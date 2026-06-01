@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cmake: configure (ninja)",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--preset", "ninja"],
+      "problemMatcher": []
+    },
+    {
+      "label": "cmake: build (ninja)",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--build", "--preset", "ninja"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "ctest (ninja)",
+      "type": "shell",
+      "command": "ctest",
+      "args": ["--preset", "ninja"],
+      "dependsOn": "cmake: build (ninja)",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}

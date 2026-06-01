@@ -1,0 +1,40 @@
+# Build directories
+build/
+build-vs/
+out/
+cmake-build-*/
+
+# clangd / tooling
+.cache/
+compile_commands.json
+CMakeUserPresets.json
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# IDE
+.vs/
+.idea/
+*.user
+
+# VSCode: ignore everything except the shared project config below.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# Compiled
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe

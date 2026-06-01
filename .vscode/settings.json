@@ -1,0 +1,31 @@
+{
+  // ---- CMake (presets-driven) ----
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+
+  // ---- clangd is the language server; disable cpptools IntelliSense to avoid
+  //      duplicate/conflicting diagnostics. cpptools is kept only for debugging.
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "C_Cpp.autocomplete": "disabled",
+  "C_Cpp.errorSquiggles": "disabled",
+
+  "clangd.path": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--header-insertion=iwyu",
+    "--pch-storage=memory",
+    // Let clangd query clang-cl for the MSVC/Windows-SDK system include paths.
+    "--query-driver=C:/Program Files/Microsoft Visual Studio/**/clang-cl.exe"
+  ],
+
+  // ---- Formatting ----
+  "editor.formatOnSave": true,
+  "[cpp]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd" },
+  "[c]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd" },
+
+  // ---- Misc ----
+  "files.associations": { "*.hpp": "cpp", "*.ipp": "cpp", "*.inl": "cpp" },
+  "files.exclude": { "**/.cache": true }
+}
