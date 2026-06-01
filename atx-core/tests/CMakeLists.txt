@@ -5,6 +5,7 @@ add_executable(atx-core-tests
     log_test.cpp
     platform_test.cpp
     bit_test.cpp
+    util_test.cpp
 )
 
 target_link_libraries(atx-core-tests
