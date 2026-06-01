@@ -15,6 +15,11 @@ target_link_libraries(atx-core
     PUBLIC
         spdlog::spdlog
         tl::expected
+        unordered_dense::unordered_dense
+        Eigen3::Eigen
+        xsimd
+    PRIVATE
+        atx_warnings
 )
 
 # Compile in every log level; runtime level (default err) does the filtering.
@@ -26,4 +31,8 @@ target_compile_definitions(atx-core
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
+endif()
+
+if(ATX_BUILD_BENCH)
+    add_subdirectory(bench)
 endif()

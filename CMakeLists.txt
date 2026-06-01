@@ -34,8 +34,76 @@ FetchContent_Declare(
     tl-expected
     GIT_REPOSITORY https://github.com/TartanLlama/expected.git
     GIT_TAG        v1.1.0
+    SYSTEM
 )
 FetchContent_MakeAvailable(tl-expected)
+
+# ankerl::unordered_dense: fast flat hash map/set (header-only, bundles wyhash).
+FetchContent_Declare(
+    unordered_dense
+    GIT_REPOSITORY https://github.com/martinus/unordered_dense.git
+    GIT_TAG        v4.4.0
+    SYSTEM
+)
+FetchContent_MakeAvailable(unordered_dense)
+
+# Eigen: header-only linear algebra. We bypass Eigen's own CMake (it enables a
+# Fortran toolchain for its test suite, which need not exist here) and expose the
+# headers through a minimal INTERFACE target.
+FetchContent_Declare(
+    Eigen3
+    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+    GIT_TAG        3.4.0
+)
+FetchContent_GetProperties(Eigen3)
+if(NOT eigen3_POPULATED)
+    FetchContent_Populate(Eigen3)
+    add_library(eigen INTERFACE)
+    target_include_directories(eigen SYSTEM INTERFACE ${eigen3_SOURCE_DIR})
+    add_library(Eigen3::Eigen ALIAS eigen)
+endif()
+
+# xsimd: header-only SIMD abstraction.
+FetchContent_Declare(
+    xsimd
+    GIT_REPOSITORY https://github.com/xtensor-stack/xsimd.git
+    GIT_TAG        13.0.0
+    SYSTEM
+)
+FetchContent_MakeAvailable(xsimd)
+
+# ---- Shared warnings gate (agent profile §8) ----
+# Applied PRIVATE to atx targets only; third-party deps are SYSTEM includes so
+# their headers never trip our warnings-as-errors.
+option(ATX_WERROR "Treat warnings as errors on atx targets" ON)
+add_library(atx_warnings INTERFACE)
+if(MSVC)
+    target_compile_options(atx_warnings INTERFACE /W4 /permissive-)
+    if(ATX_WERROR)
+        target_compile_options(atx_warnings INTERFACE /WX)
+    endif()
+else()
+    target_compile_options(atx_warnings INTERFACE
+        -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    if(ATX_WERROR)
+        target_compile_options(atx_warnings INTERFACE -Werror)
+    endif()
+endif()
+
+# ---- Benchmarks (opt-in; Google Benchmark is a test/bench-only dep) ----
+option(ATX_BUILD_BENCH "Build ATX benchmarks" OFF)
+if(ATX_BUILD_BENCH)
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        benchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG        v1.9.0
+        SYSTEM
+    )
+    FetchContent_MakeAvailable(benchmark)
+endif()
 
 # Only configure tests / GoogleTest when this is the top-level project.
 option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
@@ -48,6 +116,7 @@ if(ATX_BUILD_TESTS)
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
         GIT_TAG        v1.15.2
+        SYSTEM
     )
     # For Windows/MSVC: keep CRT linkage consistent.
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)

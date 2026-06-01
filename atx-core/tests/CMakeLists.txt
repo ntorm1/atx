@@ -9,6 +9,7 @@ target_link_libraries(atx-core-tests
     PRIVATE
         atx::core
         GTest::gtest_main
+        atx_warnings
 )
 
 include(GoogleTest)
