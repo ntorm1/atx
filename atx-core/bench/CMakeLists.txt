@@ -5,6 +5,7 @@ add_executable(atx-core-bench
     ring_buffer_bench.cpp
     disruptor_bench.cpp
     spsc_queue_bench.cpp
+    mpmc_queue_bench.cpp
 )
 
 target_link_libraries(atx-core-bench
