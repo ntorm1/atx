@@ -310,6 +310,10 @@ private:
     /// Copy all elements from src into this buffer (assumed empty).
     /// Elements are copied in oldest→newest order; head_ is set to 0.
     void copy_from(const RingBuffer& src) {
+        // Precondition: the destination must hold no live elements. We construct
+        // into slots_[0..) and overwrite head_/tail_/size_, so any pre-existing
+        // element would be leaked (never destroyed) and the indices corrupted.
+        ATX_ASSERT(size_ == 0U);
         for (usize i = 0U; i < src.size_; ++i) {
             const T* const elem = src.slot_ptr((src.head_ + i) & kMask);
             void* const mem = slots_[i].storage.data();
@@ -325,6 +329,9 @@ private:
 
     /// Move all elements from src into this buffer (assumed empty), then clear src.
     void move_from(RingBuffer&& src) noexcept(std::is_nothrow_move_constructible_v<T>) {
+        // Precondition: same as copy_from — the destination must be empty, since
+        // we construct into slots_[0..) and overwrite the indices wholesale.
+        ATX_ASSERT(size_ == 0U);
         for (usize i = 0U; i < src.size_; ++i) {
             T* const elem = src.slot_ptr((src.head_ + i) & kMask);
             void* const mem = slots_[i].storage.data();

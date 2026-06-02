@@ -321,6 +321,13 @@ class Disruptor {
     /// Indexed form: advance consumer `c`'s gating sequence.
     void consumed(i64 seq, usize c) noexcept {
         ATX_ASSERT(c < ConsumerCount);
+        // Consumption must be monotonic: a consumer advances its gate forward only.
+        // Moving a gate BACKWARD would falsely tell the producer that an
+        // already-reused slot is still live, so this catches caller misuse loudly
+        // in debug (agent.md §0). The gate is producer-private to nobody but this
+        // consumer index (driven by at most one thread), so a relaxed load of our
+        // own prior value is sufficient for the check.
+        ATX_ASSERT(seq >= consumer_gates_[c].value.load(std::memory_order_relaxed));
         // SAFETY: release so the producer's acquire load of this gate (in the
         // wrap-gating check) sees that the consumer is done reading at(seq) before
         // the producer may reuse the slot. This store is the wrap-gating handshake.
@@ -403,11 +410,20 @@ class Disruptor {
     //  Multi-producer claim: atomically reserve a sequence, then wrap-gate.
     // -----------------------------------------------------------------------
     i64 claim_multi() noexcept {
-        // SAFETY: fetch_add with acq_rel: the acquire pairs with other producers'
-        // releases (so we observe the freshest cursor); the release publishes our
-        // advance. Each caller gets a unique `next`. relaxed would suffice for the
-        // counter alone, but acq_rel keeps the cursor coherent with the cached-gate
-        // refresh below and is the conservative correct choice (agent.md §5).
+        // SAFETY: acq_rel here is a deliberately CONSERVATIVE choice, NOT a
+        // happens-before this code relies on. All inter-thread publication ordering
+        // is carried solely by the availability buffer's release/acquire pair
+        // (set_available / is_available): a consumer never reads at(seq) on the
+        // strength of the cursor alone, only after is_available(seq) succeeds with
+        // acquire. The cursor's fetch_add only needs to be atomic to hand each
+        // producer a unique `next` — relaxed would suffice for that and for the
+        // relaxed gate-cache refresh below (the gate cache is always re-validated
+        // against the true consumer sequences, so its ordering is immaterial).
+        // We retain acq_rel rather than relaxed because it cannot be wrong, the
+        // claim path is not the measured bottleneck, and a future reader extending
+        // this code should not have to re-derive the relaxed proof to stay safe.
+        // This is an explicit, not-proven-reducible deviation toward stronger
+        // ordering (agent.md §5).
         const i64 next       = cursor_.value.fetch_add(1, std::memory_order_acq_rel) + 1;
         const i64 wrap_point = next - static_cast<i64>(kCapacity);
 
@@ -455,6 +471,17 @@ class Disruptor {
 
     // The round number stored for `seq`: how many times the ring has wrapped.
     [[nodiscard]] static constexpr i32 availability_flag(i64 seq) noexcept {
+        // SAFETY: the round (seq >> kIndexShift) is truncated to i32, so two
+        // sequences whose rounds differ by a multiple of 2^32 stamp the SAME
+        // flag. That can never cause a stale round to alias a live one: at any
+        // instant the wrap-gate guarantees at most ONE live round per slot
+        // (the producer cannot claim seq + kCapacity until every consumer has
+        // consumed seq). For a stale flag to collide with the live one, two
+        // sequences mapping to the same slot would have to differ by
+        // 2^32 * kCapacity AND both be in flight simultaneously — impossible,
+        // because only kCapacity sequences are ever live at once. The wrap value
+        // therefore needs only to be unique across consecutive rounds, which a
+        // 32-bit window provides with an enormous margin; the truncation is safe.
         return static_cast<i32>(static_cast<u64>(seq) >> kIndexShift);
     }
 
