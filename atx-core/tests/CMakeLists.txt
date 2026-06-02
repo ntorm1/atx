@@ -32,6 +32,7 @@ add_executable(atx-core-tests
     rolling_test.cpp
     cross_section_test.cpp
     linalg_test.cpp
+    regression_test.cpp
 )
 
 target_link_libraries(atx-core-tests
