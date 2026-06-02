@@ -7,6 +7,7 @@ add_executable(atx-core-bench
     spsc_queue_bench.cpp
     mpmc_queue_bench.cpp
     simd_bench.cpp
+    rolling_bench.cpp
 )
 
 target_link_libraries(atx-core-bench
