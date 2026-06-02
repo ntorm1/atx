@@ -25,6 +25,7 @@ add_executable(atx-core-tests
     spsc_queue_test.cpp
     mpmc_queue_test.cpp
     datetime_test.cpp
+    simd_test.cpp
 )
 
 target_link_libraries(atx-core-tests
