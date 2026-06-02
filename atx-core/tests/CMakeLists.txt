@@ -11,6 +11,7 @@ add_executable(atx-core-tests
     hash_test.cpp
     decimal_test.cpp
     random_test.cpp
+    aligned_test.cpp
 )
 
 target_link_libraries(atx-core-tests
