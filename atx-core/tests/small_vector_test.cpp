@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -474,4 +475,107 @@ TEST_F(SmallVectorTracked, PushBackRvalueNoExtraCopy) {
     // 1 original + 1 moved-into-vector = 2 live; one move recorded
     EXPECT_EQ(TrackedSV::s_live, 2);
     EXPECT_GE(TrackedSV::s_moves, 1);
+}
+
+// ============================================================
+// Exception safety — partial-construction rollback
+// ============================================================
+//
+// A type whose COPY ctor throws on demand.  It declares no move ctor, so the
+// copy ctor also serves move-construction and std::move_if_noexcept selects it
+// (the copy may throw).  This drives the rollback paths in copy_from,
+// reallocate and steal_from from a single helper.
+struct ThrowingCopySV {
+    static int live;           // currently-alive instances
+    static int copies_allowed; // successful copies permitted before throwing
+    int value;
+
+    explicit ThrowingCopySV(int v) : value{v} { ++live; }
+    ThrowingCopySV(const ThrowingCopySV& o) : value{o.value} {
+        if (copies_allowed <= 0) {
+            throw std::runtime_error("copy budget exhausted");
+        }
+        --copies_allowed;
+        ++live;
+    }
+    ThrowingCopySV& operator=(const ThrowingCopySV&) = default;
+    ThrowingCopySV(ThrowingCopySV&&)                 = delete;
+    ThrowingCopySV& operator=(ThrowingCopySV&&)      = delete;
+    ~ThrowingCopySV() { --live; }
+
+    static void reset(int allowed) noexcept {
+        live           = 0;
+        copies_allowed = allowed;
+    }
+};
+int ThrowingCopySV::live           = 0;
+int ThrowingCopySV::copies_allowed = 0;
+
+// copy_from: a throw partway through a deep copy (spilled source) must leave no
+// constructed element or heap buffer behind in the half-built destination.
+TEST(SmallVectorExcept, CopyFromThrowsNoLeak) {
+    ThrowingCopySV::reset(/*allowed=*/100);
+    SmallVector<ThrowingCopySV, 2> src; // N=2 → spills to heap below
+    for (int i = 0; i < 5; ++i) {
+        src.emplace_back(i);
+    }
+    ASSERT_EQ(ThrowingCopySV::live, 5);
+
+    ThrowingCopySV::copies_allowed = 3; // 4th copy throws mid copy_from
+    auto copy_attempt = [&src]() {
+        SmallVector<ThrowingCopySV, 2> dst{src};
+        (void)dst;
+    };
+    EXPECT_THROW(copy_attempt(), std::runtime_error);
+
+    // Only src's 5 elements remain; dst's 3 partial copies were destroyed and
+    // its heap buffer freed.
+    EXPECT_EQ(ThrowingCopySV::live, 5);
+    EXPECT_EQ(src.size(), 5U);
+}
+
+// reallocate: a throw while transferring elements into the grown buffer must
+// roll back (strong guarantee) — the source vector is unchanged and the new
+// buffer is freed.
+TEST(SmallVectorExcept, ReallocateThrowsNoLeakNoDoubleDestroy) {
+    ThrowingCopySV::reset(/*allowed=*/100);
+    SmallVector<ThrowingCopySV, 2> v;
+    v.emplace_back(1);
+    v.emplace_back(2); // full at N=2, still inline
+    ASSERT_EQ(ThrowingCopySV::live, 2);
+
+    // The next emplace grows 2→4 → reallocate transfers 2 elements via copy.
+    ThrowingCopySV::copies_allowed = 1; // 2nd transfer copy throws
+    EXPECT_THROW(v.emplace_back(3), std::runtime_error);
+
+    // Strong guarantee: v is unchanged, the would-be element 3 never built, the
+    // grown buffer rolled back and freed — no leak, no double-destroy.
+    EXPECT_EQ(ThrowingCopySV::live, 2);
+    EXPECT_EQ(v.size(), 2U);
+    EXPECT_EQ(v[0].value, 1);
+    EXPECT_EQ(v[1].value, 2);
+}
+
+// steal_from (inline path): a throw while element-wise transferring from an
+// inline source during move-construction must roll back the destination and
+// leave the source fully intact.
+TEST(SmallVectorExcept, StealFromInlineThrowsNoLeak) {
+    ThrowingCopySV::reset(/*allowed=*/100);
+    SmallVector<ThrowingCopySV, 4> src; // inline (N=4)
+    src.emplace_back(1);
+    src.emplace_back(2);
+    src.emplace_back(3);
+    ASSERT_EQ(ThrowingCopySV::live, 3);
+
+    ThrowingCopySV::copies_allowed = 1; // 2nd transfer throws mid steal_from
+    auto move_attempt = [&src]() {
+        SmallVector<ThrowingCopySV, 4> dst{std::move(src)};
+        (void)dst;
+    };
+    EXPECT_THROW(move_attempt(), std::runtime_error);
+
+    // src keeps all 3 elements (none destroyed); dst's 1 partial element was
+    // rolled back.
+    EXPECT_EQ(ThrowingCopySV::live, 3);
+    EXPECT_EQ(src.size(), 3U);
 }

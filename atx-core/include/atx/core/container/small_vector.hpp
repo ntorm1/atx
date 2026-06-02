@@ -329,16 +329,32 @@ private:
 
         T* const new_buf = static_cast<T*>(raw);
 
-        // Move-construct each live element into the new buffer.
-        for (usize i = 0U; i < size_; ++i) {
-            // SAFETY: new_buf + i points into freshly allocated, correctly
-            //   aligned memory.  Placement-new begins the lifetime of T.
-            ::new (static_cast<void*>(new_buf + i)) T(std::move(data_[i]));
-            // Destroy the moved-from source element.
-            data_[i].~T();
+        // Transfer every live element into the new buffer BEFORE destroying any
+        // source element.  move_if_noexcept copies (not moves) when T's move
+        // ctor may throw and T is copyable, so the source stays intact and we
+        // get the strong guarantee.  If a transfer throws, roll back the
+        // elements already built into new_buf, free it, and leave *this fully
+        // unchanged — no double-destroy of the source.
+        usize i = 0U;
+        try {
+            for (; i < size_; ++i) {
+                // SAFETY: new_buf + i is freshly allocated, correctly aligned
+                //   memory; placement-new begins the lifetime of T.
+                ::new (static_cast<void*>(new_buf + i)) T(std::move_if_noexcept(data_[i]));
+            }
+        } catch (...) {
+            for (usize j = i; j > 0U; --j) {
+                new_buf[j - 1U].~T();
+            }
+            atx::core::aligned_free(raw);
+            throw;
         }
 
-        // Free the old heap buffer (if we were already spilled).
+        // All elements transferred — now destroy the old elements and free the
+        // old heap buffer (if we were already spilled).
+        for (usize j = 0U; j < size_; ++j) {
+            data_[j].~T();
+        }
         if (spilled()) {
             // SAFETY: data_ is the old heap buffer from aligned_alloc_bytes.
             atx::core::aligned_free(static_cast<void*>(data_));
@@ -357,6 +373,13 @@ private:
 
     /// Deep-copy all elements from src.  Assumes *this is currently empty and
     /// in inline state.
+    ///
+    /// Exception safety (basic guarantee): size_ is advanced after each copy
+    /// and, on throw, copy_from destroys what it built, frees any heap buffer
+    /// it allocated, and resets *this to the empty/inline state — so neither
+    /// this helper's own cleanup nor the caller's destructor leaks or
+    /// double-frees.  (Both ctor callers delegate to SmallVector(), so their
+    /// dtor also runs; the post-throw reset makes that a harmless no-op.)
     void copy_from(const SmallVector& src) {
         ATX_ASSERT(size_ == 0U);
         if (src.size_ > N) {
@@ -367,12 +390,20 @@ private:
             data_     = static_cast<T*>(raw);
             capacity_ = src.capacity_;
         }
-        for (usize i = 0U; i < src.size_; ++i) {
-            // SAFETY: data_ + i points into the correct buffer (inline or heap)
-            //   with sufficient capacity.  Placement-new copy-constructs T.
-            ::new (static_cast<void*>(data_ + i)) T(src.data_[i]);
+        try {
+            for (usize i = 0U; i < src.size_; ++i) {
+                // SAFETY: data_ + i points into the correct buffer (inline or
+                //   heap) with sufficient capacity.  Placement-new copies T.
+                ::new (static_cast<void*>(data_ + i)) T(src.data_[i]);
+                ++size_; // advance so cleanup destroys exactly the live elements
+            }
+        } catch (...) {
+            destroy_and_free();      // destroy [0, size_) and free heap if spilled
+            data_     = inline_ptr(); // return to a valid empty/inline state so a
+            size_     = 0U;           // following destructor is a no-op
+            capacity_ = N;
+            throw;
         }
-        size_ = src.size_;
     }
 
     /// Steal elements from src (move operation).
@@ -395,13 +426,29 @@ private:
         } else {
             // Slow path: src is inline, element-wise move.
             // We cannot take src's inline_slots_ address — it is part of src.
-            for (usize i = 0U; i < src.size_; ++i) {
-                // SAFETY: data_ + i is our own inline storage, correctly
-                //   aligned.  Placement-new move-constructs from src element.
-                ::new (static_cast<void*>(data_ + i)) T(std::move(src.data_[i]));
-                src.data_[i].~T();
+            // Transfer every element into our storage BEFORE destroying any
+            // source element: if a transfer throws, roll back what we built and
+            // leave src untouched (no double-destroy).  move_if_noexcept copies
+            // when T's move may throw and T is copyable, keeping src intact.
+            const usize n = src.size_;
+            usize i = 0U;
+            try {
+                for (; i < n; ++i) {
+                    // SAFETY: data_ + i is our own inline storage, correctly
+                    //   aligned.  Placement-new constructs from the src element.
+                    ::new (static_cast<void*>(data_ + i)) T(std::move_if_noexcept(src.data_[i]));
+                }
+            } catch (...) {
+                for (usize j = i; j > 0U; --j) {
+                    data_[j - 1U].~T();
+                }
+                throw;
             }
-            size_     = src.size_;
+            // All elements transferred — destroy the moved-from src elements.
+            for (usize j = 0U; j < n; ++j) {
+                src.data_[j].~T();
+            }
+            size_     = n;
             src.size_ = 0U;
             // capacity_ already set to N (inline) in our ctor / reinit.
         }
