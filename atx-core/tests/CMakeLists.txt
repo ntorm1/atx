@@ -18,6 +18,7 @@ add_executable(atx-core-tests
     disruptor_test.cpp
     fixed_vector_test.cpp
     small_vector_test.cpp
+    hash_map_test.cpp
 )
 
 target_link_libraries(atx-core-tests
