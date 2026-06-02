@@ -2,6 +2,7 @@
 # this executable as their modules land. Built only when ATX_BUILD_BENCH=ON.
 add_executable(atx-core-bench
     bench_main.cpp
+    ring_buffer_bench.cpp
 )
 
 target_link_libraries(atx-core-bench

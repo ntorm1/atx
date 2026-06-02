@@ -14,6 +14,7 @@ add_executable(atx-core-tests
     aligned_test.cpp
     arena_test.cpp
     object_pool_test.cpp
+    ring_buffer_test.cpp
 )
 
 target_link_libraries(atx-core-tests
