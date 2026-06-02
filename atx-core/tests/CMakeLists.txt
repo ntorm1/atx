@@ -12,6 +12,7 @@ add_executable(atx-core-tests
     decimal_test.cpp
     random_test.cpp
     aligned_test.cpp
+    arena_test.cpp
 )
 
 target_link_libraries(atx-core-tests
