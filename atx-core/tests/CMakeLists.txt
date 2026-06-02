@@ -15,6 +15,7 @@ add_executable(atx-core-tests
     arena_test.cpp
     object_pool_test.cpp
     ring_buffer_test.cpp
+    disruptor_test.cpp
 )
 
 target_link_libraries(atx-core-tests
@@ -23,6 +24,10 @@ target_link_libraries(atx-core-tests
         GTest::gtest_main
         atx_warnings
 )
+
+# Threads for the disruptor's multi-threaded tests (std::thread).
+find_package(Threads REQUIRED)
+target_link_libraries(atx-core-tests PRIVATE Threads::Threads)
 
 include(GoogleTest)
 gtest_discover_tests(atx-core-tests)

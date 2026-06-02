@@ -3,6 +3,7 @@
 add_executable(atx-core-bench
     bench_main.cpp
     ring_buffer_bench.cpp
+    disruptor_bench.cpp
 )
 
 target_link_libraries(atx-core-bench
@@ -11,3 +12,7 @@ target_link_libraries(atx-core-bench
         benchmark::benchmark
         atx_warnings
 )
+
+# Threads for the disruptor throughput benchmarks (std::thread).
+find_package(Threads REQUIRED)
+target_link_libraries(atx-core-bench PRIVATE Threads::Threads)
