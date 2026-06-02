@@ -15,6 +15,16 @@
 //     u32 array) but simpler, safer, and avoids any aliasing between the
 //     T-storage and the list linkage.
 //
+//   Misuse detection (debug-only):
+//     A per-slot liveness flag array `live_[]` is compiled in only when
+//     NDEBUG is not defined.  acquire() marks a slot live; release() asserts
+//     the slot is currently live BEFORE freeing it and then marks it dead.
+//     This catches double-release and release-of-never-acquired in debug —
+//     a bare free_top_ < Capacity check cannot (when other slots are live a
+//     double-release silently pushes the same index twice, aliasing storage
+//     on the next two acquires).  The flag array and its logic carry zero
+//     cost in release builds (entirely #ifndef NDEBUG'd out).
+//
 //   Storage:
 //     Each slot is a struct containing an alignas(T) std::byte array of
 //     sizeof(T) bytes.  std::aligned_storage is deprecated in C++23; this
@@ -49,6 +59,7 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -68,6 +79,8 @@ namespace atx::core {
 template <class T, usize Capacity>
 class ObjectPool {
     static_assert(Capacity > 0U, "ObjectPool: Capacity must be > 0");
+    static_assert(Capacity <= static_cast<usize>(std::numeric_limits<u32>::max()),
+                  "ObjectPool: Capacity must fit in u32 (free-stack uses u32 indices)");
 
 public:
     // ------------------------------------------------------------------
@@ -119,6 +132,9 @@ public:
         //   caller who owns the object until release() is called.
         T* const obj = ::new (mem) T(std::forward<Args>(args)...);
         ++live_count_;
+#ifndef NDEBUG
+        live_[idx] = true; // debug-only misuse tracker (see release())
+#endif
         return obj;
     }
 
@@ -138,6 +154,23 @@ public:
         ATX_ASSERT(p != nullptr);
         ATX_ASSERT(owns(p)); // pointer must be inside this pool's storage
 
+        // SAFETY: slot_index() computes a byte offset over Slot::storage from
+        //   the pointer value alone; it performs no access through p.  It is
+        //   called BEFORE ~T() so the index is in hand for the debug liveness
+        //   check.  (Pointer arithmetic on the std::byte storage address would
+        //   remain well-defined even after the object's lifetime ends — see
+        //   the post-lifetime SAFETY note below.)
+        const u32 idx = slot_index(p);
+
+        // Debug-only misuse detection: the slot MUST currently be live.
+        // Asserting here catches double-release (the index is already free)
+        // and release-of-never-acquired.  A bare free_top_ < Capacity check
+        // cannot — with other slots live, a second release would silently
+        // push the same index twice and alias storage on the next acquires.
+#ifndef NDEBUG
+        ATX_ASSERT(live_[idx]); // not live ⇒ double-release or never acquired
+#endif
+
         // SAFETY: p was constructed via placement-new in acquire().
         //   Calling the destructor explicitly ends the object's lifetime
         //   without freeing memory (the storage belongs to the pool).
@@ -145,10 +178,19 @@ public:
         //   with explicit destructor call (C++ standard [basic.life]).
         p->~T();
 
-        const u32 idx = slot_index(p);
+        // SAFETY: ~T() has ended the T object's lifetime, but the underlying
+        //   Slot::storage bytes are still alive (the Slot, and thus its
+        //   std::byte array, outlives the contained T).  Recording the freed
+        //   index and marking the slot dead operates purely on the pool's own
+        //   bookkeeping and on the still-valid storage address — no access
+        //   through the dead T occurs.  Pointer arithmetic over the byte
+        //   storage remains well-defined post-lifetime ([basic.life]).
         ATX_ASSERT(free_top_ < static_cast<u32>(Capacity)); // pool must not be empty
         free_stack_[free_top_++] = idx;
         --live_count_;
+#ifndef NDEBUG
+        live_[idx] = false; // slot is now free
+#endif
     }
 
     // ------------------------------------------------------------------
@@ -224,6 +266,13 @@ private:
 
     /// Number of currently live (acquired) objects.
     usize live_count_{0U};
+
+#ifndef NDEBUG
+    /// Debug-only per-slot liveness flags for misuse detection (double-release
+    /// / release-of-never-acquired).  Zero cost in release builds — the entire
+    /// member is #ifndef NDEBUG'd out.  Value-initialised to all-false.
+    std::array<bool, Capacity> live_{};
+#endif
 };
 
 } // namespace atx::core

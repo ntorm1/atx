@@ -231,3 +231,34 @@ TEST(ObjectPool, CapacityConstant) {
     ObjectPool<double, 16> p;
     EXPECT_EQ(p.capacity(), 16U);
 }
+
+// ---------------------------------------------------------------------------
+// TEST: Double-release is caught by the debug liveness assert
+//
+// Releasing the same pointer twice while another slot remains live must fire
+// the debug ATX_ASSERT(live_[idx]).  This is precisely the case a bare
+// free_top_ < Capacity check would miss (the other live slot keeps the stack
+// non-full, so the second push would silently alias storage).
+//
+// The assert is compiled out under NDEBUG, so this death test is debug-only.
+// ---------------------------------------------------------------------------
+#ifndef NDEBUG
+TEST(ObjectPoolDeathTest, DoubleReleaseAsserts) {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+
+    // Wrapped in a lambda: a brace-block at the start of a macro argument is
+    // parsed as an initializer list (the comma splits wrong), so we hand
+    // EXPECT_DEATH a single callable expression instead.
+    const auto double_release = [] {
+        ObjectPool<int, 4> p;
+        int* const a = p.acquire();
+        int* const b = p.acquire(); // keep a second slot live
+        ATX_CHECK(a != nullptr);
+        ATX_CHECK(b != nullptr);
+        p.release(a);
+        p.release(a); // double-release — must abort via ATX_ASSERT
+    };
+
+    EXPECT_DEATH(double_release(), "");
+}
+#endif
