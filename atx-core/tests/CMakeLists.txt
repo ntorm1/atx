@@ -30,6 +30,7 @@ add_executable(atx-core-tests
     quantile_test.cpp
     algo_test.cpp
     rolling_test.cpp
+    cross_section_test.cpp
 )
 
 target_link_libraries(atx-core-tests
