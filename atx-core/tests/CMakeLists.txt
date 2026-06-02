@@ -9,6 +9,7 @@ add_executable(atx-core-tests
     safe_math_test.cpp
     math_test.cpp
     hash_test.cpp
+    decimal_test.cpp
 )
 
 target_link_libraries(atx-core-tests
