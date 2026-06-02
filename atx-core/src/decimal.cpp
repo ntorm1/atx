@@ -7,6 +7,7 @@
 // header lean. Parsing validates ALL input at this boundary (agent profile §4);
 // interior code then assumes a well-formed mantissa.
 
+#include <array>   // std::array (to_string fractional buffer)
 #include <cmath>   // std::isfinite, std::llround
 #include <cstdint> // INT64_MAX
 #include <string>
@@ -28,8 +29,11 @@ Result<Decimal> Decimal::from_double(f64 value) noexcept {
   // scaled magnitude against INT64_MAX BEFORE converting back to integer so we
   // never invoke an out-of-range double->i64 cast (which is UB).
   const f64 scaled = value * static_cast<f64>(kScale);
-  // A small epsilon over INT64_MAX guards the boundary; doubles cannot
-  // represent INT64_MAX exactly, so compare against its double value.
+  // Deliberately conservative upper limit: this is the largest power-of-two-
+  // representable double strictly below (double)INT64_MAX, so the post-round
+  // llround result provably fits in i64 without an out-of-range cast (UB). The
+  // trade-off is that the top ~1024 nanos of the i64 range are under-accepted —
+  // irrelevant for money, and worth it to stay UB-free at the boundary.
   constexpr f64 limit = 9.223372036854775e18; // < (double)INT64_MAX, conservative
   if (scaled > limit || scaled < -limit) {
     return Err(ErrorCode::InvalidArgument, "Decimal::from_double: out of range");
@@ -101,9 +105,25 @@ Result<Decimal> Decimal::from_string(std::string_view text) {
     return Err(ErrorCode::ParseError, "Decimal::from_string: trailing garbage");
   }
 
-  // whole <= kMaxWhole was enforced above, so whole*kScale + fraction fits i64.
-  const i64 magnitude = whole * kScale + fraction;
-  return Ok(Decimal::from_raw(negative ? -magnitude : magnitude));
+  // Combine in u64 and bounds-check BEFORE the signed store. `whole <= kMaxWhole`
+  // bounds whole*kScale, but adding up to kScale-1 nanos can still push the
+  // mantissa past INT64_MAX (e.g. "9223372036.854775808" == INT64_MAX+1), which
+  // would be signed-overflow UB. The fit bound is sign-dependent: a positive
+  // mantissa must be <= INT64_MAX, while a negative one may reach |INT64_MIN| ==
+  // INT64_MAX+1 (the exact min, e.g. "-9223372036.854775808", is representable).
+  const u64 umagnitude = static_cast<u64>(whole) * static_cast<u64>(kScale) +
+                         static_cast<u64>(fraction);
+  const u64 limit = negative ? (static_cast<u64>(INT64_MAX) + 1ULL) // |INT64_MIN|
+                             : static_cast<u64>(INT64_MAX);
+  if (umagnitude > limit) {
+    return Err(ErrorCode::OutOfRange, "Decimal::from_string: mantissa overflow");
+  }
+  // SAFETY: two's-complement negation of the magnitude; defined for all
+  // magnitudes in [0, |INT64_MIN|] including the INT64_MIN boundary, and never
+  // forms a positive value > INT64_MAX (rejected above).
+  const i64 mantissa =
+      negative ? static_cast<i64>(~umagnitude + 1ULL) : static_cast<i64>(umagnitude);
+  return Ok(Decimal::from_raw(mantissa));
 }
 
 // ============================================================
@@ -128,19 +148,23 @@ std::string Decimal::to_string() const {
   out += std::to_string(whole);
   out.push_back('.');
 
-  // Render the fractional part as exactly kFractionDigits, zero-padded, then
-  // trim trailing zeros but keep at least one digit.
-  char buf[kFractionDigits];
-  u64 f = frac;
-  for (int i = kFractionDigits - 1; i >= 0; --i) {
-    buf[i] = static_cast<char>('0' + (f % 10));
-    f /= 10;
+  // Render the fractional part as exactly kFractionDigits, zero-padded (most
+  // significant digit first), then trim trailing zeros but keep at least one.
+  // std::array iterators keep the index off any unchecked raw subscript
+  // (cppcoreguidelines-pro-bounds-constant-array-index).
+  constexpr auto kDigits = static_cast<usize>(kFractionDigits);
+  std::array<char, kDigits> buf{};
+  // place starts at kScale/10 (the 0.1 nano place) and divides down per digit.
+  u64 place = static_cast<u64>(kScale) / 10;
+  for (char &digit : buf) {
+    digit = static_cast<char>('0' + ((frac / place) % 10));
+    place /= 10;
   }
-  int last = kFractionDigits - 1;
-  while (last > 0 && buf[last] == '0') {
-    --last;
+  usize len = kDigits;
+  while (len > 1 && buf.at(len - 1) == '0') {
+    --len;
   }
-  out.append(buf, static_cast<usize>(last + 1));
+  out.append(buf.data(), len);
   return out;
 }
 

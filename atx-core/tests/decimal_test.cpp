@@ -241,6 +241,39 @@ TEST(Decimal, FromStringRejectsLeadingDotFraction) {
   EXPECT_FALSE(Decimal::from_string(".5").has_value());
 }
 
+// ----- mantissa-overflow boundary: integer part within kMaxWhole but the
+//       combined mantissa (whole*kScale + fraction) crosses INT64 limits -----
+
+TEST(Decimal, FromStringAcceptsMaxMantissa) {
+  // 9223372036.854775807 == INT64_MAX exactly (largest positive mantissa).
+  const auto r = Decimal::from_string("9223372036.854775807");
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->raw(), INT64_MAX);
+}
+
+TEST(Decimal, FromStringRejectsOneAboveMaxMantissa) {
+  // INT64_MAX+1: integer part 9223372036 <= kMaxWhole, but the mantissa would
+  // overflow i64 (signed-overflow UB if combined naively) -> OutOfRange.
+  const auto r = Decimal::from_string("9223372036.854775808");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(Decimal, FromStringAcceptsMinMantissa) {
+  // -9223372036.854775808 == INT64_MIN exactly (representable, magnitude is
+  // |INT64_MIN| == INT64_MAX+1).
+  const auto r = Decimal::from_string("-9223372036.854775808");
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->raw(), INT64_MIN);
+}
+
+TEST(Decimal, FromStringRejectsOneBelowMinMantissa) {
+  // One ulp below INT64_MIN -> not representable -> OutOfRange.
+  const auto r = Decimal::from_string("-9223372036.854775809");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::OutOfRange);
+}
+
 // ============================================================
 //  Addition / subtraction (exact)
 // ============================================================
