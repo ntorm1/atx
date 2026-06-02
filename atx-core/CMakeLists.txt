@@ -1,6 +1,7 @@
 add_library(atx-core STATIC
     src/core.cpp
     src/decimal.cpp
+    src/datetime.cpp
 )
 add_library(atx::core ALIAS atx-core)
 

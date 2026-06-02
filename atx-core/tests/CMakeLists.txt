@@ -21,6 +21,7 @@ add_executable(atx-core-tests
     hash_map_test.cpp
     intrusive_list_test.cpp
     spinlock_test.cpp
+    datetime_test.cpp
 )
 
 target_link_libraries(atx-core-tests
