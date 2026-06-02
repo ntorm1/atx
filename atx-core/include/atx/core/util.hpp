@@ -53,8 +53,12 @@ public:
 
     /// Move-assign: run the current guard's callback (if armed), then take over
     /// the source guard. The source is left disarmed.
+    ///
+    /// noexcept reflects the body precisely: it invokes fn_() and then
+    /// move-assigns fn_, so it is nothrow only when both operations are.
+    /// (Overstating noexcept would force std::terminate on a real throw.)
     ScopeGuard &operator=(ScopeGuard &&other) noexcept(
-        std::is_nothrow_move_constructible_v<F>) {
+        std::is_nothrow_invocable_v<F> &&std::is_nothrow_move_assignable_v<F>) {
         if (this != &other) {
             if (armed_) {
                 fn_(); // run our own cleanup before adopting the new one
@@ -219,7 +223,7 @@ public:
 
     /// Construct from a single enumerator.
     constexpr explicit EnumFlags(E e) noexcept
-        : bits_{static_cast<underlying_type>(::atx::core::to_underlying(e))} {}
+        : bits_{::atx::core::to_underlying(e)} {}
 
     /// Construct directly from the raw underlying value (internal/advanced use).
     constexpr explicit EnumFlags(underlying_type raw) noexcept : bits_{raw} {}
@@ -246,7 +250,10 @@ public:
         return *this & EnumFlags{rhs};
     }
     [[nodiscard]] constexpr EnumFlags operator~() const noexcept {
-        return EnumFlags{static_cast<underlying_type>(~bits_)};
+        // Apply NOT on the unsigned underlying type to avoid integer promotion
+        // to a signed int (which would make the operation/cast value-dependent).
+        return EnumFlags{
+            static_cast<underlying_type>(~static_cast<underlying_type>(bits_))};
     }
 
     // ---- Mutating helpers ---------------------------------------------------

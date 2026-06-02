@@ -170,6 +170,9 @@ TEST(EnumFlags, BitwiseNot) {
     EXPECT_FALSE(f.test(Perm::Read));
     EXPECT_TRUE(f.test(Perm::Write));
     EXPECT_TRUE(f.test(Perm::Exec));
+    // Full-width assertion: every bit except Read (bit 0) is set in a 32-bit
+    // unsigned universe. Confirms the NOT runs on the full underlying width.
+    EXPECT_EQ(f.to_underlying(), 0xFFFFFFFEU);
 }
 
 TEST(EnumFlags, ToUnderlying) {
