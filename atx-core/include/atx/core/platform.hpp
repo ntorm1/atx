@@ -48,7 +48,7 @@ namespace atx::core {
 //    1. No x86-64 part has shipped with a different L1 cache line since P4.
 //    2. Runtime CPUID query is too expensive for a constant used in alignas.
 // =====================================================================
-inline constexpr usize kCacheLineSize = 64u;
+inline constexpr usize kCacheLineSize = 64U;
 
 } // namespace atx::core
 
