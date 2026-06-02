@@ -16,6 +16,7 @@ add_executable(atx-core-tests
     object_pool_test.cpp
     ring_buffer_test.cpp
     disruptor_test.cpp
+    fixed_vector_test.cpp
 )
 
 target_link_libraries(atx-core-tests
