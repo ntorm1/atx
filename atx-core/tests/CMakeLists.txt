@@ -27,6 +27,7 @@ add_executable(atx-core-tests
     datetime_test.cpp
     simd_test.cpp
     online_stats_test.cpp
+    quantile_test.cpp
 )
 
 target_link_libraries(atx-core-tests
