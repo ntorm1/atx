@@ -22,6 +22,7 @@ add_executable(atx-core-tests
     intrusive_list_test.cpp
     spinlock_test.cpp
     seqlock_test.cpp
+    spsc_queue_test.cpp
     datetime_test.cpp
 )
 
