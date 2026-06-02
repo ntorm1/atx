@@ -7,6 +7,7 @@ add_executable(atx-core-tests
     bit_test.cpp
     util_test.cpp
     safe_math_test.cpp
+    math_test.cpp
 )
 
 target_link_libraries(atx-core-tests
