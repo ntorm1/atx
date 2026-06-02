@@ -20,6 +20,7 @@ add_executable(atx-core-tests
     small_vector_test.cpp
     hash_map_test.cpp
     intrusive_list_test.cpp
+    spinlock_test.cpp
 )
 
 target_link_libraries(atx-core-tests
