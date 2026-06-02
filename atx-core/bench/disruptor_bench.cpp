@@ -123,10 +123,14 @@ void BM_Disruptor_MP2_SC(benchmark::State& state) {
             });
         }
         i64 sink = 0;
-        for (i64 i = 0; i < total; ++i) {
-            d.wait_for(i);
-            sink += d.at(i);
-            d.consumed(i);
+        i64 next = 0;
+        while (next < total) {
+            const i64 hi = d.wait_for(next); // MP: highest contiguous published
+            for (i64 s = next; s <= hi; ++s) {
+                sink += d.at(s);
+            }
+            d.consumed(hi);
+            next = hi + 1;
         }
         benchmark::DoNotOptimize(sink);
         for (auto& t : prods) {
