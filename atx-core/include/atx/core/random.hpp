@@ -173,6 +173,13 @@ public:
     /// standard normals; the second is cached and returned on the next call,
     /// halving the number of std::sqrt/log/sin/cos calls.
     ///
+    /// @note The cached spare is part of the object state and is copied by the
+    ///       copy/move constructor. A copy taken while a spare is pending will
+    ///       return that same spare on its first normal() call before drawing
+    ///       any fresh uniforms. This is intentional and correct for
+    ///       reproducibility: a copy continues the identical normal() sequence
+    ///       as the original.
+    ///
     /// @return  A f64 drawn from N(0, 1).
     [[nodiscard]] f64 normal() noexcept {
         if (has_spare_) {
@@ -207,6 +214,9 @@ public:
     ///
     /// @param p  Probability of returning true.
     ///           p <= 0.0 → always false; p >= 1.0 → always true.
+    /// @note     A NaN p always yields false: every IEEE-754 comparison with
+    ///           NaN (including `x < NaN`) is false, so `uniform01() < p` is
+    ///           false regardless of the drawn value.
     /// @return   true with probability p.
     [[nodiscard]] bool bernoulli(f64 p) noexcept {
         return uniform01() < p;

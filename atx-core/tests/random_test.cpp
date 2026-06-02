@@ -1,9 +1,72 @@
 #include "atx/core/random.hpp"
 
+#include <array>
+#include <cstdint>
+
 #include <gtest/gtest.h>
 
 using namespace atx;       // NOLINT(google-build-using-namespace)
 using namespace atx::core; // NOLINT(google-build-using-namespace)
+
+// ---- independent reference (known-answer test) ------------------------------
+//
+// A fresh, self-contained re-implementation of SplitMix64 seeding and the
+// xoshiro256++ step. This does NOT call Xoshiro256pp. The constants and rotate
+// amounts are written out independently from the textbook reference so that any
+// perturbed constant or rotl in random.hpp is caught by KnownAnswerVector.
+//
+// Reference: https://prng.di.unimi.it/xoshiro256plusplus.c and splitmix64.c.
+
+namespace {
+
+[[nodiscard]] std::uint64_t ref_rotl(std::uint64_t x, int k) noexcept {
+    return (x << k) | (x >> (64 - k));
+}
+
+[[nodiscard]] std::uint64_t ref_splitmix64(std::uint64_t& s) noexcept {
+    s += 0x9E3779B97F4A7C15ULL;
+    std::uint64_t z = s;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+[[nodiscard]] std::array<std::uint64_t, 4> ref_seed(std::uint64_t seed) noexcept {
+    std::array<std::uint64_t, 4> st{};
+    st[0] = ref_splitmix64(seed);
+    st[1] = ref_splitmix64(seed);
+    st[2] = ref_splitmix64(seed);
+    st[3] = ref_splitmix64(seed);
+    return st;
+}
+
+[[nodiscard]] std::uint64_t ref_next(std::array<std::uint64_t, 4>& s) noexcept {
+    const std::uint64_t result = ref_rotl(s[0] + s[3], 23) + s[0];
+    const std::uint64_t t = s[1] << 17;
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = ref_rotl(s[3], 45);
+    return result;
+}
+
+} // namespace
+
+TEST(Random, KnownAnswerVector) {
+    // For several seeds, the class output must match the independent reference
+    // for the first few draws. Locks the algorithm against constant/rotl drift.
+    constexpr std::array<std::uint64_t, 3> kSeeds = {0ULL, 1ULL, 42ULL};
+    for (const std::uint64_t seed : kSeeds) {
+        Xoshiro256pp gen{seed};
+        std::array<std::uint64_t, 4> ref = ref_seed(seed);
+        for (int i = 0; i < 5; ++i) {
+            EXPECT_EQ(gen.next_u64(), ref_next(ref))
+                << "seed=" << seed << " draw=" << i;
+        }
+    }
+}
 
 // ---- determinism ------------------------------------------------------------
 
