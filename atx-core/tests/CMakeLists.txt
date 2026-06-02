@@ -28,6 +28,7 @@ add_executable(atx-core-tests
     simd_test.cpp
     online_stats_test.cpp
     quantile_test.cpp
+    algo_test.cpp
 )
 
 target_link_libraries(atx-core-tests
