@@ -364,36 +364,62 @@ private:
     }
 
     /// Copy all elements from src into this buffer (assumed empty).
+    ///
+    /// Exception safety (basic guarantee): copy_from rolls back its OWN partial
+    /// work.  This is required because copy_from runs from the copy *constructor*
+    /// (FixedVector(const FixedVector&)): if a T copy-ctor throws there, the
+    /// FixedVector's own destructor never executes — only fully-constructed
+    /// members are destroyed, and slots_ is raw storage with a trivial dtor.
+    /// So relying on ~FixedVector()->clear() would leak the elements built so
+    /// far.  Instead we advance size_ as we go and, on throw, clear() those
+    /// elements here before rethrowing.  (When T's copy-ctor is noexcept the
+    /// compiler elides the handler — no hot-path cost.)
     void copy_from(const FixedVector& src) {
         ATX_ASSERT(size_ == 0U);
-        for (usize i = 0U; i < src.size_; ++i) {
-            void* const mem = slots_[i].storage.data();
+        try {
+            for (usize i = 0U; i < src.size_; ++i) {
+                void* const mem = slots_[i].storage.data();
 
-            // SAFETY: mem is alignas(T) storage of sizeof(T) bytes.
-            //   Placement-new copy-constructs T from src element.
-            ::new (mem) T(*src.slot_ptr(i));
+                // SAFETY: mem is alignas(T) storage of sizeof(T) bytes.
+                //   Placement-new copy-constructs T from src element.
+                ::new (mem) T(*src.slot_ptr(i));
+                ++size_;
+            }
+        } catch (...) {
+            clear(); // destroy [0, size_) and reset size_ — no partial leak
+            throw;
         }
-        size_ = src.size_;
     }
 
     /// Move all elements from src into this buffer (assumed empty), clear src.
+    ///
+    /// Exception safety: noexcept when T's move-ctor is noexcept (the common,
+    /// hot path).  When T's move-ctor may throw, move_from rolls back its OWN
+    /// partial work — required because move_from also runs from the move
+    /// *constructor*, where a throw means ~FixedVector() never runs (see
+    /// copy_from for the full rationale).  On throw mid-loop we clear() the
+    /// elements built into this so far and leave src fully intact (its n live
+    /// elements, some moved-from but still valid, are reclaimed by src's own
+    /// dtor).  Only after all n elements transfer does src destroy its elements.
     void move_from(FixedVector&& src) noexcept(std::is_nothrow_move_constructible_v<T>) {
         ATX_ASSERT(size_ == 0U);
-        for (usize i = 0U; i < src.size_; ++i) {
-            T* const elem = src.slot_ptr(i);
-            void* const mem = slots_[i].storage.data();
+        const usize n = src.size_;
+        try {
+            for (usize i = 0U; i < n; ++i) {
+                void* const mem = slots_[i].storage.data();
 
-            // SAFETY: mem is alignas(T) storage of sizeof(T) bytes.
-            //   Placement-new move-constructs T from src element.
-            ::new (mem) T(std::move(*elem));
-
-            // Destroy the source element now that it has been moved-from.
-            elem->~T();
+                // SAFETY: mem is alignas(T) storage of sizeof(T) bytes.
+                //   Placement-new move-constructs T from src element.
+                ::new (mem) T(std::move(*src.slot_ptr(i)));
+                ++size_; // destination now owns element i
+            }
+        } catch (...) {
+            clear(); // destroy this's partial elements; src stays intact
+            throw;
         }
-        size_ = src.size_;
-
-        // Leave src empty and consistent.
-        src.size_ = 0U;
+        // All n elements transferred successfully; destroy the moved-from
+        // source elements and leave src empty and consistent.
+        src.clear();
     }
 
     // ------------------------------------------------------------------

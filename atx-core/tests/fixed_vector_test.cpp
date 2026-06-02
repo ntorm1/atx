@@ -7,6 +7,7 @@
 
 #include <functional> // std::reference_wrapper
 #include <numeric>    // std::iota, std::accumulate
+#include <stdexcept>  // std::runtime_error
 #include <string>
 
 #include <gtest/gtest.h>
@@ -452,6 +453,64 @@ TEST(FixedVector, TryPushBackRvalueRef) {
     std::string s = "world";
     EXPECT_TRUE(v.try_push_back(std::move(s)));
     EXPECT_EQ(v[0], "world");
+}
+
+// ============================================================
+// Exception safety — copy_from rolls back partial construction
+// ============================================================
+
+// A copy-ctor that throws after a fixed number of successful copies, with a
+// live-instance counter so the test can assert no element leaks when a copy
+// throws partway through building a FixedVector.
+struct ThrowingCopyFV {
+    static int live;             // currently-alive instances
+    static int copies_allowed;   // copy-ctors permitted before throwing
+    static void reset(int allowed) {
+        live = 0;
+        copies_allowed = allowed;
+    }
+
+    int value;
+    explicit ThrowingCopyFV(int v) : value{v} { ++live; }
+    ThrowingCopyFV(const ThrowingCopyFV& o) : value{o.value} {
+        if (copies_allowed <= 0) {
+            throw std::runtime_error("copy budget exhausted");
+        }
+        --copies_allowed;
+        ++live;
+    }
+    ~ThrowingCopyFV() { --live; }
+    ThrowingCopyFV& operator=(const ThrowingCopyFV&) = default;
+    ThrowingCopyFV(ThrowingCopyFV&&) = delete;
+    ThrowingCopyFV& operator=(ThrowingCopyFV&&) = delete;
+};
+int ThrowingCopyFV::live = 0;
+int ThrowingCopyFV::copies_allowed = 0;
+
+TEST(FixedVector, CopyFromThrowsNoLeak) {
+    // Source holds 4 elements; allow only 2 copies, so the 3rd copy throws
+    // partway through copy_from. All partially-constructed destination
+    // elements must be destroyed (no leak).
+    ThrowingCopyFV::reset(/*allowed=*/100); // generous budget to build source
+    FixedVector<ThrowingCopyFV, 4> src;
+    src.emplace_back(1);
+    src.emplace_back(2);
+    src.emplace_back(3);
+    src.emplace_back(4);
+    const int live_before = ThrowingCopyFV::live; // 4 source elements alive
+    EXPECT_EQ(live_before, 4);
+
+    // Permit exactly 2 successful copies, then throw on the 3rd.
+    ThrowingCopyFV::copies_allowed = 2;
+    auto copy_attempt = [&src]() {
+        FixedVector<ThrowingCopyFV, 4> dst{src};
+        (void)dst;
+    };
+    EXPECT_THROW(copy_attempt(), std::runtime_error);
+
+    // Only the source's 4 elements remain alive; the 2 partially-copied
+    // destination elements were rolled back by ~FixedVector()->clear().
+    EXPECT_EQ(ThrowingCopyFV::live, live_before);
 }
 
 // ============================================================
