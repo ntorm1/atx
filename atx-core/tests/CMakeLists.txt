@@ -13,6 +13,7 @@ add_executable(atx-core-tests
     random_test.cpp
     aligned_test.cpp
     arena_test.cpp
+    object_pool_test.cpp
 )
 
 target_link_libraries(atx-core-tests
