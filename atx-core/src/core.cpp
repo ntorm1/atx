@@ -1,7 +1,4 @@
+// Single translation unit that includes the umbrella header, verifying that
+// every public module compiles together (no ODR/macro/namespace collisions)
+// and giving the static library a non-header anchor object.
 #include "atx/core/core.hpp"
-
-namespace atx::core {
-
-int add(int a, int b) { return a + b; }
-
-} // namespace atx::core
