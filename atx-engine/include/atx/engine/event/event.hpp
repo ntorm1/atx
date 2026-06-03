@@ -32,15 +32,15 @@
 // the bus may memcpy it into a ring slot with no special-member calls. Thread
 // safety is the bus's concern (publication/consumption fences), not the POD's.
 
-#include <compare>      // operator<=> on the Timestamp members
-#include <cstddef>      // std::byte
-#include <cstring>      // std::memcpy
-#include <string_view>  // to_string return type
-#include <type_traits>  // std::is_trivially_copyable_v, static_assert guards
+#include <array>       // std::array — the raw payload buffer
+#include <cstddef>     // std::byte
+#include <cstring>     // std::memcpy
+#include <string_view> // to_string return type
+#include <type_traits> // std::is_trivially_copyable_v, static_assert guards
 
-#include "atx/core/datetime.hpp"  // atx::core::time::Timestamp
-#include "atx/core/platform.hpp"  // ATX_CACHE_ALIGNED, atx::core::kCacheLineSize
-#include "atx/core/types.hpp"     // atx::u8, atx::usize
+#include "atx/core/datetime.hpp" // atx::core::time::Timestamp
+#include "atx/core/platform.hpp" // ATX_CACHE_ALIGNED, atx::core::kCacheLineSize
+#include "atx/core/types.hpp"    // atx::u8, atx::usize
 
 namespace atx::engine::event {
 
@@ -51,7 +51,7 @@ namespace atx::engine::event {
 //  enumerators default-number from 0, so a value-initialised Event has
 //  type == Market (0) — the natural Phase-1 default.
 // =====================================================================
-enum class EventType : u8 { Market, Signal, Order, Fill };  // closed; no `default` in switches
+enum class EventType : u8 { Market, Signal, Order, Fill }; // closed; no `default` in switches
 
 // Payload buffer size, fixed once across all phases.
 //
@@ -71,16 +71,16 @@ inline constexpr atx::usize kPayloadBytes = 64;
 //  each axis comes free from Timestamp's defaulted operator<=>.
 // =====================================================================
 struct ATX_CACHE_ALIGNED Event {
-  atx::core::time::Timestamp knowledge_ts{};  // clock-gating axis (sort/visibility)
-  atx::core::time::Timestamp event_ts{};      // true-at axis (e.g. bar close)
-  EventType                  type{};          // discriminator for the payload bytes
+  atx::core::time::Timestamp knowledge_ts; // clock-gating axis (sort/visibility)
+  atx::core::time::Timestamp event_ts;     // true-at axis (e.g. bar close)
+  EventType type{};                        // discriminator for the payload bytes
 
   // SAFETY: the payload bytes are only meaningful when interpreted as the POD
   //         whose EventType matches `type`. Access exclusively via payload_as<P>
   //         with `tag == type` as the caller's precondition. alignas(8) lets any
   //         payload up to 8-byte alignment be memcpy'd in/out without a misaligned
   //         access; the buffer is value-initialised to all-zero bytes.
-  alignas(8) std::byte payload[kPayloadBytes]{};
+  alignas(8) std::array<std::byte, kPayloadBytes> payload{};
 
   // The discriminator. Callers switch on this to pick the payload type.
   [[nodiscard]] constexpr EventType kind() const noexcept { return type; }
@@ -90,30 +90,28 @@ struct ATX_CACHE_ALIGNED Event {
   // Precondition (caller): after store_payload, set `type` to the EventType that
   // names P so a later payload_as<P> is valid. store_payload does NOT touch
   // `type` — the maker functions (P1-2) own the tag/payload pairing.
-  template <class P>
-  void store_payload(const P& p) noexcept {
+  template <class P> void store_payload(const P &p) noexcept {
     static_assert(std::is_trivially_copyable_v<P>,
                   "payload must be trivially copyable to ride the memcpy ring");
     static_assert(sizeof(P) <= kPayloadBytes,
                   "payload exceeds kPayloadBytes — grow kPayloadBytes (reshapes the ring)");
     // SAFETY: P is trivially copyable and fits; memcpy into the byte buffer
     //         begins P's lifetime there. Caller sets `type` to match P.
-    std::memcpy(payload, &p, sizeof(P));
+    std::memcpy(payload.data(), &p, sizeof(P));
   }
 
   // Deserialise the byte buffer back into a copy of payload POD P.
-  template <class P>
-  [[nodiscard]] P payload_as() const noexcept {
+  template <class P> [[nodiscard]] P payload_as() const noexcept {
     static_assert(std::is_trivially_copyable_v<P>,
                   "payload must be trivially copyable to ride the memcpy ring");
     static_assert(sizeof(P) <= kPayloadBytes,
                   "payload exceeds kPayloadBytes — grow kPayloadBytes (reshapes the ring)");
-    P out{};  // value-init then overwrite; P is trivially copyable
+    P out{}; // value-init then overwrite; P is trivially copyable
     // SAFETY: `type == the EventType that names P` is the caller's precondition
     //         (see kind()). memcpy out of the byte buffer is defined for any
     //         trivially-copyable P; reading bytes never stored as P is logically
     //         meaningless but not UB (it is a copy of well-defined byte storage).
-    std::memcpy(&out, payload, sizeof(P));
+    std::memcpy(&out, payload.data(), sizeof(P));
     return out;
   }
 };
@@ -156,14 +154,14 @@ static_assert(sizeof(Event) == 128,
 // =====================================================================
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
-    case EventType::Market:
-      return "Market";
-    case EventType::Signal:
-      return "Signal";
-    case EventType::Order:
-      return "Order";
-    case EventType::Fill:
-      return "Fill";
+  case EventType::Market:
+    return "Market";
+  case EventType::Signal:
+    return "Signal";
+  case EventType::Order:
+    return "Order";
+  case EventType::Fill:
+    return "Fill";
   }
   // Unreachable for a valid EventType. A value outside the enumerators can only
   // arise from a bit-corrupted cast (UB at the cast site); we return a sentinel
@@ -171,4 +169,4 @@ static_assert(sizeof(Event) == 128,
   return "Unknown";
 }
 
-}  // namespace atx::engine::event
+} // namespace atx::engine::event

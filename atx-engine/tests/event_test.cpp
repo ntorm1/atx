@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <string_view>
 #include <type_traits>
 
@@ -25,13 +27,20 @@ struct ProbePayload {
 static_assert(std::is_trivially_copyable_v<ProbePayload>);
 static_assert(sizeof(ProbePayload) <= kPayloadBytes);
 
+// A payload that exactly fills the buffer — exercises the upper boundary the
+// `sizeof(P) <= kPayloadBytes` guard protects (a 1-byte-larger payload would
+// fail that static_assert at compile time).
+struct FullPayload {
+  std::array<std::byte, kPayloadBytes> raw{};
+};
+static_assert(std::is_trivially_copyable_v<FullPayload>);
+static_assert(sizeof(FullPayload) == kPayloadBytes);
+
 // --------------------------------------------------------------------------
 //  Type-level guarantees (these duplicate the header's static_asserts, but a
 //  failing compile here localises the regression to the event taxonomy).
 // --------------------------------------------------------------------------
-TEST(EventTaxonomy, Event_IsTriviallyCopyable) {
-  EXPECT_TRUE(std::is_trivially_copyable_v<Event>);
-}
+TEST(EventTaxonomy, Event_IsTriviallyCopyable) { EXPECT_TRUE(std::is_trivially_copyable_v<Event>); }
 
 TEST(EventTaxonomy, Event_IsCacheLineAligned) {
   EXPECT_EQ(alignof(Event), atx::core::kCacheLineSize);
@@ -49,7 +58,7 @@ TEST(EventTaxonomy, Event_DefaultConstructed_IsWellFormed) {
   const Event e{};
   EXPECT_EQ(e.knowledge_ts, Timestamp::epoch());
   EXPECT_EQ(e.event_ts, Timestamp::epoch());
-  EXPECT_EQ(e.type, EventType::Market);          // Market == 0, the zero-init tag
+  EXPECT_EQ(e.type, EventType::Market); // Market == 0, the zero-init tag
   EXPECT_EQ(e.kind(), EventType::Market);
 }
 
@@ -66,9 +75,9 @@ TEST(EventTaxonomy, Payload_StoreThenLoad_RoundTrips) {
   Event e{};
   const ProbePayload in{.a = -42, .b = 3.5};
   e.store_payload(in);
-  e.type = EventType::Signal;                    // caller tags the active payload
+  e.type = EventType::Signal; // caller tags the active payload
 
-  const ProbePayload out = e.payload_as<ProbePayload>();  // SAFETY: tag == known
+  const auto out = e.payload_as<ProbePayload>(); // SAFETY: tag == known
   EXPECT_EQ(out.a, in.a);
   EXPECT_DOUBLE_EQ(out.b, in.b);
   EXPECT_EQ(e.kind(), EventType::Signal);
@@ -76,9 +85,28 @@ TEST(EventTaxonomy, Payload_StoreThenLoad_RoundTrips) {
 
 TEST(EventTaxonomy, Payload_DefaultEvent_ReadsZeroBytes) {
   const Event e{};
-  const ProbePayload out = e.payload_as<ProbePayload>();
+  const auto out = e.payload_as<ProbePayload>();
   EXPECT_EQ(out.a, 0);
   EXPECT_DOUBLE_EQ(out.b, 0.0);
+}
+
+TEST(EventTaxonomy, Payload_FullBufferSize_RoundTrips) {
+  // Fill every byte of a kPayloadBytes-sized payload with distinct non-zero
+  // values so a partial/truncated copy would be detected.
+  FullPayload in{};
+  atx::u8 next = 1U; // 1..kPayloadBytes, all non-zero
+  for (std::byte &b : in.raw) {
+    b = static_cast<std::byte>(next);
+    ++next;
+  }
+
+  Event e{};
+  e.store_payload(in);
+  e.type = EventType::Fill;
+
+  const auto out = e.payload_as<FullPayload>(); // SAFETY: tag == known
+  EXPECT_EQ(out.raw, in.raw);                   // std::array operator== is element-wise
+  EXPECT_EQ(e.kind(), EventType::Fill);
 }
 
 // --------------------------------------------------------------------------
@@ -129,4 +157,4 @@ TEST(EventTaxonomy, ToString_IsConstexpr) {
   EXPECT_EQ(market, std::string_view{"Market"});
 }
 
-}  // namespace
+} // namespace
