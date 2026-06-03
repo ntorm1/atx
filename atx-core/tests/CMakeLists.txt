@@ -32,6 +32,8 @@ add_executable(atx-core-tests
     rolling_test.cpp
     cross_section_test.cpp
     linalg_test.cpp
+    decompose_test.cpp
+    solve_test.cpp
     regression_test.cpp
     domain_test.cpp
     column_test.cpp
