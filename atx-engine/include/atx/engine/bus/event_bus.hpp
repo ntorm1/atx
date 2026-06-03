@@ -172,10 +172,11 @@ public:
   ///                  the dispatch callback MUST NOT throw (a throwing dispatch is
   ///                  a precondition violation that std::terminates, by design —
   ///                  it must not silently corrupt the in-order delivery state).
-  template <class Fn>
-  // NOLINTNEXTLINE(bugprone-exception-escape): noexcept is the intentional
+  // bugprone-exception-escape suppressed below: noexcept is the intentional
   // fail-loud contract — a throwing dispatch callback is a caller precondition
   // violation; terminating beats half-draining and corrupting consumer gates.
+  template <class Fn>
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   void drain_in_order(const Fn &dispatch) noexcept {
     static_assert(std::is_invocable_v<const Fn &, atx::usize, const event::Event &>,
                   "drain_in_order dispatch must be callable as "

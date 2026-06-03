@@ -1,0 +1,10 @@
+# Bench TUs use Google Benchmark conventions (BM_ function names, the
+# BENCHMARK() macro's global registrar) and a `for (auto _ : state)` loop that
+# clang-tidy mis-analyzes for const-correctness. These are accepted house style
+# (see atx-core/bench) and are not part of the enforced gate — disable the
+# noise here so the bench TU lints clean.
+InheritParentConfig: true
+Checks: >
+  -readability-identifier-naming,
+  -misc-const-correctness,
+  -cppcoreguidelines-avoid-non-const-global-variables

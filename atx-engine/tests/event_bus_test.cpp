@@ -44,16 +44,20 @@
 //  default operator new/delete do.
 // ---------------------------------------------------------------------------
 namespace {
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables): the global
-// allocation counter must be mutable global state to observe the global allocator.
-std::atomic<atx::u64> g_alloc_count{0};
+// The global allocation counter must be mutable global state to observe the
+// global allocator from the operator new override.
+std::atomic<atx::u64> g_alloc_count{
+    0}; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 } // namespace
 
 // SAFETY: these are the standard replaceable global allocation functions. We
 // forward to std::malloc and throw std::bad_alloc on failure exactly as the
 // default does; the only added behaviour is the relaxed counter bump (the test
 // reads it single-threaded, so relaxed ordering suffices).
-// NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,clang-analyzer-cplusplus.NewDelete,misc-include-cleaner)
+// inconsistent-declaration-parameter-name suppressed: matching the standard
+// operator new/delete signature is correct; MSVC <vcruntime_new.h> names the
+// param `_Block` (a reserved identifier) — renaming to match it would be worse.
+// NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,clang-analyzer-cplusplus.NewDelete,misc-include-cleaner,readability-inconsistent-declaration-parameter-name)
 void *operator new(std::size_t n) {
   g_alloc_count.fetch_add(1, std::memory_order_relaxed);
   void *p = std::malloc(n == 0 ? 1 : n);
@@ -67,7 +71,7 @@ void operator delete(void *p) noexcept { std::free(p); }
 void operator delete[](void *p) noexcept { std::free(p); }
 void operator delete(void *p, std::size_t /*n*/) noexcept { std::free(p); }
 void operator delete[](void *p, std::size_t /*n*/) noexcept { std::free(p); }
-// NOLINTEND(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,clang-analyzer-cplusplus.NewDelete,misc-include-cleaner)
+// NOLINTEND(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,clang-analyzer-cplusplus.NewDelete,misc-include-cleaner,readability-inconsistent-declaration-parameter-name)
 
 namespace {
 

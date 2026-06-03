@@ -16,7 +16,6 @@
 #include <atx/engine/bus/event_bus.hpp>
 #include <atx/engine/event/event.hpp>
 
-#include <cstdint>
 #include <memory>
 
 #include <benchmark/benchmark.h>
