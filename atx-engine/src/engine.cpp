@@ -5,8 +5,8 @@
 namespace atx::engine {
 
 int step(int value) {
-  // Demonstrates engine -> core dependency.
-  return atx::core::add(value, 1);
+  // Demonstrates engine -> core dependency via core's checked arithmetic.
+  return atx::core::checked_add(value, 1).value_or(value);
 }
 
 } // namespace atx::engine
