@@ -51,7 +51,7 @@ public:
   // -------------------------------------------------------------------------
   /// @return  The timestamp the engine currently believes is "now".
   ///          Monotonically non-decreasing; only changes via advance_to().
-  [[nodiscard]] atx::core::time::Timestamp now() const noexcept { return now_; }
+  [[nodiscard]] constexpr atx::core::time::Timestamp now() const noexcept { return now_; }
 
   // -------------------------------------------------------------------------
   //  advance_to() — move the simulation forward to t.
@@ -66,7 +66,8 @@ public:
   /// @param t  The new simulation instant. Must be >= now().
   // advance_to is intentionally NOT constexpr: ATX_ASSERT expands to logging +
   // std::abort(), which are not constexpr-compatible (matching datetime.hpp's
-  // approach of keeping runtime-checking functions non-constexpr).
+  // approach of keeping runtime-checking functions non-constexpr). The read-only
+  // now()/is_visible() ARE constexpr; only the mutating, asserting advance_to is not.
   void advance_to(atx::core::time::Timestamp t) noexcept {
     // Monotonic invariant: the clock may only move forward. A backward advance
     // indicates a bug in the event-ordering layer (e.g. out-of-order events
@@ -88,7 +89,7 @@ public:
   ///                      became available to market participants.
   /// @return              true  → the record is knowable as of now();
   ///                      false → the record is a future revision, invisible.
-  [[nodiscard]] bool is_visible(atx::core::time::Timestamp knowledge_ts) const noexcept {
+  [[nodiscard]] constexpr bool is_visible(atx::core::time::Timestamp knowledge_ts) const noexcept {
     return knowledge_ts <= now_;
   }
 
