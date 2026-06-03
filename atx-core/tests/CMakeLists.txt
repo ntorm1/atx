@@ -40,6 +40,7 @@ add_executable(atx-core-tests
     domain_test.cpp
     column_test.cpp
     frame_test.cpp
+    parquet_test.cpp
 )
 
 target_link_libraries(atx-core-tests
@@ -52,6 +53,16 @@ target_link_libraries(atx-core-tests
 # Threads for the disruptor's multi-threaded tests (std::thread).
 find_package(Threads REQUIRED)
 target_link_libraries(atx-core-tests PRIVATE Threads::Threads)
+
+# Arrow/Parquet for the parquet loader tests.
+target_link_libraries(atx-core-tests PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
+
+# Copy Arrow's runtime DLLs (and any other transitive shared deps) next to the
+# test exe so it can be launched directly by ctest.
+add_custom_command(TARGET atx-core-tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_RUNTIME_DLLS:atx-core-tests> $<TARGET_FILE_DIR:atx-core-tests>
+    COMMAND_EXPAND_LISTS)
 
 include(GoogleTest)
 gtest_discover_tests(atx-core-tests)

@@ -3,6 +3,7 @@ add_library(atx-core STATIC
     src/decimal.cpp
     src/datetime.cpp
     src/symbol.cpp
+    src/io/parquet.cpp
 )
 add_library(atx::core ALIAS atx-core)
 
@@ -14,6 +15,9 @@ target_include_directories(atx-core
 
 target_compile_features(atx-core PUBLIC cxx_std_20)
 
+find_package(Arrow CONFIG REQUIRED)
+find_package(Parquet CONFIG REQUIRED)
+
 target_link_libraries(atx-core
     PUBLIC
         spdlog::spdlog
@@ -21,6 +25,8 @@ target_link_libraries(atx-core
         unordered_dense::unordered_dense
         Eigen3::Eigen
         xsimd
+        Arrow::arrow_shared
+        Parquet::parquet_shared
     PRIVATE
         atx_warnings
 )
