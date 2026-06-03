@@ -76,6 +76,10 @@ Higher layers depend only on lower ones.
 | Module | Header | Purpose |
 |--------|--------|---------|
 | linalg | `linalg/linalg.hpp` | Eigen aliases (`Vec2..VecX`, `Mat2..MatX`) + zero-copy span bridges |
+| decompose | `linalg/decompose.hpp` | `cholesky`/`qr`/`svd`/`symmetric_eig` → owned `Result<>` factors |
+| solve | `linalg/solve.hpp` | `solve`/`solve_spd`/`inverse`/`pseudo_inverse`/`determinant`/`rank`/`condition_number` |
+| spd | `linalg/spd.hpp` | `is_symmetric`/`is_positive_definite`/`nearest_pd` (Higham)/`regularize` |
+| pca | `linalg/pca.hpp` | `pca` → `Result<PcaResult{mean, components, explained_variance, explained_ratio}>`, `transform` |
 | regression | `linalg/regression.hpp` | `ols`/`ridge`/`wls` → `Result<OlsResult{beta, r2, residuals}>` |
 
 ### L8 — time & domain

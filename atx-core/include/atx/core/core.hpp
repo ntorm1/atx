@@ -67,6 +67,10 @@
 
 // ---- L7: linear algebra ---------------------------------------------------
 #include "atx/core/linalg/linalg.hpp"
+#include "atx/core/linalg/decompose.hpp"
+#include "atx/core/linalg/solve.hpp"
+#include "atx/core/linalg/spd.hpp"
+#include "atx/core/linalg/pca.hpp"
 #include "atx/core/linalg/regression.hpp"
 
 // ---- L8: time & domain ----------------------------------------------------
