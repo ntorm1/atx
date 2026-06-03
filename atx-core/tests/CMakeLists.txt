@@ -35,6 +35,7 @@ add_executable(atx-core-tests
     regression_test.cpp
     domain_test.cpp
     column_test.cpp
+    frame_test.cpp
 )
 
 target_link_libraries(atx-core-tests
