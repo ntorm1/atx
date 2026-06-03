@@ -1,5 +1,7 @@
 #include "atx/core/io/parquet.hpp"
 
+#include <arrow/array.h>                 // Int64Array, DoubleArray, ... raw_values()
+#include <arrow/chunked_array.h>         // arrow::ChunkedArray (Table::column)
 #include <arrow/io/file.h>
 #include <arrow/result.h>
 #include <arrow/status.h>
@@ -10,7 +12,9 @@
 
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace atx::core::io {
@@ -76,6 +80,7 @@ using atx::core::Error;
   case arrow::Type::DICTIONARY: {
     // SAFETY: id()==DICTIONARY guarantees the dynamic type is DictionaryType, so
     // this static_cast is well-defined; value_type() returns a non-null shared_ptr.
+    // (Arrow never nests dictionary value types; recursion depth is 1.)
     const auto& dict = static_cast<const arrow::DictionaryType&>(type);
     return to_dtype(*dict.value_type());
   }
@@ -153,6 +158,14 @@ Result<ParquetTable> read_parquet(std::string_view path) {
 
     auto impl = std::make_unique<ParquetTable::Impl>();
     impl->table = *std::move(table_res);
+    // Combine chunks so every column is a single contiguous chunk owned by the
+    // table. This makes column_view's raw_values() alias buffers whose lifetime
+    // is tied to impl_->table (no dangling spans on multi-row-group files).
+    auto combined = impl->table->CombineChunks(arrow::default_memory_pool());
+    if (!combined.ok()) {
+      return Err(from_arrow(combined.status(), "read_parquet combine chunks"));
+    }
+    impl->table = *combined;
     // Populate the cached atx Schema from the materialized table so
     // ParquetTable::schema() is non-empty.
     impl->schema = schema_from_arrow(*impl->table->schema());
@@ -254,5 +267,158 @@ LazyParquet& LazyParquet::offset(i64 n) {
   impl_->offset = n;
   return *this;
 }
+
+// Eager full read: materialize ALL row groups into a ParquetTable. Projection,
+// filter, and slice are deferred to later tasks; this reads the whole file.
+Result<ParquetTable> LazyParquet::collect() {
+  try {
+    // Arrow 24: use the arrow::Result-returning ReadTable (the out-param form is
+    // deprecated and would trip /WX).
+    auto table_res = impl_->reader->ReadTable();
+    if (!table_res.ok()) {
+      return Err(from_arrow(table_res.status(), "collect read"));
+    }
+    impl_->stats.row_groups_total = num_row_groups();
+    auto out = std::make_unique<ParquetTable::Impl>();
+    out->table = *std::move(table_res);
+    // Combine chunks so every column is single-chunk and owned by out->table;
+    // this keeps column_view's raw_values() alias alive for the table's lifetime
+    // (no dangling spans on multi-row-group reads). Must precede rows_scanned /
+    // schema_from_arrow below.
+    auto combined = out->table->CombineChunks(arrow::default_memory_pool());
+    if (!combined.ok()) {
+      return Err(from_arrow(combined.status(), "collect combine chunks"));
+    }
+    out->table = *combined;
+    impl_->stats.rows_scanned = out->table->num_rows();
+    out->schema = schema_from_arrow(*out->table->schema());
+    return ParquetTable{std::move(out)};
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "collect: unknown exception"); }
+}
+
+// ---------------------------------------------------------------------------
+// Numeric column bridges (Arrow contiguous buffer -> span / Column / Frame).
+// Strings/bool/timestamp bridges land in Task 4.
+// ---------------------------------------------------------------------------
+
+// Maps an atx numeric element type T to its Arrow Type::id and typed Array.
+template <class T> struct ArrowTypeOf;
+template <> struct ArrowTypeOf<int64_t>  { static constexpr auto id = arrow::Type::INT64;  using ArrayT = arrow::Int64Array;  };
+template <> struct ArrowTypeOf<int32_t>  { static constexpr auto id = arrow::Type::INT32;  using ArrayT = arrow::Int32Array;  };
+template <> struct ArrowTypeOf<int16_t>  { static constexpr auto id = arrow::Type::INT16;  using ArrayT = arrow::Int16Array;  };
+template <> struct ArrowTypeOf<int8_t>   { static constexpr auto id = arrow::Type::INT8;   using ArrayT = arrow::Int8Array;   };
+template <> struct ArrowTypeOf<uint64_t> { static constexpr auto id = arrow::Type::UINT64; using ArrayT = arrow::UInt64Array; };
+template <> struct ArrowTypeOf<uint32_t> { static constexpr auto id = arrow::Type::UINT32; using ArrayT = arrow::UInt32Array; };
+template <> struct ArrowTypeOf<uint16_t> { static constexpr auto id = arrow::Type::UINT16; using ArrayT = arrow::UInt16Array; };
+template <> struct ArrowTypeOf<uint8_t>  { static constexpr auto id = arrow::Type::UINT8;  using ArrayT = arrow::UInt8Array;  };
+template <> struct ArrowTypeOf<float>    { static constexpr auto id = arrow::Type::FLOAT;  using ArrayT = arrow::FloatArray;  };
+template <> struct ArrowTypeOf<double>   { static constexpr auto id = arrow::Type::DOUBLE; using ArrayT = arrow::DoubleArray; };
+
+template <class T>
+Result<std::span<const T>> ParquetTable::column_view(std::string_view name) const {
+  const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+  if (idx < 0) {
+    return Err(ErrorCode::InvalidArgument, "column_view: column not found");
+  }
+  auto col = impl_->table->column(idx);
+  if (col->type()->id() != ArrowTypeOf<T>::id) {
+    return Err(ErrorCode::InvalidArgument, "column_view: column element-type mismatch");
+  }
+  if (col->length() == 0 || col->num_chunks() == 0) {
+    return Ok(std::span<const T>{}); // empty column: nothing to alias
+  }
+  if (col->num_chunks() != 1) {
+    // Unreachable after CombineChunks; defensive guard against a dangling alias.
+    return Err(ErrorCode::Internal, "column_view: column is not single-chunk");
+  }
+  // SAFETY: chunk(0) is owned by impl_->table (single-chunk after CombineChunks),
+  // so raw_values() aliases a contiguous buffer that stays alive as long as *this
+  // (and therefore impl_->table) lives. id() was checked, so the static_pointer_cast
+  // to ArrayT is valid (no UB).
+  auto arr = std::static_pointer_cast<typename ArrowTypeOf<T>::ArrayT>(col->chunk(0));
+  const T* p = arr->raw_values();
+  return Ok(std::span<const T>{p, static_cast<usize>(arr->length())});
+}
+
+template <class T>
+Result<series::Column<T>> ParquetTable::to_column(std::string_view name) const {
+  auto v = column_view<T>(name);
+  if (!v.has_value()) {
+    return Err(v.error());
+  }
+  series::Column<T> out;
+  out.append_bulk(*v);
+  return Ok(std::move(out));
+}
+
+// Bridges the numeric column `name` (element type T) into `frame`. On success
+// the bridged Column<T> is moved into a freshly added frame column. Returns true
+// iff the column landed; a failed bridge (e.g. all-null edge) returns false so
+// to_frame can skip it silently.
+template <class T>
+[[nodiscard]] static bool add_numeric(series::Frame& frame, std::string_view name,
+                                      const ParquetTable& table) {
+  auto col = table.to_column<T>(name);
+  if (!col.has_value()) {
+    return false;
+  }
+  auto ref = frame.add_column<T>(name);
+  if (!ref.has_value()) {
+    return false;
+  }
+  ref->get() = *std::move(col);
+  return true;
+}
+
+Result<series::Frame> ParquetTable::to_frame() const {
+  try {
+    series::Frame frame;
+    for (const auto& ci : impl_->schema.columns) {
+      switch (ci.dtype) {
+      case DType::Int8:    { (void)add_numeric<int8_t>(frame, ci.name, *this);   break; }
+      case DType::Int16:   { (void)add_numeric<int16_t>(frame, ci.name, *this);  break; }
+      case DType::Int32:   { (void)add_numeric<int32_t>(frame, ci.name, *this);  break; }
+      case DType::Int64:   { (void)add_numeric<int64_t>(frame, ci.name, *this);  break; }
+      case DType::UInt8:   { (void)add_numeric<uint8_t>(frame, ci.name, *this);  break; }
+      case DType::UInt16:  { (void)add_numeric<uint16_t>(frame, ci.name, *this); break; }
+      case DType::UInt32:  { (void)add_numeric<uint32_t>(frame, ci.name, *this); break; }
+      case DType::UInt64:  { (void)add_numeric<uint64_t>(frame, ci.name, *this); break; }
+      case DType::Float32: { (void)add_numeric<float>(frame, ci.name, *this);    break; }
+      case DType::Float64: { (void)add_numeric<double>(frame, ci.name, *this);   break; }
+      default:
+        // Bool/String/Binary/Date32/Timestamp/Decimal128/Unsupported land in
+        // Task 4+; silently skipped here so the numeric arms stay total.
+        break;
+      }
+    }
+    return Ok(std::move(frame));
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "to_frame: unknown exception"); }
+}
+
+// Explicit instantiations so the header's out-of-line template definitions link
+// for every supported numeric element type.
+// T is a TYPE used in template-arg position; wrapping it in parens (the lint's
+// usual fix) would be invalid C++ here, so the check is suppressed.
+// NOLINTNEXTLINE(bugprone-macro-parentheses)
+#define ATX_PQ_INSTANTIATE(T) \
+  template Result<std::span<const T>> ParquetTable::column_view<T>(std::string_view) const; \
+  template Result<series::Column<T>> ParquetTable::to_column<T>(std::string_view) const;
+ATX_PQ_INSTANTIATE(int8_t)
+ATX_PQ_INSTANTIATE(int16_t)
+ATX_PQ_INSTANTIATE(int32_t)
+ATX_PQ_INSTANTIATE(int64_t)
+ATX_PQ_INSTANTIATE(uint8_t)
+ATX_PQ_INSTANTIATE(uint16_t)
+ATX_PQ_INSTANTIATE(uint32_t)
+ATX_PQ_INSTANTIATE(uint64_t)
+ATX_PQ_INSTANTIATE(float)
+ATX_PQ_INSTANTIATE(double)
+#undef ATX_PQ_INSTANTIATE
 
 } // namespace atx::core::io

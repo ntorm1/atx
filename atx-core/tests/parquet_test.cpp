@@ -60,3 +60,84 @@ TEST(Parquet, ScanReportsSchemaAndMetadata) {
   EXPECT_EQ(s.columns[1].name, "val");
   EXPECT_EQ(s.columns[1].dtype, DType::Float64);
 }
+
+TEST(Parquet, CollectReadsAllRows) {
+  auto path = temp_path("collect");
+  write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 100);
+  EXPECT_EQ(t->num_columns(), 2);
+}
+
+TEST(Parquet, ToColumnCopiesValues) {
+  auto path = temp_path("tocol");
+  write_table(make_numeric_table(10), path);
+  auto t = read_parquet(path);
+  ASSERT_TRUE(t.has_value());
+  auto col = t->to_column<double>("val");
+  ASSERT_TRUE(col.has_value());
+  ASSERT_EQ(col->size(), 10u);
+  EXPECT_DOUBLE_EQ((*col)[3], 4.5);
+}
+
+TEST(Parquet, ColumnViewAliasesBuffer) {
+  auto path = temp_path("view");
+  write_table(make_numeric_table(10), path);
+  auto t = read_parquet(path);
+  ASSERT_TRUE(t.has_value());
+  auto v = t->column_view<int64_t>("id");
+  ASSERT_TRUE(v.has_value());
+  ASSERT_EQ(v->size(), 10u);
+  EXPECT_EQ((*v)[7], 7);
+}
+
+TEST(Parquet, ToColumnWrongTypeIsInvalidArgument) {
+  auto path = temp_path("wrongtype");
+  write_table(make_numeric_table(10), path);
+  auto t = read_parquet(path);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->to_column<double>("id").error().code(),  // id is int64
+            atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(Parquet, ToColumnUnknownColumnIsInvalidArgument) {
+  auto path = temp_path("nocol");
+  write_table(make_numeric_table(10), path);
+  auto t = read_parquet(path);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->to_column<double>("does_not_exist").error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(Parquet, ColumnViewMultiChunkIsContiguous) {
+  auto path = temp_path("multichunk");
+  write_table(make_numeric_table(2500), path); // 1024 row-group size -> 3 row groups
+  auto t = read_parquet(path);
+  ASSERT_TRUE(t.has_value());
+  auto v = t->column_view<int64_t>("id");
+  ASSERT_TRUE(v.has_value());
+  ASSERT_EQ(v->size(), 2500u);
+  EXPECT_EQ((*v)[0], 0);
+  EXPECT_EQ((*v)[2499], 2499);
+  int64_t sum = 0;
+  for (int64_t x : *v) { sum += x; }
+  EXPECT_EQ(sum, 2499LL * 2500 / 2);
+  auto c = t->to_column<double>("val");
+  ASSERT_TRUE(c.has_value());
+  ASSERT_EQ(c->size(), 2500u);
+  EXPECT_DOUBLE_EQ((*c)[2499], 2499.0 * 1.5);
+}
+
+TEST(Parquet, ToFrameHasNumericColumns) {
+  auto path = temp_path("toframe");
+  write_table(make_numeric_table(10), path);
+  auto t = read_parquet(path);
+  ASSERT_TRUE(t.has_value());
+  auto f = t->to_frame();
+  ASSERT_TRUE(f.has_value());
+  EXPECT_TRUE(f->has_column("id"));
+  EXPECT_TRUE(f->has_column("val"));
+}
