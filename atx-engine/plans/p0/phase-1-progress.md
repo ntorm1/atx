@@ -67,8 +67,8 @@ Defer (out of Phase 1 scope — see ROADMAP):
 
 | Unit | Status | Commit | Notes |
 |------|--------|--------|-------|
-| P1-0 | ✅ done | `<marker>` | `fwd.hpp` (spine fwd-decls); `tests/CMakeLists.txt` → `*_test.cpp` glob + `atx_warnings` + Threads; `bench/` (`bench_main.cpp` + `*_bench.cpp` glob, `ATX_BUILD_BENCH`); engine lib links `atx_warnings`; `scaffold_test` green. No `atx_engine_pending` (all upstreams landed). |
-| P1-1 | ⏳ pending | `—` | `event.hpp`: `EventType{Market,Signal,Order,Fill}`, trivially-copyable `Event`, size/alignment asserts. *blocked-on L8 `time`.* |
+| P1-0 | ✅ done | `cf6252d` | `fwd.hpp` (spine fwd-decls); `tests/CMakeLists.txt` → `*_test.cpp` glob + `atx_warnings` + Threads; `bench/` (`bench_main.cpp` + `*_bench.cpp` glob, `ATX_BUILD_BENCH`); engine lib links `atx_warnings`; `scaffold_test` green. No `atx_engine_pending` (all upstreams landed). |
+| P1-1 | ✅ done | `554cceb`+`14b8c2e` | `event/event.hpp`: `EventType{Market,Signal,Order,Fill}` (`:u8`, closed); cache-aligned trivially-copyable `Event{knowledge_ts,event_ts,type,payload}`; payload = `std::array<std::byte,kPayloadBytes=64>` + generic memcpy accessors `store_payload<P>`/`payload_as<P>` (NO union-active-member UB). Guards `sizeof==128`/`alignof==64`/trivially-copyable. Exhaustive `to_string` no-`default`. **13 tests**, clang-tidy/format clean. |
 | P1-2 | ⏳ pending | `—` | `MarketPayload` over `domain::Bar`/`Tick` + `knowledge_ts`; bitemporal invariant. *blocked-on L8 `domain`.* |
 | P1-3 | ⏳ pending | `—` | `EventBus<Cap>` over `concurrent::disruptor`; SP→MC fanout; zero-alloc; TSan; bench ns/op. *blocked-on L4.* |
 | P1-4 | ⏳ pending | `—` | `SimClock` monotonic + `is_visible(knowledge_ts)` look-ahead gate; restatement semantics. *blocked-on L8 `time`.* |
@@ -96,8 +96,8 @@ _(Lift to ROADMAP future-work backlog at close.)_ None recorded yet.
 
 | Commit | Unit | Test counts (suite/total/fail/skip) |
 |--------|------|-------------------------------------|
-| `—`    | marker (P1-0) | — |
-| `—`    | P1-1 | — |
+| `cf6252d` | marker (P1-0) | scaffold-only: `EngineScaffold` 1/1 pass |
+| `554cceb`+`14b8c2e` | P1-1 | EventTaxonomy 13/13 pass |
 | `—`    | P1-2 | — |
 | `—`    | P1-3 | — |
 | `—`    | P1-4 | — |
