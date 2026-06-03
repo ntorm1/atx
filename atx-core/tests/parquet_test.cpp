@@ -37,6 +37,20 @@ std::shared_ptr<arrow::Table> make_numeric_table(int64_t n) {
                                arrow::field("val", arrow::float64())});
   return arrow::Table::Make(schema, {aa, ba});
 }
+
+// Builds a string/bool/timestamp[ms] table with a null in the string column, to
+// exercise the Task-4 dtype bridges (null -> empty view / stored value).
+std::shared_ptr<arrow::Table> make_mixed_table() {
+  arrow::StringBuilder s; (void)s.Append("a"); (void)s.AppendNull(); (void)s.Append("c");
+  arrow::BooleanBuilder bo; (void)bo.Append(true); (void)bo.Append(false); (void)bo.Append(true);
+  arrow::TimestampBuilder ts(arrow::timestamp(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
+  (void)ts.Append(1000); (void)ts.Append(2000); (void)ts.Append(3000);
+  std::shared_ptr<arrow::Array> sa, ba, ta; (void)s.Finish(&sa); (void)bo.Finish(&ba); (void)ts.Finish(&ta);
+  auto schema = arrow::schema({arrow::field("name", arrow::utf8()),
+                               arrow::field("flag", arrow::boolean()),
+                               arrow::field("t", arrow::timestamp(arrow::TimeUnit::MILLI))});
+  return arrow::Table::Make(schema, {sa, ba, ta});
+}
 } // namespace
 
 TEST(Parquet, MissingFileReturnsNotFound) {
@@ -140,4 +154,51 @@ TEST(Parquet, ToFrameHasNumericColumns) {
   ASSERT_TRUE(f.has_value());
   EXPECT_TRUE(f->has_column("id"));
   EXPECT_TRUE(f->has_column("val"));
+}
+
+TEST(Parquet, StringsAccessor) {
+  auto path = temp_path("strings"); write_table(make_mixed_table(), path);
+  auto t = read_parquet(path); ASSERT_TRUE(t.has_value());
+  auto s = t->strings("name"); ASSERT_TRUE(s.has_value());
+  ASSERT_EQ(s->size(), 3u);
+  EXPECT_EQ((*s)[0], "a");
+  EXPECT_EQ((*s)[1], "");   // null -> empty view
+  EXPECT_EQ((*s)[2], "c");
+}
+
+TEST(Parquet, StringsWrongTypeIsInvalidArgument) {
+  auto path = temp_path("strbad"); write_table(make_mixed_table(), path);
+  auto t = read_parquet(path); ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->strings("flag").error().code(), atx::core::ErrorCode::InvalidArgument); // flag is bool
+}
+
+TEST(Parquet, BoolBridge) {
+  auto path = temp_path("bool"); write_table(make_mixed_table(), path);
+  auto t = read_parquet(path); ASSERT_TRUE(t.has_value());
+  auto c = t->to_column<bool>("flag"); ASSERT_TRUE(c.has_value());
+  ASSERT_EQ(c->size(), 3u);
+  EXPECT_TRUE((*c)[0]); EXPECT_FALSE((*c)[1]); EXPECT_TRUE((*c)[2]);
+}
+
+TEST(Parquet, BoolColumnViewIsNotImplemented) {
+  auto path = temp_path("boolview"); write_table(make_mixed_table(), path);
+  auto t = read_parquet(path); ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->column_view<bool>("flag").error().code(), atx::core::ErrorCode::NotImplemented);
+}
+
+TEST(Parquet, TimestampBridge) {
+  auto path = temp_path("ts"); write_table(make_mixed_table(), path);
+  auto t = read_parquet(path); ASSERT_TRUE(t.has_value());
+  auto c = t->to_column<atx::core::time::Timestamp>("t"); ASSERT_TRUE(c.has_value());
+  ASSERT_EQ(c->size(), 3u);
+  EXPECT_EQ((*c)[0].unix_nanos(), 1'000'000'000); // 1000 ms -> 1e9 ns
+}
+
+TEST(Parquet, SchemaReportsAllDtypes) {
+  auto path = temp_path("dtypes"); write_table(make_mixed_table(), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  ASSERT_NE(lz->schema().find("name"), nullptr);
+  EXPECT_EQ(lz->schema().find("name")->dtype, DType::String);
+  EXPECT_EQ(lz->schema().find("flag")->dtype, DType::Bool);
+  EXPECT_EQ(lz->schema().find("t")->dtype, DType::Timestamp);
 }

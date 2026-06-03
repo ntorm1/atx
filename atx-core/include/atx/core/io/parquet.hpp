@@ -98,6 +98,22 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
+// Non-numeric column bridges are provided as explicit specializations in
+// parquet.cpp (bool is bit-packed; Timestamp needs unit conversion). Declared
+// here so every TU sees them before first use (avoids ODR/IFNDR).
+template <>
+[[nodiscard]] Result<std::span<const bool>>
+ParquetTable::column_view<bool>(std::string_view name) const;
+template <>
+[[nodiscard]] Result<series::Column<bool>>
+ParquetTable::to_column<bool>(std::string_view name) const;
+template <>
+[[nodiscard]] Result<std::span<const time::Timestamp>>
+ParquetTable::column_view<time::Timestamp>(std::string_view name) const;
+template <>
+[[nodiscard]] Result<series::Column<time::Timestamp>>
+ParquetTable::to_column<time::Timestamp>(std::string_view name) const;
+
 class RowGroupStream;
 
 class LazyParquet {

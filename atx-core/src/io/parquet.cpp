@@ -301,7 +301,8 @@ Result<ParquetTable> LazyParquet::collect() {
 
 // ---------------------------------------------------------------------------
 // Numeric column bridges (Arrow contiguous buffer -> span / Column / Frame).
-// Strings/bool/timestamp bridges land in Task 4.
+// String/bool/timestamp bridges (Task 4) live further below, after the numeric
+// primary templates.
 // ---------------------------------------------------------------------------
 
 // Maps an atx numeric element type T to its Arrow Type::id and typed Array.
@@ -352,6 +353,158 @@ Result<series::Column<T>> ParquetTable::to_column(std::string_view name) const {
   series::Column<T> out;
   out.append_bulk(*v);
   return Ok(std::move(out));
+}
+
+// ---------------------------------------------------------------------------
+// String / bool / timestamp bridges (Task 4).
+//
+// Null handling across these bridges (and the numeric ones above) is a
+// deliberate simplification: validity is NOT propagated into Column's bitmap;
+// a null string becomes an empty view and a null bool/timestamp becomes the
+// underlying stored/default value. (No per-element null mask is exposed yet.)
+// ---------------------------------------------------------------------------
+
+// UTF-8 string accessor: returns a vector of views aliasing the array buffer
+// owned by impl_->table. Only STRING (utf8) is supported; LARGE_STRING is
+// rejected with NotImplemented (the Task-4 fixture uses utf8 -> StringArray,
+// and GetView's array cast must match the concrete array type).
+Result<std::vector<std::string_view>> ParquetTable::strings(std::string_view name) const {
+  try {
+    const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+    if (idx < 0) {
+      return Err(ErrorCode::InvalidArgument, "strings: column not found");
+    }
+    auto col = impl_->table->column(idx);
+    const auto id = col->type()->id();
+    if (id == arrow::Type::LARGE_STRING) {
+      return Err(ErrorCode::NotImplemented, "strings: LARGE_STRING not supported");
+    }
+    if (id != arrow::Type::STRING) {
+      return Err(ErrorCode::InvalidArgument, "strings: column is not UTF-8");
+    }
+    std::vector<std::string_view> out;
+    if (col->length() == 0 || col->num_chunks() == 0) {
+      return Ok(std::move(out));
+    }
+    // SAFETY: single-chunk after CombineChunks; id() checked == STRING, so the
+    // chunk's dynamic type is arrow::StringArray. GetView aliases the array
+    // buffer owned by impl_->table; each view is valid while *this lives. Null
+    // slots -> empty view.
+    auto& arr = static_cast<arrow::StringArray&>(*col->chunk(0));
+    out.reserve(static_cast<usize>(arr.length()));
+    for (int64_t i = 0; i < arr.length(); ++i) {
+      const std::string_view v = arr.GetView(i);
+      out.emplace_back(v.data(), v.size());
+    }
+    return Ok(std::move(out));
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "strings: unknown exception"); }
+}
+
+// Converts an Arrow timestamp `raw` (in `unit`) to an atx Timestamp (i64 ns).
+// NOTE: SECOND/MILLI/MICRO scaling multiplies `raw` into i64 ns and can overflow
+// the ~292-year ns domain for extreme values; the from_unix_* factories do not
+// guard against this (documented Timestamp precondition).
+[[nodiscard]] static atx::core::time::Timestamp to_timestamp(i64 raw,
+                                                             arrow::TimeUnit::type unit) {
+  using atx::core::time::Timestamp;
+  switch (unit) {
+  case arrow::TimeUnit::SECOND: return Timestamp::from_unix_seconds(raw);
+  case arrow::TimeUnit::MILLI:  return Timestamp::from_unix_millis(raw);
+  case arrow::TimeUnit::MICRO:  return Timestamp::from_unix_micros(raw);
+  case arrow::TimeUnit::NANO:   return Timestamp::from_unix_nanos(raw);
+  }
+  return Timestamp::from_unix_nanos(raw); // defensive default
+}
+
+// bool is bit-packed in Arrow; it cannot be zero-copy aliased as a contiguous
+// bool buffer, so column_view<bool> is unsupported and to_column<bool> copies
+// element-by-element via BooleanArray::Value.
+template <>
+Result<std::span<const bool>> ParquetTable::column_view<bool>(std::string_view name) const {
+  // Validate the name first for a clearer error, then refuse (bit-packed).
+  const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+  if (idx < 0) {
+    return Err(ErrorCode::InvalidArgument, "column_view<bool>: column not found");
+  }
+  return Err(ErrorCode::NotImplemented,
+             "column_view<bool>: Arrow bool is bit-packed; use to_column<bool>");
+}
+
+template <>
+Result<series::Column<bool>> ParquetTable::to_column<bool>(std::string_view name) const {
+  try {
+    const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+    if (idx < 0) {
+      return Err(ErrorCode::InvalidArgument, "to_column<bool>: column not found");
+    }
+    auto col = impl_->table->column(idx);
+    if (col->type()->id() != arrow::Type::BOOL) {
+      return Err(ErrorCode::InvalidArgument, "to_column<bool>: column element-type mismatch");
+    }
+    series::Column<bool> out;
+    // CombineChunks (at load) guarantees a single chunk, so this positive guard
+    // is sufficient; an empty column has length 0 and yields an empty Column.
+    if (col->length() > 0 && col->num_chunks() == 1) {
+      // SAFETY: id()==BOOL so chunk(0)'s dynamic type is arrow::BooleanArray.
+      auto& arr = static_cast<arrow::BooleanArray&>(*col->chunk(0));
+      for (int64_t i = 0; i < arr.length(); ++i) {
+        out.append(arr.Value(i)); // null slots read as the stored bit (treated as value)
+      }
+    }
+    return Ok(std::move(out));
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "to_column<bool>: unknown exception"); }
+}
+
+// Timestamp requires per-unit conversion (Arrow stores raw int64 in the array's
+// unit), so column_view<Timestamp> cannot alias the buffer and is rejected;
+// to_column<Timestamp> copies, normalising each value to i64 nanoseconds.
+template <>
+Result<std::span<const atx::core::time::Timestamp>>
+ParquetTable::column_view<atx::core::time::Timestamp>(std::string_view name) const {
+  const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+  if (idx < 0) {
+    return Err(ErrorCode::InvalidArgument, "column_view<Timestamp>: column not found");
+  }
+  return Err(ErrorCode::NotImplemented,
+             "column_view<Timestamp>: requires unit conversion; use to_column<Timestamp>");
+}
+
+template <>
+Result<series::Column<atx::core::time::Timestamp>>
+ParquetTable::to_column<atx::core::time::Timestamp>(std::string_view name) const {
+  try {
+    const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+    if (idx < 0) {
+      return Err(ErrorCode::InvalidArgument, "to_column<Timestamp>: column not found");
+    }
+    auto col = impl_->table->column(idx);
+    if (col->type()->id() != arrow::Type::TIMESTAMP) {
+      return Err(ErrorCode::InvalidArgument, "to_column<Timestamp>: column element-type mismatch");
+    }
+    const auto unit =
+        std::static_pointer_cast<arrow::TimestampType>(col->type())->unit();
+    series::Column<atx::core::time::Timestamp> out;
+    // CombineChunks (at load) guarantees a single chunk, so this positive guard
+    // is sufficient; an empty column has length 0 and yields an empty Column.
+    if (col->length() > 0 && col->num_chunks() == 1) {
+      // SAFETY: id()==TIMESTAMP so chunk(0)'s dynamic type is arrow::TimestampArray.
+      auto& arr = static_cast<arrow::TimestampArray&>(*col->chunk(0));
+      for (int64_t i = 0; i < arr.length(); ++i) {
+        const i64 raw = arr.Value(i);
+        out.append(to_timestamp(raw, unit)); // null slots read as the stored value
+      }
+    }
+    return Ok(std::move(out));
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "to_column<Timestamp>: unknown exception"); }
 }
 
 // Bridges the numeric column `name` (element type T) into `frame`. On success
