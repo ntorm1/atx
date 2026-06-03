@@ -98,10 +98,15 @@ struct MarketPayload {
 static_assert(std::is_trivially_copyable_v<MarketPayload>,
               "MarketPayload must be trivially copyable to ride the memcpy ring");
 
-// Fits the fixed ring-slot payload budget (~56 ≤ 64) with headroom for the
+// Fits the fixed ring-slot payload budget (56 ≤ 64) with headroom for the
 // Phase-3/5 PIT fields. Growing past kPayloadBytes would reshape every ring.
 static_assert(sizeof(MarketPayload) <= atx::engine::event::kPayloadBytes,
               "MarketPayload exceeds kPayloadBytes — would reshape the Disruptor ring");
+// Pin the actual size so the "headroom" narrative above stays honest: a new
+// field that silently eats the budget trips this before it reaches the ring.
+static_assert(
+    sizeof(MarketPayload) <= 56,
+    "MarketPayload grew past 56 B — update the headroom note and re-check the ring budget");
 
 // =====================================================================
 //  Typed makers — wrap a Bar/Tick into an Event with the bitemporal invariant.
@@ -142,8 +147,8 @@ static_assert(sizeof(MarketPayload) <= atx::engine::event::kPayloadBytes,
                                                    bool delisted_final = false) noexcept {
   ATX_ASSERT(knowledge_ts.unix_nanos() >= tick.ts.unix_nanos());
 
-  // Designated-init makes the Tick arm active at construction (the union's
-  // first member is Bar) — no post-construction union-member write to flag.
+  // Designated-init {.tick = …} makes the Tick arm the active union member at
+  // construction — no post-construction union-member write to flag.
   const MarketPayload mp{symbol, MarketPayload::Kind::Tick, delisted_final, {.tick = tick}};
 
   event::Event e{};
