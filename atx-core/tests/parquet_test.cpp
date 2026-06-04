@@ -439,6 +439,56 @@ TEST(Parquet, RowGroupPruningUInt64NoWrongSkip) {
   EXPECT_EQ(lz->stats().row_groups_pruned, 0);    // unsigned columns are never pruned
 }
 
+TEST(Parquet, LimitOffset) {
+  auto path = temp_path("slice"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto t = lz->offset(10).limit(5).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 5);
+  auto v = t->column_view<int64_t>("id"); ASSERT_TRUE(v.has_value());
+  EXPECT_EQ((*v)[0], 10);
+  EXPECT_EQ((*v)[4], 14);
+}
+
+TEST(Parquet, LimitOnly) {
+  auto path = temp_path("limit"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto t = lz->limit(3).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 3);
+  auto v = t->column_view<int64_t>("id"); ASSERT_TRUE(v.has_value());
+  EXPECT_EQ((*v)[0], 0);
+  EXPECT_EQ((*v)[2], 2);
+}
+
+TEST(Parquet, OffsetBeyondEndIsEmpty) {
+  auto path = temp_path("offend"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto t = lz->offset(1000).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 0);
+}
+
+TEST(Parquet, LimitAfterFilter) {
+  auto path = temp_path("limfilt"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  // filter id>=50 (50 rows), then take the first 5: ids 50..54.
+  auto t = lz->filter(Predicate{"id", Compare::Ge, Scalar{int64_t{50}}}).limit(5).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 5);
+  auto v = t->column_view<int64_t>("id"); ASSERT_TRUE(v.has_value());
+  EXPECT_EQ((*v)[0], 50);
+  EXPECT_EQ((*v)[4], 54);
+}
+
+TEST(Parquet, NoLimitReturnsAll) {
+  auto path = temp_path("nolim"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto t = lz->collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 100);
+}
+
 TEST(Parquet, AllCodecsRoundTrip) {
   struct C { arrow::Compression::type codec; const char* stem; };
   std::vector<C> codecs = {

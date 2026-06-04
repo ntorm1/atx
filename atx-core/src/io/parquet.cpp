@@ -953,11 +953,25 @@ read_pruned_plan(parquet::arrow::FileReader& reader, const parquet::FileMetaData
   return read_table_pruned(reader, keep, indices);
 }
 
+// Applies offset then limit to `table`. offset<0 treated as 0; limit<0 means "all".
+// Arrow's Table::Slice is zero-copy but clamps out-of-range args; we clamp ourselves
+// for clarity and to avoid relying on Arrow's internal clamping contract.
+[[nodiscard]] static std::shared_ptr<arrow::Table>
+apply_slice(const std::shared_ptr<arrow::Table>& table, i64 offset, i64 limit) noexcept {
+  const int64_t n = table->num_rows();
+  const int64_t off = std::min<int64_t>(offset < 0 ? 0 : offset, n);
+  int64_t len = n - off;
+  if (limit >= 0) {
+    len = std::min<int64_t>(len, limit);
+  }
+  return table->Slice(off, len);
+}
+
 // Eager read: materialize the SURVIVING row groups into a ParquetTable, applying
 // the projection (select) and any filter predicates (exact, row-level). Row
 // groups that provably cannot match (column-stats pruning) are skipped before
 // reading; the exact filter still runs on survivors so the result is identical to
-// reading everything. Slice/limit/stream are deferred to later tasks.
+// reading everything. Offset/limit slicing is applied after filtering/projection.
 Result<ParquetTable> LazyParquet::collect() {
   try {
     const std::vector<std::string> read_cols =
@@ -982,9 +996,13 @@ Result<ParquetTable> LazyParquet::collect() {
       }
       result = *std::move(down);
     }
+    // Apply offset + limit (slice) after filtering and projection. rows_scanned
+    // records how many rows survived the filter (before slicing); num_rows() on
+    // the final table reflects the slice.
     impl_->stats.row_groups_total = num_row_groups();
     impl_->stats.row_groups_pruned = pruned;        // groups skipped by stats
     impl_->stats.rows_scanned = result->num_rows(); // rows AFTER filtering
+    result = apply_slice(result, impl_->offset, impl_->limit);
     auto out = std::make_unique<ParquetTable::Impl>();
     out->table = std::move(result);
     // schema_from_arrow reflects the final (projected) columns, keeping
