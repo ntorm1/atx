@@ -10,7 +10,7 @@ translation units prefer the specific module header to keep compile times down.
 
 ## Layout
 
-Modules are organized in dependency layers L0 (foundation) → L9 (series).
+Modules are organized in dependency layers L0 (foundation) → L10 (io).
 Higher layers depend only on lower ones.
 
 ### L0 — foundation
@@ -95,6 +95,11 @@ Higher layers depend only on lower ones.
 | column | `series/column.hpp` | `Column<T>`: cache-aligned growable buffer + validity bitmap |
 | frame | `series/frame.hpp` | `Frame`: type-erased named columns + shared `Timestamp` index |
 
+### L10 — io (`atx::core::io`)
+| Module | Header | Purpose |
+|--------|--------|---------|
+| parquet | `io/parquet.hpp` | Arrow-backed lazy Parquet loader: `LazyParquet` scan plan (projection + predicate/row-group-stat pushdown, row-group streaming, slice/limit) → `ParquetTable` (wrapped Arrow Table) with zero-copy `Column<T>`/`Frame` bridges; `read_parquet` eager convenience |
+
 ## Build, test, bench
 
 The repository configures with CMake + Ninja + clang-cl (preset `ninja`). On
@@ -116,6 +121,16 @@ cmake -DATX_BUILD_BENCH=ON --preset ninja
 cmake --build --preset ninja --target atx-core-bench
 ./build/bin/atx-core-bench.exe
 ```
+
+### Parquet / Arrow (L10 io)
+
+The `io` layer links Apache Arrow + Parquet, provided via **vcpkg manifest mode**
+(`vcpkg.json` at the repo root pins `arrow[parquet]`). Set `VCPKG_ROOT` to a
+bootstrapped vcpkg before configuring; the `ninja` preset wires
+`CMAKE_TOOLCHAIN_FILE` to the vcpkg toolchain. The Arrow/Parquet runtime DLLs are
+copied next to the test executable automatically. The public header
+`io/parquet.hpp` is Arrow-free (PIMPL), so including it (or the umbrella
+`core.hpp`) does not pull Arrow headers into your translation unit.
 
 ### Performance note
 

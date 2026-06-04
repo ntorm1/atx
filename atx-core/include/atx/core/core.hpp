@@ -18,6 +18,7 @@
 //    atx::core::time        — Timestamp/Duration/Date + NYSE calendar
 //    atx::core::domain      — Price/Quantity/Notional, Symbol, Bar/Tick
 //    atx::core::series      — aligned columnar Column<T> + heterogeneous Frame
+//    atx::core::io          — Arrow-backed Parquet lazy loader
 // =============================================================================
 
 // ---- L0: foundation -------------------------------------------------------
@@ -81,3 +82,6 @@
 // ---- L9: series (columnar) ------------------------------------------------
 #include "atx/core/series/column.hpp"
 #include "atx/core/series/frame.hpp"
+
+// ---- L10: io --------------------------------------------------------------
+#include "atx/core/io/parquet.hpp"
