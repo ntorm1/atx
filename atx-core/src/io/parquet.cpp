@@ -957,7 +957,7 @@ read_pruned_plan(parquet::arrow::FileReader& reader, const parquet::FileMetaData
 // Arrow's Table::Slice is zero-copy but clamps out-of-range args; we clamp ourselves
 // for clarity and to avoid relying on Arrow's internal clamping contract.
 [[nodiscard]] static std::shared_ptr<arrow::Table>
-apply_slice(const std::shared_ptr<arrow::Table>& table, i64 offset, i64 limit) noexcept {
+apply_slice(const std::shared_ptr<arrow::Table>& table, i64 offset, i64 limit) {
   const int64_t n = table->num_rows();
   const int64_t off = std::min<int64_t>(offset < 0 ? 0 : offset, n);
   int64_t len = n - off;
