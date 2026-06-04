@@ -1,6 +1,7 @@
 #include "atx/core/io/parquet.hpp"
 
 #include <arrow/array.h>                 // Int64Array, DoubleArray, ... raw_values()
+#include <arrow/array/concatenate.h>     // arrow::Concatenate (kernel-free row take)
 #include <arrow/chunked_array.h>         // arrow::ChunkedArray (Table::column)
 #include <arrow/io/file.h>
 #include <arrow/result.h>
@@ -9,6 +10,9 @@
 #include <arrow/type.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/metadata.h>
+
+#include <algorithm>
+#include <type_traits>
 
 #include <filesystem>
 #include <memory>
@@ -20,6 +24,11 @@
 namespace atx::core::io {
 
 using atx::core::Error;
+
+// Forward declaration: the timestamp unit->ns conversion (defined with the
+// Task-4 bridges below) is also used by the Task-7 timestamp predicate evaluator.
+[[nodiscard]] static atx::core::time::Timestamp to_timestamp(i64 raw,
+                                                             arrow::TimeUnit::type unit);
 
 // Map an arrow::Status to an atx Error.
 [[nodiscard]] static Error from_arrow(const arrow::Status& s, std::string_view ctx) {
@@ -330,21 +339,384 @@ read_table_projected(parquet::arrow::FileReader& reader,
   return Ok(*std::move(combined));
 }
 
+// ---------------------------------------------------------------------------
+// Exact row-level filtering (Task 7): Polars semantics, evaluated row-by-row.
+//
+// DEVIATION (Arrow-24 build): the installed vcpkg Arrow 24 was compiled with
+// ARROW_COMPUTE OFF (util/config.h: `#undef ARROW_COMPUTE`), so the scalar
+// comparison / boolean / filter kernels are NOT registered and
+// arrow::compute::Initialize() is not even exported by arrow.dll. The planned
+// arrow::compute::CallFunction("greater_equal"/"filter"/...) path fails to link
+// here. We therefore evaluate predicates directly against the typed Arrow arrays
+// (no compute kernels) and rebuild the filtered table from contiguous kept-row
+// runs via arrow::Array::Slice + arrow::Concatenate (both core arrow, not
+// compute). Behaviour is identical: exact, row-level, ANDed predicates.
+//
+// Row-group statistics pruning is Task 8; here every selected row is compared.
+// ---------------------------------------------------------------------------
+
+// Three-valued comparison outcome for one row: True keeps it (subject to AND),
+// False drops it, and Mismatch signals a non-comparable literal/column-type pair
+// (e.g. a string literal against an int64 column) -> InvalidArgument upstream.
+enum class Cmp3 { False, True, Mismatch };
+
+// Folds a C++ three-way ordering (lhs <=> rhs already computed as -1/0/+1 in
+// `sign`) through the predicate op into a keep/drop decision.
+[[nodiscard]] static Cmp3 fold_order(Compare op, int sign) noexcept {
+  switch (op) {
+  case Compare::Eq: return sign == 0 ? Cmp3::True : Cmp3::False;
+  case Compare::Ne: return sign != 0 ? Cmp3::True : Cmp3::False;
+  case Compare::Lt: return sign < 0 ? Cmp3::True : Cmp3::False;
+  case Compare::Le: return sign <= 0 ? Cmp3::True : Cmp3::False;
+  case Compare::Gt: return sign > 0 ? Cmp3::True : Cmp3::False;
+  case Compare::Ge: return sign >= 0 ? Cmp3::True : Cmp3::False;
+  case Compare::IsNull:
+  case Compare::IsNotNull:
+    break;
+  }
+  return Cmp3::False; // null-ops handled before fold_order is reached
+}
+
+// sign(a <=> b) as -1/0/+1 for any comparable T (integral/floating/string).
+template <class T>
+[[nodiscard]] static int order_sign(const T& a, const T& b) noexcept {
+  if (a < b) { return -1; }
+  if (b < a) { return 1; }
+  return 0;
+}
+
+// Compares one numeric array element (index `i`) of typed array `arr` against the
+// literal `lit` under `op`. T is the array's element type; Lit is the literal's
+// natural C++ type (int64_t / double). The compare happens in the wider of the
+// two via common_type so an i64 literal can match an int32 column, etc.
+// NOTE (float precision): for |value| > 2^53 the common_type widening to double
+// loses integer precision; equality near that boundary may be approximate. Out
+// of scope here (no >2^53 fixtures); documented for completeness.
+template <class ArrayT, class Lit>
+[[nodiscard]] static Cmp3 compare_numeric(const ArrayT& arr, int64_t i, Compare op,
+                                          Lit lit) noexcept {
+  using Elem = decltype(arr.Value(i));
+  // Guard the signed/unsigned wrap pitfall BEFORE the common_type widening: a
+  // negative signed literal is strictly less than every unsigned cell, so the
+  // order sign is always +1 (cell > lit). Only UInt64 is actually affected
+  // (common_type of uint32/int64 is int64), but the guard is correct for any
+  // unsigned Elem.
+  if constexpr (std::is_unsigned_v<std::decay_t<Elem>> && std::is_signed_v<Lit>) {
+    if (lit < 0) {
+      return fold_order(op, 1); // negative literal < every unsigned cell
+    }
+  }
+  using Wide = std::common_type_t<std::decay_t<Elem>, Lit>;
+  // NaN is unequal to everything (IEEE / Polars): if either operand is NaN, Ne
+  // keeps the row and every other op drops it. Must precede order_sign, which
+  // would otherwise report "equal" (sign 0) for a NaN operand.
+  if constexpr (std::is_floating_point_v<Wide>) {
+    const Wide a = static_cast<Wide>(arr.Value(i));
+    const Wide b = static_cast<Wide>(lit);
+    if (a != a || b != b) { // NaN: unequal to everything
+      return (op == Compare::Ne) ? Cmp3::True : Cmp3::False;
+    }
+  }
+  // NOLINTNEXTLINE(bugprone-signed-char-misuse): widening int8->int64 here
+  // sign-extends (no truncation); the cast is to a signed wider type.
+  const auto cell = static_cast<Wide>(arr.Value(i));
+  const int sign = order_sign<Wide>(cell, static_cast<Wide>(lit));
+  return fold_order(op, sign);
+}
+
+// Evaluates predicate `p` (a binary numeric comparison) against a numeric column
+// `col` whose concrete array type is ArrayT, writing the per-row keep decision
+// into `keep` (ANDing with the prior mask). Returns Mismatch iff the scalar
+// literal is not a numeric (int/float/bool) value.
+template <class ArrayT>
+[[nodiscard]] static Cmp3 eval_numeric_column(const arrow::ChunkedArray& col,
+                                              const Predicate& p,
+                                              std::vector<bool>& keep) {
+  const Scalar::Storage& v = p.value.value();
+  // SAFETY: col is single-chunk after CombineChunks and id() was matched to
+  // ArrayT by the caller, so this cast is well-defined.
+  const auto& arr = static_cast<const ArrayT&>(*col.chunk(0));
+  const int64_t n = arr.length();
+  auto run = [&](auto lit) {
+    for (int64_t i = 0; i < n; ++i) {
+      if (!keep[static_cast<usize>(i)]) { continue; }
+      const bool ok = !arr.IsNull(i) &&
+                      compare_numeric<ArrayT>(arr, i, p.op, lit) == Cmp3::True;
+      keep[static_cast<usize>(i)] = ok;
+    }
+  };
+  if (std::holds_alternative<i64>(v)) {
+    run(static_cast<int64_t>(std::get<i64>(v)));
+  } else if (std::holds_alternative<f64>(v)) {
+    run(std::get<f64>(v));
+  } else if (std::holds_alternative<bool>(v)) {
+    run(static_cast<int64_t>(std::get<bool>(v) ? 1 : 0));
+  } else {
+    return Cmp3::Mismatch; // string/timestamp literal vs numeric column
+  }
+  return Cmp3::True;
+}
+
+// Evaluates `p` against a BOOL column. Only a bool literal is comparable; Eq/Ne
+// are the meaningful ops but ordering ops fold through bool->int (false<true).
+[[nodiscard]] static Cmp3 eval_bool_column(const arrow::ChunkedArray& col,
+                                           const Predicate& p,
+                                           std::vector<bool>& keep) {
+  const Scalar::Storage& v = p.value.value();
+  if (!std::holds_alternative<bool>(v)) {
+    return Cmp3::Mismatch;
+  }
+  // SAFETY: id()==BOOL so chunk(0) is a BooleanArray (single-chunk post-combine).
+  const auto& arr = static_cast<const arrow::BooleanArray&>(*col.chunk(0));
+  const int lit = std::get<bool>(v) ? 1 : 0;
+  for (int64_t i = 0; i < arr.length(); ++i) {
+    if (!keep[static_cast<usize>(i)]) { continue; }
+    const bool ok = !arr.IsNull(i) &&
+                    fold_order(p.op, order_sign<int>(arr.Value(i) ? 1 : 0, lit)) == Cmp3::True;
+    keep[static_cast<usize>(i)] = ok;
+  }
+  return Cmp3::True;
+}
+
+// Evaluates `p` against a UTF-8 STRING column. Only a string literal is
+// comparable; comparison is lexicographic via std::string_view ordering.
+[[nodiscard]] static Cmp3 eval_string_column(const arrow::ChunkedArray& col,
+                                             const Predicate& p,
+                                             std::vector<bool>& keep) {
+  const Scalar::Storage& v = p.value.value();
+  if (!std::holds_alternative<std::string>(v)) {
+    return Cmp3::Mismatch;
+  }
+  // SAFETY: id()==STRING so chunk(0) is a StringArray (single-chunk post-combine).
+  const auto& arr = static_cast<const arrow::StringArray&>(*col.chunk(0));
+  const std::string_view lit = std::get<std::string>(v);
+  for (int64_t i = 0; i < arr.length(); ++i) {
+    if (!keep[static_cast<usize>(i)]) { continue; }
+    if (arr.IsNull(i)) {
+      keep[static_cast<usize>(i)] = false;
+      continue;
+    }
+    const std::string_view cell = arr.GetView(i);
+    keep[static_cast<usize>(i)] = fold_order(p.op, order_sign(cell, lit)) == Cmp3::True;
+  }
+  return Cmp3::True;
+}
+
+// Evaluates `p` against a TIMESTAMP column. Comparable against a Timestamp
+// literal (normalised to ns) or a bare i64 literal (interpreted as raw
+// nanoseconds); both compare against the array's value normalised to ns. The
+// Scalar(Timestamp) path is the intended one.
+[[nodiscard]] static Cmp3 eval_timestamp_column(const arrow::ChunkedArray& col,
+                                                const Predicate& p,
+                                                std::vector<bool>& keep) {
+  const Scalar::Storage& v = p.value.value();
+  int64_t lit_ns = 0;
+  if (std::holds_alternative<time::Timestamp>(v)) {
+    lit_ns = std::get<time::Timestamp>(v).unix_nanos();
+  } else if (std::holds_alternative<i64>(v)) {
+    lit_ns = static_cast<int64_t>(std::get<i64>(v));
+  } else {
+    return Cmp3::Mismatch;
+  }
+  // SAFETY: id()==TIMESTAMP (matched by the caller's dispatch) guarantees the
+  // dynamic type of col.type() is arrow::TimestampType, so this downcast is
+  // well-defined; unit() is then valid.
+  const auto unit =
+      std::static_pointer_cast<arrow::TimestampType>(col.type())->unit();
+  // SAFETY: id()==TIMESTAMP so chunk(0) is a TimestampArray (single-chunk).
+  const auto& arr = static_cast<const arrow::TimestampArray&>(*col.chunk(0));
+  for (int64_t i = 0; i < arr.length(); ++i) {
+    if (!keep[static_cast<usize>(i)]) { continue; }
+    if (arr.IsNull(i)) {
+      keep[static_cast<usize>(i)] = false;
+      continue;
+    }
+    const int64_t cell_ns = to_timestamp(arr.Value(i), unit).unix_nanos();
+    keep[static_cast<usize>(i)] = fold_order(p.op, order_sign(cell_ns, lit_ns)) == Cmp3::True;
+  }
+  return Cmp3::True;
+}
+
+// Dispatches predicate evaluation across the supported column Arrow types,
+// ANDing the per-row result into `keep`. Unsupported column type or a
+// non-comparable literal -> InvalidArgument. Null-ops (IsNull/IsNotNull) are
+// handled here generically via the array validity bitmap.
+[[nodiscard]] static Result<std::monostate>
+eval_predicate(const arrow::ChunkedArray& col, const Predicate& p,
+               std::vector<bool>& keep) {
+  if (p.op == Compare::IsNull || p.op == Compare::IsNotNull) {
+    const auto& arr = *col.chunk(0);
+    const bool want_null = (p.op == Compare::IsNull);
+    for (int64_t i = 0; i < arr.length(); ++i) {
+      if (!keep[static_cast<usize>(i)]) { continue; }
+      keep[static_cast<usize>(i)] = (arr.IsNull(i) == want_null);
+    }
+    return Ok(std::monostate{});
+  }
+  Cmp3 r = Cmp3::Mismatch;
+  switch (col.type()->id()) {
+  case arrow::Type::INT8:   { r = eval_numeric_column<arrow::Int8Array>(col, p, keep);   break; }
+  case arrow::Type::INT16:  { r = eval_numeric_column<arrow::Int16Array>(col, p, keep);  break; }
+  case arrow::Type::INT32:  { r = eval_numeric_column<arrow::Int32Array>(col, p, keep);  break; }
+  case arrow::Type::INT64:  { r = eval_numeric_column<arrow::Int64Array>(col, p, keep);  break; }
+  case arrow::Type::UINT8:  { r = eval_numeric_column<arrow::UInt8Array>(col, p, keep);  break; }
+  case arrow::Type::UINT16: { r = eval_numeric_column<arrow::UInt16Array>(col, p, keep); break; }
+  case arrow::Type::UINT32: { r = eval_numeric_column<arrow::UInt32Array>(col, p, keep); break; }
+  case arrow::Type::UINT64: { r = eval_numeric_column<arrow::UInt64Array>(col, p, keep); break; }
+  case arrow::Type::FLOAT:  { r = eval_numeric_column<arrow::FloatArray>(col, p, keep);    break; }
+  case arrow::Type::DOUBLE: { r = eval_numeric_column<arrow::DoubleArray>(col, p, keep);   break; }
+  case arrow::Type::BOOL:   { r = eval_bool_column(col, p, keep);      break; }
+  case arrow::Type::STRING: { r = eval_string_column(col, p, keep);    break; }
+  case arrow::Type::TIMESTAMP: { r = eval_timestamp_column(col, p, keep); break; }
+  default:
+    return Err(ErrorCode::InvalidArgument,
+               "filter: unsupported column type for predicate on '" + p.column + "'");
+  }
+  if (r == Cmp3::Mismatch) {
+    return Err(ErrorCode::InvalidArgument,
+               "filter: literal not comparable to column type");
+  }
+  return Ok(std::monostate{});
+}
+
+// Slices `arr` to the kept rows described by `runs` (contiguous [offset,len)
+// ranges) and concatenates them into one array. Empty runs -> a length-0 slice
+// so the column still appears with zero rows.
+[[nodiscard]] static Result<std::shared_ptr<arrow::Array>>
+take_runs(const std::shared_ptr<arrow::Array>& arr,
+          const std::vector<std::pair<int64_t, int64_t>>& runs) {
+  if (runs.empty()) {
+    return Ok(arr->Slice(0, 0));
+  }
+  arrow::ArrayVector parts;
+  parts.reserve(runs.size());
+  for (const auto& [off, len] : runs) {
+    parts.push_back(arr->Slice(off, len));
+  }
+  auto cat = arrow::Concatenate(parts, arrow::default_memory_pool());
+  if (!cat.ok()) {
+    return Err(from_arrow(cat.status(), "filter concatenate"));
+  }
+  return Ok(*std::move(cat));
+}
+
+// Applies the ANDed `preds` to `table`, returning the row-filtered table (Polars
+// semantics: rows where every predicate is true are kept; false/null drop). An
+// empty predicate list is a no-op. Implemented kernel-free (see file header).
+[[nodiscard]] static Result<std::shared_ptr<arrow::Table>>
+apply_filter(const std::shared_ptr<arrow::Table>& table,
+             const std::vector<Predicate>& preds) {
+  if (preds.empty()) {
+    return Ok(table);
+  }
+  const int64_t n = table->num_rows();
+  if (n == 0) {
+    // No rows: skip every evaluator + the rebuild. This also guards the
+    // unconditional col.chunk(0) accesses in the evaluators, which would deref
+    // an empty chunk vector (UB) on a 0-row column.
+    return Ok(table);
+  }
+  std::vector<bool> keep(static_cast<usize>(n), true);
+  for (const auto& p : preds) {
+    const int idx = table->schema()->GetFieldIndex(p.column);
+    if (idx < 0) {
+      return Err(ErrorCode::InvalidArgument, "filter: unknown column '" + p.column + "'");
+    }
+    auto ev = eval_predicate(*table->column(idx), p, keep);
+    if (!ev.has_value()) {
+      return Err(ev.error());
+    }
+  }
+  // Collapse the row mask into maximal contiguous kept runs.
+  std::vector<std::pair<int64_t, int64_t>> runs;
+  for (int64_t i = 0; i < n;) {
+    if (!keep[static_cast<usize>(i)]) { ++i; continue; }
+    const int64_t start = i;
+    while (i < n && keep[static_cast<usize>(i)]) { ++i; }
+    runs.emplace_back(start, i - start);
+  }
+  // Rebuild each column by slicing + concatenating its kept runs (single-chunk
+  // after CombineChunks, so chunk(0) is the whole column).
+  arrow::ChunkedArrayVector out_cols;
+  out_cols.reserve(static_cast<usize>(table->num_columns()));
+  for (int c = 0; c < table->num_columns(); ++c) {
+    auto taken = take_runs(table->column(c)->chunk(0), runs);
+    if (!taken.has_value()) {
+      return Err(taken.error());
+    }
+    out_cols.push_back(std::make_shared<arrow::ChunkedArray>(*std::move(taken)));
+  }
+  return Ok(arrow::Table::Make(table->schema(), out_cols));
+}
+
+// Computes the column set to READ for a collect(): the union of the projection
+// and every predicate column, deduplicated with a stable order (projection
+// first, then any predicate-only helper columns). An empty projection means
+// "read all columns", so the union is empty too (signals read-all downstream).
+[[nodiscard]] static std::vector<std::string>
+read_columns_for(const std::vector<std::string>& projection,
+                 const std::vector<Predicate>& predicates) {
+  if (projection.empty()) {
+    return {}; // read-all; predicate columns are necessarily present
+  }
+  std::vector<std::string> cols = projection;
+  for (const auto& p : predicates) {
+    if (std::find(cols.begin(), cols.end(), p.column) == cols.end()) {
+      cols.push_back(p.column);
+    }
+  }
+  return cols;
+}
+
+// Projects `table` down to exactly `projection` (in projection order), dropping
+// predicate-only helper columns read solely for filtering. Unknown name (cannot
+// happen post-read) -> InvalidArgument; Arrow failures map via from_arrow.
+[[nodiscard]] static Result<std::shared_ptr<arrow::Table>>
+project_down(const std::shared_ptr<arrow::Table>& table,
+             const std::vector<std::string>& projection) {
+  auto idx = resolve_indices(*table->schema(), projection);
+  if (!idx.has_value()) {
+    return Err(idx.error());
+  }
+  auto sel = table->SelectColumns(*idx);
+  if (!sel.ok()) {
+    return Err(from_arrow(sel.status(), "collect select columns"));
+  }
+  return Ok(*std::move(sel));
+}
+
 // Eager read: materialize ALL row groups into a ParquetTable, applying the
-// projection (select) if one was set. Filter and slice are deferred to later
-// tasks; this reads every row of the selected columns.
+// projection (select) and any filter predicates (exact, row-level). Slice/limit
+// and statistics pruning are deferred to later tasks; this reads every row of
+// the read column set, filters it, then projects down to the selection.
 Result<ParquetTable> LazyParquet::collect() {
   try {
-    auto table = read_table_projected(*impl_->reader, impl_->projection);
+    const std::vector<std::string> read_cols =
+        read_columns_for(impl_->projection, impl_->predicates);
+    auto table = read_table_projected(*impl_->reader, read_cols);
     if (!table.has_value()) {
       return Err(table.error());
     }
+    auto filtered = apply_filter(*table, impl_->predicates);
+    if (!filtered.has_value()) {
+      return Err(filtered.error());
+    }
+    std::shared_ptr<arrow::Table> result = *std::move(filtered);
+    // Drop predicate-only helper columns when a projection was set and the read
+    // set was widened to a superset of it. (read_all keeps every column.)
+    if (!impl_->projection.empty()) {
+      auto down = project_down(result, impl_->projection);
+      if (!down.has_value()) {
+        return Err(down.error());
+      }
+      result = *std::move(down);
+    }
     impl_->stats.row_groups_total = num_row_groups();
+    impl_->stats.rows_scanned = result->num_rows(); // rows AFTER filtering
     auto out = std::make_unique<ParquetTable::Impl>();
-    out->table = *std::move(table);
-    impl_->stats.rows_scanned = out->table->num_rows();
-    // schema_from_arrow reflects only the projected columns (in projection order
-    // for a projected read), keeping ParquetTable::schema() consistent.
+    out->table = std::move(result);
+    // schema_from_arrow reflects the final (projected) columns, keeping
+    // ParquetTable::schema() consistent.
     out->schema = schema_from_arrow(*out->table->schema());
     return ParquetTable{std::move(out)};
   }

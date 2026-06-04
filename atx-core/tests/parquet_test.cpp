@@ -9,6 +9,7 @@
 #include <parquet/arrow/writer.h>
 #include <arrow/io/file.h>
 #include <filesystem>
+#include <limits>
 
 using namespace atx::core::io;
 
@@ -37,6 +38,28 @@ std::shared_ptr<arrow::Table> make_numeric_table(int64_t n) {
   auto schema = arrow::schema({arrow::field("id", arrow::int64()),
                                arrow::field("val", arrow::float64())});
   return arrow::Table::Make(schema, {aa, ba});
+}
+
+// Builds a single uint64 column "u" with values 0..n-1, to exercise the
+// signed/unsigned wrap guard in the predicate engine.
+std::shared_ptr<arrow::Table> make_uint64_table(int64_t n) {
+  arrow::UInt64Builder u;
+  for (int64_t i = 0; i < n; ++i) { (void)u.Append(static_cast<uint64_t>(i)); }
+  std::shared_ptr<arrow::Array> ua; (void)u.Finish(&ua);
+  auto schema = arrow::schema({arrow::field("u", arrow::uint64())});
+  return arrow::Table::Make(schema, {ua});
+}
+
+// Builds a single double column "d" = [1.0, NaN, 3.0], to exercise NaN handling
+// (NaN is unequal to everything: comparisons drop it, except !=).
+std::shared_ptr<arrow::Table> make_nan_table() {
+  arrow::DoubleBuilder d;
+  (void)d.Append(1.0);
+  (void)d.Append(std::numeric_limits<double>::quiet_NaN());
+  (void)d.Append(3.0);
+  std::shared_ptr<arrow::Array> da; (void)d.Finish(&da);
+  auto schema = arrow::schema({arrow::field("d", arrow::float64())});
+  return arrow::Table::Make(schema, {da});
 }
 
 // Builds a string/bool/timestamp[ms] table with a null in the string column, to
@@ -237,6 +260,92 @@ TEST(Parquet, SelectEmptyKeepsAllColumns) {
   auto t = lz->collect(); // no select -> all columns
   ASSERT_TRUE(t.has_value());
   EXPECT_EQ(t->num_columns(), 2);
+}
+
+TEST(Parquet, FilterGreaterThan) {
+  auto path = temp_path("filt"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto t = lz->filter(Predicate{"id", Compare::Ge, Scalar{int64_t{90}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 10);               // ids 90..99
+  auto v = t->column_view<int64_t>("id"); ASSERT_TRUE(v.has_value());
+  EXPECT_EQ((*v)[0], 90);
+  EXPECT_EQ((*v)[9], 99);
+}
+
+TEST(Parquet, FilterConjunction) {
+  auto path = temp_path("filt2"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto t = lz->filter(Predicate{"id", Compare::Ge, Scalar{int64_t{10}}})
+              .filter(Predicate{"id", Compare::Lt, Scalar{int64_t{20}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 10);               // ids 10..19
+}
+
+TEST(Parquet, FilterEqMatchesOne) {
+  auto path = temp_path("filteq"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto t = lz->filter(Predicate{"id", Compare::Eq, Scalar{int64_t{42}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 1);
+  auto v = t->column_view<int64_t>("id"); ASSERT_TRUE(v.has_value());
+  EXPECT_EQ((*v)[0], 42);
+}
+
+TEST(Parquet, FilterTypeMismatchIsInvalidArgument) {
+  auto path = temp_path("filt3"); write_table(make_numeric_table(10), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  // id is int64; comparing against a string literal must be rejected.
+  EXPECT_EQ(lz->filter(Predicate{"id", Compare::Eq, Scalar{std::string{"x"}}}).collect().error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(Parquet, FilterUnknownColumnIsInvalidArgument) {
+  auto path = temp_path("filt4"); write_table(make_numeric_table(10), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  EXPECT_EQ(lz->filter(Predicate{"ghost", Compare::Eq, Scalar{int64_t{1}}}).collect().error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(Parquet, FilterWithSelectDropsPredicateColumn) {
+  auto path = temp_path("filtsel"); write_table(make_numeric_table(100), path);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  // select only "val" but filter on "id": id must be read for the predicate,
+  // then dropped from the output so only "val" remains.
+  auto t = lz->select({"val"}).filter(Predicate{"id", Compare::Ge, Scalar{int64_t{90}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 10);
+  EXPECT_EQ(t->num_columns(), 1);
+  ASSERT_EQ(t->schema().size(), 1u);
+  EXPECT_EQ(t->schema().columns[0].name, "val");
+}
+
+TEST(Parquet, FilterUInt64VsNegativeLiteral) {
+  auto path = temp_path("filtu64"); write_table(make_uint64_table(5), path); // u = 0..4
+  // A negative literal is strictly less than every unsigned cell:
+  // u >= -1 keeps all 5; u < -1 keeps none. (Guards the signed/unsigned wrap.)
+  auto lz1 = LazyParquet::scan(path); ASSERT_TRUE(lz1.has_value());
+  auto t1 = lz1->filter(Predicate{"u", Compare::Ge, Scalar{int64_t{-1}}}).collect();
+  ASSERT_TRUE(t1.has_value());
+  EXPECT_EQ(t1->num_rows(), 5);
+  auto lz2 = LazyParquet::scan(path); ASSERT_TRUE(lz2.has_value());
+  auto t2 = lz2->filter(Predicate{"u", Compare::Lt, Scalar{int64_t{-1}}}).collect();
+  ASSERT_TRUE(t2.has_value());
+  EXPECT_EQ(t2->num_rows(), 0);
+}
+
+TEST(Parquet, FilterNaNRows) {
+  auto path = temp_path("filtnan"); write_table(make_nan_table(), path); // d = [1, NaN, 3]
+  // d < 5.0  -> keeps 1.0 and 3.0 (NaN dropped)                 -> 2 rows
+  auto lz1 = LazyParquet::scan(path); ASSERT_TRUE(lz1.has_value());
+  auto t1 = lz1->filter(Predicate{"d", Compare::Lt, Scalar{5.0}}).collect();
+  ASSERT_TRUE(t1.has_value());
+  EXPECT_EQ(t1->num_rows(), 2);
+  // d != 2.0 -> keeps 1.0, NaN, 3.0 (NaN unequal to everything) -> 3 rows
+  auto lz2 = LazyParquet::scan(path); ASSERT_TRUE(lz2.has_value());
+  auto t2 = lz2->filter(Predicate{"d", Compare::Ne, Scalar{2.0}}).collect();
+  ASSERT_TRUE(t2.has_value());
+  EXPECT_EQ(t2->num_rows(), 3);
 }
 
 TEST(Parquet, AllCodecsRoundTrip) {
