@@ -5,6 +5,7 @@
 #include <atx/core/error.hpp>
 
 #include <arrow/api.h>
+#include <arrow/util/compression.h>
 #include <parquet/arrow/writer.h>
 #include <arrow/io/file.h>
 #include <filesystem>
@@ -201,4 +202,31 @@ TEST(Parquet, SchemaReportsAllDtypes) {
   EXPECT_EQ(lz->schema().find("name")->dtype, DType::String);
   EXPECT_EQ(lz->schema().find("flag")->dtype, DType::Bool);
   EXPECT_EQ(lz->schema().find("t")->dtype, DType::Timestamp);
+}
+
+TEST(Parquet, AllCodecsRoundTrip) {
+  struct C { arrow::Compression::type codec; const char* stem; };
+  std::vector<C> codecs = {
+      {arrow::Compression::UNCOMPRESSED, "raw"},
+      {arrow::Compression::SNAPPY,       "snappy"},
+      {arrow::Compression::GZIP,         "gzip"},
+      {arrow::Compression::ZSTD,         "zstd"},
+      // Parquet's "LZ4" wire format maps to Arrow's LZ4_HADOOP (Hadoop-compatible
+      // LZ4 framing).  LZ4 (block) and LZ4_FRAME both crash the Parquet thrift
+      // codec encoder in this Arrow build, so we use LZ4_HADOOP here.
+      {arrow::Compression::LZ4_HADOOP,   "lz4"},
+  };
+  if (arrow::util::Codec::IsAvailable(arrow::Compression::BROTLI)) {
+    codecs.push_back({arrow::Compression::BROTLI, "brotli"});
+  }
+  for (const auto& c : codecs) {
+    auto path = temp_path(c.stem);
+    write_table(make_numeric_table(500), path, c.codec);
+    auto t = read_parquet(path);
+    ASSERT_TRUE(t.has_value()) << c.stem;
+    EXPECT_EQ(t->num_rows(), 500) << c.stem;
+    auto col = t->to_column<double>("val");
+    ASSERT_TRUE(col.has_value()) << c.stem;
+    EXPECT_DOUBLE_EQ((*col)[499], 499.0 * 1.5) << c.stem;
+  }
 }
