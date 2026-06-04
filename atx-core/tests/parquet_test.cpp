@@ -348,6 +348,43 @@ TEST(Parquet, FilterNaNRows) {
   EXPECT_EQ(t2->num_rows(), 3);
 }
 
+TEST(Parquet, RowGroupPruning) {
+  // 3 row groups of 1000 rows: ids 0..2999. Filter id >= 2500 -> only group 3 matches.
+  auto path = temp_path("prune");
+  write_table(make_numeric_table(3000), path, arrow::Compression::SNAPPY, /*row_group=*/1000);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->filter(Predicate{"id", Compare::Ge, Scalar{int64_t{2500}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 500);                 // 2500..2999
+  auto st = lz->stats();
+  EXPECT_EQ(st.row_groups_total, 3);
+  EXPECT_EQ(st.row_groups_pruned, 2);            // groups 1 and 2 skipped by stats
+}
+
+TEST(Parquet, RowGroupPruningKeepsAllWhenNoPredicate) {
+  auto path = temp_path("noprune");
+  write_table(make_numeric_table(3000), path, arrow::Compression::SNAPPY, 1000);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 3000);
+  EXPECT_EQ(lz->stats().row_groups_total, 3);
+  EXPECT_EQ(lz->stats().row_groups_pruned, 0);
+}
+
+TEST(Parquet, RowGroupPruningAllMatchNoPrune) {
+  auto path = temp_path("allmatch");
+  write_table(make_numeric_table(3000), path, arrow::Compression::SNAPPY, 1000);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->filter(Predicate{"id", Compare::Ge, Scalar{int64_t{0}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 3000);
+  EXPECT_EQ(lz->stats().row_groups_pruned, 0);   // every group can match
+}
+
 TEST(Parquet, AllCodecsRoundTrip) {
   struct C { arrow::Compression::type codec; const char* stem; };
   std::vector<C> codecs = {

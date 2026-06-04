@@ -10,16 +10,21 @@
 #include <arrow/type.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/metadata.h>
+#include <parquet/statistics.h>
+#include <parquet/types.h>
 
 #include <algorithm>
+#include <cmath>
 #include <type_traits>
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace atx::core::io {
 
@@ -291,52 +296,6 @@ resolve_indices(const arrow::Schema& schema, const std::vector<std::string>& nam
     idx.push_back(i);
   }
   return Ok(std::move(idx));
-}
-
-// Reads the table from `reader`, projecting to `projection` (empty = all
-// columns), and combines chunks so every column is a single contiguous chunk.
-// On a projected read the returned table's columns are in `projection` order
-// (Arrow returns columns in the requested-index order). Unknown projected names
-// -> InvalidArgument; Arrow failures map via from_arrow.
-[[nodiscard]] static Result<std::shared_ptr<arrow::Table>>
-read_table_projected(parquet::arrow::FileReader& reader,
-                     const std::vector<std::string>& projection) {
-  std::shared_ptr<arrow::Table> table;
-  if (projection.empty()) {
-    // Arrow 24: arrow::Result-returning ReadTable (the out-param form is
-    // deprecated and would trip /WX).
-    auto res = reader.ReadTable();
-    if (!res.ok()) {
-      return Err(from_arrow(res.status(), "collect read"));
-    }
-    table = *std::move(res);
-  } else {
-    std::shared_ptr<arrow::Schema> aschema;
-    const auto st = reader.GetSchema(&aschema);
-    if (!st.ok()) {
-      return Err(from_arrow(st, "collect get schema"));
-    }
-    auto idx = resolve_indices(*aschema, projection);
-    if (!idx.has_value()) {
-      return Err(idx.error());
-    }
-    // Arrow 24: arrow::Result-returning ReadTable(column_indices); the out-param
-    // overload is ARROW_DEPRECATED and would trip /WX. Leaf indices == arrow
-    // field positions for our flat schemas.
-    auto res = reader.ReadTable(*idx);
-    if (!res.ok()) {
-      return Err(from_arrow(res.status(), "collect read projected"));
-    }
-    table = *std::move(res);
-  }
-  // Combine chunks so every column is single-chunk and owned by the table; this
-  // keeps column_view's raw_values() alias alive for the table's lifetime (no
-  // dangling spans on multi-row-group reads).
-  auto combined = table->CombineChunks(arrow::default_memory_pool());
-  if (!combined.ok()) {
-    return Err(from_arrow(combined.status(), "collect combine chunks"));
-  }
-  return Ok(*std::move(combined));
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +608,223 @@ apply_filter(const std::shared_ptr<arrow::Table>& table,
   return Ok(arrow::Table::Make(table->schema(), out_cols));
 }
 
+// ---------------------------------------------------------------------------
+// Row-group pruning (Task 8): decide which row groups CAN contain a matching
+// row from the Parquet column-chunk statistics (min/max/null_count), and skip
+// the rest. This is an OPTIMIZATION ONLY -- the exact apply_filter() still runs
+// on the survivors, so correctness never depends on pruning. The cardinal rule
+// is CONSERVATIVE: any uncertainty (missing stats, non-numeric type, type
+// mismatch, NaN/overflow corner) -> KEEP the group (never skip a possible match).
+// ---------------------------------------------------------------------------
+
+// Converts a predicate literal to a comparable double, mirroring the numeric
+// promotion the exact filter uses (i64/f64/bool all compare as numbers). Returns
+// nullopt for non-numeric literals (string/timestamp) or NaN -> caller keeps the
+// group. NOTE (precision): |value| > 2^53 loses integer precision in double; that
+// can only make pruning MORE conservative (a wider interval), never unsound.
+[[nodiscard]] static std::optional<double> numeric_literal(const Scalar& s) noexcept {
+  const Scalar::Storage& v = s.value();
+  double d = 0.0;
+  if (std::holds_alternative<i64>(v)) {
+    d = static_cast<double>(std::get<i64>(v));
+  } else if (std::holds_alternative<f64>(v)) {
+    d = std::get<f64>(v);
+  } else if (std::holds_alternative<bool>(v)) {
+    d = std::get<bool>(v) ? 1.0 : 0.0;
+  } else {
+    return std::nullopt; // string/timestamp/monostate: not numerically prunable
+  }
+  if (std::isnan(d)) {
+    return std::nullopt; // NaN literal compares false to everything; keep group
+  }
+  return d;
+}
+
+// Reads a numeric column-chunk's [min,max] as doubles for the four supported
+// physical types (INT32/INT64/FLOAT/DOUBLE). Returns nullopt for BOOLEAN /
+// BYTE_ARRAY / anything else (caller keeps the group), or when a float min/max is
+// NaN (a NaN bound makes interval reasoning unsafe -> keep). Requires HasMinMax().
+[[nodiscard]] static std::optional<std::pair<double, double>>
+minmax_as_double(const std::shared_ptr<parquet::Statistics>& stats) {
+  switch (stats->physical_type()) {
+  case parquet::Type::INT32: {
+    // SAFETY: physical_type()==INT32 guarantees the dynamic type is
+    // TypedStatistics<Int32Type>, so this downcast is well-defined.
+    const auto t = std::static_pointer_cast<parquet::Int32Statistics>(stats);
+    return std::pair{static_cast<double>(t->min()), static_cast<double>(t->max())};
+  }
+  case parquet::Type::INT64: {
+    // SAFETY: physical_type()==INT64 -> dynamic type TypedStatistics<Int64Type>.
+    const auto t = std::static_pointer_cast<parquet::Int64Statistics>(stats);
+    return std::pair{static_cast<double>(t->min()), static_cast<double>(t->max())};
+  }
+  case parquet::Type::FLOAT: {
+    // SAFETY: physical_type()==FLOAT -> dynamic type TypedStatistics<FloatType>.
+    const auto t = std::static_pointer_cast<parquet::FloatStatistics>(stats);
+    const double lo = static_cast<double>(t->min());
+    const double hi = static_cast<double>(t->max());
+    if (std::isnan(lo) || std::isnan(hi)) {
+      return std::nullopt;
+    }
+    return std::pair{lo, hi};
+  }
+  case parquet::Type::DOUBLE: {
+    // SAFETY: physical_type()==DOUBLE -> dynamic type TypedStatistics<DoubleType>.
+    const auto t = std::static_pointer_cast<parquet::DoubleStatistics>(stats);
+    const double lo = t->min();
+    const double hi = t->max();
+    if (std::isnan(lo) || std::isnan(hi)) {
+      return std::nullopt;
+    }
+    return std::pair{lo, hi};
+  }
+  default:
+    return std::nullopt; // BOOLEAN / BYTE_ARRAY / FLBA / INT96: not pruned here
+  }
+}
+
+// Given a numeric [min,max] interval and the predicate's literal `v`, returns
+// true iff the interval COULD contain a row satisfying `op` (i.e. keep). Skips
+// only when the op is provably unsatisfiable across the whole interval.
+[[nodiscard]] static bool interval_may_match(Compare op, double mn, double mx,
+                                             double v) noexcept {
+  switch (op) {
+  case Compare::Ge: return mx >= v;            // some cell >= v
+  case Compare::Gt: return mx > v;             // some cell  > v
+  case Compare::Le: return mn <= v;            // some cell <= v
+  case Compare::Lt: return mn < v;             // some cell  < v
+  case Compare::Eq: return mn <= v && v <= mx; // v lies inside [min,max]
+  case Compare::Ne: return !(mn == mx && mn == v); // skip iff whole group == v
+  case Compare::IsNull:
+  case Compare::IsNotNull:
+    break;
+  }
+  return true; // null-ops handled before interval reasoning; keep defensively
+}
+
+// Returns true if row group `rg` COULD contain a row satisfying `p` (i.e. it
+// cannot be safely skipped). CONSERVATIVE: any uncertainty -> true (keep). Pure
+// stats reasoning; the exact filter still runs on survivors.
+[[nodiscard]] static bool group_may_match(const parquet::RowGroupMetaData& rg,
+                                           const arrow::Schema& schema,
+                                           const Predicate& p) {
+  const int leaf = schema.GetFieldIndex(p.column);
+  if (leaf < 0) {
+    return true; // unknown column: apply_filter reports InvalidArgument; never prune
+  }
+  // SAFETY: leaf in [0, num_columns) by construction (GetFieldIndex succeeded),
+  // so ColumnChunk(leaf) is in range for this row group.
+  auto cc = rg.ColumnChunk(leaf);
+  if (!cc->is_stats_set()) {
+    return true; // no stats written: cannot prove absence -> keep
+  }
+  auto stats = cc->statistics();
+  if (p.op == Compare::IsNull) {
+    // Matchable iff the chunk holds at least one null. null_count() is only
+    // meaningful when min/max stats exist alongside it; when unsure, keep.
+    return stats->HasMinMax() ? (stats->null_count() > 0) : true;
+  }
+  if (p.op == Compare::IsNotNull) {
+    // Matchable iff some non-null present. num_values() counts non-null values;
+    // when it is meaningful and zero, the whole chunk is null -> skip.
+    return stats->HasMinMax() ? (stats->num_values() > 0) : true;
+  }
+  if (!stats->HasMinMax()) {
+    return true; // ordering/equality needs a [min,max]; absent -> keep
+  }
+  const std::optional<double> lit = numeric_literal(p.value);
+  if (!lit.has_value()) {
+    return true; // non-numeric / NaN literal: not numerically prunable -> keep
+  }
+  const std::optional<std::pair<double, double>> mm = minmax_as_double(stats);
+  if (!mm.has_value()) {
+    return true; // non-numeric column or NaN bound -> keep
+  }
+  return interval_may_match(p.op, mm->first, mm->second, *lit);
+}
+
+// Indices of row groups that survive pruning (could contain a match). A group is
+// skipped only if SOME predicate proves it cannot match; with no predicates every
+// group survives. Order is ascending, matching meta's row-group order.
+[[nodiscard]] static std::vector<int>
+surviving_row_groups(const parquet::FileMetaData& meta, const arrow::Schema& schema,
+                     const std::vector<Predicate>& preds) {
+  const int total = meta.num_row_groups();
+  std::vector<int> keep;
+  keep.reserve(static_cast<usize>(total));
+  for (int g = 0; g < total; ++g) {
+    auto rg = meta.RowGroup(g);
+    bool may = true;
+    for (const auto& p : preds) {
+      if (!group_may_match(*rg, schema, p)) {
+        may = false;
+        break;
+      }
+    }
+    if (may) {
+      keep.push_back(g);
+    }
+  }
+  return keep;
+}
+
+// Reads exactly the surviving row groups `keep` (column-projected by `indices`,
+// or all columns when `indices` is empty) and combines chunks so every column is
+// a single contiguous chunk. An empty `keep` yields a 0-row table with the
+// projected schema (built via Table::MakeEmpty) without calling ReadRowGroups on
+// an empty list, which Arrow rejects.
+[[nodiscard]] static Result<std::shared_ptr<arrow::Table>>
+read_table_pruned(parquet::arrow::FileReader& reader, const std::vector<int>& keep,
+                  const std::vector<int>& indices) {
+  if (keep.empty()) {
+    // No surviving groups: synthesize a 0-row table with the projected schema.
+    std::shared_ptr<arrow::Schema> aschema;
+    const auto st = reader.GetSchema(&aschema);
+    if (!st.ok()) {
+      return Err(from_arrow(st, "collect get schema"));
+    }
+    std::shared_ptr<arrow::Schema> proj = aschema;
+    if (!indices.empty()) {
+      // Restrict the schema to the projected leaf columns (flat schema: arrow
+      // field index == leaf index, the same mapping resolve_indices relies on).
+      arrow::FieldVector fields;
+      fields.reserve(indices.size());
+      for (const int i : indices) {
+        fields.push_back(aschema->field(i));
+      }
+      proj = arrow::schema(std::move(fields));
+    }
+    auto empty = arrow::Table::MakeEmpty(proj, arrow::default_memory_pool());
+    if (!empty.ok()) {
+      return Err(from_arrow(empty.status(), "collect make empty"));
+    }
+    return Ok(*std::move(empty));
+  }
+  // Arrow 24: arrow::Result-returning ReadRowGroups; the out-param forms are
+  // ARROW_DEPRECATED and would trip /WX. Empty `indices` -> all-columns overload.
+  std::shared_ptr<arrow::Table> table;
+  if (indices.empty()) {
+    auto res = reader.ReadRowGroups(keep);
+    if (!res.ok()) {
+      return Err(from_arrow(res.status(), "collect read row groups"));
+    }
+    table = *std::move(res);
+  } else {
+    auto res = reader.ReadRowGroups(keep, indices);
+    if (!res.ok()) {
+      return Err(from_arrow(res.status(), "collect read row groups projected"));
+    }
+    table = *std::move(res);
+  }
+  // Combine chunks so every column is single-chunk and owned by the table (keeps
+  // column_view's raw_values() alias alive across multi-row-group reads).
+  auto combined = table->CombineChunks(arrow::default_memory_pool());
+  if (!combined.ok()) {
+    return Err(from_arrow(combined.status(), "collect combine chunks"));
+  }
+  return Ok(*std::move(combined));
+}
+
 // Computes the column set to READ for a collect(): the union of the projection
 // and every predicate column, deduplicated with a stable order (projection
 // first, then any predicate-only helper columns). An empty projection means
@@ -685,15 +861,44 @@ project_down(const std::shared_ptr<arrow::Table>& table,
   return Ok(*std::move(sel));
 }
 
-// Eager read: materialize ALL row groups into a ParquetTable, applying the
-// projection (select) and any filter predicates (exact, row-level). Slice/limit
-// and statistics pruning are deferred to later tasks; this reads every row of
-// the read column set, filters it, then projects down to the selection.
+// Plans and reads the surviving row groups for `read_cols` (empty = all columns):
+// resolves the read columns to leaf indices, prunes row groups via column stats,
+// reads only the survivors, and reports how many groups were pruned via `pruned`.
+// Correctness is unaffected -- the exact apply_filter still runs on the result.
+[[nodiscard]] static Result<std::shared_ptr<arrow::Table>>
+read_pruned_plan(parquet::arrow::FileReader& reader, const parquet::FileMetaData& meta,
+                 const std::vector<std::string>& read_cols,
+                 const std::vector<Predicate>& predicates, i64& pruned) {
+  std::shared_ptr<arrow::Schema> aschema;
+  const auto st = reader.GetSchema(&aschema);
+  if (!st.ok()) {
+    return Err(from_arrow(st, "collect get schema"));
+  }
+  std::vector<int> indices; // empty -> read-all-columns path
+  if (!read_cols.empty()) {
+    auto idx = resolve_indices(*aschema, read_cols);
+    if (!idx.has_value()) {
+      return Err(idx.error());
+    }
+    indices = *std::move(idx);
+  }
+  const std::vector<int> keep = surviving_row_groups(meta, *aschema, predicates);
+  pruned = static_cast<i64>(meta.num_row_groups()) - static_cast<i64>(keep.size());
+  return read_table_pruned(reader, keep, indices);
+}
+
+// Eager read: materialize the SURVIVING row groups into a ParquetTable, applying
+// the projection (select) and any filter predicates (exact, row-level). Row
+// groups that provably cannot match (column-stats pruning) are skipped before
+// reading; the exact filter still runs on survivors so the result is identical to
+// reading everything. Slice/limit/stream are deferred to later tasks.
 Result<ParquetTable> LazyParquet::collect() {
   try {
     const std::vector<std::string> read_cols =
         read_columns_for(impl_->projection, impl_->predicates);
-    auto table = read_table_projected(*impl_->reader, read_cols);
+    i64 pruned = 0;
+    auto table = read_pruned_plan(*impl_->reader, *impl_->meta, read_cols,
+                                  impl_->predicates, pruned);
     if (!table.has_value()) {
       return Err(table.error());
     }
@@ -712,6 +917,7 @@ Result<ParquetTable> LazyParquet::collect() {
       result = *std::move(down);
     }
     impl_->stats.row_groups_total = num_row_groups();
+    impl_->stats.row_groups_pruned = pruned;        // groups skipped by stats
     impl_->stats.rows_scanned = result->num_rows(); // rows AFTER filtering
     auto out = std::make_unique<ParquetTable::Impl>();
     out->table = std::move(result);
