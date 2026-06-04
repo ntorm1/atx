@@ -59,7 +59,7 @@ Defer (out of Phase 2 scope — see ROADMAP):
 
 | Unit | Status | Commit | Notes |
 |------|--------|--------|-------|
-| P2-0 | ✅ done | `fill-sha` | `loop/types.hpp` (InstrumentId alias); Phase-2 fwds in `fwd.hpp`; scaffold_test Phase2TypesAliasResolves passes. No blocked CMake targets — only VmSignalSource (P2-3) blocked-on Phase-3. |
+| P2-0 | ✅ done | `5de987d` | `loop/types.hpp` (InstrumentId alias); Phase-2 fwds in `fwd.hpp`; scaffold_test Phase2TypesAliasResolves passes. No blocked CMake targets — only VmSignalSource (P2-3) blocked-on Phase-3. |
 | P2-1 | ⏳ pending | `—` | `SignalPayload`/`OrderPayload`/`FillPayload` (complete Phase-1 `Event`); `Side`/`OrderType`; `Decimal` money. *blocked-on Phase-1, L8.* |
 | P2-2 | ⏳ pending | `—` | `RollingPanel<Cap>`: PIT append-after-close, bounded `max_lookback`, column-major + membership mask. *blocked-on L9, L3.* |
 | P2-3 | ⏳ pending | `—` | `ISignalSource`; `ScriptedSignalSource` (green); `VmSignalSource` over Phase-3 `Engine`. *VM adapter blocked-on Phase 3.* |
@@ -103,7 +103,7 @@ intraday fills; same-bar-close "cheat" flag (off by default).
 
 | Commit | Unit | Test counts (suite/total/fail/skip) |
 |--------|------|-------------------------------------|
-| `fill-sha` | marker (P2-0) | 2/2/0/0 (EngineScaffold.TestTargetLinksAndRuns, Scaffold.Phase2TypesAliasResolves) |
+| `5de987d` | marker (P2-0) | 2/2/0/0 (EngineScaffold.TestTargetLinksAndRuns, Scaffold.Phase2TypesAliasResolves) |
 | `—`    | P2-1 | — |
 | `—`    | P2-2 | — |
 | `—`    | P2-3 | — |
