@@ -11,15 +11,14 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <string_view>
 #include <type_traits>
 
 #include "atx/core/datetime.hpp"      // Timestamp
 #include "atx/core/decimal.hpp"       // Decimal
-#include "atx/core/domain/domain.hpp" // Side
 #include "atx/core/domain/symbol.hpp" // Symbol
 #include "atx/core/error.hpp"         // Result, ErrorCode
-#include "atx/core/types.hpp"         // i64, f64
 
 #include "atx/engine/event/event.hpp"   // Event, EventType, kPayloadBytes
 #include "atx/engine/exec/payloads.hpp" // SignalPayload, OrderPayload, FillPayload, make_*_event
@@ -28,7 +27,6 @@ namespace {
 
 using atx::core::Decimal;
 using atx::core::ErrorCode;
-using atx::core::domain::Side;
 using atx::core::domain::Symbol;
 using atx::core::time::Timestamp;
 using atx::engine::event::Event;
