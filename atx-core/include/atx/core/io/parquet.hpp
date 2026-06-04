@@ -89,6 +89,9 @@ public:
   [[nodiscard]] Result<std::span<const T>> column_view(std::string_view name) const;
   template <class T>
   [[nodiscard]] Result<series::Column<T>> to_column(std::string_view name) const;
+  // Materializes the POD columns (numeric + bool + timestamp) into a Frame.
+  // String/binary/date32/decimal/nested columns are skipped (no contiguous
+  // typed Column<T> bridge).
   [[nodiscard]] Result<series::Frame> to_frame() const;
   [[nodiscard]] Result<std::vector<std::string_view>> strings(std::string_view name) const;
 
@@ -135,8 +138,14 @@ public:
   LazyParquet& limit(i64 n);
   LazyParquet& offset(i64 n);
 
+  // The plan is REUSABLE: collect()/stream() may be called more than once on the
+  // same LazyParquet, and builder setters (select/filter/limit/offset) accumulate
+  // across calls.
   [[nodiscard]] Result<ParquetTable> collect();
   [[nodiscard]] Result<RowGroupStream> stream();
+  // Reflects the MOST RECENT collect()/stream(). rows_scanned is populated by
+  // collect() only (left as-is during streaming -- use each batch's num_rows()
+  // when streaming).
   [[nodiscard]] ScanStats stats() const noexcept;
 
   struct Impl;

@@ -1418,13 +1418,14 @@ ParquetTable::to_column<atx::core::time::Timestamp>(std::string_view name) const
   catch (...) { return Err(ErrorCode::Internal, "to_column<Timestamp>: unknown exception"); }
 }
 
-// Bridges the numeric column `name` (element type T) into `frame`. On success
-// the bridged Column<T> is moved into a freshly added frame column. Returns true
-// iff the column landed; a failed bridge (e.g. all-null edge) returns false so
-// to_frame can skip it silently.
+// Bridges the POD column `name` (element type T) into `frame`. On success the
+// bridged Column<T> is moved into a freshly added frame column. Returns true iff
+// the column landed; a failed bridge (e.g. all-null edge) returns false so
+// to_frame can skip it silently. Used for the numeric arms plus bool/Timestamp
+// (all trivially copyable; to_column<T> is specialized for bool/Timestamp).
 template <class T>
-[[nodiscard]] static bool add_numeric(series::Frame& frame, std::string_view name,
-                                      const ParquetTable& table) {
+[[nodiscard]] static bool add_pod_column(series::Frame& frame, std::string_view name,
+                                         const ParquetTable& table) {
   auto col = table.to_column<T>(name);
   if (!col.has_value()) {
     return false;
@@ -1442,19 +1443,25 @@ Result<series::Frame> ParquetTable::to_frame() const {
     series::Frame frame;
     for (const auto& ci : impl_->schema.columns) {
       switch (ci.dtype) {
-      case DType::Int8:    { (void)add_numeric<int8_t>(frame, ci.name, *this);   break; }
-      case DType::Int16:   { (void)add_numeric<int16_t>(frame, ci.name, *this);  break; }
-      case DType::Int32:   { (void)add_numeric<int32_t>(frame, ci.name, *this);  break; }
-      case DType::Int64:   { (void)add_numeric<int64_t>(frame, ci.name, *this);  break; }
-      case DType::UInt8:   { (void)add_numeric<uint8_t>(frame, ci.name, *this);  break; }
-      case DType::UInt16:  { (void)add_numeric<uint16_t>(frame, ci.name, *this); break; }
-      case DType::UInt32:  { (void)add_numeric<uint32_t>(frame, ci.name, *this); break; }
-      case DType::UInt64:  { (void)add_numeric<uint64_t>(frame, ci.name, *this); break; }
-      case DType::Float32: { (void)add_numeric<float>(frame, ci.name, *this);    break; }
-      case DType::Float64: { (void)add_numeric<double>(frame, ci.name, *this);   break; }
+      case DType::Int8:    { (void)add_pod_column<int8_t>(frame, ci.name, *this);   break; }
+      case DType::Int16:   { (void)add_pod_column<int16_t>(frame, ci.name, *this);  break; }
+      case DType::Int32:   { (void)add_pod_column<int32_t>(frame, ci.name, *this);  break; }
+      case DType::Int64:   { (void)add_pod_column<int64_t>(frame, ci.name, *this);  break; }
+      case DType::UInt8:   { (void)add_pod_column<uint8_t>(frame, ci.name, *this);  break; }
+      case DType::UInt16:  { (void)add_pod_column<uint16_t>(frame, ci.name, *this); break; }
+      case DType::UInt32:  { (void)add_pod_column<uint32_t>(frame, ci.name, *this); break; }
+      case DType::UInt64:  { (void)add_pod_column<uint64_t>(frame, ci.name, *this); break; }
+      case DType::Float32: { (void)add_pod_column<float>(frame, ci.name, *this);    break; }
+      case DType::Float64: { (void)add_pod_column<double>(frame, ci.name, *this);   break; }
+      case DType::Bool:    { (void)add_pod_column<bool>(frame, ci.name, *this);     break; }
+      case DType::Timestamp: {
+        (void)add_pod_column<atx::core::time::Timestamp>(frame, ci.name, *this);
+        break;
+      }
       default:
-        // Bool/String/Binary/Date32/Timestamp/Decimal128/Unsupported land in
-        // Task 4+; silently skipped here so the numeric arms stay total.
+        // String/Binary/Date32/Decimal128/Unsupported are not POD-bridgeable
+        // here (no contiguous typed Column<T>); silently skipped so the bridged
+        // arms (numeric + bool + timestamp) stay total.
         break;
       }
     }
