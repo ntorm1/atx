@@ -268,29 +268,83 @@ LazyParquet& LazyParquet::offset(i64 n) {
   return *this;
 }
 
-// Eager full read: materialize ALL row groups into a ParquetTable. Projection,
-// filter, and slice are deferred to later tasks; this reads the whole file.
+// Resolves column names to parquet leaf indices against `schema`. Unknown name
+// -> InvalidArgument. (Flat schemas: arrow field index == leaf column index.)
+[[nodiscard]] static Result<std::vector<int>>
+resolve_indices(const arrow::Schema& schema, const std::vector<std::string>& names) {
+  std::vector<int> idx;
+  idx.reserve(names.size());
+  for (const auto& n : names) {
+    const int i = schema.GetFieldIndex(n);
+    if (i < 0) {
+      return Err(ErrorCode::InvalidArgument, "select: unknown column '" + n + "'");
+    }
+    idx.push_back(i);
+  }
+  return Ok(std::move(idx));
+}
+
+// Reads the table from `reader`, projecting to `projection` (empty = all
+// columns), and combines chunks so every column is a single contiguous chunk.
+// On a projected read the returned table's columns are in `projection` order
+// (Arrow returns columns in the requested-index order). Unknown projected names
+// -> InvalidArgument; Arrow failures map via from_arrow.
+[[nodiscard]] static Result<std::shared_ptr<arrow::Table>>
+read_table_projected(parquet::arrow::FileReader& reader,
+                     const std::vector<std::string>& projection) {
+  std::shared_ptr<arrow::Table> table;
+  if (projection.empty()) {
+    // Arrow 24: arrow::Result-returning ReadTable (the out-param form is
+    // deprecated and would trip /WX).
+    auto res = reader.ReadTable();
+    if (!res.ok()) {
+      return Err(from_arrow(res.status(), "collect read"));
+    }
+    table = *std::move(res);
+  } else {
+    std::shared_ptr<arrow::Schema> aschema;
+    const auto st = reader.GetSchema(&aschema);
+    if (!st.ok()) {
+      return Err(from_arrow(st, "collect get schema"));
+    }
+    auto idx = resolve_indices(*aschema, projection);
+    if (!idx.has_value()) {
+      return Err(idx.error());
+    }
+    // Arrow 24: arrow::Result-returning ReadTable(column_indices); the out-param
+    // overload is ARROW_DEPRECATED and would trip /WX. Leaf indices == arrow
+    // field positions for our flat schemas.
+    auto res = reader.ReadTable(*idx);
+    if (!res.ok()) {
+      return Err(from_arrow(res.status(), "collect read projected"));
+    }
+    table = *std::move(res);
+  }
+  // Combine chunks so every column is single-chunk and owned by the table; this
+  // keeps column_view's raw_values() alias alive for the table's lifetime (no
+  // dangling spans on multi-row-group reads).
+  auto combined = table->CombineChunks(arrow::default_memory_pool());
+  if (!combined.ok()) {
+    return Err(from_arrow(combined.status(), "collect combine chunks"));
+  }
+  return Ok(*std::move(combined));
+}
+
+// Eager read: materialize ALL row groups into a ParquetTable, applying the
+// projection (select) if one was set. Filter and slice are deferred to later
+// tasks; this reads every row of the selected columns.
 Result<ParquetTable> LazyParquet::collect() {
   try {
-    // Arrow 24: use the arrow::Result-returning ReadTable (the out-param form is
-    // deprecated and would trip /WX).
-    auto table_res = impl_->reader->ReadTable();
-    if (!table_res.ok()) {
-      return Err(from_arrow(table_res.status(), "collect read"));
+    auto table = read_table_projected(*impl_->reader, impl_->projection);
+    if (!table.has_value()) {
+      return Err(table.error());
     }
     impl_->stats.row_groups_total = num_row_groups();
     auto out = std::make_unique<ParquetTable::Impl>();
-    out->table = *std::move(table_res);
-    // Combine chunks so every column is single-chunk and owned by out->table;
-    // this keeps column_view's raw_values() alias alive for the table's lifetime
-    // (no dangling spans on multi-row-group reads). Must precede rows_scanned /
-    // schema_from_arrow below.
-    auto combined = out->table->CombineChunks(arrow::default_memory_pool());
-    if (!combined.ok()) {
-      return Err(from_arrow(combined.status(), "collect combine chunks"));
-    }
-    out->table = *combined;
+    out->table = *std::move(table);
     impl_->stats.rows_scanned = out->table->num_rows();
+    // schema_from_arrow reflects only the projected columns (in projection order
+    // for a projected read), keeping ParquetTable::schema() consistent.
     out->schema = schema_from_arrow(*out->table->schema());
     return ParquetTable{std::move(out)};
   }

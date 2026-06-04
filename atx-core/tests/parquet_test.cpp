@@ -204,6 +204,41 @@ TEST(Parquet, SchemaReportsAllDtypes) {
   EXPECT_EQ(lz->schema().find("t")->dtype, DType::Timestamp);
 }
 
+TEST(Parquet, SelectProjectsColumns) {
+  auto path = temp_path("select");
+  write_table(make_numeric_table(50), path);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->select({"val"}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_columns(), 1);
+  ASSERT_EQ(t->schema().size(), 1u);
+  EXPECT_EQ(t->schema().columns[0].name, "val");
+  // projected column still materializes correctly
+  auto col = t->to_column<double>("val");
+  ASSERT_TRUE(col.has_value());
+  EXPECT_DOUBLE_EQ((*col)[49], 49.0 * 1.5);
+}
+
+TEST(Parquet, SelectUnknownColumnIsInvalidArgument) {
+  auto path = temp_path("selbad");
+  write_table(make_numeric_table(5), path);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  EXPECT_EQ(lz->select({"nope"}).collect().error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(Parquet, SelectEmptyKeepsAllColumns) {
+  auto path = temp_path("selall");
+  write_table(make_numeric_table(5), path);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->collect(); // no select -> all columns
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_columns(), 2);
+}
+
 TEST(Parquet, AllCodecsRoundTrip) {
   struct C { arrow::Compression::type codec; const char* stem; };
   std::vector<C> codecs = {
