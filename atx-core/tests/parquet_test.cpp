@@ -385,6 +385,60 @@ TEST(Parquet, RowGroupPruningAllMatchNoPrune) {
   EXPECT_EQ(lz->stats().row_groups_pruned, 0);   // every group can match
 }
 
+// Two int64 row groups: group A = 1000x (2^53+1), group B = 1000x 0. A naive
+// double-domain prune rounds 2^53+1 down to 2^53, so `Gt 2^53` would wrongly skip
+// group A and drop its 1000 matching rows. Exact int64 pruning keeps group A.
+TEST(Parquet, RowGroupPruningLargeInt64Exact) {
+  constexpr int64_t kBig = 9007199254740993LL; // 2^53 + 1
+  constexpr int64_t kThresh = 9007199254740992LL; // 2^53
+  arrow::Int64Builder a;
+  for (int i = 0; i < 1000; ++i) { (void)a.Append(kBig); } // group A
+  for (int i = 0; i < 1000; ++i) { (void)a.Append(0); }    // group B
+  std::shared_ptr<arrow::Array> aa; (void)a.Finish(&aa);
+  auto schema = arrow::schema({arrow::field("big", arrow::int64())});
+  auto table = arrow::Table::Make(schema, {aa});
+  auto path = temp_path("bigint");
+  write_table(table, path, arrow::Compression::SNAPPY, /*row_group=*/1000); // 2 groups
+
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->filter(Predicate{"big", Compare::Gt, Scalar{int64_t{kThresh}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 1000);                 // all of group A; NOT skipped
+  auto v = t->column_view<int64_t>("big"); ASSERT_TRUE(v.has_value());
+  EXPECT_EQ((*v)[0], kBig);
+
+  // Ne 2^53 must keep every row (2^53 is present in neither group): all 2000.
+  auto lz2 = LazyParquet::scan(path); ASSERT_TRUE(lz2.has_value());
+  auto t2 = lz2->filter(Predicate{"big", Compare::Ne, Scalar{int64_t{kThresh}}}).collect();
+  ASSERT_TRUE(t2.has_value());
+  EXPECT_EQ(t2->num_rows(), 2000);
+}
+
+// Two uint64 row groups: group A holds a value >= 2^63 (reads back negative if
+// mis-signed as int64), group B holds small values. With unsigned pruning disabled
+// no group is skipped, so `Ge 1` must return every value >= 1 (the big value plus
+// the non-zero small ones) -- the high-value rows must NOT be lost.
+TEST(Parquet, RowGroupPruningUInt64NoWrongSkip) {
+  constexpr uint64_t kHuge = 9223372036854775809ULL; // 2^63 + 1
+  arrow::UInt64Builder u;
+  for (int i = 0; i < 1000; ++i) { (void)u.Append(kHuge); }                 // group A
+  for (int i = 0; i < 1000; ++i) { (void)u.Append(static_cast<uint64_t>(i)); } // group B: 0..999
+  std::shared_ptr<arrow::Array> ua; (void)u.Finish(&ua);
+  auto schema = arrow::schema({arrow::field("u", arrow::uint64())});
+  auto table = arrow::Table::Make(schema, {ua});
+  auto path = temp_path("huge_u64");
+  write_table(table, path, arrow::Compression::SNAPPY, /*row_group=*/1000); // 2 groups
+
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  auto t = lz->filter(Predicate{"u", Compare::Ge, Scalar{int64_t{1}}}).collect();
+  ASSERT_TRUE(t.has_value());
+  // 1000 huge values (group A) + 999 non-zero small values (group B: 1..999).
+  EXPECT_EQ(t->num_rows(), 1999);
+  EXPECT_EQ(lz->stats().row_groups_pruned, 0);    // unsigned columns are never pruned
+}
+
 TEST(Parquet, AllCodecsRoundTrip) {
   struct C { arrow::Compression::type codec; const char* stem; };
   std::vector<C> codecs = {

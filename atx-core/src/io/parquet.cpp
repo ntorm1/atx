@@ -615,79 +615,62 @@ apply_filter(const std::shared_ptr<arrow::Table>& table,
 // on the survivors, so correctness never depends on pruning. The cardinal rule
 // is CONSERVATIVE: any uncertainty (missing stats, non-numeric type, type
 // mismatch, NaN/overflow corner) -> KEEP the group (never skip a possible match).
+//
+// Pruning happens ONLY in an EXACT comparison domain, never via a lossy promotion:
+// signed-int columns compare in int64, float columns in double (and an i64 literal
+// only enters the double domain when |v| <= 2^53). Unsigned-int columns are not
+// pruned at all (their physical INT64 stats mis-sign values >= 2^63). This avoids
+// the two precision/signedness hazards that could otherwise SKIP matching rows --
+// silent data loss the exact filter could not recover, since a skipped group is
+// never read.
 // ---------------------------------------------------------------------------
 
-// Converts a predicate literal to a comparable double, mirroring the numeric
-// promotion the exact filter uses (i64/f64/bool all compare as numbers). Returns
-// nullopt for non-numeric literals (string/timestamp) or NaN -> caller keeps the
-// group. NOTE (precision): |value| > 2^53 loses integer precision in double; that
-// can only make pruning MORE conservative (a wider interval), never unsound.
-[[nodiscard]] static std::optional<double> numeric_literal(const Scalar& s) noexcept {
+// Converts a predicate literal to an EXACT int64, for pruning signed-integer
+// columns. Only integer-domain literals qualify: i64 verbatim, bool -> 0/1. f64
+// and non-numeric literals return nullopt (caller keeps the group) -- promoting a
+// double into the int domain (or vice versa) is not exact, so it is never pruned.
+[[nodiscard]] static std::optional<i64> int_literal(const Scalar& s) noexcept {
   const Scalar::Storage& v = s.value();
-  double d = 0.0;
   if (std::holds_alternative<i64>(v)) {
-    d = static_cast<double>(std::get<i64>(v));
-  } else if (std::holds_alternative<f64>(v)) {
-    d = std::get<f64>(v);
-  } else if (std::holds_alternative<bool>(v)) {
-    d = std::get<bool>(v) ? 1.0 : 0.0;
-  } else {
-    return std::nullopt; // string/timestamp/monostate: not numerically prunable
+    return std::get<i64>(v);
   }
-  if (std::isnan(d)) {
-    return std::nullopt; // NaN literal compares false to everything; keep group
+  if (std::holds_alternative<bool>(v)) {
+    return std::get<bool>(v) ? i64{1} : i64{0};
   }
-  return d;
+  return std::nullopt; // f64 / string / timestamp / monostate: not int-exact
 }
 
-// Reads a numeric column-chunk's [min,max] as doubles for the four supported
-// physical types (INT32/INT64/FLOAT/DOUBLE). Returns nullopt for BOOLEAN /
-// BYTE_ARRAY / anything else (caller keeps the group), or when a float min/max is
-// NaN (a NaN bound makes interval reasoning unsafe -> keep). Requires HasMinMax().
-[[nodiscard]] static std::optional<std::pair<double, double>>
-minmax_as_double(const std::shared_ptr<parquet::Statistics>& stats) {
-  switch (stats->physical_type()) {
-  case parquet::Type::INT32: {
-    // SAFETY: physical_type()==INT32 guarantees the dynamic type is
-    // TypedStatistics<Int32Type>, so this downcast is well-defined.
-    const auto t = std::static_pointer_cast<parquet::Int32Statistics>(stats);
-    return std::pair{static_cast<double>(t->min()), static_cast<double>(t->max())};
+// Converts a predicate literal to an EXACT double, for pruning float/double
+// columns. f64 is exact; an i64 is exact only when |v| <= 2^53 (every integer up
+// to 2^53 is representable in double). i64 with |v| > 2^53, NaN, and non-numeric
+// literals return nullopt (caller keeps the group). bool -> 0.0/1.0.
+[[nodiscard]] static std::optional<double> double_literal(const Scalar& s) noexcept {
+  const Scalar::Storage& v = s.value();
+  if (std::holds_alternative<f64>(v)) {
+    const double d = std::get<f64>(v);
+    return std::isnan(d) ? std::nullopt : std::optional<double>{d};
   }
-  case parquet::Type::INT64: {
-    // SAFETY: physical_type()==INT64 -> dynamic type TypedStatistics<Int64Type>.
-    const auto t = std::static_pointer_cast<parquet::Int64Statistics>(stats);
-    return std::pair{static_cast<double>(t->min()), static_cast<double>(t->max())};
+  if (std::holds_alternative<bool>(v)) {
+    return std::get<bool>(v) ? 1.0 : 0.0;
   }
-  case parquet::Type::FLOAT: {
-    // SAFETY: physical_type()==FLOAT -> dynamic type TypedStatistics<FloatType>.
-    const auto t = std::static_pointer_cast<parquet::FloatStatistics>(stats);
-    const double lo = static_cast<double>(t->min());
-    const double hi = static_cast<double>(t->max());
-    if (std::isnan(lo) || std::isnan(hi)) {
-      return std::nullopt;
+  if (std::holds_alternative<i64>(v)) {
+    constexpr i64 kExact = i64{1} << 53; // 2^53: max exactly-representable integer
+    const i64 n = std::get<i64>(v);
+    if (n > kExact || n < -kExact) {
+      return std::nullopt; // |v| > 2^53: not double-exact -> keep group
     }
-    return std::pair{lo, hi};
+    return static_cast<double>(n);
   }
-  case parquet::Type::DOUBLE: {
-    // SAFETY: physical_type()==DOUBLE -> dynamic type TypedStatistics<DoubleType>.
-    const auto t = std::static_pointer_cast<parquet::DoubleStatistics>(stats);
-    const double lo = t->min();
-    const double hi = t->max();
-    if (std::isnan(lo) || std::isnan(hi)) {
-      return std::nullopt;
-    }
-    return std::pair{lo, hi};
-  }
-  default:
-    return std::nullopt; // BOOLEAN / BYTE_ARRAY / FLBA / INT96: not pruned here
-  }
+  return std::nullopt; // string / timestamp / monostate: not numerically prunable
 }
 
-// Given a numeric [min,max] interval and the predicate's literal `v`, returns
-// true iff the interval COULD contain a row satisfying `op` (i.e. keep). Skips
-// only when the op is provably unsatisfiable across the whole interval.
-[[nodiscard]] static bool interval_may_match(Compare op, double mn, double mx,
-                                             double v) noexcept {
+// Given a [min,max] interval and the predicate's literal `v`, returns true iff the
+// interval COULD contain a row satisfying `op` (i.e. keep). Skips only when `op`
+// is provably unsatisfiable across the whole interval. Evaluated in the EXACT
+// domain T (int64_t for signed-int columns, double for float columns) so no
+// precision is lost; the comparisons mirror the exact filter's fold_order.
+template <class T>
+[[nodiscard]] static bool interval_may_match(Compare op, T mn, T mx, T v) noexcept {
   switch (op) {
   case Compare::Ge: return mx >= v;            // some cell >= v
   case Compare::Gt: return mx > v;             // some cell  > v
@@ -702,9 +685,81 @@ minmax_as_double(const std::shared_ptr<parquet::Statistics>& stats) {
   return true; // null-ops handled before interval reasoning; keep defensively
 }
 
+// Prunes a signed-integer column-chunk (INT8/16/32/64 -> physical INT32/INT64)
+// against `p`, in the exact int64 domain. Returns keep/skip. Non-integer literal
+// or an unexpected physical type -> keep (conservative). Requires HasMinMax().
+[[nodiscard]] static bool int_group_may_match(const std::shared_ptr<parquet::Statistics>& stats,
+                                              const Predicate& p) {
+  const std::optional<i64> lit = int_literal(p.value);
+  if (!lit.has_value()) {
+    return true; // f64 / non-numeric literal vs int column: not int-exact -> keep
+  }
+  i64 mn = 0;
+  i64 mx = 0;
+  switch (stats->physical_type()) {
+  case parquet::Type::INT32: {
+    // SAFETY: physical_type()==INT32 -> dynamic type TypedStatistics<Int32Type>.
+    const auto t = std::static_pointer_cast<parquet::Int32Statistics>(stats);
+    mn = static_cast<i64>(t->min()); // int32 widens to int64 losslessly
+    mx = static_cast<i64>(t->max());
+    break;
+  }
+  case parquet::Type::INT64: {
+    // SAFETY: physical_type()==INT64 -> dynamic type TypedStatistics<Int64Type>.
+    const auto t = std::static_pointer_cast<parquet::Int64Statistics>(stats);
+    mn = t->min();
+    mx = t->max();
+    break;
+  }
+  default:
+    return true; // unexpected physical type for a signed-int column -> keep
+  }
+  return interval_may_match<i64>(p.op, mn, mx, *lit);
+}
+
+// Prunes a float/double column-chunk (physical FLOAT/DOUBLE) against `p`, in the
+// double domain. Returns keep/skip. Non-double-exact literal, NaN bound, or an
+// unexpected physical type -> keep (conservative). Requires HasMinMax().
+[[nodiscard]] static bool float_group_may_match(const std::shared_ptr<parquet::Statistics>& stats,
+                                                const Predicate& p) {
+  const std::optional<double> lit = double_literal(p.value);
+  if (!lit.has_value()) {
+    return true; // |i64|>2^53 / NaN / non-numeric literal -> not double-exact -> keep
+  }
+  double mn = 0.0;
+  double mx = 0.0;
+  switch (stats->physical_type()) {
+  case parquet::Type::FLOAT: {
+    // SAFETY: physical_type()==FLOAT -> dynamic type TypedStatistics<FloatType>.
+    const auto t = std::static_pointer_cast<parquet::FloatStatistics>(stats);
+    mn = static_cast<double>(t->min()); // float widens to double losslessly
+    mx = static_cast<double>(t->max());
+    break;
+  }
+  case parquet::Type::DOUBLE: {
+    // SAFETY: physical_type()==DOUBLE -> dynamic type TypedStatistics<DoubleType>.
+    const auto t = std::static_pointer_cast<parquet::DoubleStatistics>(stats);
+    mn = t->min();
+    mx = t->max();
+    break;
+  }
+  default:
+    return true; // unexpected physical type for a float column -> keep
+  }
+  if (std::isnan(mn) || std::isnan(mx)) {
+    return true; // a NaN bound makes interval reasoning unsafe -> keep
+  }
+  return interval_may_match<double>(p.op, mn, mx, *lit);
+}
+
 // Returns true if row group `rg` COULD contain a row satisfying `p` (i.e. it
-// cannot be safely skipped). CONSERVATIVE: any uncertainty -> true (keep). Pure
-// stats reasoning; the exact filter still runs on survivors.
+// cannot be safely skipped). CONSERVATIVE: any uncertainty -> true (keep). Pruning
+// happens ONLY in an exact comparison domain chosen from the ARROW field type:
+// signed-int columns prune in int64, float columns in double. Unsigned-int columns
+// (UINT8..UINT64) are NEVER pruned -- they are stored as physical INT64, so values
+// >= 2^63 would read back negative and could wrongly skip matches; KEEP avoids that
+// hazard entirely. Everything else (bool/string/timestamp, missing/absent stats,
+// unknown column) also keeps. The exact filter still runs on survivors.
 [[nodiscard]] static bool group_may_match(const parquet::RowGroupMetaData& rg,
                                            const arrow::Schema& schema,
                                            const Predicate& p) {
@@ -732,15 +787,26 @@ minmax_as_double(const std::shared_ptr<parquet::Statistics>& stats) {
   if (!stats->HasMinMax()) {
     return true; // ordering/equality needs a [min,max]; absent -> keep
   }
-  const std::optional<double> lit = numeric_literal(p.value);
-  if (!lit.has_value()) {
-    return true; // non-numeric / NaN literal: not numerically prunable -> keep
+  // Choose the prune domain from the ARROW field type at the predicate's leaf.
+  switch (schema.field(leaf)->type()->id()) {
+  case arrow::Type::INT8:
+  case arrow::Type::INT16:
+  case arrow::Type::INT32:
+  case arrow::Type::INT64:
+    return int_group_may_match(stats, p);
+  case arrow::Type::FLOAT:
+  case arrow::Type::DOUBLE:
+    return float_group_may_match(stats, p);
+  case arrow::Type::UINT8:
+  case arrow::Type::UINT16:
+  case arrow::Type::UINT32:
+  case arrow::Type::UINT64:
+    // Unsigned stored as physical INT64; reading Int64Statistics would mis-sign
+    // values >= 2^63 and could skip matches. KEEP (no unsigned pruning for now).
+    return true;
+  default:
+    return true; // bool / string / timestamp / decimal / etc.: not pruned here
   }
-  const std::optional<std::pair<double, double>> mm = minmax_as_double(stats);
-  if (!mm.has_value()) {
-    return true; // non-numeric column or NaN bound -> keep
-  }
-  return interval_may_match(p.op, mm->first, mm->second, *lit);
 }
 
 // Indices of row groups that survive pruning (could contain a match). A group is
