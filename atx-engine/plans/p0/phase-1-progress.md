@@ -127,3 +127,18 @@ pre-allocated ring.
 earn the first runnable, cost-honest backtest on one alpha. The strategy is reached through the
 `ISignalSource` seam (VM-centric); the loop goes green on `ScriptedSignalSource` before Phase 3's alpha
 VM lands. The `EventType` taxonomy already reserves `Signal`/`Order`/`Fill` for the Phase-2 payloads.
+
+**Carry-forward decisions (from the final holistic review — design notes, not Phase-1 defects):**
+1. **Wire or re-scope `SimClock::is_visible()`.** Today the no-look-ahead guarantee is enforced by *feed
+   ordering* (`InMemoryBarFeed::step()` advances the clock to the frontier before publishing), so the
+   gate the SimClock header advertises is correct but **not yet load-bearing** at the bus/consumer seam.
+   A new producer (e.g. a Phase-2 strategy re-publishing Signals/Orders) that forgets advance-before-
+   publish would leak look-ahead untyped. Phase 2 should either assert `clock.is_visible(e.knowledge_ts)`
+   inside `drain_in_order` delivery, or document the gate as a caller-side PIT/restatement helper.
+2. **Resolve `EventBus<>&` rigidity before the 2nd gated consumer.** `InMemoryBarFeed` hard-binds the
+   default bus params (`ConsumerCount=1`); a strategy consumer + an exec-sim consumer both gated on the
+   feed's bus need `ConsumerCount≥2` — a different type the ctor can't take. Template the feed on the bus
+   type, or introduce a producer-facing bus handle. Biggest structural constraint on building Phase 2.
+3. Untested seams (theoretical at Phase-1's fixed 64K ring): a coalesced slice larger than ring capacity
+   (wrap-vs-slice), and `make_market_tick` through the feed (bar-only today). Add when ring sizing becomes
+   configurable / a tick feed lands.
