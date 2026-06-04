@@ -1028,7 +1028,7 @@ struct RowGroupStream::Impl {
   std::shared_ptr<arrow::io::ReadableFile> file;       // co-own: file outlives stream
   std::unique_ptr<parquet::arrow::FileReader> reader;  // the stream's own reader
   std::vector<int> survivors;            // surviving row-group indices (post-pruning)
-  std::vector<int> indices;              // projected u predicate leaf indices ({}=all)
+  std::vector<int> indices;              // projected + predicate leaf indices ({}=all)
   std::vector<std::string> projection;   // user selection, for project_down
   std::vector<Predicate> predicates;
   i64 remaining_offset{0};
@@ -1162,7 +1162,7 @@ Result<RowGroupStream> LazyParquet::stream() {
     if (!st.ok()) {
       return Err(from_arrow(st, "stream get schema"));
     }
-    // Resolve the read columns (projection u predicate cols; empty = read-all).
+    // Resolve the read columns (projection + predicate cols; empty = read-all).
     const std::vector<std::string> read_cols =
         read_columns_for(impl_->projection, impl_->predicates);
     std::vector<int> indices; // empty -> read-all-columns path
@@ -1175,6 +1175,13 @@ Result<RowGroupStream> LazyParquet::stream() {
     }
     // Plan the surviving row groups and record it in stats() up front, so the
     // pruning plan is visible even before the first next() (mirrors collect()).
+    // NOTE (stats.rows_scanned): only row_groups_total/_pruned are maintained for
+    // a streamed run; rows_scanned is left AS-IS here (it is only populated by
+    // collect(), where the full filtered table is materialized). A streamed run
+    // never accumulates a global row count -- to track rows during streaming,
+    // inspect each batch's num_rows() as next() yields it. (Threading a running
+    // count back through here would couple RowGroupStream to this LazyParquet,
+    // which the self-sufficient-stream design deliberately avoids.)
     std::vector<int> survivors =
         surviving_row_groups(*impl_->meta, *aschema, impl_->predicates);
     const i64 total = impl_->meta->num_row_groups();

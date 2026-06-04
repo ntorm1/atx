@@ -9,6 +9,7 @@
 #include <parquet/arrow/writer.h>
 #include <arrow/io/file.h>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 
 using namespace atx::core::io;
@@ -572,4 +573,68 @@ TEST(Parquet, StreamAllPrunedYieldsNothing) {
   auto batch = stream->next();
   ASSERT_TRUE(batch.has_value());
   EXPECT_FALSE(batch->has_value());   // all 3 groups pruned -> no batches
+}
+
+TEST(Parquet, CorruptFileIsParseError) {
+  auto path = temp_path("corrupt");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f << "not a parquet file at all, just some random bytes ......";
+  }
+  auto r = read_parquet(path);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), atx::core::ErrorCode::ParseError);
+}
+
+TEST(Parquet, ScanCorruptFileIsParseError) {
+  auto path = temp_path("corrupt2");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f << "PAR1garbagePAR1"; // looks parquet-ish but is not a valid footer
+  }
+  auto r = LazyParquet::scan(path);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), atx::core::ErrorCode::ParseError);
+}
+
+TEST(Parquet, NestedColumnSchemaUnsupported) {
+  // list<int64> column -> schema reports Unsupported; bridge to a numeric T errors.
+  arrow::ListBuilder lb(arrow::default_memory_pool(),
+                        std::make_shared<arrow::Int64Builder>());
+  auto* vb = static_cast<arrow::Int64Builder*>(lb.value_builder());
+  (void)lb.Append(); (void)vb->Append(1); (void)vb->Append(2);
+  (void)lb.Append(); (void)vb->Append(3);
+  std::shared_ptr<arrow::Array> la;
+  (void)lb.Finish(&la);
+  auto schema = arrow::schema({arrow::field("l", arrow::list(arrow::int64()))});
+  auto table = arrow::Table::Make(schema, {la});
+  auto path = temp_path("nested");
+  write_table(table, path);
+  auto lz = LazyParquet::scan(path);
+  ASSERT_TRUE(lz.has_value());
+  ASSERT_NE(lz->schema().find("l"), nullptr);
+  EXPECT_EQ(lz->schema().find("l")->dtype, DType::Unsupported);
+  auto t = read_parquet(path);
+  ASSERT_TRUE(t.has_value());
+  // bridging a nested/list column to a numeric Column<T> must error (type mismatch).
+  EXPECT_EQ(t->to_column<int64_t>("l").error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(Parquet, ToFrameSkipsUnsupportedColumns) {
+  // a table with an int64 column AND a list column: to_frame keeps the numeric, skips the list.
+  arrow::Int64Builder ib; (void)ib.Append(10); (void)ib.Append(20);
+  arrow::ListBuilder lb(arrow::default_memory_pool(), std::make_shared<arrow::Int64Builder>());
+  auto* vb = static_cast<arrow::Int64Builder*>(lb.value_builder());
+  (void)lb.Append(); (void)vb->Append(1);
+  (void)lb.Append(); (void)vb->Append(2);
+  std::shared_ptr<arrow::Array> ia, la; (void)ib.Finish(&ia); (void)lb.Finish(&la);
+  auto schema = arrow::schema({arrow::field("n", arrow::int64()),
+                               arrow::field("l", arrow::list(arrow::int64()))});
+  auto table = arrow::Table::Make(schema, {ia, la});
+  auto path = temp_path("mixednested"); write_table(table, path);
+  auto t = read_parquet(path); ASSERT_TRUE(t.has_value());
+  auto f = t->to_frame(); ASSERT_TRUE(f.has_value());
+  EXPECT_TRUE(f->has_column("n"));
+  EXPECT_FALSE(f->has_column("l"));   // unsupported column skipped
 }
