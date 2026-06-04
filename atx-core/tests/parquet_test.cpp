@@ -515,3 +515,61 @@ TEST(Parquet, AllCodecsRoundTrip) {
     EXPECT_DOUBLE_EQ((*col)[499], 499.0 * 1.5) << c.stem;
   }
 }
+
+TEST(Parquet, StreamSumsToCollect) {
+  auto path = temp_path("stream");
+  write_table(make_numeric_table(3000), path, arrow::Compression::SNAPPY, 1000);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto stream = lz->filter(Predicate{"id", Compare::Ge, Scalar{int64_t{500}}}).stream();
+  ASSERT_TRUE(stream.has_value());
+  int64_t total = 0; int batches = 0;
+  for (;;) {
+    auto batch = stream->next();
+    ASSERT_TRUE(batch.has_value());
+    if (!batch->has_value()) { break; }
+    total += (*batch)->num_rows();
+    ++batches;
+  }
+  EXPECT_EQ(total, 2500);   // ids 500..2999
+  EXPECT_GE(batches, 1);
+}
+
+TEST(Parquet, StreamRespectsProjection) {
+  auto path = temp_path("streamproj");
+  write_table(make_numeric_table(3000), path, arrow::Compression::SNAPPY, 1000);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto stream = lz->select({"val"}).stream();
+  ASSERT_TRUE(stream.has_value());
+  auto batch = stream->next();
+  ASSERT_TRUE(batch.has_value());
+  ASSERT_TRUE(batch->has_value());
+  EXPECT_EQ((*batch)->num_columns(), 1);
+  EXPECT_EQ((*batch)->schema().columns[0].name, "val");
+}
+
+TEST(Parquet, StreamWithLimitStopsEarly) {
+  auto path = temp_path("streamlim");
+  write_table(make_numeric_table(3000), path, arrow::Compression::SNAPPY, 1000);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto stream = lz->limit(5).stream();
+  ASSERT_TRUE(stream.has_value());
+  int64_t total = 0;
+  for (;;) {
+    auto batch = stream->next();
+    ASSERT_TRUE(batch.has_value());
+    if (!batch->has_value()) { break; }
+    total += (*batch)->num_rows();
+  }
+  EXPECT_EQ(total, 5);
+}
+
+TEST(Parquet, StreamAllPrunedYieldsNothing) {
+  auto path = temp_path("streamprune");
+  write_table(make_numeric_table(3000), path, arrow::Compression::SNAPPY, 1000);
+  auto lz = LazyParquet::scan(path); ASSERT_TRUE(lz.has_value());
+  auto stream = lz->filter(Predicate{"id", Compare::Ge, Scalar{int64_t{100000}}}).stream();
+  ASSERT_TRUE(stream.has_value());
+  auto batch = stream->next();
+  ASSERT_TRUE(batch.has_value());
+  EXPECT_FALSE(batch->has_value());   // all 3 groups pruned -> no batches
+}

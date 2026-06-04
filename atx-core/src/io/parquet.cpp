@@ -1016,6 +1016,194 @@ Result<ParquetTable> LazyParquet::collect() {
 }
 
 // ---------------------------------------------------------------------------
+// Row-group streaming (Task 10): yield one filtered/projected/sliced batch per
+// surviving row group, in bounded memory (one group resident at a time). The
+// per-group flow mirrors collect()'s filter+project+slice so a streamed run
+// equals a collected run, except offset/limit are carried ACROSS batches. The
+// stream is self-sufficient: it co-owns the file and holds its OWN reader, so it
+// does not depend on the originating LazyParquet outliving it.
+// ---------------------------------------------------------------------------
+
+struct RowGroupStream::Impl {
+  std::shared_ptr<arrow::io::ReadableFile> file;       // co-own: file outlives stream
+  std::unique_ptr<parquet::arrow::FileReader> reader;  // the stream's own reader
+  std::vector<int> survivors;            // surviving row-group indices (post-pruning)
+  std::vector<int> indices;              // projected u predicate leaf indices ({}=all)
+  std::vector<std::string> projection;   // user selection, for project_down
+  std::vector<Predicate> predicates;
+  i64 remaining_offset{0};
+  i64 remaining_limit{-1};               // -1 = unlimited
+  std::size_t cursor{0};                 // index into survivors
+  bool done{false};
+};
+
+// Out-of-line special members where Impl is complete (mirrors LazyParquet).
+RowGroupStream::RowGroupStream(std::unique_ptr<Impl> impl) noexcept
+    : impl_{std::move(impl)} {}
+RowGroupStream::RowGroupStream(RowGroupStream&&) noexcept = default;
+RowGroupStream& RowGroupStream::operator=(RowGroupStream&&) noexcept = default;
+RowGroupStream::~RowGroupStream() = default;
+
+// Reads + combines the projected columns of one row group `rg` (empty `indices`
+// -> all columns), then runs the exact filter and drops predicate-only helper
+// columns when a projection is active. Mirrors read_table_pruned + collect()'s
+// filter/project_down for a single group. Returns the per-group result table.
+[[nodiscard]] static Result<std::shared_ptr<arrow::Table>>
+stream_read_group(RowGroupStream::Impl& s, int rg) {
+  std::shared_ptr<arrow::Table> table;
+  if (s.indices.empty()) {
+    auto res = s.reader->ReadRowGroups(std::vector<int>{rg});
+    if (!res.ok()) {
+      return Err(from_arrow(res.status(), "stream read row group"));
+    }
+    table = *std::move(res);
+  } else {
+    auto res = s.reader->ReadRowGroups(std::vector<int>{rg}, s.indices);
+    if (!res.ok()) {
+      return Err(from_arrow(res.status(), "stream read row group projected"));
+    }
+    table = *std::move(res);
+  }
+  auto combined = table->CombineChunks(arrow::default_memory_pool());
+  if (!combined.ok()) {
+    return Err(from_arrow(combined.status(), "stream combine chunks"));
+  }
+  table = *std::move(combined);
+  auto filtered = apply_filter(table, s.predicates);
+  if (!filtered.has_value()) {
+    return Err(filtered.error());
+  }
+  table = *std::move(filtered);
+  // Drop predicate-only helper columns when a projection was set (mirror collect).
+  if (!s.projection.empty()) {
+    auto down = project_down(table, s.projection);
+    if (!down.has_value()) {
+      return Err(down.error());
+    }
+    table = *std::move(down);
+  }
+  return Ok(std::move(table));
+}
+
+// Applies the carried offset to `table`, mutating the cross-batch remaining_offset
+// in `s`. Returns the post-offset row count; -1 signals "skip this whole batch"
+// (the entire batch was consumed by the remaining offset).
+[[nodiscard]] static int64_t stream_apply_offset(RowGroupStream::Impl& s,
+                                                 std::shared_ptr<arrow::Table>& table) {
+  int64_t m = table->num_rows();
+  if (s.remaining_offset > 0) {
+    if (s.remaining_offset >= m) {
+      s.remaining_offset -= m;
+      return -1; // whole batch skipped by the carried offset
+    }
+    table = table->Slice(s.remaining_offset);
+    s.remaining_offset = 0;
+    m = table->num_rows();
+  }
+  return m;
+}
+
+Result<std::optional<ParquetTable>> RowGroupStream::next() {
+  try {
+    if (impl_->done) {
+      return Result<std::optional<ParquetTable>>{std::optional<ParquetTable>{}};
+    }
+    while (impl_->cursor < impl_->survivors.size()) {
+      const int rg = impl_->survivors[impl_->cursor];
+      ++impl_->cursor;
+      auto read = stream_read_group(*impl_, rg);
+      if (!read.has_value()) {
+        return Err(read.error());
+      }
+      std::shared_ptr<arrow::Table> table = *std::move(read);
+      int64_t m = stream_apply_offset(*impl_, table);
+      if (m < 0) {
+        continue; // entire batch consumed by the carried offset; try next group
+      }
+      // Carried limit across batches.
+      if (impl_->remaining_limit >= 0) {
+        if (impl_->remaining_limit == 0) {
+          impl_->done = true;
+          return Result<std::optional<ParquetTable>>{std::optional<ParquetTable>{}};
+        }
+        if (m > impl_->remaining_limit) {
+          table = table->Slice(0, impl_->remaining_limit);
+          m = impl_->remaining_limit;
+        }
+        impl_->remaining_limit -= m;
+      }
+      if (m == 0) {
+        continue; // nothing left in this batch after slicing; try next group
+      }
+      auto out = std::make_unique<ParquetTable::Impl>();
+      out->table = std::move(table);
+      out->schema = schema_from_arrow(*out->table->schema());
+      return Result<std::optional<ParquetTable>>{
+          std::optional<ParquetTable>{ParquetTable{std::move(out)}}};
+    }
+    impl_->done = true;
+    return Result<std::optional<ParquetTable>>{std::optional<ParquetTable>{}};
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "stream next: unknown exception"); }
+}
+
+// Lazy streaming read: plan the surviving row groups (column-stats pruning) and
+// hand back a RowGroupStream that yields one filtered/projected/sliced batch per
+// surviving group in bounded memory. The plan (total/pruned groups) is recorded
+// in stats() up front; the stream owns its own reader from the co-owned file so
+// it stays valid independently of this LazyParquet.
+Result<RowGroupStream> LazyParquet::stream() {
+  try {
+    // Derive the arrow schema (GetSchema is /WX-safe in Arrow 24; see scan()).
+    std::shared_ptr<arrow::Schema> aschema;
+    const auto st = impl_->reader->GetSchema(&aschema);
+    if (!st.ok()) {
+      return Err(from_arrow(st, "stream get schema"));
+    }
+    // Resolve the read columns (projection u predicate cols; empty = read-all).
+    const std::vector<std::string> read_cols =
+        read_columns_for(impl_->projection, impl_->predicates);
+    std::vector<int> indices; // empty -> read-all-columns path
+    if (!read_cols.empty()) {
+      auto idx = resolve_indices(*aschema, read_cols);
+      if (!idx.has_value()) {
+        return Err(idx.error());
+      }
+      indices = *std::move(idx);
+    }
+    // Plan the surviving row groups and record it in stats() up front, so the
+    // pruning plan is visible even before the first next() (mirrors collect()).
+    std::vector<int> survivors =
+        surviving_row_groups(*impl_->meta, *aschema, impl_->predicates);
+    const i64 total = impl_->meta->num_row_groups();
+    impl_->stats.row_groups_total = total;
+    impl_->stats.row_groups_pruned = total - static_cast<i64>(survivors.size());
+    // Open a FRESH reader for the stream from the co-owned file, so the stream is
+    // self-sufficient (no dependency on this LazyParquet's reader/lifetime).
+    auto reader_res =
+        parquet::arrow::OpenFile(impl_->file, arrow::default_memory_pool());
+    if (!reader_res.ok()) {
+      return Err(from_arrow(reader_res.status(), "stream open parquet"));
+    }
+    auto sImpl = std::make_unique<RowGroupStream::Impl>();
+    sImpl->file = impl_->file;             // co-own the file
+    sImpl->reader = *std::move(reader_res);
+    sImpl->survivors = std::move(survivors);
+    sImpl->indices = std::move(indices);
+    sImpl->projection = impl_->projection;
+    sImpl->predicates = impl_->predicates;
+    sImpl->remaining_offset = impl_->offset;
+    sImpl->remaining_limit = impl_->limit;
+    return RowGroupStream{std::move(sImpl)};
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "stream: unknown exception"); }
+}
+
+// ---------------------------------------------------------------------------
 // Numeric column bridges (Arrow contiguous buffer -> span / Column / Frame).
 // String/bool/timestamp bridges (Task 4) live further below, after the numeric
 // primary templates.
