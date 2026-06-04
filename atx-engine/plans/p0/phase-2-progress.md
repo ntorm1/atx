@@ -61,7 +61,7 @@ Defer (out of Phase 2 scope — see ROADMAP):
 |------|--------|--------|-------|
 | P2-0 | ✅ done | `5de987d` | `loop/types.hpp` (InstrumentId alias); Phase-2 fwds in `fwd.hpp`; scaffold_test Phase2TypesAliasResolves passes. No blocked CMake targets — only VmSignalSource (P2-3) blocked-on Phase-3. |
 | P2-1 | ✅ done | `dca2f45` | `exec/payloads.hpp`: `SignalPayload`/`OrderPayload`/`FillPayload`; `OrderType`; `make_signal/order/fill_event`; signed-qty canonical direction; 31 new tests (payload_test.cpp). Side reused from atx-core. |
-| P2-2 | ⏳ pending | `—` | `RollingPanel<Cap>`: PIT append-after-close, bounded `max_lookback`, column-major + membership mask. *blocked-on L9, L3.* |
+| P2-2 | ✅ done | `<pending-sha>` | `loop/panel_types.hpp` (`SliceRow`/`MarketSlice`/`PanelView`/`PanelField`) + `loop/rolling_panel.hpp` (`RollingPanel<Cap>`): PIT append-after-close (structural temporal gate — no API to write an unsealed bar), bounded `max_lookback` ring (pow2 `Cap`, single L2-aligned allocation, zero alloc on append/view), column-major-per-field f64 + per-row membership bitmask, NaN for absent cells, sorted id→col index. 17 new tests (rolling_panel_test.cpp). |
 | P2-3 | ⏳ pending | `—` | `ISignalSource`; `ScriptedSignalSource` (green); `VmSignalSource` over Phase-3 `Engine`. *VM adapter blocked-on Phase 3.* |
 | P2-4 | ⏳ pending | `—` | `WeightPolicy`: rank→Σw=0→Σ\|w\|=1 + `order_target_percent` reconcile. *blocked-on L6.* |
 | P2-5 | ⏳ pending | `—` | `Portfolio`/`Holding`: open/increase/reduce/close/flip; realized/unrealized; exposure/leverage; `Decimal` cash. *blocked-on L8, L1.* |
@@ -105,7 +105,7 @@ intraday fills; same-bar-close "cheat" flag (off by default).
 |--------|------|-------------------------------------|
 | `5de987d` | marker (P2-0) | 2/2/0/0 (EngineScaffold.TestTargetLinksAndRuns, Scaffold.Phase2TypesAliasResolves) |
 | `dca2f45` | P2-1 | 31/31/0/0 (PayloadTypes×6, SignalPayloadRoundTrip×2, OrderPayloadRoundTrip×2, FillPayloadRoundTrip×1, SignedQtyConvention×3, MakeSignalEvent×4, MakeOrderEvent×6, MakeFillEvent×3, DecimalPriceExactness×2, OrderTypeToString×2) |
-| `—`    | P2-2 | — |
+| `<pending-sha>` | P2-2 | 17/17/0/0 (RollingPanel append/view/PIT/eviction/wrap/cross-section/NaN/membership/boundaries×N + RollingPanelDeathTest×2 out-of-bounds) |
 | `—`    | P2-3 | — |
 | `—`    | P2-4 | — |
 | `—`    | P2-5 | — |
