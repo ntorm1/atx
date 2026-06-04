@@ -15,7 +15,7 @@
 //   clock/sim_clock.hpp    — SimClock                              (P1-4)
 //   data/data_handler.hpp  — data::IDataHandler, InMemoryBarFeed   (P1-5)
 //   loop/types.hpp         — InstrumentId alias                    (P2-0)
-//   exec/exec.hpp          — SignalPayload/OrderPayload/FillPayload (P2-1)
+//   exec/payloads.hpp          — SignalPayload/OrderPayload/FillPayload (P2-1)
 //   loop/rolling_panel.hpp — RollingPanel<Cap>                     (P2-2)
 //   loop/signal_source.hpp — ISignalSource, ScriptedSignalSource   (P2-3)
 //   loop/weight_policy.hpp — WeightPolicy                          (P2-4)
@@ -66,7 +66,7 @@ class SimClock;
 // =====================================================================
 
 // Event payload PODs that complete the Phase-1 EventType taxonomy.
-// Full definitions in exec/exec.hpp (P2-1).
+// Full definitions in exec/payloads.hpp (P2-1).
 struct SignalPayload;
 struct OrderPayload;
 struct FillPayload;
