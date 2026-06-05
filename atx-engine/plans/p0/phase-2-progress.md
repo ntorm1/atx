@@ -34,6 +34,17 @@ Recorded at P2-0 kickoff (2026-06-03). Three as-built deltas from the frozen pla
    are unblocked. No `atx_engine_pending` CMake staging targets are needed at this time; the posture
    is noted here rather than encoded in CMake.
 
+4. **P2-4 ↔ P2-5 reorder + new shared `Market` type (recorded 2026-06-04).**  P2-5 (`Portfolio`) was
+   implemented BEFORE P2-4 (`WeightPolicy`): P2-5's atx-core deps (L8 `domain`, L1 `decimal`, L3) are all
+   green, whereas the reconcile that P2-4 shares with P2-5 reads more naturally once the position book
+   exists. The two are independent units, so the swap is order-only (no contract change). Separately, the
+   frozen plan references a `Market` type in `Portfolio::mark_to_market` that did not exist; P2-5 introduces
+   it as `atx/engine/loop/market.hpp` (`Market` + `InstrumentStats`) — the loop's current price/stats book.
+   It is the SHARED downstream contract: P2-4 reconcile and P2-6 exec read `mark`/`bar_volume`/`stats` and
+   P2-6 calls `shift_mark` for permanent impact, so those members are defined now to avoid a later reshape.
+   (NOTE: a pre-existing `atx/engine/data/market.hpp` holds the unrelated Phase-1 `data::MarketPayload`
+   event type; the P2-5 test file is named `market_book_test.cpp` to avoid colliding with `market_test.cpp`.)
+
 Realistic scope for this sprint:
 
 1. **P2-0** — Module scaffold + CMake + ledger (marker). Open ledger, freeze scope.
@@ -64,7 +75,7 @@ Defer (out of Phase 2 scope — see ROADMAP):
 | P2-2 | ✅ done | `8879bec` | `loop/panel_types.hpp` (`SliceRow`/`MarketSlice`/`PanelView`/`PanelField`) + `loop/rolling_panel.hpp` (`RollingPanel<Cap>`): PIT append-after-close (structural temporal gate — no API to write an unsealed bar), bounded `max_lookback` ring (pow2 `Cap`, single L2-aligned allocation, zero alloc on append/view), column-major-per-field f64 + per-row membership bitmask, NaN for absent cells, sorted id→col index. 17 new tests (rolling_panel_test.cpp). |
 | P2-3 | ✅ done | `db0198d` | `loop/signal_source.hpp`: `ISignalSource` seam (abstract base — virtual dtor, copy/move deleted) + `SignalView` (non-owning `std::span<const f64>`, one score per universe instrument, NaN = no opinion, borrow-valid until next `evaluate()`); `ScriptedSignalSource` GREEN (owned flat schedule buffer, deterministic cursor replay, panel-independent by design, zero per-call alloc, `Err(OutOfRange)` on exhaustion). `evaluate(PanelView)→Result<SignalView>` pure contract; `max_lookback()` returns configured N. `VmSignalSource` adapter is a compile-guarded skeleton behind `ATX_ENGINE_HAS_ALPHA_VM` (defined nowhere → never compiles → green build intact) recording the Phase-3 contract. 11 new tests (signal_source_test.cpp). *VmSignalSource green-gate blocked-on Phase 3 — see Deferred residuals.* |
 | P2-4 | ⏳ pending | `—` | `WeightPolicy`: rank→Σw=0→Σ\|w\|=1 + `order_target_percent` reconcile. *blocked-on L6.* |
-| P2-5 | ⏳ pending | `—` | `Portfolio`/`Holding`: open/increase/reduce/close/flip; realized/unrealized; exposure/leverage; `Decimal` cash. *blocked-on L8, L1.* |
+| P2-5 | ✅ done | `017ddea` | `portfolio/portfolio.hpp` (`Portfolio`/`Holding`): avg-cost open/increase/reduce/close/flip state machine; realized booked `closed·(p−avg)·sign(pos)`; full-close zeroes avg; cash `-= qty·p + fee` and realized/fees in **exact `Decimal`**, f64 sums (equity/gross/net) in fixed universe-index order; `unrealized` zero when flat. Plus a NEW shared `loop/market.hpp` (`Market`/`InstrumentStats`): dense fixed-universe price/stats book — `update_prices` (last-value table), `mark`/`bar_volume`/`stats`/`shift_mark` (P2-6 perm-impact + cost hooks defined now). Dense sorted id→index storage (no `std::hash<Symbol>`). 29 new tests (12 `market_book_test.cpp`, 17 `portfolio_test.cpp`, incl. 5 death). |
 | P2-6 | ⏳ pending | `—` | `ExecutionSimulator`: firewall + volume cap + slippage + temp/perm √-impact + commission + latency; partial fills. *blocked-on L8, math.* |
 | P2-7 | ⏳ pending | `—` | `BacktestLoop`: settle-prior→mark→panel→eval→weights→queue→sample; decide-`t`/fill-`t+1`. *green on Scripted.* |
 | P2-8 | ⏳ pending | `—` | Determinism (P&L hash) + cost-honesty (monotone in size) + no-look-ahead (truncation-invariant) + survivorship; bench. Close. |
@@ -117,7 +128,7 @@ intraday fills; same-bar-close "cheat" flag (off by default).
 | `8879bec` | P2-2 | 17/17/0/0 (RollingPanel append/view/PIT/eviction/wrap/cross-section/NaN/membership/boundaries×N + RollingPanelDeathTest×2 out-of-bounds) |
 | `db0198d` | P2-3 | 11/11/0/0 (ScriptedSignalSource: ReplaySameSchedule deterministic, EachResult length==universe, NaN passthrough, MaxLookback==N, PastEndOfSchedule→Err, ConsecutiveCalls cursor-advance, AllNaN, EmptyUniverse, SingleInstrument, EmptySchedule→Err, ThroughBaseInterface). VmSignalSource compile-guarded (no test today — Deferred). |
 | `—`    | P2-4 | — |
-| `—`    | P2-5 | — |
+| `017ddea` | P2-5 | 29/29/0/0 (Market×10 + MarketDeathTest×2; Portfolio×14 + PortfolioDeathTest×3 — open/increase-weighted-avg/partial-reduce/full-close/reduce-short/flip-long↔short/reduce-to-zero/fee/mark/unrealized/equity/gross-net-leverage/dollar-neutral/leverage-guard/cash-sequence; death: zero-price, neg-price, out-of-universe, market out-of-universe×2) |
 | `—`    | P2-6 | — |
 | `—`    | P2-7 | — |
 | `—`    | P2-8 + close | — |
