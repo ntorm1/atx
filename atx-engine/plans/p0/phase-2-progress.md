@@ -87,7 +87,7 @@ Defer (out of Phase 2 scope — see ROADMAP):
 | P2-3 | ✅ done | `db0198d` | `loop/signal_source.hpp`: `ISignalSource` seam (abstract base — virtual dtor, copy/move deleted) + `SignalView` (non-owning `std::span<const f64>`, one score per universe instrument, NaN = no opinion, borrow-valid until next `evaluate()`); `ScriptedSignalSource` GREEN (owned flat schedule buffer, deterministic cursor replay, panel-independent by design, zero per-call alloc, `Err(OutOfRange)` on exhaustion). `evaluate(PanelView)→Result<SignalView>` pure contract; `max_lookback()` returns configured N. `VmSignalSource` adapter is a compile-guarded skeleton behind `ATX_ENGINE_HAS_ALPHA_VM` (defined nowhere → never compiles → green build intact) recording the Phase-3 contract. 11 new tests (signal_source_test.cpp). *VmSignalSource green-gate blocked-on Phase 3 — see Deferred residuals.* |
 | P2-4 | ✅ done | `6d040de` (+ `52cb233` winsorize) | `loop/weight_policy.hpp` (`WeightPolicy`/`Transform`) + `Universe` alias in `loop/types.hpp`. Full frozen pipeline `winsorize→transform(Rank\|ZScore)→dollar-neutralize(Σw=0)→gross-normalize(Σ\|w\|=gross_leverage)` = Alpha101 `scale`. **Winsorize is the FIRST step** (configurable `winsorize_limit`, **default 0.025** = standard 95% winsorization / clamp extreme 2.5% per tail; nearest-rank quantile band `[lim, 1−lim]` via `atx::core::stats::winsorize`; near-no-op for Rank, material outlier guard for ZScore; `0.0` disables). NaN/out-of-cross-section scores compacted out before winsorize/`rank`/`zscore` (no NaN handling in the primitive) then scattered back to 0 weight. Tie-break = atx-core `rank` (ties averaged, [0,1], smallest→0/largest→1, stable). `reconcile(w, Universe, Portfolio, Market, now)` = `order_target_percent`: `trade = trunc(w·equity/price) − current` (truncate toward zero), skip NaN/≤0 price, fixed index order, signed-qty `OrderPayload{Market}`. Degenerate Σ\|w\|==0 (all-equal/single/all-NaN) → flat (no div-by-zero). `industry_neutral` INERT (ATX_ASSERT false — no Phase-2 group map). 20 new tests (weight_policy_test.cpp). |
 | P2-5 | ✅ done | `017ddea` | `portfolio/portfolio.hpp` (`Portfolio`/`Holding`): avg-cost open/increase/reduce/close/flip state machine; realized booked `closed·(p−avg)·sign(pos)`; full-close zeroes avg; cash `-= qty·p + fee` and realized/fees in **exact `Decimal`**, f64 sums (equity/gross/net) in fixed universe-index order; `unrealized` zero when flat. Plus a NEW shared `loop/market.hpp` (`Market`/`InstrumentStats`): dense fixed-universe price/stats book — `update_prices` (last-value table), `mark`/`bar_volume`/`stats`/`shift_mark` (P2-6 perm-impact + cost hooks defined now). Dense sorted id→index storage (no `std::hash<Symbol>`). `Holding::mark` uses a NaN "unpriced" sentinel (matches `Market::mark`); `market_value`/`unrealized` treat NaN as a 0 contribution so a position opened before the first `mark_to_market` never reports a phantom value. 32 new tests (13 `market_book_test.cpp`, 19 `portfolio_test.cpp`, incl. 7 death: zero/neg-price, zero-qty, out-of-universe fill, Market out-of-universe mark/shift, shift-before-price). Hardened in `fc426b5` — see sprint commits. |
-| P2-6 | ⏳ pending | `—` | `ExecutionSimulator`: firewall + volume cap + slippage + temp/perm √-impact + commission + latency; partial fills. *blocked-on L8, math.* |
+| P2-6 | ✅ done | `5ce23c7` | `exec/execution_sim.hpp` (`ExecutionSimulator` + `FillCfg`/`SlippageCfg`/`SlippageMode`/`ImpactCfg`/`CommissionCfg`/`CommissionMode`/`LatencyCfg`/`VolumeCapCfg`): the cost-honesty core. **Config-driven** (each model a mode-enum + coefficients held BY VALUE, exhaustive switches no-`default`, every Appendix-A coefficient a named knob — no magic numbers); **NOT** a virtual model hierarchy. Fixed per-settle order: eligibility firewall (`now > queued_at`, strictly-later slice; +latency; `allow_same_bar_fill` **default OFF** = the look-ahead cheat) → volume cap (`fillable = min(\|open\|, vlim·bar_vol − filled_this_bar)`, remainder spills → next slice, Σpartials == order qty) → slippage (VolumeShare `k·share²` / FixedBps `bps/1e4`, capped, **+spread floor** always crosses ±spread/2) → **temporary √-impact `Y·σ·part^δ` into the fill PRICE** (recorded in `FillPayload.impact`, does NOT persist) → **permanent impact `½·γ·σ·part` shifts the MARK** via `Market::shift_mark` (persists) → commission (PerShare `clamp(max(\|q\|·per_share,min),0,max_pct·notional)` / PerDollar `notional·bps/1e4`). **Units convention: all cost terms are FRACTIONS of ref** (`fill = ref·(1±slip)·(1±temp)`; perm shift = `ref·perm·sign`) — scale-free, documented. **f64 cost math; exact `Decimal` only at the fill-price + fee boundary** (`from_double(...).value_or(...)`). **Zero steady-state alloc**: `settle_pending` returns `std::span<const FillPayload>` into a reserved sim-owned scratch (cleared not freed); `open_`/accumulator reserved at ctor; borrow valid until next queue/settle. **Deterministic by construction** (no RNG; FIFO `open_`; reset-per-bar linear-scan vol accumulator, no hash in hot path). Market order full; Limit = minimal penetration gate (buy `ref≤limit`/sell `ref≥limit`). `settle_pending` takes `Market&` (non-const — perm impact must write; deviates from plan's literal `const Market&`, documented). 22 new tests (execution_sim_test.cpp). |
 | P2-7 | ⏳ pending | `—` | `BacktestLoop`: settle-prior→mark→panel→eval→weights→queue→sample; decide-`t`/fill-`t+1`. *green on Scripted.* |
 | P2-8 | ⏳ pending | `—` | Determinism (P&L hash) + cost-honesty (monotone in size) + no-look-ahead (truncation-invariant) + survivorship; bench. Close. |
 
@@ -98,20 +98,31 @@ present default-cost results as calibrated (the cost *fit* is Phase 5).
 
 | Config | orders/s or slices/s | ns/order | Host / build / feed |
 |--------|----------------------|----------|---------------------|
-| exec-sim settle | — | — | — |
-| end-to-end loop | — | — | — |
+| exec-sim settle (`BM_SettleFullCost`) | ~44.8k orders/s | ~22.3k ns/order | 16×2.50 GHz, **Debug/clang-cl (upper bound)**, 256-order batch / 256 distinct instruments, default cfg + `volume_limit=0.5`, all fill in one slice |
+| exec-sim queue+settle (`BM_QueueThenSettlePerOrder`) | ~49.6k orders/s | ~20.2k ns/order | same host/build/feed |
+| end-to-end loop | — | — | *P2-7* |
+
+> **Debug numbers — upper bounds, not calibrated.** The Debug ns/order is dominated by (a) `Decimal::from_double`'s portable 128-bit long-division (128-iteration loop), run twice per fill (price + fee), and (b) the per-bar volume accumulator's O(N) linear scan — O(N²) for an N-distinct-instrument batch (256 here). Both are acceptable: per-bar open sets are small in a real backtest, and the accumulator scan is the deterministic-no-hash trade-off. An optimized (Release) build and/or a sorted-id accumulator are the levers if exec ever shows on a loop profile.
 
 ### Cost-model defaults in force
 
 _(Record the config used; all are knobs — Appendix A of the plan.)_ √-impact `δ`, `Y`; Almgren `γ`,`η`;
 slippage `k`/`bps`; `volume_limit`; commission `per_share`/`min`/`max_pct`. Fit deferred to Phase 5.
 
-| Knob | Default | Fitted? |
-|------|---------|---------|
-| `δ` (sqrt-impact exponent) | 0.5 | ⏳ Phase 5 |
-| `γ` / `η` (Almgren) | 0.314 / 0.142 | ⏳ Phase 5 |
-| slippage | VolumeShare `k=0.1` / FixedBps `5` | ⏳ Phase 5 |
-| commission | `$0.005`/sh, `$1` min, `0.5%` max | ⏳ Phase 5 |
+In force as the `ExecutionSimulator` cfg-struct defaults (P2-6 `5ce23c7`); all are caller-overridable knobs:
+
+| Knob | Default | Cfg field | Fitted? |
+|------|---------|-----------|---------|
+| `δ` (sqrt-impact exponent) | 0.5 | `ImpactCfg.delta` | ⏳ Phase 5 |
+| `Y` (temp-impact scale) | 1.0 | `ImpactCfg.Y` | ⏳ Phase 5 |
+| `γ` (perm-impact / Almgren) | 0.314 | `ImpactCfg.gamma` | ⏳ Phase 5 |
+| slippage | VolumeShare `k=0.1` (cap 2.5%) / FixedBps `5` (cap 10%) | `SlippageCfg.{k,bps,cap_volshare,cap_bps}` | ⏳ Phase 5 |
+| `volume_limit` (participation cap) | 0.025 | `VolumeCapCfg.volume_limit` | ⏳ Phase 5 |
+| commission (per-share) | `$0.005`/sh, `$1` min, `0.5%` max | `CommissionCfg.{per_share,min_fee,max_pct}` | ⏳ Phase 5 |
+| commission (per-dollar) | `15` bps | `CommissionCfg.per_dollar_bps` | ⏳ Phase 5 |
+| latency | `0` ns | `LatencyCfg.latency_nanos` | ⏳ Phase 5 |
+
+> **Not calibrated.** These are the plan's Appendix-A starting defaults wired as struct field initializers, **not** a fit to data. `η` (Almgren temporary coefficient, distinct from `Y`) is **not** a separate knob in P2-6: temporary impact is the single `Y·σ·part^δ` term per the frozen Appendix-A row, so there is no `η`/`Y` split to record here. The cost *fit* is Phase 5.
 
 ### Deferred residuals
 
@@ -138,6 +149,24 @@ _(Lift to ROADMAP future-work backlog at close.)_
   per bar), but a caller-provided-scratch overload (pass reusable buffers so the methods are allocation-free)
   is a tracked optimization for when rebalance frequency rises. Pure addition (no contract change).
 
+- **Probabilistic-fill RNG (P2-6) — deferred by design.** The plan's optional prob-fill model (a seeded RNG
+  that randomly rejects/partials a marketable order to model queue position / adverse selection) is NOT
+  implemented: P2-6 is **deterministic by construction** (no RNG to seed), which satisfies the determinism
+  exit-criterion trivially. `atx-core/random.hpp` is intentionally NOT pulled in. When added, the seed must be
+  a logged cfg field and the determinism test must fix it; the deterministic path stays the default.
+
+- **Full limit-order-book realism (P2-6) — minimal gate today.** `OrderType::Limit` uses a simple penetration
+  gate only (buy fills iff `ref ≤ limit`, sell iff `ref ≥ limit`; else stays open). There is no book depth,
+  no queue priority, no partial-at-limit-price, no marketable-limit price improvement. The Phase-2 loop emits
+  only `OrderType::Market` (P2-4 reconcile), so the gate is sufficient for now; a depth-aware limit model is
+  future work.
+
+- **Exec-sim O(N²) per-bar volume accumulator (P2-6) — future optimization.** `vol_for_bar_` is a reset-per-bar
+  `std::vector<VolAccum>` scanned linearly by id (deterministic, no `std::hash<Symbol>`). For an N-distinct-
+  instrument batch the per-settle cost is O(N²). Acceptable for realistic per-bar open sets (small); a
+  sorted-id accumulator (or the shared `UniverseIndex` above) would make it O(N log N) if exec ever shows on a
+  loop profile. Pure optimization (no contract change).
+
 Other expected residuals: short borrow-cost accrual; limit-order-book realism; cost calibration (Phase 5);
 intraday fills; same-bar-close "cheat" flag (off by default).
 
@@ -155,7 +184,7 @@ intraday fills; same-bar-close "cheat" flag (off by default).
 | `52cb233` | P2-4 winsorize | 20/20/0/0 (+WeightPolicy.ZScoreWinsorize_ClampsOutlierBeforeStandardizing; NaNEntry strengthened to 2 live names so the NaN is the only exact zero). Adds the frozen-spec `winsorize` first step (`winsorize_limit` default 0.025) — corrects the prior silent omission. |
 | `017ddea` | P2-5 | 29/29/0/0 (Market×10 + MarketDeathTest×2; Portfolio×14 + PortfolioDeathTest×3 — open/increase-weighted-avg/partial-reduce/full-close/reduce-short/flip-long↔short/reduce-to-zero/fee/mark/unrealized/equity/gross-net-leverage/dollar-neutral/leverage-guard/cash-sequence; death: zero-price, neg-price, out-of-universe, market out-of-universe×2) |
 | `fc426b5` | P2-5 hardening | 32/32/0/0 (+Market shift-before-price death; +Portfolio equity-pre-mark-unpriced, +zero-qty death). `Holding::mark` NaN unpriced sentinel; `fee>=0` precondition; `std::isnan` guard; doc/comment honesty (two Decimal→f64 crossings; std::vector sized-once storage) |
-| `—`    | P2-6 | — |
+| `5ce23c7` | P2-6 | 22/22/0/0 (ExecSim: Firewall-NoFillSameSlice/FillsNextSlice, SameBarFill-DefaultOff/Enabled, Latency-before/after, Slippage-buy>mid/sell<mid, Participation-LargerBuyWorse, ZeroSize-NeverFills, VolumeCap-Partial/Spillover-sum/ExactCap, ZeroBarVolume-NoFill, PermanentImpact-ShiftsMark, TemporaryImpact-NotPersisted, Commission-MinFloor/MaxCap/PerDollar, Limit-buy-above-no/at-or-below-fills/sell-below-no, Determinism-IdenticalRuns, SpreadFloor-CrossesHalfSpread) |
 | `—`    | P2-7 | — |
 | `—`    | P2-8 + close | — |
 
