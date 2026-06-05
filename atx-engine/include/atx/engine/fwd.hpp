@@ -93,9 +93,15 @@ class ExecutionSimulator;
 // Full definition in loop/weight_policy.hpp (P2-4).
 struct WeightPolicy;
 
-// The backtest driver and its result aggregate.
+// The backtest driver and its result aggregate. BacktestLoop is a class template
+// on the RollingPanel ring capacity Cap (it holds the panel by reference and the
+// panel's capacity is a compile-time parameter), so it is forward-declared as a
+// template here — like RollingPanel above, no defaults to repeat. Instantiations
+// must include loop/backtest_loop.hpp for the definition.
 // Full definitions in loop/backtest_loop.hpp (P2-7).
-class BacktestLoop;
+template <atx::usize Cap> class BacktestLoop;
 struct BacktestResult;
+struct Schedule;
+struct EquitySample;
 
 } // namespace atx::engine
