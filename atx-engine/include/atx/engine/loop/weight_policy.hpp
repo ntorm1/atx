@@ -17,10 +17,20 @@
 // ===========================================================================
 //  Default policy is the canonical long/short construction:
 //
-//    transform (rank | zscore)  ->  dollar-neutralize (subtract mean, Sigma w=0)
+//    winsorize (clamp tail outliers)  ->  transform (rank | zscore)
+//      ->  dollar-neutralize (subtract mean, Sigma w=0)
 //      ->  gross-normalize (divide by Sigma|w|, times gross_leverage, Sigma|w|=L)
 //
 //  WHY each step:
+//    * winsorize: clamp every live score into the quantile band
+//      [winsorize_limit, 1 - winsorize_limit] BEFORE transforming. This caps the
+//      influence of a single extreme outlier so it cannot dominate the
+//      downstream standardization. It is near-no-op for Rank (rank already
+//      ignores magnitude — only order matters), but MATERIAL for ZScore, which
+//      has no built-in outlier clamping: one wild value would inflate the mean
+//      and std and squash every other name toward zero. Winsorizing first is why
+//      ZScore stays robust. nearest-rank quantile band (snaps to observed order
+//      statistics — see atx::core::stats::winsorize for the convention).
 //    * transform: rank or z-score puts every instrument on a common, outlier-
 //      robust cross-sectional scale (a raw alpha can have arbitrary units /
 //      heavy tails). Rank is the WorldQuant-style default (monotone, bounded,
@@ -94,7 +104,7 @@
 //  (to make these allocation-free) is a tracked deferred residual in the ledger.
 //
 //  Both methods are const: a WeightPolicy is a pure configuration object (the
-//  four knobs) and holds no mutable state.
+//  policy knobs) and holds no mutable state.
 
 #include <cmath>  // std::isnan
 #include <span>   // std::span (weights / order inputs)
@@ -129,6 +139,15 @@ struct WeightPolicy {
   bool industry_neutral = false;         // INERT in Phase-2 (asserted false; see header)
   bool dollar_neutral = true;            // center so Sigma w = 0
   atx::f64 gross_leverage = 1.0;         // target Sigma|w| (Alpha101 `scale`)
+
+  // Symmetric outlier-clamp fraction applied to the live cross-section BEFORE the
+  // transform: scores are winsorized into the nearest-rank quantile band
+  // [winsorize_limit, 1 - winsorize_limit]. Default 0.025 = a standard 95%
+  // winsorization (clamp the extreme 2.5% on each tail), the conventional robust-
+  // stats default and a near-no-op for Rank but the outlier guard ZScore needs.
+  // A knob, like every coefficient here — Phase-5 calibrates it. 0.0 disables
+  // winsorization (band == full range). PRECONDITION: 0 <= winsorize_limit <= 0.5.
+  atx::f64 winsorize_limit = 0.025;
 
   /// Map a cross-sectional signal to index-aligned target weights over
   /// `universe`. NaN / out-of-cross-section scores get exactly 0 weight and are
@@ -166,6 +185,11 @@ struct WeightPolicy {
     if (dense.empty()) {
       return weights; // no opinions anywhere -> all zero
     }
+
+    // Clamp tail outliers BEFORE transforming so a single extreme score cannot
+    // dominate the standardization (material for ZScore; near-no-op for Rank).
+    ATX_ASSERT(winsorize_limit >= 0.0 && winsorize_limit <= 0.5);
+    atx::core::stats::winsorize(std::span<atx::f64>{dense}, winsorize_limit, 1.0 - winsorize_limit);
 
     apply_transform(dense);
     if (dollar_neutral) {

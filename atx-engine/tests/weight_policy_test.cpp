@@ -170,17 +170,20 @@ TEST(WeightPolicy, UnshuffledMatchesShuffled_RankIsCrossSectional) {
 }
 
 TEST(WeightPolicy, NaNEntry_GetsZeroWeightAndExcluded) {
-  const std::array<InstrumentId, 4> u{inst(1), inst(2), inst(3), inst(4)};
-  const std::array<f64, 4> sig{1.0, kNaN, 3.0, 5.0};
+  // Two LIVE names + one NaN: the two live names demean to a clearly-nonzero
+  // [-x, +x], so the NaN is the ONLY exact zero. This distinguishes a real
+  // exclusion from a coincidental transform-of-0 (which a 3-live-name median
+  // would hide).
+  const std::array<InstrumentId, 3> u{inst(1), inst(2), inst(3)};
+  const std::array<f64, 3> sig{1.0, kNaN, 3.0};
   const WeightPolicy policy{};
   const auto w = policy.to_target_weights(SignalView{sig}, Universe{u});
 
-  EXPECT_EQ(w[1], 0.0);           // NaN -> exactly zero weight
+  EXPECT_EQ(w[1], 0.0);           // NaN -> exactly zero weight (the only zero)
+  EXPECT_LT(w[0], 0.0);           // lower live score -> strictly negative
+  EXPECT_GT(w[2], 0.0);           // higher live score -> strictly positive
   EXPECT_NEAR(sum(w), 0.0, kTol); // still dollar-neutral over the live names
   EXPECT_NEAR(gross(w), 1.0, kTol);
-  // The NaN name must not perturb the ranking of the live names.
-  EXPECT_LT(w[0], w[2]);
-  EXPECT_LT(w[2], w[3]);
 }
 
 TEST(WeightPolicy, ZScoreTransform_DollarNeutralAndGrossNormalized) {
@@ -196,6 +199,43 @@ TEST(WeightPolicy, ZScoreTransform_DollarNeutralAndGrossNormalized) {
   for (usize i = 1; i < w.size(); ++i) {
     EXPECT_LT(w[i - 1], w[i]);
   }
+}
+
+TEST(WeightPolicy, ZScoreWinsorize_ClampsOutlierBeforeStandardizing) {
+  // An extreme low outlier under ZScore. WITHOUT winsorization the -100 inflates
+  // the std and pins itself to a huge-magnitude z-score that dominates the gross,
+  // squashing every other name toward zero. WITH winsorization the outlier is
+  // first clamped to a tail order statistic, so its post-normalization weight is
+  // bounded and the other names retain meaningful weight.
+  const std::array<InstrumentId, 5> u{inst(1), inst(2), inst(3), inst(4), inst(5)};
+  const std::array<f64, 5> sig{-100.0, 1.0, 2.0, 3.0, 4.0};
+
+  WeightPolicy clamped{};
+  clamped.transform = Transform::ZScore;
+  clamped.winsorize_limit = 0.2; // trims one name per tail at n=5 (nearest-rank)
+  const auto wc = clamped.to_target_weights(SignalView{sig}, Universe{u});
+
+  WeightPolicy raw{};
+  raw.transform = Transform::ZScore;
+  raw.winsorize_limit = 0.0; // winsorization disabled -> outlier passes through
+  const auto wr = raw.to_target_weights(SignalView{sig}, Universe{u});
+
+  // Both stay dollar-neutral + gross-normalized (winsorize doesn't break those).
+  EXPECT_NEAR(sum(wc), 0.0, kTol);
+  EXPECT_NEAR(gross(wc), 1.0, kTol);
+  EXPECT_NEAR(sum(wr), 0.0, kTol);
+  EXPECT_NEAR(gross(wr), 1.0, kTol);
+
+  // The outlier (index 0) is the most negative in both, but winsorizing bounds
+  // its magnitude: |clamped outlier weight| < |raw outlier weight|.
+  EXPECT_LT(wc[0], 0.0);
+  EXPECT_LT(wr[0], 0.0);
+  EXPECT_LT(std::fabs(wc[0]), std::fabs(wr[0]));
+
+  // Without winsorization the outlier hogs almost all the gross (>0.49 of the
+  // total Sigma|w|=1); with winsorization no single name does.
+  EXPECT_GT(std::fabs(wr[0]), 0.49);
+  EXPECT_LT(std::fabs(wc[0]), 0.49);
 }
 
 TEST(WeightPolicy, AllEqualSignal_AllZeroWeights) {
