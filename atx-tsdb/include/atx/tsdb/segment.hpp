@@ -23,6 +23,7 @@ static_assert(std::endian::native == std::endian::little,
               "atx-tsdb segment format assumes a little-endian target");
 
 /// Pack an 8-char tag into a u64 (little-endian: s[0] is the low byte).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
 [[nodiscard]] consteval atx::u64 tag8(const char (&s)[9]) noexcept {
   atx::u64 v = 0;
   for (atx::u32 i = 0; i < 8U; ++i) {
@@ -63,6 +64,10 @@ struct SegmentHeader {
 
 /// One field-directory entry: NUL-padded name + its block index.
 struct FieldEntry {
+  // SAFETY: fixed-size on-disk POD field name (NUL-padded), memcpy'd verbatim;
+  // a C array pins the ABI layout. std::array<char,16> is layout-compatible but
+  // not adopted to keep the aggregate-init/memcpy sites simple.
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
   char name[kFieldNameLen]; // e.g. "close"
   atx::u32 field_index;
   atx::u32 reserved; // pad to 8-byte alignment; written 0
@@ -81,6 +86,7 @@ struct SegmentFooter {
   atx::u32 reserved;      // written 0
 };
 
+static_assert(sizeof(SegmentHeader) == 112, "SegmentHeader layout drift");
 static_assert(std::is_trivially_copyable_v<SegmentHeader>);
 static_assert(std::is_trivially_copyable_v<FieldEntry>);
 static_assert(std::is_trivially_copyable_v<SymbolEntry>);
@@ -110,6 +116,7 @@ static_assert(std::is_trivially_copyable_v<SegmentFooter>);
 /// Value at (field, t, inst). No bounds check (caller guarantees in range).
 [[nodiscard]] inline atx::f64 cell_value(const atx::u8 *base, const SegmentHeader &h,
                                          atx::u32 field, atx::u64 t, atx::u32 inst) noexcept {
+  // SAFETY: index bounded by caller contract (field<F, t<T, inst<N); flat field-block ring.
   // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   return field_block(base, h, field)[t * h.instrument_count + inst];
 }
@@ -120,7 +127,7 @@ static_assert(std::is_trivially_copyable_v<SegmentFooter>);
   const atx::u64 mw = mask_words(h.instrument_count);
   // SAFETY: bitmap section is u64-aligned and sized T*mw; index is in range by
   // caller contract. Read-only mapped bytes.
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
   const auto *bm = reinterpret_cast<const atx::u64 *>(base + h.off_present_bitmap);
   // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   const atx::u64 word = bm[t * mw + (inst >> 6U)];
@@ -131,7 +138,7 @@ static_assert(std::is_trivially_copyable_v<SegmentFooter>);
 [[nodiscard]] inline std::span<const atx::i64> time_axis(const atx::u8 *base,
                                                          const SegmentHeader &h) noexcept {
   // SAFETY: axis section is i64-aligned, sized T. Read-only mapped bytes.
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
   const auto *p = reinterpret_cast<const atx::i64 *>(base + h.off_time_axis);
   return {p, static_cast<atx::usize>(h.time_count)};
 }

@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <bit>
 
+#include "atx/core/types.hpp"
 #include "atx/tsdb/segment.hpp"
 
 using atx::tsdb::SegmentHeader;
@@ -23,7 +23,8 @@ TEST(Segment_MaskWords_RoundsUp, MaskWords) {
 // byte buffer, point a header at it, and verify the free-function accessors hit
 // the right cells (position-independent: offsets only, no stored pointers).
 TEST(Segment_Addressing_HitsCorrectCell, CellMath) {
-  constexpr atx::u32 F = 2, N = 2;
+  constexpr atx::u32 F = 2;
+  constexpr atx::u32 N = 2;
   constexpr atx::u64 T = 3;
   std::array<atx::f64, F * T * N> blocks{};
   // field 1 (second block), t=2, inst=1  ==>  index = 1*(T*N) + (2*N + 1) = 6+5 = 11
