@@ -90,7 +90,13 @@ void Mapping::reset() noexcept {
 
 Result<Mapping> Mapping::map_file_ro(const std::string &path) {
   const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-  std::wstring wpath(static_cast<std::size_t>(wlen), L'\0');
+  if (wlen <= 0) {
+    return Err(ErrorCode::InvalidArgument, "path is not valid UTF-8: " + path);
+  }
+  // wlen counts the NUL terminator; size the string to wlen-1 visible chars.
+  // std::wstring still allocates room for and guarantees a NUL at data()[size()],
+  // so the conversion below can safely write the terminator.
+  std::wstring wpath(static_cast<std::size_t>(wlen - 1), L'\0');
   MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
 
   HANDLE file = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,

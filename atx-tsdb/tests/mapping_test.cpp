@@ -77,3 +77,26 @@ TEST(Mapping_MoveLeavesSourceEmpty_NoDoubleUnmap, MoveSafe) {
   EXPECT_EQ(m->base(), nullptr); // moved-from is empty; dtor must be a no-op
   static_cast<void>(std::remove(path.c_str()));
 }
+
+TEST(Mapping_MoveAssign_ReleasesAndSteals, MoveAssign) {
+  const std::string pa = write_temp("ma_a", "aaaa");
+  const std::string pb = write_temp("ma_b", "bb");
+  auto a = atx::tsdb::Mapping::map_file_ro(pa);
+  auto b = atx::tsdb::Mapping::map_file_ro(pb);
+  ASSERT_TRUE(a.has_value() && b.has_value());
+  *b = std::move(*a); // releases b's old mapping, steals a's
+  EXPECT_EQ(b->size(), 4U);
+  // SAFETY: moved-from Mapping is a valid empty object (move-assign nulls the
+  // source); reading base() is well-defined and must observe nullptr.
+  // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
+  EXPECT_EQ(a->base(), nullptr); // moved-from is empty
+  static_cast<void>(std::remove(pa.c_str()));
+  static_cast<void>(std::remove(pb.c_str()));
+}
+
+TEST(Mapping_EmptyFile_ReturnsErr, RejectsEmpty) {
+  const std::string path = write_temp("empty", "");
+  auto m = atx::tsdb::Mapping::map_file_ro(path);
+  EXPECT_FALSE(m.has_value());
+  static_cast<void>(std::remove(path.c_str()));
+}
