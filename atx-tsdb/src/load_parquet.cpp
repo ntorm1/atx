@@ -78,8 +78,10 @@ Status load_parquet(const std::string &parquet_path, const std::string &out_path
   LongColumns cols;
   cols.field_names = field_cols;
 
-  // Timestamps: read the Timestamp column, project to unix nanos.
-  ATX_TRY(auto ts, table.column_view<atx::core::time::Timestamp>(time_col));
+  // Timestamps: materialize via to_column (column_view rejects any unit
+  // conversion; to_column normalizes the Arrow timestamp to time::Timestamp).
+  ATX_TRY(auto ts_col, table.to_column<atx::core::time::Timestamp>(time_col));
+  const auto ts = ts_col.view();
   cols.times.reserve(ts.size());
   for (const auto &t : ts) {
     cols.times.push_back(t.unix_nanos());
