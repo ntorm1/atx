@@ -124,4 +124,5 @@ if(ATX_BUILD_TESTS)
 endif()
 
 add_subdirectory(atx-core)
+add_subdirectory(atx-tsdb)
 add_subdirectory(atx-engine)
