@@ -45,6 +45,17 @@ Recorded at P2-0 kickoff (2026-06-03). Three as-built deltas from the frozen pla
    (NOTE: a pre-existing `atx/engine/data/market.hpp` holds the unrelated Phase-1 `data::MarketPayload`
    event type; the P2-5 test file is named `market_book_test.cpp` to avoid colliding with `market_test.cpp`.)
 
+5. **P2-4 reconcile signature + return types (recorded 2026-06-04).**  The frozen plan's
+   `reconcile(std::span<const f64> w, const Portfolio&, const Market&, Timestamp)` omitted the
+   `Universe`, but reconcile needs it to map `w[i]` → `InstrumentId` (the weights are index-aligned to the
+   universe, not self-describing). As-built signature:
+   `reconcile(std::span<const f64> w, const Universe&, const Portfolio&, const Market&, Timestamp now)`.
+   Also: the plan's aspirational `AlignedVec`/`FixedVector` return types are replaced by `std::vector<f64>`
+   (weights) and `std::vector<OrderPayload>` (orders) — `core::container::fixed_vector` has a COMPILE-TIME
+   capacity and cannot hold a runtime-sized universe. A new shared `Universe = std::span<const InstrumentId>`
+   alias lives in `loop/types.hpp`. `industry_neutral` is kept as a forward-compat field but is inert in
+   Phase-2 (no group map until Phase-4) and `ATX_ASSERT`ed false to prevent silent misuse.
+
 Realistic scope for this sprint:
 
 1. **P2-0** — Module scaffold + CMake + ledger (marker). Open ledger, freeze scope.
@@ -74,7 +85,7 @@ Defer (out of Phase 2 scope — see ROADMAP):
 | P2-1 | ✅ done | `dca2f45` | `exec/payloads.hpp`: `SignalPayload`/`OrderPayload`/`FillPayload`; `OrderType`; `make_signal/order/fill_event`; signed-qty canonical direction; 31 new tests (payload_test.cpp). Side reused from atx-core. |
 | P2-2 | ✅ done | `8879bec` | `loop/panel_types.hpp` (`SliceRow`/`MarketSlice`/`PanelView`/`PanelField`) + `loop/rolling_panel.hpp` (`RollingPanel<Cap>`): PIT append-after-close (structural temporal gate — no API to write an unsealed bar), bounded `max_lookback` ring (pow2 `Cap`, single L2-aligned allocation, zero alloc on append/view), column-major-per-field f64 + per-row membership bitmask, NaN for absent cells, sorted id→col index. 17 new tests (rolling_panel_test.cpp). |
 | P2-3 | ✅ done | `db0198d` | `loop/signal_source.hpp`: `ISignalSource` seam (abstract base — virtual dtor, copy/move deleted) + `SignalView` (non-owning `std::span<const f64>`, one score per universe instrument, NaN = no opinion, borrow-valid until next `evaluate()`); `ScriptedSignalSource` GREEN (owned flat schedule buffer, deterministic cursor replay, panel-independent by design, zero per-call alloc, `Err(OutOfRange)` on exhaustion). `evaluate(PanelView)→Result<SignalView>` pure contract; `max_lookback()` returns configured N. `VmSignalSource` adapter is a compile-guarded skeleton behind `ATX_ENGINE_HAS_ALPHA_VM` (defined nowhere → never compiles → green build intact) recording the Phase-3 contract. 11 new tests (signal_source_test.cpp). *VmSignalSource green-gate blocked-on Phase 3 — see Deferred residuals.* |
-| P2-4 | ⏳ pending | `—` | `WeightPolicy`: rank→Σw=0→Σ\|w\|=1 + `order_target_percent` reconcile. *blocked-on L6.* |
+| P2-4 | ✅ done | `<PENDING>` | `loop/weight_policy.hpp` (`WeightPolicy`/`Transform`) + `Universe` alias in `loop/types.hpp`. Pipeline `transform(Rank\|ZScore)→dollar-neutralize(Σw=0)→gross-normalize(Σ\|w\|=gross_leverage)` = Alpha101 `scale`. NaN/out-of-cross-section scores compacted out before `atx::core::stats::rank`/`zscore` (no NaN handling in the primitive) then scattered back to 0 weight. Tie-break = atx-core `rank` (ties averaged, [0,1], smallest→0/largest→1, stable). `reconcile(w, Universe, Portfolio, Market, now)` = `order_target_percent`: `trade = trunc(w·equity/price) − current` (truncate toward zero), skip NaN/≤0 price, fixed index order, signed-qty `OrderPayload{Market}`. Degenerate Σ\|w\|==0 (all-equal/single/all-NaN) → flat (no div-by-zero). `industry_neutral` INERT (ATX_ASSERT false — no Phase-2 group map). 19 new tests (weight_policy_test.cpp). |
 | P2-5 | ✅ done | `017ddea` | `portfolio/portfolio.hpp` (`Portfolio`/`Holding`): avg-cost open/increase/reduce/close/flip state machine; realized booked `closed·(p−avg)·sign(pos)`; full-close zeroes avg; cash `-= qty·p + fee` and realized/fees in **exact `Decimal`**, f64 sums (equity/gross/net) in fixed universe-index order; `unrealized` zero when flat. Plus a NEW shared `loop/market.hpp` (`Market`/`InstrumentStats`): dense fixed-universe price/stats book — `update_prices` (last-value table), `mark`/`bar_volume`/`stats`/`shift_mark` (P2-6 perm-impact + cost hooks defined now). Dense sorted id→index storage (no `std::hash<Symbol>`). `Holding::mark` uses a NaN "unpriced" sentinel (matches `Market::mark`); `market_value`/`unrealized` treat NaN as a 0 contribution so a position opened before the first `mark_to_market` never reports a phantom value. 32 new tests (13 `market_book_test.cpp`, 19 `portfolio_test.cpp`, incl. 7 death: zero/neg-price, zero-qty, out-of-universe fill, Market out-of-universe mark/shift, shift-before-price). Hardened in `fc426b5` — see sprint commits. |
 | P2-6 | ⏳ pending | `—` | `ExecutionSimulator`: firewall + volume cap + slippage + temp/perm √-impact + commission + latency; partial fills. *blocked-on L8, math.* |
 | P2-7 | ⏳ pending | `—` | `BacktestLoop`: settle-prior→mark→panel→eval→weights→queue→sample; decide-`t`/fill-`t+1`. *green on Scripted.* |
@@ -121,6 +132,12 @@ _(Lift to ROADMAP future-work backlog at close.)_
   the three consumers hold one. Deferred now to avoid editing three files concurrently with another agent on
   this branch; it is a pure refactor (no contract change).
 
+- **`WeightPolicy` per-rebalance allocation (P2-4) — future optimization.** `to_target_weights` and
+  `reconcile` each allocate once per call (`std::vector<f64>` weights + transform scratch / live-index
+  compaction buffers; `std::vector<OrderPayload>` order list). This is acceptable at REBALANCE cadence (not
+  per bar), but a caller-provided-scratch overload (pass reusable buffers so the methods are allocation-free)
+  is a tracked optimization for when rebalance frequency rises. Pure addition (no contract change).
+
 Other expected residuals: short borrow-cost accrual; limit-order-book realism; cost calibration (Phase 5);
 intraday fills; same-bar-close "cheat" flag (off by default).
 
@@ -134,7 +151,7 @@ intraday fills; same-bar-close "cheat" flag (off by default).
 | `dca2f45` | P2-1 | 31/31/0/0 (PayloadTypes×6, SignalPayloadRoundTrip×2, OrderPayloadRoundTrip×2, FillPayloadRoundTrip×1, SignedQtyConvention×3, MakeSignalEvent×4, MakeOrderEvent×6, MakeFillEvent×3, DecimalPriceExactness×2, OrderTypeToString×2) |
 | `8879bec` | P2-2 | 17/17/0/0 (RollingPanel append/view/PIT/eviction/wrap/cross-section/NaN/membership/boundaries×N + RollingPanelDeathTest×2 out-of-bounds) |
 | `db0198d` | P2-3 | 11/11/0/0 (ScriptedSignalSource: ReplaySameSchedule deterministic, EachResult length==universe, NaN passthrough, MaxLookback==N, PastEndOfSchedule→Err, ConsecutiveCalls cursor-advance, AllNaN, EmptyUniverse, SingleInstrument, EmptySchedule→Err, ThroughBaseInterface). VmSignalSource compile-guarded (no test today — Deferred). |
-| `—`    | P2-4 | — |
+| `<PENDING>` | P2-4 | 19/19/0/0 (WeightPolicy: RankDollarNeutral-SumIsZero, RankGrossNormalized/DefaultLeverage, RankMonotonic, UnshuffledMatchesShuffled, NaNEntry-zero+excluded, ZScore, AllEqual→zero, SingleInstrument→flat, AllNaN→zero, NotDollarNeutral, OutputLength; Reconcile: FromFlat, AlreadyOnTarget→none, FlipLong→Short full delta, ZeroWeight→close, NaNPrice→skip, ZeroEquity→flat, TruncatesTowardZero) |
 | `017ddea` | P2-5 | 29/29/0/0 (Market×10 + MarketDeathTest×2; Portfolio×14 + PortfolioDeathTest×3 — open/increase-weighted-avg/partial-reduce/full-close/reduce-short/flip-long↔short/reduce-to-zero/fee/mark/unrealized/equity/gross-net-leverage/dollar-neutral/leverage-guard/cash-sequence; death: zero-price, neg-price, out-of-universe, market out-of-universe×2) |
 | `fc426b5` | P2-5 hardening | 32/32/0/0 (+Market shift-before-price death; +Portfolio equity-pre-mark-unpriced, +zero-qty death). `Holding::mark` NaN unpriced sentinel; `fee>=0` precondition; `std::isnan` guard; doc/comment honesty (two Decimal→f64 crossings; std::vector sized-once storage) |
 | `—`    | P2-6 | — |
