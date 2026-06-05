@@ -1,7 +1,7 @@
 # Module p0 — atx-engine: Weak-Signal Backtesting Engine (`p0`)
 
-**Last reviewed:** 2026-06-03
-**Started:** Phase 1 (event spine) **CLOSED 2026-06-03** — 7 units, 69 tests green, in-place on `feat/atx-core-stdlib`. Phase 2 opens next.
+**Last reviewed:** 2026-06-05
+**Started:** Phase 1 (event spine) **CLOSED 2026-06-03** — 7 units, 69 tests green, in-place on `feat/atx-core-stdlib`. Phase 2 (backtest loop) **CLOSED 2026-06-05** — 9 units, 224 engine tests green (`ScriptedSignalSource`-green; `VmSignalSource` blocked-on Phase 3). Phase 3 (alpha-DSL VM) opens next.
 **Source:** [`engine-architecture-audit.md`](engine-architecture-audit.md) ← distills [`../../research/renaissance-worldquant-deep-dive.md`](../../research/renaissance-worldquant-deep-dive.md). Governed by [`../../../.agents/cpp/agent.md`](../../../.agents/cpp/agent.md).
 **Goal:** Build a deterministic, point-in-time, cost-honest backtesting engine for **weak-signal alpha
 aggregation** in US equities — many faint, mostly-uncorrelated signals combined into one unified
@@ -118,7 +118,7 @@ test is race-clean by construction).
 > (module.md: don't document hopes as commitments). Phases 2 & 3 now have **frozen implementation plans**
 > (the design is scoped); the *sprint* still opens at kickoff. Phases 4–5 remain sketches.
 
-### Phase 2 — Backtest loop + portfolio + execution sim (built around the alpha-DSL VM)  ⬅ **scoped** ([plan](phase-2-backtest-loop-implementation-plan.md))
+### Phase 2 — Backtest loop + portfolio + execution sim (built around the alpha-DSL VM)  ✅ **CLOSED 2026-06-05** ([plan](phase-2-backtest-loop-implementation-plan.md) · [ledger](phase-2-progress.md) · [reference](phase-2.md))
 The deterministic per-slice crank that closes the event-driven loop — **with the Phase-3 alpha-DSL VM as the
 strategy core**. Bars off the Phase-1 spine accrete into a point-in-time **`RollingPanel`**; on the rebalance
 cadence the **VM evaluates a compiled alpha program** over it (via a thin **`ISignalSource`** seam — the VM
@@ -134,6 +134,30 @@ cost-honest backtest on one alpha.** Invariants are tests: no-look-ahead (decide
 > **The strategy engine is the VM.** There is no arbitrary-C++-callback strategy — a strategy *is* a compiled
 > alpha program reached through the `ISignalSource` seam, so the Phase-4 mega-alpha combiner later plugs in as
 > just another signal source with zero loop changes.
+
+| # | Item | Effort | Status | Ledger unit | Notes |
+|---|---|---|---|---|---|
+| 2.0 | Module scaffold + CMake + ledger (marker) | S | ✅ done | P2-0 | `5de987d` (2 tests) |
+| 2.1 | Signal/Order/Fill payloads + trade domain types | S | ✅ done | P2-1 | `dca2f45` (31 tests) |
+| 2.2 | `RollingPanel` (bar→panel bridge; PIT, bounded) | M | ✅ done | P2-2 | `8879bec` (17 tests) |
+| 2.3 | `ISignalSource` seam (Scripted + Vm) | S | ✅ done | P2-3 | `db0198d` (11 tests; `VmSignalSource` compile-guarded — blocked-on Phase 3) |
+| 2.4 | Signal→weight policy (winsorize → rank → dollar-neutral → reconcile) | M | ✅ done | P2-4 | `6d040de`+`52cb233` (20 tests) |
+| 2.5 | `Portfolio` accounting + `Market` price/stats book | M | ✅ done | P2-5 | `017ddea`+`fc426b5` (32 tests) |
+| 2.6 | `ExecutionSimulator` (fill+slippage+√-impact+commission+latency+partial) | L | ✅ done | P2-6 | `5ce23c7`+`0c00c1b` (24 tests; sell-remainder fix surfaced by P2-7) |
+| 2.7 | `BacktestLoop` driver (green on `ScriptedSignalSource`) | M | ✅ done | P2-7 | `1d30250` (8 tests; hand-computed E2E) |
+| 2.8 | Integration: determinism · cost-honesty · no-look-ahead · survivorship + bench + close | M | ✅ done | P2-8 | `0f8fc93` (10 tests) + end-to-end bench |
+| — | `VmSignalSource` green-gate | S | ⏳ blocked-on Phase 3 | P2-3 | the one cross-phase edge; seam + test contract already frozen |
+
+**Exit criteria — MET (on `ScriptedSignalSource`).** The first runnable, cost-honest, deterministic backtest
+of one alpha. **Determinism**: identical feed → byte-identical fill+equity digest across two runs; a
+perturbed price and an added late bar each flip it (non-vacuous). **No look-ahead**: a decision on bar `t`
+never fills before `t+1`; truncating the feed after `t` leaves every `≤t` fill/mark/equity byte-identical.
+**Honest cost**: a buy fills above / a sell below the frictionless mark by the modeled spread + slippage +
+√-impact + commission; a larger book pays more (monotone); costs-off recovers the frictionless equity.
+**No survivorship**: a delisted symbol trades to its final bar and is excluded thereafter. Portfolio
+accounting is correct across open/increase/reduce/close/flip on an exact-money `Decimal` ledger. End-to-end
++ exec-sim benches recorded (Debug upper bound). The one cross-phase edge — `VmSignalSource` — stays
+blocked-on Phase 3; the `ScriptedSignalSource` keeps the loop + integration green without it.
 
 ### Phase 3 — Alpha Expression DSL + vectorized evaluation engine  ⬅ **scoped** ([plan](phase-3-alpha-expression-dsl-implementation-plan.md))
 A **quant idea as a string** (`rank(ts_corr(close,volume,10))`) → lexer + **Pratt parser** → typed
@@ -174,7 +198,7 @@ The engine depends on `atx-core` layers not yet shipped. Per module.md, the edge
 | P1-1, P1-2, P1-4, P1-5 | **L8** `time`, `domain` | ⏳ not built |
 | P1-3 | **L4** `concurrent::disruptor` | ✅ **built** (327/327 green) |
 | P1-5 | **L3** `fixed_vector`, `hash_map` | ⏳ not built |
-| Phase 2 (loop/portfolio/exec-sim) | Phase-1 spine; L8 `domain`, L9 `frame`, L6 `cross_section`, L3 `ring_buffer`/`hash_map`, L2 `aligned`, L1 `decimal`/`random`/`hash` | ⏳ not built (loop **green on `ScriptedSignalSource`** without Phase 3) |
+| Phase 2 (loop/portfolio/exec-sim) | Phase-1 spine; L8 `domain`, L9 `frame`, L6 `cross_section`, L3 `ring_buffer`/`hash_map`, L2 `aligned`, L1 `decimal`/`random`/`hash` | ✅ **built** (224 engine tests green; **green on `ScriptedSignalSource`** without Phase 3) |
 | Phase 2 `VmSignalSource` only | **Phase 3** `Engine`/`Program` (cross-phase) | ⏳ blocked-on Phase 3 — the one cross-phase edge (seam-localized) |
 | Phase 3 (DSL front-end P3-1..P3-4) | L0, L1 `hash`, L3 `hash_map`/`fixed_vector`, L2 `arena` | ⏳ not built (front-end **not blocked** on L5/L6/L9 — can go green early) |
 | Phase 3 (DSL VM P3-5..P3-8) | L9 `column`/`frame`, L6 `cross_section`/`rolling`/`online_stats`, L5 `simd`, L8 `time`, L2 `object_pool` | ⏳ not built |
@@ -189,8 +213,21 @@ added to the atx-core build's tracking so the upstream agent sees that engine Ph
 
 ## Future-work backlog
 
-Empty until Phase 1 closes. Deferred units lift here at sprint close with their carrying ledger unit
-and reason (module.md §8).
+Deferred units lift here at sprint close with their carrying ledger unit and reason (module.md §8).
+
+**From Phase 2 (carried in [`phase-2-progress.md`](phase-2-progress.md) → Deferred residuals):**
+- **`VmSignalSource` green-gate** (P2-3) — blocked-on Phase 3; define `ATX_ENGINE_HAS_ALPHA_VM`, wire the
+  `alpha::Program`/`alpha::Engine` adapter, write its red→green test. The seam contract is already frozen.
+- **Sorted id→index helper triplication** (P2-2/P2-5) — extract a shared `loop/universe_index.hpp` used by
+  `RollingPanel`, `Market`, `Portfolio` (pure refactor, no contract change).
+- **`WeightPolicy` per-rebalance allocation** (P2-4) + **`BacktestLoop` result accumulators** (P2-7) —
+  caller-provided scratch / streaming sink for allocation-free rebalance and bounded-memory long runs.
+- **Exec-sim O(N²) per-bar volume accumulator** (P2-6) — sorted-id accumulator if exec shows on a profile.
+- **`Schedule` integer-cadence only** (P2-7) — add a trading-calendar-aware gate (month-end/weekly/session).
+- **Probabilistic-fill RNG** (P2-6) — deferred by design (the sim is deterministic by construction).
+- **Short borrow-cost accrual, limit-order-book realism, intraday fills** — hooks left; later work.
+- **Cost *calibration*** (fit `Y/δ/γ/η`), capacity, walk-forward + deflated-Sharpe — **Phase 5** (Phase 2
+  shipped the cost *model* with documented defaults, not the fit).
 
 ---
 
@@ -212,10 +249,14 @@ and reason (module.md §8).
 
 ## Strategic decisions — resolved by what shipped
 
-Open forks, resolved at sprint-close cadence as evidence lands. None resolved yet (no sprint closed).
+Open forks, resolved at sprint-close cadence as evidence lands.
 
-- **Fork: bar-driven vs tick-driven first?** Leaning bar-driven (daily) for Phase 1–2; the data model
-  (P1-2) carries both `Bar` and `Tick` so the fork stays open. *Resolve at Phase 2 close.*
+- **Fork: bar-driven vs tick-driven first?** **RESOLVED at Phase 2 close (2026-06-05): bar-driven.** The
+  whole Phase-2 loop (RollingPanel, MarketSlice, daily-close cadence, the cost model's per-bar volume cap)
+  is built on sealed OHLCV bars; the `RollingPanel`'s `PanelField` stores OHLCV and the exec sim's
+  participation cap reads bar volume. The data model (P1-2) still carries `Tick`, and the loop's `collect`
+  ignores tick events — so an intraday/tick path stays open as a later module (listed in Phase-2 residuals:
+  intraday fills), but the p0 backtest substrate is daily-bar-driven.
 - **Fork: event-driven-only vs hybrid vectorized research layer?** Audit commits to hybrid; the spine
   ships first. *Resolved by architecture audit §2; re-confirm at Phase 3 kickoff.*
 

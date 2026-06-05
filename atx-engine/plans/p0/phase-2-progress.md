@@ -56,6 +56,36 @@ Recorded at P2-0 kickoff (2026-06-03). Three as-built deltas from the frozen pla
    alias lives in `loop/types.hpp`. `industry_neutral` is kept as a forward-compat field but is inert in
    Phase-2 (no group map until Phase-4) and `ATX_ASSERT`ed false to prevent silent misuse.
 
+6. **P2-7/P2-8 as-built deltas (recorded 2026-06-05).**  Five deltas from the frozen plan, all
+   localized to the loop driver:
+   - **`BacktestLoop<Cap>` is a class template** on the `RollingPanel<Cap>` ring capacity (the plan's
+     `fwd.hpp` forward-declared a non-template `class BacktestLoop`). The loop holds the panel by pointer
+     and the panel's capacity is a compile-time parameter; a non-template loop would need a virtual
+     `IPanel`, adding a hot-path vtable for the single Phase-2 panel type. `fwd.hpp` now forward-declares
+     `template <atx::usize Cap> class BacktestLoop;` (like `RollingPanel`).
+   - **`Schedule` is an integer slice-index cadence gate** (`fires(slice_index)`), not the plan's literal
+     `fires(Timestamp)`. A calendar-close predicate needs a trading-calendar dependency out of Phase-2
+     scope; an integer cadence (`every=1`=daily-close for a daily feed) is the honest minimal mechanism
+     and is exactly what the cadence test exercises.
+   - **Orders/fills are handled IN-PROCESS**, not routed as Signal/Order/Fill bus events. The Phase-2
+     backtest bus carries only Market events (the feed is the sole producer); the loop calls
+     `exec.queue`/`settle_pending` directly (matching the plan's loop shape §P2-7). The P2-1
+     Signal/Order/Fill payload makers complete the Event taxonomy for a future live-mode router.
+   - **No separate `Metrics` class** — sampling is inline in the loop, writing `EquitySample` rows into
+     `BacktestResult` (a speculative metrics type avoided). `turnover` = cumulative traded notional.
+   - **Collaborators held as non-owning raw pointers** (ctor takes references), matching
+     `InMemoryBarFeed`'s `clock_`/`bus_` pattern — avoids the `cppcoreguidelines-avoid-const-or-ref-data-members`
+     guidance and keeps the type assignable. The plan's `spine` bundle is dropped (a reference-member
+     aggregate trips the same guidance); the loop takes feed/clock/bus as three ctor refs.
+
+7. **P2-6 sell-remainder bug found + fixed during P2-7 integration (recorded 2026-06-05).**  P2-7's
+   end-to-end crank surfaced a latent P2-6 defect: `ExecutionSimulator::settle_one` reduced the open
+   remainder with `order.qty -= fillable` (a positive magnitude), which converges a buy toward zero but
+   GROWS a short — a sell filled 250 of −250 became −500, was retained, and re-filled a doubling short
+   every slice. The buy-only P2-6 spillover test never caught it. Fixed in `0c00c1b` (reduce the signed
+   magnitude toward zero) with two red→green sell-path regression tests. This is the intended value of the
+   P2-8 integration pass: assembling the units surfaces interaction bugs unit tests miss.
+
 Realistic scope for this sprint:
 
 1. **P2-0** — Module scaffold + CMake + ledger (marker). Open ledger, freeze scope.
@@ -88,8 +118,9 @@ Defer (out of Phase 2 scope — see ROADMAP):
 | P2-4 | ✅ done | `6d040de` (+ `52cb233` winsorize) | `loop/weight_policy.hpp` (`WeightPolicy`/`Transform`) + `Universe` alias in `loop/types.hpp`. Full frozen pipeline `winsorize→transform(Rank\|ZScore)→dollar-neutralize(Σw=0)→gross-normalize(Σ\|w\|=gross_leverage)` = Alpha101 `scale`. **Winsorize is the FIRST step** (configurable `winsorize_limit`, **default 0.025** = standard 95% winsorization / clamp extreme 2.5% per tail; nearest-rank quantile band `[lim, 1−lim]` via `atx::core::stats::winsorize`; near-no-op for Rank, material outlier guard for ZScore; `0.0` disables). NaN/out-of-cross-section scores compacted out before winsorize/`rank`/`zscore` (no NaN handling in the primitive) then scattered back to 0 weight. Tie-break = atx-core `rank` (ties averaged, [0,1], smallest→0/largest→1, stable). `reconcile(w, Universe, Portfolio, Market, now)` = `order_target_percent`: `trade = trunc(w·equity/price) − current` (truncate toward zero), skip NaN/≤0 price, fixed index order, signed-qty `OrderPayload{Market}`. Degenerate Σ\|w\|==0 (all-equal/single/all-NaN) → flat (no div-by-zero). `industry_neutral` INERT (ATX_ASSERT false — no Phase-2 group map). 20 new tests (weight_policy_test.cpp). |
 | P2-5 | ✅ done | `017ddea` | `portfolio/portfolio.hpp` (`Portfolio`/`Holding`): avg-cost open/increase/reduce/close/flip state machine; realized booked `closed·(p−avg)·sign(pos)`; full-close zeroes avg; cash `-= qty·p + fee` and realized/fees in **exact `Decimal`**, f64 sums (equity/gross/net) in fixed universe-index order; `unrealized` zero when flat. Plus a NEW shared `loop/market.hpp` (`Market`/`InstrumentStats`): dense fixed-universe price/stats book — `update_prices` (last-value table), `mark`/`bar_volume`/`stats`/`shift_mark` (P2-6 perm-impact + cost hooks defined now). Dense sorted id→index storage (no `std::hash<Symbol>`). `Holding::mark` uses a NaN "unpriced" sentinel (matches `Market::mark`); `market_value`/`unrealized` treat NaN as a 0 contribution so a position opened before the first `mark_to_market` never reports a phantom value. 32 new tests (13 `market_book_test.cpp`, 19 `portfolio_test.cpp`, incl. 7 death: zero/neg-price, zero-qty, out-of-universe fill, Market out-of-universe mark/shift, shift-before-price). Hardened in `fc426b5` — see sprint commits. |
 | P2-6 | ✅ done | `5ce23c7` | `exec/execution_sim.hpp` (`ExecutionSimulator` + `FillCfg`/`SlippageCfg`/`SlippageMode`/`ImpactCfg`/`CommissionCfg`/`CommissionMode`/`LatencyCfg`/`VolumeCapCfg`): the cost-honesty core. **Config-driven** (each model a mode-enum + coefficients held BY VALUE, exhaustive switches no-`default`, every Appendix-A coefficient a named knob — no magic numbers); **NOT** a virtual model hierarchy. Fixed per-settle order: eligibility firewall (`now > queued_at`, strictly-later slice; +latency; `allow_same_bar_fill` **default OFF** = the look-ahead cheat) → volume cap (`fillable = min(\|open\|, vlim·bar_vol − filled_this_bar)`, remainder spills → next slice, Σpartials == order qty) → slippage (VolumeShare `k·share²` / FixedBps `bps/1e4`, capped, **+spread floor** always crosses ±spread/2) → **temporary √-impact `Y·σ·part^δ` into the fill PRICE** (recorded in `FillPayload.impact`, does NOT persist) → **permanent impact `½·γ·σ·part` shifts the MARK** via `Market::shift_mark` (persists) → commission (PerShare `clamp(max(\|q\|·per_share,min),0,max_pct·notional)` / PerDollar `notional·bps/1e4`). **Units convention: all cost terms are FRACTIONS of ref** (`fill = ref·(1±slip)·(1±temp)`; perm shift = `ref·perm·sign`) — scale-free, documented. **f64 cost math; exact `Decimal` only at the fill-price + fee boundary** (`from_double(...).value_or(...)`). **Zero steady-state alloc**: `settle_pending` returns `std::span<const FillPayload>` into a reserved sim-owned scratch (cleared not freed); `open_`/accumulator reserved at ctor; borrow valid until next queue/settle. **Deterministic by construction** (no RNG; FIFO `open_`; reset-per-bar linear-scan vol accumulator, no hash in hot path). Market order full; Limit = minimal penetration gate (buy `ref≤limit`/sell `ref≥limit`). `settle_pending` takes `Market&` (non-const — perm impact must write; deviates from plan's literal `const Market&`, documented). 22 new tests (execution_sim_test.cpp). |
-| P2-7 | ⏳ pending | `—` | `BacktestLoop`: settle-prior→mark→panel→eval→weights→queue→sample; decide-`t`/fill-`t+1`. *green on Scripted.* |
-| P2-8 | ⏳ pending | `—` | Determinism (P&L hash) + cost-honesty (monotone in size) + no-look-ahead (truncation-invariant) + survivorship; bench. Close. |
+| P2-7 | ✅ done | `1d30250` | `loop/backtest_loop.hpp` (`BacktestLoop<Cap>` + `Schedule` + `EquitySample` + `BacktestResult`): the deterministic per-slice crank `update_prices→mark_to_market→settle PRIOR fills→append sealed row→(schedule)eval→weights→reconcile→queue→sample`. Settle(3) precedes queue(7) = the decide-`t`/fill-`t+1` firewall. Templated on the `RollingPanel<Cap>` capacity (held by pointer; a virtual `IPanel` would add a hot-path vtable for the one panel type). `Schedule` is an integer slice-index cadence gate (`every=1`=daily close). Orders/fills handled IN-PROCESS (`exec.queue`/`settle_pending`), NOT as bus events — the Phase-2 bus carries Market events only. Non-owning raw pointers to collaborators (house pattern); registers consumer 0; per-slice scratch reserved once. `BacktestResult` = equity curve + fills + final cash/equity + cumulative-traded-notional turnover + slice/rebalance counts. 8 new tests (backtest_loop_test.cpp): hand-computed E2E ramp, decide-`t`/fill-`t+1`, single-bar (no fill), cadence gate, flat/NaN signal (no trades), equity=cash+ΣMV, empty feed. **Surfaced + fixed a P2-6 bug** (`0c00c1b`) — see below. *Green on `ScriptedSignalSource`; `VmSignalSource` still blocked-on Phase 3.* |
+| P2-8 | ✅ done | `0f8fc93` (+ close) | `tests/backtest_integration_test.cpp` (10 tests) + `bench/backtest_loop_bench.cpp`. **Determinism** (wyhash over the ordered fill+equity-bits stream equal across two runs; perturbed-price AND added-late-bar mutations each flip it — non-vacuous; semantic-field fold, no padding). **Cost-honesty** (frictionless preserves equity exactly; buy fills ABOVE / sell BELOW mark by modeled cost; full cost stack drains equity; 2× leverage → more turnover + larger drain [monotone]; equity-drain tests use `γ=0` because permanent impact shifts the mark toward the just-opened position and would otherwise offset the drain — documented). **No-look-ahead** (feed truncated after `t` → `≤t` fill/equity prefix digest byte-identical; no fill on its decision slice). **Survivorship** (symbol delisting at bar 3 trades to that bar, its short persists to EOF, mark freezes at the delisting close, no fills after). End-to-end bench recorded (Debug upper bound). |
+| P2-6-fix | ✅ done | `0c00c1b` | `fix(p2-6)`: `settle_one` updated the open remainder with `order.qty -= fillable` (a positive magnitude) — correct for a buy but it GREW a short (sell −250 → −500 after filling 250, retained, re-filling a doubling short every slice). The long leg was unaffected, so the buy-only P2-6 spillover test missed it; the P2-7 integration crank surfaced it as an exploding short book. Fix: reduce the SIGNED remainder's magnitude toward zero (`order.qty -= is_buy ? fillable : -fillable`). 2 regression tests added to execution_sim_test.cpp (SellOrder_FullyFilled_NotReopened, VolumeCap_SellRemainder_FillsAcrossSlices_SumEqualsOrderQty), both red before the fix. |
 
 ### P2-6/P2-8 measured throughput
 
@@ -100,7 +131,7 @@ present default-cost results as calibrated (the cost *fit* is Phase 5).
 |--------|----------------------|----------|---------------------|
 | exec-sim settle (`BM_SettleFullCost`) | ~44.8k orders/s | ~22.3k ns/order | 16×2.50 GHz, **Debug/clang-cl (upper bound)**, 256-order batch / 256 distinct instruments, default cfg + `volume_limit=0.5`, all fill in one slice |
 | exec-sim queue+settle (`BM_QueueThenSettlePerOrder`) | ~49.6k orders/s | ~20.2k ns/order | same host/build/feed |
-| end-to-end loop | — | — | *P2-7* |
+| end-to-end loop (`BM_BacktestLoop_EndToEnd`) | ~64.5k bars·symbols/s (~1.29k slices/s) | ~203 ms / 252-slice run | 16×2.50 GHz, **Debug/clang-cl (upper bound)**, 50 symbols × 252 bars, rotating signal (every slice rebalances + settles), default cost stack + `volume_limit=0.5`, $10M book. Setup (8 MB bus alloc + objects) is inside the timed region — amortized by the feed size. |
 
 > **Debug numbers — upper bounds, not calibrated.** The Debug ns/order is dominated by (a) `Decimal::from_double`'s portable 128-bit long-division (128-iteration loop), run twice per fill (price + fee), and (b) the per-bar volume accumulator's O(N) linear scan — O(N²) for an N-distinct-instrument batch (256 here). Both are acceptable: per-bar open sets are small in a real backtest, and the accumulator scan is the deterministic-no-hash trade-off. An optimized (Release) build and/or a sorted-id accumulator are the levers if exec ever shows on a loop profile.
 
@@ -167,6 +198,26 @@ _(Lift to ROADMAP future-work backlog at close.)_
   sorted-id accumulator (or the shared `UniverseIndex` above) would make it O(N log N) if exec ever shows on a
   loop profile. Pure optimization (no contract change).
 
+- **`Schedule` is integer-cadence only (P2-7) — future calendar gate.** The rebalance gate fires on a
+  slice-index cadence (`every=N`), not a trading-calendar predicate (`fires(Timestamp)` per the frozen
+  plan). A calendar-aware schedule (month-end, weekly, specific session times) needs the trading-calendar
+  dependency deferred out of Phase-2 scope. Pure addition (the loop calls `schedule_.fires(slice_index)`;
+  a richer `Schedule` is drop-in).
+
+- **`BacktestResult` accumulators grow over the run (P2-7) — future streaming sink.** `equity_curve` and
+  `fills` are owned `std::vector`s that accrue over the backtest (the OUTPUT, not the per-slice hot path —
+  the crank/panel/fill path is zero-alloc). A long, high-frequency run holds the whole equity curve + fill
+  log in memory. A caller-provided streaming sink (write samples/fills to a callback or columnar store
+  instead of accumulating) is the optimization when run length × frequency outgrows memory. Pure addition.
+
+- **Permanent impact can offset the cost drain on mark-to-market equity (P2-6/P2-8) — documented, not a
+  bug.** Permanent impact shifts the instrument mark in the trade's direction, so right after opening a
+  position the mark-to-market equity reflects the moved (favorable) reference — partially offsetting the
+  spread/slippage/commission paid. This is the Almgren-Chriss model working as designed (the trade revealed
+  information that moved the market). The P2-8 equity-drain monotonicity tests therefore isolate the
+  unambiguous drain with `γ=0`; the fill-price cost-honesty tests (buy>mark, sell<mark) hold regardless.
+  Phase-5 calibration of `γ` against data is where this becomes quantitative.
+
 Other expected residuals: short borrow-cost accrual; limit-order-book realism; cost calibration (Phase 5);
 intraday fills; same-bar-close "cheat" flag (off by default).
 
@@ -185,20 +236,45 @@ intraday fills; same-bar-close "cheat" flag (off by default).
 | `017ddea` | P2-5 | 29/29/0/0 (Market×10 + MarketDeathTest×2; Portfolio×14 + PortfolioDeathTest×3 — open/increase-weighted-avg/partial-reduce/full-close/reduce-short/flip-long↔short/reduce-to-zero/fee/mark/unrealized/equity/gross-net-leverage/dollar-neutral/leverage-guard/cash-sequence; death: zero-price, neg-price, out-of-universe, market out-of-universe×2) |
 | `fc426b5` | P2-5 hardening | 32/32/0/0 (+Market shift-before-price death; +Portfolio equity-pre-mark-unpriced, +zero-qty death). `Holding::mark` NaN unpriced sentinel; `fee>=0` precondition; `std::isnan` guard; doc/comment honesty (two Decimal→f64 crossings; std::vector sized-once storage) |
 | `5ce23c7` | P2-6 | 22/22/0/0 (ExecSim: Firewall-NoFillSameSlice/FillsNextSlice, SameBarFill-DefaultOff/Enabled, Latency-before/after, Slippage-buy>mid/sell<mid, Participation-LargerBuyWorse, ZeroSize-NeverFills, VolumeCap-Partial/Spillover-sum/ExactCap, ZeroBarVolume-NoFill, PermanentImpact-ShiftsMark, TemporaryImpact-NotPersisted, Commission-MinFloor/MaxCap/PerDollar, Limit-buy-above-no/at-or-below-fills/sell-below-no, Determinism-IdenticalRuns, SpreadFloor-CrossesHalfSpread) |
-| `—`    | P2-7 | — |
-| `—`    | P2-8 + close | — |
+| `0c00c1b` | P2-6 fix | +2 (ExecSim now 24/24/0/0: SellOrder_FullyFilled_NotReopened, VolumeCap_SellRemainder_FillsAcrossSlices_SumEqualsOrderQty — both red before the signed-remainder fix) |
+| `1d30250` | P2-7 | 8/8/0/0 (BacktestLoop: EndToEnd_ScriptedRamp_PositionsFillsEquityMatch, OrderDecidedAtT_FillsAtTPlus1, SingleBarFeed_NoFillPossible, CadenceGate_FiresOnlyOnSchedule, FlatSignal_NoTrades, NaNSignal_NoOrders, EquityEqualsCashPlusNet, EmptyFeed_NoSlices) |
+| `0f8fc93` | P2-8 | 10/10/0/0 (BacktestIntegration: Determinism ×3 [IdenticalFeed/PerturbedPrice/AddedLateBar], CostHonesty ×4 [Frictionless/CostsOn/BuyAboveMark-SellBelowMark/MoreParticipation], NoLookAhead ×2 [FeedTruncation/OrderNeverFillsOnDecisionSlice], Survivorship ×1) + end-to-end bench |
 
-**Phase 2 adds `<N>` new tests (total engine footprint: `<K>`/0/0 across `<J>` binaries).** _(Fill at close.)_
+**Phase 2 adds 144 new tests across P2-0…P2-8 (total engine footprint: 224/0/0 across 1 test binary —
+`atx-engine-tests`).**
 
 ---
 
 ## What Phase 2 proves / Next sprint priorities
 
-_(Written at close — the baton handoff.)_ Expected statement: *Phase 2 proves the engine runs a complete,
-cost-honest, deterministic backtest of one alpha — bars accrete into a point-in-time rolling panel, a
-strategy (a compiled alpha program reached through the `ISignalSource` seam) produces a dollar-neutral target
-portfolio, an execution simulator charges spread + slippage + size-dependent √-impact + commission + latency,
-and the portfolio books exact-money P&L. Identical feed replays byte-identically, a decision on bar `t` never
-fills before `t+1`, and a larger order provably pays more. The loop is `ScriptedSignalSource`-green today;
-when Phase 3 merges, `VmSignalSource` drops in as the strategy core. Phase 4 plugs the mega-alpha combiner in
-as just another `ISignalSource` and adds correlation/turnover gates + a Barra risk model.*
+**Phase 2 proves the engine runs a complete, cost-honest, deterministic backtest of one alpha.** Bars off
+the Phase-1 spine accrete into a point-in-time `RollingPanel`; on the rebalance cadence a strategy — a
+signal reached through the `ISignalSource` seam (a `ScriptedSignalSource` test double today; the Phase-3
+`VmSignalSource` drops into the same seam with zero loop changes) — produces a rank → dollar-neutral
+(Σw=0) → gross-normalized (Σ|w|=1) target portfolio; an `ExecutionSimulator` charges spread + slippage +
+size-dependent √-impact (temporary → fill price, permanent → mark) + commission + latency with every
+coefficient configurable; and a `Portfolio` books exact-money `Decimal` P&L. The `BacktestLoop` crank
+(settle-prior → mark → panel → eval → weights → queue → sample) is the integration spine, and its fixed
+step order **is** the no-look-ahead firewall.
+
+**The three invariants are proven as tests, not hopes** (P2-8, all green on `ScriptedSignalSource`):
+- **Determinism** — identical feed replays to a byte-identical fill+equity digest across two runs; a
+  perturbed price and an added late bar each flip it (non-vacuous).
+- **No look-ahead** — a decision on bar `t` never fills before `t+1`; truncating the feed after `t` leaves
+  every `≤t` fill/mark/equity byte-identical (the future is invisible).
+- **Honest cost** — a buy fills above / a sell below the frictionless mark by the modeled cost; a larger
+  book pays more (monotone in participation); turning costs off recovers the frictionless equity exactly.
+- Plus **no survivorship** — a delisted symbol trades to its final bar and is excluded thereafter, never
+  retroactively removed.
+
+Phase 2 also surfaced + fixed a latent P2-6 sell-remainder bug (`0c00c1b`) — the exact payoff of assembling
+the units behind an integration harness.
+
+**Next-sprint priorities (the baton).** (1) **Phase 3 — the alpha-DSL VM**: string → Pratt parser →
+hash-consed DAG → vectorized columnar VM emitting a cross-sectional signal per date. When it merges, define
+`ATX_ENGINE_HAS_ALPHA_VM`, drop `VmSignalSource` into the `ISignalSource` seam (the one cross-phase edge,
+already the frozen contract P2-3/P2-7 build against), and write its red→green test. (2) Then **Phase 4** —
+the mega-alpha combiner plugs in as *just another* `ISignalSource` (zero loop changes), adding
+correlation/turnover gates + a Barra risk model. (3) **Phase 5** — cost *calibration* (fit `Y/δ/γ/η` per
+universe/era; Phase 2 shipped the model with documented defaults, not the fit), capacity, walk-forward +
+deflated-Sharpe validation.
