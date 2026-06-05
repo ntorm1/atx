@@ -50,30 +50,39 @@
 //  realized update is an exact Decimal op (no FP drift across a long backtest).
 //  f64: mark, market_value, unrealized, equity, gross, net, leverage — these are
 //  marked-to-MARKET quantities derived from f64 market data (Market::mark), so
-//  an exact type would be false precision. The single Decimal→f64 crossing for
-//  cash is localised in equity(); it is documented at that call site. Portfolio-
-//  level f64 sums (equity/gross/net) iterate holdings in the FIXED universe index
-//  order so the floating-point reduction is deterministic across runs.
+//  an exact type would be false precision. There are exactly TWO Decimal→f64
+//  crossings, both read-only (the ledger is never mutated through them):
+//  cash().to_double() in equity(), and avg_price.to_double() in
+//  Holding::unrealized(); each is documented at its call site. Portfolio-level
+//  f64 sums (equity/gross/net) iterate holdings in the FIXED universe index order
+//  so the floating-point reduction is deterministic across runs.
 //
 // ===========================================================================
 //  Universe & storage
 // ===========================================================================
-//  DENSE storage: a fixed_vector<Holding> sized to the universe, indexed by the
-//  same sorted (id → index) idiom RollingPanel / Market use (Symbol has no
-//  std::hash and hash iteration order is non-deterministic — a sorted array is
-//  the deterministic house pattern). A fill for an instrument NOT in the universe
-//  is a programmer error (ATX_ASSERT): the loop only ever fills universe names.
+//  DENSE storage: a std::vector<Holding> sized ONCE at construction to the
+//  universe size and NEVER reallocated thereafter (no element is ever inserted or
+//  erased — apply_fill mutates in place), indexed by the same sorted (id → index)
+//  idiom RollingPanel / Market use (Symbol has no std::hash and hash iteration
+//  order is non-deterministic — a sorted array is the deterministic house
+//  pattern). std::vector rather than core::container::fixed_vector because the
+//  latter's capacity is a compile-time template parameter, while the universe
+//  size is a runtime constructor argument. A fill for an instrument NOT in the
+//  universe is a programmer error (ATX_ASSERT): the loop only fills universe names.
 //
 // ===========================================================================
 //  Ownership / threading
 // ===========================================================================
 //  The universe span is non-owning — the caller's InstrumentId storage must
-//  outlive the Portfolio. Holdings live in an owned vector sized once at
-//  construction. Single-threaded backtest use; no synchronisation.
+//  outlive the Portfolio. Holdings live in an owned std::vector sized once at
+//  construction and never reallocated. Single-threaded backtest use; no
+//  synchronisation.
 
 #include <algorithm> // std::sort, std::lower_bound
+#include <cmath>     // std::isnan (unpriced-mark sentinel handling)
+#include <limits>    // std::numeric_limits (quiet NaN sentinel for an unpriced mark)
 #include <span>      // std::span (universe)
-#include <vector>    // std::vector (dense holdings + sorted index)
+#include <vector>    // std::vector (dense holdings sized once + sorted index)
 
 #include "atx/core/decimal.hpp" // atx::core::Decimal
 #include "atx/core/macro.hpp"   // ATX_ASSERT
@@ -92,6 +101,13 @@ namespace atx::engine {
 //  (the ledger). mark is the latest f64 reference price written by
 //  mark_to_market; market_value/unrealized are f64 because they value the open
 //  position against f64 market data.
+//
+//  UNPRICED SENTINEL: mark initialises to a quiet NaN — "not yet priced" —
+//  matching Market::mark()'s sentinel. A position opened before the first
+//  mark_to_market therefore has a NaN mark; market_value()/unrealized() treat a
+//  NaN mark as a ZERO contribution (an unpriced instrument adds nothing to
+//  equity) so the portfolio's f64 aggregates stay well-defined and never
+//  propagate a phantom value off a default-zero price.
 // ===========================================================================
 struct Holding {
   InstrumentId id{};
@@ -99,15 +115,25 @@ struct Holding {
   atx::core::Decimal avg_price{};
   atx::core::Decimal realized{};
   atx::core::Decimal fees{};
-  atx::f64 mark = 0.0;
+  atx::f64 mark = std::numeric_limits<atx::f64>::quiet_NaN(); // NaN == not yet priced
 
-  /// Signed dollar exposure: qty · mark (long > 0, short < 0). f64 (market data).
-  [[nodiscard]] atx::f64 market_value() const noexcept { return static_cast<atx::f64>(qty) * mark; }
+  /// Signed dollar exposure: qty · mark (long > 0, short < 0). An unpriced (NaN
+  /// mark) instrument contributes 0 — never a phantom value. f64 (market data).
+  [[nodiscard]] atx::f64 market_value() const noexcept {
+    if (std::isnan(mark)) {
+      return 0.0;
+    }
+    return static_cast<atx::f64>(qty) * mark;
+  }
 
-  /// Open-position P&L: qty · (mark − avg_price). Zero when flat (qty == 0), so a
-  /// closed position never reports phantom unrealized off a stale avg. f64.
+  /// Open-position P&L: qty · (mark − avg_price). Zero when flat (qty == 0) so a
+  /// closed position never reports phantom unrealized off a stale avg, and zero
+  /// when unpriced (NaN mark) so a freshly-opened position pre-mark adds nothing.
+  /// f64. SAFETY: avg_price.to_double() is a deliberate Decimal→f64 crossing of
+  /// the money boundary (open-position value is an f64 estimate; the realized
+  /// ledger stays exact). The other crossing is cash().to_double() in equity().
   [[nodiscard]] atx::f64 unrealized() const noexcept {
-    if (qty == 0) {
+    if (qty == 0 || std::isnan(mark)) {
       return 0.0;
     }
     return static_cast<atx::f64>(qty) * (mark - avg_price.to_double());
@@ -137,10 +163,15 @@ public:
   /// PRECONDITIONS (programmer errors — ABORT in debug):
   ///   * fill.price > 0  — the exec sim never emits a zero/negative price;
   ///   * fill.id is in the universe — the loop only fills universe instruments;
-  ///   * fill.qty != 0   — a zero-qty fill is not a transaction.
+  ///   * fill.qty != 0   — a zero-qty fill is not a transaction;
+  ///   * fill.fee >= 0   — Phase-2 commissions are always a cost (no rebates), so
+  ///     the accumulated `fees` stays a positive magnitude (the cash debit uses
+  ///     the same value). A signed rebate is out of scope; relax this assert and
+  ///     the fee-sign comment together if it is ever introduced.
   void apply_fill(const exec::FillPayload &f) noexcept {
     ATX_ASSERT(f.price > atx::core::Decimal{}); // zero-price guard (see header)
     ATX_ASSERT(f.qty != 0);
+    ATX_ASSERT(f.fee >= atx::core::Decimal{}); // commissions are a cost, never a rebate
     Holding &h = holdings_[require_index(f.id)];
 
     apply_cash(f);
@@ -160,8 +191,11 @@ public:
   [[nodiscard]] atx::core::Decimal cash() const noexcept { return cash_; }
 
   /// Total account value: cash + Σ market_value, summed in fixed index order.
-  /// SAFETY: the single Decimal→f64 crossing for the ledger lives here (the
-  /// money boundary). market_value is already f64 (marked against market data).
+  /// SAFETY: cash().to_double() here is ONE of the two Decimal→f64 crossings of
+  /// the money boundary (the other is avg_price.to_double() inside
+  /// Holding::unrealized()). The exact ledger (cash/realized/fees/avg_price) is
+  /// never mutated through these reads; they only value the book in f64 for the
+  /// equity/exposure aggregates, which are inherently market-data (f64) figures.
   [[nodiscard]] atx::f64 equity() const noexcept {
     atx::f64 sum = cash_.to_double();
     for (const Holding &h : holdings_) {

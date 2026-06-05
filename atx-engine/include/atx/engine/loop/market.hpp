@@ -54,6 +54,7 @@
 //  once at construction. Single-threaded backtest use; no synchronisation.
 
 #include <algorithm> // std::sort, std::lower_bound
+#include <cmath>     // std::isnan (priced-mark precondition)
 #include <limits>    // std::numeric_limits (quiet NaN sentinel)
 #include <span>      // std::span (universe + stats + slice rows)
 #include <vector>    // std::vector (dense per-instrument state + sorted index)
@@ -146,7 +147,7 @@ public:
     const atx::usize idx = require_index(id);
     // SAFETY: shifting NaN silently yields NaN and would mask a sequencing bug
     // (impact applied before any price was seen); assert the mark exists first.
-    ATX_ASSERT(marks_[idx] == marks_[idx]); // NaN-check: x != x iff x is NaN
+    ATX_ASSERT(!std::isnan(marks_[idx])); // mark must be priced before a shift
     marks_[idx] += delta;
   }
 

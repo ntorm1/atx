@@ -19,13 +19,17 @@
 //   * gross / net / leverage on a mixed book;
 //   * dollar-neutral book → net ≈ 0;
 //   * boundaries: reduce-to-zero, over-reduce (flip), first fill from flat;
-//   * EXPECT_DEATH on a zero/negative-price fill and an out-of-universe fill.
+//   * a freshly-opened position is unpriced (NaN mark) → contributes 0 to equity
+//     before the first mark_to_market, then values correctly after;
+//   * EXPECT_DEATH on a zero-price, negative-price, zero-qty, and out-of-universe
+//     fill (apply_fill's ATX_ASSERT preconditions).
 //
 // Naming: Subject_Condition_ExpectedResult.
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <span>
 
 #include "atx/core/datetime.hpp" // Timestamp
@@ -288,6 +292,36 @@ TEST(Portfolio, Unrealized_FlatPosition_IsZero) {
 }
 
 // =====================================================================
+//  Unpriced sentinel — a freshly-opened position has a NaN mark and
+//  contributes 0 to equity/market_value/unrealized BEFORE the first
+//  mark_to_market (equity == cash), then values correctly AFTER it.
+// =====================================================================
+
+TEST(Portfolio, Equity_OpenedPositionBeforeMark_ContributesZero) {
+  std::array<InstrumentId, 1> uni{inst(10)};
+  Portfolio pf{dec(100000), std::span<const InstrumentId>{uni}};
+  Market mkt{std::span<const InstrumentId>{uni}, std::span<const InstrumentStats>{}};
+
+  pf.apply_fill(fill(10, 100, 50)); // cash → 95000; mark still NaN (unpriced)
+
+  const Holding &h = pf.holding(inst(10));
+  EXPECT_TRUE(std::isnan(h.mark));         // not yet priced
+  EXPECT_DOUBLE_EQ(h.market_value(), 0.0); // NaN mark ⇒ 0 contribution
+  EXPECT_DOUBLE_EQ(h.unrealized(), 0.0);   // NaN mark ⇒ 0 (no phantom −5000)
+  EXPECT_DOUBLE_EQ(pf.equity(), 95000.0);  // equity == cash, well-defined
+  EXPECT_DOUBLE_EQ(pf.gross(), 0.0);
+  EXPECT_DOUBLE_EQ(pf.net(), 0.0);
+
+  // After the first mark the position values correctly.
+  std::array<SliceRow, 1> rows{row(10, 60)};
+  mkt.update_prices(MarketSlice{ts(1), std::span<const SliceRow>{rows}});
+  pf.mark_to_market(mkt);
+
+  EXPECT_DOUBLE_EQ(pf.holding(inst(10)).market_value(), 6000.0);
+  EXPECT_DOUBLE_EQ(pf.equity(), 101000.0); // 95000 + 6000
+}
+
+// =====================================================================
 //  Equity = cash + Σ market_value after a mark.
 // =====================================================================
 
@@ -408,6 +442,14 @@ TEST(PortfolioDeathTest, ApplyFill_IdNotInUniverse_Aborts) {
   Portfolio pf{dec(100000), std::span<const InstrumentId>{uni}};
 
   EXPECT_DEATH({ pf.apply_fill(fill(77, 100, 50)); }, "");
+}
+
+TEST(PortfolioDeathTest, ApplyFill_ZeroQty_Aborts) {
+  std::array<InstrumentId, 1> uni{inst(10)};
+  Portfolio pf{dec(100000), std::span<const InstrumentId>{uni}};
+
+  // A zero-quantity fill is not a transaction (sign encodes direction).
+  EXPECT_DEATH({ pf.apply_fill(fill(10, 0, 50)); }, "");
 }
 
 } // namespace

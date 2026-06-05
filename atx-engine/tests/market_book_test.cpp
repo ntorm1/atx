@@ -18,7 +18,8 @@
 //   * shift_mark moves the mark by a delta (the permanent-impact hook);
 //   * stats() returns the configured params, and zero-default when none given;
 //   * bar_volume() reflects the latest slice;
-//   * EXPECT_DEATH on an out-of-universe id (ATX_ASSERT precondition).
+//   * EXPECT_DEATH on an out-of-universe id, and on shift_mark before any price
+//     (the mark is still NaN — an unpriced shift is a sequencing bug).
 //
 // Naming: Subject_Condition_ExpectedResult.
 
@@ -214,6 +215,15 @@ TEST(MarketDeathTest, ShiftMark_IdNotInUniverse_Aborts) {
   Market mkt{std::span<const InstrumentId>{uni}, std::span<const InstrumentStats>{}};
 
   EXPECT_DEATH({ mkt.shift_mark(inst(77), 1.0); }, "");
+}
+
+TEST(MarketDeathTest, ShiftMark_BeforeAnyPrice_Aborts) {
+  std::array<InstrumentId, 1> uni{inst(10)};
+  Market mkt{std::span<const InstrumentId>{uni}, std::span<const InstrumentStats>{}};
+
+  // The mark is still NaN (no update_prices yet) — shifting it is a sequencing
+  // bug (impact applied before any price was seen).
+  EXPECT_DEATH({ mkt.shift_mark(inst(10), 1.0); }, "");
 }
 
 } // namespace
