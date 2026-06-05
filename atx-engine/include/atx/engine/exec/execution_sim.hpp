@@ -277,7 +277,12 @@ private:
 
     emit_fill(order, fillable, ref, now, market);
 
-    order.qty -= fillable; // signed: reduce the open remainder toward zero
+    // Reduce the SIGNED remainder's MAGNITUDE toward zero. `fillable` is a positive
+    // magnitude (<= |order.qty|), so a buy (qty > 0) subtracts it and a sell
+    // (qty < 0) adds it — both move toward zero without flipping sign. A plain
+    // `qty -= fillable` would shrink a buy but GROW a short (doubling it every
+    // slice), so the side must drive the update.
+    order.qty -= is_buy(order.qty) ? fillable : -fillable;
     return order.qty == 0; // fully consumed iff no remainder
   }
 

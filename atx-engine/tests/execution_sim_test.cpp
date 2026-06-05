@@ -339,6 +339,55 @@ TEST(ExecSim, VolumeCap_ExactCap_FillsFullyInOneSlice) {
   EXPECT_EQ(f[0].qty, 1'000); // exact-cap fill, fully in one slice
 }
 
+// A SELL order's signed remainder must shrink toward ZERO as it fills — not grow
+// (the open remainder is signed; the filled magnitude reduces |qty|, regardless of
+// side). A fully-filled sell therefore LEAVES the open set; it must not be retained
+// and re-shorted on every later slice. (Regression: a `qty -= magnitude` update
+// reduces a buy toward zero but DOUBLES a short, surfaced by the P2-7 loop.)
+TEST(ExecSim, SellOrder_FullyFilled_NotReopened) {
+  const VolumeCapCfg cap{/*volume_limit=*/1.0}; // ample: the whole sell fills in one slice
+  Book b{/*close=*/100, /*vol=*/10'000, InstrumentStats{}};
+  const SlippageCfg slip{SlippageMode::VolumeShare, 0.0, 0.0, 0.025, 0.10};
+  const ImpactCfg impact{0.0, 0.5, 0.0};
+  const CommissionCfg comm{CommissionMode::PerShare, 0.0, 0.0, 0.005, 0.0};
+  ExecutionSimulator sim{FillCfg{}, slip, impact, comm, LatencyCfg{}, cap};
+
+  std::array<OrderPayload, 1> orders{market_order(10, /*qty=*/-1'000, 1000)}; // SELL
+  sim.queue(std::span<const OrderPayload>{orders}, ts(1000));
+
+  const auto first = sim.settle_pending(ts(2000), b.market);
+  ASSERT_EQ(first.size(), 1U);
+  EXPECT_EQ(first[0].qty, -1'000); // the whole sell fills once
+
+  // Fully consumed -> a later slice settles NOTHING. A signed-remainder bug would
+  // retain the order and emit another (growing) short here.
+  const auto second = sim.settle_pending(ts(3000), b.market);
+  EXPECT_TRUE(second.empty()) << "a fully-filled sell must leave the open set";
+}
+
+// The buy spillover test's mirror for a SELL: the per-bar cap partials the sell and
+// the signed partials must sum back to the original (negative) order qty.
+TEST(ExecSim, VolumeCap_SellRemainder_FillsAcrossSlices_SumEqualsOrderQty) {
+  const VolumeCapCfg cap{/*volume_limit=*/0.1}; // 1000 shares/bar
+  Book b{/*close=*/100, /*vol=*/10'000, InstrumentStats{}};
+  const SlippageCfg slip{SlippageMode::VolumeShare, 0.0, 0.0, 0.025, 0.10};
+  const ImpactCfg impact{0.0, 0.5, 0.0};
+  const CommissionCfg comm{CommissionMode::PerShare, 0.0, 0.0, 0.005, 0.0};
+  ExecutionSimulator sim{FillCfg{}, slip, impact, comm, LatencyCfg{}, cap};
+
+  std::array<OrderPayload, 1> orders{market_order(10, /*qty=*/-2'500, 1000)}; // SELL
+  sim.queue(std::span<const OrderPayload>{orders}, ts(1000));
+
+  atx::i64 total = 0;
+  for (atx::i64 slice = 2000; slice <= 4000; slice += 1000) {
+    const auto f = sim.settle_pending(ts(slice), b.market);
+    for (const auto &fill : f) {
+      total += fill.qty;
+    }
+  }
+  EXPECT_EQ(total, -2'500); // sum of signed sell partials == original order qty
+}
+
 // =====================================================================
 //  Zero bar volume — cap is zero, nothing fills, order stays open.
 // =====================================================================
