@@ -47,6 +47,7 @@ add_library(atx-core STATIC
     src/symbol.cpp
     src/io/parquet.cpp
     src/db/sqlite.cpp
+    src/external/dbn.cpp
 )
 add_library(atx::core ALIAS atx-core)
 
