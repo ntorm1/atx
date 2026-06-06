@@ -82,6 +82,7 @@
 #include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/state_ops.hpp"
 #include "atx/engine/alpha/ts_ops.hpp"
 
 namespace atx::engine::alpha {
@@ -385,6 +386,9 @@ private:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
       return eval_time_series(in, dates, instruments);
+    case OpCode::TradeWhen:
+    case OpCode::Hump:
+      return eval_recurrence(in, dates, instruments);
     case OpCode::StoreAlpha:
     case OpCode::Free:
       ATX_UNREACHABLE(); // handled by evaluate(); never dispatched
@@ -671,11 +675,66 @@ private:
     return atx::core::Ok();
   }
 
+  // ---- stateful recurrence (forward scan, true cross-date state) -----------
+  // trade_when / hump carry state from the panel's FIRST date forward (no
+  // trailing window), so they CANNOT use eval_time_series. Per instrument j, we
+  // walk dates t=0…D-1 in order, holding the prior output out[t-1,j] in a pooled
+  // `state_[j]` slot (sized once, reused across calls — ZERO hot-path alloc),
+  // compute out[t,j] from state_[j] + the date-t operand cells, then advance
+  // state_[j] = out[t,j]. trade_when reads trigger=src[0], alpha=src[1],
+  // exit=src[2]; hump reads x=src[0] and the scalar threshold from src[1][0]
+  // (read EXACTLY as winsorize/CsScale read their scalar 2nd operand), defaulting
+  // to 0.01 when the optional arg is absent (P3b-1 default-fill normally
+  // materializes it, so the absent path is defensive).
+  //
+  // SAFETY: causal BY CONSTRUCTION. The scan reads state_[j] (which holds
+  // out[t-1,j]) and inputs at the flat index t*I+j (date t). There is NO index
+  // into state_[>t] or any input at a date > t — a forward reference is
+  // unrepresentable. The first date (t==0) is special-cased, so state_ needs no
+  // separate clear: t==0 seeds it. state_[j] reuse across t (and across calls,
+  // after the grow-once resize) is sound because every read of state_[j] at date
+  // t precedes its write for date t.
+  [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in, atx::usize dates,
+                                                  atx::usize instruments) {
+    const std::span<atx::f64> out = dst_col(in);
+    if (instruments > state_.size()) {
+      state_.resize(instruments); // grow-once; reused across calls
+    }
+    if (in.op == OpCode::Hump) {
+      const std::span<const atx::f64> x = src_col(in, 0);
+      const atx::f64 thr = in.src.at(1) == kNoSlot ? atx::f64{0.01} : src_col(in, 1).front();
+      for (atx::usize j = 0; j < instruments; ++j) {
+        for (atx::usize t = 0; t < dates; ++t) {
+          const atx::usize i = t * instruments + j;
+          const atx::f64 v = detail::hump_step(state_[j], x[i], thr, /*first=*/t == 0);
+          out[i] = v;
+          state_[j] = v;
+        }
+      }
+      return atx::core::Ok();
+    }
+    // TradeWhen: trigger=src[0], alpha=src[1], exit=src[2].
+    const std::span<const atx::f64> trig = src_col(in, 0);
+    const std::span<const atx::f64> alpha = src_col(in, 1);
+    const std::span<const atx::f64> exit_v = src_col(in, 2);
+    for (atx::usize j = 0; j < instruments; ++j) {
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize i = t * instruments + j;
+        const atx::f64 v =
+            detail::trade_when_step(state_[j], trig[i], exit_v[i], alpha[i], /*first=*/t == 0);
+        out[i] = v;
+        state_[j] = v;
+      }
+    }
+    return atx::core::Ok();
+  }
+
   const Panel &panel_;
   SlotPool pool_{1, 1};                // reused across calls; grown on demand
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
+  std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
 };
 
 } // namespace atx::engine::alpha

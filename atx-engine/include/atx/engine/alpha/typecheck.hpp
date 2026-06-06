@@ -145,6 +145,8 @@ namespace detail {
   case OpCode::CsCountG:
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
+  case OpCode::TradeWhen:
+  case OpCode::Hump:
   case OpCode::StoreAlpha:
   case OpCode::Free:
     return false;
@@ -322,6 +324,30 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
   if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "group operator requires a classifier (Group) 2nd argument");
+  }
+  // trade_when(trigger, alpha, exit): trigger (arg0) and exit (arg2) are masks;
+  // alpha (arg1) is numeric. Mirrors how analyze_select pins its Mask cond.
+  if (op == OpCode::TradeWhen) {
+    if (out[e.a].dtype != DType::Mask || out[e.c].dtype != DType::Mask) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "trade_when requires mask trigger/exit (args 1 and 3)");
+    }
+    if (out[e.b].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "trade_when alpha (arg 2) must be numeric (f64)");
+    }
+  }
+  // hump(x, threshold): x (arg0) is numeric; the threshold (arg1, when present)
+  // is a numeric scalar. Group/Mask dtypes are rejected for both.
+  if (op == OpCode::Hump) {
+    if (out[e.a].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hump requires a numeric (f64) primary operand");
+    }
+    if (e.b != kNoExpr && out[e.b].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hump threshold (arg 2) must be numeric (f64)");
+    }
   }
 
   // Collect child shapes in order for the table-driven shape rule.
