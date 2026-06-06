@@ -233,6 +233,13 @@ TEST(AlphaTypecheck_Window, SubOneWindow_FloorsToZero_IsError) {
   expect_analyze_error("ts_mean(close, 0.5)");
 }
 
+TEST(AlphaTypecheck_Window, OverMaxWindow_IsError) {
+  // 70000 > u16::max (65535): the window is cast to u16, and a float→int
+  // conversion out of the destination range is UB ([conv.fpint]/1). The
+  // upper-bound rail rejects it BEFORE the cast.
+  expect_analyze_error("ts_mean(close, 70000)");
+}
+
 // ---- shape mismatch ---------------------------------------------------------
 
 TEST(AlphaTypecheck_Shape, RankOfScalar_IsError) {

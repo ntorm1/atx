@@ -36,6 +36,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -207,8 +208,9 @@ namespace detail {
 // (non-constant window → error) holding a finite positive value. A non-integer
 // positive literal is FLOORED (P3b-4 §6 lock #3): the 101-alphas paper mines
 // fractional window constants (e.g. ts_mean(close, 8.7)), and the canonical
-// convention is floor(d). After flooring, a window of 0 (e.g. 0.5 → 0) and any
-// d <= 0 are still rejected. Returns the floored window as u16 on success.
+// convention is floor(d). After flooring, a window of 0 (e.g. 0.5 → 0), any
+// d <= 0, and a window above u16::max are all rejected. Returns the floored
+// window as u16 on success.
 [[nodiscard]] inline atx::core::Result<atx::u16> window_value(const Ast &ast, const Expr &call) {
   const ExprId window_id = (call_arity(call) == 3) ? call.c : call.b;
   const Expr &w = ast.node(window_id);
@@ -221,8 +223,8 @@ namespace detail {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "window must be a finite positive number");
   }
-  // SAFETY (lock #3): floor a fractional positive literal rather than reject it.
-  // The floor is the paper's window convention; the <=0 rail survives because a
+  // Floor a fractional positive literal rather than reject it (lock #3): the
+  // floor is the paper's window convention; the <=0 rail survives because a
   // non-positive or sub-1 literal (e.g. 0.5, -3) floors to <= 0 and is rejected
   // below. The non-constant rail is untouched (handled above).
   const atx::f64 floored = std::floor(v);
@@ -230,9 +232,19 @@ namespace detail {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "window must floor to a positive integer (>= 1)");
   }
-  // SAFETY: bounds checked above (finite, integral after floor, >= 1); the cast
-  // cannot narrow a fractional part. A window beyond u16 range is implausible
-  // for any realistic alpha; the explicit cast is well-defined (value integral).
+  // Upper-bound rail: the result is cast to u16, and a float→int conversion
+  // whose truncated value is outside the destination range is UNDEFINED
+  // ([conv.fpint]/1 — not a clamp), so a literal above u16::max must be rejected
+  // here, BEFORE the cast. Integrality alone does not make the cast safe.
+  constexpr atx::f64 kMaxWindow = static_cast<atx::f64>(std::numeric_limits<atx::u16>::max());
+  if (floored > kMaxWindow) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "window literal too large (max 65535)");
+  }
+  // SAFETY: the lower rail (>= 1.0) and the upper rail (<= u16::max) above prove
+  // `floored` is an integral value in [1, 65535] — provably within the u16
+  // destination range — so the float→int conversion is well-defined (no UB, no
+  // narrowing of a fractional part since the value is already integral).
   return atx::core::Ok(static_cast<atx::u16>(floored));
 }
 

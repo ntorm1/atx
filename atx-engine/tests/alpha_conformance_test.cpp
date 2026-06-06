@@ -490,6 +490,10 @@ TEST(AlphaConformance_Lock_MinMax, ElementWise_VsTimeSeries_Disambiguated) {
 //  AUTHORITY: the test asserts it covers 1..101 with no gap and no duplicate.
 // ===========================================================================
 
+// InBattery == "expressible" (every field the alpha references is shipped); a
+// representative 14-alpha subset is actually evaluated as fixtures by the
+// differential battery above. OutOfBattery == references at least one unshipped
+// field (the `reason` names it).
 enum class Membership : std::uint8_t { InBattery, OutOfBattery };
 
 struct AlphaClass {
@@ -689,9 +693,11 @@ TEST(AlphaConformance_Meta, InBatteryCount_AndOutOfBatteryCount_AreReported) {
     }
   }
   EXPECT_EQ(in_count + out_count, 101);
-  // Sanity: a non-trivial split (the battery is neither empty nor everything).
-  EXPECT_GT(in_count, 0);
-  EXPECT_GT(out_count, 0);
+  // Pin the exact split so an accidental In<->Out flip (which still totals 101)
+  // is caught: 65 expressible, 36 out-of-battery (1 cap + 22 adv{d!=20} + 9
+  // IndClass.industry + 4 IndClass.subindustry).
+  EXPECT_EQ(in_count, 65);
+  EXPECT_EQ(out_count, 36);
 }
 
 } // namespace
