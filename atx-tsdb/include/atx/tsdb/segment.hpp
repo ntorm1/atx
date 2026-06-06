@@ -34,9 +34,17 @@ static_assert(std::endian::native == std::endian::little,
 
 inline constexpr atx::u64 kMagic = tag8("ATXSEG01");
 inline constexpr atx::u64 kSealMarker = tag8("SEALED!!");
-inline constexpr atx::u32 kFormatVersion = 1U;
+inline constexpr atx::u32 kFormatVersion = 2U; // v2: 64B-aligned field blocks
 inline constexpr atx::u32 kFlagSealed = 1U << 0U;
 inline constexpr atx::u32 kFieldNameLen = 16U; // NUL-padded field name capacity
+inline constexpr atx::u64 kBlockAlign =
+    64U; // field-block byte alignment in v2 (cache line / AVX-512)
+
+/// True iff this reader can interpret an on-disk `version`. v1 (packed blocks)
+/// and v2 (64B-padded blocks) are both addressable via header offsets.
+[[nodiscard]] constexpr bool is_supported_version(atx::u32 version) noexcept {
+  return version >= 1U && version <= kFormatVersion;
+}
 
 // ---------------------------------------------------------------------------
 //  POD records (trivially copyable; memcpy'd to/from the file verbatim).
@@ -101,16 +109,35 @@ static_assert(std::is_trivially_copyable_v<SegmentFooter>);
   return (static_cast<atx::u64>(n_inst) + 63U) / 64U;
 }
 
+/// Bytes from one field block's start to the next. v1 packs blocks (stride ==
+/// T*N*8); v2 pads each block up to a 64-byte boundary so the block start is
+/// SIMD-aligned in the mapping. The block's live data is always the first T*N
+/// f64; the padding is trailing and never read.
+[[nodiscard]] constexpr atx::u64 field_block_stride_bytes(const SegmentHeader &h) noexcept {
+  const atx::u64 packed =
+      h.time_count * static_cast<atx::u64>(h.instrument_count) * sizeof(atx::f64);
+  if (h.format_version >= 2U) {
+    return (packed + (kBlockAlign - 1U)) & ~(kBlockAlign - 1U);
+  }
+  return packed;
+}
+
 /// Pointer to the first f64 of field block `field`.
 [[nodiscard]] inline const atx::f64 *field_block(const atx::u8 *base, const SegmentHeader &h,
                                                  atx::u32 field) noexcept {
-  const atx::u64 block_elems = h.time_count * h.instrument_count;
   const atx::u64 byte_off =
-      h.off_field_blocks + static_cast<atx::u64>(field) * block_elems * sizeof(atx::f64);
+      h.off_field_blocks + static_cast<atx::u64>(field) * field_block_stride_bytes(h);
   // SAFETY: byte_off < total_bytes by construction (validated at attach). The
-  // section is laid out f64-aligned, so the reinterpret is well-defined.
+  // section is laid out f64-aligned (64B-aligned in v2), so the reinterpret is
+  // well-defined.
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
   return reinterpret_cast<const atx::f64 *>(base + byte_off);
+}
+
+/// Non-owning view of field block `field` (length T*N, padding excluded).
+[[nodiscard]] inline std::span<const atx::f64>
+field_block_view(const atx::u8 *base, const SegmentHeader &h, atx::u32 field) noexcept {
+  return {field_block(base, h, field), static_cast<atx::usize>(h.time_count * h.instrument_count)};
 }
 
 /// Value at (field, t, inst). No bounds check (caller guarantees in range).

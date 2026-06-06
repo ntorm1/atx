@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <span>
 
 #include "atx/core/types.hpp"
 #include "atx/tsdb/segment.hpp"
@@ -42,4 +43,45 @@ TEST(Segment_Addressing_HitsCorrectCell, CellMath) {
   const auto *base = reinterpret_cast<const atx::u8 *>(blocks.data());
   EXPECT_DOUBLE_EQ(atx::tsdb::cell_value(base, h, /*field=*/1, /*t=*/2, /*inst=*/1), 42.0);
   EXPECT_DOUBLE_EQ(atx::tsdb::cell_value(base, h, /*field=*/0, /*t=*/0, /*inst=*/0), 0.0);
+}
+
+TEST(Segment_VersionPolicy_AcceptsOneAndTwo, SupportedVersions) {
+  EXPECT_FALSE(atx::tsdb::is_supported_version(0U));
+  EXPECT_TRUE(atx::tsdb::is_supported_version(1U));
+  EXPECT_TRUE(atx::tsdb::is_supported_version(2U));
+  EXPECT_FALSE(atx::tsdb::is_supported_version(3U));
+}
+
+TEST(Segment_Stride_PacksV1PadsV2, BlockStride) {
+  atx::tsdb::SegmentHeader h{};
+  h.time_count = 3;       // T
+  h.instrument_count = 2; // N  -> packed = 3*2*8 = 48 bytes
+  h.format_version = 1U;
+  EXPECT_EQ(atx::tsdb::field_block_stride_bytes(h), 48U); // v1: packed
+  h.format_version = 2U;
+  EXPECT_EQ(atx::tsdb::field_block_stride_bytes(h), 64U); // v2: align_up(48,64)
+}
+
+// Lay out a v2 grid by hand at the padded stride and verify field_block_view
+// addresses the right block (offsets only — in-memory 64B alignment is a
+// builder/mmap property covered in Task 3).
+TEST(Segment_FieldBlockView_HonorsV2Stride, ViewAddressing) {
+  constexpr atx::u32 F = 2, N = 2;
+  constexpr atx::u64 T = 3;              // packed = 48B -> stride 64B = 8 f64
+  constexpr atx::usize kStrideElems = 8; // 64 / sizeof(f64)
+  std::array<atx::f64, F * kStrideElems> buf{};
+  // field 1, (t=2, inst=1) -> within-block index t*N+inst = 5; block 1 base = 8.
+  buf[1 * kStrideElems + 5] = 42.0;
+
+  atx::tsdb::SegmentHeader h{};
+  h.format_version = 2U;
+  h.field_count = F;
+  h.instrument_count = N;
+  h.time_count = T;
+  h.off_field_blocks = 0;
+
+  const auto *base = reinterpret_cast<const atx::u8 *>(buf.data());
+  const std::span<const atx::f64> b1 = atx::tsdb::field_block_view(base, h, /*field=*/1);
+  ASSERT_EQ(b1.size(), static_cast<atx::usize>(T * N)); // view length is T*N (no padding)
+  EXPECT_DOUBLE_EQ(b1[2 * N + 1], 42.0);
 }
