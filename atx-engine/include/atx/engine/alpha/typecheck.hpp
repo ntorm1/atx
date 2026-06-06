@@ -97,6 +97,12 @@ namespace detail {
   case OpCode::TsSlope:
   case OpCode::TsRsquare:
   case OpCode::TsResid:
+  case OpCode::TsZscore:
+  case OpCode::TsBackfill:
+  case OpCode::TsAvDiff:
+  case OpCode::TsQuantile:
+  case OpCode::TsScale:
+  case OpCode::TsCountNans:
     return true;
   // Not rolling-window time-series ops.
   case OpCode::TsDelay:
@@ -111,6 +117,8 @@ namespace detail {
   case OpCode::Abs:
   case OpCode::Sign:
   case OpCode::Log:
+  case OpCode::Sigmoid:
+  case OpCode::Tanh:
   case OpCode::Pow:
   case OpCode::Spow:
   case OpCode::MinP:
@@ -128,10 +136,15 @@ namespace detail {
   case OpCode::CsRank:
   case OpCode::CsZscore:
   case OpCode::CsScale:
+  case OpCode::CsNormalize:
+  case OpCode::CsWinsorize:
   case OpCode::CsDemeanG:
   case OpCode::CsNeutG:
   case OpCode::CsRankG:
   case OpCode::CsZscoreG:
+  case OpCode::CsCountG:
+  case OpCode::CsMeanG:
+  case OpCode::CsScaleG:
   case OpCode::StoreAlpha:
   case OpCode::Free:
     return false;
@@ -152,21 +165,28 @@ namespace detail {
   case OpCode::CsRank:
   case OpCode::CsZscore:
   case OpCode::CsScale:
+  case OpCode::CsNormalize:
+  case OpCode::CsWinsorize:
   case OpCode::CsDemeanG:
   case OpCode::CsNeutG:
   case OpCode::CsRankG:
   case OpCode::CsZscoreG:
+  case OpCode::CsCountG:
+  case OpCode::CsMeanG:
+  case OpCode::CsScaleG:
     return true;
   default:
     return false;
   }
 }
 
-// The four group-aware cross-sectional ops: their 2nd argument must carry a
-// Group classifier dtype.
+// The group-aware cross-sectional ops: their 2nd argument must carry a Group
+// classifier dtype (the four neutralize/rank/zscore variants + the P3b-2
+// group aggregates group_count/group_mean/group_scale).
 [[nodiscard]] inline bool needs_group_arg(OpCode op) noexcept {
   return op == OpCode::CsDemeanG || op == OpCode::CsNeutG || op == OpCode::CsRankG ||
-         op == OpCode::CsZscoreG;
+         op == OpCode::CsZscoreG || op == OpCode::CsCountG || op == OpCode::CsMeanG ||
+         op == OpCode::CsScaleG;
 }
 
 // ----- field classification ---------------------------------------------

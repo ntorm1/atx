@@ -324,6 +324,8 @@ private:
     case OpCode::Abs:
     case OpCode::Sign:
     case OpCode::Log:
+    case OpCode::Sigmoid:
+    case OpCode::Tanh:
       return eval_unary(in);
     case OpCode::CmpLt:
     case OpCode::CmpGt:
@@ -342,10 +344,15 @@ private:
     case OpCode::CsRank:
     case OpCode::CsZscore:
     case OpCode::CsScale:
+    case OpCode::CsNormalize:
+    case OpCode::CsWinsorize:
     case OpCode::CsDemeanG:
     case OpCode::CsNeutG:
     case OpCode::CsRankG:
     case OpCode::CsZscoreG:
+    case OpCode::CsCountG:
+    case OpCode::CsMeanG:
+    case OpCode::CsScaleG:
       return eval_cross_section(in, dates, instruments);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -371,6 +378,12 @@ private:
     case OpCode::TsSlope:
     case OpCode::TsRsquare:
     case OpCode::TsResid:
+    case OpCode::TsZscore:
+    case OpCode::TsBackfill:
+    case OpCode::TsAvDiff:
+    case OpCode::TsQuantile:
+    case OpCode::TsScale:
+    case OpCode::TsCountNans:
       return eval_time_series(in, dates, instruments);
     case OpCode::StoreAlpha:
     case OpCode::Free:
@@ -423,6 +436,13 @@ private:
       break;
     case OpCode::Log:
       detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return std::log(x); });
+      break;
+    case OpCode::Sigmoid:
+      // 1/(1+exp(-x)); NaN -> NaN naturally. Bit-identical to oracle's op_sigmoid.
+      detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return 1.0 / (1.0 + std::exp(-x)); });
+      break;
+    case OpCode::Tanh:
+      detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return std::tanh(x); });
       break;
     default:
       ATX_UNREACHABLE();
@@ -531,13 +551,17 @@ private:
                                                      atx::usize instruments) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const std::span<atx::f64> out = dst_col(in);
-    const bool grouped = (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG ||
-                          in.op == OpCode::CsRankG || in.op == OpCode::CsZscoreG);
+    const bool grouped =
+        (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
+         in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
+         in.op == OpCode::CsScaleG);
     std::span<const atx::f64> g{};
+    // The scalar 2nd operand: CsScale's target L1 norm `a`, or CsWinsorize's
+    // std multiplier `k`. Read EXACTLY as CsScale does (cell [0] of the slot).
     atx::f64 scale_a = 1.0;
     if (grouped) {
       g = src_col(in, 1);
-    } else if (in.op == OpCode::CsScale) {
+    } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize) {
       const std::span<const atx::f64> col = src_col(in, 1);
       scale_a = col.empty() ? detail::kVmNaN : col.front();
     }
@@ -576,6 +600,12 @@ private:
     case OpCode::CsScale:
       detail::cs_scale_row(x, valid, scale_a, out);
       break;
+    case OpCode::CsNormalize:
+      detail::cs_normalize_row(x, valid, out);
+      break;
+    case OpCode::CsWinsorize:
+      detail::cs_winsorize_row(x, valid, scale_a, out);
+      break;
     case OpCode::CsDemeanG:
     case OpCode::CsNeutG: // SAFETY: residualize-on-group-dummies == per-group demean
       detail::cs_group_demean_row(x, g, valid, out);
@@ -585,6 +615,15 @@ private:
       break;
     case OpCode::CsZscoreG:
       detail::cs_group_row(x, g, valid, out, /*zscore=*/true);
+      break;
+    case OpCode::CsCountG:
+      detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/false);
+      break;
+    case OpCode::CsMeanG:
+      detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/true);
+      break;
+    case OpCode::CsScaleG:
+      detail::cs_group_scale_row(x, g, valid, out);
       break;
     default:
       ATX_UNREACHABLE();

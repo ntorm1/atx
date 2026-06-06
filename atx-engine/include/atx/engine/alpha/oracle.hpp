@@ -155,6 +155,10 @@ inline void map_binary(std::span<const atx::f64> a, std::span<const atx::f64> b,
   return (a > 0.0) - (a < 0.0);
 }
 
+// sigmoid(x) = 1/(1+exp(-x)) (P3b-2). NaN -> NaN naturally (exp/div propagate).
+// Bit-identical to vm.hpp's Sigmoid lambda by construction.
+[[nodiscard]] inline atx::f64 op_sigmoid(atx::f64 a) noexcept { return 1.0 / (1.0 + std::exp(-a)); }
+
 // signedpower(x, e) = sign(x) * |x|^e (Alpha101 SignedPower).
 [[nodiscard]] inline atx::f64 op_spow(atx::f64 a, atx::f64 e) noexcept {
   if (is_nan(a) || is_nan(e)) {
@@ -322,6 +326,8 @@ private:
     case OpCode::Abs:
     case OpCode::Sign:
     case OpCode::Log:
+    case OpCode::Sigmoid:
+    case OpCode::Tanh:
       return eval_unary(in);
     case OpCode::CmpLt:
     case OpCode::CmpGt:
@@ -340,10 +346,15 @@ private:
     case OpCode::CsRank:
     case OpCode::CsZscore:
     case OpCode::CsScale:
+    case OpCode::CsNormalize:
+    case OpCode::CsWinsorize:
     case OpCode::CsDemeanG:
     case OpCode::CsNeutG:
     case OpCode::CsRankG:
     case OpCode::CsZscoreG:
+    case OpCode::CsCountG:
+    case OpCode::CsMeanG:
+    case OpCode::CsScaleG:
       return eval_cross_section(in);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -369,6 +380,12 @@ private:
     case OpCode::TsSlope:
     case OpCode::TsRsquare:
     case OpCode::TsResid:
+    case OpCode::TsZscore:
+    case OpCode::TsBackfill:
+    case OpCode::TsAvDiff:
+    case OpCode::TsQuantile:
+    case OpCode::TsScale:
+    case OpCode::TsCountNans:
       return eval_time_series(in);
     case OpCode::StoreAlpha:
     case OpCode::Free:
@@ -415,6 +432,12 @@ private:
       break;
     case OpCode::Log:
       detail::map_unary(a, out, [](atx::f64 x) { return std::log(x); });
+      break;
+    case OpCode::Sigmoid:
+      detail::map_unary(a, out, detail::op_sigmoid);
+      break;
+    case OpCode::Tanh:
+      detail::map_unary(a, out, [](atx::f64 x) { return std::tanh(x); });
       break;
     default:
       ATX_UNREACHABLE();
@@ -641,17 +664,86 @@ inline void cs_group(std::span<const atx::f64> x, std::span<const atx::f64> g,
   }
 }
 
+// CsNormalize (P3b-2): cross-sectional demean — x - mean over the valid set.
+inline void cs_normalize(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                         std::span<atx::f64> out) {
+  const std::vector<atx::f64> v = gather(x, valid);
+  const atx::f64 mean = mean_of(v);
+  for (const atx::usize i : valid) {
+    out[i] = x[i] - mean;
+  }
+}
+
+// CsWinsorize (P3b-2): clamp each valid cell to [mean - k·σ, mean + k·σ] over
+// the valid set; σ = SAMPLE std (ddof=1). Fewer than 2 valid -> σ NaN -> the
+// comparisons are false -> the value passes through unclamped.
+inline void cs_winsorize(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                         atx::f64 k, std::span<atx::f64> out) {
+  const std::vector<atx::f64> v = gather(x, valid);
+  const atx::f64 mean = mean_of(v);
+  const atx::f64 sd = sample_std(v, mean);
+  const atx::f64 lo = mean - k * sd;
+  const atx::f64 hi = mean + k * sd;
+  for (const atx::usize i : valid) {
+    const atx::f64 xv = x[i];
+    out[i] = (xv < lo) ? lo : (xv > hi ? hi : xv);
+  }
+}
+
+// CsCountG / CsMeanG (P3b-2): broadcast the within-group member count or mean to
+// each valid member. A NaN group label -> stays NaN (out-of-set).
+inline void cs_group_count_mean(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                                const std::vector<atx::usize> &valid, std::span<atx::f64> out,
+                                bool want_mean) {
+  for (const atx::usize i : valid) {
+    if (is_nan(g[i])) {
+      continue;
+    }
+    atx::f64 sum = 0.0;
+    atx::usize cnt = 0;
+    for (const atx::usize j : valid) {
+      if (g[j] == g[i]) {
+        sum += x[j];
+        ++cnt;
+      }
+    }
+    out[i] = want_mean ? sum / static_cast<atx::f64>(cnt) : static_cast<atx::f64>(cnt);
+  }
+}
+
+// CsScaleG (P3b-2): scale within each group so Σ|x| over the group's valid
+// members == 1 (zero-L1 group -> 0). A NaN group label -> stays NaN.
+inline void cs_group_scale(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                           const std::vector<atx::usize> &valid, std::span<atx::f64> out) {
+  for (const atx::usize i : valid) {
+    if (is_nan(g[i])) {
+      continue;
+    }
+    atx::f64 l1 = 0.0;
+    for (const atx::usize j : valid) {
+      if (g[j] == g[i]) {
+        l1 += std::fabs(x[j]);
+      }
+    }
+    const atx::f64 kfac = (l1 == 0.0) ? 0.0 : 1.0 / l1;
+    out[i] = x[i] * kfac;
+  }
+}
+
 inline atx::core::Status Oracle::eval_cross_section(const Instr &in) {
   const std::span<const atx::f64> x = src_col(in, 0);
   std::span<atx::f64> out = dst_col(in);
-  // Group ops take the classifier in src[1]; CsScale takes the factor in src[1].
-  const bool grouped = (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG ||
-                        in.op == OpCode::CsRankG || in.op == OpCode::CsZscoreG);
+  // Group ops take the classifier in src[1]; CsScale/CsWinsorize read a scalar
+  // (target L1 norm / std multiplier) from src[1]'s [0] cell.
+  const bool grouped =
+      (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
+       in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
+       in.op == OpCode::CsScaleG);
   std::span<const atx::f64> g{};
   atx::f64 scale_a = 1.0;
   if (grouped) {
     g = src_col(in, 1);
-  } else if (in.op == OpCode::CsScale) {
+  } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize) {
     scale_a = detail::scalar_of(src_col(in, 1));
   }
   for (atx::usize d = 0; d < dates_; ++d) {
@@ -690,6 +782,12 @@ inline void Oracle::cs_one_date(OpCode op, std::span<const atx::f64> x, std::spa
   case OpCode::CsScale:
     cs_scale(x, valid, scale_a, out);
     return;
+  case OpCode::CsNormalize:
+    cs_normalize(x, valid, out);
+    return;
+  case OpCode::CsWinsorize:
+    cs_winsorize(x, valid, scale_a, out);
+    return;
   case OpCode::CsDemeanG:
   case OpCode::CsNeutG: // SAFETY: residualize-on-group-dummies == per-group demean
     cs_group_demean(x, g, valid, out);
@@ -699,6 +797,15 @@ inline void Oracle::cs_one_date(OpCode op, std::span<const atx::f64> x, std::spa
     return;
   case OpCode::CsZscoreG:
     cs_group(x, g, valid, out, /*zscore=*/true);
+    return;
+  case OpCode::CsCountG:
+    cs_group_count_mean(x, g, valid, out, /*want_mean=*/false);
+    return;
+  case OpCode::CsMeanG:
+    cs_group_count_mean(x, g, valid, out, /*want_mean=*/true);
+    return;
+  case OpCode::CsScaleG:
+    cs_group_scale(x, g, valid, out);
     return;
   default:
     ATX_UNREACHABLE();
@@ -886,6 +993,32 @@ inline atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx:
     const atx::f64 shifted = x[(t - d) * instruments_ + j];
     return op == OpCode::TsDelay ? shifted : x[t * instruments_ + j] - shifted;
   }
+  // ts_backfill (P3b-2): most recent valid value in [t-d+1, t], looking PAST
+  // NaNs (its own policy, NOT the any-NaN -> NaN gate). Scan newest -> oldest;
+  // the `t >= i` guard keeps the walk causal and underflow-safe at date 0.
+  if (op == OpCode::TsBackfill) {
+    for (atx::usize i = 0; i < d && t >= i; ++i) {
+      const atx::f64 v = x[(t - i) * instruments_ + j];
+      if (!detail::is_nan(v)) {
+        return v;
+      }
+    }
+    return detail::kNaN;
+  }
+  // ts_count_nans (P3b-2): full-window-only NaN count (returns a finite count,
+  // never propagates NaN). An incomplete window (t+1 < d) -> NaN, like delay.
+  if (op == OpCode::TsCountNans) {
+    if (d == 0 || t + 1 < d) {
+      return detail::kNaN;
+    }
+    atx::usize cnt = 0;
+    for (atx::usize s = t + 1 - d; s <= t; ++s) {
+      if (detail::is_nan(x[s * instruments_ + j])) {
+        ++cnt;
+      }
+    }
+    return static_cast<atx::f64>(cnt);
+  }
 
   std::vector<atx::f64> w;
   if (!detail::gather_window(x, t, j, d, instruments_, w)) {
@@ -1018,6 +1151,27 @@ inline atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx:
     return detail::lin_fit(w).r2;
   case OpCode::TsResid:
     return w.back() - detail::lin_fit(w).fitted_last;
+  case OpCode::TsZscore: {
+    // (x[t] - mean) / sample-std over the window; same reductions as mean/std.
+    const atx::f64 mean = detail::sum_of(w) / static_cast<atx::f64>(n);
+    const atx::f64 sd = std::sqrt(detail::sample_var(w));
+    return (w.back() - mean) / sd; // sd NaN (n<2) -> NaN
+  }
+  case OpCode::TsAvDiff:
+    return w.back() - detail::sum_of(w) / static_cast<atx::f64>(n);
+  case OpCode::TsQuantile: {
+    // Rolling median (quantile 0.5) — identical to TsMed (sort + even-n midpoint).
+    std::vector<atx::f64> s = w;
+    std::sort(s.begin(), s.end());
+    return (n % 2 == 1) ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2.0;
+  }
+  case OpCode::TsScale: {
+    // Rolling min-max: (x[t] - min) / (max - min); flat window -> 0.
+    const atx::f64 lo = *std::min_element(w.begin(), w.end());
+    const atx::f64 hi = *std::max_element(w.begin(), w.end());
+    const atx::f64 range = hi - lo;
+    return range == 0.0 ? 0.0 : (w.back() - lo) / range;
+  }
   default:
     ATX_UNREACHABLE();
   }

@@ -5,8 +5,9 @@
 // The per-instrument-column, causal trailing-window opcodes for the fast
 // vectorized VM (vm.hpp): delay / delta / sum / mean / std / var / min / max /
 // argmin / argmax / rank / corr / cov / product / decay_linear / ema / wma /
-// skew / kurt / med / mad / slope / rsquare / resid (the 24 `Ts*` ops). These
-// free functions are the PRODUCTION-path counterparts of oracle.hpp's
+// skew / kurt / med / mad / slope / rsquare / resid plus the P3b-2 superset
+// zscore / backfill / av_diff / quantile / scale / count_nans (the 30 `Ts*`
+// ops). These free functions are the PRODUCTION-path counterparts of oracle.hpp's
 // `detail::ts_unary_at` / `ts_binary_at`; vm.hpp's `Engine::eval_time_series`
 // resolves the window from the op's last operand and calls into them per cell.
 // They MUST reproduce the oracle BIT-FOR-BIT — the P3-8 differential test runs
@@ -237,13 +238,55 @@ struct TsvFit {
   return d == 1 ? 0.5 : avg / static_cast<atx::f64>(d - 1);
 }
 
+// ts_backfill (P3b-2): the most recent valid (non-NaN) value within the
+// trailing window [t-d+1, t]. Scans newest -> oldest and returns the first
+// finite cell (so it looks PAST NaNs — it deliberately does NOT use the
+// any-NaN -> NaN policy). All-NaN window (or d==0) -> NaN. The scan is purely
+// causal (only indices <= t) and order-independent (no float reduction), so the
+// VM and oracle agree bit-for-bit. The window underflow at date 0 is guarded by
+// `t >= i` (we never index a negative date).
+[[nodiscard]] inline atx::f64 tsv_backfill(std::span<const atx::f64> x, atx::usize t, atx::usize j,
+                                           atx::usize d, atx::usize instruments) noexcept {
+  for (atx::usize i = 0; i < d && t >= i; ++i) {
+    const atx::f64 v = x[(t - i) * instruments + j];
+    if (!ts_is_nan(v)) {
+      return v;
+    }
+  }
+  return kTsNaN;
+}
+
+// ts_count_nans (P3b-2): count of NaNs in the trailing window [t-d+1, t]. This
+// is a data-quality signal that returns a FINITE count even when the window has
+// NaNs (it does NOT propagate NaN). CONVENTION: full-window-only — like the
+// simplest existing partial op (delay/delta, which return NaN until t >= d), an
+// incomplete window (t+1 < d) yields NaN; once the window is full we count its
+// NaN cells. The count walk is chronological for index hygiene (order is
+// irrelevant for an integer count) and bit-trivially matches the oracle.
+[[nodiscard]] inline atx::f64 tsv_count_nans(std::span<const atx::f64> x, atx::usize t,
+                                             atx::usize j, atx::usize d,
+                                             atx::usize instruments) noexcept {
+  if (d == 0 || t + 1 < d) {
+    return kTsNaN; // incomplete window -> NaN (full-window-only convention)
+  }
+  atx::usize cnt = 0;
+  for (atx::usize k = t + 1 - d; k <= t; ++k) {
+    if (ts_is_nan(x[k * instruments + j])) {
+      ++cnt;
+    }
+  }
+  return static_cast<atx::f64>(cnt);
+}
+
 // ===========================================================================
 //  ts_value_at — single-cell value of a UNARY-series Ts op at (t, j) over the
 //  trailing window `d`. delay/delta short-circuit (they need only the shifted
-//  observation, not a full window); every other op requires a full, NaN-free
-//  window (tsv_window_valid). `sort_buf` is caller-owned scratch (>= d) reused
-//  by the median branch only. A partial `switch` over the unary Ts opcodes with
-//  `default: ATX_UNREACHABLE()` (mirrors vm.hpp's eval_binary style).
+//  observation, not a full window); ts_backfill/ts_count_nans short-circuit too
+//  (they have their OWN NaN policy — backfill looks past NaNs, count_nans counts
+//  them); every other op requires a full, NaN-free window (tsv_window_valid).
+//  `sort_buf` is caller-owned scratch (>= d) reused by the median branch only. A
+//  partial `switch` over the unary Ts opcodes with `default: ATX_UNREACHABLE()`
+//  (mirrors vm.hpp's eval_binary style).
 // ===========================================================================
 [[nodiscard]] inline atx::f64 ts_value_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
                                           atx::usize j, atx::usize d, atx::usize instruments,
@@ -255,6 +298,14 @@ struct TsvFit {
     }
     const atx::f64 shifted = x[(t - d) * instruments + j];
     return op == OpCode::TsDelay ? shifted : x[t * instruments + j] - shifted;
+  }
+  // ts_backfill / ts_count_nans: their own NaN policy (NOT the any-NaN -> NaN
+  // gate). They short-circuit before tsv_window_valid for the same reason.
+  if (op == OpCode::TsBackfill) {
+    return tsv_backfill(x, t, j, d, instruments);
+  }
+  if (op == OpCode::TsCountNans) {
+    return tsv_count_nans(x, t, j, d, instruments);
   }
 
   if (!tsv_window_valid(x, t, j, d, instruments)) {
@@ -370,6 +421,39 @@ struct TsvFit {
   case OpCode::TsResid: {
     const TsvFit f = tsv_lin_fit(x, t, j, d, instruments);
     return x[t * instruments + j] - f.fitted_last;
+  }
+  case OpCode::TsZscore: {
+    // (x[t] - rolling mean) / rolling SAMPLE std; reuse tsv_sum / tsv_var so the
+    // reduction order matches ts_mean / ts_std (hence the oracle) bit-for-bit.
+    const atx::f64 mean = tsv_sum(x, t, j, d, instruments) / nf;
+    const atx::f64 sd = std::sqrt(tsv_var(x, t, j, d, instruments));
+    return (x[t * instruments + j] - mean) / sd; // sd NaN (d<2) -> NaN
+  }
+  case OpCode::TsAvDiff: {
+    // x[t] - rolling mean (deviation from the trailing mean).
+    const atx::f64 mean = tsv_sum(x, t, j, d, instruments) / nf;
+    return x[t * instruments + j] - mean;
+  }
+  case OpCode::TsQuantile: {
+    // Rolling median (quantile 0.5) — identical kernel to TsMed (same gather,
+    // same sort, same even-n midpoint average), so the two agree bit-for-bit.
+    tsv_gather(x, t, j, d, instruments, sort_buf);
+    std::sort(sort_buf.begin(), sort_buf.begin() + static_cast<std::ptrdiff_t>(d));
+    return (d % 2 == 1) ? sort_buf[d / 2] : (sort_buf[d / 2 - 1] + sort_buf[d / 2]) / 2.0;
+  }
+  case OpCode::TsScale: {
+    // Rolling min-max: (x[t] - min) / (max - min); a flat window (max == min)
+    // -> 0 (avoid /0). Same full-window min_periods as TsMin/TsMax.
+    const atx::usize base = (t + 1 - d) * instruments + j;
+    atx::f64 lo = x[base];
+    atx::f64 hi = x[base];
+    for (atx::usize i = 1; i < d; ++i) {
+      const atx::f64 v = x[base + i * instruments];
+      lo = v < lo ? v : lo;
+      hi = v > hi ? v : hi;
+    }
+    const atx::f64 range = hi - lo;
+    return range == 0.0 ? 0.0 : (x[t * instruments + j] - lo) / range;
   }
   default:
     ATX_UNREACHABLE();

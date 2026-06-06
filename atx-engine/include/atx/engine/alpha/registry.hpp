@@ -85,6 +85,8 @@ enum class OpCode : atx::u8 {
   Abs,
   Sign,
   Log,
+  Sigmoid,
+  Tanh,
   Pow,
   Spow,
   MinP,
@@ -104,10 +106,15 @@ enum class OpCode : atx::u8 {
   CsRank,
   CsZscore,
   CsScale,
+  CsNormalize,
+  CsWinsorize,
   CsDemeanG,
   CsNeutG,
   CsRankG,
   CsZscoreG,
+  CsCountG,
+  CsMeanG,
+  CsScaleG,
   // ---- time-series ----
   TsDelay,
   TsDelta,
@@ -133,6 +140,12 @@ enum class OpCode : atx::u8 {
   TsSlope,
   TsRsquare,
   TsResid,
+  TsZscore,
+  TsBackfill,
+  TsAvDiff,
+  TsQuantile,
+  TsScale,
+  TsCountNans,
   // ---- store / free ----
   StoreAlpha,
   Free,
@@ -172,7 +185,8 @@ namespace detail {
   return detail::broadcast_max(args);
 }
 
-// Unary element-wise (Neg/Abs/Sign/Log/Not): output shape == sole arg's shape.
+// Unary element-wise (Neg/Abs/Sign/Log/Sigmoid/Tanh/Not): output shape == sole
+// arg's shape.
 // Defensive: empty args ⇒ Scalar (the checker rejects the arity before here).
 [[nodiscard]] inline Shape shape_unary(std::span<const Shape> args) noexcept {
   return args.empty() ? Shape::Scalar : args.front();
@@ -273,11 +287,14 @@ namespace detail {
   // lookahead_safe, defaults, shape_of}. Fixed-arity ops carry min==max and an
   // empty defaults array. `scale` is the lone variadic built-in in 3b: 1
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
-  static constexpr std::array<OpSig, 42> kOps = {{
+  static constexpr std::array<OpSig, 55> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
       {"log", 1, 1, OpCode::Log, DType::F64, true, {}, &shape_unary},
+      // BRAIN-superset element-wise activations (P3b-2): NaN→NaN naturally.
+      {"sigmoid", 1, 1, OpCode::Sigmoid, DType::F64, true, {}, &shape_unary},
+      {"tanh", 1, 1, OpCode::Tanh, DType::F64, true, {}, &shape_unary},
       // ---- binary element-wise functions ----
       {"power", 2, 2, OpCode::Pow, DType::F64, true, {}, &shape_elementwise},
       {"signedpower", 2, 2, OpCode::Spow, DType::F64, true, {}, &shape_elementwise},
@@ -288,11 +305,21 @@ namespace detail {
       {"zscore", 1, 1, OpCode::CsZscore, DType::F64, true, {}, &shape_cross_section},
       // scale(x) defaults its 2nd arg to 1.0 (target L1 norm).
       {"scale", 1, 2, OpCode::CsScale, DType::F64, true, {1.0}, &shape_cross_section},
+      // BRAIN-superset cross-sectional (P3b-2). normalize = cross-sectional
+      // demean; winsorize(x, std=4) clamps to mean±std·σ (σ sample, ddof=1),
+      // reading the `std` multiplier from its 2nd operand like CsScale's factor.
+      {"normalize", 1, 1, OpCode::CsNormalize, DType::F64, true, {}, &shape_cross_section},
+      {"winsorize", 1, 2, OpCode::CsWinsorize, DType::F64, true, {4.0}, &shape_cross_section},
       {"indneutralize", 2, 2, OpCode::CsDemeanG, DType::F64, true, {}, &shape_cross_section},
       // group_neutralize stays fixed-arity 2 in P3b-1; optional cap → P3b-4.
       {"group_neutralize", 2, 2, OpCode::CsNeutG, DType::F64, true, {}, &shape_cross_section},
       {"group_rank", 2, 2, OpCode::CsRankG, DType::F64, true, {}, &shape_cross_section},
       {"group_zscore", 2, 2, OpCode::CsZscoreG, DType::F64, true, {}, &shape_cross_section},
+      // BRAIN-superset group aggregates (P3b-2): arg2 = Group classifier. Each
+      // broadcasts a within-group aggregate over its members (NaN-fill excluded).
+      {"group_count", 2, 2, OpCode::CsCountG, DType::F64, true, {}, &shape_cross_section},
+      {"group_mean", 2, 2, OpCode::CsMeanG, DType::F64, true, {}, &shape_cross_section},
+      {"group_scale", 2, 2, OpCode::CsScaleG, DType::F64, true, {}, &shape_cross_section},
       // ---- time-series (P→P) ----
       {"delay", 2, 2, OpCode::TsDelay, DType::F64, true, {}, &shape_panel},
       {"delta", 2, 2, OpCode::TsDelta, DType::F64, true, {}, &shape_panel},
@@ -319,6 +346,14 @@ namespace detail {
       {"slope", 2, 2, OpCode::TsSlope, DType::F64, true, {}, &shape_panel},
       {"rsquare", 2, 2, OpCode::TsRsquare, DType::F64, true, {}, &shape_panel},
       {"resid", 2, 2, OpCode::TsResid, DType::F64, true, {}, &shape_panel},
+      // BRAIN-superset rolling (P3b-2). All full-window min_periods except
+      // ts_backfill (looks PAST NaNs to the most recent valid value in [t-d+1,t]).
+      {"ts_zscore", 2, 2, OpCode::TsZscore, DType::F64, true, {}, &shape_panel},
+      {"ts_backfill", 2, 2, OpCode::TsBackfill, DType::F64, true, {}, &shape_panel},
+      {"ts_av_diff", 2, 2, OpCode::TsAvDiff, DType::F64, true, {}, &shape_panel},
+      {"ts_quantile", 2, 2, OpCode::TsQuantile, DType::F64, true, {}, &shape_panel},
+      {"ts_scale", 2, 2, OpCode::TsScale, DType::F64, true, {}, &shape_panel},
+      {"ts_count_nans", 2, 2, OpCode::TsCountNans, DType::F64, true, {}, &shape_panel},
       {"ts_skew", 2, 2, OpCode::TsSkew, DType::F64, true, {}, &shape_panel},
       {"ts_kurt", 2, 2, OpCode::TsKurt, DType::F64, true, {}, &shape_panel},
       {"ts_corr", 3, 3, OpCode::TsCorr, DType::F64, true, {}, &shape_panel},

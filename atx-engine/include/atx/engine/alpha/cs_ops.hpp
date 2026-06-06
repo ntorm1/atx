@@ -3,8 +3,9 @@
 // atx::engine::alpha — cross-sectional VM kernels (P3-7).
 //
 // The per-date-row cross-sectional opcodes for the fast vectorized VM
-// (vm.hpp): rank / zscore / scale / indneutralize (== group demean) /
-// group_neutralize (== demean) / group_rank / group_zscore. These free
+// (vm.hpp): rank / zscore / scale / normalize / winsorize / indneutralize
+// (== group demean) / group_neutralize (== demean) / group_rank / group_zscore
+// / group_count / group_mean / group_scale (the last six P3b-2). These free
 // functions are the PRODUCTION-path counterparts of oracle.hpp's
 // `detail::cs_*`; vm.hpp's `Engine::eval_cross_section` slices each slot
 // buffer to a single date row and calls into them. They MUST reproduce the
@@ -201,6 +202,86 @@ inline void cs_group_row(std::span<const atx::f64> x, std::span<const atx::f64> 
     } else {
       cs_rank_row(x, members, out); // writes ranks for the whole group (idempotent)
     }
+  }
+}
+
+// ===========================================================================
+//  CsNormalize (P3b-2) — cross-sectional demean: x - mean over the valid set.
+//  Out-of-set cells stay NaN. With an empty valid set the mean is NaN, but the
+//  loop body never executes, so every cell stays NaN (matches the oracle).
+// ===========================================================================
+inline void cs_normalize_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                             std::span<atx::f64> out) {
+  const std::vector<atx::f64> v = cs_gather(x, valid);
+  const atx::f64 mean = cs_mean(v);
+  for (const atx::usize i : valid) {
+    out[i] = x[i] - mean;
+  }
+}
+
+// ===========================================================================
+//  CsWinsorize (P3b-2) — clamp each valid cell to [mean - k·σ, mean + k·σ]
+//  where mean/σ are over the valid set, σ = SAMPLE std (ddof=1, the pinned
+//  zscore policy) and `k` is the scalar 2nd operand. With fewer than 2 valid
+//  observations σ is NaN, so every comparison is false and the value passes
+//  through unclamped (a sub-2 valid set has no dispersion to clip against).
+// ===========================================================================
+inline void cs_winsorize_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                             atx::f64 k, std::span<atx::f64> out) {
+  const std::vector<atx::f64> v = cs_gather(x, valid);
+  const atx::f64 mean = cs_mean(v);
+  const atx::f64 sd = cs_sample_std(v, mean);
+  const atx::f64 lo = mean - k * sd;
+  const atx::f64 hi = mean + k * sd;
+  for (const atx::usize i : valid) {
+    const atx::f64 xv = x[i];
+    out[i] = (xv < lo) ? lo : (xv > hi ? hi : xv); // NaN bounds -> pass-through
+  }
+}
+
+// ===========================================================================
+//  CsCountG / CsMeanG (P3b-2) — broadcast a within-group aggregate (member
+//  count or mean) to every valid member of the group. `want_mean` selects the
+//  variant. A cell with a NaN group label has no group -> stays NaN.
+// ===========================================================================
+inline void cs_group_count_mean_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                                    const std::vector<atx::usize> &valid, std::span<atx::f64> out,
+                                    bool want_mean) {
+  for (const atx::usize i : valid) {
+    if (cs_is_nan(g[i])) {
+      continue; // no group label -> stays NaN (out-of-set)
+    }
+    atx::f64 sum = 0.0;
+    atx::usize cnt = 0;
+    for (const atx::usize j : valid) {
+      if (g[j] == g[i]) {
+        sum += x[j];
+        ++cnt;
+      }
+    }
+    out[i] = want_mean ? sum / static_cast<atx::f64>(cnt) : static_cast<atx::f64>(cnt);
+  }
+}
+
+// ===========================================================================
+//  CsScaleG (P3b-2) — scale WITHIN each group so Σ|x| over the group's valid
+//  members equals 1 (a zero-L1 group leaves its members at 0, like
+//  cs_scale_row). A cell with a NaN group label stays NaN.
+// ===========================================================================
+inline void cs_group_scale_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                               const std::vector<atx::usize> &valid, std::span<atx::f64> out) {
+  for (const atx::usize i : valid) {
+    if (cs_is_nan(g[i])) {
+      continue;
+    }
+    atx::f64 l1 = 0.0;
+    for (const atx::usize j : valid) {
+      if (g[j] == g[i]) {
+        l1 += std::fabs(x[j]);
+      }
+    }
+    const atx::f64 kfac = (l1 == 0.0) ? 0.0 : 1.0 / l1;
+    out[i] = x[i] * kfac;
   }
 }
 
