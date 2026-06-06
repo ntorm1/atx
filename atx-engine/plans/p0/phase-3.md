@@ -159,3 +159,117 @@ Phase 3 stops at *source → signal*. Phase 4 screens the resulting signal strea
 correlation/turnover/fitness gates and combines the gated pool into one mega-alpha over a Barra-style risk
 model, plugging into the Phase-2 loop as just another `ISignalSource` (the `VmSignalSource` green-gate). The
 `SignalSet` this phase emits is that input.
+
+---
+
+# Phase 3b / 3c addendum — BRAIN-superset surface · batch API · streams · loop bridge
+
+Phase 3b widened the operator vocabulary to a WorldQuant-BRAIN superset and added variadic/default args; Phase
+3c added the mass-evaluation batch convenience, the per-alpha PnL/position stream extraction, and the
+`VmSignalSource` bridge that finally drives the real Phase-2 `BacktestLoop` from a compiled alpha. The §1–§6
+contract above is unchanged; this addendum documents only the new surface. Measured CSE / throughput numbers
+live in the build ledgers ([`phase-3b-progress.md`](phase-3b-progress.md), [`phase-3c-progress.md`](phase-3c-progress.md)) — not duplicated here.
+
+## 7. BRAIN-superset operators (3b)
+
+All are causal (lookahead-safe), full-window `min_periods` (except `ts_backfill`), and NaN-propagating per the
+§3 policy. Each is one registry row + one opcode + one kernel.
+
+| Family | New operators |
+|---|---|
+| element-wise activations (P→P) | `sigmoid(x)` = 1/(1+e⁻ˣ) · `tanh(x)` |
+| cross-sectional (P→V) | `normalize(x)` = cross-sectional demean · `winsorize(x, std=4)` clamp to mean ± std·σ (σ sample, ddof=1) |
+| group aggregates (P→V) | `group_count(x, g)` · `group_mean(x, g)` · `group_scale(x, g)` — `g` is a `Group` classifier; each broadcasts a within-group aggregate over its members (NaN-fill excluded) |
+| rolling time-series (P→P) | `ts_zscore(x,d)` · `ts_backfill(x,d)` (looks PAST NaNs to the most recent valid value in `[t-d+1,t]`) · `ts_av_diff(x,d)` · `ts_quantile(x,d)` · `ts_scale(x,d)` · `ts_count_nans(x,d)` |
+| stateful recurrence (P→P, causal) | `trade_when(trigger, alpha, exit)` — `trigger`/`exit` are masks, `alpha` is F64; a forward scan seeds at the first date and reads only prior state + inputs ≤ t · `hump(x, threshold=0.01)` |
+
+### Variadic / default arguments (3b)
+A few built-ins now carry an optional trailing argument with a finite default (filled at parse time as a
+`Const`, so `scale(x)` and `scale(x, 1)` compile to the same DAG):
+
+| Call | Default | Meaning |
+|---|---|---|
+| `scale(x)` | 2nd arg = `1.0` | rescale the valid cross-section to target L1 norm |
+| `winsorize(x)` | `std = 4.0` | clamp to mean ± 4σ |
+| `hump(x)` | `threshold = 0.01` | dampen position changes below the threshold |
+
+### Locked semantics (pinned; the fast VM matches these exactly)
+- `indneutralize(x, g)` ≡ `group_neutralize` = per-group **demean** (NOT a full WLS residual).
+- `signedpower(x, a)` = `sign(x)·|x|^a`.
+- **Window convention is `floor(d)`** — a window literal is floored to an integer; a value that floors to `< 1`
+  (e.g. `0.5`, `-3`) or exceeds `u16::max` is a parse-time error (the causality rail: no forward-looking term).
+- **`min_periods` = full window** for every rolling op (an incomplete or NaN-containing trailing window yields
+  NaN); `ts_backfill` is the sole exception (it skips PAST NaNs within its window).
+
+## 8. Batch API — `compile_batch` (3c)
+
+Multi-assignment programs already compile to one cross-alpha-CSE DAG (§4); `compile_batch` is the thin
+convenience that takes N standalone expression strings (auto-named `a0…aN`, joined one-per-line) and returns
+the single `Program`:
+
+```cpp
+#include "atx/engine/alpha/bytecode.hpp"   // compile_batch, Program
+
+const Library lib;
+std::vector<std::string_view> srcs{"rank(close)", "ts_mean(close, 5) - close", "rank(close) + 1"};
+ATX_TRY(Program prog, compile_batch(std::span<const std::string_view>{srcs}, lib));
+// prog.roots[i] <-> srcs[i] (1:1, submission order); a malformed entry -> Err (never throws).
+```
+
+`Program` carries the cross-alpha **CSE telemetry**: `unique_nodes` / `total_ast_nodes` (the node-fold ratio),
+`cache_hits` / `intern_attempts`, and `cache_hit_pct()` (the share of lowered nodes deduplicated). Invariant:
+`intern_attempts == cache_hits + unique_nodes`. `Engine::evaluate(prog)` then returns a `SignalSet` with one
+`alpha` per root. Result is a function of the alpha **set**, not submission order (a by-name-sorted digest is
+replay-stable across orders).
+
+## 9. Per-alpha streams — `extract_streams` / `AlphaStreams` (3c)
+
+The typed Phase-3 → Phase-4 handoff. Phase 4 consumes, per alpha, a realized-PnL stream and the position
+(target-weight) stream that produced it — NOT raw signals. `extract_streams` builds those by **reusing** the
+Phase-2 `WeightPolicy` (positions) and one `ExecutionSimulator` coefficient (turnover cost) — no new portfolio
+logic:
+
+```cpp
+#include "atx/engine/alpha/streams.hpp"    // extract_streams, AlphaStreams
+
+ATX_TRY(SignalSet signals, engine.evaluate(prog));
+ATX_TRY(AlphaStreams streams,
+        extract_streams(signals, weight_policy, panel, exec_sim));  // panel == the eval panel
+std::span<const f64> pnl = streams.pnl(0);            // [n_periods]; pnl[0]==0 (no prior weight)
+std::span<const f64> w   = streams.positions(0, t);   // [n_instruments] target weights at period t
+```
+
+- `positions[t]` = `WeightPolicy::to_target_weights(signal_row(t), universe)` (winsorize → rank/zscore →
+  dollar-neutral → gross-scale) — the same construction the loop applies each rebalance.
+- `pnl[t]` = `Σⱼ wⱼ[t-1]·retⱼ[t] − turnover[t]·cost_rate` (no look-ahead: prior weights earn this period's
+  return; `pnl[0]=0`). `cost_rate` = the sim's `PerDollar per_dollar_bps / 1e4` (0 for a frictionless sim →
+  the pure analytic Σw·ret stream). Shape mismatch (SignalSet vs panel) or a missing `close` field → `Err`.
+
+## 10. Loop bridge — `VmSignalSource` + the `Delay` knob (3c)
+
+`VmSignalSource` adapts a compiled `alpha::Program` to the Phase-2 `ISignalSource` seam, so the SAME
+`BacktestLoop` runs the alpha VM with no loop change:
+
+```cpp
+#include "atx/engine/loop/signal_source.hpp"   // VmSignalSource
+#include "atx/engine/loop/types.hpp"           // Delay
+
+VmSignalSource src{std::move(prog)};                 // root 0 == the traded alpha
+// ... feed/clock/bus/panel/policy/sim/portfolio/market/universe/schedule as usual ...
+BacktestLoop<Cap> loop{feed, clock, bus, panel, src, policy, sim,
+                       portfolio, market, Universe{universe}, Schedule{every},
+                       Delay::Next};                  // trailing arg; defaults to Next
+BacktestResult result = loop.run();
+```
+
+Each `evaluate(PanelView)` transposes the loop's newest-first trailing window into a chronological
+`alpha::Panel` (the row reversal is load-bearing — every `ts_*` op reads a causal `[t-d+1, t]` window), runs the
+VM, and returns root 0's current-date (newest) cross-section. `max_lookback()` forwards
+`Program::required_lookback`, so the loop sizes its `RollingPanel` to the program.
+
+**`Delay`** is an execution-timing knob (NOT part of the expression — the same program runs under either value
+and reads the same panel; only the fill bar differs):
+- `Delay::Next` (delay-1, **default**) — the conservative no-look-ahead firewall: an order decided on bar `t`
+  fills no earlier than a strictly-later slice.
+- `Delay::Same` (delay-0, opt-in) — lets an order fill on the same bar's close it was decided on (mildly
+  optimistic; the signal still reads only sealed ≤ t rows).
