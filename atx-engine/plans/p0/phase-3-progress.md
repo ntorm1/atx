@@ -42,10 +42,10 @@ Realistic scope for this sprint:
 3. **P3-2** — Pratt parser → AST + operator registry (`Library`); const-fold + desugar. *not blocked.*
 4. **P3-3** — Shape/dtype check + lookback analysis (causality rail). *not blocked.*
 5. **P3-4** — Hash-consed expression DAG (free CSE) + bytecode linearization + slot/refcount. *not blocked.*
-6. **P3-5** — Columnar eval context (Panel/SlotPool) + tree-walking reference oracle. *blocked-on L9 + L2 + L8.*
-7. **P3-6** — Vectorized VM core + element-wise/logical/select opcodes. *blocked-on L5 + L2.*
-8. **P3-7** — Cross-sectional opcodes (`rank`/`zscore`/`scale`/(group_)neutralize). *blocked-on L6 `cross_section`.*
-9. **P3-8** — Time-series opcodes (`delay`/`delta`/`ts_*`/`correlation`/`decay_linear`/…). *blocked-on L6 `rolling`/`online_stats`.*
+6. **P3-5** — Columnar eval context (Panel/SlotPool) + tree-walking reference oracle. *upstream landed — targets green.*
+7. **P3-6** — Vectorized VM core + element-wise/logical/select opcodes. *upstream landed — targets green.*
+8. **P3-7** — Cross-sectional opcodes (`rank`/`zscore`/`scale`/(group_)neutralize). *upstream landed — targets green.*
+9. **P3-8** — Time-series opcodes (`delay`/`delta`/`ts_*`/`correlation`/`decay_linear`/…). *upstream landed — targets green.*
 10. **P3-9** — Differential + determinism + lookahead harness + parallel eval + bench + sprint close.
 
 Defer (out of Phase 3 scope — see ROADMAP):
@@ -64,7 +64,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 |------|--------|--------|-------|
 | P3-0 | ✅ done | `ac81776` | Scaffold `include/atx/engine/alpha/fwd.hpp`; Phase-3 section in scaffold_test.cpp; ledger. No `atx_engine_pending` label (upstream landed). Marker commit. |
 | P3-1 | ✅ done | `94fee4c` | `Token`/`TokenKind`/`Span`; hand-written lexer (`lex`), `from_chars` numbers, maximal-munch ops, interior-dot idents (`IndClass.sector`), `Result` ParseError w/ offset on bad byte. Header-only (`inline`), tidy/format clean. 55 tests. *not blocked.* |
-| P3-2 | ⏳ pending | `—` | Pratt parser → `Expr` AST; `Library` registry (`OpSig`); const-fold + desugar. *not blocked.* |
+| P3-2 | ✅ done | `f556e23` | Pratt parser → arena `Expr`/`Ast` (precedence ternary<\|\|<&&<eq<cmp<+-<*/<unary<^ right-assoc); `Library` registry (`OpCode` ISA, `Shape`, `DType`, `OpSig`, table-driven `shape_of`) with all Appendix A built-ins; const-fold (pure numeric subtrees + foldable unary fns) + ternary→`Select` desugar; arity checked at parse. Header-only (`inline`). 59 tests. *not blocked.* |
 | P3-3 | ⏳ pending | `—` | Shape (S/V/P) + dtype (f64/mask/group) check; lookback propagation; negative-lookback = error. *not blocked.* |
 | P3-4 | ⏳ pending | `—` | Hash-consed `Dag` (free CSE); topo linearize → `Instr` stream; slot alloc + refcount `Free`. *not blocked.* |
 | P3-5 | ⏳ pending | `—` | `Panel` over `series::Frame`; `SlotPool`; universe/NaN policy; tree-walking oracle. *upstream landed — targets green.* |
@@ -94,9 +94,15 @@ panel shape = dates × instruments). Report **measured** numbers only — no inv
 
 ### Deferred residuals
 
-_(Lift to ROADMAP future-work backlog at close.)_ None recorded yet. Expected: Linux/clang TSan pass for the
+_(Lift to ROADMAP future-work backlog at close.)_ Expected: Linux/clang TSan pass for the
 parallel evaluator; computed-goto dispatch (if profiling warrants); JIT exploration; `indneutralize`
 demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` vs `x^a`; BRAIN-superset ops.
+
+- **(P3-2) Optional/default args not modeled.** Appendix A lists `scale(x,a=1)` (default 2nd arg) and
+  `group_neutralize(x,g[,cap])` (optional 3rd). The registry uses **fixed** arity (`scale`=2,
+  `group_neutralize`=2), so `scale(x)` and the 3-arg `group_neutralize` form do not parse. Variadic / default-arg
+  support is deferred — revisit when a mined alpha actually needs the short form (one `OpSig` knob or a min/max
+  arity pair).
 
 ---
 
@@ -106,8 +112,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 |--------|------|-------------------------------------|
 | `ac81776` | marker (P3-0) | 2/2 EngineScaffold / 244/246 total (2 pre-existing failures: atx-core-tests_NOT_BUILT, ShmBarFeed scratch) |
 | `94fee4c` | P3-1 | 55/55 AlphaLexer / engine green |
-| `—`    | P3-1 | — |
-| `—`    | P3-2 | — |
+| `f556e23` | P3-2 | 59 new (registry + parser) / engine 114/114 green |
 | `—`    | P3-3 | — |
 | `—`    | P3-4 | — |
 | `—`    | P3-5 | — |
