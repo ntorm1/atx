@@ -131,3 +131,14 @@ TEST(Reader_FieldBlockView_ExposesWholeBlock, BlockView) {
   EXPECT_DOUBLE_EQ(block[2 * r->instrument_count() + 1], 20.0);
   std::remove(path.c_str());
 }
+
+TEST(Reader_FieldBlockView_Is64ByteAligned, Aligned) {
+  const std::string path = make_segment("fb2");
+  auto r = atx::tsdb::SegmentReader::attach(path);
+  ASSERT_TRUE(r.has_value());
+  for (atx::u32 f = 0; f < r->field_count(); ++f) {
+    const auto addr = reinterpret_cast<std::uintptr_t>(r->field_block_view(f).data());
+    EXPECT_EQ(addr % 64U, 0U) << "field " << f << " block not 64B-aligned";
+  }
+  std::remove(path.c_str());
+}

@@ -71,7 +71,7 @@ Status SegmentBuilder::write(const std::string &path, atx::i64 created_at_nanos)
     blob += symbols_[i];
   }
 
-  // --- section offsets (each 8-byte aligned for f64/i64/u64 grids) ----------
+  // --- section offsets -------------------------------------------------------
   atx::u64 off = sizeof(SegmentHeader);
 
   const atx::u64 off_field_dir = off;
@@ -82,13 +82,18 @@ Status SegmentBuilder::write(const std::string &path, atx::i64 created_at_nanos)
 
   const atx::u64 off_string_blob = off;
   off += static_cast<atx::u64>(blob.size());
-  off = align_up(off, 8U);
+  off = align_up(off, 8U); // i64 time axis needs 8B alignment
 
   const atx::u64 off_time_axis = off;
   off += t * sizeof(atx::i64);
 
+  // v2: 64-byte-align the field-block section AND pad each block to a 64-byte
+  // stride, so every block start is cache-line / AVX-512 aligned in the mapping.
+  off = align_up(off, kBlockAlign);
   const atx::u64 off_field_blocks = off;
-  off += static_cast<atx::u64>(f) * t * static_cast<atx::u64>(n) * sizeof(atx::f64);
+  const atx::u64 block_packed = t * static_cast<atx::u64>(n) * sizeof(atx::f64);
+  const atx::u64 block_stride = align_up(block_packed, kBlockAlign);
+  off += static_cast<atx::u64>(f) * block_stride;
 
   const atx::u64 off_present_bitmap = off;
   off += t * mw * sizeof(atx::u64);
@@ -155,9 +160,20 @@ Status SegmentBuilder::write(const std::string &path, atx::i64 created_at_nanos)
     put(off_time_axis, time_axis_.data(), t * sizeof(atx::i64));
   }
 
-  // Field blocks (F * T * N f64, row-major within each field).
-  if (!blocks_.empty()) {
-    put(off_field_blocks, blocks_.data(), blocks_.size() * sizeof(atx::f64));
+  // Field blocks: copy each field's packed T*N f64 to its 64B-padded slot. The
+  // inter-block padding stays zero (buf is value-initialised), so content_hash
+  // is deterministic.
+  for (atx::u32 i = 0; i < f; ++i) {
+    const atx::u64 src_elems = t * static_cast<atx::u64>(n);
+    if (src_elems == 0U) {
+      break; // no data to write (T or N is zero)
+    }
+    // SAFETY: src is blocks_[i*T*N .. +T*N) (packed in RAM); dst is the i-th
+    // 64B-padded block in buf. Both ranges are in bounds by construction.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    put(off_field_blocks + static_cast<atx::u64>(i) * block_stride,
+        blocks_.data() + static_cast<atx::usize>(static_cast<atx::u64>(i) * src_elems),
+        static_cast<atx::usize>(src_elems) * sizeof(atx::f64));
   }
 
   // Present bitmap.

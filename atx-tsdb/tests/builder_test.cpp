@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <ios>      // std::ios
@@ -9,6 +10,7 @@
 
 #include "atx/tsdb/builder.hpp"
 #include "atx/tsdb/segment.hpp"
+#include "atx/tsdb/segment_reader.hpp"
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -91,4 +93,28 @@ TEST(Builder_BuildTwice_ByteIdentical, Deterministic) {
   EXPECT_EQ(s1, s2); // identical inputs (incl. created_at) => identical bytes
   static_cast<void>(std::remove(p1.c_str()));
   static_cast<void>(std::remove(p2.c_str()));
+}
+
+TEST(Builder_V2Layout_AlignsBlocksAndRoundTrips, AlignedValues) {
+  // 2 fields x 3 times x 5 instruments -> packed block = 3*5*8 = 120B,
+  // padded stride = align_up(120,64) = 128B. The padding must not corrupt reads.
+  atx::tsdb::SegmentBuilder b({"a", "b"}, {"S0", "S1", "S2", "S3", "S4"}, {10, 20, 30});
+  b.set(/*field=*/0, /*t=*/2, /*inst=*/4, 7.5);  // a @ t2,inst4
+  b.set(/*field=*/1, /*t=*/0, /*inst=*/0, 9.25); // b @ t0,inst0
+  const std::string path = temp_path("v2lay");
+  ASSERT_TRUE(b.write(path, /*created_at_nanos=*/0).has_value());
+
+  auto r = atx::tsdb::SegmentReader::attach(path);
+  ASSERT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
+  const atx::u32 fa = *r->field_index("a");
+  const atx::u32 fb = *r->field_index("b");
+  EXPECT_DOUBLE_EQ(r->value(fa, 2, 4), 7.5);
+  EXPECT_DOUBLE_EQ(r->value(fb, 0, 0), 9.25);
+  // block starts 64B-aligned and one padded stride (128B = 16 f64) apart.
+  const auto a0 = reinterpret_cast<std::uintptr_t>(r->field_block_view(fa).data());
+  const auto b0 = reinterpret_cast<std::uintptr_t>(r->field_block_view(fb).data());
+  EXPECT_EQ(a0 % 64U, 0U);
+  EXPECT_EQ(b0 % 64U, 0U);
+  EXPECT_EQ(b0 - a0, 128U);
+  static_cast<void>(std::remove(path.c_str()));
 }
