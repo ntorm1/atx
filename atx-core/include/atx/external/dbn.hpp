@@ -1,6 +1,6 @@
 #pragma once
 
-// atx::external::dbn — pure decoder for Databento Binary Encoding (DBN) v2/v3.
+// atx::external::dbn — pure decoder for Databento Binary Encoding (DBN) v1/v2/v3.
 //
 // No zip, no zstd, no Arrow: consumes an already-decompressed DBN byte span and
 // yields OHLCV records (rtype 0x23 ohlcv-1d, 0x24 ohlcv-eod). Other record types
@@ -17,8 +17,7 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <vector>
+#include <unordered_map>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -92,7 +91,7 @@ private:
   std::span<const std::byte> buf_{};
   usize cursor_{0}; // offset of the next record
   DbnMetadata meta_{};
-  std::vector<std::pair<u32, std::string>> mappings_; // (instrument_id, raw_symbol)
+  std::unordered_map<u32, std::string> mappings_; // instrument_id -> raw_symbol
   i64 skipped_{0};
 };
 

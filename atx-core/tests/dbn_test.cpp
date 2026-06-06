@@ -72,3 +72,26 @@ TEST(DbnRecords, DecodesOhlcvFieldsAndSkipsOthers) {
   EXPECT_FALSE(end->has_value());       // exhausted
   EXPECT_EQ(dec->skipped_records(), 1); // the 0x12 record
 }
+
+// DBN v1 has a distinct metadata layout (record_count field, fixed 22-byte
+// symbols, 47 reserved bytes). The record stream is identical to v2/v3. This is
+// the layout real EQUS.SUMMARY batch files use.
+TEST(DbnMetadata, ParsesV1) {
+  using atx::test::OhlcvRow;
+  const std::vector<OhlcvRow> rows = {
+      {101, 1'700'000'000'000'000'000ULL, 100, 110, 90, 105, 50, 0x23}};
+  const auto bytes = atx::test::build_dbn({{101, "AAPL", 20240101, 20250101}}, rows,
+                                          /*symbol_cstr_len=*/32, /*version=*/1);
+  auto dec = dbn::DbnDecoder::open(bytes);
+  ASSERT_TRUE(dec.has_value()) << dec.error().to_string();
+  EXPECT_EQ(dec->metadata().version, 1);
+  EXPECT_EQ(dec->metadata().symbol_cstr_len, 22);
+  EXPECT_EQ(dec->symbol_for(101), "AAPL");
+
+  auto r = dec->next();
+  ASSERT_TRUE(r.has_value());
+  ASSERT_TRUE(r->has_value());
+  EXPECT_EQ((*r)->hd.instrument_id, 101u);
+  EXPECT_EQ((*r)->open, 100);
+  EXPECT_EQ((*r)->close, 105);
+}

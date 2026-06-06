@@ -77,9 +77,11 @@ private:
 };
 
 constexpr usize kPrefixLen = 8;      // "DBN" + version + u32 frame_len
-constexpr usize kFixedMetaLen = 100; // METADATA_FIXED_LEN (v2/v3)
+constexpr usize kFixedMetaLen = 100; // METADATA_FIXED_LEN (all versions)
 constexpr usize kDatasetLen = 16;    // DATASET_CSTR_LEN
 constexpr usize kReservedLen = 53;   // METADATA_RESERVED_LEN (v2/v3)
+constexpr usize kReservedLenV1 = 47; // METADATA_RESERVED_LEN (v1; v1 also has record_count)
+constexpr u16 kSymbolCstrLenV1 = 22; // SYMBOL_CSTR_LEN (v1; v2+ carries it in the header)
 
 } // namespace
 
@@ -91,8 +93,8 @@ Result<DbnDecoder> DbnDecoder::open(std::span<const std::byte> dbn) {
     return Err(ErrorCode::ParseError, "DBN: bad magic");
   }
   const u8 version = std::to_integer<u8>(dbn[3]);
-  if (version != 2 && version != 3) {
-    return Err(ErrorCode::NotImplemented, "DBN: only version 2/3 supported");
+  if (version < 1 || version > 3) {
+    return Err(ErrorCode::NotImplemented, "DBN: unsupported version (expected 1-3)");
   }
 
   Reader r{dbn, 4};
@@ -102,6 +104,10 @@ Result<DbnDecoder> DbnDecoder::open(std::span<const std::byte> dbn) {
     return Err(ErrorCode::ParseError, "DBN: metadata frame out of range");
   }
 
+  // Fixed 100-byte metadata block. v1 carries record_count (after limit) and a
+  // fixed symbol_cstr_len (22) with 47 reserved bytes; v2+ drops record_count,
+  // carries symbol_cstr_len in the header, and has 53 reserved bytes. Both land
+  // the record stream at offset 108 (== 8 + 100).
   DbnDecoder dec;
   dec.buf_ = dbn;
   dec.meta_.version = version;
@@ -110,12 +116,21 @@ Result<DbnDecoder> DbnDecoder::open(std::span<const std::byte> dbn) {
   (void)r.u64v(); // start
   (void)r.u64v(); // end
   (void)r.u64v(); // limit
-  (void)r.u8v();  // stype_in
-  (void)r.u8v();  // stype_out
-  (void)r.u8v();  // ts_out
-  dec.meta_.symbol_cstr_len = r.u16v();
-  r.skip(kReservedLen); // reserved -> cursor at offset 108
-  const u16 sym_len = dec.meta_.symbol_cstr_len;
+  if (version == 1) {
+    (void)r.u64v(); // record_count (v1 only)
+  }
+  (void)r.u8v(); // stype_in
+  (void)r.u8v(); // stype_out
+  (void)r.u8v(); // ts_out
+  u16 sym_len = 0;
+  if (version >= 2) {
+    sym_len = r.u16v();   // symbol_cstr_len (v2+)
+    r.skip(kReservedLen); // reserved (53) -> offset 108
+  } else {
+    sym_len = kSymbolCstrLenV1; // fixed 22 (v1)
+    r.skip(kReservedLenV1);     // reserved (47) -> offset 108
+  }
+  dec.meta_.symbol_cstr_len = sym_len;
   if (sym_len == 0) {
     return Err(ErrorCode::ParseError, "DBN: zero symbol_cstr_len");
   }
@@ -138,7 +153,7 @@ Result<DbnDecoder> DbnDecoder::open(std::span<const std::byte> dbn) {
       u32 iid = 0;
       const auto res = std::from_chars(out.data(), out.data() + out.size(), iid);
       if (res.ec == std::errc{} && res.ptr == out.data() + out.size()) {
-        dec.mappings_.emplace_back(iid, raw); // last interval wins per iid
+        dec.mappings_.try_emplace(iid, raw); // first interval wins per iid
       }
     }
   }
@@ -151,12 +166,8 @@ Result<DbnDecoder> DbnDecoder::open(std::span<const std::byte> dbn) {
 }
 
 std::string_view DbnDecoder::symbol_for(u32 instrument_id) const noexcept {
-  for (const auto &[iid, sym] : mappings_) {
-    if (iid == instrument_id) {
-      return sym;
-    }
-  }
-  return {};
+  const auto it = mappings_.find(instrument_id);
+  return it != mappings_.end() ? std::string_view{it->second} : std::string_view{};
 }
 
 Result<std::optional<OhlcvMsg>> DbnDecoder::next() {

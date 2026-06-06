@@ -71,31 +71,42 @@ inline void put_record(std::vector<std::byte> &b, const OhlcvRow &r) {
 
 } // namespace detail
 
-// Build an uncompressed DBN v2 stream. symbol_cstr_len defaults small (32) to
-// keep fixtures compact; the decoder reads it from the header, so any value works.
+// Build an uncompressed DBN stream (version 1, 2, or 3). For v1 the symbol cstr
+// length is fixed at 22 (the `symbol_cstr_len` argument is ignored and a
+// record_count field is emitted); v2+ carries symbol_cstr_len in the header.
+// Defaults keep fixtures compact (v2, 32-byte symbols).
 inline std::vector<std::byte> build_dbn(const std::vector<SymMap> &maps,
                                         const std::vector<OhlcvRow> &rows,
-                                        std::uint16_t symbol_cstr_len = 32) {
+                                        std::uint16_t symbol_cstr_len = 32,
+                                        std::uint8_t version = 2) {
   using namespace detail;
+  const std::uint16_t cstr_len = (version == 1) ? std::uint16_t{22} : symbol_cstr_len;
   std::vector<std::byte> b;
   b.push_back(std::byte('D'));
   b.push_back(std::byte('B'));
   b.push_back(std::byte('N'));
-  b.push_back(std::byte(2));               // version 2
+  b.push_back(std::byte(version));
   put_u32(b, 0);                           // frame_len placeholder @ offset 4
   const std::size_t meta_start = b.size(); // == 8
 
-  // Fixed 100-byte metadata block.
-  put_cstr(b, "EQUS.SUMMARY", 16);     // dataset
-  put_u16(b, 8);                       // schema = Ohlcv1D
-  put_u64(b, 0);                       // start
-  put_u64(b, 0);                       // end
-  put_u64(b, 0);                       // limit
-  b.push_back(std::byte(0));           // stype_in
-  b.push_back(std::byte(0));           // stype_out
-  b.push_back(std::byte(0));           // ts_out
-  put_u16(b, symbol_cstr_len);         // symbol_cstr_len
-  b.insert(b.end(), 53, std::byte(0)); // reserved -> fixed block now 100 bytes
+  // Fixed 100-byte metadata block (v1 and v2+ both total 100).
+  put_cstr(b, "EQUS.SUMMARY", 16); // dataset
+  put_u16(b, 8);                   // schema = Ohlcv1D
+  put_u64(b, 0);                   // start
+  put_u64(b, 0);                   // end
+  put_u64(b, 0);                   // limit
+  if (version == 1) {
+    put_u64(b, static_cast<std::uint64_t>(rows.size())); // record_count (v1 only)
+  }
+  b.push_back(std::byte(0)); // stype_in
+  b.push_back(std::byte(0)); // stype_out
+  b.push_back(std::byte(0)); // ts_out
+  if (version >= 2) {
+    put_u16(b, cstr_len);                // symbol_cstr_len (v2+)
+    b.insert(b.end(), 53, std::byte(0)); // reserved (53)
+  } else {
+    b.insert(b.end(), 47, std::byte(0)); // reserved (47)
+  }
 
   // Variable sections.
   put_u32(b, 0);                                       // schema_definition_len
@@ -104,11 +115,11 @@ inline std::vector<std::byte> build_dbn(const std::vector<SymMap> &maps,
   put_u32(b, 0);                                       // not_found count
   put_u32(b, static_cast<std::uint32_t>(maps.size())); // mappings count
   for (const auto &m : maps) {
-    put_cstr(b, m.raw_symbol, symbol_cstr_len); // raw_symbol (key)
-    put_u32(b, 1);                              // interval_count
+    put_cstr(b, m.raw_symbol, cstr_len); // raw_symbol (key)
+    put_u32(b, 1);                       // interval_count
     put_u32(b, m.start_date);
     put_u32(b, m.end_date);
-    put_cstr(b, std::to_string(m.instrument_id), symbol_cstr_len); // out = iid string
+    put_cstr(b, std::to_string(m.instrument_id), cstr_len); // out = iid string
   }
 
   // Backpatch frame_len = bytes from meta_start to here.

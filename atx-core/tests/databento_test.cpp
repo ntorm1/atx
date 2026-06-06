@@ -2,9 +2,13 @@
 
 #include "atx/core/io/parquet.hpp"
 
+#include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -97,4 +101,75 @@ TEST(Databento, SkipsUnsupportedAndCounts) {
   ASSERT_TRUE(stats.has_value()) << stats.error().to_string();
   EXPECT_EQ(stats->records_decoded, 1);
   EXPECT_EQ(stats->records_skipped, 1);
+}
+
+namespace {
+[[nodiscard]] std::string env_or_empty(const char *key) {
+#if defined(_WIN32)
+  char *v = nullptr;
+  std::size_t n = 0;
+  if (_dupenv_s(&v, &n, key) == 0 && v != nullptr) {
+    std::string s(v);
+    std::free(v);
+    return s;
+  }
+  return {};
+#else
+  const char *v = std::getenv(key);
+  return v != nullptr ? std::string(v) : std::string{};
+#endif
+}
+} // namespace
+
+// Env-gated smoke test against a REAL Databento EQUS.SUMMARY batch zip. Set
+// ATX_EQUS_ZIP to the .zip path to enable; skipped otherwise so the suite stays
+// green without the proprietary file. Validates the metadata/record byte layout
+// against a real v2/v3 file: symbols must resolve to alpha tickers, not the
+// numeric-id fallback.
+TEST(Databento, RealEqusSummarySmoke) {
+  const std::string zip = env_or_empty("ATX_EQUS_ZIP");
+  if (zip.empty() || !fs::exists(fs::path{zip})) {
+    GTEST_SKIP() << "set ATX_EQUS_ZIP to a real EQUS.SUMMARY .zip to run";
+  }
+  const fs::path dest = fs::temp_directory_path() / "atx_db_real_dest";
+  fs::remove_all(dest);
+
+  auto stats = db::load_equs_summary_zip(zip, dest.string());
+  ASSERT_TRUE(stats.has_value()) << stats.error().to_string();
+  std::cout << "[real] files=" << stats->files_processed << " records=" << stats->records_decoded
+            << " partitions=" << stats->partitions_written << " skipped=" << stats->records_skipped
+            << "\n";
+  EXPECT_GT(stats->records_decoded, 0);
+  EXPECT_GT(stats->partitions_written, 0);
+
+  // Read back one partition; confirm symbols resolved (not numeric fallback).
+  fs::path first;
+  for (const auto &e : fs::recursive_directory_iterator(dest)) {
+    if (e.path().filename() == "data.parquet") {
+      first = e.path();
+      break;
+    }
+  }
+  ASSERT_FALSE(first.empty());
+  auto t = io::read_parquet(first.string());
+  ASSERT_TRUE(t.has_value()) << t.error().to_string();
+  EXPECT_GT(t->num_rows(), 0);
+  auto syms = t->strings("symbol");
+  ASSERT_TRUE(syms.has_value());
+  bool any_alpha = false;
+  for (const auto sv : *syms) {
+    for (const char ch : sv) {
+      if (std::isalpha(static_cast<unsigned char>(ch)) != 0) {
+        any_alpha = true;
+        break;
+      }
+    }
+    if (any_alpha) {
+      break;
+    }
+  }
+  std::cout << "[real] partition=" << first.string() << " rows=" << t->num_rows()
+            << " first_symbol=" << (syms->empty() ? std::string{} : std::string(syms->front()))
+            << "\n";
+  EXPECT_TRUE(any_alpha) << "symbols look numeric -> metadata mapping parse may be off";
 }
