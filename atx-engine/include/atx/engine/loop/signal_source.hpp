@@ -46,13 +46,20 @@
 //  vector) keeps evaluate() allocation-free on the hot path: the VM writes its
 //  alpha column into its own pooled slot and hands back a span over it.
 
-#include <span>   // std::span — the non-owning signal values view
-#include <vector> // std::vector — ScriptedSignalSource's owned schedule storage
+#include <cstdint> // std::uint8_t — alpha::Panel universe mask element
+#include <limits>  // std::numeric_limits (the "no opinion" quiet-NaN sentinel)
+#include <span>    // std::span — the non-owning signal values view
+#include <string>  // std::string — alpha::Panel field-name dictionary
+#include <utility> // std::move (program hand-off)
+#include <vector>  // std::vector — ScriptedSignalSource's owned schedule storage
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
 #include "atx/core/macro.hpp" // ATX_ASSERT (construction precondition)
 #include "atx/core/types.hpp" // usize, f64
 
+#include "atx/engine/alpha/bytecode.hpp"   // alpha::Program (compiled alpha + required_lookback)
+#include "atx/engine/alpha/panel.hpp"      // alpha::Panel, SignalSet (the VM's data plane)
+#include "atx/engine/alpha/vm.hpp"         // alpha::Engine (the vectorized executor)
 #include "atx/engine/loop/panel_types.hpp" // PanelView (the evaluate() input)
 
 namespace atx::engine {
@@ -178,66 +185,150 @@ private:
 };
 
 // ===========================================================================
-//  VmSignalSource — production adapter over the Phase-3 alpha VM.
+//  ATX_ENGINE_HAS_ALPHA_VM — the green-gate, resolved IN-HEADER (P3c-3).
 //
-//  CONTRACT (staged red until Phase 3 — see below for why it is compile-guarded)
-//  --------------------------------------------------------------------------
-//  VmSignalSource is the REAL strategy seam: it wraps a compiled alpha::Program
-//  and the alpha::Engine that executes it. Its responsibilities, frozen here so
-//  the seam contract is recorded before its dependency exists:
-//
-//    * Holds an alpha::Program (the compiled alpha expression DSL — Phase-3) and
-//      an alpha::Engine (the VM that runs it). Both are owned for the source's
-//      lifetime; construction compiles/binds the program once.
-//    * evaluate(PanelView panel): runs the VM over the panel and returns the
-//      alpha column (one score per universe instrument) as a SignalView that
-//      borrows the Engine's pooled output slot. NO per-call allocation beyond
-//      the VM's own pre-sized pooled slots — the whole reason evaluate() returns
-//      a view, not a vector. Pure in `panel`: the program reads only the panel.
-//    * max_lookback(): forwards alpha::Program's COMPILE-TIME lookback (the
-//      deepest trailing window any operator in the program references), so the
-//      loop sizes its RollingPanel exactly to the program's needs.
-//
-//  WHY COMPILE-GUARDED, NOT STUBBED: alpha::Program / alpha::Engine do not exist
-//  yet (Phase 3). A fake/stub implementation that "pretends to work" would be
-//  dead code that could silently ship wrong signals. Instead the declaration AND
-//  intended implementation live behind ATX_ENGINE_HAS_ALPHA_VM, a macro defined
-//  NOWHERE today — so this block never compiles, the green build is unaffected,
-//  and the contract above is still recorded as code (not prose). When Phase 3
-//  lands, defining the macro (and adding the #include for the alpha headers)
-//  turns this into the real adapter; its red→green test is a tracked Deferred
-//  residual in the Phase-2 ledger.
+//  The Phase-2 freeze guarded VmSignalSource behind this macro, defined NOWHERE,
+//  against an ASSUMED alpha API. As of Phase 3 the alpha VM headers are
+//  header-only and ALWAYS present (included above), so we DEFINE the macro right
+//  here — no CMakeLists change, no build-system flag — and the adapter below
+//  compiles unconditionally. The macro is kept (rather than just dropping the
+//  #if) so any downstream `#if defined(ATX_ENGINE_HAS_ALPHA_VM)` written against
+//  the frozen contract still sees the seam as "present".
 // ===========================================================================
-#if defined(ATX_ENGINE_HAS_ALPHA_VM)
+#define ATX_ENGINE_HAS_ALPHA_VM 1
+
+// ===========================================================================
+//  VmSignalSource — production adapter over the Phase-3 alpha VM (as-built).
+//
+//  THE API RECONCILIATION (the frozen contract above was WRONG)
+//  --------------------------------------------------------------------------
+//  The Phase-2 freeze assumed `Engine::run(program, panel) -> span<f64>` and
+//  `Program::max_lookback()`. The AS-BUILT alpha API differs and this adapter is
+//  rewritten to it:
+//    * alpha::Engine BINDS its alpha::Panel at CONSTRUCTION (const ref) and
+//      `evaluate(const Program&) -> Result<SignalSet>` returns the WHOLE
+//      date×instrument matrix for EVERY alpha root — not a single column.
+//    * the lookback is a FIELD, `Program::required_lookback` (atx::u16), not a
+//      method.
+//    * the loop hands a `loop::PanelView` (newest-first, column-major per field,
+//      ring storage) but the VM consumes an `alpha::Panel` (date-major,
+//      CHRONOLOGICAL, flat per-field f64 + a {0,1} universe mask). The adapter
+//      must TRANSPOSE: reverse the row order (newest-first -> oldest-first) and
+//      reshape into the date-major layout. Chronological order is LOAD-BEARING —
+//      every Ts* op reads a causal trailing window [t-d+1, t], so a reversed
+//      window silently corrupts every time-series alpha.
+//
+//  WHAT evaluate(PanelView) DOES
+//    1. Build an alpha::Panel from the trailing PanelView: dates = panel.rows(),
+//       instruments = panel.instruments(), the five OHLCV fields named so a
+//       program's `close`/`open`/... references resolve, with row reversal +
+//       reshape and a PIT universe mask (present()==false -> 0, reads back NaN).
+//    2. Construct an alpha::Engine over that Panel and evaluate(program_).
+//    3. Extract the CURRENT-date cross-section: the NEWEST date is the LAST
+//       alpha date (dates-1) of the program's first root; copy it into a
+//       source-owned buffer and hand back a SignalView over THAT buffer (never a
+//       temporary — the borrow lives until the next evaluate()).
+//    * max_lookback() forwards program_.required_lookback.
+//
+//  ALLOCATION (scoped honestly, NOT claimed zero). The as-built Engine binds its
+//  Panel at construction and there is no rebind API, so a fresh alpha::Panel +
+//  Engine are built per evaluate() — that allocates (the Panel's owned columns,
+//  the Engine's slot pool). We REUSE source-owned scratch (field_data_, the
+//  signal_ output buffer) across calls to keep the per-call allocation to the
+//  Panel/Engine themselves. This is acceptable per plan §3.5: evaluate() runs at
+//  the REBALANCE cadence (per-schedule, not per-bar), so the cold-ish build is a
+//  documented residual, not a hot-path regression. The SignalView borrow is
+//  zero-alloc steady-state (signal_ is reserved once, refreshed in place).
+//
+//  PURE in `panel`: the program reads only the panel the source is handed; there
+//  is no hidden time state (the VM's only state is recurrence scratch reset per
+//  evaluate). Same panel contents -> same SignalView (the ISignalSource contract).
+// ===========================================================================
 
 class VmSignalSource final : public ISignalSource {
 public:
-  /// Wrap a compiled alpha program and its execution engine. `program` is the
-  /// compiled alpha::Program; `engine` runs it over a panel. Both are owned for
-  /// this source's lifetime; the program is bound to the engine once here.
-  VmSignalSource(alpha::Program program, alpha::Engine engine) noexcept
-      : program_{std::move(program)}, engine_{std::move(engine)} {}
+  /// Wrap a compiled alpha program. `program` is owned for this source's lifetime
+  /// (typically ONE alpha = the strategy; root 0 is the traded alpha). The VM
+  /// Engine is built per evaluate() over the freshly-transposed panel (the
+  /// as-built Engine binds its Panel at construction — see the header note).
+  explicit VmSignalSource(alpha::Program program) noexcept : program_{std::move(program)} {}
 
-  /// Run the VM over `panel` and return the alpha column as a SignalView that
-  /// borrows the engine's pooled output slot. No per-call allocation beyond the
-  /// VM's pooled slots. Err on a VM execution fault (an expected failure — e.g.
-  /// a program/panel shape mismatch — not an abort).
+  /// Transpose the trailing PanelView into a chronological alpha::Panel, run the
+  /// VM, and return the current-date cross-section as a SignalView borrowing this
+  /// source's own buffer (valid until the next evaluate()). Err on any VM fault /
+  /// shape mismatch (an expected failure — never an abort/throw).
   [[nodiscard]] atx::core::Result<SignalView> evaluate(PanelView panel) override {
-    ATX_TRY(const std::span<const atx::f64> col, engine_.run(program_, panel));
-    return atx::core::Ok(SignalView{col});
+    const atx::usize dates = panel.rows();
+    const atx::usize inst = panel.instruments();
+
+    ATX_TRY(const alpha::Panel ap, build_alpha_panel(panel, dates, inst));
+    alpha::Engine engine{ap};
+    ATX_TRY(const alpha::SignalSet signals, engine.evaluate(program_));
+
+    // The strategy is root 0 (the traded alpha). A zero-root or zero-date panel
+    // yields no opinion (an expected boundary, not a fault).
+    if (signals.alphas.empty() || dates == 0) {
+      signal_.assign(inst, kNoOpinion);
+      return atx::core::Ok(SignalView{std::span<const atx::f64>{signal_}});
+    }
+    // The CURRENT date is the NEWEST row == the LAST alpha date (chronological).
+    const std::span<const atx::f64> cross = signals.alpha_cross_section(0, dates - 1);
+    signal_.assign(cross.begin(), cross.end());
+    return atx::core::Ok(SignalView{std::span<const atx::f64>{signal_}});
   }
 
   /// Forward the program's compile-time lookback (deepest trailing window any
   /// operator references), so the loop sizes its RollingPanel to the program.
   [[nodiscard]] atx::usize max_lookback() const noexcept override {
-    return program_.max_lookback();
+    return static_cast<atx::usize>(program_.required_lookback);
   }
 
 private:
-  alpha::Program program_; // compiled alpha expression (Phase-3 DSL)
-  alpha::Engine engine_;   // the VM that executes program_ over a panel
-};
+  /// Quiet NaN "no opinion" sentinel (matches the SignalView NaN contract).
+  static constexpr atx::f64 kNoOpinion = std::numeric_limits<atx::f64>::quiet_NaN();
 
-#endif // ATX_ENGINE_HAS_ALPHA_VM
+  /// The five OHLCV field names, in PanelField storage order. A program that
+  /// references any of these resolves; the VM loads only the ones it uses.
+  [[nodiscard]] static std::vector<std::string> ohlcv_field_names() {
+    return {"open", "high", "low", "close", "volume"};
+  }
+
+  /// Build a date-major, CHRONOLOGICAL alpha::Panel from the newest-first
+  /// PanelView. Reuses the source-owned field_data_ scratch (refreshed in place),
+  /// then hands it to Panel::create (which copies it). Returns the program's
+  /// shape error verbatim if the (rare) ragged-input guard ever trips.
+  [[nodiscard]] atx::core::Result<alpha::Panel> build_alpha_panel(PanelView panel, atx::usize dates,
+                                                                  atx::usize inst) {
+    const atx::usize cells = dates * inst;
+    field_data_.assign(kPanelFieldCount, std::vector<atx::f64>(cells, kNoOpinion));
+    universe_.assign(cells, std::uint8_t{0});
+
+    // SAFETY: transpose + reshape. PanelView row 0 is the NEWEST sealed row; the
+    //   alpha::Panel wants date 0 == EARLIEST. So alpha date `d` reads PanelView
+    //   row `(dates-1) - d` (the reversal that makes the window chronological —
+    //   load-bearing for every Ts* op). The flat alpha index is `d*inst + j`,
+    //   bounded by `cells` (== field_data_ column size); `row < dates == rows()`
+    //   and `j < inst == instruments()` satisfy the PanelView accessor
+    //   preconditions. Absent cells read as NaN and present()==false -> mask 0.
+    for (atx::usize d = 0; d < dates; ++d) {
+      const atx::usize row = (dates - 1U) - d; // newest-first -> chronological
+      for (atx::usize j = 0; j < inst; ++j) {
+        const atx::usize idx = d * inst + j;
+        field_data_[static_cast<atx::usize>(PanelField::Open)][idx] = panel.open(row, j);
+        field_data_[static_cast<atx::usize>(PanelField::High)][idx] = panel.high(row, j);
+        field_data_[static_cast<atx::usize>(PanelField::Low)][idx] = panel.low(row, j);
+        field_data_[static_cast<atx::usize>(PanelField::Close)][idx] = panel.close(row, j);
+        field_data_[static_cast<atx::usize>(PanelField::Volume)][idx] = panel.volume(row, j);
+        universe_[idx] = panel.present(row, j) ? std::uint8_t{1} : std::uint8_t{0};
+      }
+    }
+    return alpha::Panel::create(dates, inst, ohlcv_field_names(), field_data_, universe_);
+  }
+
+  alpha::Program program_;                        // compiled alpha (root 0 == traded strategy)
+  std::vector<std::vector<atx::f64>> field_data_; // [field][dates*inst] transpose scratch (reused)
+  std::vector<std::uint8_t> universe_;            // [dates*inst] PIT mask scratch (reused)
+  std::vector<atx::f64> signal_; // current-date cross-section the SignalView borrows
+};
 
 } // namespace atx::engine
