@@ -147,6 +147,16 @@ TEST(Correlation, AllNaNReturnsZero) {
   EXPECT_EQ(pairwise_complete_corr(a, b), 0.0);
 }
 
+TEST(Correlation, MismatchedLengthAbortsInDebug) {
+  // The equal-length precondition fires ATX_ASSERT (-> std::abort) in a debug
+  // build; EXPECT_DEATH captures it. Documents the contract: the release build
+  // is OOB-safe via the min() bound, but a mismatched call is still misuse and
+  // must fail loudly in debug. The regex matches any output.
+  const std::vector<f64> a{1.0, 2.0, 3.0, 4.0};
+  const std::vector<f64> b{1.0, 2.0}; // shorter -> contract violation
+  EXPECT_DEATH({ (void)pairwise_complete_corr(a, b); }, ".*");
+}
+
 // ===========================================================================
 //  AlphaGate::admit — floor gates
 // ===========================================================================

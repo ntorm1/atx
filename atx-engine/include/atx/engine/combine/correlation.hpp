@@ -54,8 +54,9 @@
 //
 //  Thread-safety: a pure function of its inputs; no shared state.
 
-#include <cmath> // std::isnan, std::sqrt
-#include <span>  // std::span
+#include <algorithm> // std::min (release OOB-safe loop bound)
+#include <cmath>     // std::isnan, std::sqrt
+#include <span>      // std::span
 
 #include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // atx::f64, atx::usize
@@ -65,9 +66,12 @@ namespace atx::engine::combine {
 // ===========================================================================
 //  pairwise_complete_corr — Pearson over the BOTH-non-NaN overlap of a and b.
 //
-//  PRECONDITION: a.size() == b.size() (asserted; paired observations). Returns
-//  0.0 for < 2 valid pairs or a zero-variance leg (the documented degenerate
-//  convention above). Otherwise returns the Pearson correlation in [-1, 1].
+//  PRECONDITION: a.size() == b.size() (asserted in debug; paired observations).
+//  In a release build the loop is bounded by min(a.size(), b.size()) so a misuse
+//  with mismatched lengths truncates to the overlap rather than reading OOB (the
+//  assert still fires loudly in debug). Returns 0.0 for < 2 valid pairs or a
+//  zero-variance leg (the documented degenerate convention above). Otherwise
+//  returns the Pearson correlation in [-1, 1].
 // ===========================================================================
 [[nodiscard]] inline atx::f64 pairwise_complete_corr(std::span<const atx::f64> a,
                                                      std::span<const atx::f64> b) noexcept {
@@ -78,7 +82,14 @@ namespace atx::engine::combine {
   atx::f64 saa = 0.0; // Σ a_i²
   atx::f64 sbb = 0.0; // Σ b_i²
   atx::usize n = 0U;  // count of valid (both-non-NaN) pairs
-  for (atx::usize i = 0U; i < a.size(); ++i) {
+  // SAFETY: iterate to min(a.size(), b.size()) so neither a[i] nor b[i] can read
+  //         out of bounds in a RELEASE build even if the equal-length contract is
+  //         violated (the ATX_ASSERT above expands to ((void)0) under NDEBUG). The
+  //         assert fails LOUDLY in debug on misuse; the min() bound is the release
+  //         safety net (agent.md "fail loud in debug, fail safe in release"). An
+  //         equal-length call — the only correct usage — iterates the full span.
+  const atx::usize bound = std::min(a.size(), b.size());
+  for (atx::usize i = 0U; i < bound; ++i) {
     const atx::f64 ai = a[i];
     const atx::f64 bi = b[i];
     // Pairwise-complete: skip the index entirely if EITHER leg is NaN.

@@ -51,6 +51,7 @@
 
 #include <span> // std::span (candidate PnL view)
 
+#include "atx/core/macro.hpp" // ATX_ASSERT (debug length precondition)
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
 
 #include "atx/engine/combine/correlation.hpp" // pairwise_complete_corr (shared §3.3 helper)
@@ -128,6 +129,12 @@ private:
   // perfect anti-correlation as equally disqualifying. Empty pool ⇒ 0.
   [[nodiscard]] static atx::f64 max_abs_corr_to_pool(std::span<const atx::f64> candidate_pnl,
                                                      const AlphaStore &pool) noexcept {
+    // Every pool member's PnL row has length pool.n_periods(), so the candidate
+    // MUST match that length to be a coherent paired-observation stream. An empty
+    // pool short-circuits (the loop never runs — nothing to correlate against).
+    // pairwise_complete_corr is OOB-safe regardless (it truncates to the overlap
+    // in release); this assert makes the contract violation loud in debug.
+    ATX_ASSERT(pool.n_periods() == 0U || candidate_pnl.size() == pool.n_periods());
     atx::f64 worst = 0.0;
     const atx::usize n = pool.n_alphas();
     for (atx::usize i = 0U; i < n; ++i) {
