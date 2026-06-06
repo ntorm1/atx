@@ -372,11 +372,13 @@ TEST(AlphaVm_Boundary, BareField_MatchesOracle) {
   expect_vm_matches_oracle("close", panel);
 }
 
-TEST(AlphaVm_Boundary, CrossSectionalOp_ReturnsNotImplemented) {
+TEST(AlphaVm_Boundary, TimeSeriesOp_ReturnsNotImplemented) {
   const atx::usize dates = 4;
   const atx::usize instruments = 4;
   const Panel panel = make_panel(dates, instruments, random_ohlcv(dates * instruments, 0x44ULL));
-  const Program prog = compile_ok("rank(close)"); // CsRank -> not yet in the VM
+  // Cross-sectional ops are implemented as of P3-7; the Ts* family lands in
+  // P3-8, so a time-series op is what still returns NotImplemented here.
+  const Program prog = compile_ok("delay(close, 2)"); // TsDelay -> not yet in the VM
   Engine engine{panel};
   auto out = engine.evaluate(prog);
   ASSERT_FALSE(out.has_value());

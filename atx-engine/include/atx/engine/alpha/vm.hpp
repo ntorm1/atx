@@ -79,6 +79,7 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/bytecode.hpp"
+#include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
 
@@ -344,8 +345,7 @@ private:
     case OpCode::CsNeutG:
     case OpCode::CsRankG:
     case OpCode::CsZscoreG:
-      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
-                            "Cs*: cross-sectional/time-series kernels land in P3-7/P3-8");
+      return eval_cross_section(in, dates, instruments);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
     case OpCode::TsSum:
@@ -518,6 +518,77 @@ private:
       out[i] = detail::vm_select(c[i], a[i], b[i]);
     }
     return atx::core::Ok();
+  }
+
+  // ---- cross-sectional (per date-row) -------------------------------------
+  // Slice each whole-panel slot buffer to a single date row and apply the
+  // cross-sectional kernel (cs_ops.hpp) over that row's VALID SET (non-NaN
+  // cells). `x` is the input (src[0]); group ops take the classifier in
+  // src[1], CsScale takes the scalar factor a == src[1][0]. EVERY output cell
+  // is written (out-of-set -> NaN) since scratch slots are recycled. Mirrors
+  // oracle.hpp's Oracle::eval_cross_section / cs_one_date dispatch exactly.
+  [[nodiscard]] atx::core::Status eval_cross_section(const Instr &in, atx::usize dates,
+                                                     atx::usize instruments) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const std::span<atx::f64> out = dst_col(in);
+    const bool grouped = (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG ||
+                          in.op == OpCode::CsRankG || in.op == OpCode::CsZscoreG);
+    std::span<const atx::f64> g{};
+    atx::f64 scale_a = 1.0;
+    if (grouped) {
+      g = src_col(in, 1);
+    } else if (in.op == OpCode::CsScale) {
+      const std::span<const atx::f64> col = src_col(in, 1);
+      scale_a = col.empty() ? detail::kVmNaN : col.front();
+    }
+    std::vector<atx::usize> valid; // per-row scratch, reused across dates
+    valid.reserve(instruments);
+    for (atx::usize d = 0; d < dates; ++d) {
+      const std::span<const atx::f64> xr = x.subspan(d * instruments, instruments);
+      const std::span<atx::f64> orow = out.subspan(d * instruments, instruments);
+      const std::span<const atx::f64> grow =
+          grouped ? g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
+      cs_one_date(in.op, xr, grow, scale_a, orow, valid);
+    }
+    return atx::core::Ok();
+  }
+
+  // Apply one cross-sectional op to a single date's row. `out` is reset to all
+  // NaN here (out-of-set cells stay NaN — scratch slots are recycled), the
+  // valid set is rebuilt into `valid` (caller-owned scratch), then dispatched.
+  static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
+                          atx::f64 scale_a, std::span<atx::f64> out,
+                          std::vector<atx::usize> &valid) {
+    valid.clear();
+    for (atx::usize i = 0; i < x.size(); ++i) {
+      out[i] = detail::kVmNaN; // default every cell (out-of-set stays NaN)
+      if (!detail::cs_is_nan(x[i])) {
+        valid.push_back(i);
+      }
+    }
+    switch (op) {
+    case OpCode::CsRank:
+      detail::cs_rank_row(x, valid, out);
+      break;
+    case OpCode::CsZscore:
+      detail::cs_zscore_row(x, valid, out);
+      break;
+    case OpCode::CsScale:
+      detail::cs_scale_row(x, valid, scale_a, out);
+      break;
+    case OpCode::CsDemeanG:
+    case OpCode::CsNeutG: // SAFETY: residualize-on-group-dummies == per-group demean
+      detail::cs_group_demean_row(x, g, valid, out);
+      break;
+    case OpCode::CsRankG:
+      detail::cs_group_row(x, g, valid, out, /*zscore=*/false);
+      break;
+    case OpCode::CsZscoreG:
+      detail::cs_group_row(x, g, valid, out, /*zscore=*/true);
+      break;
+    default:
+      ATX_UNREACHABLE();
+    }
   }
 
   const Panel &panel_;
