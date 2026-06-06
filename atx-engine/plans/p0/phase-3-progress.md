@@ -62,7 +62,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 
 | Unit | Status | Commit | Notes |
 |------|--------|--------|-------|
-| P3-0 | ✅ done | `—` | Scaffold `include/atx/engine/alpha/fwd.hpp`; Phase-3 section in scaffold_test.cpp; ledger. No `atx_engine_pending` label (upstream landed). Marker commit. |
+| P3-0 | ✅ done | `ac81776` | Scaffold `include/atx/engine/alpha/fwd.hpp`; Phase-3 section in scaffold_test.cpp; ledger. No `atx_engine_pending` label (upstream landed). Marker commit. |
 | P3-1 | ⏳ pending | `—` | `Token`/`TokenKind`/`Span`; hand-written lexer; `Result` on bad byte. *not blocked.* |
 | P3-2 | ⏳ pending | `—` | Pratt parser → `Expr` AST; `Library` registry (`OpSig`); const-fold + desugar. *not blocked.* |
 | P3-3 | ⏳ pending | `—` | Shape (S/V/P) + dtype (f64/mask/group) check; lookback propagation; negative-lookback = error. *not blocked.* |
@@ -104,7 +104,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 
 | Commit | Unit | Test counts (suite/total/fail/skip) |
 |--------|------|-------------------------------------|
-| `—`    | marker (P3-0) | 2/2 EngineScaffold / 244/246 total (2 pre-existing failures: atx-core-tests_NOT_BUILT, ShmBarFeed scratch) |
+| `ac81776` | marker (P3-0) | 2/2 EngineScaffold / 244/246 total (2 pre-existing failures: atx-core-tests_NOT_BUILT, ShmBarFeed scratch) |
 | `—`    | P3-1 | — |
 | `—`    | P3-2 | — |
 | `—`    | P3-3 | — |
