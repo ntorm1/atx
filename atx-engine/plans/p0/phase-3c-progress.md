@@ -77,10 +77,33 @@ Defer to Phase 4 (or future-work): the combiner/gates/risk/optimizer; position-b
 | Unit | Status | Commit | Notes |
 |------|--------|--------|-------|
 | P3c-0 | ✅ done | _(this)_ | Open ledger; record base `2aeec2a`; fossil reconciliation (A–E) — esp. (A) batch already exists, (B) bridge needs the as-built adapter. Marker. |
-| P3c-1 | ⏳ pending | — | |
+| P3c-1 | ✅ done | _(SHA pending)_ | **Batch already exists** (adj. A confirmed): `parse_program` (multi-assignment) → `analyze` → `compile` folds N alphas into ONE hash-consed DAG; `Engine::evaluate` already returns one `SignalSet::Alpha` per root — no `evaluate_batch` needed. Added (a) `compile_batch(span<string_view>, Library&)`, a thin convenience over that pipeline (auto-names entries `aN`, joins one-per-line, propagates Err on a malformed source — never throws); (b) **intern cache-hit telemetry** — `Dag::cache_hits()`/`intern_attempts()` (one `++` per `intern()` call / hit, pure observability) carried onto `Program.cache_hits`/`intern_attempts` + a `cache_hit_pct()` accessor, beside the pre-existing `unique_nodes`/`total_ast_nodes`. Invariant `intern_attempts == cache_hits + unique_nodes`. Proofs: **batch==singly** (each alpha[i] cell-identical, NaN==NaN, to compiling+evaluating it alone), **order-independence** (two submission orders → identical hash after sort-by-name; raw hashes differ so non-vacuous), CSE `unique < total` + `cache_hits>0` on overlap, boundaries (batch-of-1, fully-disjoint `unique==total`/`cache_hits==0`, identical-alphas heavy dedup). 8 AlphaBatch tests; full Alpha suite 346/346 green. Bench `alpha_batch_bench.cpp` (mined 24-alpha battery, 512×256). See measured sub-table below. |
 | P3c-2 | ⏳ pending | — | |
 | P3c-3 | ⏳ pending | — | |
 | P3c-4 | ⏳ pending | — | |
+
+### P3c-1 measured CSE lever
+
+Mined 24-alpha high-overlap battery (verbatim from the P3-9 proof bench), compiled ONCE to one
+cross-alpha-CSE Program; warm `Engine::evaluate` over a fixed 512×256 panel (131 072 cells).
+**Debug / clang-cl build — these are UPPER-BOUND figures, not release numbers.** Host: 16× 2496 MHz,
+L1d 48 KiB, L2 1280 KiB, L3 18432 KiB. (`build/bin/atx-engine-bench.exe --benchmark_filter=BM_BatchEvaluate`.)
+
+| Metric | Value |
+|--------|-------|
+| alphas | 24 |
+| unique_nodes | 41 |
+| total_ast_nodes | 156 |
+| unique/total ratio | 0.2628 (~74% of lowered nodes folded by cross-alpha CSE) |
+| cache_hits / intern_attempts | 115 / 156 |
+| cache_hit_pct | 73.72 % |
+| num_slots (peak live) | 12 |
+| evaluate wall time | ~282 ms / call (24 alphas × 131 072 cells, Debug) |
+| throughput | ~11.50 M alpha-cells/s ⇒ **~86.9 ns/cell**, **~85 alphas/s** |
+
+The cache-hit% (73.7) ≈ 1 − unique/total (0.263); both quantify the same cross-alpha dedup from opposite sides
+(`intern_attempts == cache_hits + unique_nodes` holds exactly). The metric is **reportable** off `Program` with
+no derived computation needed.
 
 ### P3c deferred residuals
 
@@ -95,6 +118,7 @@ _(Lift to ROADMAP future-work backlog at close.)_
 | Commit | Unit | Test counts (suite/total/fail/skip) |
 |--------|------|-------------------------------------|
 | _(this)_ | marker (P3c-0) | — (no logic; build stays green) |
+| _(SHA pending)_ | P3c-1 | AlphaBatch 8/8; full Alpha suite 346/346/0/0; bench builds + runs |
 
 ---
 

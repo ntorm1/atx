@@ -93,6 +93,21 @@ struct Program {
   atx::u32 unique_nodes{};
   atx::u32 total_ast_nodes{};
   atx::u32 peak_live_slots{}; // == num_slots
+
+  // Intern cache-hit telemetry, carried from the Dag (the cross-alpha CSE lever).
+  // `cache_hits` = intern() calls that collapsed onto an existing node;
+  // `intern_attempts` = total intern() calls. Invariant (held by Dag::intern):
+  // `intern_attempts == cache_hits + unique_nodes`. `cache_hit_pct()` is the
+  // share of lowered nodes deduplicated — non-zero exactly when alphas share a
+  // sub-expression. Pure observability; no effect on the emitted code.
+  atx::u32 cache_hits{};
+  atx::u32 intern_attempts{};
+
+  [[nodiscard]] double cache_hit_pct() const noexcept {
+    return intern_attempts == 0
+               ? 0.0
+               : 100.0 * static_cast<double>(cache_hits) / static_cast<double>(intern_attempts);
+  }
 };
 
 namespace detail {
@@ -169,6 +184,8 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
   prog.required_lookback = dag.required_lookback();
   prog.unique_nodes = dag.unique_nodes();
   prog.total_ast_nodes = dag.total_ast_nodes();
+  prog.cache_hits = dag.cache_hits();
+  prog.intern_attempts = dag.intern_attempts();
   prog.fields.assign(dag.fields().begin(), dag.fields().end());
   prog.code.reserve(nodes.size() * 2); // node emit + its Free, roughly
 
@@ -260,6 +277,46 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
 [[nodiscard]] inline atx::core::Result<Program> compile(const Ast &ast, const Analysis &analysis) {
   ATX_TRY(const Dag dag, build_dag(ast, analysis));
   return linearize(dag);
+}
+
+// =========================================================================
+//  compile_batch — compile N alpha sources into ONE cross-alpha-CSE Program.
+// =========================================================================
+//
+// A thin convenience over the existing pipeline: join the sources one-per-line
+// into a single `program` (`{ assignment }`), then parse_program -> analyze ->
+// compile. Because every alpha lands in ONE hash-consed Dag, sub-expressions
+// shared ACROSS alphas (e.g. two alphas both referencing `rank(close)`) collapse
+// to one node — that cross-alpha CSE is exactly what `Program::unique_nodes <
+// total_ast_nodes` and `cache_hits` quantify.
+//
+// This adds NO evaluation logic: `Engine(panel).evaluate(program)` is ALREADY
+// the batch path — it returns one `SignalSet::Alpha` per root (per input source),
+// so no separate `evaluate_batch` is needed. The roots preserve submission order
+// (parse_program appends one root per assignment in order), so `prog.roots[i]`
+// and the resulting `SignalSet.alphas[i]` correspond to `alpha_srcs[i]`.
+//
+// Each `alpha_srcs[i]` must be a single bare expression (no embedded newline /
+// `=`); it is auto-named `aN` (its 0-based index) so anonymous batch entries are
+// still distinguishable in the SignalSet. A malformed source surfaces as
+// Err(ParseError)/Err(InvalidArgument) from the underlying stages — never a
+// throw. An empty span yields an empty (zero-root) Program.
+//
+// COLD path (compile-time); std::string assembly is fine (zero-alloc is a VM
+// hot-path concern only).
+[[nodiscard]] inline atx::core::Result<Program>
+compile_batch(std::span<const std::string_view> alpha_srcs, const Library &lib) {
+  std::string program;
+  for (atx::usize i = 0; i < alpha_srcs.size(); ++i) {
+    program += 'a';
+    program += std::to_string(i);
+    program += " = ";
+    program.append(alpha_srcs[i].data(), alpha_srcs[i].size());
+    program += '\n';
+  }
+  ATX_TRY(const Ast ast, parse_program(program, lib));
+  ATX_TRY(const Analysis analysis, analyze(ast));
+  return compile(ast, analysis);
 }
 
 } // namespace atx::engine::alpha
