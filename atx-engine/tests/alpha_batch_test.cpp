@@ -374,4 +374,24 @@ TEST(AlphaBatch_Errors, EmptyBatch_YieldsZeroRootProgram) {
   EXPECT_EQ(prog.value().roots.size(), 0U);
 }
 
+// An embedded newline + `IDENT =` would lex to a SECOND assignment (the lexer
+// treats '\n' as ordinary whitespace; assignments are delimited purely by the
+// `IDENT =` pattern). That injects an extra root from ONE input, silently
+// breaking the roots[i] <-> alpha_srcs[i] contract. compile_batch MUST reject it.
+TEST(AlphaBatch_Errors, EmbeddedAssignment_RejectedNotSilentlyMerged) {
+  const std::vector<std::string_view> srcs = {"close\nfoo = open"};
+  auto prog = compile_batch(std::span<const std::string_view>{srcs}, shared_lib());
+  EXPECT_FALSE(prog.has_value())
+      << "an embedded assignment must be rejected, not silently expanded to 2 roots";
+}
+
+// The honest case still maps 1:1: N well-formed sources -> exactly N roots, in
+// submission order (the contract downstream P3c-2/3 + Phase 4 rely on).
+TEST(AlphaBatch_Errors, WellFormedBatch_MapsOneToOne_RootsMatchSrcCount) {
+  const std::vector<std::string_view> srcs = {"rank(close)", "ts_mean(close, 5)", "close - open"};
+  auto prog = compile_batch(std::span<const std::string_view>{srcs}, shared_lib());
+  ASSERT_TRUE(prog.has_value()) << (prog ? "" : prog.error().message());
+  EXPECT_EQ(prog.value().roots.size(), srcs.size());
+}
+
 } // namespace

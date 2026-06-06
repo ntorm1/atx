@@ -36,6 +36,7 @@
 #include <array>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -302,12 +303,28 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
 // Err(ParseError)/Err(InvalidArgument) from the underlying stages — never a
 // throw. An empty span yields an empty (zero-root) Program.
 //
+// CONTRACT ENFORCEMENT (make illegal states unrepresentable): the lexer treats
+// '\n' as ordinary whitespace and `parse_program` delimits assignments purely by
+// the `IDENT '='` pattern, so a source containing an embedded `IDENT =` (e.g.
+// "close\nfoo = open") would lex into a SECOND assignment — injecting an extra
+// root from ONE input and silently breaking the `roots[i] <-> alpha_srcs[i]`
+// 1:1 mapping the SignalSet correspondence depends on. We close that hole two
+// ways: (a) reject any source containing '\n' up front (a batch entry is one
+// expression, never a statement); (b) defensively assert post-compile that
+// `roots.size() == alpha_srcs.size()` — catching ANY desync regardless of cause.
+//
 // COLD path (compile-time); std::string assembly is fine (zero-alloc is a VM
 // hot-path concern only).
 [[nodiscard]] inline atx::core::Result<Program>
 compile_batch(std::span<const std::string_view> alpha_srcs, const Library &lib) {
   std::string program;
   for (atx::usize i = 0; i < alpha_srcs.size(); ++i) {
+    if (alpha_srcs[i].find('\n') != std::string_view::npos) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "compile_batch: alpha source " + std::to_string(i) +
+                                " contains an embedded newline (a batch entry must be a single "
+                                "expression, not a statement)");
+    }
     program += 'a';
     program += std::to_string(i);
     program += " = ";
@@ -316,7 +333,16 @@ compile_batch(std::span<const std::string_view> alpha_srcs, const Library &lib) 
   }
   ATX_TRY(const Ast ast, parse_program(program, lib));
   ATX_TRY(const Analysis analysis, analyze(ast));
-  return compile(ast, analysis);
+  ATX_TRY(Program prog, compile(ast, analysis));
+  // Defensive 1:1 invariant: one root per input source. An embedded assignment
+  // (or any other merge/injection) that slipped past the newline guard would
+  // desync this — fail loud rather than corrupt the roots[i] <-> src[i] mapping.
+  if (prog.roots.size() != alpha_srcs.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "compile_batch: a source injected/merged roots (embedded assignment?) — "
+                          "root count does not match the input source count");
+  }
+  return atx::core::Ok(std::move(prog));
 }
 
 } // namespace atx::engine::alpha
