@@ -12,9 +12,12 @@ target_include_directories(atx-engine
 target_compile_features(atx-engine PUBLIC cxx_std_20)
 
 # Engine builds on top of core; the warnings gate (§8) applies to engine TUs.
+# atx::tsdb is PUBLIC: ShmBarFeed (a header in this target's public include tree)
+# exposes atx::tsdb::SegmentReader in its interface, so consumers need it too.
 target_link_libraries(atx-engine
     PUBLIC
         atx::core
+        atx::tsdb
     PRIVATE
         atx_warnings
 )
