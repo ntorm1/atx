@@ -372,17 +372,17 @@ TEST(AlphaVm_Boundary, BareField_MatchesOracle) {
   expect_vm_matches_oracle("close", panel);
 }
 
-TEST(AlphaVm_Boundary, TimeSeriesOp_ReturnsNotImplemented) {
+TEST(AlphaVm_Boundary, TimeSeriesOp_Evaluates) {
   const atx::usize dates = 4;
   const atx::usize instruments = 4;
   const Panel panel = make_panel(dates, instruments, random_ohlcv(dates * instruments, 0x44ULL));
-  // Cross-sectional ops are implemented as of P3-7; the Ts* family lands in
-  // P3-8, so a time-series op is what still returns NotImplemented here.
-  const Program prog = compile_ok("delay(close, 2)"); // TsDelay -> not yet in the VM
+  // Cross-sectional ops landed in P3-7; the Ts* family landed in P3-8, so a
+  // time-series op now evaluates successfully (the full differential lives in
+  // alpha_ts_test.cpp; here we only confirm the VM no longer rejects it).
+  const Program prog = compile_ok("delay(close, 2)"); // TsDelay -> implemented in the VM
   Engine engine{panel};
   auto out = engine.evaluate(prog);
-  ASSERT_FALSE(out.has_value());
-  EXPECT_EQ(out.error().code(), ErrorCode::NotImplemented);
+  ASSERT_TRUE(out.has_value()) << (out ? "" : out.error().message());
 }
 
 TEST(AlphaVm_Field, UnknownField_ReturnsNotFound) {

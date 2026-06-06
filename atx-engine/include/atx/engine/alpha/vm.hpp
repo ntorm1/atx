@@ -82,6 +82,7 @@
 #include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/ts_ops.hpp"
 
 namespace atx::engine::alpha {
 
@@ -370,8 +371,7 @@ private:
     case OpCode::TsSlope:
     case OpCode::TsRsquare:
     case OpCode::TsResid:
-      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
-                            "Ts*: cross-sectional/time-series kernels land in P3-7/P3-8");
+      return eval_time_series(in, dates, instruments);
     case OpCode::StoreAlpha:
     case OpCode::Free:
       ATX_UNREACHABLE(); // handled by evaluate(); never dispatched
@@ -591,9 +591,52 @@ private:
     }
   }
 
+  // ---- time-series (per instrument column, causal trailing window) ---------
+  // Resolve the window `d` from the op's LAST operand, then fill every output
+  // cell from ts_ops.hpp's per-cell kernels. The window is STRIDED by
+  // `instruments` down each instrument column; the kernels recompute over the
+  // trailing window [t-d+1, t] in the oracle's chronological order (NO online
+  // rolling — bit-exact with oracle.hpp). Iterate instrument-outer / date-inner
+  // to match the oracle's loop nest. Mirrors oracle.hpp's eval_time_series.
+  [[nodiscard]] atx::core::Status eval_time_series(const Instr &in, atx::usize dates,
+                                                   atx::usize instruments) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const std::span<atx::f64> out = dst_col(in);
+    // Window from the LAST populated operand (delay/delta/unary-window: src[1];
+    // corr/cov: src[2]). Find the highest non-kNoSlot operand slot.
+    atx::usize last = 0;
+    for (atx::usize k = 0; k < in.src.size(); ++k) {
+      if (in.src.at(k) != kNoSlot) {
+        last = k;
+      }
+    }
+    const atx::usize d = detail::tsv_window_of(src_col(in, last));
+    const bool binary_series = (in.op == OpCode::TsCorr || in.op == OpCode::TsCov);
+    const std::span<const atx::f64> y =
+        binary_series ? src_col(in, 1) : std::span<const atx::f64>{};
+
+    // Reusable scratch sized to the window: NO per-cell allocation (grown only
+    // when `d` exceeds any prior call). Only the sort/pair ops touch it.
+    if (d > ts_scratch_a_.size()) {
+      ts_scratch_a_.resize(d);
+      ts_scratch_b_.resize(d);
+    }
+    for (atx::usize j = 0; j < instruments; ++j) {
+      for (atx::usize t = 0; t < dates; ++t) {
+        out[t * instruments + j] =
+            binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
+                                               ts_scratch_b_)
+                          : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_);
+      }
+    }
+    return atx::core::Ok();
+  }
+
   const Panel &panel_;
-  SlotPool pool_{1, 1};              // reused across calls; grown on demand
-  std::vector<FieldId> field_remap_; // program field id -> Panel FieldId scratch
+  SlotPool pool_{1, 1};                // reused across calls; grown on demand
+  std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
+  std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
+  std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
 };
 
 } // namespace atx::engine::alpha
