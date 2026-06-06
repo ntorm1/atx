@@ -41,6 +41,7 @@ add_executable(atx-core-tests
     column_test.cpp
     frame_test.cpp
     parquet_test.cpp
+    db_sqlite_test.cpp
 )
 
 target_link_libraries(atx-core-tests

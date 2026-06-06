@@ -1,9 +1,38 @@
+# ---- Vendored SQLite amalgamation (third-party/sqlite) ----
+# Compiled as its own static lib so its C source never sees the project's
+# /W4 /WX gate (it is third-party C with its own warning profile). atx-core
+# links it PRIVATE: the symbols propagate to the final link, but the
+# third-party include dir does NOT — sqlite3.h stays out of the atx-core
+# umbrella (the db/ wrapper forward-declares the opaque handles). See
+# third-party/sqlite/PROVENANCE.md for source/version/integrity.
+add_library(atx_sqlite3 STATIC third-party/sqlite/sqlite3.c)
+target_include_directories(atx_sqlite3 PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/sqlite>)
+target_compile_definitions(atx_sqlite3 PUBLIC
+    SQLITE_THREADSAFE=2              # multi-thread: one connection per thread
+    SQLITE_DQS=0                     # forbid double-quoted string literals (hardening)
+    SQLITE_DEFAULT_FOREIGN_KEYS=1    # enforce foreign keys by default
+    SQLITE_DEFAULT_MEMSTATUS=0       # skip per-call memory accounting (perf)
+    SQLITE_LIKE_DOESNT_MATCH_BLOBS
+    SQLITE_OMIT_DEPRECATED
+    SQLITE_USE_ALLOCA
+    SQLITE_ENABLE_COLUMN_METADATA
+    SQLITE_ENABLE_FTS5
+)
+# Third-party C: silence ALL warnings for this TU (must not trip /WX).
+if(MSVC)
+    target_compile_options(atx_sqlite3 PRIVATE /w)
+else()
+    target_compile_options(atx_sqlite3 PRIVATE -w)
+endif()
+
 add_library(atx-core STATIC
     src/core.cpp
     src/decimal.cpp
     src/datetime.cpp
     src/symbol.cpp
     src/io/parquet.cpp
+    src/db/sqlite.cpp
 )
 add_library(atx::core ALIAS atx-core)
 
@@ -29,6 +58,7 @@ target_link_libraries(atx-core
         Parquet::parquet_shared
     PRIVATE
         atx_warnings
+        atx_sqlite3
 )
 
 # Compile in every log level; runtime level (default err) does the filtering.

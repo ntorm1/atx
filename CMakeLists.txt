@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(atx
     VERSION 0.1.0
     DESCRIPTION "ATX monorepo: core + engine"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 # ---- Global settings ----
