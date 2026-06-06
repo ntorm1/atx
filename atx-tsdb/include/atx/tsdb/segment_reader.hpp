@@ -51,6 +51,15 @@ public:
     return cell_present(map_.base(), header(), t, inst);
   }
 
+  /// Field name for directory index `field`. PRECONDITION: field < F (ABORTS).
+  [[nodiscard]] std::string_view field_name(atx::u32 field) const noexcept;
+
+  /// Whole field block `field` as a non-owning view (length T*N, date-major).
+  /// PRECONDITION: field < F (ABORTS in debug; addressing is otherwise UB).
+  [[nodiscard]] std::span<const atx::f64> field_block_view(atx::u32 field) const noexcept {
+    return atx::tsdb::field_block_view(map_.base(), header(), field);
+  }
+
   /// Newest row index whose time <= now_nanos, or nullopt if none is visible.
   /// This is the no-look-ahead cutoff: a reader must never address past it.
   [[nodiscard]] std::optional<atx::u64> cutoff_index(atx::i64 now_nanos) const noexcept;

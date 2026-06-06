@@ -3,6 +3,7 @@
 #include <algorithm>   // std::upper_bound
 #include <optional>    // std::optional, std::nullopt
 #include <span>        // std::span
+#include <string.h>    // ::strnlen (POSIX/MSVC extension; not in <cstring>)
 #include <string>      // std::string
 #include <string_view> // std::string_view
 #include <utility>     // std::move
@@ -34,7 +35,7 @@ namespace {
   if (h.magic != kMagic) {
     return atx::core::Error{ErrorCode::InvalidArgument, "bad magic (not an atx segment)"};
   }
-  if (h.format_version != kFormatVersion) {
+  if (!is_supported_version(h.format_version)) {
     return atx::core::Error{ErrorCode::InvalidArgument, "unsupported format version"};
   }
   if ((h.flags & kFlagSealed) == 0U) {
@@ -82,6 +83,18 @@ std::optional<atx::u32> SegmentReader::field_index(std::string_view name) const 
     }
   }
   return std::nullopt;
+}
+
+std::string_view SegmentReader::field_name(atx::u32 field) const noexcept {
+  const SegmentHeader &h = header();
+  ATX_ASSERT(field < h.field_count);
+  // SAFETY: directory is F contiguous FieldEntry, validated in range; read-only.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  const auto *dir = reinterpret_cast<const FieldEntry *>(map_.base() + h.off_field_dir);
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  const FieldEntry &e = dir[field];
+  const atx::usize len = ::strnlen(e.name, kFieldNameLen);
+  return std::string_view{e.name, len};
 }
 
 std::string_view SegmentReader::symbol_name(atx::u32 inst) const noexcept {

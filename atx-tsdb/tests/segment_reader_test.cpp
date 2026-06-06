@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <ios> // std::ios
+#include <span>
 #include <string>
 
 #include "atx/tsdb/builder.hpp"
@@ -105,4 +107,27 @@ TEST(Reader_TwoIndependentMappings_SameContent, SharedReadProxy) {
   EXPECT_DOUBLE_EQ(a->value(*a->field_index("close"), 2, 1),
                    b->value(*b->field_index("close"), 2, 1));
   static_cast<void>(std::remove(path.c_str()));
+}
+
+TEST(Reader_FieldName_RoundTrips, NamesByIndex) {
+  const std::string path = make_segment("fn1");
+  auto r = atx::tsdb::SegmentReader::attach(path);
+  ASSERT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
+  EXPECT_EQ(r->field_name(0), "close");
+  EXPECT_EQ(r->field_name(1), "volume");
+  std::remove(path.c_str());
+}
+
+TEST(Reader_FieldBlockView_ExposesWholeBlock, BlockView) {
+  const std::string path = make_segment("fb1");
+  auto r = atx::tsdb::SegmentReader::attach(path);
+  ASSERT_TRUE(r.has_value());
+  const atx::u32 close = *r->field_index("close");
+  const std::span<const atx::f64> block = r->field_block_view(close);
+  ASSERT_EQ(block.size(), r->time_count() * r->instrument_count()); // T*N = 3*2
+  // date-major [t][inst]: close AAA@t0 (inst 0, t 0) == 10.0
+  EXPECT_DOUBLE_EQ(block[0 * r->instrument_count() + 0], 10.0);
+  // close BBB@t2 (inst 1, t 2)
+  EXPECT_DOUBLE_EQ(block[2 * r->instrument_count() + 1], 20.0);
+  std::remove(path.c_str());
 }
