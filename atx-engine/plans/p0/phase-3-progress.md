@@ -93,7 +93,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 | P3-5 | ✅ done | `1ec22ca` | `Panel` (self-contained date-major f64 + PIT universe mask — **not** a `series::Frame` view, see adjustment 4), `SlotPool` (pre-sized buffers, over-acquire = `ATX_ASSERT`), full `SignalSet`. `evaluate_reference(Program,Panel)`: full-buffer model (each slot a whole date×inst buffer), one exhaustive no-`default` `OpCode` switch → simple per-op kernels. **Pinned differential contract** (VM must match bit-for-bit): NaN-propagate min/max, masks 1/0, full-window min_periods (any-NaN window→NaN; delay/delta shift-only), CsRank ordinal tie-break by instrument id, sample-ddof std/var/zscore, CsNeutG≡demean. Universe folds to NaN at LoadField, propagates everywhere. Header-only. 27 tests. *upstream landed — green.* |
 | P3-6 | ✅ done | `1078249` | `Engine::evaluate(Program)→SignalSet`: full-buffer columnar VM (batch-per-opcode, deviation 5). Element-wise (`+−×÷`/pow/spow/min/max), unary (neg/abs/sign/log), cmp→mask, and/or/not, `Select`, LoadField (PIT→NaN), Const — re-stating the oracle's pinned scalar semantics independently (differential proves bit-parity). Cs*/Ts*→`Err(NotImplemented)` (P3-7/8). Exhaustive no-`default` switch. Zero-alloc dispatch loop (pool + remap scratch reused; warm `evaluate` allocs only the output) — CRT-alloc-hook guard. Header-only. 11 tests. *upstream landed — green.* |
 | P3-7 | ✅ done | `bf02154` | 7 cross-sectional kernels (`cs_ops.hpp`) wired into the VM (surgical vm.hpp stub→`eval_cross_section`). Per date-row over the valid (non-NaN) set; matches the oracle bit-for-bit: ordinal `CsRank` r/(n-1) tie-break by instrument id (singleton→0.5), sample-ddof `CsZscore`, `CsScale` L1→a, `CsDemeanG`≡`CsNeutG` per-group demean, within-group rank/zscore. **L6 `stats::cross_section` deliberately NOT used** (its average-tie/population semantics break the plan §3.5 ordinal-by-id determinism rail). Header-only. 15 tests (differential + known-value + tie-storm/NaN/single-member boundaries). *upstream landed — green.* |
-| P3-8 | ⏳ pending | `—` | `TsDelay`/`Delta`/`Sum`/`Mean`/`Std`/`Min`/`Max`/`Arg*`/`Rank`/`Corr`/`Cov`/`Product`/`DecayLinear`/…; O(1)/cell rolling; lookahead. *upstream landed — targets green.* |
+| P3-8 | ✅ done | `7b63c35` | 24 time-series kernels (`ts_ops.hpp`) wired into the VM (surgical vm.hpp stub→`eval_time_series` + reusable scratch). Causal trailing window `[t−d+1,t]` walked strided down the date-major slot. Matches oracle **bit-for-bit** via identical chronological summation order (NOT incremental — that would reorder FP ops); zero per-cell alloc (scratch grown once for med/rank/corr/cov). Full-window min_periods (any-NaN→NaN; delay/delta shift-only), sample-ddof var/std/skew/kurt/cov, population corr∈[-1,1], first-extreme arg*, oldest-seeded ema, `decay_linear`≡`wma`. **True O(1)/cell rolling DEFERRED** (needs ULP-tolerant differential). Header-only. 13 tests (differential×2 windows + known-value + causality-truncation rail + NaN/boundary). *upstream landed — green.* |
 | P3-9 | ⏳ pending | `—` | Differential (VM==oracle) + determinism-hash + lookahead-truncation + parallel/TSan; bench. Sprint close. |
 
 ### P3-4 CSE-lever metrics
@@ -129,6 +129,11 @@ _(Lift to ROADMAP future-work backlog at close.)_ Expected: Linux/clang TSan pas
 parallel evaluator; computed-goto dispatch (if profiling warrants); JIT exploration; `indneutralize`
 demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` vs `x^a`; BRAIN-superset ops.
 
+- **(P3-8) True O(1)/cell incremental rolling deferred.** The VM's `Ts*` kernels recompute each trailing
+  window O(d)/cell in the oracle's exact summation order to stay **bit-for-bit** with the differential oracle
+  (zero per-cell alloc, so still far faster than the oracle). An incremental/online accumulator (the §3.6
+  O(1)/cell budget) reorders FP ops → would need a documented ULP tolerance in the differential. Promote when
+  the §3.6 throughput budget is pursued (pairs with the L6 `rolling`/`online_stats` kernels).
 - **(P3-5) Oracle numeric choices to audit vs Alpha101/Qlib at sprint close.** The oracle PINS a self-consistent
   contract (the VM matches the oracle, not vice-versa), but a few formulas are engine choices worth confirming
   against the Alpha101 PDF before Phase 4 trusts the signals: `ts_rank` uses average-rank/(n−1) (vs CsRank's
@@ -156,7 +161,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 | `1ec22ca` | P3-5 | 27 new (AlphaPanel + AlphaOracle) / engine 464/465 (only `atx-core-tests_NOT_BUILT`) |
 | `1078249` | P3-6 | 11 new (AlphaVm differential) / engine 475/476 (only `atx-core-tests_NOT_BUILT`) |
 | `bf02154` | P3-7 | 15 new (AlphaCs differential) / engine 490/491 (only `atx-core-tests_NOT_BUILT`) |
-| `—`    | P3-8 | — |
+| `7b63c35` | P3-8 | 13 new (AlphaTs differential) / engine 503/504 (only `atx-core-tests_NOT_BUILT`) |
 | `—`    | P3-9 + close | — |
 
 **Phase 3 adds `<N>` new tests (total engine footprint: `<K>`/0/0 across `<J>` binaries).** _(Fill at close.)_
