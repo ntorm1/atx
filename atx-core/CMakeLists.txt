@@ -46,6 +46,7 @@ add_library(atx-core STATIC
     src/datetime.cpp
     src/symbol.cpp
     src/io/parquet.cpp
+    src/io/parquet_writer.cpp
     src/db/sqlite.cpp
     src/external/dbn.cpp
 )
