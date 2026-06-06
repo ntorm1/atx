@@ -387,6 +387,9 @@ private:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
       return eval_time_series(in);
+    case OpCode::TradeWhen:
+    case OpCode::Hump:
+      return eval_recurrence(in);
     case OpCode::StoreAlpha:
     case OpCode::Free:
       ATX_UNREACHABLE(); // handled by run(); never dispatched
@@ -538,6 +541,9 @@ private:
 
   // ---- time-series (per instrument column) --------------------------------
   [[nodiscard]] atx::core::Status eval_time_series(const Instr &in);
+
+  // ---- stateful recurrence (forward scan, true cross-date state) -----------
+  [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in);
 
   // Helpers for the two big families (defined out-of-line below the class).
   void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g, atx::f64 a,
@@ -1188,6 +1194,67 @@ inline atx::f64 Oracle::ts_binary_at(OpCode op, std::span<const atx::f64> x,
     return detail::kNaN;
   }
   return op == OpCode::TsCorr ? detail::pearson(wx, wy) : detail::sample_cov(wx, wy);
+}
+
+// =========================================================================
+//  Stateful causal recurrences — INDEPENDENT reference (P3b-3).
+//
+//  trade_when / hump carry TRUE cross-date state from the panel's first date
+//  forward (no trailing window), so they do NOT route through eval_time_series.
+//  This is the obviously-correct REFERENCE the fast VM (vm.hpp::eval_recurrence)
+//  must reproduce BIT-FOR-BIT; the branch order and NaN policy below are PINNED
+//  and re-stated independently of state_ops.hpp (the differential test proves
+//  the two agree). Per instrument column j we walk dates t=0…D-1 forward,
+//  carrying the prior output in a scalar `prior`.
+//
+//  SAFETY: causal by construction. The inner step reads only `prior`
+//  (== out[t-1,j]) and the date-t operand cells at index t*I+j; there is no
+//  index into a future date or future state. The first date (t==0) is special-
+//  cased, seeding `prior` without any look-back. No std container grows in the
+//  scan (the SignalSet/slot buffers are pre-sized), so this allocates nothing.
+// =========================================================================
+inline atx::core::Status Oracle::eval_recurrence(const Instr &in) {
+  std::span<atx::f64> out = dst_col(in);
+  if (in.op == OpCode::Hump) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    // Scalar threshold from the 2nd operand's [0] cell (read like CsScale's `a`);
+    // absent optional -> the 0.01 default (P3b-1 default-fill usually supplies it).
+    const atx::f64 thr =
+        in.src.at(1) == kNoSlot ? atx::f64{0.01} : detail::scalar_of(src_col(in, 1));
+    for (atx::usize j = 0; j < instruments_; ++j) {
+      atx::f64 prior = detail::kNaN;
+      for (atx::usize t = 0; t < dates_; ++t) {
+        const atx::usize i = t * instruments_ + j;
+        // first date -> x[0]; else pass x[t] iff |x[t]-prior| STRICTLY > thr,
+        // holding the prior otherwise (a NaN diff is never > thr -> holds).
+        const atx::f64 v = (t == 0) ? x[i] : (std::fabs(x[i] - prior) > thr ? x[i] : prior);
+        out[i] = v;
+        prior = v;
+      }
+    }
+    return atx::core::Ok();
+  }
+  // TradeWhen: trigger=src[0], alpha=src[1], exit=src[2]. Exit checked FIRST.
+  const std::span<const atx::f64> trig = src_col(in, 0);
+  const std::span<const atx::f64> alpha = src_col(in, 1);
+  const std::span<const atx::f64> exit_v = src_col(in, 2);
+  for (atx::usize j = 0; j < instruments_; ++j) {
+    atx::f64 prior = detail::kNaN;
+    for (atx::usize t = 0; t < dates_; ++t) {
+      const atx::usize i = t * instruments_ + j;
+      atx::f64 v;
+      if (detail::mask_true(exit_v[i])) {
+        v = detail::kNaN; // close / no position
+      } else if (detail::mask_true(trig[i])) {
+        v = alpha[i]; // (re)enter with the new signal
+      } else {
+        v = (t == 0) ? detail::kNaN : prior; // hold (flat on the first date)
+      }
+      out[i] = v;
+      prior = v;
+    }
+  }
+  return atx::core::Ok();
 }
 
 } // namespace detail

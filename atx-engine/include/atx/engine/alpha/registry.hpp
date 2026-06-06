@@ -146,6 +146,11 @@ enum class OpCode : atx::u8 {
   TsQuantile,
   TsScale,
   TsCountNans,
+  // ---- stateful recurrence (P3b-3): carry TRUE cross-date state from the
+  //      panel's first date forward (no trailing window). Causal by
+  //      construction — the forward scan reads only state[t-1] + inputs <= t.
+  TradeWhen,
+  Hump,
   // ---- store / free ----
   StoreAlpha,
   Free,
@@ -287,7 +292,7 @@ namespace detail {
   // lookahead_safe, defaults, shape_of}. Fixed-arity ops carry min==max and an
   // empty defaults array. `scale` is the lone variadic built-in in 3b: 1
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
-  static constexpr std::array<OpSig, 55> kOps = {{
+  static constexpr std::array<OpSig, 57> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -357,6 +362,17 @@ namespace detail {
       {"ts_skew", 2, 2, OpCode::TsSkew, DType::F64, true, {}, &shape_panel},
       {"ts_kurt", 2, 2, OpCode::TsKurt, DType::F64, true, {}, &shape_panel},
       {"ts_corr", 3, 3, OpCode::TsCorr, DType::F64, true, {}, &shape_panel},
+      // ---- stateful recurrence (P3b-3): output Panel; both are CAUSAL (the
+      //      forward scan seeds at the panel's first date and reads only the
+      //      prior state + inputs <= t) so lookahead_safe = true. shape_panel
+      //      (always Panel) is correct: the per-instrument recurrence yields a
+      //      date x instrument block, mirroring the Ts* P->P shape rule.
+      //   trade_when(trigger, alpha, exit) — arity 3; trigger/exit are masks,
+      //   alpha is F64; the typechecker pins the per-arg dtypes (analyze_call).
+      {"trade_when", 3, 3, OpCode::TradeWhen, DType::F64, true, {}, &shape_panel},
+      //   hump(x, threshold=0.01) — arity (1,2); the optional threshold uses the
+      //   P3b-1 default machinery (default-fill materializes Literal 0.01).
+      {"hump", 1, 2, OpCode::Hump, DType::F64, true, {0.01}, &shape_panel},
   }};
   return kOps;
 }

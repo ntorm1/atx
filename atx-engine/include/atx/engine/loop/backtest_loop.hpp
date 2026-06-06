@@ -174,14 +174,32 @@ public:
   /// the panel / market / portfolio / signal source were built over.
   BacktestLoop(data::IDataHandler &feed, SimClock &clock, EventBus<> &bus, RollingPanel<Cap> &panel,
                ISignalSource &signal, const WeightPolicy &policy, exec::ExecutionSimulator &exec,
-               Portfolio &portfolio, Market &market, Universe universe, Schedule schedule) noexcept
+               Portfolio &portfolio, Market &market, Universe universe, Schedule schedule,
+               Delay delay = Delay::Next) noexcept
       : feed_{&feed}, clock_{&clock}, bus_{&bus}, panel_{&panel}, signal_{&signal},
         policy_{&policy}, exec_{&exec}, portfolio_{&portfolio}, market_{&market},
-        universe_{universe}, schedule_{schedule} {
+        universe_{universe}, schedule_{schedule}, delay_{delay} {
     // One consumer drives the single-threaded drain. Reserve the slice scratch to
     // the universe size so steady-state slice assembly never allocates.
     (void)bus_->add_consumer(0);
     slice_rows_.reserve(universe_.size());
+
+    // Fill-timing knob (P3c-3). delay-0 (Same) flips the exec sim's same-bar
+    // relaxation ON so the dedicated post-queue same-bar settle below CAN fill;
+    // delay-1 (Next, the default) leaves the relaxation OFF — the firewall. The
+    // knob NEVER touches the signal data: the same program reads the same panel
+    // under either value; only the bar an order fills on differs. We flip the sim
+    // flag only for Same, so the default (Next) leaves the caller-built posture
+    // (relaxation OFF) untouched.
+    switch (delay_) {
+    case Delay::Same:
+      exec_->set_allow_same_bar_fill(true);
+      break;
+    case Delay::Next:
+      // Default firewall: do not relax. The sim was constructed with the
+      // relaxation OFF (FillCfg default), so Next is a no-op by construction.
+      break;
+    }
   }
 
   // The loop holds non-owning pointers into caller storage and is a stack fixture;
@@ -235,12 +253,10 @@ private:
     portfolio_->mark_to_market(*market_); // 2. value the book on the new marks
 
     // 3. Settle orders queued on an EARLIER slice (precedes queue() below — the
-    //    firewall). The returned span borrows sim-owned scratch valid only until
-    //    the next sim call, so it is fully consumed here before any queue().
-    for (const exec::FillPayload &f : exec_->settle_pending(t, *market_)) {
-      portfolio_->apply_fill(f);
-      record_fill(f);
-    }
+    //    firewall). For the default (Next) this is the slice's ONLY settle, so an
+    //    order decided here can never fill here. (delay-0 adds a second settle
+    //    AFTER queue, in rebalance(), gated entirely by Delay::Same.)
+    settle_at(t);
 
     panel_->append_sealed_row(slice); // 4. seal the completed bar into the panel
 
@@ -253,9 +269,12 @@ private:
     ++slice_index_;
   }
 
-  /// Evaluate the strategy over the sealed panel and queue the resulting orders
-  /// for a LATER slice. An expected signal failure (exhausted scripted schedule)
-  /// or an all-NaN signal simply produces no orders — never an abort.
+  /// Evaluate the strategy over the sealed panel and queue the resulting orders.
+  /// Under delay-1 (Next, the default) they fill on a strictly-LATER slice — the
+  /// firewall. Under delay-0 (Same) a dedicated post-queue settle at THIS `t`
+  /// fills them against this bar's close (opt-in). An expected signal failure
+  /// (exhausted scripted schedule) or an all-NaN signal produces no orders — never
+  /// an abort.
   void rebalance(atx::core::time::Timestamp t) {
     auto signal = signal_->evaluate(panel_->view()); // 6. strategy = VM (or scripted)
     if (!signal) {
@@ -264,7 +283,29 @@ private:
     const std::vector<atx::f64> weights = policy_->to_target_weights(*signal, universe_);
     const std::vector<exec::OrderPayload> orders =
         policy_->reconcile(weights, universe_, *portfolio_, *market_, t); // 7. target - current
-    exec_->queue(std::span<const exec::OrderPayload>{orders}, t); //    fill on a LATER slice
+    exec_->queue(std::span<const exec::OrderPayload>{orders}, t);
+
+    // delay-0 (Same) ONLY: a second settle at THIS same `t` lets the just-queued
+    // orders fill against this bar's close. It is gated entirely by `delay_`, so
+    // the default (Next) path NEVER runs this — the slice's only settle is step 3
+    // (which strictly precedes this queue), keeping the no-look-ahead firewall
+    // structurally intact for the conservative default. The sim's same-bar
+    // relaxation (now >= queued_at, flipped on in the ctor for Same) is what makes
+    // these queued-at-`t` orders eligible at `t`.
+    if (delay_ == Delay::Same) {
+      settle_at(t); // delay-0: fill on this bar's close
+    }
+  }
+
+  /// Apply every fill the sim emits at `now` to the portfolio + result. Shared by
+  /// the per-slice settle (step 3) and the delay-0 same-bar settle. The returned
+  /// span borrows sim-owned scratch valid only until the next sim call, so it is
+  /// fully consumed here.
+  void settle_at(atx::core::time::Timestamp now) {
+    for (const exec::FillPayload &f : exec_->settle_pending(now, *market_)) {
+      portfolio_->apply_fill(f);
+      record_fill(f);
+    }
   }
 
   /// Append a fill to the result and accrue its traded notional into turnover.
@@ -293,6 +334,7 @@ private:
   Market *market_;
   Universe universe_;
   Schedule schedule_;
+  Delay delay_; // fill-timing knob (P3c-3): Same = delay-0, Next = delay-1
 
   // ---- run state ------------------------------------------------------------
   std::vector<SliceRow> slice_rows_; // per-slice scratch (reserved once)

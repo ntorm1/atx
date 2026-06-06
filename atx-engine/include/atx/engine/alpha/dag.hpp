@@ -150,12 +150,24 @@ public:
   [[nodiscard]] atx::u32 total_ast_nodes() const noexcept { return total_ast_nodes_; }
   [[nodiscard]] atx::u16 required_lookback() const noexcept { return required_lookback_; }
 
+  // Intern cache-hit telemetry (the cross-alpha CSE lever, made reportable).
+  // `intern_attempts()` counts every intern() call (one per lowered Ast node);
+  // `cache_hits()` counts those that resolved to an ALREADY-interned node — i.e.
+  // a common sub-expression collapsed instead of growing the graph. A hit is a
+  // node NOT materialized, so `intern_attempts() == cache_hits() + unique_nodes()`
+  // exactly (every attempt either hits or appends one fresh node). These are pure
+  // observability counters: interning behaviour is unchanged.
+  [[nodiscard]] atx::u32 cache_hits() const noexcept { return cache_hits_; }
+  [[nodiscard]] atx::u32 intern_attempts() const noexcept { return intern_attempts_; }
+
   // ---- builder API (used by build_dag; intentionally public) ------------
 
   // Hash-cons a key: return the existing NodeId on a structural hit (CSE), or
   // append a fresh node from `proto` and return its NodeId on a miss.
   [[nodiscard]] NodeId intern(const NodeKey &key, const Node &proto) {
+    ++intern_attempts_;
     if (const auto it = cons_.find(key); it != cons_.end()) {
+      ++cache_hits_; // structural hit: a shared sub-expression was NOT re-materialized
       return it->second;
     }
     const auto id = static_cast<NodeId>(nodes_.size());
@@ -188,6 +200,8 @@ private:
   atx::core::container::HashMap<NodeKey, NodeId, detail::NodeKeyHash> cons_; // cons table
   atx::u32 total_ast_nodes_{};
   atx::u16 required_lookback_{};
+  atx::u32 cache_hits_{};      // intern() calls that hit an existing node (CSE)
+  atx::u32 intern_attempts_{}; // total intern() calls (hits + fresh inserts)
 };
 
 namespace detail {

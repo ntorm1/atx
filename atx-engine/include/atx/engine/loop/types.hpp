@@ -15,6 +15,7 @@
 #include <span> // std::span (Universe view)
 
 #include "atx/core/domain/symbol.hpp" // atx::core::domain::Symbol
+#include "atx/core/types.hpp"         // atx::u8 (Delay underlying type)
 
 namespace atx::engine {
 
@@ -30,5 +31,30 @@ using InstrumentId = atx::core::domain::Symbol;
 /// alias (rather than a bare std::span at each call site) so the index-alignment
 /// contract has one named type across the loop, signal source and weight policy.
 using Universe = std::span<const InstrumentId>;
+
+// ===========================================================================
+//  Delay — the execution-timing knob (delay-0 vs delay-1).
+//
+//  This is an EXECUTION-TIMING setting, NOT part of the alpha expression: the
+//  SAME compiled program runs under either value and reads the SAME panel data;
+//  only the bar an order FILLS on differs. It mirrors the standard backtest
+//  convention (and Zipline/LEAN's "trade at this close" vs "next open").
+//
+//    * Next  (delay-1, DEFAULT): the conservative, structurally-safe firewall.
+//      An order decided on bar t fills no earlier than a STRICTLY-LATER slice
+//      (the loop settles the prior batch BEFORE queueing this bar's orders, and
+//      the ExecutionSimulator additionally refuses any fill whose bar end_time
+//      <= queued_at). This is the no-look-ahead default a reviewer must find on.
+//    * Same  (delay-0, OPT-IN): the less-conservative relaxation that lets an
+//      order fill on the SAME bar's close it was decided on. Wired to the
+//      ExecutionSimulator's FillCfg.allow_same_bar_fill relaxation (which itself
+//      defaults OFF). Use only with eyes open — it trades on the close the
+//      decision read, so it is mildly optimistic, not look-ahead in the panel
+//      sense (the signal still reads only sealed <= t rows).
+// ===========================================================================
+enum class Delay : atx::u8 {
+  Same, // delay-0: fill on THIS bar's close (opt-in; relaxes the exec firewall)
+  Next, // delay-1: fill on a strictly-later slice (default; firewall intact)
+};
 
 } // namespace atx::engine

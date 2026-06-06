@@ -36,6 +36,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -145,6 +146,8 @@ namespace detail {
   case OpCode::CsCountG:
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
+  case OpCode::TradeWhen:
+  case OpCode::Hump:
   case OpCode::StoreAlpha:
   case OpCode::Free:
     return false;
@@ -202,7 +205,11 @@ namespace detail {
 
 // Read & validate a temporal op's window argument. The window is the LAST arg:
 // arg `c` for arity-3 (corr/cov), else arg `b`. It MUST be a folded Literal
-// (non-constant window → error) holding a finite integer >= 1. Returns the
+// (non-constant window → error) holding a finite positive value. A non-integer
+// positive literal is FLOORED (P3b-4 §6 lock #3): the 101-alphas paper mines
+// fractional window constants (e.g. ts_mean(close, 8.7)), and the canonical
+// convention is floor(d). After flooring, a window of 0 (e.g. 0.5 → 0), any
+// d <= 0, and a window above u16::max are all rejected. Returns the floored
 // window as u16 on success.
 [[nodiscard]] inline atx::core::Result<atx::u16> window_value(const Ast &ast, const Expr &call) {
   const ExprId window_id = (call_arity(call) == 3) ? call.c : call.b;
@@ -212,14 +219,33 @@ namespace detail {
                           "window must be a compile-time constant");
   }
   const atx::f64 v = w.value;
-  if (!std::isfinite(v) || v < 1.0 || v != std::floor(v)) {
+  if (!std::isfinite(v)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "window must be a positive integer");
+                          "window must be a finite positive number");
   }
-  // SAFETY: bounds checked above (finite, integral, >= 1); the cast cannot
-  // narrow a fractional part. A window beyond u16 range is implausible for any
-  // realistic alpha; clamp via the explicit cast (no UB — value is integral).
-  return atx::core::Ok(static_cast<atx::u16>(v));
+  // Floor a fractional positive literal rather than reject it (lock #3): the
+  // floor is the paper's window convention; the <=0 rail survives because a
+  // non-positive or sub-1 literal (e.g. 0.5, -3) floors to <= 0 and is rejected
+  // below. The non-constant rail is untouched (handled above).
+  const atx::f64 floored = std::floor(v);
+  if (floored < 1.0) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "window must floor to a positive integer (>= 1)");
+  }
+  // Upper-bound rail: the result is cast to u16, and a float→int conversion
+  // whose truncated value is outside the destination range is UNDEFINED
+  // ([conv.fpint]/1 — not a clamp), so a literal above u16::max must be rejected
+  // here, BEFORE the cast. Integrality alone does not make the cast safe.
+  constexpr atx::f64 kMaxWindow = static_cast<atx::f64>(std::numeric_limits<atx::u16>::max());
+  if (floored > kMaxWindow) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "window literal too large (max 65535)");
+  }
+  // SAFETY: the lower rail (>= 1.0) and the upper rail (<= u16::max) above prove
+  // `floored` is an integral value in [1, 65535] — provably within the u16
+  // destination range — so the float→int conversion is well-defined (no UB, no
+  // narrowing of a fractional part since the value is already integral).
+  return atx::core::Ok(static_cast<atx::u16>(floored));
 }
 
 // ----- per-kind analyzers (each builds the node's TypeInfo or an error) ----
@@ -322,6 +348,30 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
   if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "group operator requires a classifier (Group) 2nd argument");
+  }
+  // trade_when(trigger, alpha, exit): trigger (arg0) and exit (arg2) are masks;
+  // alpha (arg1) is numeric. Mirrors how analyze_select pins its Mask cond.
+  if (op == OpCode::TradeWhen) {
+    if (out[e.a].dtype != DType::Mask || out[e.c].dtype != DType::Mask) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "trade_when requires mask trigger/exit (args 1 and 3)");
+    }
+    if (out[e.b].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "trade_when alpha (arg 2) must be numeric (f64)");
+    }
+  }
+  // hump(x, threshold): x (arg0) is numeric; the threshold (arg1, when present)
+  // is a numeric scalar. Group/Mask dtypes are rejected for both.
+  if (op == OpCode::Hump) {
+    if (out[e.a].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hump requires a numeric (f64) primary operand");
+    }
+    if (e.b != kNoExpr && out[e.b].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hump threshold (arg 2) must be numeric (f64)");
+    }
   }
 
   // Collect child shapes in order for the table-driven shape rule.

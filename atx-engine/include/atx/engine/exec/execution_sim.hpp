@@ -198,6 +198,22 @@ public:
       : ExecutionSimulator{FillCfg{},       SlippageCfg{}, ImpactCfg{},
                            CommissionCfg{}, LatencyCfg{},  VolumeCapCfg{}} {}
 
+  /// Read-only access to the configured commission model. Lets a research-cadence
+  /// consumer (e.g. alpha::extract_streams, P3c-2) extract the per-notional cost
+  /// COEFFICIENT and apply a lightweight turnover charge WITHOUT replaying the full
+  /// bar-by-bar queue/settle loop — reusing this sim's own coefficient rather than
+  /// inventing a second cost number. Pure observability; mutates nothing.
+  [[nodiscard]] const CommissionCfg &commission_cfg() const noexcept { return comm_cfg_; }
+
+  /// Toggle the same-bar fill relaxation (the delay-0 knob; P3c-3). When false
+  /// (the DEFAULT, set at construction) an order fills only on a STRICTLY-LATER
+  /// slice — the no-look-ahead firewall. When true, an order may fill on the same
+  /// slice it was queued (delay-0). This is the single mutable seam the BacktestLoop
+  /// flips when wired with loop::Delay::Same; it never weakens the default (Next)
+  /// posture, which leaves the flag off. The relaxation is itself opt-in (FillCfg
+  /// defaults it OFF), so flipping it is always a deliberate, loud decision.
+  void set_allow_same_bar_fill(bool allow) noexcept { fill_cfg_.allow_same_bar_fill = allow; }
+
   /// Add new orders to the open set. They settle on a STRICTLY LATER slice (the
   /// firewall). A zero-qty order is not a transaction and is dropped here (mirrors
   /// the make_order_event qty!=0 guard) — it never reaches the fill path. `now`
