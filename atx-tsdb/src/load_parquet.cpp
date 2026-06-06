@@ -154,13 +154,18 @@ Status build_dated_segments(const std::string &hive_root, const std::string &seg
     return Err(ErrorCode::IoError, "hive_root does not exist");
   }
   // Collect date partitions: subdirs named "date=YYYY-MM-DD".
+  fs::directory_iterator it{fs::path{hive_root}, ec};
+  if (ec) {
+    return Err(ErrorCode::IoError, "cannot iterate hive_root");
+  }
   std::vector<std::string> dates;
-  for (const auto &entry : fs::directory_iterator(hive_root, ec)) {
+  static constexpr std::string_view prefix = "date=";
+  for (const auto &entry : it) {
+    // A stat failure on an entry is treated as "skip non-dir".
     if (!entry.is_directory(ec)) {
       continue;
     }
     const std::string dir = entry.path().filename().string();
-    const std::string prefix = "date=";
     if (dir.rfind(prefix, 0) == 0) {
       dates.push_back(dir.substr(prefix.size()));
     }
@@ -171,6 +176,9 @@ Status build_dated_segments(const std::string &hive_root, const std::string &seg
   std::sort(dates.begin(), dates.end()); // ISO dates sort chronologically
 
   fs::create_directories(fs::path{seg_dir}, ec);
+  if (ec) {
+    return Err(ErrorCode::IoError, "cannot create seg_dir");
+  }
   for (const std::string &date : dates) {
     const std::string parquet = (fs::path{hive_root} / ("date=" + date) / "data.parquet").string();
     const std::string out = (fs::path{seg_dir} / (date + ".seg")).string();
