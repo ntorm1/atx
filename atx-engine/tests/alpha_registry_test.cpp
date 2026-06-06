@@ -1,0 +1,188 @@
+// atx::engine::alpha — operator registry unit tests (P3-2).
+//
+// Covers the Library catalogue and the table-driven shape signatures:
+//   * built-ins registered (find returns a row; unknown → nullptr);
+//   * name → opcode / arity / out_dtype mapping (Appendix A);
+//   * all built-ins lookahead_safe;
+//   * shape_of broadcast rules per op family (§4);
+//   * register_op: success, duplicate, empty-name, null-shape rejection.
+//
+// Naming: Subject_Condition_ExpectedResult.
+
+#include <array>
+#include <span>
+
+#include <gtest/gtest.h>
+
+#include "atx/core/error.hpp"
+#include "atx/engine/alpha/registry.hpp"
+
+namespace {
+
+using atx::core::ErrorCode;
+using atx::engine::alpha::DType;
+using atx::engine::alpha::Library;
+using atx::engine::alpha::OpCode;
+using atx::engine::alpha::OpSig;
+using atx::engine::alpha::Shape;
+
+// ---- catalogue presence -----------------------------------------------------
+
+TEST(AlphaRegistry_Find, KnownBuiltin_ReturnsRow) {
+  const Library lib;
+  const OpSig *sig = lib.find("ts_mean");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->name, "ts_mean");
+  EXPECT_EQ(sig->arity, 2U);
+  EXPECT_EQ(sig->opcode, OpCode::TsMean);
+}
+
+TEST(AlphaRegistry_Find, UnknownName_ReturnsNullptr) {
+  const Library lib;
+  EXPECT_EQ(lib.find("no_such_op"), nullptr);
+}
+
+TEST(AlphaRegistry_Find, EmptyName_ReturnsNullptr) {
+  const Library lib;
+  EXPECT_EQ(lib.find(""), nullptr);
+}
+
+// ---- name → opcode mapping (Appendix A spot checks) -------------------------
+
+TEST(AlphaRegistry_Mapping, Correlation_MapsToTsCorr_Arity3) {
+  const Library lib;
+  const OpSig *sig = lib.find("correlation");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->opcode, OpCode::TsCorr);
+  EXPECT_EQ(sig->arity, 3U);
+}
+
+TEST(AlphaRegistry_Mapping, Stddev_MapsToTsStd) {
+  const Library lib;
+  const OpSig *sig = lib.find("stddev");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->opcode, OpCode::TsStd);
+}
+
+TEST(AlphaRegistry_Mapping, SignedPower_MapsToSpow) {
+  const Library lib;
+  const OpSig *sig = lib.find("signedpower");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->opcode, OpCode::Spow);
+  EXPECT_EQ(sig->arity, 2U);
+}
+
+TEST(AlphaRegistry_Mapping, IndNeutralize_MapsToCsDemeanG) {
+  const Library lib;
+  const OpSig *sig = lib.find("indneutralize");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->opcode, OpCode::CsDemeanG);
+}
+
+TEST(AlphaRegistry_Mapping, GroupNeutralize_MapsToCsNeutG) {
+  const Library lib;
+  const OpSig *sig = lib.find("group_neutralize");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->opcode, OpCode::CsNeutG);
+}
+
+TEST(AlphaRegistry_Mapping, Rank_MapsToCsRank_Arity1) {
+  const Library lib;
+  const OpSig *sig = lib.find("rank");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->opcode, OpCode::CsRank);
+  EXPECT_EQ(sig->arity, 1U);
+}
+
+// ---- out_dtype + lookahead rail ---------------------------------------------
+
+TEST(AlphaRegistry_Dtype, AbsFunction_OutDtypeIsF64) {
+  const Library lib;
+  const OpSig *sig = lib.find("abs");
+  ASSERT_NE(sig, nullptr);
+  EXPECT_EQ(sig->out_dtype, DType::F64);
+}
+
+TEST(AlphaRegistry_Lookahead, AllBuiltins_AreLookaheadSafe) {
+  const Library lib;
+  static constexpr std::array<const char *, 6> kNames = {"rank",  "ts_mean",     "correlation",
+                                                         "delay", "signedpower", "decay_linear"};
+  for (const char *name : kNames) {
+    const OpSig *sig = lib.find(name);
+    ASSERT_NE(sig, nullptr) << name;
+    EXPECT_TRUE(sig->lookahead_safe) << name;
+  }
+}
+
+// ---- shape_of broadcast rules (§4) ------------------------------------------
+
+TEST(AlphaRegistry_Shape, MinFunction_BroadcastsToMaxShape) {
+  const Library lib;
+  const OpSig *sig = lib.find("min");
+  ASSERT_NE(sig, nullptr);
+  const std::array<Shape, 2> panel_scalar = {Shape::Panel, Shape::Scalar};
+  EXPECT_EQ(sig->shape_of(panel_scalar), Shape::Panel);
+  const std::array<Shape, 2> scalar_scalar = {Shape::Scalar, Shape::Scalar};
+  EXPECT_EQ(sig->shape_of(scalar_scalar), Shape::Scalar);
+}
+
+TEST(AlphaRegistry_Shape, AbsFunction_PreservesArgShape) {
+  const Library lib;
+  const OpSig *sig = lib.find("abs");
+  ASSERT_NE(sig, nullptr);
+  const std::array<Shape, 1> panel = {Shape::Panel};
+  EXPECT_EQ(sig->shape_of(panel), Shape::Panel);
+  const std::array<Shape, 1> cs = {Shape::CrossSection};
+  EXPECT_EQ(sig->shape_of(cs), Shape::CrossSection);
+}
+
+TEST(AlphaRegistry_Shape, Rank_AlwaysCrossSection) {
+  const Library lib;
+  const OpSig *sig = lib.find("rank");
+  ASSERT_NE(sig, nullptr);
+  const std::array<Shape, 1> panel = {Shape::Panel};
+  EXPECT_EQ(sig->shape_of(panel), Shape::CrossSection);
+}
+
+TEST(AlphaRegistry_Shape, TsMean_AlwaysPanel) {
+  const Library lib;
+  const OpSig *sig = lib.find("ts_mean");
+  ASSERT_NE(sig, nullptr);
+  const std::array<Shape, 2> panel_scalar = {Shape::Panel, Shape::Scalar};
+  EXPECT_EQ(sig->shape_of(panel_scalar), Shape::Panel);
+}
+
+// ---- register_op ------------------------------------------------------------
+
+TEST(AlphaRegistry_Register, NewOp_Succeeds) {
+  Library lib;
+  const OpSig sig{"my_op", 1, OpCode::Abs, DType::F64, true, &atx::engine::alpha::shape_unary};
+  const auto status = lib.register_op(sig);
+  ASSERT_TRUE(status.has_value()) << (status ? "" : status.error().message());
+  EXPECT_NE(lib.find("my_op"), nullptr);
+}
+
+TEST(AlphaRegistry_Register, DuplicateName_Fails) {
+  Library lib;
+  const auto status = lib.register_op(
+      OpSig{"ts_mean", 2, OpCode::TsMean, DType::F64, true, &atx::engine::alpha::shape_panel});
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::AlreadyExists);
+}
+
+TEST(AlphaRegistry_Register, EmptyName_Fails) {
+  Library lib;
+  const auto status = lib.register_op(
+      OpSig{"", 1, OpCode::Abs, DType::F64, true, &atx::engine::alpha::shape_unary});
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(AlphaRegistry_Register, NullShapeOf_Fails) {
+  Library lib;
+  const auto status = lib.register_op(OpSig{"bad_op", 1, OpCode::Abs, DType::F64, true, nullptr});
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+}
+
+} // namespace

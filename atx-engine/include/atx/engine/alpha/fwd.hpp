@@ -10,13 +10,14 @@
 // DAG, or the columnar eval context.
 //
 // Full definitions live in (added per phase unit):
-//   alpha/lexer.hpp    — TokenKind, Token, Span                       (P3-1)
-//   alpha/parser.hpp   — Expr, Library, OpSig                         (P3-2)
+//   alpha/lexer.hpp     — TokenKind, Token, Span                      (P3-1)
+//   alpha/registry.hpp  — OpCode, Shape, DType, OpSig, Library        (P3-2)
+//   alpha/parser.hpp    — Expr, Ast                                   (P3-2)
 //   alpha/typecheck.hpp — (uses Token/Expr; no new forward types)     (P3-3)
-//   alpha/dag.hpp      — Node, Dag                                    (P3-4)
-//   alpha/bytecode.hpp — OpCode, Program                              (P3-4)
-//   alpha/vm.hpp       — SignalSet                                     (P3-6)
-//   alpha/engine.hpp   — Engine                                       (P3-9)
+//   alpha/dag.hpp       — Node, Dag                                   (P3-4)
+//   alpha/bytecode.hpp  — Program (OpCode lives in registry.hpp)      (P3-4)
+//   alpha/vm.hpp        — SignalSet                                    (P3-6)
+//   alpha/engine.hpp    — Engine                                      (P3-9)
 //
 // NOTE: OpCode, TokenKind, Shape, and DType are scoped enums with an explicit
 // underlying type (atx::u8). They are forward-declared here so callers that
@@ -34,15 +35,15 @@ namespace atx::engine::alpha {
 // Lexer token category. Full definition in alpha/lexer.hpp (P3-1).
 enum class TokenKind : atx::u8;
 
-// VM instruction opcode. Full definition in alpha/bytecode.hpp (P3-4).
+// VM instruction opcode (the ISA). Full definition in alpha/registry.hpp (P3-2).
 enum class OpCode : atx::u8;
 
 // Signal shape: Scalar (S), Vector/cross-sectional (V), or Panel (P).
-// Full definition in alpha/typecheck.hpp (P3-3).
+// Full definition in alpha/registry.hpp (P3-2).
 enum class Shape : atx::u8;
 
 // Element data type: f64, mask (boolean), or group (integer label).
-// Full definition in alpha/typecheck.hpp (P3-3).
+// Full definition in alpha/registry.hpp (P3-2).
 enum class DType : atx::u8;
 
 // =====================================================================
@@ -61,16 +62,16 @@ struct Span;
 //  Parser / registry — AST + operator catalogue (P3-2)
 // =====================================================================
 
-// An immutable expression tree node produced by the Pratt parser. Carries
-// shape/dtype annotations after P3-3 typecheck. Full definition in alpha/parser.hpp (P3-2).
+// An expression tree node produced by the Pratt parser (arena-indexed).
+// Full definition in alpha/parser.hpp (P3-2).
 struct Expr;
 
-// Operator registry: maps name → OpSig; supports const-fold and desugar
-// rewrites. Full definition in alpha/parser.hpp (P3-2).
+// Operator registry: maps name → OpSig (the shared source of truth the parser,
+// checker, DAG, and VM all consult). Full definition in alpha/registry.hpp (P3-2).
 class Library;
 
-// Operator signature: arity, shape/dtype rules, lookback.
-// Full definition in alpha/parser.hpp (P3-2).
+// Operator signature: name, arity, opcode, out dtype, lookahead rail, and a
+// table-driven shape signature. Full definition in alpha/registry.hpp (P3-2).
 struct OpSig;
 
 // =====================================================================
