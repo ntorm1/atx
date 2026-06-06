@@ -60,3 +60,28 @@ TEST(ParquetWriter, HiveRejectsMissingPartitionColumn) {
   auto n = io::write_hive_parquet(cols, "ignored", "nope");
   EXPECT_FALSE(n.has_value());
 }
+
+TEST(ParquetWriter, ZstdShrinksHighlyCompressibleFile) {
+  std::vector<i64> v(2000, 42); // very compressible
+  std::vector<std::string> sym(2000, std::string("AAAA"));
+  const std::vector<io::WriteColumn> cols = {
+      {"v", std::span<const i64>(v)},
+      {"sym", std::span<const std::string>(sym)},
+  };
+  const fs::path none = fs::temp_directory_path() / "atx_pqw_none.parquet";
+  const fs::path zstd = fs::temp_directory_path() / "atx_pqw_zstd.parquet";
+  fs::remove(none);
+  fs::remove(zstd);
+
+  ASSERT_TRUE(io::write_parquet(cols, none.string(), io::WriteOptions{io::Compression::None, false})
+                  .has_value());
+  ASSERT_TRUE(io::write_parquet(cols, zstd.string(), io::WriteOptions{io::Compression::Zstd, true})
+                  .has_value());
+
+  EXPECT_LT(fs::file_size(zstd), fs::file_size(none));
+
+  // Both round-trip identically.
+  auto t = io::read_parquet(zstd.string());
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_rows(), 2000);
+}

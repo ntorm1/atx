@@ -8,6 +8,7 @@
 #include <arrow/table.h>
 #include <arrow/type.h>
 #include <parquet/arrow/writer.h>
+#include <parquet/properties.h>
 
 #include <filesystem>
 #include <memory>
@@ -109,16 +110,37 @@ build_table(std::span<const WriteColumn> cols, std::span<const usize> rows, std:
   return arrow::Table::Make(arrow::schema(fields), arrays, static_cast<i64>(rows.size()));
 }
 
+[[nodiscard]] parquet::Compression::type to_parquet(Compression c) noexcept {
+  switch (c) {
+  case Compression::None:
+    return parquet::Compression::UNCOMPRESSED;
+  case Compression::Snappy:
+    return parquet::Compression::SNAPPY;
+  case Compression::Zstd:
+    return parquet::Compression::ZSTD;
+  }
+  return parquet::Compression::UNCOMPRESSED;
+}
+
 [[nodiscard]] Status write_table(const std::shared_ptr<arrow::Table> &table,
-                                 const std::string &path) {
+                                 const std::string &path, WriteOptions opts) {
   std::error_code ec;
   std::filesystem::create_directories(std::filesystem::path{path}.parent_path(), ec);
   auto sink_r = arrow::io::FileOutputStream::Open(path);
   if (!sink_r.ok()) {
     return atx::core::Err(from_arrow(sink_r.status(), "open output"));
   }
+  parquet::WriterProperties::Builder pb;
+  pb.compression(to_parquet(opts.compression));
+  if (opts.dictionary) {
+    pb.enable_dictionary();
+  } else {
+    pb.disable_dictionary();
+  }
+  const std::shared_ptr<parquet::WriterProperties> props = pb.build();
   auto st = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *sink_r,
-                                       /*chunk_size=*/1 << 20);
+                                       /*chunk_size=*/1 << 20, props,
+                                       parquet::default_arrow_writer_properties());
   if (!st.ok()) {
     return atx::core::Err(from_arrow(st, "write parquet"));
   }
@@ -152,18 +174,18 @@ build_table(std::span<const WriteColumn> cols, std::span<const usize> rows, std:
 
 } // namespace
 
-Status write_parquet(std::span<const WriteColumn> cols, std::string_view path) {
+Status write_parquet(std::span<const WriteColumn> cols, std::string_view path, WriteOptions opts) {
   ATX_TRY_VOID(validate_lengths(cols));
   const auto rows = all_rows(column_rows(cols.front()));
   auto table = build_table(cols, rows, /*skip=*/"");
   if (!table.ok()) {
     return atx::core::Err(from_arrow(table.status(), "build table"));
   }
-  return write_table(*table, std::string{path});
+  return write_table(*table, std::string{path}, opts);
 }
 
 Result<i64> write_hive_parquet(std::span<const WriteColumn> cols, std::string_view root,
-                               std::string_view partition_col) {
+                               std::string_view partition_col, WriteOptions opts) {
   ATX_TRY_VOID(validate_lengths(cols));
   const usize n = column_rows(cols.front());
 
@@ -206,7 +228,7 @@ Result<i64> write_hive_parquet(std::span<const WriteColumn> cols, std::string_vi
     }
     const std::string path =
         std::string{root} + "/" + std::string{partition_col} + "=" + values[b] + "/data.parquet";
-    ATX_TRY_VOID(write_table(*table, path));
+    ATX_TRY_VOID(write_table(*table, path, opts));
   }
   return atx::core::Ok(static_cast<i64>(buckets.size()));
 }
