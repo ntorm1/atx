@@ -403,6 +403,10 @@ struct Parser {
 // the absence). Precondition: min_arity ≤ args.size() ≤ max_arity.
 inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &args) {
   for (atx::usize k = args.size(); k < sig.max_arity; ++k) {
+    // SAFETY: `k - sig.min_arity` lies in [0, max_arity - min_arity). The
+    // Library (static built-in table + register_op validation) guarantees
+    // max_arity - min_arity <= kMaxDefaults, so this index is in-bounds of the
+    // fixed-size defaults array — no out-of-bounds read.
     const atx::f64 value = sig.defaults[k - sig.min_arity];
     if (std::isnan(value)) {
       break; // NaN sentinel: leave this (and any later) optional arg absent.

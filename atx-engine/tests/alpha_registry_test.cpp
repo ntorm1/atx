@@ -237,4 +237,25 @@ TEST(AlphaRegistry_Register, VariadicWithFiniteDefault_Succeeds) {
   EXPECT_DOUBLE_EQ(found->defaults[0], 2.5);
 }
 
+TEST(AlphaRegistry_Register, OptionalCountExceedsDefaultsCapacity_Fails) {
+  // (max_arity - min_arity) > kMaxDefaults would index OpSig::defaults out of
+  // bounds during parser default-fill — register_op must reject at the boundary.
+  Library lib;
+  const OpSig sig{"too_many_opts", 1,    5,     OpCode::CsScale,
+                  DType::F64,      true, {1.0}, &atx::engine::alpha::shape_cross_section};
+  const auto status = lib.register_op(sig);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(AlphaRegistry_Register, MaxArityBelowMinArity_Fails) {
+  // An inverted arity range is malformed; reject it at the boundary.
+  Library lib;
+  const OpSig sig{"inverted", 3,    2,  OpCode::CsScale,
+                  DType::F64, true, {}, &atx::engine::alpha::shape_cross_section};
+  const auto status = lib.register_op(sig);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+}
+
 } // namespace

@@ -210,6 +210,14 @@ struct OpSig {
   // first (max_arity - min_arity) entries are meaningful. A NaN sentinel means
   // "no scalar default" — the parser does NOT materialize that arg and the
   // op's kernel handles its absence.
+  //
+  // Invariant (register_op enforces the bound; callers must honor the ordering):
+  //   * Optional arguments are TRAILING — required args occupy [0, min_arity),
+  //     optionals occupy [min_arity, max_arity).
+  //   * (max_arity - min_arity) <= kMaxDefaults (else register_op rejects).
+  //   * A NaN sentinel marks "absent"; once an optional is absent, ALL later
+  //     optionals are also absent — so a finite default must NOT follow a NaN
+  //     sentinel (the parser stops materializing at the first NaN).
   std::array<atx::f64, kMaxDefaults> defaults{};
   // Non-owning, non-null pointer to a pure shape rule (plan §4). Given the
   // ordered child shapes, returns this op's output shape.
@@ -352,6 +360,21 @@ inline atx::core::Status Library::register_op(const OpSig &sig) {
     return atx::core::Err(atx::core::ErrorCode::AlreadyExists,
                           std::string{"register_op: duplicate operator '"} + std::string{sig.name} +
                               "'");
+  }
+  // Arity-range well-formedness. The parser's default-fill indexes
+  // `defaults[k - min_arity]` for k in [min_arity, max_arity), so the optional
+  // count (max_arity - min_arity) MUST fit OpSig::defaults; an inverted range
+  // is meaningless. Both checks keep fill_default_args in-bounds (no UB).
+  if (sig.max_arity < sig.min_arity) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          std::string{"register_op: max_arity < min_arity for '"} +
+                              std::string{sig.name} + "'");
+  }
+  if (sig.max_arity - sig.min_arity > kMaxDefaults) {
+    return atx::core::Err(
+        atx::core::ErrorCode::InvalidArgument,
+        std::string{"register_op: optional-arg count exceeds kMaxDefaults for '"} +
+            std::string{sig.name} + "'");
   }
   ops_.push_back(sig);
   return atx::core::Ok();
