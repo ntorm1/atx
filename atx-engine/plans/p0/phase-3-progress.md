@@ -79,7 +79,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 | P3-2 | ✅ done | `f556e23` | Pratt parser → arena `Expr`/`Ast` (precedence ternary<\|\|<&&<eq<cmp<+-<*/<unary<^ right-assoc); `Library` registry (`OpCode` ISA, `Shape`, `DType`, `OpSig`, table-driven `shape_of`) with all Appendix A built-ins; const-fold (pure numeric subtrees + foldable unary fns) + ternary→`Select` desugar; arity checked at parse. Header-only (`inline`). 59 tests. *not blocked.* |
 | P3-3 | ✅ done | `96045e9` | `analyze(Ast)→Result<Analysis>`: per-node `TypeInfo{shape,dtype,lookback}`. Table-driven shapes (broadcast-max / P→V / P→P; `Select` widens over cond too); dtype rails (cmp/logic→Mask, group-ops need `Group` arg2, `Select` needs Mask cond, arithmetic F64, `IndClass.*`→Group); lookback = shift(`delay`/`delta`)+d vs rolling+`(d-1)`, max over children (`ts_mean(delta(close,5),10)`⇒14); window must be folded positive-int literal (non-const/≤0/non-int rejected — no-look-ahead rail); scalar-primary into Cs*/Ts*→error. Single forward pass (topo arena), no recursion. Header-only. 36 tests. *not blocked.* |
 | P3-4 | ✅ done | `b2fe473` | `build_dag(Ast,Analysis)→Dag`: hash-cons all roots into one DAG (free CSE via `NodeKey{op,param,children}` cons-table, `hash_combine`); `pow(x,2)→Mul(x,x)` strength reduction; refcount counted **once per unique DAG edge** (CSE-miss only — else a duplicate AST occurrence leaks the shared leaf's slot). `linearize(Dag)→Program`: topo emit, `SlotPool` recycle, refcount-driven `Free` after last consumer, one `StoreAlpha` **per root** (two identical alphas → one node, two stores). `compile=build_dag∘linearize`. Header-only. 36 tests (18 dag + 18 bytecode). *not blocked.* |
-| P3-5 | ⏳ pending | `—` | `Panel` over `series::Frame`; `SlotPool`; universe/NaN policy; tree-walking oracle. *upstream landed — targets green.* |
+| P3-5 | ✅ done | `1ec22ca` | `Panel` (self-contained date-major f64 + PIT universe mask — **not** a `series::Frame` view, see adjustment 4), `SlotPool` (pre-sized buffers, over-acquire = `ATX_ASSERT`), full `SignalSet`. `evaluate_reference(Program,Panel)`: full-buffer model (each slot a whole date×inst buffer), one exhaustive no-`default` `OpCode` switch → simple per-op kernels. **Pinned differential contract** (VM must match bit-for-bit): NaN-propagate min/max, masks 1/0, full-window min_periods (any-NaN window→NaN; delay/delta shift-only), CsRank ordinal tie-break by instrument id, sample-ddof std/var/zscore, CsNeutG≡demean. Universe folds to NaN at LoadField, propagates everywhere. Header-only. 27 tests. *upstream landed — green.* |
 | P3-6 | ⏳ pending | `—` | VM dispatch loop + element-wise/logical/`Select` opcodes; zero-alloc; bench ns/cell. *upstream landed — targets green.* |
 | P3-7 | ⏳ pending | `—` | `CsRank`/`CsZscore`/`CsScale`/`CsDemeanG`/`CsNeutG`/group; fixed tie-break; valid-mask only. *upstream landed — targets green.* |
 | P3-8 | ⏳ pending | `—` | `TsDelay`/`Delta`/`Sum`/`Mean`/`Std`/`Min`/`Max`/`Arg*`/`Rank`/`Corr`/`Cov`/`Product`/`DecayLinear`/…; O(1)/cell rolling; lookahead. *upstream landed — targets green.* |
@@ -114,6 +114,13 @@ _(Lift to ROADMAP future-work backlog at close.)_ Expected: Linux/clang TSan pas
 parallel evaluator; computed-goto dispatch (if profiling warrants); JIT exploration; `indneutralize`
 demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` vs `x^a`; BRAIN-superset ops.
 
+- **(P3-5) Oracle numeric choices to audit vs Alpha101/Qlib at sprint close.** The oracle PINS a self-consistent
+  contract (the VM matches the oracle, not vice-versa), but a few formulas are engine choices worth confirming
+  against the Alpha101 PDF before Phase 4 trusts the signals: `ts_rank` uses average-rank/(n−1) (vs CsRank's
+  ordinal); `ts_ema` is a windowed EMA seeded on the oldest obs (not a running EMA over all history); `wma` is
+  aliased to `decay_linear` (linear weights, newest heaviest); `ts_skew`/`ts_kurt` use population moments with
+  sample-sd / excess kurtosis; regression ops use a 0..n−1 time axis; `CsNeutG`≡`CsDemeanG` (no extra
+  regressors). `min_periods` is uniform full-window (registry has no per-op field yet → **promote into `OpSig`**).
 - **(P3-2) Optional/default args not modeled.** Appendix A lists `scale(x,a=1)` (default 2nd arg) and
   `group_neutralize(x,g[,cap])` (optional 3rd). The registry uses **fixed** arity (`scale`=2,
   `group_neutralize`=2), so `scale(x)` and the 3-arg `group_neutralize` form do not parse. Variadic / default-arg
@@ -131,7 +138,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 | `f556e23` | P3-2 | 59 new (registry + parser) / engine 114/114 green |
 | `96045e9` | P3-3 | 36 new (AlphaTypecheck) / engine 393/395 (2 pre-existing baseline fails) |
 | `b2fe473` | P3-4 | 36 new (18 AlphaDag + 18 AlphaBytecode) / engine 431/432 (only `atx-core-tests_NOT_BUILT`) |
-| `—`    | P3-5 | — |
+| `1ec22ca` | P3-5 | 27 new (AlphaPanel + AlphaOracle) / engine 464/465 (only `atx-core-tests_NOT_BUILT`) |
 | `—`    | P3-6 | — |
 | `—`    | P3-7 | — |
 | `—`    | P3-8 | — |
