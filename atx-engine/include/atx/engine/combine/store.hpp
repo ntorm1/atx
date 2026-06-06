@@ -58,6 +58,7 @@
 //  caller that only passes records around does not transitively pull the alpha
 //  VM in.
 
+#include <limits>  // std::numeric_limits (u32 id-overflow guard)
 #include <span>    // std::span (non-owning stream views)
 #include <utility> // std::move (Result hand-off)
 #include <vector>  // std::vector (owned dense stream storage)
@@ -141,7 +142,7 @@ public:
     const atx::usize periods = pnl.size();
     if (records_.empty()) {
       n_periods_ = periods; // first insert fixes the shape
-      n_instruments_ = (periods == 0) ? 0 : positions_flat.size() / max_usize(periods, 1);
+      n_instruments_ = (periods == 0) ? 0 : positions_flat.size() / periods;
     } else if (periods != n_periods_) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "AlphaStore::insert: PnL period count disagrees with the pool");
@@ -153,6 +154,9 @@ public:
                             "AlphaStore::insert: positions_flat size != n_periods * n_instruments");
     }
 
+    // SAFETY: AlphaId.value is u32 (insertion index); the pool cannot hold more
+    //         than u32-max alphas, so the usize->u32 narrowing cannot truncate.
+    ATX_ASSERT(records_.size() <= std::numeric_limits<atx::u32>::max());
     const auto id = AlphaId{static_cast<atx::u32>(records_.size())};
     pnl_.insert(pnl_.end(), pnl.begin(), pnl.end());
     pos_.insert(pos_.end(), positions_flat.begin(), positions_flat.end());
@@ -215,13 +219,18 @@ public:
   /// The flat, alpha-major PnL matrix [n_alphas * n_periods]: element (a, t) is
   /// at index a * n_periods() + t (see the header LAYOUT note). Empty for an
   /// empty store.
+  /// BORROW LIFETIME: the returned span aliases the backing vector; a subsequent
+  /// insert()/ingest_streams() may reallocate it and DANGLE this span. Consume it
+  /// before the next growth (the gate/combiner read it within one pass).
   [[nodiscard]] std::span<const atx::f64> pnl_matrix() const noexcept {
     return std::span<const atx::f64>{pnl_};
   }
 
   /// Alpha `id`'s PnL stream (length == n_periods()): the matrix row
   /// [id*n_periods, +n_periods). PRECONDITION: id.value < size() (ABORTS in
-  /// debug).
+  /// debug). BORROW LIFETIME: aliases the backing vector — a later
+  /// insert()/ingest_streams() may reallocate and dangle this span; consume it
+  /// before the next growth.
   [[nodiscard]] std::span<const atx::f64> pnl(AlphaId id) const noexcept {
     ATX_ASSERT(id.value < records_.size());
     // SAFETY: id.value < n_alphas (asserted) and pnl_ holds exactly
@@ -233,7 +242,9 @@ public:
 
   /// Alpha `id`'s target-weight cross-section at `period` (length ==
   /// n_instruments()). PRECONDITION: id.value < size() and period < n_periods()
-  /// (ABORTS in debug).
+  /// (ABORTS in debug). BORROW LIFETIME: aliases the backing vector — a later
+  /// insert()/ingest_streams() may reallocate and dangle this span; consume it
+  /// before the next growth.
   [[nodiscard]] std::span<const atx::f64> positions(AlphaId id, atx::usize period) const noexcept {
     ATX_ASSERT(id.value < records_.size());
     ATX_ASSERT(period < n_periods_);
@@ -246,12 +257,6 @@ public:
   }
 
 private:
-  // max(a, b) for usize — a tiny constexpr helper to avoid a 0-period divide in
-  // the first-insert n_instruments inference (periods==0 short-circuits before).
-  [[nodiscard]] static constexpr atx::usize max_usize(atx::usize a, atx::usize b) noexcept {
-    return a > b ? a : b;
-  }
-
   std::vector<AlphaRecord> records_; // one row per AlphaId, insertion order
   std::vector<atx::f64> pnl_;        // flat [n_alphas * n_periods_], alpha-major
   std::vector<atx::f64> pos_;        // flat [n_alphas * n_periods_ * n_instruments_]
