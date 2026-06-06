@@ -42,6 +42,13 @@ load_parquet(const std::string &parquet_path, const std::string &out_path,
 /// (name, scale) in `field_scales`, project that column as f64 (value * scale) and
 /// build a sealed segment at `out_path`. `time_col` is a timestamp column,
 /// `symbol_col` a string column.
+///
+/// ENGINE-CONSUMPTION CONTRACT: a segment intended for the engine via
+/// `ShmBarFeed`/`MultiSegmentBarFeed` MUST carry ALL FIVE OHLCV field names —
+/// "open", "high", "low", "close", "volume" — in `field_scales` (the four prices
+/// scaled by 1e-9, volume by 1.0). `ShmBarFeed` ABORTS at attach if any of the
+/// five is missing (a non-OHLCV segment is a wiring error). Omitting one (or
+/// renaming it) yields a segment the feed cannot open.
 [[nodiscard]] atx::core::Status
 load_parquet_scaled(const std::string &parquet_path, const std::string &out_path,
                     const std::string &time_col, const std::string &symbol_col,
@@ -51,6 +58,14 @@ load_parquet_scaled(const std::string &parquet_path, const std::string &out_path
 /// For each `<hive_root>/date=YYYY-MM-DD/data.parquet`, build a sealed segment at
 /// `<seg_dir>/YYYY-MM-DD.seg` via load_parquet_scaled. Creates `seg_dir`. Dates are
 /// processed in ascending order. Err if `hive_root` has no `date=` partitions.
+///
+/// ENGINE-CONSUMPTION CONTRACT: the resulting `.seg` files are the per-date inputs
+/// to `MultiSegmentBarFeed`, so `field_scales` MUST include ALL FIVE OHLCV field
+/// names — "open", "high", "low", "close", "volume" (prices scaled 1e-9, volume
+/// 1.0). The canonical list is
+/// `{{"open",1e-9},{"high",1e-9},{"low",1e-9},{"close",1e-9},{"volume",1.0}}`.
+/// `ShmBarFeed`/`MultiSegmentBarFeed` ABORT at attach if any of the five is
+/// missing from a segment.
 [[nodiscard]] atx::core::Status
 build_dated_segments(const std::string &hive_root, const std::string &seg_dir,
                      const std::string &time_col, const std::string &symbol_col,
