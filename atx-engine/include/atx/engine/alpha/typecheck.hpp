@@ -204,8 +204,11 @@ namespace detail {
 
 // Read & validate a temporal op's window argument. The window is the LAST arg:
 // arg `c` for arity-3 (corr/cov), else arg `b`. It MUST be a folded Literal
-// (non-constant window → error) holding a finite integer >= 1. Returns the
-// window as u16 on success.
+// (non-constant window → error) holding a finite positive value. A non-integer
+// positive literal is FLOORED (P3b-4 §6 lock #3): the 101-alphas paper mines
+// fractional window constants (e.g. ts_mean(close, 8.7)), and the canonical
+// convention is floor(d). After flooring, a window of 0 (e.g. 0.5 → 0) and any
+// d <= 0 are still rejected. Returns the floored window as u16 on success.
 [[nodiscard]] inline atx::core::Result<atx::u16> window_value(const Ast &ast, const Expr &call) {
   const ExprId window_id = (call_arity(call) == 3) ? call.c : call.b;
   const Expr &w = ast.node(window_id);
@@ -214,14 +217,23 @@ namespace detail {
                           "window must be a compile-time constant");
   }
   const atx::f64 v = w.value;
-  if (!std::isfinite(v) || v < 1.0 || v != std::floor(v)) {
+  if (!std::isfinite(v)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "window must be a positive integer");
+                          "window must be a finite positive number");
   }
-  // SAFETY: bounds checked above (finite, integral, >= 1); the cast cannot
-  // narrow a fractional part. A window beyond u16 range is implausible for any
-  // realistic alpha; clamp via the explicit cast (no UB — value is integral).
-  return atx::core::Ok(static_cast<atx::u16>(v));
+  // SAFETY (lock #3): floor a fractional positive literal rather than reject it.
+  // The floor is the paper's window convention; the <=0 rail survives because a
+  // non-positive or sub-1 literal (e.g. 0.5, -3) floors to <= 0 and is rejected
+  // below. The non-constant rail is untouched (handled above).
+  const atx::f64 floored = std::floor(v);
+  if (floored < 1.0) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "window must floor to a positive integer (>= 1)");
+  }
+  // SAFETY: bounds checked above (finite, integral after floor, >= 1); the cast
+  // cannot narrow a fractional part. A window beyond u16 range is implausible
+  // for any realistic alpha; the explicit cast is well-defined (value integral).
+  return atx::core::Ok(static_cast<atx::u16>(floored));
 }
 
 // ----- per-kind analyzers (each builds the node's TypeInfo or an error) ----

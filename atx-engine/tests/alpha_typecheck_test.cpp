@@ -218,9 +218,19 @@ TEST(AlphaTypecheck_Window, NonLiteralWindow_IsError) {
   expect_analyze_error("ts_mean(close, close)");
 }
 
-TEST(AlphaTypecheck_Window, FractionalWindow_IsError) {
-  // 2.5 is not an integer window.
-  expect_analyze_error("ts_mean(close, 2.5)");
+TEST(AlphaTypecheck_Window, FractionalWindow_IsFloored) {
+  // P3b-4 lock #3: a fractional positive window is FLOORED (was: rejected). The
+  // 101-alphas paper mines fractional constants; the canonical convention is
+  // floor(d). ts_mean(close, 8.7) → window 8 → rolling lookback (8-1)+0 = 7,
+  // bit-identical to ts_mean(close, 8).
+  EXPECT_EQ(analyze_root("ts_mean(close, 8.7)").lookback,
+            analyze_root("ts_mean(close, 8)").lookback);
+  EXPECT_EQ(analyze_root("ts_mean(close, 8.7)").lookback, 7U);
+}
+
+TEST(AlphaTypecheck_Window, SubOneWindow_FloorsToZero_IsError) {
+  // 0.5 floors to 0 — a zero window has nothing to roll over → still rejected.
+  expect_analyze_error("ts_mean(close, 0.5)");
 }
 
 // ---- shape mismatch ---------------------------------------------------------
