@@ -58,9 +58,10 @@ class AlphaStore;
 //  Metrics — per-alpha fitness statistics (P4-2)
 // =====================================================================
 
-// Per-alpha fitness statistics computed over AlphaStreams::pnl(a).
-// Includes IC, turnover, Sharpe, drawdown, and correlation summary.
-// Full definition in combine/metrics.hpp (P4-2).
+// Per-alpha realized-performance summary computed over AlphaStreams::pnl(a).
+// Fields: sharpe, turnover, returns, drawdown, margin, fitness, holding_days
+// (no IC or correlation field — those are computed in the gate/combiner, not
+// stored here). Full definition in combine/metrics.hpp (P4-2).
 struct AlphaMetrics;
 
 // =====================================================================
