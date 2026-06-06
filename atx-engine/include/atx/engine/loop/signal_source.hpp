@@ -233,12 +233,14 @@ private:
 //  ALLOCATION (scoped honestly, NOT claimed zero). The as-built Engine binds its
 //  Panel at construction and there is no rebind API, so a fresh alpha::Panel +
 //  Engine are built per evaluate() — that allocates (the Panel's owned columns,
-//  the Engine's slot pool). We REUSE source-owned scratch (field_data_, the
-//  signal_ output buffer) across calls to keep the per-call allocation to the
-//  Panel/Engine themselves. This is acceptable per plan §3.5: evaluate() runs at
-//  the REBALANCE cadence (per-schedule, not per-bar), so the cold-ish build is a
-//  documented residual, not a hot-path regression. The SignalView borrow is
-//  zero-alloc steady-state (signal_ is reserved once, refreshed in place).
+//  copied from our scratch; the Engine's slot pool). The source-owned scratch is
+//  GENUINELY reused across same-shape calls: field_data_ is refreshed IN PLACE
+//  (resize-once outer + per-column assign that reuses capacity — no realloc on the
+//  steady-state path), the field-name dictionary is a function-local static, and
+//  signal_/universe_ likewise refresh in place. So the only per-call allocation is
+//  the Panel-column COPY + the Engine pool — acceptable per plan §3.5: evaluate()
+//  runs at the REBALANCE cadence (per-schedule, not per-bar), so the cold-ish build
+//  is a documented residual, not a hot-path regression.
 //
 //  PURE in `panel`: the program reads only the panel the source is handed; there
 //  is no hidden time state (the VM's only state is recurrence scratch reset per
@@ -288,9 +290,30 @@ private:
   static constexpr atx::f64 kNoOpinion = std::numeric_limits<atx::f64>::quiet_NaN();
 
   /// The five OHLCV field names, in PanelField storage order. A program that
-  /// references any of these resolves; the VM loads only the ones it uses.
-  [[nodiscard]] static std::vector<std::string> ohlcv_field_names() {
-    return {"open", "high", "low", "close", "volume"};
+  /// references any of these resolves; the VM loads only the ones it uses. Built
+  /// ONCE as a function-local static (no per-call vector<string> alloc) and copied
+  /// into Panel::create's by-value parameter. Const so the shared instance is
+  /// never mutated.
+  [[nodiscard]] static const std::vector<std::string> &ohlcv_field_names() {
+    static const std::vector<std::string> kNames{"open", "high", "low", "close", "volume"};
+    return kNames;
+  }
+
+  /// Refresh field_data_ in place to kPanelFieldCount columns of `cells` NaNs,
+  /// REUSING each inner vector's capacity. On the steady-state (unchanged-shape)
+  /// path no reallocation occurs: the outer vector already holds kPanelFieldCount
+  /// inner vectors, and vector::assign(cells, val) on an already-large-enough
+  /// buffer overwrites in place without freeing/reallocating. Replacing the whole
+  /// outer vector with fresh temporaries (the prior `assign`-with-temporary) would
+  /// instead allocate 5 fresh `cells`-sized buffers every call — the bug this
+  /// closes, so the class's "reuse" comment is now true.
+  void ensure_field_scratch(atx::usize cells) {
+    if (field_data_.size() != kPanelFieldCount) {
+      field_data_.resize(kPanelFieldCount); // one-time grow; never shrinks after
+    }
+    for (std::vector<atx::f64> &col : field_data_) {
+      col.assign(cells, kNoOpinion); // reuses capacity when cells <= prior size
+    }
   }
 
   /// Build a date-major, CHRONOLOGICAL alpha::Panel from the newest-first
@@ -300,7 +323,7 @@ private:
   [[nodiscard]] atx::core::Result<alpha::Panel> build_alpha_panel(PanelView panel, atx::usize dates,
                                                                   atx::usize inst) {
     const atx::usize cells = dates * inst;
-    field_data_.assign(kPanelFieldCount, std::vector<atx::f64>(cells, kNoOpinion));
+    ensure_field_scratch(cells); // in-place capacity reuse (see helper)
     universe_.assign(cells, std::uint8_t{0});
 
     // SAFETY: transpose + reshape. PanelView row 0 is the NEWEST sealed row; the
