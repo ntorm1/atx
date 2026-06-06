@@ -35,6 +35,18 @@ on the current branch `feat/atx-core-stdlib`. There is only one working tree. Th
 `.claude/worktrees/phase-3-alpha-dsl` / branch `worktree-phase-3-alpha-dsl` recorded in the skeleton
 header has been corrected above.
 
+**(3) Assignment names are NOT let-bindings (decided at P3-4).** The grammar `program := { assignment }`
+(`IDENT '=' expr`) names **independent** alphas; a later assignment **cannot** reference an earlier one by
+name. A bare identifier always resolves to a panel field — so `x = ts_mean(close,5)` `alpha = rank(x)` treats
+the `x` in `rank(x)` as a *field* named `x`, not a back-reference to the binding (it will fail field lookup
+at P3-5, not silently mis-evaluate, since the panel has no `x` column). This is deliberate: the CSE throughput
+lever (§3.2) comes from **subexpression** overlap across the mined alpha population (`rank(close)` repeated in
+thousands of trees), which the hash-cons captures regardless — named-intermediate reuse is not required for
+it. The plan's P3-4 diamond illustration (`m=…; a=m+1; b=m*2`) assumed let-binding; the equivalent test uses a
+genuine shared **expression** instead, which exercises the same diamond/refcount machinery. **Deferred:**
+let-binding (a parser pre-pass substituting prior roots, or a scope table) → future-work if a real alpha needs
+named intermediates.
+
 Realistic scope for this sprint:
 
 1. **P3-0** — Module scaffold + CMake + ledger (marker). Open ledger, freeze scope.
@@ -66,7 +78,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 | P3-1 | ✅ done | `94fee4c` | `Token`/`TokenKind`/`Span`; hand-written lexer (`lex`), `from_chars` numbers, maximal-munch ops, interior-dot idents (`IndClass.sector`), `Result` ParseError w/ offset on bad byte. Header-only (`inline`), tidy/format clean. 55 tests. *not blocked.* |
 | P3-2 | ✅ done | `f556e23` | Pratt parser → arena `Expr`/`Ast` (precedence ternary<\|\|<&&<eq<cmp<+-<*/<unary<^ right-assoc); `Library` registry (`OpCode` ISA, `Shape`, `DType`, `OpSig`, table-driven `shape_of`) with all Appendix A built-ins; const-fold (pure numeric subtrees + foldable unary fns) + ternary→`Select` desugar; arity checked at parse. Header-only (`inline`). 59 tests. *not blocked.* |
 | P3-3 | ✅ done | `96045e9` | `analyze(Ast)→Result<Analysis>`: per-node `TypeInfo{shape,dtype,lookback}`. Table-driven shapes (broadcast-max / P→V / P→P; `Select` widens over cond too); dtype rails (cmp/logic→Mask, group-ops need `Group` arg2, `Select` needs Mask cond, arithmetic F64, `IndClass.*`→Group); lookback = shift(`delay`/`delta`)+d vs rolling+`(d-1)`, max over children (`ts_mean(delta(close,5),10)`⇒14); window must be folded positive-int literal (non-const/≤0/non-int rejected — no-look-ahead rail); scalar-primary into Cs*/Ts*→error. Single forward pass (topo arena), no recursion. Header-only. 36 tests. *not blocked.* |
-| P3-4 | ⏳ pending | `—` | Hash-consed `Dag` (free CSE); topo linearize → `Instr` stream; slot alloc + refcount `Free`. *not blocked.* |
+| P3-4 | ✅ done | `b2fe473` | `build_dag(Ast,Analysis)→Dag`: hash-cons all roots into one DAG (free CSE via `NodeKey{op,param,children}` cons-table, `hash_combine`); `pow(x,2)→Mul(x,x)` strength reduction; refcount counted **once per unique DAG edge** (CSE-miss only — else a duplicate AST occurrence leaks the shared leaf's slot). `linearize(Dag)→Program`: topo emit, `SlotPool` recycle, refcount-driven `Free` after last consumer, one `StoreAlpha` **per root** (two identical alphas → one node, two stores). `compile=build_dag∘linearize`. Header-only. 36 tests (18 dag + 18 bytecode). *not blocked.* |
 | P3-5 | ⏳ pending | `—` | `Panel` over `series::Frame`; `SlotPool`; universe/NaN policy; tree-walking oracle. *upstream landed — targets green.* |
 | P3-6 | ⏳ pending | `—` | VM dispatch loop + element-wise/logical/`Select` opcodes; zero-alloc; bench ns/cell. *upstream landed — targets green.* |
 | P3-7 | ⏳ pending | `—` | `CsRank`/`CsZscore`/`CsScale`/`CsDemeanG`/`CsNeutG`/group; fixed tie-break; valid-mask only. *upstream landed — targets green.* |
@@ -80,7 +92,11 @@ hash-consed DAG collapses a mined-style alpha set.
 
 | Alpha set | total AST nodes | unique DAG nodes | unique/total | peak-live-slots |
 |-----------|-----------------|------------------|--------------|-----------------|
-| —         | —               | —                | —            | —               |
+| `a=ts_mean(close,5)+1` / `b=ts_mean(close,5)*2` (shared subtree) | 10 | 7 | 0.70 | 3 |
+| `ts_mean(ts_mean(ts_mean(close,3),3),3)` (deep chain) | 7 | 5 | 0.71 | 3 |
+| `a=rank(close)` / `b=rank(close)` (identical alphas) | 4 | 2 | 0.50 | 2 |
+
+_(Unit-test fixtures, not a mined battery — these pin the CSE+liveness machinery; the §3.6 mass-scale numbers come once P3-9 runs a real alpha set.)_
 
 ### P3-6/P3-9 measured throughput
 
@@ -114,7 +130,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 | `94fee4c` | P3-1 | 55/55 AlphaLexer / engine green |
 | `f556e23` | P3-2 | 59 new (registry + parser) / engine 114/114 green |
 | `96045e9` | P3-3 | 36 new (AlphaTypecheck) / engine 393/395 (2 pre-existing baseline fails) |
-| `—`    | P3-4 | — |
+| `b2fe473` | P3-4 | 36 new (18 AlphaDag + 18 AlphaBytecode) / engine 431/432 (only `atx-core-tests_NOT_BUILT`) |
 | `—`    | P3-5 | — |
 | `—`    | P3-6 | — |
 | `—`    | P3-7 | — |
