@@ -109,7 +109,11 @@ public:
     p.dates_ = dates;
     p.instruments_ = instruments;
     p.field_names_ = std::move(field_names);
-    p.field_data_ = std::move(field_data);
+    p.backing_ = std::move(field_data);
+    p.columns_.reserve(p.backing_.size());
+    for (const std::vector<atx::f64> &col : p.backing_) {
+      p.columns_.emplace_back(col.data(), col.size());
+    }
     // Empty universe == all-valid: materialize an all-ones mask so in_universe()
     // is a single O(1) read with no special-casing on the hot path.
     if (universe.empty()) {
@@ -119,6 +123,59 @@ public:
     }
     return atx::core::Ok(std::move(p));
   }
+
+  // Build a Panel whose field columns are BORROWED (no copy). Each span in
+  // `columns` must have exactly dates*instruments cells and must outlive the
+  // Panel (caller's contract — e.g. a mmap held by a MappedPanel). The universe
+  // mask is still OWNED (materialized small mask); empty == all-in-universe.
+  [[nodiscard]] static atx::core::Result<Panel>
+  create_borrowed(atx::usize dates, atx::usize instruments, std::vector<std::string> field_names,
+                  std::vector<std::span<const atx::f64>> columns,
+                  std::vector<std::uint8_t> universe) {
+    if (field_names.size() != columns.size()) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Panel::create_borrowed: field_names and columns size mismatch");
+    }
+    const atx::usize cells = dates * instruments;
+    for (const std::span<const atx::f64> &col : columns) {
+      if (col.size() != cells) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "Panel::create_borrowed: a column is not dates*instruments cells");
+      }
+    }
+    if (!universe.empty() && universe.size() != cells) {
+      return atx::core::Err(
+          atx::core::ErrorCode::InvalidArgument,
+          "Panel::create_borrowed: universe is neither empty nor dates*instruments cells");
+    }
+    Panel p;
+    p.dates_ = dates;
+    p.instruments_ = instruments;
+    p.field_names_ = std::move(field_names);
+    p.columns_ = std::move(columns); // borrowed; backing_ stays empty
+    if (universe.empty()) {
+      p.universe_.assign(cells, std::uint8_t{1});
+    } else {
+      p.universe_ = std::move(universe);
+    }
+    return atx::core::Ok(std::move(p));
+  }
+
+  // Rule of five: columns_ caches spans into backing_ for owned panels. A naive
+  // copy would deep-copy backing_ but leave the copy's spans pointing at the
+  // SOURCE's backing_ (dangling once the source dies). Re-point on copy. Move is
+  // safe by default: moving a vector preserves its elements' addresses, so the
+  // moved spans still alias the moved backing_.
+  Panel(const Panel &other) { copy_from(other); }
+  Panel &operator=(const Panel &other) {
+    if (this != &other) {
+      copy_from(other);
+    }
+    return *this;
+  }
+  Panel(Panel &&) noexcept = default;
+  Panel &operator=(Panel &&) noexcept = default;
+  ~Panel() = default;
 
   [[nodiscard]] atx::usize dates() const noexcept { return dates_; }
   [[nodiscard]] atx::usize instruments() const noexcept { return instruments_; }
@@ -142,16 +199,15 @@ public:
   // only ever passes ids it resolved from this Panel).
   [[nodiscard]] std::span<const atx::f64> field_cross_section(FieldId field,
                                                               DateIdx date) const noexcept {
-    ATX_ASSERT(field < field_data_.size());
+    ATX_ASSERT(field < columns_.size());
     ATX_ASSERT(date < dates_);
-    const std::vector<atx::f64> &col = field_data_[field];
-    return std::span<const atx::f64>{col.data() + date * instruments_, instruments_};
+    return columns_[field].subspan(date * instruments_, instruments_);
   }
 
   // The whole field, date-major (length == dates*instruments).
   [[nodiscard]] std::span<const atx::f64> field_all(FieldId field) const noexcept {
-    ATX_ASSERT(field < field_data_.size());
-    return std::span<const atx::f64>{field_data_[field]};
+    ATX_ASSERT(field < columns_.size());
+    return columns_[field];
   }
 
   // Point-in-time universe membership of (date, inst). Precondition: indices in
@@ -163,13 +219,41 @@ public:
   }
 
 private:
-  Panel() = default; // built only via create()
+  Panel() = default; // built only via create() / create_borrowed()
+
+  // Deep-copy state; rebuild columns_ to alias THIS panel's backing_ when owned.
+  // A borrowed panel (backing_ empty) keeps its external column spans verbatim.
+  void copy_from(const Panel &o) {
+    dates_ = o.dates_;
+    instruments_ = o.instruments_;
+    field_names_ = o.field_names_;
+    universe_ = o.universe_;
+    backing_ = o.backing_;
+    if (backing_.empty()) {
+      columns_ = o.columns_; // borrowed (or zero-field): external spans copy fine
+    } else {
+      columns_.clear();
+      columns_.reserve(backing_.size());
+      for (const std::vector<atx::f64> &col : backing_) {
+        columns_.emplace_back(col.data(), col.size());
+      }
+    }
+  }
 
   atx::usize dates_{};
   atx::usize instruments_{};
   std::vector<std::string> field_names_;
-  std::vector<std::vector<atx::f64>> field_data_; // one column per field, date-major
-  std::vector<std::uint8_t> universe_;            // dates*instruments, 1 == in-universe
+  // Access plane: one span per field (date-major, dates*instruments). Spans point
+  // either into `backing_` (owned panels) or into caller/mmap memory (borrowed
+  // panels). Every read goes through here, so owned and borrowed share one code
+  // path with no per-access branch.
+  std::vector<std::span<const atx::f64>> columns_;
+  // Owned column storage; EMPTY for a borrowed panel. SAFETY: moving a Panel
+  // moves this outer vector by buffer transfer (no reallocation), so the inner
+  // vectors' data() pointers — and therefore the spans in columns_ that alias
+  // them — stay valid across the create()-return-by-value move.
+  std::vector<std::vector<atx::f64>> backing_;
+  std::vector<std::uint8_t> universe_; // dates*instruments, 1 == in-universe
 };
 
 // =========================================================================
