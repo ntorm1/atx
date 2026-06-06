@@ -55,9 +55,9 @@
 //    ANY alpha is NaN are dropped) — for SPD-ness AND so the LW intensity and the
 //    shrink/solve share the SAME S (coherence: a pairwise S for the solve with a
 //    listwise S for the intensity would mismatch the off-diagonal scales once
-//    δ < 1). The combine/correlation.hpp pairwise_complete_cov helper (the §3.3
-//    NaN-policy covariance analog) is RETAINED for any genuinely-pairwise use but
-//    is not used in this fit path. For the common no-NaN window the two agree.
+//    δ < 1). The §3.3 pairwise-complete NaN policy lives in combine/correlation.hpp
+//    (pairwise_complete_corr, used by the gate); this fit path needs a coherent
+//    listwise S instead, so it does not reuse that helper.
 //  * BoundedRegression realizes a RETURN-SPACE bounded MV fit (signal-space bounded
 //    regression needs raw signals — deferred). It uses atx-core pca() for the
 //    top-k eigenpairs and a closed-form ridge-regularized PC-space solve (no
@@ -179,6 +179,9 @@ namespace detail {
 // ever reads — the firewall is enforced by construction (no path reads >= fit_end).
 [[nodiscard]] inline std::span<const atx::f64> window_span(const AlphaStore &pool, atx::usize id,
                                                            atx::usize fit_begin, atx::usize t) {
+  // SAFETY: every caller iterates `id` over [0, pool.size()), and AlphaStore mints
+  //         only u32 ids (insert() caps the pool at u32-max — store.hpp), so `id` is
+  //         provably < 2^32 and the usize->u32 narrowing cannot truncate.
   return pool.pnl(AlphaId{static_cast<atx::u32>(id)}).subspan(fit_begin, t);
 }
 
@@ -348,10 +351,9 @@ complete_case_centered(const AlphaStore &pool, atx::usize n, atx::usize fit_begi
 // The Ledoit-Wolf shrunk covariance Σ̂ and the intensity δ used to build it, over
 // the §3.1 window. COHERENCE: the SAME complete-case MLE covariance S (divisor
 // T_cc, listwise NaN-dropped) feeds BOTH the LW intensity AND the shrink/solve —
-// computing the intensity on listwise rows while solving against a pairwise_complete
-// S would be incoherent once δ < 1 (the off-diagonal scales would not match). For
-// the common no-NaN window this is identical to the pairwise covariance. The
-// pairwise_complete_cov helper remains for any genuinely-pairwise use elsewhere.
+// computing the intensity on listwise rows while solving against an entry-by-entry
+// pairwise-complete S would be incoherent once δ < 1 (the off-diagonal scales would
+// not match). For the common no-NaN window the two would be identical anyway.
 // `cfg_shrinkage >= 0` overrides δ with the fixed value clamped to [0,1].
 struct ShrunkCov {
   atx::core::linalg::MatX sigma; // Σ̂ = δ·μ·I + (1−δ)·S
