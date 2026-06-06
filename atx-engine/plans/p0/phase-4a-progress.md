@@ -35,7 +35,7 @@ Defer to Phase 4b (or later):
 | Unit  | Status | Commit  | Notes |
 |-------|--------|---------|-------|
 | P4-0  | done   | `44d88a8` | scaffold + ledger; combine_scaffold_test green (CombineScaffold 1/1/0/0) |
-| P4-1  | done   | `<sha>` | `combine/metrics.hpp` (AlphaMetrics POD only — P4-2 adds compute) + `combine/store.hpp` (AlphaId, AlphaRecord, AlphaStore). Append-only, insertion-ordered pool owning each alpha's PnL row + per-period position stream + a NON-OWNING `atx::engine::ISignalSource*` re-eval handle (forward-declared). **§0-A wrap-not-rebuild:** insert() COPIES pre-computed `extract_streams` rows into the store's own id-ordered dense matrices — it never recomputes PnL; `ingest_streams(AlphaStreams, sources, metrics)` is the "one extract_streams call" batch path (one insert per row in id order). `pnl_matrix()` is **alpha-major row-major `[n_alphas × n_periods]`** (element (a,t) at `a*n_periods+t`; row a == `pnl(id)`); first insert fixes n_periods/n_instruments, later period-count mismatch → `Err(InvalidArgument)` (store unchanged). NaN streams stored verbatim. `ingest_streams` tested against a hand-built `alpha::AlphaStreams` (aggregate-constructible, no extract_streams pipeline needed). AlphaStore 8/0/0 green; /W4 /permissive- /WX clean. |
+| P4-1  | done   | `b054436` | `combine/metrics.hpp` (AlphaMetrics POD only — P4-2 adds compute) + `combine/store.hpp` (AlphaId, AlphaRecord, AlphaStore). Append-only, insertion-ordered pool owning each alpha's PnL row + per-period position stream + a NON-OWNING `atx::engine::ISignalSource*` re-eval handle (forward-declared). **§0-A wrap-not-rebuild:** insert() COPIES pre-computed `extract_streams` rows into the store's own id-ordered dense matrices — it never recomputes PnL; `ingest_streams(AlphaStreams, sources, metrics)` is the "one extract_streams call" batch path (one insert per row in id order). `pnl_matrix()` is **alpha-major row-major `[n_alphas × n_periods]`** (element (a,t) at `a*n_periods+t`; row a == `pnl(id)`); first insert fixes n_periods/n_instruments, later period-count mismatch → `Err(InvalidArgument)` (store unchanged). NaN streams stored verbatim. `ingest_streams` tested against a hand-built `alpha::AlphaStreams` (aggregate-constructible, no extract_streams pipeline needed). AlphaStore 8/0/0 green; /W4 /permissive- /WX clean. |
 
 ---
 
@@ -44,7 +44,7 @@ Defer to Phase 4b (or later):
 | Commit  | Unit   | Test counts |
 |---------|--------|-------------|
 | `44d88a8` | marker (P4-0) | CombineScaffold 1/1/0/0 |
-| `<sha>` | P4-1 (alpha store + record) | AlphaStore 8/0/0 |
+| `b054436` | P4-1 (alpha store + record) | AlphaStore 8/0/0 |
 
 ---
 
