@@ -240,7 +240,10 @@ TEST(AlphaCombiner, ShrinkageMvSingularScmRescuedByShrinkage) {
   insert_pnl(pool, c);
   AlphaCombiner comb;
   comb.cfg.method = CombineMethod::ShrinkageMv;
-  // Window [2,4): two observations, N=3 -> singular S, rescued by shrinkage.
+  // Window [2,4): two observations, N=3 -> singular S. The canonical LW δ comes out
+  // ~0 here (the populated subspace looks near-spherical, so there is little
+  // shrinkage signal); the kLwSpdFloor numerical guard lifts every null-space
+  // eigenvalue above 0, so Σ̂ is SPD and fit() returns finite weights (NOT Err).
   const auto r = comb.fit(pool, 2, 4);
   ASSERT_TRUE(r.has_value());
   ASSERT_EQ(r->weights.size(), 3U);
@@ -266,6 +269,64 @@ TEST(AlphaCombiner, ShrinkageMvFixedIntensityRespected) {
     EXPECT_TRUE(std::isfinite(w));
   }
   EXPECT_NEAR(abs_sum(r->weights), 1.0, 1e-9);
+}
+
+TEST(AlphaCombiner, ShrinkageMvWellConditionedInverseVarianceTilt) {
+  // REGRESSION TEST for the Ledoit-Wolf 1/T² normalization defect: an earlier
+  // revision saturated the intensity δ -> 1 (full shrinkage to μ·I) on every
+  // realistic window, which discards the SCM off-diagonal/variance structure and
+  // collapses ShrinkageMv to EqualWeight. On a WELL-CONDITIONED window (T≫N) the
+  // canonical LW δ is small, so the inverse-variance tilt MUST show through:
+  // equal expected returns but distinct variances => the lowest-variance alpha
+  // earns a strictly larger |weight| than the highest-variance one.
+  //
+  // Deterministic fixture (no RNG): three mutually-orthogonal Walsh square waves
+  // (periods 2, 4, 8 over T=64, a multiple of 8 => exact orthogonality + zero mean
+  // per wave) with DISTINCT amplitudes (=> distinct variances, ~zero cross-corr),
+  // each plus the SAME positive drift (=> equal mean returns μ_i). With a near-
+  // diagonal Σ̂ and equal μ, MV weight w_i ∝ μ / σ²_i, so amp ascending => |w|
+  // descending.
+  constexpr usize T = 64;
+  constexpr f64 drift = 0.01;
+  const f64 amp[3] = {0.005, 0.02, 0.05}; // distinct vols: low, mid, high
+  std::vector<f64> rows[3];
+  for (usize i = 0; i < 3; ++i) {
+    rows[i].resize(T);
+    const usize period = (i == 0) ? 2 : (i == 1) ? 4 : 8; // Walsh periods 2,4,8
+    for (usize t = 0; t < T; ++t) {
+      const bool hi = ((t / (period / 2)) % 2) == 0; // square wave, zero mean
+      rows[i][t] = drift + (hi ? amp[i] : -amp[i]);
+    }
+  }
+  AlphaStore pool;
+  for (usize i = 0; i < 3; ++i) {
+    insert_pnl(pool, rows[i]);
+  }
+  AlphaCombiner comb;
+  comb.cfg.method = CombineMethod::ShrinkageMv; // AUTO LW (cfg.shrinkage < 0)
+  const auto r = comb.fit(pool, 0, T);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_EQ(r->weights.size(), 3U);
+  for (const f64 w : r->weights) {
+    EXPECT_TRUE(std::isfinite(w));
+  }
+  EXPECT_NEAR(abs_sum(r->weights), 1.0, 1e-9);
+
+  // The fit is NOT EqualWeight: the inverse-variance tilt is visible.
+  EXPECT_GT(std::abs(std::abs(r->weights[0]) - 1.0 / 3.0), 1e-3);
+  // Lowest-variance alpha (index 0) earns strictly more |weight| than the highest
+  // (index 2) — the structure the saturated-δ bug would have erased.
+  EXPECT_GT(std::abs(r->weights[0]), std::abs(r->weights[2]));
+
+  // δ < 1 (and in fact small) on this well-conditioned window — pins the
+  // normalization directly. Expose δ via the testable detail helper.
+  const auto sc =
+      atx::engine::combine::detail::shrunk_covariance(pool, /*n*/ 3, /*fit_begin*/ 0, /*t*/ T,
+                                                      /*cfg_shrinkage*/ -1.0);
+  // Measured δ ≈ 0.0094 on this fixture (≪ 1 — the saturation defect is gone);
+  // the assertion uses the loose < 0.5 bound to stay robust across platforms.
+  EXPECT_LT(sc.delta, 0.5);
+  EXPECT_GE(sc.delta, 0.0);
 }
 
 // ===========================================================================

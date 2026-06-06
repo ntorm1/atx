@@ -47,11 +47,17 @@
 //    it is excluded from the per-alpha moments (matches P4-2). IC-from-signal is
 //    deferred until a raw-signal store exists.
 //  * Ledoit-Wolf: atx-core has NO ledoit_wolf/shrinkage helper (grepped linalg/ +
-//    stats/), so the standard LW 2004 closed-form intensity is implemented below
-//    (cited at the call site). Computed deterministically (order-fixed sums).
-//  * Pairwise-complete covariance: estimated entry-by-entry with
-//    combine/correlation.hpp's pairwise_complete_cov (the §3.3 NaN policy's
-//    covariance analog, added alongside pairwise_complete_corr — one shared policy).
+//    stats/), so the canonical LW 2004 closed-form intensity is implemented below
+//    (1/T² normalization; cited at the call site). Computed deterministically
+//    (order-fixed sums).
+//  * Covariance for ShrinkageMv: the SCM uses a COMPLETE-CASE (listwise) MLE
+//    covariance S = (1/T_cc)·Σ_t r_t r_tᵀ over the demeaned window (periods where
+//    ANY alpha is NaN are dropped) — for SPD-ness AND so the LW intensity and the
+//    shrink/solve share the SAME S (coherence: a pairwise S for the solve with a
+//    listwise S for the intensity would mismatch the off-diagonal scales once
+//    δ < 1). The combine/correlation.hpp pairwise_complete_cov helper (the §3.3
+//    NaN-policy covariance analog) is RETAINED for any genuinely-pairwise use but
+//    is not used in this fit path. For the common no-NaN window the two agree.
 //  * BoundedRegression realizes a RETURN-SPACE bounded MV fit (signal-space bounded
 //    regression needs raw signals — deferred). It uses atx-core pca() for the
 //    top-k eigenpairs and a closed-form ridge-regularized PC-space solve (no
@@ -65,15 +71,13 @@
 #include <Eigen/Dense> // VecX/MatX assembly for the linalg kernels
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode, ATX_TRY
-#include "atx/core/macro.hpp" // ATX_ASSERT
-#include "atx/core/types.hpp" // f64, u8, usize
+#include "atx/core/types.hpp" // f64, i64, u8, usize
 
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/linalg/pca.hpp"    // pca, PcaResult
 #include "atx/core/linalg/solve.hpp"  // solve_spd
 
-#include "atx/engine/combine/correlation.hpp" // pairwise_complete_cov (§3.3 policy)
-#include "atx/engine/combine/store.hpp"       // AlphaStore, AlphaId
+#include "atx/engine/combine/store.hpp" // AlphaStore, AlphaId
 
 namespace atx::engine::combine {
 
@@ -198,25 +202,6 @@ inline void renorm_abs_sum(std::vector<atx::f64> &w) noexcept {
   }
 }
 
-// N×N sample covariance over the window, estimated entry-by-entry with the §3.3
-// pairwise-complete policy. Symmetric by construction (S[j][i] copied from
-// S[i][j]); diagonal is each alpha's window variance. Column-major Eigen MatX
-// (the linalg convention) so it feeds solve_spd / symmetric_eig directly.
-[[nodiscard]] inline atx::core::linalg::MatX window_covariance(const AlphaStore &pool, atx::usize n,
-                                                               atx::usize fit_begin, atx::usize t) {
-  atx::core::linalg::MatX s(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
-  for (atx::usize i = 0U; i < n; ++i) {
-    const std::span<const atx::f64> wi = window_span(pool, i, fit_begin, t);
-    for (atx::usize j = i; j < n; ++j) {
-      const std::span<const atx::f64> wj = window_span(pool, j, fit_begin, t);
-      const atx::f64 c = pairwise_complete_cov(wi, wj);
-      s(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = c;
-      s(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) = c; // symmetry
-    }
-  }
-  return s;
-}
-
 // Per-alpha window means, in id order (the MV target μ).
 [[nodiscard]] inline atx::core::linalg::VecX window_means(const AlphaStore &pool, atx::usize n,
                                                           atx::usize fit_begin, atx::usize t) {
@@ -227,37 +212,70 @@ inline void renorm_abs_sum(std::vector<atx::f64> &w) noexcept {
   return mu;
 }
 
-// Ledoit & Wolf (2004) optimal shrinkage intensity toward the scaled identity
-// target F = m·I, where m = tr(S)/N. Closed form (order-fixed sums, no RNG):
-//   d²  = ‖S − m·I‖²_F / N
-//   b̄²  = (1/N) · (1/T) Σ_t ‖x_t x_tᵀ − S‖²_F,  clamped to ≤ d²
-//   ρ*  = clamp(b̄²/d², 0, 1)
-// `centered` is the T×N complete-case window data, already column-demeaned, in
-// canonical (period, alpha) order. A degenerate d² == 0 (S already == m·I) gives
-// ρ* = 0 (no shrinkage needed; the identity target equals S).
+// Complete-case MLE sample covariance S = (1/T_cc)·Σ_t r_t r_tᵀ from the demeaned
+// T_cc×N window matrix `centered` (each column already demeaned by its window mean).
+// DIVISOR T_cc (the MLE / 1/T form), NOT T_cc−1: the Ledoit-Wolf 2004 closed form
+// is derived for this MLE covariance, so the intensity AND the shrink/solve must
+// share the SAME S for coherence (§ COHERENCE). Symmetric by construction. Empty
+// window (T_cc == 0) yields a zero matrix (the caller's T>=2 guard plus complete-
+// case dropping make this only reachable for an all-NaN window).
+[[nodiscard]] inline atx::core::linalg::MatX mle_covariance(const atx::core::linalg::MatX &centered,
+                                                            atx::usize n) {
+  const Eigen::Index t = centered.rows();
+  atx::core::linalg::MatX s =
+      atx::core::linalg::MatX::Zero(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
+  if (t < 1) {
+    return s;
+  }
+  // S = (1/T_cc) Rᵀ R  (Eigen's matrix product sums in a fixed order -> deterministic).
+  s = (centered.transpose() * centered) / static_cast<atx::f64>(t);
+  return s;
+}
+
+// Ledoit & Wolf (2004) "A well-conditioned estimator for large-dimensional
+// covariance matrices" — optimal shrinkage intensity δ toward the scaled-identity
+// target F = μ·I, μ = tr(S)/N. ALL terms are computed from the ONE complete-case
+// demeaned sample matrix `centered` (T_cc×N) and its MLE covariance `s` (divisor
+// T_cc — see mle_covariance). Closed form (order-fixed sums, no RNG):
+//   μ   = tr(S) / N
+//   d²  = ‖S − μ·I‖²_F                         (NO 1/N — Frobenius sq-dist to target)
+//   π̂   = (1/T_cc) Σ_t ‖ r_t r_tᵀ − S ‖²_F      (mean over t of per-sample sq-dist)
+//   b̄²  = π̂ / T_cc                              (the 1/T factor; == (1/T_cc²)·Σ ‖..‖²_F)
+//   b²  = min(b̄², d²)                           (LW guarantee b̄² ≤ d²)
+//   δ   = (d² == 0) ? 0 : clamp(b² / d², 0, 1)
+// HISTORICAL DEFECT (fixed): an earlier revision divided d² by N and b̄² by N·T
+// instead of T², inflating b̄²/d² by ~T/N so δ saturated to 1 (full shrinkage to
+// μ·I) on every realistic window, discarding the off-diagonal SCM structure. The
+// 1/T² normalization is the canonical LW result. A degenerate d² == 0 (S already
+// == μ·I) gives δ = 0 (the identity target already equals S — no shrinkage needed).
 [[nodiscard]] inline atx::f64 ledoit_wolf_intensity(const atx::core::linalg::MatX &s,
                                                     const atx::core::linalg::MatX &centered) {
   const Eigen::Index n = s.rows();
   const Eigen::Index t = centered.rows();
+  if (t < 1) {
+    return 0.0; // no observations -> no shrinkage signal
+  }
   const atx::f64 nf = static_cast<atx::f64>(n);
-  const atx::f64 m = s.trace() / nf;
-  // d² = ‖S − m·I‖²_F / N.
+  const atx::f64 tf = static_cast<atx::f64>(t);
+  const atx::f64 mu = s.trace() / nf;
+  // d² = ‖S − μ·I‖²_F (no 1/N).
   atx::core::linalg::MatX diff = s;
-  diff.diagonal().array() -= m;
-  const atx::f64 d2 = diff.squaredNorm() / nf;
-  if (d2 <= 0.0 || t < 1) {
-    return 0.0; // S already proportional to I, or no observations -> no shrinkage
+  diff.diagonal().array() -= mu;
+  const atx::f64 d2 = diff.squaredNorm();
+  if (d2 <= 0.0) {
+    return 0.0; // S already proportional to I -> target == S -> no shrinkage
   }
-  // b̄² = mean_t ‖x_t x_tᵀ − S‖²_F / N. Order-fixed sum over periods.
-  atx::f64 b2_sum = 0.0;
+  // π̂ = (1/T_cc) Σ_t ‖ r_t r_tᵀ − S ‖²_F. Order-fixed sum over periods.
+  atx::f64 pi_sum = 0.0;
   for (Eigen::Index k = 0; k < t; ++k) {
-    const atx::core::linalg::VecX x = centered.row(k).transpose();
-    atx::core::linalg::MatX outer = x * x.transpose();
+    const atx::core::linalg::VecX r = centered.row(k).transpose();
+    atx::core::linalg::MatX outer = r * r.transpose();
     outer -= s;
-    b2_sum += outer.squaredNorm();
+    pi_sum += outer.squaredNorm();
   }
-  const atx::f64 b2 = (b2_sum / static_cast<atx::f64>(t)) / nf;
-  const atx::f64 b2_clamped = (b2 > d2) ? d2 : b2; // b̄² ≤ d² (LW guarantee)
+  const atx::f64 pi_hat = pi_sum / tf;
+  const atx::f64 b2 = pi_hat / tf;                 // b̄² = π̂ / T_cc  (the missing 1/T)
+  const atx::f64 b2_clamped = (b2 > d2) ? d2 : b2; // b² = min(b̄², d²)
   return std::clamp(b2_clamped / d2, 0.0, 1.0);
 }
 
@@ -327,27 +345,63 @@ complete_case_centered(const AlphaStore &pool, atx::usize n, atx::usize fit_begi
   return w;
 }
 
-// ShrinkageMv: Σ̂ = (1−ρ)S + ρ·m·I (Ledoit-Wolf, ρ AUTO if cfg.shrinkage < 0 else
-// the fixed intensity clamped to [0,1]); solve Σ̂ w = μ via SPD Cholesky; Σ|w| = 1.
-// Returns Err if Σ̂ is not SPD even after shrinkage (solve_spd factorization fails).
+// The Ledoit-Wolf shrunk covariance Σ̂ and the intensity δ used to build it, over
+// the §3.1 window. COHERENCE: the SAME complete-case MLE covariance S (divisor
+// T_cc, listwise NaN-dropped) feeds BOTH the LW intensity AND the shrink/solve —
+// computing the intensity on listwise rows while solving against a pairwise_complete
+// S would be incoherent once δ < 1 (the off-diagonal scales would not match). For
+// the common no-NaN window this is identical to the pairwise covariance. The
+// pairwise_complete_cov helper remains for any genuinely-pairwise use elsewhere.
+// `cfg_shrinkage >= 0` overrides δ with the fixed value clamped to [0,1].
+struct ShrunkCov {
+  atx::core::linalg::MatX sigma; // Σ̂ = δ·μ·I + (1−δ)·S
+  atx::core::linalg::VecX mu;    // per-alpha mean-return target (MV right-hand side)
+  atx::f64 delta;                // the LW (or fixed) shrinkage intensity actually used
+};
+
+// Numerical SPD floor for the AUTO Ledoit-Wolf intensity. The statistically
+// optimal LW δ can come out ~0 on a SINGULAR sample covariance (T_cc < N): when the
+// populated subspace looks near-spherical the data carries little shrinkage signal,
+// so δ→0 and Σ̂ ≈ S keeps the null-space eigenvalue at 0 (Cholesky then fails). The
+// contract requires shrinkage to RESCUE the T<N singular case (return finite
+// weights), so the AUTO intensity is floored to this tiny constant: it lifts every
+// null-space eigenvalue to ≥ δ_floor·μ_id > 0 (Σ̂ SPD), while staying FAR below any
+// statistically-meaningful δ — in the well-conditioned regime LW δ ≫ kLwSpdFloor,
+// so the inverse-variance tilt is unaffected (the floor never binds there). It is a
+// NUMERICAL SPD guard, not a statistical choice, and applies ONLY to the AUTO path
+// (a caller-supplied fixed cfg.shrinkage is honored verbatim).
+inline constexpr atx::f64 kLwSpdFloor = 1e-6;
+
+[[nodiscard]] inline ShrunkCov shrunk_covariance(const AlphaStore &pool, atx::usize n,
+                                                 atx::usize fit_begin, atx::usize t,
+                                                 atx::f64 cfg_shrinkage) {
+  using namespace atx::core::linalg;
+  const VecX mu_ret = window_means(pool, n, fit_begin, t);
+  const MatX centered = complete_case_centered(pool, n, fit_begin, t, mu_ret);
+  const MatX s = mle_covariance(centered, n);        // complete-case MLE S (divisor T_cc)
+  const f64 mu_id = s.trace() / static_cast<f64>(n); // scaled-identity target factor
+  f64 delta = 0.0;
+  if (cfg_shrinkage < 0.0) {
+    // AUTO LW, floored for SPD-ness on a singular S (see kLwSpdFloor).
+    delta = std::max(ledoit_wolf_intensity(s, centered), kLwSpdFloor);
+  } else {
+    delta = std::clamp(cfg_shrinkage, 0.0, 1.0); // fixed intensity, honored verbatim
+  }
+  // Σ̂ = δ·μ·I + (1−δ)·S.
+  MatX sigma = (1.0 - delta) * s;
+  sigma.diagonal().array() += delta * mu_id;
+  return ShrunkCov{std::move(sigma), mu_ret, delta};
+}
+
+// ShrinkageMv: solve Σ̂ w = μ via SPD Cholesky on the LW-shrunk covariance, then
+// renormalize Σ|w| = 1. Returns Err if Σ̂ is not SPD even after shrinkage (the
+// solve_spd factorization fails — e.g. δ == 0 on a singular S).
 [[nodiscard]] inline atx::core::Result<std::vector<atx::f64>>
 fit_shrinkage_mv(const AlphaStore &pool, atx::usize n, atx::usize fit_begin, atx::usize t,
                  atx::f64 cfg_shrinkage) {
   using namespace atx::core::linalg;
-  const VecX mu = window_means(pool, n, fit_begin, t);
-  const MatX s = window_covariance(pool, n, fit_begin, t);
-  const f64 m = s.trace() / static_cast<f64>(n); // scaled-identity target factor
-  f64 rho = 0.0;
-  if (cfg_shrinkage < 0.0) {
-    const MatX centered = complete_case_centered(pool, n, fit_begin, t, mu);
-    rho = ledoit_wolf_intensity(s, centered); // LW 2004 auto intensity
-  } else {
-    rho = std::clamp(cfg_shrinkage, 0.0, 1.0); // fixed intensity
-  }
-  // Σ̂ = (1−ρ)S + ρ·m·I.
-  MatX sigma = (1.0 - rho) * s;
-  sigma.diagonal().array() += rho * m;
-  ATX_TRY(VecX raw, solve_spd(sigma, mu)); // SPD after shrinkage; Err if not
+  const ShrunkCov sc = shrunk_covariance(pool, n, fit_begin, t, cfg_shrinkage);
+  ATX_TRY(VecX raw, solve_spd(sc.sigma, sc.mu)); // SPD after shrinkage; Err if not
   std::vector<atx::f64> w(n);
   for (atx::usize i = 0U; i < n; ++i) {
     w[i] = raw[static_cast<Eigen::Index>(i)];
