@@ -76,7 +76,7 @@ Defer to Phase 3c (or future-work):
 | Unit | Status | Commit | Notes |
 |------|--------|--------|-------|
 | P3b-0 | ✅ done | _(this)_ | Open ledger; freeze scope; fossil reconciliation (A–D) recorded; Base `cfaf2d2`. Marker commit. |
-| P3b-1 | ⏳ pending | — | |
+| P3b-1 | ✅ done | _(SHA pending)_ | Generalized `OpSig` arity `u8 arity` → `[min_arity, max_arity]` + trailing `std::array<f64, kMaxDefaults> defaults` (kMaxDefaults=2). All 42 built-in rows migrated to the 8-field positional form (fixed-arity ⇒ min==max, empty defaults — no behavior change). Parser `parse_call` now range-checks arity (`min ≤ k ≤ max`, else ParseError) and default-fills omitted trailing args: finite default ⇒ append `Literal(default)` node, NaN sentinel ⇒ skip (kernel handles absence). **`scale` → (1,2,{1.0})**: the end-to-end proof — `scale(x)` materializes a 2nd `Literal 1.0` arg and is structurally equal to `scale(x,1)` (same OpSig row, same CsScale opcode, same 2 materialized args, arg1 Literal 1.0). **`group_neutralize` stays fixed-arity (2,2,{})** — optional cap deferred to P3b-4. Forced mechanical follow-on: `OpSig::arity` was read in `typecheck.hpp` (window selection) and `dag.hpp` (Call child_count); both now call a new `call_arity(const Expr&)` helper in `parser.hpp` that counts populated child slots (the materialized count — correct for variadic/default-filled calls). Zero semantic change; the full Phase-3 Alpha suite (DAG/typecheck/VM/oracle/cs/ts/proof) stays green. **17 new tests** (8 registry: min/max range, scale 1..2 + default 1.0, group_neutralize fixed 2, variadic register_op; 7 parser: scale default-fill + structural ≡ scale(x,1), explicit 2-arg unchanged, too-few/too-many ParseError, NaN-sentinel skip via synthetic register_op). Full Alpha suite: 272/272 green. |
 | P3b-2 | ⏳ pending | — | |
 | P3b-3 | ⏳ pending | — | |
 | P3b-4 | ⏳ pending | — | |
@@ -94,6 +94,7 @@ _(Lift to ROADMAP future-work backlog at close.)_
 | Commit | Unit | Test counts (suite/total/fail/skip) |
 |--------|------|-------------------------------------|
 | _(this)_ | marker (P3b-0) | — (no logic; build stays green) |
+| _(SHA pending)_ | P3b-1 (variadic/default args) | AlphaRegistry+AlphaParser 64/64; full Alpha 272/272; 0 fail / 0 skip (+17 new) |
 
 ---
 

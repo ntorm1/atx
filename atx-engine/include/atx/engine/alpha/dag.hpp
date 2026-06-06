@@ -233,7 +233,7 @@ namespace detail {
   case Expr::Kind::Select:
     return 3;
   case Expr::Kind::Call:
-    return e.op->arity;
+    return call_arity(e); // materialized arg count (P3b-1 default-fill aware)
   }
   return 0; // unreachable for a valid Expr::Kind
 }

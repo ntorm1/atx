@@ -13,6 +13,8 @@
 //
 // Naming: Subject_Condition_ExpectedResult.
 
+#include <cmath>
+#include <limits>
 #include <string_view>
 
 #include <gtest/gtest.h>
@@ -25,12 +27,15 @@ namespace {
 
 using atx::core::ErrorCode;
 using atx::engine::alpha::Ast;
+using atx::engine::alpha::DType;
 using atx::engine::alpha::Expr;
 using atx::engine::alpha::ExprId;
 using atx::engine::alpha::Library;
 using atx::engine::alpha::OpCode;
+using atx::engine::alpha::OpSig;
 using atx::engine::alpha::parse_expr;
 using atx::engine::alpha::parse_program;
+using atx::engine::alpha::Shape;
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -209,6 +214,89 @@ TEST(AlphaParser_Call, Nested_RankOfTsCorr) {
   const Expr &inner = ast.node(r.a);
   EXPECT_EQ(inner.kind, Expr::Kind::Call);
   EXPECT_EQ(inner.opcode, OpCode::TsCorr);
+}
+
+// ---- P3b-1: variadic / default-fill of omitted trailing args ----------------
+
+TEST(AlphaParser_Variadic, ScaleOmittedArg_MaterializesDefaultLiteralOne) {
+  // scale is (min=1, max=2, defaults={1.0}); scale(close) materializes a 2nd
+  // arg: a Literal 1.0, so the DAG/VM see a fully-applied call.
+  const Ast ast = parse_ok("scale(close)");
+  const Expr &r = root_of(ast);
+  ASSERT_EQ(r.kind, Expr::Kind::Call);
+  EXPECT_EQ(r.opcode, OpCode::CsScale);
+  EXPECT_EQ(ast.node(r.a).kind, Expr::Kind::Field); // arg 0 = close
+  const Expr &filled = ast.node(r.b);               // arg 1 = default 1.0
+  ASSERT_EQ(filled.kind, Expr::Kind::Literal);
+  EXPECT_DOUBLE_EQ(filled.value, 1.0);
+  EXPECT_EQ(r.c, atx::engine::alpha::kNoExpr); // no third slot
+}
+
+TEST(AlphaParser_Variadic, ScaleOneArg_StructurallyEqualsExplicitDefault) {
+  // The pinned proof: scale(close) ≡ scale(close, 1) — same node shape.
+  const Ast implicit_ast = parse_ok("scale(close)");
+  const Ast explicit_ast = parse_ok("scale(close, 1)");
+  const Expr &im = root_of(implicit_ast);
+  const Expr &ex = root_of(explicit_ast);
+  ASSERT_EQ(im.kind, Expr::Kind::Call);
+  ASSERT_EQ(ex.kind, Expr::Kind::Call);
+  EXPECT_EQ(im.opcode, ex.opcode);
+  EXPECT_EQ(im.op, ex.op); // same resolved registry row
+  // Both: arg0 a Field, arg1 a Literal 1.0, arg2 absent.
+  EXPECT_EQ(implicit_ast.node(im.a).kind, explicit_ast.node(ex.a).kind);
+  ASSERT_EQ(implicit_ast.node(im.b).kind, Expr::Kind::Literal);
+  ASSERT_EQ(explicit_ast.node(ex.b).kind, Expr::Kind::Literal);
+  EXPECT_DOUBLE_EQ(implicit_ast.node(im.b).value, explicit_ast.node(ex.b).value);
+  EXPECT_EQ(im.c, atx::engine::alpha::kNoExpr);
+  EXPECT_EQ(ex.c, atx::engine::alpha::kNoExpr);
+}
+
+TEST(AlphaParser_Variadic, ScaleExplicitTwoArgs_ParsesUnchanged) {
+  const Ast ast = parse_ok("scale(close, 2)");
+  const Expr &r = root_of(ast);
+  ASSERT_EQ(r.kind, Expr::Kind::Call);
+  EXPECT_EQ(r.opcode, OpCode::CsScale);
+  EXPECT_EQ(ast.node(r.a).kind, Expr::Kind::Field);
+  ASSERT_EQ(ast.node(r.b).kind, Expr::Kind::Literal);
+  EXPECT_DOUBLE_EQ(ast.node(r.b).value, 2.0);
+}
+
+TEST(AlphaParser_Variadic, ScaleTooFewArgs_IsParseError) {
+  // scale() supplies 0 < min_arity (1).
+  const auto res = parse_expr("scale()", shared_lib());
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::ParseError);
+}
+
+TEST(AlphaParser_Variadic, ScaleTooManyArgs_IsParseError) {
+  // scale(x, 1, 2) supplies 3 > max_arity (2).
+  const auto res = parse_expr("scale(close, 1, 2)", shared_lib());
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::ParseError);
+}
+
+TEST(AlphaParser_Variadic, NanSentinelDefault_OmittedArgNotMaterialized) {
+  // A synthetic op with a NaN-sentinel default: the omitted optional arg must
+  // NOT be materialized (the kernel handles absence). Verified via a private
+  // Library so the synthetic op does not leak into shared_lib().
+  Library lib;
+  const OpSig sig{"nan_opt",
+                  1,
+                  2,
+                  OpCode::CsScale,
+                  DType::F64,
+                  true,
+                  {std::numeric_limits<atx::f64>::quiet_NaN()},
+                  &atx::engine::alpha::shape_cross_section};
+  ASSERT_TRUE(lib.register_op(sig).has_value());
+  const auto res = parse_expr("nan_opt(close)", lib);
+  ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().message());
+  const Ast &ast = *res;
+  const Expr &r = ast.node(ast.roots().front().root);
+  ASSERT_EQ(r.kind, Expr::Kind::Call);
+  EXPECT_EQ(ast.node(r.a).kind, Expr::Kind::Field); // arg 0 = close
+  EXPECT_EQ(r.b, atx::engine::alpha::kNoExpr);      // NaN sentinel skipped
+  EXPECT_EQ(r.c, atx::engine::alpha::kNoExpr);
 }
 
 // ---- desugar ----------------------------------------------------------------

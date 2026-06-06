@@ -185,7 +185,7 @@ namespace detail {
 // (non-constant window → error) holding a finite integer >= 1. Returns the
 // window as u16 on success.
 [[nodiscard]] inline atx::core::Result<atx::u16> window_value(const Ast &ast, const Expr &call) {
-  const ExprId window_id = (call.op->arity == 3) ? call.c : call.b;
+  const ExprId window_id = (call_arity(call) == 3) ? call.c : call.b;
   const Expr &w = ast.node(window_id);
   if (w.kind != Expr::Kind::Literal) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,

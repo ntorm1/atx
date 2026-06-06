@@ -89,6 +89,23 @@ struct Expr {
   ExprId c{kNoExpr};            // child 2 (Call/Select)
 };
 
+// Materialized argument count of a Call node: the number of populated child
+// slots (a/b/c). After P3b-1 default-fill the Call's slots reflect the fully-
+// applied call, so this is the count downstream consumers (DAG child walk,
+// type-checker window selection) must use — NOT a static OpSig field, since a
+// variadic op's materialized count varies per call site. Precondition: `e` is a
+// Call node. Slots populate left-to-right (a before b before c), so the first
+// kNoExpr terminates the count.
+[[nodiscard]] inline atx::usize call_arity(const Expr &e) noexcept {
+  if (e.a == kNoExpr) {
+    return 0;
+  }
+  if (e.b == kNoExpr) {
+    return 1;
+  }
+  return (e.c == kNoExpr) ? 2 : 3;
+}
+
 // One top-level `name = expr` binding (anonymous name for parse_expr).
 struct Assignment {
   std::string name; // owned; empty for a bare parse_expr root
@@ -379,8 +396,24 @@ struct Parser {
   }
 }
 
-// Resolve an `IDENT(` call: look up the op, check arity, build a Call (folding
-// foldable unary fns on a literal). Precondition: cursor is on the '(' token.
+// Append default Literal nodes for arguments the call omitted (P3b-1). For each
+// missing trailing arg index k in [supplied, max_arity), the op's default is
+// `defaults[k - min_arity]`: a finite value is materialized as a Literal so the
+// DAG/VM see a fully-applied call; a NaN sentinel is SKIPPED (the kernel handles
+// the absence). Precondition: min_arity ≤ args.size() ≤ max_arity.
+inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &args) {
+  for (atx::usize k = args.size(); k < sig.max_arity; ++k) {
+    const atx::f64 value = sig.defaults[k - sig.min_arity];
+    if (std::isnan(value)) {
+      break; // NaN sentinel: leave this (and any later) optional arg absent.
+    }
+    args.push_back(p.lit(value));
+  }
+}
+
+// Resolve an `IDENT(` call: look up the op, range-check arity, default-fill
+// omitted trailing args, then build a Call (folding foldable unary fns on a
+// literal). Precondition: cursor is on the '(' token.
 [[nodiscard]] inline atx::core::Result<ExprId> parse_call(Parser &p, std::string_view name,
                                                           const Token &name_tok) {
   const OpSig *sig = p.lib->find(name);
@@ -391,15 +424,21 @@ struct Parser {
   p.advance(); // consume '('
   std::vector<ExprId> args;
   ATX_TRY_VOID(parse_args(p, args));
-  if (args.size() != sig->arity) {
+  if (args.size() < sig->min_arity || args.size() > sig->max_arity) {
+    const std::string expected =
+        (sig->min_arity == sig->max_arity)
+            ? std::to_string(sig->min_arity)
+            : (std::to_string(sig->min_arity) + ".." + std::to_string(sig->max_arity));
     return atx::core::Err(parse_error(std::string{"arity mismatch for '"} + std::string{name} +
-                                          "': expected " + std::to_string(sig->arity) + ", got " +
+                                          "': expected " + expected + ", got " +
                                           std::to_string(args.size()),
                                       name_tok));
   }
+  fill_default_args(p, *sig, args);
 
   // Constant-fold foldable unary functions on a literal operand (log(1)→0).
-  if (sig->arity == 1 && detail::is_foldable_unary(sig->opcode)) {
+  // A foldable unary is fixed-arity 1, so the materialized list is exactly one.
+  if (args.size() == 1 && detail::is_foldable_unary(sig->opcode)) {
     const Expr &arg0 = p.ast->node(args[0]);
     if (arg0.kind == Expr::Kind::Literal) {
       return p.lit(detail::fold_unary(sig->opcode, arg0.value));

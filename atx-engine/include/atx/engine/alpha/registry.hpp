@@ -193,12 +193,24 @@ namespace detail {
 //  OpSig — one registry row per named operator/function.
 // =========================================================================
 
+// Maximum trailing-optional arguments any op may declare. Headroom: the
+// largest optional-arg count among all planned ops is 1 (scale). Declared
+// before OpSig because the struct embeds an array of this size.
+inline constexpr atx::u8 kMaxDefaults = 2;
+
 struct OpSig {
   std::string_view name;        // operator/function spelling (e.g. "ts_mean")
-  atx::u8 arity{};              // fixed arity (operand count)
+  atx::u8 min_arity{};          // REQUIRED operand count (== arity for fixed ops)
+  atx::u8 max_arity{};          // max operand count; == min_arity for fixed-arity
   OpCode opcode{OpCode::Const}; // the VM instruction this op compiles to
   DType out_dtype{DType::F64};  // result element type
   bool lookahead_safe{true};    // causal rail; all built-ins are true
+  // Trailing defaults for optional args: defaults[k] is the literal value
+  // supplied for argument (min_arity + k) when the call omits it. Only the
+  // first (max_arity - min_arity) entries are meaningful. A NaN sentinel means
+  // "no scalar default" — the parser does NOT materialize that arg and the
+  // op's kernel handles its absence.
+  std::array<atx::f64, kMaxDefaults> defaults{};
   // Non-owning, non-null pointer to a pure shape rule (plan §4). Given the
   // ordered child shapes, returns this op's output shape.
   Shape (*shape_of)(std::span<const Shape> args){nullptr};
@@ -249,53 +261,59 @@ namespace detail {
 // static span so construction is a single copy. `consteval`-friendly literals;
 // the array has static storage, so every `name` view is non-dangling forever.
 [[nodiscard]] inline std::span<const OpSig> builtin_ops() noexcept {
+  // Rows are positional: {name, min_arity, max_arity, opcode, out_dtype,
+  // lookahead_safe, defaults, shape_of}. Fixed-arity ops carry min==max and an
+  // empty defaults array. `scale` is the lone variadic built-in in 3b: 1
+  // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   static constexpr std::array<OpSig, 42> kOps = {{
       // ---- unary element-wise functions (P→P) ----
-      {"abs", 1, OpCode::Abs, DType::F64, true, &shape_unary},
-      {"sign", 1, OpCode::Sign, DType::F64, true, &shape_unary},
-      {"log", 1, OpCode::Log, DType::F64, true, &shape_unary},
+      {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
+      {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
+      {"log", 1, 1, OpCode::Log, DType::F64, true, {}, &shape_unary},
       // ---- binary element-wise functions ----
-      {"power", 2, OpCode::Pow, DType::F64, true, &shape_elementwise},
-      {"signedpower", 2, OpCode::Spow, DType::F64, true, &shape_elementwise},
-      {"min", 2, OpCode::MinP, DType::F64, true, &shape_elementwise},
-      {"max", 2, OpCode::MaxP, DType::F64, true, &shape_elementwise},
+      {"power", 2, 2, OpCode::Pow, DType::F64, true, {}, &shape_elementwise},
+      {"signedpower", 2, 2, OpCode::Spow, DType::F64, true, {}, &shape_elementwise},
+      {"min", 2, 2, OpCode::MinP, DType::F64, true, {}, &shape_elementwise},
+      {"max", 2, 2, OpCode::MaxP, DType::F64, true, {}, &shape_elementwise},
       // ---- cross-sectional (P→V) ----
-      {"rank", 1, OpCode::CsRank, DType::F64, true, &shape_cross_section},
-      {"zscore", 1, OpCode::CsZscore, DType::F64, true, &shape_cross_section},
-      {"scale", 2, OpCode::CsScale, DType::F64, true, &shape_cross_section},
-      {"indneutralize", 2, OpCode::CsDemeanG, DType::F64, true, &shape_cross_section},
-      {"group_neutralize", 2, OpCode::CsNeutG, DType::F64, true, &shape_cross_section},
-      {"group_rank", 2, OpCode::CsRankG, DType::F64, true, &shape_cross_section},
-      {"group_zscore", 2, OpCode::CsZscoreG, DType::F64, true, &shape_cross_section},
+      {"rank", 1, 1, OpCode::CsRank, DType::F64, true, {}, &shape_cross_section},
+      {"zscore", 1, 1, OpCode::CsZscore, DType::F64, true, {}, &shape_cross_section},
+      // scale(x) defaults its 2nd arg to 1.0 (target L1 norm).
+      {"scale", 1, 2, OpCode::CsScale, DType::F64, true, {1.0}, &shape_cross_section},
+      {"indneutralize", 2, 2, OpCode::CsDemeanG, DType::F64, true, {}, &shape_cross_section},
+      // group_neutralize stays fixed-arity 2 in P3b-1; optional cap → P3b-4.
+      {"group_neutralize", 2, 2, OpCode::CsNeutG, DType::F64, true, {}, &shape_cross_section},
+      {"group_rank", 2, 2, OpCode::CsRankG, DType::F64, true, {}, &shape_cross_section},
+      {"group_zscore", 2, 2, OpCode::CsZscoreG, DType::F64, true, {}, &shape_cross_section},
       // ---- time-series (P→P) ----
-      {"delay", 2, OpCode::TsDelay, DType::F64, true, &shape_panel},
-      {"delta", 2, OpCode::TsDelta, DType::F64, true, &shape_panel},
-      {"ts_sum", 2, OpCode::TsSum, DType::F64, true, &shape_panel},
-      {"ts_mean", 2, OpCode::TsMean, DType::F64, true, &shape_panel},
-      {"stddev", 2, OpCode::TsStd, DType::F64, true, &shape_panel},
-      {"ts_std", 2, OpCode::TsStd, DType::F64, true, &shape_panel},
-      {"ts_var", 2, OpCode::TsVar, DType::F64, true, &shape_panel},
-      {"ts_min", 2, OpCode::TsMin, DType::F64, true, &shape_panel},
-      {"ts_max", 2, OpCode::TsMax, DType::F64, true, &shape_panel},
-      {"ts_argmin", 2, OpCode::TsArgMin, DType::F64, true, &shape_panel},
-      {"ts_argmax", 2, OpCode::TsArgMax, DType::F64, true, &shape_panel},
-      {"ts_rank", 2, OpCode::TsRank, DType::F64, true, &shape_panel},
-      {"correlation", 3, OpCode::TsCorr, DType::F64, true, &shape_panel},
-      {"covariance", 3, OpCode::TsCov, DType::F64, true, &shape_panel},
-      {"product", 2, OpCode::TsProduct, DType::F64, true, &shape_panel},
-      {"decay_linear", 2, OpCode::TsDecayLinear, DType::F64, true, &shape_panel},
-      {"ema", 2, OpCode::TsEma, DType::F64, true, &shape_panel},
-      {"wma", 2, OpCode::TsWma, DType::F64, true, &shape_panel},
-      {"skew", 2, OpCode::TsSkew, DType::F64, true, &shape_panel},
-      {"kurt", 2, OpCode::TsKurt, DType::F64, true, &shape_panel},
-      {"med", 2, OpCode::TsMed, DType::F64, true, &shape_panel},
-      {"mad", 2, OpCode::TsMad, DType::F64, true, &shape_panel},
-      {"slope", 2, OpCode::TsSlope, DType::F64, true, &shape_panel},
-      {"rsquare", 2, OpCode::TsRsquare, DType::F64, true, &shape_panel},
-      {"resid", 2, OpCode::TsResid, DType::F64, true, &shape_panel},
-      {"ts_skew", 2, OpCode::TsSkew, DType::F64, true, &shape_panel},
-      {"ts_kurt", 2, OpCode::TsKurt, DType::F64, true, &shape_panel},
-      {"ts_corr", 3, OpCode::TsCorr, DType::F64, true, &shape_panel},
+      {"delay", 2, 2, OpCode::TsDelay, DType::F64, true, {}, &shape_panel},
+      {"delta", 2, 2, OpCode::TsDelta, DType::F64, true, {}, &shape_panel},
+      {"ts_sum", 2, 2, OpCode::TsSum, DType::F64, true, {}, &shape_panel},
+      {"ts_mean", 2, 2, OpCode::TsMean, DType::F64, true, {}, &shape_panel},
+      {"stddev", 2, 2, OpCode::TsStd, DType::F64, true, {}, &shape_panel},
+      {"ts_std", 2, 2, OpCode::TsStd, DType::F64, true, {}, &shape_panel},
+      {"ts_var", 2, 2, OpCode::TsVar, DType::F64, true, {}, &shape_panel},
+      {"ts_min", 2, 2, OpCode::TsMin, DType::F64, true, {}, &shape_panel},
+      {"ts_max", 2, 2, OpCode::TsMax, DType::F64, true, {}, &shape_panel},
+      {"ts_argmin", 2, 2, OpCode::TsArgMin, DType::F64, true, {}, &shape_panel},
+      {"ts_argmax", 2, 2, OpCode::TsArgMax, DType::F64, true, {}, &shape_panel},
+      {"ts_rank", 2, 2, OpCode::TsRank, DType::F64, true, {}, &shape_panel},
+      {"correlation", 3, 3, OpCode::TsCorr, DType::F64, true, {}, &shape_panel},
+      {"covariance", 3, 3, OpCode::TsCov, DType::F64, true, {}, &shape_panel},
+      {"product", 2, 2, OpCode::TsProduct, DType::F64, true, {}, &shape_panel},
+      {"decay_linear", 2, 2, OpCode::TsDecayLinear, DType::F64, true, {}, &shape_panel},
+      {"ema", 2, 2, OpCode::TsEma, DType::F64, true, {}, &shape_panel},
+      {"wma", 2, 2, OpCode::TsWma, DType::F64, true, {}, &shape_panel},
+      {"skew", 2, 2, OpCode::TsSkew, DType::F64, true, {}, &shape_panel},
+      {"kurt", 2, 2, OpCode::TsKurt, DType::F64, true, {}, &shape_panel},
+      {"med", 2, 2, OpCode::TsMed, DType::F64, true, {}, &shape_panel},
+      {"mad", 2, 2, OpCode::TsMad, DType::F64, true, {}, &shape_panel},
+      {"slope", 2, 2, OpCode::TsSlope, DType::F64, true, {}, &shape_panel},
+      {"rsquare", 2, 2, OpCode::TsRsquare, DType::F64, true, {}, &shape_panel},
+      {"resid", 2, 2, OpCode::TsResid, DType::F64, true, {}, &shape_panel},
+      {"ts_skew", 2, 2, OpCode::TsSkew, DType::F64, true, {}, &shape_panel},
+      {"ts_kurt", 2, 2, OpCode::TsKurt, DType::F64, true, {}, &shape_panel},
+      {"ts_corr", 3, 3, OpCode::TsCorr, DType::F64, true, {}, &shape_panel},
   }};
   return kOps;
 }
