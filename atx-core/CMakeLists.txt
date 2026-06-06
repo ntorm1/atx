@@ -49,6 +49,7 @@ add_library(atx-core STATIC
     src/io/parquet_writer.cpp
     src/db/sqlite.cpp
     src/external/dbn.cpp
+    src/external/databento.cpp
 )
 add_library(atx::core ALIAS atx-core)
 

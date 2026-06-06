@@ -44,6 +44,7 @@ add_executable(atx-core-tests
     db_sqlite_test.cpp
     dbn_test.cpp
     parquet_writer_test.cpp
+    databento_test.cpp
 )
 
 target_link_libraries(atx-core-tests
