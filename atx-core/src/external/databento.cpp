@@ -76,7 +76,8 @@ struct Columns {
 [[nodiscard]] Result<void> decode_into(std::span<const std::byte> dbn, Columns &c, i64 &decoded,
                                        i64 &skipped) {
   ATX_TRY(auto dec, dbn::DbnDecoder::open(dbn));
-  constexpr i64 kNsPerDay = 86'400'000'000'000LL;
+  // Memo key divides by the same constant to_civil_utc uses, so the day bucket
+  // stays tied to the civil-date computation that produces cached_date.
   i64 cached_day = std::numeric_limits<i64>::min();
   std::string cached_date;
   for (;;) {
@@ -86,7 +87,7 @@ struct Columns {
     }
     const auto &m = *rec;
     const i64 ns = static_cast<i64>(m.hd.ts_event);
-    const i64 day = ns / kNsPerDay; // floor for ns >= 0 (daily bars are positive)
+    const i64 day = ns / time::Duration::kNsPerDay; // floor for ns >= 0 (daily bars are positive)
     if (day != cached_day) {
       cached_day = day;
       cached_date = date_string(m.hd.ts_event);
@@ -124,6 +125,55 @@ struct Columns {
   return atx::core::io::write_hive_parquet(wcols, dest_dir, "date");
 }
 
+// Decode+write one zip entry, owning the extracted heap buffer for its whole
+// lifetime (freed on every path). Returns the partition count for the entry, 0
+// for entries that are not DBN (no row work, files_processed untouched), or an
+// error. On success for a DBN entry, bumps stats.files_processed so it keeps
+// counting exactly the entries that actually decoded.
+[[nodiscard]] Result<i64> process_entry(mz_zip_archive &zip, mz_uint i, std::string_view dest_dir,
+                                        LoadStats &stats) {
+  mz_zip_archive_file_stat st{};
+  if (!mz_zip_reader_file_stat(&zip, i, &st)) {
+    return Ok(i64{0});
+  }
+  const std::string_view name{static_cast<const char *>(st.m_filename)};
+  const bool is_zst = ends_with(name, ".dbn.zst");
+  if (!is_zst && !ends_with(name, ".dbn")) {
+    return Ok(i64{0});
+  }
+
+  std::size_t raw_size = 0;
+  void *raw = mz_zip_reader_extract_to_heap(&zip, i, &raw_size, 0);
+  if (raw == nullptr) {
+    return Err(ErrorCode::ParseError, std::string{"failed to extract "} + std::string{name});
+  }
+  const std::span<const std::byte> entry{static_cast<const std::byte *>(raw), raw_size};
+
+  Columns cols; // ONE file's rows only -> peak memory bounded to one day
+  Result<void> step = Ok();
+  if (is_zst) {
+    auto dec = zstd_decompress(entry);
+    if (!dec.has_value()) {
+      mz_free(raw);
+      return Err(dec.error());
+    }
+    step = decode_into(*dec, cols, stats.records_decoded, stats.records_skipped);
+  } else {
+    step = decode_into(entry, cols, stats.records_decoded, stats.records_skipped);
+  }
+  mz_free(raw);
+  if (!step.has_value()) {
+    return Err(step.error());
+  }
+  ++stats.files_processed;
+  if (cols.ts.empty()) {
+    return Ok(i64{0});
+  }
+  // Per-entry write relies on EQUS giving exactly one distinct date per zip
+  // entry; a date repeated across entries would overwrite (truncate), not merge.
+  return write_columns(cols, dest_dir);
+}
+
 } // namespace
 
 Result<LoadStats> load_equs_summary_zip(std::string_view zip_path, std::string_view dest_dir) {
@@ -141,54 +191,14 @@ Result<LoadStats> load_equs_summary_zip(std::string_view zip_path, std::string_v
   const mz_uint count = mz_zip_reader_get_num_files(&zip);
   i64 total_partitions = 0;
   for (mz_uint i = 0; i < count; ++i) {
-    mz_zip_archive_file_stat st{};
-    if (!mz_zip_reader_file_stat(&zip, i, &st)) {
-      continue;
-    }
-    const std::string_view name{static_cast<const char *>(st.m_filename)};
-    const bool is_zst = ends_with(name, ".dbn.zst");
-    const bool is_raw = ends_with(name, ".dbn");
-    if (!is_zst && !is_raw) {
-      continue;
-    }
-
-    std::size_t raw_size = 0;
-    void *raw = mz_zip_reader_extract_to_heap(&zip, i, &raw_size, 0);
-    if (raw == nullptr) {
+    // process_entry owns the extracted heap buffer; on error we only need to
+    // close the archive here. Earlier entries' partitions are already on disk.
+    auto nparts = process_entry(zip, i, dest_dir, stats);
+    if (!nparts.has_value()) {
       mz_zip_reader_end(&zip);
-      return Err(ErrorCode::ParseError, std::string{"failed to extract "} + std::string{name});
+      return Err(nparts.error());
     }
-    const std::span<const std::byte> entry{static_cast<const std::byte *>(raw), raw_size};
-
-    Columns cols; // ONE file's rows only -> peak memory bounded to one day
-    Result<void> step = Ok();
-    if (is_zst) {
-      auto dec = zstd_decompress(entry);
-      if (!dec.has_value()) {
-        mz_free(raw);
-        mz_zip_reader_end(&zip);
-        return Err(dec.error());
-      }
-      step = decode_into(*dec, cols, stats.records_decoded, stats.records_skipped);
-    } else {
-      step = decode_into(entry, cols, stats.records_decoded, stats.records_skipped);
-    }
-    mz_free(raw);
-    if (!step.has_value()) {
-      mz_zip_reader_end(&zip);
-      return Err(step.error());
-    }
-    // Write this entry's partitions before moving on, so a later malformed
-    // entry cannot discard days that already decoded successfully.
-    if (!cols.ts.empty()) {
-      auto nparts = write_columns(cols, dest_dir);
-      if (!nparts.has_value()) {
-        mz_zip_reader_end(&zip);
-        return Err(nparts.error());
-      }
-      total_partitions += *nparts;
-    }
-    ++stats.files_processed;
+    total_partitions += *nparts;
   }
   mz_zip_reader_end(&zip);
 
