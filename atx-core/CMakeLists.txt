@@ -26,6 +26,20 @@ else()
     target_compile_options(atx_sqlite3 PRIVATE -w)
 endif()
 
+# ---- Vendored miniz (third-party/miniz) ----
+# PKZIP reader for the Databento batch .zip. Own static lib so its C source never
+# sees /W4 /WX; linked PRIVATE into atx-core (symbols propagate, include dir does
+# not -- miniz.h stays confined to the .cpp TUs and the test target). Mirrors the
+# atx_sqlite3 pattern. See third-party/miniz/PROVENANCE.md.
+add_library(atx_miniz STATIC third-party/miniz/miniz.c)
+target_include_directories(atx_miniz PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/miniz>)
+if(MSVC)
+    target_compile_options(atx_miniz PRIVATE /w)
+else()
+    target_compile_options(atx_miniz PRIVATE -w)
+endif()
+
 add_library(atx-core STATIC
     src/core.cpp
     src/decimal.cpp
@@ -46,6 +60,7 @@ target_compile_features(atx-core PUBLIC cxx_std_20)
 
 find_package(Arrow CONFIG REQUIRED)
 find_package(Parquet CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
 
 target_link_libraries(atx-core
     PUBLIC
@@ -59,6 +74,8 @@ target_link_libraries(atx-core
     PRIVATE
         atx_warnings
         atx_sqlite3
+        atx_miniz
+        zstd::libzstd
 )
 
 # Compile in every log level; runtime level (default err) does the filtering.

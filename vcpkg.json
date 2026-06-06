@@ -2,7 +2,8 @@
   "name": "atx",
   "version-string": "0.1.0",
   "dependencies": [
-    { "name": "arrow", "features": ["parquet"] }
+    { "name": "arrow", "features": ["parquet"] },
+    "zstd"
   ],
   "builtin-baseline": "9e9398f90a6c386bbd6ed89714ddb036b2e969eb"
 }

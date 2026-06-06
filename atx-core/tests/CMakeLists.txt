@@ -58,6 +58,12 @@ target_link_libraries(atx-core-tests PRIVATE Threads::Threads)
 # Arrow/Parquet for the parquet loader tests.
 target_link_libraries(atx-core-tests PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
 
+# miniz + zstd: the Databento tests build .dbn.zst fixtures in-process. Linked to
+# the (first-party) test target directly; their include dirs propagate here only,
+# never to atx-core's public consumers. zstd::libzstd is the same vcpkg zstd Arrow
+# links, so its DLL is already handled by the TARGET_RUNTIME_DLLS copy below.
+target_link_libraries(atx-core-tests PRIVATE atx_miniz zstd::libzstd)
+
 # Copy Arrow's runtime DLLs (and any other transitive shared deps) next to the
 # test exe so it can be launched directly by ctest.
 add_custom_command(TARGET atx-core-tests POST_BUILD
