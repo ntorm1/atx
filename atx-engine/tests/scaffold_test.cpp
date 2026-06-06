@@ -38,3 +38,16 @@ TEST(Scaffold, Phase2TypesAliasResolves) {
   const atx::engine::InstrumentId id{};
   EXPECT_EQ(id.id, 0U);
 }
+
+// =====================================================================
+//  Phase-3 — alpha-expression DSL scaffold (P3-0)
+// =====================================================================
+
+#include "atx/engine/alpha/fwd.hpp"
+
+TEST(EngineScaffold, Phase3AlphaFwdLinks) {
+  // Touch a forward-declared alpha spine type so the fwd header is genuinely
+  // used (a null pointer needs only the declaration, not the definition).
+  atx::engine::alpha::Engine *eng = nullptr;
+  EXPECT_EQ(eng, nullptr);
+}
