@@ -11,6 +11,7 @@
 // Naming: Subject_Condition_ExpectedResult.
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -196,6 +197,64 @@ TEST(AlphaSignalSet_CrossSection, SlicesAlphaRowByDate) {
   ASSERT_EQ(row1.size(), 2U);
   EXPECT_DOUBLE_EQ(row1[0], 20.0);
   EXPECT_DOUBLE_EQ(row1[1], 21.0);
+}
+
+// ---- Borrowed Panel ---------------------------------------------------------
+
+TEST(AlphaPanel_Borrowed_MatchesOwned, BorrowedReadSurface) {
+  // Two fields, 2 dates x 3 instruments, date-major columns.
+  const std::vector<atx::f64> close{1, 2, 3, 4, 5, 6}; // d0=[1,2,3] d1=[4,5,6]
+  const std::vector<atx::f64> volume{10, 20, 30, 40, 50, 60};
+  const std::vector<std::uint8_t> uni{1, 0, 1, 1, 1, 0};
+
+  // Borrowed: column spans alias the vectors above (which outlive the panel).
+  std::vector<std::span<const atx::f64>> cols{std::span<const atx::f64>{close},
+                                              std::span<const atx::f64>{volume}};
+  auto bp = Panel::create_borrowed(2, 3, {"close", "volume"}, std::move(cols), uni);
+  ASSERT_TRUE(bp.has_value()) << (bp ? "" : bp.error().message());
+  const Panel &p = bp.value();
+
+  EXPECT_EQ(p.dates(), 2U);
+  EXPECT_EQ(p.instruments(), 3U);
+  EXPECT_EQ(p.num_fields(), 2U);
+  const auto cid = p.field_id("close");
+  ASSERT_TRUE(cid.has_value());
+  const auto cs1 = p.field_cross_section(cid.value(), 1); // d1 = [4,5,6]
+  ASSERT_EQ(cs1.size(), 3U);
+  EXPECT_DOUBLE_EQ(cs1[0], 4.0);
+  EXPECT_DOUBLE_EQ(cs1[2], 6.0);
+  EXPECT_DOUBLE_EQ(p.field_all(cid.value())[0], 1.0);
+  EXPECT_TRUE(p.in_universe(0, 0));
+  EXPECT_FALSE(p.in_universe(0, 1));
+}
+
+TEST(AlphaPanel_Borrowed_RaggedColumn_Errs, BorrowedValidation) {
+  const std::vector<atx::f64> good{1, 2};
+  const std::vector<atx::f64> bad{1, 2, 3}; // wrong length for 1x2
+  std::vector<std::span<const atx::f64>> cols{std::span<const atx::f64>{good},
+                                              std::span<const atx::f64>{bad}};
+  auto bp = Panel::create_borrowed(1, 2, {"a", "b"}, std::move(cols), {});
+  EXPECT_FALSE(bp.has_value());
+}
+
+TEST(AlphaPanel_BorrowedSurvivesPanelMove, BorrowedMoveStable) {
+  const std::vector<atx::f64> close{1, 2, 3, 4};
+  std::vector<std::span<const atx::f64>> cols{std::span<const atx::f64>{close}};
+  auto bp = Panel::create_borrowed(2, 2, {"close"}, std::move(cols), {});
+  ASSERT_TRUE(bp.has_value());
+  Panel moved = std::move(bp.value()); // borrowed spans point at `close`, unaffected
+  EXPECT_DOUBLE_EQ(moved.field_all(moved.field_id("close").value())[3], 4.0);
+}
+
+TEST(AlphaPanel_OwnedCopy_RepointsSpans, OwnedCopySafe) {
+  std::vector<std::vector<atx::f64>> data{{1, 2, 3, 4}}; // 2x2, one field
+  auto src = Panel::create(2, 2, {"close"}, data, {});
+  ASSERT_TRUE(src.has_value());
+  Panel copy = src.value();                                      // exercises copy ctor
+  src.value() = Panel::create(1, 1, {"x"}, {{9.0}}, {}).value(); // clobber source
+  EXPECT_EQ(copy.dates(), 2U);
+  EXPECT_EQ(copy.instruments(), 2U);
+  EXPECT_DOUBLE_EQ(copy.field_all(copy.field_id("close").value())[3], 4.0);
 }
 
 } // namespace
