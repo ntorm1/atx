@@ -38,6 +38,12 @@ public:
                       SimClock &clock, EventBus<> &bus)
       : paths_{std::move(seg_paths)}, symbols_{&symbols}, clock_{&clock}, bus_{&bus} {}
 
+  // Non-copyable, non-movable: `feed_` holds a non-owning `const SegmentReader*`
+  // into `reader_`'s storage, so a default move would relocate `reader_` to a new
+  // address while leaving `feed_`'s pointer aimed at the old one (instant dangle).
+  // Deleting copy/move makes that invariant compiler-enforced, not convention.
+  ATX_DISABLE_COPY_MOVE(MultiSegmentBarFeed);
+
   /// Advance one row of the resident segment; at its EOF, lazily attach the next
   /// segment and continue. Returns false only once every segment is drained.
   [[nodiscard]] bool step() override {
