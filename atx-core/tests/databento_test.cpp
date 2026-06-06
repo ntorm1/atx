@@ -66,6 +66,28 @@ TEST(Databento, LoadsZipIntoDatePartitions) {
   EXPECT_EQ(syms->size(), 2u);
 }
 
+TEST(Databento, PerFilePartialWritePersistsBeforeError) {
+  using atx::test::OhlcvRow;
+  // Entry 1: valid, date 2024-01-02. Entry 2: a zstd blob whose DBN magic is bad.
+  const std::vector<OhlcvRow> day = {{101, kJan02, 10, 11, 9, 10, 100, 0x23}};
+  auto good = atx::test::build_dbn({{101, "AAPL", 20240101, 20250101}}, day);
+  auto good_zst = atx::test::zstd_compress(good);
+
+  std::vector<std::byte> bad_dbn(64, std::byte(0));
+  bad_dbn[0] = std::byte('X'); // not "DBN" -> DbnDecoder::open fails
+  auto bad_zst = atx::test::zstd_compress(bad_dbn);
+
+  auto zip = atx::test::build_zip({{"a-20240102.dbn.zst", good_zst}, {"b-bad.dbn.zst", bad_zst}});
+  const fs::path zip_path = write_zip("atx_db_partial.zip", zip);
+  const fs::path dest = fs::temp_directory_path() / "atx_db_partial_dest";
+  fs::remove_all(dest);
+
+  auto stats = db::load_equs_summary_zip(zip_path.string(), dest.string());
+  EXPECT_FALSE(stats.has_value()); // the bad second entry aborts the load
+  // ...but the first day's partition was already written (per-file streaming).
+  EXPECT_TRUE(fs::exists(dest / "date=2024-01-02" / "data.parquet"));
+}
+
 TEST(Databento, MissingZipErrors) {
   auto stats = db::load_equs_summary_zip("c:/no/such/file.zip", "ignored");
   ASSERT_FALSE(stats.has_value());
