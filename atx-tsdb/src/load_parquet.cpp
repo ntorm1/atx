@@ -1,9 +1,11 @@
 #include "atx/tsdb/load_parquet.hpp"
 
 #include <algorithm>     // std::sort, std::unique
+#include <filesystem>    // std::filesystem
 #include <string>        // std::string
 #include <string_view>   // std::string_view
 #include <unordered_map> // std::unordered_map
+#include <utility>       // std::pair
 #include <vector>        // std::vector
 
 #include "atx/core/datetime.hpp"   // time::Timestamp
@@ -17,6 +19,7 @@ namespace atx::tsdb {
 
 using atx::core::Err;
 using atx::core::ErrorCode;
+using atx::core::Ok;
 using atx::core::Status;
 
 Status build_from_long(const LongColumns &cols, const std::string &path,
@@ -102,6 +105,79 @@ Status load_parquet(const std::string &parquet_path, const std::string &out_path
   }
 
   return build_from_long(cols, out_path, created_at_nanos);
+}
+
+Status load_parquet_scaled(const std::string &parquet_path, const std::string &out_path,
+                           const std::string &time_col, const std::string &symbol_col,
+                           const std::vector<std::pair<std::string, atx::f64>> &field_scales,
+                           atx::i64 created_at_nanos) {
+  ATX_TRY(auto table, atx::core::io::read_parquet(parquet_path));
+
+  LongColumns cols;
+  cols.field_names.reserve(field_scales.size());
+
+  ATX_TRY(auto ts_col, table.to_column<atx::core::time::Timestamp>(time_col));
+  const auto ts = ts_col.view();
+  cols.times.reserve(ts.size());
+  for (const auto &t : ts) {
+    cols.times.push_back(t.unix_nanos());
+  }
+
+  ATX_TRY(auto syms, table.strings(symbol_col));
+  cols.symbols.reserve(syms.size());
+  for (const std::string_view s : syms) {
+    cols.symbols.emplace_back(s);
+  }
+
+  cols.values.resize(field_scales.size());
+  for (atx::usize f = 0; f < field_scales.size(); ++f) {
+    cols.field_names.push_back(field_scales[f].first);
+    ATX_TRY(auto col, table.column_view<atx::i64>(field_scales[f].first));
+    const atx::f64 scale = field_scales[f].second;
+    auto &dst = cols.values[f];
+    dst.reserve(col.size());
+    for (const atx::i64 v : col) {
+      dst.push_back(static_cast<atx::f64>(v) * scale);
+    }
+  }
+
+  return build_from_long(cols, out_path, created_at_nanos);
+}
+
+Status build_dated_segments(const std::string &hive_root, const std::string &seg_dir,
+                            const std::string &time_col, const std::string &symbol_col,
+                            const std::vector<std::pair<std::string, atx::f64>> &field_scales,
+                            atx::i64 created_at_nanos) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (!fs::exists(fs::path{hive_root}, ec)) {
+    return Err(ErrorCode::IoError, "hive_root does not exist");
+  }
+  // Collect date partitions: subdirs named "date=YYYY-MM-DD".
+  std::vector<std::string> dates;
+  for (const auto &entry : fs::directory_iterator(hive_root, ec)) {
+    if (!entry.is_directory(ec)) {
+      continue;
+    }
+    const std::string dir = entry.path().filename().string();
+    const std::string prefix = "date=";
+    if (dir.rfind(prefix, 0) == 0) {
+      dates.push_back(dir.substr(prefix.size()));
+    }
+  }
+  if (dates.empty()) {
+    return Err(ErrorCode::InvalidArgument, "no date= partitions under hive_root");
+  }
+  std::sort(dates.begin(), dates.end()); // ISO dates sort chronologically
+
+  fs::create_directories(fs::path{seg_dir}, ec);
+  for (const std::string &date : dates) {
+    const std::string parquet = (fs::path{hive_root} / ("date=" + date) / "data.parquet").string();
+    const std::string out = (fs::path{seg_dir} / (date + ".seg")).string();
+    ATX_TRY_VOID(
+        load_parquet_scaled(parquet, out, time_col, symbol_col, field_scales, created_at_nanos));
+  }
+  return Ok();
 }
 
 } // namespace atx::tsdb

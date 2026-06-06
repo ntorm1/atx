@@ -8,6 +8,7 @@
 // that pulls those columns out of a parquet via atx-core io::read_parquet.
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -36,5 +37,24 @@ struct LongColumns {
 load_parquet(const std::string &parquet_path, const std::string &out_path,
              const std::string &time_col, const std::string &symbol_col,
              const std::vector<std::string> &field_cols, atx::i64 created_at_nanos);
+
+/// Read `parquet_path` whose field columns are int64 fixed-point; for each
+/// (name, scale) in `field_scales`, project that column as f64 (value * scale) and
+/// build a sealed segment at `out_path`. `time_col` is a timestamp column,
+/// `symbol_col` a string column.
+[[nodiscard]] atx::core::Status
+load_parquet_scaled(const std::string &parquet_path, const std::string &out_path,
+                    const std::string &time_col, const std::string &symbol_col,
+                    const std::vector<std::pair<std::string, atx::f64>> &field_scales,
+                    atx::i64 created_at_nanos);
+
+/// For each `<hive_root>/date=YYYY-MM-DD/data.parquet`, build a sealed segment at
+/// `<seg_dir>/YYYY-MM-DD.seg` via load_parquet_scaled. Creates `seg_dir`. Dates are
+/// processed in ascending order. Err if `hive_root` has no `date=` partitions.
+[[nodiscard]] atx::core::Status
+build_dated_segments(const std::string &hive_root, const std::string &seg_dir,
+                     const std::string &time_col, const std::string &symbol_col,
+                     const std::vector<std::pair<std::string, atx::f64>> &field_scales,
+                     atx::i64 created_at_nanos);
 
 } // namespace atx::tsdb

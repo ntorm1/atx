@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <filesystem>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "atx/core/io/parquet_writer.hpp"
 #include "atx/tsdb/load_parquet.hpp"
 #include "atx/tsdb/segment_reader.hpp"
 
@@ -68,4 +72,51 @@ TEST(LoadPivot_LongRows_BuildsDenseGrid, Pivots) {
   EXPECT_DOUBLE_EQ(r->value(close, 1, 0), 3.0); // t=200, AAA
   EXPECT_FALSE(r->present(1, 1));               // t=200, BBB absent (the gap)
   static_cast<void>(std::remove(path.c_str()));
+}
+
+TEST(BuildDatedSegments, ScalesI64FieldsAndPartitions) {
+  namespace io = atx::core::io;
+  namespace fs = std::filesystem;
+  using atx::core::time::Timestamp;
+
+  const fs::path root = fs::temp_directory_path() / "atx_dated_root";
+  const fs::path segs = fs::temp_directory_path() / "atx_dated_segs";
+  fs::remove_all(root);
+  fs::remove_all(segs);
+
+  // Two date partitions, prices as int64 1e-9 (2.0 and 3.0), volume int64 (1500).
+  auto write_day = [&](const std::string &date, std::int64_t close_i64) {
+    const std::vector<Timestamp> ts = {Timestamp::from_unix_nanos(100)};
+    const std::vector<std::string> sym = {"AAA"};
+    const std::vector<atx::i64> close = {close_i64};
+    const std::vector<atx::i64> vol = {1500};
+    const std::vector<io::WriteColumn> cols = {
+        {"ts", std::span<const Timestamp>(ts)},
+        {"symbol", std::span<const std::string>(sym)},
+        {"close", std::span<const atx::i64>(close)},
+        {"volume", std::span<const atx::i64>(vol)},
+    };
+    const fs::path p = root / ("date=" + date) / "data.parquet";
+    ASSERT_TRUE(io::write_parquet(cols, p.string()).has_value());
+  };
+  write_day("2024-01-02", 2'000'000'000); // -> 2.0
+  write_day("2024-01-03", 3'000'000'000); // -> 3.0
+
+  const std::vector<std::pair<std::string, atx::f64>> scales = {{"close", 1e-9}, {"volume", 1.0}};
+  ASSERT_TRUE(
+      atx::tsdb::build_dated_segments(root.string(), segs.string(), "ts", "symbol", scales, 0)
+          .has_value());
+
+  auto r2 = atx::tsdb::SegmentReader::attach((segs / "2024-01-02.seg").string());
+  ASSERT_TRUE(r2.has_value());
+  const auto fc = r2->field_index("close");
+  ASSERT_TRUE(fc.has_value());
+  EXPECT_DOUBLE_EQ(r2->value(*fc, 0, 0), 2.0); // i64 2e9 * 1e-9
+  const auto fv = r2->field_index("volume");
+  ASSERT_TRUE(fv.has_value());
+  EXPECT_DOUBLE_EQ(r2->value(*fv, 0, 0), 1500.0);
+
+  auto r3 = atx::tsdb::SegmentReader::attach((segs / "2024-01-03.seg").string());
+  ASSERT_TRUE(r3.has_value());
+  EXPECT_DOUBLE_EQ(r3->value(*r3->field_index("close"), 0, 0), 3.0);
 }
