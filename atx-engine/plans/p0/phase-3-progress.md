@@ -47,6 +47,17 @@ genuine shared **expression** instead, which exercises the same diamond/refcount
 let-binding (a parser pre-pass substituting prior roots, or a scope table) → future-work if a real alpha needs
 named intermediates.
 
+**(5) VM eval model = full-buffer columnar, not the date-loop-outer sketch (decided at P3-6).** The plan §P3-6
+sketches `for (date t) for (instr) …` with cross-section-sized slots. The VM (and the P3-5 oracle) instead use
+the **batch-per-opcode full-buffer** model: each slot is a whole `dates×instruments` f64 buffer and each
+instruction sweeps it once in a contiguous loop. Rationale: it is the canonical vectorized-interpreter shape
+(DuckDB/Vectorwise-X100, Appendix B), it shares the oracle's exact layout so the P3-9 differential is robust
+(both index identically — any mismatch is a real numeric bug, not a reshape artifact), and the P3-7/P3-8
+cross-sectional/time-series kernels plug in with the full panel materialized (no ring-buffered rolling state).
+Peak-live-slots is small (3–5), so the `num_slots×dates×instruments` working set stays bounded. **Deferred:**
+the date-loop-outer + incremental rolling optimization (lower memory at mass scale) is future-work if a real
+panel × alpha-batch exceeds memory.
+
 Realistic scope for this sprint:
 
 1. **P3-0** — Module scaffold + CMake + ledger (marker). Open ledger, freeze scope.
@@ -80,7 +91,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 | P3-3 | ✅ done | `96045e9` | `analyze(Ast)→Result<Analysis>`: per-node `TypeInfo{shape,dtype,lookback}`. Table-driven shapes (broadcast-max / P→V / P→P; `Select` widens over cond too); dtype rails (cmp/logic→Mask, group-ops need `Group` arg2, `Select` needs Mask cond, arithmetic F64, `IndClass.*`→Group); lookback = shift(`delay`/`delta`)+d vs rolling+`(d-1)`, max over children (`ts_mean(delta(close,5),10)`⇒14); window must be folded positive-int literal (non-const/≤0/non-int rejected — no-look-ahead rail); scalar-primary into Cs*/Ts*→error. Single forward pass (topo arena), no recursion. Header-only. 36 tests. *not blocked.* |
 | P3-4 | ✅ done | `b2fe473` | `build_dag(Ast,Analysis)→Dag`: hash-cons all roots into one DAG (free CSE via `NodeKey{op,param,children}` cons-table, `hash_combine`); `pow(x,2)→Mul(x,x)` strength reduction; refcount counted **once per unique DAG edge** (CSE-miss only — else a duplicate AST occurrence leaks the shared leaf's slot). `linearize(Dag)→Program`: topo emit, `SlotPool` recycle, refcount-driven `Free` after last consumer, one `StoreAlpha` **per root** (two identical alphas → one node, two stores). `compile=build_dag∘linearize`. Header-only. 36 tests (18 dag + 18 bytecode). *not blocked.* |
 | P3-5 | ✅ done | `1ec22ca` | `Panel` (self-contained date-major f64 + PIT universe mask — **not** a `series::Frame` view, see adjustment 4), `SlotPool` (pre-sized buffers, over-acquire = `ATX_ASSERT`), full `SignalSet`. `evaluate_reference(Program,Panel)`: full-buffer model (each slot a whole date×inst buffer), one exhaustive no-`default` `OpCode` switch → simple per-op kernels. **Pinned differential contract** (VM must match bit-for-bit): NaN-propagate min/max, masks 1/0, full-window min_periods (any-NaN window→NaN; delay/delta shift-only), CsRank ordinal tie-break by instrument id, sample-ddof std/var/zscore, CsNeutG≡demean. Universe folds to NaN at LoadField, propagates everywhere. Header-only. 27 tests. *upstream landed — green.* |
-| P3-6 | ⏳ pending | `—` | VM dispatch loop + element-wise/logical/`Select` opcodes; zero-alloc; bench ns/cell. *upstream landed — targets green.* |
+| P3-6 | ✅ done | `1078249` | `Engine::evaluate(Program)→SignalSet`: full-buffer columnar VM (batch-per-opcode, deviation 5). Element-wise (`+−×÷`/pow/spow/min/max), unary (neg/abs/sign/log), cmp→mask, and/or/not, `Select`, LoadField (PIT→NaN), Const — re-stating the oracle's pinned scalar semantics independently (differential proves bit-parity). Cs*/Ts*→`Err(NotImplemented)` (P3-7/8). Exhaustive no-`default` switch. Zero-alloc dispatch loop (pool + remap scratch reused; warm `evaluate` allocs only the output) — CRT-alloc-hook guard. Header-only. 11 tests. *upstream landed — green.* |
 | P3-7 | ⏳ pending | `—` | `CsRank`/`CsZscore`/`CsScale`/`CsDemeanG`/`CsNeutG`/group; fixed tie-break; valid-mask only. *upstream landed — targets green.* |
 | P3-8 | ⏳ pending | `—` | `TsDelay`/`Delta`/`Sum`/`Mean`/`Std`/`Min`/`Max`/`Arg*`/`Rank`/`Corr`/`Cov`/`Product`/`DecayLinear`/…; O(1)/cell rolling; lookahead. *upstream landed — targets green.* |
 | P3-9 | ⏳ pending | `—` | Differential (VM==oracle) + determinism-hash + lookahead-truncation + parallel/TSan; bench. Sprint close. |
@@ -105,8 +116,12 @@ panel shape = dates × instruments). Report **measured** numbers only — no inv
 
 | Config | alphas/s | ns/cell | cache-hit % | Host / build / panel |
 |--------|----------|---------|-------------|----------------------|
-| element-wise (add/mul) | — | — | — | — |
+| element-wise add | — | ~32.8 | — | clang-cl **Debug** (`/Od`); 1024×512 panel (524288 cells) |
+| element-wise mul | — | ~32.8 | — | clang-cl **Debug** (`/Od`); 1024×512 panel |
+| select | — | ~79.8 | — | clang-cl **Debug** (`/Od`); 1024×512 panel |
 | mined set (high overlap) | — | — | — | — |
+
+> ⚠️ **Debug-build upper bounds**, not the §3.6 ≤1–2 ns/cell budget (that targets a `/O2` release build). Re-measure under Release at P3-9 before drawing throughput conclusions.
 
 ### Deferred residuals
 
@@ -139,7 +154,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 | `96045e9` | P3-3 | 36 new (AlphaTypecheck) / engine 393/395 (2 pre-existing baseline fails) |
 | `b2fe473` | P3-4 | 36 new (18 AlphaDag + 18 AlphaBytecode) / engine 431/432 (only `atx-core-tests_NOT_BUILT`) |
 | `1ec22ca` | P3-5 | 27 new (AlphaPanel + AlphaOracle) / engine 464/465 (only `atx-core-tests_NOT_BUILT`) |
-| `—`    | P3-6 | — |
+| `1078249` | P3-6 | 11 new (AlphaVm differential) / engine 475/476 (only `atx-core-tests_NOT_BUILT`) |
 | `—`    | P3-7 | — |
 | `—`    | P3-8 | — |
 | `—`    | P3-9 + close | — |
