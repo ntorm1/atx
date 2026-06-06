@@ -65,7 +65,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 | P3-0 | ✅ done | `ac81776` | Scaffold `include/atx/engine/alpha/fwd.hpp`; Phase-3 section in scaffold_test.cpp; ledger. No `atx_engine_pending` label (upstream landed). Marker commit. |
 | P3-1 | ✅ done | `94fee4c` | `Token`/`TokenKind`/`Span`; hand-written lexer (`lex`), `from_chars` numbers, maximal-munch ops, interior-dot idents (`IndClass.sector`), `Result` ParseError w/ offset on bad byte. Header-only (`inline`), tidy/format clean. 55 tests. *not blocked.* |
 | P3-2 | ✅ done | `f556e23` | Pratt parser → arena `Expr`/`Ast` (precedence ternary<\|\|<&&<eq<cmp<+-<*/<unary<^ right-assoc); `Library` registry (`OpCode` ISA, `Shape`, `DType`, `OpSig`, table-driven `shape_of`) with all Appendix A built-ins; const-fold (pure numeric subtrees + foldable unary fns) + ternary→`Select` desugar; arity checked at parse. Header-only (`inline`). 59 tests. *not blocked.* |
-| P3-3 | ⏳ pending | `—` | Shape (S/V/P) + dtype (f64/mask/group) check; lookback propagation; negative-lookback = error. *not blocked.* |
+| P3-3 | ✅ done | `96045e9` | `analyze(Ast)→Result<Analysis>`: per-node `TypeInfo{shape,dtype,lookback}`. Table-driven shapes (broadcast-max / P→V / P→P; `Select` widens over cond too); dtype rails (cmp/logic→Mask, group-ops need `Group` arg2, `Select` needs Mask cond, arithmetic F64, `IndClass.*`→Group); lookback = shift(`delay`/`delta`)+d vs rolling+`(d-1)`, max over children (`ts_mean(delta(close,5),10)`⇒14); window must be folded positive-int literal (non-const/≤0/non-int rejected — no-look-ahead rail); scalar-primary into Cs*/Ts*→error. Single forward pass (topo arena), no recursion. Header-only. 36 tests. *not blocked.* |
 | P3-4 | ⏳ pending | `—` | Hash-consed `Dag` (free CSE); topo linearize → `Instr` stream; slot alloc + refcount `Free`. *not blocked.* |
 | P3-5 | ⏳ pending | `—` | `Panel` over `series::Frame`; `SlotPool`; universe/NaN policy; tree-walking oracle. *upstream landed — targets green.* |
 | P3-6 | ⏳ pending | `—` | VM dispatch loop + element-wise/logical/`Select` opcodes; zero-alloc; bench ns/cell. *upstream landed — targets green.* |
@@ -113,7 +113,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 | `ac81776` | marker (P3-0) | 2/2 EngineScaffold / 244/246 total (2 pre-existing failures: atx-core-tests_NOT_BUILT, ShmBarFeed scratch) |
 | `94fee4c` | P3-1 | 55/55 AlphaLexer / engine green |
 | `f556e23` | P3-2 | 59 new (registry + parser) / engine 114/114 green |
-| `—`    | P3-3 | — |
+| `96045e9` | P3-3 | 36 new (AlphaTypecheck) / engine 393/395 (2 pre-existing baseline fails) |
 | `—`    | P3-4 | — |
 | `—`    | P3-5 | — |
 | `—`    | P3-6 | — |
