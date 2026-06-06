@@ -198,6 +198,13 @@ public:
       : ExecutionSimulator{FillCfg{},       SlippageCfg{}, ImpactCfg{},
                            CommissionCfg{}, LatencyCfg{},  VolumeCapCfg{}} {}
 
+  /// Read-only access to the configured commission model. Lets a research-cadence
+  /// consumer (e.g. alpha::extract_streams, P3c-2) extract the per-notional cost
+  /// COEFFICIENT and apply a lightweight turnover charge WITHOUT replaying the full
+  /// bar-by-bar queue/settle loop — reusing this sim's own coefficient rather than
+  /// inventing a second cost number. Pure observability; mutates nothing.
+  [[nodiscard]] const CommissionCfg &commission_cfg() const noexcept { return comm_cfg_; }
+
   /// Add new orders to the open set. They settle on a STRICTLY LATER slice (the
   /// firewall). A zero-qty order is not a transaction and is dropped here (mirrors
   /// the make_order_event qty!=0 guard) — it never reaches the fill path. `now`
