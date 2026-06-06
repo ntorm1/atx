@@ -63,7 +63,7 @@ Defer (out of Phase 3 scope — see ROADMAP):
 | Unit | Status | Commit | Notes |
 |------|--------|--------|-------|
 | P3-0 | ✅ done | `ac81776` | Scaffold `include/atx/engine/alpha/fwd.hpp`; Phase-3 section in scaffold_test.cpp; ledger. No `atx_engine_pending` label (upstream landed). Marker commit. |
-| P3-1 | ✅ done | `<p3-1-sha>` | `Token`/`TokenKind`/`Span`; hand-written lexer (`lex`), `from_chars` numbers, maximal-munch ops, interior-dot idents (`IndClass.sector`), `Result` ParseError w/ offset on bad byte. Header-only (`inline`), tidy/format clean. 55 tests. *not blocked.* |
+| P3-1 | ✅ done | `94fee4c` | `Token`/`TokenKind`/`Span`; hand-written lexer (`lex`), `from_chars` numbers, maximal-munch ops, interior-dot idents (`IndClass.sector`), `Result` ParseError w/ offset on bad byte. Header-only (`inline`), tidy/format clean. 55 tests. *not blocked.* |
 | P3-2 | ⏳ pending | `—` | Pratt parser → `Expr` AST; `Library` registry (`OpSig`); const-fold + desugar. *not blocked.* |
 | P3-3 | ⏳ pending | `—` | Shape (S/V/P) + dtype (f64/mask/group) check; lookback propagation; negative-lookback = error. *not blocked.* |
 | P3-4 | ⏳ pending | `—` | Hash-consed `Dag` (free CSE); topo linearize → `Instr` stream; slot alloc + refcount `Free`. *not blocked.* |
@@ -105,7 +105,7 @@ demean-vs-regression edge-case audit vs the actual Alpha101 PDF; `signedpower` v
 | Commit | Unit | Test counts (suite/total/fail/skip) |
 |--------|------|-------------------------------------|
 | `ac81776` | marker (P3-0) | 2/2 EngineScaffold / 244/246 total (2 pre-existing failures: atx-core-tests_NOT_BUILT, ShmBarFeed scratch) |
-| `<p3-1-sha>` | P3-1 | 55/55 AlphaLexer / engine green |
+| `94fee4c` | P3-1 | 55/55 AlphaLexer / engine green |
 | `—`    | P3-1 | — |
 | `—`    | P3-2 | — |
 | `—`    | P3-3 | — |
