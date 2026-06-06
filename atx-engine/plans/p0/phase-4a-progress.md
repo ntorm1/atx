@@ -34,7 +34,7 @@ Defer to Phase 4b (or later):
 
 | Unit  | Status | Commit  | Notes |
 |-------|--------|---------|-------|
-| P4-0  | done   | `<sha>` | scaffold + ledger; combine_scaffold_test green |
+| P4-0  | done   | `44d88a8` | scaffold + ledger; combine_scaffold_test green (CombineScaffold 1/1/0/0) |
 
 ---
 
@@ -42,7 +42,7 @@ Defer to Phase 4b (or later):
 
 | Commit  | Unit   | Test counts |
 |---------|--------|-------------|
-| `<sha>` | marker (P4-0) | — |
+| `44d88a8` | marker (P4-0) | CombineScaffold 1/1/0/0 |
 
 ---
 
