@@ -39,7 +39,8 @@ Realistic scope for this sprint:
 |---------|--------|------------|-------|
 | P4b-0   | done   | `ac3b26a`  | scaffold + ledger; RiskScaffold 1/1/0/0 |
 | P4-6    | done   | `7c87d79`  | factor exposure matrix `X` builder; RiskExposures 11/11/0/0 (see note) |
-| P4-7    | —      | —          | — |
+| P4-7a   | done   | `PENDING`  | FactorModel factored-V apply-math (risk/apply_inverse/neutralize); RiskFactorModel 11/11/0/0 |
+| P4-7b   | —      | —          | FactorModelBuilder (per-date WLS estimating X,F,D) — next unit |
 | P4-8    | —      | —          | — |
 | P4-9    | —      | —          | — |
 | P4-10   | —      | —          | — |
@@ -52,6 +53,7 @@ Realistic scope for this sprint:
 |-----------|-------------|-------------|
 | `ac3b26a` | marker (P4b-0) | RiskScaffold 1/1/0/0 |
 | `7c87d79` | feat (P4-6)    | RiskExposures 11/11/0/0 |
+| `PENDING` | feat (P4-7a)   | RiskFactorModel 11/11/0/0 |
 
 ---
 
@@ -90,6 +92,47 @@ missing-cap drop, standardized-column mean≈0/std≈1, momentum + volatility wi
 truncation-invariance, sector dummies sum to group size, single-sector all-ones,
 1-instrument degenerate-z→0, column order, row-out-of-range error, span-length
 mismatch error. `/W4 /permissive- /WX` clean; `11/11` green.
+
+---
+
+## P4-7a — FactorModel (factored covariance V = XFXᵀ + D, apply-math)
+
+`risk/factor_model.hpp` adds `FactorModel` — a Barra-style risk model kept in
+FACTORED form `V = X F Xᵀ + D` (`X` M×K exposures, `F` K×K SPD factor covariance,
+`D` M specific variances) that applies `V` WITHOUT ever materializing the dense M×M
+matrix. **P4-7a is the orchestrator's split of plan-P4-7:** this unit is the value
+type + its apply-path math, constructed from a GIVEN (X, F, D); **P4-7b adds
+`FactorModelBuilder::build`** (the per-date cross-sectional WLS that ESTIMATES X, F,
+D) — a clean marker is left in the header for it (no stub). `FactorModel::create(x,
+f, d, fit_begin, fit_end) -> Result<FactorModel>` validates the shapes
+(`F` K×K with K==`X.cols()`, `D` length==`X.rows()`==M, `fit_begin < fit_end`),
+**floors D** (`d_i ← max(d_i, kSpecificVarFloor)`, `kSpecificVarFloor = 1e-12`) so
+D⁻¹ is finite and V is positive-DEFINITE even for a zero-idiosyncratic-variance
+instrument, requires `F` SPD via a Cholesky (`Eigen::LLT`; failure → `Err`), and
+**precomputes + caches** the whole apply path: `dinv = 1/D`, `F⁻¹` (from F's LLT),
+and the K×K **capacitance** `C = F⁻¹ + Xᵀ diag(dinv) X` whose `Eigen::LLT` is held as
+a member — so each apply is matvecs + one cached K×K solve, never a refactor, never
+an O(M²) materialization. `risk(w)` (`[[nodiscard]] const noexcept`, **genuinely
+alloc-free** — manual order-fixed loops over a fixed K-stack `g`-buffer, NOT Eigen
+temporaries) returns `(Xᵀw)ᵀ F (Xᵀw) + Σ D_i w_i²` in O(MK+K²). `apply_inverse(in,
+out)` is **Woodbury** `out = D⁻¹in − D⁻¹X C⁻¹ Xᵀ D⁻¹in` (O(MK+K³), small documented
+K-sized temporaries, spans mapped to `Eigen::Map`). `neutralize(signal)` residualizes
+in place: `s ← s − X (XᵀX + kNeutralizeRidge·I)⁻¹ Xᵀ s` — a TINY ridge
+(`kNeutralizeRidge = 1e-10`) keeps a collinear/rank-deficient X solvable; **NaN cells
+propagate** ("no opinion" stays NaN; the caller's `WeightPolicy` maps NaN→weight 0).
+`fit_begin`/`fit_end` are carried + exposed (the apply-only-after-fit_end firewall is
+enforced by the P4-9/P4-10 CALLERS, not here). atx-core API used: `Eigen::LLT<MatX>`
+directly for the cached F and C factorizations (Eigen is available transitively via
+`linalg.hpp`); `atx::core::linalg::MatX`/`VecX`, `Result`/`Ok`/`Err`. NO RNG;
+order-fixed reductions. Header-only inline (matches `combine/*.hpp`). **11 new tests**
+(`RiskFactorModel`), verified via `--gtest_list_tests
+--gtest_filter=RiskFactorModel.*`: K=1 + K=2 `risk(w)` cross-checked against a
+TEST-ONLY dense `V = X F Xᵀ + diag(D)`; `apply_inverse` round-trips both directions
+(`V·V⁻¹x ≈ x`, `V⁻¹·Vx ≈ x`, ~1e-9); `neutralize` orthogonality (`Xᵀs ≈ 0`); the
+zero-specific-variance boundary (floored → V PD, `apply_inverse` finite, round-trips
+within the ill-conditioned tol); fit-window accessors; and four construction `Err`
+cases (F dim mismatch, D length mismatch, empty/inverted window, non-SPD F).
+`/W4 /permissive- /WX` clean; `11/11` green.
 
 ---
 
