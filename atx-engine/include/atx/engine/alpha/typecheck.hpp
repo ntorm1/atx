@@ -58,6 +58,8 @@ struct TypeInfo {
   Shape shape{Shape::Scalar};
   DType dtype{DType::F64};
   atx::u16 lookback{}; // prior bars required at date t (the causality rail)
+  bool is_record{false};
+  std::span<const PinSig> pins{}; // valid iff is_record
 };
 
 namespace detail {
@@ -270,6 +272,10 @@ namespace detail {
 [[nodiscard]] inline atx::core::Result<TypeInfo> analyze_unary(std::span<const TypeInfo> out,
                                                                const Expr &e) {
   const TypeInfo child = out[e.a];
+  if (child.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "record value must be projected with .pin before use");
+  }
   if (e.opcode == OpCode::Not) {
     if (child.dtype != DType::Mask) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -293,6 +299,10 @@ namespace detail {
                                                                 const Expr &e) {
   const TypeInfo lhs = out[e.a];
   const TypeInfo rhs = out[e.b];
+  if (lhs.is_record || rhs.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "record value must be projected with .pin before use");
+  }
   const std::array<Shape, 2> shapes{lhs.shape, rhs.shape};
   const Shape shape = shape_elementwise(shapes);
   const atx::u16 lb = max_child_lookback(out, e);
@@ -323,6 +333,10 @@ namespace detail {
   const TypeInfo cond = out[e.a];
   const TypeInfo then_v = out[e.b];
   const TypeInfo else_v = out[e.c];
+  if (cond.is_record || then_v.is_record || else_v.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "record value must be projected with .pin before use");
+  }
   if (cond.dtype != DType::Mask) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "SELECT condition must be a mask");
   }
@@ -339,6 +353,21 @@ namespace detail {
 // reject a pure-scalar primary operand.
 [[nodiscard]] inline atx::core::Result<TypeInfo>
 analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
+  // Record-misuse: no operand of a Call may be a raw record — project first.
+  const std::array<ExprId, 3> operand_ids{e.a, e.b, e.c};
+  for (const ExprId id : operand_ids) {
+    if (id != kNoExpr && out[id].is_record) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "record value must be projected with .pin before use");
+    }
+  }
+  // Hparam finite-constant check: each peeled hparam must be a finite literal.
+  for (atx::u8 k = 0; k < e.n_hparams; ++k) {
+    if (!std::isfinite(e.hparams[k])) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hyperparameter must be a compile-time constant");
+    }
+  }
   const OpCode op = e.op->opcode;
   // A Cs*/Ts* op operates over instruments/time, so its primary operand cannot
   // be a pure compile-time scalar (there is nothing to rank/roll over).
@@ -396,7 +425,31 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
     ATX_TRY(const atx::u16 d, window_value(ast, e));
     lb = static_cast<atx::u16>((d - 1) + lb);
   }
+  // Record op: non-empty pins span means this call produces a named-pin tuple.
+  if (!e.op->pins.empty()) {
+    return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, lb, true, e.op->pins});
+  }
   return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, lb});
+}
+
+// Member node: pin projection from a record-valued operand. Resolves the named
+// pin in the record's PinSig table and returns its dtype with the record's
+// shape/lookback. Rejects non-record operands and unknown pin names.
+[[nodiscard]] inline atx::core::Result<TypeInfo> analyze_member(std::span<const TypeInfo> out,
+                                                                const Ast &ast, const Expr &e) {
+  const TypeInfo rec = out[e.a];
+  if (!rec.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "member access '.' requires a record-valued operand");
+  }
+  const std::string_view pin = ast.field_name(e.name_id);
+  for (const PinSig &ps : rec.pins) {
+    if (ps.name == pin) {
+      return atx::core::Ok(TypeInfo{rec.shape, ps.dtype, rec.lookback, false, {}});
+    }
+  }
+  return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                        std::string{"no pin '"} + std::string{pin} + "' on record");
 }
 
 // Dispatch one node to its kind-specific analyzer. `out` holds the already-
@@ -418,6 +471,8 @@ analyze_node(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
     return analyze_call(ast, out, e);
   case Expr::Kind::Select:
     return analyze_select(out, e);
+  case Expr::Kind::Member:
+    return analyze_member(out, ast, e);
   }
   return atx::core::Err(atx::core::ErrorCode::Internal,
                         "analyze: unhandled Expr::Kind"); // unreachable
@@ -475,7 +530,12 @@ private:
   atx::u16 required = 0;
   for (const Assignment &root : ast.roots()) {
     if (root.root != kNoExpr) {
-      const atx::u16 lb = result.info(root.root).lookback;
+      const TypeInfo &root_ti = result.info(root.root);
+      if (root_ti.is_record) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "a record value cannot be an alpha output; project a pin with .pin");
+      }
+      const atx::u16 lb = root_ti.lookback;
       required = (lb > required) ? lb : required;
     }
   }

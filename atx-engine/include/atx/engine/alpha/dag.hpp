@@ -218,7 +218,8 @@ namespace detail {
 }
 
 // The opcode a node lowers to. Leaves map to LoadField/Const; Unary/Binary/
-// Select carry their opcode directly; Call uses its resolved registry row.
+// Select carry their opcode directly; Call uses its resolved registry row;
+// Member (pin projection) lowers to Pin.
 [[nodiscard]] inline OpCode lowered_opcode(const Expr &e) noexcept {
   switch (e.kind) {
   case Expr::Kind::Literal:
@@ -232,6 +233,8 @@ namespace detail {
     return OpCode::Select;
   case Expr::Kind::Call:
     return e.op->opcode;
+  case Expr::Kind::Member:
+    return OpCode::Pin;
   }
   return OpCode::Const; // unreachable for a valid Expr::Kind
 }
@@ -244,6 +247,7 @@ namespace detail {
   case Expr::Kind::Field:
     return 0;
   case Expr::Kind::Unary:
+  case Expr::Kind::Member: // one child: the record-valued operand
     return 1;
   case Expr::Kind::Binary:
     return 2;

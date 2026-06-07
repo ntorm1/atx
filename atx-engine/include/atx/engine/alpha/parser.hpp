@@ -39,7 +39,9 @@
 // Header-only; every free function is `inline`. Parsing is a COLD path —
 // std::vector allocation is fine (zero-alloc is a VM hot-path concern only).
 
+#include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -76,17 +78,23 @@ struct Expr {
     Binary,  // a + b, a < b, a && b, …      → `opcode`, `a`, `b`
     Call,    // f(args…)                    → `op` (resolved sig), `a`,`b`,`c`
     Select,  // desugared ternary           → `a` (cond), `b` (then), `c` (else)
+    Member,  // f.pin → `a` = record expr, `name_id` = pin name
   };
 
   Kind kind{Kind::Literal};
   bool dollar{false};           // Field only: was it `$name`?
   OpCode opcode{OpCode::Const}; // Unary/Binary: the operator's opcode
   atx::f64 value{};             // Literal: the folded numeric value
-  atx::u32 name_id{};           // Field: index into Ast string pool
+  atx::u32 name_id{};           // Field/Member: index into Ast string pool
   const OpSig *op{nullptr};     // Call: resolved registry row (non-null)
-  ExprId a{kNoExpr};            // child 0 (Unary/Binary/Call/Select)
+  ExprId a{kNoExpr};            // child 0 (Unary/Binary/Call/Select/Member)
   ExprId b{kNoExpr};            // child 1 (Binary/Call/Select)
   ExprId c{kNoExpr};            // child 2 (Call/Select)
+  // Call only: compile-time hyperparameter immediates peeled from trailing args.
+  // Slots [0, n_hparams) are finite literals baked into the instruction; a NaN
+  // sentinel here means the literal could not be peeled (analyze rejects it).
+  std::array<atx::f64, 2> hparams{};
+  atx::u8 n_hparams{0};
 };
 
 // Materialized argument count of a Call node: the number of populated child
@@ -466,6 +474,8 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
 
   // Constant-fold foldable unary functions on a literal operand (log(1)→0).
   // A foldable unary is fixed-arity 1, so the materialized list is exactly one.
+  // NOTE: this fast-path fires BEFORE hparam peeling; foldable unaries have
+  // n_hparams==0, so no interaction — peeling would be a no-op for them anyway.
   if (args.size() == 1 && detail::is_foldable_unary(sig->opcode)) {
     const Expr &arg0 = p.ast->node(args[0]);
     if (arg0.kind == Expr::Kind::Literal) {
@@ -473,13 +483,24 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     }
   }
 
+  // Peel the last `sig->n_hparams` args as compile-time constant immediates.
+  // They leave the operand child slots (`n_oper` leading args) unchanged. For
+  // ops with n_hparams==0 (the majority), n_oper == args.size() — no-op.
   Expr e;
   e.kind = Expr::Kind::Call;
   e.op = sig;
   e.opcode = sig->opcode;
-  e.a = !args.empty() ? args[0] : kNoExpr;
-  e.b = args.size() > 1 ? args[1] : kNoExpr;
-  e.c = args.size() > 2 ? args[2] : kNoExpr;
+  e.n_hparams = sig->n_hparams;
+  const atx::usize n_oper = args.size() - sig->n_hparams;
+  for (atx::usize k = 0; k < sig->n_hparams; ++k) {
+    const Expr &h = p.ast->node(args[n_oper + k]);
+    e.hparams[k] = (h.kind == Expr::Kind::Literal)
+                       ? h.value
+                       : std::numeric_limits<atx::f64>::quiet_NaN(); // analyze rejects NaN sentinel
+  }
+  e.a = n_oper > 0 ? args[0] : kNoExpr;
+  e.b = n_oper > 1 ? args[1] : kNoExpr;
+  e.c = n_oper > 2 ? args[2] : kNoExpr;
   return atx::core::Ok(p.ast->add(e));
 }
 
@@ -628,10 +649,32 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
 }
 
 // The core precedence-climbing loop. Parses a prefix, then folds in infix
-// operators whose left binding power is ≥ `min_bp`.
+// operators whose left binding power is ≥ `min_bp`. A postfix `.pin` member-
+// access parselet is checked first (before any infix-bp test) so that `.`
+// always binds tighter than any binary operator — matching call syntax priority.
 [[nodiscard]] inline atx::core::Result<ExprId> parse_precedence(Parser &p, atx::u8 min_bp) {
   ATX_TRY(ExprId left, parse_prefix(p));
   for (;;) {
+    // Postfix member access: `expr.pin` — binds tighter than any binary op.
+    // This arm only fires when a Dot token is left over after parse_prefix,
+    // which only happens if the prefix was a binding-ref, a Call, or a
+    // parenthesised expression. Non-binding dotted idents (e.g. IndClass.sector)
+    // were already consumed inside parse_prefix's dot-join loop and do NOT
+    // leave a Dot here — so this parselet never mis-parses a field name.
+    if (p.peek_kind() == TokenKind::Dot) {
+      p.advance(); // consume '.'
+      if (p.peek_kind() != TokenKind::Ident) {
+        return atx::core::Err(parse_error("expected pin name after '.'", p.peek()));
+      }
+      const Token pin = p.peek();
+      p.advance(); // consume pin ident
+      Expr m;
+      m.kind = Expr::Kind::Member;
+      m.a = left;
+      m.name_id = p.ast->intern(p.text(pin));
+      left = p.ast->add(m);
+      continue;
+    }
     const TokenKind k = p.peek_kind();
     const atx::u8 lbp = detail::infix_bp(k);
     if (lbp == detail::kBpNone || lbp < min_bp) {
