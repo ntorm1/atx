@@ -54,6 +54,7 @@
 #include <vector>  // std::vector
 
 #include "atx/core/error.hpp"            // Result, Ok, Err, ErrorCode
+#include "atx/core/macro.hpp"            // ATX_ASSERT
 #include "atx/core/stats/algo.hpp"       // stats::partial_rank
 #include "atx/core/types.hpp"            // atx::f64, atx::usize
 #include "atx/engine/eval/stats_ext.hpp" // eval::mean_std_pop, eval::MeanStd
@@ -79,8 +80,16 @@ namespace detail {
 // ---------------------------------------------------------------------------
 //  binomial — C(n, k), computed multiplicatively to size the split vector
 //  without overflowing a factorial. Returns 0 when k > n. Uses the symmetry
-//  C(n, k) == C(n, n-k) to keep the running product small. For CSCV sizes
-//  (S <= a few dozen, k = S/2) the result fits in a usize comfortably.
+//  C(n, k) == C(n, n-k) to keep the running product small.
+//
+//  SAFETY (no intermediate overflow): after iteration i the running product is
+//  EXACTLY C(n - kk + 1 + i, i + 1), itself a binomial coefficient and therefore
+//  an integer that never exceeds the final C(n, kk) = C(n, k). So no intermediate
+//  is larger than the result; the only overflow risk is the result itself, and
+//  the checked guard keeps S small and even (practical CSCV uses S <= 16, whose
+//  largest split count C(16, 8) = 12870 is far inside usize). The division by
+//  (i + 1) is exact (the product of i+1 consecutive integers is divisible by
+//  (i+1)!), so the running value stays a true integer at every step.
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline atx::usize binomial(atx::usize n, atx::usize k) noexcept {
   if (k > n) {
@@ -89,9 +98,13 @@ namespace detail {
   const atx::usize kk = (k > n - k) ? (n - k) : k; // smaller arm, by symmetry
   atx::usize result = 1U;
   for (atx::usize i = 0U; i < kk; ++i) {
+    const atx::usize prev = result;
     // result *= (n - kk + 1 + i); result /= (i + 1) — exact at each step because
     // the running product is always a binomial coefficient (an integer).
     result = result * (n - kk + 1U + i) / (i + 1U);
+    // C(m, j) is non-decreasing as the walk grows the coefficient toward C(n, kk);
+    // a decrease would signal a wraparound (overflow), which the S<=16 guard rules out.
+    ATX_ASSERT(result >= prev);
   }
   return result;
 }
@@ -148,6 +161,10 @@ namespace detail {
   scratch.clear();
   for (const atx::usize sub : subset) {
     const atx::usize base = sub * width;
+    // SAFETY: the gather reads row[base .. base+width). Every sub-period index is
+    // < S and width = T_used/S, so base+width <= T_used <= row.size(); asserted to
+    // pin the precondition (a malformed subset/width would otherwise read OOB).
+    ATX_ASSERT(base + width <= row.size());
     for (atx::usize off = 0U; off < width; ++off) {
       scratch.push_back(row[base + off]);
     }
@@ -157,6 +174,76 @@ namespace detail {
     return 0.0;
   }
   return ms.mean / ms.std;
+}
+
+// ---------------------------------------------------------------------------
+//  SplitScratch — per-call reusable buffers for one CSCV run, allocated once and
+//  reused across every split to keep the inner loop allocation-free.
+//    oos_set — the OOS complement sub-period indices for the current split.
+//    in_is   — membership table over [0, S) for the current IS-set.
+//    concat  — Sharpe gather buffer (cleared/refilled per candidate per side).
+//    is_sh   — per-candidate IS Sharpe.
+//    oos_sh  — per-candidate OOS Sharpe.
+//    oos_rank— per-candidate ascending OOS rank (partial_rank output).
+// ---------------------------------------------------------------------------
+struct SplitScratch {
+  std::vector<atx::usize> oos_set;
+  std::vector<bool> in_is;
+  std::vector<atx::f64> concat;
+  std::vector<atx::f64> is_sh;
+  std::vector<atx::f64> oos_sh;
+  std::vector<atx::usize> oos_rank;
+};
+
+// ---------------------------------------------------------------------------
+//  split_logit — the per-split body of CSCV: given the IS sub-period set, derive
+//  the OOS complement, find the IS-best candidate (max IS Sharpe, first-max
+//  tie-break), rank all candidates by OOS Sharpe, and return the IS-best's logit
+//  lambda = ln( w_bar / (1 - w_bar) ), w_bar = (rank0[n*]+1)/(N+1) in (0,1).
+//
+//  Pure w.r.t. `perf`; mutates only the caller-owned `sc` scratch (reused across
+//  splits). Preconditions: n >= 2; is_set holds S/2 ascending indices in [0, S);
+//  width = T_used/S; row stride is `periods`.
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline atx::f64 split_logit(std::span<const atx::f64> perf, atx::usize n,
+                                          atx::usize periods, atx::usize n_splits,
+                                          atx::usize width, std::span<const atx::usize> is_set,
+                                          SplitScratch &sc) {
+  // Build the OOS complement and a membership table for this IS-set.
+  for (atx::usize i = 0U; i < n_splits; ++i) {
+    sc.in_is[i] = false;
+  }
+  for (const atx::usize sub : is_set) {
+    sc.in_is[sub] = true;
+  }
+  atx::usize w = 0U;
+  for (atx::usize i = 0U; i < n_splits; ++i) {
+    if (!sc.in_is[i]) {
+      sc.oos_set[w] = i;
+      ++w;
+    }
+  }
+
+  // (1)/(2) IS & OOS Sharpe per candidate; pick the IS-best (first-max tie-break).
+  atx::usize best_is = 0U;
+  atx::f64 best_is_sharpe = 0.0;
+  for (atx::usize c = 0U; c < n; ++c) {
+    const std::span<const atx::f64> row{perf.data() + c * periods, periods};
+    sc.is_sh[c] = subset_sharpe(row, is_set, width, sc.concat);
+    sc.oos_sh[c] = subset_sharpe(row, std::span<const atx::usize>{sc.oos_set}, width, sc.concat);
+    // Strict '>' keeps the FIRST maximum (ascending-index tie-break).
+    if (c == 0U || sc.is_sh[c] > best_is_sharpe) {
+      best_is_sharpe = sc.is_sh[c];
+      best_is = c;
+    }
+  }
+
+  // (3) Rank candidates ascending by OOS Sharpe (best OOS ⇒ highest rank0).
+  atx::core::stats::partial_rank<atx::f64>(std::span<const atx::f64>{sc.oos_sh},
+                                           std::span<atx::usize>{sc.oos_rank});
+  const atx::f64 denom = static_cast<atx::f64>(n + 1U);                            // (N+1)
+  const atx::f64 w_bar = (static_cast<atx::f64>(sc.oos_rank[best_is]) + 1.0) / denom; // (0,1)
+  return std::log(w_bar / (1.0 - w_bar));                                          // finite
 }
 
 // ---------------------------------------------------------------------------
@@ -180,58 +267,25 @@ namespace detail {
   for (atx::usize i = 0U; i < half; ++i) {
     is_set[i] = i; // first combination: 0,1,...,half-1
   }
-  std::vector<atx::usize> oos_set(s - half); // OOS complement (recomputed per split)
-  std::vector<bool> in_is(s);
 
-  // Reusable per-candidate scratch (Sharpe gather buffer + ranking inputs).
-  std::vector<atx::f64> concat_scratch;
-  concat_scratch.reserve(half * width); // identical upper bound for IS and OOS gathers
-  std::vector<atx::f64> is_sharpe(n);
-  std::vector<atx::f64> oos_sharpe(n);
-  std::vector<atx::usize> oos_rank(n);
+  // Reusable per-split scratch, sized once.
+  SplitScratch sc;
+  sc.oos_set.resize(s - half);
+  sc.in_is.resize(s);
+  sc.concat.reserve(half * width); // identical upper bound for IS and OOS gathers
+  sc.is_sh.resize(n);
+  sc.oos_sh.resize(n);
+  sc.oos_rank.resize(n);
 
   PboResult result{0.0, {}, 0.0};
   result.split_logits.reserve(binomial(s, half)); // exact split count, no realloc churn
 
-  const atx::f64 denom = static_cast<atx::f64>(n + 1U); // (N+1) for the relative rank
-  atx::usize below_or_at = 0U;                          // count of splits with lambda <= 0
+  atx::usize below_or_at = 0U; // count of splits with lambda <= 0
   atx::f64 logit_sum = 0.0;
 
   do {
-    // Build the OOS complement and a membership table for this IS-set.
-    for (atx::usize i = 0U; i < s; ++i) {
-      in_is[i] = false;
-    }
-    for (const atx::usize sub : is_set) {
-      in_is[sub] = true;
-    }
-    atx::usize w = 0U;
-    for (atx::usize i = 0U; i < s; ++i) {
-      if (!in_is[i]) {
-        oos_set[w] = i;
-        ++w;
-      }
-    }
-
-    // (1)/(2) IS & OOS Sharpe per candidate; pick the IS-best (first-max tie-break).
-    atx::usize best_is = 0U;
-    atx::f64 best_is_sharpe = 0.0;
-    for (atx::usize c = 0U; c < n; ++c) {
-      const std::span<const atx::f64> row{perf.data() + c * periods, periods};
-      is_sharpe[c] = subset_sharpe(row, std::span<const atx::usize>{is_set}, width, concat_scratch);
-      oos_sharpe[c] = subset_sharpe(row, std::span<const atx::usize>{oos_set}, width, concat_scratch);
-      // Strict '>' keeps the FIRST maximum (ascending-index tie-break).
-      if (c == 0U || is_sharpe[c] > best_is_sharpe) {
-        best_is_sharpe = is_sharpe[c];
-        best_is = c;
-      }
-    }
-
-    // (3) Rank candidates ascending by OOS Sharpe (best OOS ⇒ highest rank0).
-    atx::core::stats::partial_rank<atx::f64>(std::span<const atx::f64>{oos_sharpe},
-                                             std::span<atx::usize>{oos_rank});
-    const atx::f64 w_bar = (static_cast<atx::f64>(oos_rank[best_is]) + 1.0) / denom; // (0,1)
-    const atx::f64 lambda = std::log(w_bar / (1.0 - w_bar));                          // finite
+    const atx::f64 lambda =
+        split_logit(perf, n, periods, s, width, std::span<const atx::usize>{is_set}, sc);
     result.split_logits.push_back(lambda);
     logit_sum += lambda;
     if (lambda <= 0.0) {
@@ -277,15 +331,20 @@ pbo_cscv_checked(std::span<const atx::f64> perf, atx::usize n_candidates, atx::u
 }
 
 // ===========================================================================
-//  pbo_cscv — unchecked convenience. Preconditions match pbo_cscv_checked
-//  (n_candidates >= 2, n_splits positive & even, n_splits <= T). Passing invalid
-//  arguments is undefined behaviour — call pbo_cscv_checked when inputs are not
-//  statically known to be valid.
+//  pbo_cscv — unchecked convenience for inputs known to be valid (n_candidates
+//  >= 2, n_splits positive & even, n_splits <= T). It delegates to the checked
+//  variant and FAILS FAST on a precondition violation (ATX_ASSERT, compiled out
+//  under NDEBUG) rather than running an undefined-behavior path — a safety-
+//  critical library never silently consumes malformed input. Call
+//  pbo_cscv_checked directly when validity is not statically guaranteed.
 // ===========================================================================
 [[nodiscard]] inline PboResult
 pbo_cscv(std::span<const atx::f64> perf, atx::usize n_candidates, atx::usize n_splits) {
-  const atx::usize periods = perf.size() / n_candidates;
-  return detail::pbo_cscv_core(perf, n_candidates, n_splits, periods);
+  auto r = pbo_cscv_checked(perf, n_candidates, n_splits);
+  // SAFETY: precondition contract — a release build with NDEBUG trusts the caller;
+  // a debug build traps the invalid argument instead of proceeding into UB.
+  ATX_ASSERT(r.has_value());
+  return *r;
 }
 
 } // namespace atx::engine::eval

@@ -26,6 +26,7 @@ TEST(EvalPbo, SplitCount_IsCombinatorial) {
 }
 TEST(EvalPbo, PureNoise_AboutHalf) {
   auto r = pbo_cscv(noise_matrix(20, 64), 20, /*S=*/8);  // C(8,4)=70
+  EXPECT_EQ(r.split_logits.size(), 70U);
   EXPECT_NEAR(r.pbo, 0.5, 0.20);
 }
 TEST(EvalPbo, OneGenuineEdge_MateriallyBelowHalf) {
