@@ -48,4 +48,21 @@ TEST(AlphaBindings, SelfReferenceOnRhsIsField) {
   EXPECT_EQ(nodes[y_root].a, x_root); // y's `x` references the line-1 binding
 }
 
+TEST(AlphaBindings, BindingReferenceEmitsShadowWarning) {
+  Library lib;
+  std::vector<std::string> warnings;
+  auto ast = parse_program("m = ts_mean(close, 5)\na = m + close\n", lib, &warnings);
+  ASSERT_TRUE(ast) << ast.error().message();
+  ASSERT_EQ(warnings.size(), 1u);
+  EXPECT_NE(warnings[0].find("m"), std::string::npos);
+}
+
+TEST(AlphaBindings, NoBindingUseNoWarning) {
+  Library lib;
+  std::vector<std::string> warnings;
+  auto ast = parse_program("a = close + open\n", lib, &warnings);
+  ASSERT_TRUE(ast) << ast.error().message();
+  EXPECT_TRUE(warnings.empty());
+}
+
 } // namespace

@@ -353,6 +353,10 @@ struct Parser {
   };
   std::vector<Binding> bindings;
 
+  // Advisory warnings accumulated during parsing (e.g. binding shadows a field).
+  // Non-fatal; surfaced via the 3-arg parse_program overload.
+  std::vector<std::string> warnings;
+
   [[nodiscard]] ExprId lookup_binding(std::string_view name) const noexcept {
     for (auto it = bindings.rbegin(); it != bindings.rend(); ++it) {
       if (it->name == name) {
@@ -505,6 +509,8 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
       return parse_call(p, p.text(tok), tok); // cursor on '('
     }
     if (const ExprId bound = p.lookup_binding(p.text(tok)); bound != kNoExpr) {
+      p.warnings.push_back(std::string{"binding '"} + std::string{p.text(tok)} +
+                           "' shadows a possible panel field of the same name");
       return atx::core::Ok(bound); // reference an earlier binding (reuse its ExprId)
     }
     Expr e;
@@ -641,7 +647,7 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
                                                        const Library &lib) {
   ATX_TRY(auto toks, detail::lex_checked(source));
   Ast ast;
-  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}};
+  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}, {}};
   ATX_TRY(const ExprId root, detail::parse_precedence(p, detail::kBpTernary));
   if (p.peek_kind() != TokenKind::End) {
     return atx::core::Err(detail::parse_error("unexpected trailing token", p.peek()));
@@ -651,12 +657,14 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
 }
 
 // Parse a program (`{ IDENT '=' expr }`) into an Ast with one root per binding.
-// An empty source yields an Ast with zero roots.
-[[nodiscard]] inline atx::core::Result<Ast> parse_program(std::string_view source,
-                                                          const Library &lib) {
+// An empty source yields an Ast with zero roots. Advisory warnings (e.g. a bare
+// identifier resolved to a local binding, which could shadow a panel field of the
+// same name) are appended to `*warnings` when the pointer is non-null.
+[[nodiscard]] inline atx::core::Result<Ast>
+parse_program(std::string_view source, const Library &lib, std::vector<std::string> *warnings) {
   ATX_TRY(auto toks, detail::lex_checked(source));
   Ast ast;
-  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}};
+  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}, {}};
 
   while (p.peek_kind() != TokenKind::End) {
     if (p.peek_kind() != TokenKind::Ident) {
@@ -672,7 +680,16 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     p.bindings.push_back(detail::Parser::Binding{std::string{p.text(name_tok)}, root});
     ast.add_root(std::string{p.text(name_tok)}, root);
   }
+  if (warnings != nullptr) {
+    *warnings = std::move(p.warnings);
+  }
   return atx::core::Ok(std::move(ast));
+}
+
+// 2-arg overload: delegates to the 3-arg form, discarding warnings.
+[[nodiscard]] inline atx::core::Result<Ast> parse_program(std::string_view source,
+                                                          const Library &lib) {
+  return parse_program(source, lib, nullptr);
 }
 
 } // namespace atx::engine::alpha
