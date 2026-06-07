@@ -19,6 +19,7 @@
 #include "atx/core/datetime.hpp"
 #include "atx/core/io/parquet.hpp"
 #include "atx/core/io/parquet_writer.hpp"
+#include "atx/core/series/column.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/data/disk.hpp"
 #include "atx/engine/quant/black_scholes.hpp"
@@ -109,16 +110,17 @@ int main(int argc, char** argv) {
     return 1;
   }
   const io::ParquetTable opt = std::move(*opt_tbl_r);
-  auto ts = opt.column_view<atxtime::Timestamp>("ts");
+  auto ts_r = opt.to_column<atxtime::Timestamp>("ts");
   auto under = opt.strings("underlying");
   auto osi = opt.strings("symbol");
   auto obid_i = opt.column_view<i64>("bid_px");
   auto oask_i = opt.column_view<i64>("ask_px");
-  if (!ts.has_value() || !under.has_value() || !osi.has_value() || !obid_i.has_value() ||
+  if (!ts_r.has_value() || !under.has_value() || !osi.has_value() || !obid_i.has_value() ||
       !oask_i.has_value()) {
     std::fprintf(stderr, "OPRA_BBO columns missing\n");
     return 1;
   }
+  const atx::core::series::Column<atxtime::Timestamp> ts_col = std::move(*ts_r);
   const std::size_t n = osi->size();
 
   // observation date (partition) -> (y,m,d)
@@ -195,7 +197,7 @@ int main(int argc, char** argv) {
   // --- write OCHAIN ----------------------------------------------------------
   const std::vector<std::string> c_date(n, date);
   const std::vector<io::WriteColumn> cols{
-      {"timestamp", std::span<const atxtime::Timestamp>(*ts)},
+      {"timestamp", ts_col.view()},
       {"date", std::span<const std::string>(c_date)},
       {"underlying", std::span<const std::string>(c_underlying)},
       {"expiry", std::span<const std::string>(c_expiry)},
