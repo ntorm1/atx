@@ -1,5 +1,6 @@
 add_library(atx-engine STATIC
     src/engine.cpp
+    src/data/disk.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
