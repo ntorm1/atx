@@ -39,7 +39,7 @@
 
 #include <algorithm> // std::max
 #include <cmath>     // std::sqrt, std::exp
-#include <cstddef>   // (atx::usize underlying)
+#include <limits>    // std::numeric_limits (quiet_NaN for degenerate inputs)
 #include <optional>  // std::optional (caller-supplied cross-trial variance)
 
 #include "atx/core/types.hpp"           // atx::f64, atx::usize
@@ -74,15 +74,28 @@ struct DsrResult {
 //  The denominator is the per-observation standard error of the Sharpe estimate
 //  scaled out (the √T cancels against the √(T−1) numerator factor up to the
 //  finite-sample (T−1) correction). When SR == SR* the argument is 0 ⇒ PSR =
-//  0.5 (Φ(0)). T < 2 makes √(T−1) degenerate; the caller (DSR over a real
-//  backtest) always has T ≥ 2, so no runtime guard is emitted on this pure path.
+//  0.5 (Φ(0)). Degenerate inputs (T < 2, or a pathological skew/kurtosis that
+//  drives the variance term ≤ 0) return NaN — this is a public pure function, so
+//  the guards are explicit rather than relying on a caller precondition.
 // ===========================================================================
 [[nodiscard]] inline atx::f64 probabilistic_sharpe(atx::f64 sr, atx::f64 sr_star, atx::usize T,
                                                    atx::f64 skew, atx::f64 exkurt) noexcept {
+  // SAFETY: √(T−1) is NaN for T < 2 (and the (T−1) finite-sample correction is
+  //         undefined for fewer than two observations). Return NaN explicitly
+  //         rather than propagate a silent NaN through the divide below.
+  if (T < 2U) {
+    return std::numeric_limits<atx::f64>::quiet_NaN();
+  }
   // Variance scaling term 1 − γ3·SR + ((κ+2)/4)·SR² (the per-T variance of the
   // Sharpe estimate, times T). Strictly positive for the SR/moment ranges DSR
   // ever sees; std::sqrt of a non-negative argument is well-defined.
   const atx::f64 var_term = 1.0 - skew * sr + ((exkurt + 2.0) / 4.0) * sr * sr;
+  // SAFETY: the documented domain has var_term > 0; a pathological skew/kurtosis
+  //         can drive it ≤ 0, where √var_term is NaN (or a 0 denominator gives
+  //         ±inf). The !(>0) form also rejects a NaN var_term. Fail to NaN.
+  if (!(var_term > 0.0)) {
+    return std::numeric_limits<atx::f64>::quiet_NaN();
+  }
   const atx::f64 tf = static_cast<atx::f64>(T);
   const atx::f64 z = (sr - sr_star) * std::sqrt(tf - 1.0) / std::sqrt(var_term);
   return norm_cdf(z);

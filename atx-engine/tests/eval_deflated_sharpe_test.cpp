@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <cmath>
 #include <optional>
 #include "atx/engine/eval/deflated_sharpe.hpp"
 using namespace atx::engine::eval;
@@ -47,4 +48,8 @@ TEST(EvalDsr, ReferenceValue_CitedConstant) {
   //   DSR     = Phi(z) = norm_cdf(-1.6592648513047705) = 0.04853121733576854
   auto d = deflated_sharpe(0.0808, 120, -0.5, 3.0, 100, std::nullopt);
   EXPECT_NEAR(d.dsr, /*REF=*/0.0485312173357685, 1e-6);
+}
+TEST(EvalDsr, DegenerateT_ReturnsNaN) {
+  EXPECT_TRUE(std::isnan(probabilistic_sharpe(0.10, 0.0, 1, 0.0, 0.0)));  // T<2 degenerate
+  EXPECT_TRUE(std::isnan(probabilistic_sharpe(0.10, 0.0, 0, 0.0, 0.0)));
 }
