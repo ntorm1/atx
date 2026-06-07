@@ -148,6 +148,8 @@ namespace detail {
   case OpCode::CsScaleG:
   case OpCode::TradeWhen:
   case OpCode::Hump:
+  case OpCode::Pin:
+  case OpCode::Split2:
   case OpCode::StoreAlpha:
   case OpCode::Free:
     return false;

@@ -390,6 +390,11 @@ private:
     case OpCode::TradeWhen:
     case OpCode::Hump:
       return eval_recurrence(in);
+    case OpCode::Pin:
+    case OpCode::Split2:
+      // Placeholder (P3d-B3): kernels land in B9. No program emits these yet.
+      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
+                            "Split2/Pin: not implemented until B9");
     case OpCode::StoreAlpha:
     case OpCode::Free:
       ATX_UNREACHABLE(); // handled by run(); never dispatched

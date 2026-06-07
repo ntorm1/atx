@@ -151,6 +151,11 @@ enum class OpCode : atx::u8 {
   //      construction — the forward scan reads only state[t-1] + inputs <= t.
   TradeWhen,
   Hump,
+  // ---- multi-output / record ops (P3d-B3): split a panel into named pins.
+  //      Kernels land in B9; these enumerators exist now so the ISA is
+  //      forward-declared and the registry + switch sites stay green.
+  Pin,
+  Split2,
   // ---- store / free ----
   StoreAlpha,
   Free,
@@ -217,6 +222,15 @@ namespace detail {
 // before OpSig because the struct embeds an array of this size.
 inline constexpr atx::u8 kMaxDefaults = 2;
 
+// A single output pin of a record (multi-output) op (P3d-B3).
+// `name` is a string-literal view; `dtype` is the element type of that pin's
+// output buffer. An OpSig with a non-empty `pins` span is a record op: its
+// output is a named tuple rather than a single panel column.
+struct PinSig {
+  std::string_view name;
+  DType dtype{DType::F64};
+};
+
 struct OpSig {
   std::string_view name;        // operator/function spelling (e.g. "ts_mean")
   atx::u8 min_arity{};          // REQUIRED operand count (== arity for fixed ops)
@@ -241,6 +255,17 @@ struct OpSig {
   // Non-owning, non-null pointer to a pure shape rule (plan §4). Given the
   // ordered child shapes, returns this op's output shape.
   Shape (*shape_of)(std::span<const Shape> args){nullptr};
+  // ---- TRAILING fields added in P3d-B3 (member-defaults allow existing rows
+  //      to omit them in aggregate init — the compiler fills them from the
+  //      member-initializers here, so no existing row needs touching). ----
+  //
+  // Number of trailing arguments parsed as compile-time constant-literal
+  // immediates (hyperparameters baked into the instruction at compile time).
+  atx::u8 n_hparams{0};
+  // Non-owning view into a static PinSig array. Empty = single output (the
+  // normal case); non-empty = record op whose output is a named pin tuple.
+  // Invariant (register_op enforces): either empty OR size >= 2.
+  std::span<const PinSig> pins{};
 };
 
 // =========================================================================
@@ -282,6 +307,12 @@ private:
 //  built-ins are lookahead_safe.
 // =========================================================================
 
+// Static pin table for the split2 test-only builtin (P3d-B3). Two named
+// output pins: "hi" (high-pass) and "lo" (low-pass), both F64 panel signals.
+// Lifetime: static storage — the std::span<const PinSig> in the OpSig row
+// borrows from here; the borrow is non-dangling (program lifetime).
+inline constexpr std::array<PinSig, 2> kSplit2Pins = {{{"hi", DType::F64}, {"lo", DType::F64}}};
+
 namespace detail {
 
 // The complete built-in catalogue (Appendix A named functions). Kept as a
@@ -292,7 +323,9 @@ namespace detail {
   // lookahead_safe, defaults, shape_of}. Fixed-arity ops carry min==max and an
   // empty defaults array. `scale` is the lone variadic built-in in 3b: 1
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
-  static constexpr std::array<OpSig, 57> kOps = {{
+  // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
+  // initializers — existing rows omit them and pick up {0, {}} automatically.
+  static constexpr std::array<OpSig, 58> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -373,6 +406,20 @@ namespace detail {
       //   hump(x, threshold=0.01) — arity (1,2); the optional threshold uses the
       //   P3b-1 default machinery (default-fill materializes Literal 0.01).
       {"hump", 1, 2, OpCode::Hump, DType::F64, true, {0.01}, &shape_panel},
+      // ---- multi-output test builtin (P3d-B3) --------------------------------
+      // split2(x) — synthetic 2-pin record op used to validate the multi-output
+      // IR before real filter kernels land in B9. Registers Pin/Split2 opcodes
+      // and exercises the PinSig/pins machinery. NOT emitted by any program yet.
+      {"split2",
+       1,
+       1,
+       OpCode::Split2,
+       DType::F64,
+       true,
+       {},
+       &shape_panel,
+       0,
+       std::span<const PinSig>{kSplit2Pins}},
   }};
   return kOps;
 }
@@ -426,6 +473,16 @@ inline atx::core::Status Library::register_op(const OpSig &sig) {
         atx::core::ErrorCode::InvalidArgument,
         std::string{"register_op: optional-arg count exceeds kMaxDefaults for '"} +
             std::string{sig.name} + "'");
+  }
+  if (sig.n_hparams > sig.max_arity) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          std::string{"register_op: n_hparams exceeds arity for '"} +
+                              std::string{sig.name} + "'");
+  }
+  if (!sig.pins.empty() && sig.pins.size() < 2) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          std::string{"register_op: record op needs >=2 pins for '"} +
+                              std::string{sig.name} + "'");
   }
   ops_.push_back(sig);
   return atx::core::Ok();
