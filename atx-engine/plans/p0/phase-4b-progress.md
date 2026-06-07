@@ -39,7 +39,7 @@ Realistic scope for this sprint:
 |---------|--------|------------|-------|
 | P4b-0   | done   | `ac3b26a`  | scaffold + ledger; RiskScaffold 1/1/0/0 |
 | P4-6    | done   | `7c87d79`  | factor exposure matrix `X` builder; RiskExposures 11/11/0/0 (see note) |
-| P4-7a   | done   | `caae1c9`  | FactorModel factored-V apply-math (risk/apply_inverse/neutralize); RiskFactorModel 11/11/0/0 |
+| P4-7a   | done   | `caae1c9`  | FactorModel factored-V apply-math (risk/apply_inverse/neutralize); RiskFactorModel 12/12/0/0 (cq fix: +`<span>`, +create-time K-stack bound) |
 | P4-7b   | —      | —          | FactorModelBuilder (per-date WLS estimating X,F,D) — next unit |
 | P4-8    | —      | —          | — |
 | P4-9    | —      | —          | — |
@@ -54,6 +54,7 @@ Realistic scope for this sprint:
 | `ac3b26a` | marker (P4b-0) | RiskScaffold 1/1/0/0 |
 | `7c87d79` | feat (P4-6)    | RiskExposures 11/11/0/0 |
 | `caae1c9` | feat (P4-7a)   | RiskFactorModel 11/11/0/0 |
+| `PENDING` | fix (P4-7a)    | RiskFactorModel 12/12/0/0 (cq: +`<span>`, +create-time K-stack bound) |
 
 ---
 

@@ -278,4 +278,18 @@ TEST(RiskFactorModel, RidgeConstantIsTiny) {
   EXPECT_LT(kNeutralizeRidge, 1e-6);
 }
 
+// risk() accumulates g_k into a fixed K-stack buffer (kMaxFactorsStack == 256), so a
+// model with K > that bound would overrun it in a release build where the in-risk()
+// ATX_ASSERT is compiled out. create() must reject K > kMaxFactorsStack up front; K=257
+// (one past the bound) → Err. F = I_257 is SPD; M is kept tiny since only K is checked.
+TEST(RiskFactorModel, CreateRejectsFactorCountAboveStackBound) {
+  constexpr Eigen::Index kOverBound = 257; // kMaxFactorsStack (256) + 1
+  MatX x = MatX::Zero(2, kOverBound);
+  x(0, 0) = 1.0; // nonzero so X is not all-zero, but K is what triggers the reject
+  const MatX f = MatX::Identity(kOverBound, kOverBound);
+  VecX d(2);
+  d << 0.1, 0.1;
+  EXPECT_FALSE(FactorModel::create(x, f, d, 0U, 1U).has_value());
+}
+
 } // namespace

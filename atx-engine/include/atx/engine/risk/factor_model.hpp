@@ -56,6 +56,7 @@
 //  factor). The apply/neutralize matvecs and the cached Cholesky are deterministic
 //  given (X, F, D). Same inputs → same outputs.
 
+#include <span>    // std::span (risk / apply_inverse / neutralize args)
 #include <utility> // std::move
 
 #include <Eigen/Dense> // Eigen::LLT, Eigen::Index, Eigen::Map
@@ -95,6 +96,15 @@ public:
     if (f.rows() != f.cols() || f.rows() != x.cols()) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "FactorModel::create: F must be K×K with K == X.cols()");
+    }
+    // Hard create-time bound: risk() accumulates g_k into a fixed K-stack buffer
+    // (kMaxFactorsStack) whose only run-time guard is a debug ATX_ASSERT (compiled
+    // out under NDEBUG). Rejecting K > kMaxFactorsStack HERE makes that buffer
+    // provably un-overrunnable in release without burdening the noexcept apply path.
+    if (x.cols() > kMaxFactorsStack) {
+      return atx::core::Err(
+          atx::core::ErrorCode::InvalidArgument,
+          "FactorModel::create: factor count exceeds the risk() stack buffer bound");
     }
     if (d.size() != x.rows()) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -211,7 +221,9 @@ public:
 private:
   // Max K we materialize the risk() g-buffer for on the stack. K is the factor count
   // (sector dummies + ≤5 style factors); 256 is far above any realistic factor block
-  // yet keeps the buffer tiny. Asserted in risk().
+  // yet keeps the buffer tiny. ENFORCED at construction (create() rejects K > this),
+  // so risk()'s fixed buffer is provably never overrun; risk()'s ATX_ASSERT is a
+  // debug double-check, not the primary guard.
   static constexpr Eigen::Index kMaxFactorsStack = 256;
 
   FactorModel(atx::core::linalg::MatX x, atx::core::linalg::MatX f, atx::core::linalg::VecX d,
