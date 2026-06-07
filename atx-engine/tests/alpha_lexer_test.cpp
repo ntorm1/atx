@@ -326,13 +326,18 @@ TEST(AlphaLexer_Spans, Number_SpanCoversFullNumberText) {
 
 // ---- IndClass.sector — interior dot in ident --------------------------------
 
-TEST(AlphaLexer_Ident, IndClassSector_LexesAsSingleIdentToken) {
+TEST(AlphaLexer_Ident, IndClassSector_LexesAsIdentDotIdent) {
+  // B4: interior dots are no longer consumed by scan_ident; '.' is a Dot token.
+  // "IndClass.sector" → Ident("IndClass"), Dot, Ident("sector"), End.
   const std::string_view src = "IndClass.sector";
   const auto toks = lex_ok(src);
-  ASSERT_EQ(toks.size(), 2U); // Ident + End
+  ASSERT_EQ(toks.size(), 4U); // Ident + Dot + Ident + End
   EXPECT_EQ(toks[0].kind, TokenKind::Ident);
-  EXPECT_EQ(src.substr(toks[0].span.begin, toks[0].span.end - toks[0].span.begin),
-            "IndClass.sector");
+  EXPECT_EQ(src.substr(toks[0].span.begin, toks[0].span.end - toks[0].span.begin), "IndClass");
+  EXPECT_EQ(toks[1].kind, TokenKind::Dot);
+  EXPECT_EQ(toks[2].kind, TokenKind::Ident);
+  EXPECT_EQ(src.substr(toks[2].span.begin, toks[2].span.end - toks[2].span.begin), "sector");
+  EXPECT_EQ(toks[3].kind, TokenKind::End);
 }
 
 TEST(AlphaLexer_Ident, UnderscoreStart_IsValidIdent) {
@@ -347,12 +352,13 @@ TEST(AlphaLexer_Ident, AlphanumericAndUnderscore_IsValidIdent) {
   EXPECT_EQ(toks[0].kind, TokenKind::Ident);
 }
 
-TEST(AlphaLexer_Ident, TrailingDot_NotPartOfIdent) {
-  // "foo." — the '.' after ident chars is not an interior dot (no alpha after)
-  // so it should produce an Ident("foo") and then an unknown-byte error.
-  const auto result = lex("foo.");
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().code(), ErrorCode::ParseError);
+TEST(AlphaLexer_Ident, TrailingDot_ProducesIdentThenDot) {
+  // "foo." — the '.' is now a standalone Dot token (B4); no longer an error.
+  const auto toks = lex_ok("foo.");
+  ASSERT_EQ(toks.size(), 3U); // Ident("foo"), Dot, End
+  EXPECT_EQ(toks[0].kind, TokenKind::Ident);
+  EXPECT_EQ(toks[1].kind, TokenKind::Dot);
+  EXPECT_EQ(toks[2].kind, TokenKind::End);
 }
 
 // ---- unknown byte → ParseError ----------------------------------------------
@@ -462,6 +468,23 @@ TEST(AlphaLexer_Expression, TernaryExpr_LexesQuestionAndColon) {
   ASSERT_EQ(toks.size(), 9U);
   EXPECT_EQ(toks[3].kind, TokenKind::Question);
   EXPECT_EQ(toks[5].kind, TokenKind::Colon);
+}
+
+// ---- B4: Dot token ----------------------------------------------------------
+
+TEST(AlphaLexer, DotToken) {
+  auto toks = lex("kf.beta");
+  ASSERT_TRUE(toks);
+  ASSERT_GE(toks.value().size(), 4u); // Ident, Dot, Ident, End
+  EXPECT_EQ(toks.value()[0].kind, TokenKind::Ident);
+  EXPECT_EQ(toks.value()[1].kind, TokenKind::Dot);
+  EXPECT_EQ(toks.value()[2].kind, TokenKind::Ident);
+}
+
+TEST(AlphaLexer, NumberDotNotSplit) {
+  auto toks = lex("3.5");
+  ASSERT_TRUE(toks);
+  EXPECT_EQ(toks.value()[0].kind, TokenKind::Number); // 3.5 stays one numeric literal
 }
 
 } // namespace

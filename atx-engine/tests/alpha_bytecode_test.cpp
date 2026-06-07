@@ -301,7 +301,7 @@ TEST(AlphaBytecode_Const, ImmediateValueCarriedOnInstr) {
   bool found = false;
   for (const Instr &i : prog.code) {
     if (i.op == OpCode::Const) {
-      EXPECT_EQ(i.imm, 7.0);
+      EXPECT_EQ(i.imm[0], 7.0);
       found = true;
     }
   }
@@ -333,6 +333,43 @@ TEST(AlphaBytecode_Metric, SharedSubtree_PeakLiveSlotsIsThree) {
   const Program prog = build("a = ts_mean(close, 5) + 1\nb = ts_mean(close, 5) * 2");
   EXPECT_EQ(prog.unique_nodes, 7U);
   EXPECT_EQ(prog.peak_live_slots, 3U);
+}
+
+// ---- multi-output (B8) ------------------------------------------------------
+
+// A split2 program with two pin projections must linearize to exactly ONE
+// Split2 compute instr and exactly TWO Pin instrs (CSE collapses the two
+// split2(close) calls to one node; each .hi/.lo is a distinct Pin).
+// The Split2 instr must declare n_out==2; its dst block must not collide with
+// any later slot (the linearizer bumps the high-water by 2, not 1).
+TEST(AlphaBytecode, MultiOutputCompilesOneComputeInstr) {
+  Library lib;
+  auto ast = parse_program("a = split2(close).hi\nb = split2(close).lo\n", lib);
+  ASSERT_TRUE(ast);
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an);
+  auto prog = compile(ast.value(), an.value());
+  ASSERT_TRUE(prog) << prog.error().message();
+
+  int split = 0;
+  int pin = 0;
+  for (const Instr &in : prog.value().code) {
+    if (in.op == OpCode::Split2) {
+      ++split;
+    }
+    if (in.op == OpCode::Pin) {
+      ++pin;
+    }
+  }
+  EXPECT_EQ(split, 1);
+  EXPECT_EQ(pin, 2);
+
+  // The Split2 instr must carry n_out==2.
+  for (const Instr &in : prog.value().code) {
+    if (in.op == OpCode::Split2) {
+      EXPECT_EQ(in.n_out, 2);
+    }
+  }
 }
 
 } // namespace

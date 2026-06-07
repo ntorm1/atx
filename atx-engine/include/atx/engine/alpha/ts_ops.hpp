@@ -508,4 +508,137 @@ struct TsvFit {
   return denom == 0.0 ? kTsNaN : sab / denom;
 }
 
+// ===========================================================================
+//  P3d E1 — Rolling AR(1) OLS fit helper (ou_ar1_fit)
+//
+//  Fits x[s] = a + b*x[s-1] over the lagged pairs in the trailing window
+//  (oldest..newest). Pairs with a NaN endpoint are skipped. Returns {a, b,
+//  resid_std, n}. NaN fields when <2 valid pairs or zero predictor variance.
+//  resid_std is the POPULATION std of residuals over the n valid pairs (mirrors
+//  the population cross-moment convention used by tsv_lin_fit's r2 path).
+//  noexcept: all operations are floating-point arithmetic with no allocation.
+// ===========================================================================
+
+struct OuAr1Fit {
+  atx::f64 a{kTsNaN};
+  atx::f64 b{kTsNaN};
+  atx::f64 resid_std{kTsNaN};
+  atx::usize n{0};
+};
+
+// OLS of x[s] on x[s-1] over a trailing window (oldest..newest). Pairs with a
+// NaN endpoint are skipped. NaN fields when <2 valid pairs or zero predictor
+// variance. resid_std is the POPULATION std of residuals over the n pairs.
+[[nodiscard]] inline OuAr1Fit ou_ar1_fit(std::span<const atx::f64> w) noexcept {
+  atx::f64 sx = 0.0;
+  atx::f64 sy = 0.0;
+  atx::f64 sxx = 0.0;
+  atx::f64 sxy = 0.0;
+  atx::usize n = 0;
+  for (atx::usize s = 1; s < w.size(); ++s) {
+    const atx::f64 xp = w[s - 1];
+    const atx::f64 yc = w[s];
+    if (ts_is_nan(xp) || ts_is_nan(yc)) {
+      continue;
+    }
+    sx += xp;
+    sy += yc;
+    sxx += xp * xp;
+    sxy += xp * yc;
+    ++n;
+  }
+  if (n < 2) {
+    return {};
+  }
+  const atx::f64 dn = static_cast<atx::f64>(n);
+  const atx::f64 denom = sxx - sx * sx / dn;
+  if (denom == 0.0) {
+    return {};
+  }
+  const atx::f64 b = (sxy - sx * sy / dn) / denom;
+  const atx::f64 a = (sy - b * sx) / dn;
+  atx::f64 ss = 0.0;
+  for (atx::usize s = 1; s < w.size(); ++s) {
+    const atx::f64 xp = w[s - 1];
+    const atx::f64 yc = w[s];
+    if (ts_is_nan(xp) || ts_is_nan(yc)) {
+      continue;
+    }
+    const atx::f64 r = yc - (a + b * xp);
+    ss += r * r;
+  }
+  return {a, b, std::sqrt(ss / dn), n};
+}
+
+// ===========================================================================
+//  P3d E2 — OU derived-quantity mappers
+//
+//  From an OuAr1Fit f (phi = b):
+//    theta    = -ln(b)            valid when b in (0,1)
+//    halflife = ln2 / theta       valid when b in (0,1)
+//    mean(mu) = a / (1-b)         valid when b < 1 (and b not NaN)
+//    zscore   = (x_last - mu) / sigma_eq
+//               sigma_eq = resid_std / sqrt(1 - b^2), valid when b in (0,1)
+//               and sigma_eq > 0
+//  NaN when b not in (0,1) for theta/halflife/zscore, b>=1 for mean, or
+//  sigma_eq==0/NaN for zscore.
+// ===========================================================================
+
+[[nodiscard]] inline atx::f64 ou_theta_of(const OuAr1Fit &f) noexcept {
+  return (f.b > 0.0 && f.b < 1.0) ? -std::log(f.b) : kTsNaN;
+}
+
+[[nodiscard]] inline atx::f64 ou_halflife_of(const OuAr1Fit &f) noexcept {
+  const atx::f64 th = ou_theta_of(f);
+  return ts_is_nan(th) ? kTsNaN : std::log(2.0) / th;
+}
+
+[[nodiscard]] inline atx::f64 ou_mean_of(const OuAr1Fit &f) noexcept {
+  return (!ts_is_nan(f.b) && f.b < 1.0) ? f.a / (1.0 - f.b) : kTsNaN;
+}
+
+[[nodiscard]] inline atx::f64 ou_zscore_of(const OuAr1Fit &f, atx::f64 x_last) noexcept {
+  if (!(f.b > 0.0 && f.b < 1.0)) {
+    return kTsNaN;
+  }
+  const atx::f64 sig = f.resid_std / std::sqrt(1.0 - f.b * f.b);
+  if (sig == 0.0 || ts_is_nan(sig)) {
+    return kTsNaN;
+  }
+  return (x_last - f.a / (1.0 - f.b)) / sig;
+}
+
+// ===========================================================================
+//  P3d E4 — OU rolling-fit per-cell VM kernel (ou_value_at)
+//
+//  Single-cell value of an OU rolling-fit op at (t, j): require a full, NaN-free
+//  trailing window (same gate as ts_value_at), gather it chronologically, fit
+//  AR(1) once, then map to the requested OU quantity. x_last (for zscore) is the
+//  window's newest element x[t]. Routed here from vm.hpp::eval_time_series (an
+//  `ou_rolling` arm alongside ts_value_at / ts_pair_at). The oracle restates the
+//  fit + derivations INDEPENDENTLY (oracle.hpp ou_fit + ou_unary_at); the
+//  differential proves the two agree. `buf` is caller-owned scratch (>= d).
+// ===========================================================================
+[[nodiscard]] inline atx::f64 ou_value_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
+                                          atx::usize j, atx::usize d, atx::usize instruments,
+                                          std::vector<atx::f64> &buf) {
+  if (!tsv_window_valid(x, t, j, d, instruments)) {
+    return kTsNaN; // short window or any-NaN -> NaN (pinned policy)
+  }
+  tsv_gather(x, t, j, d, instruments, buf);
+  const OuAr1Fit f = ou_ar1_fit(std::span<const atx::f64>{buf.data(), d});
+  switch (op) {
+  case OpCode::OuTheta:
+    return ou_theta_of(f);
+  case OpCode::OuHalflife:
+    return ou_halflife_of(f);
+  case OpCode::OuMean:
+    return ou_mean_of(f);
+  case OpCode::OuZscore:
+    return ou_zscore_of(f, x[t * instruments + j]);
+  default:
+    ATX_UNREACHABLE();
+  }
+}
+
 } // namespace atx::engine::alpha::detail

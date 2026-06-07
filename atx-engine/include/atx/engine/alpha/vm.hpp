@@ -240,6 +240,19 @@ public:
     // ---- ZERO-ALLOC dispatch loop (everything below allocates nothing) ----
     // Program SlotIds index the pool buffer directly (the linearizer pre-sized
     // num_slots); acquire()/release() only honor the pool's live-count assert.
+    // LIVENESS CONTRACT for multi-output nodes:
+    //   * The linearizer's acquire_block(n_out) grew peak by n_out, so the pool
+    //     buffer has n_out contiguous slots starting at in.dst.
+    //   * The VM mirrors the ACQUIRE side with exactly ONE (void)pool_.acquire()
+    //     per dispatched compute instr regardless of n_out. A Split2 block wrote
+    //     two buffer columns but the live-count assert only needs to stay <=
+    //     capacity — capacity == num_slots which already accounts for the block.
+    //   * Pin is a value-producing instr (occupies its own single slot); it is
+    //     handled here before dispatch (like StoreAlpha) so we can copy from
+    //     the source block without routing through the generic switch.
+    //   * Free calls release once regardless of n_out (mirrors the single
+    //     acquire above). The block's extra buffer slots remain valid throughout
+    //     execution since the flat buffer is pre-sized to num_slots total slots.
     for (const Instr &in : prog.code) {
       if (in.op == OpCode::Free) {
         pool_.release(in.dst);
@@ -247,6 +260,19 @@ public:
       }
       if (in.op == OpCode::StoreAlpha) {
         ATX_TRY_VOID(store_alpha(in, out, cells));
+        continue;
+      }
+      if (in.op == OpCode::Pin) {
+        // Pin projects one output of its parent's contiguous block into its own
+        // single slot: column(src[0] + param) -> column(dst). One acquire for
+        // the single dst slot; no dispatch needed (pure buffer copy).
+        (void)pool_.acquire();
+        const std::span<const atx::f64> src = pool_.column(in.src[0] + in.param);
+        const std::span<atx::f64> dst_span = pool_.column(in.dst);
+        const atx::usize n = dst_span.size();
+        for (atx::usize ci = 0; ci < n; ++ci) {
+          dst_span[ci] = src[ci];
+        }
         continue;
       }
       (void)pool_.acquire();
@@ -385,13 +411,25 @@ private:
     case OpCode::TsQuantile:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
+    // OU rolling-fit ops (P3d-E3): same windowed path as Ts* rolling ops.
+    case OpCode::OuTheta:
+    case OpCode::OuHalflife:
+    case OpCode::OuMean:
+    case OpCode::OuZscore:
       return eval_time_series(in, dates, instruments);
     case OpCode::TradeWhen:
     case OpCode::Hump:
+    case OpCode::KalmanLevel:
+    case OpCode::OuFilter:
       return eval_recurrence(in, dates, instruments);
+    case OpCode::Split2:
+      return eval_split2(in, cells);
+    case OpCode::KalmanReg:
+      return eval_kalman_reg(in, dates, instruments);
+    case OpCode::Pin:
     case OpCode::StoreAlpha:
     case OpCode::Free:
-      ATX_UNREACHABLE(); // handled by evaluate(); never dispatched
+      ATX_UNREACHABLE(); // Pin/StoreAlpha/Free handled by evaluate(); never dispatched
     }
     ATX_UNREACHABLE(); // exhaustive switch — no valid fallthrough
   }
@@ -400,7 +438,7 @@ private:
   [[nodiscard]] atx::core::Status eval_const(const Instr &in) {
     const std::span<atx::f64> out = dst_col(in);
     for (atx::f64 &c : out) {
-      c = in.imm;
+      c = in.imm[0];
     }
     return atx::core::Ok();
   }
@@ -657,6 +695,10 @@ private:
     const bool binary_series = (in.op == OpCode::TsCorr || in.op == OpCode::TsCov);
     const std::span<const atx::f64> y =
         binary_series ? src_col(in, 1) : std::span<const atx::f64>{};
+    // OU rolling-fit ops (P3d-E4) fit AR(1) over the trailing window per cell;
+    // they take the same windowed path but a distinct per-cell kernel.
+    const bool ou_rolling = (in.op == OpCode::OuTheta || in.op == OpCode::OuHalflife ||
+                             in.op == OpCode::OuMean || in.op == OpCode::OuZscore);
 
     // Reusable scratch sized to the window: NO per-cell allocation (grown only
     // when `d` exceeds any prior call). Only the sort/pair ops touch it.
@@ -667,9 +709,11 @@ private:
     for (atx::usize j = 0; j < instruments; ++j) {
       for (atx::usize t = 0; t < dates; ++t) {
         out[t * instruments + j] =
-            binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
-                                               ts_scratch_b_)
-                          : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_);
+            ou_rolling
+                ? detail::ou_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_)
+            : binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
+                                                 ts_scratch_b_)
+                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_);
       }
     }
     return atx::core::Ok();
@@ -697,6 +741,12 @@ private:
   [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in, atx::usize dates,
                                                   atx::usize instruments) {
     const std::span<atx::f64> out = dst_col(in);
+    if (in.op == OpCode::KalmanLevel) {
+      return eval_kalman_level(in, out, dates, instruments);
+    }
+    if (in.op == OpCode::OuFilter) {
+      return eval_ou_filter(in, out, dates, instruments);
+    }
     if (instruments > state_.size()) {
       state_.resize(instruments); // grow-once; reused across calls
     }
@@ -724,6 +774,92 @@ private:
             detail::trade_when_step(state_[j], trig[i], exit_v[i], alpha[i], /*first=*/t == 0);
         out[i] = v;
         state_[j] = v;
+      }
+    }
+    return atx::core::Ok();
+  }
+
+  // KalmanLevel VM kernel — per-instrument forward scan using the shared scalar
+  // step kernel (state_ops::kalman_level_step). Stack-local KalmanLevelState per
+  // instrument (no pooled state_ buffer needed — the struct holds {x,P}). Reads
+  // Q/R from in.imm[0/1]. The oracle restates this math INLINE for the diff.
+  [[nodiscard]] atx::core::Status eval_kalman_level(const Instr &in, std::span<atx::f64> out,
+                                                    atx::usize dates, atx::usize instruments) {
+    const std::span<const atx::f64> z = src_col(in, 0);
+    const atx::f64 Q = in.imm[0];
+    const atx::f64 R = in.imm[1];
+    for (atx::usize j = 0; j < instruments; ++j) {
+      detail::KalmanLevelState s{};
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize i = t * instruments + j;
+        out[i] = detail::kalman_level_step(s, seeded, z[i], Q, R);
+      }
+    }
+    return atx::core::Ok();
+  }
+
+  // OuFilter VM kernel — per-instrument forward scan using the shared scalar step
+  // kernel (state_ops::ou_filter_step). Stack-local {xhat, seeded} per instrument.
+  // Reads theta/mu from in.imm[0/1]. The oracle restates this math INLINE.
+  [[nodiscard]] atx::core::Status eval_ou_filter(const Instr &in, std::span<atx::f64> out,
+                                                 atx::usize dates, atx::usize instruments) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const atx::f64 theta = in.imm[0];
+    const atx::f64 mu = in.imm[1];
+    for (atx::usize j = 0; j < instruments; ++j) {
+      atx::f64 xhat = 0.0;
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize i = t * instruments + j;
+        out[i] = detail::ou_filter_step(xhat, seeded, x[i], theta, mu);
+      }
+    }
+    return atx::core::Ok();
+  }
+
+  // ---- multi-output (Split2) -----------------------------------------------
+  // Split2 is the synthetic test op: hi = x, lo = -x. It occupies a contiguous
+  // two-slot block [dst, dst+1]; `out_col(in, k)` = pool_.column(in.dst + k).
+  // SAFETY: the linearizer's acquire_block(2) ensured both buffer slots are
+  // within the pre-sized pool; accessing in.dst+1 never exceeds capacity.
+  [[nodiscard]] atx::core::Status eval_split2(const Instr &in, atx::usize cells) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const std::span<atx::f64> hi = pool_.column(in.dst + 0);
+    const std::span<atx::f64> lo = pool_.column(in.dst + 1);
+    for (atx::usize i = 0; i < cells; ++i) {
+      hi[i] = x[i];
+      lo[i] = -x[i];
+    }
+    return atx::core::Ok();
+  }
+
+  // ---- Chan 2-state time-varying regression (multi-output, 3 pins) -----------
+  // Writes alpha(dst+0), beta(dst+1), resid(dst+2) using the shared kernel from
+  // state_ops.hpp (kalman_reg_step). Per instrument j: walk dates t=0…D-1 in
+  // order with a fresh KalmanRegState (diffuse prior). delta=in.imm[0],
+  // R=in.imm[1]. y=src[0], x=src[1]. Accesses pool_.column(dst+k) directly for
+  // the three output columns — the linearizer's acquire_block(3) guarantees the
+  // contiguous block [dst, dst+2] is within the pre-sized pool.
+  // SAFETY: causal by construction (step reads only prior state + date-t inputs).
+  [[nodiscard]] atx::core::Status eval_kalman_reg(const Instr &in, atx::usize dates,
+                                                  atx::usize instruments) {
+    const std::span<const atx::f64> y = src_col(in, 0);
+    const std::span<const atx::f64> x = src_col(in, 1);
+    const atx::f64 delta = in.imm[0];
+    const atx::f64 R = in.imm[1];
+    const std::span<atx::f64> oa = pool_.column(in.dst + 0);
+    const std::span<atx::f64> ob = pool_.column(in.dst + 1);
+    const std::span<atx::f64> orr = pool_.column(in.dst + 2);
+    for (atx::usize j = 0; j < instruments; ++j) {
+      detail::KalmanRegState s{};
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize i = t * instruments + j;
+        const detail::KalmanRegOut o = detail::kalman_reg_step(s, seeded, y[i], x[i], delta, R);
+        oa[i] = o.alpha;
+        ob[i] = o.beta;
+        orr[i] = o.resid;
       }
     }
     return atx::core::Ok();

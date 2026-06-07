@@ -34,6 +34,7 @@ using atx::engine::alpha::Ast;
 using atx::engine::alpha::DType;
 using atx::engine::alpha::Library;
 using atx::engine::alpha::parse_expr;
+using atx::engine::alpha::parse_program;
 using atx::engine::alpha::Shape;
 using atx::engine::alpha::TypeInfo;
 
@@ -267,16 +268,114 @@ TEST(AlphaTypecheck_Boundary, DeeplyNestedTs_AccumulatesLookback) {
   EXPECT_EQ(analyze_root("ts_sum(ts_mean(delta(close, 5), 10), 4)").lookback, 17U);
 }
 
+// ---- kalman_level / ou_filter typecheck (P3d-C4) ----------------------------
+
+TEST(AlphaTypecheck, KalmanLevelTypes) {
+  Library lib;
+  auto ast = parse_program("a = kalman_level(close, 0.1, 1.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << (an ? "" : an.error().message());
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+}
+
+TEST(AlphaTypecheck, KalmanLevelRejectsNonConstHparam) {
+  // Q must be a compile-time constant literal; a panel field is not.
+  Library lib;
+  auto ast = parse_program("a = kalman_level(close, close, 1.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, KalmanLevelRejectsScalarPrimary) {
+  // primary must be a panel/cross-section, not a scalar literal.
+  Library lib;
+  auto ast = parse_program("a = kalman_level(3.0, 0.1, 1.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, OuFilterTypes) {
+  Library lib;
+  auto ast = parse_program("a = ou_filter(close, 0.05, 100.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << (an ? "" : an.error().message());
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+}
+
+TEST(AlphaTypecheck, KalmanLevelRejectsNegativeQ) {
+  // Q (process noise) must be >= 0.
+  Library lib;
+  auto ast = parse_program("a = kalman_level(close, -1.0, 1.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, KalmanLevelRejectsNonPositiveR) {
+  // R (observation noise) must be > 0; 0.0 is rejected.
+  Library lib;
+  auto ast = parse_program("a = kalman_level(close, 0.1, 0.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, OuFilterRejectsNegativeTheta) {
+  // theta (mean-reversion rate) must be >= 0.
+  Library lib;
+  auto ast = parse_program("a = ou_filter(close, -0.5, 1.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
 // ---- required_lookback over a multi-root program ----------------------------
 
 TEST(AlphaTypecheck_Required, MaxOverAllRoots) {
-  using atx::engine::alpha::parse_program;
   auto parsed = parse_program("a = ts_mean(close, 10)\nb = delay(open, 3)", shared_lib());
   ASSERT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().message());
   auto res = analyze(*parsed);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().message());
   // max(9, 3) = 9.
   EXPECT_EQ(res->required_lookback(), 9U);
+}
+
+// ---- OU rolling family typecheck (P3d-E3) ------------------------------------
+
+TEST(AlphaTypecheck, OuZscoreRollingLookback) {
+  Library lib;
+  auto ast = parse_program("a = ou_zscore(close, 60)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 59U); // (d-1)+0
+}
+
+TEST(AlphaTypecheck, OuHalflifeRejectsScalarPrimary) {
+  Library lib;
+  auto ast = parse_program("a = ou_halflife(3.0, 60)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, OuThetaRollingLookback) {
+  Library lib;
+  auto ast = parse_program("a = ou_theta(close, 20)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 19U); // (d-1)+0
+}
+
+TEST(AlphaTypecheck, OuMeanRollingLookback) {
+  Library lib;
+  auto ast = parse_program("a = ou_mean(close, 10)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 9U); // (d-1)+0
 }
 
 } // namespace

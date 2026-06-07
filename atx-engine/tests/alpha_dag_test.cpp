@@ -255,4 +255,44 @@ TEST(AlphaDag_Metric, SharedSubtree_DedupsThreeOfTenNodes) {
   EXPECT_EQ(dag.unique_nodes(), 7U);
 }
 
+// ---- multi-output record ops (B7) -------------------------------------------
+
+TEST(AlphaDag, SharedComputeOnePinPerProjection) {
+  // split2(close).hi and split2(close).lo must share ONE compute node (CSE on
+  // identical call + hparams) and produce TWO distinct Pin nodes with indices 0
+  // and 1 respectively. The compute node must declare n_out == 2.
+  Library lib;
+  auto ast = parse_program("a = split2(close).hi\nb = split2(close).lo\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << (an ? "" : an.error().message());
+  auto dag = build_dag(ast.value(), an.value());
+  ASSERT_TRUE(dag) << (dag ? "" : dag.error().message());
+
+  int compute = 0;
+  int pins = 0;
+  std::array<int, 2> pin_index_seen{0, 0};
+  for (const Node &n : dag.value().nodes()) {
+    if (n.op == OpCode::Split2) {
+      ++compute;
+    }
+    if (n.op == OpCode::Pin) {
+      ++pins;
+      if (n.param < 2) {
+        ++pin_index_seen[n.param];
+      }
+    }
+  }
+  EXPECT_EQ(compute, 1);           // single shared compute (CSE on identical args+hparams)
+  EXPECT_EQ(pins, 2);              // hi and lo each get their own Pin node
+  EXPECT_EQ(pin_index_seen[0], 1); // exactly one Pin with index 0 (hi)
+  EXPECT_EQ(pin_index_seen[1], 1); // exactly one Pin with index 1 (lo)
+  // The compute node must declare 2 output pins.
+  for (const Node &n : dag.value().nodes()) {
+    if (n.op == OpCode::Split2) {
+      EXPECT_EQ(n.n_out, 2U);
+    }
+  }
+}
+
 } // namespace

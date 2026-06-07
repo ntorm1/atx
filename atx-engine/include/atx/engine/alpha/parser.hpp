@@ -39,7 +39,9 @@
 // Header-only; every free function is `inline`. Parsing is a COLD path —
 // std::vector allocation is fine (zero-alloc is a VM hot-path concern only).
 
+#include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -76,17 +78,23 @@ struct Expr {
     Binary,  // a + b, a < b, a && b, …      → `opcode`, `a`, `b`
     Call,    // f(args…)                    → `op` (resolved sig), `a`,`b`,`c`
     Select,  // desugared ternary           → `a` (cond), `b` (then), `c` (else)
+    Member,  // f.pin → `a` = record expr, `name_id` = pin name
   };
 
   Kind kind{Kind::Literal};
   bool dollar{false};           // Field only: was it `$name`?
   OpCode opcode{OpCode::Const}; // Unary/Binary: the operator's opcode
   atx::f64 value{};             // Literal: the folded numeric value
-  atx::u32 name_id{};           // Field: index into Ast string pool
+  atx::u32 name_id{};           // Field/Member: index into Ast string pool
   const OpSig *op{nullptr};     // Call: resolved registry row (non-null)
-  ExprId a{kNoExpr};            // child 0 (Unary/Binary/Call/Select)
+  ExprId a{kNoExpr};            // child 0 (Unary/Binary/Call/Select/Member)
   ExprId b{kNoExpr};            // child 1 (Binary/Call/Select)
   ExprId c{kNoExpr};            // child 2 (Call/Select)
+  // Call only: compile-time hyperparameter immediates peeled from trailing args.
+  // Slots [0, n_hparams) are finite literals baked into the instruction; a NaN
+  // sentinel here means the literal could not be peeled (analyze rejects it).
+  std::array<atx::f64, 2> hparams{};
+  atx::u8 n_hparams{0};
 };
 
 // Materialized argument count of a Call node: the number of populated child
@@ -201,6 +209,7 @@ inline constexpr atx::u8 kBpPower = 9;    // ^ (right-assoc)
   case TokenKind::Number:
   case TokenKind::Ident:
   case TokenKind::Dollar:
+  case TokenKind::Dot: // member-access separator; postfix handled in B5, not infix here
   case TokenKind::Bang:
   case TokenKind::Colon:
   case TokenKind::LParen:
@@ -247,6 +256,7 @@ inline constexpr atx::u8 kBpPower = 9;    // ^ (right-assoc)
   case TokenKind::Number:
   case TokenKind::Ident:
   case TokenKind::Dollar:
+  case TokenKind::Dot: // member-access separator; postfix handled in B5, not binary-infix
   case TokenKind::Bang:
   case TokenKind::Question:
   case TokenKind::Colon:
@@ -343,6 +353,28 @@ struct Parser {
   const Library *lib{nullptr};
   Ast *ast{nullptr};
   atx::usize pos{0};
+
+  // Local bindings (Phase 3d-A): name -> the bound expression's ExprId. A bare
+  // identifier resolves binding-first, field-fallback. Declaration order; a later
+  // binding may shadow an earlier one (last wins) and shadow a panel field.
+  struct Binding {
+    std::string name;
+    ExprId id{kNoExpr};
+  };
+  std::vector<Binding> bindings;
+
+  // Advisory warnings accumulated during parsing (e.g. binding shadows a field).
+  // Non-fatal; surfaced via the 3-arg parse_program overload.
+  std::vector<std::string> warnings;
+
+  [[nodiscard]] ExprId lookup_binding(std::string_view name) const noexcept {
+    for (auto it = bindings.rbegin(); it != bindings.rend(); ++it) {
+      if (it->name == name) {
+        return it->id; // last binding wins (shadowing)
+      }
+    }
+    return kNoExpr;
+  }
 
   [[nodiscard]] const Token &peek() const noexcept { return toks[pos]; }
   [[nodiscard]] TokenKind peek_kind() const noexcept { return toks[pos].kind; }
@@ -442,6 +474,8 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
 
   // Constant-fold foldable unary functions on a literal operand (log(1)→0).
   // A foldable unary is fixed-arity 1, so the materialized list is exactly one.
+  // NOTE: this fast-path fires BEFORE hparam peeling; foldable unaries have
+  // n_hparams==0, so no interaction — peeling would be a no-op for them anyway.
   if (args.size() == 1 && detail::is_foldable_unary(sig->opcode)) {
     const Expr &arg0 = p.ast->node(args[0]);
     if (arg0.kind == Expr::Kind::Literal) {
@@ -449,13 +483,24 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     }
   }
 
+  // Peel the last `sig->n_hparams` args as compile-time constant immediates.
+  // They leave the operand child slots (`n_oper` leading args) unchanged. For
+  // ops with n_hparams==0 (the majority), n_oper == args.size() — no-op.
   Expr e;
   e.kind = Expr::Kind::Call;
   e.op = sig;
   e.opcode = sig->opcode;
-  e.a = !args.empty() ? args[0] : kNoExpr;
-  e.b = args.size() > 1 ? args[1] : kNoExpr;
-  e.c = args.size() > 2 ? args[2] : kNoExpr;
+  e.n_hparams = sig->n_hparams;
+  const atx::usize n_oper = args.size() - sig->n_hparams;
+  for (atx::usize k = 0; k < sig->n_hparams; ++k) {
+    const Expr &h = p.ast->node(args[n_oper + k]);
+    e.hparams[k] = (h.kind == Expr::Kind::Literal)
+                       ? h.value
+                       : std::numeric_limits<atx::f64>::quiet_NaN(); // analyze rejects NaN sentinel
+  }
+  e.a = n_oper > 0 ? args[0] : kNoExpr;
+  e.b = n_oper > 1 ? args[1] : kNoExpr;
+  e.c = n_oper > 2 ? args[2] : kNoExpr;
   return atx::core::Ok(p.ast->add(e));
 }
 
@@ -486,9 +531,33 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     if (p.peek_kind() == TokenKind::LParen) {
       return parse_call(p, p.text(tok), tok); // cursor on '('
     }
+    if (const ExprId bound = p.lookup_binding(p.text(tok)); bound != kNoExpr) {
+      p.warnings.push_back(std::string{"binding '"} + std::string{p.text(tok)} +
+                           "' shadows a possible panel field of the same name");
+      return atx::core::Ok(bound); // reference an earlier binding (reuse its ExprId)
+    }
+    // Collect dotted field segments: Ident [Dot Ident]* — e.g. "IndClass.sector".
+    // The B4 lexer emits '.' as a Dot token instead of consuming it inside an
+    // ident, so the parser must reassemble dotted paths into a single Field name.
+    // (Full member-access AST nodes are deferred to B5; here we produce one Field
+    // whose interned name is the dot-joined string, matching pre-B4 behaviour.)
+    std::string field_name{p.text(tok)};
+    while (p.peek_kind() == TokenKind::Dot) {
+      // Peek one more ahead: consume Dot+Ident only; a trailing '.' without an
+      // ident continuation remains as a Dot token for the caller to handle.
+      const atx::usize saved = p.pos;
+      p.advance(); // consume Dot
+      if (p.peek_kind() != TokenKind::Ident) {
+        p.pos = saved; // back-track: trailing dot is not part of this field
+        break;
+      }
+      field_name += '.';
+      field_name += p.text(p.peek());
+      p.advance(); // consume trailing Ident segment
+    }
     Expr e;
     e.kind = Expr::Kind::Field;
-    e.name_id = p.ast->intern(p.text(tok));
+    e.name_id = p.ast->intern(field_name);
     return atx::core::Ok(p.ast->add(e));
   }
   case TokenKind::LParen: {
@@ -517,6 +586,7 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     return atx::core::Ok(p.ast->add(e));
   }
   // Tokens that cannot start an expression.
+  case TokenKind::Dot: // member-access postfix; cannot open a prefix position (B5 handles it)
   case TokenKind::Plus:
   case TokenKind::Star:
   case TokenKind::Slash:
@@ -579,10 +649,32 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
 }
 
 // The core precedence-climbing loop. Parses a prefix, then folds in infix
-// operators whose left binding power is ≥ `min_bp`.
+// operators whose left binding power is ≥ `min_bp`. A postfix `.pin` member-
+// access parselet is checked first (before any infix-bp test) so that `.`
+// always binds tighter than any binary operator — matching call syntax priority.
 [[nodiscard]] inline atx::core::Result<ExprId> parse_precedence(Parser &p, atx::u8 min_bp) {
   ATX_TRY(ExprId left, parse_prefix(p));
   for (;;) {
+    // Postfix member access: `expr.pin` — binds tighter than any binary op.
+    // This arm only fires when a Dot token is left over after parse_prefix,
+    // which only happens if the prefix was a binding-ref, a Call, or a
+    // parenthesised expression. Non-binding dotted idents (e.g. IndClass.sector)
+    // were already consumed inside parse_prefix's dot-join loop and do NOT
+    // leave a Dot here — so this parselet never mis-parses a field name.
+    if (p.peek_kind() == TokenKind::Dot) {
+      p.advance(); // consume '.'
+      if (p.peek_kind() != TokenKind::Ident) {
+        return atx::core::Err(parse_error("expected pin name after '.'", p.peek()));
+      }
+      const Token pin = p.peek();
+      p.advance(); // consume pin ident
+      Expr m;
+      m.kind = Expr::Kind::Member;
+      m.a = left;
+      m.name_id = p.ast->intern(p.text(pin));
+      left = p.ast->add(m);
+      continue;
+    }
     const TokenKind k = p.peek_kind();
     const atx::u8 lbp = detail::infix_bp(k);
     if (lbp == detail::kBpNone || lbp < min_bp) {
@@ -620,7 +712,7 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
                                                        const Library &lib) {
   ATX_TRY(auto toks, detail::lex_checked(source));
   Ast ast;
-  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0};
+  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}, {}};
   ATX_TRY(const ExprId root, detail::parse_precedence(p, detail::kBpTernary));
   if (p.peek_kind() != TokenKind::End) {
     return atx::core::Err(detail::parse_error("unexpected trailing token", p.peek()));
@@ -630,12 +722,14 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
 }
 
 // Parse a program (`{ IDENT '=' expr }`) into an Ast with one root per binding.
-// An empty source yields an Ast with zero roots.
-[[nodiscard]] inline atx::core::Result<Ast> parse_program(std::string_view source,
-                                                          const Library &lib) {
+// An empty source yields an Ast with zero roots. Advisory warnings (e.g. a bare
+// identifier resolved to a local binding, which could shadow a panel field of the
+// same name) are appended to `*warnings` when the pointer is non-null.
+[[nodiscard]] inline atx::core::Result<Ast>
+parse_program(std::string_view source, const Library &lib, std::vector<std::string> *warnings) {
   ATX_TRY(auto toks, detail::lex_checked(source));
   Ast ast;
-  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0};
+  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}, {}};
 
   while (p.peek_kind() != TokenKind::End) {
     if (p.peek_kind() != TokenKind::Ident) {
@@ -648,9 +742,19 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     }
     p.advance();
     ATX_TRY(const ExprId root, detail::parse_precedence(p, detail::kBpTernary));
+    p.bindings.push_back(detail::Parser::Binding{std::string{p.text(name_tok)}, root});
     ast.add_root(std::string{p.text(name_tok)}, root);
   }
+  if (warnings != nullptr) {
+    *warnings = std::move(p.warnings);
+  }
   return atx::core::Ok(std::move(ast));
+}
+
+// 2-arg overload: delegates to the 3-arg form, discarding warnings.
+[[nodiscard]] inline atx::core::Result<Ast> parse_program(std::string_view source,
+                                                          const Library &lib) {
+  return parse_program(source, lib, nullptr);
 }
 
 } // namespace atx::engine::alpha

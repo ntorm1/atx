@@ -258,4 +258,16 @@ TEST(AlphaRegistry_Register, MaxArityBelowMinArity_Fails) {
   EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
 }
 
+// ---- B3: PinSig + OpSig.pins + split2 builtin -------------------------------
+
+TEST(AlphaRegistry, Split2IsRecordWithTwoPins) {
+  Library lib;
+  const OpSig *s = lib.find("split2");
+  ASSERT_NE(s, nullptr);
+  EXPECT_EQ(s->min_arity, 1u);
+  ASSERT_EQ(s->pins.size(), 2u);
+  EXPECT_EQ(s->pins[0].name, "hi");
+  EXPECT_EQ(s->pins[1].name, "lo");
+}
+
 } // namespace

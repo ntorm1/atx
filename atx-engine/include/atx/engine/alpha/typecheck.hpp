@@ -58,6 +58,8 @@ struct TypeInfo {
   Shape shape{Shape::Scalar};
   DType dtype{DType::F64};
   atx::u16 lookback{}; // prior bars required at date t (the causality rail)
+  bool is_record{false};
+  std::span<const PinSig> pins{}; // valid iff is_record
 };
 
 namespace detail {
@@ -104,6 +106,11 @@ namespace detail {
   case OpCode::TsQuantile:
   case OpCode::TsScale:
   case OpCode::TsCountNans:
+  // OU rolling-fit ops (P3d-E3): windowed, same lookback rule as ts_mean.
+  case OpCode::OuTheta:
+  case OpCode::OuHalflife:
+  case OpCode::OuMean:
+  case OpCode::OuZscore:
     return true;
   // Not rolling-window time-series ops.
   case OpCode::TsDelay:
@@ -148,6 +155,11 @@ namespace detail {
   case OpCode::CsScaleG:
   case OpCode::TradeWhen:
   case OpCode::Hump:
+  case OpCode::KalmanLevel:
+  case OpCode::OuFilter:
+  case OpCode::Pin:
+  case OpCode::Split2:
+  case OpCode::KalmanReg:
   case OpCode::StoreAlpha:
   case OpCode::Free:
     return false;
@@ -268,6 +280,10 @@ namespace detail {
 [[nodiscard]] inline atx::core::Result<TypeInfo> analyze_unary(std::span<const TypeInfo> out,
                                                                const Expr &e) {
   const TypeInfo child = out[e.a];
+  if (child.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "record value must be projected with .pin before use");
+  }
   if (e.opcode == OpCode::Not) {
     if (child.dtype != DType::Mask) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -291,6 +307,10 @@ namespace detail {
                                                                 const Expr &e) {
   const TypeInfo lhs = out[e.a];
   const TypeInfo rhs = out[e.b];
+  if (lhs.is_record || rhs.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "record value must be projected with .pin before use");
+  }
   const std::array<Shape, 2> shapes{lhs.shape, rhs.shape};
   const Shape shape = shape_elementwise(shapes);
   const atx::u16 lb = max_child_lookback(out, e);
@@ -321,6 +341,10 @@ namespace detail {
   const TypeInfo cond = out[e.a];
   const TypeInfo then_v = out[e.b];
   const TypeInfo else_v = out[e.c];
+  if (cond.is_record || then_v.is_record || else_v.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "record value must be projected with .pin before use");
+  }
   if (cond.dtype != DType::Mask) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "SELECT condition must be a mask");
   }
@@ -332,26 +356,27 @@ namespace detail {
   return atx::core::Ok(TypeInfo{shape_elementwise(shapes), DType::F64, max_child_lookback(out, e)});
 }
 
-// Call node: shape from the op's table-driven rule, dtype from the registry row
-// (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops
-// reject a pure-scalar primary operand.
-[[nodiscard]] inline atx::core::Result<TypeInfo>
-analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
-  const OpCode op = e.op->opcode;
-  // A Cs*/Ts* op operates over instruments/time, so its primary operand cannot
-  // be a pure compile-time scalar (there is nothing to rank/roll over).
-  if ((is_cross_section(op) || is_time_series(op)) && out[e.a].shape == Shape::Scalar) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "expected a panel/cross-section operand, got a scalar");
+// Guard: reject any operand that is a raw record value (must project with .pin
+// before use in arithmetic, calls, or control flow). Returns Ok on success or
+// Err(InvalidArgument) for the first offending operand.
+[[nodiscard]] inline atx::core::Status reject_record_operands(std::span<const TypeInfo> out,
+                                                              const Expr &e) {
+  const std::array<ExprId, 3> kids{e.a, e.b, e.c};
+  for (const ExprId id : kids) {
+    if (id != kNoExpr && out[id].is_record) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "record value must be projected with .pin before use");
+    }
   }
-  // Group-aware ops: the 2nd argument must be a Group classifier.
-  if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "group operator requires a classifier (Group) 2nd argument");
-  }
-  // trade_when(trigger, alpha, exit): trigger (arg0) and exit (arg2) are masks;
-  // alpha (arg1) is numeric. Mirrors how analyze_select pins its Mask cond.
+  return atx::core::Ok();
+}
+
+// Validate dtype constraints for the special-cased stateful ops (trade_when and
+// hump). Called only when `op` is one of those two; returns Ok otherwise.
+[[nodiscard]] inline atx::core::Status
+validate_stateful_op_dtypes(OpCode op, std::span<const TypeInfo> out, const Expr &e) {
   if (op == OpCode::TradeWhen) {
+    // trade_when(trigger, alpha, exit): trigger (arg0) and exit (arg2) are masks.
     if (out[e.a].dtype != DType::Mask || out[e.c].dtype != DType::Mask) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "trade_when requires mask trigger/exit (args 1 and 3)");
@@ -361,9 +386,8 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
                             "trade_when alpha (arg 2) must be numeric (f64)");
     }
   }
-  // hump(x, threshold): x (arg0) is numeric; the threshold (arg1, when present)
-  // is a numeric scalar. Group/Mask dtypes are rejected for both.
   if (op == OpCode::Hump) {
+    // hump(x, threshold): x (arg0) is numeric; optional threshold (arg1) too.
     if (out[e.a].dtype != DType::F64) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "hump requires a numeric (f64) primary operand");
@@ -373,19 +397,97 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
                             "hump threshold (arg 2) must be numeric (f64)");
     }
   }
+  return atx::core::Ok();
+}
 
-  // Collect child shapes in order for the table-driven shape rule.
+// Validate the per-op hyperparameter RANGE constraints for the filter
+// recurrence ops (hparams are already verified finite by analyze_call's
+// finite-constant loop). Only the filter ops carry range rails; every other op
+// has no hparam ranges, so a `default: break` is correct here (this is NOT an
+// exhaustive-over-all-OpCodes switch — it only handles the filter ops).
+[[nodiscard]] inline atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e) {
+  switch (op) {
+  case OpCode::KalmanLevel:
+    // Q (process noise) >= 0; R (observation noise) > 0.
+    if (e.hparams[0] < 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman_level: Q (process noise) must be >= 0");
+    }
+    if (e.hparams[1] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman_level: R (observation noise) must be > 0");
+    }
+    break;
+  case OpCode::OuFilter:
+    // theta (mean-reversion rate) >= 0; mu (long-run mean) is only required
+    // finite (already guaranteed by analyze_call's isfinite loop).
+    if (e.hparams[0] < 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ou_filter: theta (mean-reversion rate) must be >= 0");
+    }
+    break;
+  case OpCode::KalmanReg:
+    // delta in (0,1) strict: sets process noise W = (delta/(1-delta))*I2.
+    if (e.hparams[0] <= 0.0 || e.hparams[0] >= 1.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman: delta must be in (0, 1) exclusive");
+    }
+    // R (observation noise) must be strictly positive.
+    if (e.hparams[1] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman: R (observation noise) must be > 0");
+    }
+    break;
+  default:
+    break; // non-filter ops: no hparam ranges
+  }
+  return atx::core::Ok();
+}
+
+// Call node: shape from the op's table-driven rule, dtype from the registry row
+// (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops
+// reject a pure-scalar primary operand.
+[[nodiscard]] inline atx::core::Result<TypeInfo>
+analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
+  ATX_TRY_VOID(reject_record_operands(out, e));
+  // Hparam finite-constant check: each peeled hparam must be a finite literal.
+  for (atx::u8 k = 0; k < e.n_hparams; ++k) {
+    if (!std::isfinite(e.hparams[k])) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hyperparameter must be a compile-time constant");
+    }
+  }
+  const OpCode op = e.op->opcode;
+  // A Cs*/Ts* op or filter recurrence op requires a non-scalar primary.
+  const bool needs_panel_primary = is_cross_section(op) || is_time_series(op) ||
+                                   op == OpCode::KalmanLevel || op == OpCode::OuFilter ||
+                                   op == OpCode::KalmanReg;
+  if (needs_panel_primary && out[e.a].shape == Shape::Scalar) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "expected a panel/cross-section operand, got a scalar");
+  }
+  // KalmanReg requires BOTH y (arg0) and x (arg1) to be non-scalar Panel operands.
+  if (op == OpCode::KalmanReg && e.b != kNoExpr && out[e.b].shape == Shape::Scalar) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "kalman: both y and x operands must be panel signals");
+  }
+  // Group-aware ops: the 2nd argument must be a Group classifier.
+  if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "group operator requires a classifier (Group) 2nd argument");
+  }
+  ATX_TRY_VOID(validate_stateful_op_dtypes(op, out, e));
+  // Filter hparam range checks (hparams already verified finite by the loop above).
+  ATX_TRY_VOID(validate_hparam_ranges(op, e));
+  // Collect child shapes for the table-driven shape rule.
   std::array<Shape, 3> shape_buf{};
   atx::usize n = 0;
-  const std::array<ExprId, 3> kids{e.a, e.b, e.c};
-  for (const ExprId id : kids) {
+  for (const ExprId id : std::array<ExprId, 3>{e.a, e.b, e.c}) {
     if (id != kNoExpr) {
-      shape_buf.at(n) = out[id].shape;
-      ++n;
+      shape_buf.at(n++) = out[id].shape;
     }
   }
   const Shape shape = e.op->shape_of(std::span<const Shape>{shape_buf.data(), n});
-
   atx::u16 lb = max_child_lookback(out, e);
   if (is_shift_ts(op)) {
     ATX_TRY(const atx::u16 d, window_value(ast, e));
@@ -394,7 +496,30 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
     ATX_TRY(const atx::u16 d, window_value(ast, e));
     lb = static_cast<atx::u16>((d - 1) + lb);
   }
+  if (!e.op->pins.empty()) {
+    return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, lb, true, e.op->pins});
+  }
   return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, lb});
+}
+
+// Member node: pin projection from a record-valued operand. Resolves the named
+// pin in the record's PinSig table and returns its dtype with the record's
+// shape/lookback. Rejects non-record operands and unknown pin names.
+[[nodiscard]] inline atx::core::Result<TypeInfo> analyze_member(std::span<const TypeInfo> out,
+                                                                const Ast &ast, const Expr &e) {
+  const TypeInfo rec = out[e.a];
+  if (!rec.is_record) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "member access '.' requires a record-valued operand");
+  }
+  const std::string_view pin = ast.field_name(e.name_id);
+  for (const PinSig &ps : rec.pins) {
+    if (ps.name == pin) {
+      return atx::core::Ok(TypeInfo{rec.shape, ps.dtype, rec.lookback, false, {}});
+    }
+  }
+  return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                        std::string{"no pin '"} + std::string{pin} + "' on record");
 }
 
 // Dispatch one node to its kind-specific analyzer. `out` holds the already-
@@ -416,6 +541,8 @@ analyze_node(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
     return analyze_call(ast, out, e);
   case Expr::Kind::Select:
     return analyze_select(out, e);
+  case Expr::Kind::Member:
+    return analyze_member(out, ast, e);
   }
   return atx::core::Err(atx::core::ErrorCode::Internal,
                         "analyze: unhandled Expr::Kind"); // unreachable
@@ -473,7 +600,12 @@ private:
   atx::u16 required = 0;
   for (const Assignment &root : ast.roots()) {
     if (root.root != kNoExpr) {
-      const atx::u16 lb = result.info(root.root).lookback;
+      const TypeInfo &root_ti = result.info(root.root);
+      if (root_ti.is_record) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "a record value cannot be an alpha output; project a pin with .pin");
+      }
+      const atx::u16 lb = root_ti.lookback;
       required = (lb > required) ? lb : required;
     }
   }
