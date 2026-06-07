@@ -22,7 +22,7 @@ Base is `fdc1257` not `master` (the branch carries concurrent databento disk-lay
 |-------|--------------------------------------------|-------------|----------------|-------|-------|
 | S1-0  | Marker + ledger + eval scaffold            | done        | `ec1aaf1`      | —     | fwd.hpp + this ledger (landed in a shared-branch-bundled databento commit; content correct) |
 | S1-1  | stats_ext + perf_metrics                   | done        | (this commit)  | 11    | Sharpe bit-equal to combine (delegated, no second convention); pnl[0] excluded; turnover/fitness via combine::compute_metrics |
-| S1-2  | Deflated Sharpe (DSR)                      | not started | —              | —     | |
+| S1-2  | Deflated Sharpe (DSR)                      | done        | (this commit)  | 6     | PSR + expected-max-Sharpe + DSR + haircut (Bailey-LdP 2014 §3.3); reuses norm_cdf/norm_ppf; N==1 ⇒ DSR=PSR(0); reference literal derived offline (DSR≈0.0485312) |
 | S1-3  | Probability of Backtest Overfitting (CSCV) | not started | —              | —     | |
 | S1-4  | CPCV fold generator                        | not started | —              | —     | |
 | S1-5  | Integration / walk-forward validation      | not started | —              | —     | |
@@ -35,3 +35,4 @@ Base is `fdc1257` not `master` (the branch carries concurrent databento disk-lay
 |-----|------|---------|
 | `ec1aaf1` | S1-0 | docs(s1-0): open sprint-1 evaluation/validation ledger + eval scaffold (bundled into a shared-branch databento commit) |
 | (this commit) | S1-1 | feat(s1-1): PerfMetrics suite + numeric base (norm_cdf/norm_ppf/skew/kurt/median) |
+| (this commit) | S1-2 | feat(s1-2): deflated Sharpe ratio + haircut (Bailey-LdP 2014) |
