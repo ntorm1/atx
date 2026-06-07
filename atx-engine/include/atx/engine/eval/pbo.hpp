@@ -48,7 +48,6 @@
 //  * Per-candidate tie-break for the IS argmax is ascending index (first max
 //    wins); OOS ranking ties resolve by ascending index via core::partial_rank.
 
-#include <cstddef> // std::size_t
 #include <cmath>   // std::log
 #include <span>    // std::span
 #include <string>  // std::string (Err message; included by error.hpp but explicit)
