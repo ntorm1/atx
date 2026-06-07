@@ -44,6 +44,7 @@ namespace atx::engine::factory {
 using atx::core::Xoshiro256pp;
 using atx::engine::alpha::call_arity;
 using atx::engine::alpha::DType;
+using atx::engine::alpha::OpCode;
 using atx::engine::alpha::OpSig;
 
 // =========================================================================
@@ -139,30 +140,55 @@ namespace detail {
 [[nodiscard]] inline atx::core::Result<Genome> op_swap(const Genome &g, const OpCatalog &cat,
                                                        Xoshiro256pp &rng) {
   const std::span<const Expr> arena = g.ast.nodes();
-  // Candidate Call nodes in canonical-id order. Record-producing calls are
-  // skipped (the catalog never offers a record op, so they have no replacement).
+  // Candidate nodes in canonical-id order (§4.2 {Unary, Binary, Call}): Call
+  // nodes carry a named OpSig* (swapped via the named-op buckets); Unary/Binary
+  // carry a bare `opcode` for the parser's infix/prefix ops (swapped via the
+  // OpCode buckets, §0.4). Record-producing calls are skipped (no record op is
+  // ever offered as a replacement, so they have no candidate).
   std::vector<ExprId> cands;
   for (atx::usize i = 0; i < arena.size(); ++i) {
-    if (arena[i].kind == Expr::Kind::Call && arena[i].op != nullptr && arena[i].op->pins.empty()) {
+    const Expr &e = arena[i];
+    const bool is_named_call =
+        e.kind == Expr::Kind::Call && e.op != nullptr && e.op->pins.empty();
+    const bool is_bare_op = e.kind == Expr::Kind::Unary || e.kind == Expr::Kind::Binary;
+    if (is_named_call || is_bare_op) {
       cands.push_back(static_cast<ExprId>(i));
     }
   }
   if (cands.empty()) {
-    return atx::core::Err(atx::core::ErrorCode::NotFound, "op_swap: no Call node to mutate");
+    return atx::core::Err(atx::core::ErrorCode::NotFound, "op_swap: no swappable node");
   }
   const ExprId target = cands[detail::uniform_index(rng, cands.size())];
+  const Expr &tnode = g.ast.node(target);
   const alpha::TypeInfo &ti = g.analysis.info(target);
-  const OpSig *current = g.ast.node(target).op;
-  const atx::usize arity = call_arity(g.ast.node(target));
-  const auto repl = cat.sample_compatible(ti.shape, ti.dtype, arity, current, rng);
-  if (!repl) {
-    return atx::core::Err(atx::core::ErrorCode::NotFound, "op_swap: no compatible replacement op");
+
+  if (tnode.kind == Expr::Kind::Call) {
+    const OpSig *current = tnode.op;
+    const atx::usize arity = call_arity(tnode);
+    const auto repl = cat.sample_compatible(ti.shape, ti.dtype, arity, current, rng);
+    if (!repl) {
+      return atx::core::Err(atx::core::ErrorCode::NotFound, "op_swap: no compatible replacement op");
+    }
+    const OpSig *new_op = *repl;
+    Ast rebuilt = rebuild_with(g, target, [new_op](Expr &e, Ast & /*dst*/) {
+      e.op = new_op;
+      e.opcode = new_op->opcode;
+      e.n_hparams = new_op->n_hparams; // keep peeled-hparam count consistent
+    });
+    return analyze_into(std::move(rebuilt));
   }
-  const OpSig *new_op = *repl;
-  Ast rebuilt = rebuild_with(g, target, [new_op](Expr &e, Ast & /*dst*/) {
-    e.op = new_op;
-    e.opcode = new_op->opcode;
-    e.n_hparams = new_op->n_hparams; // keep peeled-hparam count consistent
+
+  // Unary/Binary: swap the bare opcode within the same (shape, dtype, arity)
+  // OpCode bucket. These nodes have no OpSig* — the parser maps infix/prefix
+  // operators straight to OpCodes (§0.4), so we leave `op` untouched (null).
+  const atx::usize arity = (tnode.kind == Expr::Kind::Unary) ? 1 : 2;
+  const auto repl = cat.sample_compatible_opcode(ti.shape, ti.dtype, arity, tnode.opcode, rng);
+  if (!repl) {
+    return atx::core::Err(atx::core::ErrorCode::NotFound, "op_swap: no compatible replacement opcode");
+  }
+  const OpCode new_opcode = *repl;
+  Ast rebuilt = rebuild_with(g, target, [new_opcode](Expr &e, Ast & /*dst*/) {
+    e.opcode = new_opcode; // bare opcode swap; `op` stays null for Unary/Binary
   });
   return analyze_into(std::move(rebuilt));
 }

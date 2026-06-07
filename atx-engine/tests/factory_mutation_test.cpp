@@ -12,6 +12,7 @@
 //   * has_kind(consts, kind) — does any classified literal carry `kind`?
 //   * window_of(g) — the value of the genome's first Window-classified literal.
 
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -215,6 +216,33 @@ TEST(FactoryMutation, SameSeedSameMutation) { // F1
   if (a) {
     EXPECT_EQ(unparse(a->ast), unparse(b->ast)); // byte-identical under same seed
   }
+}
+
+// op_swap must reach the bare-opcode infix surface: a Binary(Add) root can be
+// swapped to another arithmetic opcode (Sub/Mul/Div/Pow). Proves the OpCode half
+// of the catalog is wired (§0.4 / §4.2) AND is non-vacuous (Ok-rate > 0, and the
+// swap genuinely produces >= 2 distinct arithmetic opcodes over the loop).
+TEST(FactoryMutation, OpSwapReachesInfixArithmetic) {
+  Library lib;
+  OpCatalog cat(lib);
+  Xoshiro256pp rng(2024);
+  auto g = make_genome("close + open", lib); // a Binary(Add) root, no OpSig*
+  ASSERT_EQ(g.ast.node(g.ast.roots().front().root).kind, Expr::Kind::Binary);
+
+  std::set<OpCode> reached;
+  int ok = 0;
+  for (int i = 0; i < 300; ++i) {
+    auto m = op_swap(g, cat, rng);
+    if (m) {
+      ++ok;
+      EXPECT_TRUE(analyze(m->ast).has_value()); // every accepted mutant valid (F5)
+      const auto &mroot = m->ast.node(m->ast.roots().front().root);
+      reached.insert(mroot.opcode);
+    }
+  }
+  EXPECT_GT(ok, 0);                  // non-vacuous: the guard body actually ran
+  EXPECT_GE(reached.size(), 2U);     // genuinely swaps Add -> {Sub|Mul|Div|Pow}
+  EXPECT_EQ(reached.count(OpCode::Add), 0U); // never a no-op swap back to itself
 }
 
 } // namespace

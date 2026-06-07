@@ -120,7 +120,47 @@ public:
     return std::nullopt; // unreachable: k < alternatives
   }
 
-  // Number of distinct (shape, dtype, arity) buckets — diagnostics / tests.
+  // Sample a replacement OPCODE for a bare-opcode Unary/Binary slot of result
+  // `(shape, dtype)` and the given `arity` (Unary=1, Binary=2), drawn uniformly
+  // from the same (shape-cat, dtype, arity) bucket but never equal to `current`.
+  // These nodes carry NO `OpSig*` (the parser maps infix `+ - * / ^ < > <= >= ==
+  // != && ||` and prefix `- !` straight to OpCodes, §0.4), so op-swap edits the
+  // bare `opcode`. `analyze` is the F5 backstop for the per-arg constraints the
+  // type-checker hard-codes. Returns nullopt when no alternative exists.
+  //
+  // Determinism (F1): one u64 of entropy; the bucket is in a fixed (curated)
+  // order, so the same rng state yields the same pick.
+  [[nodiscard]] std::optional<OpCode> sample_compatible_opcode(Shape shape, DType dtype,
+                                                               atx::usize arity, OpCode current,
+                                                               Xoshiro256pp &rng) const {
+    const OpcodeBucket *b = find_opcode_bucket(shape, dtype, arity);
+    if (b == nullptr) {
+      return std::nullopt;
+    }
+    atx::usize alternatives = 0;
+    for (const OpCode op : b->ops) {
+      if (op != current) {
+        ++alternatives;
+      }
+    }
+    if (alternatives == 0) {
+      return std::nullopt;
+    }
+    const atx::usize k = static_cast<atx::usize>(rng.next_u64() % alternatives);
+    atx::usize seen = 0;
+    for (const OpCode op : b->ops) {
+      if (op == current) {
+        continue;
+      }
+      if (seen == k) {
+        return op;
+      }
+      ++seen;
+    }
+    return std::nullopt; // unreachable: k < alternatives
+  }
+
+  // Number of distinct (shape, dtype, arity) named-op buckets — diagnostics.
   [[nodiscard]] atx::usize bucket_count() const noexcept { return buckets_.size(); }
 
 private:
@@ -143,6 +183,57 @@ private:
     Key key;
     std::vector<const OpSig *> ops;
   };
+
+  // A bucket of bare OpCodes (infix/unary nodes that carry no OpSig*), keyed the
+  // same way as the named-op buckets.
+  struct OpcodeBucket {
+    Key key;
+    std::vector<OpCode> ops;
+  };
+
+  // One curated swappable infix/unary opcode and its result-slot key fields.
+  // `cat` is always Elementwise: infix/unary nodes broadcast (shape_elementwise)
+  // or follow the operand shape (shape_unary), neither of which forces Panel /
+  // CrossSection — so they live in the Elementwise family, matching where an
+  // element-wise Binary/Unary node looks up at swap time. `dtype` separates
+  // arithmetic (F64) from comparison/logical (Mask) so a `+`→`>` swap (which
+  // changes out-dtype) lands in a different bucket and is never sampled.
+  struct OpcodeRow {
+    OpCode op;
+    DType dtype;
+    atx::usize arity;
+  };
+
+  // The swappable infix/unary OpCode set (§0.4 / §4.2). Curated from the real
+  // OpCode enum: arithmetic binaries (F64), comparison binaries (Mask), logical
+  // binaries (Mask), and the two prefix unaries (Neg→F64, Not→Mask). MinP/MaxP/
+  // Spow are reachable as NAMED ops (min/max/signedpower) and are intentionally
+  // NOT duplicated here — this set is exactly the bare-opcode infix/prefix surface
+  // the parser produces with no OpSig*.
+  [[nodiscard]] static std::span<const OpcodeRow> swappable_opcodes() noexcept {
+    static constexpr std::array<OpcodeRow, 15> kRows = {{
+        // arithmetic binary (out F64, arity 2)
+        {OpCode::Add, DType::F64, 2},
+        {OpCode::Sub, DType::F64, 2},
+        {OpCode::Mul, DType::F64, 2},
+        {OpCode::Div, DType::F64, 2},
+        {OpCode::Pow, DType::F64, 2},
+        // comparison binary (out Mask, arity 2)
+        {OpCode::CmpLt, DType::Mask, 2},
+        {OpCode::CmpGt, DType::Mask, 2},
+        {OpCode::CmpLe, DType::Mask, 2},
+        {OpCode::CmpGe, DType::Mask, 2},
+        {OpCode::CmpEq, DType::Mask, 2},
+        {OpCode::CmpNe, DType::Mask, 2},
+        // logical binary (out Mask, arity 2)
+        {OpCode::And, DType::Mask, 2},
+        {OpCode::Or, DType::Mask, 2},
+        // prefix unary (arity 1)
+        {OpCode::Neg, DType::F64, 1},
+        {OpCode::Not, DType::Mask, 1},
+    }};
+    return kRows;
+  }
 
   // Classify a named op's result-shape family from its shape_of function pointer
   // (the registry's pure shape rules are shared singletons we can compare to).
@@ -181,6 +272,11 @@ private:
     // User ops registered into the borrowed Library beyond the built-ins are not
     // enumerable (no iterator). Tests that need extra ops register them and rely
     // on find(); op-swap over built-ins is the spec'd surface (§0.4).
+
+    // Bucket the bare infix/unary OpCode set (the half with no OpSig*, §0.4).
+    for (const OpcodeRow &row : swappable_opcodes()) {
+      add_opcode(row);
+    }
   }
 
   void add_op(const OpSig &sig) {
@@ -195,6 +291,17 @@ private:
       }
     }
     buckets_.push_back(Bucket{key, std::vector<const OpSig *>{&sig}});
+  }
+
+  void add_opcode(const OpcodeRow &row) {
+    const Key key{ShapeCat::Elementwise, row.dtype, row.arity};
+    for (OpcodeBucket &b : opcode_buckets_) {
+      if (b.key == key) {
+        b.ops.push_back(row.op);
+        return;
+      }
+    }
+    opcode_buckets_.push_back(OpcodeBucket{key, std::vector<OpCode>{row.op}});
   }
 
   [[nodiscard]] const Bucket *find_bucket(Shape shape, DType dtype, atx::usize arity) const {
@@ -213,7 +320,23 @@ private:
     return nullptr;
   }
 
+  [[nodiscard]] const OpcodeBucket *find_opcode_bucket(Shape shape, DType dtype,
+                                                       atx::usize arity) const {
+    // Infix/unary nodes live in the Elementwise family regardless of the
+    // broadcast result shape, so we look up by Elementwise directly. (`shape` is
+    // accepted for signature symmetry with the named-op path and future use.)
+    static_cast<void>(shape);
+    const Key key{ShapeCat::Elementwise, dtype, arity};
+    for (const OpcodeBucket &b : opcode_buckets_) {
+      if (b.key == key) {
+        return &b;
+      }
+    }
+    return nullptr;
+  }
+
   std::vector<Bucket> buckets_;
+  std::vector<OpcodeBucket> opcode_buckets_;
 };
 
 } // namespace atx::engine::factory
