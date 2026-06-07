@@ -5,6 +5,7 @@
 // YYMMDD expiry, 1-char type (C/P), 8-digit strike in thousandths of a dollar.
 // Pure and header-only.
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -59,7 +60,14 @@ struct OsiOption {
   o.year = 2000 + to_int(sym.substr(6, 2));
   o.month = to_int(sym.substr(8, 2));
   o.day = to_int(sym.substr(10, 2));
-  if (o.month < 1 || o.month > 12 || o.day < 1 || o.day > 31) {
+  if (o.month < 1 || o.month > 12) {
+    return std::nullopt;
+  }
+  const bool leap = (o.year % 4 == 0 && (o.year % 100 != 0 || o.year % 400 == 0));
+  constexpr std::array<int, 12> kDaysInMonth{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const int max_day =
+      (o.month == 2 && leap) ? 29 : kDaysInMonth[static_cast<std::size_t>(o.month - 1)];
+  if (o.day < 1 || o.day > max_day) {
     return std::nullopt;
   }
   o.is_call = (type == 'C');

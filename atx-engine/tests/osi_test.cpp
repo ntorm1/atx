@@ -53,5 +53,7 @@ TEST(Osi, RejectsAllSpaceRootAndBadDate) {
   EXPECT_FALSE(parse_osi("      260615C00322500").has_value());  // all-space root
   EXPECT_FALSE(parse_osi("AAPL  260015C00322500").has_value());  // month 00
   EXPECT_FALSE(parse_osi("AAPL  260600C00322500").has_value());  // day 00
+  EXPECT_FALSE(parse_osi("AAPL  260231C00322500").has_value());  // Feb 30 -> invalid
+  EXPECT_TRUE(parse_osi("AAPL  240229C00322500").has_value());   // Feb 29 2024 (leap) -> valid
 }
 } // namespace
