@@ -24,10 +24,15 @@ Record one row per landed task: `pNd-X | SHA | summary | tests`.
 | p3d-B8 | 73647b9 | linearize multi-output block alloc + Pin emit + block Free | AlphaBytecode; 422 |
 | p3d-B9 | c9f8d8d, 79f887a | VM+oracle Split2 + Pin projection (differential); Free comment + relaxed peak guard | MultiOutput; 426 |
 
+| p3d-C2 | 5da2f60 | kalman_level scalar local-level step kernel | KalmanLevelStep 3/3 |
+| p3d-C3 | ae6ab68 | ou_filter AR(1) pull-to-mean step kernel | OuFilterStep 2/2 |
+| p3d-C4 | 044e977 | kalman_level + ou_filter registry + typecheck + hparam→imm | AlphaTypecheck; 429 |
+| p3d-C5 | dd282f4, a4e5a6d | VM+oracle recurrence (differential); independent oracle restatement + ≤60 + range tests | 435 |
+
 ## Phase status
 - [x] A — local bindings + references (A1–A3) — spec✓ quality✓, 410/410 green
 - [x] B — multi-output IR + records + member access (B1–B9) — spec✓ quality✓, 426/426; multi-output proven end-to-end on split2 via bit-exact differential
-- [ ] C — strided recurrence + kalman_level + ou_filter (C1–C5)
+- [x] C — recurrence + kalman_level + ou_filter (C1 skipped: instrument-outer locals; C2–C5) — spec✓ quality✓, 435/435; oracle restates inline (genuine differential)
 - [ ] D — Chan kalman record {alpha,beta,resid} (D1–D4)
 - [ ] E — OU rolling family (E1–E4)
 - [ ] F — integration + docs (F1–F2)
