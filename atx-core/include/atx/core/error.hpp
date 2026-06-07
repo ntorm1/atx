@@ -95,9 +95,21 @@ private:
 };
 
 // ---------------------------------------------------------------------
-//  Result aliases
+//  Result
 // ---------------------------------------------------------------------
-template <class T> using Result = tl::expected<T, Error>;
+//  A value-or-error built on tl::expected<T, Error>. Subclassed (rather than a
+//  bare alias) purely to add the Rust-spelled predicates is_ok()/is_err() on top
+//  of tl::expected's has_value(); it inherits every constructor and the implicit
+//  conversion from tl::unexpected<Error>, so Ok(...)/Err(...) and ATX_TRY keep
+//  working unchanged. No data members are added (Rule of Zero; same layout).
+template <class T> struct Result : tl::expected<T, Error> {
+  using tl::expected<T, Error>::expected; // inherit all base constructors
+
+  // true when this holds a value (Rust `is_ok`); the negation is is_err().
+  [[nodiscard]] constexpr bool is_ok() const noexcept { return this->has_value(); }
+  // true when this holds an Error (Rust `is_err`).
+  [[nodiscard]] constexpr bool is_err() const noexcept { return !this->has_value(); }
+};
 
 using Status = Result<void>; // success-or-error, carries no value
 
