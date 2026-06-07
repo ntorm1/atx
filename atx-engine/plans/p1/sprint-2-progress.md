@@ -28,8 +28,8 @@ The implementation plan's §0 reconciles the spec against reconnaissance + web r
 
 | Unit  | Title                                         | Status | Commit SHA(s) | Tests | Notes |
 |-------|-----------------------------------------------|--------|---------------|-------|-------|
-| S2-0  | Marker + ledger + parallel scaffold           | ⏳     |               | —     | `parallel/fwd.hpp` + this ledger. |
-| S2-1  | Deterministic pool (DetPool fallback) + digest | ⏳     |               |       |       |
+| S2-0  | Marker + ledger + parallel scaffold           | ✅ done | `bef28ad`                       | —     | `parallel/fwd.hpp` (DetPool/FoldResult fwd + determinism-contract doc) + this ledger. |
+| S2-1  | Deterministic pool (DetPool fallback) + digest | ✅ done | `078749e` + `5eaea08`           | 14    | Hand-rolled `DetPool`: persistent threads, atomic work-index dispenser, generation-guarded wakes, **lowest-index deterministic exception rethrow**, `JobKind` ParallelFor/EachWorker modes, Rule-of-Five pinned. `signal_set_digest` = canonical-order wyhash over **raw f64 bytes** (1-ULP flips it). *(Spec review caught a broken `for_each_worker` — old impl routed through the shared dispenser so 3/4 worker ids were skipped; fixed in `5eaea08` with a per-worker fan-out + 3 tests, non-vacuity confirmed by an old-logic probe 2000/2000 bad.)* |
 | S2-2  | Parallel batch-eval (digest == single-thread)  | ⏳     |               |       |       |
 | S2-3  | Parallel backtests + CPCV folds                | ⏳     |               |       |       |
 | S2-4  | Determinism matrix + bench + close             | ⏳     |               |       |       |
@@ -40,7 +40,9 @@ The implementation plan's §0 reconciles the spec against reconnaissance + web r
 
 | SHA | Unit | Subject |
 |-----|------|---------|
-|     | S2-0 | docs(s2-0): open sprint-2 parallel-compute ledger + scaffold |
+| `bef28ad` | S2-0 | docs(s2-0): open sprint-2 parallel-compute ledger + scaffold |
+| `078749e` | S2-1 | feat(s2-1): deterministic task pool (fallback) + digest oracle |
+| `5eaea08` | S2-1 | fix(s2-1): correct for_each_worker (per-worker fan-out, not dispenser); +tests; drop dead includes |
 
 ---
 
