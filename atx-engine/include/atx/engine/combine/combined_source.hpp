@@ -155,19 +155,37 @@ inline void cs_percentile_rank(std::span<const atx::f64> s, std::vector<atx::usi
 //  final ISignalSource: virtual dtor/copy/move come from the base (the seam's
 //  concern — we do NOT add our own dtor). Constituents are NON-OWNING (caller
 //  owns lifetime). out_ is the owned blend buffer the returned SignalView borrows.
+//
+//  NOT REENTRANT / NOT THREAD-SAFE: evaluate() mutates per-instance scratch (out_,
+//  cross_, rank_*, order_scratch_), so at most ONE evaluate() may be in flight per
+//  instance — concurrent calls on the same instance race. The returned SignalView
+//  borrows out_ and is valid ONLY until the next evaluate() on this instance (the
+//  next call overwrites out_) — the same single-in-flight-borrow property as
+//  VmSignalSource. The loop calls one source serially per rebalance, so this holds.
 // ===========================================================================
 class CombinedSignalSource final : public ISignalSource {
 public:
   /// Wrap the constituent sources + a frozen Combination + the blend method.
   /// NON-OWNING constituents (the caller keeps each alive for this source's
   /// lifetime). noexcept: moves the vectors/combo in (no allocation, no throw).
+  /// PRECONDITION: combo.weights.size() == sources.size() (the blend reads
+  /// weights[i] for every constituent i; a length disagreement is a wiring bug that
+  /// would read OOB on the apply path — ABORTS in debug, fail-closed).
   CombinedSignalSource(std::vector<ISignalSource *> sources, Combination combo,
                        CombineMethod method) noexcept
-      : sources_{std::move(sources)}, combo_{std::move(combo)}, method_{method} {}
+      : sources_{std::move(sources)}, combo_{std::move(combo)}, method_{method} {
+    // ATX_ASSERT aborts (noexcept-compatible): the per-alpha weight vector must be
+    // index-aligned to the constituents (combiner.hpp documents Σ|w|=1 over exactly
+    // pool.size() == sources_.size() weights). RankAverage ignores the weights, but
+    // the invariant is cheap and uniform, so it is asserted unconditionally.
+    ATX_ASSERT(combo_.weights.size() == sources_.size());
+  }
 
   /// Evaluate each constituent over `panel`, blend into ONE cross-sectional signal,
   /// and return a SignalView borrowing the owned out_ buffer (valid until the next
   /// evaluate()). PURE in `panel`. Propagates any constituent's Err verbatim.
+  /// NOT REENTRANT: one in-flight evaluate() per instance; the returned SignalView
+  /// is invalidated by the next evaluate() on this instance (see the class note).
   [[nodiscard]] atx::core::Result<SignalView> evaluate(PanelView panel) override {
     const atx::usize m = sources_.size();
     // Evaluate every constituent; cache the borrowed cross-sections. Each borrow is
