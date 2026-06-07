@@ -29,11 +29,12 @@
 //
 // Header-only; the single free function is inline.
 
+#include <cstddef> // std::size_t (hash_combine seed type)
+
 #include "atx/core/hash.hpp"  // atx::core::hash_bytes / hash_combine
 #include "atx/core/types.hpp" // atx::u64 / usize / f64
 
-#include "atx/engine/alpha/panel.hpp"  // alpha::SignalSet
-#include "atx/engine/parallel/fwd.hpp" // parallel-layer fwd decls (consistency)
+#include "atx/engine/alpha/panel.hpp" // alpha::SignalSet
 
 namespace atx::engine::parallel {
 

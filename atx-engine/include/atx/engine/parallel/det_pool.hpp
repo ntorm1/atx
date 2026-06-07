@@ -23,9 +23,12 @@
 //   N persistent std::threads park on a condition_variable between jobs. A
 //   monotonically-increasing `generation_` counter distinguishes a real new job
 //   from a spurious wake; a `stop_` flag breaks the park loop for destruction.
-//   Work is dispensed by a single atomic `next_index_` counter (fetch_add) — no
-//   queue, no work-stealing. A `busy_` counter tracks outstanding workers; the
-//   one that drives it to zero signals the main thread's completion barrier.
+//   A `job_kind_` selects the dispatch shape: ParallelFor work is dispensed by a
+//   single atomic `next_index_` counter (fetch_add) — no queue, no work-stealing;
+//   EachWorker runs the body once per worker (each worker invokes body(wid, wid)),
+//   used for per-worker setup like warming a stateful Engine. Either way a `busy_`
+//   counter tracks outstanding workers; the one that drives it to zero signals the
+//   main thread's completion barrier.
 //
 // Header-only; everything inline. Rule of Five: DetPool owns threads, so it is a
 // PINNED object — copy AND move are deleted.
@@ -37,7 +40,6 @@
 #include <functional>
 #include <mutex>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #include "atx/core/types.hpp"
@@ -92,18 +94,47 @@ public:
     if (n == 0) {
       return; // nothing to do; do not wake workers or erect a barrier
     }
+    dispatch_job(JobKind::ParallelFor, n,
+                 [&body](atx::usize i, atx::usize wid) { body(i, wid); });
+  }
 
+  // Runs fn(worker_id) exactly once on EACH worker (per-worker setup, e.g.
+  // warming a per-thread Engine). This is NOT a parallel_for over the dispenser:
+  // the shared next_index_ counter gives no index->worker binding, so a fast
+  // worker would drain the indices and a late worker would run fn zero times.
+  // The EachWorker job kind instead has every worker invoke the body exactly
+  // once with its own id, so fn runs on all n_workers() workers deterministically.
+  template <class Fn>
+  void for_each_worker(Fn&& fn) {
+    dispatch_job(JobKind::EachWorker, n_workers_,
+                 [&fn](atx::usize /*i*/, atx::usize wid) { fn(wid); });
+  }
+
+private:
+  // Selects how a published job is dispatched across the workers.
+  enum class JobKind {
+    ParallelFor, // drain the atomic next_index_ dispenser over [0, job_n_)
+    EachWorker,  // run the body once per worker as body(wid, wid)
+  };
+
+  // Publish a job (under the lock), wake the workers, wait on the completion
+  // barrier, then rethrow the lowest-index/lowest-wid captured exception. Shared
+  // by parallel_for and for_each_worker — only kind + n + body differ.
+  void dispatch_job(JobKind kind, atx::usize n,
+                    std::function<void(atx::usize, atx::usize)> body) {
     // Reset per-job state under the lock, then publish the new generation. The
     // lock + generation bump establish a happens-before edge from this setup to
     // every worker's wake, so the body the workers read is fully constructed.
     {
       std::unique_lock<std::mutex> lock{mtx_};
-      body_ = [&body](atx::usize i, atx::usize wid) { body(i, wid); };
+      body_ = std::move(body);
+      job_kind_ = kind;
       job_n_ = n;
       next_index_.store(0, std::memory_order_relaxed);
       // SAFETY: busy_ is set before the generation is published and read only by
       // workers that have already taken mtx_ on wake, so this plain store is
-      // ordered before any worker decrement by the mutex release/acquire.
+      // ordered before any worker decrement by the mutex release/acquire. busy_
+      // counts ALL workers in both job kinds, so the barrier is identical.
       busy_.store(n_workers_, std::memory_order_relaxed);
       done_ = false;
       ++generation_;
@@ -116,24 +147,10 @@ public:
       cv_done_.wait(lock, [this] { return done_; });
     }
 
-    rethrow_lowest(); // deterministic: lowest index that threw, or no-op
+    rethrow_lowest(); // deterministic: lowest index/wid that threw, or no-op
     clear_captures();
   }
 
-  // Runs fn(worker_id) exactly once on EACH worker (per-worker setup, e.g.
-  // warming a per-thread Engine). Implemented over parallel_for with n ==
-  // n_workers() and a body that runs fn only when i == worker_id, so every
-  // worker executes fn for its own id exactly once.
-  template <class Fn>
-  void for_each_worker(Fn&& fn) {
-    parallel_for(n_workers_, [&fn](atx::usize i, atx::usize wid) {
-      if (i == wid) {
-        fn(wid);
-      }
-    });
-  }
-
-private:
   // Resolve the requested worker count: 0 -> max(1, hw_concurrency - 2).
   [[nodiscard]] static atx::usize resolve_workers(atx::usize requested) noexcept {
     if (requested != 0) {
@@ -160,7 +177,13 @@ private:
         }
         last_gen = generation_;
       }
-      run_job(wid);
+      // job_kind_ was published under mtx_ before this wake, so the read is
+      // ordered after the publish by the cv_work_ mutex handshake.
+      if (job_kind_ == JobKind::EachWorker) {
+        run_each_worker(wid);
+      } else {
+        run_job(wid);
+      }
     }
   }
 
@@ -178,19 +201,39 @@ private:
       if (i >= n) {
         break;
       }
-      try {
-        body_(i, wid);
-      } catch (...) {
-        // Capture per-worker (lowest index this worker saw). No shared write, so
-        // no race; the cross-worker minimum is reduced single-threaded after the
-        // barrier in rethrow_lowest().
-        if (!worker_has_exc(wid) || i < captures_[wid].index) {
-          captures_[wid].index = i;
-          captures_[wid].eptr = std::current_exception();
-        }
+      capture_or_run(i, wid);
+    }
+    signal_done_if_last();
+  }
+
+  // EachWorker job: this worker runs the body EXACTLY once as body(wid, wid),
+  // then joins the same barrier. No dispenser is touched — the per-worker fan-out
+  // is the whole point (see for_each_worker). An exception in per-worker setup is
+  // captured under this worker's wid and rethrown deterministically (lowest wid)
+  // after the barrier, exactly like the dispenser path.
+  void run_each_worker(atx::usize wid) {
+    capture_or_run(wid, wid); // index == wid for the deterministic-rethrow ordering
+    signal_done_if_last();
+  }
+
+  // Run body_(index, wid); on throw, capture per-worker the LOWEST index this
+  // worker saw. No shared write, so no race — the cross-worker minimum is reduced
+  // single-threaded after the barrier in rethrow_lowest(). For EachWorker, index
+  // == wid, so "lowest index" reduces to "lowest wid".
+  void capture_or_run(atx::usize index, atx::usize wid) {
+    try {
+      body_(index, wid);
+    } catch (...) {
+      if (!worker_has_exc(wid) || index < captures_[wid].index) {
+        captures_[wid].index = index;
+        captures_[wid].eptr = std::current_exception();
       }
     }
+  }
 
+  // Barrier-completion tail shared by both job kinds. The worker that drives
+  // busy_ to zero signals the waiting main thread.
+  void signal_done_if_last() {
     // SAFETY: acq_rel on the completion decrement. The release ensures this
     // worker's body effects (its out[i] writes) are visible to the main thread
     // that acquires when it observes the counter hit 0; the acquire pairs with
@@ -247,6 +290,7 @@ private:
   std::condition_variable cv_done_; // main parks here on the barrier
 
   std::function<void(atx::usize, atx::usize)> body_; // current job body (set under mtx_)
+  JobKind job_kind_{JobKind::ParallelFor};           // dispatch shape (set under mtx_)
   atx::usize job_n_{0};                              // current job index count
   std::atomic<atx::usize> next_index_{0};            // work dispenser
   std::atomic<atx::usize> busy_{0};                  // outstanding workers this job

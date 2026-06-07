@@ -57,3 +57,28 @@ TEST(ParallelDetPool, DefaultWorkerCountIsPositive) {
   DetPool pool{0};
   EXPECT_GE(pool.n_workers(), 1U);
 }
+
+TEST(ParallelDetPool, ForEachWorkerRunsExactlyOncePerWorker) {
+  DetPool pool{4};
+  std::vector<std::atomic<int>> ran(pool.n_workers());
+  pool.for_each_worker([&](std::size_t wid) { ran[wid].fetch_add(1); });
+  for (auto& r : ran) EXPECT_EQ(r.load(), 1);
+}
+
+TEST(ParallelDetPool, ForEachWorkerStableUnderRepeat) {
+  DetPool pool{4};
+  for (int rep = 0; rep < 200; ++rep) {
+    std::vector<std::atomic<int>> ran(pool.n_workers());
+    pool.for_each_worker([&](std::size_t wid) { ran[wid].fetch_add(1); });
+    for (auto& r : ran) ASSERT_EQ(r.load(), 1) << "rep=" << rep;
+  }
+}
+
+TEST(ParallelDetPool, ForEachWorkerExceptionRethrown) {
+  DetPool pool{4};
+  EXPECT_THROW(pool.for_each_worker(
+                   [&](std::size_t wid) {
+                     if (wid == 2) throw std::runtime_error("setup");
+                   }),
+               std::exception);
+}
