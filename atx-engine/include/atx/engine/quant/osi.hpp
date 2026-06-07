@@ -59,6 +59,9 @@ struct OsiOption {
   o.year = 2000 + to_int(sym.substr(6, 2));
   o.month = to_int(sym.substr(8, 2));
   o.day = to_int(sym.substr(10, 2));
+  if (o.month < 1 || o.month > 12 || o.day < 1 || o.day > 31) {
+    return std::nullopt;
+  }
   o.is_call = (type == 'C');
   o.strike = static_cast<double>(to_int(sym.substr(13, 8))) / 1000.0;
   return o;
