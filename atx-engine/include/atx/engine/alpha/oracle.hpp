@@ -69,7 +69,6 @@
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
-#include "atx/engine/alpha/state_ops.hpp"
 
 namespace atx::engine::alpha {
 
@@ -583,6 +582,10 @@ private:
 
   // ---- stateful recurrence (forward scan, true cross-date state) -----------
   [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in);
+  // Per-op filter helpers — each restates the recurrence math INLINE (no shared
+  // state_ops kernels), so the differential proves VM-vs-oracle independently.
+  [[nodiscard]] atx::core::Status eval_kalman_level(const Instr &in, std::span<atx::f64> out) const;
+  [[nodiscard]] atx::core::Status eval_ou_filter(const Instr &in, std::span<atx::f64> out) const;
 
   // Helpers for the two big families (defined out-of-line below the class).
   void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g, atx::f64 a,
@@ -1252,45 +1255,87 @@ inline atx::f64 Oracle::ts_binary_at(OpCode op, std::span<const atx::f64> x,
 //  cased, seeding `prior` without any look-back. No std container grows in the
 //  scan (the SignalSet/slot buffers are pre-sized), so this allocates nothing.
 // =========================================================================
+// KalmanLevel oracle reference — scalar local-level Kalman filter, per-instrument
+// forward scan. Hyperparams Q (process noise) and R (observation noise) from
+// in.imm[0/1]. The recurrence math is restated INLINE here (NOT via the shared
+// state_ops kernels the VM uses), so the differential proves the two paths agree
+// independently. Stack-local {x, P, seeded} per instrument — no shared buffer.
+// SAFETY: causal by construction (reads only prior state + date-t input).
+inline atx::core::Status Oracle::eval_kalman_level(const Instr &in, std::span<atx::f64> out) const {
+  const std::span<const atx::f64> z = src_col(in, 0);
+  const atx::f64 Q = in.imm[0];
+  const atx::f64 R = in.imm[1];
+  for (atx::usize j = 0; j < instruments_; ++j) {
+    atx::f64 x = 0.0;
+    atx::f64 P = 0.0;
+    bool seeded = false;
+    for (atx::usize t = 0; t < dates_; ++t) {
+      const atx::usize idx = t * instruments_ + j;
+      const atx::f64 zv = z[idx];
+      if (!seeded) {
+        if (detail::is_nan(zv)) {
+          out[idx] = detail::kNaN; // unseeded NaN -> NaN, stay unseeded
+          continue;
+        }
+        x = zv; // seed: x=z, P=R
+        P = R;
+        seeded = true;
+        out[idx] = x;
+        continue;
+      }
+      P += Q; // predict
+      if (!detail::is_nan(zv)) {
+        const atx::f64 K = P / (P + R);
+        x += K * (zv - x);
+        P = (1.0 - K) * P;
+      }
+      out[idx] = x;
+    }
+  }
+  return atx::core::Ok();
+}
+
+// OuFilter oracle reference — OU AR(1) pull-to-mean smoother, per-instrument
+// forward scan. Hyperparams theta (mean-reversion) and mu (long-run mean) from
+// in.imm[0/1]. Restated INLINE (NOT the shared state_ops kernel). The pull is
+// OBSERVATION-FREE after seeding: xhat = mu + phi*(xhat - mu), phi = exp(-theta);
+// the new x[t] is intentionally ignored once seeded (spec §4.3). Stack-local
+// {xhat, seeded} per instrument. SAFETY: causal (reads only prior xhat + date-t x).
+inline atx::core::Status Oracle::eval_ou_filter(const Instr &in, std::span<atx::f64> out) const {
+  const std::span<const atx::f64> x = src_col(in, 0);
+  const atx::f64 theta = in.imm[0];
+  const atx::f64 mu = in.imm[1];
+  for (atx::usize j = 0; j < instruments_; ++j) {
+    atx::f64 xhat = 0.0;
+    bool seeded = false;
+    for (atx::usize t = 0; t < dates_; ++t) {
+      const atx::usize idx = t * instruments_ + j;
+      const atx::f64 xv = x[idx];
+      if (!seeded) {
+        if (detail::is_nan(xv)) {
+          out[idx] = detail::kNaN; // unseeded NaN -> NaN, stay unseeded
+          continue;
+        }
+        xhat = xv; // seed
+        seeded = true;
+        out[idx] = xhat;
+        continue;
+      }
+      const atx::f64 phi = std::exp(-theta);
+      xhat = mu + phi * (xhat - mu); // observation-free pull toward mu
+      out[idx] = xhat;
+    }
+  }
+  return atx::core::Ok();
+}
+
 inline atx::core::Status Oracle::eval_recurrence(const Instr &in) {
   std::span<atx::f64> out = dst_col(in);
-  // KalmanLevel: scalar local-level Kalman filter, per-instrument forward scan.
-  // Hyperparams Q (process noise) and R (observation noise) from in.imm[0/1].
-  // Stack-local state per instrument — no shared buffer; SAFETY: causal by
-  // construction (reads only prior state + date-t input). Reads in.imm identically
-  // to the VM; bit-equality is enforced by the differential test.
   if (in.op == OpCode::KalmanLevel) {
-    const std::span<const atx::f64> z = src_col(in, 0);
-    const atx::f64 Q = in.imm[0];
-    const atx::f64 R = in.imm[1];
-    for (atx::usize j = 0; j < instruments_; ++j) {
-      ::atx::engine::alpha::detail::KalmanLevelState s{};
-      bool seeded = false;
-      for (atx::usize t = 0; t < dates_; ++t) {
-        const atx::usize i = t * instruments_ + j;
-        out[i] = ::atx::engine::alpha::detail::kalman_level_step(s, seeded, z[i], Q, R);
-      }
-    }
-    return atx::core::Ok();
+    return eval_kalman_level(in, out);
   }
-  // OuFilter: OU AR(1) pull-to-mean smoother, per-instrument forward scan.
-  // Hyperparams theta (mean-reversion) and mu (long-run mean) from in.imm[0/1].
-  // Stack-local state per instrument — no shared buffer; SAFETY: causal by
-  // construction (reads only prior xhat + date-t input). Reads in.imm identically
-  // to the VM; bit-equality is enforced by the differential test.
   if (in.op == OpCode::OuFilter) {
-    const std::span<const atx::f64> x = src_col(in, 0);
-    const atx::f64 theta = in.imm[0];
-    const atx::f64 mu = in.imm[1];
-    for (atx::usize j = 0; j < instruments_; ++j) {
-      atx::f64 xhat = 0.0;
-      bool seeded = false;
-      for (atx::usize t = 0; t < dates_; ++t) {
-        const atx::usize i = t * instruments_ + j;
-        out[i] = ::atx::engine::alpha::detail::ou_filter_step(xhat, seeded, x[i], theta, mu);
-      }
-    }
-    return atx::core::Ok();
+    return eval_ou_filter(in, out);
   }
   if (in.op == OpCode::Hump) {
     const std::span<const atx::f64> x = src_col(in, 0);

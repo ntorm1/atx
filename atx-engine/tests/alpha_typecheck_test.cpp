@@ -304,6 +304,30 @@ TEST(AlphaTypecheck, OuFilterTypes) {
   EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
 }
 
+TEST(AlphaTypecheck, KalmanLevelRejectsNegativeQ) {
+  // Q (process noise) must be >= 0.
+  Library lib;
+  auto ast = parse_program("a = kalman_level(close, -1.0, 1.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, KalmanLevelRejectsNonPositiveR) {
+  // R (observation noise) must be > 0; 0.0 is rejected.
+  Library lib;
+  auto ast = parse_program("a = kalman_level(close, 0.1, 0.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, OuFilterRejectsNegativeTheta) {
+  // theta (mean-reversion rate) must be >= 0.
+  Library lib;
+  auto ast = parse_program("a = ou_filter(close, -0.5, 1.0)\n", lib);
+  ASSERT_TRUE(ast) << (ast ? "" : ast.error().message());
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
 // ---- required_lookback over a multi-root program ----------------------------
 
 TEST(AlphaTypecheck_Required, MaxOverAllRoots) {

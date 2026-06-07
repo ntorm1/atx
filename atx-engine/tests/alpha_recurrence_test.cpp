@@ -113,6 +113,9 @@ TEST(AlphaOuFilter, VmMatchesOracleAndHandMath) {
   const Program prog = compile_ok("a = ou_filter(close, 0.6931471805599453, 10.0)\n", lib);
   // close = [2.0, 99.0]: t=0 seeds at 2.0; t=1 pulls toward mu=10 with phi=0.5:
   //   xhat = 10 + 0.5*(2-10) = 6.0
+  // NOTE: x[t=1]=99.0 is INTENTIONALLY ignored after seeding — the OU pull is
+  // observation-free per spec §4.3 (xhat = mu + phi*(xhat-mu), no x[t] term), so
+  // the 99.0 not affecting the output is by design, not a kernel bug.
   const Panel panel = make_close_panel(2.0, 99.0);
 
   Engine eng(panel);

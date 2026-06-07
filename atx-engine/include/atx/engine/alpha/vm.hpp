@@ -729,32 +729,10 @@ private:
                                                   atx::usize instruments) {
     const std::span<atx::f64> out = dst_col(in);
     if (in.op == OpCode::KalmanLevel) {
-      const std::span<const atx::f64> z = src_col(in, 0);
-      const atx::f64 Q = in.imm[0];
-      const atx::f64 R = in.imm[1];
-      for (atx::usize j = 0; j < instruments; ++j) {
-        detail::KalmanLevelState s{};
-        bool seeded = false;
-        for (atx::usize t = 0; t < dates; ++t) {
-          const atx::usize i = t * instruments + j;
-          out[i] = detail::kalman_level_step(s, seeded, z[i], Q, R);
-        }
-      }
-      return atx::core::Ok();
+      return eval_kalman_level(in, out, dates, instruments);
     }
     if (in.op == OpCode::OuFilter) {
-      const std::span<const atx::f64> x = src_col(in, 0);
-      const atx::f64 theta = in.imm[0];
-      const atx::f64 mu = in.imm[1];
-      for (atx::usize j = 0; j < instruments; ++j) {
-        atx::f64 xhat = 0.0;
-        bool seeded = false;
-        for (atx::usize t = 0; t < dates; ++t) {
-          const atx::usize i = t * instruments + j;
-          out[i] = detail::ou_filter_step(xhat, seeded, x[i], theta, mu);
-        }
-      }
-      return atx::core::Ok();
+      return eval_ou_filter(in, out, dates, instruments);
     }
     if (instruments > state_.size()) {
       state_.resize(instruments); // grow-once; reused across calls
@@ -783,6 +761,45 @@ private:
             detail::trade_when_step(state_[j], trig[i], exit_v[i], alpha[i], /*first=*/t == 0);
         out[i] = v;
         state_[j] = v;
+      }
+    }
+    return atx::core::Ok();
+  }
+
+  // KalmanLevel VM kernel — per-instrument forward scan using the shared scalar
+  // step kernel (state_ops::kalman_level_step). Stack-local KalmanLevelState per
+  // instrument (no pooled state_ buffer needed — the struct holds {x,P}). Reads
+  // Q/R from in.imm[0/1]. The oracle restates this math INLINE for the diff.
+  [[nodiscard]] atx::core::Status eval_kalman_level(const Instr &in, std::span<atx::f64> out,
+                                                    atx::usize dates, atx::usize instruments) {
+    const std::span<const atx::f64> z = src_col(in, 0);
+    const atx::f64 Q = in.imm[0];
+    const atx::f64 R = in.imm[1];
+    for (atx::usize j = 0; j < instruments; ++j) {
+      detail::KalmanLevelState s{};
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize i = t * instruments + j;
+        out[i] = detail::kalman_level_step(s, seeded, z[i], Q, R);
+      }
+    }
+    return atx::core::Ok();
+  }
+
+  // OuFilter VM kernel — per-instrument forward scan using the shared scalar step
+  // kernel (state_ops::ou_filter_step). Stack-local {xhat, seeded} per instrument.
+  // Reads theta/mu from in.imm[0/1]. The oracle restates this math INLINE.
+  [[nodiscard]] atx::core::Status eval_ou_filter(const Instr &in, std::span<atx::f64> out,
+                                                 atx::usize dates, atx::usize instruments) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const atx::f64 theta = in.imm[0];
+    const atx::f64 mu = in.imm[1];
+    for (atx::usize j = 0; j < instruments; ++j) {
+      atx::f64 xhat = 0.0;
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize i = t * instruments + j;
+        out[i] = detail::ou_filter_step(xhat, seeded, x[i], theta, mu);
       }
     }
     return atx::core::Ok();
