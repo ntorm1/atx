@@ -40,8 +40,8 @@ The implementation plan's §0 reconciles the spec against reconnaissance of the 
 
 | Unit  | Title                                                        | Status | Commit SHA(s) | Tests | Notes |
 |-------|-------------------------------------------------------------|--------|---------------|-------|-------|
-| S3-0  | Marker + ledger + factory scaffold                          | ✅ done | _(this commit)_ | —    | `factory/fwd.hpp` (Genome/OpCatalog/ParamSpace/FitnessReport/SearchDriver/Factory fwd + F1/F4/F6 contract doc + eval switch point) + this ledger. |
-| S3-1  | Genome substrate + OpCatalog + mutation operators           | ⏳     |               |       | |
+| S3-0  | Marker + ledger + factory scaffold                          | ✅ done | `b0c07ac` | —    | `factory/fwd.hpp` (Genome/OpCatalog/ParamSpace/FitnessReport/SearchDriver/Factory fwd + F1/F4/F6 contract doc + eval switch point) + this ledger. |
+| S3-1  | Genome substrate + OpCatalog + mutation operators           | ✅ done | `ee6ec50` + `c0f09d8` + `5da7cdf` | 8 | `Genome{ast,analysis,canon_hash}` value-owned; `clone`/`clone_subtree` (post-order DFS + memo + field re-intern, `Expr::op` carried verbatim under the shared-`Library` `// SAFETY:` note)/`rebuild_with(target, (Expr&,Ast&)edit)`/`analyze_into`. `OpCatalog` buckets BOTH the 65 named `builtin_ops()` rows AND the bare infix/prefix `OpCode` set (arith `{Add,Sub,Mul,Div,Pow}`, cmp `{CmpLt..CmpNe}`, logical `{And,Or}`, unary `{Neg,Not}`) by `(Shape,DType,arity)` + declared-commutative `{Add,Mul,MinP,MaxP,And,Or,CmpEq,CmpNe}`. `op_swap` (Call→named path, Unary/Binary→opcode path), `field_swap`, `jitter_const` + `classify_literals` (Window/Scale; Hparam best-effort). All analyze-validated (F5); same-seed-identical (F1). *(Spec review caught a MUST-FIX: first cut dropped the infix/OpCode op-swap half (§0.4+§4.2) → fixed in `c0f09d8` (op_swap now reaches Add→{Sub,Mul,Div,Pow}, 300/300 Ok, distinct=4, non-vacuous). Quality review: 2 bounds-check findings declined as false-positive-by-Genome-invariant (children always in-bounds in a valid analyzed Ast); 1 unused-include hygiene fix `5da7cdf`.)* |
 | S3-2  | Subtree crossover + canonical-hash dedup                    | ⏳     |               |       | |
 | S3-3  | Parameter optimizer (grid / random / sep-CMA-ES)           | ⏳     |               |       | |
 | S3-4  | Pool-aware fitness (WQ × marginal-corr × robustness, deflated) | ⏳  |               |       | |
@@ -54,7 +54,10 @@ The implementation plan's §0 reconciles the spec against reconnaissance of the 
 
 | SHA | Unit | Subject |
 |-----|------|---------|
-| _(this commit)_ | S3-0 | docs(s3-0): open sprint-3 formulaic-alpha-factory ledger + scaffold |
+| `b0c07ac` | S3-0 | docs(s3-0): open sprint-3 formulaic-alpha-factory ledger + scaffold |
+| `ee6ec50` | S3-1 | feat(s3-1): genome rebuild substrate + OpCatalog + mutation operators |
+| `c0f09d8` | S3-1 | fix(s3-1): infix/OpCode op-swap (Unary/Binary candidates + opcode buckets) |
+| `5da7cdf` | S3-1 | fix(s3-1): drop unused typecheck.hpp include from op_catalog |
 
 ---
 
