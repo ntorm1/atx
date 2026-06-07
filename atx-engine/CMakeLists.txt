@@ -1,6 +1,7 @@
 add_library(atx-engine STATIC
     src/engine.cpp
     src/data/disk.cpp
+    src/quant/trading_calendar.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
