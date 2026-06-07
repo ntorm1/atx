@@ -57,8 +57,8 @@
 //  are O(N^2) (CPCV is not a hot path; correctness first).
 
 #include <cmath>    // std::ceil
-#include <cstddef>  // (size_type idioms)
 #include <span>     // std::span
+#include <utility>  // std::move
 #include <vector>   // std::vector
 
 #include "atx/core/macro.hpp" // ATX_ASSERT
@@ -248,8 +248,8 @@ purged_embargoed_train(std::span<const LabelSpan> spans, std::span<const atx::us
 //  observation (the fitted object's [fit_begin, fit_end) per Ch. 7). Returns one
 //  CpcvFold per lexicographic test-group combination, in that order. Each fold's
 //  train_idx and test_idx are ascending. Preconditions (fail-fast under debug):
-//  n_groups >= 1, n_test_groups in [1, n_groups]. embargo_len = ceil(embargo*N).
-//  An empty `spans` yields C(K,k) folds with empty index sets.
+//  n_groups >= 1, n_test_groups in [1, n_groups], embargo >= 0. embargo_len =
+//  ceil(embargo*N). An empty `spans` yields C(K,k) folds with empty index sets.
 // ===========================================================================
 [[nodiscard]] inline std::vector<CpcvFold> cpcv_folds(std::span<const LabelSpan> spans,
                                                       const CpcvConfig &cfg) {
@@ -259,6 +259,10 @@ purged_embargoed_train(std::span<const LabelSpan> spans, std::span<const atx::us
   ATX_ASSERT(k_groups >= 1U);
   ATX_ASSERT(k_test >= 1U && k_test <= k_groups);
 
+  // SAFETY: embargo must be non-negative — a negative fraction would make
+  // std::ceil(embargo*N) negative, and casting a negative f64 to the unsigned
+  // usize embargo_len is undefined behavior. Fail fast on the contract instead.
+  ATX_ASSERT(cfg.embargo >= 0.0);
   // embargo_len = ceil(h * N); h == 0 (or N == 0) -> 0 -> no embargo.
   const atx::f64 raw = cfg.embargo * static_cast<atx::f64>(n);
   const atx::usize embargo_len = static_cast<atx::usize>(std::ceil(raw));

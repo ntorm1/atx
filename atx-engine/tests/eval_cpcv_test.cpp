@@ -45,3 +45,8 @@ TEST(EvalCpcvDeathTest, ApplyInsideFitWindowAborts) {
   auto guard = [](atx::usize apply_date, atx::usize fit_end){ ATX_ASSERT(apply_date >= fit_end); };
   EXPECT_DEATH(guard(/*apply_date=*/0U, /*fit_end=*/8U), ".*");
 }
+TEST(EvalCpcvDeathTest, NegativeEmbargoAborts) {
+  // The call aborts before returning, so its [[nodiscard]] result is genuinely
+  // discarded; cast to void to keep the /WX build clean (-Wunused-result).
+  EXPECT_DEATH((void)cpcv_folds(spans_h(60,1), CpcvConfig{6,2,-0.1}), ".*");
+}
