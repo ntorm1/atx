@@ -4,6 +4,12 @@ build-vs/
 out/
 cmake-build-*/
 
+# Git worktrees (isolated workspaces)
+.worktrees/
+
+# Downloaded market data (DBN/parquet dumps from examples)
+data/
+
 # clangd / tooling
 .cache/
 compile_commands.json
