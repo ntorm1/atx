@@ -29,10 +29,15 @@ Record one row per landed task: `pNd-X | SHA | summary | tests`.
 | p3d-C4 | 044e977 | kalman_level + ou_filter registry + typecheck + hparam→imm | AlphaTypecheck; 429 |
 | p3d-C5 | dd282f4, a4e5a6d | VM+oracle recurrence (differential); independent oracle restatement + ≤60 + range tests | 435 |
 
+| p3d-D1 | accf06f | Chan 2-state kalman_reg step kernel | KalmanRegStep 2/2 (α=2/11,β=4/11,resid=1/√11) |
+| p3d-D2 | b47510e, 336de5e | kalman record op (alpha/beta/resid) + typecheck; extract validate_hparam_ranges + RejectsBadR | AlphaKalmanReg 6/6 |
+| p3d-D3 | feef48d | VM+oracle Chan kalman multi-output recurrence (oracle inline) | differential green |
+| p3d-D4 | 5d86c87 | numpy known-value reference fixture + test | KalmanRef; VM==numpy sub-ULP |
+
 ## Phase status
 - [x] A — local bindings + references (A1–A3) — spec✓ quality✓, 410/410 green
 - [x] B — multi-output IR + records + member access (B1–B9) — spec✓ quality✓, 426/426; multi-output proven end-to-end on split2 via bit-exact differential
 - [x] C — recurrence + kalman_level + ou_filter (C1 skipped: instrument-outer locals; C2–C5) — spec✓ quality✓, 435/435; oracle restates inline (genuine differential)
-- [ ] D — Chan kalman record {alpha,beta,resid} (D1–D4)
+- [x] D — Chan kalman record {alpha,beta,resid} (D1–D4) — spec✓ quality✓, 441/441; single compute→3 pins, oracle inline, numpy-verified
 - [ ] E — OU rolling family (E1–E4)
 - [ ] F — integration + docs (F1–F2)
