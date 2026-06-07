@@ -38,7 +38,7 @@ Realistic scope for this sprint:
 | Unit    | Status | Commit     | Notes |
 |---------|--------|------------|-------|
 | P4b-0   | done   | `ac3b26a`  | scaffold + ledger; RiskScaffold 1/1/0/0 |
-| P4-6    | done   | `PENDING`  | factor exposure matrix `X` builder; RiskExposures 11/11/0/0 (see note) |
+| P4-6    | done   | `7c87d79`  | factor exposure matrix `X` builder; RiskExposures 11/11/0/0 (see note) |
 | P4-7    | —      | —          | — |
 | P4-8    | —      | —          | — |
 | P4-9    | —      | —          | — |
@@ -51,7 +51,7 @@ Realistic scope for this sprint:
 | Commit    | Unit        | Test counts |
 |-----------|-------------|-------------|
 | `ac3b26a` | marker (P4b-0) | RiskScaffold 1/1/0/0 |
-| `PENDING` | feat (P4-6)    | RiskExposures 11/11/0/0 |
+| `7c87d79` | feat (P4-6)    | RiskExposures 11/11/0/0 |
 
 ---
 
