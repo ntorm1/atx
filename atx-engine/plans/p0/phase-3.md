@@ -1,6 +1,8 @@
 # Phase 3 — Alpha-Expression DSL + Vectorized VM (user reference)
 
 **Status:** ✅ closed 2026-06-06 · 10 units (P3-0…P3-9) · in-place on `feat/atx-core-stdlib`
+**Extended by Phase 3d** (state-space & mean-reversion: local bindings, records/`.pin`, Kalman/OU operators) — see
+§1.1, [`phase-3d-statespace-dsl-design.md`](phase-3d-statespace-dsl-design.md), [`phase-3d-progress.md`](phase-3d-progress.md).
 **Source plan:** [`phase-3-alpha-expression-dsl-implementation-plan.md`](phase-3-alpha-expression-dsl-implementation-plan.md) ·
 **Build log:** [`phase-3-progress.md`](phase-3-progress.md)
 
@@ -40,9 +42,12 @@ call        := IDENT '(' [ expr { ',' expr } ] ')'
 - **Fields**: `open high low close volume vwap returns cap adv{d}` resolve to panel columns;
   `IndClass.sector` / `.industry` / `.subindustry` are integer **group** classifiers.
 - **`$vwap` and `vwap` are the same field** (the `$` sigil is stripped).
-- **Assignment names are NOT let-bindings** — each `IDENT = expr` is an independent named alpha; a bare
-  identifier always resolves to a panel field, never to an earlier binding. (Cross-alpha reuse comes from
-  *subexpression* sharing in the DAG, not named intermediates — see §4.)
+- **Assignment names are local bindings (Phase 3d).** Each `IDENT = expr` is still an independent named
+  alpha (a root/output), but a bare identifier now resolves **binding-first, field-fallback**: it reuses an
+  *earlier* assignment of that name (sharing its DAG node) if one exists, otherwise it loads the panel field.
+  A binding may shadow a panel field of the same name — `parse_program`'s optional `warnings` out-param flags
+  it. A forward or self reference (a name used at or before its own definition) falls back to the field.
+  Cross-alpha reuse therefore comes from *either* named bindings *or* automatic subexpression sharing (§4).
 - Build-time **constant folding** (`2*3`→`6`, `log(1)`→`0`, `-3`, `2^10`) and **ternary desugaring**
   (`c ? a : b` → a `Select` node) happen in the parser. `pow(x,2)`→`x*x` strength reduction happens in the DAG.
 
@@ -56,9 +61,57 @@ All built-ins are lookahead-safe (causal).
 | logical → mask | `< > <= >= == !=`, `&& ||`, `!x`, `cond ? a : b` |
 | cross-sectional (P→V) | `rank zscore scale indneutralize group_neutralize group_rank group_zscore` |
 | time-series (P→P, causal) | `delay delta ts_sum ts_mean stddev/ts_std ts_var ts_min ts_max ts_argmin ts_argmax ts_rank correlation covariance product decay_linear ema wma skew kurt med mad slope rsquare resid` |
+| state-space & mean-reversion (P→P, causal) | `kalman_level(x,Q,R)` · `kalman(y,x,δ,R)`→record `{alpha,beta,resid}` · `ou_filter(x,θ,μ)` · `ou_theta ou_halflife ou_mean ou_zscore` (each `(x,d)`) — see §1.1 |
 
 The full table with arities, shapes, and opcodes is Appendix A of the source plan. Adding an operator is one
 registry row + one opcode + one kernel.
+
+### 1.1 State-space, mean-reversion, records & `.pin` (Phase 3d)
+
+Phase 3d adds a state-space / mean-reversion family plus the language machinery a multi-output filter needs:
+**records** (a node that emits several named columns) and **`.pin` member access** to project one column.
+
+**Recurrence operators** carry true cross-date state from the first date forward (no trailing window); they are
+causal by construction (output at `t` reads only state at `t-1` and the date-`t` inputs). Hyperparameters are
+**compile-time literals** (folded into the op's CSE identity), not panel operands.
+
+| Operator | Signature | Math (per instrument, forward scan) | NaN policy |
+|---|---|---|---|
+| `kalman_level` | `kalman_level(x, Q, R)` → P | scalar local-level (random-walk+noise) filter. Seed `x̂=z, P=R` on first finite obs; predict `P+=Q`; update `K=P/(P+R)`, `x̂+=K·(z−x̂)`, `P=(1−K)·P`. `Q≥0` (process var), `R>0` (obs var). | NaN before the first finite obs; a NaN obs is predict-only (carries `x̂`, `P+=Q`). |
+| `kalman` | `kalman(y, x, δ, R)` → **record** `{alpha, beta, resid}` | Chan 2-state time-varying regression of `y` on `x`. Process covariance `W=(δ/(1−δ))·I₂`, diffuse prior `(a=b=0, P=I₂)`. `alpha`=intercept state, `beta`=slope/hedge-ratio state, `resid`=standardized innovation `e/√Q` (the spread). `δ∈(0,1)` strict, `R>0`. | A NaN `y` or `x` is predict-only (`P+=W`); that date's three pins are NaN. |
+| `ou_filter` | `ou_filter(x, θ, μ)` → P | OU AR(1) pull-to-mean smoother. `φ=exp(−θ)`. Seed `x̂=x` on first finite obs; then `x̂=μ+φ·(x̂−μ)` (pulls toward `μ`). `θ≥0`, `μ` finite. | NaN before the first finite obs. |
+
+**Rolling OU-fit operators** are windowed time-series ops (same `(series, window)` shape as `slope`/`resid`):
+each fits an AR(1) `x[s]=a+b·x[s−1]` by OLS over the trailing window `[t−d+1, t]`, then derives a quantity.
+Lookback is `(d−1)+child`; the window `d` is a positive-integer literal.
+
+| Operator | Signature | Value | NaN policy |
+|---|---|---|---|
+| `ou_theta` | `ou_theta(x, d)` → P | `θ = −ln(b)` (mean-reversion speed) | NaN unless `b∈(0,1)` |
+| `ou_halflife` | `ou_halflife(x, d)` → P | `ln2/θ` (half-life) | NaN unless `b∈(0,1)` |
+| `ou_mean` | `ou_mean(x, d)` → P | `a/(1−b)` (long-run equilibrium) | NaN unless `b<1` (and `b` finite) |
+| `ou_zscore` | `ou_zscore(x, d)` → P | `(x[t]−μ)/σ_eq`, `σ_eq=resid_std/√(1−b²)` | NaN unless `b∈(0,1)` and `σ_eq>0` |
+
+All rolling ops yield NaN on a short or any-NaN window (`d` cells required) or a degenerate fit (`<2` lagged
+pairs / zero predictor variance).
+
+**Records & `.pin`.** `kalman(...)` returns a record, which **cannot itself be an alpha output** —
+`analyze` rejects a bare record root with *"a record value cannot be an alpha output; project a pin with .pin"*.
+Project a named column with member access: `kalman(y, x, δ, R).beta`, `.alpha`, or `.resid`. Two pins of the
+**same** call hash-cons to ONE filter scan (compute once, project many) — so `beta = kalman(...).beta` and
+`spread = kalman(...).resid` run a single Kalman pass.
+
+**Headline example — Kalman pairs + OU mean-reversion signal:**
+
+```text
+beta   = kalman(ret, hedge, 0.0001, 0.001).beta     # time-varying hedge ratio
+spread = kalman(ret, hedge, 0.0001, 0.001).resid    # standardized spread (one shared scan via CSE)
+hl     = ou_halflife(spread, 20)                     # mean-reversion half-life of the spread
+sig    = -ou_zscore(spread, 20)                      # fade the spread: short rich / long cheap
+```
+
+`beta`, `spread`, `hl`, `sig` are four alpha outputs; the two `kalman(...)` calls share one scan. Because
+assignment names are local bindings (above), `spread` is computed once and reused by both `hl` and `sig`.
 
 ---
 
