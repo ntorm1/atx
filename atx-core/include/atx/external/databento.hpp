@@ -90,4 +90,13 @@ split_under_cap(std::span<const std::string> symbols, double cap, EstFn&& est) {
     const std::pair<std::string, std::string>& range_utc, std::string_view schema,
     std::string_view out_path, double cap_usd = 2.0);
 
+// OPRA full-chain cbbo-1m for `underlyings` via parent symbology "<SYM>.OPT".
+// Writes one Parquet file at out_path with columns:
+// ts, underlying, symbol, bid_px, ask_px, bid_sz, ask_sz.
+// Splits underlyings so every API call's preflight cost < cap_usd.
+[[nodiscard]] Result<PullStats> pull_opra_cbbo_1m_to_parquet(
+    std::string_view api_key, std::span<const std::string> underlyings,
+    const std::pair<std::string, std::string>& range_utc, std::string_view out_path,
+    double cap_usd = 2.0);
+
 } // namespace atx::external::databento

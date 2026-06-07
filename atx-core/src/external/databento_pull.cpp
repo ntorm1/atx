@@ -7,6 +7,7 @@
 // that the databento client drags in transitively (record.hpp -> exceptions.hpp ->
 // httplib.h -> zlib.h). The two cannot coexist in one TU, so they are split here.
 
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -74,6 +75,16 @@ constexpr i64 kUnsetPx = std::numeric_limits<i64>::min();
 
 [[nodiscard]] ::databento::Historical make_client(std::string_view api_key) {
   return ::databento::Historical::Builder().SetKey(std::string{api_key}).Build();
+}
+
+// OSI root = leading capital letters of an option symbol,
+// e.g. "XOM   260605C00150000" -> "XOM".
+[[nodiscard]] std::string osi_root(std::string_view osi) {
+  std::size_t i = 0;
+  while (i < osi.size() && osi[i] >= 'A' && osi[i] <= 'Z') {
+    ++i;
+  }
+  return std::string{osi.substr(0, i)};
 }
 
 } // namespace
@@ -145,6 +156,72 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
   stats.records = static_cast<i64>(c.ts.size());
   const std::vector<atx::core::io::WriteColumn> cols{
       {"ts", std::span<const time::Timestamp>(c.ts)},
+      {"symbol", std::span<const std::string>(c.symbol)},
+      {"bid_px", std::span<const i64>(c.bid_px)},
+      {"ask_px", std::span<const i64>(c.ask_px)},
+      {"bid_sz", std::span<const i64>(c.bid_sz)},
+      {"ask_sz", std::span<const i64>(c.ask_sz)},
+  };
+  auto w = atx::core::io::write_parquet(cols, out_path);
+  if (!w.has_value()) {
+    return Err(w.error());
+  }
+  return Ok(stats);
+}
+
+Result<PullStats> pull_opra_cbbo_1m_to_parquet(
+    std::string_view api_key, std::span<const std::string> underlyings,
+    const std::pair<std::string, std::string>& range_utc, std::string_view out_path,
+    double cap_usd) {
+  const std::string dataset = "OPRA.PILLAR";
+  const auto sch = ::databento::Schema::Cbbo1M;
+  const auto sty = ::databento::SType::Parent;
+
+  std::vector<std::string> parents;
+  parents.reserve(underlyings.size());
+  for (const auto& u : underlyings) {
+    parents.push_back(u + ".OPT");
+  }
+
+  PullStats stats;
+  L1Columns c;
+  std::vector<std::string> underlying_col;
+  try {
+    auto client = make_client(api_key);
+    const ::databento::DateTimeRange<std::string> range{range_utc.first, range_utc.second};
+    auto est = [&](std::span<const std::string> b) -> double {
+      const std::vector<std::string> v(b.begin(), b.end());
+      return client.MetadataGetCost(dataset, range, v, sch, sty, 0);
+    };
+    const auto batches = split_under_cap(std::span<const std::string>(parents), cap_usd, est);
+    for (const auto& batch : batches) {
+      stats.cost_usd += est(std::span<const std::string>(batch));
+      ::databento::TsSymbolMap tsmap;
+      client.TimeseriesGetRange(
+          dataset, range, batch, sch, sty, ::databento::SType::InstrumentId, 0,
+          [&](::databento::Metadata&& m) { tsmap = m.CreateSymbolMap(); },
+          [&](const ::databento::Record& rec) {
+            if (rec.Holds<::databento::CbboMsg>()) {
+              const auto& q = rec.Get<::databento::CbboMsg>();
+              const auto& l = q.levels[0];
+              const auto it = tsmap.Find(q);
+              const std::string sym =
+                  it != tsmap.Map().end() ? *it->second : std::to_string(q.hd.instrument_id);
+              underlying_col.push_back(osi_root(sym));
+              c.push(q.ts_recv.time_since_epoch().count(), sym, px_or_unset(l.bid_px),
+                     px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
+            }
+            return ::databento::KeepGoing::Continue;
+          });
+      ++stats.api_calls;
+    }
+  } catch (const std::exception& e) {
+    return Err(ErrorCode::Internal, std::string{"pull_opra_cbbo: "} + e.what());
+  }
+  stats.records = static_cast<i64>(c.ts.size());
+  const std::vector<atx::core::io::WriteColumn> cols{
+      {"ts", std::span<const time::Timestamp>(c.ts)},
+      {"underlying", std::span<const std::string>(underlying_col)},
       {"symbol", std::span<const std::string>(c.symbol)},
       {"bid_px", std::span<const i64>(c.bid_px)},
       {"ask_px", std::span<const i64>(c.ask_px)},
