@@ -1,10 +1,11 @@
 # Module p1 — atx-engine v2: The Alpha Factory & Portfolio Brain (`p1`)
 
 **Last reviewed:** 2026-06-07
-**Status:** **S1 (Evaluation & Validation Spine) CLOSED** (`feat/atx-core-stdlib`; close ledger
-[`sprint-1-progress.md`](sprint-1-progress.md)). p0 Phases 1–4 are complete (Phase-4 mega-alpha layer
-closed at `f2d22f4`). S2–S7 remain `⏳ proposed`; the factory track (S3→S4→S5→S7) is unblocked, and
-S2 (parallel) / S6 (cost) can open concurrently with it.
+**Status:** **S1 (Evaluation & Validation Spine) + S2 (Parallel Compute Substrate) CLOSED**
+(`feat/atx-core-stdlib`; close ledgers [`sprint-1-progress.md`](sprint-1-progress.md),
+[`sprint-2-progress.md`](sprint-2-progress.md)). p0 Phases 1–4 are complete (Phase-4 mega-alpha layer
+closed at `f2d22f4`). S3–S7 remain `⏳ proposed`; the factory track (S3→S4→S5→S7) is unblocked, and
+S6 (cost) can open concurrently with it (S2 parallel is done — it hands S3 cross-core throughput).
 **Source:** distills [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md)
 + [`../../research/renaissance-technologies-systems-deep-dive.md`](../../research/renaissance-technologies-systems-deep-dive.md),
 reviewed against the as-built `p0` engine and the frozen [`../p0/phase-4-signal-combination-risk-implementation-plan.md`](../p0/phase-4-signal-combination-risk-implementation-plan.md).
@@ -186,7 +187,7 @@ look-ahead, snooping) every downstream sprint reuses. *Grounded in RenTech §7 (
 > deflated_sharpe/pbo/cpcv) + `validation::bias_audit`. Residuals lifted to the Pattern-B backlog below:
 > atx-core L6 stats (norm_cdf/ppf/skew/kurt/median), monthly-decomposition-needs-dates, appraisal-vs-real-factor.
 
-### S2 — Parallel Compute Substrate  ⏳ proposed ([spec](sprint-2-parallel-compute.md))
+### S2 — Parallel Compute Substrate  ✅ closed ([spec](sprint-2-parallel-compute.md))
 **Theme:** Deterministic throughput before the factory needs it. A deterministic task pool (atx-core L4
 request), **parallel batch-eval** (partition the alpha set / date-shards, **order-fixed merge** so the
 result is byte-identical to single-thread), parallel backtests and parallel CPCV folds, per-worker arenas
@@ -196,11 +197,19 @@ determinism invariant.* **No P4 dependency** — can open concurrently with S1.
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S2.0 | Marker + ledger | S | ⏳ |
-| S2.1 | Deterministic task pool (atx-core L4 `concurrent` request; fixed worker count, no time-dependent scheduling) | M | ⏳ |
-| S2.2 | Parallel batch-eval: shard the `Program` root set across workers; order-fixed `SignalSet` merge | L | ⏳ |
-| S2.3 | Parallel backtests / parallel CPCV folds (per-fold isolation, deterministic reduce) | M | ⏳ |
-| S2.4 | Determinism-under-parallelism proof (digest == single-thread; thread-count invariance) + bench + close | M | ⏳ |
+| S2.0 | Marker + ledger | S | ✅ |
+| S2.1 | Deterministic task pool (engine-local `DetPool` fallback; atx-core L4 `concurrent` request recorded; fixed worker count, atomic dispenser) | M | ✅ |
+| S2.2 | Parallel batch-eval: fan per-root `Program`s across per-worker stateful Engines; order-fixed `SignalSet` merge | L | ✅ |
+| S2.3 | Parallel backtests / parallel CPCV folds (per-fold isolation over const `AlphaStreams`, reduce-by-sort) | M | ✅ |
+| S2.4 | Determinism-under-parallelism proof (digest == single-thread; {1,2,4,8} invariance) + bench + close | M | ✅ |
+
+> **Closed 2026-06-07** (`d7a1b75`) — 27 new tests, full engine suite 882/882 green; `parallel::` (`DetPool` +
+> `signal_set_digest`/`result_table_digest` + `parallel_evaluate` + `parallel_cpcv`/`parallel_backtests` +
+> reduce-by-sort aggregate). Backbone = hand-rolled deterministic pool (oneTBB evaluated + rejected); determinism
+> by construction (map + fixed-order assemble + reduce-by-sort), validated by the {1,2,4,8}==single-thread digest
+> matrix. Residuals → Pattern-B backlog below: **atx-core `concurrent/task_pool.hpp` lift** (engine `DetPool` →
+> L4), strategy-B CSE-preserving batch-eval (needs `Engine::evaluate_root`), Linux-CI TSan job, lowest-index-error
+> tie-break test, NUMA panel partitioning (profile-gated).
 
 ### S3 — Formulaic Alpha Factory  ⏳ proposed ([spec](sprint-3-formulaic-alpha-factory.md))
 **Theme:** The headline — **automated discovery**. Genetic/evolutionary + parameter search over the DSL

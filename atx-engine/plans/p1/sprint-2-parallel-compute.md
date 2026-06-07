@@ -1,6 +1,10 @@
 # Sprint S2 — Parallel Compute Substrate (sprint spec)
 
-**Status:** ⏳ ready to open (spec frozen). No Phase-4 dependency — opens concurrently with S1.
+**Status:** ✅ CLOSED (2026-06-07, `feat/atx-core-stdlib @ d7a1b75`). Shipped as `parallel::` (`DetPool` +
+`signal_set_digest`/`result_table_digest` + `parallel_evaluate` + `parallel_cpcv`/`parallel_backtests` +
+reduce-by-sort aggregate) — 27 tests, full engine suite 882/882 green, determinism proven by the
+{1,2,4,8}==single-thread digest matrix. See the close ledger [`sprint-2-progress.md`](sprint-2-progress.md)
+and the user reference [`sprint-2.md`](sprint-2.md). No Phase-4 dependency — opened concurrently with S1.
 **Implementation plan (the frozen *how*):** [`sprint-2-parallel-compute-implementation-plan.md`](sprint-2-parallel-compute-implementation-plan.md) — per-unit S2-0…S2-4, data structures, algorithms + pseudocode, the determinism design rules (R1–R7), and ~40 web-research references. **On conflict, the implementation plan's §0 amendment overrides this spec.**
 **Backbone decision (web-researched):** a **hand-rolled fixed-worker deterministic pool** on atx-core's *existing* `concurrent/` + `arena` primitives — **NOT oneTBB** (evaluated and rejected: TBB's determinism feature is redundant for this fixed-slot embarrassingly-parallel workload, and it adds a compiled redistributable DLL against the header-only philosophy; Taskflow is the header-only fallback if a real task-graph DAG appears later). Determinism is achieved **by construction** (map pattern + fixed-order assemble + reduce-by-sort + strict-FP), not by a clever reduction.
 **Roadmap:** [`ROADMAP.md`](ROADMAP.md) · **Discipline:** [`../docs/sprint.md`](../docs/sprint.md)
