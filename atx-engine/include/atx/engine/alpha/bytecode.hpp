@@ -180,8 +180,11 @@ private:
 }
 
 // Decrement a child's remaining-consumer count; when it hits zero emit a Free
-// for its slot and recycle it. `slot[child]` must already be valid.
-inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
+// for its slot (block) and recycle it. `slot[child]` must already be valid.
+// `child_n_out` is the number of output slots the child node occupies (1 for
+// all single-output nodes; >= 2 for multi-output record nodes such as Split2).
+// A Free instr carries `n_out` so the VM knows the block width.
+inline void retire_consumer(NodeId child, atx::u8 child_n_out, std::vector<atx::u32> &remaining,
                             std::vector<SlotId> &slot, std::vector<Instr> &code, SlotPool &pool) {
   // SAFETY: every consumer edge is counted in refcount and decremented exactly
   // once, so `remaining` can never underflow below zero before reaching it.
@@ -190,8 +193,9 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
     Instr fr;
     fr.op = OpCode::Free;
     fr.dst = slot[child];
+    fr.n_out = child_n_out; // block width: VM releases [dst, dst+n_out)
     code.push_back(fr);
-    pool.release(slot[child]);
+    pool.release_block(slot[child], child_n_out);
     slot[child] = kNoSlot;
   }
 }
@@ -249,7 +253,10 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
       continue;
     }
 
-    const SlotId dst = pool.acquire();
+    // Multi-output nodes (e.g. Split2, n_out>=2) occupy a CONTIGUOUS block of
+    // slots [dst, dst+n_out). acquire_block grows the high-water by n_out and
+    // returns the first slot; single-output nodes use the fast acquire() path.
+    const SlotId dst = (n.n_out > 1) ? pool.acquire_block(n.n_out) : pool.acquire();
     slot[i] = dst;
 
     Instr instr;
@@ -263,14 +270,20 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
       instr.param = n.param;
     } else if (n.op == OpCode::Const) {
       instr.imm[0] = n.value;
+    } else if (n.op == OpCode::Pin) {
+      // Pin's param is the pin index (which output of the record compute to
+      // project). It differs from LoadField / Const, so it must be set here.
+      instr.param = n.param;
     }
     instr.n_out = n.n_out;
     prog.code.push_back(instr);
 
     // Retire each child edge of this node (Mul(x,x) retires x twice — its two
     // edges are two separate consumers and both must count down `remaining`).
+    // Pass the child's n_out so retire_consumer can release the right block size.
     for (atx::usize k = 0; k < nkids; ++k) {
-      detail::retire_consumer(n.in.at(k), remaining, slot, prog.code, pool);
+      const NodeId child = n.in.at(k);
+      detail::retire_consumer(child, nodes[child].n_out, remaining, slot, prog.code, pool);
     }
 
     // Emit one StoreAlpha per root targeting this node (the "+1" consumers),
@@ -285,17 +298,15 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
       store.src[0] = slot[i];
       store.param = out;
       prog.code.push_back(store);
-      detail::retire_consumer(static_cast<NodeId>(i), remaining, slot, prog.code, pool);
+      detail::retire_consumer(static_cast<NodeId>(i), n.n_out, remaining, slot, prog.code, pool);
     }
   }
 
   prog.num_slots = pool.peak();
   prog.peak_live_slots = pool.peak();
-  // Peak live slots can never exceed the number of live nodes interned.
-  if (prog.num_slots > nodes.size()) {
-    return atx::core::Err(atx::core::ErrorCode::Internal,
-                          "linearize: peak live slots exceeded node count (allocator bug)");
-  }
+  // With multi-output nodes a single node may occupy n_out slots, so peak can
+  // legitimately exceed unique_nodes. The only hard invariant is that peak is
+  // finite and non-zero (the VM pre-sizes its pool from this value).
   return atx::core::Ok(std::move(prog));
 }
 
