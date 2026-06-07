@@ -201,6 +201,7 @@ inline constexpr atx::u8 kBpPower = 9;    // ^ (right-assoc)
   case TokenKind::Number:
   case TokenKind::Ident:
   case TokenKind::Dollar:
+  case TokenKind::Dot: // member-access separator; postfix handled in B5, not infix here
   case TokenKind::Bang:
   case TokenKind::Colon:
   case TokenKind::LParen:
@@ -247,6 +248,7 @@ inline constexpr atx::u8 kBpPower = 9;    // ^ (right-assoc)
   case TokenKind::Number:
   case TokenKind::Ident:
   case TokenKind::Dollar:
+  case TokenKind::Dot: // member-access separator; postfix handled in B5, not binary-infix
   case TokenKind::Bang:
   case TokenKind::Question:
   case TokenKind::Colon:
@@ -513,9 +515,28 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
                            "' shadows a possible panel field of the same name");
       return atx::core::Ok(bound); // reference an earlier binding (reuse its ExprId)
     }
+    // Collect dotted field segments: Ident [Dot Ident]* — e.g. "IndClass.sector".
+    // The B4 lexer emits '.' as a Dot token instead of consuming it inside an
+    // ident, so the parser must reassemble dotted paths into a single Field name.
+    // (Full member-access AST nodes are deferred to B5; here we produce one Field
+    // whose interned name is the dot-joined string, matching pre-B4 behaviour.)
+    std::string field_name{p.text(tok)};
+    while (p.peek_kind() == TokenKind::Dot) {
+      // Peek one more ahead: consume Dot+Ident only; a trailing '.' without an
+      // ident continuation remains as a Dot token for the caller to handle.
+      const atx::usize saved = p.pos;
+      p.advance(); // consume Dot
+      if (p.peek_kind() != TokenKind::Ident) {
+        p.pos = saved; // back-track: trailing dot is not part of this field
+        break;
+      }
+      field_name += '.';
+      field_name += p.text(p.peek());
+      p.advance(); // consume trailing Ident segment
+    }
     Expr e;
     e.kind = Expr::Kind::Field;
-    e.name_id = p.ast->intern(p.text(tok));
+    e.name_id = p.ast->intern(field_name);
     return atx::core::Ok(p.ast->add(e));
   }
   case TokenKind::LParen: {
@@ -544,6 +565,7 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     return atx::core::Ok(p.ast->add(e));
   }
   // Tokens that cannot start an expression.
+  case TokenKind::Dot: // member-access postfix; cannot open a prefix position (B5 handles it)
   case TokenKind::Plus:
   case TokenKind::Star:
   case TokenKind::Slash:

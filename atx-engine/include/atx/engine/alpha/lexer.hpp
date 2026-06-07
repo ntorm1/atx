@@ -12,12 +12,14 @@
 //   * A lone '&' or '|' is a ParseError (no single-char boolean ops in the DSL).
 //   * Numbers are parsed with std::from_chars<double> (C++17, locale-independent,
 //     no strtod locale surprises). Handles integer, decimal, and scientific forms
-//     (1, 0.5, 1e3, 1E3, 2.5e-2). A lone '.' is not a number — it is an unknown
-//     byte and yields ParseError.
-//   * Identifiers: [A-Za-z_] start, then [A-Za-z0-9_.] — an interior '.' is
-//     accepted so that field paths like "IndClass.sector" lex as a single Ident.
-//     A trailing dot with no alpha/digit/underscore continuation is a ParseError.
+//     (1, 0.5, 1e3, 1E3, 2.5e-2). A '.' that begins a numeric literal (i.e. is
+//     followed by a digit) is consumed as part of that literal; an isolated '.'
+//     (not preceded by a digit context, not followed by a digit) lexes as Dot.
+//   * Identifiers: [A-Za-z_] start, then [A-Za-z0-9_] continue. A '.' is NOT
+//     consumed inside an identifier — it emits a separate Dot token (B4), which
+//     the parser uses for member access (`kf.beta` → Ident Dot Ident).
 //   * '$' lexes as Dollar; the parser pairs it with the subsequent Ident.
+//   * '.' lexes as Dot (TokenKind::Dot) whenever it is not part of a number.
 //   * Every successful scan appends exactly one End token with span {len, len}.
 //   * On any unrecognised byte, returns Err(ParseError, message with offset).
 //   * Return type is NOT noexcept — std::vector allocation may throw.
@@ -47,6 +49,7 @@ enum class TokenKind : atx::u8 {
   Number,
   Ident,
   Dollar,
+  Dot, // '.' — member-access separator (B4); not consumed inside identifiers or numbers
   Plus,
   Minus,
   Star,
@@ -104,7 +107,8 @@ namespace detail {
 
 [[nodiscard]] constexpr bool is_ident_continue(char c) noexcept {
   return is_alpha_under(c) || is_digit(c);
-  // Note: '.' is handled separately in scan_ident with look-ahead.
+  // Note: '.' is NOT an ident-continue character (B4). A '.' after an ident
+  // becomes a separate Dot token enabling member-access syntax (kf.beta).
 }
 
 // Scan a number starting at src[pos].  Returns the parsed value and advances
@@ -128,26 +132,16 @@ namespace detail {
   return atx::core::Ok(value);
 }
 
-// Scan an identifier (and optional interior dots) starting at src[pos].
+// Scan an identifier starting at src[pos].
 // Precondition: src[pos] satisfies is_alpha_under.
-// Returns the end offset (exclusive).  A trailing dot without a continuation
-// character is NOT consumed (caller will re-encounter it and error).
+// Returns the end offset (exclusive). '.' is NOT consumed; it will be emitted
+// as a separate Dot token by the main scan loop (B4).
 [[nodiscard]] inline atx::usize scan_ident(std::string_view src, atx::usize pos) noexcept {
   const atx::usize len = src.size();
   // Consume the start character (already verified by caller).
   ++pos;
-  while (pos < len) {
-    const char c = src[pos];
-    if (is_ident_continue(c)) {
-      ++pos;
-    } else if (c == '.' && pos + 1 < len && is_ident_continue(src[pos + 1])) {
-      // Interior dot: "IndClass.sector" — only consume if followed by an
-      // ident-continue character so a trailing dot is not swallowed.
-      ++pos; // consume '.'
-      ++pos; // consume the char after dot
-    } else {
-      break;
-    }
+  while (pos < len && is_ident_continue(src[pos])) {
+    ++pos;
   }
   return pos;
 }
@@ -225,6 +219,11 @@ namespace detail {
     }
     ++pos;
     kind = TokenKind::PipePipe;
+    break;
+  case '.':
+    // A '.' that reaches here is NOT part of a number (digits are handled
+    // before scan_operator is called) — emit a standalone Dot token (B4).
+    kind = TokenKind::Dot;
     break;
   default:
     return atx::core::Err(atx::core::ErrorCode::ParseError,
