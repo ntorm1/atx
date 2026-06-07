@@ -86,4 +86,39 @@ inline constexpr atx::f64 kStateNaN = std::numeric_limits<atx::f64>::quiet_NaN()
   return (std::fabs(x - prior) > threshold) ? x : prior;
 }
 
+// ---------------------------------------------------------------------------
+// KalmanLevelState / kalman_level_step — C2 (scalar local-level Kalman filter)
+// ---------------------------------------------------------------------------
+
+struct KalmanLevelState {
+  atx::f64 x{0.0};
+  atx::f64 P{0.0};
+};
+
+// One step of the scalar local-level (random-walk + noise) filter for one
+// instrument. `seeded` is false until the first finite observation z (then
+// x=z, P=R). Subsequent: predict P+=Q; if z finite Kalman-update; if z NaN
+// carry x (P still += Q). Returns the filtered level (NaN before seed).
+// SAFETY: reads only prior state `s`/`seeded` and the date-t observation `z`
+// — causal by construction.
+[[nodiscard]] inline atx::f64 kalman_level_step(KalmanLevelState &s, bool &seeded, atx::f64 z,
+                                                atx::f64 Q, atx::f64 R) noexcept {
+  if (!seeded) {
+    if (state_is_nan(z)) {
+      return kStateNaN;
+    }
+    s.x = z;
+    s.P = R;
+    seeded = true;
+    return s.x;
+  }
+  s.P += Q; // predict
+  if (!state_is_nan(z)) {
+    const atx::f64 K = s.P / (s.P + R);
+    s.x += K * (z - s.x);
+    s.P = (1.0 - K) * s.P;
+  }
+  return s.x;
+}
+
 } // namespace atx::engine::alpha::detail
