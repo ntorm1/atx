@@ -66,6 +66,28 @@ Result<core::io::LazyParquet> DiskStore::scan_partition(Store s, std::string_vie
   return core::io::LazyParquet::scan(p.string());
 }
 
-// list_dates added in the next task.
+Result<std::vector<std::string>> DiskStore::list_dates(Store s) const {
+  std::vector<std::string> dates;
+  const std::filesystem::path dir = store_dir(s);
+  std::error_code ec;
+  if (!std::filesystem::exists(dir, ec)) {
+    return Ok(std::move(dates));
+  }
+  for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) {
+      return Err(ErrorCode::IoError, "iterate store: " + ec.message());
+    }
+    if (!e.is_directory()) {
+      continue;
+    }
+    const std::string name = e.path().filename().string();
+    constexpr std::string_view kPrefix = "date=";
+    if (name.rfind(kPrefix, 0) == 0) {
+      dates.emplace_back(name.substr(kPrefix.size()));
+    }
+  }
+  std::sort(dates.begin(), dates.end());
+  return Ok(std::move(dates));
+}
 
 } // namespace atx::engine::data

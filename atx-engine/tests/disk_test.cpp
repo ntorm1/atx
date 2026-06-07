@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string>
@@ -16,9 +15,7 @@ using atx::engine::data::Store;
 namespace {
 fs::path unique_tmp() {
   static int counter = 0;
-  return fs::temp_directory_path() /
-         ("atx_disk_test_" + std::to_string(++counter) + "_" +
-          std::to_string(static_cast<long long>(reinterpret_cast<std::uintptr_t>(&counter))));
+  return fs::temp_directory_path() / ("atx_disk_test_" + std::to_string(++counter));
 }
 } // namespace
 
@@ -74,5 +71,27 @@ TEST(DiskStore, WriteThenScanPartitionRoundTrip) {
     EXPECT_EQ((*bids)[0], 100);
     EXPECT_EQ((*bids)[1], 200);
   }
+  fs::remove_all(root);
+}
+
+TEST(DiskStore, ListDatesSortedAscending) {
+  using atx::i64;
+  namespace io = atx::core::io;
+  const fs::path root = unique_tmp();
+  auto st = DiskStore::open(root);
+  ASSERT_TRUE(st.has_value());
+  const std::vector<std::string> sym{"AAA"};
+  const std::vector<i64> v{1};
+  const std::vector<io::WriteColumn> cols{
+      {"symbol", std::span<const std::string>(sym)}, {"x", std::span<const i64>(v)}};
+  for (const char* d : {"2026-06-05", "2026-06-03", "2026-06-04"}) {
+    ASSERT_TRUE(st->write_partition(Store::Ohlc1D, d, cols).has_value());
+  }
+  auto dates = st->list_dates(Store::Ohlc1D);
+  ASSERT_TRUE(dates.has_value()) << dates.error().message();
+  ASSERT_EQ(dates->size(), 3u);
+  EXPECT_EQ((*dates)[0], "2026-06-03");
+  EXPECT_EQ((*dates)[1], "2026-06-04");
+  EXPECT_EQ((*dates)[2], "2026-06-05");
   fs::remove_all(root);
 }
