@@ -43,7 +43,9 @@ Realistic scope for this sprint:
 | P4-7b   | done   | `4d8f4a9`  | FactorModelBuilder (per-date WLS-bootstrapped-from-OLS estimating X,F,D; reuses combine LW for F); RiskFactorBuilder 8/8/0/0 |
 | P4-8    | done   | `a815d0d`  | WeightPolicy neutralization (group-demean + truncation); industry_neutral now LIVE; bit-identical-when-off guard; WeightPolicyNeutralize 9/9/0/0 (existing WeightPolicy 20/20 UNCHANGED). DECAY + FACTOR-neutralize deferred (residuals below) |
 | P4-9    | done   | `ef77f8a`  | turnover-penalized risk-aware optimizer (`PortfolioOptimizer`); λ=κ=0 recovers WeightPolicy book ≤1e-9; factored V via `apply_inverse` only; RiskOptimizer 16/16/0/0 (cq fix `e2d4395`: +`<limits>`, λ-scaling comment corrected) |
-| P4-10   | —      | —          | — |
+| P4-10a  | done   | `5d7aa0e`  | capacity curve (`CapacityPoint`, `capacity_curve`); √-impact edge erosion via sim's OWN `ImpactCfg` (one cost surface §0-G); +additive `ExecutionSimulator::impact_cfg()` accessor; RiskCapacity 9/9/0/0 (ExecSim 24/24 unchanged; cq fix `2a42e69`: drop unused `<limits>`/`<cstdint>`) |
+| P4-10b  | —      | —          | integration proofs: firewall truncation-invariance + determinism hash + walk-forward combined backtest (orchestrator split of plan-P4-10) |
+| P4-10c  | —      | —          | bench (combiner fit / factor build / optimizer solve / walk-forward) |
 
 ---
 
@@ -59,6 +61,8 @@ Realistic scope for this sprint:
 | `a815d0d` | feat (P4-8)  | WeightPolicyNeutralize 9/9/0/0 (existing WeightPolicy 20/20 unchanged; full engine suite 1552/1552) |
 | `ef77f8a` | feat (P4-9)  | RiskOptimizer 16/16/0/0 (Risk\|WeightPolicy 77/77; full engine suite 1568/1568) |
 | `e2d4395` | fix (P4-9)   | RiskOptimizer 16/16/0/0 (cq: +`<limits>` include, corrected λ-scaling comment) |
+| `5d7aa0e` | feat (P4-10a)| RiskCapacity 9/9/0/0 (ExecSim 24/24 unchanged; Risk 57/57) |
+| `2a42e69` | fix (P4-10a) | RiskCapacity 9/9/0/0 (cq: drop unused `<limits>`/`<cstdint>`) |
 
 ---
 
@@ -319,6 +323,38 @@ determinism (bitwise `EXPECT_EQ` on re-run); boundaries `w_prev=w*`-no-trade, si
 cap-below-equal-weight-all-pinned, empty-w_prev==flat; and two dim-mismatch `Err` paths. `/W4 /permissive-
 /WX` clean. Reviews: spec ✅ COMPLIANT (independent rebuild; λ-collapse judged spec-acceptable),
 code-quality ✅ APPROVED (two Minors fixed in `e2d4395`).
+
+---
+
+## P4-10a — Capacity curve (`capacity_curve` + `CapacityPoint`)
+
+`risk/capacity.hpp` (new, header-only inline, ns `atx::engine::risk`) adds
+`struct CapacityPoint { f64 aum; f64 net_edge_bps; }` (matching the pre-existing `fwd.hpp` decl —
+untouched) + `capacity_curve(span<const f64> weights, const PanelView& panel,
+const exec::ExecutionSimulator& sim, span<const f64> aum_grid) -> vector<CapacityPoint>` — the RenTech
+§9.6 capacity report: the AUM at which √-impact erodes net edge to zero. **First slice of the orchestrator's
+P4-10 split** (capacity model only; firewall/determinism/walk-forward = P4-10b, bench = P4-10c).
+
+**Model.** `gross_edge_bps = 1e4·mean_{r}(Σ_i w_i·ret_i(r))` (AUM-independent, computed once; `ret` reuses
+the P4-6 `detail::step_return`, PIT/structural). Per name at a swept `aum`: `notional_i = aum·|w_i|`,
+`shares_i = notional_i/close(0,i)`, `ADV_i = mean close·volume` (adv20), `part_i = shares_i/ADV_i`,
+`sigma_i = popstd(ret_i)` (vol60), `temp_i = Y·sigma_i·part_i^δ`. **§0-G ONE COST SURFACE:** Y, δ are read
+from `sim.impact_cfg()` — a NEW purely-additive read-only accessor on `ExecutionSimulator` mirroring the
+existing `commission_cfg()` (the ONE permitted Phase-2 touch; ExecSim suite 24/24 UNCHANGED, no behavior
+change). `cost_bps(aum) = 1e4·Σ_i |w_i|·temp_i`; `net_edge_bps = gross_edge_bps − cost_bps(aum)`. Scoped to
+the size-dependent √-impact term ONLY (commission ≈scale-free in bps, slippage excluded by design — RT §9.6
+capacity is impact-bounded). Named windows `kCapacityAdvWindow=20`/`kCapacityVolWindow=60` (Phase-5
+calibrates); every return-window CLAMPED to `rows()-1` (no OOB under NDEBUG); guards on `price≤0`, `ADV≤0`,
+`part/sigma≤0`, NaN/zero weights (no NaN leak). Cold/research-cadence (a few scratch allocs OK). NO RNG;
+order-fixed reductions; deterministic.
+
+**9 new tests** (`RiskCapacity`), `9/9` via `ctest -R RiskCapacity` (ExecSim 24/24 unchanged; Risk 57/57;
+`/W4 /permissive- /WX` clean): net-edge monotone-non-increasing in AUM + zero-crossing (the capacity point);
+AUM→0 ⇒ net≈gross; ONE-cost-surface (a sim with larger `ImpactCfg.Y` ⇒ strictly smaller net edge — proves
+it reads the sim's coeff, not a constant); determinism (bitwise `memcmp` re-run); length/order/aum 1:1;
+boundaries empty-grid, zero/NaN-weight-excluded, short/1-row-panel degenerate, hand-computed
+constant-return-zero-σ ⇒ net==gross. Reviews: spec ✅ COMPLIANT (independent rebuild; accessor additive,
+math + §0-G correct), code-quality ✅ (two unused-include Minors fixed in `2a42e69`).
 
 ---
 
