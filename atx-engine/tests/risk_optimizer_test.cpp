@@ -24,6 +24,7 @@
 
 #include <cmath>   // std::isnan, std::isfinite, std::fabs
 #include <cstdint> // fixed-width
+#include <limits>  // std::numeric_limits (NaN-hole / finite checks)
 #include <span>
 #include <vector>
 

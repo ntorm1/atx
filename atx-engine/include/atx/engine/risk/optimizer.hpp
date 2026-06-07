@@ -40,10 +40,12 @@
 //  FIXED-ITERATION projected/proximal loop (no convergence-dependent early exit,
 //  §3.2): each pass takes a gradient step of the smooth surrogate ½‖w − t‖² toward
 //  the target t, a proximal soft-threshold toward w_prev for the κ turnover term,
-//  then PROJECTS onto {Σw=0, Σ|w|=L, |w_i|≤cap}. Raising λ scales t down (the
-//  (1/2λ) factor) AND tilts it via V⁻¹ away from high-variance names, so the gross
-//  on high-variance names shrinks (pin #3); a κ>0 prox shrinks the move away from
-//  w_prev, cutting turnover (pin #4).
+//  then PROJECTS onto {Σw=0, Σ|w|=L, |w_i|≤cap}. The (1/2λ) scalar on t washes out
+//  under the subsequent gross-normalize (Σ|w|→L), so the λ effect on the final book
+//  is BINARY — off at λ=0 (pure-alpha direction), on at λ>0 — not λ-graduated: only
+//  the λ-independent V⁻¹ DIRECTIONAL tilt away from high-variance names survives, so
+//  any λ>0 shrinks high-variance gross relative to λ=0 (pin #3). A κ>0 prox shrinks
+//  the move away from w_prev, cutting turnover (pin #4).
 //
 // ===========================================================================
 //  Determinism (§3.2)
