@@ -508,4 +508,66 @@ struct TsvFit {
   return denom == 0.0 ? kTsNaN : sab / denom;
 }
 
+// ===========================================================================
+//  P3d E1 — Rolling AR(1) OLS fit helper (ou_ar1_fit)
+//
+//  Fits x[s] = a + b*x[s-1] over the lagged pairs in the trailing window
+//  (oldest..newest). Pairs with a NaN endpoint are skipped. Returns {a, b,
+//  resid_std, n}. NaN fields when <2 valid pairs or zero predictor variance.
+//  resid_std is the POPULATION std of residuals over the n valid pairs (mirrors
+//  the population cross-moment convention used by tsv_lin_fit's r2 path).
+//  noexcept: all operations are floating-point arithmetic with no allocation.
+// ===========================================================================
+
+struct OuAr1Fit {
+  atx::f64 a{kTsNaN};
+  atx::f64 b{kTsNaN};
+  atx::f64 resid_std{kTsNaN};
+  atx::usize n{0};
+};
+
+// OLS of x[s] on x[s-1] over a trailing window (oldest..newest). Pairs with a
+// NaN endpoint are skipped. NaN fields when <2 valid pairs or zero predictor
+// variance. resid_std is the POPULATION std of residuals over the n pairs.
+[[nodiscard]] inline OuAr1Fit ou_ar1_fit(std::span<const atx::f64> w) noexcept {
+  atx::f64 sx = 0.0;
+  atx::f64 sy = 0.0;
+  atx::f64 sxx = 0.0;
+  atx::f64 sxy = 0.0;
+  atx::usize n = 0;
+  for (atx::usize s = 1; s < w.size(); ++s) {
+    const atx::f64 xp = w[s - 1];
+    const atx::f64 yc = w[s];
+    if (ts_is_nan(xp) || ts_is_nan(yc)) {
+      continue;
+    }
+    sx += xp;
+    sy += yc;
+    sxx += xp * xp;
+    sxy += xp * yc;
+    ++n;
+  }
+  if (n < 2) {
+    return {};
+  }
+  const atx::f64 dn = static_cast<atx::f64>(n);
+  const atx::f64 denom = sxx - sx * sx / dn;
+  if (denom == 0.0) {
+    return {};
+  }
+  const atx::f64 b = (sxy - sx * sy / dn) / denom;
+  const atx::f64 a = (sy - b * sx) / dn;
+  atx::f64 ss = 0.0;
+  for (atx::usize s = 1; s < w.size(); ++s) {
+    const atx::f64 xp = w[s - 1];
+    const atx::f64 yc = w[s];
+    if (ts_is_nan(xp) || ts_is_nan(yc)) {
+      continue;
+    }
+    const atx::f64 r = yc - (a + b * xp);
+    ss += r * r;
+  }
+  return {a, b, std::sqrt(ss / dn), n};
+}
+
 } // namespace atx::engine::alpha::detail
