@@ -1040,6 +1040,87 @@ struct LinFit {
   return static_cast<atx::f64>(best + 1);
 }
 
+// Trailing AR(1) OLS of the window: regress w[s] on w[s-1] over the lagged pairs
+// (oldest..newest). Returns {a, b, resid_std}; NaN fields when <2 pairs or zero
+// predictor variance. resid_std is the POPULATION std of the residuals over the
+// n pairs. This is the INDEPENDENT oracle restatement of ts_ops `ou_ar1_fit` —
+// the windowed-family differential pairs the VM's gathered kernel with THIS
+// gathered-window restatement (cf. lin_fit vs tsv_lin_fit). Do NOT collapse the
+// two to a shared kernel; that would defeat the cross-check. The caller has
+// already enforced a full, NaN-free window (gather_window), so no NaN-skip here.
+struct OuFit {
+  atx::f64 a{kNaN};
+  atx::f64 b{kNaN};
+  atx::f64 resid_std{kNaN};
+};
+[[nodiscard]] inline OuFit ou_fit(const std::vector<atx::f64> &w) noexcept {
+  atx::f64 sx = 0.0;
+  atx::f64 sy = 0.0;
+  atx::f64 sxx = 0.0;
+  atx::f64 sxy = 0.0;
+  atx::usize n = 0;
+  for (atx::usize s = 1; s < w.size(); ++s) {
+    sx += w[s - 1];
+    sy += w[s];
+    sxx += w[s - 1] * w[s - 1];
+    sxy += w[s - 1] * w[s];
+    ++n;
+  }
+  OuFit f;
+  if (n < 2) {
+    return f;
+  }
+  const atx::f64 dn = static_cast<atx::f64>(n);
+  const atx::f64 denom = sxx - sx * sx / dn;
+  if (denom == 0.0) {
+    return f;
+  }
+  f.b = (sxy - sx * sy / dn) / denom;
+  f.a = (sy - f.b * sx) / dn;
+  atx::f64 ss = 0.0;
+  for (atx::usize s = 1; s < w.size(); ++s) {
+    const atx::f64 r = w[s] - (f.a + f.b * w[s - 1]);
+    ss += r * r;
+  }
+  f.resid_std = std::sqrt(ss / dn);
+  return f;
+}
+
+// OU derived-quantity per-cell value over a gathered window `w` (newest last).
+// INDEPENDENT restatement of the ts_ops ou_*_of mappers:
+//   theta    = -ln(b)                       valid when b in (0,1)
+//   halflife = ln2 / theta                  valid when b in (0,1)
+//   mean     = a / (1-b)                     valid when b < 1 (b not NaN)
+//   zscore   = (w.back()-mean) / sigma_eq    sigma_eq = resid_std/sqrt(1-b^2)
+[[nodiscard]] inline atx::f64 ou_unary_at(OpCode op, const std::vector<atx::f64> &w) noexcept {
+  const OuFit f = ou_fit(w);
+  switch (op) {
+  case OpCode::OuTheta:
+    return (f.b > 0.0 && f.b < 1.0) ? -std::log(f.b) : kNaN;
+  case OpCode::OuHalflife: {
+    if (!(f.b > 0.0 && f.b < 1.0)) {
+      return kNaN;
+    }
+    const atx::f64 th = -std::log(f.b);
+    return std::log(2.0) / th;
+  }
+  case OpCode::OuMean:
+    return (!is_nan(f.b) && f.b < 1.0) ? f.a / (1.0 - f.b) : kNaN;
+  case OpCode::OuZscore: {
+    if (!(f.b > 0.0 && f.b < 1.0)) {
+      return kNaN;
+    }
+    const atx::f64 sig = f.resid_std / std::sqrt(1.0 - f.b * f.b);
+    if (sig == 0.0 || is_nan(sig)) {
+      return kNaN;
+    }
+    return (w.back() - f.a / (1.0 - f.b)) / sig;
+  }
+  default:
+    ATX_UNREACHABLE();
+  }
+}
+
 // ts_unary_at — single-cell value of a unary-series Ts op at (t, j). delay/delta
 // short-circuit (they need only the shifted observation, not a full window).
 inline atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
@@ -1231,6 +1312,11 @@ inline atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx:
     const atx::f64 range = hi - lo;
     return range == 0.0 ? 0.0 : (w.back() - lo) / range;
   }
+  case OpCode::OuTheta:
+  case OpCode::OuHalflife:
+  case OpCode::OuMean:
+  case OpCode::OuZscore:
+    return ou_unary_at(op, w);
   default:
     ATX_UNREACHABLE();
   }

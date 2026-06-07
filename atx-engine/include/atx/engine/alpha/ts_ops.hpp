@@ -608,4 +608,37 @@ struct OuAr1Fit {
   return (x_last - f.a / (1.0 - f.b)) / sig;
 }
 
+// ===========================================================================
+//  P3d E4 — OU rolling-fit per-cell VM kernel (ou_value_at)
+//
+//  Single-cell value of an OU rolling-fit op at (t, j): require a full, NaN-free
+//  trailing window (same gate as ts_value_at), gather it chronologically, fit
+//  AR(1) once, then map to the requested OU quantity. x_last (for zscore) is the
+//  window's newest element x[t]. Routed here from vm.hpp::eval_time_series (an
+//  `ou_rolling` arm alongside ts_value_at / ts_pair_at). The oracle restates the
+//  fit + derivations INDEPENDENTLY (oracle.hpp ou_fit + ou_unary_at); the
+//  differential proves the two agree. `buf` is caller-owned scratch (>= d).
+// ===========================================================================
+[[nodiscard]] inline atx::f64 ou_value_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
+                                          atx::usize j, atx::usize d, atx::usize instruments,
+                                          std::vector<atx::f64> &buf) {
+  if (!tsv_window_valid(x, t, j, d, instruments)) {
+    return kTsNaN; // short window or any-NaN -> NaN (pinned policy)
+  }
+  tsv_gather(x, t, j, d, instruments, buf);
+  const OuAr1Fit f = ou_ar1_fit(std::span<const atx::f64>{buf.data(), d});
+  switch (op) {
+  case OpCode::OuTheta:
+    return ou_theta_of(f);
+  case OpCode::OuHalflife:
+    return ou_halflife_of(f);
+  case OpCode::OuMean:
+    return ou_mean_of(f);
+  case OpCode::OuZscore:
+    return ou_zscore_of(f, x[t * instruments + j]);
+  default:
+    ATX_UNREACHABLE();
+  }
+}
+
 } // namespace atx::engine::alpha::detail

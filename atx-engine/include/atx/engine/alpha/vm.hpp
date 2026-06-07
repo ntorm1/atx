@@ -695,6 +695,10 @@ private:
     const bool binary_series = (in.op == OpCode::TsCorr || in.op == OpCode::TsCov);
     const std::span<const atx::f64> y =
         binary_series ? src_col(in, 1) : std::span<const atx::f64>{};
+    // OU rolling-fit ops (P3d-E4) fit AR(1) over the trailing window per cell;
+    // they take the same windowed path but a distinct per-cell kernel.
+    const bool ou_rolling = (in.op == OpCode::OuTheta || in.op == OpCode::OuHalflife ||
+                             in.op == OpCode::OuMean || in.op == OpCode::OuZscore);
 
     // Reusable scratch sized to the window: NO per-cell allocation (grown only
     // when `d` exceeds any prior call). Only the sort/pair ops touch it.
@@ -705,9 +709,11 @@ private:
     for (atx::usize j = 0; j < instruments; ++j) {
       for (atx::usize t = 0; t < dates; ++t) {
         out[t * instruments + j] =
-            binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
-                                               ts_scratch_b_)
-                          : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_);
+            ou_rolling
+                ? detail::ou_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_)
+            : binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
+                                                 ts_scratch_b_)
+                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_);
       }
     }
     return atx::core::Ok();
