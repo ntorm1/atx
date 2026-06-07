@@ -68,3 +68,32 @@ TEST(OuFilterStep, UnseededNanStaysUnseeded) {
   EXPECT_TRUE(std::isnan(o));
   EXPECT_FALSE(seeded);
 }
+
+// ---------------------------------------------------------------------------
+// KalmanRegStep — D1 (Chan 2-state time-varying regression)
+// ---------------------------------------------------------------------------
+
+TEST(KalmanRegStep, SeedAndOneStep) {
+  KalmanRegState s{};
+  bool seeded = false;
+  KalmanRegOut o = kalman_reg_step(s, seeded, 1.0, 2.0, 0.5, 1.0); // y=1,x=2,delta=0.5,R=1
+  EXPECT_NEAR(o.alpha, 2.0 / 11.0, 1e-12);
+  EXPECT_NEAR(o.beta, 4.0 / 11.0, 1e-12);
+  EXPECT_NEAR(o.resid, 1.0 / std::sqrt(11.0), 1e-12);
+  EXPECT_TRUE(seeded);
+}
+
+TEST(KalmanRegStep, NanObsPredictOnlyOutputsNaN) {
+  KalmanRegState s{};
+  bool seeded = false;
+  KalmanRegOut seed_o = kalman_reg_step(s, seeded, 1.0, 2.0, 0.5, 1.0); // seed/first step
+  (void)seed_o;
+  const double a_before = s.a, b_before = s.b;
+  KalmanRegOut o =
+      kalman_reg_step(s, seeded, std::numeric_limits<double>::quiet_NaN(), 3.0, 0.5, 1.0);
+  EXPECT_TRUE(std::isnan(o.alpha));
+  EXPECT_TRUE(std::isnan(o.beta));
+  EXPECT_TRUE(std::isnan(o.resid));
+  EXPECT_DOUBLE_EQ(s.a, a_before); // beta unchanged (predict-only)
+  EXPECT_DOUBLE_EQ(s.b, b_before);
+}
