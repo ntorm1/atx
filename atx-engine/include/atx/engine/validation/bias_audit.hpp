@@ -34,7 +34,6 @@
 //    matrix is constructed from index arithmetic), so its verdict is stable.
 
 #include <algorithm> // std::min
-#include <cstddef>   // std::size_t (generic recompute size)
 #include <optional>  // std::nullopt (deflated_sharpe selection benchmark)
 #include <span>      // std::span
 #include <vector>    // std::vector (synthetic performance matrix)
@@ -59,6 +58,10 @@ namespace atx::engine::validation {
 //  m = min(cut, |full|, |trunc|) to stay in range of both outputs, and compare
 //  element-wise with EXACT `!=` (a single differing entry => the function peeked
 //  ahead => leak). Returns true iff the invariant holds over [0, m).
+//
+//  Requires: `recompute` returns a sized, index-accessible range of `atx::f64`
+//  (supports `.size()` and `operator[]`, e.g. std::vector<atx::f64>); the first
+//  min(cut, |full|, |trunc|) outputs of the two runs are compared bit-for-bit.
 // ===========================================================================
 template <class Recompute>
 [[nodiscard]] inline bool check_no_lookahead(atx::usize full_n, atx::usize cut,
@@ -91,6 +94,10 @@ template <class Recompute>
 //
 //  Returns true iff pnl[i] == 0.0 for ALL i > delist_period. Indices at or
 //  before delist_period are live trading and are not constrained here.
+//
+//  Contract: `delist_period` is the last LIVE period index; if
+//  `delist_period >= pnl.size()` there are no post-delist periods to check and
+//  the function returns true (vacuously frozen).
 // ===========================================================================
 [[nodiscard]] inline bool check_survivorship_frozen(std::span<const atx::f64> pnl,
                                                     atx::usize delist_period) noexcept {
@@ -109,10 +116,12 @@ template <class Recompute>
 //  reject:
 //
 //   (1) PBO gate (anti-persistent batch). An N×T matrix in which each candidate
-//       spikes (+1) on exactly one disjoint sub-period and is flat-negative
-//       (−0.02) everywhere else. Whatever is in-sample-best is specialized to an
-//       IS sub-period and is therefore dead out-of-sample, so it lands at/below
-//       the OOS median on every split => PBO is HIGH. Assert pbo > 0.5.
+//       spikes (+1) on exactly one sub-period window (windows are temporally
+//       disjoint; with kN>kS, candidate c and c+kS share a window) and is
+//       flat-negative (−0.02) elsewhere — so whichever candidate is in-sample-
+//       best is specialized to an IS window and therefore dead out-of-sample, so
+//       it lands at/below the OOS median on every split => PBO is HIGH. Assert
+//       pbo > 0.5.
 //
 //   (2) DSR gate (multiple-testing kill). A per-period Sharpe sr=0.12 over T=250
 //       looks "significant" under a SINGLE test (PSR(0.12, 0) > 0.9), but as the
