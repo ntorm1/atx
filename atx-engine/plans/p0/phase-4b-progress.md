@@ -37,7 +37,7 @@ Realistic scope for this sprint:
 
 | Unit    | Status | Commit     | Notes |
 |---------|--------|------------|-------|
-| P4b-0   | done   | _(fill)_   | scaffold + ledger; RiskScaffold 1/1/0/0 |
+| P4b-0   | done   | `ac3b26a`  | scaffold + ledger; RiskScaffold 1/1/0/0 |
 | P4-6    | —      | —          | — |
 | P4-7    | —      | —          | — |
 | P4-8    | —      | —          | — |
@@ -50,7 +50,7 @@ Realistic scope for this sprint:
 
 | Commit    | Unit        | Test counts |
 |-----------|-------------|-------------|
-| _(fill)_  | marker (P4b-0) | RiskScaffold 1/1/0/0 |
+| `ac3b26a` | marker (P4b-0) | RiskScaffold 1/1/0/0 |
 
 ---
 
