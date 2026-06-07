@@ -30,3 +30,7 @@ endif()
 if(ATX_BUILD_BENCH)
     add_subdirectory(bench)
 endif()
+
+if(ATX_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
