@@ -154,6 +154,7 @@ namespace detail {
   case OpCode::OuFilter:
   case OpCode::Pin:
   case OpCode::Split2:
+  case OpCode::KalmanReg:
   case OpCode::StoreAlpha:
   case OpCode::Free:
     return false;
@@ -410,10 +411,16 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
   const OpCode op = e.op->opcode;
   // A Cs*/Ts* op or filter recurrence op requires a non-scalar primary.
   const bool needs_panel_primary = is_cross_section(op) || is_time_series(op) ||
-                                   op == OpCode::KalmanLevel || op == OpCode::OuFilter;
+                                   op == OpCode::KalmanLevel || op == OpCode::OuFilter ||
+                                   op == OpCode::KalmanReg;
   if (needs_panel_primary && out[e.a].shape == Shape::Scalar) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "expected a panel/cross-section operand, got a scalar");
+  }
+  // KalmanReg requires BOTH y (arg0) and x (arg1) to be non-scalar Panel operands.
+  if (op == OpCode::KalmanReg && e.b != kNoExpr && out[e.b].shape == Shape::Scalar) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "kalman: both y and x operands must be panel signals");
   }
   // Group-aware ops: the 2nd argument must be a Group classifier.
   if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
@@ -439,6 +446,18 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
     if (e.hparams[0] < 0.0) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "ou_filter: theta (mean-reversion rate) must be >= 0");
+    }
+  }
+  if (op == OpCode::KalmanReg) {
+    // delta in (0,1) strict: sets process noise W = (delta/(1-delta))*I2.
+    if (e.hparams[0] <= 0.0 || e.hparams[0] >= 1.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman: delta must be in (0, 1) exclusive");
+    }
+    // R (observation noise) must be strictly positive.
+    if (e.hparams[1] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman: R (observation noise) must be > 0");
     }
   }
   // Collect child shapes for the table-driven shape rule.

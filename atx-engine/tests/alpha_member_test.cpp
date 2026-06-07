@@ -94,3 +94,44 @@ TEST(AlphaMember, RecordRootRejected) {
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// D2 — KalmanReg registry + typecheck tests
+// ---------------------------------------------------------------------------
+
+namespace {
+
+TEST(AlphaKalmanReg, PinsResolve) {
+  Library lib;
+  auto ast = parse_program("b = kalman(close, open, 0.0001, 0.001).beta\n", lib);
+  ASSERT_TRUE(ast);
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, atx::engine::alpha::Shape::Panel);
+}
+
+TEST(AlphaKalmanReg, AllThreePinsResolve) {
+  Library lib;
+  auto ast = parse_program("al = kalman(close, open, 0.0001, 0.001).alpha\n"
+                           "be = kalman(close, open, 0.0001, 0.001).beta\n"
+                           "re = kalman(close, open, 0.0001, 0.001).resid\n",
+                           lib);
+  ASSERT_TRUE(ast);
+  EXPECT_TRUE(analyze(ast.value()));
+}
+
+TEST(AlphaKalmanReg, BadPinRejected) {
+  Library lib;
+  auto ast = parse_program("b = kalman(close, open, 0.0001, 0.001).gamma\n", lib);
+  ASSERT_TRUE(ast);
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaKalmanReg, RejectsBadDelta) {
+  Library lib;
+  auto ast = parse_program("b = kalman(close, open, 1.5, 0.001).beta\n", lib);
+  ASSERT_TRUE(ast);
+  EXPECT_FALSE(analyze(ast.value())); // delta must be in (0,1)
+}
+
+} // namespace

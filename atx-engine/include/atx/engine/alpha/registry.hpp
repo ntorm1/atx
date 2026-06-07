@@ -162,6 +162,11 @@ enum class OpCode : atx::u8 {
   //      forward-declared and the registry + switch sites stay green.
   Pin,
   Split2,
+  // ---- Chan 2-state time-varying regression record op (P3d-D2):
+  //      kalman(y, x, delta, R) -> record {alpha, beta, resid}.
+  //      3 output pins (intercept, slope, standardised residual); delta in
+  //      (0,1) strict; R > 0; both y and x must be non-scalar (Panel).
+  KalmanReg,
   // ---- store / free ----
   StoreAlpha,
   Free,
@@ -319,6 +324,13 @@ private:
 // borrows from here; the borrow is non-dangling (program lifetime).
 inline constexpr std::array<PinSig, 2> kSplit2Pins = {{{"hi", DType::F64}, {"lo", DType::F64}}};
 
+// Static pin table for kalman(y,x,delta,R) (P3d-D2). Three named output pins:
+// "alpha" (time-varying intercept), "beta" (time-varying slope), "resid"
+// (standardised innovation e/sqrt(Q)). All F64 Panel signals.
+// Lifetime: static storage — non-dangling for the program lifetime.
+inline constexpr std::array<PinSig, 3> kKalmanRegPins = {
+    {{"alpha", DType::F64}, {"beta", DType::F64}, {"resid", DType::F64}}};
+
 namespace detail {
 
 // The complete built-in catalogue (Appendix A named functions). Kept as a
@@ -331,7 +343,7 @@ namespace detail {
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
   // initializers — existing rows omit them and pick up {0, {}} automatically.
-  static constexpr std::array<OpSig, 60> kOps = {{
+  static constexpr std::array<OpSig, 61> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -432,6 +444,21 @@ namespace detail {
        &shape_panel,
        0,
        std::span<const PinSig>{kSplit2Pins}},
+      // ---- Chan 2-state time-varying regression record op (P3d-D2) -----------
+      // kalman(y, x, delta, R) — arity 4; y and x are panel operands (2 non-
+      // hparam args); delta and R are compile-time hparams (n_hparams=2).
+      // delta in (0,1) strict; R > 0 (typecheck enforces). Outputs 3 pins:
+      // alpha (intercept), beta (slope), resid (standardised innovation).
+      {"kalman",
+       4,
+       4,
+       OpCode::KalmanReg,
+       DType::F64,
+       true,
+       {},
+       &shape_panel,
+       2,
+       std::span<const PinSig>{kKalmanRegPins}},
   }};
   return kOps;
 }
