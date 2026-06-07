@@ -64,6 +64,16 @@
 #include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // atx::f64, atx::usize
 
+// detail::binomial / detail::next_combination are the SHARED combinatorics
+// helpers. They were originally duplicated verbatim here and in pbo.hpp with the
+// documented assumption that a single TU never includes both. S3-4 (pool-aware
+// fitness) is the first consumer to include BOTH cpcv.hpp (folds) and, via
+// validation/bias_audit.hpp, pbo.hpp — which made the two inline definitions
+// collide (redefinition in one TU). The dedup: cpcv.hpp now REUSES pbo.hpp's
+// detail::binomial / detail::next_combination instead of redefining them (the
+// bodies were byte-identical), so a TU may include both headers safely.
+#include "atx/engine/eval/pbo.hpp" // eval::detail::binomial, eval::detail::next_combination
+
 namespace atx::engine::eval {
 
 // ===========================================================================
@@ -100,61 +110,9 @@ struct CpcvFold {
 
 namespace detail {
 
-// ---------------------------------------------------------------------------
-//  binomial — C(n, k), computed multiplicatively to size the fold vector
-//  without overflowing a factorial. Returns 0 when k > n. Uses the symmetry
-//  C(n, k) == C(n, n-k) to keep the running product small.
-//
-//  SAFETY (no intermediate overflow): after iteration i the running product is
-//  EXACTLY C(n - kk + 1 + i, i + 1), itself a binomial coefficient and so an
-//  integer that never exceeds the final result; the division by (i + 1) is
-//  exact at every step. Practical CPCV uses tiny K (default 6 -> C(6,2)=15), so
-//  the result is far inside usize. (Small duplicate of pbo.hpp's helper — a
-//  trivial static detail:: utility, intentionally NOT promoted to atx-core.)
-// ---------------------------------------------------------------------------
-[[nodiscard]] inline atx::usize binomial(atx::usize n, atx::usize k) noexcept {
-  if (k > n) {
-    return 0U;
-  }
-  const atx::usize kk = (k > n - k) ? (n - k) : k; // smaller arm, by symmetry
-  atx::usize result = 1U;
-  for (atx::usize i = 0U; i < kk; ++i) {
-    const atx::usize prev = result;
-    result = result * (n - kk + 1U + i) / (i + 1U);
-    ATX_ASSERT(result >= prev); // monotone walk; a decrease would mean overflow
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-//  next_combination — advance a strictly-ascending k-subset of [0, n) to the
-//  lexicographically next one. Returns false when `comb` is the final (largest)
-//  combination, leaving it unchanged. Deterministic; no allocation; no RNG.
-//
-//  Standard index walk: find the rightmost element with headroom to increment
-//  (comb[i] < n - k + i), bump it, then reset every element to its right to the
-//  minimal increasing run. `comb` must hold k strictly-ascending indices < n.
-//  (Small duplicate of pbo.hpp's helper, by design — see binomial above.)
-// ---------------------------------------------------------------------------
-[[nodiscard]] inline bool next_combination(std::span<atx::usize> comb, atx::usize n) noexcept {
-  const atx::usize k = comb.size();
-  if (k == 0U) {
-    return false; // the empty subset is its own only combination
-  }
-  atx::usize i = k; // one past the last; loop decrements before use
-  while (i > 0U) {
-    --i;
-    const atx::usize ceiling = n - k + i; // max legal value at position i
-    if (comb[i] < ceiling) {
-      ++comb[i];
-      for (atx::usize j = i + 1U; j < k; ++j) {
-        comb[j] = comb[j - 1U] + 1U;
-      }
-      return true;
-    }
-  }
-  return false; // already the last combination
-}
+// binomial / next_combination are REUSED from pbo.hpp (included above) — they
+// were previously duplicated here verbatim. See the include-site note for why
+// the dedup was required (S3-4 includes both headers in one TU).
 
 // ---------------------------------------------------------------------------
 //  group_start — first observation index of group g in the contiguous,
