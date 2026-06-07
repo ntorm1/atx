@@ -88,7 +88,6 @@
 //  hot-path concern. Same (weights, panel, sim, aum_grid) -> byte-identical out.
 
 #include <cmath>   // std::isnan, std::pow (part^delta), std::sqrt, std::fabs
-#include <limits>  // std::numeric_limits (quiet NaN sentinel)
 #include <span>    // std::span (weights + aum_grid inputs)
 #include <vector>  // std::vector (cold-path scratch + output)
 

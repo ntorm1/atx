@@ -25,7 +25,6 @@
 //              ShortPanelDegenerates / HandComputedNetEdge.
 
 #include <cmath>   // std::isnan, std::pow, std::sqrt, std::fabs
-#include <cstdint> // fixed-width
 #include <cstring> // std::memcmp (bitwise determinism check)
 #include <limits>  // std::numeric_limits (quiet NaN sentinel)
 #include <span>
