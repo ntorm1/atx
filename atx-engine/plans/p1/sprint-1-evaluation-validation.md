@@ -1,8 +1,10 @@
 # Sprint S1 — Evaluation & Validation Spine (sprint spec)
 
-**Status:** ⏳ ready to open (spec frozen). **p0 Phases 1–4 are CLOSED** (`feat/atx-core-stdlib @ f2d22f4`),
-so S1 now *reuses* the P4 fit/apply firewall + `combine::compute_metrics` rather than assuming them — no
-upstream wait. Opens **first** of p1 (independent of the *factory* track).
+**Status:** ✅ CLOSED (2026-06-07, `feat/atx-core-stdlib @ 2158a17`). Shipped as `eval::` (stats_ext /
+perf_metrics / deflated_sharpe / pbo / cpcv) + `validation::bias_audit` — 36 tests, full engine suite green.
+See the close ledger [`sprint-1-progress.md`](sprint-1-progress.md) and the user reference
+[`sprint-1.md`](sprint-1.md). S1 *reused* the P4 fit/apply firewall + `combine::compute_metrics` (no second
+Sharpe convention). Opened **first** of p1, independent of the *factory* track.
 **Implementation plan (the frozen *how*):** [`sprint-1-evaluation-validation-implementation-plan.md`](sprint-1-evaluation-validation-implementation-plan.md) — per-unit S1-0…S1-5, exact APIs, TDD steps.
 **Roadmap:** [`ROADMAP.md`](ROADMAP.md) · **Discipline:** [`../docs/sprint.md`](../docs/sprint.md)
 **Grounded in:** [`../../research/renaissance-technologies-systems-deep-dive.md`](../../research/renaissance-technologies-systems-deep-dive.md)
