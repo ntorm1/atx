@@ -348,41 +348,27 @@ namespace detail {
   return atx::core::Ok(TypeInfo{shape_elementwise(shapes), DType::F64, max_child_lookback(out, e)});
 }
 
-// Call node: shape from the op's table-driven rule, dtype from the registry row
-// (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops
-// reject a pure-scalar primary operand.
-[[nodiscard]] inline atx::core::Result<TypeInfo>
-analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
-  // Record-misuse: no operand of a Call may be a raw record — project first.
-  const std::array<ExprId, 3> operand_ids{e.a, e.b, e.c};
-  for (const ExprId id : operand_ids) {
+// Guard: reject any operand that is a raw record value (must project with .pin
+// before use in arithmetic, calls, or control flow). Returns Ok on success or
+// Err(InvalidArgument) for the first offending operand.
+[[nodiscard]] inline atx::core::Status reject_record_operands(std::span<const TypeInfo> out,
+                                                              const Expr &e) {
+  const std::array<ExprId, 3> kids{e.a, e.b, e.c};
+  for (const ExprId id : kids) {
     if (id != kNoExpr && out[id].is_record) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "record value must be projected with .pin before use");
     }
   }
-  // Hparam finite-constant check: each peeled hparam must be a finite literal.
-  for (atx::u8 k = 0; k < e.n_hparams; ++k) {
-    if (!std::isfinite(e.hparams[k])) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "hyperparameter must be a compile-time constant");
-    }
-  }
-  const OpCode op = e.op->opcode;
-  // A Cs*/Ts* op operates over instruments/time, so its primary operand cannot
-  // be a pure compile-time scalar (there is nothing to rank/roll over).
-  if ((is_cross_section(op) || is_time_series(op)) && out[e.a].shape == Shape::Scalar) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "expected a panel/cross-section operand, got a scalar");
-  }
-  // Group-aware ops: the 2nd argument must be a Group classifier.
-  if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "group operator requires a classifier (Group) 2nd argument");
-  }
-  // trade_when(trigger, alpha, exit): trigger (arg0) and exit (arg2) are masks;
-  // alpha (arg1) is numeric. Mirrors how analyze_select pins its Mask cond.
+  return atx::core::Ok();
+}
+
+// Validate dtype constraints for the special-cased stateful ops (trade_when and
+// hump). Called only when `op` is one of those two; returns Ok otherwise.
+[[nodiscard]] inline atx::core::Status
+validate_stateful_op_dtypes(OpCode op, std::span<const TypeInfo> out, const Expr &e) {
   if (op == OpCode::TradeWhen) {
+    // trade_when(trigger, alpha, exit): trigger (arg0) and exit (arg2) are masks.
     if (out[e.a].dtype != DType::Mask || out[e.c].dtype != DType::Mask) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "trade_when requires mask trigger/exit (args 1 and 3)");
@@ -392,9 +378,8 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
                             "trade_when alpha (arg 2) must be numeric (f64)");
     }
   }
-  // hump(x, threshold): x (arg0) is numeric; the threshold (arg1, when present)
-  // is a numeric scalar. Group/Mask dtypes are rejected for both.
   if (op == OpCode::Hump) {
+    // hump(x, threshold): x (arg0) is numeric; optional threshold (arg1) too.
     if (out[e.a].dtype != DType::F64) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "hump requires a numeric (f64) primary operand");
@@ -404,19 +389,43 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
                             "hump threshold (arg 2) must be numeric (f64)");
     }
   }
+  return atx::core::Ok();
+}
 
-  // Collect child shapes in order for the table-driven shape rule.
+// Call node: shape from the op's table-driven rule, dtype from the registry row
+// (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops
+// reject a pure-scalar primary operand.
+[[nodiscard]] inline atx::core::Result<TypeInfo>
+analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
+  ATX_TRY_VOID(reject_record_operands(out, e));
+  // Hparam finite-constant check: each peeled hparam must be a finite literal.
+  for (atx::u8 k = 0; k < e.n_hparams; ++k) {
+    if (!std::isfinite(e.hparams[k])) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hyperparameter must be a compile-time constant");
+    }
+  }
+  const OpCode op = e.op->opcode;
+  // A Cs*/Ts* op requires a non-scalar primary (nothing to rank/roll over).
+  if ((is_cross_section(op) || is_time_series(op)) && out[e.a].shape == Shape::Scalar) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "expected a panel/cross-section operand, got a scalar");
+  }
+  // Group-aware ops: the 2nd argument must be a Group classifier.
+  if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "group operator requires a classifier (Group) 2nd argument");
+  }
+  ATX_TRY_VOID(validate_stateful_op_dtypes(op, out, e));
+  // Collect child shapes for the table-driven shape rule.
   std::array<Shape, 3> shape_buf{};
   atx::usize n = 0;
-  const std::array<ExprId, 3> kids{e.a, e.b, e.c};
-  for (const ExprId id : kids) {
+  for (const ExprId id : std::array<ExprId, 3>{e.a, e.b, e.c}) {
     if (id != kNoExpr) {
-      shape_buf.at(n) = out[id].shape;
-      ++n;
+      shape_buf.at(n++) = out[id].shape;
     }
   }
   const Shape shape = e.op->shape_of(std::span<const Shape>{shape_buf.data(), n});
-
   atx::u16 lb = max_child_lookback(out, e);
   if (is_shift_ts(op)) {
     ATX_TRY(const atx::u16 d, window_value(ast, e));
@@ -425,7 +434,6 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
     ATX_TRY(const atx::u16 d, window_value(ast, e));
     lb = static_cast<atx::u16>((d - 1) + lb);
   }
-  // Record op: non-empty pins span means this call produces a named-pin tuple.
   if (!e.op->pins.empty()) {
     return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, lb, true, e.op->pins});
   }
