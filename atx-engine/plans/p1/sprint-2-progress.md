@@ -31,7 +31,7 @@ The implementation plan's §0 reconciles the spec against reconnaissance + web r
 | S2-0  | Marker + ledger + parallel scaffold           | ✅ done | `bef28ad`                       | —     | `parallel/fwd.hpp` (DetPool/FoldResult fwd + determinism-contract doc) + this ledger. |
 | S2-1  | Deterministic pool (DetPool fallback) + digest | ✅ done | `078749e` + `5eaea08`           | 14    | Hand-rolled `DetPool`: persistent threads, atomic work-index dispenser, generation-guarded wakes, **lowest-index deterministic exception rethrow**, `JobKind` ParallelFor/EachWorker modes, Rule-of-Five pinned. `signal_set_digest` = canonical-order wyhash over **raw f64 bytes** (1-ULP flips it). *(Spec review caught a broken `for_each_worker` — old impl routed through the shared dispenser so 3/4 worker ids were skipped; fixed in `5eaea08` with a per-worker fan-out + 3 tests, non-vacuity confirmed by an old-logic probe 2000/2000 bad.)* |
 | S2-2  | Parallel batch-eval (digest == single-thread)  | ✅ done | `fa6ae31`                       | 5     | `parallel_evaluate(span<Program>, panel, DetPool)`: one program/work-item on a per-worker stateful `Engine` (`unique_ptr`, warmed via `for_each_worker`), pre-indexed disjoint output slots, lowest-index `Err` reduce. Strategy A (per-worker recompute; no `Engine::evaluate_root`). **Load-bearing: `digest(parallel fan) == digest(Engine::evaluate(batch))`** over a 34-alpha shared-subexpr battery + {1,2,4,8} invariance — a genuine two-path (compile_batch vs per-program compile) bit-identity proof, backed by the existing `alpha_batch_test` batch==singly result. |
-| S2-3  | Parallel backtests + CPCV folds                | ⏳     |               |       |       |
+| S2-3  | Parallel backtests + CPCV folds                | ✅ done | `fc51747` + `92d9f2f`           | 5     | `parallel_cpcv` (folds of one alpha) + `parallel_backtests` (one full-sample metric per alpha) → `FoldResult` table in `(alpha_id, fold_id)` order; per-item metric via `combine::compute_metrics` over const `AlphaStreams` (pure map). `cpcv_aggregate_mean_sharpe` = **reduce-by-sort (R3)**: copy → stable-sort → sequential Neumaier fold (order-independent, bit-exact). `result_table_digest` over raw f64 bytes. **`result_table_digest(parallel) == sequential` + {1,2,4,8} invariance**; backtests cross-checked vs an independent inline reference. *(Quality pass: dropped a `noexcept` on the allocating aggregate — `92d9f2f`.)* |
 | S2-4  | Determinism matrix + bench + close             | ⏳     |               |       |       |
 
 ---
@@ -44,6 +44,8 @@ The implementation plan's §0 reconciles the spec against reconnaissance + web r
 | `078749e` | S2-1 | feat(s2-1): deterministic task pool (fallback) + digest oracle |
 | `5eaea08` | S2-1 | fix(s2-1): correct for_each_worker (per-worker fan-out, not dispenser); +tests; drop dead includes |
 | `fa6ae31` | S2-2 | feat(s2-2): parallel batch-eval (per-worker Engine; digest == single-thread) |
+| `fc51747` | S2-3 | feat(s2-3): parallel CPCV folds + backtests (digest == sequential; reduce-by-sort) |
+| `92d9f2f` | S2-3 | fix(s2-3): drop noexcept from cpcv_aggregate_mean_sharpe (it allocates) |
 
 ---
 
