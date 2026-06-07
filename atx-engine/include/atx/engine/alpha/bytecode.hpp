@@ -268,10 +268,15 @@ inline void retire_consumer(NodeId child, atx::u8 child_n_out, std::vector<atx::
     for (atx::usize k = 0; k < nkids; ++k) {
       instr.src.at(k) = slot[n.in.at(k)];
     }
+    // Propagate hparams into the instruction immediates for every node first
+    // (filter ops bake Q/R or theta/mu here; all others have hparams == {0,0}).
+    // Then apply op-specific overrides: Const replaces imm[0] with its literal
+    // value (Const nodes always carry hparams == {0,0}, so no conflict arises).
+    instr.imm = n.hparams;
     if (n.op == OpCode::LoadField) {
       instr.param = n.param;
     } else if (n.op == OpCode::Const) {
-      instr.imm[0] = n.value;
+      instr.imm[0] = n.value; // override: Const uses imm[0] for the literal
     } else if (n.op == OpCode::Pin) {
       // Pin's param is the pin index (which output of the record compute to
       // project). It differs from LoadField / Const, so it must be set here.

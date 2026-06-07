@@ -414,6 +414,8 @@ private:
       return eval_time_series(in, dates, instruments);
     case OpCode::TradeWhen:
     case OpCode::Hump:
+    case OpCode::KalmanLevel:
+    case OpCode::OuFilter:
       return eval_recurrence(in, dates, instruments);
     case OpCode::Split2:
       return eval_split2(in, cells);
@@ -726,6 +728,34 @@ private:
   [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in, atx::usize dates,
                                                   atx::usize instruments) {
     const std::span<atx::f64> out = dst_col(in);
+    if (in.op == OpCode::KalmanLevel) {
+      const std::span<const atx::f64> z = src_col(in, 0);
+      const atx::f64 Q = in.imm[0];
+      const atx::f64 R = in.imm[1];
+      for (atx::usize j = 0; j < instruments; ++j) {
+        detail::KalmanLevelState s{};
+        bool seeded = false;
+        for (atx::usize t = 0; t < dates; ++t) {
+          const atx::usize i = t * instruments + j;
+          out[i] = detail::kalman_level_step(s, seeded, z[i], Q, R);
+        }
+      }
+      return atx::core::Ok();
+    }
+    if (in.op == OpCode::OuFilter) {
+      const std::span<const atx::f64> x = src_col(in, 0);
+      const atx::f64 theta = in.imm[0];
+      const atx::f64 mu = in.imm[1];
+      for (atx::usize j = 0; j < instruments; ++j) {
+        atx::f64 xhat = 0.0;
+        bool seeded = false;
+        for (atx::usize t = 0; t < dates; ++t) {
+          const atx::usize i = t * instruments + j;
+          out[i] = detail::ou_filter_step(xhat, seeded, x[i], theta, mu);
+        }
+      }
+      return atx::core::Ok();
+    }
     if (instruments > state_.size()) {
       state_.resize(instruments); // grow-once; reused across calls
     }

@@ -150,6 +150,8 @@ namespace detail {
   case OpCode::CsScaleG:
   case OpCode::TradeWhen:
   case OpCode::Hump:
+  case OpCode::KalmanLevel:
+  case OpCode::OuFilter:
   case OpCode::Pin:
   case OpCode::Split2:
   case OpCode::StoreAlpha:
@@ -406,8 +408,10 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
     }
   }
   const OpCode op = e.op->opcode;
-  // A Cs*/Ts* op requires a non-scalar primary (nothing to rank/roll over).
-  if ((is_cross_section(op) || is_time_series(op)) && out[e.a].shape == Shape::Scalar) {
+  // A Cs*/Ts* op or filter recurrence op requires a non-scalar primary.
+  const bool needs_panel_primary = is_cross_section(op) || is_time_series(op) ||
+                                   op == OpCode::KalmanLevel || op == OpCode::OuFilter;
+  if (needs_panel_primary && out[e.a].shape == Shape::Scalar) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "expected a panel/cross-section operand, got a scalar");
   }
@@ -417,6 +421,26 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
                           "group operator requires a classifier (Group) 2nd argument");
   }
   ATX_TRY_VOID(validate_stateful_op_dtypes(op, out, e));
+  // Filter hparam range checks (hparams already verified finite by the loop above).
+  if (op == OpCode::KalmanLevel) {
+    // Q (process noise) >= 0; R (observation noise) > 0.
+    if (e.hparams[0] < 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman_level: Q (process noise) must be >= 0");
+    }
+    if (e.hparams[1] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman_level: R (observation noise) must be > 0");
+    }
+  }
+  if (op == OpCode::OuFilter) {
+    // theta (mean-reversion rate) >= 0; mu (long-run mean) must be finite
+    // (already guaranteed by the isfinite loop above).
+    if (e.hparams[0] < 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ou_filter: theta (mean-reversion rate) must be >= 0");
+    }
+  }
   // Collect child shapes for the table-driven shape rule.
   std::array<Shape, 3> shape_buf{};
   atx::usize n = 0;

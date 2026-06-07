@@ -151,6 +151,12 @@ enum class OpCode : atx::u8 {
   //      construction — the forward scan reads only state[t-1] + inputs <= t.
   TradeWhen,
   Hump,
+  // ---- stateful filter ops (P3d-C4): per-instrument causal recurrences with
+  //      compile-time hyperparameters baked into the instruction as immediates.
+  //      KalmanLevel: scalar local-level Kalman filter (Q, R).
+  //      OuFilter: Ornstein-Uhlenbeck AR(1) pull-to-mean smoother (theta, mu).
+  KalmanLevel,
+  OuFilter,
   // ---- multi-output / record ops (P3d-B3): split a panel into named pins.
   //      Kernels land in B9; these enumerators exist now so the ISA is
   //      forward-declared and the registry + switch sites stay green.
@@ -325,7 +331,7 @@ namespace detail {
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
   // initializers — existing rows omit them and pick up {0, {}} automatically.
-  static constexpr std::array<OpSig, 58> kOps = {{
+  static constexpr std::array<OpSig, 60> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -406,6 +412,12 @@ namespace detail {
       //   hump(x, threshold=0.01) — arity (1,2); the optional threshold uses the
       //   P3b-1 default machinery (default-fill materializes Literal 0.01).
       {"hump", 1, 2, OpCode::Hump, DType::F64, true, {0.01}, &shape_panel},
+      //   kalman_level(x, Q, R) — scalar local-level Kalman filter; Q>=0, R>0.
+      //   Q and R are peeled as hparams (n_hparams=2); x is the panel primary.
+      {"kalman_level", 3, 3, OpCode::KalmanLevel, DType::F64, true, {}, &shape_panel, 2, {}},
+      //   ou_filter(x, theta, mu) — OU AR(1) pull-to-mean smoother; theta>=0.
+      //   theta and mu are peeled as hparams (n_hparams=2); x is the panel primary.
+      {"ou_filter", 3, 3, OpCode::OuFilter, DType::F64, true, {}, &shape_panel, 2, {}},
       // ---- multi-output test builtin (P3d-B3) --------------------------------
       // split2(x) — synthetic 2-pin record op used to validate the multi-output
       // IR before real filter kernels land in B9. Registers Pin/Split2 opcodes

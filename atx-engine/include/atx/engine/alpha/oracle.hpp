@@ -69,6 +69,7 @@
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/state_ops.hpp"
 
 namespace atx::engine::alpha {
 
@@ -405,6 +406,8 @@ private:
       return eval_time_series(in);
     case OpCode::TradeWhen:
     case OpCode::Hump:
+    case OpCode::KalmanLevel:
+    case OpCode::OuFilter:
       return eval_recurrence(in);
     case OpCode::Split2:
       return eval_split2(in);
@@ -1251,6 +1254,44 @@ inline atx::f64 Oracle::ts_binary_at(OpCode op, std::span<const atx::f64> x,
 // =========================================================================
 inline atx::core::Status Oracle::eval_recurrence(const Instr &in) {
   std::span<atx::f64> out = dst_col(in);
+  // KalmanLevel: scalar local-level Kalman filter, per-instrument forward scan.
+  // Hyperparams Q (process noise) and R (observation noise) from in.imm[0/1].
+  // Stack-local state per instrument — no shared buffer; SAFETY: causal by
+  // construction (reads only prior state + date-t input). Reads in.imm identically
+  // to the VM; bit-equality is enforced by the differential test.
+  if (in.op == OpCode::KalmanLevel) {
+    const std::span<const atx::f64> z = src_col(in, 0);
+    const atx::f64 Q = in.imm[0];
+    const atx::f64 R = in.imm[1];
+    for (atx::usize j = 0; j < instruments_; ++j) {
+      ::atx::engine::alpha::detail::KalmanLevelState s{};
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates_; ++t) {
+        const atx::usize i = t * instruments_ + j;
+        out[i] = ::atx::engine::alpha::detail::kalman_level_step(s, seeded, z[i], Q, R);
+      }
+    }
+    return atx::core::Ok();
+  }
+  // OuFilter: OU AR(1) pull-to-mean smoother, per-instrument forward scan.
+  // Hyperparams theta (mean-reversion) and mu (long-run mean) from in.imm[0/1].
+  // Stack-local state per instrument — no shared buffer; SAFETY: causal by
+  // construction (reads only prior xhat + date-t input). Reads in.imm identically
+  // to the VM; bit-equality is enforced by the differential test.
+  if (in.op == OpCode::OuFilter) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const atx::f64 theta = in.imm[0];
+    const atx::f64 mu = in.imm[1];
+    for (atx::usize j = 0; j < instruments_; ++j) {
+      atx::f64 xhat = 0.0;
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates_; ++t) {
+        const atx::usize i = t * instruments_ + j;
+        out[i] = ::atx::engine::alpha::detail::ou_filter_step(xhat, seeded, x[i], theta, mu);
+      }
+    }
+    return atx::core::Ok();
+  }
   if (in.op == OpCode::Hump) {
     const std::span<const atx::f64> x = src_col(in, 0);
     // Scalar threshold from the 2nd operand's [0] cell (read like CsScale's `a`);
