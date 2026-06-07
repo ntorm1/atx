@@ -65,7 +65,7 @@ Each unit carries a non-vacuous proof test against its relevant failure mode.
 
 | Unit  | Title                                                                    | Status | Commit SHA(s)     | Tests | Notes |
 |-------|--------------------------------------------------------------------------|--------|-------------------|-------|-------|
-| S4-0  | Marker + ledger + library scaffold + sqlite build check                  | ✅ done | `<fill-after>`   | —     | ledger + `library/fwd.hpp` + sqlite-link smoke-check: **passed transitively** (no CMake changes needed; `atx_sqlite3` resolves via `atx::core` → `atx::engine` transitive link). `Status` API uses `.has_value()` (not `.ok()`). Smoke test deleted after verification. |
+| S4-0  | Marker + ledger + library scaffold + sqlite build check                  | ✅ done | `e97c192`        | —     | ledger + `library/fwd.hpp` + sqlite-link smoke-check: **passed transitively** (no CMake changes needed; `atx_sqlite3` resolves via `atx::core` → `atx::engine` transitive link). `Status` API uses `.has_value()` (not `.ok()`). Smoke test deleted after verification. |
 | S4-1  | On-disk record schema + append-only segmented store                      | ⏳     |                   |       | |
 | S4-2  | Library-wide canonical-hash dedup index                                  | ⏳     |                   |       | |
 | S4-3  | Correlation-neighbor index + incremental corr-to-pool                    | ⏳     |                   |       | |
@@ -78,7 +78,7 @@ Each unit carries a non-vacuous proof test against its relevant failure mode.
 
 | SHA | Unit | Subject |
 |-----|------|---------|
-| `<fill-after>` | S4-0 | docs(s4-0): open sprint-4 library-management ledger + scaffold |
+| `e97c192` | S4-0 | docs(s4-0): open sprint-4 library-management ledger + scaffold |
 
 ---
 
