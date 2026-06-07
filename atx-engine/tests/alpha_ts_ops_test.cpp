@@ -70,3 +70,66 @@ TEST(OuAr1Fit, EmptyWindowGivesNaN) {
   EXPECT_EQ(f.n, 0u);
 }
 
+// ===========================================================================
+//  E2 — OU derived-quantity mappers: theta / halflife / mean / zscore
+// ===========================================================================
+
+TEST(OuDeriv, ThetaHalflifeMeanFromKnownB) {
+  // construct an OuAr1Fit directly with b=0.5, a=5
+  // -> mu=a/(1-b)=10; theta=-ln(0.5)=ln2; halflife=ln2/theta=1
+  OuAr1Fit f;
+  f.a = 5.0;
+  f.b = 0.5;
+  f.resid_std = 1.0;
+  f.n = 4;
+  EXPECT_NEAR(ou_theta_of(f), std::log(2.0), 1e-12);
+  EXPECT_NEAR(ou_halflife_of(f), 1.0, 1e-12);
+  EXPECT_NEAR(ou_mean_of(f), 10.0, 1e-12);
+  // sigma_eq = resid_std / sqrt(1-b^2) = 1/sqrt(0.75)
+  // zscore at x_last=12: (12 - 10) / sigma_eq
+  const double sig = 1.0 / std::sqrt(0.75);
+  EXPECT_NEAR(ou_zscore_of(f, 12.0), (12.0 - 10.0) / sig, 1e-12);
+}
+
+TEST(OuDeriv, NonMeanRevertingGivesNaN) {
+  OuAr1Fit f;
+  f.a = 1.0;
+  f.b = 1.5; // b >= 1 -> not mean-reverting
+  f.resid_std = 1.0;
+  f.n = 4;
+  EXPECT_TRUE(ts_is_nan(ou_theta_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_halflife_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_mean_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_zscore_of(f, 5.0)));
+}
+
+TEST(OuDeriv, NegativeBGivesNaNForThetaAndZscore) {
+  // b < 0: oscillating, not OU-mean-reverting
+  OuAr1Fit f;
+  f.a = 0.0;
+  f.b = -0.5;
+  f.resid_std = 1.0;
+  f.n = 4;
+  EXPECT_TRUE(ts_is_nan(ou_theta_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_halflife_of(f)));
+  // ou_mean_of: b < 1 so a/(1-b) = 0/(1.5) = 0 (b<1 allowed for mean)
+  EXPECT_FALSE(ts_is_nan(ou_mean_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_zscore_of(f, 0.0)));
+}
+
+TEST(OuDeriv, ZeroResidStdGivesNaNZscore) {
+  OuAr1Fit f;
+  f.a = 5.0;
+  f.b = 0.5;
+  f.resid_std = 0.0; // sigma_eq = 0 -> zscore undefined
+  f.n = 4;
+  EXPECT_TRUE(ts_is_nan(ou_zscore_of(f, 10.0)));
+}
+
+TEST(OuDeriv, NaNBGivesNaNForAll) {
+  OuAr1Fit f; // default-constructed: all NaN
+  EXPECT_TRUE(ts_is_nan(ou_theta_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_halflife_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_mean_of(f)));
+  EXPECT_TRUE(ts_is_nan(ou_zscore_of(f, 5.0)));
+}
