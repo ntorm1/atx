@@ -7,8 +7,9 @@ cmake-build-*/
 # Git worktrees (isolated workspaces)
 .worktrees/
 
-# Downloaded market data (DBN/parquet dumps from examples)
-data/
+# Downloaded market data (DBN/parquet dumps from examples). Anchored to repo root
+# so it does NOT match source dirs like atx-engine/src/data/.
+/data/
 
 # clangd / tooling
 .cache/
