@@ -18,6 +18,8 @@ TEST(Calendar, FixedAndFloatingHolidays) {
   EXPECT_FALSE(cal::is_trading_day(2026, 5, 25));   // Memorial (last Mon)
   EXPECT_FALSE(cal::is_trading_day(2026, 11, 26));  // Thanksgiving (4th Thu)
   EXPECT_FALSE(cal::is_trading_day(2026, 12, 25));  // Christmas (Fri)
+  EXPECT_FALSE(cal::is_trading_day(2026, 2, 16));   // Washington's Birthday (3rd Mon Feb)
+  EXPECT_FALSE(cal::is_trading_day(2026, 9, 7));    // Labor Day (1st Mon Sep)
 }
 
 TEST(Calendar, WeekendObservedHolidays) {
@@ -26,6 +28,8 @@ TEST(Calendar, WeekendObservedHolidays) {
   EXPECT_FALSE(cal::is_trading_day(2026, 7, 4));  // the Saturday itself: not a trading day anyway
   // New Year exception: Jan 1 2028 is Saturday -> NOT observed; Dec 31 2027 stays open.
   EXPECT_TRUE(cal::is_trading_day(2027, 12, 31)); // Fri, open
+  EXPECT_FALSE(cal::is_trading_day(2026, 6, 19));   // Juneteenth (Fri, on-weekday)
+  EXPECT_FALSE(cal::is_trading_day(2027, 6, 18));   // Juneteenth 2027 Sat -> observed Fri
 }
 
 TEST(Calendar, TradingDaysBetween) {

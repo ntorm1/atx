@@ -2,7 +2,7 @@
 
 // atx::engine::quant — NYSE trading-day calendar for ACT/252 time-to-expiry.
 // Holidays are computed by rule (fixed-date with weekend shift, floating
-// nth-weekday, Good Friday via Computus) for years 2025-2030. A day is a
+// nth-weekday, Good Friday via Computus) for years 2025-2035. A day is a
 // trading day if it is Mon-Fri and not an NYSE holiday.
 
 namespace atx::engine::quant {

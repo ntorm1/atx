@@ -91,7 +91,7 @@ void add_year_holidays(std::unordered_set<long>& h, int y) {
 const std::unordered_set<long>& holidays() {
   static const std::unordered_set<long> set = [] {
     std::unordered_set<long> h;
-    for (int y = 2025; y <= 2030; ++y) {
+    for (int y = 2025; y <= 2035; ++y) {
       add_year_holidays(h, y);
     }
     return h;
@@ -104,7 +104,8 @@ bool is_trading_day_z(long z) {
   if (w == 0 || w == 6) {
     return false;
   }
-  return holidays().find(z) == holidays().end();
+  const auto& h = holidays();
+  return h.find(z) == h.end();
 }
 
 } // namespace
