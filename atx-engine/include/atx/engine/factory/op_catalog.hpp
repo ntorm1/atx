@@ -32,7 +32,6 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/registry.hpp"
-#include "atx/engine/alpha/typecheck.hpp"
 
 namespace atx::engine::factory {
 
