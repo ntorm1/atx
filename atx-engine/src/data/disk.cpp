@@ -43,6 +43,29 @@ std::filesystem::path DiskStore::partition_path(Store s, std::string_view date) 
   return store_dir(s) / ("date=" + std::string{date}) / "data.parquet";
 }
 
-// write_partition / list_dates / scan_partition added in later tasks.
+Result<void> DiskStore::write_partition(Store s, std::string_view date,
+                                        std::span<const core::io::WriteColumn> cols) const {
+  const std::filesystem::path out = partition_path(s, date);
+  std::error_code ec;
+  std::filesystem::create_directories(out.parent_path(), ec);
+  if (ec) {
+    return Err(ErrorCode::IoError, "create partition dir: " + ec.message());
+  }
+  auto status = core::io::write_parquet(cols, out.string());
+  if (!status.has_value()) {
+    return Err(status.error());
+  }
+  return Ok();
+}
+
+Result<core::io::LazyParquet> DiskStore::scan_partition(Store s, std::string_view date) const {
+  const std::filesystem::path p = partition_path(s, date);
+  if (!std::filesystem::exists(p)) {
+    return Err(ErrorCode::IoError, "partition not found: " + p.string());
+  }
+  return core::io::LazyParquet::scan(p.string());
+}
+
+// list_dates added in the next task.
 
 } // namespace atx::engine::data
