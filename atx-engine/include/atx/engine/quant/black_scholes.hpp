@@ -58,7 +58,7 @@ struct Greeks {
 [[nodiscard]] inline Greeks bs_greeks(double S, double K, double T, double r, double q,
                                       double sigma, bool is_call) {
   const double nan = std::nan("");
-  if (T <= 0.0 || sigma <= 0.0 || S <= 0.0 || K <= 0.0) {
+  if (T <= 0.0 || sigma <= 0.0 || S <= 0.0 || K <= 0.0 || !std::isfinite(sigma)) {
     return Greeks{nan, nan, nan, nan};
   }
   const double sqrtT = std::sqrt(T);
@@ -88,6 +88,7 @@ struct Greeks {
                                         double q, bool is_call) {
   const double nan = std::nan("");
   if (!std::isfinite(price) || !std::isfinite(S) || !std::isfinite(K) || !std::isfinite(T) ||
+      !std::isfinite(r) || !std::isfinite(q) ||
       T <= 0.0 || S <= 0.0 || K <= 0.0 || price <= 0.0) {
     return nan;
   }
