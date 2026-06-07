@@ -54,6 +54,7 @@
 #include <cmath>   // std::sqrt, std::isnan, NaN
 #include <limits>  // std::numeric_limits
 #include <span>    // std::span
+#include <utility> // std::move (monthly grid into the result aggregate)
 #include <vector>  // std::vector (monthly grid output)
 
 #include "atx/core/datetime.hpp"             // atx::core::time::Timestamp
@@ -138,6 +139,35 @@ inline constexpr atx::f64 kCalmarEps = 1e-9;
   return std::sqrt(periods_per_year) * ms.mean / ms.std;
 }
 
+// Compound r into a (year, month) grid: cell.ret = ∏(1 + rᵢ) − 1 over the periods
+// whose UTC date falls in that calendar month. `dates` must be aligned to r (one
+// Timestamp per observation). Returns an empty grid when dates are absent or
+// misaligned (size != r.size()). dates are assumed ascending (chronological), so
+// equal (year, month) runs are contiguous — one linear pass, no map, deterministic.
+[[nodiscard]] inline std::vector<MonthlyCell>
+build_monthly_grid(std::span<const atx::f64> r,
+                   std::span<const atx::core::time::Timestamp> dates) {
+  std::vector<MonthlyCell> monthly;
+  if (dates.empty() || dates.size() != r.size()) {
+    return monthly;
+  }
+  for (atx::usize i = 0U; i < r.size(); ++i) {
+    const atx::core::time::CivilTime ct = atx::core::time::to_civil_utc(dates[i]);
+    const atx::i32 y = ct.date.year;
+    // SAFETY: ct.date.month is the civil month, guaranteed ∈ [1, 12] by
+    //         to_civil_utc (civil_from_days yields m ∈ [1, 12]); the explicit
+    //         narrowing cast to u8 cannot lose information and silences
+    //         -Wconversion on non-MSVC toolchains.
+    const atx::u8 m = static_cast<atx::u8>(ct.date.month);
+    if (!monthly.empty() && monthly.back().year == y && monthly.back().month == m) {
+      monthly.back().ret = (1.0 + monthly.back().ret) * (1.0 + r[i]) - 1.0;
+    } else {
+      monthly.push_back(MonthlyCell{y, m, r[i]});
+    }
+  }
+  return monthly;
+}
+
 } // namespace detail
 
 // ===========================================================================
@@ -204,22 +234,7 @@ inline constexpr atx::f64 kCalmarEps = 1e-9;
   }
 
   // Monthly grid: compound r by (year, month). Empty when no aligned dates.
-  std::vector<MonthlyCell> monthly;
-  if (!cfg.dates.empty() && cfg.dates.size() == n_obs) {
-    for (atx::usize i = 0U; i < n_obs; ++i) {
-      const atx::core::time::CivilTime ct = atx::core::time::to_civil_utc(cfg.dates[i]);
-      const atx::i32 y = ct.date.year;
-      const atx::u8 m = static_cast<atx::u8>(ct.date.month);
-      // Append to the current month-cell if it matches the last; else open a new
-      // cell. dates are assumed ascending (chronological), so equal (y,m) runs are
-      // contiguous — one linear pass, no map, deterministic order.
-      if (!monthly.empty() && monthly.back().year == y && monthly.back().month == m) {
-        monthly.back().ret = (1.0 + monthly.back().ret) * (1.0 + r[i]) - 1.0;
-      } else {
-        monthly.push_back(MonthlyCell{y, m, r[i]});
-      }
-    }
-  }
+  std::vector<MonthlyCell> monthly = detail::build_monthly_grid(r, cfg.dates);
 
   return ReturnMetrics{sharpe, sortino, max_dd, calmar, ir, appraisal, hit_rate, std::move(monthly)};
 }

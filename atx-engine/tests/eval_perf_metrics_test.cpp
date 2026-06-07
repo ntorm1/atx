@@ -15,6 +15,13 @@ TEST(EvalPerfMetrics, Sortino_DownsideOnly) {
   std::vector<double> pnl{0.0, 0.01, 0.02, 0.03};
   EXPECT_EQ(compute_return_metrics(pnl, {}).sortino, 0.0);
 }
+TEST(EvalPerfMetrics, Sortino_NonZeroDownsidePath) {
+  std::vector<double> pnl{0.0, 0.02, -0.01, 0.03, -0.02};  // r=[.02,-.01,.03,-.02]
+  // mean=0.005; downside dev=sqrt(mean(min(r,0)^2))=sqrt(0.000125)=0.01118034; sortino=sqrt(252)*0.005/0.01118034
+  auto rm = compute_return_metrics(pnl, {});
+  EXPECT_GT(rm.sortino, 0.0);
+  EXPECT_NEAR(rm.sortino, 7.0993, 1e-2);
+}
 TEST(EvalPerfMetrics, HitRate_CountsPositive) {
   std::vector<double> pnl{0.0, 1.0, -1.0, 1.0, 1.0};
   EXPECT_NEAR(compute_return_metrics(pnl, {}).hit_rate, 0.75, 1e-12);

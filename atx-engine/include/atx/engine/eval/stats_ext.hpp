@@ -33,8 +33,9 @@
 //  takes a non-owning std::span, and is thread-safe. median() makes ONE internal
 //  copy (it must reorder to select order statistics) — see its SAFETY note.
 
-#include <algorithm> // std::nth_element
+#include <algorithm> // std::nth_element, std::max_element
 #include <cmath>     // std::erfc, std::sqrt, std::exp, std::log, std::abs
+#include <cstddef>   // std::ptrdiff_t (nth_element iterator offsets)
 #include <span>      // std::span
 #include <vector>    // std::vector (median scratch copy, returns_from_equity out)
 

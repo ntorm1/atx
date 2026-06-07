@@ -15,6 +15,10 @@ TEST(EvalStatsExt, SkewKurt_SymmetricIsZero) {
   std::vector<double> s{-2,-1,0,1,2};
   EXPECT_NEAR(skewness(s), 0.0, 1e-12);
 }
+TEST(EvalStatsExt, ExcessKurtosis_KnownValue) {
+  std::vector<double> s{-2,-1,0,1,2};   // pop: mu=0, var=2, 4th std moment=1.7 -> excess = -1.3
+  EXPECT_NEAR(excess_kurtosis(s), -1.3, 1e-12);
+}
 TEST(EvalStatsExt, Median_EvenAndOdd) {
   std::vector<double> a{3,1,2}; std::vector<double> b{4,1,3,2};
   EXPECT_DOUBLE_EQ(median(a), 2.0); EXPECT_DOUBLE_EQ(median(b), 2.5);
