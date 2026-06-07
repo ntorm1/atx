@@ -48,3 +48,49 @@ TEST(AlphaMember, IndClassStillField) {
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// B6 — type-checker tests (appended after B5 parser tests per plan)
+// ---------------------------------------------------------------------------
+
+#include "atx/engine/alpha/typecheck.hpp"
+
+namespace {
+
+using atx::engine::alpha::analyze;
+using atx::engine::alpha::DType;
+using atx::engine::alpha::Shape;
+
+TEST(AlphaMember, PinTypechecks) {
+  Library lib;
+  auto ast = parse_program("b = split2(close).hi\n", lib);
+  ASSERT_TRUE(ast);
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  const ExprId root = ast.value().roots()[0].root;
+  EXPECT_EQ(an.value().info(root).shape, Shape::Panel);
+  EXPECT_EQ(an.value().info(root).dtype, DType::F64);
+}
+
+TEST(AlphaMember, UnknownPinRejected) {
+  Library lib;
+  auto ast = parse_program("b = split2(close).nope\n", lib);
+  ASSERT_TRUE(ast);
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaMember, RecordUsedAsScalarRejected) {
+  Library lib;
+  auto ast = parse_program("b = split2(close) + 1\n", lib);
+  ASSERT_TRUE(ast);
+  EXPECT_FALSE(analyze(ast.value())); // record in arithmetic
+}
+
+TEST(AlphaMember, RecordRootRejected) {
+  Library lib;
+  auto ast = parse_program("b = split2(close)\n", lib);
+  ASSERT_TRUE(ast);
+  EXPECT_FALSE(analyze(ast.value())); // a bare record cannot be an alpha root
+}
+
+} // namespace
