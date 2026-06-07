@@ -42,7 +42,7 @@ Realistic scope for this sprint:
 | P4-7a   | done   | `caae1c9`  | FactorModel factored-V apply-math (risk/apply_inverse/neutralize); RiskFactorModel 12/12/0/0 (cq fix: +`<span>`, +create-time K-stack bound) |
 | P4-7b   | done   | `4d8f4a9`  | FactorModelBuilder (per-date WLS-bootstrapped-from-OLS estimating X,F,D; reuses combine LW for F); RiskFactorBuilder 8/8/0/0 |
 | P4-8    | done   | `a815d0d`  | WeightPolicy neutralization (group-demean + truncation); industry_neutral now LIVE; bit-identical-when-off guard; WeightPolicyNeutralize 9/9/0/0 (existing WeightPolicy 20/20 UNCHANGED). DECAY + FACTOR-neutralize deferred (residuals below) |
-| P4-9    | —      | —          | — |
+| P4-9    | done   | `ef77f8a`  | turnover-penalized risk-aware optimizer (`PortfolioOptimizer`); λ=κ=0 recovers WeightPolicy book ≤1e-9; factored V via `apply_inverse` only; RiskOptimizer 16/16/0/0 (cq fix `e2d4395`: +`<limits>`, λ-scaling comment corrected) |
 | P4-10   | —      | —          | — |
 
 ---
@@ -57,6 +57,8 @@ Realistic scope for this sprint:
 | `1b76e5b` | fix (P4-7a)    | RiskFactorModel 12/12/0/0 (cq: +`<span>`, +create-time K-stack bound) |
 | `4d8f4a9` | feat (P4-7b)   | RiskFactorBuilder 8/8/0/0 |
 | `a815d0d` | feat (P4-8)  | WeightPolicyNeutralize 9/9/0/0 (existing WeightPolicy 20/20 unchanged; full engine suite 1552/1552) |
+| `ef77f8a` | feat (P4-9)  | RiskOptimizer 16/16/0/0 (Risk\|WeightPolicy 77/77; full engine suite 1568/1568) |
+| `e2d4395` | fix (P4-9)   | RiskOptimizer 16/16/0/0 (cq: +`<limits>` include, corrected λ-scaling comment) |
 
 ---
 
@@ -276,6 +278,47 @@ applied; clang-tidy NOT run (per unit constraints).
   only X,F,D), so wiring it needs the model→universe `instrument_rows` threaded through
   AND pulls the whole `risk/` + combiner include chain into this Phase-2 header. NOT
   implemented here (a ledger residual, not a code stub).
+
+---
+
+## P4-9 — Turnover-penalized risk-aware optimizer (`PortfolioOptimizer`)
+
+`risk/optimizer.hpp` (new, header-only inline, ns `atx::engine::risk`) adds `OptimizerConfig`
+(λ `risk_aversion`, κ `turnover_penalty`, L `gross_leverage`, `name_cap`, `dollar_neutral`,
+FIXED `max_iters=64`) + `PortfolioOptimizer::solve(span<const f64> alpha, const FactorModel& V,
+span<const f64> w_prev) -> Result<vector<f64>>` — the §5.6 book
+`max αᵀw − λwᵀVw − κ‖w−w_prev‖₁` s.t. `Σw=0`, `Σ|w|≤L`, `|w_i|≤cap`. The forward decls already
+existed in `risk/fwd.hpp` (untouched).
+
+**Solve.** Deterministic FIXED-iteration (`max_iters`, NO convergence early-exit) gradient→prox→project
+loop. The smooth target is built WITHOUT ever materializing the M×M V: at **λ>0** it is the analytic
+dollar-neutral MV optimum `t = (1/2λ)·P·V⁻¹·P·α` via `FactorModel::apply_inverse` (Woodbury) ONLY
+(no forward `Vw`, no dense V; P = mean-subtraction dollar-neutral projection); at **λ=0** there is no
+risk term to invert, so the smooth target is the pure-alpha direction `demean(α)` (NaN→0, excluded from
+the mean) — a `// SAFETY:`-documented branch that makes pin #1 exact. The target is then PROJECTED onto
+`{Σw=0, Σ|w|=L, |w_i|≤cap}` reusing WeightPolicy's `demean`→`gross_normalize` arithmetic; the κ turnover
+term is a proximal soft-threshold toward `w_prev` (empty `w_prev` ⇒ materialized once to flat/0). Because
+the smooth target is the PROJECTED (gross-normalized) book, the κ=0 surrogate is stationary at the optimum
+— so the `w_prev=w*` no-trade boundary is an EXACT fixed point. **Single scratch alloc per solve**
+(allocate-once-per-rebalance, WeightPolicy precedent); NO heap inside the iteration loop; O(iters·(MK+K³)).
+NO RNG; order-fixed reductions.
+
+**The λ-collapse (documented, spec-acceptable).** Since the `(1/2λ)` scalar washes out under the gross
+normalization, the λ effect on the FINAL book is **binary** (off at λ=0, on at λ>0) — only the
+λ-independent V⁻¹ directional tilt survives; any two λ>0 give the byte-identical book. This is the
+mathematically forced consequence of fixing `Σ|w|=L` on a dollar-neutral book (the MV optimum's direction
+is scale-free), NOT a defect: the qualitative spec intent ("risk-aware tilts weight away from high-variance
+names") holds and is tested (high-var pair gross 0.5→0.024). The cq comment fix (`e2d4395`) corrected the
+header to state this binary effect rather than implying a graduated `(1/2λ)` shrink.
+
+**16 new tests** (`RiskOptimizer`), `16/16` via `ctest -R RiskOptimizer`, `Risk|WeightPolicy` `77/77`,
+full engine suite **1568/1568**: λ=κ=0 recovers `gross_normalize(demean(α))` ≤1e-9 (+ L=2 variant +
+NaN-hole variant asserting held-out names ==0); κ=0 pure-MV (w_prev-independent, bitwise); raising-λ shrinks
+high-variance gross; κ>0 reduces turnover vs κ=0; name-cap never exceeded; Σw=0 & Σ|w|≤L invariants;
+determinism (bitwise `EXPECT_EQ` on re-run); boundaries `w_prev=w*`-no-trade, single-name-→0,
+cap-below-equal-weight-all-pinned, empty-w_prev==flat; and two dim-mismatch `Err` paths. `/W4 /permissive-
+/WX` clean. Reviews: spec ✅ COMPLIANT (independent rebuild; λ-collapse judged spec-acceptable),
+code-quality ✅ APPROVED (two Minors fixed in `e2d4395`).
 
 ---
 
