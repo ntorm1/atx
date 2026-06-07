@@ -121,4 +121,28 @@ struct KalmanLevelState {
   return s.x;
 }
 
+// ---------------------------------------------------------------------------
+// ou_filter_step — C3 (OU AR(1) pull-to-mean smoother)
+// ---------------------------------------------------------------------------
+
+// One step of the OU AR(1) pull-to-mean smoother for one instrument.
+// phi = exp(-theta). Seeds on the first finite x (xhat=x). Subsequent steps
+// pull toward mu independent of the new observation: xhat = mu + phi*(xhat-mu).
+// Returns xhat (NaN before seed). theta>=0, mu finite.
+// SAFETY: reads only prior `xhat`/`seeded` and the date-t input x.
+[[nodiscard]] inline atx::f64 ou_filter_step(atx::f64 &xhat, bool &seeded, atx::f64 x,
+                                             atx::f64 theta, atx::f64 mu) noexcept {
+  if (!seeded) {
+    if (state_is_nan(x)) {
+      return kStateNaN;
+    }
+    xhat = x;
+    seeded = true;
+    return xhat;
+  }
+  const atx::f64 phi = std::exp(-theta);
+  xhat = mu + phi * (xhat - mu);
+  return xhat;
+}
+
 } // namespace atx::engine::alpha::detail
