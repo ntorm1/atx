@@ -193,7 +193,9 @@ inline void retire_consumer(NodeId child, atx::u8 child_n_out, std::vector<atx::
     Instr fr;
     fr.op = OpCode::Free;
     fr.dst = slot[child];
-    fr.n_out = child_n_out; // block width: VM releases [dst, dst+n_out)
+    fr.n_out = child_n_out; // carried for tooling/debug; runtime uses
+                            // 1-acquire/1-release per instr, so the VM ignores
+                            // this on Free
     code.push_back(fr);
     pool.release_block(slot[child], child_n_out);
     slot[child] = kNoSlot;
@@ -304,9 +306,19 @@ inline void retire_consumer(NodeId child, atx::u8 child_n_out, std::vector<atx::
 
   prog.num_slots = pool.peak();
   prog.peak_live_slots = pool.peak();
-  // With multi-output nodes a single node may occupy n_out slots, so peak can
-  // legitimately exceed unique_nodes. The only hard invariant is that peak is
-  // finite and non-zero (the VM pre-sizes its pool from this value).
+  // Sanity: peak slots bounded by sum of n_out over LIVE nodes. Allows a
+  // multi-output node (1 node, n_out slots) while still catching an allocator
+  // bug where peak exceeds what the live nodes could legitimately occupy.
+  atx::u32 max_possible_slots = 0;
+  for (const Node &nd : nodes) {
+    if (nd.refcount > 0) {
+      max_possible_slots += nd.n_out;
+    }
+  }
+  if (prog.num_slots > max_possible_slots) {
+    return atx::core::Err(atx::core::ErrorCode::Internal,
+                          "linearize: peak live slots exceeded sum(n_out) — allocator bug");
+  }
   return atx::core::Ok(std::move(prog));
 }
 
