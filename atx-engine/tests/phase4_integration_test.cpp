@@ -56,7 +56,6 @@
 
 #include <bit>     // std::bit_cast (canonical f64 bits in the digest)
 #include <cmath>   // std::isnan, std::fabs
-#include <cstring> // std::memcmp (NaN-tolerant byte-equality)
 #include <limits>  // std::numeric_limits (the NaN gap sentinel)
 #include <memory>  // std::make_unique (the per-run EventBus)
 #include <span>
