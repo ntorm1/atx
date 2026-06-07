@@ -1,5 +1,6 @@
 # Phase 4b — Implementation Progress
 
+**Status:** ✅ CLOSED 2026-06-07 — 8 units (P4-6…P4-10c), 75 new tests, full engine suite green; `atx-engine-bench` +4 benches. ROADMAP bump + `phase-4.md` reference are the remaining close-ceremony artifacts (see "What Phase 4b proves / Next").
 **Worktree:** NONE — in-place on the active shared branch (the established engine workflow; Phase 3b/3c/4a worked this way too; `.agents/atx-engine/agent.md` is the authority).
 **Branch:** `feat/atx-core-stdlib`
 **Base:** `feat/atx-core-stdlib` @ `3d09371` (the 4a close)
@@ -45,7 +46,7 @@ Realistic scope for this sprint:
 | P4-9    | done   | `ef77f8a`  | turnover-penalized risk-aware optimizer (`PortfolioOptimizer`); λ=κ=0 recovers WeightPolicy book ≤1e-9; factored V via `apply_inverse` only; RiskOptimizer 16/16/0/0 (cq fix `e2d4395`: +`<limits>`, λ-scaling comment corrected) |
 | P4-10a  | done   | `5d7aa0e`  | capacity curve (`CapacityPoint`, `capacity_curve`); √-impact edge erosion via sim's OWN `ImpactCfg` (one cost surface §0-G); +additive `ExecutionSimulator::impact_cfg()` accessor; RiskCapacity 9/9/0/0 (ExecSim 24/24 unchanged; cq fix `2a42e69`: drop unused `<limits>`/`<cstdint>`) |
 | P4-10b  | done   | `1baa523`  | phase-4 integration proofs (firewall truncation-invariance + determinism hash + walk-forward combined backtest); Phase4Integration 10/10/0/0 (broader 146/146); TESTS-ONLY, no production change (cq fix `a0abb17`: drop unused `<cstring>`) |
-| P4-10c  | —      | —          | bench (combiner fit / factor build / optimizer solve / walk-forward) |
+| P4-10c  | done   | `0aa1aa5`  | phase-4 micro-benchmarks (combiner fit by method×N,T / factor build / optimizer solve / walk-forward loop); measured-only Google Benchmark, `atx-engine-bench` builds `/W4 /WX` clean, all 4 run |
 
 ---
 
@@ -65,6 +66,7 @@ Realistic scope for this sprint:
 | `2a42e69` | fix (P4-10a) | RiskCapacity 9/9/0/0 (cq: drop unused `<limits>`/`<cstdint>`) |
 | `1baa523` | feat (P4-10b)| Phase4Integration 10/10/0/0 (Phase4Integration\|Combine\|Risk\|Backtest\|ExecSim 146/146) |
 | `a0abb17` | fix (P4-10b) | Phase4Integration 10/10/0/0 (cq: drop unused `<cstring>`) |
+| `0aa1aa5` | bench (P4-10c)| 4 benches (`atx-engine-bench` `/W4 /WX` clean; all run) |
 
 ---
 
@@ -397,6 +399,85 @@ APPROVED (one unused-include Minor fixed in `a0abb17`).
 
 ---
 
+## P4-10c — Phase-4 micro-benchmarks
+
+`bench/phase4_bench.cpp` (NEW, measured-only Google Benchmark; auto-globbed into `atx-engine-bench`, no
+CMake edit) covers the four §8 P4-10 bench targets, each measuring the right call with setup hoisted OUTSIDE
+the `for (auto _ : state)` loop, results guarded by `DoNotOptimize`/`ClobberMemory`, fixtures deterministic
+(fixed data, vary-by-index, no RNG):
+1. **`BM_CombinerFit`** — `AlphaCombiner::fit` over a synthetic `AlphaStore`, parameterized by CombineMethod
+   (`EqualWeight`/`IcWeighted`/`ShrinkageMv` via a template param) × `(N alphas, T window)` Args.
+2. **`BM_FactorBuild`** — `FactorModelBuilder::build` over a synthetic `PanelView` (sectors-only K), Args `(window, M)`.
+3. **`BM_OptimizerSolve`** — `PortfolioOptimizer::solve` per rebalance (FactorModel built ONCE outside the
+   measured region; λ>0 so the Woodbury `apply_inverse` path is exercised), Arg `M`.
+4. **`BM_WalkForwardLoop`** — full `BacktestLoop::run()` (CombinedSignalSource + WeightPolicy), Arg bar-count
+   (feed/clock/bus/panel/portfolio legitimately rebuilt per-iteration — the loop mutates the portfolio +
+   registers a bus consumer).
+
+`atx-engine-bench` builds `/W4 /permissive- /WX` clean; all four run (Debug = UPPER BOUNDS, GBench DEBUG
+warning expected). Sample Debug ns/iter: CombinerFit EqualWeight ~14–40µs, IcWeighted ~82µs–2.6ms, ShrinkageMv
+~5–266ms (the Ledoit-Wolf shrunk MV solve dominates at large N); FactorBuild ~14–254ms; OptimizerSolve
+~5µs–41ms; WalkForwardLoop ~16–47ms. Review: consolidated coverage+quality ✅ APPROVED (measured-only, no
+correctness assertions; one benign explicit `int` cast on the bar-count Arg accepted as a Minor — `/WX`-clean,
+safe for 16/64/256, a `usize` change risks `-Wconversion` cascade through the bar-row builder).
+
+---
+
 ## What Phase 4b proves / Next
 
-_(Fill at sprint close.)_
+**Phase 4b CLOSED 2026-06-07.** 8 units shipped (P4-6, P4-7a, P4-7b, P4-8, P4-9, P4-10a, P4-10b, P4-10c) on
+`feat/atx-core-stdlib`; every unit spec ✅ + code-quality ✅ reviewed by independent rebuild; ledger SHAs
+backfilled per unit. New tests this sprint: RiskExposures 11 + RiskFactorModel 12 + RiskFactorBuilder 8 +
+WeightPolicyNeutralize 9 + RiskOptimizer 16 + RiskCapacity 9 + Phase4Integration 10 = **75 new tests**; full
+engine suite green (1568/1568 at P4-9; +RiskCapacity 9 +Phase4Integration 10 after). `atx-engine-bench`
+extended with 4 phase-4 benches. `/W4 /permissive- /WX` clean throughout; clang-tidy disabled (the strict
+build is the gate); NO RNG, determinism §3.2 held.
+
+**What Phase 4b proves:**
+1. **A factored Barra risk model that never materializes M×M.** `FactorModel` keeps `V = XFXᵀ + D` factored;
+   `risk(w)` is O(MK+K²) alloc-free, `apply_inverse` is Woodbury with a cached K×K capacitance Cholesky
+   (O(MK+K³)). The factor covariance `F` reuses the ONE canonical Ledoit-Wolf closed form from P4-4; the
+   per-date cross-sectional WLS (`FactorModelBuilder`, bootstrapped from OLS) estimates `(X, F, D)` over a
+   trailing window. Exposures `X` are OHLCV-derived (Momentum/Volatility/Beta/Liquidity) + config-gated
+   Size/sector dummies from optional external cap/group spans (the as-built PanelView is OHLCV-only).
+2. **A turnover-penalized risk-aware optimizer** (`PortfolioOptimizer`) — `max αᵀw − λwᵀVw − κ‖w−w_prev‖₁`
+   s.t. Σw=0, Σ|w|≤L, |w_i|≤cap — deterministic fixed-iteration, uses ONLY the factored `apply_inverse`, and
+   recovers the `WeightPolicy` dollar-neutral book at λ=κ=0 within 1e-9.
+3. **`WeightPolicy` neutralization wired** — the inert `industry_neutral` is now a live per-group demean +
+   a per-name truncation cap, both bit-identical-when-off (the 20 Phase-2 tests pass unchanged).
+4. **Capacity as a first-class output** (`capacity_curve`) — √-impact edge erosion via the ONE
+   `ExecutionSimulator` cost surface (§0-G), monotone in AUM, crossing zero at the capacity point (RT §9.6).
+5. **The fit/apply firewall is structural and PROVEN** — `Phase4Integration` truncation-invariance shows
+   combiner.fit + FactorModelBuilder.build + optimizer.solve are byte-identical under future-row corruption
+   (future provably invisible), the whole layer is determinism-hash reproducible (non-vacuously — mutations
+   flip the digest), and a realistic walk-forward combined backtest (delisted symbols + NaN gaps) through the
+   real `BacktestLoop` is deterministic and cost-honest (costs-off recovers frictionless equity).
+
+**Deferred residuals (lift to ROADMAP backlog at the Phase-4 close ceremony):**
+- **P4-8 DECAY + FACTOR-neutralize** policy wiring (stateless `WeightPolicy` holds no signal history; the
+  `FactorModel::neutralize` primitive ships + is tested but carries no instrument→universe map). Ledger
+  residuals, not code stubs.
+- **P4-9** apply-window self-guard: `FactorModel`/`Combination` carry `[fit_begin,fit_end)` but do NOT
+  self-assert the apply-after-fit_end firewall — it is caller-enforced (proven structurally by
+  truncation-invariance). A self-asserting guard is a future hardening.
+- **P4-7b** stat/dead-factor PCA rungs return `Err(NotImplemented)` (explicit deferral, default-off).
+- **P4-9** optimizer λ>0 gross-collapse (any two λ>0 give the same book under fixed-gross normalization — a
+  mathematically forced consequence, documented + spec-accepted).
+- Sprint-4a residuals carried forward: single-`compile_batch` production `CombinedSignalSource` (§0-C),
+  position-based combiner rung, IC-from-raw-signal, caller-scratch apply overloads, computed-`V` parallelism
+  Linux-TSan pass.
+- Deflated-Sharpe + the full walk-forward validation harness → **Phase 5**.
+
+**Close-ceremony items NOT done by this in-place sprint (recorded, not silently skipped):**
+- **ROADMAP Phase-4 status bump + `Last reviewed`** — DEFERRED: `atx-engine/plans/p0/ROADMAP.md` is a
+  contended file concurrently edited by the databento effort on this shared branch; bumping it here risks a
+  cross-effort conflict. To be reconciled when the branch settles.
+- **`merge --no-ff`** — N/A: this sprint worked IN-PLACE on `feat/atx-core-stdlib` (no separate
+  `worktree-phase-4b-risk` branch to merge), per the established engine workflow recorded in this ledger's
+  header. No push (awaiting explicit request).
+- **`phase-4.md` user reference** — the combiner/gate/factor-model/optimizer/capacity API + firewall +
+  determinism + capacity guarantees summary (the next artifact after this ledger close).
+
+**Next sprint priorities (baton → Phase 5 validation):** deflated-Sharpe + a multi-fold walk-forward harness
+over the combined+risk layer; lift the deferred residuals above; the production single-`compile_batch`
+`CombinedSignalSource`; calibrate the WeightPolicy/optimizer/capacity knobs (all default to inert/no-op today).
