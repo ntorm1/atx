@@ -11,6 +11,7 @@
 //
 // Local helpers (no engine make_genome): mirror factory_mutation_test's shape.
 
+#include <cmath>
 #include <span>
 #include <string>
 #include <string_view>
@@ -94,15 +95,12 @@ TEST(FactoryParamSearch, GridIsExhaustiveAndBounded) {
     ++evals;
     return 0.0;
   };
-  // The Grid path touches NO rng, so the verbatim test passes a null rng ref. The
-  // deref expression is never evaluated for entropy (Grid uses no rng); the local
-  // pragmas keep the spec's exact call while satisfying /WX (nodiscard + the
-  // static null-deref lint on the deliberately-unreachable deref).
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-result"
-#pragma clang diagnostic ignored "-Wnull-dereference"
-  optimize_params_raw(sp, f, *(Xoshiro256pp *)nullptr, {Method::Grid, /*per-dim*/ 3, 1});
-#pragma clang diagnostic pop
+  // The Grid path touches NO rng — but we pass a REAL stack rng (never a null
+  // reference: forming `*(T*)nullptr` is UB). The evals counter proves the Grid
+  // path is exhaustive (3 points) and the rng goes untouched.
+  Xoshiro256pp dummy(0);
+  const auto r = optimize_params_raw(sp, f, dummy, {Method::Grid, /*per-dim*/ 3, 1});
+  static_cast<void>(r);
   EXPECT_EQ(evals, 3); // 3 grid points, no RNG used
 }
 
@@ -134,6 +132,40 @@ TEST(FactoryParamSearch, OptimizeParamsInstantiatesGenome) {
   EXPECT_NEAR(r.best_x[0], 20.0, 1.0); // search homed in on the rewarded window
 
   // The reported optimum instantiates to an analyze-valid genome (F5).
+  auto best = atx::engine::factory::instantiate(g, sp, r.best_x);
+  ASSERT_TRUE(best.has_value()) << (best ? "" : best.error().message());
+  EXPECT_TRUE(analyze(best->ast).has_value());
+}
+
+// Boundary (plan §3): a genome with ZERO free constants. `rank(close)` carries no
+// Window/Scale literal, so the search space is empty. Both the raw (empty box) and
+// genome forms must no-op cleanly — a FINITE best_fitness, never NaN (the sep-CMA
+// recurrence divides by K), and the genome form's degenerate point must still
+// instantiate to an analyze-valid genome (F5).
+TEST(FactoryParamSearch, ZeroFreeConstantsIsNoOp) {
+  // Raw form over an empty box: no dim, no NaN.
+  {
+    Xoshiro256pp rng(1);
+    ParamSpace empty = box({});
+    EXPECT_EQ(empty.dims(), 0u);
+    auto f = [](std::span<const double>) { return 0.5; };
+    auto r = optimize_params_raw(empty, f, rng, {Method::SepCmaEs, 12, 40});
+    EXPECT_TRUE(std::isfinite(r.best_fitness)); // never NaN despite K==0
+    EXPECT_TRUE(r.best_x.empty());              // 0-dim space → empty point
+  }
+
+  // Genome form: `rank(close)` has no free constant.
+  Library lib;
+  auto g = make_genome("rank(close)", lib);
+  ParamSpace sp = extract_free_constants(g);
+  EXPECT_EQ(sp.dims(), 0u);
+
+  Xoshiro256pp rng(2);
+  auto fitness = [](const Genome &) { return 1.0; };
+  auto r = optimize_params(g, sp, fitness, rng, {Method::SepCmaEs, 12, 40});
+  EXPECT_TRUE(std::isfinite(r.best_fitness)); // graceful no-op, not NaN
+
+  // The degenerate (empty) point instantiates back to the (valid) template genome.
   auto best = atx::engine::factory::instantiate(g, sp, r.best_x);
   ASSERT_TRUE(best.has_value()) << (best ? "" : best.error().message());
   EXPECT_TRUE(analyze(best->ast).has_value());

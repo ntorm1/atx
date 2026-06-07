@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <span>
 #include <utility>
@@ -181,6 +182,11 @@ namespace detail {
 [[nodiscard]] inline atx::f64 clamp_dim(atx::f64 v, const ParamDim &d) noexcept {
   return std::min(d.hi, std::max(d.lo, v));
 }
+
+// Positivity floor for the diagonal covariance entries c_k. Applied BEFORE any
+// division by c_k (or 1/sqrt(c_k)) so a collapsed coordinate can never blow up
+// the rank-one update; keeps C strictly positive-definite (the sep-CMA invariant).
+inline constexpr atx::f64 kCdiagFloor = 1e-20;
 
 // Grid: cartesian product of per-dim grids (`pts` points/dim, evenly spaced
 // across [lo, hi]; a single-point dim sits at its midpoint). Touches NO rng.
@@ -382,18 +388,21 @@ inline void sep_cma_es(const ParamSpace &space, Fitness &f, Xoshiro256pp &rng,
     // (again realized/clamped, consistent with the mean-path normalization).
     const atx::f64 hsig_corr = (1.0 - (h_sigma ? 1.0 : 0.0)) * p.c_c * (2.0 - p.c_c);
     for (atx::usize k = 0; k < K; ++k) {
-      const atx::f64 denom = sigma * sigma_scale[k] * std::sqrt(cdiag[k]);
+      // Apply the positivity floor BEFORE any division by c_k: a prior iteration
+      // may have floored cdiag[k] to kCdiagFloor, and dividing p_c^2 (or forming
+      // 1/sqrt(c)) by a sub-floor value would blow up to ~1/floor. Use the floored
+      // c_k everywhere this iteration, then write the new floored value back.
+      const atx::f64 c_k = std::max(cdiag[k], kCdiagFloor);
+      const atx::f64 denom = sigma * sigma_scale[k] * std::sqrt(c_k);
       atx::f64 rank_mu = 0.0;
       for (atx::usize i = 0; i < p.mu; ++i) {
         const atx::f64 yik = (denom > 0.0) ? (xs[order[i]][k] - mean_old[k]) / denom : 0.0;
         rank_mu += p.w[i] * yik * yik;
       }
-      cdiag[k] = (1.0 - p.c_1 - p.c_mu) * cdiag[k] +
-                 p.c_1 * (p_c[k] * p_c[k] / cdiag[k] + hsig_corr) +
-                 p.c_mu * rank_mu;
-      if (cdiag[k] < 1e-20) {
-        cdiag[k] = 1e-20; // numerical floor (C stays positive)
-      }
+      atx::f64 next = (1.0 - p.c_1 - p.c_mu) * c_k +
+                      p.c_1 * (p_c[k] * p_c[k] / c_k + hsig_corr) +
+                      p.c_mu * rank_mu;
+      cdiag[k] = std::max(next, kCdiagFloor); // C stays positive (>= floor)
     }
 
     // Step-size control (CSA): sigma *= exp((c_sigma/d_sigma)(||p_sigma||/chi_n - 1)).
@@ -415,6 +424,16 @@ template <class Fitness>
 [[nodiscard]] inline ParamResult optimize_params_raw(const ParamSpace &space, Fitness &&f,
                                                      Xoshiro256pp &rng, const ParamSearchCfg &cfg) {
   ParamResult out;
+  // Boundary (plan §3): a space with ZERO free constants (e.g. `rank(close)` has
+  // no Window/Scale literal). There is nothing to search — every method would be
+  // a no-op, and the sep-CMA recurrence divides by K (→ NaN). Score the single
+  // degenerate (empty) point ONCE so best_fitness is finite, then return; touches
+  // no rng. best_x stays empty (its natural value for a 0-dim space).
+  if (space.dims() == 0) {
+    out.best_fitness = f(std::span<const atx::f64>{});
+    out.trials = 1;
+    return out;
+  }
   switch (cfg.method) {
   case Method::Grid:
     detail::grid_search(space, f, cfg.lambda_or_gridpoints, out);
