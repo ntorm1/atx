@@ -12,7 +12,12 @@
 // (units of 1e-9), volume:i64. The partition column "date" is encoded in the path.
 // Prices use Databento's native 1e-9 fixed-point (divide by 1e9 for dollars).
 
+#include <cstddef>
+#include <iterator>
+#include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -32,5 +37,37 @@ struct LoadStats {
 // malformed input or if zero OHLCV records are found.
 [[nodiscard]] Result<LoadStats> load_equs_summary_zip(std::string_view zip_path,
                                                       std::string_view dest_dir);
+
+struct PullStats {
+  i64 records{0};       // L1 rows written
+  i64 symbols{0};       // distinct symbols/contracts seen
+  i64 api_calls{0};     // TimeseriesGetRange calls after batch split
+  double cost_usd{0.0}; // summed preflight cost actually pulled
+};
+
+// Recursively split `symbols` into batches whose estimated cost is < cap. `est` is
+// any callable: (std::span<const std::string>) -> double. A single symbol whose own
+// estimate is >= cap is still emitted alone (caller decides whether to pull it).
+// Order-preserving; the union of batches equals the input.
+template <class EstFn>
+[[nodiscard]] std::vector<std::vector<std::string>>
+split_under_cap(std::span<const std::string> symbols, double cap, EstFn&& est) {
+  std::vector<std::vector<std::string>> out;
+  if (symbols.empty()) {
+    return out;
+  }
+  if (symbols.size() == 1 || est(symbols) < cap) {
+    out.emplace_back(symbols.begin(), symbols.end());
+    return out;
+  }
+  const std::size_t mid = symbols.size() / 2;
+  auto left = split_under_cap(symbols.first(mid), cap, est);
+  auto right = split_under_cap(symbols.subspan(mid), cap, est);
+  out.insert(out.end(), std::make_move_iterator(left.begin()),
+             std::make_move_iterator(left.end()));
+  out.insert(out.end(), std::make_move_iterator(right.begin()),
+             std::make_move_iterator(right.end()));
+  return out;
+}
 
 } // namespace atx::external::databento
