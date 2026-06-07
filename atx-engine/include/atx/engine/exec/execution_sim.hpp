@@ -205,6 +205,13 @@ public:
   /// inventing a second cost number. Pure observability; mutates nothing.
   [[nodiscard]] const CommissionCfg &commission_cfg() const noexcept { return comm_cfg_; }
 
+  /// Read-only access to the configured √-impact model. Lets a research-cadence
+  /// consumer (e.g. risk::capacity_curve, P4-10) reuse this sim's own impact
+  /// COEFFICIENTS to size market-impact erosion WITHOUT replaying the full
+  /// bar-by-bar queue/settle loop — one cost surface, not a second cost number.
+  /// Pure observability; mutates nothing.
+  [[nodiscard]] const ImpactCfg &impact_cfg() const noexcept { return impact_cfg_; }
+
   /// Toggle the same-bar fill relaxation (the delay-0 knob; P3c-3). When false
   /// (the DEFAULT, set at construction) an order fills only on a STRICTLY-LATER
   /// slice — the no-look-ahead firewall. When true, an order may fill on the same
