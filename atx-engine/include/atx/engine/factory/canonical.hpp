@@ -25,22 +25,30 @@
 //
 // F6 SOUNDNESS (the load-bearing invariant): hash-equal ⇒ the VM evaluates the
 // two expressions BIT-IDENTICAL. The ONLY normalization applied is the
-// commutative-operand reorder for the declared set + the parse-time folds, both
-// value-preserving. The commutative reorder is sound ONLY for ops whose VM kernel
-// is bit-SYMMETRIC under operand swap — including the NaN policy. The as-built VM
-// (`vm.hpp`) makes:
-//     Add/Mul          — IEEE `a+b == b+a`, `a*b == b*a` bit-for-bit;
-//     And/Or           — finite-nonzero→true / 0→false / NaN→NaN, symmetric;
-//     MinP/MaxP        — "NaN if EITHER operand is NaN" then `a<b?a:b` — the NaN
-//                        branch is symmetric and the tie/strict branch returns
-//                        the same bit pattern under swap (verified by the
-//                        directed FactoryCanonical.MinMaxCommuteIsBitIdentical);
-//     CmpEq/CmpNe      — `x==y`/`x!=y` are symmetric, NaN→0 mask symmetric.
-// So ALL EIGHT op_catalog declared-commutative opcodes are bit-symmetric and the
-// hash-commutative set EQUALS op_catalog's `is_commutative` — no narrowing needed.
-// (If a future VM change broke a kernel's swap-symmetry, the directed test would
-// fail and that opcode would be removed from `is_hash_commutative` below —
-// under-canonicalize rather than ever claim two non-bit-equal exprs equal.)
+// commutative-operand reorder for `is_hash_commutative` + the parse-time folds,
+// both value-preserving. The reorder is sound ONLY for an op whose VM kernel is
+// bit-SYMMETRIC under operand swap across ALL of {distinct values, ties, NaN,
+// signed-zero}. The hash-commutative set is therefore a STRICT SUBSET of
+// op_catalog's eight declared-commutative opcodes — only these SIX qualify:
+//     Add / Mul    — IEEE `a+b == b+a`, `a*b == b*a` bit-for-bit (incl. NaN
+//                    payloads and ±0: -0.0 + +0.0 == +0.0 + -0.0 == +0.0);
+//     And / Or     — finite-nonzero→1 / 0→0 / NaN→NaN, swap-symmetric;
+//     CmpEq / CmpNe— `x==y`/`x!=y` symmetric (and ±0 compare equal both ways),
+//                    NaN→0 mask symmetric.
+// MinP / MaxP are EXCLUDED (the recon fix to cf30730): the VM kernels are
+// `a<b?a:b` / `a>b?a:b`, and on an OPPOSITE-SIGNED-ZERO pair the strict compare
+// is FALSE (`-0.0 < +0.0` is false — they compare equal), so the kernel returns
+// the SECOND operand:
+//     min(-0.0, +0.0) = +0.0   but   min(+0.0, -0.0) = -0.0
+// a VERIFIED bit-difference (signbit 0 vs 1; driven through the real VM by
+// FactoryCanonical.MinMaxSwapIsNotBitSafe). Hashing min/max commutative would
+// collide that bit-different pair — an F6 violation — so we DROP them and
+// under-canonicalize: `min(a,b)` and `min(b,a)` hash DIFFERENTLY and do not dedup.
+// Soundness > dedup rate: never claim two non-bit-equal exprs equal.
+//
+// NOTE: op_catalog's `is_commutative` stays the FULL eight — op-swap BUCKETING
+// only needs value-interchangeability, not bit-equality. Only the canonical HASH
+// needs the stricter property, so `is_hash_commutative` below is its own set.
 //
 // Header-only; COLD path (run once per candidate, never on the VM hot path), so
 // the recursion + memo map allocate freely.
@@ -60,7 +68,6 @@
 #include "atx/engine/alpha/registry.hpp"
 
 #include "atx/engine/factory/genome.hpp"
-#include "atx/engine/factory/op_catalog.hpp"
 
 namespace atx::engine::factory {
 
@@ -125,15 +132,38 @@ enum class Tag : atx::u8 {
 // =========================================================================
 //  is_hash_commutative — the operand-reorder set used by the hash.
 //
-//  EQUALS op_catalog's declared-commutative set: every one of those eight VM
-//  kernels is bit-symmetric under operand swap (see the soundness note above and
-//  the directed MinMax test). Re-exposed under this name so a future narrowing
-//  (if a kernel ever loses swap-symmetry) is a one-line change here, NOT a
-//  re-declaration of op_catalog's set.
+//  A STRICT SUBSET of op_catalog's eight declared-commutative opcodes:
+//      { Add, Mul, And, Or, CmpEq, CmpNe }   (MinP / MaxP DROPPED)
+//  Only an op whose VM kernel is bit-SYMMETRIC under operand swap across ALL of
+//  {distinct values, ties, NaN, signed-zero} may be hashed commutative (else the
+//  hash would claim two bit-DIFFERENT exprs equal — an F6 violation).
+//
+//  MinP / MaxP are EXCLUDED: the VM kernels are `a<b?a:b` / `a>b?a:b`, and on an
+//  opposite-signed-zero pair the strict comparison is FALSE (-0.0 < +0.0 is
+//  false: they compare equal), so the kernel returns the SECOND operand —
+//      min(-0.0, +0.0) = +0.0   but   min(+0.0, -0.0) = -0.0
+//  a verified bit-difference (signbit 0 vs 1). Hashing them commutative would
+//  collide a bit-different pair, so we under-canonicalize: min(a,b) and min(b,a)
+//  hash DIFFERENTLY and simply do not dedup. Soundness > dedup rate.
+//
+//  This is INTENTIONALLY decoupled from op_catalog's `is_commutative` (which stays
+//  the full eight): op-swap BUCKETING only needs value-interchangeability, not
+//  bit-equality — only the canonical HASH needs the stricter property (§0.4/§4.4).
 // =========================================================================
 
 [[nodiscard]] inline bool is_hash_commutative(OpCode op) noexcept {
-  return is_commutative(op); // op_catalog.hpp — single source of truth (§0.4)
+  switch (op) {
+  case OpCode::Add:
+  case OpCode::Mul:
+  case OpCode::And:
+  case OpCode::Or:
+  case OpCode::CmpEq:
+  case OpCode::CmpNe:
+    return true;
+  // MinP / MaxP deliberately omitted (signed-zero swap-asymmetry — see above).
+  default:
+    return false;
+  }
 }
 
 // =========================================================================

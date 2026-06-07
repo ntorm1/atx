@@ -137,22 +137,16 @@ inline void register_aliases(Library &lib) {
                     {close, volume, open, high});
 }
 
-// Same shape but with scattered NaNs in close/open so the min/max NaN policy is
-// actually exercised by the directed soundness check.
-[[nodiscard]] Panel make_nan_panel(std::size_t dates, std::size_t insts) {
-  const std::size_t cells = dates * insts;
-  const atx::f64 nan = std::nan("");
-  std::vector<atx::f64> close(cells), open(cells);
-  for (std::size_t d = 0; d < dates; ++d) {
-    for (std::size_t n = 0; n < insts; ++n) {
-      const std::size_t i = d * insts + n;
-      const auto dd = static_cast<atx::f64>(d);
-      const auto nn = static_cast<atx::f64>(n);
-      close[i] = ((i % 3) == 0) ? nan : (100.0 + 10.0 * nn + dd);
-      open[i] = ((i % 5) == 0) ? nan : (99.0 + 10.0 * nn + dd);
-    }
-  }
-  return make_panel(dates, insts, {"close", "open"}, {close, open});
+// A 1-date, 2-instrument panel whose two fields "za"/"zb" hold an OPPOSITE-signed-
+// zero pair in SWAPPED positions: za = {-0.0, +0.0}, zb = {+0.0, -0.0}. This is
+// the minimal fixture that exposes the min/max swap-asymmetry (`-0.0 < +0.0` is
+// false ⇒ the kernel returns the second operand, so the signbit depends on order).
+[[nodiscard]] Panel make_signed_zero_panel() {
+  const atx::f64 pz = 0.0;
+  const atx::f64 nz = -0.0;
+  const std::vector<atx::f64> za{nz, pz};
+  const std::vector<atx::f64> zb{pz, nz};
+  return make_panel(1, 2, {"za", "zb"}, {za, zb});
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -193,27 +187,59 @@ TEST(FactoryCanonical, HashEqualImpliesBitIdenticalEval) { // soundness, the loa
   }
 }
 
-// Directed NaN-soundness for a NON-Add declared-commutative op (min/max). The VM
-// states "MinP/MaxP: NaN if EITHER operand is NaN" (vm.hpp), so min(close,open)
-// and min(open,close) MUST evaluate bit-identical even where a NaN is present —
-// the precondition for keeping min/max in the hash-commutative set.
-TEST(FactoryCanonical, MinMaxCommuteIsBitIdentical) {
+// F6 soundness, the MinP/MaxP counterexample (the recon fix to cf30730). The VM
+// kernels are `a<b?a:b` / `a>b?a:b`, so on an OPPOSITE-signed-zero pair a min/max
+// operand swap is NOT bit-safe: `min(-0.0,+0.0)=+0.0` but `min(+0.0,-0.0)=-0.0`
+// (signbit differs). This test PROVES the bit-difference through the real VM
+// (non-vacuously — it asserts a signbit divergence actually occurred) AND proves
+// the fix: canonical_hash now hashes the two orderings DIFFERENTLY (min/max are
+// excluded from is_hash_commutative), so no equal-hash claim is made for a
+// bit-different pair. If min/max were ever re-added to the hash-commutative set,
+// the hash-EQ assertion below would fire — guarding the soundness invariant.
+TEST(FactoryCanonical, MinMaxSwapIsNotBitSafe) {
   Library lib;
-  Panel panel = make_nan_panel(20, 5);
+  Panel panel = make_signed_zero_panel();
   for (const char *op : {"min", "max"}) {
-    auto x = make_genome(std::string{op} + "(close, open)", lib);
-    auto y = make_genome(std::string{op} + "(open, close)", lib);
-    EXPECT_EQ(canonical_hash(x.ast, root(x)), canonical_hash(y.ast, root(y))) << op;
+    auto x = make_genome(std::string{op} + "(za, zb)", lib);
+    auto y = make_genome(std::string{op} + "(zb, za)", lib); // operands swapped
+
+    // The fix: the hash must DISTINGUISH the two orderings (min/max not commuted).
+    EXPECT_NE(canonical_hash(x.ast, root(x)), canonical_hash(y.ast, root(y)))
+        << op << ": min/max must NOT be hashed commutative (signed-zero asymmetry)";
+
+    // The hazard the fix guards: the VM really does produce a bit-different vector.
     auto vx = eval_alpha0(x, panel);
     auto vy = eval_alpha0(y, panel);
     ASSERT_EQ(vx.size(), vy.size());
     ASSERT_GT(vx.size(), 0U);
-    bool saw_nan = false;
+    bool saw_signbit_diff = false;
     for (std::size_t i = 0; i < vx.size(); ++i) {
-      saw_nan = saw_nan || std::isnan(vx[i]);
-      EXPECT_TRUE((std::isnan(vx[i]) && std::isnan(vy[i])) || vx[i] == vy[i]) << op << " cell " << i;
+      // Same magnitude (both are zero here) but the sign bit flips with the order.
+      EXPECT_FALSE(std::isnan(vx[i])) << op << " cell " << i;
+      EXPECT_EQ(vx[i], 0.0) << op << " cell " << i; // ±0 compares == 0.0
+      saw_signbit_diff = saw_signbit_diff || (std::signbit(vx[i]) != std::signbit(vy[i]));
     }
-    EXPECT_TRUE(saw_nan) << op << ": fixture must actually exercise the NaN path";
+    EXPECT_TRUE(saw_signbit_diff)
+        << op << ": fixture must actually exercise the signed-zero swap divergence";
+  }
+}
+
+// The retained set stays SOUND: a commutative op KEPT in is_hash_commutative (Add)
+// over the SAME opposite-signed-zero panel still hashes-equal AND evaluates
+// bit-identical under swap (`-0.0 + +0.0 == +0.0 + -0.0 == +0.0`, both orders).
+TEST(FactoryCanonical, RetainedCommutativeStaysSoundOnSignedZero) {
+  Library lib;
+  Panel panel = make_signed_zero_panel();
+  auto x = make_genome("add(za, zb)", lib);
+  auto y = make_genome("add(zb, za)", lib); // operands swapped
+  ASSERT_EQ(canonical_hash(x.ast, root(x)), canonical_hash(y.ast, root(y)));
+  auto vx = eval_alpha0(x, panel);
+  auto vy = eval_alpha0(y, panel);
+  ASSERT_EQ(vx.size(), vy.size());
+  ASSERT_GT(vx.size(), 0U);
+  for (std::size_t i = 0; i < vx.size(); ++i) {
+    EXPECT_TRUE((std::isnan(vx[i]) && std::isnan(vy[i])) || vx[i] == vy[i]) << "cell " << i;
+    EXPECT_EQ(std::signbit(vx[i]), std::signbit(vy[i])) << "cell " << i; // ±0 sign matches too
   }
 }
 
