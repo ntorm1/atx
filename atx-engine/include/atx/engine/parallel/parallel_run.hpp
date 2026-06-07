@@ -207,7 +207,7 @@ parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 boo
 //  regardless of how the table was produced. NEVER an atomic running sum. An
 //  empty table returns 0.0 (documented sentinel).
 // ===========================================================================
-[[nodiscard]] inline atx::f64 cpcv_aggregate_mean_sharpe(std::span<const FoldResult> rows) noexcept {
+[[nodiscard]] inline atx::f64 cpcv_aggregate_mean_sharpe(std::span<const FoldResult> rows) {
   if (rows.empty()) {
     return 0.0; // documented sentinel for an empty table
   }
