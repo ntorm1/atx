@@ -344,6 +344,24 @@ struct Parser {
   Ast *ast{nullptr};
   atx::usize pos{0};
 
+  // Local bindings (Phase 3d-A): name -> the bound expression's ExprId. A bare
+  // identifier resolves binding-first, field-fallback. Declaration order; a later
+  // binding may shadow an earlier one (last wins) and shadow a panel field.
+  struct Binding {
+    std::string name;
+    ExprId id{kNoExpr};
+  };
+  std::vector<Binding> bindings;
+
+  [[nodiscard]] ExprId lookup_binding(std::string_view name) const noexcept {
+    for (auto it = bindings.rbegin(); it != bindings.rend(); ++it) {
+      if (it->name == name) {
+        return it->id; // last binding wins (shadowing)
+      }
+    }
+    return kNoExpr;
+  }
+
   [[nodiscard]] const Token &peek() const noexcept { return toks[pos]; }
   [[nodiscard]] TokenKind peek_kind() const noexcept { return toks[pos].kind; }
   void advance() noexcept { ++pos; }
@@ -486,6 +504,9 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     if (p.peek_kind() == TokenKind::LParen) {
       return parse_call(p, p.text(tok), tok); // cursor on '('
     }
+    if (const ExprId bound = p.lookup_binding(p.text(tok)); bound != kNoExpr) {
+      return atx::core::Ok(bound); // reference an earlier binding (reuse its ExprId)
+    }
     Expr e;
     e.kind = Expr::Kind::Field;
     e.name_id = p.ast->intern(p.text(tok));
@@ -620,7 +641,7 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
                                                        const Library &lib) {
   ATX_TRY(auto toks, detail::lex_checked(source));
   Ast ast;
-  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0};
+  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}};
   ATX_TRY(const ExprId root, detail::parse_precedence(p, detail::kBpTernary));
   if (p.peek_kind() != TokenKind::End) {
     return atx::core::Err(detail::parse_error("unexpected trailing token", p.peek()));
@@ -635,7 +656,7 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
                                                           const Library &lib) {
   ATX_TRY(auto toks, detail::lex_checked(source));
   Ast ast;
-  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0};
+  detail::Parser p{std::span<const Token>{toks}, source, &lib, &ast, 0, {}};
 
   while (p.peek_kind() != TokenKind::End) {
     if (p.peek_kind() != TokenKind::Ident) {
@@ -648,6 +669,7 @@ inline void fill_default_args(Parser &p, const OpSig &sig, std::vector<ExprId> &
     }
     p.advance();
     ATX_TRY(const ExprId root, detail::parse_precedence(p, detail::kBpTernary));
+    p.bindings.push_back(detail::Parser::Binding{std::string{p.text(name_tok)}, root});
     ast.add_root(std::string{p.text(name_tok)}, root);
   }
   return atx::core::Ok(std::move(ast));
