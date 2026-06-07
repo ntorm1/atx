@@ -6,6 +6,7 @@
 **Started:** 2026-06-06
 **Source plan:** [`phase-4-signal-combination-risk-implementation-plan.md`](phase-4-signal-combination-risk-implementation-plan.md)
 **Prior progress:** Phase 3c ([`phase-3c-progress.md`](phase-3c-progress.md))
+**Status:** ✅ **CLOSED** 2026-06-06 — 6 units (P4-0…P4-5), **70 new tests**, full engine suite 1511/1511, /W4 /permissive- /WX clean. Sprint 4b (P4-6…P4-10) opens its own ledger.
 
 ---
 
@@ -55,10 +56,42 @@ Defer to Phase 4b (or later):
 | `67a248b` | P4-3 (orthogonality + quality gates) | Correlation 8/0/0 + AlphaGate 12/0/0 (20 new tests; +1 EXPECT_DEATH from the release-OOB fix) |
 | `fb5d69a` | P4-4 (progressive alpha combiner) | AlphaCombiner 15/0/0 |
 | `0c9e683` | P4-4-fix (Ledoit-Wolf 1/T² normalization + complete-case MLE SCM + SPD floor) | AlphaCombiner 16/0/0 (+1 regression test; measured δ≈0.0094 on the well-conditioned fixture) |
+| `355be0d` | P4-4-cleanup (code-quality: remove dead `pairwise_complete_cov` + document `window_span` narrowing) | AlphaCombiner 16/0/0 unchanged; Correlation 8/0/0 + AlphaGate 12/0/0 still green |
 | `5147c64` | P4-5 (combined signal source — the mega-alpha, Sprint-4a CAPSTONE) | CombinedSignalSource 13/0/0 (incl. the real-BacktestLoop integration test reproducing the Phase-2 single-alpha result + a byte-identical repeat-run determinism test) |
+| `4bd9b12` | P4-5-fix (code-quality: assert weights/sources length agreement + document non-reentrancy) | CombinedSignalSource 13/0/0 unchanged |
+
+(Plus the `docs(p4a-N): record SHA` ledger-backfill commits per unit.)
+
+**Phase 4a adds 70 new tests** — CombineScaffold 1 · AlphaStore 8 · AlphaMetrics 12 · Correlation 8 · AlphaGate 12 · AlphaCombiner 16 · CombinedSignalSource 13 — on top of the prior engine footprint. Full engine suite **1511/0/0**; /W4 /permissive- /WX clean; ASan/UBSan per the test harness.
 
 ---
 
+## Deferred residuals (lift to the module ROADMAP backlog when it settles)
+
+- **Production single-`compile_batch` Program `CombinedSignalSource` (§0-C).** P4-5 shipped the frozen `vector<ISignalSource*>` blend (the §8 ctor). The CSE-shared single-Program adapter — all constituents evaluated in ONE VM pass, `max_lookback()` forwarding `Program::required_lookback`, no N× `alpha::Panel`/`Engine` rebuilds — overlaps `VmSignalSource` and is deferred (documented in `combined_source.hpp`). Carrying unit: a future 4a-follow / 4b wiring.
+- **Position-based combiner rung (§5.3 deferred knob).** Combine on *holdings* (Kakushadze "How to Combine a Billion Alphas", O(N), trade-crossing savings). The `AlphaStore` already keeps the position matrix; the *method* isn't built — a future rung, no data-model change.
+- **IC-from-raw-signal.** P4-4 `IcWeighted` uses the plan's return-only window-sharpe proxy (the store holds PnL, not raw signals); true `IC = corr(signal, fwd_return)` needs the signal stream.
+- **Per-`evaluate()` Panel/Engine rebuild (carried from P3c-3).** Constituent re-eval via `VmSignalSource` allocates a fresh `Panel`+`Engine` per call (no `alpha::Engine::rebind`); rebalance-cadence, documented residual — `rebind` would close it.
+- **caller-scratch overloads** on the apply path (tracked since Phase 2).
+- **pairwise-vs-complete-case covariance.** The combiner SCM uses complete-case (listwise) for SPD-ness + Ledoit-Wolf coherence; the §3.3 pairwise-complete policy is satisfied for the gate (correlation). Documented; not a defect.
+
 ## What Phase 4a proves / Next
 
-_(Fill at sprint close.)_
+**What Phase 4a proves**
+
+1. **The weak-signal → mega-alpha pipeline is real and runnable end-to-end**, zero loop changes: gate (P4-3) → store (P4-1) ← metrics (P4-2) → combiner (P4-4) → `CombinedSignalSource` (P4-5) → the EXISTING `BacktestLoop`. The capstone integration test (`RunsInRealBacktestLoop_MatchesPhase2SingleAlpha`) reproduces the Phase-2 single-alpha result **byte-for-byte through the real loop** (`loop/*.hpp` untouched) — the seam Phase-2's `signal_source.hpp` anticipated.
+2. **The combiner handles the singular-SCM (N≫T) obstacle.** ShrinkageMv uses the canonical **Ledoit-Wolf 2004 (1/T²)** intensity over a complete-case MLE covariance; T<N is rescued by a documented 1e-6 SPD floor, and the well-conditioned **inverse-variance tilt is recovered** (δ≈0.009, weights ≈ [0.91, 0.08, 0.01]) — *not* the saturated δ=1 the first cut shipped, which spec-review caught and the regression test now pins.
+3. **The fit/apply firewall (§3.1) is built into the combiner.** `fit()` physically reads only `[fit_begin, fit_end)` (sub-spans — no path indexes ≥ fit_end); truncation-invariance is byte-proven (mutating rows ≥ b leaves weights identical). `Combination` carries its window for the apply-side rail. This is the rail 4b's factor model + P4-10 extend to the whole layer.
+4. **Determinism (§3.2):** fixed-order reductions, stable rank tie-break, no RNG, fixed-iteration solvers (LW + bounded-regression clip-reproject) → byte-identical weights + a byte-identical repeat-run loop test.
+5. **One shared §3.3 pairwise-complete NaN policy** lives in `combine/correlation.hpp` (`pairwise_complete_corr`), reused by the gate; the combiner uses complete-case for SPD/LW coherence (documented reconciliation, not a divergence).
+
+**Next sprint priorities (baton → 4b)**
+
+- **P4-6** factor exposures `X` (sector dummies + the 5 price-derived style factors), each cross-sectionally standardized — opens the `phase-4b-progress.md` ledger.
+- **P4-7** factored `V = XFXᵀ + D` (per-date cross-sectional WLS `r=Xf+u`, Ledoit-Wolf `F`, specific `D`, Woodbury inverse) — **reuse the LW closed-form already implemented + corrected in P4-4** (`ledoit_wolf_intensity`).
+- **P4-8** `WeightPolicy` neutralization: wire the inert `industry_neutral` (group-demean — §0-H notes `CsDemeanG` semantics already exist in the DSL), add factor-neutralize (`FactorModel::neutralize`), decay, truncation; **all stages default no-op so the Phase-2 WeightPolicy tests stay bit-identical**.
+- **P4-9** turnover-penalized risk-aware optimizer (`max αᵀw − λwᵀVw − κ‖w−w_prev‖₁`); recovers the `WeightPolicy` dollar-neutral book at λ=κ=0 **bit-for-bit** (the regression check).
+- **P4-10** the proof rail: fit/apply firewall truncation-invariance across combiner + factor model, whole-layer determinism hash, capacity curve, walk-forward combined backtest, bench, 4b close.
+- **Direct 4a→4b inputs:** the fit/apply firewall pattern, the LW closed-form, and the complete-case SCM from P4-4 feed P4-7's factor covariance directly.
+
+**ROADMAP note:** the `ROADMAP.md` Phase-4 status-table bump + `Last reviewed` are **DEFERRED** — `ROADMAP.md` is mid-edit by a concurrent (databento) effort (uncommitted `M` in the shared tree); to avoid clobbering it, **this ledger is the canonical 4a record**, and the ROADMAP 4a rows should be flipped to ✅ `<close-sha>` when that file settles. No worktree merge step (`--no-ff`) applies — 4a ran in-place on `feat/atx-core-stdlib` (the established engine workflow), so the per-unit commits ARE the integration.
