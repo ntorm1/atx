@@ -42,6 +42,7 @@
 #include "atx/core/container/hash_map.hpp"
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
+#include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/parser.hpp"
@@ -275,6 +276,135 @@ namespace detail {
   return n;
 }
 
+// Lower a `record.pin` Member node to a Pin node whose `param` is the resolved
+// pin index (NOT the generic param=0 the fallthrough would produce). The pin
+// name is looked up in the record operand's TypeInfo.pins table; the result is
+// interned keyed by (OpCode::Pin, pin_index, {rec_node, kNoNode, kNoNode}). The
+// record child's refcount is bumped only on a cons MISS (a CSE-hit Pin reuses
+// the already-counted edge — mirrors the generic build_dag refcount rule).
+// Returns the interned Pin NodeId (caller assigns it to ast_to_node[i]).
+//
+// SAFETY: analyze_member rejects unknown pin names before build_dag runs, so the
+// pin is GUARANTEED to exist in cti.pins; the ATX_ASSERT documents that invariant
+// (and aborts in debug if a future caller violates it). Precondition: `e` is a
+// Member node and `ast_to_node[e.a]` is already mapped (children precede parents).
+[[nodiscard]] inline NodeId lower_member(Dag &dag, const Ast &ast, const Analysis &analysis,
+                                         const std::vector<NodeId> &ast_to_node, const Expr &e,
+                                         const TypeInfo &ti) {
+  const NodeId rec = ast_to_node[e.a];
+  const TypeInfo &cti = analysis.info(static_cast<ExprId>(e.a));
+  const std::string_view pin = ast.field_name(e.name_id);
+  bool found = false;
+  atx::u32 pin_idx = 0;
+  for (atx::usize k = 0; k < cti.pins.size(); ++k) {
+    if (cti.pins[k].name == pin) {
+      pin_idx = static_cast<atx::u32>(k);
+      found = true;
+      break;
+    }
+  }
+  ATX_ASSERT(found); // analyze_member rejects unknown pins before build_dag; unreachable otherwise
+  (void)found;       // release builds: ATX_ASSERT compiles out, so `found` is otherwise unused
+  Node pn;
+  pn.op = OpCode::Pin;
+  pn.shape = ti.shape;
+  pn.dtype = ti.dtype;
+  pn.lookback = ti.lookback;
+  pn.in = {rec, kNoNode, kNoNode};
+  pn.param = pin_idx;
+  const NodeKey pk{OpCode::Pin, atx::u64{pin_idx}, {rec, kNoNode, kNoNode}, {}};
+  const atx::usize before = dag.nodes().size();
+  const NodeId pid = dag.intern(pk, pn);
+  if (dag.nodes().size() != before) {
+    dag.add_edge_refcount(rec);
+  }
+  return pid;
+}
+
+// Strength reduction: pow(x, 2) -> mul(x, x). When the 2nd operand of a Pow is a
+// Const node holding exactly 2.0, rewrite to Mul with both children = x. Mutates
+// `emit_op`/`emit_kids` in place; a no-op for any other op. The dropped Const(2)
+// is left interned but unreferenced (refcount 0) — linearize skips it.
+inline void apply_pow2_strength_reduction(const Dag &dag, OpCode op, atx::usize nkids,
+                                          const std::array<NodeId, 3> &kids, OpCode &emit_op,
+                                          std::array<NodeId, 3> &emit_kids) noexcept {
+  if (op == OpCode::Pow && nkids == 2 && kids[1] != kNoNode) {
+    const Node &exp = dag.node(kids[1]);
+    if (exp.op == OpCode::Const && exp.value == 2.0) {
+      emit_op = OpCode::Mul;
+      emit_kids = {kids[0], kids[0], kNoNode};
+    }
+  }
+}
+
+// Count one refcount per emitted child EDGE. Called only when intern appended a
+// NEW node (a cons miss) — on a CSE hit the parent and its edges already exist,
+// and re-counting would inflate a shared child's refcount and leak its slot.
+// (Mul(x,x) bumps x twice: a single node with two distinct edges to one child.)
+inline void count_child_edges(Dag &dag, OpCode op, OpCode emit_op, atx::usize nkids,
+                              const std::array<NodeId, 3> &emit_kids) noexcept {
+  const atx::usize emit_nkids = (emit_op == OpCode::Mul && op == OpCode::Pow) ? 2 : nkids;
+  for (atx::usize k = 0; k < emit_nkids; ++k) {
+    if (emit_kids.at(k) != kNoNode) {
+      dag.add_edge_refcount(emit_kids.at(k));
+    }
+  }
+}
+
+// Lower a non-Member Ast node (leaf/Unary/Binary/Call/Select) to its interned
+// NodeId: map children, compute leaf immediates, apply pow(x,2)->mul strength
+// reduction, fold Call hparams into imm_bits + n_out, intern, and bump child
+// edge refcounts on a cons miss. Returns the interned NodeId. Precondition: `e`
+// is NOT a Member node and every child ExprId is already mapped in ast_to_node.
+[[nodiscard]] inline NodeId lower_generic(Dag &dag, const Ast &ast,
+                                          const std::vector<NodeId> &ast_to_node, const Expr &e,
+                                          const TypeInfo &ti) {
+  const OpCode op = lowered_opcode(e);
+  const atx::usize nkids = child_count(e);
+
+  // Map this node's children (already interned) into NodeKey/Node child slots.
+  std::array<NodeId, 3> kids{kNoNode, kNoNode, kNoNode};
+  const std::array<ExprId, 3> child_ids{e.a, e.b, e.c};
+  for (atx::usize k = 0; k < nkids; ++k) {
+    kids.at(k) = ast_to_node[child_ids.at(k)];
+  }
+
+  // Leaf immediates: LoadField -> field id; Const -> bit pattern of the f64.
+  atx::u32 field_param = 0;
+  atx::u64 key_param = 0;
+  if (e.kind == Expr::Kind::Field) {
+    field_param = dag.intern_field(strip_dollar(ast.field_name(e.name_id)));
+    key_param = field_param;
+  } else if (e.kind == Expr::Kind::Literal) {
+    key_param = std::bit_cast<atx::u64>(e.value);
+  }
+
+  // pow(x,2) -> mul(x,x) BEFORE interning (emit_op/emit_kids carry the result).
+  OpCode emit_op = op;
+  std::array<NodeId, 3> emit_kids = kids;
+  apply_pow2_strength_reduction(dag, op, nkids, kids, emit_op, emit_kids);
+
+  // hparams from Call nodes: fold into imm_bits for CSE identity. Non-Call Exprs
+  // default hparams to {0,0}, so imm_bits is {} and keys are unchanged — all
+  // existing CSE (no record nodes) is preserved exactly.
+  const std::array<atx::u64, 2> imm_bits{std::bit_cast<atx::u64>(e.hparams[0]),
+                                         std::bit_cast<atx::u64>(e.hparams[1])};
+  NodeKey key{emit_op, key_param, emit_kids, imm_bits};
+  Node proto = make_node(e, ti, emit_kids, emit_op, field_param);
+  // Propagate hparams and n_out onto the proto for Call nodes.
+  proto.hparams = e.hparams;
+  proto.n_out = (e.kind == Expr::Kind::Call && e.op != nullptr && !e.op->pins.empty())
+                    ? static_cast<atx::u8>(e.op->pins.size())
+                    : atx::u8{1};
+
+  const atx::usize before = dag.nodes().size();
+  const NodeId id = dag.intern(key, proto);
+  if (dag.nodes().size() != before) {
+    count_child_edges(dag, op, emit_op, nkids, emit_kids);
+  }
+  return id;
+}
+
 } // namespace detail
 
 // =========================================================================
@@ -307,106 +437,12 @@ namespace detail {
     const Expr &e = arena[i];
     const TypeInfo &ti = analysis.info(static_cast<ExprId>(i));
 
-    // ---- Special case: Member (pin projection) ---------------------------
-    // Lower `record.pin` to a Pin node whose `param` is the resolved pin index
-    // (NOT the generic param=0 that the fallthrough would produce). We look up
-    // the pin name in the record operand's TypeInfo.pins table, then intern a
-    // Pin node keyed by (OpCode::Pin, pin_index, {rec_node_id, kNoNode, kNoNode}).
-    // This MUST come before the generic path so Member never falls through.
-    if (e.kind == Expr::Kind::Member) {
-      const NodeId rec = ast_to_node[e.a];
-      const TypeInfo &cti = analysis.info(static_cast<ExprId>(e.a));
-      const std::string_view pin = ast.field_name(e.name_id);
-      atx::u32 pin_idx = 0;
-      for (atx::usize k = 0; k < cti.pins.size(); ++k) {
-        if (cti.pins[k].name == pin) {
-          pin_idx = static_cast<atx::u32>(k);
-          break;
-        }
-      }
-      Node pn;
-      pn.op = OpCode::Pin;
-      pn.shape = ti.shape;
-      pn.dtype = ti.dtype;
-      pn.lookback = ti.lookback;
-      pn.in = {rec, kNoNode, kNoNode};
-      pn.param = pin_idx;
-      const NodeKey pk{OpCode::Pin, atx::u64{pin_idx}, {rec, kNoNode, kNoNode}, {}};
-      const atx::usize before = dag.nodes().size();
-      const NodeId pid = dag.intern(pk, pn);
-      ast_to_node[i] = pid;
-      if (dag.nodes().size() != before) {
-        dag.add_edge_refcount(rec);
-      }
-      continue;
-    }
-
-    const OpCode op = detail::lowered_opcode(e);
-    const atx::usize nkids = detail::child_count(e);
-
-    // Map this node's children (already interned) into NodeKey/Node child slots.
-    std::array<NodeId, 3> kids{kNoNode, kNoNode, kNoNode};
-    const std::array<ExprId, 3> child_ids{e.a, e.b, e.c};
-    for (atx::usize k = 0; k < nkids; ++k) {
-      kids.at(k) = ast_to_node[child_ids.at(k)];
-    }
-
-    // Leaf immediates: LoadField -> field id; Const -> bit pattern of the f64.
-    atx::u32 field_param = 0;
-    atx::u64 key_param = 0;
-    if (e.kind == Expr::Kind::Field) {
-      field_param = dag.intern_field(detail::strip_dollar(ast.field_name(e.name_id)));
-      key_param = field_param;
-    } else if (e.kind == Expr::Kind::Literal) {
-      key_param = std::bit_cast<atx::u64>(e.value);
-    }
-
-    // Strength reduction: pow(x, 2) -> mul(x, x). When the 2nd operand of a Pow
-    // is a Const node holding exactly 2.0, rewrite to Mul with both children = x
-    // BEFORE interning. The Const(2) node may be left interned but unreferenced
-    // (refcount 0); linearize skips refcount-0 nodes so it is never emitted.
-    OpCode emit_op = op;
-    std::array<NodeId, 3> emit_kids = kids;
-    if (op == OpCode::Pow && nkids == 2 && kids[1] != kNoNode) {
-      const Node &exp = dag.node(kids[1]);
-      if (exp.op == OpCode::Const && exp.value == 2.0) {
-        emit_op = OpCode::Mul;
-        emit_kids = {kids[0], kids[0], kNoNode};
-      }
-    }
-
-    // hparams from Call nodes: fold into imm_bits for CSE identity. Non-Call
-    // Exprs default hparams to {0,0}, so imm_bits is {} and keys are unchanged —
-    // all existing CSE (no record nodes) is preserved exactly.
-    const std::array<atx::u64, 2> imm_bits{std::bit_cast<atx::u64>(e.hparams[0]),
-                                           std::bit_cast<atx::u64>(e.hparams[1])};
-
-    NodeKey key{emit_op, key_param, emit_kids, imm_bits};
-    Node proto = detail::make_node(e, ti, emit_kids, emit_op, field_param);
-    // Propagate hparams and n_out onto the proto for Call nodes.
-    proto.hparams = e.hparams;
-    proto.n_out = (e.kind == Expr::Kind::Call && e.op != nullptr && !e.op->pins.empty())
-                      ? static_cast<atx::u8>(e.op->pins.size())
-                      : atx::u8{1};
-
-    const atx::usize before = dag.nodes().size();
-    const NodeId id = dag.intern(key, proto);
-    ast_to_node[i] = id;
-
-    // Count child edges ONLY when intern actually appended a NEW node. On a CSE
-    // hit the parent — and therefore its edges — already exist; re-counting would
-    // inflate a shared child's refcount once per duplicate AST occurrence of the
-    // same sub-expression, and the over-counted leaf would never be freed (slot
-    // leak). One unique DAG edge ⇒ one refcount. (Mul(x,x) still bumps x twice on
-    // the miss: a single node with two distinct edges to the same child.)
-    if (dag.nodes().size() != before) {
-      const atx::usize emit_nkids = (emit_op == OpCode::Mul && op == OpCode::Pow) ? 2 : nkids;
-      for (atx::usize k = 0; k < emit_nkids; ++k) {
-        if (emit_kids.at(k) != kNoNode) {
-          dag.add_edge_refcount(emit_kids.at(k));
-        }
-      }
-    }
+    // Member (pin projection) lowers to a Pin node with the REAL pin index, so it
+    // must not fall through the generic path (which would emit param=0). Every
+    // other kind goes through lower_generic.
+    ast_to_node[i] = (e.kind == Expr::Kind::Member)
+                         ? detail::lower_member(dag, ast, analysis, ast_to_node, e, ti)
+                         : detail::lower_generic(dag, ast, ast_to_node, e, ti);
   }
 
   // Each StoreAlpha is a consumer of its root target: +1 refcount, +1 Root.
