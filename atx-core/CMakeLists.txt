@@ -76,6 +76,7 @@ add_library(atx-core STATIC
     src/db/sqlite.cpp
     src/external/dbn.cpp
     src/external/databento.cpp
+    src/external/databento_pull.cpp
 )
 add_library(atx::core ALIAS atx-core)
 

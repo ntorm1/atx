@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -69,5 +70,24 @@ split_under_cap(std::span<const std::string> symbols, double cap, EstFn&& est) {
              std::make_move_iterator(right.end()));
   return out;
 }
+
+// Free MetadataGetCost (no egress, no charge). schema/stype_in are databento schema
+// and symbology strings, e.g. "cbbo-1m" / "raw_symbol".
+[[nodiscard]] Result<double> estimate_cost(
+    std::string_view api_key, std::string_view dataset,
+    const std::pair<std::string, std::string>& range_utc,
+    std::span<const std::string> symbols, std::string_view schema,
+    std::string_view stype_in);
+
+// Equity L1 ("bbo-1m" or "cbbo-1m") for `symbols` over [start,end), stype_in
+// "raw_symbol". Writes one Parquet file at out_path with columns:
+// ts, symbol, bid_px, ask_px, bid_sz, ask_sz  (px = 1e-9 fixed-point i64; unset px
+// stored as INT64_MIN; sizes i64). Splits symbols so every API call's preflight
+// cost < cap_usd; accumulates all batches in memory; writes the file once.
+[[nodiscard]] Result<PullStats> pull_equity_l1_1m_to_parquet(
+    std::string_view api_key, std::string_view dataset,
+    std::span<const std::string> symbols,
+    const std::pair<std::string, std::string>& range_utc, std::string_view schema,
+    std::string_view out_path, double cap_usd = 2.0);
 
 } // namespace atx::external::databento
