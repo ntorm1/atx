@@ -204,7 +204,21 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
       const std::vector<std::string> v(b.begin(), b.end());
       return client.MetadataGetCost(dataset, range, v, sch, sty, 0);
     };
-    const auto batches = split_under_cap(std::span<const std::string>(parents), cap_usd, est);
+    // OPRA full chains are large: one get_range over many underlyings times out
+    // (504) even when the cost gate passes. Cap each query by underlying count
+    // first, then cost-split each chunk so every call is both small and < cap.
+    constexpr std::size_t kMaxParentsPerQuery = 10;
+    std::vector<std::vector<std::string>> batches;
+    for (std::size_t off = 0; off < parents.size(); off += kMaxParentsPerQuery) {
+      const std::size_t cnt = (parents.size() - off < kMaxParentsPerQuery)
+                                  ? (parents.size() - off)
+                                  : kMaxParentsPerQuery;
+      const std::span<const std::string> chunk(parents.data() + off, cnt);
+      auto sub = split_under_cap(chunk, cap_usd, est);
+      for (auto& b : sub) {
+        batches.push_back(std::move(b));
+      }
+    }
     for (const auto& batch : batches) {
       stats.cost_usd += est(std::span<const std::string>(batch));
       ::databento::TsSymbolMap tsmap;
