@@ -38,7 +38,7 @@ Realistic scope for this sprint:
 | Unit    | Status | Commit     | Notes |
 |---------|--------|------------|-------|
 | P4b-0   | done   | `ac3b26a`  | scaffold + ledger; RiskScaffold 1/1/0/0 |
-| P4-6    | —      | —          | — |
+| P4-6    | done   | `PENDING`  | factor exposure matrix `X` builder; RiskExposures 11/11/0/0 (see note) |
 | P4-7    | —      | —          | — |
 | P4-8    | —      | —          | — |
 | P4-9    | —      | —          | — |
@@ -51,6 +51,45 @@ Realistic scope for this sprint:
 | Commit    | Unit        | Test counts |
 |-----------|-------------|-------------|
 | `ac3b26a` | marker (P4b-0) | RiskScaffold 1/1/0/0 |
+| `PENDING` | feat (P4-6)    | RiskExposures 11/11/0/0 |
+
+---
+
+## P4-6 — Factor exposure matrix `X` (the exposure builder)
+
+`risk/exposures.hpp` adds `StyleFactor` (Size, Momentum, Volatility, Beta, Liquidity;
+matches `fwd.hpp` `: atx::u8`), `FactorModelConfig`, `ColumnTag`, `ExposureMatrix`,
+and `build_exposures(panel, cfg, row, market_cap, group_id) -> Result<ExposureMatrix>`.
+Per the §0 amendment, the as-built `PanelView` exposes OHLCV ONLY, so the §5.4
+factors split: **Momentum** (`ts_sum(ret,252)−ts_sum(ret,21)`), **Volatility**
+(`popstd(ret,60)`), **Beta** (`cov(ret_i,ret_mkt)/var(ret_mkt)` over 252 rows;
+`ret_mkt` = equal-weight mean over present instruments), and **Liquidity**
+(`ln(adv20)`, `adv20 = mean(close·volume)` over 20 rows) are PANEL-DERIVED from
+`ret[r][i] = close(r,i)/close(r+1,i)−1`; **Size** (`ln cap`) and the **sector
+dummies** require OPTIONAL EXTERNAL spans (`market_cap`, `group_id`, each length ==
+`instruments()` when present, EMPTY = absent). When cap is empty the Size column is
+OMITTED (never fabricated); when `group_id` is empty OR `sector_factors` is false,
+no sector columns are emitted. PIT is STRUCTURAL: the builder reads only panel rows
+`>= row` (`row` 0 = current date; `row` lets P4-7 rebuild `X` at each historical
+date). **Drop rule (§3.3):** an instrument with a NaN in ANY EMITTED style column
+(after the cap/availability gate) is dropped — it appears in no `instrument_rows`
+entry and contributes to no column (sector membership alone does NOT keep a
+style-NaN instrument); the z-score runs AFTER the drop over survivors. Each STYLE
+column is z-scored cross-sectionally `(v−mean)/popstd`; a single-instrument or
+zero-variance column standardizes to **0** (degenerate). Sector dummies (0/1) are
+NOT standardized. **Column order (deterministic):** sector dummies first (ascending
+group id), then style columns in `StyleFactor` enum order. `ExposureMatrix` carries
+`atx::core::linalg::MatX x` (column-major Eigen `M_valid×K`), the ascending
+surviving-instrument index list, and the `ColumnTag` column→factor map. `Err` on
+`row >= rows()` or a non-empty span whose length != `instruments()`. NO RNG;
+order-fixed (ascending row, ascending instrument) reductions; EXHAUSTIVE switch over
+`StyleFactor` (no default). Header-only inline (matches the `combine/*.hpp` pattern).
+**11 new tests** (`RiskExposures`), verified via
+`--gtest_list_tests --gtest_filter=RiskExposures.*`: Size = ln(cap) standardized,
+missing-cap drop, standardized-column mean≈0/std≈1, momentum + volatility window
+truncation-invariance, sector dummies sum to group size, single-sector all-ones,
+1-instrument degenerate-z→0, column order, row-out-of-range error, span-length
+mismatch error. `/W4 /permissive- /WX` clean; `11/11` green.
 
 ---
 
