@@ -134,4 +134,11 @@ TEST(AlphaKalmanReg, RejectsBadDelta) {
   EXPECT_FALSE(analyze(ast.value())); // delta must be in (0,1)
 }
 
+TEST(AlphaKalmanReg, RejectsBadR) {
+  Library lib;
+  auto ast = parse_program("b = kalman(close, open, 0.0001, 0.0).beta\n", lib);
+  ASSERT_TRUE(ast);
+  EXPECT_FALSE(analyze(ast.value())); // R must be > 0
+}
+
 } // namespace

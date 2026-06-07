@@ -395,6 +395,50 @@ validate_stateful_op_dtypes(OpCode op, std::span<const TypeInfo> out, const Expr
   return atx::core::Ok();
 }
 
+// Validate the per-op hyperparameter RANGE constraints for the filter
+// recurrence ops (hparams are already verified finite by analyze_call's
+// finite-constant loop). Only the filter ops carry range rails; every other op
+// has no hparam ranges, so a `default: break` is correct here (this is NOT an
+// exhaustive-over-all-OpCodes switch — it only handles the filter ops).
+[[nodiscard]] inline atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e) {
+  switch (op) {
+  case OpCode::KalmanLevel:
+    // Q (process noise) >= 0; R (observation noise) > 0.
+    if (e.hparams[0] < 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman_level: Q (process noise) must be >= 0");
+    }
+    if (e.hparams[1] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman_level: R (observation noise) must be > 0");
+    }
+    break;
+  case OpCode::OuFilter:
+    // theta (mean-reversion rate) >= 0; mu (long-run mean) is only required
+    // finite (already guaranteed by analyze_call's isfinite loop).
+    if (e.hparams[0] < 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ou_filter: theta (mean-reversion rate) must be >= 0");
+    }
+    break;
+  case OpCode::KalmanReg:
+    // delta in (0,1) strict: sets process noise W = (delta/(1-delta))*I2.
+    if (e.hparams[0] <= 0.0 || e.hparams[0] >= 1.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman: delta must be in (0, 1) exclusive");
+    }
+    // R (observation noise) must be strictly positive.
+    if (e.hparams[1] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "kalman: R (observation noise) must be > 0");
+    }
+    break;
+  default:
+    break; // non-filter ops: no hparam ranges
+  }
+  return atx::core::Ok();
+}
+
 // Call node: shape from the op's table-driven rule, dtype from the registry row
 // (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops
 // reject a pure-scalar primary operand.
@@ -429,37 +473,7 @@ analyze_call(const Ast &ast, std::span<const TypeInfo> out, const Expr &e) {
   }
   ATX_TRY_VOID(validate_stateful_op_dtypes(op, out, e));
   // Filter hparam range checks (hparams already verified finite by the loop above).
-  if (op == OpCode::KalmanLevel) {
-    // Q (process noise) >= 0; R (observation noise) > 0.
-    if (e.hparams[0] < 0.0) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "kalman_level: Q (process noise) must be >= 0");
-    }
-    if (e.hparams[1] <= 0.0) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "kalman_level: R (observation noise) must be > 0");
-    }
-  }
-  if (op == OpCode::OuFilter) {
-    // theta (mean-reversion rate) >= 0; mu (long-run mean) must be finite
-    // (already guaranteed by the isfinite loop above).
-    if (e.hparams[0] < 0.0) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "ou_filter: theta (mean-reversion rate) must be >= 0");
-    }
-  }
-  if (op == OpCode::KalmanReg) {
-    // delta in (0,1) strict: sets process noise W = (delta/(1-delta))*I2.
-    if (e.hparams[0] <= 0.0 || e.hparams[0] >= 1.0) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "kalman: delta must be in (0, 1) exclusive");
-    }
-    // R (observation noise) must be strictly positive.
-    if (e.hparams[1] <= 0.0) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "kalman: R (observation noise) must be > 0");
-    }
-  }
+  ATX_TRY_VOID(validate_hparam_ranges(op, e));
   // Collect child shapes for the table-driven shape rule.
   std::array<Shape, 3> shape_buf{};
   atx::usize n = 0;
