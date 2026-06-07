@@ -40,6 +40,32 @@ else()
     target_compile_options(atx_miniz PRIVATE -w)
 endif()
 
+# ---- Official Databento C++ client (third-party/databento-cpp submodule) ----
+# Full CMake library: HTTP Historical/Live API client + maintained DBN decoder
+# (distinct from our self-contained batch-zip loader in external/databento). Built
+# via its own bundled CMake as a static lib; tests, examples, and static analyzers
+# are forced off so they never enter our build. It FetchContents its own
+# json/httplib/date at configure time; OpenSSL and zstd resolve from vcpkg (zstd is
+# already an atx dep, openssl was added to vcpkg.json for this). EXCLUDE_FROM_ALL so
+# only the bits atx-core actually links get built. See the submodule's pinned tag
+# (v0.59.0) for source/version. Linked PRIVATE into atx-core, mirroring sqlite/miniz:
+# databento's symbols + include dirs reach atx-core's own TUs, but are NOT re-exported
+# to downstream consumers of atx::core.
+set(DATABENTO_ENABLE_UNIT_TESTING OFF CACHE BOOL "" FORCE)
+set(DATABENTO_ENABLE_EXAMPLES     OFF CACHE BOOL "" FORCE)
+set(DATABENTO_ENABLE_CLANG_TIDY   OFF CACHE BOOL "" FORCE)
+set(DATABENTO_ENABLE_CPPCHECK     OFF CACHE BOOL "" FORCE)
+set(DATABENTO_ENABLE_CCACHE       OFF CACHE BOOL "" FORCE)
+set(DATABENTO_WARNINGS_AS_ERRORS  OFF CACHE BOOL "" FORCE)
+add_subdirectory(third-party/databento-cpp EXCLUDE_FROM_ALL)
+# Demote databento's headers (and its fetched deps') to SYSTEM includes so they never
+# trip atx-core's /W4 /permissive- /WX gate when an atx TU includes <databento/...>.
+get_target_property(_dbn_incs databento INTERFACE_INCLUDE_DIRECTORIES)
+if(_dbn_incs)
+    set_target_properties(databento PROPERTIES
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_dbn_incs}")
+endif()
+
 add_library(atx-core STATIC
     src/core.cpp
     src/decimal.cpp
@@ -78,6 +104,7 @@ target_link_libraries(atx-core
         atx_warnings
         atx_sqlite3
         atx_miniz
+        databento::databento
         zstd::libzstd
 )
 
@@ -94,4 +121,11 @@ endif()
 
 if(ATX_BUILD_BENCH)
     add_subdirectory(bench)
+endif()
+
+# Opt-in example/smoke-test executables (e.g. the Databento client). Off by default
+# so they never enter the normal build or CI.
+option(ATX_BUILD_EXAMPLES "Build atx-core example executables" OFF)
+if(ATX_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()

@@ -1,0 +1,3 @@
+[submodule "atx-core/third-party/databento-cpp"]
+	path = atx-core/third-party/databento-cpp
+	url = https://github.com/databento/databento-cpp

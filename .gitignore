@@ -17,6 +17,11 @@ CTestTestfile.cmake
 Testing/
 _deps/
 
+# Secrets / local env (API keys, credentials)
+.env
+.env.*
+!.env.example
+
 # IDE
 .vs/
 .idea/
