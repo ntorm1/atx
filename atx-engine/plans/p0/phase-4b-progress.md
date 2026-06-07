@@ -54,7 +54,7 @@ Realistic scope for this sprint:
 | `ac3b26a` | marker (P4b-0) | RiskScaffold 1/1/0/0 |
 | `7c87d79` | feat (P4-6)    | RiskExposures 11/11/0/0 |
 | `caae1c9` | feat (P4-7a)   | RiskFactorModel 11/11/0/0 |
-| `PENDING` | fix (P4-7a)    | RiskFactorModel 12/12/0/0 (cq: +`<span>`, +create-time K-stack bound) |
+| `1b76e5b` | fix (P4-7a)    | RiskFactorModel 12/12/0/0 (cq: +`<span>`, +create-time K-stack bound) |
 
 ---
 
