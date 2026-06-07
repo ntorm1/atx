@@ -141,4 +141,62 @@ TEST(AlphaOuFilter, VmMatchesOracleAndHandMath) {
   }
 }
 
+// ===========================================================================
+//  KalmanReg differential (D3)
+// ===========================================================================
+
+TEST(AlphaKalmanReg, VmMatchesOracle) {
+  Library lib;
+  auto ast = parse_program("al = kalman(close, open, 0.0001, 0.001).alpha\n"
+                           "be = kalman(close, open, 0.0001, 0.001).beta\n"
+                           "re = kalman(close, open, 0.0001, 0.001).resid\n",
+                           lib);
+  ASSERT_TRUE(ast);
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an);
+  auto prog = compile(ast.value(), an.value());
+  ASSERT_TRUE(prog);
+
+  // Verify: single shared KalmanReg compute instruction feeds all 3 pins.
+  int compute = 0;
+  for (const auto &in : prog.value().code) {
+    if (in.op == atx::engine::alpha::OpCode::KalmanReg) {
+      ++compute;
+    }
+  }
+  EXPECT_EQ(compute, 1);
+
+  // 4 dates x 2 instruments; close and open with varied finite values.
+  const atx::usize dates = 4;
+  const atx::usize instruments = 2;
+  // date-major: [d=0,j=0],[d=0,j=1],[d=1,j=0],[d=1,j=1], ...
+  std::vector<atx::f64> close_data = {1.0, 2.0, 3.5, 4.2, 5.1, 6.3, 7.8, 8.4};
+  std::vector<atx::f64> open_data = {0.9, 1.8, 3.0, 3.9, 4.7, 5.8, 7.0, 7.9};
+  std::vector<std::vector<atx::f64>> cols{close_data, open_data};
+  auto panel_res =
+      Panel::create(dates, instruments, {"close", "open"}, std::move(cols), /*universe=*/{});
+  ASSERT_TRUE(panel_res) << panel_res.error().message();
+  const Panel &panel = panel_res.value();
+
+  Engine eng(panel);
+  auto vm_res = eng.evaluate(prog.value());
+  ASSERT_TRUE(vm_res) << vm_res.error().message();
+
+  auto orc_res = evaluate_reference(prog.value(), panel);
+  ASSERT_TRUE(orc_res) << orc_res.error().message();
+
+  ASSERT_EQ(vm_res.value().alphas.size(), 3U);
+  ASSERT_EQ(orc_res.value().alphas.size(), 3U);
+
+  for (atx::usize a = 0; a < 3; ++a) {
+    const auto &vv = vm_res.value().alphas[a].values;
+    const auto &ov = orc_res.value().alphas[a].values;
+    ASSERT_EQ(vv.size(), ov.size());
+    for (atx::usize i = 0; i < vv.size(); ++i) {
+      EXPECT_EQ(vv[i], ov[i]) << "alpha[" << a << "] cell " << i << " vm=" << vv[i]
+                              << " orc=" << ov[i];
+    }
+  }
+}
+
 } // namespace

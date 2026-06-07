@@ -419,6 +419,8 @@ private:
       return eval_recurrence(in, dates, instruments);
     case OpCode::Split2:
       return eval_split2(in, cells);
+    case OpCode::KalmanReg:
+      return eval_kalman_reg(in, dates, instruments);
     case OpCode::Pin:
     case OpCode::StoreAlpha:
     case OpCode::Free:
@@ -817,6 +819,37 @@ private:
     for (atx::usize i = 0; i < cells; ++i) {
       hi[i] = x[i];
       lo[i] = -x[i];
+    }
+    return atx::core::Ok();
+  }
+
+  // ---- Chan 2-state time-varying regression (multi-output, 3 pins) -----------
+  // Writes alpha(dst+0), beta(dst+1), resid(dst+2) using the shared kernel from
+  // state_ops.hpp (kalman_reg_step). Per instrument j: walk dates t=0…D-1 in
+  // order with a fresh KalmanRegState (diffuse prior). delta=in.imm[0],
+  // R=in.imm[1]. y=src[0], x=src[1]. Accesses pool_.column(dst+k) directly for
+  // the three output columns — the linearizer's acquire_block(3) guarantees the
+  // contiguous block [dst, dst+2] is within the pre-sized pool.
+  // SAFETY: causal by construction (step reads only prior state + date-t inputs).
+  [[nodiscard]] atx::core::Status eval_kalman_reg(const Instr &in, atx::usize dates,
+                                                  atx::usize instruments) {
+    const std::span<const atx::f64> y = src_col(in, 0);
+    const std::span<const atx::f64> x = src_col(in, 1);
+    const atx::f64 delta = in.imm[0];
+    const atx::f64 R = in.imm[1];
+    const std::span<atx::f64> oa = pool_.column(in.dst + 0);
+    const std::span<atx::f64> ob = pool_.column(in.dst + 1);
+    const std::span<atx::f64> orr = pool_.column(in.dst + 2);
+    for (atx::usize j = 0; j < instruments; ++j) {
+      detail::KalmanRegState s{};
+      bool seeded = false;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize i = t * instruments + j;
+        const detail::KalmanRegOut o = detail::kalman_reg_step(s, seeded, y[i], x[i], delta, R);
+        oa[i] = o.alpha;
+        ob[i] = o.beta;
+        orr[i] = o.resid;
+      }
     }
     return atx::core::Ok();
   }

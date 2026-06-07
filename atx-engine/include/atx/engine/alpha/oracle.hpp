@@ -410,6 +410,8 @@ private:
       return eval_recurrence(in);
     case OpCode::Split2:
       return eval_split2(in);
+    case OpCode::KalmanReg:
+      return eval_kalman_reg(in);
     case OpCode::Pin:
     case OpCode::StoreAlpha:
     case OpCode::Free:
@@ -586,6 +588,10 @@ private:
   // state_ops kernels), so the differential proves VM-vs-oracle independently.
   [[nodiscard]] atx::core::Status eval_kalman_level(const Instr &in, std::span<atx::f64> out) const;
   [[nodiscard]] atx::core::Status eval_ou_filter(const Instr &in, std::span<atx::f64> out) const;
+  // KalmanReg: Chan 2-state regression record op (3 output pins). Writes to
+  // pool_.column(dst+0/1/2). Restates the 2x2 Chan recursion INLINE — does NOT
+  // call state_ops::kalman_reg_step, so the differential is a real cross-check.
+  [[nodiscard]] atx::core::Status eval_kalman_reg(const Instr &in);
 
   // Helpers for the two big families (defined out-of-line below the class).
   void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g, atx::f64 a,
@@ -1324,6 +1330,64 @@ inline atx::core::Status Oracle::eval_ou_filter(const Instr &in, std::span<atx::
       const atx::f64 phi = std::exp(-theta);
       xhat = mu + phi * (xhat - mu); // observation-free pull toward mu
       out[idx] = xhat;
+    }
+  }
+  return atx::core::Ok();
+}
+
+// KalmanReg oracle reference — Chan 2-state time-varying regression of y on x,
+// per-instrument forward scan. Hyperparams delta and R from in.imm[0/1].
+// Writes three contiguous output columns: alpha=pool_.column(dst+0),
+// beta=pool_.column(dst+1), resid=pool_.column(dst+2). The 2x2 Chan recursion
+// is restated INLINE here — does NOT call state_ops::kalman_reg_step — so the
+// VM-vs-oracle differential is an independent cross-check.
+// Diffuse prior: a=b=0, P00=P11=1, P01=0 (matches KalmanRegState defaults).
+// Incomplete obs (y or x NaN): predict-only (P00+=w, P11+=w), output NaN.
+// SAFETY: causal by construction (reads only prior state + date-t inputs).
+inline atx::core::Status Oracle::eval_kalman_reg(const Instr &in) {
+  const std::span<const atx::f64> yv = src_col(in, 0);
+  const std::span<const atx::f64> xv = src_col(in, 1);
+  const atx::f64 delta = in.imm[0];
+  const atx::f64 R = in.imm[1];
+  const std::span<atx::f64> oa = pool_.column(in.dst + 0);
+  const std::span<atx::f64> ob = pool_.column(in.dst + 1);
+  const std::span<atx::f64> orr = pool_.column(in.dst + 2);
+  for (atx::usize j = 0; j < instruments_; ++j) {
+    atx::f64 a = 0.0;
+    atx::f64 b = 0.0;
+    atx::f64 P00 = 1.0;
+    atx::f64 P01 = 0.0;
+    atx::f64 P11 = 1.0;
+    for (atx::usize t = 0; t < dates_; ++t) {
+      const atx::usize i = t * instruments_ + j;
+      const atx::f64 y = yv[i];
+      const atx::f64 x = xv[i];
+      const atx::f64 w = delta / (1.0 - delta);
+      if (detail::is_nan(y) || detail::is_nan(x)) {
+        P00 += w;
+        P11 += w;
+        oa[i] = detail::kNaN;
+        ob[i] = detail::kNaN;
+        orr[i] = detail::kNaN;
+        continue;
+      }
+      const atx::f64 P00p = P00 + w;
+      const atx::f64 P01p = P01;
+      const atx::f64 P11p = P11 + w;
+      const atx::f64 e = y - (a + b * x);
+      const atx::f64 pf0 = P00p + P01p * x;
+      const atx::f64 pf1 = P01p + P11p * x;
+      const atx::f64 Qv = pf0 + x * pf1 + R;
+      const atx::f64 k0 = pf0 / Qv;
+      const atx::f64 k1 = pf1 / Qv;
+      a += k0 * e;
+      b += k1 * e;
+      P00 = P00p - k0 * pf0;
+      P01 = P01p - k0 * pf1;
+      P11 = P11p - k1 * pf1;
+      oa[i] = a;
+      ob[i] = b;
+      orr[i] = e / std::sqrt(Qv);
     }
   }
   return atx::core::Ok();
