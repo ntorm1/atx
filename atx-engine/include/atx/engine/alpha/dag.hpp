@@ -306,6 +306,41 @@ namespace detail {
   for (atx::usize i = 0; i < arena.size(); ++i) {
     const Expr &e = arena[i];
     const TypeInfo &ti = analysis.info(static_cast<ExprId>(i));
+
+    // ---- Special case: Member (pin projection) ---------------------------
+    // Lower `record.pin` to a Pin node whose `param` is the resolved pin index
+    // (NOT the generic param=0 that the fallthrough would produce). We look up
+    // the pin name in the record operand's TypeInfo.pins table, then intern a
+    // Pin node keyed by (OpCode::Pin, pin_index, {rec_node_id, kNoNode, kNoNode}).
+    // This MUST come before the generic path so Member never falls through.
+    if (e.kind == Expr::Kind::Member) {
+      const NodeId rec = ast_to_node[e.a];
+      const TypeInfo &cti = analysis.info(static_cast<ExprId>(e.a));
+      const std::string_view pin = ast.field_name(e.name_id);
+      atx::u32 pin_idx = 0;
+      for (atx::usize k = 0; k < cti.pins.size(); ++k) {
+        if (cti.pins[k].name == pin) {
+          pin_idx = static_cast<atx::u32>(k);
+          break;
+        }
+      }
+      Node pn;
+      pn.op = OpCode::Pin;
+      pn.shape = ti.shape;
+      pn.dtype = ti.dtype;
+      pn.lookback = ti.lookback;
+      pn.in = {rec, kNoNode, kNoNode};
+      pn.param = pin_idx;
+      const NodeKey pk{OpCode::Pin, atx::u64{pin_idx}, {rec, kNoNode, kNoNode}, {}};
+      const atx::usize before = dag.nodes().size();
+      const NodeId pid = dag.intern(pk, pn);
+      ast_to_node[i] = pid;
+      if (dag.nodes().size() != before) {
+        dag.add_edge_refcount(rec);
+      }
+      continue;
+    }
+
     const OpCode op = detail::lowered_opcode(e);
     const atx::usize nkids = detail::child_count(e);
 
@@ -340,8 +375,20 @@ namespace detail {
       }
     }
 
-    NodeKey key{emit_op, key_param, emit_kids, {}};
-    const Node proto = detail::make_node(e, ti, emit_kids, emit_op, field_param);
+    // hparams from Call nodes: fold into imm_bits for CSE identity. Non-Call
+    // Exprs default hparams to {0,0}, so imm_bits is {} and keys are unchanged —
+    // all existing CSE (no record nodes) is preserved exactly.
+    const std::array<atx::u64, 2> imm_bits{std::bit_cast<atx::u64>(e.hparams[0]),
+                                           std::bit_cast<atx::u64>(e.hparams[1])};
+
+    NodeKey key{emit_op, key_param, emit_kids, imm_bits};
+    Node proto = detail::make_node(e, ti, emit_kids, emit_op, field_param);
+    // Propagate hparams and n_out onto the proto for Call nodes.
+    proto.hparams = e.hparams;
+    proto.n_out = (e.kind == Expr::Kind::Call && e.op != nullptr && !e.op->pins.empty())
+                      ? static_cast<atx::u8>(e.op->pins.size())
+                      : atx::u8{1};
+
     const atx::usize before = dag.nodes().size();
     const NodeId id = dag.intern(key, proto);
     ast_to_node[i] = id;
