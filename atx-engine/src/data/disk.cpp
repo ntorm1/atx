@@ -74,9 +74,6 @@ Result<std::vector<std::string>> DiskStore::list_dates(Store s) const {
     return Ok(std::move(dates));
   }
   for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
-    if (ec) {
-      return Err(ErrorCode::IoError, "iterate store: " + ec.message());
-    }
     if (!e.is_directory()) {
       continue;
     }
@@ -85,6 +82,9 @@ Result<std::vector<std::string>> DiskStore::list_dates(Store s) const {
     if (name.rfind(kPrefix, 0) == 0) {
       dates.emplace_back(name.substr(kPrefix.size()));
     }
+  }
+  if (ec) {
+    return Err(ErrorCode::IoError, "iterate store: " + ec.message());
   }
   std::sort(dates.begin(), dates.end());
   return Ok(std::move(dates));

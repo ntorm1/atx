@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -114,6 +115,7 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
   const auto sty = ::databento::SType::RawSymbol;
   PullStats stats;
   L1Columns c;
+  std::unordered_set<std::string> seen;
   try {
     auto client = make_client(api_key);
     const ::databento::DateTimeRange<std::string> range{range_utc.first, range_utc.second};
@@ -133,18 +135,20 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
               const auto& q = rec.Get<::databento::CbboMsg>();
               const auto& l = q.levels[0];
               const auto it = tsmap.Find(q);
-              c.push(q.ts_recv.time_since_epoch().count(),
-                     it != tsmap.Map().end() ? *it->second
-                                             : std::to_string(q.hd.instrument_id),
-                     px_or_unset(l.bid_px), px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
+              const std::string sym =
+                  it != tsmap.Map().end() ? *it->second : std::to_string(q.hd.instrument_id);
+              seen.insert(sym);
+              c.push(q.ts_recv.time_since_epoch().count(), sym, px_or_unset(l.bid_px),
+                     px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
             } else if (rec.Holds<::databento::BboMsg>()) {
               const auto& q = rec.Get<::databento::BboMsg>();
               const auto& l = q.levels[0];
               const auto it = tsmap.Find(q);
-              c.push(q.ts_recv.time_since_epoch().count(),
-                     it != tsmap.Map().end() ? *it->second
-                                             : std::to_string(q.hd.instrument_id),
-                     px_or_unset(l.bid_px), px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
+              const std::string sym =
+                  it != tsmap.Map().end() ? *it->second : std::to_string(q.hd.instrument_id);
+              seen.insert(sym);
+              c.push(q.ts_recv.time_since_epoch().count(), sym, px_or_unset(l.bid_px),
+                     px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
             }
             return ::databento::KeepGoing::Continue;
           });
@@ -154,6 +158,7 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
     return Err(ErrorCode::Internal, std::string{"pull_equity_l1: "} + e.what());
   }
   stats.records = static_cast<i64>(c.ts.size());
+  stats.symbols = static_cast<i64>(seen.size());
   const std::vector<atx::core::io::WriteColumn> cols{
       {"ts", std::span<const time::Timestamp>(c.ts)},
       {"symbol", std::span<const std::string>(c.symbol)},
@@ -180,12 +185,18 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
   std::vector<std::string> parents;
   parents.reserve(underlyings.size());
   for (const auto& u : underlyings) {
-    parents.push_back(u + ".OPT");
+    std::string root;
+    root.reserve(u.size());
+    for (const char ch : u) {
+      if (ch != '.') { root.push_back(ch); }   // BRK.B -> BRKB (OPRA root)
+    }
+    parents.push_back(root + ".OPT");
   }
 
   PullStats stats;
   L1Columns c;
   std::vector<std::string> underlying_col;
+  std::unordered_set<std::string> seen;
   try {
     auto client = make_client(api_key);
     const ::databento::DateTimeRange<std::string> range{range_utc.first, range_utc.second};
@@ -205,9 +216,11 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
               const auto& q = rec.Get<::databento::CbboMsg>();
               const auto& l = q.levels[0];
               const auto it = tsmap.Find(q);
+              const bool mapped = it != tsmap.Map().end();
               const std::string sym =
-                  it != tsmap.Map().end() ? *it->second : std::to_string(q.hd.instrument_id);
-              underlying_col.push_back(osi_root(sym));
+                  mapped ? *it->second : std::to_string(q.hd.instrument_id);
+              underlying_col.push_back(mapped ? osi_root(sym) : sym);
+              seen.insert(sym);
               c.push(q.ts_recv.time_since_epoch().count(), sym, px_or_unset(l.bid_px),
                      px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
             }
@@ -219,6 +232,7 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
     return Err(ErrorCode::Internal, std::string{"pull_opra_cbbo: "} + e.what());
   }
   stats.records = static_cast<i64>(c.ts.size());
+  stats.symbols = static_cast<i64>(seen.size());
   const std::vector<atx::core::io::WriteColumn> cols{
       {"ts", std::span<const time::Timestamp>(c.ts)},
       {"underlying", std::span<const std::string>(underlying_col)},
