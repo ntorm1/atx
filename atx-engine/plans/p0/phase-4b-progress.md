@@ -44,7 +44,7 @@ Realistic scope for this sprint:
 | P4-8    | done   | `a815d0d`  | WeightPolicy neutralization (group-demean + truncation); industry_neutral now LIVE; bit-identical-when-off guard; WeightPolicyNeutralize 9/9/0/0 (existing WeightPolicy 20/20 UNCHANGED). DECAY + FACTOR-neutralize deferred (residuals below) |
 | P4-9    | done   | `ef77f8a`  | turnover-penalized risk-aware optimizer (`PortfolioOptimizer`); λ=κ=0 recovers WeightPolicy book ≤1e-9; factored V via `apply_inverse` only; RiskOptimizer 16/16/0/0 (cq fix `e2d4395`: +`<limits>`, λ-scaling comment corrected) |
 | P4-10a  | done   | `5d7aa0e`  | capacity curve (`CapacityPoint`, `capacity_curve`); √-impact edge erosion via sim's OWN `ImpactCfg` (one cost surface §0-G); +additive `ExecutionSimulator::impact_cfg()` accessor; RiskCapacity 9/9/0/0 (ExecSim 24/24 unchanged; cq fix `2a42e69`: drop unused `<limits>`/`<cstdint>`) |
-| P4-10b  | —      | —          | integration proofs: firewall truncation-invariance + determinism hash + walk-forward combined backtest (orchestrator split of plan-P4-10) |
+| P4-10b  | done   | `1baa523`  | phase-4 integration proofs (firewall truncation-invariance + determinism hash + walk-forward combined backtest); Phase4Integration 10/10/0/0 (broader 146/146); TESTS-ONLY, no production change (cq fix `a0abb17`: drop unused `<cstring>`) |
 | P4-10c  | —      | —          | bench (combiner fit / factor build / optimizer solve / walk-forward) |
 
 ---
@@ -63,6 +63,8 @@ Realistic scope for this sprint:
 | `e2d4395` | fix (P4-9)   | RiskOptimizer 16/16/0/0 (cq: +`<limits>` include, corrected λ-scaling comment) |
 | `5d7aa0e` | feat (P4-10a)| RiskCapacity 9/9/0/0 (ExecSim 24/24 unchanged; Risk 57/57) |
 | `2a42e69` | fix (P4-10a) | RiskCapacity 9/9/0/0 (cq: drop unused `<limits>`/`<cstdint>`) |
+| `1baa523` | feat (P4-10b)| Phase4Integration 10/10/0/0 (Phase4Integration\|Combine\|Risk\|Backtest\|ExecSim 146/146) |
+| `a0abb17` | fix (P4-10b) | Phase4Integration 10/10/0/0 (cq: drop unused `<cstring>`) |
 
 ---
 
@@ -355,6 +357,43 @@ it reads the sim's coeff, not a constant); determinism (bitwise `memcmp` re-run)
 boundaries empty-grid, zero/NaN-weight-excluded, short/1-row-panel degenerate, hand-computed
 constant-return-zero-σ ⇒ net==gross. Reviews: spec ✅ COMPLIANT (independent rebuild; accessor additive,
 math + §0-G correct), code-quality ✅ (two unused-include Minors fixed in `2a42e69`).
+
+---
+
+## P4-10b — Phase-4 integration proof suite (firewall · determinism · walk-forward)
+
+`tests/phase4_integration_test.cpp` (NEW, TESTS-ONLY — no production code; suites `Phase4Integration` +
+`Phase4IntegrationDeathTest`) proves the three headline invariants of the combine+risk layer. **Second slice
+of the orchestrator's P4-10 split** (capacity = P4-10a; bench = P4-10c).
+
+**(A) Fit/apply firewall — truncation-invariance (the headline).** Two byte-identity proofs:
+`Firewall_CombinerFutureRowsCorrupted_WeightsByteIdentical` (corrupt pool-PnL rows ≥ fit_end, `AlphaCombiner::fit`
+weights `EXPECT_EQ` bit-identical) and `Firewall_CombinedBookFutureCorrupted_OptimizerBookByteIdentical` (the
+COMBINED chain combiner.fit → `CombinedSignalSource` → `FactorModelBuilder::build` → `PortfolioOptimizer::solve`,
+corrupt future panel rows ≥ window with a TIGHT one-row margin — an off-by-one over-read would fail — final
+book bit-identical), plus `Firewall_OptimizerBook_DeterministicAndConstraintsHold` (Σw=0/Σ|w|≤L/cap). The
+`Phase4IntegrationDeathTest.Firewall_ApplyInsideFitWindow_CallerGuardAborts` `EXPECT_DEATH` pins a CALLER-SIDE
+firewall guard written in the test TU — the spec reviewer EMPIRICALLY confirmed (by neutering then reverting)
+this is honest: as-built `FactorModel`/`Combination` carry `[fit_begin,fit_end)` but do NOT self-assert the
+apply-window (firewall is structural-by-truncation + caller-enforced; NO production-header assert was added).
+**(B) Whole-layer determinism hash.** `DeterminismHash_RepeatRun_IdenticalDigest` folds the ordered
+(rebalance, instrument, weight-bits) stream via atx-core `hash_combine` (digest ≠ 0, two runs equal); non-vacuity
+proven by `DeterminismHash_ReorderedPool_DigestFlips` + `DeterminismHash_PerturbedPnl_DigestFlips` (`EXPECT_NE`
+— the reviewer confirmed both genuinely flip).
+**(C) Walk-forward combined backtest.** `WalkForward_RepeatRun_IdenticalEquityAndDigest` drives the REAL
+`loop::BacktestLoop` (gate→store→re-fit combiner→`CombinedSignalSource`→WeightPolicy→`ExecutionSimulator`→
+`Portfolio`) over a synthetic panel with a DELISTED symbol (genuine `delisted_final` survivorship; no fill after
+its last bar) + NaN gaps; two independent runs → bit-identical equity + digest. Cost-honesty:
+`WalkForward_CostsOff_RecoversFrictionlessEquity` (frictionless dollar-neutral ⇒ equity == 100000 exactly) +
+`WalkForward_CostsOn_EquityStrictlyBelowFrictionless` (`EXPECT_LT`).
+
+**As-built reconciliations (documented):** (1) the loop is WeightPolicy-driven (not optimizer-driven); wiring
+the optimizer THROUGH the loop is a forbidden loop change, so the optimizer + factor model run in a PARALLEL
+per-rebalance component harness (`solve_optimizer_book`) used by (A)/(B). (2) The apply-window firewall is
+caller-enforced (above). **10 tests**, `10/10` via `ctest -R Phase4Integration`; broader
+`Phase4Integration|Combine|Risk|Backtest|ExecSim` `146/146`; `/W4 /permissive- /WX` clean. Reviews: spec ✅
+COMPLIANT (independent rebuild + empirical non-vacuity check; only the one test file changed), code-quality ✅
+APPROVED (one unused-include Minor fixed in `a0abb17`).
 
 ---
 
