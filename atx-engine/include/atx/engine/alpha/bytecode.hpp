@@ -37,6 +37,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -132,6 +133,30 @@ public:
 
   void release(SlotId s) { free_.push_back(s); }
 
+  // Acquire `k` CONTIGUOUS slots; returns the first. Reuses a freed same-size
+  // block if available, else grows the high-water counter by k. k>=1.
+  [[nodiscard]] SlotId acquire_block(atx::u32 k) {
+    if (k == 1) {
+      return acquire();
+    }
+    if (auto it = free_blocks_.find(k); it != free_blocks_.end() && !it->second.empty()) {
+      const SlotId s = it->second.back();
+      it->second.pop_back();
+      return s;
+    }
+    const SlotId s = next_slot_;
+    next_slot_ += k;
+    return s;
+  }
+
+  void release_block(SlotId first, atx::u32 k) {
+    if (k == 1) {
+      release(first);
+      return;
+    }
+    free_blocks_[k].push_back(first);
+  }
+
   // High-water mark: total distinct slots ever handed out simultaneously. Since
   // a slot is reused only after release, `next_slot_` IS the peak live count.
   [[nodiscard]] atx::u32 peak() const noexcept { return next_slot_; }
@@ -139,6 +164,7 @@ public:
 private:
   std::vector<SlotId> free_;
   SlotId next_slot_{0};
+  std::unordered_map<atx::u32, std::vector<SlotId>> free_blocks_;
 };
 
 // Number of populated child slots of a DAG node, by opcode arity in the graph
