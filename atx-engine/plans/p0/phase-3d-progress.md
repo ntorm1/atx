@@ -39,10 +39,15 @@ Record one row per landed task: `pNd-X | SHA | summary | tests`.
 | p3d-E3 | aed1e5c | OU rolling family registry rows + rolling lookback + VM/oracle dispatch | AlphaTypecheck 49/49 |
 | p3d-E4 | 7523fd5 | VM ou_value_at + oracle independent ou_fit/ou_unary_at (differential) | AlphaOuRolling 2/2; Alpha+Diff 447/447 |
 
+| p3d-F1 | 6d82e35 | E2E Kalman/OU pairs pipeline (inline kalman→.pin, CSE→1 scan) + no-look-ahead causality regression | AlphaStatespaceE2E 2/2; broad filter 489/489 |
+| p3d-F2 | ca5eff5 | user-reference docs: §1.1 state-space/OU ops + records/.pin + bindings (fixed stale let-binding note) | — |
+
 ## Phase status
 - [x] A — local bindings + references (A1–A3) — spec✓ quality✓, 410/410 green
 - [x] B — multi-output IR + records + member access (B1–B9) — spec✓ quality✓, 426/426; multi-output proven end-to-end on split2 via bit-exact differential
 - [x] C — recurrence + kalman_level + ou_filter (C1 skipped: instrument-outer locals; C2–C5) — spec✓ quality✓, 435/435; oracle restates inline (genuine differential)
 - [x] D — Chan kalman record {alpha,beta,resid} (D1–D4) — spec✓ quality✓, 441/441; single compute→3 pins, oracle inline, numpy-verified
 - [x] E — OU rolling family (E1–E4) — spec✓ quality✓, 447/447; VM uses ou_ar1_fit+mappers, oracle restates ou_fit/ou_unary_at independently (genuine windowed differential, cf. lin_fit↔tsv_lin_fit)
-- [ ] F — integration + docs (F1–F2)
+- [x] F — integration + docs (F1–F2) — spec✓ quality✓; E2E pairs pipeline (CSE single Kalman scan) + no-look-ahead regression green, user reference documents all 7 ops + records/.pin/bindings
+
+**Phase 3d COMPLETE** — all of A–F landed. State-space & mean-reversion DSL: local bindings, multi-output records + `.pin`, kalman_level/kalman(record)/ou_filter recurrences, ou_theta/halflife/mean/zscore rolling family. VM⊥oracle differential green throughout (489/489 across the alpha+statespace filter).
