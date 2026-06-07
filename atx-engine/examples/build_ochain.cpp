@@ -35,6 +35,8 @@ using atx::f64;
 
 namespace {
 
+// Flat r ~= US 3M risk-free rate on the snapshot date (2026-06-05). q=0 is a
+// known simplification (no dividend schedule); it biases IV for high-yield names.
 constexpr double kRate = 0.043;
 constexpr double kDiv = 0.0;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -92,6 +94,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "OHLC1M columns missing\n");
     return 1;
   }
+  // OPRA 'underlying' is already dot-stripped (osi_root form, e.g. BRK.B->BRKB,
+  // see databento_pull.cpp). OHLC1M symbols may carry dots, so strip both sides
+  // to the same root before joining.
   std::unordered_map<std::string, std::pair<i64, i64>> umap;
   umap.reserve(equ_sym->size());
   for (std::size_t i = 0; i < equ_sym->size(); ++i) {
@@ -153,7 +158,7 @@ int main(int argc, char** argv) {
         c_callput[i] = parsed->is_call ? "C" : "P";
         strike = parsed->strike;
         years = q::act252_years(oy, om, od, parsed->year, parsed->month, parsed->day);
-        const auto it = umap.find(u);
+        const auto it = umap.find(strip_dot(u));
         if (it != umap.end()) {
           ubid = px_f64(it->second.first);
           uask = px_f64(it->second.second);
