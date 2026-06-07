@@ -411,6 +411,11 @@ private:
     case OpCode::TsQuantile:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
+    // OU rolling-fit ops (P3d-E3): same windowed path as Ts* rolling ops.
+    case OpCode::OuTheta:
+    case OpCode::OuHalflife:
+    case OpCode::OuMean:
+    case OpCode::OuZscore:
       return eval_time_series(in, dates, instruments);
     case OpCode::TradeWhen:
     case OpCode::Hump:

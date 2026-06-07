@@ -106,6 +106,11 @@ namespace detail {
   case OpCode::TsQuantile:
   case OpCode::TsScale:
   case OpCode::TsCountNans:
+  // OU rolling-fit ops (P3d-E3): windowed, same lookback rule as ts_mean.
+  case OpCode::OuTheta:
+  case OpCode::OuHalflife:
+  case OpCode::OuMean:
+  case OpCode::OuZscore:
     return true;
   // Not rolling-window time-series ops.
   case OpCode::TsDelay:

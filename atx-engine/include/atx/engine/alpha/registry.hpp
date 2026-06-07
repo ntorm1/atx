@@ -167,6 +167,18 @@ enum class OpCode : atx::u8 {
   //      3 output pins (intercept, slope, standardised residual); delta in
   //      (0,1) strict; R > 0; both y and x must be non-scalar (Panel).
   KalmanReg,
+  // ---- OU rolling-fit ops (P3d-E3): windowed time-series ops (arity 2,
+  //      window = operand literal, output Panel, lookback (d-1)+child).
+  //      Each fits AR(1) OLS over the trailing window [t-d+1, t] per cell:
+  //        OuTheta    = -ln(b)            (mean-reversion speed)
+  //        OuHalflife = ln(2) / theta     (half-life of mean reversion)
+  //        OuMean     = a / (1-b)         (long-run equilibrium mean)
+  //        OuZscore   = (x[t]-mu)/sigma_eq (standardised deviation from mean)
+  //      All yield NaN when b not in (0,1) or the fit is degenerate.
+  OuTheta,
+  OuHalflife,
+  OuMean,
+  OuZscore,
   // ---- store / free ----
   StoreAlpha,
   Free,
@@ -343,7 +355,7 @@ namespace detail {
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
   // initializers — existing rows omit them and pick up {0, {}} automatically.
-  static constexpr std::array<OpSig, 61> kOps = {{
+  static constexpr std::array<OpSig, 65> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -459,6 +471,13 @@ namespace detail {
        &shape_panel,
        2,
        std::span<const PinSig>{kKalmanRegPins}},
+      // ---- OU rolling-fit ops (P3d-E3): windowed time-series, arity 2 -----
+      // Each fits AR(1) OLS over the trailing window and derives an OU quantity.
+      // Window is the 2nd operand (a literal constant). n_hparams=0, no pins.
+      {"ou_theta",    2, 2, OpCode::OuTheta,    DType::F64, true, {}, &shape_panel},
+      {"ou_halflife", 2, 2, OpCode::OuHalflife, DType::F64, true, {}, &shape_panel},
+      {"ou_mean",     2, 2, OpCode::OuMean,     DType::F64, true, {}, &shape_panel},
+      {"ou_zscore",   2, 2, OpCode::OuZscore,   DType::F64, true, {}, &shape_panel},
   }};
   return kOps;
 }

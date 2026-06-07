@@ -339,4 +339,43 @@ TEST(AlphaTypecheck_Required, MaxOverAllRoots) {
   EXPECT_EQ(res->required_lookback(), 9U);
 }
 
+// ---- OU rolling family typecheck (P3d-E3) ------------------------------------
+
+TEST(AlphaTypecheck, OuZscoreRollingLookback) {
+  Library lib;
+  auto ast = parse_program("a = ou_zscore(close, 60)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 59U); // (d-1)+0
+}
+
+TEST(AlphaTypecheck, OuHalflifeRejectsScalarPrimary) {
+  Library lib;
+  auto ast = parse_program("a = ou_halflife(3.0, 60)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  EXPECT_FALSE(analyze(ast.value()));
+}
+
+TEST(AlphaTypecheck, OuThetaRollingLookback) {
+  Library lib;
+  auto ast = parse_program("a = ou_theta(close, 20)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 19U); // (d-1)+0
+}
+
+TEST(AlphaTypecheck, OuMeanRollingLookback) {
+  Library lib;
+  auto ast = parse_program("a = ou_mean(close, 10)\n", lib);
+  ASSERT_TRUE(ast) << ast.error().message();
+  auto an = analyze(ast.value());
+  ASSERT_TRUE(an) << an.error().message();
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).shape, Shape::Panel);
+  EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 9U); // (d-1)+0
+}
+
 } // namespace
