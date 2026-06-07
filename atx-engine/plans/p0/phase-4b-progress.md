@@ -41,7 +41,7 @@ Realistic scope for this sprint:
 | P4-6    | done   | `7c87d79`  | factor exposure matrix `X` builder; RiskExposures 11/11/0/0 (see note) |
 | P4-7a   | done   | `caae1c9`  | FactorModel factored-V apply-math (risk/apply_inverse/neutralize); RiskFactorModel 12/12/0/0 (cq fix: +`<span>`, +create-time K-stack bound) |
 | P4-7b   | done   | `4d8f4a9`  | FactorModelBuilder (per-date WLS-bootstrapped-from-OLS estimating X,F,D; reuses combine LW for F); RiskFactorBuilder 8/8/0/0 |
-| P4-8    | —      | —          | — |
+| P4-8    | done   | `<pending>`| WeightPolicy neutralization (group-demean + truncation); industry_neutral now LIVE; bit-identical-when-off guard; WeightPolicyNeutralize 9/9/0/0 (existing WeightPolicy 20/20 UNCHANGED). DECAY + FACTOR-neutralize deferred (residuals below) |
 | P4-9    | —      | —          | — |
 | P4-10   | —      | —          | — |
 
@@ -56,6 +56,7 @@ Realistic scope for this sprint:
 | `caae1c9` | feat (P4-7a)   | RiskFactorModel 11/11/0/0 |
 | `1b76e5b` | fix (P4-7a)    | RiskFactorModel 12/12/0/0 (cq: +`<span>`, +create-time K-stack bound) |
 | `4d8f4a9` | feat (P4-7b)   | RiskFactorBuilder 8/8/0/0 |
+| `<pending>` | feat (P4-8)  | WeightPolicyNeutralize 9/9/0/0 (existing WeightPolicy 20/20 unchanged; full engine suite 1552/1552) |
 
 ---
 
@@ -200,6 +201,81 @@ the window's return reach — leaves the model byte-identical); and three Err bo
 (`window<2`, `window<K` via 3 sectors / window 2, `n_stat_factors>0` →
 `NotImplemented`). `/W4 /permissive- /WX` clean; **P4-7a `RiskFactorModel` 12/12 and
 P4-6 `RiskExposures` 11/11 NOT regressed** (full 1543-test engine suite green).
+
+---
+
+## P4-8 — WeightPolicy neutralization (group-demean + truncation)
+
+`loop/weight_policy.hpp` (the ONE Phase-2 unit P4-8 modifies) wires the two §5.5
+neutralization stages the orchestrator scoped to the as-built stateless/loop-local
+policy. The §5.5 realized order is
+`winsorize → transform → [GROUP-neutralize] → dollar-neutralize → gross-normalize →
+[TRUNCATE]`. **The IRON RULE held:** with `industry_neutral=false` + `truncation=0.0`
++ an empty `group_map` (all defaults) NONE of the new branches run, so the output is
+BYTE-IDENTICAL to the Phase-2 pipeline — the 20 pre-existing `WeightPolicy` tests pass
+UNCHANGED (their file was not touched).
+
+**Config additions** to `struct WeightPolicy`: `industry_neutral` is now WIRED (no
+longer the inert asserted-false flag — header doc updated to describe the live
+group-demean + the `group_map` requirement); new `atx::f64 truncation = 0.0` (per-name
+|w_i| cap in FINAL gross-normalized units; 0 disables; typical 0.01–0.10, Phase-5
+calibrates). `to_target_weights` gains ONE defaulted parameter
+`std::span<const atx::u32> group_map = {}` so every existing call site + behavior is
+unchanged. The Phase-2 `ATX_ASSERT(!industry_neutral)` is REPLACED by
+`ATX_ASSERT(!industry_neutral || group_map.size() == n)` (fail-closed on misconfig,
+matching the original intent — group_map is REQUIRED + universe-aligned when on).
+
+**GROUP-demean realization (CsDemeanG / §0-H semantics):** after `apply_transform`,
+BEFORE the global demean, `group_demean` demeans the dense live buffer WITHIN each
+group. DETERMINISTIC, order-fixed: distinct live group ids are enumerated in ASCENDING
+order (`std::sort` + `std::unique` over the live ids — NOT an `unordered_map` iteration
+into a reduction), and each group's mean is subtracted from its members in ascending-k
+order. A NaN name is already excluded (it never enters the dense buffer), so it neither
+gets weight nor pollutes a group mean. After group-demean each group sums to ~0, so the
+subsequent global demean is a ~no-op (correct). A single group over all names ⇒ the
+per-group demean == the global demean (tested == the Phase-2 path).
+
+**TRUNCATE clip-renorm (fixed-iteration, determinism §3.2):** `dense` is
+gross-normalized FIRST (so the cap is compared in FINAL weight units — the gross step
+runs UNCONDITIONALLY, preserving the bit-identical-when-off path), then
+`truncate_renorm` runs a FIXED `kTruncateIters = 8` passes of (clip to ±cap, renorm
+Σ|w|→gross_leverage) — NO convergence-dependent early exit. `kTruncateIters` is a named
+constant. After the fixed passes (which settle WHICH names bind) a `finalize_truncation`
+pass clips HARD to the cap then pours the remaining gross budget onto the UNBINDING
+(sub-cap) names ALONE — so for a FEASIBLE cap both invariants hold to rounding
+(`|w_i| ≤ cap` AND `Σ|w| == gross_leverage`) WITHOUT a convergence-tolerance dependence,
+and a name pins at EXACTLY the cap. No `gross_normalize` follows truncate (it would
+rescale the pinned weights over the cap). **Documented degenerate:** an INFEASIBLY-small
+cap (`truncation·n_active < gross_leverage`) leaves no unbinding mass to absorb the
+deficit, so every name pins at the cap and `Σ|w| < gross_leverage` — the cap wins (never
+a div-by-zero; the all-zero buffer is a no-op).
+
+**Bit-identical guard (the critical test):** `StagesOff_ByteIdenticalToPhase2Pipeline`
+sweeps 3 signals (incl. NaN holes) × {Rank, ZScore} × {dollar_neutral on/off} × {gross
+1.0/2.0/0.5} = 36 configs and asserts `to_target_weights(signal, universe)` (no
+group_map, stages off) is `EXPECT_EQ` byte-identical to an INDEPENDENT recomputation of
+the Phase-2 winsorize→transform→demean→gross pipeline.
+
+**9 new tests** (`WeightPolicyNeutralize`), verified via `ctest -R WeightPolicy`
+(29 total = 20 existing UNCHANGED + 9 new; full engine suite **1552/1552** green):
+group-demean each group sums to 0 (even + uneven groups), single-group == global demean,
+NaN excluded from the group mean; truncate no |w|>cap & Σ|w|≈gross, outlier pinned at the
+cap, infeasible-cap pins-every-name-below-gross degenerate, truncate-disabled==Phase-2;
+and the 36-config bit-identical guard. `/W4 /permissive- /WX` clean; `clang-format`
+applied; clang-tidy NOT run (per unit constraints).
+
+### Deferred residuals (lifted to ROADMAP at 4b close)
+
+- **DECAY** — a stateless `const WeightPolicy` holds NO signal history, so a faithful
+  d-window `TsDecayLinear` TEMPORAL decay cannot live in it: it needs a signal-history
+  input or a stateful policy (an architectural change beyond wiring a cross-sectional
+  stage). NOT implemented (a ledger residual, not a code stub).
+- **FACTOR-neutralize** — the `FactorModel::neutralize` PRIMITIVE already ships + is
+  tested in P4-7a (`risk/factor_model.hpp`); only the POLICY WIRING is deferred. The
+  `FactorModel` carries no self-describing instrument→universe mapping (`create` takes
+  only X,F,D), so wiring it needs the model→universe `instrument_rows` threaded through
+  AND pulls the whole `risk/` + combiner include chain into this Phase-2 header. NOT
+  implemented here (a ledger residual, not a code stub).
 
 ---
 
