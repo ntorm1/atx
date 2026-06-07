@@ -56,18 +56,25 @@
 //  factor). The apply/neutralize matvecs and the cached Cholesky are deterministic
 //  given (X, F, D). Same inputs → same outputs.
 
-#include <span>    // std::span (risk / apply_inverse / neutralize args)
-#include <utility> // std::move
+#include <algorithm> // std::clamp (fixed factor-cov shrink override)
+#include <cmath>     // std::isnan (FactorModelBuilder: per-date return drop)
+#include <span>      // std::span (risk / apply_inverse / neutralize args)
+#include <utility>   // std::move
+#include <vector>    // std::vector (FactorModelBuilder cold-path scratch)
 
 #include <Eigen/Dense> // Eigen::LLT, Eigen::Index, Eigen::Map
 
-#include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
+#include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode, ATX_TRY
 #include "atx/core/macro.hpp" // ATX_ASSERT
-#include "atx/core/types.hpp" // f64, usize
+#include "atx/core/types.hpp" // f64, u32, usize
 
-#include "atx/core/linalg/linalg.hpp" // MatX, VecX (column-major Eigen)
+#include "atx/core/linalg/linalg.hpp"     // MatX, VecX (column-major Eigen)
+#include "atx/core/linalg/regression.hpp" // ols, wls (per-date factor-return solve)
 
-#include "atx/engine/risk/fwd.hpp" // FactorModel / FactorModelBuilder fwd decls
+#include "atx/engine/combine/combiner.hpp" // combine::detail::ledoit_wolf_intensity (canonical LW)
+#include "atx/engine/loop/panel_types.hpp" // PanelView (the trailing newest-first panel)
+#include "atx/engine/risk/exposures.hpp"   // build_exposures, ExposureMatrix, detail::step_return
+#include "atx/engine/risk/fwd.hpp"         // FactorModel / FactorModelBuilder fwd decls
 
 namespace atx::engine::risk {
 
@@ -242,9 +249,283 @@ private:
 };
 
 // ===========================================================================
-//  P4-7b lands here: `class FactorModelBuilder` (the per-date cross-sectional WLS
-//  that ESTIMATES X, F, D and calls FactorModel::create). NOT part of P4-7a — left
-//  intentionally unimplemented; do not stub.
+//  FactorModelBuilder — per-date cross-sectional WLS estimating (X, F, D) (P4-7b).
+//
+//  build(panel, window, market_cap, group_id) ESTIMATES the factored covariance
+//  V = X[0] F X[0]ᵀ + diag(D) from a trailing newest-first PanelView, then calls
+//  FactorModel::create. The §4 build(panel, t, window) interface reconciles to the
+//  as-built PanelView (newest-first, NO absolute t): row 0 IS the current cross-
+//  section, so `t` collapses to row 0 and the model is built to apply at the
+//  present date, fit over the trailing rows [0, window).
+//
+//  Estimation (§5.4), a FIXED deterministic two-pass (no convergence loop):
+//    Pass A (OLS, equal weights) over each date s in [0, window): per-date factor
+//      returns f_ols[s], residuals u_ols[s]. Accumulate u_ols per universe
+//      instrument over the window -> an initial specific variance d0_i = var(u_ols_i)
+//      (floored to a tiny ε). This BOOTSTRAPS the WLS weights from an OLS pass.
+//    Pass B (WLS, weights 1/d0_i) over each date: factor returns f[s] (a window×K
+//      series), residuals u[s].
+//    F = LedoitWolf(cov(f over window)) — the CANONICAL combine LW closed form
+//      (REUSED from combine::detail::ledoit_wolf_intensity; the 4b plan mandates one
+//      canonical LW). cfg.factor_cov_shrink >= 0 overrides δ with the fixed value.
+//    D_i = var(u_i over window) per CURRENT cross-section instrument (X[0]).
+//
+//  PIT is STRUCTURAL: build_exposures(...,row=s,...) and step_return read only rows
+//  >= s (the past); no future bar can enter. market_cap / group_id are reused for
+//  EVERY X[s] (sector is static; cap-as-static is a documented approximation — the
+//  as-built world exposes only a CURRENT cap span). Under-determined dates (M_s < K)
+//  are SKIPPED (not fatal) as long as >= 2 usable dates remain. The PCA / dead-alpha
+//  rungs (cfg.n_stat_factors / n_dead_factors, DEFAULT 0) are a deferred 4b residual
+//  -> Err(NotImplemented), NOT a silent skip. Err if window < 2, window < K (T < K),
+//  too few usable dates, or FactorModel::create rejects (non-SPD F / dim / K bound).
+//
+//  COLD path (allocates window scratch). atx-core kernels for ALL regression; the
+//  only hand math is the order-fixed variance/cov reductions. NO RNG; deterministic.
 // ===========================================================================
+namespace detail {
+
+// One date's cross-section returns over the surviving instruments of `xm`:
+// r_i = step_return(panel, s, inst) for inst in xm.instrument_rows. Any NaN return
+// drops that (date, instrument) listwise — the kept rows are reported via `keep`
+// (indices into xm.instrument_rows) so the caller can sub-select X[s]'s rows too.
+[[nodiscard]] inline atx::core::linalg::VecX date_returns(const PanelView &panel, atx::usize s,
+                                                          const ExposureMatrix &xm,
+                                                          std::vector<atx::usize> &keep) {
+  keep.clear();
+  keep.reserve(xm.instrument_rows.size());
+  std::vector<atx::f64> vals;
+  vals.reserve(xm.instrument_rows.size());
+  for (atx::usize j = 0U; j < xm.instrument_rows.size(); ++j) {
+    const atx::f64 r = step_return(panel, s, xm.instrument_rows[j]); // close(s)/close(s+1)−1 (P4-6)
+    if (!std::isnan(r)) {
+      keep.push_back(j);
+      vals.push_back(r);
+    }
+  }
+  atx::core::linalg::VecX out(static_cast<Eigen::Index>(vals.size()));
+  for (atx::usize j = 0U; j < vals.size(); ++j) {
+    out[static_cast<Eigen::Index>(j)] = vals[j];
+  }
+  return out;
+}
+
+// Sub-select the rows of `x` named by `keep` (the listwise-kept instruments of a
+// date). Keeps all K columns. Deterministic (keep is ascending by construction).
+[[nodiscard]] inline atx::core::linalg::MatX select_rows(const atx::core::linalg::MatX &x,
+                                                         const std::vector<atx::usize> &keep) {
+  atx::core::linalg::MatX out(static_cast<Eigen::Index>(keep.size()), x.cols());
+  for (atx::usize j = 0U; j < keep.size(); ++j) {
+    out.row(static_cast<Eigen::Index>(j)) = x.row(static_cast<Eigen::Index>(keep[j]));
+  }
+  return out;
+}
+
+// Population variance of a value series over the window (order-fixed two-pass mean
+// then sum-of-squares). 0 or 1 samples -> 0.0 (FactorModel::create floors D anyway).
+[[nodiscard]] inline atx::f64 pop_variance(const std::vector<atx::f64> &xs) noexcept {
+  const atx::usize n = xs.size();
+  if (n < 2U) {
+    return 0.0;
+  }
+  atx::f64 sum = 0.0;
+  for (const atx::f64 v : xs) {
+    sum += v;
+  }
+  const atx::f64 mean = sum / static_cast<atx::f64>(n);
+  atx::f64 ss = 0.0;
+  for (const atx::f64 v : xs) {
+    const atx::f64 d = v - mean;
+    ss += d * d;
+  }
+  return ss / static_cast<atx::f64>(n);
+}
+
+// The K×K Ledoit-Wolf shrunk covariance of a T×K factor-return series. REUSES the
+// CANONICAL combine LW intensity (combine::detail::ledoit_wolf_intensity) on the
+// column-demeaned series + its MLE covariance S (divisor T) — the SAME inputs that
+// helper is derived for. F = (1−δ)·S + δ·m·I, m = tr(S)/K. cfg_shrink >= 0 overrides
+// δ with the fixed value (clamped). Order-fixed demean; SPD by the shrinkage toward
+// m·I (FactorModel::create re-checks via its Cholesky).
+[[nodiscard]] inline atx::core::linalg::MatX factor_covariance(atx::core::linalg::MatX fseries,
+                                                               atx::f64 cfg_shrink) {
+  const Eigen::Index t = fseries.rows();
+  const Eigen::Index k = fseries.cols();
+  for (Eigen::Index c = 0; c < k; ++c) { // column-demean (each factor-return series)
+    const atx::f64 mean = fseries.col(c).mean();
+    fseries.col(c).array() -= mean;
+  }
+  const atx::core::linalg::MatX s =
+      (fseries.transpose() * fseries) / static_cast<atx::f64>(t); // MLE cov (divisor T)
+  const atx::f64 m = s.trace() / static_cast<atx::f64>(k);
+  const atx::f64 delta = (cfg_shrink >= 0.0)
+                             ? std::clamp(cfg_shrink, 0.0, 1.0)
+                             : combine::detail::ledoit_wolf_intensity(s, fseries); // canonical LW
+  atx::core::linalg::MatX f = (1.0 - delta) * s;
+  f.diagonal().array() += delta * m;
+  return f;
+}
+
+} // namespace detail
+
+class FactorModelBuilder {
+public:
+  FactorModelConfig cfg;
+
+  // Estimate (X, F, D) over the trailing `window` cross-sections and assemble the
+  // FactorModel. COLD path. PIT-structural (reads only rows >= each date). See the
+  // header block above for the full estimation contract. `[[nodiscard]] const`.
+  [[nodiscard]] atx::core::Result<FactorModel> build(const PanelView &panel, atx::usize window,
+                                                     std::span<const atx::f64> market_cap,
+                                                     std::span<const atx::u32> group_id) const {
+    if (cfg.n_stat_factors > 0U || cfg.n_dead_factors > 0U) {
+      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
+                            "FactorModelBuilder::build: stat/dead factor rungs are a deferred "
+                            "4b residual"); // NOT a silent skip — an explicit deferral
+    }
+    if (window < 2U) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "FactorModelBuilder::build: require window >= 2");
+    }
+    // X[0] (the CURRENT cross-section) defines M and the emitted factor count K.
+    ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, market_cap, group_id));
+    const atx::usize k = x0.n_factors();
+    if (k == 0U) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "FactorModelBuilder::build: no factor columns emitted");
+    }
+    if (window < k) { // T < K -> the factor-return cov is rank-deficient
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "FactorModelBuilder::build: window < factor count (T < K)");
+    }
+
+    // Pass A (OLS) -> bootstrap specific variances d0; Pass B (WLS) -> f[s], u[s].
+    const atx::usize n_inst = panel.instruments();
+    atx::core::linalg::VecX d0(static_cast<Eigen::Index>(n_inst));
+    ATX_TRY(atx::usize used_a, accumulate_ols(panel, window, market_cap, group_id, k, d0));
+    if (used_a < 2U) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "FactorModelBuilder::build: too few usable dates (M_s < K everywhere)");
+    }
+
+    std::vector<std::vector<atx::f64>> u_by_inst(n_inst); // final WLS residuals per universe inst
+    atx::core::linalg::MatX fseries(static_cast<Eigen::Index>(window),
+                                    static_cast<Eigen::Index>(k));
+    ATX_TRY(atx::usize used_b,
+            accumulate_wls(panel, window, market_cap, group_id, d0, fseries, u_by_inst));
+    if (used_b < 2U) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "FactorModelBuilder::build: too few usable WLS dates");
+    }
+    // Compact fseries to the rows actually filled (under-determined dates skipped).
+    const atx::core::linalg::MatX fkept = fseries.topRows(static_cast<Eigen::Index>(used_b));
+    if (fkept.rows() < static_cast<Eigen::Index>(k)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "FactorModelBuilder::build: usable dates < K (factor cov rank)");
+    }
+
+    const atx::core::linalg::MatX f = detail::factor_covariance(fkept, cfg.factor_cov_shrink);
+    const atx::core::linalg::VecX d = specific_variances(x0, u_by_inst);
+    return FactorModel::create(std::move(x0.x), f, d, /*fit_begin=*/0U, /*fit_end=*/window);
+  }
+
+private:
+  // ε floor for the bootstrap weights so 1/d0_i is finite for a zero-residual
+  // instrument (a date with M_s==K fits exactly -> 0 OLS residual). Far below any
+  // real return variance, so it never tilts a well-populated instrument's weight.
+  static constexpr atx::f64 kBootstrapVarFloor = 1e-12;
+
+  // Pass A: per date s, build X[s], read the date returns (listwise NaN-drop), run
+  // OLS (skip an under-determined date M_s < K), accumulate the per-instrument OLS
+  // residual series; emit d0_i = floored pop-var of that series. Returns the count
+  // of usable dates. A linalg kernel failure on a usable date is non-fatal (the date
+  // is skipped) — only a build_exposures failure (a bad span) propagates.
+  [[nodiscard]] atx::core::Result<atx::usize>
+  accumulate_ols(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
+                 std::span<const atx::u32> group_id, atx::usize k,
+                 atx::core::linalg::VecX &d0_out) const {
+    const atx::usize n_inst = panel.instruments();
+    std::vector<std::vector<atx::f64>> resid(n_inst); // OLS residual series per universe inst
+    std::vector<atx::usize> keep;
+    atx::usize used = 0U;
+    for (atx::usize s = 0U; s < window; ++s) {
+      ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
+      const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
+      if (keep.size() < k) {
+        continue; // under-determined cross-section (M_s < K) -> skip this date
+      }
+      const atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
+      const auto fit = atx::core::linalg::ols(xsr, r);
+      if (!fit) {
+        continue; // rank-deficient date -> skip (e.g. a degenerate sector block)
+      }
+      ++used;
+      for (atx::usize j = 0U; j < keep.size(); ++j) {
+        resid[xs.instrument_rows[keep[j]]].push_back(fit->residuals[static_cast<Eigen::Index>(j)]);
+      }
+    }
+    for (atx::usize i = 0U; i < n_inst; ++i) {
+      const atx::f64 v = detail::pop_variance(resid[i]);
+      d0_out[static_cast<Eigen::Index>(i)] = (v < kBootstrapVarFloor) ? kBootstrapVarFloor : v;
+    }
+    return atx::core::Ok(used);
+  }
+
+  // Pass B: per date s, build X[s], read the date returns, run WLS with weights
+  // 1/d0_i over the kept instruments (skip M_s < K), store the factor return f[s] in
+  // the next free row of `fseries` and append the per-instrument WLS residual to
+  // `u_by_inst`. Returns the count of usable WLS dates (== filled fseries rows). A
+  // per-date kernel failure is non-fatal (skip); a bad span propagates.
+  [[nodiscard]] atx::core::Result<atx::usize>
+  accumulate_wls(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
+                 std::span<const atx::u32> group_id, const atx::core::linalg::VecX &d0,
+                 atx::core::linalg::MatX &fseries,
+                 std::vector<std::vector<atx::f64>> &u_by_inst) const {
+    const atx::usize k = static_cast<atx::usize>(fseries.cols());
+    std::vector<atx::usize> keep;
+    atx::usize used = 0U;
+    for (atx::usize s = 0U; s < window; ++s) {
+      ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
+      const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
+      if (keep.size() < k) {
+        continue; // under-determined -> skip (matches Pass A's skip rule)
+      }
+      const atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
+      atx::core::linalg::VecX w(static_cast<Eigen::Index>(keep.size())); // weight 1/d0_i (P4-2 IVW)
+      for (atx::usize j = 0U; j < keep.size(); ++j) {
+        w[static_cast<Eigen::Index>(j)] =
+            1.0 / d0[static_cast<Eigen::Index>(xs.instrument_rows[keep[j]])];
+      }
+      const auto fit = atx::core::linalg::wls(xsr, r, w);
+      if (!fit) {
+        continue; // rank-deficient weighted date -> skip
+      }
+      for (atx::usize c = 0U; c < k; ++c) {
+        fseries(static_cast<Eigen::Index>(used), static_cast<Eigen::Index>(c)) =
+            fit->beta[static_cast<Eigen::Index>(c)];
+      }
+      ++used;
+      for (atx::usize j = 0U; j < keep.size(); ++j) {
+        u_by_inst[xs.instrument_rows[keep[j]]].push_back(
+            fit->residuals[static_cast<Eigen::Index>(j)]);
+      }
+    }
+    return atx::core::Ok(used);
+  }
+
+  // Per current-cross-section instrument (X[0].instrument_rows order), D_i =
+  // pop-var of its final WLS residual series; absent/short series -> 0 (create()
+  // floors to kSpecificVarFloor). Length == M == X[0].n_instruments().
+  [[nodiscard]] static atx::core::linalg::VecX
+  specific_variances(const ExposureMatrix &x0,
+                     const std::vector<std::vector<atx::f64>> &u_by_inst) {
+    const atx::usize m = x0.n_instruments();
+    atx::core::linalg::VecX d(static_cast<Eigen::Index>(m));
+    for (atx::usize r = 0U; r < m; ++r) {
+      const atx::usize inst = x0.instrument_rows[r];
+      d[static_cast<Eigen::Index>(r)] = detail::pop_variance(u_by_inst[inst]);
+    }
+    return d;
+  }
+};
 
 } // namespace atx::engine::risk

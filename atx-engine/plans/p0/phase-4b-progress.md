@@ -40,7 +40,7 @@ Realistic scope for this sprint:
 | P4b-0   | done   | `ac3b26a`  | scaffold + ledger; RiskScaffold 1/1/0/0 |
 | P4-6    | done   | `7c87d79`  | factor exposure matrix `X` builder; RiskExposures 11/11/0/0 (see note) |
 | P4-7a   | done   | `caae1c9`  | FactorModel factored-V apply-math (risk/apply_inverse/neutralize); RiskFactorModel 12/12/0/0 (cq fix: +`<span>`, +create-time K-stack bound) |
-| P4-7b   | —      | —          | FactorModelBuilder (per-date WLS estimating X,F,D) — next unit |
+| P4-7b   | done   | `PENDING`  | FactorModelBuilder (per-date WLS-bootstrapped-from-OLS estimating X,F,D; reuses combine LW for F); RiskFactorBuilder 8/8/0/0 |
 | P4-8    | —      | —          | — |
 | P4-9    | —      | —          | — |
 | P4-10   | —      | —          | — |
@@ -55,6 +55,7 @@ Realistic scope for this sprint:
 | `7c87d79` | feat (P4-6)    | RiskExposures 11/11/0/0 |
 | `caae1c9` | feat (P4-7a)   | RiskFactorModel 11/11/0/0 |
 | `1b76e5b` | fix (P4-7a)    | RiskFactorModel 12/12/0/0 (cq: +`<span>`, +create-time K-stack bound) |
+| `PENDING` | feat (P4-7b)   | RiskFactorBuilder 8/8/0/0 |
 
 ---
 
@@ -134,6 +135,71 @@ zero-specific-variance boundary (floored → V PD, `apply_inverse` finite, round
 within the ill-conditioned tol); fit-window accessors; and four construction `Err`
 cases (F dim mismatch, D length mismatch, empty/inverted window, non-SPD F).
 `/W4 /permissive- /WX` clean; `11/11` green.
+
+---
+
+## P4-7b — FactorModelBuilder (per-date cross-sectional WLS estimating X, F, D)
+
+`risk/factor_model.hpp` adds `FactorModelBuilder` (at the marker P4-7a reserved) —
+the per-date cross-sectional WLS that ESTIMATES `(X, F, D)` from the panel and calls
+`FactorModel::create`. **Estimation (§5.4), WLS-bootstrapped-from-OLS**, a FIXED
+deterministic two-pass (no convergence loop): **Pass A (OLS)** runs `linalg::ols(X[s],
+r[s])` over each window date, accumulates the per-instrument OLS residual series, and
+emits an initial specific variance `d0_i = pop-var(u_ols_i)` floored to a tiny ε
+(`kBootstrapVarFloor = 1e-12`, so `1/d0_i` is finite when a date fits exactly).
+**Pass B (WLS)** runs `linalg::wls(X[s], r[s], 1/d0_i)` over each date, storing the
+factor return `f[s]` (a `window×K` series) and the FINAL residual `u[s]`. Per-date
+returns are `step_return(panel, s, inst) = close(s)/close(s+1)−1` (the P4-6 helper,
+reused via `risk/exposures.hpp`'s `detail::step_return`); a NaN return drops that
+(date, instrument) LISTWISE from that date's regression. **atx-core regression API
+used: `ols` + `wls`** (the QR-based estimators returning `OlsResult{beta, r2,
+residuals}` — `residuals` is the unweighted `y − Xβ`, exactly the specific return);
+no hand-rolled solve. `F = LedoitWolf(cov(f over window))` — **REUSED** the CANONICAL
+combine LW closed form `combine::detail::ledoit_wolf_intensity(S, centered)` (the 4b
+plan mandates ONE canonical LW reused from P4-4; reaching into `combine::detail` is
+clean since `combiner.hpp` is header-only) on the column-demeaned `f`-series + its MLE
+covariance `S` (divisor T), assembling `F = (1−δ)S + δ·m·I`, `m = tr(S)/K`;
+`cfg.factor_cov_shrink ≥ 0` overrides δ with the fixed clamped value. `D_i =
+pop-var(u_i over window)` for the instruments in the CURRENT cross-section `X[0]`
+(length M, aligned to `X[0].instrument_rows`; `create` floors to `kSpecificVarFloor`).
+Final call: `FactorModel::create(X[0].x, F, D, fit_begin=0, fit_end=window)`.
+
+**The §4 `build(panel, t, window)` → row-0 reconciliation:** the as-built `PanelView`
+is newest-first with NO absolute `t`, so (like P4-6) `t` collapses to **row 0 = the
+current cross-section**; the model is built to apply at the present date and **fit over
+the trailing rows `[0, window)`** (`fit_begin=0`, `fit_end=window`; the
+apply-after-fit_end firewall is P4-10's to assert). Reconciled signature:
+`build(const PanelView&, usize window, span<const f64> market_cap, span<const u32>
+group_id) const`. **PIT is STRUCTURAL:** `build_exposures(..., row=s, ...)` and
+`step_return` read only rows `≥ s` (the past). `market_cap`/`group_id` are reused for
+EVERY `X[s]` (sector is static; **cap-as-static is a documented approximation** — only
+a current cap span exists in the as-built world). **Under-determined-date policy:** a
+date with `M_s < K` (or a rank-deficient kernel result) is **SKIPPED** (both passes
+share the rule), `Err(InvalidArgument)` only if fewer than 2 usable dates (or usable
+dates < K) remain — skipping is documented as the recommended choice. **Err paths:**
+`window < 2` and `window < K` (T<K) → `Err(InvalidArgument)`; `n_stat_factors > 0` OR
+`n_dead_factors > 0` → `Err(NotImplemented, "stat/dead factor rungs are a deferred 4b
+residual")` — the advanced PCA/dead-alpha rungs (default 0) are an EXPLICIT deferral,
+NOT a silent skip or stub. (The plan wrote `Unimplemented`; the atx-core enum
+enumerator is `ErrorCode::NotImplemented`.) COLD path (allocates window scratch);
+NO RNG; order-fixed variance/cov reductions; deterministic (fixed two-pass).
+Header-only inline. The `build`/`accumulate_ols`/`accumulate_wls`/`factor_covariance`
+helpers are each ≤ ~52 lines.
+
+**8 new tests** (`RiskFactorBuilder`), verified `8/8` via
+`ctest -R "FactorModelBuilder|RiskFactorBuilder"`: WLS factor-return step recovers
+`f_true` on a residual-free `r = X·f_true` (K=2; the `wls` kernel directly); D ==
+per-instrument FINAL WLS residual variance (a K=1 single-sector panel with KNOWN
+returns whose builder D, read out via `risk`-pairing `risk(e_i−e_j)=D_i+D_j`, matches
+an in-test faithful replication of the exact two-pass WLS); the canonical LW oracle
+matches the closed form (δ∈[0,1], `(1−δ)S+δmI` SPD); build() end-to-end (synthetic
+single-sector panel → usable K=1 `FactorModel`: `risk`/`apply_inverse` finite, K
+matches the emitted column, `fit_begin`/`fit_end` = 0/window, a repeat build is
+byte-identical); fit-window truncation-invariance (mutating rows beyond `window+1` —
+the window's return reach — leaves the model byte-identical); and three Err boundaries
+(`window<2`, `window<K` via 3 sectors / window 2, `n_stat_factors>0` →
+`NotImplemented`). `/W4 /permissive- /WX` clean; **P4-7a `RiskFactorModel` 12/12 and
+P4-6 `RiskExposures` 11/11 NOT regressed** (full 1543-test engine suite green).
 
 ---
 
