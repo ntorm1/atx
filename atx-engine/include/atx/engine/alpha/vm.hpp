@@ -240,6 +240,19 @@ public:
     // ---- ZERO-ALLOC dispatch loop (everything below allocates nothing) ----
     // Program SlotIds index the pool buffer directly (the linearizer pre-sized
     // num_slots); acquire()/release() only honor the pool's live-count assert.
+    // LIVENESS CONTRACT for multi-output nodes:
+    //   * The linearizer's acquire_block(n_out) grew peak by n_out, so the pool
+    //     buffer has n_out contiguous slots starting at in.dst.
+    //   * The VM mirrors the ACQUIRE side with exactly ONE (void)pool_.acquire()
+    //     per dispatched compute instr regardless of n_out. A Split2 block wrote
+    //     two buffer columns but the live-count assert only needs to stay <=
+    //     capacity — capacity == num_slots which already accounts for the block.
+    //   * Pin is a value-producing instr (occupies its own single slot); it is
+    //     handled here before dispatch (like StoreAlpha) so we can copy from
+    //     the source block without routing through the generic switch.
+    //   * Free calls release once regardless of n_out (mirrors the single
+    //     acquire above). The block's extra buffer slots remain valid throughout
+    //     execution since the flat buffer is pre-sized to num_slots total slots.
     for (const Instr &in : prog.code) {
       if (in.op == OpCode::Free) {
         pool_.release(in.dst);
@@ -247,6 +260,19 @@ public:
       }
       if (in.op == OpCode::StoreAlpha) {
         ATX_TRY_VOID(store_alpha(in, out, cells));
+        continue;
+      }
+      if (in.op == OpCode::Pin) {
+        // Pin projects one output of its parent's contiguous block into its own
+        // single slot: column(src[0] + param) -> column(dst). One acquire for
+        // the single dst slot; no dispatch needed (pure buffer copy).
+        (void)pool_.acquire();
+        const std::span<const atx::f64> src = pool_.column(in.src[0] + in.param);
+        const std::span<atx::f64> dst_span = pool_.column(in.dst);
+        const atx::usize n = dst_span.size();
+        for (atx::usize ci = 0; ci < n; ++ci) {
+          dst_span[ci] = src[ci];
+        }
         continue;
       }
       (void)pool_.acquire();
@@ -389,14 +415,12 @@ private:
     case OpCode::TradeWhen:
     case OpCode::Hump:
       return eval_recurrence(in, dates, instruments);
-    case OpCode::Pin:
     case OpCode::Split2:
-      // Placeholder (P3d-B3): kernels land in B9. No program emits these yet.
-      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
-                            "Split2/Pin: not implemented until B9");
+      return eval_split2(in, cells);
+    case OpCode::Pin:
     case OpCode::StoreAlpha:
     case OpCode::Free:
-      ATX_UNREACHABLE(); // handled by evaluate(); never dispatched
+      ATX_UNREACHABLE(); // Pin/StoreAlpha/Free handled by evaluate(); never dispatched
     }
     ATX_UNREACHABLE(); // exhaustive switch — no valid fallthrough
   }
@@ -730,6 +754,22 @@ private:
         out[i] = v;
         state_[j] = v;
       }
+    }
+    return atx::core::Ok();
+  }
+
+  // ---- multi-output (Split2) -----------------------------------------------
+  // Split2 is the synthetic test op: hi = x, lo = -x. It occupies a contiguous
+  // two-slot block [dst, dst+1]; `out_col(in, k)` = pool_.column(in.dst + k).
+  // SAFETY: the linearizer's acquire_block(2) ensured both buffer slots are
+  // within the pre-sized pool; accessing in.dst+1 never exceeds capacity.
+  [[nodiscard]] atx::core::Status eval_split2(const Instr &in, atx::usize cells) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const std::span<atx::f64> hi = pool_.column(in.dst + 0);
+    const std::span<atx::f64> lo = pool_.column(in.dst + 1);
+    for (atx::usize i = 0; i < cells; ++i) {
+      hi[i] = x[i];
+      lo[i] = -x[i];
     }
     return atx::core::Ok();
   }
