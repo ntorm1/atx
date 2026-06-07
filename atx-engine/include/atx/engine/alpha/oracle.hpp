@@ -401,7 +401,7 @@ private:
   [[nodiscard]] atx::core::Status eval_const(const Instr &in) {
     std::span<atx::f64> out = dst_col(in);
     for (atx::f64 &c : out) {
-      c = in.imm;
+      c = in.imm[0];
     }
     return atx::core::Ok();
   }

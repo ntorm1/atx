@@ -69,8 +69,9 @@ struct Instr {
   OpCode op{};
   SlotId dst{kNoSlot};
   std::array<SlotId, 3> src{kNoSlot, kNoSlot, kNoSlot};
-  atx::u32 param{}; // LoadField field id / Ts window / StoreAlpha output index
-  atx::f64 imm{};   // Const immediate value
+  atx::u32 param{};              // LoadField id / Ts window / StoreAlpha out / Pin index
+  atx::u8 n_out{1};              // output pins (>=2 for record compute nodes)
+  std::array<atx::f64, 2> imm{}; // Const: imm[0]; filter hyperparams: imm[0],imm[1]
 };
 
 // =========================================================================
@@ -235,8 +236,9 @@ inline void retire_consumer(NodeId child, std::vector<atx::u32> &remaining,
     if (n.op == OpCode::LoadField) {
       instr.param = n.param;
     } else if (n.op == OpCode::Const) {
-      instr.imm = n.value;
+      instr.imm[0] = n.value;
     }
+    instr.n_out = n.n_out;
     prog.code.push_back(instr);
 
     // Retire each child edge of this node (Mul(x,x) retires x twice — its two

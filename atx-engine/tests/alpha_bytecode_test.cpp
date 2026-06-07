@@ -301,7 +301,7 @@ TEST(AlphaBytecode_Const, ImmediateValueCarriedOnInstr) {
   bool found = false;
   for (const Instr &i : prog.code) {
     if (i.op == OpCode::Const) {
-      EXPECT_EQ(i.imm, 7.0);
+      EXPECT_EQ(i.imm[0], 7.0);
       found = true;
     }
   }

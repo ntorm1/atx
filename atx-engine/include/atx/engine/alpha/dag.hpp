@@ -77,6 +77,7 @@ struct NodeKey {
   OpCode op{};
   atx::u64 param{};
   std::array<NodeId, 3> children{kNoNode, kNoNode, kNoNode};
+  std::array<atx::u64, 2> imm_bits{}; // bit-cast hparams for CSE identity
 
   // Memberwise structural equality. std::array compares elementwise; the
   // defaulted comparison is exactly the hash-cons identity we want.
@@ -98,9 +99,11 @@ struct Node {
   DType dtype{};
   atx::u16 lookback{};
   std::array<NodeId, 3> in{kNoNode, kNoNode, kNoNode};
-  atx::f64 value{};    // Const: the literal value
-  atx::u32 param{};    // LoadField: field id (or Ts window immediate, future)
-  atx::u32 refcount{}; // consumers: one per parent EDGE + one per root store
+  atx::f64 value{};                  // Const: the literal value
+  std::array<atx::f64, 2> hparams{}; // filter hyperparameters (e.g. upper/lower thresholds)
+  atx::u32 param{};                  // LoadField: field id (or Ts window immediate, future)
+  atx::u8 n_out{1};                  // output pins (>=2 for record compute nodes)
+  atx::u32 refcount{};               // consumers: one per parent EDGE + one per root store
 };
 
 namespace detail {
@@ -117,7 +120,7 @@ struct NodeKeyHash {
   [[nodiscard]] atx::usize operator()(const NodeKey &k) const noexcept {
     const auto op_val = static_cast<atx::u8>(k.op);
     return atx::core::hash_combine(atx::usize{0}, op_val, k.param, k.children[0], k.children[1],
-                                   k.children[2]);
+                                   k.children[2], k.imm_bits[0], k.imm_bits[1]);
   }
 };
 
@@ -333,7 +336,7 @@ namespace detail {
       }
     }
 
-    NodeKey key{emit_op, key_param, emit_kids};
+    NodeKey key{emit_op, key_param, emit_kids, {}};
     const Node proto = detail::make_node(e, ti, emit_kids, emit_op, field_param);
     const atx::usize before = dag.nodes().size();
     const NodeId id = dag.intern(key, proto);
