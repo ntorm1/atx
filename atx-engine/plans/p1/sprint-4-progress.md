@@ -66,7 +66,7 @@ Each unit carries a non-vacuous proof test against its relevant failure mode.
 | Unit  | Title                                                                    | Status | Commit SHA(s)     | Tests | Notes |
 |-------|--------------------------------------------------------------------------|--------|-------------------|-------|-------|
 | S4-0  | Marker + ledger + library scaffold + sqlite build check                  | ✅ done | `e97c192`        | —     | ledger + `library/fwd.hpp` + sqlite-link smoke-check: **passed transitively** (no CMake changes needed; `atx_sqlite3` resolves via `atx::core` → `atx::engine` transitive link). `Status` API uses `.has_value()` (not `.ok()`). Smoke test deleted after verification. |
-| S4-1  | On-disk record schema + append-only segmented store                      | ⏳     |                   |       | |
+| S4-1  | On-disk record schema + append-only segmented store                      | ✅ done | `8fdbad0`        | 11/11 (LibraryRecord 5/5, LibraryStore 6/6) | `record.hpp` (POD SegmentHeader/AlphaDirEntry/SegmentFooter, LE-pinned + size static_asserts; one-pass sealed `write_segment_bytes`; `SegmentReaderLite` mmap-ro `attach`/in-mem `attach_bytes` with validate-magic/version/seal/crc BEFORE expose) + `store.hpp` (`LibraryStore`: memtable=`combine::AlphaStore`, sqlite segment catalog, union read over sealed segments+memtable via binary-searched base ids, reopen-from-disk). **Round-trips BIT-IDENTICAL** to AlphaStore incl. NaN cells + a delisted/final-value NaN-tail column (proven via `std::bit_cast<u64>` compare of pnl+positions). Multi-segment global-id read (12 alphas across 2 segments), **two-builds byte-identical** (same integrity crc), **sealed segment byte-frozen** after later admits. Framing CLONED from atx::tsdb (tag8/crc32/Mapping reused, NOT the bar layout). Full suite green: **1766/1766** (1 pre-existing Databento smoke skipped). Deviations: `tag8` lives in `atx/tsdb/segment.hpp` (not checksum.hpp); `AlphaStore` has no `clear()` → memtable reset by move-assign; `Database` has no default ctor → opened in init list via `open_or_abort` helper. |
 | S4-2  | Library-wide canonical-hash dedup index                                  | ⏳     |                   |       | |
 | S4-3  | Correlation-neighbor index + incremental corr-to-pool                    | ⏳     |                   |       | |
 | S4-4  | Lifecycle state machine (PIT, append-only journal)                       | ⏳     |                   |       | |
@@ -79,6 +79,7 @@ Each unit carries a non-vacuous proof test against its relevant failure mode.
 | SHA | Unit | Subject |
 |-----|------|---------|
 | `e97c192` | S4-0 | docs(s4-0): open sprint-4 library-management ledger + scaffold |
+| `8fdbad0` | S4-1 | feat(s4-1): append-only mmap'd segmented library store + on-disk record |
 
 ---
 
