@@ -202,6 +202,11 @@ private:
   /// by binary-searching the ascending segment base ids.
   [[nodiscard]] std::pair<atx::usize, atx::u32> locate(combine::AlphaId g) const noexcept {
     ATX_ASSERT(g.value < next_alpha_id_);
+    // Precondition for the (it - begin) - 1 step below: there is at least one
+    // segment and g lands at or after the first segment's base (segment 0's base
+    // is always 0, so this holds for any sealed id, but guard it explicitly so a
+    // future non-zero base 0 can't underflow `seg` to SIZE_MAX).
+    ATX_ASSERT(!seg_bases_.empty() && g.value >= seg_bases_.front());
     // Largest seg whose base <= g.value. upper_bound gives the first base > g,
     // so the target is the element before it.
     const auto it = std::upper_bound(seg_bases_.begin(), seg_bases_.end(),

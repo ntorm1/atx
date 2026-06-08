@@ -73,6 +73,11 @@ inline constexpr atx::u32 kLibFlagSealed = 1U << 0U;
   return version >= 1U && version <= kLibFormatVersion;
 }
 
+/// Round `value` up to the next multiple of `align` (align must be a power of 2).
+[[nodiscard]] constexpr atx::u64 align_up(atx::u64 value, atx::u64 align) noexcept {
+  return (value + (align - 1U)) & ~(align - 1U);
+}
+
 // ===========================================================================
 //  POD records (trivially copyable; memcpy'd to/from the file verbatim).
 //
@@ -270,8 +275,14 @@ write_segment_bytes(atx::u32 n_alphas, atx::u32 n_instruments, atx::u64 n_period
     e.lifecycle_at_seal = 0;
     e.pad_ = 0;
   }
-  // 2) Finalize offsets now that the blob length is known.
-  h.off_footer = h.off_prov + static_cast<atx::u64>(blob.size());
+  // 2) Finalize offsets now that the blob length is known. The ProvenanceBlob
+  //    is variable-length and NOT a multiple of 8, so pad off_footer up to an
+  //    8-byte boundary: SegmentFooter has alignof 8, and keeping it naturally
+  //    aligned future-proofs the format (the pad gap is part of the crc'd
+  //    region but stays deterministic because `out` is zero-initialized).
+  const atx::u64 footer_off = align_up(h.off_prov + static_cast<atx::u64>(blob.size()),
+                                       alignof(SegmentFooter));
+  h.off_footer = footer_off;
   h.total_bytes = h.off_footer + sizeof(SegmentFooter);
 
   std::vector<std::byte> out(static_cast<atx::usize>(h.total_bytes));
@@ -407,9 +418,16 @@ private:
     // SAFETY: validate() confirmed size >= sizeof(SegmentHeader) + magic.
     return *reinterpret_cast<const SegmentHeader *>(base_);
   }
-  [[nodiscard]] const SegmentFooter &footer() const noexcept {
-    // SAFETY: validate() confirmed off_footer + sizeof(SegmentFooter) <= size.
-    return *reinterpret_cast<const SegmentFooter *>(base_ + header().off_footer);
+  [[nodiscard]] SegmentFooter footer() const noexcept {
+    // Read by value via memcpy (NOT a reinterpret_cast deref): although the
+    // writer now 8-aligns off_footer (so the footer IS naturally aligned), the
+    // ProvenanceBlob is variable-length, so reading through a typed pointer is
+    // alignment-fragile if the format ever changes. memcpy is alignment-agnostic
+    // and well-defined for any off_footer. validate() confirmed
+    // off_footer + sizeof(SegmentFooter) <= size, so the read is in-bounds.
+    SegmentFooter f{};
+    std::memcpy(&f, base_ + header().off_footer, sizeof(f));
+    return f;
   }
   [[nodiscard]] const atx::f64 *f64_at(atx::u64 off) const noexcept {
     // SAFETY: section offsets validated at attach; f64 grids are 8-byte aligned
