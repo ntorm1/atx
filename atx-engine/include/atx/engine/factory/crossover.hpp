@@ -116,7 +116,10 @@ inline ExprId splice_visit(const Ast &src, ExprId s, ExprId cut, ExprId spliced,
 }
 
 // Draw a uniform index in [0, n). Precondition: n > 0. One u64 of entropy.
-[[nodiscard]] inline atx::usize uniform_index(Xoshiro256pp &rng, atx::usize n) noexcept {
+// NOTE: named distinctly from mutation.hpp's identical helper so a TU that
+// includes BOTH headers (e.g. the S3-5 search driver) does not hit an inline
+// redefinition — the two live in the same factory::detail namespace.
+[[nodiscard]] inline atx::usize uniform_cut_index(Xoshiro256pp &rng, atx::usize n) noexcept {
   return static_cast<atx::usize>(rng.next_u64() % n);
 }
 
@@ -143,7 +146,7 @@ subtree_crossover(const Genome &a, const Genome &b, Xoshiro256pp &rng, Crossover
   }
 
   // (2) Draw the cut; the slot type it must yield.
-  const ExprId cut = cuts[detail::uniform_index(rng, cuts.size())];
+  const ExprId cut = cuts[detail::uniform_cut_index(rng, cuts.size())];
   const TypeInfo &want = a.analysis.info(cut);
 
   // (3) Donor candidates in B: type-compatible AND within the lookback cap, in
@@ -162,7 +165,7 @@ subtree_crossover(const Genome &a, const Genome &b, Xoshiro256pp &rng, Crossover
   }
 
   // (4) Draw the donor.
-  const ExprId donor = donors[detail::uniform_index(rng, donors.size())];
+  const ExprId donor = donors[detail::uniform_cut_index(rng, donors.size())];
 
   // (5) Rebuild A, splicing a deep copy of B's donor subtree at the cut.
   Ast dst;
