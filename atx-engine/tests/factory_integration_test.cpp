@@ -15,7 +15,6 @@
 // admitted counts (real > 0, noise == 0).
 
 #include <cstdint>
-#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,7 +24,7 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
-#include "atx/engine/alpha/parser.hpp" // alpha::Library
+#include "atx/engine/alpha/registry.hpp" // alpha::Library (its definition site)
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
@@ -58,7 +57,6 @@ using atx::engine::exec::VolumeCapCfg;
 using atx::engine::factory::Factory;
 using atx::engine::factory::FactoryConfig;
 using atx::engine::factory::FactoryReport;
-using atx::engine::factory::SearchConfig;
 
 // ---- builders ---------------------------------------------------------------
 

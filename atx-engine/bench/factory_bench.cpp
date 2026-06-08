@@ -24,7 +24,6 @@
 // well under a second per case.
 
 #include <cstdint> // std::uint64_t (the deterministic LCG state)
-#include <span>    // std::span
 #include <string>  // std::string (seed exprs / field names)
 #include <utility> // std::move
 #include <vector>  // std::vector (synthetic panel storage)
@@ -34,7 +33,7 @@
 #include "atx/core/types.hpp" // f64, usize, u64
 
 #include "atx/engine/alpha/panel.hpp"
-#include "atx/engine/alpha/parser.hpp" // alpha::Library
+#include "atx/engine/alpha/registry.hpp" // alpha::Library (its definition site)
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 

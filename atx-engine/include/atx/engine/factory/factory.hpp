@@ -84,7 +84,6 @@
 #include <cstddef>   // std::size_t (hash_combine seed type)
 #include <span>      // std::span
 #include <string>    // std::string (seed-expression / field source)
-#include <utility>   // std::move
 #include <vector>    // std::vector
 
 #include "atx/core/error.hpp"  // Result, Ok, Err
@@ -211,6 +210,15 @@ public:
         continue; // an un-evaluable candidate is silently dropped (F5 backstop)
       }
       const alpha::AlphaStreams &strm = *strm_res;
+      // DEFENSIVE GUARD: every Factory access below indexes alpha 0 (strm.pnl(0) /
+      // flatten_positions's strm.positions(0, .)), which ABORTS (ATX_ASSERT) on a
+      // zero-alpha streams. A single-root Genome compiles to a single-root Program
+      // (1 alpha), so this holds in practice — but a stream-extraction that returns
+      // 0 alphas would otherwise abort mid-mine. Guard ONCE at the source: skip the
+      // candidate gracefully (covers BOTH the pnl(0) read and flatten_positions).
+      if (strm.n_alphas() == 0U) {
+        continue;
+      }
       const atx::usize n_inst = strm.n_instruments();
       // OWNED copies (the store's insert COPIES from these; they outlive the call).
       std::vector<atx::f64> cand_pnl(strm.pnl(0).begin(), strm.pnl(0).end());
