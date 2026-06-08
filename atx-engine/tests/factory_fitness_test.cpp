@@ -9,7 +9,6 @@
 // The fixtures build streams + a pool + panels DIRECTLY (public members), the S2
 // precedent — the test controls the data so the WQ thesis holds by construction.
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
