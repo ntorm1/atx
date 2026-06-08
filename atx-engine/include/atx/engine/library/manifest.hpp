@@ -45,7 +45,8 @@
 //
 //  Threading: a value type; the (de)serialization helpers are pure functions.
 
-#include <fstream> // sidecar read/write
+#include <algorithm> // std::min (bound speculative reserve against bytes remaining)
+#include <fstream>   // sidecar read/write
 #include <span>
 #include <string>
 #include <vector>
@@ -79,6 +80,14 @@ struct ManifestEntry {
   atx::u8 lifecycle_at_snapshot;
   atx::u32 segment_crc;
 };
+
+// The ON-DISK width of one serialized ManifestEntry: the pinned field-by-field
+// layout put_entry() writes (alpha_id u64 + canon_hash u64 + lifecycle u8 +
+// segment_crc u32), with NO struct padding folded in. Used to bound the speculative
+// read_manifest reserve against the bytes actually remaining (NOT sizeof(ManifestEntry),
+// which would include compiler padding the wire format does not have).
+inline constexpr atx::usize kManifestEntryWireBytes =
+    sizeof(atx::u64) + sizeof(atx::u64) + sizeof(atx::u8) + sizeof(atx::u32);
 
 // ===========================================================================
 //  LibraryManifest — the versioned, content-addressed snapshot.
@@ -201,7 +210,15 @@ inline atx::u64 finalize_version_id(LibraryManifest &m) {
   if (!detail::get_le(src, off, stored_version) || !detail::get_le(src, off, n_seeds)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "LibraryManifest: truncated header");
   }
-  m.master_seeds.reserve(static_cast<atx::usize>(n_seeds));
+  // Bound the speculative reserve against the bytes ACTUALLY remaining: a garbage
+  // huge n_seeds from a corrupt sidecar must NOT throw length_error/bad_alloc before
+  // the per-element get_le bounds check can return the intended Err(InvalidArgument).
+  // The loop below still rejects a truncated buffer; this only caps the allocation.
+  {
+    const atx::usize rem = src.size() - off;
+    m.master_seeds.reserve(
+        std::min<atx::usize>(static_cast<atx::usize>(n_seeds), rem / sizeof(atx::u64)));
+  }
   for (atx::u64 i = 0; i < n_seeds; ++i) {
     atx::u64 s = 0;
     if (!detail::get_le(src, off, s)) {
@@ -214,7 +231,14 @@ inline atx::u64 finalize_version_id(LibraryManifest &m) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "LibraryManifest: truncated entry count");
   }
-  m.entries.reserve(static_cast<atx::usize>(n_entries));
+  // Same bound for entries: cap the reserve at (bytes remaining / on-disk entry
+  // width) so a corrupt n_entries cannot trigger a huge speculative allocation
+  // before the per-element get_le loop rejects the truncated buffer.
+  {
+    const atx::usize rem = src.size() - off;
+    m.entries.reserve(
+        std::min<atx::usize>(static_cast<atx::usize>(n_entries), rem / kManifestEntryWireBytes));
+  }
   for (atx::u64 i = 0; i < n_entries; ++i) {
     ManifestEntry e{};
     if (!detail::get_le(src, off, e.alpha_id) || !detail::get_le(src, off, e.canon_hash) ||

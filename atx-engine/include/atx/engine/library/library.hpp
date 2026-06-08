@@ -151,7 +151,8 @@ public:
     // 4. admit, all in AlphaId order (L7).
     ensure_corr(c.pnl.size()); // size the corr index to T on the first admit
     const auto staged = store_.stage(c.source, c.pnl, c.pos_flat, c.metrics, c.prov, c.canon_hash);
-    ATX_ASSERT(staged.has_value()); // shape mismatch is a programmer error here
+    ATX_CHECK(staged.has_value()); // shape mismatch is a programmer error; *staged below
+                                   // would be UB on the error state under NDEBUG (always-on)
     const AlphaId id = *staged;
     corr_->add(id, c.pnl);                      // reads the caller's buffer (copies signature only)
     const auto ins = dedup_.insert(c.canon_hash, id);
@@ -175,8 +176,16 @@ public:
   }
 
   /// Seal the live memtable into a segment (no-op if nothing is staged). Call
-  /// before snapshot()/reopen to make every staged alpha durable.
-  [[nodiscard]] atx::core::Status flush_all() { return store_.flush(); }
+  /// before snapshot()/reopen to make every staged alpha durable. Resets the
+  /// auto-flush batch counter on success so a following auto-flush is not biased
+  /// early by admits already sealed here.
+  [[nodiscard]] atx::core::Status flush_all() {
+    auto st = store_.flush();
+    if (st.has_value()) {
+      memtable_pending_ = 0;
+    }
+    return st;
+  }
 
   /// Record a lifecycle transition of `id` to `to` as of `as_of` (delegates to the
   /// journal — append-only PIT semantics, illegal edges return Err).
@@ -206,6 +215,7 @@ public:
     const auto st = store_.flush();
     ATX_ASSERT(st.has_value());
     (void)st;
+    memtable_pending_ = 0; // snapshot sealed the memtable: keep the auto-flush counter in sync
     LibraryManifest m;
     m.master_seeds = master_seeds_;
     const std::vector<atx::u32> per_alpha_crc = segment_crc_per_alpha();
@@ -319,13 +329,15 @@ private:
     std::vector<atx::u32> out(static_cast<atx::usize>(store_.n_alphas()), 0U);
     for (atx::usize s = 0; s < store_.n_segments(); ++s) {
       auto reader = SegmentReaderLite::attach(store_.segment_path(s));
-      ATX_ASSERT(reader.has_value());
+      ATX_CHECK(reader.has_value()); // reader->... below would be UB on a failed attach
+                                     // under NDEBUG (always-on guard, not elided)
       const atx::u64 base = reader->base_alpha_id();
       const atx::u32 cnt = reader->n_alphas();
       const atx::u32 crc = reader->integrity_crc();
       for (atx::u32 i = 0; i < cnt; ++i) {
         const atx::usize g = static_cast<atx::usize>(base) + i;
-        ATX_ASSERT(g < out.size());
+        ATX_CHECK(g < out.size()); // guards the out[g] HEAP WRITE below: a catalog row whose
+                                   // base+n_alphas overruns must abort, not silently corrupt
         out[g] = crc;
       }
     }
