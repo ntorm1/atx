@@ -1,11 +1,11 @@
 # Module p1 — atx-engine v2: The Alpha Factory & Portfolio Brain (`p1`)
 
-**Last reviewed:** 2026-06-07
-**Status:** **S1 (Evaluation & Validation Spine) + S2 (Parallel Compute Substrate) CLOSED**
+**Last reviewed:** 2026-06-08
+**Status:** **S1 (Evaluation & Validation Spine) + S2 (Parallel Compute Substrate) + S3 (Formulaic Alpha Factory) CLOSED**
 (`feat/atx-core-stdlib`; close ledgers [`sprint-1-progress.md`](sprint-1-progress.md),
-[`sprint-2-progress.md`](sprint-2-progress.md)). p0 Phases 1–4 are complete (Phase-4 mega-alpha layer
-closed at `f2d22f4`). S3–S7 remain `⏳ proposed`; the factory track (S3→S4→S5→S7) is unblocked, and
-S6 (cost) can open concurrently with it (S2 parallel is done — it hands S3 cross-core throughput).
+[`sprint-2-progress.md`](sprint-2-progress.md), [`sprint-3-progress.md`](sprint-3-progress.md)). p0 Phases 1–4 are complete (Phase-4 mega-alpha layer
+closed at `f2d22f4`). S4–S7 remain `⏳ proposed`; the factory track continues (S3 ✅ → **S4** → S5 → S7), and
+S6 (cost) can open concurrently (S2 parallel is done — it handed S3 cross-core throughput).
 **Source:** distills [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md)
 + [`../../research/renaissance-technologies-systems-deep-dive.md`](../../research/renaissance-technologies-systems-deep-dive.md),
 reviewed against the as-built `p0` engine and the frozen [`../p0/phase-4-signal-combination-risk-implementation-plan.md`](../p0/phase-4-signal-combination-risk-implementation-plan.md).
@@ -211,7 +211,7 @@ determinism invariant.* **No P4 dependency** — can open concurrently with S1.
 > L4), strategy-B CSE-preserving batch-eval (needs `Engine::evaluate_root`), Linux-CI TSan job, lowest-index-error
 > tie-break test, NUMA panel partitioning (profile-gated).
 
-### S3 — Formulaic Alpha Factory  ⏳ proposed ([spec](sprint-3-formulaic-alpha-factory.md))
+### S3 — Formulaic Alpha Factory  ✅ CLOSED `5f57a34` ([spec](sprint-3-formulaic-alpha-factory.md) · [ledger](sprint-3-progress.md) · [user ref](sprint-3.md))
 **Theme:** The headline — **automated discovery**. Genetic/evolutionary + parameter search over the DSL
 expression space (the WQ 19→10⁷ engine), reusing the existing VM/CSE substrate. AST mutation (op-swap,
 field-swap, fractional-window perturbation) and subtree crossover; a population driver with selection +
@@ -223,16 +223,25 @@ re-evaluated. Consumes S1 (the scorer), S2 (throughput), P4 (pool + gates). *Gro
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S3.0 | Marker + ledger | S | ⏳ |
-| S3.1 | AST mutation operators (op-swap, field-swap, window/const perturbation; type-safe = produces valid programs) | M | ⏳ |
-| S3.2 | Subtree crossover + canonical-hash dedup (DAG normalization → never re-eval an equivalent expr) | M | ⏳ |
-| S3.3 | Parameter optimizer (grid/random/CMA-ES over fractional window/scale constants) | M | ⏳ |
-| S3.4 | Pool-aware fitness (WQ fitness × marginal corr-to-pool; reuses P4 gate stats + S1 metrics) | M | ⏳ |
-| S3.5 | Evolutionary search driver (population, selection, elitism, novelty pressure; deterministic, seeded) | L | ⏳ |
-| S3.6 | Factory integration (mine→gate→admit loop over S2 workers) + bench (alphas/sec) + close | M | ⏳ |
+| S3.0 | Marker + ledger | S | ✅ |
+| S3.1 | AST mutation operators (op-swap, field-swap, window/const perturbation; type-safe = produces valid programs) | M | ✅ |
+| S3.2 | Subtree crossover + canonical-hash dedup (DAG normalization → never re-eval an equivalent expr) | M | ✅ |
+| S3.3 | Parameter optimizer (grid/random/CMA-ES over fractional window/scale constants) | M | ✅ |
+| S3.4 | Pool-aware fitness (WQ fitness × marginal corr-to-pool; reuses P4 gate stats + S1 metrics) | M | ✅ |
+| S3.5 | Evolutionary search driver (population, selection, elitism, novelty pressure; deterministic, seeded) | L | ✅ |
+| S3.6 | Factory integration (mine→gate→admit loop over S2 workers) + bench (alphas/sec) + close | M | ✅ |
 
-> Likely splits **S3-a** (search operators + dedup + params: S3.1–S3.3) / **S3-b** (fitness + driver +
-> integration: S3.4–S3.6) at kickoff if it exceeds ~7 units.
+> **Closed 2026-06-08** (`5f57a34`) — 38 factory tests across 8 suites + integration; full engine suite
+> 1769/1769 green; header-only `factory::` (genome rebuild substrate + OpCatalog + mutation/crossover +
+> sound canonical-hash dedup + sep-CMA-ES param search + pool-aware deflated fitness + seeded search driver +
+> mine→gate→admit `Factory`), **atx-core unmodified**. The crown jewel — **a pure-noise population admits
+> NOTHING while a real-signal panel admits survivors under the SAME gate+deflation bar, with deflation (N =
+> the running trial count) doing the killing** — proven non-vacuous end-to-end. Residuals → Pattern-B backlog
+> below: **full rotation-invariant CMA-ES → atx-core L7 `eigh`/`cma`** (sep-diagonal CMA-ES shipped),
+> `parallel_evaluate`-in-driver swap (single-thread fresh-Engine fallback shipped pending S2 warm-up+reuse
+> verification on evolved candidates), the **op_swap VM-SlotPool-corruption fix** (`enable_op_swap=false`),
+> a first-class scoring-layer universe mask (vs the alternate-Panel sub-universe re-eval), and persisted
+> cross-run dedup (→ S4 library-wide index).
 
 ### S4 — Massive Alpha Library Management  ⏳ proposed ([spec](sprint-4-library-management.md))
 **Theme:** Make 10⁵–10⁹ alphas *live*. A persistent, append-only **library store** (the P4 `AlphaStore`
@@ -353,6 +362,7 @@ engine.
 |---|---|---|
 | S2.1 | **L4** `concurrent` — a deterministic task/work pool (fixed workers, no time-dependent scheduling) | core blocker for all parallelism |
 | S1.2/S1.3 | **L6** `stats` — t-dist / variance-of-Sharpe helpers (DSR/PBO) | small additions |
+| S3.3 | **L7** `eigh`/`cma` — full rotation-invariant CMA-ES (eigendecomposition of the covariance) | S3 shipped a separable diagonal-covariance CMA-ES engine-local; the rotation-invariant optimizer is the lift |
 | S5.2 | **L7** coordinate-descent / L-BFGS solver for elastic-net | linear learned alphas |
 | S5.3 | **L7** (or new) gradient-boosted-tree primitive (deterministic histogram split) | GBT learned alpha |
 | S5.4 | **L7** HMM / Baum-Welch (forward-backward, log-space) | regime detection |
