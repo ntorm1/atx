@@ -193,11 +193,26 @@ public:
     // each admission decision is folded in below (F1/F2).
     rep.digest = res.digest;
 
+    // F4 — the multiple-testing N fed to the ADMISSION deflation is the search's
+    // RUNNING distinct-candidate count (res.trial_count), NOT the static config N:
+    // each candidate is deflated against the number of trials the search ACTUALLY
+    // performed, so the anti-snooping bar AUTO-SCALES with search effort (a larger
+    // mine deflates harder — the multiple-testing correction the S1 DSR/PBO
+    // accounting expects). The in-search SELECTION fitness keeps the config N (the
+    // realized count is unknown mid-search); only admission — which runs AFTER the
+    // search completes — knows the realized N. (res.trial_count == 0 only on a
+    // degenerate empty run, where `ranked` is empty and N is never consumed; the
+    // config N is the harmless fallback there.)
+    FitnessCfg admit_fit = cfg.search.fitness;
+    if (res.trial_count > 0U) {
+      admit_fit.trial_count = res.trial_count;
+    }
+
     // (2) rank the DISTINCT scored candidates by deflated fitness (best first).
     // Re-score each against the pool AS IT STANDS NOW (run start) to get its dsr;
     // the per-candidate re-score INSIDE the admission loop below then reflects the
     // GROWING pool. all_scored is the set of distinct structures (F5/F6).
-    std::vector<Ranked> ranked = rank_by_deflated_fitness(res.all_scored, cfg, pool);
+    std::vector<Ranked> ranked = rank_by_deflated_fitness(res.all_scored, admit_fit, pool);
 
     // (3) the mine -> gate -> admit loop (§4.8), best-deflated first.
     for (const Ranked &r : ranked) {
@@ -232,7 +247,7 @@ public:
       // (3c) re-score against the CURRENT (growing) pool for the deflated bar — the
       // dsr that gates admission must reflect the pool the candidate would join.
       atx::f64 dsr = r.dsr; // fall back to the run-start dsr if a re-score errs
-      auto fit = pool_aware_fitness(cand, pool, panel_, policy_, sim_, cfg.search.fitness);
+      auto fit = pool_aware_fitness(cand, pool, panel_, policy_, sim_, admit_fit);
       if (fit.has_value()) {
         dsr = fit->dsr;
       }
@@ -312,14 +327,14 @@ private:
   // ONCE against the pool as it stands at run start (the pool grows later, in the
   // admission loop). A genome whose fitness errors sorts last (dsr = raw = 0).
   [[nodiscard]] std::vector<Ranked> rank_by_deflated_fitness(const std::vector<Genome> &scored,
-                                                             const FactoryConfig &cfg,
+                                                             const FitnessCfg &fit_cfg,
                                                              const combine::AlphaStore &pool) const {
     std::vector<Ranked> ranked;
     ranked.reserve(scored.size());
     for (atx::usize i = 0U; i < scored.size(); ++i) {
       atx::f64 dsr = 0.0;
       atx::f64 raw = 0.0;
-      auto fit = pool_aware_fitness(scored[i], pool, panel_, policy_, sim_, cfg.search.fitness);
+      auto fit = pool_aware_fitness(scored[i], pool, panel_, policy_, sim_, fit_cfg);
       if (fit.has_value()) {
         dsr = fit->dsr;
         raw = fit->raw;
