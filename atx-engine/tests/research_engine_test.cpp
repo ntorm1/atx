@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <filesystem>   // per-test temp directory (the library is rooted at a dir)
+#include <limits>       // std::numeric_limits (u64->u32 AlphaId narrowing guard)
 #include <string>
 #include <system_error> // std::error_code (tmpdir's remove_all/create_directories)
 #include <utility>
@@ -440,6 +441,10 @@ TEST(ResearchEngine, UnparseRoundTripsThroughCanonicalHash) {
 
   const u64 n = library.n_alphas();
   ASSERT_EQ(n, rep.library_size);
+  // AlphaId.value is a u32 (insertion index); the u64->u32 narrowing below is only
+  // sound while the pool fits in u32. Guard it once so the truncating cast inside the
+  // loop is provably safe (a > u32-max pool would otherwise silently wrap the id).
+  ASSERT_LE(n, static_cast<u64>(std::numeric_limits<u32>::max()));
   for (u64 a = 0; a < n; ++a) {
     const lib::AlphaRecordView rec = library.get(lib::AlphaId{static_cast<u32>(a)});
     const lib::Provenance &prov = rec.provenance;

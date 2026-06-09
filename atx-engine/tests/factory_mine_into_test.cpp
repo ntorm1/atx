@@ -15,8 +15,9 @@
 // discrimination the S3 suite proves for mine().
 
 #include <cstdint>
-#include <filesystem> // per-test temp directory (the library is rooted at a dir)
+#include <filesystem>   // per-test temp directory (the library is rooted at a dir)
 #include <string>
+#include <system_error> // std::error_code (tmpdir's remove_all/create_directories)
 #include <utility>
 #include <vector>
 
