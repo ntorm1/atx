@@ -1,6 +1,6 @@
 # Sprint S4b — The Automated Alpha Engine (sprint spec)
 
-**Status:** ⏳ proposed (brainstormed 2026-06-08; not open). Depends on **S3** (the factory ✅ `5f57a34`), **S4** (the library ✅ merged), **S1** (deflation), **S2** (parallel), **P4** (gate/metrics).
+**Status:** ✅ CLOSED 2026-06-09 (`feat/atx-core-stdlib @ 54a53f4`; ledger [`sprint-4b-progress.md`](sprint-4b-progress.md) · user ref [`sprint-4b.md`](sprint-4b.md)). Depended on **S3** (the factory ✅ `5f57a34`), **S4** (the library ✅ merged), **S1** (deflation), **S2** (parallel), **P4** (gate/metrics).
 **Roadmap:** [`ROADMAP.md`](ROADMAP.md) · **Discipline:** [`../docs/sprint.md`](../docs/sprint.md)
 **Grounded in:** [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md) §2/§5/§9/§10 (the alpha factory + the persistent corr-gated library + online marginal-correlation gating at scale) + [`../../research/renaissance-technologies-systems-deep-dive.md`](../../research/renaissance-technologies-systems-deep-dive.md) §1/§7 (continuous statistical discovery + ruthless OOS discipline).
 

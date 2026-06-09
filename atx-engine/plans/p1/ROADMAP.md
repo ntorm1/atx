@@ -1,7 +1,7 @@
 # Module p1 — atx-engine v2: The Alpha Factory & Portfolio Brain (`p1`)
 
-**Last reviewed:** 2026-06-08
-**Status:** **S1 (Evaluation & Validation Spine) + S2 (Parallel Compute Substrate) + S3 (Formulaic Alpha Factory) CLOSED**
+**Last reviewed:** 2026-06-09
+**Status:** **S1 (Evaluation & Validation Spine) + S2 (Parallel Compute Substrate) + S3 (Formulaic Alpha Factory) + S4b (Automated Alpha Engine — factory↔library integration) CLOSED**
 (`feat/atx-core-stdlib`; close ledgers [`sprint-1-progress.md`](sprint-1-progress.md),
 [`sprint-2-progress.md`](sprint-2-progress.md), [`sprint-3-progress.md`](sprint-3-progress.md)). p0 Phases 1–4 are complete (Phase-4 mega-alpha layer
 closed at `f2d22f4`). S4–S7 remain `⏳ proposed`; the factory track continues (S3 ✅ → **S4** → S5 → S7), and
@@ -260,6 +260,40 @@ dead-alpha reuse.*
 | S4.3 | Correlation-neighbor index + online/streaming corr-to-pool (incremental gate, not O(N²) recompute) | L | ⏳ |
 | S4.4 | Lifecycle state machine (candidate→admitted→live→decaying→dead→recycled; PIT transitions) | M | ⏳ |
 | S4.5 | Versioned reproducible library builds (snapshot replay = byte-identical) + close | M | ⏳ |
+
+### S4b — The Automated Alpha Engine (factory↔library integration)  ✅ CLOSED `54a53f4` ([spec](sprint-4b-automated-alpha-engine.md) · [ledger](sprint-4b-progress.md) · [user ref](sprint-4b.md))
+**Theme:** Fuse the two finished halves — S3 mined into an *ephemeral* in-memory pool (O(N), evaporates) while S4's
+*persistent* library admit path (library-wide dedup → O(neighbors) corr → P4 floors → segmented store + PIT
+lifecycle + content-addressed manifest) sat unused, with **zero** references between them. S4b is the integration
+milestone that makes them **one automated, persistent, deflation-gated discovery engine with end-to-end seeded
+replay**: a `ResearchDriver` continuous mine→admit→repeat loop over a fixed panel, scoring each candidate's
+marginal contribution to the *persistent* library at O(neighbors) scale, deflating against the running trial count
+(the S1 bar stays factory-side, wrapped around `library::admit`), recording a round-trippable formula
+(`unparse(Ast)`), and replaying byte-identically — manifest `version_id` included. Library = single source of truth.
+*Grounded in WorldQuant §2/§5/§9/§10 + RenTech §1/§7 (continuous statistical discovery + ruthless OOS discipline).*
+
+| # | Unit | Effort | Status |
+|---|---|---|---|
+| S4b.0 | Marker + ledger + as-built seam | S | ✅ |
+| S4b.1 | `unparse(alpha::Ast)→string` + round-trip-through-`canonical_hash` soundness (the formula record) | M | ✅ |
+| S4b.2 | `PoolView` seam + library-backed pool-aware fitness (O(neighbors) `worst_corr_to_pool`; legacy O(N) retained) | M | ✅ |
+| S4b.3 | `Factory::mine_into(library)` — factory→library admit bridge (deflation factory-side; old ephemeral `mine()` test-only) | M | ✅ |
+| S4b.4 | `ResearchDriver` — continuous mine→admit→repeat over a fixed panel; seed axis `(master,run,gen,idx)`; checkpoint/resume | L | ✅ |
+| S4b.5 | E2E `ResearchEngine` (F1/F4/F6 + unparse-at-scale) + scale-lever bench + close | M | ✅ |
+
+> **Closed 2026-06-09** (`54a53f4`) — 15 new engine tests (`ResearchEngine` F1/F4/F6 + unparse-at-scale, plus the
+> per-unit `AlphaUnparse`/`FactoryPoolView`/`FactoryMineInto`/`ResearchDriver` suites) + `research_bench`; full
+> engine suite **983/983** green; header-only additions (`alpha::unparse`, `factory::{PoolView, AlphaStorePool,
+> LibraryPool, Factory::mine_into, ResearchDriver}`, `library::Library::worst_corr_to_pool` — the one additive
+> facade accessor), **atx-core unmodified**. The proof: **a seeded engine run mines a population, scores marginal
+> contribution to the *persistent* library at O(neighbors), deflates against the running trial count, admits
+> survivors into the durable deduplicated library, and replays byte-identically (manifest `version_id` included) —
+> while a pure-noise panel grows the library by ~0 across 4 seeds under the same bar, and a reopen-from-disk re-mine
+> never re-admits a duplicate.** Scale lever benched ~3.35× (O(neighbors) vs O(N)) at a 4096-alpha pool, widening
+> with size. Residuals → backlog: ranking-tiebreak asymmetry vs legacy `mine()`, Provenance lineage stub
+> (`parent_hashes`/`mutation_op`), in-search selection vs the persistent library (needs a `SearchDriver` `PoolView`
+> overload), and the re-eval adapter (re-parse `expr_source`→compile→eval over a new panel) → **S7**. The
+> populated persistent library is the **baton to S5** (a real pool for the ML/regime combiner).
 
 ### S5 — Learned Signals & ML Combiner  ⏳ proposed ([spec](sprint-5-learned-signals-ml-combiner.md))
 **Theme:** The RenTech direction — **learned predictors as first-class alphas**, and a combiner that goes
