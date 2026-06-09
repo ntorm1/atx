@@ -24,13 +24,14 @@
 // UPPER BOUND on cost, not the optimised number. A short min-time / iteration cap
 // keeps the Debug bench well under a second per case.
 
-#include <cmath>   // std::sin (synthetic low-corr pnl streams)
-#include <cstdint> // std::uint64_t (the deterministic LCG state)
-#include <filesystem> // per-iteration temp dir for the engine library
+#include <cmath>        // std::sin (synthetic low-corr pnl streams)
+#include <cstdint>      // std::uint64_t (the deterministic LCG state)
+#include <filesystem>   // per-iteration temp dir for the engine library
 #include <span>
-#include <string>  // std::string (seed exprs / field names / tmp dirs)
-#include <utility> // std::move
-#include <vector>  // std::vector (synthetic panel / pnl storage)
+#include <string>       // std::string (seed exprs / field names / tmp dirs)
+#include <system_error> // std::error_code (bench_tmpdir's remove_all/create_directories)
+#include <utility>      // std::move
+#include <vector>       // std::vector (synthetic panel / pnl storage)
 
 #include <benchmark/benchmark.h>
 

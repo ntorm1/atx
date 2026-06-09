@@ -27,8 +27,9 @@
 // discrimination the S3/S4b unit suites prove.
 
 #include <cstdint>
-#include <filesystem> // per-test temp directory (the library is rooted at a dir)
+#include <filesystem>   // per-test temp directory (the library is rooted at a dir)
 #include <string>
+#include <system_error> // std::error_code (tmpdir's remove_all/create_directories)
 #include <utility>
 #include <vector>
 
@@ -50,10 +51,9 @@
 #include "atx/engine/factory/genome.hpp"          // factory::Genome (round-trip re-parse)
 #include "atx/engine/factory/research_driver.hpp" // factory::ResearchDriver, ResearchConfig, ResearchReport
 
-#include "atx/engine/library/library.hpp"  // library::Library, rebuild_equals
-#include "atx/engine/library/manifest.hpp" // library::LibraryManifest
-#include "atx/engine/library/record.hpp"   // library::Provenance
-#include "atx/engine/library/store.hpp"    // library::AlphaRecordView
+#include "atx/engine/library/library.hpp" // library::Library
+#include "atx/engine/library/record.hpp"  // library::Provenance
+#include "atx/engine/library/store.hpp"   // library::AlphaRecordView
 
 namespace {
 
@@ -324,19 +324,24 @@ TEST(ResearchEngine, SeededEngineReplaysByteIdentical) {
 //  opposite outcomes = non-vacuous anti-snooping at the engine scale.
 // =============================================================================
 TEST(ResearchEngine, NoiseGrowsLibraryByNothing) {
-  // (1) Pure noise, large budget: the engine admits 0 and the library stays empty.
-  {
+  // (1) Pure noise, large budget, OVER SEVERAL INDEPENDENT ENGINE SEEDS: each seed
+  // drives a distinct mine population over the noise panel (8 runs each), and EVERY
+  // one admits 0 — the kMinDsr = 0.80 anti-snooping bar sits above the in-sample-best
+  // noise structure's deflated Sharpe across all of them. Looping the seed makes the
+  // "noise never admits" claim empirical, not author-asserted.
+  for (const u64 seed : {41u, 51u, 61u, 71u}) {
     Fixture fx{pure_noise_panel()};
     AlphaGate gate{default_gate_cfg()};
-    lib::Library library = lib::Library::open(tmpdir("noise"), default_gate_cfg(), {kLibSeed});
+    lib::Library library =
+        lib::Library::open(tmpdir("noise_" + std::to_string(seed)), default_gate_cfg(), {kLibSeed});
     ResearchDriver engine{library, fx.dsl, fx.panel, fx.sim, fx.policy, gate};
 
     const ResearchReport rep =
-        engine.run(noise_research_cfg(/*seed*/ 41, /*max_runs*/ 8, /*patience*/ 0));
+        engine.run(noise_research_cfg(seed, /*max_runs*/ 8, /*patience*/ 0));
 
-    EXPECT_EQ(rep.total_admitted, 0u);    // deflation N kills the entire noise population
-    EXPECT_EQ(rep.library_size, 0u);      // nothing grew the library
-    EXPECT_EQ(library.n_alphas(), 0u);    // reconciles with the persistent store
+    EXPECT_EQ(rep.total_admitted, 0u) << "noise seed " << seed << " admitted a fluke";
+    EXPECT_EQ(rep.library_size, 0u) << "noise seed " << seed << " grew the library";
+    EXPECT_EQ(library.n_alphas(), 0u) << "noise seed " << seed << " persisted an alpha";
   }
 
   // (2) Real signal, SAME gate + SAME min_dsr bar: the engine admits survivors.
@@ -357,51 +362,64 @@ TEST(ResearchEngine, NoiseGrowsLibraryByNothing) {
 
 // =============================================================================
 //  F6 — CrossRunDedupNeverReadmits. Drive the engine ONCE into a temp-dir library
-//  (admits N>0). Then run a SECOND engine pass with the SAME master_seed into the
-//  SAME library: the same population is re-mined, so every rediscovered alpha is
-//  structurally-equivalent to a run-1 admit and collides with the S4-2
-//  canonical-hash index ACROSS the persistence boundary. Assert: the second pass
-//  registers duplicates (it re-found known motifs) AND the library did NOT grow
-//  from those rediscoveries.
+//  (admits N>0). SEAL it and REOPEN a fresh Library object from the SAME dir, then
+//  run a SECOND engine pass with the SAME master_seed: the same population is
+//  re-mined, so every rediscovered alpha is structurally-equivalent to a pass-1
+//  admit and collides with the S4-2 canonical-hash index — which on pass 2 has been
+//  RELOADED FROM DISK (the on-disk dedup.db / segment catalog), so the dedup crosses
+//  the PERSISTENCE BOUNDARY, not merely the in-memory DedupIndex cache. Assert: the
+//  second pass registers duplicates (it re-found known motifs) AND the library did
+//  NOT grow from those rediscoveries.
 //
-//  CONSTRUCTION: the second engine is built over the SAME persistent library with
-//  the SAME master_seed + SAME per-run config, so the per-run seeds (seed_for_run)
-//  and thus the searched populations match run 1 exactly. Every motif run 1 admitted
-//  is now in the library's dedup index, so run 2's rediscovery of any of them is a
-//  Duplicate. We require at least one genuine rediscovery (duplicates > 0); if the
-//  engine somehow found only brand-new motifs (no rediscovery), the library-unchanged
-//  assertion still holds and the duplicates-positive assertion would surface that as
-//  a failure to construct the re-mine — but the same-seed re-mine guarantees overlap.
+//  CONSTRUCTION: pass 1 and pass 2 run over the SAME dir but through DISTINCT Library
+//  objects — pass 1's library is destroyed (its in-memory cache gone) before pass 2's
+//  Library::open re-attaches every catalogued segment and reloads the dedup table from
+//  disk. The same master_seed + per-run config makes pass 2's per-run seeds
+//  (seed_for_run) and thus the searched populations match pass 1 exactly, so every
+//  motif pass 1 admitted is rediscovered and must dedup off the RELOADED index. This is
+//  NON-VACUOUS against a broken persisted dedup: a dedup.db that failed to reload would
+//  re-admit the rediscovered motifs, growing the library past size_after_pass1 +
+//  pass2.total_admitted and failing the final EXPECT_EQ.
 // =============================================================================
 TEST(ResearchEngine, CrossRunDedupNeverReadmits) {
   Fixture fx{real_signal_panel()};
-  AlphaGate gate{default_gate_cfg()};
-  lib::Library library = lib::Library::open(tmpdir(), default_gate_cfg(), {kLibSeed});
+  const GateConfig gate_cfg = default_gate_cfg();
+  AlphaGate gate{gate_cfg};
+  const std::vector<u64> seeds{kLibSeed};
+  const std::string dir = tmpdir(); // ONE dir reused across both passes (no re-wipe)
 
-  // Pass 1: grow the library from empty (must admit at least one alpha to dedup on).
-  const ResearchReport pass1 = [&] {
-    ResearchDriver engine{library, fx.dsl, fx.panel, fx.sim, fx.policy, gate};
-    return engine.run(real_signal_research_cfg(/*seed*/ 51, /*max_runs*/ 3, /*patience*/ 0));
-  }();
-  ASSERT_GT(pass1.total_admitted, 0u) << "pass 1 must admit so pass 2 can rediscover-and-dedup";
-  const u64 size_after_pass1 = library.n_alphas();
-  ASSERT_EQ(size_after_pass1, static_cast<u64>(pass1.total_admitted));
+  // Pass 1: grow the library from empty (must admit at least one alpha to dedup on),
+  // then SEAL it durable (snapshot flushes the memtable + persists dedup/segments) and
+  // CLOSE it (the scope exit drops lib1 and its in-memory DedupIndex cache).
+  u64 size_after_pass1 = 0;
+  {
+    lib::Library lib1 = lib::Library::open(dir, gate_cfg, seeds);
+    ResearchDriver engine{lib1, fx.dsl, fx.panel, fx.sim, fx.policy, gate};
+    const ResearchReport pass1 =
+        engine.run(real_signal_research_cfg(/*seed*/ 51, /*max_runs*/ 3, /*patience*/ 0));
+    ASSERT_GT(pass1.total_admitted, 0u) << "pass 1 must admit so pass 2 can rediscover-and-dedup";
+    (void)lib1.snapshot(); // flush + seal so dedup.db + segments are durable on disk
+    size_after_pass1 = lib1.n_alphas();
+    ASSERT_EQ(size_after_pass1, static_cast<u64>(pass1.total_admitted));
+  } // lib1 closed — its in-memory dedup cache is gone; the only state is on disk
 
-  // Pass 2: SAME master_seed re-mines the SAME population into the SAME (now-populated)
-  // library. Every motif pass 1 admitted is in the dedup index, so its rediscovery is a
-  // cross-run Duplicate, not a re-admit.
+  // Pass 2: REOPEN a fresh Library from the SAME dir (Library::open re-attaches the
+  // segment catalog + reloads the dedup table from sqlite), so dedup now fires off the
+  // RELOADED on-disk index. The SAME master_seed re-mines the SAME population.
+  lib::Library lib2 = lib::Library::open(dir, gate_cfg, seeds);
+  ASSERT_EQ(lib2.n_alphas(), size_after_pass1) << "reopen must reload the pass-1 pool from disk";
   const ResearchReport pass2 = [&] {
-    ResearchDriver engine{library, fx.dsl, fx.panel, fx.sim, fx.policy, gate};
+    ResearchDriver engine{lib2, fx.dsl, fx.panel, fx.sim, fx.policy, gate};
     return engine.run(real_signal_research_cfg(/*seed*/ 51, /*max_runs*/ 3, /*patience*/ 0));
   }();
 
   EXPECT_GT(pass2.total_duplicates, 0u)
       << "the same-seed re-mine must rediscover at least one already-admitted motif";
   // The library did NOT grow from the rediscovered duplicates: every re-found pass-1
-  // motif was deduped across the persistence boundary, so the only growth (if any) is
+  // motif was deduped against the RELOADED on-disk index, so the only growth (if any) is
   // from genuinely-new motifs == pass2.total_admitted, never a re-admit of a duplicate.
-  EXPECT_EQ(library.n_alphas(), size_after_pass1 + static_cast<u64>(pass2.total_admitted))
-      << "rediscovered duplicates must NOT re-admit (cross-run dedup across persistence)";
+  EXPECT_EQ(lib2.n_alphas(), size_after_pass1 + static_cast<u64>(pass2.total_admitted))
+      << "rediscovered duplicates must NOT re-admit (cross-run dedup across the reopen boundary)";
 }
 
 // =============================================================================
