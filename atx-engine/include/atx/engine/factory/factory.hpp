@@ -80,10 +80,12 @@
 //  so std::vector / per-candidate allocation is acceptable (the VM hot loop is
 //  untouched — F8).
 
+#include <array>     // std::array (reject_histogram, indexed by library::AdmitKind)
 #include <algorithm> // std::sort, std::max
 #include <cstddef>   // std::size_t (hash_combine seed type)
 #include <span>      // std::span
 #include <string>    // std::string (seed-expression / field source)
+#include <utility>   // std::move (admitted provenance / streams)
 #include <vector>    // std::vector
 
 #include "atx/core/error.hpp"  // Result, Ok, Err
@@ -93,6 +95,7 @@
 #include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program (cse_pct)
 #include "atx/engine/alpha/panel.hpp"    // alpha::Panel, alpha::SignalSet
 #include "atx/engine/alpha/streams.hpp"  // alpha::extract_streams, AlphaStreams
+#include "atx/engine/alpha/unparse.hpp"  // alpha::unparse (admitted-alpha expr_source, S4b-1)
 #include "atx/engine/alpha/vm.hpp"       // alpha::Engine
 
 #include "atx/engine/combine/gate.hpp"    // combine::AlphaGate, GateVerdict, GateConfig
@@ -101,8 +104,13 @@
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
+#include "atx/engine/library/library.hpp" // library::Library, AlphaCandidate, AdmitKind, AdmitVerdict
+#include "atx/engine/library/record.hpp"  // library::Provenance (admitted-alpha lineage)
+
+#include "atx/engine/factory/canonical.hpp"     // factory::canonical_hash (F6 dedup key)
 #include "atx/engine/factory/fitness.hpp"       // factory::pool_aware_fitness, FitnessCfg
 #include "atx/engine/factory/genome.hpp"        // factory::Genome
+#include "atx/engine/factory/pool_view.hpp"     // factory::LibraryPool, PoolView, pool_aware_fitness overload (S4b-2)
 #include "atx/engine/factory/search_driver.hpp" // factory::SearchDriver, SearchConfig, SearchResult
 
 namespace atx::engine::factory {
@@ -148,6 +156,14 @@ struct FactoryReport {
   atx::usize trials{0};
   atx::u64 seed{0};
   atx::u64 digest{0};
+
+  // --- S4b-3 mine_into() telemetry (additive; default-init so mine() is untouched).
+  // These fields are populated ONLY by mine_into (the persistent-library admit path);
+  // the ephemeral-AlphaStore mine() leaves them at their defaults.
+  atx::usize duplicates{0};                     // library-wide F6 dedup hits (AdmitKind::Duplicate)
+  atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
+  atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
+  std::array<atx::usize, 6> reject_histogram{}; // count per library::AdmitKind (0..5)
 };
 
 // =========================================================================
@@ -286,7 +302,147 @@ public:
     return rep;
   }
 
+  // =======================================================================
+  //  mine_into — the REAL admit path: mine + deflate, then admit each
+  //  survivor into the PERSISTENT library::Library (S4b-3).
+  //
+  //  Same seeded SearchDriver path as mine() (shared internals; no fork), but
+  //  the admit target is the persistent library — library-wide F6 dedup ->
+  //  O(neighbors) corr -> P4 gate floors -> segmented store + PIT lifecycle +
+  //  manifest — instead of an ephemeral combine::AlphaStore. The S1 deflation
+  //  bar stays FACTORY-side: a candidate must clear cand.dsr >= cfg.min_dsr
+  //  BEFORE library::admit is consulted (so a noise candidate the library alone
+  //  might pass is still rejected by the multiple-testing deflation). `lib_lib`
+  //  is GROWN in place. Deterministic: same cfg + same starting library contents
+  //  => byte-identical report.digest (the search digest folded with every
+  //  admission decision; F1/F2).
+  //
+  //  §0.6 DANGLING-SPAN discipline (as in mine()): the AlphaCandidate's pnl /
+  //  pos_flat are NON-OWNING spans into the OWNED cand_pnl / cand_pos vectors,
+  //  which MUST outlive the admit() call. They are kept alive in the loop body
+  //  across the admit, so the spans never dangle.
+  // =======================================================================
+  [[nodiscard]] FactoryReport mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                                        const combine::AlphaGate &gate) {
+    FactoryReport rep;
+    rep.library_n_alphas_before = lib_lib.n_alphas();
+
+    // (1) run the S3-5 search — IDENTICAL to mine(): a fresh seeded driver re-derives
+    // clean per-run state, preserving F1 replay. The driver's SELECTION fitness scores
+    // against a combine::AlphaStore (the S3-5 run() signature — there is no PoolView
+    // run() overload), so the search runs against an EMPTY scratch store, exactly as
+    // mine() does at run start. Admission below scores against the persistent library
+    // via the LibraryPool seam (S4b-2). The empty store and an empty library agree
+    // (both have worst_corr == 0), so the search is byte-identical to mine()'s search.
+    combine::AlphaStore search_pool; // empty selection pool (the search's pre-pool)
+    SearchDriver driver{lib_, panel_, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+    const SearchResult res = driver.run(cfg.search, search_pool);
+
+    // The persistent library is the ADMISSION pool: the deflated-fitness ranking and
+    // the per-candidate re-score below score marginal corr against it (O(neighbors)).
+    LibraryPool view{lib_lib};
+
+    rep.evaluated = res.trial_count;
+    rep.trials = res.trial_count;
+    rep.dedup_pct = res.dedup_pct;
+    rep.seed = res.seed;
+    rep.cse_pct = mean_cse_pct(res);
+    rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
+
+    // F4 — the admission deflation N is the search's RUNNING distinct-candidate count
+    // (res.trial_count), NOT the static config N (identical to mine()).
+    FitnessCfg admit_fit = cfg.search.fitness;
+    if (res.trial_count > 0U) {
+      admit_fit.trial_count = res.trial_count;
+    }
+
+    // (2) rank the distinct scored candidates by deflated fitness against the LIBRARY
+    // (the PoolView overload routes the corr-to-pool through the O(neighbors) index).
+    std::vector<Ranked> ranked = rank_by_deflated_fitness(res.all_scored, admit_fit, view);
+
+    // (3) the mine -> deflate -> library::admit loop, best-deflated first.
+    for (const Ranked &r : ranked) {
+      const Genome &g = res.all_scored[r.idx];
+
+      // (3a) realize the candidate's FULL OOS streams (PnL + positions). Computed
+      // BEFORE any admit; the OWNED vectors below outlive the admit() call (§0.6).
+      auto strm_res = detail_eval_streams(g);
+      if (!strm_res.has_value()) {
+        continue; // S3-6 0-alpha guard: an un-evaluable candidate is silently dropped (F5)
+      }
+      const alpha::AlphaStreams &strm = *strm_res;
+      if (strm.n_alphas() == 0U) {
+        continue; // guards strm.pnl(0) / flatten_positions's strm.positions(0,.) abort
+      }
+      const atx::usize n_inst = strm.n_instruments();
+      // OWNED copies kept alive across admit() — the AlphaCandidate spans alias them.
+      std::vector<atx::f64> cand_pnl(strm.pnl(0).begin(), strm.pnl(0).end());
+      std::vector<atx::f64> cand_pos = flatten_positions(strm);
+
+      // (3b) realized-performance metrics over the full OOS stream.
+      const combine::AlphaMetrics metrics = combine::compute_metrics(
+          std::span<const atx::f64>{cand_pnl}, std::span<const atx::f64>{cand_pos}, n_inst,
+          cfg.book_size);
+
+      // (3c) re-score against the CURRENT (growing) library for the deflated bar (the
+      // O(neighbors) PoolView overload). Fall back to the run-start dsr if it errs.
+      atx::f64 dsr = r.dsr;
+      auto fit = pool_aware_fitness(g, view, panel_, policy_, sim_, admit_fit);
+      if (fit.has_value()) {
+        dsr = fit->dsr;
+      }
+
+      // (3d) F6 dedup key: Genome.canon_hash is left 0 by the S3 search path
+      // (genome.hpp INVARIANT — canon_hash defaulted 0, not populated), so COMPUTE
+      // the real canonical key here; an admit on canon_hash == 0 would break the
+      // library-wide dedup gate. This is the SAME stable key the library deduped on.
+      const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+
+      // Provenance lineage: S3's all_scored Genomes do NOT track parent hashes /
+      // mutation op (a deliberate S4b-3 simplification — F6 depends on canon_hash,
+      // not lineage), so parent_hashes is empty and mutation_op is 0. The meaningful
+      // provenance is the re-parseable formula text (S4b-1 unparse, round-trips to
+      // canon_hash) and the run seed.
+      library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
+                               /*mutation_op=*/0, /*seed=*/res.seed};
+
+      // The deflation bar is FACTORY-side: clear it BEFORE library::admit is consulted.
+      library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel for the histogram
+      if (dsr >= cfg.min_dsr) {
+        const library::AlphaCandidate cand{canon_hash,
+                                           std::span<const atx::f64>{cand_pnl},
+                                           std::span<const atx::f64>{cand_pos},
+                                           metrics,
+                                           std::move(prov),
+                                           /*as_of=*/kAdmitAsOf,
+                                           /*source=*/nullptr};
+        const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+        kind = v.kind;
+        if (kind == library::AdmitKind::Accept) {
+          ++rep.admitted;
+        } else if (kind == library::AdmitKind::Duplicate) {
+          ++rep.duplicates;
+        }
+      }
+      ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+
+      // Fold the decision into the digest (every screened candidate, in rank order):
+      // (canon_hash, AdmitKind) — a different admission outcome shifts the digest, and
+      // an identical mine+admit replays byte-identical (F1/F2).
+      rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+          static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+    }
+
+    rep.library_n_alphas_after = lib_lib.n_alphas();
+    return rep;
+  }
+
 private:
+  // The as-of period for an admitted alpha's Candidate->Admitted lifecycle transition.
+  // A constant (the S4 fixtures use period 1); the realized OOS streams are not keyed
+  // to a calendar period in the research panel, so a fixed admit period is sufficient.
+  static constexpr atx::usize kAdmitAsOf = 1U;
+
   // A scored candidate's admission ranking key: its deflated Sharpe (primary) and
   // raw fitness (tiebreak), plus its index into all_scored.
   struct Ranked {
@@ -349,6 +505,47 @@ private:
         return a.raw > b.raw; // raw tiebreak
       }
       return scored[a.idx].canon_hash < scored[b.idx].canon_hash; // deterministic total order
+    });
+    return ranked;
+  }
+
+  // The PoolView overload (S4b-3): identical to the AlphaStore overload above, but
+  // `pool` is a backing-agnostic PoolView and the inner score call uses the S4b-2
+  // pool_aware_fitness(genome, view, ...) overload (the O(neighbors) MAX-|corr| seam).
+  // Used by mine_into to rank against the PERSISTENT library. The sort key + total
+  // order are identical (DESCENDING dsr, then raw, then canon_hash; F1). A genome
+  // whose fitness errors sorts last (dsr = raw = 0). NOTE: Genome.canon_hash is left
+  // 0 by the S3 search path, so the canon_hash tiebreak is degenerate here; an
+  // `idx` final tiebreak therefore pins a TRUE total order (std::sort is not stable),
+  // so the rank — and the digest folded from it — is deterministic regardless of the
+  // sort's internal permutation of equal-key elements (all_scored is built in a
+  // deterministic order, so equal idx never occurs and the order is reproducible; F1).
+  [[nodiscard]] std::vector<Ranked> rank_by_deflated_fitness(const std::vector<Genome> &scored,
+                                                             const FitnessCfg &fit_cfg,
+                                                             const PoolView &pool) const {
+    std::vector<Ranked> ranked;
+    ranked.reserve(scored.size());
+    for (atx::usize i = 0U; i < scored.size(); ++i) {
+      atx::f64 dsr = 0.0;
+      atx::f64 raw = 0.0;
+      auto fit = pool_aware_fitness(scored[i], pool, panel_, policy_, sim_, fit_cfg);
+      if (fit.has_value()) {
+        dsr = fit->dsr;
+        raw = fit->raw;
+      }
+      ranked.push_back(Ranked{i, dsr, raw});
+    }
+    std::sort(ranked.begin(), ranked.end(), [&scored](const Ranked &a, const Ranked &b) {
+      if (a.dsr != b.dsr) {
+        return a.dsr > b.dsr; // best DEFLATED first (§4.8)
+      }
+      if (a.raw != b.raw) {
+        return a.raw > b.raw; // raw tiebreak
+      }
+      if (scored[a.idx].canon_hash != scored[b.idx].canon_hash) {
+        return scored[a.idx].canon_hash < scored[b.idx].canon_hash; // canon tiebreak
+      }
+      return a.idx < b.idx; // true total order (canon_hash is 0 on the S3 search path)
     });
     return ranked;
   }
