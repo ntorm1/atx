@@ -43,7 +43,9 @@
 #include <cmath>
 #include <string>
 #include <string_view>
+#include <system_error> // std::errc (to_chars_result::ec)
 
+#include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/parser.hpp"
@@ -66,6 +68,7 @@ namespace detail {
   }
   std::array<char, 64> buf{};
   const std::to_chars_result r = std::to_chars(buf.data(), buf.data() + buf.size(), v);
+  ATX_ASSERT(r.ec == std::errc{}); // 64 bytes is always enough for a double's shortest form
   return std::string(buf.data(), r.ptr);
 }
 

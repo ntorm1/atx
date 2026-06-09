@@ -49,6 +49,30 @@ TEST(AlphaUnparse, RoundTripsNested) {
 }
 TEST(AlphaUnparse, RoundTripsRankAndCs) { expect_round_trips("rank(ts_sum(close, 10))"); }
 
+// --- regression guards for the Unary / Call-with-hparams / Select arms (S4b-1
+// review NIT): the printer already handled these, but no fixture exercised them.
+
+// Unary(Neg): `-close` does NOT fold (only literal operands fold), so it is a
+// real Unary node. Unary(Not) over a comparison: `!(close > open)`.
+TEST(AlphaUnparse, RoundTripsUnaryNeg) { expect_round_trips("-close"); }
+TEST(AlphaUnparse, RoundTripsUnaryNot) { expect_round_trips("!(close > open)"); }
+
+// Call carrying n_hparams==2: kalman_level(x, Q, R) and ou_filter(x, theta, mu)
+// peel their two trailing literals into hparams[] — exercises the hparam-emission
+// loop that no other fixture covers. parse_expr only parses (no analyze), so the
+// hparam values need not satisfy the typecheck's domain bounds here.
+TEST(AlphaUnparse, RoundTripsCallHparamsKalman) {
+  expect_round_trips("kalman_level(close, 0.1, 1.0)");
+}
+TEST(AlphaUnparse, RoundTripsCallHparamsOu) {
+  expect_round_trips("ou_filter(close, 0.5, 2.0)");
+}
+
+// Select (desugared ternary): `cond ? then : else`.
+TEST(AlphaUnparse, RoundTripsSelectTernary) {
+  expect_round_trips("(close > open) ? close : open");
+}
+
 // fail-on-bad: non-commutative operand order matters (Sub is NOT hash-commutative,
 // so a-b and b-a must hash differently — and unparse must preserve that order).
 TEST(AlphaUnparse, WrongOrderFlipsHash) {
