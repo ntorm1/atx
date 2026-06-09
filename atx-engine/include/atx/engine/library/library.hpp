@@ -193,6 +193,30 @@ public:
     return journal_.transition(id, to, static_cast<atx::u64>(as_of));
   }
 
+  /// Max |corr| of `pnl` against the current pool via the SimHash neighbor scan
+  /// (O(neighbors)). Empty pool (corr index unconstructed — no admits yet) => 0.0,
+  /// matching the empty-pool gate convention. This is the SAME corr the admit-time
+  /// verdict consults (verdict_for routes through it), exposed for the factory's
+  /// PoolView seam (S4b-2): pool-aware fitness scores marginal corr against either
+  /// this incremental index or the O(N) AlphaStore scan, with ONE corr impl each.
+  ///
+  /// RECALL CAVEAT: online_corr_to_pool returns the MAX |corr| over the candidate's
+  /// SimHash NEIGHBORS, not the whole pool — it is APPROXIMATE in which ids it scans
+  /// (it equals the exhaustive max only when recall == 1.0, as on the S4-3 / S4-5
+  /// orthogonal equal-norm-basis fixtures). The corr reported per recalled id is the
+  /// exact pairwise_complete_corr value.
+  ///
+  /// SAFETY: reads the CALLER's `pnl` buffer + store spans within this call only (no
+  /// store growth), so nothing dangles — same discipline as verdict_for.
+  [[nodiscard]] atx::f64 worst_corr_to_pool(std::span<const atx::f64> pnl) const {
+    if (!corr_.has_value()) {
+      return 0.0;
+    }
+    CorrNeighborIndex &idx =
+        const_cast<CorrNeighborIndex &>(*corr_); // NOLINT: logical-const scratch (as in verdict_for)
+    return online_corr_to_pool(pnl, store_, idx);
+  }
+
   // --- read passthroughs ----------------------------------------------------
   [[nodiscard]] atx::u64 n_alphas() const noexcept { return store_.n_alphas(); }
   [[nodiscard]] atx::usize n_segments() const noexcept { return store_.n_segments(); }
@@ -297,14 +321,9 @@ private:
     // The o(N) corr screen replaces AlphaGate's O(N) scan; worst_corr = MAX |corr|
     // over the SimHash neighbors (exact corr per neighbor). An empty pool (no admits
     // yet => corr_ unconstructed) has worst_corr = 0, matching AlphaGate's empty-pool
-    // convention. corr_ is mutated only by its reusable scratch (logically const);
-    // the cast keeps verdict_for const.
-    atx::f64 worst_corr = 0.0;
-    if (corr_.has_value()) {
-      CorrNeighborIndex &idx =
-          const_cast<CorrNeighborIndex &>(*corr_); // NOLINT: logical-const scratch
-      worst_corr = online_corr_to_pool(c.pnl, store_, idx);
-    }
+    // convention. Routed through the public worst_corr_to_pool accessor so there is
+    // exactly ONE incremental-corr code path (the PoolView seam shares it, S4b-2).
+    const atx::f64 worst_corr = worst_corr_to_pool(c.pnl);
     if (worst_corr > cfg.max_pool_corr) {
       return AdmitKind::RejectCorrelated;
     }

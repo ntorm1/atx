@@ -282,6 +282,96 @@ eval_streams(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   return alpha::extract_streams(ss, policy, panel, sim);
 }
 
+// =========================================================================
+//  FitnessCore — every POOL-INDEPENDENT term of a candidate's fitness.
+//
+//  Holds the candidate's full realized OOS PnL stream plus wq / robust / dsr /
+//  haircut_sharpe. The ONLY thing missing from a FitnessReport is the
+//  redundancy/diversify pair (the pool-dependent term), which each
+//  pool_aware_fitness overload computes from a DIFFERENT backing (the legacy
+//  AlphaStore Mean scan, or the PoolView Max scan) and folds in via
+//  finish_report(). Extracting this guarantees the wq/robust/dsr/haircut math is
+//  written ONCE — the legacy overload's result is byte-unchanged (it feeds the
+//  same oos_pnl into the same corr_to_pool(..., Mean) it always did).
+// =========================================================================
+struct FitnessCore {
+  std::vector<atx::f64> oos_pnl; // full realized stream (the corr-to-pool input)
+  atx::f64 wq;
+  atx::f64 robust;
+  atx::f64 dsr;
+  atx::f64 haircut_sharpe;
+};
+
+// Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:
+// the OOS WQ aggregate, the sub-universe robustness re-eval, and the deflation).
+// IDENTICAL control flow + values to the original pool_aware_fitness body for
+// those steps — the legacy overload below now simply layers the Mean-based
+// redundancy on top, so its output is provably unchanged. Err propagates a
+// candidate compile/eval/extract failure (full or weak panel).
+[[nodiscard]] inline atx::core::Result<FitnessCore>
+fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
+             const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
+             const alpha::Panel *weak_panel) {
+  // SAFETY (eps): the robustness ratio divides by wq; floor the denominator so a
+  //               near-zero full-universe wq cannot blow the ratio to ±inf.
+  constexpr atx::f64 kEps = 1e-12;
+
+  // (1) full-universe eval -> OOS fold aggregate.
+  ATX_TRY(const alpha::AlphaStreams strm, eval_streams(cand, panel, policy, sim));
+  const atx::usize insts = strm.n_instruments();
+  const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
+  const std::vector<eval::CpcvFold> folds =
+      eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
+  OosAggregate agg = aggregate_oos(strm, folds, insts, cfg.book_size);
+  const atx::f64 wq = agg.wq;
+
+  // (3) sub-universe robustness (§0.8): re-eval on the weak-universe Panel.
+  atx::f64 robust = 1.0; // degenerate default: no weak universe configured.
+  if (weak_panel != nullptr) {
+    ATX_TRY(const alpha::AlphaStreams weak_strm, eval_streams(cand, *weak_panel, policy, sim));
+    const atx::usize weak_insts = weak_strm.n_instruments();
+    const std::vector<eval::LabelSpan> weak_spans = point_label_spans(weak_strm.n_periods());
+    const std::vector<eval::CpcvFold> weak_folds =
+        eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
+    const OosAggregate weak_agg = aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
+    const atx::f64 denom = (std::abs(wq) > kEps) ? wq : kEps;
+    robust = std::clamp(weak_agg.wq / denom, 0.0, 1.0);
+  }
+
+  // (5) deflation by the running trial count N (F4): higher N -> lower dsr.
+  //
+  // RECONCILIATION (§0.7): combine::compute_metrics().sharpe is ANNUALIZED
+  // (sqrt(252)*mean/std), but eval::deflated_sharpe expects a PER-PERIOD Sharpe
+  // (its variance-of-Sharpe estimator and finite-sample (T-1) correction are
+  // per-observation). We therefore DE-ANNUALIZE the aggregate Sharpe by
+  // sqrt(252) before deflation — feeding the annualized figure saturates PSR to
+  // 1.0 and the trial-count lever never bites. skew/kurtosis are scale-free, so
+  // no adjustment is needed there.
+  // Moment/T input = r[1..) — drop the structural index-0 zero (combine §0-F: it
+  // would bias mean/variance). The full-length oos_pnl is for corr-to-pool only.
+  const std::span<const atx::f64> oos_full{agg.oos_pnl};
+  const std::span<const atx::f64> moments = (oos_full.size() > 1U) ? oos_full.subspan(1) : oos_full;
+  const atx::usize T = moments.size();
+  const atx::f64 per_period_sharpe = agg.sharpe / std::sqrt(combine::kAnnualizationDays);
+  const eval::DsrResult dsr =
+      eval::deflated_sharpe(per_period_sharpe, T, eval::skewness(moments),
+                            eval::excess_kurtosis(moments), cfg.trial_count, std::nullopt);
+
+  return atx::core::Ok(
+      FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr, dsr.haircut_sharpe});
+}
+
+// Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
+// `redundancy` is the (Mean for the legacy AlphaStore path, Max for the PoolView
+// path) |corr-to-pool| of core.oos_pnl; diversify = clamp(1−redundancy, 0, 1) and
+// raw = wq * diversify * robust — identical to the original assembly.
+[[nodiscard]] inline FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy) {
+  const atx::f64 diversify = std::clamp(1.0 - redundancy, 0.0, 1.0);
+  const atx::f64 raw = core.wq * diversify * core.robust;
+  return FitnessReport{core.wq, redundancy, diversify, core.robust,
+                       raw,     core.dsr,   core.haircut_sharpe};
+}
+
 } // namespace detail
 
 // =========================================================================
@@ -306,64 +396,18 @@ pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool,
                    const alpha::Panel &panel, const WeightPolicy &policy,
                    const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
                    const alpha::Panel *weak_panel = nullptr) {
-  // SAFETY (eps): the robustness ratio divides by wq; floor the denominator so a
-  //               near-zero full-universe wq cannot blow the ratio to ±inf.
-  constexpr atx::f64 kEps = 1e-12;
+  // Steps 1, 3, 5 (pool-INDEPENDENT) — written once in fitness_core (byte-identical
+  // to the original body for those steps).
+  ATX_TRY(const detail::FitnessCore core,
+          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel));
 
-  // (1) full-universe eval -> OOS fold aggregate.
-  ATX_TRY(const alpha::AlphaStreams strm, detail::eval_streams(cand, panel, policy, sim));
-  const atx::usize insts = strm.n_instruments();
-  const std::vector<eval::LabelSpan> spans = detail::point_label_spans(strm.n_periods());
-  const std::vector<eval::CpcvFold> folds =
-      eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-  const detail::OosAggregate agg = detail::aggregate_oos(strm, folds, insts, cfg.book_size);
-  const atx::f64 wq = agg.wq;
-
-  // (2) diversification discount (F7): mean |corr-to-pool| of the OOS PnL.
+  // (2) diversification discount (F7): MEAN |corr-to-pool| of the OOS PnL — the
+  // legacy AlphaStore semantics (UNCHANGED; the green S3 suite gates this).
   const atx::f64 redundancy =
-      corr_to_pool(std::span<const atx::f64>{agg.oos_pnl}, pool, Reduce::Mean);
-  const atx::f64 diversify = std::clamp(1.0 - redundancy, 0.0, 1.0);
+      corr_to_pool(std::span<const atx::f64>{core.oos_pnl}, pool, Reduce::Mean);
 
-  // (3) sub-universe robustness (§0.8): re-eval on the weak-universe Panel.
-  atx::f64 robust = 1.0; // degenerate default: no weak universe configured.
-  if (weak_panel != nullptr) {
-    ATX_TRY(const alpha::AlphaStreams weak_strm,
-            detail::eval_streams(cand, *weak_panel, policy, sim));
-    const atx::usize weak_insts = weak_strm.n_instruments();
-    const std::vector<eval::LabelSpan> weak_spans =
-        detail::point_label_spans(weak_strm.n_periods());
-    const std::vector<eval::CpcvFold> weak_folds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
-    const detail::OosAggregate weak_agg =
-        detail::aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
-    const atx::f64 denom = (std::abs(wq) > kEps) ? wq : kEps;
-    robust = std::clamp(weak_agg.wq / denom, 0.0, 1.0);
-  }
-
-  // (4) the raw search signal.
-  const atx::f64 raw = wq * diversify * robust;
-
-  // (5) deflation by the running trial count N (F4): higher N -> lower dsr.
-  //
-  // RECONCILIATION (§0.7): combine::compute_metrics().sharpe is ANNUALIZED
-  // (sqrt(252)*mean/std), but eval::deflated_sharpe expects a PER-PERIOD Sharpe
-  // (its variance-of-Sharpe estimator and finite-sample (T-1) correction are
-  // per-observation). We therefore DE-ANNUALIZE the aggregate Sharpe by
-  // sqrt(252) before deflation — feeding the annualized figure saturates PSR to
-  // 1.0 and the trial-count lever never bites. skew/kurtosis are scale-free, so
-  // no adjustment is needed there.
-  // Moment/T input = r[1..) — drop the structural index-0 zero (combine §0-F: it
-  // would bias mean/variance). The full-length oos_pnl is for corr-to-pool only.
-  const std::span<const atx::f64> oos_full{agg.oos_pnl};
-  const std::span<const atx::f64> moments = (oos_full.size() > 1U) ? oos_full.subspan(1) : oos_full;
-  const atx::usize T = moments.size();
-  const atx::f64 per_period_sharpe = agg.sharpe / std::sqrt(combine::kAnnualizationDays);
-  const eval::DsrResult dsr =
-      eval::deflated_sharpe(per_period_sharpe, T, eval::skewness(moments),
-                            eval::excess_kurtosis(moments), cfg.trial_count, std::nullopt);
-
-  return atx::core::Ok(FitnessReport{wq, redundancy, diversify, robust, raw, dsr.dsr,
-                                     dsr.haircut_sharpe});
+  // (4) raw = wq * diversify * robust, assembled into the report.
+  return atx::core::Ok(detail::finish_report(core, redundancy));
 }
 
 } // namespace atx::engine::factory
