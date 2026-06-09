@@ -60,11 +60,11 @@
 //  Seam map — the APIs this layer consumes (never re-implements)
 // =====================================================================
 //  From atx-core (consumed directly):
-//    core::regression::{ridge}          — linear L2 baseline (Eigen-backed)
-//    core::pca::{pca, transform}        — trailing-fit latent features
-//    core::linalg::{as_matrix, as_vector, MatX, VecX}
+//    core::linalg::{ridge, pca, transform, as_matrix, as_vector, MatX, VecX}
+//                                       — Eigen-backed L2 baseline + trailing-fit
+//                                         latent features + design-matrix bridges
 //    core::{solve, decompose}           — solve_spd / inverse / symmetric_eig
-//    core::random::Xoshiro256pp         — seeded, reproducible training RNG
+//    core::Xoshiro256pp                 — seeded, reproducible training RNG
 //    core::cross_section::{rank, zscore, demean, winsorize}
 //    core::rolling::{RollingMean, RollingStd}
 //    core::simd::{dot, axpy}            — inner loops

@@ -36,6 +36,7 @@
 #include "atx/core/linalg/pca.hpp"        // pca, PcaResult
 #include "atx/core/linalg/regression.hpp" // ridge, OlsResult
 #include "atx/core/random.hpp"            // Xoshiro256pp
+#include "atx/core/types.hpp"             // atx::f64
 
 #include "atx/engine/learn/fwd.hpp" // the layer doc block + forward decls
 
