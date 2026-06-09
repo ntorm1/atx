@@ -36,17 +36,20 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility> // std::move
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/bytecode.hpp" // alpha::compile
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/streams.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
+#include "atx/engine/alpha/vm.hpp" // alpha::Engine
 
 #include "atx/engine/combine/gate.hpp"
 #include "atx/engine/combine/metrics.hpp"

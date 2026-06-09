@@ -37,8 +37,7 @@
 //  the admission gate screens on. The two overloads therefore measure different
 //  pool semantics BY DESIGN; this one is the scalable, gate-consistent path.
 
-#include <algorithm> // std::clamp
-#include <span>      // std::span
+#include <span> // std::span
 
 #include "atx/core/error.hpp" // Result, Ok
 #include "atx/core/types.hpp" // atx::f64
