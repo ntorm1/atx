@@ -61,9 +61,8 @@
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
-#include "atx/engine/library/library.hpp"   // library::Library, LibraryManifest
-#include "atx/engine/library/lifecycle.hpp" // library::LifecycleState (histogram cardinality)
-#include "atx/engine/library/manifest.hpp"  // library::ManifestEntry
+#include "atx/engine/library/library.hpp"  // library::Library, LibraryManifest
+#include "atx/engine/library/manifest.hpp" // library::ManifestEntry
 
 #include "atx/engine/factory/factory.hpp" // factory::Factory, FactoryConfig, FactoryReport
 
