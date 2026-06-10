@@ -37,11 +37,14 @@
 // Header-only; every function is defined inline. Fitting is a COLD path (once per
 // training window), so std::vector / Eigen allocation is fine.
 
-#include <cmath>     // std::sqrt
+#include <cmath>     // std::sqrt, std::isfinite
+#include <cstddef>   // std::ptrdiff_t (chosen-set slice index)
 #include <optional>  // std::optional
 #include <span>      // std::span (the rows view apply_latent projects)
 #include <utility>   // std::pair, std::move
 #include <vector>    // std::vector
+
+#include <Eigen/Dense> // Eigen::Index (gather / score dimensions)
 
 #include "atx/core/macro.hpp" // ATX_CHECK
 #include "atx/core/types.hpp" // f64, u8, u16, u32, usize, i64
@@ -270,12 +273,27 @@ select_interactions(const FeatureMatrix &fm, atx::usize t, atx::u16 embargo, atx
   if (!detail::trailing_cutoff(t, embargo, cutoff)) {
     return pairs;
   }
-  const std::vector<atx::usize> rows = detail::trailing_valid_rows(fm, cutoff);
+  const std::vector<atx::usize> trailing = detail::trailing_valid_rows(fm, cutoff);
+  // row_valid means FEATURES are finite, NOT the label: forward_return returns
+  // quiet-NaN at the tail (date + horizon >= n_dates), which is reachable in the
+  // trailing window whenever embargo < horizon. A single NaN label would make
+  // spearman -> pearson return NaN for EVERY feature, collapsing the ranking to
+  // blind index order. So drop rows with a non-finite Y[0] here, dropping them
+  // from BOTH the label and every feature column consistently (aligned, finite
+  // pairs). Deterministic: a single forward walk in row order, no map.
+  std::vector<atx::usize> rows;
+  rows.reserve(trailing.size());
+  for (const atx::usize r : trailing) {
+    if (std::isfinite(fm.Y[0][r])) {
+      rows.push_back(r);
+    }
+  }
   if (rows.size() < 2U) {
     return pairs;
   }
 
-  // Per-feature |Spearman IC| against the horizon-0 label over the trailing rows.
+  // Per-feature |Spearman IC| against the horizon-0 label over the finite-label
+  // trailing rows.
   std::vector<atx::f64> label;
   label.reserve(rows.size());
   for (const atx::usize r : rows) {

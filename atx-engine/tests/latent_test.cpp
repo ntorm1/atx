@@ -19,6 +19,7 @@
 // latent.hpp reads only row_date / row_valid / X / Y / n_features). Naming:
 // Subject_Condition_ExpectedResult.
 
+#include <limits>  // std::numeric_limits (tail NaN label)
 #include <utility> // std::pair
 #include <vector>
 
@@ -141,57 +142,100 @@ TEST(Latent, PcaBasis_FitOnTrailing_TruncationInvariant) {
   EXPECT_EQ(b_full.model.components.cols(), 2);
 }
 
-// 3. select_interactions is deterministic AND ranks by |Spearman IC| vs Y[0]:
-//    feat0/feat1 strongly track Y[0]; feat2/feat3 are anti-correlated noise.
-TEST(Latent, Interactions_SelectTopByIC_Deterministic) {
+// Build a 4-feature fixture where the |IC|-leaders are the HIGH-index features
+// (feat2, feat3 track Y[0]) and the low-index features (feat0, feat1) are noise.
+// An index-order selector would pick {0,1}; an IC-order selector picks {2,3}.
+[[nodiscard]] FeatureMatrix make_ranking_fixture() {
   const usize nf = 4U;
   std::vector<usize> dates;
   std::vector<std::vector<f64>> rows;
   std::vector<f64> y0;
   for (usize i = 0; i < 16U; ++i) {
     const f64 t = static_cast<f64>(i);
-    const f64 f0 = t;                 // monotone in y -> |IC| == 1
-    const f64 f1 = 0.9 * t + 1.0;     // monotone in y -> |IC| == 1
-    const f64 f2 = (i % 2U == 0U) ? 1.0 : -1.0;      // zig-zag, ~0 rank corr
-    const f64 f3 = static_cast<f64>((i * 7U) % 5U);  // scrambled, weak corr
+    const f64 f0 = (i % 2U == 0U) ? 1.0 : -1.0;      // zig-zag noise vs y
+    const f64 f1 = static_cast<f64>((i * 7U) % 5U);  // scrambled noise vs y
+    const f64 f2 = t;                                 // monotone in y -> |IC| == 1
+    const f64 f3 = 0.9 * t + 1.0;                     // monotone in y -> |IC| == 1
     dates.push_back(i / 4U);
     rows.push_back({f0, f1, f2, f3});
-    y0.push_back(t); // label tracks f0/f1
+    y0.push_back(t); // label tracks f2/f3
   }
-  const FeatureMatrix fm = make_fm(nf, dates, rows, y0);
+  return make_fm(nf, dates, rows, y0);
+}
 
+// Build a fixture engineered so the non-finite-label FILTER is load-bearing: the
+// final block of rows carries a NaN label (the unknowable tail forward-return).
+// On the FINITE rows the IC-leaders are {2,3}; but if the NaN-tail rows are NOT
+// filtered out, their ranks lift the noise features {0,1} ABOVE {2,3}. So:
+//   * filtered (correct):   select_interactions -> {2,3}
+//   * unfiltered (buggy):   would -> {0,1}
+// Asserting {2,3} therefore fails on the unfiltered code (non-vacuous).
+[[nodiscard]] FeatureMatrix make_tail_nan_fixture() {
+  const usize nf = 4U;
+  const usize n_rows = 16U;
+  const usize nan_from = 12U; // last 4 rows have a NaN (tail) label
+  std::vector<usize> dates;
+  std::vector<std::vector<f64>> rows;
+  std::vector<f64> y0;
+  for (usize i = 0; i < n_rows; ++i) {
+    const f64 t = static_cast<f64>(i);
+    const bool tail = (i >= nan_from);
+    // f2/f3 track the label cleanly on the finite block, but BREAK hard on the
+    // tail (dropping to large negatives) — so including the tail wrecks their IC.
+    const f64 f2 = tail ? -t : t;
+    const f64 f3 = tail ? -(0.9 * t) : (0.9 * t + 1.0);
+    // f0/f1 are weak noise on the finite block, but on the tail they are large and
+    // strictly ordered — so including the tail INFLATES their IC above f2/f3.
+    const f64 f0 = tail ? (100.0 + t) : static_cast<f64>((i * 5U) % 4U);
+    const f64 f1 = tail ? (200.0 + 0.7 * t) : static_cast<f64>((i * 3U) % 5U);
+    dates.push_back(i / 4U);
+    rows.push_back({f0, f1, f2, f3});
+    y0.push_back(tail ? std::numeric_limits<f64>::quiet_NaN() : t);
+  }
+  return make_fm(nf, dates, rows, y0);
+}
+
+// 3a. select_interactions ranks by |Spearman IC|, NOT by feature index: the
+//     high-index IC-leaders {2,3} are chosen over the low-index noise {0,1}.
+TEST(Latent, Interactions_RanksByIC_NotIndex) {
+  const FeatureMatrix fm = make_ranking_fixture();
+  const usize t = fm.n_dates - 1U;
+  const auto p = atx::engine::learn::select_interactions(fm, t, /*embargo=*/0U, /*m=*/2U);
+
+  // m=2 -> C(2,2) == 1 pair, and it must be exactly the IC-leaders {2,3} — an
+  // index-order selector would have returned {0,1} instead.
+  ASSERT_EQ(p.size(), 1U);
+  EXPECT_EQ(p[0].first, 2U);
+  EXPECT_EQ(p[0].second, 3U);
+}
+
+// 3b. A non-finite (tail) Y[0] label in the trailing window is filtered out, so
+//     the genuine finite-row IC-leaders {2,3} are ranked correctly. WITHOUT the
+//     filter the NaN-tail rows lift the noise features and the selection flips to
+//     {0,1} (verified: unfiltered |IC| f0~0.72,f1~0.63 > f2,f3~0.16). Asserting
+//     {2,3} therefore fails on the unfiltered code — the filter is load-bearing.
+TEST(Latent, Interactions_TailNaNLabel_StillRanks) {
+  const FeatureMatrix fm = make_tail_nan_fixture();
+  const usize t = fm.n_dates - 1U; // embargo 0 < horizon -> the NaN tail rows are in-window
+  const auto p = atx::engine::learn::select_interactions(fm, t, /*embargo=*/0U, /*m=*/2U);
+
+  ASSERT_EQ(p.size(), 1U);
+  EXPECT_EQ(p[0].first, 2U);  // finite-row IC-leaders, not the {0,1} the tail would inflate
+  EXPECT_EQ(p[0].second, 3U);
+}
+
+// 3c. select_interactions is deterministic: same input -> identical pairs, order.
+TEST(Latent, Interactions_Deterministic) {
+  const FeatureMatrix fm = make_ranking_fixture();
   const usize t = fm.n_dates - 1U;
   const auto p1 = atx::engine::learn::select_interactions(fm, t, /*embargo=*/0U, /*m=*/3U);
   const auto p2 = atx::engine::learn::select_interactions(fm, t, /*embargo=*/0U, /*m=*/3U);
 
-  // Deterministic: same input -> identical pairs in identical order.
   EXPECT_EQ(p1, p2);
-
-  // m=3 -> C(3,2) == 3 pairs.
-  ASSERT_EQ(p1.size(), 3U);
-
-  // The two IC-dominant features (0 and 1) MUST be in the selected top-m set, and
-  // their pair (0,1) must appear — proving IC ranking, not index ranking. (If the
-  // selector merely took features {0,1,2} by index it could miss this only if it
-  // ranked by index; planting f0/f1 as the |IC| leaders pins ranking-by-IC.)
-  bool has_01 = false;
-  bool saw_0 = false;
-  bool saw_1 = false;
+  ASSERT_EQ(p1.size(), 3U); // m=3 -> C(3,2) == 3 pairs
   for (const std::pair<u32, u32> &pr : p1) {
     EXPECT_LT(pr.first, pr.second); // canonical a < b
-    if (pr.first == 0U && pr.second == 1U) {
-      has_01 = true;
-    }
-    if (pr.first == 0U || pr.second == 0U) {
-      saw_0 = true;
-    }
-    if (pr.first == 1U || pr.second == 1U) {
-      saw_1 = true;
-    }
   }
-  EXPECT_TRUE(has_01); // the two strongest-IC features cross
-  EXPECT_TRUE(saw_0);
-  EXPECT_TRUE(saw_1);
 }
 
 } // namespace
