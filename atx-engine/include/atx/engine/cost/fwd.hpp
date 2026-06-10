@@ -67,10 +67,11 @@
 //    tests using the simulator's accessors impact_cfg() and commission_cfg().
 //
 //  exec::SlippageCfg    (exec/execution_sim.hpp:140) — f64 bps=5.0
+//    Calibrated into CalibratedCost.slippage; feeds round_trip_cost_bps (S6-4).
 //  exec::CommissionCfg  (exec/execution_sim.hpp:161) — f64 per_dollar_bps=15.0
-//    Read via ExecutionSimulator::commission_cfg() (read-only accessor).
-//    S6-3 derives κ from the observed turnover cost using commission_cfg()
-//    so the penalty is grounded in the same coefficient the sim charges.
+//    Read via ExecutionSimulator::commission_cfg() (read-only accessor; the cost
+//    layer does not call it as-built — round-trip cost is derived from the
+//    calibrated impact + slippage, not the commission).
 //
 //  exec::FillPayload    (exec/payloads.hpp:138)
 //    { InstrumentId id; i64 qty; core::Decimal price; core::Decimal fee;
@@ -79,13 +80,14 @@
 //
 //  risk::OptimizerConfig (risk/optimizer.hpp:89)
 //    { f64 risk_aversion=1.0; f64 turnover_penalty=0.0; ... }
-//    turnover_penalty is κ.  S6-3 derives κ from calibrated cost and writes
-//    it into a new OptimizerConfig (the one-κ contract of C6).
+//    turnover_penalty is κ.  S6-4 derives κ (= round_trip_cost_bps/1e4) from
+//    calibrated cost and writes it into a new OptimizerConfig (one-κ, C6).
 //
 //  risk::CapacityPoint  (risk/capacity.hpp:107)
 //    { f64 aum; f64 net_edge_bps; }
-//    risk::capacity_curve returns a vector<CapacityPoint>.  S6-4 wraps that
-//    call and exposes the curve to the portfolio / strategy-sizing layers.
+//    risk::capacity_curve returns a vector<CapacityPoint>.  S6-3 wraps that
+//    call (per-alpha / per-mega) + the capacity-point root-find, and exposes
+//    the curve to the portfolio / strategy-sizing layers.
 //
 //  Portfolio::apply_fill (portfolio/portfolio.hpp:171)
 //    PRECONDITION (ATX_ASSERT): f.qty != 0  AND  f.price > 0  AND  f.fee >= 0.
@@ -131,24 +133,26 @@ namespace atx::engine::cost {
 // Forward declarations — full definitions in their respective unit headers.
 // ---------------------------------------------------------------------------
 
-/// Calibrated impact/commission parameters fit to a trailing fill window.
-/// Wraps exec::ImpactCfg with fit provenance (window, R², stderr).
-/// Full definition: cost/calibrated_cost.hpp (S6-1).
+/// Calibrated cost coefficients fit to a trailing fill window.
+/// As-built: { exec::ImpactCfg impact; exec::SlippageCfg slippage; FitReport report; }.
+/// Full definition: cost/calibration.hpp (S6-1).
 struct CalibratedCost;
 
-/// Fit diagnostics emitted alongside a CalibratedCost.
-/// Fields: r2 (f64), stderr (f64), n_obs (usize), window_start/end timestamps.
-/// Full definition: cost/calibrated_cost.hpp (S6-1).
+/// Auditable fit diagnostics emitted alongside a CalibratedCost (C1).
+/// As-built fields: { f64 r2_temp; f64 r2_perm; f64 delta_stderr; f64 Y_stderr;
+///                    usize n_fills; f64 resid_p95; }.
+/// Full definition: cost/calibration.hpp (S6-1).
 struct FitReport;
 
-/// The derived decision knobs produced by calibration.
-/// Wraps exec::ImpactCfg (Y, delta, gamma) + risk::OptimizerConfig::turnover_penalty (κ).
-/// Full definition: cost/cost_knobs.hpp (S6-3).
+/// The three emitted decision knobs (C8). As-built: { f64 kappa;
+/// combine::GateConfig gate; f64 fitness_cost_floor; } — emit-only values the
+/// caller feeds into OptimizerConfig.κ / the gate / the factory fitness floor.
+/// Full definition: cost/cost_aware.hpp (S6-4).
 struct CostKnobs;
 
-/// Short-borrow cost model: annualized rate per instrument, accrual cadence.
+/// Short-borrow cost model: { f64 annual_rate; DayCount day_count; }.
 /// Accrual is applied via Portfolio::accrue_financing (NOT a zero-qty fill).
-/// Full definition: cost/borrow_model.hpp (S6-5).
+/// Full definition: cost/borrow.hpp (S6-5).
 struct BorrowModel;
 
 } // namespace atx::engine::cost
