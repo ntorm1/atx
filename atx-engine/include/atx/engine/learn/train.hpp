@@ -31,8 +31,6 @@
 //
 // Header-only; every function is defined inline.
 
-#include <cstdint> // (none directly, but pulls width-stable ints transitively)
-#include <span>    // std::span
 #include <string_view>
 #include <vector>
 

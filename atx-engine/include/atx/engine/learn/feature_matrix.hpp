@@ -47,7 +47,6 @@
 // COLD path (once per training window), so std::vector allocation is fine (M7).
 
 #include <cmath>         // std::isfinite
-#include <cstdint>       // std::uint8_t backing for u8
 #include <limits>        // std::numeric_limits<f64>::quiet_NaN
 #include <span>          // std::span (aliasing Panel / store cross-sections)
 #include <string>        // std::string (raw field names)
