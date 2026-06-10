@@ -27,8 +27,7 @@
 //
 // Naming: Subject_Condition_ExpectedResult.
 
-#include <cmath>   // std::sqrt, std::fabs
-#include <vector>
+#include <cmath> // std::sqrt, std::fabs
 
 #include <Eigen/Dense> // Eigen::Index, MatX/VecX construction in fixtures
 
@@ -81,7 +80,7 @@ using atx::engine::learn::elastic_net;
 }
 
 // 1. alpha == 0 (pure ridge) on a standardized design matches atx-core ridge with
-//    the matched penalty L == 2*n*lambda.
+//    the matched penalty L == n*lambda.
 TEST(ElasticNet, AlphaZero_MatchesAtxCoreRidge) {
   const Eigen::Index n = 40;
   const Eigen::Index p = 3;

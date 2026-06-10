@@ -46,6 +46,7 @@
 #include "atx/engine/learn/latent.hpp"         // LatentAugmentation
 #include "atx/engine/learn/learned_source.hpp" // LearnedModel, LearnedSignalSource
 #include "atx/engine/learn/linear_alpha.hpp"   // fit_linear, predict_at, oos_deflated_sharpe
+#include "atx/engine/learn/train.hpp"          // date_label_spans, expand_date_folds
 #include "atx/engine/loop/panel_types.hpp"     // PanelView
 #include "atx/engine/loop/types.hpp"           // InstrumentId
 
@@ -137,10 +138,14 @@ struct Lcg {
   // so the M1 determinism test proves it is byte-identical across builds.
   buf.insert(buf.end(), m.oos_score_series.begin(), m.oos_score_series.end());
   buf.push_back(static_cast<f64>(m.trial_count));
+  // SAFETY: std::vector<f64> stores doubles contiguously; buf.data() points at
+  // buf.size()*sizeof(f64) live bytes for the call's duration.
   return atx::core::hash_bytes(buf.data(), buf.size() * sizeof(f64));
 }
 
 [[nodiscard]] u64 hash_signal(const atx::core::linalg::VecX &v) {
+  // SAFETY: Eigen VecX stores doubles contiguously; v.data() points at
+  // size()*sizeof(f64) live bytes for the vector's lifetime.
   return atx::core::hash_bytes(v.data(), static_cast<usize>(v.size()) * sizeof(f64));
 }
 

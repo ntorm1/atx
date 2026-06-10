@@ -58,6 +58,7 @@
 #include <cmath>   // std::isfinite
 #include <limits>  // std::numeric_limits (NaN "no opinion" sentinel)
 #include <span>    // std::span (augmented-row view, SignalView values)
+#include <string>  // std::string (raw field name resolution)
 #include <utility> // std::move
 #include <vector>  // std::vector (owned model params + source scratch)
 
