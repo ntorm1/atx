@@ -68,8 +68,8 @@ Each S6 unit carries a non-vacuous differential proof test against its relevant 
 
 | Unit  | Title                                                                   | Status   | Commit SHA(s) | Tests | Notes |
 |-------|-------------------------------------------------------------------------|----------|---------------|-------|-------|
-| S6-0  | Marker + ledger + scaffold + as-built seam verification                 | ✅ done  | pending       | 4/4 (CostScaffold) | `cost/fwd.hpp` + scaffold test + ledger. apply_fill(qty=0) abort finding confirmed; accrue_financing decision recorded. |
-| S6-1  | Fill-stream ingestion + impact calibration (Y, δ, γ)                   | 🔲 todo  | —             | —     | |
+| S6-0  | Marker + ledger + scaffold + as-built seam verification                 | ✅ done  | e45bd2a       | 4/4 (CostScaffold) | `cost/fwd.hpp` + scaffold test + ledger. apply_fill(qty=0) abort finding confirmed; accrue_financing decision recorded. |
+| S6-1  | Fill-stream ingestion + impact calibration (Y, δ, γ)                   | ✅ done  | pending       | 9/9 (RobustLs 4 + Calibration 5) | `cost/robust_ls.hpp` (IRLS-Huber) + `cost/calibration.hpp`. As-built API reconciliation: added `CostObs` + `prior` + `calibrate_from_obs` because the single-snapshot `Market` + `FillPayload` carry no per-fill `mark_before` or realized perm-shift, so γ must come from explicit observations (or stay at the prior on the snapshot path). δ-stderr from σ̂²·(XᵀX)⁻¹; Y-stderr via the delta method (Y=exp(β₀)); γ via through-origin σ·p regression. |
 | S6-2  | Temp/perm zero-leakage verification                                     | 🔲 todo  | —             | —     | |
 | S6-3  | κ derivation (turnover penalty from calibrated commission cost)         | 🔲 todo  | —             | —     | |
 | S6-4  | Capacity-curve integration (call risk::capacity_curve with fitted cfg)  | 🔲 todo  | —             | —     | |
@@ -81,4 +81,5 @@ Each S6 unit carries a non-vacuous differential proof test against its relevant 
 
 | SHA | Unit | Subject |
 |-----|------|---------|
-| pending | S6-0 | docs(s6-0): open sprint-6 cost-calibration ledger + scaffold + as-built seam verification |
+| e45bd2a | S6-0 | docs(s6-0): open sprint-6 cost-calibration ledger + scaffold + as-built seam verification |
+| pending | S6-1 | feat(s6-1): cost-coefficient calibration (IRLS-Huber robust LS + log-linear power-law fit, auditable) |
