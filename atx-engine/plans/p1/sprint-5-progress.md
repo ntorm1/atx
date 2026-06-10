@@ -92,7 +92,7 @@ These two failures are silent, not loud — the suite must catch them by constru
 | Unit  | Title                                                                 | Status | Commit SHA(s) | Tests | Notes |
 |-------|-----------------------------------------------------------------------|--------|---------------|-------|-------|
 | S5-0  | Marker + ledger + learn scaffold + atx-core L7 link smoke-test        | ✅ done | _this commit_ | 3/3 (LearnScaffold) | `learn/fwd.hpp` (M1–M8 doc block + seam map + determinism contract + the three Pattern-B edges; forward-decls `struct FeatureMatrix; struct FeatureSpec; class LearnedSignalSource; struct LearnedModel;`) + this ledger + `learn_scaffold_test.cpp`. **§0.8 Eigen-link risk RETIRED** (ridge/pca INCLUDE+LINK from `atx-engine-tests`, 3/3 PASS, /WX clean). As-built API confirmed (see §0 supplementary table): headers under `atx/core/linalg/`, `ridge`/`pca` in `atx::core::linalg`, RNG is `atx::core::Xoshiro256pp` (no `random` sub-ns), Result success = `.has_value()`. |
-| S5-1  | PIT feature matrix + multi-horizon forward-return labels              | 🚧 next | —             | —     | `learn/feature_matrix.hpp` + `learn/train.hpp`; raw Panel fields + stored alpha streams; NaN-verbatim tail labels (M8); truncation-invariant (M2); deterministic (date,instrument) order (M1). |
+| S5-1  | PIT feature matrix + multi-horizon forward-return labels              | ✅ done | _this commit_ | 5/5 (FeatureMatrix 4 + TrainScaffold 1); full engine suite 1840/1840 (1 pre-existing Databento smoke skipped) | `learn/feature_matrix.hpp` (`FeatureSpec`, `FeatureMatrix`, `build_features`) + `learn/train.hpp` (`date_label_spans`, `expand_date_folds`, `RowFold`/`Folds`, `seed_for`, `TrialCounter`); raw Panel fields + stored `AlphaStore::positions` streams; forward labels `close[d+H]/close[d]-1`, NaN-verbatim at the tail (M8/§0.6); truncation-invariant (M2); deterministic (date,instrument) emit order, no map iteration on the hot loop (M1); out-of-universe cells emit NO row (M8); date-axis CPCV expanded to feature rows (§0.2). /WX clean. |
 | S5-2  | PIT latent / hidden-feature extraction (trailing-fit PCA + interactions) | ⏳ todo | —          | —     | `learn/latent.hpp`; `core::pca` fit on `date ≤ t−embargo`, projected forward; truncation-invariant (M2/§0.5). |
 | S5-3  | Elastic-net CD + linear learned alpha + LearnedSignalSource           | ⏳ todo | —             | —     | `learn/elastic_net.hpp` (Pattern-B edge 1), `learn/linear_alpha.hpp`, `learn/learned_source.hpp`; ridge+elastic-net, per-horizon CPCV, horizon blend. M4 differential vs `core::ridge` at α=0. |
 | S5-4  | Deterministic histogram GBT model + GBT learned alpha                 | ⏳ todo | —             | —     | `learn/gbt.hpp` (Pattern-B edge 2); fixed-bin histogram split finder, seeded subsampling, first-max tie-break. M1 byte-identical; M4 vs brute-force stump. |
@@ -107,6 +107,7 @@ These two failures are silent, not loud — the suite must catch them by constru
 | SHA | Unit | Subject |
 |-----|------|---------|
 | _this commit_ | S5-0 | docs(s5-0): open sprint-5 learned-signals ledger + scaffold + atx-core L7 link smoke-test |
+| _this commit_ | S5-1 | feat(s5-1): PIT feature matrix + multi-horizon labels + CPCV date-fold scaffold |
 
 ---
 
