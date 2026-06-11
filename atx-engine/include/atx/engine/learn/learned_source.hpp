@@ -84,7 +84,77 @@ namespace atx::engine::learn {
 //  predict dispatch's exhaustive switch (no default) — a compile error there
 //  flags the missing arm, which is the intended guard.
 // ===========================================================================
-enum class ModelKind : atx::u8 { Linear };
+enum class ModelKind : atx::u8 { Linear, Gbt };
+
+// ===========================================================================
+//  GBT forest representation (S5-4) — the deployed parameters of a histogram
+//  gradient-boosted-tree learned alpha. These structs live next to LearnedModel
+//  because they ARE part of the deployed model (the fitting algorithm lives in
+//  learn/gbt.hpp). Inference walks pre-stored nodes with NO allocation (M7).
+//
+//  GbtNode — one flat node. For a split: `feature` is the augmented-row column,
+//  `threshold` the split point (go left iff value < threshold), `left`/`right`
+//  the child node indices (into the owning tree's `nodes`). For a leaf:
+//  `is_leaf` is true, `leaf_value` is the additive prediction, and left/right are
+//  -1. Storing children as indices (not pointers) keeps the tree relocatable and
+//  the bytes hashable for the M1 determinism gate.
+// ===========================================================================
+struct GbtNode {
+  atx::u32 feature{0};  // split feature (augmented-row column); unused at a leaf
+  atx::f64 threshold{0.0}; // go left iff augmented_row[feature] < threshold
+  atx::f64 leaf_value{0.0}; // additive prediction contribution at a leaf
+  atx::i32 left{-1};        // left child node index (-1 at a leaf)
+  atx::i32 right{-1};       // right child node index (-1 at a leaf)
+  bool is_leaf{true};       // true -> leaf_value is the contribution; no split
+};
+
+// One depth-limited regression tree: a flat node array, root at index 0.
+struct GbtTree {
+  std::vector<GbtNode> nodes;
+};
+
+// One boosted forest for a single horizon: an initial constant `base` (the train
+// mean) plus a sequence of trees whose (learning-rate-scaled) leaf values sum
+// onto it. forest prediction = base + Σ_t tree_t.predict(row).
+struct GbtForest {
+  atx::f64 base{0.0};
+  std::vector<GbtTree> trees;
+};
+
+// Evaluate one tree on an augmented row: walk from the root, branching left iff
+// row[feature] < threshold, until a leaf, and return its leaf_value. Allocation-
+// free (M7): a bounded index walk over pre-stored nodes. An empty tree predicts 0.
+[[nodiscard]] inline atx::f64 gbt_tree_predict(const GbtTree &tree,
+                                               std::span<const atx::f64> augmented_row) {
+  if (tree.nodes.empty()) {
+    return 0.0;
+  }
+  atx::i32 idx = 0;
+  // SAFETY: a well-formed tree's child indices are all valid node positions and
+  // every path terminates at a leaf; the loop is bounded by the node count so a
+  // malformed (cyclic) tree cannot spin forever.
+  for (atx::usize steps = 0; steps <= tree.nodes.size(); ++steps) {
+    ATX_CHECK(idx >= 0 && static_cast<atx::usize>(idx) < tree.nodes.size());
+    const GbtNode &node = tree.nodes[static_cast<atx::usize>(idx)];
+    if (node.is_leaf) {
+      return node.leaf_value;
+    }
+    ATX_CHECK(static_cast<atx::usize>(node.feature) < augmented_row.size());
+    idx = (augmented_row[node.feature] < node.threshold) ? node.left : node.right;
+  }
+  ATX_CHECK(false); // a well-formed tree always reaches a leaf within node-count steps
+  return 0.0;
+}
+
+// Evaluate one forest on an augmented row: base + Σ trees. Allocation-free (M7).
+[[nodiscard]] inline atx::f64 gbt_forest_predict(const GbtForest &forest,
+                                                 std::span<const atx::f64> augmented_row) {
+  atx::f64 acc = forest.base;
+  for (const GbtTree &tree : forest.trees) {
+    acc += gbt_tree_predict(tree, augmented_row);
+  }
+  return acc;
+}
 
 // ===========================================================================
 //  LearnedModel — the immutable deployed parameters of a fitted learned alpha.
@@ -121,6 +191,10 @@ struct LearnedModel {
   LatentAugmentation aug;
   atx::u32 n_base_features{0};
   std::vector<atx::f64> oos_score_series{};
+  // S5-4 GBT deployed forests, one per horizon (parallel to horizons / blend_w).
+  // Empty for a Linear model, so existing Linear construction is unchanged; the
+  // Gbt predict arm reads these instead of coeffs.
+  std::vector<GbtForest> forests{};
 
   // The augmented feature dimension this model's coeffs operate on:
   // base + latent-k + interaction-pairs. The single source of that arithmetic so
@@ -216,6 +290,16 @@ struct LearnedModel {
         dot += c(static_cast<Eigen::Index>(j)) * augmented_row[j];
       }
       acc += m.blend_w[h] * dot;
+    }
+    return acc;
+  }
+  case ModelKind::Gbt: {
+    // Blend each horizon's forest prediction by blend_w (§0.6), exactly as the
+    // Linear arm blends its per-horizon dot products. Forest eval is allocation-
+    // free (gbt_forest_predict walks pre-stored nodes).
+    atx::f64 acc = 0.0;
+    for (atx::usize h = 0; h < m.forests.size(); ++h) {
+      acc += m.blend_w[h] * gbt_forest_predict(m.forests[h], augmented_row);
     }
     return acc;
   }
