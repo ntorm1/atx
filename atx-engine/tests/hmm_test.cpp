@@ -83,26 +83,32 @@ struct Lcg {
   return obs;
 }
 
-// A planted 2-regime, 1-dim series with PERSISTENT runs and a LARGE separation,
-// returning the observation matrix and the per-row ground-truth labels (0 = A,
-// 1 = B). Regime A: mean 0, low var; regime B: mean +3, higher var. Persistence
-// is encoded by switching regime only at fixed run boundaries (deterministic),
-// so a correct fit recovers the runs comfortably above the 0.8 bar.
-[[nodiscard]] MatX planted_two_regime_series(usize T, u64 seed, std::vector<u32> &truth_out) {
+// A planted 2-regime, 1-dim series with PERSISTENT runs, parameterized by the
+// regime-B mean/sd so the SAME generator drives both an easy (well-separated) and
+// a hard (weakly-separated) recovery fixture. Regime A is fixed at mean 0, sd 0.3;
+// regime B is mean_b / sd_b. Persistence is encoded by switching regime only at
+// fixed run boundaries (deterministic) — what an HMM's self-transition models —
+// so the planted truth stays crisp regardless of separation.
+[[nodiscard]] MatX planted_two_regime_series_sep(usize T, u64 seed, f64 mean_b, f64 sd_b,
+                                                 std::vector<u32> &truth_out) {
   MatX obs(static_cast<Eigen::Index>(T), 1);
   truth_out.assign(T, 0U);
   Lcg rng{seed};
-  // Fixed run lengths cycle so regimes persist (no per-step coin flip) — this is
-  // what an HMM's self-transition models, and keeps the planted truth crisp.
   const usize run = 25U;
   for (usize t = 0; t < T; ++t) {
     const bool b = ((t / run) % 2U) == 1U;
     truth_out[t] = b ? 1U : 0U;
-    const f64 mean = b ? 3.0 : 0.0;
-    const f64 sd = b ? 0.6 : 0.3;
+    const f64 mean = b ? mean_b : 0.0;
+    const f64 sd = b ? sd_b : 0.3;
     obs(static_cast<Eigen::Index>(t), 0) = mean + sd * rng.normal();
   }
   return obs;
+}
+
+// The well-separated default fixture (mean +3, sd 0.6 ≈ 5σ gap) used by the PIT
+// and easy-recovery tests.
+[[nodiscard]] MatX planted_two_regime_series(usize T, u64 seed, std::vector<u32> &truth_out) {
+  return planted_two_regime_series_sep(T, seed, /*mean_b=*/3.0, /*sd_b=*/0.6, truth_out);
 }
 
 // Permutation-robust agreement between a decode and the planted truth: HMM state
@@ -197,8 +203,29 @@ TEST(Hmm, RecoversPlantedRegimes_AboveChance) {
   const std::vector<u32> decode = learn::posterior_decode(hmm, obs);
   ASSERT_EQ(decode.size(), truth.size());
 
+  // Well-separated (~5σ) fixture: a correct fit recovers the planted runs nearly
+  // perfectly. The bar is set high (0.95, not a loose 0.8) so a kernel that only
+  // half-works — or decodes near chance — genuinely FAILS this test.
   const f64 agree = regime_agreement(decode, truth);
-  EXPECT_GT(agree, 0.8) << "fitted regimes must recover the planted truth: agreement=" << agree;
+  EXPECT_GT(agree, 0.95) << "fitted regimes must recover the planted truth: agreement=" << agree;
+}
+
+// A HARDER recovery fixture: regime B is only mean +1.2 / sd 0.6 over regime A
+// (mean 0 / sd 0.3) — a ~2σ overlap where a single-threshold classifier struggles
+// but the HMM's temporal self-transition prior should still pull decode well above
+// chance. This makes the recovery claim load-bearing on a non-trivial separation,
+// not just the auto-passing wide-gap case.
+TEST(Hmm, RecoversWeaklySeparatedRegimes_AboveChance) {
+  std::vector<u32> truth;
+  const MatX obs =
+      planted_two_regime_series_sep(/*T=*/400U, /*seed=*/7ULL, /*mean_b=*/1.2, /*sd_b=*/0.6, truth);
+  const Hmm hmm = learn::baum_welch(obs, standard_cfg());
+  const std::vector<u32> decode = learn::posterior_decode(hmm, obs);
+  ASSERT_EQ(decode.size(), truth.size());
+
+  const f64 agree = regime_agreement(decode, truth);
+  EXPECT_GT(agree, 0.75) << "weakly-separated regimes must still recover above chance: agreement="
+                         << agree;
 }
 
 // ---- 3: M2 PIT posterior — causal + truncation-invariant ----------------------

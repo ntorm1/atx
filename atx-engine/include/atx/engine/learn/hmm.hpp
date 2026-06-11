@@ -514,12 +514,10 @@ inline void global_stats(const hmm_lin::MatX &obs, hmm_lin::VecX &mean_out,
                                                        atx::usize d) {
   ATX_CHECK(static_cast<atx::usize>(obs.rows()) > d); // row d must exist in obs
   const Eigen::Index ns = static_cast<Eigen::Index>(fitted.n_states);
-  // Forward over the causal prefix [0..d] only (length d+1). Note: emission_logp
-  // inside forward_alpha_prefix is computed over the FULL obs for simplicity, but
-  // the recursion reads only la rows [0..d] and obs rows [0..d]; the posterior
-  // below uses ONLY row d, whose value depends solely on obs[0..d]. To make the
-  // causality structural (not just "we ignore later rows"), restrict obs to the
-  // prefix before the forward pass.
+  // Forward over the causal prefix [0..d] only (length d+1). Causality is made
+  // STRUCTURAL by copying obs[0..d] into a fresh prefix and running the forward
+  // recursion over THAT — so emission_logp and the recursion physically cannot
+  // touch any row > d. The posterior below reads only la row d.
   hmm_lin::MatX prefix(static_cast<Eigen::Index>(d + 1), obs.cols());
   for (atx::usize t = 0; t <= d; ++t) {
     for (Eigen::Index j = 0; j < obs.cols(); ++j) {
