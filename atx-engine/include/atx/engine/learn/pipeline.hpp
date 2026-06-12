@@ -131,35 +131,12 @@ namespace pipeline_detail {
   return s;
 }
 
-// The per-date observable the pipeline fits the HMM on: the cross-sectional MEAN of
-// the FeatureMatrix's LAST feature column over each date's rows (the same marker
-// derivation fit_stack uses for its regime split). A (n_dates x 1) MatX so the HMM
-// can run its forward filter over it; a date with no rows gets observable 0.
-// Order-fixed forward walk over (date,instrument)-ordered rows (no map, M1).
-[[nodiscard]] inline atx::core::linalg::MatX marker_observable(const FeatureMatrix &fm) {
-  const atx::usize nd = fm.n_dates;
-  const atx::usize marker = (fm.n_features == 0U) ? 0U : (fm.n_features - 1U);
-  atx::core::linalg::MatX obs(static_cast<Eigen::Index>(nd), 1);
-  for (atx::usize d = 0; d < nd; ++d) {
-    obs(static_cast<Eigen::Index>(d), 0) = 0.0;
-  }
-  atx::usize r = 0;
-  const atx::usize nr = fm.n_rows();
-  while (r < nr) {
-    const atx::usize date = fm.row_date[r];
-    atx::f64 sum = 0.0;
-    atx::usize cnt = 0;
-    while (r < nr && fm.row_date[r] == date) {
-      sum += fm.X[r * fm.n_features + marker];
-      ++cnt;
-      ++r;
-    }
-    if (date < nd && cnt > 0U) {
-      obs(static_cast<Eigen::Index>(date), 0) = sum / static_cast<atx::f64>(cnt);
-    }
-  }
-  return obs;
-}
+// The per-date observable the pipeline fits the HMM on is the SAME marker derivation
+// fit_stack uses for its regime split — so the pipeline REUSES the canonical
+// `ensemble_detail::regime_observable` (cross-sectional mean of the last feature
+// column per date, a (n_dates x 1) MatX, order-fixed forward walk) rather than
+// keeping a divergent copy. (Both derivations must stay identical; one definition
+// guarantees it.)
 
 // Fold a LearnedModel's DECIDED parameters (M1) into the f64 digest buffer:
 // kind, trial_count, blend weights, the frozen out-of-fold series, the linear
@@ -217,7 +194,7 @@ inline void fold_model(std::vector<atx::f64> &buf, const LearnedModel &m) {
 
   // HMM on the derived marker observable: fold its log-parameters + an independent
   // forward log-likelihood (all deterministic from the seeded init + order-fixed EM).
-  const atx::core::linalg::MatX obs = pipeline_detail::marker_observable(fm);
+  const atx::core::linalg::MatX obs = ensemble_detail::regime_observable(fm);
   HmmCfg hcfg;
   hcfg.n_states = 2U;
   hcfg.master_seed = cfg.master_seed;
