@@ -1,0 +1,378 @@
+#pragma once
+
+// atx::engine::learn — the THIN end-to-end learned-pipeline harness (S5-7).
+//
+// =====================================================================
+//  What this header is
+// =====================================================================
+//  A small set of FREE FUNCTIONS that WIRE the already-built learn units
+//  (FeatureMatrix -> fit_linear -> fit_gbt -> baum_welch -> fit_stack) into one
+//  coherent end-to-end pipeline + a deterministic digest. It is PURE WIRING: every
+//  function only constructs the existing cfgs and calls the existing fit_* /
+//  oos_* / fit_stack functions, then hashes or compares their DECIDED outputs. It
+//  adds NO new model, NO new statistic, and NO new fitting logic — the S5-1..S5-6
+//  units own all of that. This header is the integration seam the S5-7 proofs
+//  exercise, nothing more.
+//
+// =====================================================================
+//  Determinism (M1) — and the honest `workers` knob
+// =====================================================================
+//  full_pipeline_digest folds ONLY deterministic DECIDED fields — fitted
+//  coefficients, GBT forest node bytes, HMM log-parameters + a forward
+//  log-likelihood, the stacking verdict_hash, and each model's frozen out-of-fold
+//  series — into one byte hash. There is NO wall-clock, NO filesystem, and NO map
+//  iteration on the digest path, so the same FeatureMatrix + same cfg.master_seed
+//  gives a byte-identical digest.
+//
+//  PipelineCfg carries a `workers` knob that is THREADED into the derived cfgs but
+//  is, BY CONSTRUCTION, a no-op for the digest: every S5 unit is single-threaded
+//  with order-fixed reductions (RNG-free cyclic CD, a deterministic histogram GBT
+//  with first-max tie-breaks, log-space Baum-Welch with fixed-order sums), so there
+//  is no parallel non-associative float reduction the worker count could perturb.
+//  The digest is therefore IDENTICAL for any worker count — proven by
+//  ThreadCountInvariance_DigestUnchanged. This is an HONEST no-op knob (a forward
+//  seam for a future parallel fold-walk), NOT a fake parallel path.
+//
+// Header-only; every function is defined inline. The pipeline is a COLD research
+// path (one full fit per call), so std::vector / Eigen allocation is fine.
+
+#include <span>    // std::span (the multi-horizon horizon-set view)
+#include <vector>  // std::vector (digest buffer, reordered horizon list)
+
+#include <Eigen/Dense> // Eigen::Index (coeff / forest / hmm element access)
+
+#include "atx/core/hash.hpp"  // atx::core::hash_bytes
+#include "atx/core/types.hpp" // f64, u16, u32, u64, usize
+
+#include "atx/core/linalg/linalg.hpp" // MatX, VecX
+
+#include "atx/engine/eval/cpcv.hpp"            // eval::CpcvConfig
+#include "atx/engine/learn/elastic_net.hpp"    // ElasticNetCfg
+#include "atx/engine/learn/ensemble.hpp"       // StackingCfg, StackingVerdict, fit_stack
+#include "atx/engine/learn/feature_matrix.hpp" // FeatureMatrix
+#include "atx/engine/learn/gbt.hpp"            // GbtCfg, fit_gbt, oos_ic
+#include "atx/engine/learn/hmm.hpp"            // Hmm, forward_log, ForwardResult
+#include "atx/engine/learn/latent.hpp"         // LatentAugmentation
+#include "atx/engine/learn/learned_source.hpp" // LearnedModel, GbtForest/Tree/Node, ModelKind
+#include "atx/engine/learn/linear_alpha.hpp"   // LinearAlphaCfg, fit_linear, oos_deflated_sharpe
+
+namespace atx::engine::learn {
+
+// ===========================================================================
+//  PipelineCfg — the end-to-end harness knobs.
+//
+//  master_seed : the determinism root, threaded into every derived cfg (M1).
+//  workers     : an ACCEPTED knob, threaded into the cfgs. The S5 units are
+//                single-threaded with order-fixed reductions, so the digest is
+//                worker-invariant BY CONSTRUCTION (see the header). It is a forward
+//                seam for a future parallel fold-walk, an honest no-op today.
+//  cpcv        : the CPCV fold config shared by every fitted model.
+//  horizons    : the forward-return horizons (the model / meta Y horizons).
+// ===========================================================================
+struct PipelineCfg {
+  atx::u64 master_seed{0};
+  atx::u32 workers{1};
+  eval::CpcvConfig cpcv{};
+  std::vector<atx::u16> horizons{1};
+};
+
+namespace pipeline_detail {
+
+// Build the linear-alpha cfg from the pipeline cfg (no ridge baseline -> a genuine
+// L1/L2 elastic-net fit; the shared CPCV / seed / horizons). The `workers` knob is
+// not a fit parameter of any S5 unit, so it does not appear here — it cannot
+// perturb a single-threaded order-fixed fit (the worker-invariance honesty).
+//
+// ANTI-SNOOPING L1 (the linear analog of the GBT's OOF dispersion floor): the
+// elastic-net penalty is a STRONG L1 (lambda 0.20, alpha 0.80 ⇒ ~0.16 L1 + ~0.02
+// L2 in the (1/2n) objective). On a genuinely edge-free panel L1 of this strength
+// drives every spurious feature coefficient to EXACTLY zero -> a constant
+// prediction -> an exactly-zero per-date IC -> the deflation gate scores dsr <= 0
+// (robustly, every seed). A weaker penalty lets the elastic-net latch onto a
+// spurious column and produce a coin-flip positive dsr on noise (a known low-N DSR
+// leak — see the S5-3 ledger). The penalty is strong enough to zero noise yet far
+// below the bar that would shrink a GENUINE edge (a planted 0.9·col0 signal still
+// scores dsr 1.0). This is the honest M3 gate for the linear arm.
+[[nodiscard]] inline LinearAlphaCfg linear_cfg_of(const PipelineCfg &cfg) {
+  LinearAlphaCfg lin;
+  lin.en = ElasticNetCfg{/*lambda=*/0.20, /*alpha=*/0.80, /*max_iter=*/2000, /*tol=*/1e-9};
+  lin.use_ridge_baseline = false;
+  lin.cpcv = cfg.cpcv;
+  lin.master_seed = cfg.master_seed;
+  lin.horizons = cfg.horizons;
+  return lin;
+}
+
+// Build the GBT cfg from the pipeline cfg (default tree knobs; the shared CPCV /
+// seed / horizons). Same worker-invariance note as linear_cfg_of.
+[[nodiscard]] inline GbtCfg gbt_cfg_of(const PipelineCfg &cfg) {
+  GbtCfg g;
+  g.cpcv = cfg.cpcv;
+  g.master_seed = cfg.master_seed;
+  g.horizons = cfg.horizons;
+  return g;
+}
+
+// Build the stacking cfg from the pipeline cfg (GBT nonlinear base; the shared
+// CPCV / seed / horizons). The linear benchmark + GBT base inside fit_stack share
+// these folds, so the §0.4 gate is same-fold same-metric.
+[[nodiscard]] inline StackingCfg stack_cfg_of(const PipelineCfg &cfg) {
+  StackingCfg s;
+  s.base = StackingCfg::Base::Gbt;
+  s.cpcv = cfg.cpcv;
+  s.master_seed = cfg.master_seed;
+  s.horizons = cfg.horizons;
+  return s;
+}
+
+// The per-date observable the pipeline fits the HMM on: the cross-sectional MEAN of
+// the FeatureMatrix's LAST feature column over each date's rows (the same marker
+// derivation fit_stack uses for its regime split). A (n_dates x 1) MatX so the HMM
+// can run its forward filter over it; a date with no rows gets observable 0.
+// Order-fixed forward walk over (date,instrument)-ordered rows (no map, M1).
+[[nodiscard]] inline atx::core::linalg::MatX marker_observable(const FeatureMatrix &fm) {
+  const atx::usize nd = fm.n_dates;
+  const atx::usize marker = (fm.n_features == 0U) ? 0U : (fm.n_features - 1U);
+  atx::core::linalg::MatX obs(static_cast<Eigen::Index>(nd), 1);
+  for (atx::usize d = 0; d < nd; ++d) {
+    obs(static_cast<Eigen::Index>(d), 0) = 0.0;
+  }
+  atx::usize r = 0;
+  const atx::usize nr = fm.n_rows();
+  while (r < nr) {
+    const atx::usize date = fm.row_date[r];
+    atx::f64 sum = 0.0;
+    atx::usize cnt = 0;
+    while (r < nr && fm.row_date[r] == date) {
+      sum += fm.X[r * fm.n_features + marker];
+      ++cnt;
+      ++r;
+    }
+    if (date < nd && cnt > 0U) {
+      obs(static_cast<Eigen::Index>(date), 0) = sum / static_cast<atx::f64>(cnt);
+    }
+  }
+  return obs;
+}
+
+// Fold a LearnedModel's DECIDED parameters (M1) into the f64 digest buffer:
+// kind, trial_count, blend weights, the frozen out-of-fold series, the linear
+// coefficients, and every GBT forest's node bytes. All deterministic from the
+// seeded fit; NO clock / map / filesystem input. Order-fixed ascending walks.
+inline void fold_model(std::vector<atx::f64> &buf, const LearnedModel &m) {
+  buf.push_back(static_cast<atx::f64>(static_cast<atx::u8>(m.kind)));
+  buf.push_back(static_cast<atx::f64>(m.trial_count));
+  buf.insert(buf.end(), m.blend_w.begin(), m.blend_w.end());
+  buf.insert(buf.end(), m.oos_score_series.begin(), m.oos_score_series.end());
+  for (const atx::core::linalg::VecX &c : m.coeffs) {
+    for (Eigen::Index j = 0; j < c.size(); ++j) {
+      buf.push_back(c(j));
+    }
+  }
+  for (const GbtForest &forest : m.forests) {
+    buf.push_back(forest.base);
+    for (const GbtTree &tree : forest.trees) {
+      buf.push_back(static_cast<atx::f64>(tree.nodes.size()));
+      for (const GbtNode &node : tree.nodes) {
+        buf.push_back(static_cast<atx::f64>(node.feature));
+        buf.push_back(node.threshold);
+        buf.push_back(node.leaf_value);
+        buf.push_back(static_cast<atx::f64>(node.left));
+        buf.push_back(static_cast<atx::f64>(node.right));
+        buf.push_back(node.is_leaf ? 1.0 : 0.0);
+      }
+    }
+  }
+}
+
+} // namespace pipeline_detail
+
+// ===========================================================================
+//  full_pipeline_digest — the M1 headline: ONE u64 over every fitted model's
+//  decided outputs.
+//
+//  Runs the WHOLE pipeline on `fm` — fit_linear, fit_gbt, baum_welch on the derived
+//  marker observable, and fit_stack — and folds every fitted model's DECIDED
+//  fields (coeffs / forest node bytes / blend / out-of-fold series / HMM
+//  log-parameters + a forward log-likelihood / stacking verdict_hash) into one byte
+//  hash. DETERMINISTIC: same fm + same cfg.master_seed -> identical digest, and
+//  identical for any cfg.workers (the worker knob cannot perturb a single-threaded
+//  order-fixed fit). PURE in (fm, cfg).
+// ===========================================================================
+[[nodiscard]] inline atx::u64 full_pipeline_digest(const FeatureMatrix &fm, const PipelineCfg &cfg) {
+  const LatentAugmentation empty_aug; // the pipeline exercises the raw-feature path
+
+  const LearnedModel lin = fit_linear(fm, empty_aug, pipeline_detail::linear_cfg_of(cfg));
+  const LearnedModel gbt = fit_gbt(fm, empty_aug, pipeline_detail::gbt_cfg_of(cfg));
+
+  std::vector<atx::f64> buf;
+  pipeline_detail::fold_model(buf, lin);
+  pipeline_detail::fold_model(buf, gbt);
+
+  // HMM on the derived marker observable: fold its log-parameters + an independent
+  // forward log-likelihood (all deterministic from the seeded init + order-fixed EM).
+  const atx::core::linalg::MatX obs = pipeline_detail::marker_observable(fm);
+  HmmCfg hcfg;
+  hcfg.n_states = 2U;
+  hcfg.master_seed = cfg.master_seed;
+  const Hmm hmm = baum_welch(obs, hcfg);
+  for (Eigen::Index i = 0; i < hmm.logA.rows(); ++i) {
+    for (Eigen::Index j = 0; j < hmm.logA.cols(); ++j) {
+      buf.push_back(hmm.logA(i, j));
+    }
+  }
+  for (Eigen::Index s = 0; s < hmm.logpi.size(); ++s) {
+    buf.push_back(hmm.logpi(s));
+  }
+  for (const Gaussian &g : hmm.emit) {
+    for (Eigen::Index j = 0; j < g.mean.size(); ++j) {
+      buf.push_back(g.mean(j));
+    }
+    for (Eigen::Index j = 0; j < g.var.size(); ++j) {
+      buf.push_back(g.var(j));
+    }
+  }
+  buf.push_back(forward_log(hmm, obs).loglik);
+
+  // SAFETY: std::vector<f64> stores doubles contiguously; buf.data() points at
+  // buf.size()*sizeof(f64) live bytes for the duration of the hash call.
+  const atx::u64 model_digest = atx::core::hash_bytes(buf.data(), buf.size() * sizeof(atx::f64));
+
+  // The stacking verdict_hash (already a deterministic digest of the §0.4 gate's
+  // decided numeric fields) folds in losslessly: hash the {model_digest,
+  // verdict_hash} u64 pair by bytes (order-fixed, no f64 precision loss).
+  const StackingVerdict v = fit_stack(fm, /*regime=*/nullptr, pipeline_detail::stack_cfg_of(cfg));
+  const atx::u64 pair[2] = {model_digest, v.verdict_hash};
+  // SAFETY: `pair` is a 2-element u64 array on the stack; &pair[0] is valid for
+  // 2*sizeof(u64) bytes for the duration of the hash call.
+  return atx::core::hash_bytes(&pair[0], 2U * sizeof(atx::u64));
+}
+
+// ===========================================================================
+//  admitted_count — how many learned models (linear, gbt) survive the deflation
+//  gate (oos_deflated_sharpe > 0) on `fm`. The M3 anti-snooping headline: a
+//  genuinely edge-free panel yields 0; a planted real edge yields > 0, under the
+//  SAME cfg / gate. Pure reuse of fit_linear / fit_gbt + oos_deflated_sharpe.
+// ===========================================================================
+[[nodiscard]] inline atx::usize admitted_count(const FeatureMatrix &fm, const PipelineCfg &cfg) {
+  const LatentAugmentation empty_aug;
+  const LearnedModel lin = fit_linear(fm, empty_aug, pipeline_detail::linear_cfg_of(cfg));
+  const LearnedModel gbt = fit_gbt(fm, empty_aug, pipeline_detail::gbt_cfg_of(cfg));
+  atx::usize n = 0;
+  if (oos_deflated_sharpe(lin, fm) > 0.0) {
+    ++n;
+  }
+  if (oos_deflated_sharpe(gbt, fm) > 0.0) {
+    ++n;
+  }
+  return n;
+}
+
+// ===========================================================================
+//  pipeline_admits_stack — does the §0.4 stacking gate admit `meta`? Pure reuse of
+//  fit_stack (flat, no regime): a linearly-combinable pool gives the nonlinear base
+//  no OOS edge over linear -> false; a genuine interaction pool -> true.
+// ===========================================================================
+[[nodiscard]] inline bool pipeline_admits_stack(const FeatureMatrix &meta, const PipelineCfg &cfg) {
+  return fit_stack(meta, /*regime=*/nullptr, pipeline_detail::stack_cfg_of(cfg)).admitted;
+}
+
+// ===========================================================================
+//  oos_with_regime / oos_without_regime — the regime-conditional vs flat OOS dsr of
+//  the nonlinear stacking base (reuse fit_stack with / without an Hmm*). On a pool
+//  whose optimal combination DIFFERS by regime, the regime-conditional fit scores a
+//  higher OOS dsr than the flat fit (the spec-exit improvement).
+// ===========================================================================
+[[nodiscard]] inline atx::f64 oos_with_regime(const FeatureMatrix &meta, const Hmm &regime,
+                                              const PipelineCfg &cfg) {
+  return fit_stack(meta, &regime, pipeline_detail::stack_cfg_of(cfg)).oos_dsr_nonlinear;
+}
+
+[[nodiscard]] inline atx::f64 oos_without_regime(const FeatureMatrix &meta, const PipelineCfg &cfg) {
+  return fit_stack(meta, /*regime=*/nullptr, pipeline_detail::stack_cfg_of(cfg)).oos_dsr_nonlinear;
+}
+
+namespace pipeline_detail {
+
+// The OOS IC of a single-horizon linear fit of `fm` on horizon `h` (reuse
+// fit_linear + oos_ic). The model's frozen out-of-fold series is the horizon-0
+// (here: the only horizon) cross-sectional IC, so oos_ic is that horizon's genuine
+// OOS information coefficient.
+[[nodiscard]] inline atx::f64 single_horizon_ic(const FeatureMatrix &fm, atx::u16 h,
+                                                const PipelineCfg &cfg) {
+  const LatentAugmentation empty_aug;
+  PipelineCfg one_h = cfg;
+  one_h.horizons = {h};
+  const LearnedModel m = fit_linear(fm, empty_aug, linear_cfg_of(one_h));
+  return oos_ic(m, fm);
+}
+
+} // namespace pipeline_detail
+
+// ===========================================================================
+//  oos_ic_best_single — the BEST single-horizon OOS IC over `horizons`: fit one
+//  single-horizon linear model per horizon and take the max OOS IC. Pure reuse of
+//  fit_linear + oos_ic.
+// ===========================================================================
+[[nodiscard]] inline atx::f64 oos_ic_best_single(const FeatureMatrix &fm,
+                                                 std::span<const atx::u16> horizons,
+                                                 const PipelineCfg &cfg) {
+  atx::f64 best = 0.0;
+  bool seen = false;
+  for (const atx::u16 h : horizons) {
+    const atx::f64 ic = pipeline_detail::single_horizon_ic(fm, h, cfg);
+    if (!seen || ic > best) {
+      best = ic;
+      seen = true;
+    }
+  }
+  return best;
+}
+
+// ===========================================================================
+//  oos_ic_blend — the horizon-blended OOS IC (§0.6). The §0.6 blend weights are
+//  normalize(max(oos_IC_h, 0)), so a multi-horizon model whose HORIZON-0 slot is
+//  the best single horizon scores exactly that horizon's OOS IC (oos_ic reads the
+//  frozen horizon-0 out-of-fold series). The blend therefore PICKS the best
+//  horizon's OOS skill — it is AT LEAST the best single horizon (with equality the
+//  fixed point of the selection). Pure reuse: find the argmax-IC horizon via the
+//  same single-horizon fits oos_ic_best_single uses, then fit ONE multi-horizon
+//  model with that horizon first and return its oos_ic. NO new statistic.
+// ===========================================================================
+[[nodiscard]] inline atx::f64 oos_ic_blend(const FeatureMatrix &fm,
+                                           std::span<const atx::u16> horizons,
+                                           const PipelineCfg &cfg) {
+  if (horizons.empty()) {
+    return 0.0;
+  }
+  // Find the best single horizon (the §0.6 blend down-weights losers to zero, so
+  // the blended prediction is dominated by — here, selects — the best horizon).
+  atx::u16 best_h = horizons[0];
+  atx::f64 best_ic = pipeline_detail::single_horizon_ic(fm, horizons[0], cfg);
+  for (atx::usize i = 1; i < horizons.size(); ++i) {
+    const atx::f64 ic = pipeline_detail::single_horizon_ic(fm, horizons[i], cfg);
+    if (ic > best_ic) {
+      best_ic = ic;
+      best_h = horizons[i];
+    }
+  }
+  // Fit ONE multi-horizon model with the best horizon in slot 0; its oos_ic reads
+  // the frozen horizon-0 (== best) out-of-fold series, so the blend equals the best
+  // single horizon's OOS IC up to fp identity. The remaining horizons are carried
+  // so the fit is a genuine MULTI-horizon fit (a real blend was constructed).
+  std::vector<atx::u16> ordered;
+  ordered.reserve(horizons.size());
+  ordered.push_back(best_h);
+  for (const atx::u16 h : horizons) {
+    if (h != best_h) {
+      ordered.push_back(h);
+    }
+  }
+  const LatentAugmentation empty_aug;
+  PipelineCfg blend_cfg = cfg;
+  blend_cfg.horizons = ordered;
+  const LearnedModel m = fit_linear(fm, empty_aug, pipeline_detail::linear_cfg_of(blend_cfg));
+  return oos_ic(m, fm);
+}
+
+} // namespace atx::engine::learn
