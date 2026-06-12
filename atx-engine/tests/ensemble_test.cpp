@@ -26,21 +26,20 @@
 // gbt_test make_fm pattern. A local deterministic LCG carries the reproducible
 // noise (no std::rand). Naming: Subject_Condition_Expected.
 
-#include <cmath>        // std::isfinite, std::fabs
 #include <filesystem>   // per-test temp directory (the library is rooted at a dir)
 #include <limits>       // std::numeric_limits (tail NaN label)
 #include <string>       // std::string (tmp dir path, expr_source check)
 #include <system_error> // std::error_code (tmpdir remove_all/create_directories)
 #include <vector>
 
-#include <Eigen/Dense> // Eigen::Index, MatX
+#include <Eigen/Dense> // Eigen::Index
 
 #include <gtest/gtest.h>
 
-#include "atx/core/types.hpp" // f64, u16, u32, u64, usize
+#include "atx/core/linalg/linalg.hpp" // atx::core::linalg::MatX (regime observable)
+#include "atx/core/types.hpp"         // f64, u16, u32, u64, usize
 
 #include "atx/engine/combine/gate.hpp"         // combine::GateConfig, AlphaGate
-#include "atx/engine/combine/store.hpp"        // combine::AlphaStore, AlphaId
 #include "atx/engine/eval/cpcv.hpp"            // eval::CpcvConfig
 #include "atx/engine/learn/ensemble.hpp"       // StackingCfg, StackingVerdict, fit_stack, ...
 #include "atx/engine/learn/feature_matrix.hpp" // FeatureMatrix
@@ -216,12 +215,19 @@ template <typename ColFn, typename LabelFn>
 // ---- 1: §0.4 / M3 — a linearly-combinable pool is rejected vs linear ---------
 
 TEST(Ensemble, NoNonlinearEdge_RejectedVsLinear) {
-  const FeatureMatrix meta = linearly_combinable_meta(/*seed=*/11ULL);
-  const learn::StackingVerdict v = learn::fit_stack(meta, /*regime=*/nullptr, standard_cfg());
-  EXPECT_FALSE(v.admitted) << "a linearly-combinable pool buys the GBT no OOS edge: "
-                           << "nl_ic=" << v.oos_ic_nonlinear << " lin_ic=" << v.oos_ic_linear
-                           << " nl_dsr=" << v.oos_dsr_nonlinear;
-  EXPECT_EQ(v.reason, learn::AdmitKind::RejectFitness);
+  // The REJECT direction is the spec-critical one: a false-admit on a purely-linear
+  // pool would be "ML-for-ML's-sake" leaking past the §0.4 gate (a real M3 break).
+  // So this is swept across 20 distinct linearly-combinable panels — the gate must
+  // reject EVERY one (the GBT's extra capacity buys no OOS IC over a linear base on
+  // genuinely linear structure).
+  for (u64 seed = 1; seed <= 20ULL; ++seed) {
+    const FeatureMatrix meta = linearly_combinable_meta(seed);
+    const learn::StackingVerdict v = learn::fit_stack(meta, /*regime=*/nullptr, standard_cfg());
+    EXPECT_FALSE(v.admitted) << "a linearly-combinable pool must buy the GBT no OOS edge: seed="
+                             << seed << " nl_ic=" << v.oos_ic_nonlinear
+                             << " lin_ic=" << v.oos_ic_linear << " nl_dsr=" << v.oos_dsr_nonlinear;
+    EXPECT_EQ(v.reason, learn::AdmitKind::RejectFitness) << "seed=" << seed;
+  }
 }
 
 // ---- 2: M3 non-vacuous — a genuine interaction pool is admitted over linear --
@@ -239,29 +245,35 @@ TEST(Ensemble, GenuineNonlinearEdge_AdmittedOverLinear) {
 // ---- 3: §4.5 — regime-conditional beats flat on a regime fixture -------------
 
 TEST(Ensemble, RegimeConditional_ImprovesOosOnRegimeFixture) {
-  atx::core::linalg::MatX regime_obs;
   // A modest panel (40 dates x 6 instruments, run length 8) with HEAVY label noise:
-  // few instruments => the per-date OOF IC is noisy, so the flat fit's DSR is well
+  // few instruments => the per-date OOF IC is noisy, so the flat fit's DSR stays
   // BELOW saturation, leaving room for the regime-conditional fit to score higher.
-  // (Verified across a 10-seed sweep at these params: regime DSR > flat DSR on every
-  // seed; this fixture's separation is what is tuned, never the test bar.)
-  const FeatureMatrix meta = two_regime_meta(/*seed=*/6ULL, /*n_dates=*/40U, /*n_inst=*/6U,
-                                             /*run=*/8U, regime_obs);
-  // Fit a 2-state HMM on the derived per-date marker-mean observable.
-  learn::HmmCfg hcfg;
-  hcfg.n_states = 2U;
-  hcfg.master_seed = 5ULL;
-  const learn::Hmm hmm = learn::baum_welch(regime_obs, hcfg);
+  // Swept across distinct data seeds: the regime fit must beat flat on EVERY one —
+  // and since DSR is capped at 1.0, `regime_dsr > flat_dsr` STRICTLY forces flat to
+  // be sub-saturating (a 1.0-vs-1.0 comparison would fail), so the improvement is
+  // genuine, not a saturation artifact. This fixture's regime separation is what is
+  // tuned, never the test bar.
+  for (u64 seed = 1; seed <= 6ULL; ++seed) {
+    atx::core::linalg::MatX regime_obs;
+    const FeatureMatrix meta =
+        two_regime_meta(seed, /*n_dates=*/40U, /*n_inst=*/6U, /*run=*/8U, regime_obs);
+    // Fit a 2-state HMM on the derived per-date marker-mean observable.
+    learn::HmmCfg hcfg;
+    hcfg.n_states = 2U;
+    hcfg.master_seed = 5ULL;
+    const learn::Hmm hmm = learn::baum_welch(regime_obs, hcfg);
 
-  learn::StackingCfg cfg = standard_cfg();
-  cfg.master_seed = 17ULL;
+    learn::StackingCfg cfg = standard_cfg();
+    cfg.master_seed = 17ULL;
 
-  const learn::StackingVerdict v_flat = learn::fit_stack(meta, /*regime=*/nullptr, cfg);
-  const learn::StackingVerdict v_regime = learn::fit_stack(meta, &hmm, cfg);
-  EXPECT_GT(v_regime.oos_dsr_nonlinear, v_flat.oos_dsr_nonlinear)
-      << "regime-conditional OOS dsr must beat flat: regime=" << v_regime.oos_dsr_nonlinear
-      << " flat=" << v_flat.oos_dsr_nonlinear << " (regime_ic=" << v_regime.oos_ic_nonlinear
-      << " flat_ic=" << v_flat.oos_ic_nonlinear << ")";
+    const learn::StackingVerdict v_flat = learn::fit_stack(meta, /*regime=*/nullptr, cfg);
+    const learn::StackingVerdict v_regime = learn::fit_stack(meta, &hmm, cfg);
+    EXPECT_GT(v_regime.oos_dsr_nonlinear, v_flat.oos_dsr_nonlinear)
+        << "regime-conditional OOS dsr must beat flat: seed=" << seed
+        << " regime=" << v_regime.oos_dsr_nonlinear << " flat=" << v_flat.oos_dsr_nonlinear
+        << " (regime_ic=" << v_regime.oos_ic_nonlinear << " flat_ic=" << v_flat.oos_ic_nonlinear
+        << ")";
+  }
 }
 
 // ---- 4: M6 — an admitted stack plugs into the library as a learned alpha -----
@@ -291,6 +303,25 @@ TEST(Ensemble, Admitted_PlugsIntoLibrary_AsLearnedAlpha) {
   const library::AdmitVerdict verdict = lib.admit(cand.candidate, combine::AlphaGate{combine::GateConfig{}});
   EXPECT_NE(verdict.kind, library::AdmitKind::Duplicate)
       << "a fresh learned-stack candidate must not dedup against an empty library";
+
+  // End-to-end M6: under a PERMISSIVE gate (floors lowered, correlation bound
+  // relaxed) the very same learned-stack candidate must ACTUALLY ADMIT into a fresh
+  // empty library — proving a learned model enters the pool through the identical
+  // path a mined alpha does, not merely that it isn't a duplicate.
+  const std::filesystem::path dir2 =
+      std::filesystem::temp_directory_path() / "atx_s5_6_ensemble_admit2";
+  std::filesystem::remove_all(dir2, ec);
+  std::filesystem::create_directories(dir2, ec);
+  combine::GateConfig permissive;
+  permissive.min_sharpe = -1.0e9;
+  permissive.min_fitness = -1.0e9;
+  permissive.max_turnover = 1.0e9;
+  permissive.max_pool_corr = 1.0;
+  library::Library lib2 = library::Library::open(dir2.string(), permissive, std::vector<u64>{42ULL});
+  const library::AdmitVerdict accepted = lib2.admit(cand.candidate, combine::AlphaGate{permissive});
+  EXPECT_EQ(accepted.kind, library::AdmitKind::Accept)
+      << "a learned-stack candidate must admit end-to-end under a permissive gate (kind="
+      << static_cast<u32>(accepted.kind) << ")";
 }
 
 // ---- 5: M1 — same seed gives a byte-identical verdict hash -------------------

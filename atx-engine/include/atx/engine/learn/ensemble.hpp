@@ -89,7 +89,6 @@
 #include "atx/engine/combine/metrics.hpp"      // combine::AlphaMetrics, compute_metrics
 #include "atx/engine/combine/store.hpp"        // combine::AlphaStore, AlphaId
 #include "atx/engine/eval/cpcv.hpp"            // eval::CpcvConfig
-#include "atx/engine/eval/stats_ext.hpp"       // eval::mean_std_pop
 #include "atx/engine/learn/elastic_net.hpp"    // ElasticNetCfg
 #include "atx/engine/learn/feature_matrix.hpp" // FeatureMatrix
 #include "atx/engine/learn/gbt.hpp"            // GbtCfg, fit_gbt, oos_ic
