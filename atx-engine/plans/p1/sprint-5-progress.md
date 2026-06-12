@@ -1,6 +1,6 @@
 # Sprint 5 — Learned Signals & ML Combiner — Implementation Progress
 
-**Status:** 🚧 OPEN (S5-0…S5-6 done; S5-7 pending)
+**Status:** ✅ CLOSED — all 8 units S5-0…S5-7 shipped (1025/1025 engine tests; 1 pre-existing Databento smoke skipped); /W4 /permissive- /WX + strict-FP clean; S5 purely additive. Every unit two-stage reviewed (spec-compliance then code-quality); every review caught ≥1 real defect (all fixed). Determinism (M1) carried byte-identical params+signal per RNG-bearing unit + a worker-count-invariant end-to-end digest.
 **Branch:** `feat/atx-core-stdlib` (SHARED — explicit pathspecs only, never `git add -A`/`-u`/`-a`; never pushed; S5 is purely additive under `learn/`, `tests/`, `bench/`, this ledger)
 **Base:** `feat/atx-core-stdlib` @ `1a64c55` (S4b close `1a64c55`; S4 library management merged; P4 combine/risk + S1 eval/CPCV/DSR present)
 **Started:** 2026-06-09
@@ -106,21 +106,32 @@ These two failures are silent, not loud — the suite must catch them by constru
 
 | SHA | Unit | Subject |
 |-----|------|---------|
-| _this commit_ | S5-0 | docs(s5-0): open sprint-5 learned-signals ledger + scaffold + atx-core L7 link smoke-test |
-| _this commit_ | S5-1 | feat(s5-1): PIT feature matrix + multi-horizon labels + CPCV date-fold scaffold |
-| _this commit_ | S5-2 | feat(s5-2): PIT latent factor + interaction feature extraction (hidden features) |
-| _this commit_ | S5-3 | feat(s5-3): linear learned alpha (elastic-net CD + ridge), per-horizon blend, ISignalSource adapter; genuine-OOS deflation gate + per-fold standardization firewall |
-| _this commit_ | S5-4 | feat(s5-4): deterministic histogram GBT learned alpha (interaction capture, genuine-OOS deflation) |
-| _this commit_ | S5-5 | feat(s5-5): log-space Baum-Welch HMM + PIT regime posterior |
-| _this commit_ | S5-6 | feat(s5-6): nonlinear stacking mega-combiner (alpha-of-alphas), regime-conditional, deflation-gated vs linear |
-| _this commit_ | S5-7 | feat(s5-7): end-to-end learned-pipeline integration proofs + micro-bench + thin pipeline harness |
+| `3c4b96d` | S5-0 | docs(s5-0): open sprint-5 learned-signals ledger + scaffold + atx-core L7 link smoke-test |
+| `e451c5e` | S5-0 | docs(s5-0): correct seam-map namespaces (core::linalg ridge/pca, core::Xoshiro256pp); direct types include |
+| `a2d0615` | S5-1 | feat(s5-1): PIT feature matrix + multi-horizon labels + CPCV date-fold scaffold |
+| `29a4871` | S5-1 | refactor(s5-1): drop dead includes (cstdint x2, unused span in train.hpp) |
+| `e2c37db` | S5-2 | feat(s5-2): PIT latent factor + interaction feature extraction (hidden features) |
+| `eea4098` | S5-2 | fix(s5-2): filter non-finite labels in interaction IC; prove IC-not-index ranking; IWYU cstddef/Eigen |
+| `e3f8793` | S5-3 | feat(s5-3): linear learned alpha (elastic-net CD + ridge), per-horizon blend, ISignalSource adapter; genuine-OOS deflation gate + per-fold standardization firewall |
+| `912586f` | S5-3 | refactor(s5-3): IWYU (string, train.hpp; drop dead vector); SAFETY on hash helpers; fix stale penalty comment |
+| `0fc8ebe` | S5-4 | feat(s5-4): deterministic histogram GBT learned alpha (interaction capture, genuine-OOS deflation) |
+| `ee58f2d` | S5-5 | feat(s5-5): log-space Baum-Welch HMM + PIT regime posterior |
+| `1a7b5de` | S5-5 | test(s5-5): make HMM recovery load-bearing (tighten to 0.95 + add ~2sigma weak-separation fixture); accurate PIT-causality comment |
+| `a7e62a9` | S5-6 | feat(s5-6): nonlinear stacking mega-combiner (alpha-of-alphas), regime-conditional, deflation-gated vs linear |
+| `5910a0f` | S5-6 | test(s5-6): harden stacking gate review concerns (20-seed reject sweep, 6-seed regime sweep, end-to-end M6 Accept); IWYU |
+| `5d1e34d` | S5-7 | feat(s5-7): end-to-end learned-pipeline integration proofs + micro-bench + thin pipeline harness |
+| `9fdf307` | S5-7 | test(s5-7): fix tautological multi-horizon proof (assert IC-driven blend weights), widen noise sweep 12->30, correct workers/lambda comments |
 
 ---
 
 ## Close residuals → p1 ROADMAP future-work backlog
 
-To be populated at S5-7 close. Expected lifts: the three Pattern-B kernels (elastic-net CD, histogram GBT, log-space HMM forward-backward) → atx-core L7; `learn_bench.cpp` throughput curve.
+1. **Three Pattern-B kernels → atx-core L7 (M5 promotions).** The engine-local edges shipped this sprint are atx-core requests: `learn/elastic_net.hpp` (L1+L2 cyclic coordinate descent), `learn/gbt.hpp` (deterministic histogram split-finder + boosting), `learn/hmm.hpp` (log-space forward-backward + Baum-Welch EM). Each is differential-tested vs an obviously-correct reference, so a promotion is a lift-with-tests, not a rewrite.
+2. **Blended-prediction OOS-IC metric (the S5-7 multi-horizon residual).** §6's "multi-horizon blend beats the best single horizon OOS" is currently proven only at the WEIGHTING level (`MultiHorizon_BlendWeightsByOosIc`: the §0.6 blend demotes a no-skill horizon). A full "the blended PREDICTION's OOS IC strictly beats the best single horizon's" proof needs `fit_linear`/`fit_gbt` to RETAIN every horizon's out-of-fold predictions (today only horizon-0's series is frozen on the model) plus a new blended-OOS-IC metric and a decorrelated-horizon fixture — new model logic beyond S5-7's pure-wiring scope. Deferred.
+3. **`LearnedSignalSource::evaluate` hot-path bench case.** `learn_bench.cpp` benches the five FIT paths (elastic-net/linear/GBT/HMM/stacking); the plan also listed the M7 zero-alloc `evaluate()` cross-sections/sec case, which needs a constructed `PanelView` + base panel — deferred (the M7 zero-alloc invariant is already proven by construction in the per-unit tests, not a bench).
+4. **Live re-eval adapter (§0.1).** Deferred until a public DSL compile-to-bytecode API exists (no runtime `alpha::Engine` evaluate-from-`expr_source` today); `Provenance.expr_source` is record-keeping only. The training/admit path never needs it.
+5. **`PoolView`/`worst_corr_to_pool` consumption swap (M6).** If/when S4b lands `library::PoolView`/`worst_corr_to_pool`, S5's stacking candidate corr-to-pool should consume it instead of the stored-stream path (§0.1) — no fork.
 
 ## Baton → next
 
-S5-7 hands to **S7 (portfolio lifecycle)**: a learned model admits through `library::Library::admit` exactly like a mined alpha (M6), so the portfolio book operates learned and formulaic alphas through one lifecycle journal.
+S5 makes the pool's constituents and combiner **learned, not just formulaic** — completing the discover→predict→combine arc. **S7 (portfolio + lifecycle)** operates the combined book over time: it consumes the learned `ISignalSource`s and the `learn::StackingCombiner` as ordinary pool members (a learned model admits through `library::Library::admit` exactly like a mined alpha, M6), runs them through the multi-period optimizer + decay monitor + capacity bound, and feeds dead learned alphas into the risk-factor extractor exactly as it does formulaic ones. The **HMM regime posterior** (`regime_posterior_at`, PIT forward-only) is available to S7's regime-aware rebalancing schedule.

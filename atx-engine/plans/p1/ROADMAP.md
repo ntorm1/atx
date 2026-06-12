@@ -1,6 +1,6 @@
 # Module p1 — atx-engine v2: The Alpha Factory & Portfolio Brain (`p1`)
 
-**Last reviewed:** 2026-06-09
+**Last reviewed:** 2026-06-11
 **Status:** **S1 (Evaluation & Validation Spine) + S2 (Parallel Compute Substrate) + S3 (Formulaic Alpha Factory) + S4b (Automated Alpha Engine — factory↔library integration) CLOSED**
 (`feat/atx-core-stdlib`; close ledgers [`sprint-1-progress.md`](sprint-1-progress.md),
 [`sprint-2-progress.md`](sprint-2-progress.md), [`sprint-3-progress.md`](sprint-3-progress.md)). p0 Phases 1–4 are complete (Phase-4 mega-alpha layer
@@ -295,7 +295,7 @@ marginal contribution to the *persistent* library at O(neighbors) scale, deflati
 > overload), and the re-eval adapter (re-parse `expr_source`→compile→eval over a new panel) → **S7**. The
 > populated persistent library is the **baton to S5** (a real pool for the ML/regime combiner).
 
-### S5 — Learned Signals & ML Combiner  ⏳ proposed ([spec](sprint-5-learned-signals-ml-combiner.md))
+### S5 — Learned Signals & ML Combiner  ✅ CLOSED on `feat/atx-core-stdlib` (unmerged) ([spec](sprint-5-learned-signals-ml-combiner.md) · [ledger](sprint-5-progress.md) · [user ref](sprint-5.md))
 **Theme:** The RenTech direction — **learned predictors as first-class alphas**, and a combiner that goes
 beyond linear. A point-in-time **feature-matrix builder** (DSL outputs + raw fields → a panel feature
 tensor), **learned signal models** (ridge/lasso/elastic-net, gradient-boosted trees) trained walk-forward
@@ -308,12 +308,12 @@ in RenTech §1/§2/§3 (no-theory statistical modeling, HMM, the combination cro
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S5.0 | Marker + ledger | S | ⏳ |
-| S5.1 | PIT feature-matrix builder (DSL signals + raw fields → panel tensor; no look-ahead) | M | ⏳ |
-| S5.2 | Linear learned alphas (ridge/lasso/elastic-net; walk-forward trained; → `ISignalSource`) — atx-core L7 solver request | M | ⏳ |
-| S5.3 | Gradient-boosted-tree learned alpha (deterministic; atx-core GBT primitive request) | L | ⏳ |
-| S5.4 | HMM regime detector (Baum-Welch) + regime-conditional combination weights | L | ⏳ |
-| S5.5 | Nonlinear ensemble mega-combiner (stacking over the gated pool; deflated-Sharpe-gated) + close | L | ⏳ |
+| S5.0 | Marker + ledger | S | ✅ (S5-0; +§0.8 Eigen-link retired) |
+| S5.1 | PIT feature-matrix builder (DSL signals + raw fields → panel tensor; no look-ahead) | M | ✅ (S5-1 features + multi-horizon labels; S5-2 latent PCA + interactions) |
+| S5.2 | Linear learned alphas (ridge/lasso/elastic-net; walk-forward trained; → `ISignalSource`) — atx-core L7 solver request | M | ✅ (S5-3; elastic-net CD Pattern-B + ridge, genuine-OOS firewall) |
+| S5.3 | Gradient-boosted-tree learned alpha (deterministic; atx-core GBT primitive request) | L | ✅ (S5-4; histogram GBT, seed-robust M3) |
+| S5.4 | HMM regime detector (Baum-Welch) + regime-conditional combination weights | L | ✅ (S5-5 log-space Baum-Welch; S5-6 regime-conditional stacking) |
+| S5.5 | Nonlinear ensemble mega-combiner (stacking over the gated pool; deflated-Sharpe-gated) + close | L | ✅ (S5-6 stacking, deflation-gated vs linear; S5-7 integration + bench + close) |
 
 > Likely splits **S5-a** (features + linear + GBT: S5.1–S5.3) / **S5-b** (HMM regimes + ensemble combiner:
 > S5.4–S5.5) at kickoff. Each learned-model unit raises a specific atx-core numeric request (Pattern B).
