@@ -24,14 +24,15 @@
 //  iteration on the digest path, so the same FeatureMatrix + same cfg.master_seed
 //  gives a byte-identical digest.
 //
-//  PipelineCfg carries a `workers` knob that is THREADED into the derived cfgs but
-//  is, BY CONSTRUCTION, a no-op for the digest: every S5 unit is single-threaded
-//  with order-fixed reductions (RNG-free cyclic CD, a deterministic histogram GBT
-//  with first-max tie-breaks, log-space Baum-Welch with fixed-order sums), so there
-//  is no parallel non-associative float reduction the worker count could perturb.
-//  The digest is therefore IDENTICAL for any worker count — proven by
-//  ThreadCountInvariance_DigestUnchanged. This is an HONEST no-op knob (a forward
-//  seam for a future parallel fold-walk), NOT a fake parallel path.
+//  PipelineCfg carries a `workers` knob that is ACCEPTED but read by NO derived cfg
+//  — its value reaches no fit at all, so it is a no-op for the digest BY
+//  CONSTRUCTION: every S5 unit is single-threaded with order-fixed reductions
+//  (RNG-free cyclic CD, a deterministic histogram GBT with first-max tie-breaks,
+//  log-space Baum-Welch with fixed-order sums), so there is no parallel
+//  non-associative float reduction a worker count could perturb. The digest is
+//  therefore IDENTICAL for any worker count — proven by
+//  ThreadCountInvariance_DigestUnchanged. This is an HONEST forward seam for a
+//  future parallel fold-walk, NOT a fake parallel path.
 //
 // Header-only; every function is defined inline. The pipeline is a COLD research
 // path (one full fit per call), so std::vector / Eigen allocation is fine.
@@ -62,10 +63,12 @@ namespace atx::engine::learn {
 //  PipelineCfg — the end-to-end harness knobs.
 //
 //  master_seed : the determinism root, threaded into every derived cfg (M1).
-//  workers     : an ACCEPTED knob, threaded into the cfgs. The S5 units are
-//                single-threaded with order-fixed reductions, so the digest is
-//                worker-invariant BY CONSTRUCTION (see the header). It is a forward
-//                seam for a future parallel fold-walk, an honest no-op today.
+//  workers     : an ACCEPTED-but-UNUSED knob (read by no derived cfg). The S5 units
+//                are single-threaded with order-fixed reductions, so the digest is
+//                worker-invariant BY CONSTRUCTION — even more strongly than a no-op:
+//                the value reaches no fit at all. A forward seam for a future
+//                parallel fold-walk; ThreadCountInvariance proves determinism
+//                survives the knob (it does NOT claim a real parallel path exists).
 //  cpcv        : the CPCV fold config shared by every fitted model.
 //  horizons    : the forward-return horizons (the model / meta Y horizons).
 // ===========================================================================
@@ -92,7 +95,10 @@ namespace pipeline_detail {
 // spurious column and produce a coin-flip positive dsr on noise (a known low-N DSR
 // leak — see the S5-3 ledger). The penalty is strong enough to zero noise yet far
 // below the bar that would shrink a GENUINE edge (a planted 0.9·col0 signal still
-// scores dsr 1.0). This is the honest M3 gate for the linear arm.
+// scores dsr 1.0). This is the anti-snooping knob for the LINEAR arm specifically;
+// the GBT arm carries its own (the OOF dispersion floor) and the stacking benchmark
+// uses its own elastic-net cfg — there is no single global lambda, each arm owns its
+// anti-overfit guard.
 [[nodiscard]] inline LinearAlphaCfg linear_cfg_of(const PipelineCfg &cfg) {
   LinearAlphaCfg lin;
   lin.en = ElasticNetCfg{/*lambda=*/0.20, /*alpha=*/0.80, /*max_iter=*/2000, /*tol=*/1e-9};
@@ -196,8 +202,8 @@ inline void fold_model(std::vector<atx::f64> &buf, const LearnedModel &m) {
 //  fields (coeffs / forest node bytes / blend / out-of-fold series / HMM
 //  log-parameters + a forward log-likelihood / stacking verdict_hash) into one byte
 //  hash. DETERMINISTIC: same fm + same cfg.master_seed -> identical digest, and
-//  identical for any cfg.workers (the worker knob cannot perturb a single-threaded
-//  order-fixed fit). PURE in (fm, cfg).
+//  identical for any cfg.workers (which is read by no fit at all — see the header).
+//  PURE in (fm, cfg).
 // ===========================================================================
 [[nodiscard]] inline atx::u64 full_pipeline_digest(const FeatureMatrix &fm, const PipelineCfg &cfg) {
   const LatentAugmentation empty_aug; // the pipeline exercises the raw-feature path
@@ -330,49 +336,32 @@ namespace pipeline_detail {
 }
 
 // ===========================================================================
-//  oos_ic_blend — the horizon-blended OOS IC (§0.6). The §0.6 blend weights are
-//  normalize(max(oos_IC_h, 0)), so a multi-horizon model whose HORIZON-0 slot is
-//  the best single horizon scores exactly that horizon's OOS IC (oos_ic reads the
-//  frozen horizon-0 out-of-fold series). The blend therefore PICKS the best
-//  horizon's OOS skill — it is AT LEAST the best single horizon (with equality the
-//  fixed point of the selection). Pure reuse: find the argmax-IC horizon via the
-//  same single-horizon fits oos_ic_best_single uses, then fit ONE multi-horizon
-//  model with that horizon first and return its oos_ic. NO new statistic.
+//  horizon_blend_weights — the §0.6 per-horizon blend weights of ONE multi-horizon
+//  linear fit, aligned to the input `horizons` order. The weights are
+//  normalize(max(oos_IC_h, 0)): a horizon carrying genuine OOS skill earns positive
+//  weight, a no-skill horizon is driven toward zero (and an all-non-positive set
+//  falls back to uniform). This is the HONEST, non-tautological §0.6 proof surface —
+//  a blend that demonstrably WEIGHTS BY OOS IC.
+//
+//  NOTE (deferred residual): a full "the blended PREDICTION's OOS IC strictly beats
+//  the best single horizon's" proof is NOT expressible by pure wiring today — the
+//  frozen oos_ic surface reads only each model's horizon-0 out-of-fold series, so no
+//  metric scores a blended prediction. That requires retaining every horizon's OOF
+//  predictions plus a blended-OOS-IC metric (new model logic, beyond S5-7's wiring
+//  scope) and a decorrelated-horizon fixture; it is recorded as an S5 close residual.
+//  This function proves the weighting mechanism (the §0.6 weights are IC-driven, not
+//  degenerate), which is what the as-built surface can honestly establish.
 // ===========================================================================
-[[nodiscard]] inline atx::f64 oos_ic_blend(const FeatureMatrix &fm,
-                                           std::span<const atx::u16> horizons,
-                                           const PipelineCfg &cfg) {
-  if (horizons.empty()) {
-    return 0.0;
-  }
-  // Find the best single horizon (the §0.6 blend down-weights losers to zero, so
-  // the blended prediction is dominated by — here, selects — the best horizon).
-  atx::u16 best_h = horizons[0];
-  atx::f64 best_ic = pipeline_detail::single_horizon_ic(fm, horizons[0], cfg);
-  for (atx::usize i = 1; i < horizons.size(); ++i) {
-    const atx::f64 ic = pipeline_detail::single_horizon_ic(fm, horizons[i], cfg);
-    if (ic > best_ic) {
-      best_ic = ic;
-      best_h = horizons[i];
-    }
-  }
-  // Fit ONE multi-horizon model with the best horizon in slot 0; its oos_ic reads
-  // the frozen horizon-0 (== best) out-of-fold series, so the blend equals the best
-  // single horizon's OOS IC up to fp identity. The remaining horizons are carried
-  // so the fit is a genuine MULTI-horizon fit (a real blend was constructed).
-  std::vector<atx::u16> ordered;
-  ordered.reserve(horizons.size());
-  ordered.push_back(best_h);
-  for (const atx::u16 h : horizons) {
-    if (h != best_h) {
-      ordered.push_back(h);
-    }
-  }
+[[nodiscard]] inline std::vector<atx::f64>
+horizon_blend_weights(const FeatureMatrix &fm, std::span<const atx::u16> horizons,
+                      const PipelineCfg &cfg) {
   const LatentAugmentation empty_aug;
   PipelineCfg blend_cfg = cfg;
-  blend_cfg.horizons = ordered;
+  blend_cfg.horizons.assign(horizons.begin(), horizons.end());
+  // fit_linear sets m.horizons = cfg.horizons and m.blend_w[i] = the §0.6 weight of
+  // horizons[i], so the returned weights are aligned to the input order.
   const LearnedModel m = fit_linear(fm, empty_aug, pipeline_detail::linear_cfg_of(blend_cfg));
-  return oos_ic(m, fm);
+  return m.blend_w;
 }
 
 } // namespace atx::engine::learn
