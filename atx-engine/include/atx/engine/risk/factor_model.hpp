@@ -78,6 +78,7 @@
 // rather than introducing a second engine-local IRLS loop.
 #include "atx/engine/cost/robust_ls.hpp" // cost::irls_huber, RobustCfg, RobustFit (S8.1 robust path)
 #include "atx/engine/loop/panel_types.hpp" // PanelView (the trailing newest-first panel)
+#include "atx/engine/risk/cov_ewma.hpp"    // ewma_factor_covariance (S8.2 EWMA + Newey-West path)
 #include "atx/engine/risk/exposures.hpp"   // build_exposures, ExposureMatrix, detail::step_return
 #include "atx/engine/risk/fwd.hpp"         // FactorModel / FactorModelBuilder fwd decls
 
@@ -475,9 +476,24 @@ public:
                             "FactorModelBuilder::build: usable dates < K (factor cov rank)");
     }
 
-    const atx::core::linalg::MatX f = detail::factor_covariance(fkept, cfg.factor_cov_shrink);
+    // Factor-covariance dispatch. DEFAULT (LedoitWolfSingle) is the as-built P4 path,
+    // byte-identical. EwmaNeweyWest (S8.2, opt-in) is the split vol/corr half-life EWMA
+    // covariance recombined F_ij=ρ_ij·σ_i·σ_j with a Newey-West Bartlett serial-corr add
+    // and an SPD eigenvalue floor. EXHAUSTIVE switch (no default — a new enumerator is a
+    // compile error). `fkept` rows are the compacted kept dates, newest (row 0) first.
+    atx::core::linalg::MatX f;
+    switch (cfg.cov.factor_cov_method) {
+    case FactorCovMethod::LedoitWolfSingle:
+      f = detail::factor_covariance(fkept, cfg.factor_cov_shrink);
+      break;
+    case FactorCovMethod::EwmaNeweyWest:
+      f = ewma_factor_covariance(fkept, cfg.cov.vol_halflife, cfg.cov.corr_halflife,
+                                 cfg.cov.nw_lags);
+      break;
+    }
     const atx::core::linalg::VecX d = specific_variances(x0, u_by_inst);
-    return FactorModel::create(std::move(x0.x), f, d, /*fit_begin=*/0U, /*fit_end=*/window);
+    return FactorModel::create(std::move(x0.x), std::move(f), d, /*fit_begin=*/0U,
+                               /*fit_end=*/window);
   }
 
 private:
