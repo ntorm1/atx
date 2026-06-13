@@ -35,7 +35,7 @@ expected, ignore unless those targets are built).
 | S8.0 | Marker + ledger + frozen plan | ✅ done | _this commit_ | — |
 | S8.1 | Robust √-cap + Huber IRLS regression (reuse `cost::irls_huber`) | ✅ done | `77c4562` | `risk_robust_regression_test.cpp` (9) |
 | S8.2 | EWMA split-HL factor cov + Newey-West | ✅ done | `c195d29` | `risk_cov_ewma_test.cpp` (8) |
-| S8.3 | Monte-Carlo eigenfactor adjustment (seeded, a=1.0) | ⏳ pending | — | `risk_eigen_adjust_test.cpp` |
+| S8.3 | Monte-Carlo eigenfactor adjustment (seeded, a=1.0) | ✅ done | `fb52fd2` | `risk_eigen_adjust_test.cpp` (6) |
 | S8.4 | Specific risk: EWMA + NW + structural blend | ⏳ pending | — | `risk_specific_risk_test.cpp` |
 
 ## Decisions / discoveries
@@ -46,6 +46,10 @@ expected, ignore unless those targets are built).
 - New estimators are **opt-in via `CovarianceConfig cov`** on `FactorModelConfig`; defaults = P4 path.
 - Tests are **GoogleTest** (`TEST(...)`), flat + CMake-globbed under `atx-engine/tests/` (the spec's
   `ATS_TEST` shorthand reconciles to GoogleTest here).
+- **S8.3 corrected the frozen plan §4 MWO formula** (folded into commit `fb52fd2`): the literal
+  `D̃=diag(Uᵀ F̃ U)` true-basis projection is *unbiased* (v≈1, no correction); genuine Menchero-Wang-Orr
+  measures the bias in each sim's *sample* eigenbasis (`v(k)=mean √(û_kᵀ F û_k / D̂_m[k])`). Spec review
+  verified this reproduces the research anchor (v_small≈1.37 at T/K=4). `T_sim=max(100·K,200)`.
 
 ## Residuals → backlog (for S8-b / atx-core)
 
