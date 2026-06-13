@@ -145,6 +145,11 @@ struct PipelineConfig {
   atx::f64 ref_participation = 0.05;         // cost_aware_knobs reference participation
   atx::f64 ref_sigma = 0.02;                 // cost_aware_knobs reference per-step volatility
   atx::f64 cost_horizon_days = 2.0;          // cost_aware_knobs rebalance horizon (RenTech ~2-day hold)
+  // The deployed book capital used to convert the capacity AUM (cost::capacity_point, a
+  // dollar figure) into a deployable GROSS-LEVERAGE ceiling: capacity_gross =
+  // clamp(capacity_aum / reference_aum, 0, alloc.max_gross). A LARGER reference_aum (more
+  // capital chasing the same capacity) yields a TIGHTER leverage ceiling. (§0.9.)
+  atx::f64 reference_aum = 1.0e5;            // deployed book capital (AUM->leverage divisor)
   // The sim exposes impact_cfg() but NOT a slippage accessor, so the calibrated cost's
   // slippage coefficient is taken from here (a default 1 bp one-way slippage). Keeps the
   // round-trip cost strictly positive so the net-below-gross invariant (R3) is non-vacuous.
@@ -292,13 +297,17 @@ private:
     sources_.clear();
     source_ptrs_.clear();
     for (atx::usize c = 0; c < n_const; ++c) {
-      // Per-constituent canned schedule: a shifted view of the returns field so the
-      // constituents are distinct but real (a deterministic double — RESIDUAL #1).
-      std::vector<std::vector<atx::f64>> schedule;
+      // The combiner FITS on the constituent's FULL panel-length pnl/positions (real
+      // [0, n_periods) fit window). The replayed evaluate() schedule is SEPARATE — one
+      // row per SCHEDULE period (so cursor s replays the constituent cross-section at
+      // sched.periods[s]); the fit and the replay are independent ScriptedSignalSource
+      // facets (the store holds pnl/pos; the source replays the baked schedule).
       std::vector<atx::f64> pnl(n_periods, 0.0);
       std::vector<atx::f64> pos_flat;
       pos_flat.reserve(n_periods * universe);
-      build_constituent_streams(cfg, c, universe, n_periods, schedule, pnl, pos_flat);
+      build_constituent_fit_streams(cfg, c, universe, n_periods, pnl, pos_flat);
+      std::vector<std::vector<atx::f64>> schedule =
+          build_constituent_eval_schedule(cfg, c, universe);
       sources_.emplace_back(schedule, universe, /*max_lookback*/ 1U);
       source_ptrs_.push_back(&sources_.back());
       combine::AlphaMetrics m{};
@@ -315,31 +324,49 @@ private:
     return atx::core::Ok(std::move(combo));
   }
 
-  // One constituent's (schedule, pnl, positions) streams. The schedule row at period
-  // t is the panel's returns cross-section at t (shifted by the constituent index),
-  // NaN-cleaned to 0; pnl[t] is the cross-sectional mean (a benign realized stream);
-  // positions mirror the schedule. Deterministic in (cfg, c).
-  void build_constituent_streams(const PipelineConfig &cfg, atx::usize c, atx::usize universe,
-                                 atx::usize n_periods,
-                                 std::vector<std::vector<atx::f64>> &schedule,
-                                 std::vector<atx::f64> &pnl,
-                                 std::vector<atx::f64> &pos_flat) const {
+  // One constituent's FIT streams (pnl + positions) over the FULL panel: the schedule row
+  // at period t is the panel's returns cross-section at t (shifted by the constituent
+  // index), NaN-cleaned to 0; pnl[t] is the cross-sectional mean. Deterministic in (cfg,c).
+  void build_constituent_fit_streams(const PipelineConfig &cfg, atx::usize c, atx::usize universe,
+                                     atx::usize n_periods, std::vector<atx::f64> &pnl,
+                                     std::vector<atx::f64> &pos_flat) const {
     const alpha::FieldId rev = returns_field_id(cfg);
-    schedule.reserve(n_periods);
     for (atx::usize t = 0; t < n_periods; ++t) {
       const std::span<const atx::f64> cs = panel_.field_cross_section(rev, t);
-      std::vector<atx::f64> row(universe, 0.0);
       atx::f64 sum = 0.0;
       for (atx::usize i = 0; i < universe; ++i) {
         const atx::usize j = (i + c) % universe; // a deterministic per-constituent shift
         const atx::f64 v = (j < cs.size() && !(cs[j] != cs[j])) ? cs[j] : 0.0; // NaN -> 0
-        row[i] = v;
+        pos_flat.push_back(v);
         sum += v;
       }
       pnl[t] = (universe > 0U) ? sum / static_cast<atx::f64>(universe) : 0.0;
-      pos_flat.insert(pos_flat.end(), row.begin(), row.end());
+    }
+  }
+
+  // One constituent's REPLAY schedule: one row per SCHEDULE period (cursor s -> the
+  // constituent's returns cross-section, shifted by c, at sched.periods[s]). This is what
+  // CombinedSignalSource::evaluate() replays and blends with the FITTED combo.weights —
+  // so the fitted blend genuinely drives the optimizer's per-period alpha (R1 byte-exact:
+  // canned rows + fixed weights + fixed order). Deterministic in (cfg, c).
+  [[nodiscard]] std::vector<std::vector<atx::f64>>
+  build_constituent_eval_schedule(const PipelineConfig &cfg, atx::usize c,
+                                  atx::usize universe) const {
+    const alpha::FieldId rev = returns_field_id(cfg);
+    std::vector<std::vector<atx::f64>> schedule;
+    schedule.reserve(cfg.schedule.periods.size());
+    for (const atx::usize period : cfg.schedule.periods) {
+      std::vector<atx::f64> row(universe, 0.0);
+      if (period < panel_.dates()) {
+        const std::span<const atx::f64> cs = panel_.field_cross_section(rev, period);
+        for (atx::usize i = 0; i < universe; ++i) {
+          const atx::usize j = (i + c) % universe;
+          row[i] = (j < cs.size() && !(cs[j] != cs[j])) ? cs[j] : 0.0;
+        }
+      }
       schedule.push_back(std::move(row));
     }
+    return schedule;
   }
 
   // --- step 4 --------------------------------------------------------------
@@ -409,10 +436,20 @@ private:
     const std::vector<atx::f64> aum_grid{1e5, 1e6, 1e7, 1e8};
     const std::vector<risk::CapacityPoint> curve =
         risk::capacity_curve(std::span<const atx::f64>{flat}, pv, sim_, std::span<const atx::f64>{aum_grid});
-    atx::f64 capacity_gross = cost::capacity_point(std::span<const risk::CapacityPoint>{curve});
+    // cost::capacity_point returns the capacity AUM (a DOLLAR figure where net edge
+    // crosses zero), NOT a leverage multiple. CostInputs.capacity_gross is a GROSS-
+    // LEVERAGE ceiling, so convert §0.9 "expressed as a deployable gross given AUM":
+    //   capacity_gross = clamp(capacity_aum / reference_aum, 0, alloc.max_gross),
+    // where reference_aum is the deployed book capital. A +inf capacity AUM (net edge
+    // never crosses zero on the grid) clamps to max_gross. This is a documented modeling
+    // choice (the AUM->leverage map); it makes the ceiling a real, bindable leverage bound.
+    const atx::f64 capacity_aum = cost::capacity_point(std::span<const risk::CapacityPoint>{curve});
+    const atx::f64 ref_aum = (cfg.reference_aum > 0.0) ? cfg.reference_aum : 1.0;
+    atx::f64 capacity_gross = capacity_aum / ref_aum;
     if (!(capacity_gross > 0.0)) {
-      capacity_gross = cfg.alloc.max_gross; // a degenerate curve falls back to the hard cap
+      capacity_gross = cfg.alloc.max_gross; // a degenerate/empty curve falls back to the cap
     }
+    capacity_gross = std::clamp(capacity_gross, 0.0, cfg.alloc.max_gross);
     // The sim exposes impact_cfg() (reused VERBATIM — one cost surface) but NO slippage
     // accessor, so the calibrated cost's slippage comes from cfg.slippage (documented).
     const cost::CalibratedCost cc{sim_.impact_cfg(), cfg.slippage, cost::FitReport{}};
@@ -431,18 +468,20 @@ private:
   }
 
   // --- step 6 --------------------------------------------------------------
-  // Walk the rebalance schedule. alpha_at returns the per-period mega-alpha cross-
-  // section (the blended constituent stream at that period), model_at the augmented V.
+  // Walk the rebalance schedule. alpha_at returns the per-period mega-alpha cross-section
+  // SOURCED FROM THE FITTED CombinedSignalSource (the fitted combo.weights genuinely drive
+  // the book), model_at the augmented V.
   [[nodiscard]] atx::core::Result<risk::MultiPeriodResult>
   optimize_schedule(const PipelineConfig &cfg, const risk::FactorModel &V, atx::usize universe,
                     const CostInputs &cost) {
-    // Materialize one alpha cross-section per schedule period UP FRONT (so alpha_at
-    // returns a stable span — the multi-period driver only reads it during run()).
+    // Materialize one alpha cross-section per schedule period UP FRONT by replaying the
+    // CombinedSignalSource: each evaluate() blends the constituent rows with the FITTED
+    // combo.weights (combine no longer inert) and returns a SignalView into the source's
+    // OWN buffer — valid only until the NEXT evaluate() — so each is COPIED OUT into a
+    // stable alpha_rows_ entry before the next call (the seam's borrow-lifetime contract).
     sched_periods_ = cfg.schedule.periods; // the period -> row map alpha_at consults
-    alpha_rows_.assign(cfg.schedule.periods.size(), std::vector<atx::f64>(universe, 0.0));
-    for (atx::usize s = 0; s < cfg.schedule.periods.size(); ++s) {
-      mega_alpha_cross_section(cfg.schedule.periods[s], universe, alpha_rows_[s]);
-    }
+    ATX_TRY(std::vector<std::vector<atx::f64>> blended, replay_combined(universe));
+    alpha_rows_ = std::move(blended); // one row per schedule period (replay_combined fills all)
     const auto alpha_at = [this](atx::usize period) -> std::span<const atx::f64> {
       // map the absolute schedule period back to its row index (ascending, unique).
       for (atx::usize s = 0; s < sched_periods_.size(); ++s) {
@@ -455,6 +494,34 @@ private:
     const auto model_at = [&V](atx::usize) -> const risk::FactorModel & { return V; };
     const risk::MultiPeriodOptimizer opt{cfg.optimizer};
     return opt.run(cfg.schedule, alpha_at, model_at, cost);
+  }
+
+  // Replay the fitted CombinedSignalSource once per SCHEDULE period (cursor s -> period s),
+  // copying each blended SignalView out into an owned row. A NaN "no opinion" blend cell is
+  // mapped to 0 (the optimizer treats it as a no-opinion name anyway, but copying 0 keeps
+  // the size_book / report reductions NaN-free). The panel passed to evaluate() is the
+  // standalone PanelView (the ScriptedSignalSource doubles ignore it by design — RESIDUAL
+  // #1 — but a real CombinedSignalSource is panel-pure, so passing it is contract-correct).
+  [[nodiscard]] atx::core::Result<std::vector<std::vector<atx::f64>>>
+  replay_combined(atx::usize universe) {
+    std::vector<std::vector<atx::f64>> rows;
+    rows.reserve(sched_periods_.size());
+    if (!combined_.has_value()) {
+      rows.assign(sched_periods_.size(), std::vector<atx::f64>(universe, 0.0));
+      return atx::core::Ok(std::move(rows));
+    }
+    const PanelView pv = panel_view();
+    for (atx::usize s = 0; s < sched_periods_.size(); ++s) {
+      ATX_TRY(const atx::engine::SignalView sv, combined_->evaluate(pv));
+      std::vector<atx::f64> row(universe, 0.0);
+      const atx::usize m = (sv.values.size() < universe) ? sv.values.size() : universe;
+      for (atx::usize i = 0; i < m; ++i) {
+        const atx::f64 v = sv.values[i];
+        row[i] = (v != v) ? 0.0 : v; // NaN no-opinion -> 0 (copied out before next evaluate)
+      }
+      rows.push_back(std::move(row));
+    }
+    return atx::core::Ok(std::move(rows));
   }
 
   // --- steps 7 + 8 ---------------------------------------------------------
@@ -610,28 +677,6 @@ private:
   }
   [[nodiscard]] atx::usize monitor_base_period(const PipelineConfig &cfg) const {
     return cfg.schedule.periods.empty() ? 0U : cfg.schedule.periods.back();
-  }
-
-  // The mega-alpha cross-section at `period`: the blended constituent streams (a
-  // deterministic linear combine of the per-constituent shifted returns rows).
-  void mega_alpha_cross_section(atx::usize period, atx::usize universe,
-                                std::vector<atx::f64> &out) const {
-    out.assign(universe, 0.0);
-    const atx::usize n_const = sources_.size();
-    if (n_const == 0U || period >= panel_.dates()) {
-      return;
-    }
-    const alpha::FieldId rev = returns_field_id_cached_;
-    const std::span<const atx::f64> cs = panel_.field_cross_section(rev, period);
-    for (atx::usize i = 0; i < universe; ++i) {
-      atx::f64 acc = 0.0;
-      for (atx::usize c = 0; c < n_const; ++c) {
-        const atx::usize j = (i + c) % universe;
-        const atx::f64 v = (j < cs.size() && !(cs[j] != cs[j])) ? cs[j] : 0.0;
-        acc += v;
-      }
-      out[i] = acc / static_cast<atx::f64>(n_const);
-    }
   }
 
   // (Sharpe, sigma) of the blended mega-alpha per-period mean stream (the size_book

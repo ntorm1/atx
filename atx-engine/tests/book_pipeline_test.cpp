@@ -266,10 +266,16 @@ constexpr f64 kMinDsr = 0.5;
   cfg.library_master_seed = kLibSeed;
   cfg.schedule = book_schedule();
   cfg.combiner = CombinerConfig{}; // default ShrinkageMv
+  // R7 must BIND non-vacuously: the configured gross (2.0) DELIBERATELY exceeds the
+  // capacity-derived ceiling. reference_aum/max_gross are chosen so capacity_gross clamps
+  // to a small leverage (1.0) below single.gross_leverage, so the MultiPeriodOptimizer's
+  // `min(gross_leverage, capacity_gross)` clip actually binds (every book's L1 ≈ 1.0).
   cfg.optimizer.single.gross_leverage = 2.0;
   cfg.optimizer.single.turnover_penalty = 0.0; // overridden to cost.kappa by run()
   cfg.optimizer.trade_rate = 1.0;
   cfg.optimizer.capacity_bound_gross = true;
+  cfg.alloc.max_gross = 1.0;     // the capacity-leverage ceiling clamps here (< gross 2.0)
+  cfg.reference_aum = 1.0e5;     // AUM->leverage divisor (deployed book capital)
   cfg.forward_window = 80U;
   cfg.returns_field = "rev";
   cfg.dead_lifecycle_as_of = 5U;  // a pre-retired alpha (planted) reads Dead at journal period 5
@@ -365,6 +371,21 @@ TEST(BookPipeline, EndToEndRunIsByteIdentical) {
   // Non-vacuity: the book chain is non-empty and the digest is a real fold (not the seed).
   EXPECT_EQ(ra->report.pnl_gross.size(), book_schedule().periods.size());
   EXPECT_NE(ra->book_digest, 0u);
+
+  // COMBINER DRIVES THE BOOK (the combine step is NOT inert): a run that differs ONLY in
+  // the combiner blend method (RankAverage's rank-space kernel vs the default linear
+  // ShrinkageMv) produces a DIFFERENT book. If the optimizer ignored the fitted
+  // CombinedSignalSource output, the book_digest would be identical regardless of method,
+  // so this pins that combine -> optimize is wired through (the fitted blend drives the book).
+  Fixture fc{real_signal_panel()};
+  lib::Library lc = lib::Library::open(tmpdir("c"), default_gate_cfg(), {kLibSeed});
+  BookPipeline pc{lc, fc.dsl, fc.panel, fc.sim, fc.policy, fc.gate};
+  PipelineConfig cc = real_pipeline_cfg(/*seed*/ 21);
+  cc.combiner.method = atx::engine::combine::CombineMethod::RankAverage; // different blend kernel
+  const auto rc = pc.run(cc);
+  ASSERT_TRUE(rc.has_value()) << (rc ? "" : rc.error().to_string());
+  EXPECT_NE(ra->book_digest, rc->book_digest)
+      << "the combiner blend method must change the book (combine -> optimize is wired)";
 }
 
 // =============================================================================
@@ -478,6 +499,24 @@ TEST(BookPipeline, NoLookAheadTruncationInvariant) {
   ASSERT_EQ(a->D.size(), b->D.size());
   EXPECT_TRUE(a->D == b->D);
   EXPECT_EQ(a->fit_end, b->fit_end);
+
+  // MUTATION / SANITY (the test must actually catch a look-ahead leak): poisoning a row
+  // WITHIN the fit horizon (row 10 <= kWindow) MUST change the fitted components. If it
+  // did not, the truncation-invariance above would be vacuous (the builder would be
+  // ignoring ALL rows, not just the future ones). So at least one of (X, F, D) must differ.
+  std::vector<std::vector<f64>> in_window = close;
+  for (usize i = 0; i < kM; ++i) {
+    in_window[10][i] = -999.0; // poison an IN-HORIZON row (10 < kWindow)
+  }
+  PanelBack mutated{kRows, kM, in_window};
+  const auto c = builder.build_components(mutated.view(kRows), kWindow,
+                                          std::span<const f64>{mkt}, std::span<const u32>{grp});
+  ASSERT_TRUE(c.has_value()) << (c ? "" : c.error().to_string());
+  const bool x_changed = !(a->X == c->X);
+  const bool f_changed = !(a->F == c->F);
+  const bool d_changed = !(a->D == c->D);
+  EXPECT_TRUE(x_changed || f_changed || d_changed)
+      << "an in-horizon mutation must change the fit (else truncation-invariance is vacuous)";
 }
 
 // =============================================================================
@@ -541,21 +580,42 @@ TEST(BookPipeline, NetBelowGrossCostHonest) {
 }
 
 // =============================================================================
-//  #5 GrossNeverExceedsCapacity (R7) — every period's capacity_utilization <= 1 + eps.
+//  #5 GrossNeverExceedsCapacity (R7) — NON-VACUOUS: the capacity ceiling is a real GROSS-
+//  LEVERAGE bound (AUM->leverage converted), the optimizer's configured gross (2.0)
+//  EXCEEDS it (1.0), so the `min(gross_leverage, capacity_gross)` clip BINDS. We assert
+//  (a) every book's L1 gross <= capacity_gross + eps, AND (b) the clip actually binds —
+//  at least one period's gross ~= capacity_gross (utilization ~= 1). The test would FAIL
+//  if the cap were removed (the book would lever to 2.0 and (a) would break).
 // =============================================================================
 TEST(BookPipeline, GrossNeverExceedsCapacity) {
   Fixture fx{real_signal_panel()};
   lib::Library library = lib::Library::open(tmpdir(), default_gate_cfg(), {kLibSeed});
   BookPipeline pipe{library, fx.dsl, fx.panel, fx.sim, fx.policy, fx.gate};
-  const auto r = pipe.run(real_pipeline_cfg(/*seed*/ 51));
+  const PipelineConfig cfg = real_pipeline_cfg(/*seed*/ 51);
+  const auto r = pipe.run(cfg);
   ASSERT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
 
-  ASSERT_FALSE(r->report.capacity_utilization.empty());
+  ASSERT_FALSE(r->report.gross_leverage.empty());
   ASSERT_GT(r->capacity_gross, 0.0);
-  for (usize s = 0; s < r->report.capacity_utilization.size(); ++s) {
-    EXPECT_LE(r->report.capacity_utilization[s], 1.0 + 1e-9)
+  // The capacity ceiling is a leverage bound STRICTLY below the configured gross (so the
+  // clip can bind — proves the test is exercising a real constraint, not a no-op).
+  ASSERT_LT(r->capacity_gross, cfg.optimizer.single.gross_leverage)
+      << "fixture must set capacity_gross below the configured gross so the clip binds";
+
+  f64 max_util = 0.0;
+  for (usize s = 0; s < r->report.gross_leverage.size(); ++s) {
+    // (a) the realized L1 gross never exceeds the capacity ceiling.
+    EXPECT_LE(r->report.gross_leverage[s], r->capacity_gross + 1e-9)
         << "gross exceeded the capacity ceiling at period " << s;
+    EXPECT_LE(r->report.capacity_utilization[s], 1.0 + 1e-9);
+    if (r->report.capacity_utilization[s] > max_util) {
+      max_util = r->report.capacity_utilization[s];
+    }
   }
+  // (b) the clip BINDS: some period's gross is AT the ceiling (utilization ~= 1). Without
+  // the capacity clip the optimizer would lever to single.gross_leverage (2x the ceiling),
+  // so this binding assertion is what makes R7 fail if the cap were deleted.
+  EXPECT_NEAR(max_util, 1.0, 1e-6) << "the capacity clip must actually bind (R7 non-vacuous)";
 }
 
 // =============================================================================
