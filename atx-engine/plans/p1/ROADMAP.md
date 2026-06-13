@@ -318,7 +318,7 @@ in RenTech §1/§2/§3 (no-theory statistical modeling, HMM, the combination cro
 > Likely splits **S5-a** (features + linear + GBT: S5.1–S5.3) / **S5-b** (HMM regimes + ensemble combiner:
 > S5.4–S5.5) at kickoff. Each learned-model unit raises a specific atx-core numeric request (Pattern B).
 
-### S6 — Cost Calibration & Capacity  ⏳ proposed ([spec](sprint-6-cost-calibration-capacity.md))
+### S6 — Cost Calibration & Capacity  ✅ closed @ `c4c3ff3` ([spec](sprint-6-cost-calibration-capacity.md))
 **Theme:** RenTech's "secret weapon" — **cost fidelity**. p0 ships the √-impact model with *uncalibrated*
 2001-era defaults; at a microscopic per-trade edge, a fraction of a basis point of cost error flips the
 sign of the strategy. Calibrate δ/Y/γ/η to realized fills (or reference impact data), refine the
@@ -331,12 +331,12 @@ with S1/S2; capacity-on-the-mega-alpha needs P4.
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S6.0 | Marker + ledger | S | ⏳ |
-| S6.1 | Cost-coefficient calibration harness (fit δ/Y/γ/η to realized fills / reference; report fit quality) | L | ⏳ |
-| S6.2 | Almgren-Chriss temp/perm split refinement (no temp-cost leakage into forward mark) | M | ⏳ |
-| S6.3 | Capacity curve (per-alpha + per-mega-alpha; AUM→net-edge=0) | M | ⏳ |
-| S6.4 | Cost-aware fitness/gating hook (turnover/cost budget into S3 fitness + P4 combiner) | M | ⏳ |
-| S6.5 | Borrow / short-financing accrual + close | S | ⏳ |
+| S6.0 | Marker + ledger | S | ✅ `e45bd2a` |
+| S6.1 | Cost-coefficient calibration harness (fit δ/Y/γ/η to realized fills / reference; report fit quality) | L | ✅ `6a8cd0c` |
+| S6.2 | Almgren-Chriss temp/perm split refinement (no temp-cost leakage into forward mark) | M | ✅ `3c8e109` |
+| S6.3 | Capacity curve (per-alpha + per-mega-alpha; AUM→net-edge=0) | M | ✅ `9f3a8c5` |
+| S6.4 | Cost-aware fitness/gating hook (turnover/cost budget into S3 fitness + P4 combiner) | M | ✅ `84223d5` |
+| S6.5 | Borrow / short-financing accrual + close | S | ✅ `c4c3ff3` |
 
 ### S7 — Portfolio Construction & Production Lifecycle  ⏳ proposed ([spec](sprint-7-portfolio-lifecycle.md))
 **Theme:** Tie it all into an **operating mega-alpha**. A **multi-period / dynamic optimizer** (extends

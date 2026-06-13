@@ -233,6 +233,15 @@ public:
     return gross() / eq;
   }
 
+  /// Debit a financing / borrow charge directly from cash, with NO position change.
+  /// Short-borrow accrual (S6) cannot ride apply_fill (which requires qty != 0), so
+  /// this is the minimal additive cash-only mutator. `charge` >= 0 (a cost, never a
+  /// rebate) — same fee-sign discipline as apply_fill.
+  void accrue_financing(atx::core::Decimal charge) noexcept {
+    ATX_CHECK(charge >= atx::core::Decimal{}); // financing is a cost, never a credit
+    cash_ = cash_ - charge;
+  }
+
   /// Read-only access to an instrument's holding (for inspection / tests).
   /// PRECONDITION: id is in the universe (ABORTS in debug).
   [[nodiscard]] const Holding &holding(InstrumentId id) const noexcept {
