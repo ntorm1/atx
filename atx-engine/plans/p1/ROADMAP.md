@@ -365,7 +365,7 @@ unified book).* Consumes everything.
 | S7.4 | Capital allocation across the mega-alpha + book-level reporting artifacts | M | ⏳ |
 | S7.5 | Full E2E pipeline integration test (data→mine→store→eval→combine→optimize→cost→report; deterministic) + close | L | ⏳ |
 
-### S8 — Vendor-Grade Risk Model: Covariance Construction & Cleaning  🚧 S8-a ✅ shipped / S8-b ⏳ proposed ([spec](sprint-8-risk-covariance-construction.md) · [S8-a ledger](sprint-8a-progress.md) · [S8-a plan](sprint-8a-covariance-construction-implementation-plan.md))
+### S8 — Vendor-Grade Risk Model: Covariance Construction & Cleaning  🚧 S8-a ✅ shipped / S8-b 🚧 in progress ([spec](sprint-8-risk-covariance-construction.md) · [S8-a ledger](sprint-8a-progress.md) · [S8-a plan](sprint-8a-covariance-construction-implementation-plan.md) · [S8-b ledger](sprint-8b-progress.md) · [S8-b plan](sprint-8b-regime-statistical-shrinkage-implementation-plan.md))
 **Theme:** Deepen the P4 factored risk model `V = X F Xᵀ + D` from *correct-but-minimal* to *Barra/Axioma-grade*.
 P4 keeps the covariance factored and applies it via Woodbury, but estimates `F` as one scaled-identity-LW-shrunk
 sample covariance and `D` as plain residual variance — missing the four cleaning layers every risk shop applies.
