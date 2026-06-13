@@ -83,7 +83,8 @@
 #include "atx/engine/risk/exposures.hpp"    // build_exposures, ExposureMatrix, detail::step_return
 #include "atx/engine/risk/fwd.hpp"          // FactorModel / FactorModelBuilder fwd decls
 #include "atx/engine/risk/specific_risk.hpp" // specific_risk_blend, SpecificRisk (S8.4 specific risk)
-#include "atx/engine/risk/vol_regime.hpp"    // vol_regime_multiplier, RegimeAdjust (S8.5 VRA)
+#include "atx/engine/risk/stat_factor_model.hpp" // detail::{gram_matrix,…} (S8.6 APCA kernels)
+#include "atx/engine/risk/vol_regime.hpp"        // vol_regime_multiplier, RegimeAdjust (S8.5 VRA)
 
 namespace atx::engine::risk {
 
@@ -428,10 +429,24 @@ public:
   [[nodiscard]] atx::core::Result<FactorModel> build(const PanelView &panel, atx::usize window,
                                                      std::span<const atx::f64> market_cap,
                                                      std::span<const atx::u32> group_id) const {
-    if (cfg.n_stat_factors > 0U || cfg.n_dead_factors > 0U) {
+    // The dead-alpha rung is STILL a deferred residual (S7.3) → NotImplemented; the
+    // statistical (APCA) rung is now WIRED (S8.6). Order matters: dead takes
+    // precedence so a (stat>0 AND dead>0) config is rejected, not silently fit as
+    // statistical-only.
+    if (cfg.n_dead_factors > 0U) {
       return atx::core::Err(atx::core::ErrorCode::NotImplemented,
-                            "FactorModelBuilder::build: stat/dead factor rungs are a deferred "
-                            "4b residual"); // NOT a silent skip — an explicit deferral
+                            "FactorModelBuilder::build: dead-alpha factor rung is a deferred "
+                            "residual"); // NOT a silent skip — an explicit deferral
+    }
+    if (cfg.n_stat_factors > 0U) {
+      // Statistical model variant (APCA, T×T Gram). A DISTINCT model from the
+      // fundamental pipeline below — it extracts latent factors from the return
+      // panel rather than regressing on style/sector exposures. The current
+      // cross-section instrument set (and thus M) is the row-0 build_exposures
+      // survivors, shared with the fundamental path's M (documented in
+      // build_stat_factor_model).
+      return build_stat_factor_model(panel, window, market_cap, group_id, cfg, cfg.n_stat_factors,
+                                     cfg.cov.apca_gls_reweight, cfg.factor_cov_shrink);
     }
     if (window < 2U) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -528,6 +543,115 @@ private:
   // instrument (a date with M_s==K fits exactly -> 0 OLS residual). Far below any
   // real return variance, so it never tilts a well-populated instrument's weight.
   static constexpr atx::f64 kBootstrapVarFloor = 1e-12;
+
+  // ===========================================================================
+  //  build_stat_factor_model — the S8.6 STATISTICAL (APCA) model variant.
+  //
+  //  A STATIC member (not a free function): keeps the APCA orchestration in the
+  //  same TU as FactorModel + detail::factor_covariance + detail::step_return so it
+  //  reuses them directly with NO include cycle (the pure linalg kernels live in
+  //  stat_factor_model.hpp, included at the top; this orchestrator stitches them to
+  //  the panel and the FactorModel assembly). The alternative — a free function in a
+  //  header included AFTER the class — would still need the kernels' header AND a
+  //  forward path to detail::factor_covariance; the static-member form is the one
+  //  that compiles cleanly with the existing single-header layout.
+  //
+  //  Steps (Connor-Korajczyk 2-pass; algorithm detail in stat_factor_model.hpp):
+  //    1. Cross-section = the row-0 build_exposures survivors (the SAME instrument
+  //       set the fundamental path's X[0] uses — so M aligns across both variants;
+  //       a single-sector / style-free cfg makes that the present cross-section).
+  //    2. Build the complete-case return panel R (N×T): keep an instrument only if
+  //       ALL T trailing returns step_return(panel,t,inst) are non-NaN (the
+  //       asymptotic argument needs a rectangular block). Column-demean each row.
+  //    3. Validate N > T, T > K, N > K (else InvalidArgument).
+  //    4. Pass 1 (equal-weight): Fhat = top-K of the T×T Gram; B, s_n from R.
+  //    5. Pass 2 (GLS, when gls_reweight): re-extract Fhat from the 1/√s_n-reweighted
+  //       Gram; recover the FINAL B, s_n from the UN-weighted R.
+  //    6. X = B, F = factor_covariance(Fhat, factor_cov_shrink), D = s_n; create.
+  //  PIT-structural (reads only rows >= 0; the window bounds the trailing returns).
+  //  RNG-free, order-fixed ⇒ byte-identical on replay (Fhat sign-pinned).
+  // ===========================================================================
+  [[nodiscard]] static atx::core::Result<FactorModel>
+  build_stat_factor_model(const PanelView &panel, atx::usize window,
+                          std::span<const atx::f64> market_cap, std::span<const atx::u32> group_id,
+                          const FactorModelConfig &cfg, atx::usize n_stat, bool gls_reweight,
+                          atx::f64 factor_cov_shrink) {
+    if (window < 2U) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "build_stat_factor_model: require window >= 2");
+    }
+    // The current cross-section (row 0) defines the candidate instrument set — the
+    // SAME survivors the fundamental X[0] would use, so M aligns across variants.
+    ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, market_cap, group_id));
+
+    // Complete-case return panel R (N×T): an instrument survives only if all T
+    // trailing returns are clean. Order-fixed (ascending cross-section row, then
+    // ascending date). newest date t == column 0.
+    const atx::usize t_dates = window;
+    std::vector<atx::usize> kept_inst; // universe index of each surviving asset
+    std::vector<atx::f64> flat;        // row-major N×T scratch (asset-major)
+    kept_inst.reserve(x0.instrument_rows.size());
+    flat.reserve(x0.instrument_rows.size() * t_dates);
+    std::vector<atx::f64> series(t_dates); // hoisted: reused (overwritten) per instrument
+    for (const atx::usize inst : x0.instrument_rows) {
+      bool complete = true;
+      for (atx::usize t = 0U; t < t_dates && complete; ++t) {
+        const atx::f64 r = detail::step_return(panel, t, inst);
+        complete = !std::isnan(r);
+        series[t] = r;
+      }
+      if (complete) {
+        kept_inst.push_back(inst);
+        for (const atx::f64 v : series) {
+          flat.push_back(v);
+        }
+      }
+    }
+
+    const atx::usize n = kept_inst.size();
+    const atx::usize k = n_stat;
+    // The asymptotic-PCA validity conditions: N > T (the trick needs many names per
+    // date), T > K and N > K (K factors are estimable from T dates / N assets).
+    if (n <= t_dates || t_dates <= k || n <= k) {
+      return atx::core::Err(
+          atx::core::ErrorCode::InvalidArgument,
+          "build_stat_factor_model: require N > T > K and N > K (complete-case panel)");
+    }
+
+    // Pack R (N×T) into a column-major MatX (asset rows, date columns; column 0 =
+    // newest), then column-demean each asset row.
+    atx::core::linalg::MatX r_panel(static_cast<Eigen::Index>(n),
+                                    static_cast<Eigen::Index>(t_dates));
+    for (atx::usize a = 0U; a < n; ++a) {
+      for (atx::usize t = 0U; t < t_dates; ++t) {
+        r_panel(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(t)) = flat[a * t_dates + t];
+      }
+    }
+    detail::demean_rows(r_panel);
+
+    // Pass 1 (equal-weighted): Fhat from the T×T Gram of R; B, s_n from R.
+    ATX_TRY(atx::core::linalg::MatX fhat, detail::apca_factor_returns(r_panel, k));
+    ATX_TRY(atx::core::linalg::MatX b, detail::exposures(r_panel, fhat));
+    atx::core::linalg::VecX s = detail::specific_variances(r_panel, b, fhat);
+
+    // Pass 2 (GLS, opt-in): re-extract Fhat from the 1/√s_n-reweighted Gram, then
+    // recover the FINAL B and s_n from the UN-weighted R (original return scale).
+    if (gls_reweight) {
+      const atx::core::linalg::MatX r_w = detail::gls_reweight(r_panel, s);
+      ATX_TRY(atx::core::linalg::MatX fhat_gls, detail::apca_factor_returns(r_w, k));
+      fhat = std::move(fhat_gls);
+      ATX_TRY(atx::core::linalg::MatX b_gls, detail::exposures(r_panel, fhat));
+      b = std::move(b_gls);
+      s = detail::specific_variances(r_panel, b, fhat);
+    }
+
+    // Assemble: X = B (N×K), F = LW-shrunk covariance of the factor-return series,
+    // D = s_n. factor_covariance column-demeans Fhat + MLE-covs ÷T + canonical LW so
+    // F stays SPD; FactorModel::create re-checks via Cholesky and floors D.
+    atx::core::linalg::MatX f = detail::factor_covariance(fhat, factor_cov_shrink);
+    return FactorModel::create(std::move(b), std::move(f), std::move(s), /*fit_begin=*/0U,
+                               /*fit_end=*/window);
+  }
 
   // Pass A: per date s, build X[s], read the date returns (listwise NaN-drop), run
   // OLS (skip an under-determined date M_s < K), accumulate the per-instrument OLS

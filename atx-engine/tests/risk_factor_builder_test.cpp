@@ -421,7 +421,12 @@ TEST(RiskFactorBuilder, WindowBelowFactorCountIsError) {
   EXPECT_FALSE(m.has_value()); // window 2 < K 3
 }
 
-TEST(RiskFactorBuilder, StatFactorRungIsNotImplemented) {
+// S8.6 RETIRED the statistical rung's NotImplemented: n_stat_factors>0 (with
+// n_dead_factors==0) now dispatches to the APCA model variant. On this tiny
+// degenerate panel (N==T==2) the APCA validity bound N>T trips, so the result is
+// InvalidArgument — but crucially NOT NotImplemented. (Full APCA recovery coverage
+// lives in risk_stat_factor_test.cpp.) The DEAD-alpha rung stays NotImplemented.
+TEST(RiskFactorBuilder, StatFactorRungIsNoLongerNotImplemented) {
   const usize n_inst = 2U;
   PanelFixture fx{3U,
                   n_inst,
@@ -429,7 +434,24 @@ TEST(RiskFactorBuilder, StatFactorRungIsNotImplemented) {
                   {{10.0, 10.0}, {10.0, 10.0}, {10.0, 10.0}}};
   const std::vector<u32> group{1U, 1U};
   FactorModelConfig cfg = single_sector_cfg();
-  cfg.n_stat_factors = 1U; // PCA rung -> deferred residual -> NotImplemented
+  cfg.n_stat_factors = 1U; // APCA rung (S8.6) — no longer a deferred residual
+  FactorModelBuilder builder{cfg};
+  const auto m =
+      builder.build(fx.view(), /*window=*/2U, std::span<const f64>{}, std::span<const u32>{group});
+  ASSERT_FALSE(m.has_value());                                       // N==T==2 trips N>T
+  EXPECT_NE(m.error().code(), atx::core::ErrorCode::NotImplemented); // retired
+  EXPECT_EQ(m.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(RiskFactorBuilder, DeadFactorRungIsStillNotImplemented) {
+  const usize n_inst = 2U;
+  PanelFixture fx{3U,
+                  n_inst,
+                  {{101.0, 102.0}, {100.0, 101.0}, {99.0, 100.0}},
+                  {{10.0, 10.0}, {10.0, 10.0}, {10.0, 10.0}}};
+  const std::vector<u32> group{1U, 1U};
+  FactorModelConfig cfg = single_sector_cfg();
+  cfg.n_dead_factors = 1U; // dead-alpha rung (S7.3) — still a deferred residual
   FactorModelBuilder builder{cfg};
   const auto m =
       builder.build(fx.view(), /*window=*/2U, std::span<const f64>{}, std::span<const u32>{group});
