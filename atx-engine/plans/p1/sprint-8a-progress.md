@@ -36,7 +36,9 @@ expected, ignore unless those targets are built).
 | S8.1 | Robust √-cap + Huber IRLS regression (reuse `cost::irls_huber`) | ✅ done | `77c4562` | `risk_robust_regression_test.cpp` (9) |
 | S8.2 | EWMA split-HL factor cov + Newey-West | ✅ done | `c195d29` | `risk_cov_ewma_test.cpp` (8) |
 | S8.3 | Monte-Carlo eigenfactor adjustment (seeded, a=1.0) | ✅ done | `fb52fd2` | `risk_eigen_adjust_test.cpp` (6) |
-| S8.4 | Specific risk: EWMA + NW + structural blend | ⏳ pending | — | `risk_specific_risk_test.cpp` |
+| S8.4 | Specific risk: EWMA + NW + structural blend | ✅ done | `cb01c07` | `risk_specific_risk_test.cpp` (8) |
+
+**S8-a CLOSED** — all 4 code units shipped, each TDD + spec-compliance review + code-quality review passed. Full `atx-engine-tests` green (only the 2 engine-only `*_NOT_BUILT` sentinels "fail"). `feat/s8` stays open for S8-b (VRA, APCA, shrinkage/PSD toolkit, short/long blend + integration + bench + close), which gets its own frozen impl-plan + ledger at kickoff.
 
 ## Decisions / discoveries
 
@@ -56,3 +58,10 @@ expected, ignore unless those targets are built).
 - atx-core L7 `huber_irls` (promote `cost::irls_huber`), `apca`, `nonlinear_shrinkage`/`mp_clip`/`nearest_corr`.
 - Newey-West PSD repair (Higham) — engine-side eigen-floor in S8-a, full repair toolkit in S8.7.
 - ISC (issuer-specific covariance) off-diagonal wiring into the Woodbury path — interface only in S8.4.
+- **All-features-on integration test** (robust + EWMA + eigen-adjust + structural through one `build()`) — the
+  S8-a per-unit tests each exercise only their own flags; the composition is sound by construction (confirmed by
+  the S8-a holistic review) but not yet test-pinned. **Cover in S8.8** (the integration unit).
+- **Pass A / Pass B `industry_sum_to_zero` asymmetry** (`factor_model.hpp`): the OLS bootstrap (Pass A → `d0`)
+  fits the *unconstrained* design; the constraint applies only in Pass B. Benign (documented bootstrap-weights
+  design; Pass B's `used_b<2` gate catches a constraint-collapsed date) — note it in S8-b if the constraint is
+  ever paired with an explicit market-level column.
