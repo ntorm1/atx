@@ -1,10 +1,10 @@
 # Sprint 7 — Portfolio Construction & Production Lifecycle — Implementation Progress
 
-**Status:** 🔄 IN PROGRESS — S7-0 open
+**Status:** ✅ CLOSED 2026-06-13 — all 6 units (S7-0…S7-5) shipped + two-stage reviewed; final whole-sprint review **SHIP**. Full engine suite **1105/1105** (288 suites), `/W4 /permissive- /WX` + strict-FP clean. Unmerged on `feat/atx-engine-book` (merge/push is the user's gate).
 **Worktree:** in-place (branch `feat/atx-engine-book`; S7 does not use a dedicated worktree — explicit pathspecs only, no push)
 **Branch:** `feat/atx-engine-book`
 **Base:** `feat/atx-core-stdlib` @ `6445b5c` (branch cut from main @ 6445b5c)
-**Started:** 2026-06-13
+**Started / Closed:** 2026-06-13 / 2026-06-13
 **Source plan:** [`sprint-7-portfolio-lifecycle-implementation-plan.md`](sprint-7-portfolio-lifecycle-implementation-plan.md)
 
 ---
@@ -48,14 +48,15 @@ Branch `feat/atx-engine-book` is in the main worktree (no dedicated worktree). E
 
 ## Per-unit status
 
-| Unit  | Title                                                                            | Status      | Commit SHA(s) | Tests | Notes |
-|-------|----------------------------------------------------------------------------------|-------------|---------------|-------|-------|
-| S7-0  | Marker + ledger + book scaffold + S6-merge prerequisite check                   | 🔄 in prog  |               | —     | ledger + `book/fwd.hpp` forward decls; S6 merge confirmed (D1). |
-| S7-1  | Multi-period optimizer (`risk::MultiPeriodOptimizer`)                            | ⬜ pending   |               | —     | |
-| S7-2  | Alpha-decay monitor (`book::DecayMonitor` + `book::DecayController`)            | ⬜ pending   |               | —     | |
-| S7-3  | Dead-alpha recycler → risk factors (`risk::DeadFactorExtractor`)                 | ⬜ pending   |               | —     | Engine touch: `Library::positions` passthrough (D3). |
-| S7-4  | Kelly / fractional-Kelly allocator (`book::AllocationConfig` + allocate())      | ⬜ pending   |               | —     | |
-| S7-5  | End-to-end `book::BookPipeline` + `book::BookReport` capstone                   | ⬜ pending   |               | —     | |
+| Unit  | Title                                                                            | Status   | Commit SHA(s)        | Tests | Notes |
+|-------|----------------------------------------------------------------------------------|----------|----------------------|-------|-------|
+| S7-0  | Marker + ledger + book scaffold + S6-merge prerequisite check                   | ✅ done  | `e134308`            | —     | ledger + `book/fwd.hpp`; S6 merge confirmed (D1). |
+| S7-1  | Multi-period optimizer (`risk::MultiPeriodOptimizer`)                            | ✅ done  | `e19b218` + `0d78a01`| 7     | receding-horizon over `PortfolioOptimizer::solve`; single-period==multi-period bit-pin; signed-zero full-step fix; trade_rate∈(0,1] guard. |
+| S7-2  | Alpha-decay monitor (`book::DecayMonitor` + `book::DecayController`)            | ✅ done  | `ec3e51e` + `d6fa81b`| 9     | Page-Hinkley down + DSR/PSR drop + MinTRL gate + cost-flood discriminator; asymmetric retire-fast/restore-slow over `Library::mark` (PIT). PH level-shift proven; pure-function MinTRL test; `DecayState` split. |
+| S7-3  | Dead-alpha → risk factors (`risk::extract_dead_factors`/`augment_factor_model`) | ✅ done  | `9981e13` + `88f8814`| 9     | Kakushadze holdings-overlap eigen-extraction (sign-pinned) + eRank truncation + blockdiag FactorModel augmentation; R6 ‖X_deadᵀw‖ reduced ~45%. Engine touches: `FactorModelBuilder::build_components` refactor, `Library::positions`/`n_periods` passthroughs (D3). |
+| S7-4  | Capacity-bounded Kelly allocation + reproducible book report                    | ✅ done  | `58b97f4` + `842be7c`| 16    | `size_book`/`effective_breadth`; `accumulate_report→Result` (OOB/dim guards) + byte-identical `write_report` (`to_chars`, binary); `FactorModel::exposures()` accessor. |
+| S7-5  | End-to-end `book::BookPipeline` capstone + bench                                | ✅ done  | `41803b4` + `346db45`| 7     | real orchestrator (mine→promote→combine→augment-risk→size→optimize→monitor→recycle→report); all 7 invariants proven non-vacuously; R7 binding capacity clip; fitted combiner drives the book. `bench/book_bench.cpp` compiles under `-DATX_BUILD_BENCH=ON`. |
+| polish| IWYU + decay dead-accessor/explicit-journal-fault + fwd.hpp comments             | ✅ done  | `2f24a2a`            | —     | carry-forward minors from per-unit reviews. |
 
 ---
 
@@ -63,4 +64,40 @@ Branch `feat/atx-engine-book` is in the main worktree (no dedicated worktree). E
 
 | SHA | Unit | Subject |
 |-----|------|---------|
-| _(this commit)_ | S7-0 | docs(s7-0): open sprint-7 portfolio-lifecycle ledger + book scaffold |
+| `e134308` | S7-0 | docs(s7-0): open sprint-7 portfolio-lifecycle ledger + book scaffold |
+| `e19b218` | S7-1 | feat(s7-1): multi-period turnover-aware optimizer (receding-horizon over PortfolioOptimizer) |
+| `0d78a01` | S7-1 | fix(s7-1): exact full-step bit-identity (signed-zero) + trade_rate boundary validation |
+| `ec3e51e` | S7-2 | feat(s7-2): alpha-decay monitor (Page-Hinkley + DSR drop) driving the S4 lifecycle |
+| `d6fa81b` | S7-2 | fix(s7-2): prove Page-Hinkley level-shift detection + pure-function MinTRL test; split DecayState; IWYU |
+| `9981e13` | S7-3 | feat(s7-3): dead-alpha→risk-factor extraction (Kakushadze) + FactorModel augmentation |
+| `88f8814` | S7-3 | fix(s7-3): validate as_of_period (OOB guard) + augment dim-check + caller-order-independent determinism + IWYU |
+| `58b97f4` | S7-4 | feat(s7-4): capacity-bounded Kelly allocation + reproducible book reporting |
+| `842be7c` | S7-4 | fix(s7-4): accumulate_report returns Result with OOB/dim guards; split long fns; test separator |
+| `41803b4` | S7-5 | feat(s7-5): end-to-end BookPipeline capstone (all-invariants gate) + book micro-bench |
+| `346db45` | S7-5 | fix(s7-5): make R7 capacity clip a real binding leverage bound + wire fitted combiner into the book |
+| `2f24a2a` | polish | chore(s7): IWYU cleanup + decay-monitor dead-accessor/explicit-journal-fault + fwd.hpp comment fixes |
+
+> _(plus the user's interleaved `14fccd3 chore(dev): fast-worktree build setup` — not part of S7, disjoint files.)_
+
+---
+
+## What S7 proves (v2 done-gate)
+
+S7 turns the v2 factory into an **operating book** and proves all eight carried invariants **simultaneously** in the `BookPipeline` capstone (R1 deterministic byte-identical replay; R2 receding-horizon no-look-ahead, truncation-invariant at every fitted boundary; R3 calibrated honest cost — turnover κ + cost-flood discriminator + capacity ceiling; R4 no survivorship; R5 the S4 lifecycle spine **driven** PIT with asymmetric retire-fast/restore-slow; R6 dead alphas → endogenous risk factors that **measurably** neutralize; R7 capacity-bounded Kelly gross; R8 reproducible headless artifacts). Every primitive already existed (the fixed-iteration optimizer, the PIT journal, the capacity curve, the DSR, the combined mega-alpha, the calibrated cost) — S7 is the compositional layer that **drives, threads, and accumulates** over them. The two genuinely-new numeric paths are the dead-alpha eigen-extraction (R6) and the Page-Hinkley + DSR decay detector (R5); both are differential-tested and non-vacuous.
+
+**v2 is feature-complete** (S1 truth · S2 throughput · S3 mining · S4 library · S5 learned combiner · S6 calibrated cost · S7 operating book), pending merge.
+
+## Residuals → p2 backlog
+- **L7 QP / fixed-iteration ADMM optimizer → atx-core** — shipped on the as-built `PortfolioOptimizer` projected/proximal loop; true OSQP-style solver is the recorded lift.
+- **eRank / effective-breadth `(Σλ)²/Σλ²` → atx-core L6** — engine-local for now.
+- **DSL re-eval adapter (§0.8)** — the pipeline uses `ScriptedSignalSource` deterministic doubles as combiner constituents; re-parsing `provenance.expr_source` → compile → `VmSignalSource` at scale is deferred (batoned from S5).
+- **Standalone-PanelView / full book-prefix truncation harness (§0.9 / R2)** — the pipeline builds a `PanelView` directly over the research panel grids; the load-bearing no-look-ahead property (builder truncation-invariance) is proven directly, but a full end-to-end book-prefix truncation harness is the deferred extension.
+- **Gârleanu-Pedersen forward-blended aim** — the myopic + partial trade-rate is shipped; the full multi-step forward aim is deferred.
+- **S6 borrow-accrual completion** — the net-cost picture for a half-short book.
+
+## Close-out notes
+- **ROADMAP.md S7-row flip DEFERRED to the user**: `p1/ROADMAP.md` has the user's **uncommitted** edits (Sprint-8 covariance-construction prep). To avoid entangling that uncommitted work, this sprint does **not** edit ROADMAP.md; flipping the S7 row `⏳ → ✅` and the module status `S1–S7 CLOSED — v2 complete` is left for the user to apply alongside their S8 changes.
+- Spec [`sprint-7-portfolio-lifecycle.md`](sprint-7-portfolio-lifecycle.md) marked ✅ closed; user reference [`sprint-7.md`](sprint-7.md) created.
+
+## Baton → p2
+With v2 complete — a deterministic, bias-free, calibrated, multicore alpha factory + portfolio brain that mines, stores, learns, combines, prices, **and operates** a capacity-bounded book that watches itself decay and recycles its dead — the p2 frontier is **live**: broker connectivity, real-time PIT ingest, intraday execution, and cross-machine scale-out. The reproducible artifacts (content-addressed library manifest + byte-identical book report) and the S7.5 all-invariants gate are the foundation that makes going live trustworthy.

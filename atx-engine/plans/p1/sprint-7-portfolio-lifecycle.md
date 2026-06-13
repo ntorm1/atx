@@ -1,7 +1,7 @@
 # Sprint S7 — Portfolio Construction & Production Lifecycle (sprint spec)
 
-**Status:** ⏳ proposed (not open). **Consumes everything** — S3 (alphas), S4 (library), S5 (combiner),
-S6 (cost/capacity), P4 (optimizer + risk model).
+**Status:** ✅ CLOSED 2026-06-13 on `feat/atx-engine-book` (unmerged) — 6 units S7-0…S7-5 shipped, 1105/1105 engine tests, /WX clean, final review SHIP. Implemented per [`sprint-7-portfolio-lifecycle-implementation-plan.md`](sprint-7-portfolio-lifecycle-implementation-plan.md) (§0 as-built v2 amendments override this spec on conflict); see the [ledger](sprint-7-progress.md) for per-unit status + the as-built reconciliation (D1–D6) + residuals. **Consumes everything** — S3 (alphas), S4 (library), S5 (combiner),
+S6 (cost/capacity, now merged), P4 (optimizer + risk model).
 **Roadmap:** [`ROADMAP.md`](ROADMAP.md) · **Discipline:** [`../docs/sprint.md`](../docs/sprint.md)
 **Grounded in:** [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md)
 §6 (mega-alpha as one book), §7 (neutralization + turnover control), §10 (alpha lifecycle, decay, dead-alpha
