@@ -324,4 +324,25 @@ TEST(MultiPeriodOptimizer, TradeRatePartialStep) {
   EXPECT_NEAR(sum(half->books[0]), 0.0, 1e-9);
 }
 
+// ===========================================================================
+//  TEST 7 — a trade_rate outside the (0,1] domain is rejected at the boundary.
+// ===========================================================================
+TEST(MultiPeriodOptimizer, RejectsInvalidTradeRate) {
+  const FactorModel v = make_model();
+  const RebalanceSchedule sched{{0U}};
+  const CostInputs cost{0.0, 0.0, 1e9};
+  const auto alpha_at = [&](usize) { return std::span<const f64>(kAlpha); };
+  const auto model_at = [&](usize) -> const FactorModel & { return v; };
+
+  MultiPeriodConfig zero_cfg;
+  zero_cfg.single = default_oc();
+  zero_cfg.trade_rate = 0.0; // below the (0,1] domain
+  EXPECT_FALSE(MultiPeriodOptimizer{zero_cfg}.run(sched, alpha_at, model_at, cost).has_value());
+
+  MultiPeriodConfig over_cfg;
+  over_cfg.single = default_oc();
+  over_cfg.trade_rate = 1.5; // above the (0,1] domain
+  EXPECT_FALSE(MultiPeriodOptimizer{over_cfg}.run(sched, alpha_at, model_at, cost).has_value());
+}
+
 } // namespace

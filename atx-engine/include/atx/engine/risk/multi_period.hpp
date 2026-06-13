@@ -96,7 +96,7 @@ struct MultiPeriodConfig {
 //  MultiPeriodResult — the realized book chain + per-period turnover/cost.
 // ===========================================================================
 struct MultiPeriodResult {
-  std::vector<std::vector<atx::f64>> books;    // one weight vector per schedule period (book[s][i])
+  std::vector<std::vector<atx::f64>> books;    // one weight vector per schedule period (books[s][i])
   std::vector<atx::f64> turnover;              // per-period Σ_i |book[s] − book[s-1]| (one-sided from flat at s=0)
   std::vector<atx::f64> cost_bps;              // per-period calibrated cost charged on that turnover
 };
@@ -119,6 +119,11 @@ public:
       const std::function<std::span<const atx::f64>(atx::usize s)> &alpha_at,
       const std::function<const FactorModel &(atx::usize s)> &model_at,
       const book::CostInputs &cost) const {
+    // Validate at the boundary: the Gârleanu-Pedersen trade-rate domain is (0,1].
+    if (cfg.trade_rate <= 0.0 || cfg.trade_rate > 1.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "MultiPeriodOptimizer::run: trade_rate must be in (0, 1]");
+    }
     MultiPeriodResult out;
     out.books.reserve(sched.periods.size());
     out.turnover.reserve(sched.periods.size());
@@ -152,15 +157,19 @@ public:
 private:
   // Gârleanu-Pedersen partial step: book[i] = w_prev[i] + rate·(target[i] − w_prev[i]),
   // ascending i. An empty w_prev is treated as zeros of target.size() (the s=0 flat
-  // book), so at rate == 1 the book is target BIT-FOR-BIT (the single-solve pin), and a
-  // NaN-target name — which solve already 0s — stays 0 (0 + rate·(0 − 0) = 0).
+  // book), and a NaN-target name — which solve already 0s — stays 0 (0 + rate·(0 − 0) = 0).
+  // The rate == 1.0 full step is SPECIAL-CASED to assign target[i] VERBATIM: the algebraic
+  // form 0.0 + 1.0·(target[i] − 0.0) would flush a −0.0 target weight to +0.0 (IEEE:
+  // 0.0 + −0.0 == +0.0), and solve's dollar-neutral demean can emit −0.0, so the verbatim
+  // assignment is what makes a full step byte-identical to the solver output (the test #1
+  // bit_cast<u64> single-solve pin — signed zero preserved).
   [[nodiscard]] static std::vector<atx::f64> blend_toward(std::span<const atx::f64> w_prev,
                                                           std::span<const atx::f64> target,
                                                           atx::f64 rate) {
     std::vector<atx::f64> book(target.size(), 0.0);
     for (atx::usize i = 0; i < target.size(); ++i) {
       const atx::f64 p = i < w_prev.size() ? w_prev[i] : 0.0;
-      book[i] = p + rate * (target[i] - p);
+      book[i] = (rate == 1.0) ? target[i] : (p + rate * (target[i] - p));
     }
     return book;
   }
