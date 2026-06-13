@@ -72,6 +72,11 @@
 #include "atx/core/linalg/regression.hpp" // ols, wls (per-date factor-return solve)
 
 #include "atx/engine/combine/combiner.hpp" // combine::detail::ledoit_wolf_intensity (canonical LW)
+// PATTERN-B: reuse S6-1 cost::irls_huber; atx-core huber_irls is the eventual L7 home.
+// This is the (new in S8.1) risk→cost edge: the robust factor-return path composes a
+// √-cap / inverse-specific-variance PRIOR weight with the existing Huber IRLS kernel
+// rather than introducing a second engine-local IRLS loop.
+#include "atx/engine/cost/robust_ls.hpp" // cost::irls_huber, RobustCfg, RobustFit (S8.1 robust path)
 #include "atx/engine/loop/panel_types.hpp" // PanelView (the trailing newest-first panel)
 #include "atx/engine/risk/exposures.hpp"   // build_exposures, ExposureMatrix, detail::step_return
 #include "atx/engine/risk/fwd.hpp"         // FactorModel / FactorModelBuilder fwd decls
@@ -365,6 +370,48 @@ namespace detail {
   return f;
 }
 
+// S8.1 robust-prior weight over a date's KEPT instruments. The robust IRLS uses
+// w0_i as the FIXED prior weight (multiplied by the per-iteration Huber factor):
+//   * cap_weight && caps present ⇒ √-cap weighting from the exposures helper,
+//     w0_i = √(cap_i) / mean_j √(cap_j) (down-weights mega-caps without letting a few
+//     names dominate; flat caps reproduce Ones). Where that helper FLAGS a row (a
+//     non-positive cap, returned as 0.0) we substitute the 1/d0_i fallback so a single
+//     bad cap cannot zero a row out.
+//   * otherwise ⇒ w0_i = 1/d0_i, the SAME inverse-specific-variance weight the P4 WLS
+//     pass uses (so the robust fit keeps the WLS character, adding ONLY the Huber
+//     down-weighting).
+// `keep` indexes into `xm.instrument_rows`; d0 is indexed by the universe instrument.
+// The √-cap math itself lives in exposures::detail::sqrt_cap_weight (the spec's reuse
+// home); only the builder-specific 1/d0 composition stays here. Order-fixed.
+[[nodiscard]] inline atx::core::linalg::VecX
+robust_prior_weight(const ExposureMatrix &xm, const std::vector<atx::usize> &keep,
+                    const atx::core::linalg::VecX &d0, std::span<const atx::f64> market_cap,
+                    bool cap_weight) {
+  const Eigen::Index nk = static_cast<Eigen::Index>(keep.size());
+  // Universe-instrument index of each kept row (the order sqrt_cap_weight expects).
+  std::vector<atx::usize> kept_instrument_rows;
+  kept_instrument_rows.reserve(keep.size());
+  for (const atx::usize j : keep) {
+    kept_instrument_rows.push_back(xm.instrument_rows[j]);
+  }
+  atx::core::linalg::VecX w0(nk);
+  if (cap_weight && !market_cap.empty()) {
+    const atx::core::linalg::VecX cap_w = sqrt_cap_weight(market_cap, kept_instrument_rows);
+    for (atx::usize j = 0U; j < kept_instrument_rows.size(); ++j) {
+      const atx::f64 cw = cap_w[static_cast<Eigen::Index>(j)];
+      w0[static_cast<Eigen::Index>(j)] =
+          (cw > 0.0)
+              ? cw // valid √-cap weight (helper guarantees strictly positive)
+              : 1.0 / d0[static_cast<Eigen::Index>(kept_instrument_rows[j])]; // flagged ⇒ 1/d0
+    }
+    return w0;
+  }
+  for (atx::usize j = 0U; j < kept_instrument_rows.size(); ++j) {
+    w0[static_cast<Eigen::Index>(j)] = 1.0 / d0[static_cast<Eigen::Index>(kept_instrument_rows[j])];
+  }
+  return w0;
+}
+
 } // namespace detail
 
 class FactorModelBuilder {
@@ -407,11 +454,16 @@ public:
                             "FactorModelBuilder::build: too few usable dates (M_s < K everywhere)");
     }
 
-    std::vector<std::vector<atx::f64>> u_by_inst(n_inst); // final WLS residuals per universe inst
+    std::vector<std::vector<atx::f64>> u_by_inst(n_inst); // final residuals per universe inst
     atx::core::linalg::MatX fseries(static_cast<Eigen::Index>(window),
                                     static_cast<Eigen::Index>(k));
+    // Pass B dispatch: robust root-cap + Huber IRLS when opted in (cfg.cov), else the
+    // P4 plain inverse-specific-variance WLS. Both emit the SAME (window×K) factor-
+    // return series + per-instrument residuals downstream; the default keeps P4 exactly.
     ATX_TRY(atx::usize used_b,
-            accumulate_wls(panel, window, market_cap, group_id, d0, fseries, u_by_inst));
+            cfg.cov.robust_regression
+                ? accumulate_robust(panel, window, market_cap, group_id, d0, fseries, u_by_inst)
+                : accumulate_wls(panel, window, market_cap, group_id, d0, fseries, u_by_inst));
     if (used_b < 2U) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "FactorModelBuilder::build: too few usable WLS dates");
@@ -507,6 +559,67 @@ private:
       for (atx::usize j = 0U; j < keep.size(); ++j) {
         u_by_inst[xs.instrument_rows[keep[j]]].push_back(
             fit->residuals[static_cast<Eigen::Index>(j)]);
+      }
+    }
+    return atx::core::Ok(used);
+  }
+
+  // Pass B (ROBUST, S8.1; opt-in via cfg.cov.robust_regression). Mirrors
+  // accumulate_wls but, per date, composes a FIXED √-cap / inverse-specific-variance
+  // PRIOR weight (detail::robust_prior_weight) with the S6-1 Huber IRLS kernel
+  // (cost::irls_huber) instead of a single WLS solve — the prior keeps the WLS
+  // character while Huber down-weights fat-tailed outlier instrument-dates. When
+  // cfg.cov.industry_sum_to_zero is set, the kept design's industry dummies are
+  // cap-weight mean-centered first (detail::apply_industry_sum_to_zero) to resolve the
+  // market/industry-dummy collinearity. Stores the robust factor-return beta into the
+  // next free fseries row and appends the per-instrument residuals — identical
+  // downstream to the WLS path. Runs EXACTLY cfg.cov.robust_iters IRLS steps: we pass
+  // tol = 0.0 so the kernel's `max_dh < tol` convergence test can never fire, making
+  // the loop a true FIXED-COUNT iteration (the project's determinism rule favors a
+  // fixed count over a convergence-dependent exit, and it moots any prior-weight
+  // interaction with the kernel's Huber-factor convergence test). RNG-free. A per-date
+  // kernel failure is non-fatal (skip); a bad span propagates. Returns the usable-date
+  // count. (The S6 calibration path keeps the kernel's default tol; only this risk path
+  // forces tol = 0.)
+  // PATTERN-B: reuse S6-1 cost::irls_huber; atx-core huber_irls is the eventual L7 home.
+  [[nodiscard]] atx::core::Result<atx::usize>
+  accumulate_robust(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
+                    std::span<const atx::u32> group_id, const atx::core::linalg::VecX &d0,
+                    atx::core::linalg::MatX &fseries,
+                    std::vector<std::vector<atx::f64>> &u_by_inst) const {
+    const atx::usize k = static_cast<atx::usize>(fseries.cols());
+    const cost::RobustCfg rcfg{/*huber_k=*/cfg.cov.huber_c, /*max_iter=*/cfg.cov.robust_iters,
+                               /*tol=*/0.0};
+    std::vector<atx::usize> keep;
+    atx::usize used = 0U;
+    for (atx::usize s = 0U; s < window; ++s) {
+      ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
+      const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
+      if (keep.size() < k) {
+        continue; // under-determined -> skip (matches the WLS pass's skip rule)
+      }
+      atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
+      if (cfg.cov.industry_sum_to_zero) {
+        detail::apply_industry_sum_to_zero(xsr, xs, keep, market_cap);
+      }
+      // Rank probe: cost::irls_huber fails LOUD (ATX_CHECK) on a rank-deficient
+      // design, but a degenerate date must be SKIPPED here (matching the WLS pass's
+      // `if (!fit)` skip). An OLS solve on the post-constraint design is the same
+      // rank test wls/irls would apply, run once up front so the IRLS only ever sees a
+      // full-rank system.
+      if (!atx::core::linalg::ols(xsr, r)) {
+        continue; // rank-deficient (e.g. a collinear sector block) -> skip this date
+      }
+      const atx::core::linalg::VecX w0 =
+          detail::robust_prior_weight(xs, keep, d0, market_cap, cfg.cov.cap_weight);
+      const cost::RobustFit fit = cost::irls_huber(xsr, r, rcfg, &w0);
+      for (atx::usize c = 0U; c < k; ++c) {
+        fseries(static_cast<Eigen::Index>(used), static_cast<Eigen::Index>(c)) =
+            fit.beta[static_cast<Eigen::Index>(c)];
+      }
+      ++used;
+      for (atx::usize j = 0U; j < keep.size(); ++j) {
+        u_by_inst[xs.instrument_rows[keep[j]]].push_back(fit.residuals[j]);
       }
     }
     return atx::core::Ok(used);

@@ -40,10 +40,10 @@
 #include <cmath>     // std::abs, std::isinf
 #include <vector>    // std::vector (residual export, MAD scratch)
 
-#include "atx/core/macro.hpp"          // ATX_CHECK
-#include "atx/core/types.hpp"          // f64, usize
-#include "atx/core/linalg/linalg.hpp"  // MatX, VecX
+#include "atx/core/linalg/linalg.hpp"     // MatX, VecX
 #include "atx/core/linalg/regression.hpp" // wls, OlsResult, Result
+#include "atx/core/macro.hpp"             // ATX_CHECK
+#include "atx/core/types.hpp"             // f64, usize
 
 #include "atx/engine/eval/stats_ext.hpp" // eval::median (robust MAD scale)
 
@@ -96,7 +96,7 @@ inline constexpr f64 kScaleEps = 1e-12;
 /// Robust scale estimate s = 1.4826 * median(|r|) (the MAD, scaled so it is a
 /// consistent estimator of σ under Gaussian noise). Floored at kScaleEps so the
 /// subsequent r/s division is always well defined.
-[[nodiscard]] inline f64 mad_scale(const VecX& r) {
+[[nodiscard]] inline f64 mad_scale(const VecX &r) {
   std::vector<f64> abs_r(static_cast<usize>(r.size()));
   for (Eigen::Index i = 0; i < r.size(); ++i) {
     abs_r[static_cast<usize>(i)] = std::abs(r[i]);
@@ -113,22 +113,40 @@ inline constexpr f64 kScaleEps = 1e-12;
 
 /// Fit beta minimising the Huber loss via IRLS over linalg::wls.
 ///
-/// @param X  n×p design (full column rank; the caller guarantees this).
-/// @param y  length-n target.
-/// @param c  tuning (knee, iteration bound, convergence tolerance).
-/// @return   the converged (or iteration-capped) robust fit.
+/// @param X       n×p design (full column rank; the caller guarantees this).
+/// @param y       length-n target.
+/// @param c       tuning (knee, iteration bound, convergence tolerance).
+/// @param prior_w OPTIONAL fixed per-observation prior weight w0 (length n).
+///                nullptr ⇒ w0 ≡ Ones, which is bit-identical to the original
+///                S6-1 behaviour (the RobustLs* suite is unaffected). When
+///                supplied, the per-iteration weight is ω_i = w0_i · huber(r_i/s,k)
+///                and the convergence test runs on the HUBER factor (not ω_i) so a
+///                fixed prior never perturbs the iteration count. S8.1 passes a
+///                √-cap / inverse-specific-variance prior here.
+/// @return        the converged (or iteration-capped) robust fit.
 ///
 /// @pre  X.rows() == y.size() and X is full column rank. A violated precondition
-///       trips ATX_CHECK on the underlying wls Result (fail-loud).
+///       trips ATX_CHECK on the underlying wls Result (fail-loud). If prior_w is
+///       non-null it must have length n (debug-checked) and entries >= 0.
 /// @note noexcept(false): Eigen may throw std::bad_alloc.
-[[nodiscard]] inline RobustFit irls_huber(const MatX& X, const VecX& y, const RobustCfg& c) {
+// PATTERN-B: reuse S6-1 cost::irls_huber; atx-core huber_irls is the eventual L7 home.
+[[nodiscard]] inline RobustFit irls_huber(const MatX &X, const VecX &y, const RobustCfg &c,
+                                          const VecX *prior_w = nullptr) {
   const Eigen::Index n = X.rows();
-  VecX w = VecX::Ones(n); // start at OLS-equivalent weights (C4 anchor)
+  ATX_ASSERT(prior_w == nullptr || prior_w->size() == n);
+  // Huber factor h_i (starts at 1 ⇒ first WLS step uses w0 directly: OLS when
+  // prior_w is Ones — the C4 anchor). The effective WLS weight is ω_i = w0_i·h_i.
+  VecX h = VecX::Ones(n);
+  VecX w(n);
   VecX r = VecX::Zero(n);
 
   atx::core::linalg::OlsResult fit;
   usize it = 0;
   for (; it < c.max_iter; ++it) {
+    for (Eigen::Index i = 0; i < n; ++i) {
+      const f64 w0 = (prior_w == nullptr) ? 1.0 : (*prior_w)[i];
+      w[i] = w0 * h[i];
+    }
     auto res = atx::core::linalg::wls(X, y, w);
     // SAFETY: the deref is OUTSIDE the success test, so ATX_CHECK (always-on),
     // not ATX_ASSERT — a rank-deficient design is a caller contract violation.
@@ -138,16 +156,14 @@ inline constexpr f64 kScaleEps = 1e-12;
     r = y - X * fit.beta;
     const f64 s = detail::mad_scale(r);
 
-    VecX w_next(n);
-    f64 max_dw = 0.0;
+    f64 max_dh = 0.0;
     for (Eigen::Index i = 0; i < n; ++i) {
       const f64 z = r[i] / s; // s >= kScaleEps, division is safe
-      const f64 wi = detail::huber_weight(z, c.huber_k);
-      max_dw = std::max(max_dw, std::abs(wi - w[i]));
-      w_next[i] = wi;
+      const f64 hi = detail::huber_weight(z, c.huber_k);
+      max_dh = std::max(max_dh, std::abs(hi - h[i]));
+      h[i] = hi;
     }
-    w = w_next;
-    if (max_dw < c.tol) {
+    if (max_dh < c.tol) {
       ++it; // count this (converged) iteration
       break;
     }
