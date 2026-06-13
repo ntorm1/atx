@@ -54,13 +54,11 @@
 //  irrelevant and determinism (L7) is preserved.
 
 #include <algorithm>     // std::max
-#include <cmath>         // std::sqrt, std::ceil, std::isfinite
-#include <cstddef>       // std::size_t
+#include <cmath>         // std::ceil, std::isfinite
 #include <limits>        // std::numeric_limits (MinTRL sentinel)
 #include <optional>      // std::optional (lazily-frozen baseline)
 #include <span>          // std::span (non-owning live window)
 #include <unordered_map> // per-alpha controller bookkeeping
-#include <utility>       // std::move
 #include <vector>        // owned per-alpha live window copy
 
 #include "atx/core/macro.hpp" // ATX_CHECK (assert legal-path mark success)
@@ -93,33 +91,46 @@ struct AdmittedBaseline {
 };
 
 // ===========================================================================
-//  PageHinkleyState — one-sided LOWER (DOWN) cumulative change detector + the
-//  DSR-drop confirmation run (the two streaming detectors share one state).
+//  PageHinkleyState — one-sided LOWER (DOWN) cumulative change detector (§4.2).
 //
-//  Page-Hinkley fields: `mean` is the running mean of the standardized
-//  observation, `cum` the cumulative deviation below (mean + delta), `max` its
-//  running maximum. A persistent negative shift drives cum down, so (max − cum)
-//  grows past lambda. `dsr_low_run` is the count of CONSECUTIVE observations for
-//  which the realized DSR/PSR drop condition held (reset to 0 on any clean
-//  observation): the DSR-drop only flags after a sustained run, which is what
-//  separates a genuine decay (PSR stays near 0 indefinitely) from a stable
-//  stream's transient sample dip (a short run that recovers). Trivial aggregate.
+//  `mean` is the running mean of the standardized observation, `cum` the
+//  cumulative deviation below (mean + delta), `max` its running maximum. A
+//  persistent negative LEVEL shift drives cum down, so (max − cum) grows past
+//  lambda and the detector trips. Exactly the §4.2 quadruple {mean,cum,max,n};
+//  it owns no other responsibility. Trivial aggregate (Rule of Zero).
 // ===========================================================================
 struct PageHinkleyState {
   atx::f64 mean = 0.0;
   atx::f64 cum = 0.0;
   atx::f64 max = 0.0;
   atx::usize n = 0;
+};
+
+// ===========================================================================
+//  DecayState — the per-alpha CROSS-PERIOD streaming state observe() threads.
+//
+//  Bundles the Page-Hinkley detector state with the DSR-drop confirmation run so
+//  each struct keeps a single responsibility: PageHinkleyState stays the pure
+//  §4.2 detector quadruple, while `dsr_low_run` (the count of CONSECUTIVE
+//  observations for which the realized DSR/PSR drop condition held, reset to 0 on
+//  any clean observation) lives here. The DSR-drop only flags after a sustained
+//  run — what separates a genuine decay (PSR stays near 0 indefinitely) from a
+//  stable stream's transient sample dip (a short run that recovers).
+// ===========================================================================
+struct DecayState {
+  PageHinkleyState ph;
   atx::usize dsr_low_run = 0; // consecutive DSR-drop observations (confirmation streak)
 };
 
 // ===========================================================================
 //  DecayConfig — detector + hysteresis knobs.
 //
-//  Defaults are tuned (see default_decay_cfg) for a clean separation between a
-//  genuine mean-halving decay (detected within ~50 obs) and a stable stream
-//  (never flagged) on the S7-2 fixtures — verified across a 12-seed sweep in
-//  both directions (book_decay_monitor_test).
+//  Defaults are tuned (see default_decay_cfg) for a separation between a genuine
+//  mean-halving decay (detected within ~50 obs) and a stable stream on the S7-2
+//  fixtures — verified across the asserted 12-seed sweep in both directions
+//  (book_decay_monitor_test). The residual stable false-alarm rate is consistent
+//  with the by-design psr_alpha one-sided gate: suppressed (but not eliminated)
+//  by the effect-size floor + confirmation run.
 // ===========================================================================
 struct DecayConfig {
   atx::f64 ph_delta = 0.005;      // Page-Hinkley slack (tolerated downward drift / step)
@@ -176,6 +187,38 @@ struct DecayVerdict {
 }
 
 // ===========================================================================
+//  min_track_record_length — MinTRL (Bailey-López de Prado), as a pure function.
+//
+//  The track-record length at which a realized PSR of sr_live against the
+//  admitted sr_admit would be significant at psr_alpha:
+//      MinTRL = 1 + var_term · (Φ⁻¹(1 − α) / (sr_admit − sr_live))²,
+//      var_term = 1 − γ3·sr_live + ((κ+2)/4)·sr_live²   (the as-built PSR var-term).
+//  den = sr_admit − sr_live is positive when decaying. A NON-POSITIVE gap (live
+//  not below admit) means decay cannot be concluded -> the SIZE_MAX sentinel; a
+//  degenerate (≤0) var_term or a non-finite result also returns the sentinel.
+//  Monotone: a SMALLER positive gap yields a LARGER MinTRL (1/den²). Free
+//  function so it is unit-testable against its closed form (S7-2 review).
+// ===========================================================================
+[[nodiscard]] inline atx::usize min_track_record_length(atx::f64 sr_admit, atx::f64 sr_live,
+                                                        atx::f64 skew, atx::f64 exkurt,
+                                                        atx::f64 psr_alpha) noexcept {
+  const atx::f64 den = sr_admit - sr_live;
+  if (!(den > 0.0)) {
+    return std::numeric_limits<atx::usize>::max(); // cannot conclude decay yet
+  }
+  const atx::f64 var_term = 1.0 - skew * sr_live + ((exkurt + 2.0) / 4.0) * sr_live * sr_live;
+  if (!(var_term > 0.0)) {
+    return std::numeric_limits<atx::usize>::max(); // degenerate moments -> no conclusion
+  }
+  const atx::f64 ratio = eval::norm_ppf(1.0 - psr_alpha) / den;
+  const atx::f64 trl = 1.0 + var_term * ratio * ratio;
+  if (!std::isfinite(trl) || trl <= 0.0) {
+    return std::numeric_limits<atx::usize>::max();
+  }
+  return static_cast<atx::usize>(std::ceil(trl));
+}
+
+// ===========================================================================
 //  DecayMonitor — stateless per-observation decay evaluator.
 //
 //  Holds only its config. observe() is const + [[nodiscard]] and mutates only the
@@ -192,14 +235,15 @@ public:
   /// Evaluate ONE live period. `live_window` is the realized return stream since
   /// admission (OOS continuation, length >= 1); its back() is the newest return
   /// r_t. `gross_edge_bps`/`round_trip_cost_bps` drive the cost-flooding
-  /// discriminator. `ph` is the caller's persistent Page-Hinkley state (updated
-  /// in place). Reads nothing in the future (PIT).
+  /// discriminator. `st` is the caller's persistent cross-period streaming state
+  /// (Page-Hinkley + DSR-drop run), updated in place. Reads nothing in the future
+  /// (PIT).
   [[nodiscard]] DecayVerdict observe(const AdmittedBaseline &base,
                                      std::span<const atx::f64> live_window,
                                      atx::f64 gross_edge_bps, atx::f64 round_trip_cost_bps,
-                                     PageHinkleyState &ph) const {
+                                     DecayState &st) const {
     // 1. Page-Hinkley DOWN on the standardized newest realized return.
-    const bool ph_trip = page_hinkley_down(base, live_window, ph);
+    const bool ph_trip = page_hinkley_down(base, live_window, st.ph);
 
     // 2. Realized moments of the live window (order-fixed; the eval convention).
     const eval::MeanStd ms = eval::mean_std_pop(live_window);
@@ -221,18 +265,19 @@ public:
     //      (c) an EFFECT-SIZE floor: sr_live < decay_effect_frac * sr_admit — a REAL
     //          performance loss, not a noisy dip. A stable stream's transient dip is a
     //          SHORT run that recovers; a genuine decay's PSR stays near 0 forever, so
-    //          the run reaches the confirmation length. This holds the false-alarm rate
-    //          (verified across a 12-seed both-directions sweep).
-    const atx::usize min_trl = min_track_record_length(base, sr_live, skew, exkurt);
+    //          the run reaches the confirmation length. This SUPPRESSES (does not
+    //          eliminate) the by-design psr_alpha false-alarm rate — clean across the
+    //          asserted 12-seed both-directions sweep (book_decay_monitor_test).
+    const atx::usize min_trl = min_track_record_length(base.sr_admit, sr_live, skew, exkurt, cfg.psr_alpha);
     const atx::usize trl_floor = std::max(min_trl, cfg.ph_min_obs);
     const bool drop_obs = (t_live >= trl_floor) && (dsr.dsr < base.dsr_admit) &&
                           (psr < cfg.psr_alpha) && (sr_live < cfg.decay_effect_frac * base.sr_admit);
     if (drop_obs) {
-      ph.dsr_low_run += 1U;
+      st.dsr_low_run += 1U;
     } else {
-      ph.dsr_low_run = 0U;
+      st.dsr_low_run = 0U;
     }
-    const bool dsr_drop = ph.dsr_low_run >= cfg.dsr_confirm_run;
+    const bool dsr_drop = st.dsr_low_run >= cfg.dsr_confirm_run;
 
     // 4. Cost-flooding discriminator (a cost-driven NET decay is sized down).
     const bool cost_flooded = !cost::should_trade(gross_edge_bps, round_trip_cost_bps, cfg.cost_flood_safety);
@@ -259,29 +304,6 @@ private:
     ph.cum += (z - ph.mean - cfg.ph_delta);
     ph.max = std::max(ph.max, ph.cum);
     return (ph.n >= cfg.ph_min_obs) && (ph.max - ph.cum > cfg.ph_lambda);
-  }
-
-  // MinTRL (Bailey-López de Prado): the track-record length at which a PSR of
-  // sr_live against the admitted SR would be significant at psr_alpha. den =
-  // sr_admit − sr_live is positive when decaying; den <= 0 (live not below admit)
-  // means decay cannot yet be concluded -> a large sentinel.
-  [[nodiscard]] atx::usize min_track_record_length(const AdmittedBaseline &base, atx::f64 sr_live,
-                                                   atx::f64 skew, atx::f64 exkurt) const noexcept {
-    const atx::f64 den = base.sr_admit - sr_live;
-    if (!(den > 0.0)) {
-      return std::numeric_limits<atx::usize>::max(); // cannot conclude decay yet
-    }
-    const atx::f64 var_term = 1.0 - skew * sr_live + ((exkurt + 2.0) / 4.0) * sr_live * sr_live;
-    if (!(var_term > 0.0)) {
-      return std::numeric_limits<atx::usize>::max(); // degenerate moments -> no conclusion
-    }
-    const atx::f64 q = eval::norm_ppf(1.0 - cfg.psr_alpha);
-    const atx::f64 ratio = q / den;
-    const atx::f64 trl = 1.0 + var_term * ratio * ratio;
-    if (!std::isfinite(trl) || trl <= 0.0) {
-      return std::numeric_limits<atx::usize>::max();
-    }
-    return static_cast<atx::usize>(std::ceil(trl));
   }
 };
 
@@ -316,7 +338,7 @@ public:
     }
     pa.live_window.push_back(r_t);
     const DecayVerdict v =
-        monitor_.observe(*pa.base, pa.live_window, gross_edge_bps, rt_cost_bps, pa.ph);
+        monitor_.observe(*pa.base, pa.live_window, gross_edge_bps, rt_cost_bps, pa.st);
     apply_hysteresis(lib, id, as_of, v, pa);
   }
 
@@ -326,7 +348,7 @@ private:
   // Per-alpha bookkeeping. Independent across alphas (no cross-alpha coupling).
   struct PerAlpha {
     std::optional<AdmittedBaseline> base;
-    PageHinkleyState ph;
+    DecayState st;
     std::vector<atx::f64> live_window;
     atx::usize consec_flags = 0; // consecutive Decaying-state flags (toward Dead)
     atx::usize clean_periods = 0; // consecutive clean periods (toward recovery)
