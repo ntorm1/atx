@@ -18,6 +18,19 @@
       }
     },
     {
+      "name": "dev",
+      "inherits": "ninja",
+      "displayName": "Ninja + clang-cl + sccache + shared deps (fast iterate)",
+      "description": "Fast iterative preset for worktrees: sccache compiler cache (cross-worktree object-cache hits for third-party AND first-party) + a shared FetchContent clone/build cache via $env{ATX_DEPS_DIR} (deps cloned once, reused by every worktree). CMP0141=NEW forces embedded debug info (/Z7) so debug objects are sccache-cacheable (the repo's top-level cmake_minimum_required is 3.20, which would otherwise leave CMP0141 OLD and /Zi PDBs uncacheable). Prereqs: run from a VS Developer shell, sccache on PATH, ATX_DEPS_DIR set (see scripts/dev-setup.md).",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER_LAUNCHER": "sccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "sccache",
+        "CMAKE_POLICY_DEFAULT_CMP0141": "NEW",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded",
+        "FETCHCONTENT_BASE_DIR": "$env{ATX_DEPS_DIR}"
+      }
+    },
+    {
       "name": "vs",
       "displayName": "Visual Studio 2022 (MSBuild)",
       "description": "Multi-config MSBuild generator for the VS IDE / msbuild CLI.",
@@ -30,12 +43,18 @@
   ],
   "buildPresets": [
     { "name": "ninja", "configurePreset": "ninja" },
+    { "name": "dev", "configurePreset": "dev" },
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],
   "testPresets": [
     {
       "name": "ninja",
       "configurePreset": "ninja",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev",
+      "configurePreset": "dev",
       "output": { "outputOnFailure": true }
     },
     {
