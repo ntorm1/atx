@@ -158,6 +158,10 @@ public:
   [[nodiscard]] atx::usize n_instruments() const noexcept {
     return static_cast<atx::usize>(x_.rows()); // M
   }
+  // The M×K exposure matrix X (read-only). Mirrors n_factors()/n_instruments():
+  // FactorModel keeps V factored, so X is the only way a caller can form a per-
+  // period book factor exposure Xᵀw (the S7-4 book report's factor_exposures row).
+  [[nodiscard]] const atx::core::linalg::MatX &exposures() const noexcept { return x_; }
 
   // wᵀ V w computed in factor space: (Xᵀw)ᵀ F (Xᵀw) + Σ D_i w_i². noexcept and
   // ALLOC-FREE — manual order-fixed loops (ascending i, then k), NOT Eigen
