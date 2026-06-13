@@ -36,6 +36,8 @@ add_library(atx-engine STATIC
     src/learn/train.cpp
     src/data/data_handler.cpp
     src/data/shm_bar_feed.cpp
+    src/parallel/batch_eval.cpp
+    src/parallel/parallel_run.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
