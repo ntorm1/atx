@@ -20,18 +20,20 @@
 //   * DeadFactorBuild.BuildComponentsMatchesBuild — the §0.3 refactor is behavior-
 //     preserving (build == build_components + create).
 
-#include <cmath>      // std::cos, std::isfinite
-#include <filesystem> // per-test temp directory
-#include <limits>     // std::numeric_limits (PanelFixture NaN fill)
-#include <memory>     // std::unique_ptr (DeadLibFixture owns the Library)
-#include <numbers>    // std::numbers::pi
+#include <cmath>        // std::cos, std::isfinite
+#include <filesystem>   // per-test temp directory
+#include <limits>       // std::numeric_limits (PanelFixture NaN fill)
+#include <memory>       // std::unique_ptr (DeadLibFixture owns the Library)
+#include <numbers>      // std::numbers::pi
 #include <span>
 #include <string>
+#include <system_error> // std::error_code (filesystem remove_all/create_directories)
+#include <utility>      // std::move (DeadCandidate / fixture moves)
 #include <vector>
 
 #include <gtest/gtest.h>
 
-#include <Eigen/Dense>
+#include <Eigen/Dense> // Eigen::Index, Eigen::Map (covers <Eigen/Core>)
 
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"
@@ -281,6 +283,41 @@ TEST(DeadFactor, EffectiveRankMatchesEntropy) {
 }
 
 // ===========================================================================
+//  RejectsOutOfRangePeriod — a too-large as_of_period (>= n_periods) must Err, NOT
+//  silently OOB-read the store's pos_row (the NDEBUG heap-read hazard the guard
+//  closes). The fixture has T == 2 periods, so period 100 is out of range.
+// ===========================================================================
+TEST(DeadFactor, RejectsOutOfRangePeriod) {
+  const usize m = 16U;
+  DeadLibFixture fx = library_with_dead_alphas(8U, m);
+  ASSERT_FALSE(fx.dead_ids.empty());
+  const auto df = extract_dead_factors(*fx.lib, std::span<const AlphaId>{fx.dead_ids},
+                                       /*as_of*/ 100U, m); // >> n_periods (==2)
+  ASSERT_FALSE(df.has_value());
+  EXPECT_EQ(df.error().code(), atx::core::ErrorCode::OutOfRange);
+}
+
+// ===========================================================================
+//  OrderIndependentOfDeadIdOrdering — the overlap sum is order-sensitive FP, so the
+//  result must NOT depend on the caller's dead_ids ordering (extract sorts a local
+//  copy ascending). Extract with the ids forward vs reversed → BIT-identical (R1).
+// ===========================================================================
+TEST(DeadFactor, OrderIndependentOfDeadIdOrdering) {
+  const usize n_dead = 12U;
+  const usize m = 16U;
+  DeadLibFixture fx = library_with_dead_alphas(n_dead, m);
+  std::vector<AlphaId> rev(fx.dead_ids.rbegin(), fx.dead_ids.rend()); // reversed order
+  const auto fwd =
+      extract_dead_factors(*fx.lib, std::span<const AlphaId>{fx.dead_ids}, fx.as_of, m);
+  const auto bwd = extract_dead_factors(*fx.lib, std::span<const AlphaId>{rev}, fx.as_of, m);
+  ASSERT_TRUE(fwd.has_value());
+  ASSERT_TRUE(bwd.has_value());
+  ASSERT_EQ(fwd->k_dead, bwd->k_dead);
+  EXPECT_TRUE((fwd->loadings.array() == bwd->loadings.array()).all()); // bit-identical
+  EXPECT_TRUE((fwd->variances.array() == bwd->variances.array()).all());
+}
+
+// ===========================================================================
 //  R6 fixture helpers: build a base FactorComponents directly (full control over
 //  the geometry) for the load-bearing reduction proof. M instruments, ONE base
 //  factor (an all-ones market column) with small factor variance, plus uniform
@@ -372,6 +409,23 @@ TEST(DeadFactor, AugmentedModelReducesDeadSubspaceExposure) {
   // dead-subspace exposure) — a clean strict reduction, far off the knife-edge.
   EXPECT_LT(e1, e0) << "augmented book must load LESS on the dead subspace (e0=" << e0
                     << ", e1=" << e1 << ")";
+}
+
+// ===========================================================================
+//  AugmentRejectsDimMismatch — dead loadings whose row count disagrees with X's must
+//  return Err (NOT abort via Eigen's comma-initializer eigen_assert). M=8 base vs a
+//  10-row dead loading column.
+// ===========================================================================
+TEST(DeadFactor, AugmentRejectsDimMismatch) {
+  const usize m = 8U;
+  const FactorComponents base = make_base_components(m, /*spec_var*/ 1e-4);
+  DeadAlphaFactors bad;
+  bad.loadings = MatX::Ones(static_cast<Eigen::Index>(m + 2U), 1); // wrong row count (10 != 8)
+  bad.variances = VecX::Constant(1, 1.0);
+  bad.k_dead = 1U;
+  const auto v = augment_factor_model(base, bad);
+  ASSERT_FALSE(v.has_value());
+  EXPECT_EQ(v.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 // ===========================================================================

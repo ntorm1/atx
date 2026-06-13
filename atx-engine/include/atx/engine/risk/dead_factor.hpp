@@ -59,10 +59,13 @@
 //  scratch. It runs at recycle cadence (a dead alpha is demoted infrequently), so a
 //  per-extraction allocation is acceptable (documented).
 
-#include <cmath>   // std::isnan, std::fabs, std::log, std::exp, std::llround
-#include <span>    // std::span (dead-id list)
-#include <utility> // std::move
+#include <algorithm> // std::sort (caller-order-independent overlap accumulation, R1)
+#include <cmath>     // std::isnan, std::fabs, std::log, std::exp, std::llround
+#include <span>      // std::span (dead-id list)
+#include <utility>   // std::move
+#include <vector>    // std::vector (sorted local copy of dead_ids)
 
+#include <Eigen/Core>        // Eigen::Index (the matrix index type)
 #include <Eigen/Eigenvalues> // Eigen::SelfAdjointEigenSolver, Eigen::Success
 
 #include "atx/core/error.hpp"  // Result, Ok, Err, ErrorCode
@@ -161,10 +164,14 @@ l1_normalize_ignoring_nan(std::span<const atx::f64> p, atx::usize m) {
 //  Builds X_AB = Σ_{i∈dead} P_iA P_iB over the L1-normalized dead holdings at
 //  `as_of_period` (Kakushadze & Yu 1709.06641), eigendecomposes the symmetric M×M
 //  overlap, FIXES the sign convention (largest-|component| positive), truncates to
-//  the effective rank, and returns the kept loadings + eigenvalues. `dead_ids` is
-//  iterated in the GIVEN order — the caller passes ASCENDING AlphaId so the
-//  accumulation is deterministic (R1). An EMPTY dead set yields k_dead == 0 (the
-//  boundary). COLD path (allocates the M×M overlap + eigensolver scratch).
+//  the effective rank, and returns the kept loadings + eigenvalues. The overlap is
+//  an FP sum of rank-1 outer products under -ffp-contract=off (ORDER-SENSITIVE), so
+//  the ids are accumulated over a SORTED LOCAL COPY (ascending AlphaId) — the result
+//  is CALLER-ORDER-INDEPENDENT and bit-reproducible (R1), not merely documented to
+//  expect ascending input. An EMPTY dead set yields k_dead == 0 (the boundary). Err
+//  if `as_of_period` is out of range (a too-large period is a silent OOB heap read in
+//  the store's NDEBUG pos_row path — guarded HERE). COLD path (allocates the M×M
+//  overlap + eigensolver scratch + the sorted id copy).
 // ===========================================================================
 [[nodiscard]] inline atx::core::Result<DeadAlphaFactors>
 extract_dead_factors(const library::Library &lib, std::span<const combine::AlphaId> dead_ids,
@@ -176,10 +183,23 @@ extract_dead_factors(const library::Library &lib, std::span<const combine::Alpha
   if (dead_ids.empty()) {
     return atx::core::Ok(DeadAlphaFactors{}); // boundary: no dead alphas → no factors
   }
+  // PERIOD BOUNDS GUARD: lib.positions(id, period) → store pos_row does NO bounds
+  // check under NDEBUG, so a too-large `as_of_period` would be a silent out-of-bounds
+  // heap read. Reject it at the boundary (before any per-id read).
+  if (as_of_period >= lib.n_periods()) {
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange,
+                          "extract_dead_factors: as_of_period >= library n_periods");
+  }
+
+  // Sort a LOCAL COPY of the ids ascending so the order-sensitive overlap sum is
+  // independent of the caller's id ordering (R1 — see the header note).
+  std::vector<combine::AlphaId> ids(dead_ids.begin(), dead_ids.end());
+  std::sort(ids.begin(), ids.end(),
+            [](const combine::AlphaId &a, const combine::AlphaId &b) { return a.value < b.value; });
 
   const Eigen::Index m = static_cast<Eigen::Index>(universe_size);
   atx::core::linalg::MatX overlap = atx::core::linalg::MatX::Zero(m, m);
-  for (const combine::AlphaId id : dead_ids) { // ORDER-FIXED (ascending AlphaId, R1)
+  for (const combine::AlphaId id : ids) { // ORDER-FIXED (sorted ascending AlphaId, R1)
     // positions() aliases store memory; l1_normalize_ignoring_nan COPIES it out
     // (NaN→0) into `p` BEFORE we touch the store again (R4 aliasing discipline).
     const atx::core::linalg::VecX p =
@@ -242,13 +262,22 @@ extract_dead_factors(const library::Library &lib, std::span<const combine::Alpha
 //  apply path — no second covariance implementation). Raising a dead direction's
 //  variance makes the optimizer assign it more risk, steering the book OFF that
 //  direction (R6). A k_dead == 0 dead set is a passthrough (the base model). Err if
-//  create rejects the augmented (X, F) (e.g. K_total exceeds the risk() stack bound).
+//  the dead loadings' row count disagrees with X's (an Eigen comma-initializer
+//  mismatch would otherwise abort via eigen_assert, not return), or if create rejects
+//  the augmented (X, F) (e.g. K_total exceeds the risk() stack bound).
 // ===========================================================================
 [[nodiscard]] inline atx::core::Result<FactorModel>
 augment_factor_model(const FactorComponents &base, const DeadAlphaFactors &dead) {
   if (dead.k_dead == 0U) {
     // Passthrough: no dead factors → the base model verbatim.
     return FactorModel::create(base.X, base.F, base.D, /*fit_begin=*/0U, base.fit_end);
+  }
+  // ROW-CONSISTENCY GUARD: the hstack below uses Eigen's comma-initializer, which
+  // fires eigen_assert (abort) — NOT a Result — on a row mismatch. Reject it here so
+  // a malformed DeadAlphaFactors is an Err, never a crash.
+  if (dead.loadings.rows() != base.X.rows()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "augment_factor_model: dead.loadings.rows() must equal base.X.rows() (M)");
   }
   const Eigen::Index k_base = base.X.cols();
   const Eigen::Index k_dead = static_cast<Eigen::Index>(dead.k_dead);

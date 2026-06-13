@@ -134,7 +134,8 @@ struct DecayVerdict;
 class DecayMonitor;
 
 // Orchestrates DecayMonitor across the admitted alpha universe; decides which
-// alphas to demote to dead status and forwards them to DeadFactorExtractor.
+// alphas to demote to dead status and forwards them to the dead-factor extraction
+// (extract_dead_factors / augment_factor_model).
 // Full definition in book/decay_monitor.hpp (S7-2).
 class DecayController;
 
@@ -159,7 +160,7 @@ struct BookReport;
 
 // Orchestrates the full operating-book loop:
 //   RebalanceSchedule → MultiPeriodOptimizer → DecayController
-//   → DeadFactorExtractor → Kelly allocator → BookReport.
+//   → extract_dead_factors / augment_factor_model → Kelly allocator → BookReport.
 // Full definition in book/pipeline.hpp (S7-5).
 class BookPipeline;
 

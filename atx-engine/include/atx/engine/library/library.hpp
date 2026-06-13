@@ -233,6 +233,11 @@ public:
   [[nodiscard]] std::span<const atx::f64> positions(AlphaId id, atx::usize period) const noexcept {
     return store_.positions(id, period);
   }
+  /// Shared period count of the store (0 for a fully-empty store). Exposed so a
+  /// caller can bounds-check a `period` BEFORE positions(id, period): the store's
+  /// pos_row does NO bounds check under NDEBUG (S7-3 dead-factor extraction guards
+  /// as_of_period against this before reading dead holdings).
+  [[nodiscard]] atx::usize n_periods() const noexcept { return store_.n_periods(); }
   [[nodiscard]] atx::core::Result<LifecycleState> state_as_of(AlphaId id, atx::usize t) const {
     return journal_.state_as_of(id, static_cast<atx::u64>(t));
   }
