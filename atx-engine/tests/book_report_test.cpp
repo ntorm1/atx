@@ -98,7 +98,10 @@ namespace lib = atx::engine::library;
   for (const auto &p : paths) {
     std::ifstream in(p, std::ios::binary);
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    out.push_back(p.filename().string() + "\x00" + bytes);
+    // A genuine NUL byte separates name from contents: "x" + "\x00" (a one-char
+    // C-string would terminate at the NUL and emit nothing — std::string("\x00",1)
+    // forces the byte to be part of the element so name/content can't bleed across.
+    out.push_back(p.filename().string() + std::string("\x00", 1) + bytes);
   }
   return out;
 }
@@ -204,6 +207,17 @@ constexpr usize kT = 6;      // library pnl stream length
   return library;
 }
 
+// Unwrap accumulate_report (now Result<BookReport>): assert success and return the
+// report so each happy-path test stays compact.
+[[nodiscard]] BookReport accumulate_ok(const MultiPeriodResult &books, const Panel &panel,
+                                       FieldId ret, const RebalanceSchedule &sched,
+                                       const FactorModel &V, f64 capacity_gross,
+                                       const lib::Library &library, usize as_of) {
+  auto res = accumulate_report(books, panel, ret, sched, V, capacity_gross, library, as_of);
+  EXPECT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
+  return std::move(*res);
+}
+
 // ===========================================================================
 //  Net-of-cost equity + pnl attribution
 // ===========================================================================
@@ -217,7 +231,7 @@ TEST(BookReport, AccumulatesNetOfCostEquityCurve) {
   const FieldId ret = *panel.field_id("ret");
 
   const BookReport rep =
-      accumulate_report(books, panel, ret, sched, V, /*capacity_gross=*/1.0, library, /*as_of=*/2U);
+      accumulate_ok(books, panel, ret, sched, V, /*capacity_gross=*/1.0, library, /*as_of=*/2U);
 
   ASSERT_EQ(rep.equity_curve.size(), sched.periods.size());
   ASSERT_EQ(rep.pnl_net.size(), sched.periods.size());
@@ -246,7 +260,7 @@ TEST(BookReport, CapacityUtilizationBounded) {
 
   // capacity_gross = 0.5 >= every period's gross (0.40) ⇒ utilization <= 1.
   const BookReport rep =
-      accumulate_report(books, panel, ret, sched, V, /*capacity_gross=*/0.5, library, 2U);
+      accumulate_ok(books, panel, ret, sched, V, /*capacity_gross=*/0.5, library, 2U);
 
   ASSERT_EQ(rep.capacity_utilization.size(), sched.periods.size());
   for (usize s = 0; s < sched.periods.size(); ++s) {
@@ -268,7 +282,7 @@ TEST(BookReport, WriteIsByteIdenticalAcrossRuns) {
   const FieldId ret = *panel.field_id("ret");
 
   const BookReport rep =
-      accumulate_report(books, panel, ret, sched, V, /*capacity_gross=*/1.0, library, 2U);
+      accumulate_ok(books, panel, ret, sched, V, /*capacity_gross=*/1.0, library, 2U);
 
   const std::string dirA = tmpdir("A");
   const std::string dirB = tmpdir("B");
@@ -296,7 +310,7 @@ TEST(BookReport, FactorExposureIncludesDeadColumns) {
   const FieldId ret = *panel.field_id("ret");
 
   const BookReport rep =
-      accumulate_report(books, panel, ret, sched, V, /*capacity_gross=*/1.0, library, 2U);
+      accumulate_ok(books, panel, ret, sched, V, /*capacity_gross=*/1.0, library, 2U);
 
   EXPECT_EQ(rep.factor_exposures.cols(), static_cast<Eigen::Index>(V.n_factors()));
   EXPECT_EQ(rep.factor_exposures.rows(), static_cast<Eigen::Index>(sched.periods.size()));
@@ -322,10 +336,8 @@ TEST(BookReport, NoSurvivorship) {
   lib::Library library = make_library(dir);
   const FieldId ret = *clean.field_id("ret");
 
-  const BookReport rc =
-      accumulate_report(books, clean, ret, sched, V, 1.0, library, 2U);
-  const BookReport rp =
-      accumulate_report(books, poisoned, ret, sched, V, 1.0, library, 2U);
+  const BookReport rc = accumulate_ok(books, clean, ret, sched, V, 1.0, library, 2U);
+  const BookReport rp = accumulate_ok(books, poisoned, ret, sched, V, 1.0, library, 2U);
 
   // Period-0 book[1] = -0.10, clean ret[1] = -0.02 contributes -0.10·-0.02 = 0.002.
   // Poisoning that cell to NaN drops its contribution to 0, so the poisoned
@@ -349,11 +361,57 @@ TEST(BookReport, LifecycleCensusCountsStates) {
 
   // as_of = 2 (>= the Live transition at period 1): alpha_a is Live, alpha_b is
   // Admitted ⇒ census[Admitted]==1, census[Live]==1.
-  const BookReport rep =
-      accumulate_report(books, panel, ret, sched, V, 1.0, library, /*as_of=*/2U);
+  const BookReport rep = accumulate_ok(books, panel, ret, sched, V, 1.0, library, /*as_of=*/2U);
   EXPECT_EQ(rep.lifecycle_census[static_cast<usize>(LifecycleState::Admitted)], 1U);
   EXPECT_EQ(rep.lifecycle_census[static_cast<usize>(LifecycleState::Live)], 1U);
   EXPECT_EQ(rep.lifecycle_census[static_cast<usize>(LifecycleState::Candidate)], 0U);
+}
+
+// ===========================================================================
+//  Front-door guards (fix #1): OOB schedule date + dimension mismatch → Err
+// ===========================================================================
+TEST(BookReport, RejectsOutOfRangeScheduleDate) {
+  const MultiPeriodResult books = make_books();
+  const Panel panel = make_panel(); // kDates == 3 dates
+  const FactorModel V = make_model();
+  const std::string dir = tmpdir("lib");
+  lib::Library library = make_library(dir);
+  const FieldId ret = *panel.field_id("ret");
+
+  // Schedule references date index 3, but the panel only has dates 0..2 ⇒ Err
+  // (previously an ATX_ASSERT-only path → release OOB read).
+  const RebalanceSchedule bad{std::vector<usize>{0U, 1U, 3U}};
+  const auto res = accumulate_report(books, panel, ret, bad, V, 1.0, library, 2U);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::OutOfRange);
+}
+
+TEST(BookReport, RejectsDimMismatch) {
+  const Panel panel = make_panel();
+  const FactorModel V = make_model(); // n_instruments() == 3
+  const RebalanceSchedule sched = make_sched();
+  const std::string dir = tmpdir("lib");
+  lib::Library library = make_library(dir);
+  const FieldId ret = *panel.field_id("ret");
+
+  // (a) MultiPeriodResult vectors shorter than the schedule (2 books vs 3 periods).
+  {
+    MultiPeriodResult short_books = make_books();
+    short_books.books.pop_back();    // now 2 books, but 3 schedule periods
+    short_books.turnover.pop_back();
+    short_books.cost_bps.pop_back();
+    const auto res = accumulate_report(short_books, panel, ret, sched, V, 1.0, library, 2U);
+    ASSERT_FALSE(res.has_value());
+    EXPECT_EQ(res.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+  // (b) a book whose length != V.n_instruments() (would UB the Xᵀw Map + pnl loop).
+  {
+    MultiPeriodResult bad_books = make_books();
+    bad_books.books[1] = std::vector<f64>{0.1, 0.2}; // length 2, model wants 3
+    const auto res = accumulate_report(bad_books, panel, ret, sched, V, 1.0, library, 2U);
+    ASSERT_FALSE(res.has_value());
+    EXPECT_EQ(res.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
 }
 
 } // namespace
