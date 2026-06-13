@@ -24,6 +24,11 @@ add_library(atx-engine STATIC
     src/alpha/segment_panel.cpp
     src/alpha/typecheck.cpp
     src/alpha/unparse.cpp
+    src/learn/ensemble.cpp
+    src/learn/gbt.cpp
+    src/learn/hmm.cpp
+    src/learn/latent.cpp
+    src/learn/linear_alpha.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
