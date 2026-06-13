@@ -365,7 +365,7 @@ unified book).* Consumes everything.
 | S7.4 | Capital allocation across the mega-alpha + book-level reporting artifacts | M | ⏳ |
 | S7.5 | Full E2E pipeline integration test (data→mine→store→eval→combine→optimize→cost→report; deterministic) + close | L | ⏳ |
 
-### S8 — Vendor-Grade Risk Model: Covariance Construction & Cleaning  🚧 S8-a ✅ shipped / S8-b 🚧 in progress ([spec](sprint-8-risk-covariance-construction.md) · [S8-a ledger](sprint-8a-progress.md) · [S8-a plan](sprint-8a-covariance-construction-implementation-plan.md) · [S8-b ledger](sprint-8b-progress.md) · [S8-b plan](sprint-8b-regime-statistical-shrinkage-implementation-plan.md))
+### S8 — Vendor-Grade Risk Model: Covariance Construction & Cleaning  ✅ shipped — S8-a + S8-b (on `feat/s8`, unmerged) ([spec](sprint-8-risk-covariance-construction.md) · [S8-a ledger](sprint-8a-progress.md) · [S8-a plan](sprint-8a-covariance-construction-implementation-plan.md) · [S8-b ledger](sprint-8b-progress.md) · [S8-b plan](sprint-8b-regime-statistical-shrinkage-implementation-plan.md))
 **Theme:** Deepen the P4 factored risk model `V = X F Xᵀ + D` from *correct-but-minimal* to *Barra/Axioma-grade*.
 P4 keeps the covariance factored and applies it via Woodbury, but estimates `F` as one scaled-identity-LW-shrunk
 sample covariance and `D` as plain residual variance — missing the four cleaning layers every risk shop applies.
@@ -385,10 +385,10 @@ shrinkage/RMT/PSD toolkit** (constant-correlation + nonlinear Ledoit-Wolf, March
 | S8.2 | EWMA factor covariance — split vol/correlation half-lives + Newey-West | L | ✅ `c195d29` |
 | S8.3 | Eigenfactor risk adjustment (Monte-Carlo de-biasing; seeded; `a=1.0` not 1.4) | L | ✅ `fb52fd2` |
 | S8.4 | Specific-risk model — EWMA + Newey-West + structural blend (+ ISC hook) | M | ✅ `cb01c07` |
-| S8.5 | Volatility Regime Adjustment (VRA) + bias-stat diagnostic | M | ⏳ |
-| S8.6 | APCA statistical factor model (fills `n_stat_factors`; shares S7.3's append seam) | L | ⏳ |
-| S8.7 | Model-free shrinkage + RMT clip + Higham PSD-repair toolkit | M | ⏳ |
-| S8.8 | Short/long-horizon blend + integration + risk attribution + bench + close | L | ⏳ |
+| S8.5 | Volatility Regime Adjustment (VRA) + bias-stat diagnostic | M | ✅ `a939e67` |
+| S8.6 | APCA statistical factor model (fills `n_stat_factors`; shares S7.3's append seam) | L | ✅ `a74da77` |
+| S8.7 | Model-free shrinkage + RMT clip + Higham PSD-repair toolkit | M | ✅ `3ce8cfe` |
+| S8.8 | Short/long-horizon blend + integration + bench + close | L | ✅ `89d7c74` |
 
 ---
 

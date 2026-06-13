@@ -37,10 +37,19 @@ expected, ignore unless those targets are built).
 | Unit | Title | Status | Commit | Tests |
 |---|---|---|---|---|
 | S8-b.0 | Marker + ledger + frozen plan | ✅ done | _this commit_ | — |
-| S8.5 | Volatility Regime Adjustment (VRA) + bias-stat diagnostic | ⏳ | — | `risk_vol_regime_test.cpp` |
-| S8.6 | APCA statistical factor model (retires `n_stat_factors` NotImplemented) | ⏳ | — | `risk_stat_factor_test.cpp` |
-| S8.7 | Model-free shrinkage (const-corr LW + MP clip) + PSD repair (Higham + eigen-clip) | ⏳ | — | `risk_shrinkage_psd_test.cpp` |
-| S8.8 | Short/long-horizon blend + integration + bench + close | ⏳ | — | `risk_covariance_integration_test.cpp` + `bench/risk_covariance_bench.cpp` |
+| S8.5 | Volatility Regime Adjustment (VRA) + bias-stat diagnostic | ✅ done | `a939e67` | `risk_vol_regime_test.cpp` (8) |
+| S8.6 | APCA statistical factor model (retires `n_stat_factors` NotImplemented) | ✅ done | `a74da77` | `risk_stat_factor_test.cpp` (10) |
+| S8.7 | Model-free shrinkage (const-corr LW + MP clip) + PSD repair (Higham + eigen-clip) | ✅ done | `3ce8cfe` | `risk_shrinkage_psd_test.cpp` (9) |
+| S8.8 | Short/long-horizon blend + integration + bench + close | ✅ done | `89d7c74` | `risk_covariance_integration_test.cpp` (9) + `bench/risk_covariance_bench.cpp` |
+
+**S8-b CLOSED** — all 4 code units shipped, each TDD + spec-compliance review + code-quality review passed,
+plus a final cross-unit holistic review (**SHIP**: config coherent, build() pipeline order correct, S8.3
+eigen_adjust still the ONLY model RNG, PSD-by-construction at every stage, `FactorModel` apply interface
+byte-unchanged, DRY — S8.8 reuses the S8.2/S8.4 kernels). Full `atx-engine-tests` green: **1133/1133 real
+tests pass** (+9 over the 1124 S8.7 baseline; only the 2 engine-only `*_NOT_BUILT` sentinels "fail").
+Covariance bench (§10): `cond_p4 14.77 → cond_blend 9.94 → cond_s8 9.48` (~33% better-conditioned).
+**With S8-a, Sprint 8 is complete.** `feat/s8` is intentionally NOT merged — the merge is a controller/user
+decision (the worktree carries S8-a + S8-b; merge after the user reviews).
 
 ## Decisions / discoveries
 
@@ -64,3 +73,14 @@ expected, ignore unless those targets are built).
 - Risk-attribution diagnostic (factor vs specific variance decomposition) — S8.8 ships the integration; the
   full attribution surface is a thin follow-up if not folded into S8.8.
 - S8.6 APCA append seam is the path S7.3 (dead-alpha→risk-factor) reuses.
+- **APCA path does not compose with eigen_adjust / VRA / EWMA-blend / structural-D** (holistic-review finding):
+  the statistical variant is a self-contained model (F = canonical LW of factor returns, D = APCA residual
+  floored). The regime-aware / de-biasing / blend features apply to the FUNDAMENTAL path only. Composing them
+  onto the statistical variant is a follow-up.
+- **`horizon_blend=true` + `factor_cov_method=LedoitWolfSingle` is a silent no-op** (holistic-review finding):
+  the long half-lives are EWMA-only, so the LW-single case ignores the blend (documented at the call site but
+  not validated). Consider a debug assert / config validation so a mis-set pair fails loud.
+- **Stale comment** `risk_factor_builder_test.cpp:25` still says "n_stat_factors>0 → NotImplemented" (S8.6
+  retired that; the test body asserts the retirement correctly). Comment-only; fix opportunistically.
+- MultiPeriodOptimizer flow-through: the S8.8 integration test exercises `PortfolioOptimizer::solve`; a
+  `MultiPeriodOptimizer::run` flow-through of the deepened V is a thin additional integration test.
