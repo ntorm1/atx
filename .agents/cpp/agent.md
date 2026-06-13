@@ -86,6 +86,8 @@ Authoritative sources, in precedence order when they conflict:
 - Single Responsibility. Composition over inheritance. Inherit only for runtime polymorphism behind an abstract interface; mark `override`, leaf classes/virtuals `final`. Public base destructors `virtual`.
 - No raw pointers in interfaces for ownership — smart pointers or values. Non-owning observe = `T*`/`T&`/`span` with documented non-null.
 - Free functions over members when they don't need private state (better encapsulation). Every path that touches data enforces its invariants.
+- Keep headers clean: declarations, contracts, forward declarations, and minimal includes. Put implementation in `.cpp` files whenever possible; headers should not accumulate private helper code or heavy dependency "fill".
+- Prioritize private PIMPL implementations for classes with non-trivial state, unstable dependencies, or expensive includes. Store the opaque `Impl` by `std::unique_ptr`; define `Impl` and member bodies in the source file.
 - Templates: constrain with **concepts** (C++20). No SFINAE soup. `static_assert` intent with a message. Keep error messages human-readable.
 
 ---
