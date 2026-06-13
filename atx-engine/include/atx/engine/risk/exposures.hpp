@@ -141,6 +141,16 @@ struct CovarianceConfig {
   atx::usize spec_halflife = 0;  // EWMA HL for specific-return variance (0 ⇒ unused)
   atx::usize spec_nw_lags = 0;   // Newey-West lags for specific autocorrelation
   bool structural_blend = false; // blend thin-history names toward ln-vol-on-exposures model
+  // --- S8.5 Volatility Regime Adjustment (VRA) ---
+  atx::usize vra_halflife = 0; // 0 ⇒ no VRA (λ²≡1); e.g. 42 (short) / 168 (long) — USE4
+  // --- S8.6 statistical factors (APCA); activates when FactorModelConfig.n_stat_factors > 0 ---
+  bool apca_gls_reweight = true; // 2nd APCA pass (GLS residual-variance reweight); false ⇒ 1-pass
+  // --- S8.8 short/long-horizon blend (the long-horizon half-life set + convex weight) ---
+  bool horizon_blend = false;          // false ⇒ single-horizon (P4 / S8.2 path), byte-identical
+  atx::f64 horizon_blend_weight = 0.5; // w in F = w·F_short + (1−w)·F_long (clamped [0,1])
+  atx::usize vol_halflife_long = 0;  // long-horizon vol HL  (short HL is the existing vol_halflife)
+  atx::usize corr_halflife_long = 0; // long-horizon corr HL (short = existing corr_halflife)
+  atx::usize spec_halflife_long = 0; // long-horizon specific HL (short = existing spec_halflife)
 };
 
 struct FactorModelConfig {

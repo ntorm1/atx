@@ -83,6 +83,7 @@
 #include "atx/engine/risk/exposures.hpp"    // build_exposures, ExposureMatrix, detail::step_return
 #include "atx/engine/risk/fwd.hpp"          // FactorModel / FactorModelBuilder fwd decls
 #include "atx/engine/risk/specific_risk.hpp" // specific_risk_blend, SpecificRisk (S8.4 specific risk)
+#include "atx/engine/risk/vol_regime.hpp"    // vol_regime_multiplier, RegimeAdjust (S8.5 VRA)
 
 namespace atx::engine::risk {
 
@@ -506,8 +507,19 @@ public:
                            cfg.cov.eigen_adjust_seed));
       f = std::move(f_adj);
     }
-    const atx::core::linalg::VecX d = specific_variances(x0, u_by_inst, window);
-    return FactorModel::create(std::move(x0.x), std::move(f), d, /*fit_begin=*/0U,
+    // S8.5 Volatility Regime Adjustment (opt-in via cfg.cov.vra_halflife > 0; the
+    // DEFAULT 0 is a no-op so F and D are the pre-S8.5 P4/S8.2 values, byte-identical).
+    // The market-wide regime multiplier λ² is computed ONCE from the kept factor-return
+    // series `fkept` and the FINALIZED (post-eigen-adjust) forecast F, then rescales BOTH
+    // F ← λ²·F (PSD-preserving — λ² > 0) and D ← λ²·D (the SAME multiplier on the specific
+    // variances; per-name specific VRA is a recorded backlog residual). RNG-free.
+    atx::core::linalg::VecX d = specific_variances(x0, u_by_inst, window);
+    if (cfg.cov.vra_halflife > 0U) {
+      const RegimeAdjust ra = vol_regime_multiplier(fkept, f, cfg.cov.vra_halflife);
+      f *= ra.lambda2;
+      d *= ra.lambda2;
+    }
+    return FactorModel::create(std::move(x0.x), std::move(f), std::move(d), /*fit_begin=*/0U,
                                /*fit_end=*/window);
   }
 
