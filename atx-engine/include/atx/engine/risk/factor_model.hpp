@@ -82,6 +82,7 @@
 #include "atx/engine/risk/eigen_adjust.hpp" // eigen_adjust (S8.3 Monte-Carlo eigenfactor de-biasing)
 #include "atx/engine/risk/exposures.hpp"    // build_exposures, ExposureMatrix, detail::step_return
 #include "atx/engine/risk/fwd.hpp"          // FactorModel / FactorModelBuilder fwd decls
+#include "atx/engine/risk/specific_risk.hpp" // specific_risk_blend, SpecificRisk (S8.4 specific risk)
 
 namespace atx::engine::risk {
 
@@ -505,7 +506,7 @@ public:
                            cfg.cov.eigen_adjust_seed));
       f = std::move(f_adj);
     }
-    const atx::core::linalg::VecX d = specific_variances(x0, u_by_inst);
+    const atx::core::linalg::VecX d = specific_variances(x0, u_by_inst, window);
     return FactorModel::create(std::move(x0.x), std::move(f), d, /*fit_begin=*/0U,
                                /*fit_end=*/window);
   }
@@ -655,19 +656,38 @@ private:
     return atx::core::Ok(used);
   }
 
-  // Per current-cross-section instrument (X[0].instrument_rows order), D_i =
-  // pop-var of its final WLS residual series; absent/short series -> 0 (create()
-  // floors to kSpecificVarFloor). Length == M == X[0].n_instruments().
-  [[nodiscard]] static atx::core::linalg::VecX
-  specific_variances(const ExposureMatrix &x0,
-                     const std::vector<std::vector<atx::f64>> &u_by_inst) {
-    const atx::usize m = x0.n_instruments();
-    atx::core::linalg::VecX d(static_cast<Eigen::Index>(m));
-    for (atx::usize r = 0U; r < m; ++r) {
-      const atx::usize inst = x0.instrument_rows[r];
-      d[static_cast<Eigen::Index>(r)] = detail::pop_variance(u_by_inst[inst]);
+  // Specific (idiosyncratic) variances D over the current cross-section
+  // (X[0].instrument_rows order). EXHAUSTIVE dispatch on cfg.cov.specific_method (no
+  // default — a new enumerator is a compile error):
+  //   * PopVariance (DEFAULT, P4): D_i = pop-var of instrument i's final WLS residual
+  //     series; absent/short series -> 0 (create() floors to kSpecificVarFloor). This
+  //     branch is byte-identical to the as-built path.
+  //   * EwmaNeweyWestStructural (S8.4, opt-in): the blended estimator
+  //     (specific_risk_blend) — EWMA specific-vol × Newey-West autocorrelation
+  //     inflation, blended toward a ln-vol-on-exposures structural model by history
+  //     depth so thin-history names inherit a sane structural level instead of a noisy
+  //     near-zero pop variance. The ISC off-diagonal carrier is defined interface-only;
+  //     D stays strictly DIAGONAL this sprint (the carrier is not wired here).
+  // Length == M == X[0].n_instruments(). Member (not static) so it reads cfg.cov.
+  [[nodiscard]] atx::core::linalg::VecX
+  specific_variances(const ExposureMatrix &x0, const std::vector<std::vector<atx::f64>> &u_by_inst,
+                     atx::usize window) const {
+    switch (cfg.cov.specific_method) {
+    case SpecificRiskMethod::PopVariance: {
+      const atx::usize m = x0.n_instruments();
+      atx::core::linalg::VecX d(static_cast<Eigen::Index>(m));
+      for (atx::usize r = 0U; r < m; ++r) {
+        const atx::usize inst = x0.instrument_rows[r];
+        d[static_cast<Eigen::Index>(r)] = detail::pop_variance(u_by_inst[inst]);
+      }
+      return d;
     }
-    return d;
+    case SpecificRiskMethod::EwmaNeweyWestStructural:
+      return specific_risk_blend(x0, u_by_inst, window, cfg.cov.spec_halflife, cfg.cov.spec_nw_lags,
+                                 cfg.cov.structural_blend)
+          .variances;
+    }
+    return {}; // unreachable (switch exhaustive over SpecificRiskMethod)
   }
 };
 
