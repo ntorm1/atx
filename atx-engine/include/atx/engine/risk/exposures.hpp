@@ -84,7 +84,6 @@
 #include <vector>    // std::vector (cold-path scratch)
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
-#include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // f64, u8, u32, usize
 
 #include "atx/core/linalg/linalg.hpp" // MatX (column-major Eigen), VecX
@@ -105,12 +104,62 @@ enum class StyleFactor : atx::u8 { Size, Momentum, Volatility, Beta, Liquidity }
 // Number of style factors (the style_mask is a bitset over [0, kStyleFactorCount)).
 inline constexpr atx::usize kStyleFactorCount = 5U;
 
+// ===========================================================================
+//  §3 CovarianceConfig — the S8 covariance-construction knobs (all opt-in).
+// ===========================================================================
+//  Carried on FactorModelConfig as the member `cov`. EVERY default reproduces the
+//  P4 path bit-for-bit, so the existing risk suite stays green untouched. The full
+//  set of S8-a fields is added NOW even though only the S8.1 robust-regression
+//  fields (robust_regression / huber_c / robust_iters / cap_weight /
+//  industry_sum_to_zero) are wired in this unit; landing the unused S8.2–S8.4
+//  fields up front is INTENTIONAL — it avoids churning this struct (and re-touching
+//  every including TU) once per later unit. Half-lives are in observations (rows);
+//  0 / the default enum value selects the P4 path. All EWMA/NW reductions are
+//  order-fixed (ascending lag, then factor). Method enums match the `: atx::u8`
+//  underlying-type convention used by StyleFactor.
+enum class FactorCovMethod : atx::u8 { LedoitWolfSingle /*P4 default*/, EwmaNeweyWest };
+enum class SpecificRiskMethod : atx::u8 { PopVariance /*P4 default*/, EwmaNeweyWestStructural };
+
+struct CovarianceConfig {
+  // --- S8.1 robust regression (WIRED in S8.1) ---
+  bool robust_regression = false;    // false ⇒ plain inverse-d0 WLS (P4)
+  atx::f64 huber_c = 1.345;          // Huber tuning constant (95% Gaussian efficiency)
+  atx::usize robust_iters = 5;       // FIXED IRLS iterations (determinism: no convergence exit)
+  bool cap_weight = false;           // √-cap instrument weighting (needs market_cap)
+  bool industry_sum_to_zero = false; // cap-weighted industry-dummy sum-to-zero constraint
+  // --- S8.2 EWMA + Newey-West factor covariance (reserved; not wired in S8.1) ---
+  FactorCovMethod factor_cov_method = FactorCovMethod::LedoitWolfSingle;
+  atx::usize vol_halflife = 0;  // fast HL for variances    (0 ⇒ unused; e.g. 60 short-horizon)
+  atx::usize corr_halflife = 0; // slow HL for correlations (0 ⇒ unused; e.g. 125)
+  atx::usize nw_lags = 0;       // Newey-West Bartlett lags  (0 ⇒ no serial-corr adjustment)
+  // --- S8.3 eigenfactor risk adjustment (reserved; the ONLY future RNG site) ---
+  atx::usize eigen_adjust_sims = 0;    // 0 ⇒ no adjustment; e.g. 1000 sims when enabled
+  atx::f64 eigen_adjust_amplify = 1.0; // a in γ(k)=a(v(k)−1)+1. DEFAULT 1.0 (NOT the paper's 1.4)
+  atx::u64 eigen_adjust_seed = 0;      // recorded; same seed ⇒ byte-identical F̂
+  // --- S8.4 specific risk (reserved; not wired in S8.1) ---
+  SpecificRiskMethod specific_method = SpecificRiskMethod::PopVariance;
+  atx::usize spec_halflife = 0;  // EWMA HL for specific-return variance (0 ⇒ unused)
+  atx::usize spec_nw_lags = 0;   // Newey-West lags for specific autocorrelation
+  bool structural_blend = false; // blend thin-history names toward ln-vol-on-exposures model
+  // --- S8.5 Volatility Regime Adjustment (VRA) ---
+  atx::usize vra_halflife = 0; // 0 ⇒ no VRA (λ²≡1); e.g. 42 (short) / 168 (long) — USE4
+  // --- S8.6 statistical factors (APCA); activates when FactorModelConfig.n_stat_factors > 0 ---
+  bool apca_gls_reweight = true; // 2nd APCA pass (GLS residual-variance reweight); false ⇒ 1-pass
+  // --- S8.8 short/long-horizon blend (the long-horizon half-life set + convex weight) ---
+  bool horizon_blend = false;          // false ⇒ single-horizon (P4 / S8.2 path), byte-identical
+  atx::f64 horizon_blend_weight = 0.5; // w in F = w·F_short + (1−w)·F_long (clamped [0,1])
+  atx::usize vol_halflife_long = 0;  // long-horizon vol HL  (short HL is the existing vol_halflife)
+  atx::usize corr_halflife_long = 0; // long-horizon corr HL (short = existing corr_halflife)
+  atx::usize spec_halflife_long = 0; // long-horizon specific HL (short = existing spec_halflife)
+};
+
 struct FactorModelConfig {
   bool sector_factors = true;        // emit one dummy column per IndClass group
   atx::u8 style_mask = 0x1F;         // bitset over StyleFactor (bit i = factor i); default all 5
   atx::usize n_stat_factors = 0;     // P4-7 (PCA) — ignored here
   atx::usize n_dead_factors = 0;     // P4-7 — ignored here
   atx::f64 factor_cov_shrink = -1.0; // P4-7 — ignored here
+  CovarianceConfig cov{};            // S8 covariance-construction knobs (defaults ⇒ P4)
 };
 
 // ===========================================================================
@@ -365,6 +414,107 @@ inline void zscore_column(atx::core::linalg::MatX &x, Eigen::Index col) noexcept
   std::sort(groups.begin(), groups.end());
   groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
   return groups;
+}
+
+// ===========================================================================
+//  §4/§5 robust-regression exposure helpers (S8.1; reuse home for later units +
+//  the optimizer). Pure functions over the exposure types — no builder state.
+// ===========================================================================
+
+// Normalized √-cap instrument weight over a date's KEPT instruments:
+//   w_i = √(cap_i) / mean_j √(cap_j)
+// taken over the kept rows whose cap is POSITIVE (the normalizer is the mean of
+// √cap across positive-cap kept names, so a flat-cap cross-section yields w ≡ 1).
+// This down-weights mega-caps relative to plain cap-weighting without letting a few
+// names dominate.
+//
+// Contract:
+//   * `kept_instrument_rows` are universe instrument indices (ExposureMatrix row
+//     order; ascending by construction); `market_cap[inst]` is that instrument's cap.
+//   * A non-positive cap row (or an all-non-positive block, mean undefined) is FLAGGED
+//     by returning 0.0 for that row — the caller substitutes its own fallback weight
+//     (S8.1: 1/d0_i). 0.0 is an unambiguous sentinel: a real √-cap weight is strictly
+//     positive, and a 0.0 prior weight is never the intended robust weighting.
+//   * Order-fixed (ascending kept index). Returns a length == kept_instrument_rows.size()
+//     vector. `market_cap` MUST be non-empty (the caller gates on cap availability).
+[[nodiscard]] inline atx::core::linalg::VecX
+sqrt_cap_weight(std::span<const atx::f64> market_cap,
+                const std::vector<atx::usize> &kept_instrument_rows) {
+  const Eigen::Index nk = static_cast<Eigen::Index>(kept_instrument_rows.size());
+  atx::core::linalg::VecX w(nk);
+  atx::f64 sum_root = 0.0; // Σ_j √(cap_j) over positive-cap kept names (order-fixed)
+  atx::usize n_pos = 0U;
+  for (const atx::usize inst : kept_instrument_rows) {
+    const atx::f64 cap = market_cap[inst];
+    if (cap > 0.0) {
+      sum_root += std::sqrt(cap);
+      ++n_pos;
+    }
+  }
+  const atx::f64 mean_root = (n_pos == 0U) ? 0.0 : sum_root / static_cast<atx::f64>(n_pos);
+  for (atx::usize j = 0U; j < kept_instrument_rows.size(); ++j) {
+    const atx::f64 cap = market_cap[kept_instrument_rows[j]];
+    w[static_cast<Eigen::Index>(j)] =
+        (cap > 0.0 && mean_root > 0.0) ? std::sqrt(cap) / mean_root : 0.0; // 0.0 ⇒ fallback flag
+  }
+  return w;
+}
+
+// Cap-weighted industry-sum-to-zero constraint, applied IN PLACE to a date's kept
+// design `xsr` (rows aligned with `keep`, columns described by `xm.columns`). The
+// market level (the all-ones direction captured by the style intercept / a market
+// dummy) and the industry dummies are collinear; the canonical Barra resolution is
+// to require the cap-weighted industry returns to sum to zero. We enforce the
+// equivalent design-side condition by MEAN-CENTERING each industry (Kind::Sector)
+// dummy column by its cap-weighted mean: column c ← x(:,c) − Σ_i ν_i x(i,c), with
+// ν_i = √cap_i normalized to Σ ν_i = 1. After centering the cap-weighted sum of every
+// industry column is 0, so the industry block is orthogonal to the cap-weighted
+// market level and the collinear direction is removed (this replaces the as-built
+// kNeutralizeRidge crutch when enabled). Style (z-scored) columns are already
+// cross-sectionally centered and are left untouched. Falls back to equal-weight
+// (1/M) centering when caps are absent so the constraint stays well defined. A block
+// with no positive cap weight is left as-is. Order-fixed.
+//
+// NOTE (rank): the constraint deletes one degree of freedom — the cap-weighted market
+// level shared by the industry dummies. When the dummies partition the universe and
+// NO separate market-level/style column is present (the as-built sectors-only design),
+// they already sum to the all-ones level, so centering them collapses the block to
+// rank K−1 and the design becomes rank-deficient; the builder's OLS rank probe then
+// skips that date. The constraint is non-degenerate only when a market-level column
+// accompanies the dummies (it absorbs the removed direction).
+inline void apply_industry_sum_to_zero(atx::core::linalg::MatX &xsr, const ExposureMatrix &xm,
+                                       const std::vector<atx::usize> &keep,
+                                       std::span<const atx::f64> market_cap) {
+  const Eigen::Index nk = xsr.rows();
+  if (nk == 0) {
+    return;
+  }
+  atx::core::linalg::VecX nu(nk); // cap weights ν_i, normalized to Σ ν_i = 1
+  atx::f64 total = 0.0;
+  const bool use_cap = !market_cap.empty();
+  for (atx::usize j = 0U; j < keep.size(); ++j) {
+    const atx::f64 cap = use_cap ? market_cap[xm.instrument_rows[keep[j]]] : 1.0;
+    const atx::f64 root = (cap > 0.0) ? std::sqrt(cap) : 0.0;
+    nu[static_cast<Eigen::Index>(j)] = root;
+    total += root;
+  }
+  if (total <= 0.0) {
+    return; // no positive cap weight ⇒ constraint undefined ⇒ leave design as-is
+  }
+  nu /= total;
+  for (atx::usize c = 0U; c < xm.columns.size(); ++c) {
+    if (xm.columns[c].kind != ColumnTag::Kind::Sector) {
+      continue; // only industry/sector dummies are mean-centered
+    }
+    const Eigen::Index col = static_cast<Eigen::Index>(c);
+    atx::f64 wmean = 0.0;
+    for (Eigen::Index r = 0; r < nk; ++r) {
+      wmean += nu[r] * xsr(r, col);
+    }
+    for (Eigen::Index r = 0; r < nk; ++r) {
+      xsr(r, col) -= wmean;
+    }
+  }
 }
 
 } // namespace detail
