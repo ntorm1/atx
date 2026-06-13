@@ -288,3 +288,17 @@ TEST(ParallelExecutor, Workers_ReportsResolvedCount) {
   ThreadExecutor def{}; // 0 => substrate default, always >= 1
   EXPECT_GE(def.workers(), 1U);
 }
+
+// ---------------------------------------------------------------------------
+// Precondition assertion fires (debug-only). ATX_ASSERT is compiled out under
+// NDEBUG, so this death test only exists when asserts are live (the test build).
+// ---------------------------------------------------------------------------
+#ifndef NDEBUG
+TEST(ParallelExecutor, SlotViewDeathTest_OutOfRangeSlotAborts) {
+  const usize n = 4;
+  std::vector<std::byte> buf(slot_view_bytes(n, sizeof(f64)));
+  const SlotView v = make_slot_view(buf, n, sizeof(f64));
+  // s == n is one past the last valid slot: ATX_ASSERT(s < n()) must abort.
+  EXPECT_DEATH({ (void)v.slot(n); }, ".*");
+}
+#endif

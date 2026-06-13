@@ -32,6 +32,7 @@
 #include <span>
 
 #include "atx/core/error.hpp"
+#include "atx/core/macro.hpp" // ATX_ASSERT — debug-only precondition guards
 #include "atx/core/types.hpp"
 
 namespace atx::engine::parallel {
@@ -84,11 +85,15 @@ struct SlotView {
   // the subspan is in-bounds because bytes.size() == n() * slot_stride and
   // slot_size <= slot_stride, so s*slot_stride + slot_size <= bytes.size().
   [[nodiscard]] std::span<std::byte> slot(ShardId s) const noexcept {
+    ATX_ASSERT(s < n());                 // out-of-range s would form an OOB subspan (UB)
+    ATX_ASSERT(slot_size <= slot_stride); // payload must fit within its padded stride
     return bytes.subspan(s * slot_stride, slot_size);
   }
 
   // Const payload of shard s, for the gather / reduce after submit() returns.
   [[nodiscard]] std::span<const std::byte> cslot(ShardId s) const noexcept {
+    ATX_ASSERT(s < n());                 // out-of-range s would form an OOB subspan (UB)
+    ATX_ASSERT(slot_size <= slot_stride); // payload must fit within its padded stride
     return std::span<const std::byte>{bytes}.subspan(s * slot_stride, slot_size);
   }
 
@@ -101,7 +106,11 @@ struct SlotView {
 // Total bytes a SlotView over n shards of `slot_size` POD bytes needs: n slots
 // each padded to the cache-line stride (R6). Caller sizes its buffer with this.
 [[nodiscard]] inline atx::usize slot_view_bytes(atx::usize n, atx::usize slot_size) noexcept {
-  return n * padded_stride(slot_size);
+  const atx::usize stride = padded_stride(slot_size); // always >= kCacheLine, so > 0
+  // SAFETY: the n * stride product is unchecked size_t arithmetic; guard against a
+  // silent wrap. stride > 0 (padded to >= one cache line) makes the division safe.
+  ATX_ASSERT(n <= (static_cast<atx::usize>(-1) / stride));
+  return n * stride;
 }
 
 // Build a SlotView over `buffer` for n shards of `slot_size` POD bytes, with the
@@ -110,7 +119,13 @@ struct SlotView {
 // larger buffer is fine (trailing bytes are simply not part of the view).
 [[nodiscard]] inline SlotView make_slot_view(std::span<std::byte> buffer, atx::usize n,
                                              atx::usize slot_size) noexcept {
-  const atx::usize stride = padded_stride(slot_size);
+  const atx::usize stride = padded_stride(slot_size); // always >= kCacheLine, so > 0
+  // SAFETY: this is a noexcept path, so it cannot return Err — the preconditions are
+  // contract-enforced via assert. Guard the n * stride product against a silent
+  // size_t wrap, then require the buffer to actually hold n full strides (a too-small
+  // buffer would make the subspan below out-of-bounds, i.e. UB in release).
+  ATX_ASSERT(n <= (static_cast<atx::usize>(-1) / stride));
+  ATX_ASSERT(buffer.size() >= n * stride);
   return SlotView{buffer.subspan(0, n * stride), stride, slot_size};
 }
 

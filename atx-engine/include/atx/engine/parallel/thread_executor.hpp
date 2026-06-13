@@ -22,7 +22,6 @@
 // IExecutor base already deletes copy/assign; DetPool deletes move, which deletes
 // ours implicitly — Rule of Zero, nothing to declare).
 
-#include <span>
 #include <vector>
 
 #include "atx/core/error.hpp"
