@@ -17,8 +17,11 @@ add_library(atx-engine STATIC
     src/alpha/bytecode.cpp
     src/alpha/dag.cpp
     src/alpha/lexer.cpp
+    src/alpha/oracle.cpp
+    src/alpha/panel.cpp
     src/alpha/parser.cpp
     src/alpha/registry.cpp
+    src/alpha/segment_panel.cpp
     src/alpha/typecheck.cpp
     src/alpha/unparse.cpp
 )
