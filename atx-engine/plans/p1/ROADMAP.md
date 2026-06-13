@@ -1,6 +1,6 @@
 # Module p1 — atx-engine v2: The Alpha Factory & Portfolio Brain (`p1`)
 
-**Last reviewed:** 2026-06-11
+**Last reviewed:** 2026-06-13
 **Status:** **S1 (Evaluation & Validation Spine) + S2 (Parallel Compute Substrate) + S3 (Formulaic Alpha Factory) + S4b (Automated Alpha Engine — factory↔library integration) CLOSED**
 (`feat/atx-core-stdlib`; close ledgers [`sprint-1-progress.md`](sprint-1-progress.md),
 [`sprint-2-progress.md`](sprint-2-progress.md), [`sprint-3-progress.md`](sprint-3-progress.md)). p0 Phases 1–4 are complete (Phase-4 mega-alpha layer
@@ -59,6 +59,7 @@ anti-roadmap are where it goes to die.
 | [`sprint-5-learned-signals-ml-combiner.md`](sprint-5-learned-signals-ml-combiner.md) | sprint spec | **S5** — PIT feature matrix + learned alphas (ridge/lasso/GBM) + HMM regimes + ML mega-combiner. |
 | [`sprint-6-cost-calibration-capacity.md`](sprint-6-cost-calibration-capacity.md) | sprint spec | **S6** — calibrate δ/Y/γ/η; Almgren-Chriss temp/perm; capacity curves; cost-aware gating; borrow accrual. |
 | [`sprint-7-portfolio-lifecycle.md`](sprint-7-portfolio-lifecycle.md) | sprint spec | **S7** — multi-period optimizer + decay monitor + dead-alpha→risk-factor + capital allocation + full E2E. |
+| [`sprint-8-risk-covariance-construction.md`](sprint-8-risk-covariance-construction.md) | sprint spec | **S8** — vendor-grade covariance: robust regression + EWMA/Newey-West factor cov + eigenfactor cleaning + specific-risk blend + VRA + APCA statistical factors + shrinkage/PSD toolkit. Deepens the P4 risk model to Barra/Axioma parity. |
 
 **Pending (created at each sprint kickoff/close):**
 - `sprint-{N}-progress.md` — sprint ledgers (one per sprint, opened at kickoff; sub-sprints `Sn-a/Sn-b` if a
@@ -161,9 +162,15 @@ the established seams (`ISignalSource`, `WeightPolicy`, `AlphaStore`/`AlphaStrea
                               ▼     │
                           S5 ML ◄───┘
                               │
-                              ▼
-                  S7 portfolio + lifecycle  (consumes S3·S4·S5·S6 + P4)
+              S8 risk-cov ────┤      (deepens P4 risk model; needs only P4+S6 — truth/cost track)
+              (Barra/Axioma)  ▼
+                  S7 portfolio + lifecycle  (consumes S3·S4·S5·S6 + P4; trades S8's cleaned V)
 ```
+
+> **S8 placement:** S8 sits on the *truth/throughput/cost* track (needs only **P4 + S6**, no S3/S4/S5). It deepens
+> the P4 factored covariance to vendor grade and **strengthens S7** — S7's multi-period optimizer trades S8's
+> cleaned `V`, and S7.3 (dead-alpha→risk-factor) reuses S8.6's statistical-factor append path. Open S8 **before
+> or alongside S7**.
 
 ### S1 — Evaluation & Validation Spine  ✅ CLOSED `2158a17` ([spec](sprint-1-evaluation-validation.md) · [ledger](sprint-1-progress.md) · [user ref](sprint-1.md))
 **Theme:** Build the *truth layer first*. A factory that mass-produces alphas without an honest scorer
@@ -358,6 +365,31 @@ unified book).* Consumes everything.
 | S7.4 | Capital allocation across the mega-alpha + book-level reporting artifacts | M | ⏳ |
 | S7.5 | Full E2E pipeline integration test (data→mine→store→eval→combine→optimize→cost→report; deterministic) + close | L | ⏳ |
 
+### S8 — Vendor-Grade Risk Model: Covariance Construction & Cleaning  ⏳ proposed ([spec](sprint-8-risk-covariance-construction.md))
+**Theme:** Deepen the P4 factored risk model `V = X F Xᵀ + D` from *correct-but-minimal* to *Barra/Axioma-grade*.
+P4 keeps the covariance factored and applies it via Woodbury, but estimates `F` as one scaled-identity-LW-shrunk
+sample covariance and `D` as plain residual variance — missing the four cleaning layers every risk shop applies.
+S8 adds **robust √-cap/Huber factor regression**, **EWMA factor covariance with split vol/correlation half-lives +
+Newey-West**, the **eigenfactor Monte-Carlo de-biasing** that corrects the ~40% small-eigenfactor risk under-forecast
+(the one new, *seeded*, RNG site), an **EWMA+NW+structural specific-risk blend**, a **Volatility Regime Adjustment**,
+the **APCA statistical-factor path** (retires the `n_stat_factors` `NotImplemented`), and a **model-free
+shrinkage/RMT/PSD toolkit** (constant-correlation + nonlinear Ledoit-Wolf, Marchenko-Pastur clip, Higham repair).
+*Grounded in [`../../research/covariance-matrix-construction-massive-universe-deep-dive.md`](../../research/covariance-matrix-construction-massive-universe-deep-dive.md)
+(25/25 adversarially-verified vendor + peer-reviewed claims).* **Needs only P4 + S6** — truth/cost track; splits
+**S8-a** (S8.1–S8.4 construction core) / **S8-b** (S8.5–S8.8 regime/statistical/shrinkage/integration) at kickoff.
+
+| # | Unit | Effort | Status |
+|---|---|---|---|
+| S8.0 | Marker + ledger | S | ⏳ |
+| S8.1 | Robust cross-sectional factor regression (√-cap + Huber IRLS; industry sum-to-zero) | M | ⏳ |
+| S8.2 | EWMA factor covariance — split vol/correlation half-lives + Newey-West | L | ⏳ |
+| S8.3 | Eigenfactor risk adjustment (Monte-Carlo de-biasing; seeded; `a=1.0` not 1.4) | L | ⏳ |
+| S8.4 | Specific-risk model — EWMA + Newey-West + structural blend (+ ISC hook) | M | ⏳ |
+| S8.5 | Volatility Regime Adjustment (VRA) + bias-stat diagnostic | M | ⏳ |
+| S8.6 | APCA statistical factor model (fills `n_stat_factors`; shares S7.3's append seam) | L | ⏳ |
+| S8.7 | Model-free shrinkage + RMT clip + Higham PSD-repair toolkit | M | ⏳ |
+| S8.8 | Short/long-horizon blend + integration + risk attribution + bench + close | L | ⏳ |
+
 ---
 
 ## Carried-forward invariants (non-negotiable — every sprint, proven by test not hope)
@@ -402,6 +434,9 @@ engine.
 | S5.4 | **L7** HMM / Baum-Welch (forward-backward, log-space) | regime detection |
 | S6.1 | **L7** robust regression / least-squares for impact-coefficient fitting | cost calibration |
 | S7.1 | **L7** QP / projected-gradient refinement for the multi-period objective | dynamic optimizer |
+| S8.1 | **L7** `huber_irls` — robust/Huber IRLS least-squares | robust factor regression; engine-side IRLS-over-`wls` fallback |
+| S8.6 | **L7** `apca` — asymptotic PCA on the `T×T` Gram (`N≫T`) | statistical factors; `symmetric_eig`-on-Gram fallback |
+| S8.7 | **L7** `nonlinear_shrinkage` (QIS) + `mp_clip` + optional `nearest_corr` | shrinkage/RMT/PSD toolkit; constant-corr LW + Higham-via-`symmetric_eig` fallback |
 
 **Sequencing consequence:** S1, S2, S6 can scaffold immediately against atx-core *contracts* (TDD red
 first), green-gating as each atx-core layer lands. S3/S4/S5/S7 wait on Phase-4 being merged. If atx-core L4
