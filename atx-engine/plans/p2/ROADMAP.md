@@ -54,6 +54,7 @@ to die.
 | Doc | Type | Covers |
 |---|---|---|
 | [`sprint-1-multi-horizon-optimization-implementation-plan.md`](sprint-1-multi-horizon-optimization-implementation-plan.md) | implementation plan | **S1** frozen *how* — constraint algebra, fixed-iteration QP/ADMM, multi-horizon forecast trajectory, Gârleanu-Pedersen aim portfolio, integration with S7/S8. The first sprint's per-unit plan. |
+| [`sprint-7-distributed-scale-out-compute-implementation-plan.md`](sprint-7-distributed-scale-out-compute-implementation-plan.md) | implementation plan | **S7** frozen *how* — the substrate-agnostic `IExecutor` seam, cross-platform multi-process shared-memory substrate (Win32 + POSIX), deterministic heterogeneous-cost scheduler, library partition-and-merge, the five-path digest-invariance proof. Reframed (per kickoff) to **single-box multi-process + scale-out-ready**: ships threads + processes on one machine; the N-node network transport is the recorded atx-core L4 lift. |
 
 **Pending (created at each sprint kickoff/close):**
 - `sprint-{N}-<theme>.md` — sprint spec (the *what*) for S2–S8. **For S1, the embedded ROADMAP section below is the
@@ -310,28 +311,36 @@ regions, delay), RenTech §7.1/§9.1 (PIT correctness, as-of versioning, survivo
 | S6.4 | Intraday-bar universe + horizon (sub-daily panel; feeds S4) | M | ⏳ |
 | S6.5 | Alt-data bias-audit gates (extends `p1` S1 battery; 125k-field data-snooping) + close | M | ⏳ |
 
-### S7 — Distributed / Scale-Out Compute  ⏳ proposed
+### S7 — Distributed / Scale-Out Compute  ⏳ proposed ([impl-plan](sprint-7-distributed-scale-out-compute-implementation-plan.md))
 **Theme:** Lift the scale ceiling — the deferred distributed compute (`p1` anti-roadmap #4: *"Single-box multicore is
 the scale ceiling for v2 … cross-machine eval = p2"*). WorldQuant's WebSim fans hundreds of thousands of backtests/day
 across a global population (§4.1/§8); RenTech re-optimizes a unified book over a petabyte warehouse (§6.1/§6.2). S7
-extends `p1` S2's `parallel::DetPool` from one box to **N nodes** while preserving the non-negotiable: **the
-distributed result digest must equal the single-box digest.** A **deterministic distributed work distributor**
-(order-fixed cross-machine merge — the S2 reduce-by-sort lifted across the network; an atx-core L4 multi-node request),
-a **sharded distributed library** (the S4 library partitioned across nodes with a consistent dedup + correlation
-index), **distributed batch-eval + distributed CPCV** (mining/eval/folds fanned across nodes), the **digest-invariance
-proof** (`{1 node} == {N nodes}` byte-identical) + **deterministic fault tolerance** (a failed shard re-runs to the
-same result). *Grounded in WorldQuant §4.1/§8 (global fan-out scale), RenTech §6.1/§6.2 (continuous re-optimization at
-scale), `p1` S2 (the determinism-under-parallelism invariant this must not break).* **Needs only `p1` S2** — independent
-infra track.
+lifts `p1` S2's single-substrate `parallel::DetPool` into a **substrate-agnostic `IExecutor` abstraction** while
+preserving the non-negotiable: **the digest must be invariant across substrate and worker count.** A **substrate-agnostic
+executor seam** (the Ray-`init`/Dask-`Client`/Spark-`master` "swap only the placement handle" pattern — `WorkUnit`/
+`submit`/`gather`/slots/digest are transport-agnostic), a **cross-platform multi-process shared-memory substrate** (Win32
+`CreateFileMapping` + POSIX `shm_open`; read-only zero-copy inputs + pre-indexed slots), a **deterministic
+heterogeneous-cost scheduler** (NUMA/affinity/first-touch; load-balance with placement decoupled from steal order), a
+**partition-and-merge library** (the S4 library admit made process-safe via disjoint-`AlphaId` partitions + canonical
+manifest merge), the **digest-invariance proof** (`{sequential == ThreadExecutor@{1,N} == ProcessExecutor@{1,N}}`
+byte-identical) + **deterministic fault tolerance** (a failed shard re-runs bit-identical because shards are pure).
+> **Reframe (kickoff directive):** S7 ships the robust **single-machine** substrate — **threads + multi-process shared
+> memory on one box** — with the scale-out abstraction fully in place; the **N-node network transport** is interface-only
+> + a recorded **atx-core L4 `dist_pool` lift**, and the **cross-machine canonical-byte-order digest** is its companion
+> lift. The impl-plan §0 overrides this sketch on conflict.
+*Grounded in WorldQuant §4.1/§8 (global fan-out scale), RenTech §6.1/§6.2 (continuous re-optimization at scale), `p1` S2
+(the determinism-under-parallelism invariant this must not break), and the verified executor/determinism/IPC literature —
+Ray, Dask, Spark, P2300, oneTBB, Roofline, Drepper (impl-plan §1A).* **Needs only `p1` S2** — independent infra track.
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S7.0 | Marker + ledger | S | ⏳ |
-| S7.1 | Deterministic multi-node work distributor (order-fixed cross-machine merge; extends `DetPool`) — atx-core L4 request | L | ⏳ |
-| S7.2 | Sharded distributed library (partitioned store; consistent dedup + correlation-neighbor index) | L | ⏳ |
-| S7.3 | Distributed batch-eval + distributed CPCV (fan mining/eval/folds across nodes) | M | ⏳ |
-| S7.4 | Digest-invariance proof (`1 node == N nodes` byte-identical) + deterministic fault tolerance (failed-shard replay) | M | ⏳ |
-| S7.5 | Scale bench (3–5k universe, 10⁶–10⁹ alphas across nodes) + close | M | ⏳ |
+| S7.0 | Marker + ledger + as-built recon vs `parallel::{DetPool, parallel_evaluate, parallel_cpcv, parallel_backtests}`, `digest.hpp`, `shm_bar_feed`, factory/library hazard map | S | ⏳ |
+| S7.1 | `IExecutor` seam + `WorkUnit`/shard model + deterministic gather; `ThreadExecutor` (DetPool adapter, the degenerate 1-process case); `fwd.hpp` SWITCH POINT — atx-core L4 request | M | ⏳ |
+| S7.2 | Cross-platform shared-memory substrate (`ShmSegment`: Win32 `CreateFileMapping` + POSIX `shm_open`; read-only zero-copy inputs + pre-indexed slots; reuses `SegmentReader`) | L | ⏳ |
+| S7.3 | `ProcessExecutor` — the primary multi-process pool over `ShmSegment` (worker-process lifecycle; deterministic dispatch; pure-shard exec; parent gather+digest) | L | ⏳ |
+| S7.4 | Deterministic heterogeneous-cost scheduler (cost-ordered dispatch + NUMA/affinity/first-touch/topology; no bit contact) | M | ⏳ |
+| S7.5 | Port workloads onto `IExecutor` (batch-eval + CPCV + backtests + GA mine loop) + library partition-and-merge (disjoint-`AlphaId`, canonical manifest merge) | M | ⏳ |
+| S7.6 | Five-path digest-invariance proof + deterministic fault tolerance (failed-shard bit-identical replay) + scale bench (bandwidth/NUMA knee) + close | M | ⏳ |
 
 ### S8 — The Unified Fund: Full Integration + Live-Readiness Capstone  ⏳ proposed
 **Theme:** Tie **everything** together and prove it — the `p2` done-gate. A **full-fund orchestrator** that runs the
