@@ -17,16 +17,17 @@
 // (FactorExposureIncludesDeadColumns), and a NaN realized-return cell contributes
 // ZERO to pnl_gross (NoSurvivorship, R4).
 
-#include <algorithm>  // std::sort
-#include <array>      // std::array (lifecycle census)
-#include <cmath>      // std::isnan, std::fabs
-#include <cstdint>    // std::uint8_t
-#include <filesystem> // per-test tmpdir + byte-identity read-back
-#include <fstream>    // raw file byte read (R8 proof)
-#include <iterator>   // std::istreambuf_iterator
-#include <limits>     // std::numeric_limits (quiet_NaN)
+#include <algorithm>    // std::sort
+#include <array>        // std::array (lifecycle census)
+#include <cmath>        // std::isnan, std::fabs
+#include <filesystem>   // per-test tmpdir + byte-identity read-back
+#include <fstream>      // raw file byte read (R8 proof) + std::ios
+#include <iterator>     // std::istreambuf_iterator
+#include <limits>       // std::numeric_limits (quiet_NaN)
 #include <span>
 #include <string>
+#include <system_error> // std::error_code
+#include <utility>      // std::move
 #include <vector>
 
 #include <gtest/gtest.h>

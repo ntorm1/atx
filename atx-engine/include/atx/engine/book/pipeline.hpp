@@ -71,7 +71,6 @@
 #include <array>      // std::array (lifecycle census)
 #include <bit>        // std::bit_cast (f64 -> u64 digest fold)
 #include <cmath>      // std::sqrt (book sigma)
-#include <cstdint>    // fixed-width
 #include <deque>      // std::deque (stable-address owned constituents)
 #include <functional> // std::function (alpha_at / model_at callbacks)
 #include <limits>     // std::numeric_limits (quiet NaN panel fill)
@@ -81,10 +80,7 @@
 #include <utility>    // std::move, std::pair
 #include <vector>     // owned schedules / books
 
-#include <Eigen/Core> // Eigen::Index
-
 #include "atx/core/error.hpp" // Result, Ok, Err, ATX_TRY, Status
-#include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp" // f64, u32, u64, usize
 
 #include "atx/engine/alpha/panel.hpp"    // alpha::Panel, alpha::FieldId

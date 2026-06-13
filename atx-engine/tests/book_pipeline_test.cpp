@@ -24,6 +24,7 @@
 #include <cmath>        // std::isfinite, std::cos
 #include <cstdint>      // std::uint64_t
 #include <filesystem>   // per-test temp directory
+#include <limits>       // std::numeric_limits (quiet_NaN panel cell)
 #include <numbers>      // std::numbers::pi
 #include <span>
 #include <string>
@@ -56,6 +57,7 @@
 #include "atx/engine/loop/types.hpp"        // InstrumentId
 #include "atx/engine/loop/weight_policy.hpp"
 
+#include "atx/engine/risk/exposures.hpp"    // risk::FactorModelConfig
 #include "atx/engine/risk/factor_model.hpp" // FactorModelBuilder, FactorComponents (R2 boundary)
 #include "atx/engine/risk/multi_period.hpp" // risk::RebalanceSchedule, MultiPeriodConfig
 

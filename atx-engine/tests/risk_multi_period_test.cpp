@@ -24,6 +24,7 @@
 #include <bit>       // std::bit_cast
 #include <functional>
 #include <span>
+#include <utility> // std::move
 #include <vector>
 
 #include <gtest/gtest.h>

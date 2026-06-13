@@ -95,7 +95,7 @@ namespace atx::engine::book {
 // Distilled scalar inputs the optimizer and allocator consume, produced by
 // upstream cost:: calls (cost_aware_knobs, capacity_point).  Isolates
 // optimizer code from direct cost::CalibratedCost dependencies.
-// Full definition in book/pipeline.hpp (S7-5).
+// Full definition in risk/multi_period.hpp (S7-5, the first consumer that needs the complete type).
 struct CostInputs;
 
 // =====================================================================
@@ -145,7 +145,7 @@ class DecayController;
 
 // Parameters governing capital allocation: Kelly fraction f*, leverage cap,
 // and per-alpha concentration limit.
-// Full definition in book/allocator.hpp (S7-4).
+// Full definition in book/allocation.hpp (S7-4).
 struct AllocationConfig;
 
 // =====================================================================
@@ -155,7 +155,7 @@ struct AllocationConfig;
 // Structured output of one BookPipeline rebalance cycle: optimal weights,
 // allocation fractions, decay verdicts, effective breadth (eRank), and
 // round-trip cost estimate.  eRank = (Σλ)²/Σλ² shipped engine-local.
-// Full definition in book/pipeline.hpp (S7-5).
+// Full definition in book/report.hpp (S7-4).
 struct BookReport;
 
 // Orchestrates the full operating-book loop:

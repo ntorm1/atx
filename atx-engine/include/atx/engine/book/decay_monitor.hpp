@@ -342,8 +342,6 @@ public:
     apply_hysteresis(lib, id, as_of, v, pa);
   }
 
-  [[nodiscard]] const DecayConfig &cfg() const noexcept { return cfg_; }
-
 private:
   // Per-alpha bookkeeping. Independent across alphas (no cross-alpha coupling).
   struct PerAlpha {
@@ -358,10 +356,11 @@ private:
   // current PIT state; only the legal Live<->Decaying<->Dead edges are driven.
   void apply_hysteresis(library::Library &lib, combine::AlphaId id, atx::usize as_of,
                         const DecayVerdict &v, PerAlpha &pa) {
+    // A tracked alpha the controller is stepping was admitted/promoted through the
+    // journal, so it ALWAYS has a state as of `as_of`; a read fault is a programmer
+    // error (untracked id / bad period), consistent with the ATX_CHECK-guarded marks.
     const auto cur = lib.state_as_of(id, as_of);
-    if (!cur.has_value()) {
-      return; // a journal fault: leave the state untouched (no guess)
-    }
+    ATX_CHECK(cur.has_value());
     const library::LifecycleState state = *cur;
     if (state == library::LifecycleState::Live) {
       if (v.flag) {

@@ -17,8 +17,6 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm> // std::min
-
 #include "atx/core/linalg/linalg.hpp" // VecX
 #include "atx/core/types.hpp"         // f64
 
