@@ -82,6 +82,7 @@
 #include "atx/engine/risk/eigen_adjust.hpp" // eigen_adjust (S8.3 Monte-Carlo eigenfactor de-biasing)
 #include "atx/engine/risk/exposures.hpp"    // build_exposures, ExposureMatrix, detail::step_return
 #include "atx/engine/risk/fwd.hpp"          // FactorModel / FactorModelBuilder fwd decls
+#include "atx/engine/risk/horizon_blend.hpp" // blend_factor_cov, blend_specific (S8.8 horizon blend)
 #include "atx/engine/risk/specific_risk.hpp" // specific_risk_blend, SpecificRisk (S8.4 specific risk)
 #include "atx/engine/risk/stat_factor_model.hpp" // detail::{gram_matrix,…} (S8.6 APCA kernels)
 #include "atx/engine/risk/vol_regime.hpp"        // vol_regime_multiplier, RegimeAdjust (S8.5 VRA)
@@ -505,8 +506,25 @@ public:
       f = detail::factor_covariance(fkept, cfg.factor_cov_shrink);
       break;
     case FactorCovMethod::EwmaNeweyWest:
-      f = ewma_factor_covariance(fkept, cfg.cov.vol_halflife, cfg.cov.corr_halflife,
-                                 cfg.cov.nw_lags);
+      // S8.8 short/long-horizon blend (opt-in via cfg.cov.horizon_blend; the DEFAULT
+      // false is the single-horizon S8.2 path, byte-identical). Build the SAME `fkept`
+      // factor-return series at TWO half-life sets — the existing vol/corr half-lives
+      // (short horizon) and the `*_long` half-lives (long horizon) — and convex-blend
+      // them F = w·F_short + (1−w)·F_long. Both inputs are SPD (eigenvalue-floored by
+      // ewma_factor_covariance) so the convex combo is SPD (no extra PSD repair). The
+      // blend is the factor-cov CONSTRUCTION; the eigen_adjust + VRA steps below then
+      // clean/scale the blended F. (horizon_blend under LedoitWolfSingle is a no-op —
+      // the long-horizon half-life set only applies to this EWMA path.)
+      if (cfg.cov.horizon_blend) {
+        const atx::core::linalg::MatX f_short = ewma_factor_covariance(
+            fkept, cfg.cov.vol_halflife, cfg.cov.corr_halflife, cfg.cov.nw_lags);
+        const atx::core::linalg::MatX f_long = ewma_factor_covariance(
+            fkept, cfg.cov.vol_halflife_long, cfg.cov.corr_halflife_long, cfg.cov.nw_lags);
+        f = blend_factor_cov(f_short, f_long, cfg.cov.horizon_blend_weight);
+      } else {
+        f = ewma_factor_covariance(fkept, cfg.cov.vol_halflife, cfg.cov.corr_halflife,
+                                   cfg.cov.nw_lags);
+      }
       break;
     }
     // S8.3 eigenfactor risk adjustment (opt-in via cfg.cov.eigen_adjust_sims > 0; the
@@ -818,10 +836,28 @@ private:
       }
       return d;
     }
-    case SpecificRiskMethod::EwmaNeweyWestStructural:
-      return specific_risk_blend(x0, u_by_inst, window, cfg.cov.spec_halflife, cfg.cov.spec_nw_lags,
-                                 cfg.cov.structural_blend)
-          .variances;
+    case SpecificRiskMethod::EwmaNeweyWestStructural: {
+      // S8.8 short/long-horizon blend for D (opt-in via cfg.cov.horizon_blend). Run
+      // the SAME structural specific-risk estimator at TWO specific half-lives — the
+      // existing spec_halflife (short) and spec_halflife_long (long) — and convex-blend
+      // the two positive variance vectors d = w·d_short + (1−w)·d_long (PSD-trivial:
+      // each entry stays positive). DEFAULT horizon_blend == false ⇒ the single-horizon
+      // S8.4 path, byte-identical. (specific_risk_blend takes the half-life as a param,
+      // so the two-horizon path is two calls; the structural-blend / NW-lag knobs are
+      // shared across both horizons.)
+      const atx::core::linalg::VecX d_short =
+          specific_risk_blend(x0, u_by_inst, window, cfg.cov.spec_halflife, cfg.cov.spec_nw_lags,
+                              cfg.cov.structural_blend)
+              .variances;
+      if (!cfg.cov.horizon_blend) {
+        return d_short;
+      }
+      const atx::core::linalg::VecX d_long =
+          specific_risk_blend(x0, u_by_inst, window, cfg.cov.spec_halflife_long,
+                              cfg.cov.spec_nw_lags, cfg.cov.structural_blend)
+              .variances;
+      return blend_specific(d_short, d_long, cfg.cov.horizon_blend_weight);
+    }
     }
     return {}; // unreachable (switch exhaustive over SpecificRiskMethod)
   }
