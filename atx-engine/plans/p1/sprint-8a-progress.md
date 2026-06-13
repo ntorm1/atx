@@ -34,7 +34,7 @@ expected, ignore unless those targets are built).
 |---|---|---|---|---|
 | S8.0 | Marker + ledger + frozen plan | ✅ done | _this commit_ | — |
 | S8.1 | Robust √-cap + Huber IRLS regression (reuse `cost::irls_huber`) | ✅ done | `77c4562` | `risk_robust_regression_test.cpp` (9) |
-| S8.2 | EWMA split-HL factor cov + Newey-West | ⏳ pending | — | `risk_cov_ewma_test.cpp` |
+| S8.2 | EWMA split-HL factor cov + Newey-West | ✅ done | `c195d29` | `risk_cov_ewma_test.cpp` (8) |
 | S8.3 | Monte-Carlo eigenfactor adjustment (seeded, a=1.0) | ⏳ pending | — | `risk_eigen_adjust_test.cpp` |
 | S8.4 | Specific risk: EWMA + NW + structural blend | ⏳ pending | — | `risk_specific_risk_test.cpp` |
 
