@@ -14,6 +14,13 @@ add_library(atx-engine STATIC
     src/eval/cpcv.cpp
     src/eval/pbo.cpp
     src/eval/perf_metrics.cpp
+    src/alpha/bytecode.cpp
+    src/alpha/dag.cpp
+    src/alpha/lexer.cpp
+    src/alpha/parser.cpp
+    src/alpha/registry.cpp
+    src/alpha/typecheck.cpp
+    src/alpha/unparse.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
