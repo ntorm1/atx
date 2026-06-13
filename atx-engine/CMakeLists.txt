@@ -1,5 +1,16 @@
 add_library(atx-engine STATIC
     src/engine.cpp
+    src/factory/canonical.cpp
+    src/factory/crossover.cpp
+    src/factory/factory.cpp
+    src/factory/fitness.cpp
+    src/factory/genome.cpp
+    src/factory/mutation.cpp
+    src/factory/op_catalog.cpp
+    src/factory/param_search.cpp
+    src/factory/pool_view.cpp
+    src/factory/research_driver.cpp
+    src/factory/search_driver.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 

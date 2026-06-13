@@ -75,10 +75,7 @@ public:
   // `const OpSig*` candidates alias the static `builtin_ops()` table (program
   // lifetime), so they never dangle; the Library reference establishes which run
   // the catalog belongs to (the same one every genome borrows ops from — §0.4).
-  explicit OpCatalog(const alpha::Library &lib) {
-    static_cast<void>(lib); // built-ins enumerated from the static table below
-    build();
-  }
+  explicit OpCatalog(const alpha::Library &lib);
 
   // Sample a replacement op for a Call slot of result `(shape, dtype)` and the
   // given materialized `arity`, drawn uniformly from the same bucket but never
@@ -90,34 +87,7 @@ public:
   [[nodiscard]] std::optional<const OpSig *> sample_compatible(Shape shape, DType dtype,
                                                                atx::usize arity,
                                                                const OpSig *current,
-                                                               Xoshiro256pp &rng) const {
-    const Bucket *b = find_bucket(shape, dtype, arity);
-    if (b == nullptr) {
-      return std::nullopt;
-    }
-    // Count alternatives (!= current) without allocating; then pick the k-th.
-    atx::usize alternatives = 0;
-    for (const OpSig *sig : b->ops) {
-      if (sig != current) {
-        ++alternatives;
-      }
-    }
-    if (alternatives == 0) {
-      return std::nullopt;
-    }
-    const atx::usize k = static_cast<atx::usize>(rng.next_u64() % alternatives);
-    atx::usize seen = 0;
-    for (const OpSig *sig : b->ops) {
-      if (sig == current) {
-        continue;
-      }
-      if (seen == k) {
-        return sig;
-      }
-      ++seen;
-    }
-    return std::nullopt; // unreachable: k < alternatives
-  }
+                                                               Xoshiro256pp &rng) const;
 
   // Sample a replacement OPCODE for a bare-opcode Unary/Binary slot of result
   // `(shape, dtype)` and the given `arity` (Unary=1, Binary=2), drawn uniformly
@@ -131,33 +101,7 @@ public:
   // order, so the same rng state yields the same pick.
   [[nodiscard]] std::optional<OpCode> sample_compatible_opcode(Shape shape, DType dtype,
                                                                atx::usize arity, OpCode current,
-                                                               Xoshiro256pp &rng) const {
-    const OpcodeBucket *b = find_opcode_bucket(shape, dtype, arity);
-    if (b == nullptr) {
-      return std::nullopt;
-    }
-    atx::usize alternatives = 0;
-    for (const OpCode op : b->ops) {
-      if (op != current) {
-        ++alternatives;
-      }
-    }
-    if (alternatives == 0) {
-      return std::nullopt;
-    }
-    const atx::usize k = static_cast<atx::usize>(rng.next_u64() % alternatives);
-    atx::usize seen = 0;
-    for (const OpCode op : b->ops) {
-      if (op == current) {
-        continue;
-      }
-      if (seen == k) {
-        return op;
-      }
-      ++seen;
-    }
-    return std::nullopt; // unreachable: k < alternatives
-  }
+                                                               Xoshiro256pp &rng) const;
 
   // Number of distinct (shape, dtype, arity) named-op buckets — diagnostics.
   [[nodiscard]] atx::usize bucket_count() const noexcept { return buckets_.size(); }
@@ -261,22 +205,7 @@ private:
     return fallback;
   }
 
-  void build() {
-    // Walk the static built-in table. Record ops are EXCLUDED (their result is a
-    // named pin tuple, not a swappable single-value slot). Group-aware ops are
-    // kept (their bucket is still (cat,dtype,arity)); analyze rejects a bad arg.
-    for (const OpSig &sig : alpha::detail::builtin_ops()) {
-      add_op(sig);
-    }
-    // User ops registered into the borrowed Library beyond the built-ins are not
-    // enumerable (no iterator). Tests that need extra ops register them and rely
-    // on find(); op-swap over built-ins is the spec'd surface (§0.4).
-
-    // Bucket the bare infix/unary OpCode set (the half with no OpSig*, §0.4).
-    for (const OpcodeRow &row : swappable_opcodes()) {
-      add_opcode(row);
-    }
-  }
+  void build();
 
   void add_op(const OpSig &sig) {
     if (!sig.pins.empty()) {

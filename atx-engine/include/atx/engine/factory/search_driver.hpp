@@ -62,33 +62,25 @@
 // per-generation Program allocation is acceptable (F8: no allocation on the VM hot
 // loop; the cold compile path may allocate, documented).
 
-#include <algorithm> // std::clamp, std::sort, std::max, std::min
 #include <bit>       // std::popcount (canonical-structure novelty distance)
-#include <cstddef>   // std::size_t (hash_combine seed type)
 #include <span>      // std::span
 #include <string>    // std::string (seed-expression source input)
 #include <string_view> // std::string_view (field-swap candidate names)
 #include <unordered_map> // std::unordered_map (per-run fitness cache, F6 throughput)
-#include <utility>   // std::move
 #include <vector>
 
 #include "atx/core/error.hpp"  // Result, Ok, Err
-#include "atx/core/hash.hpp"   // atx::core::hash_combine
 #include "atx/core/random.hpp" // atx::core::Xoshiro256pp
 #include "atx/core/types.hpp"  // atx::u64, atx::usize, atx::f64
 
-#include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program
 #include "atx/engine/alpha/panel.hpp"    // alpha::Panel, alpha::SignalSet
 #include "atx/engine/alpha/parser.hpp"   // alpha::parse_expr, alpha::Library
-#include "atx/engine/alpha/typecheck.hpp" // alpha::analyze
-#include "atx/engine/alpha/vm.hpp"        // alpha::Engine (digest eval, fresh per program)
 
 #include "atx/engine/combine/store.hpp" // combine::AlphaStore
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
 #include "atx/engine/parallel/det_pool.hpp" // parallel::DetPool (wired S2 handle)
-#include "atx/engine/parallel/digest.hpp"   // parallel::signal_set_digest
 
 #include "atx/engine/factory/canonical.hpp" // factory::canonical_hash, CanonSet
 #include "atx/engine/factory/crossover.hpp" // factory::subtree_crossover
@@ -214,59 +206,11 @@ public:
   // caller supplies them — they MUST be the panel's actual field spellings).
   SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
-               std::vector<std::string> seed_exprs, std::vector<std::string> panel_fields)
-      : lib_{lib}, panel_{panel}, policy_{policy}, sim_{sim}, catalog_{lib},
-        seed_exprs_{std::move(seed_exprs)}, panel_fields_{std::move(panel_fields)} {
-    panel_field_views_.reserve(panel_fields_.size());
-    for (const std::string &f : panel_fields_) {
-      panel_field_views_.push_back(f);
-    }
-  }
+               std::vector<std::string> seed_exprs, std::vector<std::string> panel_fields);
 
   // Run the deterministic search. Same cfg + same pool => byte-identical result
   // (F1). `pool` is borrowed read-only for the marginal-correlation fitness term.
-  [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool) {
-    SearchResult res;
-    res.seed = cfg.master_seed;
-    res.best_fitness_per_gen.reserve(cfg.generations);
-
-    CanonSet canon;                 // F6 dedup: distinct structures scored so far
-    // Run-LOCAL fitness cache keyed by canon_hash (F6 throughput: an equivalent
-    // structure is scored ONCE per run). Declared per-run (not a member) so a
-    // second run() with the same seed replays from a clean slate (F1).
-    std::unordered_map<atx::u64, atx::f64> fitness_cache;
-    parallel::DetPool det_pool{cfg.n_workers};
-
-    std::vector<Genome> pop = init_population(cfg);
-    res.candidates_generated += pop.size();
-
-    std::vector<Scored> scored; // current generation's scored population
-
-    for (atx::usize gen = 0; gen < cfg.generations; ++gen) {
-      // (a)-(c): evaluate the fresh (not-yet-seen) candidates of `pop`, fold the
-      // determinism digest, and score each via pool_aware_fitness (cached by canon).
-      scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, res);
-
-      // (d) novelty pressure -> selection fitness (anti-collapse, deterministic).
-      novelty_penalize(scored, pool, cfg);
-
-      // Track the best RAW fitness this generation (the maximized search signal,
-      // NOT the novelty-penalized selection score). A best-raw elite is carried
-      // verbatim into the next gen and re-scores to the same cached raw value, so
-      // this sequence is non-decreasing by construction (the ElitismKeepsBest
-      // guarantee).
-      res.best_fitness_per_gen.push_back(best_raw(scored));
-
-      // (e)-(g) reproduce into the next population (skip on the final generation —
-      // the last scored set is the result).
-      if (gen + 1 < cfg.generations) {
-        pop = reproduce(scored, cfg, gen, res);
-      }
-    }
-
-    finalize(scored, canon, res);
-    return res;
-  }
+  [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool);
 
 private:
   // ----- (1) init_population -------------------------------------------------
@@ -275,32 +219,7 @@ private:
   // deterministic, in-grammar fill — every member is analyze-valid by
   // construction). At least one seed must parse; an all-invalid seed set yields an
   // empty population and an empty (but well-formed) result.
-  [[nodiscard]] std::vector<Genome> init_population(const SearchConfig &cfg) const {
-    std::vector<Genome> seeds;
-    for (const std::string &src : seed_exprs_) {
-      auto ast = alpha::parse_expr(src, lib_);
-      if (!ast.has_value()) {
-        continue;
-      }
-      auto info = alpha::analyze(*ast);
-      if (!info.has_value()) {
-        continue;
-      }
-      Genome g{std::move(*ast), std::move(*info), 0};
-      g.canon_hash = canonical_hash(g);
-      seeds.push_back(std::move(g));
-    }
-    std::vector<Genome> pop;
-    pop.reserve(cfg.population);
-    if (seeds.empty()) {
-      return pop; // degenerate: no valid seed -> empty (well-formed) run
-    }
-    for (atx::usize i = 0; i < cfg.population; ++i) {
-      pop.push_back(seeds[i % seeds.size()].clone());
-      pop.back().canon_hash = seeds[i % seeds.size()].canon_hash;
-    }
-    return pop;
-  }
+  [[nodiscard]] std::vector<Genome> init_population(const SearchConfig &cfg) const;
 
   // ----- (2) evaluate_generation --------------------------------------------
   // Collect the fresh (un-seen) genomes (F6), compile them to single-root Programs,
@@ -313,83 +232,7 @@ private:
   evaluate_generation(const std::vector<Genome> &pop, const SearchConfig &cfg, atx::usize gen,
                       const combine::AlphaStore &pool, CanonSet &canon,
                       std::unordered_map<atx::u64, atx::f64> &fitness_cache,
-                      parallel::DetPool &det_pool, SearchResult &res) {
-    // Fresh genomes (canonical-id ordered so the digest is order-stable).
-    std::vector<const Genome *> fresh;
-    for (const Genome &g : pop) {
-      if (!canon.contains(g.canon_hash)) {
-        fresh.push_back(&g);
-      }
-    }
-    std::sort(fresh.begin(), fresh.end(),
-              [](const Genome *a, const Genome *b) { return detail::canon_less(*a, *b); });
-
-    // Compile each fresh candidate to a single-root Program and fold its eval
-    // digest into the run digest (F2), in canonical-id order (fresh was sorted
-    // above) so the digest is order-stable and replayable (F1/F2).
-    //
-    // EVAL-PATH NOTE (the §0.8 switch, as-built S2 reality): the spec's primary
-    // path is parallel::parallel_evaluate, whose digest is byte-identical to the
-    // single-thread Engine::evaluate and worker-count-invariant. parallel_evaluate
-    // HAS been verified to SUCCEED on the seed grammar (rank / ts_mean / ts_std /
-    // delta) with a worker-invariant digest (see the F2 test). We nonetheless take
-    // the single-thread fresh-Engine FALLBACK — which the spec EXPLICITLY sanctions
-    // (§4.8 tail) — because S2's per-worker Engine warm-up + reuse remains a
-    // RESIDUAL concern for arbitrary EVOLVED stateful candidates produced mid-search
-    // (not just the seed set): warm-up evaluates progs[0] then re-evaluates on the
-    // reused Engine, and we have not exhaustively verified that every reachable
-    // evolved Ts/Cs program leaves the reused SlotPool live-count clean. A FRESH
-    // Engine per program (never reused) sidesteps that concern entirely: it is
-    // exactly pool_aware_fitness's internal eval (which the S3-4 suite exercises
-    // green), and its digest is worker-count-invariant BY CONSTRUCTION — no worker
-    // count enters the math at all. det_pool is retained (the wired S2 handle) so
-    // the parallel path can be reinstated once the warm-up + reuse path is verified
-    // clean across the full evolved grammar.
-    static_cast<void>(det_pool);
-    for (const Genome *g : fresh) {
-      auto prog = alpha::compile(g->ast, g->analysis);
-      if (!prog.has_value()) {
-        continue; // F5 backstop: a non-compilable structure is dropped
-      }
-      alpha::Engine engine{panel_}; // fresh Engine per program (no reuse, no warm-up)
-      auto ss = engine.evaluate(*prog);
-      const atx::u64 prog_digest =
-          ss.has_value() ? parallel::signal_set_digest(*ss) : atx::u64{0};
-      res.digest = static_cast<atx::u64>(
-          atx::core::hash_combine(static_cast<std::size_t>(res.digest), gen, prog_digest));
-    }
-
-    // (c) score each member via pool_aware_fitness (its own single-thread OOS eval
-    // is the fitness oracle; the digest loop above is the determinism fingerprint).
-    // F6 THROUGHPUT: a candidate whose canon_hash is already in `fitness_cache_` is
-    // NOT re-scored — its cached fitness is reused, so an equivalent expression
-    // costs ONE eval across the whole run (the dedup lever, measured by dedup_pct).
-    // A NEW structure is scored once, cached, recorded in all_scored, and inserted
-    // into the CanonSet. A fresh candidate whose fitness errors (F5/eval failure)
-    // scores 0 but is still counted as a distinct trial (it WAS attempted).
-    std::vector<Scored> out;
-    out.reserve(pop.size());
-    for (const Genome &g : pop) {
-      atx::f64 fit = 0.0;
-      const bool is_new = !canon.contains(g.canon_hash);
-      if (is_new) {
-        auto rep = pool_aware_fitness(g, pool, panel_, policy_, sim_, cfg.fitness);
-        if (rep.has_value()) {
-          fit = rep->raw;
-        }
-        canon.insert(g.canon_hash);
-        fitness_cache.emplace(g.canon_hash, fit);
-        res.all_scored.push_back(g.clone());
-        res.all_scored.back().canon_hash = g.canon_hash;
-      } else {
-        const auto it = fitness_cache.find(g.canon_hash);
-        fit = (it != fitness_cache.end()) ? it->second : 0.0; // reuse cached score
-      }
-      out.push_back(Scored{g.clone(), fit, fit});
-      out.back().genome.canon_hash = g.canon_hash;
-    }
-    return out;
-  }
+                      parallel::DetPool &det_pool, SearchResult &res);
 
   // ----- (3) novelty_penalize ------------------------------------------------
   // Subtract a deterministic behavioral-distance term from each genome's selection
@@ -399,33 +242,7 @@ private:
   // distance of canonical hashes (RNG-free, value-based, order-independent), so
   // this is fully deterministic and F1-safe.
   void novelty_penalize(std::vector<Scored> &scored, const combine::AlphaStore &pool,
-                        const SearchConfig &cfg) const {
-    // DIVISION OF LABOR: distance-to-POOL is already priced into each candidate's
-    // fitness by pool_aware_fitness's `diversify` term (1 − mean|corr-to-pool|, F7),
-    // so a pool-redundant candidate enters here ALREADY discounted. This pass adds
-    // the orthogonal anti-collapse pressure the fitness score lacks: distance to the
-    // rest of the POPULATION (so the search does not pile onto one motif even when
-    // that motif is pool-diversifying). `pool` is therefore unused here.
-    static_cast<void>(pool);
-    const atx::usize n = scored.size();
-    if (n <= 1 || cfg.novelty_w == 0.0) {
-      return;
-    }
-    for (atx::usize i = 0; i < n; ++i) {
-      atx::f64 sum_dist = 0.0;
-      for (atx::usize j = 0; j < n; ++j) {
-        if (i == j) {
-          continue;
-        }
-        sum_dist += detail::canonical_distance(scored[i].genome.canon_hash,
-                                               scored[j].genome.canon_hash);
-      }
-      const atx::f64 mean_dist = sum_dist / static_cast<atx::f64>(n - 1);
-      // novelty in [0,1]; penalty = novelty_w * (1 - novelty) (redundant => bigger).
-      const atx::f64 penalty = cfg.novelty_w * (1.0 - mean_dist);
-      scored[i].selection = scored[i].fitness - penalty;
-    }
-  }
+                        const SearchConfig &cfg) const;
 
   // ----- (4) reproduce -------------------------------------------------------
   // Produce the next population: carry the top `elites` by RAW fitness, then fill
@@ -442,42 +259,7 @@ private:
   // explore/anti-collapse pressure — only the elite carry switches to raw.)
   [[nodiscard]] std::vector<Genome> reproduce(const std::vector<Scored> &scored,
                                               const SearchConfig &cfg, atx::usize gen,
-                                              SearchResult &res) {
-    if (scored.empty()) {
-      return {};
-    }
-    // Canonical-id order BEFORE any RNG draw (F2). Index into this order for the
-    // value-based parent pool; rank elites separately by RAW fitness.
-    std::vector<atx::usize> canon_order = canon_ordered_indices(scored);
-    std::vector<atx::usize> elite_order = raw_ordered_indices(scored);
-
-    std::vector<Genome> next;
-    next.reserve(cfg.population);
-
-    // (g) elitism: carry the top-k by RAW fitness (F5-valid by construction).
-    const atx::usize n_elites = std::min(cfg.elites, scored.size());
-    for (atx::usize e = 0; e < n_elites; ++e) {
-      next.push_back(scored[elite_order[e]].genome.clone());
-      next.back().canon_hash = scored[elite_order[e]].genome.canon_hash;
-    }
-
-    // (e) reproduction: id-seeded children fill the remainder.
-    for (atx::usize i = n_elites; i < cfg.population; ++i) {
-      Xoshiro256pp rng{detail::seed_for(cfg.master_seed, gen, i)};
-      auto child = make_child(scored, canon_order, cfg, rng);
-      ++res.candidates_generated;
-      if (child.has_value()) {
-        child->canon_hash = canonical_hash(*child);
-        next.push_back(std::move(*child));
-      } else {
-        // F5 reject -> hold population size with an elite clone (deterministic).
-        const atx::usize fallback = elite_order[i % std::max<atx::usize>(n_elites, 1)];
-        next.push_back(scored[fallback].genome.clone());
-        next.back().canon_hash = scored[fallback].genome.canon_hash;
-      }
-    }
-    return next;
-  }
+                                              SearchResult &res);
 
   // Produce one child from the canonical-id-ordered parent pool with a single
   // id-seeded rng: bernoulli(p_cross) ? crossover(two tournament picks) :
@@ -485,14 +267,7 @@ private:
   // Ok child is F5-valid; an Err propagates (the caller substitutes an elite).
   [[nodiscard]] atx::core::Result<Genome> make_child(const std::vector<Scored> &scored,
                                                      const std::vector<atx::usize> &canon_order,
-                                                     const SearchConfig &cfg, Xoshiro256pp &rng) {
-    const Genome &p1 = tournament_pick(scored, canon_order, cfg.k_tournament, rng);
-    if (rng.bernoulli(cfg.p_cross)) {
-      const Genome &p2 = tournament_pick(scored, canon_order, cfg.k_tournament, rng);
-      return subtree_crossover(p1, p2, rng, CrossoverCfg{cfg.max_lookback});
-    }
-    return mutate_one(p1, cfg, rng);
-  }
+                                                     const SearchConfig &cfg, Xoshiro256pp &rng);
 
   // Pick one type-safe mutation by a seeded draw, fallback-cascading so a
   // degenerate genome (e.g. no literal to jitter) still yields a child when ANY
@@ -505,59 +280,21 @@ private:
   // replay (F1) — does not shift when the gate flips; a drawn-but-disabled op_swap
   // simply falls through to jitter_const.
   [[nodiscard]] atx::core::Result<Genome> mutate_one(const Genome &g, const SearchConfig &cfg,
-                                                     Xoshiro256pp &rng) {
-    const atx::u64 which = rng.next_u64() % 3;
-    JitterCfg jc;
-    jc.max_lookback = cfg.max_lookback;
-    if (which == 0 && cfg.enable_op_swap) {
-      auto r = op_swap(g, catalog_, rng);
-      if (r.has_value()) {
-        return r;
-      }
-    } else if (which == 1) {
-      auto r = field_swap(g, std::span<const std::string_view>{panel_field_views_}, rng);
-      if (r.has_value()) {
-        return r;
-      }
-    }
-    // Default / fallback: jitter a literal (the most broadly-applicable mutation).
-    return jitter_const(g, rng, jc);
-  }
+                                                     Xoshiro256pp &rng);
 
   // ----- selection helpers ---------------------------------------------------
 
   // Indices of `scored` in canonical-id order (value-based, RNG-free). Established
   // before any draw so the seeded tournament is replayable (F2).
   [[nodiscard]] static std::vector<atx::usize>
-  canon_ordered_indices(const std::vector<Scored> &scored) {
-    std::vector<atx::usize> idx(scored.size());
-    for (atx::usize i = 0; i < idx.size(); ++i) {
-      idx[i] = i;
-    }
-    std::sort(idx.begin(), idx.end(), [&scored](atx::usize a, atx::usize b) {
-      return detail::canon_less(scored[a].genome, scored[b].genome);
-    });
-    return idx;
-  }
+  canon_ordered_indices(const std::vector<Scored> &scored);
 
   // Indices of `scored` ranked by DESCENDING selection fitness (penalized score);
   // ties broken by canonical order so the rank is deterministic (F1). NOTE: this is
   // the .selection ranking — it is no longer used for elitism (which switched to
   // raw_ordered_indices, below); retained for any selection-pressure consumer.
   [[nodiscard]] static std::vector<atx::usize>
-  elite_ordered_indices(const std::vector<Scored> &scored) {
-    std::vector<atx::usize> idx(scored.size());
-    for (atx::usize i = 0; i < idx.size(); ++i) {
-      idx[i] = i;
-    }
-    std::sort(idx.begin(), idx.end(), [&scored](atx::usize a, atx::usize b) {
-      if (scored[a].selection != scored[b].selection) {
-        return scored[a].selection > scored[b].selection;
-      }
-      return detail::canon_less(scored[a].genome, scored[b].genome);
-    });
-    return idx;
-  }
+  elite_ordered_indices(const std::vector<Scored> &scored);
 
   // Indices of `scored` ranked by DESCENDING RAW fitness (the maximized search
   // signal); ties broken by canonical order so the rank is deterministic (F1).
@@ -565,19 +302,7 @@ private:
   // verbatim each gen (and re-scoring it from the canon-keyed cache to the SAME raw
   // value) makes best_fitness_per_gen non-decreasing BY CONSTRUCTION.
   [[nodiscard]] static std::vector<atx::usize>
-  raw_ordered_indices(const std::vector<Scored> &scored) {
-    std::vector<atx::usize> idx(scored.size());
-    for (atx::usize i = 0; i < idx.size(); ++i) {
-      idx[i] = i;
-    }
-    std::sort(idx.begin(), idx.end(), [&scored](atx::usize a, atx::usize b) {
-      if (scored[a].fitness != scored[b].fitness) {
-        return scored[a].fitness > scored[b].fitness;
-      }
-      return detail::canon_less(scored[a].genome, scored[b].genome);
-    });
-    return idx;
-  }
+  raw_ordered_indices(const std::vector<Scored> &scored);
 
   // k-tournament over the canonical-id-ordered parent pool: draw k indices into
   // `canon_order` with the seeded rng, return the one with the highest selection
@@ -585,53 +310,20 @@ private:
   // set is iterated in fixed canonical order, so the draw is fully replayable (F2).
   [[nodiscard]] static const Genome &tournament_pick(const std::vector<Scored> &scored,
                                                      const std::vector<atx::usize> &canon_order,
-                                                     atx::usize k, Xoshiro256pp &rng) {
-    const atx::usize n = canon_order.size();
-    atx::usize best = canon_order[static_cast<atx::usize>(rng.next_u64() % n)];
-    for (atx::usize t = 1; t < std::max<atx::usize>(k, 1); ++t) {
-      const atx::usize cand = canon_order[static_cast<atx::usize>(rng.next_u64() % n)];
-      if (scored[cand].selection > scored[best].selection) {
-        best = cand;
-      }
-    }
-    return scored[best].genome;
-  }
+                                                     atx::usize k, Xoshiro256pp &rng);
 
   // ----- result assembly -----------------------------------------------------
 
   // Best RAW fitness in the scored set (the maximized search signal, NOT the
   // novelty-penalized .selection). This is what best_fitness_per_gen tracks; the
   // structural elite carry guarantees it is non-decreasing across generations.
-  [[nodiscard]] static atx::f64 best_raw(const std::vector<Scored> &scored) {
-    atx::f64 best = 0.0;
-    bool any = false;
-    for (const Scored &s : scored) {
-      if (!any || s.fitness > best) {
-        best = s.fitness;
-        any = true;
-      }
-    }
-    return best;
-  }
+  [[nodiscard]] static atx::f64 best_raw(const std::vector<Scored> &scored);
 
   // dedup_pct + admitted candidates (top survivors of the final generation by
   // RAW fitness — same ordering as the structural elite carry, so the run's
   // reported best matches what was preserved across generations). trial_count ==
   // the distinct structures scored (CanonSet).
-  void finalize(const std::vector<Scored> &scored, const CanonSet &canon,
-                SearchResult &res) const {
-    res.trial_count = canon.size();
-    if (res.candidates_generated > 0) {
-      res.dedup_pct = 1.0 - static_cast<atx::f64>(res.trial_count) /
-                                static_cast<atx::f64>(res.candidates_generated);
-      res.dedup_pct = std::clamp(res.dedup_pct, 0.0, 1.0);
-    }
-    std::vector<atx::usize> order = raw_ordered_indices(scored);
-    for (const atx::usize i : order) {
-      res.admitted_candidates.push_back(scored[i].genome.clone());
-      res.admitted_candidates.back().canon_hash = scored[i].genome.canon_hash;
-    }
-  }
+  void finalize(const std::vector<Scored> &scored, const CanonSet &canon, SearchResult &res) const;
 
   // SAFETY: each member borrows a const OpSig* from `lib_`; `lib_`/`panel_` etc.
   // are borrowed for the driver's lifetime and must outlive every produced genome.
