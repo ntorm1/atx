@@ -49,3 +49,12 @@ _deps/
 *.dylib
 *.dll
 *.exe
+
+# Generated benchmark / TSDB segment artifacts (e.g. atx_panel_bench.atxseg, 100s of MB)
+*.atxseg
+
+# Crash dumps
+*.stackdump
+
+# Scratch / experiment dirs (notebooks, throwaway scripts) — not versioned
+scratch/

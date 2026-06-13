@@ -105,7 +105,7 @@ Authoritative sources, in precedence order when they conflict:
 
 - **Warnings are errors.** `-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror` (Clang/GCC) / `/W4 /permissive- /WX` (MSVC).
 - **Sanitizers in CI:** ASan + UBSan on every test run; TSan for threaded code. A sanitizer hit fails the build.
-- **clang-tidy** with `cppcoreguidelines-*`, `bugprone-*`, `cert-*`, `misc-*`, `performance-*`. **clang-format** enforced; formatting is not a review topic.
+- **clang-tidy is disabled in this repo.** Do not run it or treat it as a gate unless the user explicitly re-enables it. The root `.clang-tidy` intentionally sets `Checks: '-*'` because the broad profile is prohibitively slow on umbrella-header translation units. **clang-format** remains enforced; formatting is not a review topic.
 - Static analysis (clang-analyzer / cppcheck) in CI. Treat findings as defects.
 - Reproducible builds; pin dependency versions (GoogleTest tag). No build-time network beyond pinned fetches.
 
@@ -128,7 +128,7 @@ Authoritative sources, in precedence order when they conflict:
 - [ ] Ownership & lifetimes unambiguous; no dangling refs/spans; Rule of Zero/Five satisfied.
 - [ ] Every `switch`/branch exhaustive; loops bounded; functions small.
 - [ ] Tests written first, cover boundaries + failures, pass under ASan/UBSan/TSan.
-- [ ] Warnings clean at `/W4 -Werror`; clang-tidy/format clean.
+- [ ] Warnings clean at `/W4 -Werror`; clang-format clean. Do not run clang-tidy.
 - [ ] Public API documents contract; deviations carry `// SAFETY:` rationale.
 
 > When a rule and a deadline conflict, the rule wins. Slow-and-correct beats fast-and-undefined. If a guideline genuinely doesn't fit, deviate **explicitly** with a written reason — never silently.

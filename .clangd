@@ -1,11 +1,12 @@
 # clangd project config. Reads the compile DB produced by the `ninja` CMake
-# preset (build/compile_commands.json). The --query-driver in
-# .vscode/settings.json lets clangd extract MSVC/SDK include paths from clang-cl.
+# preset (build/compile_commands.json). clang-tidy is intentionally disabled
+# for this repo; keep editor diagnostics to clangd compile/include checks.
+# The --query-driver in .vscode/settings.json lets clangd extract MSVC/SDK
+# include paths from clang-cl.
 CompileFlags:
   CompilationDatabase: build
 
 Diagnostics:
-  ClangTidy: true
   UnusedIncludes: Strict
   MissingIncludes: Strict
 

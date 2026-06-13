@@ -20,12 +20,18 @@ target portfolio — on top of the `atx-core` stdlib.
 | [`phase-2-progress.md`](phase-2-progress.md) | sprint ledger | Phase 2 marker-stage ledger; fills in as units land. |
 | [`phase-3-alpha-expression-dsl-implementation-plan.md`](phase-3-alpha-expression-dsl-implementation-plan.md) | implementation plan | Per-unit P3-0..P3-9 plan: the alpha-expression DSL + vectorized VM (the alpha-research layer). |
 | [`phase-3-progress.md`](phase-3-progress.md) | sprint ledger | Phase 3 marker-stage ledger; fills in as units land. |
+| [`phase-3b-vm-completion-implementation-plan.md`](phase-3b-vm-completion-implementation-plan.md) | implementation plan | Per-unit P3b-0..P3b-4 + P3c-0..P3c-4 plan: complete the signal-gen VM — BRAIN-superset ops + variadic args + Alpha101 conformance + batch eval + per-alpha streams + `VmSignalSource` bridge. **Two sprints (3b/3c).** Precursor to Phase 4. |
+| [`phase-4-signal-combination-risk-implementation-plan.md`](phase-4-signal-combination-risk-implementation-plan.md) | implementation plan | Per-unit P4-0..P4-10 plan: alpha pool gates + mega-alpha combiner + Barra factor risk + risk-aware optimizer. **Two sprints (4a/4b).** |
 | [`../../research/backtest-loop-execution-sim-deep-dive.md`](../../research/backtest-loop-execution-sim-deep-dive.md) | research | Loop/portfolio/exec-sim grounding: LEAN, Zipline, Nautilus, backtrader; Almgren/√-impact. Cited by the Phase-2 plan. |
 | [`../../research/alpha-expression-dsl-deep-dive.md`](../../research/alpha-expression-dsl-deep-dive.md) | research | DSL/VM grounding: Alpha101, Qlib, Zipline, DuckDB, Pratt/CSE. Cited by the Phase-3 plan. |
+| [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md) | research | WorldQuant north-star: alpha factory, BRAIN/WebSim, 101-Alphas, fitness + correlation gates, bounded-regression / O(N) / dead-alpha combiners, Barra neutralization. Cited by the Phase-4 plan. |
+| [`../../research/renaissance-technologies-systems-deep-dive.md`](../../research/renaissance-technologies-systems-deep-dive.md) | research | RenTech north-star: weak-signal aggregation, HMM/noisy-channel lineage, cost-fidelity-dominates-at-turnover, OOS discipline, capacity-bounded edge. Cited by the Phase-4 plan. |
 
 **Pending (created at later sprint kickoff/close):**
 - `phase-1.md` — user reference (written at Phase 1 close).
-- `phase-2-backtest-loop-implementation-plan.md` (Phase 2 kickoff) and `phase-3.md` (Phase 3 close), etc.
+- `phase-3.md` — user reference (Phase 3 close; extended at Phase 3b/3c close); `phase-4.md` — user reference (Phase 4 close).
+- `phase-3b-progress.md` / `phase-3c-progress.md` — sprint ledgers (created at each Phase-3b sub-sprint kickoff).
+- `phase-4a-progress.md` / `phase-4b-progress.md` — sprint ledgers (created at each Phase-4 sub-sprint kickoff).
 
 **Sprint/module discipline:** as defined in [`../docs/sprint.md`](../docs/sprint.md),
 [`../docs/module.md`](../docs/module.md), [`../docs/implementation-quality.md`](../docs/implementation-quality.md).
@@ -174,12 +180,46 @@ Strategy. Consumes atx-core L5 (simd), L6 (cross_section/rolling/online_stats), 
 > **correlation/turnover orthogonality gates** that lived here move to **Phase 4** (they screen a *pool* of
 > evaluated signals — combiner territory). Phase 3 is now the pure expression→signal compute core.
 
-### Phase 4 — Alpha pool gates + signal combination + risk
-**Alpha store** + **correlation/turnover orthogonality gates** (WebSim-style fan-out screening; moved from
-the old Phase 3) feeding the mega-alpha **combiner** (rank-average → Ledoit-Wolf shrinkage / factor-imposed
-covariance → regularized regression), a **Barra-style factor risk model** `r=Xf+u`, `V=XFXᵀ+D` (research §VI),
-neutralization, and a turnover-penalized portfolio optimizer. Consumes the Phase-3 `SignalSet` + atx-core L7
-(linalg/regression).
+### Phase 3b — Alpha-DSL VM completion (vocabulary · conformance · mass eval · loop bridge)  ⬅ **scoped** ([plan](phase-3b-vm-completion-implementation-plan.md))
+**Complete the signal-generation VM** before Phase 4 builds combiners/risk on it. Extends Phase 3 (does not
+rebuild it): the **BRAIN-superset operator vocabulary** consultants actually use (`ts_zscore`, `ts_backfill`,
+`winsorize`, `sigmoid`, `normalize`, **`trade_when`**, group zoo, …), **variadic/default arguments**
+(`scale(x)`, `group_neutralize(x,g[,cap])`), an **Alpha101 conformance battery** that pins the disputed
+semantics (`indneutralize` demean, `signedpower`, `floor(d)`, NaN policy), a **batch / cross-alpha evaluation
+API** with measured CSE evidence, the **per-alpha PnL/position streams** Phase 4 ingests, and the
+**`VmSignalSource` green-gate + delay-0/1 knob** that finally lets the VM drive the real Phase-2 loop
+(resolving the Phase-2 P2-3 cross-phase residual). Consumes the as-built Phase-3 VM + atx-core L5/L6/L9 — all
+landed, **not upstream-blocked**. *Grounded in [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md)
+§9.1/§9.3/§9.6 + [`../../research/renaissance-technologies-systems-deep-dive.md`](../../research/renaissance-technologies-systems-deep-dive.md)
+§9.3/§9.5.*
+
+> **Two sub-sprints** (scope ~10 units; the `p0` 4/4b/4c precedent): **3b** — vocabulary + variadic args +
+> conformance (P3b-0..P3b-4); **3c** — mass evaluation + VM→loop bridge (P3c-0..P3c-4). **Prerequisite:**
+> Phase 3 (P3-0..P3-9) closes first — 3b/3c build on the as-built `alpha::Dag`/`Program`/`Engine`/`SignalSet`
+> + oracle. **Explicitly NOT here:** JIT, computed-goto, SIMD micro-tuning (pure perf optimization stays
+> future-work — "before optimizations"); the full BRAIN op zoo; and the combiner/risk/optimizer (Phase 4).
+
+### Phase 4 — Alpha pool gates + signal combination + risk  ⬅ **scoped** ([plan](phase-4-signal-combination-risk-implementation-plan.md))
+The **mega-alpha layer**. **Alpha store** + **correlation/turnover/fitness orthogonality gates** (WebSim-style
+fan-out screening; moved from the old Phase 3) feeding the mega-alpha **combiner** (equal-weight → rank-average
+→ IC/Sharpe-weighted → Ledoit-Wolf shrinkage mean-variance → bounded/ridge regression over SCM PCs — each rung
+handling the singular-SCM N≫T obstacle), a **Barra-style factor risk model** `r=Xf+u`, `V=XFXᵀ+D` kept
+**factored** (sector + price-derived style factors size/momentum/vol/beta/liquidity; optional PCA + dead-alpha
+risk directions), **neutralization** (group + factor + decay + truncation stages added to `WeightPolicy`), and
+a **turnover-penalized risk-aware optimizer** (`max αᵀw − λwᵀVw − κ‖w−w_prev‖₁` s.t. dollar-neutral, gross,
+name caps). The mega-alpha **plugs into the existing loop as just another `ISignalSource`** (the seam Phase-2
+anticipated). Consumes the Phase-3 `SignalSet` + atx-core L7 (linalg/regression/pca/spd/solve) — **all landed,
+not upstream-blocked.** *Grounded in [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md)
++ [`../../research/renaissance-technologies-systems-deep-dive.md`](../../research/renaissance-technologies-systems-deep-dive.md).*
+
+> **Two sub-sprints** (scope > 4–7 units/sprint; matches the `p0` 4/4b/4c precedent): **4a** — alpha pool +
+> gates + combiner (P4-0..P4-5, the mega-alpha gross-of-risk-model); **4b** — factor risk model + risk-aware
+> construction (P4-6..P4-10). Each opens its own ledger at its own kickoff.
+>
+> **New invariant introduced here:** the **fit/apply firewall** — the combiner weights, gate stats, and factor
+> model are *fitted* objects; they are estimated on a trailing window and applied out-of-sample only (proven by
+> truncation-invariance), or they leak look-ahead the per-datum rails can't see. Full deflated-Sharpe /
+> walk-forward harness deepening stays **Phase 5**.
 
 ### Phase 5 — Cost calibration + capacity + validation
 Fit √-impact exponent `δ` (0.45–0.65), split temporary vs permanent (Almgren-Chriss), capacity
