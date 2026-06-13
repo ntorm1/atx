@@ -11,6 +11,9 @@ add_library(atx-engine STATIC
     src/factory/pool_view.cpp
     src/factory/research_driver.cpp
     src/factory/search_driver.cpp
+    src/eval/cpcv.cpp
+    src/eval/pbo.cpp
+    src/eval/perf_metrics.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
