@@ -38,6 +38,7 @@ add_library(atx-engine STATIC
     src/data/shm_bar_feed.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
+    src/validation/bias_audit.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
