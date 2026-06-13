@@ -179,12 +179,21 @@ S6-1). S8.1 composes √-cap *prior* weighting with that Huber kernel rather tha
 1. `symmetric_eig(F) → U (cols=eigenvectors), D (ascending eigenvalues)`. Treat `F=U D Uᵀ` as truth.
 2. For `m = 1..M` (`eigen_adjust_sims`, fixed): draw `b_m ∈ ℝ^{K×T}` with `b_m[k,t] ~ N(0, D[k])` using
    the seeded `Xoshiro256pp` (`σ_k·normal()`); simulated factor-return history `f_m = U b_m` (K×T).
-   Re-estimate the simulated covariance `F̃_m = (1/T) f_m f_mᵀ`; project onto the original eigenbasis
-   `D̃_m = diag(Uᵀ F̃_m U)`. Accumulate per-eigenfactor `v(k) += √(D̃_m(k)/D(k))`.
-3. `v(k) = (1/M) Σ_m √(D̃_m(k)/D(k))` (simulated vol bias); `γ(k) = a·(v(k)−1)+1`,
+   Re-estimate the simulated covariance `F̃_m = (1/T) f_m f_mᵀ`. **Eigendecompose the SAMPLE covariance**
+   `F̃_m = Û_m·D̂_m·Û_mᵀ` (its OWN sample eigenbasis Û_m — NOT the true U). The per-eigenfactor bias is the
+   ratio of the *true* variance along the sample direction to the sample eigenvariance the model reports:
+   accumulate `v(k) += √( û_{m,k}ᵀ·F·û_{m,k} / D̂_m[k] )`.
+   > **DO NOT** project onto the true basis (`diag(Uᵀ F̃_m U)`) — that estimator is *unbiased* (→ `v(k)≈1`
+   > for all k) and cannot correct anything. The de-bias must be measured in the SAMPLE eigenbasis, which is
+   > what one actually estimates from data (Menchero-Wang-Orr USE4 App. B; research §4.3). Empirically the
+   > sample-basis form reproduces the research anchor `v_small≈1.37, v_large≈0.76` at T/K=4; the true-basis
+   > form gives `v≈0.999` everywhere. *(This corrects the original frozen-plan formula — confirmed in the
+   > S8.3 spec review.)*
+3. `v(k) = (1/M) Σ_m √( û_{m,k}ᵀ·F·û_{m,k} / D̂_m[k] )` (simulated vol bias); `γ(k) = a·(v(k)−1)+1`,
    `a = eigen_adjust_amplify` (**default 1.0**). Rescale `D̂(k) = γ(k)²·D(k)`; rotate back
-   `F̂ = U D̂ Uᵀ`. **PSD-preserving** (γ²>0). `T` for the inner sim = the fit window (or K·constant);
-   fix it and document. `a=0 ⇒ γ≡1 ⇒ F̂≡F` (identity — a test case).
+   `F̂ = U D̂ Uᵀ`. **PSD-preserving** (γ²>0). `T` for the inner sim is a fixed deterministic function of K
+   (as-built: `T = max(100·K, 200)` — the apply path never sees the fit window); fix it and document.
+   `a=0 ⇒ γ≡1 ⇒ F̂≡F` (identity — a test case).
 
 **Specific-risk blend (S8.4).** Per current-cross-section instrument:
 `σ_n^TS = √(EWMA-var(spec returns, spec_halflife) · NW-inflation(spec_nw_lags))`. Structural model:

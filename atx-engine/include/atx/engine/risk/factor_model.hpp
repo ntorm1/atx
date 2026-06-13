@@ -77,10 +77,11 @@
 // √-cap / inverse-specific-variance PRIOR weight with the existing Huber IRLS kernel
 // rather than introducing a second engine-local IRLS loop.
 #include "atx/engine/cost/robust_ls.hpp" // cost::irls_huber, RobustCfg, RobustFit (S8.1 robust path)
-#include "atx/engine/loop/panel_types.hpp" // PanelView (the trailing newest-first panel)
-#include "atx/engine/risk/cov_ewma.hpp"    // ewma_factor_covariance (S8.2 EWMA + Newey-West path)
-#include "atx/engine/risk/exposures.hpp"   // build_exposures, ExposureMatrix, detail::step_return
-#include "atx/engine/risk/fwd.hpp"         // FactorModel / FactorModelBuilder fwd decls
+#include "atx/engine/loop/panel_types.hpp"  // PanelView (the trailing newest-first panel)
+#include "atx/engine/risk/cov_ewma.hpp"     // ewma_factor_covariance (S8.2 EWMA + Newey-West path)
+#include "atx/engine/risk/eigen_adjust.hpp" // eigen_adjust (S8.3 Monte-Carlo eigenfactor de-biasing)
+#include "atx/engine/risk/exposures.hpp"    // build_exposures, ExposureMatrix, detail::step_return
+#include "atx/engine/risk/fwd.hpp"          // FactorModel / FactorModelBuilder fwd decls
 
 namespace atx::engine::risk {
 
@@ -490,6 +491,19 @@ public:
       f = ewma_factor_covariance(fkept, cfg.cov.vol_halflife, cfg.cov.corr_halflife,
                                  cfg.cov.nw_lags);
       break;
+    }
+    // S8.3 eigenfactor risk adjustment (opt-in via cfg.cov.eigen_adjust_sims > 0; the
+    // DEFAULT 0 is a no-op so the P4 / S8.2 covariance is untouched, byte-identical).
+    // Monte-Carlo de-biases the factor-covariance eigenvariances (Menchero-Wang-Orr)
+    // BEFORE create's SPD gate; the adjustment is PSD-preserving (γ²>0). This is the
+    // ONLY RNG site in the build — its Xoshiro256pp seed is cfg.cov.eigen_adjust_seed,
+    // recorded so the model is byte-identical on replay. ATX_TRY propagates a non-SPD F
+    // (symmetric_eig failure / non-positive eigenvalue) instead of silently skipping.
+    if (cfg.cov.eigen_adjust_sims > 0U) {
+      ATX_TRY(atx::core::linalg::MatX f_adj,
+              eigen_adjust(f, cfg.cov.eigen_adjust_sims, cfg.cov.eigen_adjust_amplify,
+                           cfg.cov.eigen_adjust_seed));
+      f = std::move(f_adj);
     }
     const atx::core::linalg::VecX d = specific_variances(x0, u_by_inst);
     return FactorModel::create(std::move(x0.x), std::move(f), d, /*fit_begin=*/0U,
