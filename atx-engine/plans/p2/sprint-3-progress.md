@@ -1,0 +1,53 @@
+# Sprint S3 (p2) — Alpha DSL & Expression Substrate — Implementation Progress
+
+**Status:** 🟡 OPEN (S3.0 marker) — started 2026-06-13
+**Worktree:** `C:\Users\natha\atx-wt\p2-s3` (isolated — one branch per worktree, no shared-branch race)
+**Branch:** `feat/p2-s3-alpha-dsl`
+**Base:** `main @ 0790157` (p2 roadmap refactor: S3/S4 = alpha DSL + genetic search)
+**Source plan:** [`sprint-3-alpha-dsl-expression-substrate-implementation-plan.md`](sprint-3-alpha-dsl-expression-substrate-implementation-plan.md)
+**Spec:** [`sprint-3-alpha-dsl-expression-substrate.md`](sprint-3-alpha-dsl-expression-substrate.md)
+**Build env:** `cmd /c "call C:\Users\natha\atx-wt\p2-s3-env.cmd && <cmd>"` (VS2022 + vcpkg + sccache + ninja);
+preset `dev`; target `atx-engine-tests`.
+
+---
+
+## §0 As-built recon (the plan's §0, condensed) — the corrections that shaped the units
+
+1. **9-site operator add-surface** (registry.hpp enum, registry.cpp row, shape rule, typecheck, kernel hpp, vm
+   dispatch, oracle dispatch, oracle.cpp kernel, tests). Exhaustive `OpCode` switches carry **no `default`** — the
+   compiler enumerates every site a new op must touch (`/WX` enforces it).
+2. **Neutralization is genuinely demean-only.** `cs_group_demean_row` is the WLS residual on a pure group-dummy
+   design; the header itself notes "the full residualizer is deferred." S3.1 generalizes it; the demean special case
+   is the bit-for-bit boundary pin.
+3. **`op_swap` root cause confirmed.** Bucket key `(shape_cat, out_dtype, min_arity)` + materialized-`call_arity`
+   lookup mismatch lets a hparam-peeling op (kalman_level, materialized arity 1) swap to `hump`; `analyze_call` never
+   checks the node's structure matches its op's declared contract (`n_hparams`, operand presence, roles), so the
+   malformed node analyzes clean and aborts the VM (SlotPool out-of-range / garbage immediate). Root fix = analyzer
+   contract check (analyze-valid ⟹ VM-safe for ALL mutation) + refined catalog buckets. (S3.4.)
+4. **Lookback rail is centralized** (`analyze_call` + `is_rolling_ts`/`is_shift_ts`); new rolling ops register there.
+5. **Datafields are name-recognized panel inputs, not opcodes** — `vwap`/`adv{d}` are derived panel columns, no new
+   `OpCode` (keeps the ISA price-volume-clean). (S3.3.)
+6. **No from-scratch AST generator exists** — S3.5 is additive (`factory/generate.hpp`), measured against an
+   in-test random-AST control.
+
+---
+
+## Unit ledger
+
+| Unit | Title | Status | SHA | Tests | Notes |
+|---|---|---|---|---|---|
+| S3.0 | Marker + ledger + recon | 🟡 in progress | — | — | impl plan frozen; baseline build verifying |
+| S3.1 | Regression-residual neutralization (`CsResidualize`) | ⬜ | — | — | demean special case = boundary pin |
+| S3.2 | BRAIN-superset `ts_*` (`ts_regression`/`ts_decay_exp`/`ts_entropy`/`ts_moment`) + backfill/quantile audit | ⬜ | — | — | |
+| S3.3 | Cross-sectional gap-fill ops + `vwap`/`adv{d}`/dollar-volume datafields | ⬜ | — | — | |
+| S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ⬜ | — | — | analyzer contract check load-bearing |
+| S3.5 | Grammar-typed (valid-by-construction) generation | ⬜ | — | — | report rejection-rate vs control |
+| S3.6 | Conformance suite + Alpha101 subset repro + bench + close | ⬜ | — | — | p1 corpus byte-identical |
+
+Legend: ⬜ not started · 🟡 in progress · ✅ done (header + tests + `/W4 /WX` + `/fp:precise` clean).
+
+## Numbers (filled on close)
+- op_swap stress: buckets covered / total, abort count (must be 0).
+- generation: analyze-rejection rate (grammar-typed) vs random-AST control.
+- Alpha101: subset reproduced / total; not-yet-expressible residual + blocking op.
+- bench: widened-op eval throughput (Debug upper bound), CSE hit-rate.
