@@ -34,6 +34,8 @@ add_library(atx-engine STATIC
     src/learn/linear_alpha.cpp
     src/learn/pipeline.cpp
     src/learn/train.cpp
+    src/data/data_handler.cpp
+    src/data/shm_bar_feed.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 

@@ -144,17 +144,7 @@ public:
   // is the intended fail-closed posture — there is no half-built feed to leak.
   // NOLINTNEXTLINE(bugprone-exception-escape)
   InMemoryBarFeed(std::span<const std::span<const BarRow>> sources, SimClock &clock,
-                  EventBus<> &bus) noexcept
-      : sources_{sources}, clock_{&clock}, bus_{&bus} {
-    // One allocation each, sized to N: the cursors and the heap's backing store.
-    cursors_.assign(sources_.size(), 0);
-    for (atx::usize s = 0; s < sources_.size(); ++s) {
-      if (!sources_[s].empty()) {
-        heap_.push(
-            HeapEntry{sources_[s].front().knowledge_ts.unix_nanos(), static_cast<atx::u32>(s)});
-      }
-    }
-  }
+                  EventBus<> &bus) noexcept;
 
   // step() is NOT noexcept: std::priority_queue::push may throw std::bad_alloc.
   // In steady state the heap never grows past its N-sized backing store (every
