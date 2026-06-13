@@ -10,9 +10,10 @@
 // Namespace split:
 //   atx::engine::risk — extensions to the existing risk spine introduced by
 //       S7: `risk::MultiPeriodOptimizer` (turnover-aware multi-horizon QP)
-//       and `risk::DeadFactorExtractor` (eigensolver-based dead-alpha →
-//       orthogonal risk factor).  Full definitions live in
-//       risk/multi_period.hpp and risk/dead_factor.hpp respectively.
+//       and the dead-alpha → orthogonal risk factor extraction FREE FUNCTIONS
+//       (`extract_dead_factors` / `augment_factor_model`, operating on the
+//       `FactorComponents` / `DeadAlphaFactors` carriers).  Full definitions
+//       live in risk/multi_period.hpp and risk/dead_factor.hpp respectively.
 //
 //   atx::engine::book — new layer introduced by S7: decay monitoring, cost
 //       scalar adapter, Kelly allocation, and the top-level pipeline/report.
@@ -67,15 +68,21 @@ struct MultiPeriodResult;
 class MultiPeriodOptimizer;
 
 // =====================================================================
-//  Dead-alpha risk factor extractor (S7-3)
+//  Dead-alpha risk factor extraction (S7-3)
 // =====================================================================
 
-// Extracts orthogonal risk factors from the return history of alphas whose
-// DSR has fallen below the admission threshold, using
-// Eigen::SelfAdjointEigenSolver with a fixed ascending-eigenvalue sign
-// convention.  No atx-core request; Eigen is sufficient.
-// Full definition in risk/dead_factor.hpp (S7-3).
-class DeadFactorExtractor;
+// The estimated (X, F, D, fit_end) carrier FactorModelBuilder::build_components
+// emits and the dead-factor augmentation hstacks/blockdiags into an augmented
+// FactorModel.  Defined in risk/factor_model.hpp (returned by build_components).
+struct FactorComponents;
+
+// The dead-alpha risk factors extracted from the holdings-overlap eigenspectrum:
+// sign-fixed eigenvector loadings, kept eigenvalues (the dead factor variances),
+// and the eRank-truncated factor count k_dead.  S7-3 uses FREE FUNCTIONS
+// (extract_dead_factors / augment_factor_model) — not a class — built on
+// Eigen::SelfAdjointEigenSolver with a fixed largest-|component|-positive sign
+// convention for bit-reproducibility.  Full definition in risk/dead_factor.hpp.
+struct DeadAlphaFactors;
 
 } // namespace atx::engine::risk
 

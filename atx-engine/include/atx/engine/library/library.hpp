@@ -225,6 +225,14 @@ public:
   }
   [[nodiscard]] AlphaRecordView get(AlphaId id) const { return store_.get(id); }
   [[nodiscard]] std::span<const atx::f64> pnl(AlphaId id) const noexcept { return store_.pnl(id); }
+  /// Alpha `id`'s target-weight cross-section at `period` (length n_instruments()).
+  /// SAFETY: same aliasing contract as pnl() — the span ALIASES a segment Mapping
+  /// (dangles when the store dies) or the live memtable (dangles on the next
+  /// stage()/flush()). Copy out before the store grows. Consumed by S7-3 dead-alpha
+  /// factor extraction (risk::extract_dead_factors reads dead holdings at as_of).
+  [[nodiscard]] std::span<const atx::f64> positions(AlphaId id, atx::usize period) const noexcept {
+    return store_.positions(id, period);
+  }
   [[nodiscard]] atx::core::Result<LifecycleState> state_as_of(AlphaId id, atx::usize t) const {
     return journal_.state_as_of(id, static_cast<atx::u64>(t));
   }

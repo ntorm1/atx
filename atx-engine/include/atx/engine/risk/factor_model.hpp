@@ -367,6 +367,23 @@ namespace detail {
 
 } // namespace detail
 
+// ===========================================================================
+//  FactorComponents — the estimated (X, F, D, fit_end) FactorModelBuilder feeds to
+//  FactorModel::create. Exposed by build_components(...) so the dead-alpha factor
+//  augmentation (S7-3, risk/dead_factor.hpp) can hstack X with the extracted dead
+//  loadings and blockdiag F with the dead variances BEFORE the create() assembly,
+//  without re-running the per-date WLS estimation. build() is a thin wrapper:
+//  build_components -> create (BEHAVIOR-PRESERVING split, §0.3 reserved-slot).
+//  Defined HERE (not in dead_factor.hpp) so build_components can return it without
+//  a circular include — dead_factor.hpp includes THIS header and uses the type.
+// ===========================================================================
+struct FactorComponents {
+  atx::core::linalg::MatX X; // M×K exposures (X[0], the current cross-section)
+  atx::core::linalg::MatX F; // K×K factor covariance (Ledoit-Wolf shrunk, SPD)
+  atx::core::linalg::VecX D; // M specific (idiosyncratic) variances
+  atx::usize fit_end;        // the fit window upper bound (== window)
+};
+
 class FactorModelBuilder {
 public:
   FactorModelConfig cfg;
@@ -374,28 +391,46 @@ public:
   // Estimate (X, F, D) over the trailing `window` cross-sections and assemble the
   // FactorModel. COLD path. PIT-structural (reads only rows >= each date). See the
   // header block above for the full estimation contract. `[[nodiscard]] const`.
+  // THIN WRAPPER (§0.3): runs build_components then FactorModel::create — the
+  // estimation body lives in build_components so the S7-3 dead-factor augmentation
+  // can intercept (X, F, D) before create. Behavior is identical to the pre-split
+  // build (build_components returns EXACTLY the (X, F, D, fit_end) create consumed).
   [[nodiscard]] atx::core::Result<FactorModel> build(const PanelView &panel, atx::usize window,
                                                      std::span<const atx::f64> market_cap,
                                                      std::span<const atx::u32> group_id) const {
+    ATX_TRY(FactorComponents comp, build_components(panel, window, market_cap, group_id));
+    return FactorModel::create(std::move(comp.X), std::move(comp.F), std::move(comp.D),
+                               /*fit_begin=*/0U, /*fit_end=*/comp.fit_end);
+  }
+
+  // Estimate the factored covariance components (X, F, D) over the trailing `window`
+  // cross-sections WITHOUT assembling the FactorModel — the estimation half of the
+  // original build(), extracted VERBATIM so S7-3 can augment (X, F) with dead-alpha
+  // risk factors before create(). Returns FactorComponents{ X[0], F, D, window }.
+  // Same Err contract as build (stat/dead rung NotImplemented, window<2, window<K,
+  // too-few-usable-dates). COLD path; PIT-structural. `[[nodiscard]] const`.
+  [[nodiscard]] atx::core::Result<FactorComponents>
+  build_components(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
+                   std::span<const atx::u32> group_id) const {
     if (cfg.n_stat_factors > 0U || cfg.n_dead_factors > 0U) {
       return atx::core::Err(atx::core::ErrorCode::NotImplemented,
-                            "FactorModelBuilder::build: stat/dead factor rungs are a deferred "
-                            "4b residual"); // NOT a silent skip — an explicit deferral
+                            "FactorModelBuilder::build_components: stat/dead factor rungs are a "
+                            "deferred 4b residual"); // NOT a silent skip — an explicit deferral
     }
     if (window < 2U) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build: require window >= 2");
+                            "FactorModelBuilder::build_components: require window >= 2");
     }
     // X[0] (the CURRENT cross-section) defines M and the emitted factor count K.
     ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, market_cap, group_id));
     const atx::usize k = x0.n_factors();
     if (k == 0U) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build: no factor columns emitted");
+                            "FactorModelBuilder::build_components: no factor columns emitted");
     }
     if (window < k) { // T < K -> the factor-return cov is rank-deficient
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build: window < factor count (T < K)");
+                            "FactorModelBuilder::build_components: window < factor count (T < K)");
     }
 
     // Pass A (OLS) -> bootstrap specific variances d0; Pass B (WLS) -> f[s], u[s].
@@ -403,8 +438,9 @@ public:
     atx::core::linalg::VecX d0(static_cast<Eigen::Index>(n_inst));
     ATX_TRY(atx::usize used_a, accumulate_ols(panel, window, market_cap, group_id, k, d0));
     if (used_a < 2U) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build: too few usable dates (M_s < K everywhere)");
+      return atx::core::Err(
+          atx::core::ErrorCode::InvalidArgument,
+          "FactorModelBuilder::build_components: too few usable dates (M_s < K everywhere)");
     }
 
     std::vector<std::vector<atx::f64>> u_by_inst(n_inst); // final WLS residuals per universe inst
@@ -414,18 +450,19 @@ public:
             accumulate_wls(panel, window, market_cap, group_id, d0, fseries, u_by_inst));
     if (used_b < 2U) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build: too few usable WLS dates");
+                            "FactorModelBuilder::build_components: too few usable WLS dates");
     }
     // Compact fseries to the rows actually filled (under-determined dates skipped).
     const atx::core::linalg::MatX fkept = fseries.topRows(static_cast<Eigen::Index>(used_b));
     if (fkept.rows() < static_cast<Eigen::Index>(k)) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build: usable dates < K (factor cov rank)");
+                            "FactorModelBuilder::build_components: usable dates < K (factor cov rank)");
     }
 
-    const atx::core::linalg::MatX f = detail::factor_covariance(fkept, cfg.factor_cov_shrink);
-    const atx::core::linalg::VecX d = specific_variances(x0, u_by_inst);
-    return FactorModel::create(std::move(x0.x), f, d, /*fit_begin=*/0U, /*fit_end=*/window);
+    atx::core::linalg::MatX f = detail::factor_covariance(fkept, cfg.factor_cov_shrink);
+    atx::core::linalg::VecX d = specific_variances(x0, u_by_inst);
+    return atx::core::Ok(
+        FactorComponents{std::move(x0.x), std::move(f), std::move(d), /*fit_end=*/window});
   }
 
 private:
