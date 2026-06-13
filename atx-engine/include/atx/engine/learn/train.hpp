@@ -29,7 +29,8 @@
 //  This is the learn-layer analog of factory::detail::seed_for(master, gen, idx);
 //  the extra string `tag` lets distinct unit/horizon streams stay well-separated.
 //
-// Header-only; every function is defined inline.
+// Hot inline bits (seed_for, TrialCounter) stay here; cold run-once span/fold
+// builders are declared here and defined in src/learn/train.cpp.
 
 #include <string_view>
 #include <vector>
@@ -105,54 +106,21 @@ struct TrialCounter {
 //  is indexed by used-date ordinal; expand_date_folds maps fold indices (which
 //  are ordinals into THIS vector) back to actual date indices.
 // ===========================================================================
-[[nodiscard]] inline std::vector<eval::LabelSpan> date_label_spans(const FeatureMatrix &fm,
-                                                                   atx::u16 horizon) {
-  std::vector<eval::LabelSpan> spans;
-  // Rows are in (date, instrument) order, so row_date is non-decreasing — collect
-  // each distinct date once, ascending, with no map / sort needed.
-  atx::usize prev = fm.n_dates; // sentinel: no date equals n_dates
-  for (const atx::usize d : fm.row_date) {
-    if (d != prev) {
-      const atx::usize t1 = (d + static_cast<atx::usize>(horizon) < fm.n_dates)
-                                ? d + static_cast<atx::usize>(horizon)
-                                : fm.n_dates;
-      spans.push_back(eval::LabelSpan{d, t1});
-      prev = d;
-    }
-  }
-  return spans;
-}
+[[nodiscard]] std::vector<eval::LabelSpan> date_label_spans(const FeatureMatrix &fm,
+                                                            atx::u16 horizon);
 
 namespace detail {
 
 // The ascending list of distinct USED dates (the date axis of date_label_spans):
 // the same dates, in the same order. A CPCV fold's index `o` is an ordinal into
 // THIS list, so used_dates[o] is the actual date index.
-[[nodiscard]] inline std::vector<atx::usize> used_dates(const FeatureMatrix &fm) {
-  std::vector<atx::usize> dates;
-  atx::usize prev = fm.n_dates;
-  for (const atx::usize d : fm.row_date) {
-    if (d != prev) {
-      dates.push_back(d);
-      prev = d;
-    }
-  }
-  return dates;
-}
+[[nodiscard]] std::vector<atx::usize> used_dates(const FeatureMatrix &fm);
 
 // Collect every VALID feature row whose date is in `date_set`, ascending by row.
 // `in_set[date]` is the per-date membership table for this side of the fold.
 // Invalid rows (a non-finite feature, M8) are dropped from the fit.
-[[nodiscard]] inline std::vector<atx::usize> rows_for_dates(const FeatureMatrix &fm,
-                                                            const std::vector<bool> &in_set) {
-  std::vector<atx::usize> rows;
-  for (atx::usize r = 0; r < fm.n_rows(); ++r) {
-    if (in_set[fm.row_date[r]] && fm.row_valid[r] != 0) {
-      rows.push_back(r);
-    }
-  }
-  return rows;
-}
+[[nodiscard]] std::vector<atx::usize> rows_for_dates(const FeatureMatrix &fm,
+                                                     const std::vector<bool> &in_set);
 
 } // namespace detail
 
@@ -166,28 +134,7 @@ namespace detail {
 //  guarantees it) and each date maps to one ordinal, no train row can share a
 //  date with any test row (§0.2 firewall, carried to the rows).
 // ===========================================================================
-[[nodiscard]] inline Folds expand_date_folds(const std::vector<eval::CpcvFold> &folds,
-                                             const FeatureMatrix &fm) {
-  const std::vector<atx::usize> dates = detail::used_dates(fm);
-  Folds out;
-  out.reserve(folds.size());
-  for (const eval::CpcvFold &f : folds) {
-    std::vector<bool> in_train(fm.n_dates, false);
-    std::vector<bool> in_test(fm.n_dates, false);
-    for (const atx::usize o : f.train_idx) {
-      if (o < dates.size()) {
-        in_train[dates[o]] = true;
-      }
-    }
-    for (const atx::usize o : f.test_idx) {
-      if (o < dates.size()) {
-        in_test[dates[o]] = true;
-      }
-    }
-    out.push_back(RowFold{detail::rows_for_dates(fm, in_train),
-                          detail::rows_for_dates(fm, in_test)});
-  }
-  return out;
-}
+[[nodiscard]] Folds expand_date_folds(const std::vector<eval::CpcvFold> &folds,
+                                      const FeatureMatrix &fm);
 
 } // namespace atx::engine::learn
