@@ -1,9 +1,12 @@
 #include "atx/engine/data/context.hpp"
 
-#include <span>    // std::span
-#include <string>  // std::string
-#include <utility> // std::move
-#include <vector>  // std::vector
+#include <functional> // std::reference_wrapper, std::cref
+#include <span>       // std::span
+#include <string>     // std::string
+#include <utility>    // std::move, std::exchange
+#include <vector>     // std::vector
+
+#include "atx/core/macro.hpp" // ATX_ASSERT (moved-from + as_of guards)
 
 #include "atx/engine/data/adapt_factor.hpp"  // artifact_to_factor_model, reference_spans, RefSpans
 #include "atx/engine/data/adapt_feature.hpp" // merge_features_into_panel
@@ -12,6 +15,35 @@
 #include "atx/engine/data/dataset.hpp"       // Dataset
 
 namespace atx::engine::data {
+
+// ===========================================================================
+//  Move ops — NULL the source's catalog_ borrow so a moved-from DataContext
+//  fails LOUDLY (nullptr deref) instead of silently aliasing the catalog. A
+//  moved-from DataContext must not be used (only destroyed / reassigned).
+// ===========================================================================
+DataContext::DataContext(DataContext &&other) noexcept
+    : catalog_{std::exchange(other.catalog_, nullptr)}, price_name_{std::move(other.price_name_)},
+      adv_windows_{std::move(other.adv_windows_)}, panel_cache_{std::move(other.panel_cache_)},
+      factor_artifact_{std::move(other.factor_artifact_)},
+      factor_cache_{std::move(other.factor_cache_)}, admissions_{std::move(other.admissions_)},
+      flat_candidates_{std::move(other.flat_candidates_)}, signals_built_{other.signals_built_},
+      cached_admit_as_of_{other.cached_admit_as_of_} {}
+
+DataContext &DataContext::operator=(DataContext &&other) noexcept {
+  if (this != &other) {
+    catalog_ = std::exchange(other.catalog_, nullptr);
+    price_name_ = std::move(other.price_name_);
+    adv_windows_ = std::move(other.adv_windows_);
+    panel_cache_ = std::move(other.panel_cache_);
+    factor_artifact_ = std::move(other.factor_artifact_);
+    factor_cache_ = std::move(other.factor_cache_);
+    admissions_ = std::move(other.admissions_);
+    flat_candidates_ = std::move(other.flat_candidates_);
+    signals_built_ = other.signals_built_;
+    cached_admit_as_of_ = other.cached_admit_as_of_;
+  }
+  return *this;
+}
 
 // ===========================================================================
 //  create — validate the price dataset is registered AND Role::Price.
@@ -32,28 +64,29 @@ atx::core::Result<DataContext> DataContext::create(const DatasetCatalog &catalog
 // ===========================================================================
 void DataContext::set_factor_model(FactorModelArtifact artifact) {
   factor_artifact_ = std::move(artifact);
-  factor_cache_.reset();
-  factor_lowered_ = false;
+  factor_cache_.reset(); // invalidate any lowered model; has_value() == materialized
 }
 
 // ===========================================================================
 //  names_with_role — registered datasets of a given role, ascending (catalog order).
 // ===========================================================================
-std::vector<std::string> DataContext::names_with_role(Role role) const {
+atx::core::Result<std::vector<std::string>> DataContext::names_with_role(Role role) const {
+  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
   std::vector<std::string> out;
   for (const std::string &name : catalog_->names()) {
-    const auto r = catalog_->role_of(name);
-    if (r.has_value() && *r == role) {
+    ATX_TRY(const Role r, catalog_->role_of(name)); // propagate, never silently skip
+    if (r == role) {
       out.push_back(name);
     }
   }
-  return out;
+  return atx::core::Ok(std::move(out));
 }
 
 // ===========================================================================
 //  price_panel — RAW lowering (default) + Feature merge. Lazy + cached.
 // ===========================================================================
 atx::core::Result<std::reference_wrapper<const alpha::Panel>> DataContext::price_panel() {
+  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
   if (panel_cache_.has_value()) {
     return atx::core::Ok(std::cref(*panel_cache_));
   }
@@ -87,7 +120,8 @@ atx::core::Result<std::reference_wrapper<const alpha::Panel>> DataContext::price
 
   // 2. Merge every Role::Feature dataset (ascending name) as extra named fields. A
   //    price-only context (no Feature datasets) leaves `base` untouched.
-  for (const std::string &fname : names_with_role(Role::Feature)) {
+  ATX_TRY(const std::vector<std::string> feature_names, names_with_role(Role::Feature));
+  for (const std::string &fname : feature_names) {
     ATX_TRY(const auto feat_ref, catalog_->resolve(fname));
     ATX_TRY(alpha::Panel merged, merge_features_into_panel(*base, price, feat_ref.get()));
     base = std::move(merged);
@@ -100,16 +134,18 @@ atx::core::Result<std::reference_wrapper<const alpha::Panel>> DataContext::price
 // ===========================================================================
 //  factor_model_override — lower the BYO artifact, or nullopt. Lazy + cached.
 // ===========================================================================
-atx::core::Result<std::optional<risk::FactorModel>> DataContext::factor_model_override() {
+atx::core::Result<std::optional<std::reference_wrapper<const risk::FactorModel>>>
+DataContext::factor_model_override() {
+  using Ref = std::reference_wrapper<const risk::FactorModel>;
   if (!factor_artifact_.has_value()) {
-    return atx::core::Ok(std::optional<risk::FactorModel>{});
+    return atx::core::Ok(std::optional<Ref>{});
   }
-  if (!factor_lowered_) {
+  if (!factor_cache_.has_value()) { // lower once; has_value() == materialized
     ATX_TRY(risk::FactorModel fm, artifact_to_factor_model(*factor_artifact_));
     factor_cache_ = std::move(fm);
-    factor_lowered_ = true;
   }
-  return atx::core::Ok(std::optional<risk::FactorModel>{factor_cache_});
+  // Reference into the cached member (NOT a copy) — valid while the DataContext lives.
+  return atx::core::Ok(std::optional<Ref>{std::cref(*factor_cache_)});
 }
 
 // ===========================================================================
@@ -119,7 +155,12 @@ atx::core::Result<std::optional<risk::FactorModel>> DataContext::factor_model_ov
 atx::core::Result<std::span<const library::AlphaCandidate>>
 DataContext::signal_admit_candidates(const exec::ExecutionSimulator &sim,
                                      const atx::engine::WeightPolicy &policy, atx::usize as_of) {
+  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
   if (signals_built_) {
+    // The cache is as_of-SPECIFIC (each candidate's pnl/positions were realized as-of
+    // `cached_admit_as_of_`). A walk-forward harness reusing a DataContext across windows
+    // with a DIFFERENT as_of would otherwise get stale-epoch candidates — fail loudly.
+    ATX_ASSERT(as_of == cached_admit_as_of_);
     return atx::core::Ok(std::span<const library::AlphaCandidate>{flat_candidates_});
   }
   ATX_TRY(const auto panel_ref, price_panel());
@@ -129,7 +170,8 @@ DataContext::signal_admit_candidates(const exec::ExecutionSimulator &sim,
 
   admissions_.clear();
   flat_candidates_.clear();
-  for (const std::string &sname : names_with_role(Role::Signal)) {
+  ATX_TRY(const std::vector<std::string> signal_names, names_with_role(Role::Signal));
+  for (const std::string &sname : signal_names) {
     ATX_TRY(const auto sig_ref, catalog_->resolve(sname));
     ATX_TRY(SignalAdmission adm,
             signal_to_candidates(sig_ref.get(), price, panel, sim, policy, as_of));
@@ -144,6 +186,7 @@ DataContext::signal_admit_candidates(const exec::ExecutionSimulator &sim,
     }
   }
   signals_built_ = true;
+  cached_admit_as_of_ = as_of; // pin the epoch the cached candidates were realized for (M1)
   return atx::core::Ok(std::span<const library::AlphaCandidate>{flat_candidates_});
 }
 
@@ -152,7 +195,8 @@ DataContext::signal_admit_candidates(const exec::ExecutionSimulator &sim,
 // ===========================================================================
 atx::core::Result<RefSpans> DataContext::reference_spans_at(DateKey as_of_date,
                                                             atx::u32 default_group) {
-  const std::vector<std::string> refs = names_with_role(Role::Reference);
+  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
+  ATX_TRY(const std::vector<std::string> refs, names_with_role(Role::Reference));
   if (refs.empty()) {
     return atx::core::Err(atx::core::ErrorCode::NotFound,
                           "DataContext::reference_spans_at: no Role::Reference dataset registered");

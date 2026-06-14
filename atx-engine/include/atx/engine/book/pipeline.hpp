@@ -244,9 +244,17 @@ public:
     for (const library::AlphaCandidate &c : cands) {
       (void)lib_.admit(c, gate_); // gated by the EXISTING admission battery; verdict ignored
     }
-    // 2. Resolve the optional BYO factor-model override and drive the shared flow.
-    ATX_TRY(std::optional<risk::FactorModel> override, ctx.factor_model_override());
-    return run_impl(cfg, std::move(override));
+    // 2. Resolve the optional BYO factor-model override and drive the shared flow. The
+    //    context hands back a REFERENCE into its cached model (no copy on the accessor);
+    //    we copy it into an OWNED optional exactly ONCE here, and ONLY when an override
+    //    exists. A price-only context returns nullopt, so this is zero-copy and the
+    //    boundary pin is unaffected.
+    ATX_TRY(const auto override_ref, ctx.factor_model_override());
+    std::optional<risk::FactorModel> factor_override;
+    if (override_ref.has_value()) {
+      factor_override = override_ref->get(); // single copy, override path only
+    }
+    return run_impl(cfg, std::move(factor_override));
   }
 
 private:

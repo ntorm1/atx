@@ -79,9 +79,11 @@ public:
   create(const DatasetCatalog &catalog, std::string price_name,
          std::vector<atx::u16> adv_windows = {});
 
-  // Move-only (owns move-only SignalAdmissions + a cached Panel).
-  DataContext(DataContext &&) noexcept = default;
-  DataContext &operator=(DataContext &&) noexcept = default;
+  // Move-only (owns move-only SignalAdmissions + a cached Panel). The move ops NULL the
+  // source's catalog_ borrow so a moved-from DataContext fails LOUDLY (nullptr deref)
+  // rather than silently aliasing the catalog — a moved-from DataContext must not be used.
+  DataContext(DataContext &&other) noexcept;
+  DataContext &operator=(DataContext &&other) noexcept;
   DataContext(const DataContext &) = delete;
   DataContext &operator=(const DataContext &) = delete;
   ~DataContext() = default;
@@ -97,9 +99,13 @@ public:
   // outlive the returned reference.
   [[nodiscard]] atx::core::Result<std::reference_wrapper<const alpha::Panel>> price_panel();
 
-  // The BYO factor model lowered (artifact_to_factor_model), or nullopt (=> the
-  // pipeline builds the price-derived model). Lazy + cached.
-  [[nodiscard]] atx::core::Result<std::optional<risk::FactorModel>> factor_model_override();
+  // The BYO factor model lowered (artifact_to_factor_model) as a const reference into a
+  // cached member, or nullopt (=> the pipeline builds the price-derived model). Lazy +
+  // cached; returns a reference_wrapper (NOT a copy — lowering a FactorModel is 5 Eigen
+  // allocations) valid while the DataContext lives. The override path copies the referenced
+  // model into its owned V exactly once, only when an override exists.
+  [[nodiscard]] atx::core::Result<std::optional<std::reference_wrapper<const risk::FactorModel>>>
+  factor_model_override();
 
   // Builds + OWNS the SignalAdmission(s) for every Role::Signal dataset (ascending
   // name), returns a flat view of all candidates. The candidates' spans point into
@@ -120,19 +126,20 @@ private:
         adv_windows_{std::move(adv_windows)} {}
 
   // Names of every registered dataset whose role == `role`, ascending (catalog order).
-  [[nodiscard]] std::vector<std::string> names_with_role(Role role) const;
+  // Returns Err if any catalog role_of() probe fails (propagated, never silently skipped).
+  [[nodiscard]] atx::core::Result<std::vector<std::string>> names_with_role(Role role) const;
 
-  const DatasetCatalog *catalog_; // borrowed; must outlive *this
+  const DatasetCatalog *catalog_; // borrowed; must outlive *this (nulled on move-from)
   std::string price_name_;
   std::vector<atx::u16> adv_windows_; // empty => raw lowering
 
-  std::optional<alpha::Panel> panel_cache_;              // lazily built by price_panel()
-  std::optional<FactorModelArtifact> factor_artifact_;   // set via set_factor_model
-  std::optional<risk::FactorModel> factor_cache_;        // lazily lowered override
-  bool factor_lowered_ = false;                          // factor_cache_ is materialized
-  std::vector<SignalAdmission> admissions_;              // owns signal candidate streams
+  std::optional<alpha::Panel> panel_cache_;            // lazily built by price_panel()
+  std::optional<FactorModelArtifact> factor_artifact_; // set via set_factor_model
+  std::optional<risk::FactorModel> factor_cache_; // lazily lowered override (has_value == built)
+  std::vector<SignalAdmission> admissions_;       // owns signal candidate streams
   std::vector<library::AlphaCandidate> flat_candidates_; // flat view over admissions_
   bool signals_built_ = false;
+  atx::usize cached_admit_as_of_ = 0; // the as_of the cached candidates were built for (M1 guard)
 };
 
 } // namespace atx::engine::data
