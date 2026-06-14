@@ -17,7 +17,7 @@ namespace detail {
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
   // initializers — existing rows omit them and pick up {0, {}} automatically.
-  static constexpr std::array<OpSig, 70> kOps = {{
+  static constexpr std::array<OpSig, 74> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -57,6 +57,15 @@ namespace detail {
       // (arg c == kNoExpr) rather than materialized — the kernel handles both.
       {"cs_residualize", 2, 3, OpCode::CsResidualize, DType::F64, true,
        {std::numeric_limits<atx::f64>::quiet_NaN()}, &shape_cross_section},
+      // Cross-sectional gap-fill ops (S3.3). quantile(x[, n]) discretizes the
+      // valid set into n buckets (default 5; n read from the scalar 2nd operand
+      // exactly like winsorize's std/CsScale's factor); reverse(x) = -x (routes
+      // to Neg — the rank-reversal idiom, no new opcode); vec_sum/vec_avg reduce
+      // over the valid set and broadcast the scalar back to every valid cell.
+      {"quantile", 1, 2, OpCode::CsQuantile, DType::F64, true, {5.0}, &shape_cross_section},
+      {"reverse", 1, 1, OpCode::Neg, DType::F64, true, {}, &shape_unary},
+      {"vec_sum", 1, 1, OpCode::CsVecSum, DType::F64, true, {}, &shape_cross_section},
+      {"vec_avg", 1, 1, OpCode::CsVecAvg, DType::F64, true, {}, &shape_cross_section},
       // ---- time-series (P→P) ----
       {"delay", 2, 2, OpCode::TsDelay, DType::F64, true, {}, &shape_panel},
       {"delta", 2, 2, OpCode::TsDelta, DType::F64, true, {}, &shape_panel},

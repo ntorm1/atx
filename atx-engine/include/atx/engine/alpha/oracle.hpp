@@ -371,6 +371,9 @@ private:
     case OpCode::CsMeanG:
     case OpCode::CsScaleG:
     case OpCode::CsResidualize:
+    case OpCode::CsQuantile:
+    case OpCode::CsVecSum:
+    case OpCode::CsVecAvg:
       return eval_cross_section(in);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -664,6 +667,17 @@ void cs_group_demean(std::span<const atx::f64> x, std::span<const atx::f64> g,
 // group of the valid set. `zscore` selects the variant.
 void cs_group(std::span<const atx::f64> x, std::span<const atx::f64> g,
               const std::vector<atx::usize> &valid, std::span<atx::f64> out, bool zscore);
+
+// CsQuantile (S3.3): discretize the valid set into `n` quantile buckets
+// (value = bucket/(n-1), ordinal rank as cs_rank); n < 2 -> NaN. Bit-identical
+// to cs_ops.hpp's cs_quantile_row.
+void cs_quantile(std::span<const atx::f64> x, const std::vector<atx::usize> &valid, atx::f64 n_real,
+                 std::span<atx::f64> out);
+
+// CsVecSum / CsVecAvg (S3.3): reduce over the valid set (sum / mean) and
+// broadcast the scalar back to every valid cell. `want_avg` selects the variant.
+void cs_vec_reduce(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                   std::span<atx::f64> out, bool want_avg);
 
 // CsNormalize (P3b-2): cross-sectional demean — x - mean over the valid set.
 void cs_normalize(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,

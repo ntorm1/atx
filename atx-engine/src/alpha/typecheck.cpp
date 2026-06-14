@@ -93,6 +93,9 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
   case OpCode::CsResidualize:
+  case OpCode::CsQuantile:
+  case OpCode::CsVecSum:
+  case OpCode::CsVecAvg:
   case OpCode::TradeWhen:
   case OpCode::Hump:
   case OpCode::KalmanLevel:

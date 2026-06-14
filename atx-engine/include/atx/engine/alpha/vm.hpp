@@ -381,6 +381,9 @@ private:
     case OpCode::CsMeanG:
     case OpCode::CsScaleG:
     case OpCode::CsResidualize:
+    case OpCode::CsQuantile:
+    case OpCode::CsVecSum:
+    case OpCode::CsVecAvg:
       return eval_cross_section(in, dates, instruments);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -613,7 +616,8 @@ private:
       if (in.op == OpCode::CsResidualize && in.src[2] != kNoSlot) {
         z = src_col(in, 2); // present only for the arity-3 cs_residualize(x, g, z)
       }
-    } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize) {
+    } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize ||
+               in.op == OpCode::CsQuantile) {
       const std::span<const atx::f64> col = src_col(in, 1);
       scale_a = col.empty() ? detail::kVmNaN : col.front();
     }
@@ -666,6 +670,15 @@ private:
       break;
     case OpCode::CsResidualize: // demean (z empty) or FWL partial-out (z present)
       detail::cs_residualize_row(x, g, z, valid, out);
+      break;
+    case OpCode::CsQuantile: // discretize the valid set into `scale_a` buckets
+      detail::cs_quantile_row(x, valid, scale_a, out);
+      break;
+    case OpCode::CsVecSum:
+      detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/false);
+      break;
+    case OpCode::CsVecAvg:
+      detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/true);
       break;
     case OpCode::CsRankG:
       detail::cs_group_row(x, g, valid, out, /*zscore=*/false);

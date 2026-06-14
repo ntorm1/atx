@@ -222,6 +222,56 @@ void cs_group_scale(std::span<const atx::f64> x, std::span<const atx::f64> g,
   }
 }
 
+// CsQuantile (S3.3): discretize the valid set into `n` buckets. Ordinal-rank
+// each valid cell (ascending value, tie-broken by ascending instrument index,
+// as cs_rank), map percentile p to bucket b = floor(p·n) clamped to [0, n-1],
+// emit b/(n-1). Singleton -> p == 0.5. n < 2 -> NaN. Summation/sort order is
+// bit-identical to cs_ops.hpp's cs_quantile_row.
+void cs_quantile(std::span<const atx::f64> x, const std::vector<atx::usize> &valid, atx::f64 n_real,
+                 std::span<atx::f64> out) {
+  const atx::usize m = valid.size();
+  if (m == 0) {
+    return;
+  }
+  const int nb = static_cast<int>(n_real);
+  if (nb < 2) {
+    for (const atx::usize i : valid) {
+      out[i] = kNaN;
+    }
+    return;
+  }
+  std::vector<atx::usize> order = valid;
+  std::stable_sort(order.begin(), order.end(),
+                   [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+  const atx::f64 denom = static_cast<atx::f64>(nb - 1);
+  for (atx::usize r = 0; r < m; ++r) {
+    const atx::f64 p = (m == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(m - 1);
+    int b = static_cast<int>(p * static_cast<atx::f64>(nb));
+    if (b >= nb) {
+      b = nb - 1;
+    }
+    out[order[r]] = static_cast<atx::f64>(b) / denom;
+  }
+}
+
+// CsVecSum / CsVecAvg (S3.3): reduce over the valid set (sum / mean) and
+// broadcast the scalar back to every valid cell. Ascending-index summation —
+// bit-identical to cs_ops.hpp's cs_vec_reduce_row.
+void cs_vec_reduce(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                   std::span<atx::f64> out, bool want_avg) {
+  if (valid.empty()) {
+    return;
+  }
+  atx::f64 sum = 0.0;
+  for (const atx::usize i : valid) {
+    sum += x[i];
+  }
+  const atx::f64 v = want_avg ? sum / static_cast<atx::f64>(valid.size()) : sum;
+  for (const atx::usize i : valid) {
+    out[i] = v;
+  }
+}
+
 atx::core::Status Oracle::eval_cross_section(const Instr &in) {
   const std::span<const atx::f64> x = src_col(in, 0);
   std::span<atx::f64> out = dst_col(in);
@@ -239,7 +289,8 @@ atx::core::Status Oracle::eval_cross_section(const Instr &in) {
     if (in.op == OpCode::CsResidualize && in.src[2] != kNoSlot) {
       z = src_col(in, 2); // present only for arity-3 cs_residualize(x, g, z)
     }
-  } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize) {
+  } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize ||
+             in.op == OpCode::CsQuantile) {
     scale_a = detail::scalar_of(src_col(in, 1));
   }
   for (atx::usize d = 0; d < dates_; ++d) {
@@ -293,6 +344,15 @@ void Oracle::cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const
     return;
   case OpCode::CsResidualize: // demean (z empty) or FWL partial-out (z present)
     cs_residualize(x, g, z, valid, out);
+    return;
+  case OpCode::CsQuantile: // discretize the valid set into `scale_a` buckets
+    cs_quantile(x, valid, scale_a, out);
+    return;
+  case OpCode::CsVecSum:
+    cs_vec_reduce(x, valid, out, /*want_avg=*/false);
+    return;
+  case OpCode::CsVecAvg:
+    cs_vec_reduce(x, valid, out, /*want_avg=*/true);
     return;
   case OpCode::CsRankG:
     cs_group(x, g, valid, out, /*zscore=*/false);

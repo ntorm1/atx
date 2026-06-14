@@ -118,6 +118,14 @@ enum class OpCode : atx::u8 {
   // group-dummy design (+ an optional continuous style covariate) and emit the
   // residual. Demean (CsDemeanG) is the special case with no style covariate.
   CsResidualize,
+  // Cross-sectional gap-fill ops (S3.3). CsQuantile buckets the valid set into
+  // `n` quantiles (value = bucket/(n-1), like CsRank but discretized; `n` read
+  // from the scalar 2nd operand). CsVecSum/CsVecAvg reduce over the valid set
+  // (sum / mean) and broadcast the scalar back to every valid cell. (`reverse`
+  // is `-x` and routes to the existing Neg opcode — no new enumerator.)
+  CsQuantile,
+  CsVecSum,
+  CsVecAvg,
   // ---- time-series ----
   TsDelay,
   TsDelta,

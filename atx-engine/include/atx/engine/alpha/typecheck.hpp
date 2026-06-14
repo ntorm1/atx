@@ -98,6 +98,9 @@ namespace detail {
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
   case OpCode::CsResidualize:
+  case OpCode::CsQuantile:
+  case OpCode::CsVecSum:
+  case OpCode::CsVecAvg:
     return true;
   default:
     return false;
