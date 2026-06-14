@@ -497,7 +497,14 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
   const atx::usize pos_cells = t * ninst;
   ATX_ASSERT(t <= kMax / sizeof(atx::f64));         // pnl bytes
   ATX_ASSERT(pos_cells <= kMax / sizeof(atx::f64)); // pos bytes
-  const atx::usize slot_size = 24U + t * sizeof(atx::f64) + pos_cells * sizeof(atx::f64);
+  const atx::usize pnl_bytes = t * sizeof(atx::f64);
+  const atx::usize pos_bytes = pos_cells * sizeof(atx::f64);
+  // The SUM can wrap even though each product is asserted non-overflowing above; assert it
+  // too (trusted panel dims -> a wrap is a programmer error, consistent with the product
+  // asserts) so an undersized slot can never be silently formed and memcpy'd into.
+  ATX_ASSERT(pnl_bytes <= kMax - 24U);
+  ATX_ASSERT(pos_bytes <= kMax - (24U + pnl_bytes));
+  const atx::usize slot_size = 24U + pnl_bytes + pos_bytes;
 
   std::vector<std::byte> buf(parallel::slot_view_bytes(n, slot_size), std::byte{0});
   parallel::SlotView slots = parallel::make_slot_view(buf, n, slot_size);

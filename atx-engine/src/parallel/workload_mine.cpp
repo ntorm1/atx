@@ -446,7 +446,13 @@ Result<MineInputView> MineInputView::parse(InputView in) {
   // Validate the table: offsets[0] is the byte right after the table; every entry is
   // monotonic non-decreasing and <= buffer size (a malformed table is rejected — no OOB
   // genome slice is ever formed).
-  const atx::usize data_begin = table_off + table_entries * sizeof(atx::u64);
+  // table_entries*8 <= b.size()-table_off was just proved by the division-form check above,
+  // so this product cannot wrap; recompute it through checked_mul so the safety is self-evident.
+  atx::usize table_bytes = 0;
+  if (!checked_mul(table_entries, sizeof(atx::u64), table_bytes)) {
+    return Err(ErrorCode::InvalidArgument, "MineInputView: genome offset table size overflows");
+  }
+  const atx::usize data_begin = table_off + table_bytes;
   if (offsets[0] != static_cast<atx::u64>(data_begin)) {
     return Err(ErrorCode::InvalidArgument, "MineInputView: first genome offset misplaced");
   }
@@ -822,7 +828,16 @@ Status mine_shard(InputView in, ShardId k, std::span<std::byte> slot) noexcept {
       !checked_mul(pos_cells, sizeof(atx::f64), pos_bytes)) {
     return Err(ErrorCode::Internal, "mine_shard: output byte size overflows");
   }
+  // Guard the SUM too: each product is checked above, but 24 + pnl + pos can still wrap, which
+  // would yield a small need_bytes that passes the slot check and then OOB-writes the pnl memcpy.
+  constexpr atx::usize kUsizeMax = static_cast<atx::usize>(-1);
+  if (pnl_bytes > kUsizeMax - need_bytes) {
+    return Err(ErrorCode::Internal, "mine_shard: output byte size overflows");
+  }
   need_bytes += pnl_bytes;
+  if (pos_bytes > kUsizeMax - need_bytes) {
+    return Err(ErrorCode::Internal, "mine_shard: output byte size overflows");
+  }
   need_bytes += pos_bytes;
   // ALWAYS-ON guard: the slot must hold the whole fixed-shape record before any memcpy.
   if (slot.size() < need_bytes) {
@@ -842,7 +857,12 @@ Status mine_shard(InputView in, ShardId k, std::span<std::byte> slot) noexcept {
     // SAFETY: need_bytes (validated <= slot.size()) bounds both writes; pnl/pos cells
     // were overflow-checked; res.streams has n_alphas >= 1 (guarded in score_one_genome).
     const std::span<const atx::f64> pnl0 = res.streams.pnl(0);
-    ATX_ASSERT(pnl0.size() == pnl_cells);
+    // ALWAYS-ON (not ATX_ASSERT): the memcpy below READS pnl_bytes == pnl_cells*8 from
+    // pnl0.data(); a debug-only assert would be elided under NDEBUG and a short stream would
+    // then OOB-read the source. (pnl_cells derives from the untrusted-bytes-reconstructed panel.)
+    if (pnl0.size() != pnl_cells) {
+      return Err(ErrorCode::Internal, "mine_shard: pnl stream size != expected cells");
+    }
     if (pnl_bytes != 0) {
       std::memcpy(slot.data() + kMineSlotHeaderBytes, pnl0.data(), pnl_bytes);
     }
@@ -850,8 +870,11 @@ Status mine_shard(InputView in, ShardId k, std::span<std::byte> slot) noexcept {
     atx::usize off = kMineSlotHeaderBytes + pnl_bytes;
     for (atx::usize t = 0; t < stream_periods; ++t) {
       const std::span<const atx::f64> cs = res.streams.positions(0, t);
-      ATX_ASSERT(cs.size() == n_inst);
-      const atx::usize cs_bytes = n_inst * sizeof(atx::f64);
+      // ALWAYS-ON source-read guard (same reason as the pnl write above).
+      if (cs.size() != n_inst) {
+        return Err(ErrorCode::Internal, "mine_shard: position cross-section size != n_inst");
+      }
+      const atx::usize cs_bytes = cs.size() * sizeof(atx::f64); // == n_inst*8 <= pos_bytes (checked)
       // ALWAYS-ON guard before each cross-section memcpy (NDEBUG-safe bound).
       if (cs_bytes != 0) {
         if (off + cs_bytes > slot.size()) {
