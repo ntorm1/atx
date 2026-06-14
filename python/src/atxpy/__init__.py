@@ -25,8 +25,13 @@ from ._core import (
     WeightPolicy,
 )
 from ._core import Library, Program  # alpha DSL handles
+from ._core import FactorModel, OptimizerConfig, PortfolioOptimizer  # risk
 from .alpha import compile_alpha, evaluate_alpha
 from .backtest import BacktestResult, run_backtest
+from . import eval as eval  # noqa: A004  (submodule: atxpy.eval.performance, ...)
+from . import risk as risk
+from .eval import Metrics, performance, return_metrics
+from .risk import factor_model, optimize
 
 __version__ = "0.1.0"
 
@@ -59,5 +64,17 @@ __all__ = [
     # backtest facade
     "BacktestResult",
     "run_backtest",
+    # eval
+    "eval",
+    "Metrics",
+    "performance",
+    "return_metrics",
+    # risk
+    "risk",
+    "FactorModel",
+    "OptimizerConfig",
+    "PortfolioOptimizer",
+    "factor_model",
+    "optimize",
     "__version__",
 ]
