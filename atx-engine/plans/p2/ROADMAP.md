@@ -104,6 +104,10 @@ alpha-depth sprints. S1 (optimizer) and S7 (distributed) keep their numbers so t
   `risk::{PortfolioOptimizer, MultiPeriodOptimizer, FactorModel}`, `book::{BookPipeline, BookReport, allocation}`,
   `cost::*`, `parallel::DetPool`) and must not re-duplicate any of them. **S3 deepens `alpha::` + `factory::OpCatalog`;
   S4 deepens `factory::{SearchDriver, fitness}`.**
+- **Downstream sibling:** `p3` — atx-engine v4, real-data validation & robustness verification. See [`../p3-impl/`](../p3-impl/).
+  `p3` runs the `p2` mine→prove pipeline on **real US equity data** (databento OHLCV ⋈ security-master corporate actions),
+  building the real-data ingestion adapters (corporate actions, total-return, universe) **on top of** the `p2` S6 BYO-data
+  layer + S4 robustness battery. It adds **no** new alpha-discovery capability — it hardens the real-data seam and measures honestly.
 
 ---
 
