@@ -31,20 +31,25 @@ def _require_pandas():
     return pd
 
 
-def run_backtest(bars, signals, *, symbols=None, starting_cash="1000000.0",
-                 max_lookback=1, every=1, delay_same=False, policy=None,
+def run_backtest(bars, signals=None, *, symbols=None, starting_cash="1000000.0",
+                 alpha=None, max_lookback=1, every=1, delay_same=False, policy=None,
                  fill=None, slip=None, impact=None, comm=None, latency=None,
                  volcap=None, stats=None):
-    """Run a backtest from a long-format bars DataFrame and a signals matrix.
+    """Run a backtest from a long-format bars DataFrame.
 
     bars: DataFrame with columns [symbol, timestamp, open, high, low, close, volume];
           timestamp is int64 unix-nanos. Rows are grouped by symbol and sorted by
           timestamp to form the per-symbol feed.
-    signals: 2D array-like [n_rebalances, n_symbols] of alpha scores, column-aligned
-             to `symbols` (NaN = no opinion). Row k drives the k-th rebalance.
+    Provide EITHER:
+      signals: 2D array-like [n_rebalances, n_symbols] of alpha scores, column-aligned
+               to `symbols` (NaN = no opinion). Row k drives the k-th rebalance; OR
+      alpha:   a DSL expression string evaluated each rebalance as the strategy
+               (e.g. "rank(delta(close, 1))").
     symbols: explicit universe order; defaults to sorted(unique(bars.symbol)).
     """
     pd = _require_pandas()
+    if alpha is None and signals is None:
+        raise ValueError("provide signals= (a matrix) or alpha= (a DSL string)")
     if symbols is None:
         symbols = sorted(bars["symbol"].unique())
     symbols = list(symbols)
@@ -65,12 +70,15 @@ def run_backtest(bars, signals, *, symbols=None, starting_cash="1000000.0",
     p.bars = bars_list
     p.starting_cash = str(starting_cash)
 
-    sig = np.asarray(signals, dtype=np.float64)
-    if sig.ndim != 2:
-        raise ValueError("signals must be 2D [n_rebalances, n_symbols]")
-    if sig.shape[1] != len(symbols):
-        raise ValueError(f"signals has {sig.shape[1]} cols, expected {len(symbols)}")
-    p.signals = [row.tolist() for row in sig]
+    if alpha is not None:
+        p.alpha_expr = str(alpha)
+    else:
+        sig = np.asarray(signals, dtype=np.float64)
+        if sig.ndim != 2:
+            raise ValueError("signals must be 2D [n_rebalances, n_symbols]")
+        if sig.shape[1] != len(symbols):
+            raise ValueError(f"signals has {sig.shape[1]} cols, expected {len(symbols)}")
+        p.signals = [row.tolist() for row in sig]
 
     p.max_lookback = int(max_lookback)
     p.every = int(every)

@@ -24,6 +24,8 @@ from ._core import (
     VolumeCapCfg,
     WeightPolicy,
 )
+from ._core import Library, Program  # alpha DSL handles
+from .alpha import compile_alpha, evaluate_alpha
 from .backtest import BacktestResult, run_backtest
 
 __version__ = "0.1.0"
@@ -49,6 +51,11 @@ __all__ = [
     "OrderType",
     "BarsForSymbol",
     "BacktestParams",
+    # alpha DSL
+    "Library",
+    "Program",
+    "compile_alpha",
+    "evaluate_alpha",
     # backtest facade
     "BacktestResult",
     "run_backtest",

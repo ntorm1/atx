@@ -28,7 +28,8 @@ struct BacktestParams {
   std::vector<std::string> symbols;            // defines universe column order
   std::vector<BarsForSymbol> bars;             // bars[i] <-> symbols[i]
   std::string starting_cash = "1000000.0";     // exact decimal string
-  std::vector<std::vector<atx::f64>> signals;  // [rebalance][universe] alpha scores
+  std::vector<std::vector<atx::f64>> signals;  // [rebalance][universe] alpha scores (scripted)
+  std::string alpha_expr;                      // non-empty => DSL strategy (VmSignalSource)
   atx::usize max_lookback = 1;
   atx::usize every = 1;
   bool delay_same = false;                     // false=Next (firewall), true=Same

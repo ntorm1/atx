@@ -20,6 +20,7 @@ pybind11_add_module(_core
     src/_bindings/bind_core.cpp
     src/_bindings/bind_symbol.cpp
     src/_bindings/bind_config.cpp
+    src/_bindings/bind_alpha.cpp
     src/_bindings/bind_backtest.cpp
     src/_bindings/shim/backtest_shim.cpp
 )

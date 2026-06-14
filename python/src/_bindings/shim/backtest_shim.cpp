@@ -1,5 +1,8 @@
 #include "backtest_shim.hpp"
 
+#include <algorithm>
+#include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 
@@ -7,6 +10,10 @@
 #include "atx/core/decimal.hpp"
 #include "atx/core/domain/domain.hpp"
 #include "atx/core/domain/symbol.hpp"
+#include "atx/engine/alpha/bytecode.hpp"
+#include "atx/engine/alpha/parser.hpp"
+#include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/bus/event_bus.hpp"
 #include "atx/engine/clock/sim_clock.hpp"
 #include "atx/engine/data/data_handler.hpp"
@@ -18,12 +25,15 @@
 namespace atxpy {
 namespace {
 
+namespace alpha = atx::engine::alpha;
+
 using atx::engine::BacktestLoop;
 using atx::engine::BacktestResult;
 using atx::engine::Delay;
 using atx::engine::EventBus;
 using atx::engine::InstrumentId;
 using atx::engine::InstrumentStats;
+using atx::engine::ISignalSource;
 using atx::engine::Market;
 using atx::engine::Portfolio;
 using atx::engine::RollingPanel;
@@ -31,6 +41,7 @@ using atx::engine::Schedule;
 using atx::engine::ScriptedSignalSource;
 using atx::engine::SimClock;
 using atx::engine::Universe;
+using atx::engine::VmSignalSource;
 using atx::engine::WeightPolicy;
 using atx::engine::data::BarRow;
 using atx::engine::data::InMemoryBarFeed;
@@ -49,6 +60,36 @@ Decimal dec(atx::f64 v) {
     throw std::runtime_error("price/volume not representable as Decimal: " + r.error().to_string());
   }
   return *r;
+}
+
+// Parse + analyze + compile a DSL expression; throws std::runtime_error on any
+// stage failure. The Program is self-contained (the local Library may die).
+alpha::Program compile_program(const std::string &src) {
+  alpha::Library lib;
+  auto ast = alpha::parse_expr(src, lib);
+  if (!ast) {
+    throw std::runtime_error("alpha parse: " + ast.error().to_string());
+  }
+  auto an = alpha::analyze(*ast);
+  if (!an) {
+    throw std::runtime_error("alpha analyze: " + an.error().to_string());
+  }
+  auto prog = alpha::compile(*ast, *an);
+  if (!prog) {
+    throw std::runtime_error("alpha compile: " + prog.error().to_string());
+  }
+  return std::move(*prog);
+}
+
+// Build the strategy seam: a compiled program => VmSignalSource, else the
+// scripted schedule. Returned as a heap ISignalSource (both subtypes are
+// non-movable, so the shim holds them via unique_ptr).
+std::unique_ptr<ISignalSource> make_signal_source(const BacktestParams &p, atx::usize lookback,
+                                                  std::optional<alpha::Program> prog) {
+  if (prog) {
+    return std::make_unique<VmSignalSource>(std::move(*prog));
+  }
+  return std::make_unique<ScriptedSignalSource>(p.signals, p.symbols.size(), lookback);
 }
 
 // Storage layer: built FIRST so the collaborators below borrow stable memory.
@@ -113,16 +154,16 @@ struct BacktestEnv : BacktestStorage {
   SimClock clock;
   EventBus<> bus;
   InMemoryBarFeed feed;
-  ScriptedSignalSource signal;
+  std::unique_ptr<ISignalSource> signal; // scripted or VM
   WeightPolicy policy;
   ExecutionSimulator exec;
   Portfolio portfolio;
   Market market;
 
-  explicit BacktestEnv(const BacktestParams &p)
+  BacktestEnv(const BacktestParams &p, atx::usize lookback, std::optional<alpha::Program> prog)
       : BacktestStorage(p), clock{}, bus{},
         feed{std::span<const std::span<const BarRow>>{bar_spans}, clock, bus},
-        signal{p.signals, universe.size(), p.max_lookback}, policy{p.policy},
+        signal{make_signal_source(p, lookback, std::move(prog))}, policy{p.policy},
         exec{p.fill, p.slip, p.impact, p.comm, p.latency, p.volcap},
         portfolio{starting_cash, std::span<const InstrumentId>{universe}},
         market{std::span<const InstrumentId>{universe}, std::span<const InstrumentStats>{stats}} {}
@@ -133,13 +174,14 @@ template <atx::usize Cap> struct BacktestRunner final : IBacktestRunner {
   RollingPanel<Cap> panel;
   BacktestLoop<Cap> loop;
 
-  explicit BacktestRunner(const BacktestParams &p)
-      : env{p}, panel{std::span<const InstrumentId>{env.universe}, p.max_lookback},
+  BacktestRunner(const BacktestParams &p, atx::usize lookback, std::optional<alpha::Program> prog)
+      : env{p, lookback, std::move(prog)},
+        panel{std::span<const InstrumentId>{env.universe}, lookback},
         loop{env.feed,
              env.clock,
              env.bus,
              panel,
-             env.signal,
+             *env.signal,
              env.policy,
              env.exec,
              env.portfolio,
@@ -154,20 +196,28 @@ template <atx::usize Cap> struct BacktestRunner final : IBacktestRunner {
 } // namespace
 
 std::unique_ptr<IBacktestRunner> make_runner(const BacktestParams &p) {
-  const atx::usize need = p.max_lookback;
-  if (need == 0) {
+  std::optional<alpha::Program> prog;
+  atx::usize lookback = p.max_lookback;
+  if (!p.alpha_expr.empty()) {
+    alpha::Program program = compile_program(p.alpha_expr);
+    // The panel must hold the current bar plus the program's required priors.
+    lookback = std::max<atx::usize>(p.max_lookback,
+                                    static_cast<atx::usize>(program.required_lookback) + 1U);
+    prog = std::move(program);
+  }
+  if (lookback == 0) {
     throw std::runtime_error("max_lookback must be >= 1");
   }
-  if (need <= 8) return std::make_unique<BacktestRunner<8>>(p);
-  if (need <= 16) return std::make_unique<BacktestRunner<16>>(p);
-  if (need <= 32) return std::make_unique<BacktestRunner<32>>(p);
-  if (need <= 64) return std::make_unique<BacktestRunner<64>>(p);
-  if (need <= 128) return std::make_unique<BacktestRunner<128>>(p);
-  if (need <= 256) return std::make_unique<BacktestRunner<256>>(p);
-  if (need <= 512) return std::make_unique<BacktestRunner<512>>(p);
-  if (need <= 1024) return std::make_unique<BacktestRunner<1024>>(p);
-  if (need <= 4096) return std::make_unique<BacktestRunner<4096>>(p);
-  throw std::runtime_error("max_lookback exceeds largest precompiled Cap (4096)");
+  if (lookback <= 8) return std::make_unique<BacktestRunner<8>>(p, lookback, std::move(prog));
+  if (lookback <= 16) return std::make_unique<BacktestRunner<16>>(p, lookback, std::move(prog));
+  if (lookback <= 32) return std::make_unique<BacktestRunner<32>>(p, lookback, std::move(prog));
+  if (lookback <= 64) return std::make_unique<BacktestRunner<64>>(p, lookback, std::move(prog));
+  if (lookback <= 128) return std::make_unique<BacktestRunner<128>>(p, lookback, std::move(prog));
+  if (lookback <= 256) return std::make_unique<BacktestRunner<256>>(p, lookback, std::move(prog));
+  if (lookback <= 512) return std::make_unique<BacktestRunner<512>>(p, lookback, std::move(prog));
+  if (lookback <= 1024) return std::make_unique<BacktestRunner<1024>>(p, lookback, std::move(prog));
+  if (lookback <= 4096) return std::make_unique<BacktestRunner<4096>>(p, lookback, std::move(prog));
+  throw std::runtime_error("required lookback exceeds largest precompiled Cap (4096)");
 }
 
 } // namespace atxpy

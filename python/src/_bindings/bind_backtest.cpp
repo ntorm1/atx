@@ -44,6 +44,7 @@ void bind_backtest(py::module_ &m) {
       .def_readwrite("bars", &atxpy::BacktestParams::bars)
       .def_readwrite("starting_cash", &atxpy::BacktestParams::starting_cash)
       .def_readwrite("signals", &atxpy::BacktestParams::signals)
+      .def_readwrite("alpha_expr", &atxpy::BacktestParams::alpha_expr)
       .def_readwrite("max_lookback", &atxpy::BacktestParams::max_lookback)
       .def_readwrite("every", &atxpy::BacktestParams::every)
       .def_readwrite("delay_same", &atxpy::BacktestParams::delay_same)
