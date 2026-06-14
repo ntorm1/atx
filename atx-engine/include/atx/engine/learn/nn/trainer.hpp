@@ -63,6 +63,14 @@ struct TrainConfig {
   // order, then opt.step runs. 0.0 (the default) is a no-op, so a config that does
   // not set it trains exactly as before (R1: deterministic ascending fold, no RNG).
   atx::f64 l2 = 0.0;
+  // L1 (LASSO) penalty coefficient (DECOUPLED convention, mirrors l2): each
+  // minibatch step, after backward fills grads and before opt.step, the L1
+  // subgradient grad[i] += l1 * sgn(param[i]) is added in ascending param order
+  // (sgn(0) == 0). 0.0 (the default) is a no-op, so a config that does not set it
+  // trains BYTE-IDENTICALLY to before (R1: deterministic ascending fold, no RNG).
+  // The penalty rides the SAME grad span opt.step consumes, so it inherits the
+  // optimizer's update rule (it is not a separate, reorderable path).
+  atx::f64 l1 = 0.0;
 };
 
 // The model factory: build + seed-initialise a fresh architecture for `seed`.

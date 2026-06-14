@@ -84,8 +84,13 @@ namespace atx::engine::learn {
 //  flags the missing arm, which is the intended guard. p2 S5-2b adds the two
 //  sequence-NN arms Tcn + Gru (see NnPayload below + predict_nn in tcn_alpha.cpp);
 //  p2 S5-3a adds the single-head causal-attention arm Attn (same NnPayload path).
+//  p2 S5-3b adds the AUTOENCODER statistical-factor arm (Gu-Kelly-Xiu): it reuses
+//  the NnPayload (the encoder/decoder seed-ensemble + arch dims) but is a SEPARATE
+//  predict path (predict_ae, declared after predict_blended, defined in
+//  src/learn/autoencoder_alpha.cpp). The AE input is the F-dim cross-sectional
+//  feature vector (NOT the L*F window), so it cannot share predict_nn.
 // ===========================================================================
-enum class ModelKind : atx::u8 { Linear, Gbt, Tcn, Gru, Attn };
+enum class ModelKind : atx::u8 { Linear, Gbt, Tcn, Gru, Attn, Autoencoder };
 
 // ===========================================================================
 //  GBT forest representation (S5-4) — the deployed parameters of a histogram
@@ -322,6 +327,26 @@ struct LearnedModel {
 [[nodiscard]] atx::f64 predict_nn(const LearnedModel &m, std::span<const atx::f64> window_row);
 
 // ===========================================================================
+//  predict_ae — the AUTOENCODER statistical-factor inference (kind == Autoencoder,
+//  p2 S5-3b).
+//
+//  Defined in src/learn/autoencoder_alpha.cpp (the TU that owns the nn/ includes —
+//  kept out of this widely-included header, like predict_nn). The AE input is the
+//  F-dim CROSS-SECTIONAL feature vector (NOT a flattened L*F window): predict_ae
+//  centers `feature_row` with m.feat_mean, rebuilds the ENCODER seed-ensemble from
+//  m.nn (arch_dims = {F, K, beta_hidden...}), reloads each member's encoder prefix,
+//  runs ONLY the encoder to the K-dim latent Z, and returns the ascending-member
+//  mean of Z[0] (the leading latent factor) as the scalar alpha (R1). A guarded
+//  payload (empty member_states / malformed arch) returns 0.0 ("no opinion").
+//  PRECONDITION: m.kind == Autoencoder and feature_row.size() == F (== feat_mean
+//  size == augmented_dim(), aug empty).
+//
+//  Declared BEFORE predict_blended so the (inline) Autoencoder switch arm below can
+//  call it; the definition is in the .cpp.
+// ===========================================================================
+[[nodiscard]] atx::f64 predict_ae(const LearnedModel &m, std::span<const atx::f64> feature_row);
+
+// ===========================================================================
 //  predict_blended — the horizon-blended scalar score for one augmented row.
 //
 //  Sum over horizons of blend_w[h] * (coeff_h . augmented_row). The exhaustive
@@ -364,6 +389,13 @@ struct LearnedModel {
     // single ascending-member-mean forward — delegated to predict_nn, which owns
     // the nn/ includes (kept out of this widely-included header).
     return predict_nn(m, augmented_row);
+  case ModelKind::Autoencoder:
+    // The statistical-factor arm (p2 S5-3b). `augmented_row` IS the F-dim
+    // cross-sectional feature vector (n_base_features == F and aug is empty, so
+    // build_augmented_row produced it). Inference runs ONLY the encoder to the
+    // K-dim latent and returns the leading factor Z[0] — delegated to predict_ae,
+    // which owns the nn/ includes (kept out of this widely-included header).
+    return predict_ae(m, augmented_row);
   }
   return 0.0; // unreachable: every ModelKind is handled above (no default).
 }

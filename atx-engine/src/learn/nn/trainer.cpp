@@ -45,10 +45,15 @@ void seeded_shuffle(std::vector<atx::usize> &order, atx::u64 seed) {
   return out;
 }
 
+// Sign of x with sgn(0) == 0 (the L1 subgradient at the origin). Pure, no RNG.
+[[nodiscard]] atx::f64 sgn(atx::f64 x) noexcept {
+  return (x > 0.0) ? 1.0 : ((x < 0.0) ? -1.0 : 0.0);
+}
+
 // One full-pass training epoch over the order-fixed minibatches of `order`.
 void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
                const lin::MatX &y_train, const std::vector<atx::usize> &order,
-               atx::usize batch_size, atx::f64 l2) {
+               atx::usize batch_size, atx::f64 l2, atx::f64 l1) {
   const atx::usize n = order.size();
   for (atx::usize lo = 0; lo < n; lo += batch_size) {
     const atx::usize hi = (lo + batch_size < n) ? lo + batch_size : n;
@@ -72,6 +77,17 @@ void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_tra
       const std::span<atx::f64> params = model.params();
       for (atx::usize i = 0; i < g.size(); ++i) {
         g[i] += l2 * params[i];
+      }
+    }
+    // L1 (LASSO) subgradient (DECOUPLED, mirrors L2): after backward fills the data
+    // gradient and before opt.step, add l1 * sgn(param[i]) to each grad in ASCENDING
+    // param order (R1: deterministic scalar fold, no RNG, no reordering). sgn(0) == 0
+    // so a parameter sitting exactly at the origin contributes no penalty. l1 == 0
+    // makes this a no-op, so the default config is byte-identical to before.
+    if (l1 != 0.0) {
+      const std::span<atx::f64> params = model.params();
+      for (atx::usize i = 0; i < g.size(); ++i) {
+        g[i] += l1 * sgn(params[i]);
       }
     }
     opt.step(model.params(), model.grads());
@@ -140,7 +156,7 @@ train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::Mat
       seeded_shuffle(order, seed_for(cfg.master_seed, "nn-shuffle", m, epoch));
 
       model->train(true);
-      run_epoch(*model, opt, loss, x_train, y_train, order, cfg.batch_size, cfg.l2);
+      run_epoch(*model, opt, loss, x_train, y_train, order, cfg.batch_size, cfg.l2, cfg.l1);
 
       // Checkpoint-at-best every ckpt_every epochs and always on the last epoch.
       const bool is_last = (epoch + 1 == cfg.epochs);

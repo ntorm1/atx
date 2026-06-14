@@ -36,6 +36,8 @@ add_library(atx-engine STATIC
     src/learn/sequence_features.cpp
     # sequence alphas (p2 S5-2b-ii — TCN + GRU-lite learned alphas over windows)
     src/learn/tcn_alpha.cpp
+    # autoencoder statistical-factor alpha (p2 S5-3b — GKX latent-factor extractor)
+    src/learn/autoencoder_alpha.cpp
     src/learn/train.cpp
     # nn substrate (p2 S5-2a — deterministic CPU NN framework + generic layers)
     src/learn/nn/layers.cpp
