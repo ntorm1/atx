@@ -293,6 +293,8 @@ void admit_fixture(lib::Library &facade, usize n) {
 // mmap-ro reopen can also read a stale on-disk fixture from a reused tmpdir (the
 // round-trip writes + reopens within one run, so it is independent of the S3
 // OpCode-enum insertion). Re-enable once the tmpdir isolation + timeout are fixed.
+// (S7 merge: the scale-out sprint also disabled this to unblock its gate; library/
+// is untouched by S7, so this stays the library-track follow-up.)
 TEST(LibraryIntegration, DISABLED_RoundTripsLargeFixtureZeroCopy) {
   const std::string dir = tmpdir("rt");
   constexpr usize kNAlphas = 4096;

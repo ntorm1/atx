@@ -38,6 +38,12 @@ add_library(atx-engine STATIC
     src/data/shm_bar_feed.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
+    src/parallel/process_executor.cpp
+    src/parallel/scheduler.cpp
+    src/parallel/shm_segment.cpp
+    src/parallel/workload_eval.cpp
+    src/parallel/workload_mine.cpp
+    src/parallel/workload_streams.cpp
     src/validation/bias_audit.cpp
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
@@ -71,6 +77,12 @@ target_link_libraries(atx-engine
     PRIVATE
         atx_warnings
 )
+
+# The dedicated multi-process executor worker (S7-3, §0.8). ProcessExecutor spawns
+# this beside the test/host module; it lands in build/bin/ via the global
+# CMAKE_RUNTIME_OUTPUT_DIRECTORY, so it sits next to atx-engine-tests.exe.
+add_executable(atx-shm-worker src/parallel/shm_worker_main.cpp)
+target_link_libraries(atx-shm-worker PRIVATE atx::engine atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)

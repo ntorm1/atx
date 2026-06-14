@@ -90,17 +90,21 @@
 #include "atx/engine/alpha/panel.hpp"   // alpha::Panel, alpha::SignalSet
 #include "atx/engine/alpha/streams.hpp" // alpha::extract_streams, AlphaStreams
 
-#include "atx/engine/combine/gate.hpp"  // combine::AlphaGate, GateVerdict, GateConfig
-#include "atx/engine/combine/store.hpp" // combine::AlphaStore
+#include "atx/engine/combine/gate.hpp"       // combine::AlphaGate, GateVerdict, GateConfig
+#include "atx/engine/combine/store.hpp"      // combine::AlphaStore
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
 #include "atx/engine/library/library.hpp" // library::Library, AlphaCandidate, AdmitKind, AdmitVerdict
 
-#include "atx/engine/factory/fitness.hpp"       // factory::pool_aware_fitness, FitnessCfg
-#include "atx/engine/factory/genome.hpp"        // factory::Genome
-#include "atx/engine/factory/pool_view.hpp"     // factory::LibraryPool, PoolView, pool_aware_fitness overload (S4b-2)
+#include "atx/engine/factory/fitness.hpp" // factory::pool_aware_fitness, FitnessCfg
+#include "atx/engine/factory/genome.hpp"  // factory::Genome
+#include "atx/engine/factory/pool_view.hpp" // factory::LibraryPool, PoolView, pool_aware_fitness overload (S4b-2)
 #include "atx/engine/factory/search_driver.hpp" // factory::SearchDriver, SearchConfig, SearchResult
+
+namespace atx::engine::parallel {
+class IExecutor; // S7.5d substrate seam (fwd-declared; the .cpp pulls the full header)
+} // namespace atx::engine::parallel
 
 namespace atx::engine::factory {
 
@@ -116,11 +120,11 @@ namespace atx::engine::factory {
 //  cand.dsr >= min_dsr to be admitted.
 // =========================================================================
 struct FactoryConfig {
-  SearchConfig search{};                  // the S3-5 search budget + CPCV/deflation geometry
-  std::vector<std::string> seed_exprs;    // in-grammar starting templates (SearchDriver ctor)
-  std::vector<std::string> panel_fields;  // field-swap candidate names (SearchDriver ctor)
-  atx::f64 min_dsr = 0.5;                 // S1 deflation bar (F4): admit iff dsr >= this
-  atx::f64 book_size = 1.0;               // notional divisor for compute_metrics turnover
+  SearchConfig search{};                 // the S3-5 search budget + CPCV/deflation geometry
+  std::vector<std::string> seed_exprs;   // in-grammar starting templates (SearchDriver ctor)
+  std::vector<std::string> panel_fields; // field-swap candidate names (SearchDriver ctor)
+  atx::f64 min_dsr = 0.5;                // S1 deflation bar (F4): admit iff dsr >= this
+  atx::f64 book_size = 1.0;              // notional divisor for compute_metrics turnover
 };
 
 // =========================================================================
@@ -171,8 +175,8 @@ public:
   // The ctor signature matches the S3-6 verbatim tests: Factory(lib, panel, sim,
   // weight_policy). The SearchDriver's extra ctor inputs (seed_exprs, panel_fields)
   // come from the per-run cfg passed to mine(), not the ctor (see FactoryConfig).
-  Factory(const alpha::Library &lib, const alpha::Panel &panel,
-          const exec::ExecutionSimulator &sim, const WeightPolicy &policy) noexcept
+  Factory(const alpha::Library &lib, const alpha::Panel &panel, const exec::ExecutionSimulator &sim,
+          const WeightPolicy &policy) noexcept
       : lib_{lib}, panel_{panel}, sim_{sim}, policy_{policy} {}
 
   // Mine the search space, screen every distinct candidate through the P4 gate +
@@ -206,6 +210,27 @@ public:
   [[nodiscard]] FactoryReport mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                                         const combine::AlphaGate &gate);
 
+  // =======================================================================
+  //  mine_into (SUBSTRATE-AWARE, S7.5d) — the SAME mine_into admit path with the
+  //  PURE expensive per-genome scoring map moved over the IExecutor seam.
+  //
+  //  run_search stays in the parent (seeded/deterministic, F1/F2). The per-genome
+  //  compile+eval+extract_streams + pool-aware-fitness(dsr, raw) map — scored
+  //  against the RUN-START library snapshot (a const) — is what crosses the seam:
+  //    * InProcess (ThreadExecutor): delegates to the existing mine_into(cfg, lib,
+  //      gate) verbatim (the in-process map).
+  //    * MultiProcess (ProcessExecutor): serialize {genomes = res.all_scored, the
+  //      run-start admitted-pnl snapshot, panel, cfg}; submit(WorkloadId::Mine);
+  //      gather per-genome {ok, dsr, raw, streams}; then run the EXISTING
+  //      rank_by_deflated_fitness (on the gathered dsr/raw) and the EXISTING
+  //      sequential library::admit loop (fed the gathered streams).
+  //  Because rank+admit runs in the PARENT identically, report.digest and the
+  //  library version_id are byte-identical across every substrate and worker count
+  //  BY CONSTRUCTION (the §0.9 sound design). An unknown substrate aborts (ATX_CHECK).
+  // =======================================================================
+  [[nodiscard]] FactoryReport mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                                        const combine::AlphaGate &gate, parallel::IExecutor &exec);
+
 private:
   // The as-of period for an admitted alpha's Candidate->Admitted lifecycle transition.
   // A constant (the S4 fixtures use period 1); the realized OOS streams are not keyed
@@ -224,7 +249,8 @@ private:
   // streams (the candidate is root 0). The single-thread Engine path — exactly
   // pool_aware_fitness's internal eval (S3-4) — so the realized streams match the
   // fitness oracle. Err propagates compile/eval/extract failure.
-  [[nodiscard]] atx::core::Result<alpha::AlphaStreams> detail_eval_streams(const Genome &cand) const;
+  [[nodiscard]] atx::core::Result<alpha::AlphaStreams>
+  detail_eval_streams(const Genome &cand) const;
 
   // Flatten alpha 0's per-period position cross-sections into the period-major,
   // instrument-minor layout AlphaStore::insert / compute_metrics expect
