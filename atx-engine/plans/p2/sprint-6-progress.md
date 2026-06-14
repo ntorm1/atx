@@ -22,7 +22,7 @@
 | S6-1  | `data::Dataset` + `DatasetSchema`                                  | ✅ done     | 729d084 | 10   | dataset.hpp + dataset.cpp + data_dataset_test.cpp |
 | S6-2  | `data::DatasetCatalog` + as-of index + lineage                     | ✅ done     | 2a62605 | 9    | catalog.hpp + catalog.cpp + data_catalog_test.cpp; resolve() returns `Result<reference_wrapper<const Dataset>>` (tl::expected cannot hold references) |
 | S6-3  | PIT alignment rail (date×inst grid join, NaN/drop/count)           | ✅ done     | a86d148 | 7    | align.hpp + align.cpp + data_align_test.cpp; `as_of_index` axis helper added inline to dataset.hpp (truncation-invariant `upper_bound`-step-back). Match-by-InstKey; missing→NaN (never imputed); delisted final-value carry-forward (no survivorship); future-row drop counted but never read. |
-| S6-4  | `adapt_panel` (Price→Panel) + `adapt_feature` (Feature merge)      | 🟡 in progress (4a done) | TBD | 5 | S6.4a: `data/adapt_panel.hpp` + `.cpp` + `data_adapt_panel_test.cpp`; `Dataset::mask()` accessor added; boundary-pin seed `PriceOnlyPanelEqualsWithDatafields` passes byte-for-byte compare via `std::memcpy`→u64 NaN-safe compare. |
+| S6-4  | `adapt_panel` (Price→Panel) + `adapt_feature` (Feature merge)      | 🟡 in progress (4a done) | 4f7b13f | 5 | S6.4a: `data/adapt_panel.hpp` + `.cpp` + `data_adapt_panel_test.cpp`; `Dataset::mask()` accessor added; boundary-pin seed `PriceOnlyPanelEqualsWithDatafields` passes byte-for-byte compare via `std::memcpy`→u64 NaN-safe compare. |
 | S6-5  | `adapt_signal` (Signal→AlphaCandidate via extract_streams)         | ⏳ pending  | —      | —     | — |
 | S6-6  | `FactorModelArtifact` + `adapt_factor` (BYO factor model)          | ⏳ pending  | —      | —     | — |
 | S6-7  | Alt-data subsumption test (no new ingestion code needed)           | ⏳ pending  | —      | —     | — |
@@ -313,7 +313,7 @@ extract_streams(const SignalSet &signals, const WeightPolicy &policy, const Pane
 | SHA | Unit | Subject |
 |-----|------|---------|
 | TBD | S6-0 | docs(s6-0): open sprint-6 ledger + as-built recon-verify + seam map |
-| TBD | S6-4a | feat(s6-4a): PriceDataset->Panel adapter (== with_datafields) |
+| 4f7b13f | S6-4a | feat(s6-4a): PriceDataset->Panel adapter (== with_datafields) |
 
 ---
 
