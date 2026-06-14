@@ -173,6 +173,42 @@ end-to-end **before** the real engine workloads are ported in S7.5.
 > mutable state across the process boundary, folds a reduction in completion order, or fails to reduce to the sequential
 > oracle. Each is a named gate in §3.
 
+### 0.9 `mine_into` over the process boundary is a PARALLEL-EVAL map + a SEQUENTIAL parent admit — §0.4 partition-and-merge is UNSOUND (S7-5d amendment, user-confirmed)
+
+**Recon finding (the admit fold is stateful and order-dependent):** `library::admit` (library.hpp) is a **stateful fold**, not a
+pure map. It runs library-wide **F6 dedup** (`dedup_.contains(canon_hash)`), a **pool-wide MAX-|corr|** screen against every
+already-admitted alpha, and — on Accept — `store.stage()` which assigns the global **`AlphaId` in ADMISSION ORDER**; the
+manifest's `segment_crc`/`integrity_crc` then **fold `base_alpha_id`** (the segment's first AlphaId) into the content-address,
+and `version_id = crc32(entries ++ master_seeds)` over those AlphaId-ordered entries. Every one of these is **path-dependent**:
+admit candidate A then B, and B is screened against a pool that already contains A (and lands at a different AlphaId / segment
+offset) than if B were admitted first or in a sibling partition. Therefore the frozen plan **§0.4 "N partition libraries →
+merge manifests" is UNSOUND** — partitioning the admit fold across workers and merging the manifests **cannot** reproduce the
+single-process `report.digest` or `version_id` byte-for-byte (the merge would have to re-derive the global admission order and
+re-fold every `base_alpha_id`, i.e. re-run the sequential admit anyway). This is the **same hazard class as Spark's SPARK-23207**
+(a non-deterministic repartition silently corrupting a downstream order-dependent result): a parallel reorder of an
+order-sensitive fold is a correctness bug, not a throughput knob. **§0.4 is therefore NOT implemented.**
+
+**The SOUND design (implemented in S7-5d):** parallelize **only** the PURE expensive per-genome **map**, and keep the stateful
+fold **sequential in the parent**:
+- **Map (over the IExecutor seam):** per genome, `compile + Engine::evaluate + extract_streams` → the realized
+  `alpha::AlphaStreams`, **plus** `pool_aware_fitness` → `(dsr, raw)` scored against the **RUN-START pool snapshot** (a `const`
+  captured before any admit grows the library). This map has **no cross-item shared mutable state** — exactly the eval/cpcv/
+  backtests maps S7.5a–c already lifted. Crucially `dsr` is **pool-INDEPENDENT** (`detail::FitnessCore.dsr` — the deflated
+  Sharpe of the candidate's OWN OOS stream at the fixed trial count `N = res.trial_count`), so the worker reproduces it
+  bit-identically; `raw`'s only pool-dependent term is the MAX-|corr| redundancy against the run-start snapshot, which the
+  worker rebuilds from the serialized admitted-pnl snapshot using the **same** SimHash seed/T/K as `library::worst_corr_to_pool`
+  (→ the same value).
+- **Fold (in the parent):** the parent runs the EXISTING deterministic `rank_by_deflated_fitness` (DESC `dsr`, then `raw`, then
+  `canon_hash`, then `idx` — F1) on the gathered scores, then the EXISTING **sequential** `library::admit` loop fed the gathered
+  streams. The loop's per-candidate growing-pool re-score (step 3c) updates only `dsr`, which is pool-independent and therefore
+  **equals** the gathered run-start `dsr` — so feeding the gathered value is byte-identical to re-scoring. Because rank + admit
+  is the **identical single-process code path** in the parent, `report.digest` (the search digest folded with `(canon_hash,
+  AdmitKind)` per screened candidate) **and** the library `version_id` are **byte-identical BY CONSTRUCTION** across the
+  sequential path, `ThreadExecutor@{1,N}`, and `ProcessExecutor@{1,N}`. The new transport (`workload_mine.{hpp,cpp}` +
+  `WorkloadId::Mine` + a substrate-aware `Factory::mine_into(cfg, lib, gate, IExecutor&)` overload) moves **only bytes**, never
+  a result bit. **The user explicitly confirmed the full capstone depth** (the real `mine_into` over the boundary with a
+  byte-identical `FactoryReport::digest`, not a lighter eval-only subset).
+
 ---
 
 ## §1 — Research foundation: the deterministic-executor design rules (with citations)

@@ -42,6 +42,7 @@ add_library(atx-engine STATIC
     src/parallel/scheduler.cpp
     src/parallel/shm_segment.cpp
     src/parallel/workload_eval.cpp
+    src/parallel/workload_mine.cpp
     src/parallel/workload_streams.cpp
     src/validation/bias_audit.cpp
 )

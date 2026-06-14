@@ -18,6 +18,9 @@
 
 #include "atx/engine/factory/canonical.hpp" // factory::canonical_hash (F6 dedup key)
 
+#include "atx/engine/parallel/executor.hpp" // parallel::IExecutor, Substrate, SlotView (S7.5d seam)
+#include "atx/engine/parallel/workload_mine.hpp" // parallel::serialize_mine_input / MineGenomeResult (S7.5d)
+
 namespace atx::engine::factory {
 
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
@@ -85,9 +88,9 @@ namespace atx::engine::factory {
     std::vector<atx::f64> cand_pos = flatten_positions(strm);
 
     // (3b) realized-performance metrics over the full OOS stream (§4.8).
-    const combine::AlphaMetrics metrics = combine::compute_metrics(
-        std::span<const atx::f64>{cand_pnl}, std::span<const atx::f64>{cand_pos}, n_inst,
-        cfg.book_size);
+    const combine::AlphaMetrics metrics =
+        combine::compute_metrics(std::span<const atx::f64>{cand_pnl},
+                                 std::span<const atx::f64>{cand_pos}, n_inst, cfg.book_size);
 
     // (3c) re-score against the CURRENT (growing) pool for the deflated bar — the
     // dsr that gates admission must reflect the pool the candidate would join.
@@ -105,9 +108,9 @@ namespace atx::engine::factory {
     // Fold the decision into the digest (every screened candidate, in order):
     // (canon_hash, accept-bit) — so a different admission outcome shifts the
     // digest, and an identical mine+admit replays byte-identical (F1/F2).
-    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
-        static_cast<std::size_t>(rep.digest), cand.canon_hash,
-        static_cast<atx::u64>(accept ? 1U : 0U)));
+    rep.digest = static_cast<atx::u64>(
+        atx::core::hash_combine(static_cast<std::size_t>(rep.digest), cand.canon_hash,
+                                static_cast<atx::u64>(accept ? 1U : 0U)));
 
     if (!accept) {
       continue;
@@ -189,9 +192,9 @@ namespace atx::engine::factory {
     std::vector<atx::f64> cand_pos = flatten_positions(strm);
 
     // (3b) realized-performance metrics over the full OOS stream.
-    const combine::AlphaMetrics metrics = combine::compute_metrics(
-        std::span<const atx::f64>{cand_pnl}, std::span<const atx::f64>{cand_pos}, n_inst,
-        cfg.book_size);
+    const combine::AlphaMetrics metrics =
+        combine::compute_metrics(std::span<const atx::f64>{cand_pnl},
+                                 std::span<const atx::f64>{cand_pos}, n_inst, cfg.book_size);
 
     // (3c) re-score against the CURRENT (growing) library for the deflated bar (the
     // O(neighbors) PoolView overload). Fall back to the run-start dsr if it errs.
@@ -216,7 +219,8 @@ namespace atx::engine::factory {
                              /*mutation_op=*/0, /*seed=*/res.seed};
 
     // The deflation bar is FACTORY-side: clear it BEFORE library::admit is consulted.
-    library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel for the histogram
+    library::AdmitKind kind =
+        library::AdmitKind::RejectFitness; // non-accept sentinel for the histogram
     if (dsr >= cfg.min_dsr) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{cand_pnl},
@@ -245,6 +249,272 @@ namespace atx::engine::factory {
   rep.library_n_alphas_after = lib_lib.n_alphas();
   return rep;
 }
+
+namespace {
+
+// One gathered per-genome scoring result: ok (1 iff compiled+scored), the run-start
+// pool-aware (dsr, raw), and the realized single-alpha streams (valid iff ok == 1).
+// This is exactly what the in-process map produces per genome and what the MultiProcess
+// worker ships back — so the parent's rank + admit loop is fed identically either way.
+struct GatheredScore {
+  atx::u32 ok{0};
+  atx::f64 dsr{0.0};
+  atx::f64 raw{0.0};
+  alpha::AlphaStreams streams;
+};
+
+// Snapshot the run-start library's admitted-pnl streams (alpha-major [n_alphas * T]) so
+// the worker rebuilds the SAME SimHash corr index library::worst_corr_to_pool uses. The
+// pool is the const-at-run-start state; we copy it OUT before any admit grows the store
+// (the §0.6 dangling-span discipline — store.pnl() aliases the segment/memtable). Empty
+// library -> empty snapshot (worst_corr == 0 for every candidate).
+[[nodiscard]] std::vector<atx::f64> snapshot_pool_pnl(const library::Library &lib) {
+  const atx::usize n = static_cast<atx::usize>(lib.n_alphas());
+  const atx::usize t = lib.n_periods();
+  std::vector<atx::f64> out;
+  if (n == 0U || t == 0U) {
+    return out;
+  }
+  out.reserve(n * t);
+  for (atx::usize a = 0; a < n; ++a) {
+    const std::span<const atx::f64> p = lib.pnl(library::AlphaId{static_cast<atx::u32>(a)});
+    out.insert(out.end(), p.begin(), p.end());
+  }
+  return out;
+}
+
+// Forward decl: the per-substrate gather (defined after decode_mine_slot below). A free
+// function (not a Factory member) so its anonymous-namespace return type GatheredScore
+// never leaks into the public header.
+[[nodiscard]] std::vector<GatheredScore>
+gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkItem &pool_item,
+                   const FitnessCfg &admit_fit, const alpha::Panel &panel,
+                   const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
+                   parallel::IExecutor &exec);
+
+// Decode one Mine output slot { ok:u32, pad:u32, dsr:f64, raw:f64, pnl[T], pos[T*N] } into
+// a GatheredScore, reconstructing the single-alpha AlphaStreams from the f64 tails. The
+// slot is the parent's own buffer (already bounds-validated by the SlotView); n_periods /
+// n_instruments are the known panel dims, so the tail sizes are fixed.
+[[nodiscard]] GatheredScore decode_mine_slot(std::span<const std::byte> slot, atx::usize n_periods,
+                                             atx::usize n_instruments) {
+  // The slot is the parent's OWN buffer, sized by gather_mine_scores to exactly
+  // hdr + n_periods*8 + n_periods*n_instruments*8 (the panel dims are this process's own
+  // trusted Panel). ALWAYS-ON guards (not a debug-only assert an NDEBUG build elides)
+  // precede every memcpy: a corrupt slot size here would over-read the SHM segment.
+  GatheredScore g;
+  const atx::usize hdr = 24U;    // kMineSlotHeaderBytes
+  ATX_CHECK(slot.size() >= hdr); // the fixed header must be present before any read
+  atx::u32 ok = 0;
+  std::memcpy(&ok, slot.data() + 0, sizeof(atx::u32));
+  std::memcpy(&g.dsr, slot.data() + 8, sizeof(atx::f64));
+  std::memcpy(&g.raw, slot.data() + 16, sizeof(atx::f64));
+  g.ok = ok;
+  if (ok != 1U) {
+    return g; // a failed genome: dsr=raw=0, no streams (the parent drops it)
+  }
+  // pnl[T] then pos[T*N]. Compute the byte offsets overflow-safe and require the slot to
+  // hold the whole record before any tail memcpy.
+  const atx::usize pnl_bytes = n_periods * sizeof(atx::f64);
+  const atx::usize pos_cells = n_periods * n_instruments;
+  const atx::usize pos_bytes = pos_cells * sizeof(atx::f64);
+  ATX_CHECK(slot.size() >= hdr + pnl_bytes + pos_bytes); // whole fixed-shape record present
+  alpha::AlphaStreams strm;
+  strm.n_alphas_ = 1U;
+  strm.n_periods_ = n_periods;
+  strm.n_instruments_ = n_instruments;
+  strm.pnl_flat.resize(n_periods);
+  strm.pos_flat.resize(pos_cells);
+  if (pnl_bytes != 0U) {
+    std::memcpy(strm.pnl_flat.data(), slot.data() + hdr, pnl_bytes);
+  }
+  if (pos_bytes != 0U) {
+    std::memcpy(strm.pos_flat.data(), slot.data() + hdr + pnl_bytes, pos_bytes);
+  }
+  g.streams = std::move(strm);
+  return g;
+}
+
+} // namespace
+
+[[nodiscard]] FactoryReport Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                                               const combine::AlphaGate &gate,
+                                               parallel::IExecutor &exec) {
+  // InProcess: the existing in-process map IS the sound single-process path. Delegate
+  // verbatim so the digest is, trivially, the sequential digest.
+  switch (exec.substrate()) {
+  case parallel::Substrate::InProcess:
+    return mine_into(cfg, lib_lib, gate);
+  case parallel::Substrate::MultiProcess:
+    break; // handled below
+  }
+  // (Defensive: an executor returning neither substrate aborts rather than silently
+  // producing a wrong digest — the same fail-safe as parallel_evaluate.)
+  ATX_CHECK(exec.substrate() == parallel::Substrate::MultiProcess &&
+            "Factory::mine_into: unknown executor substrate");
+
+  FactoryReport rep;
+  rep.library_n_alphas_before = lib_lib.n_alphas();
+
+  // (1) run the S3-5 search — IDENTICAL to the sequential mine_into.
+  combine::AlphaStore search_pool;
+  SearchDriver driver{lib_, panel_, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  const SearchResult res = driver.run(cfg.search, search_pool);
+
+  rep.evaluated = res.trial_count;
+  rep.trials = res.trial_count;
+  rep.dedup_pct = res.dedup_pct;
+  rep.seed = res.seed;
+  rep.cse_pct = mean_cse_pct(res);
+  rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
+
+  // F4 — identical to the sequential path: the admission deflation N is res.trial_count.
+  FitnessCfg admit_fit = cfg.search.fitness;
+  if (res.trial_count > 0U) {
+    admit_fit.trial_count = res.trial_count;
+  }
+
+  // (2) GATHER per-genome {ok, dsr, raw, streams} over the PROCESS boundary. The pure
+  // map (compile+eval+extract_streams + pool-aware fitness vs. the RUN-START snapshot)
+  // is what crosses; the snapshot is the library as it stands NOW (const at run start).
+  const std::vector<atx::f64> pool_pnl = snapshot_pool_pnl(lib_lib);
+  const atx::usize n_periods = lib_lib.n_periods();
+  parallel::MineWorkItem pool_item;
+  pool_item.pool_pnl_flat = std::span<const atx::f64>{pool_pnl};
+  pool_item.pool_n_alphas = static_cast<atx::usize>(lib_lib.n_alphas());
+  pool_item.n_periods = n_periods;
+  pool_item.pool_seed = lib_lib.master_seeds().empty() ? 0ULL : lib_lib.master_seeds().front();
+
+  const std::vector<GatheredScore> gathered =
+      gather_mine_scores(res.all_scored, pool_item, admit_fit, panel_, policy_, sim_, exec);
+
+  // (3) rank by deflated fitness (DESC dsr, then raw, then idx) over the GATHERED scores
+  // — byte-identical to rank_by_deflated_fitness(all_scored, admit_fit, LibraryPool) at
+  // run start, because the worker scored against the SAME snapshot (dsr is pool-
+  // independent; raw's redundancy is the SAME SimHash MAX-|corr|). canon_hash is 0 on
+  // the S3 search path, so the idx tiebreak pins the total order (F1).
+  std::vector<Ranked> ranked;
+  ranked.reserve(res.all_scored.size());
+  for (atx::usize i = 0; i < res.all_scored.size(); ++i) {
+    ranked.push_back(Ranked{i, gathered[i].dsr, gathered[i].raw});
+  }
+  std::sort(ranked.begin(), ranked.end(), [&res](const Ranked &a, const Ranked &b) {
+    if (a.dsr != b.dsr) {
+      return a.dsr > b.dsr;
+    }
+    if (a.raw != b.raw) {
+      return a.raw > b.raw;
+    }
+    if (res.all_scored[a.idx].canon_hash != res.all_scored[b.idx].canon_hash) {
+      return res.all_scored[a.idx].canon_hash < res.all_scored[b.idx].canon_hash;
+    }
+    return a.idx < b.idx;
+  });
+
+  // (4) the EXISTING sequential admit loop, fed the gathered streams — byte-identical to
+  // the sequential mine_into loop (same metrics/dsr/canon/admit/digest fold). dsr is the
+  // gathered run-start value, which equals the sequential 3c re-score (pool-INDEPENDENT).
+  for (const Ranked &r : ranked) {
+    const GatheredScore &gs = gathered[r.idx];
+    const Genome &g = res.all_scored[r.idx];
+    if (gs.ok != 1U) {
+      continue; // an un-evaluable candidate is silently dropped (F5) — no digest fold.
+    }
+    const alpha::AlphaStreams &strm = gs.streams;
+    if (strm.n_alphas() == 0U) {
+      continue;
+    }
+    const atx::usize n_inst = strm.n_instruments();
+    std::vector<atx::f64> cand_pnl(strm.pnl(0).begin(), strm.pnl(0).end());
+    std::vector<atx::f64> cand_pos = flatten_positions(strm);
+
+    const combine::AlphaMetrics metrics =
+        combine::compute_metrics(std::span<const atx::f64>{cand_pnl},
+                                 std::span<const atx::f64>{cand_pos}, n_inst, cfg.book_size);
+
+    // (3c equivalent) the deflated bar's dsr. It is POOL-INDEPENDENT, so the gathered
+    // run-start dsr equals the sequential loop's growing-pool re-score dsr exactly.
+    const atx::f64 dsr = gs.dsr;
+
+    const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+    library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
+                             /*mutation_op=*/0, /*seed=*/res.seed};
+
+    library::AdmitKind kind = library::AdmitKind::RejectFitness;
+    if (dsr >= cfg.min_dsr) {
+      const library::AlphaCandidate cand{canon_hash,
+                                         std::span<const atx::f64>{cand_pnl},
+                                         std::span<const atx::f64>{cand_pos},
+                                         metrics,
+                                         std::move(prov),
+                                         /*as_of=*/kAdmitAsOf,
+                                         /*source=*/nullptr};
+      const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+      kind = v.kind;
+      if (kind == library::AdmitKind::Accept) {
+        ++rep.admitted;
+      } else if (kind == library::AdmitKind::Duplicate) {
+        ++rep.duplicates;
+      }
+    }
+    ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+
+    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+        static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+  }
+
+  rep.library_n_alphas_after = lib_lib.n_alphas();
+  return rep;
+}
+
+namespace {
+
+[[nodiscard]] std::vector<GatheredScore>
+gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkItem &pool_item,
+                   const FitnessCfg &admit_fit, const alpha::Panel &panel,
+                   const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
+                   parallel::IExecutor &exec) {
+  const atx::usize n = scored.size();
+  std::vector<GatheredScore> out(n);
+  if (n == 0U) {
+    return out;
+  }
+
+  // Serialize {genomes, run-start pool snapshot, panel, cfg} into ONE InputView.
+  const std::vector<std::byte> input = parallel::serialize_mine_input(
+      std::span<const Genome>{scored}, pool_item, panel, admit_fit, policy, sim);
+
+  // Fixed-shape output slot per genome: header(24) + pnl[T]*8 + pos[T*N]*8, where T/N are
+  // the PANEL dims (every realized stream has exactly those, single-alpha). One uniform
+  // stride covers all shards (slot s written ONLY by shard s). T/N come from THIS process's
+  // own trusted Panel (not untrusted bytes), so a wrap is a programmer error — assert the
+  // products do not overflow rather than silently form an undersized slot (ATX_ASSERT for a
+  // trusted-input precondition; slot_view_bytes also guards the n*stride product).
+  const atx::usize t = panel.dates();
+  const atx::usize ninst = panel.instruments();
+  constexpr atx::usize kMax = static_cast<atx::usize>(-1);
+  ATX_ASSERT(ninst == 0U || t <= kMax / ninst); // t * ninst (pos cells)
+  const atx::usize pos_cells = t * ninst;
+  ATX_ASSERT(t <= kMax / sizeof(atx::f64));         // pnl bytes
+  ATX_ASSERT(pos_cells <= kMax / sizeof(atx::f64)); // pos bytes
+  const atx::usize slot_size = 24U + t * sizeof(atx::f64) + pos_cells * sizeof(atx::f64);
+
+  std::vector<std::byte> buf(parallel::slot_view_bytes(n, slot_size), std::byte{0});
+  parallel::SlotView slots = parallel::make_slot_view(buf, n, slot_size);
+  const atx::core::Status s = exec.submit(
+      parallel::WorkloadId::Mine, parallel::InputView{std::span<const std::byte>{input}}, n, slots);
+  // A shard returns Err only on a malformed-input fault (never on a genome that simply
+  // fails to compile — that is an in-band ok=0). An infra/parse fault is a programmer
+  // error here (the parent serialized trusted, well-formed bytes), so fail loud.
+  ATX_CHECK(s.has_value() && "Factory::gather_mine_scores: mine shard reported a fault");
+
+  for (atx::usize k = 0; k < n; ++k) {
+    out[k] = decode_mine_slot(slots.cslot(k), t, ninst);
+  }
+  return out;
+}
+
+} // namespace
 
 [[nodiscard]] atx::core::Result<alpha::AlphaStreams>
 Factory::detail_eval_streams(const Genome &cand) const {
