@@ -39,6 +39,8 @@ add_library(atx-engine STATIC
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
     src/validation/bias_audit.cpp
+    # fund (p2 S2 — multi-strategy meta-book)
+    src/fund/meta_allocator.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
