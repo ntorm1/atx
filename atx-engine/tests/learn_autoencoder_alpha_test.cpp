@@ -44,7 +44,7 @@
 #include "atx/engine/learn/learned_source.hpp"    // LearnedModel, ModelKind, predict_ae, predict_blended
 #include "atx/engine/learn/sequence_features.hpp" // SequenceTensor
 
-namespace {
+namespace atxtest_learn_autoencoder_alpha_test {
 
 using atx::f64;
 using atx::i64;
@@ -436,4 +436,4 @@ TEST(LearnAutoencoderAlpha, KFactorsExceedsFeatures_ReturnsInvalidArgument) {
   EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-} // namespace
+}  // namespace atxtest_learn_autoencoder_alpha_test

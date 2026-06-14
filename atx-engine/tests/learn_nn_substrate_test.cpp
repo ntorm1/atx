@@ -37,7 +37,7 @@
 #include "atx/engine/learn/nn/optimizer.hpp"
 #include "atx/engine/learn/nn/trainer.hpp"
 
-namespace {
+namespace atxtest_learn_nn_substrate_test {
 
 using atx::f64;
 using atx::u64;
@@ -609,4 +609,4 @@ TEST(LearnNnSubstrate, Trainer_RejectsBadConfig) {
   }
 }
 
-} // namespace
+}  // namespace atxtest_learn_nn_substrate_test

@@ -80,7 +80,7 @@
 #include <filesystem>
 #include <memory>
 
-namespace {
+namespace atxtest_learn_nn_source_integration_test {
 
 using atx::f64;
 using atx::i64;
@@ -594,4 +594,4 @@ TEST(LearnNnSourceIntegration, BufferReuse_EvaluateNoCorruption) {
   }
 }
 
-} // namespace
+}  // namespace atxtest_learn_nn_source_integration_test

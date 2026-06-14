@@ -43,7 +43,7 @@
 #include "atx/engine/learn/sequence_features.hpp" // SequenceTensor
 #include "atx/engine/learn/tcn_alpha.hpp"         // fit_attn, AttnAlphaCfg
 
-namespace {
+namespace atxtest_learn_attn_alpha_test {
 
 using atx::f64;
 using atx::u16;
@@ -533,4 +533,4 @@ TEST(LearnAttnAlpha, ZeroLookback_ReturnsInvalidArgument) {
   EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-} // namespace
+}  // namespace atxtest_learn_attn_alpha_test

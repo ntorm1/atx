@@ -32,7 +32,7 @@
 #include "atx/engine/learn/nn/tensor.hpp"         // nn::Seq3
 #include "atx/engine/learn/sequence_features.hpp" // SeqFeatureSpec, SequenceTensor, build_sequences
 
-namespace {
+namespace atxtest_learn_sequence_features_test {
 
 using atx::f64;
 using atx::u8;
@@ -439,4 +439,4 @@ TEST(LearnSequenceFeatures, MultiHorizonLabels_CarriesEachHorizonFromAnchor) {
   }
 }
 
-} // namespace
+}  // namespace atxtest_learn_sequence_features_test

@@ -44,7 +44,7 @@
 #include "atx/engine/learn/sequence_features.hpp" // SequenceTensor
 #include "atx/engine/learn/tcn_alpha.hpp"         // fit_tcn, fit_gru (the real-fit wiring test)
 
-namespace {
+namespace atxtest_learn_nn_gate_test {
 
 using atx::f64;
 using atx::u16;
@@ -392,4 +392,4 @@ TEST(LearnNnGate, RealFitSweep_GatesEndToEnd) {
   EXPECT_LE(g.pbo, 1.0);
 }
 
-} // namespace
+}  // namespace atxtest_learn_nn_gate_test

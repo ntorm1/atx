@@ -40,7 +40,7 @@
 #include "atx/engine/learn/sequence_features.hpp" // SequenceTensor
 #include "atx/engine/learn/tcn_alpha.hpp"         // fit_tcn, fit_gru, TcnAlphaCfg, GruAlphaCfg
 
-namespace {
+namespace atxtest_learn_tcn_gru_alpha_test {
 
 using atx::f64;
 using atx::u16;
@@ -472,4 +472,4 @@ TEST(LearnTcnGruAlpha, ZeroLookback_ReturnsInvalidArgument) {
   EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-} // namespace
+}  // namespace atxtest_learn_tcn_gru_alpha_test

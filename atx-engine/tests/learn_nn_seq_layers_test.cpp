@@ -33,7 +33,7 @@
 #include "atx/engine/learn/nn/module.hpp"
 #include "atx/engine/learn/nn/seq_layers.hpp"
 
-namespace {
+namespace atxtest_learn_nn_seq_layers_test {
 
 using atx::f64;
 using atx::u64;
@@ -529,4 +529,4 @@ TEST(LearnNnSeqLayers, R1_Init_SameSeed_SameParams) {
   EXPECT_EQ(std::memcmp(sa.data(), sb.data(), sa.size() * sizeof(f64)), 0);
 }
 
-} // namespace
+}  // namespace atxtest_learn_nn_seq_layers_test
