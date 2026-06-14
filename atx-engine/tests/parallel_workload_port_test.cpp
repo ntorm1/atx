@@ -421,31 +421,12 @@ TEST(ParallelWorkloadPort, BacktestsWorkerCountInvariant) {
 }
 
 // ===========================================================================
-//  OUT-OF-PROCESS MISUSE — the vector-returning IExecutor& overloads are
-//  IN-PROCESS ONLY: their map body is a closure, which a ProcessExecutor's
-//  parallel_for cannot run (it returns Err(NotImplemented)). exec_dispatch
-//  guards that with the ALWAYS-ON ATX_CHECK, so passing a ProcessExecutor
-//  ABORTS in both debug and release rather than silently returning a
-//  zero-filled FoldResult table. These death tests are NOT #ifndef-NDEBUG
-//  guarded — ATX_CHECK fires under NDEBUG too (that is the whole point of the
-//  fix). The process substrate routes these workloads through the serialized
-//  submit() path in a later unit, never through these overloads.
+//  PROCESS SUBSTRATE — as of S7.5b the cpcv / backtests IExecutor& overloads are
+//  SUBSTRATE-AWARE: a ProcessExecutor no longer aborts but runs the serialized
+//  WorkloadId::Cpcv / ::Backtests path in worker processes. The S7.5a death tests
+//  that asserted an abort are therefore REMOVED (they would now fail). The
+//  process-boundary digest-equality proof (process@{1,N} == thread == sequential)
+//  lives in parallel_workload_process_test.cpp.
 // ===========================================================================
-
-TEST(ParallelWorkloadPortDeathTest, CpcvOnProcessExecutorAborts) {
-  const auto streams = make_streams(1, 8, 2, 0xC0FFEEULL);
-  const auto folds = make_cpcv_folds(8);
-  ProcessExecutor exec{ExecutorConfig{2}};
-  // ProcessExecutor::parallel_for returns Err(NotImplemented); exec_dispatch's
-  // ATX_CHECK then aborts rather than returning a zero-filled table.
-  EXPECT_DEATH({ (void)parallel_cpcv(folds, streams, 0, 1.0e6, exec); }, ".*");
-}
-
-TEST(ParallelWorkloadPortDeathTest, BacktestsOnProcessExecutorAborts) {
-  const auto streams = make_streams(4, 8, 2, 0x1234ULL);
-  ProcessExecutor exec{ExecutorConfig{2}};
-  // Same in-process-only contract: an out-of-process executor aborts loudly.
-  EXPECT_DEATH({ (void)parallel_backtests(streams, 1.0e6, exec); }, ".*");
-}
 
 } // namespace

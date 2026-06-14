@@ -45,6 +45,9 @@ public:
 
   [[nodiscard]] atx::usize workers() const noexcept override { return pool_.n_workers(); }
 
+  // In-process substrate: the closure-bodied parallel_for path is supported here.
+  [[nodiscard]] Substrate substrate() const noexcept override { return Substrate::InProcess; }
+
   // See IExecutor::parallel_for. THIN forward to DetPool::parallel_for: the pool
   // already runs every index in [0, n) exactly once, erects the completion
   // barrier, and rethrows the LOWEST-index body exception — exactly the seam's

@@ -47,9 +47,10 @@
 //  discipline throughout. Reuses atx-core hash + combine::compute_metrics — no
 //  new numeric primitive is introduced.
 
-#include <cstddef>   // std::size_t (hash_combine seed, pool body params)
-#include <span>      // std::span (read-only inputs)
-#include <vector>    // std::vector (owned result table / gather buffers)
+#include <cstddef>     // std::size_t (hash_combine seed, pool body params)
+#include <span>        // std::span (read-only inputs)
+#include <type_traits> // std::is_trivially_copyable_v (FoldResult wire guard)
+#include <vector>      // std::vector (owned result table / gather buffers)
 
 #include "atx/core/hash.hpp"  // hash_bytes / hash_combine
 #include "atx/core/types.hpp" // f64 / u64 / usize
@@ -74,6 +75,14 @@ struct FoldResult {
   atx::f64 returns{};    // combine::compute_metrics(...).returns over the row's obs
   atx::usize n_test{};   // number of test observations the metric used
 };
+
+// FoldResult crosses the PROCESS boundary as raw bytes (S7.5b: each shard memcpy's
+// its FoldResult into a shared-memory output slot, the parent memcpy's it back).
+// That is defined ONLY for a trivially-copyable POD (all usize/f64 members) — pin
+// it so a future non-trivial member (a std::string, a vector) is caught at compile
+// time, not as silent cross-process corruption.
+static_assert(std::is_trivially_copyable_v<FoldResult>,
+              "FoldResult crosses a process boundary as raw bytes; it must stay trivially copyable");
 
 // ===========================================================================
 //  result_table_digest — canonical-order wyhash over RAW f64 bytes; the
@@ -132,14 +141,13 @@ parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
               const atx::engine::alpha::AlphaStreams& streams, atx::usize alpha_id,
               atx::f64 book_size, DetPool& pool);
 
-// S7.5a — the SAME parallel CPCV over the substrate-agnostic IExecutor seam
-// (THREAD substrate this unit). The map BODY (run_one_fold) is UNCHANGED — this
-// overload shares the one map with the DetPool& overload, substituting
-// exec.parallel_for for pool.parallel_for. Output is byte-identical to the
-// DetPool& / sequential path and invariant across worker counts. IN-PROCESS ONLY:
-// passing an out-of-process substrate (ProcessExecutor, whose parallel_for rejects
-// a closure body) is a programmer-error precondition violation (ATX_ASSERT in
-// debug) — those workloads use the serialized submit() path in a later unit.
+// S7.5b — the SAME parallel CPCV over the substrate-agnostic IExecutor seam,
+// SUBSTRATE-AWARE. The map BODY (run_one_fold) is UNCHANGED — only the transport
+// differs by exec.substrate(): InProcess (ThreadExecutor) runs the closure-bodied
+// parallel_for map shared with the DetPool& overload; MultiProcess (ProcessExecutor)
+// serializes the streams + folds and runs cpcv_shard over the registered
+// WorkloadId::Cpcv + InputView seam in worker processes. Output is byte-identical
+// across both substrates, the DetPool& / sequential oracle, and worker counts {1,N}.
 [[nodiscard]] std::vector<FoldResult>
 parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
               const atx::engine::alpha::AlphaStreams& streams, atx::usize alpha_id,
@@ -154,11 +162,13 @@ parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
 parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 book_size,
                    DetPool& pool);
 
-// S7.5a — the SAME parallel backtests over the substrate-agnostic IExecutor seam
-// (THREAD substrate this unit). The map BODY (run_full_backtest) is UNCHANGED —
-// shares the one map with the DetPool& overload, substituting exec.parallel_for /
-// exec.workers(). Output is byte-identical to the DetPool& / sequential path and
-// invariant across worker counts. In-process only (see parallel_cpcv note).
+// S7.5b — the SAME parallel backtests over the substrate-agnostic IExecutor seam,
+// SUBSTRATE-AWARE. The map BODY (run_full_backtest) is UNCHANGED — only the transport
+// differs by exec.substrate(): InProcess (ThreadExecutor) runs the closure-bodied
+// parallel_for map shared with the DetPool& overload; MultiProcess (ProcessExecutor)
+// serializes the streams and runs backtests_shard over the registered
+// WorkloadId::Backtests + InputView seam in worker processes. Output is byte-identical
+// across both substrates, the DetPool& / sequential oracle, and worker counts {1,N}.
 [[nodiscard]] std::vector<FoldResult>
 parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 book_size,
                    IExecutor& exec);

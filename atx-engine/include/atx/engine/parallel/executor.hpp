@@ -41,10 +41,20 @@ namespace atx::engine::parallel {
 // Canonical dense slot key in [0, n). One shard == one slot == one result row.
 using ShardId = atx::usize;
 
-// Closed, process-portable set of workloads. S7-1 ships ONLY `Test`; later units
-// (S7.5) append Eval / Cpcv / Backtests / Mine. Fixed underlying type so the enum
-// has the SAME byte width in every process that sends/receives a WorkloadId.
-enum class WorkloadId : atx::u32 { Test = 0 };
+// Closed, process-portable set of workloads. Fixed underlying type so the enum has
+// the SAME byte width in every process that sends/receives a WorkloadId. Values are
+// EXPLICIT and STABLE (a worker resolves an incoming integer to this enum). S7-1
+// shipped `Test`; S7.5b registers `Backtests` + `Cpcv` (the real serialized-
+// AlphaStreams workloads). `Eval` / `Mine` are RESERVED for later units — their
+// values are pinned here so the dispatch keys never shift, but they are NOT yet
+// registered (no ShardFn maps to them until their unit lands).
+enum class WorkloadId : atx::u32 {
+  Test = 0,
+  Eval = 1,      // reserved: serialized parallel_evaluate (later unit)
+  Mine = 2,      // reserved: serialized factory mine (later unit)
+  Backtests = 3, // S7.5b: serialized parallel_backtests (run_full_backtest)
+  Cpcv = 4,      // S7.5b: serialized parallel_cpcv (run_one_fold)
+};
 
 // Cache-line stride used to pad slots so adjacent shards never share a line (R6).
 //
@@ -135,6 +145,15 @@ struct SlotView {
 struct ExecutorConfig {
   atx::usize workers = 0;
   bool pin_workers = true;
+};
+
+// Which kind of substrate an IExecutor is. The map MATH is identical across
+// substrates; this only lets a substrate-aware caller pick the TRANSPORT — the
+// in-process closure path (InProcess) or the serialized registered-WorkloadId path
+// (MultiProcess). A result bit never depends on this (R1/R2).
+enum class Substrate {
+  InProcess,    // ThreadExecutor — runs a closure body in this address space
+  MultiProcess, // ProcessExecutor — serialized InputView -> worker processes
 };
 
 // The process-portable PURE shard function: writes shard `id`'s POD result into
@@ -231,6 +250,12 @@ public:
 
   // Number of workers this substrate runs (the resolved count, never 0).
   [[nodiscard]] virtual atx::usize workers() const noexcept = 0;
+
+  // Which transport this substrate is (S7.5b). A substrate-aware workload (e.g.
+  // parallel_backtests / parallel_cpcv) uses this to pick the in-process closure
+  // path vs. the serialized submit(WorkloadId, ...) path — NEVER to change a
+  // result bit. ThreadExecutor => InProcess; ProcessExecutor => MultiProcess.
+  [[nodiscard]] virtual Substrate substrate() const noexcept = 0;
 
 protected:
   IExecutor() = default;

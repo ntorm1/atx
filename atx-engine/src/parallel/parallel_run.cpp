@@ -2,11 +2,13 @@
 
 #include <algorithm>  // std::stable_sort
 #include <cmath>      // std::abs (Neumaier branch)
-#include <cstddef>    // std::size_t (pool body params)
+#include <cstddef>    // std::size_t, std::byte (pool body params, wire bytes)
+#include <cstring>    // std::memcpy (slot gather)
 #include <functional> // std::function (dispatch wrapper signature)
 #include <span>       // std::span (read-only inputs)
 #include <vector>     // std::vector (owned result table / gather buffers)
 
+#include "atx/core/error.hpp" // Status (serialized submit() path)
 #include "atx/core/macro.hpp" // ATX_ASSERT, ATX_CHECK
 #include "atx/core/types.hpp" // f64 / u64 / usize
 
@@ -14,6 +16,8 @@
 #include "atx/engine/combine/metrics.hpp"   // combine::compute_metrics, AlphaMetrics
 #include "atx/engine/eval/cpcv.hpp"         // eval::CpcvFold
 #include "atx/engine/parallel/det_pool.hpp" // DetPool
+#include "atx/engine/parallel/executor.hpp" // IExecutor, SlotView, WorkloadId, slot_view_bytes
+#include "atx/engine/parallel/workload_streams.hpp" // serialize_*_input (serialized process path)
 
 namespace atx::engine::parallel {
 
@@ -36,25 +40,59 @@ using Dispatch = std::function<void(std::size_t, const MapBody &)>;
   return [&pool](std::size_t n, const MapBody &body) { pool.parallel_for(n, body); };
 }
 
-// Wrap an IExecutor: parallel_for returns a Status. These workloads are IN-PROCESS
-// ONLY (the body is a closure); an in-process executor (ThreadExecutor) always
-// returns Ok() for these non-throwing bodies. A non-Ok return means the caller
-// handed an out-of-process substrate (ProcessExecutor, whose parallel_for rejects
-// a closure body with Err(NotImplemented)) to an in-process-only map — a
-// programmer error. We guard it with the ALWAYS-ON ATX_CHECK (NOT debug-only
-// ATX_ASSERT): under NDEBUG a debug assert would elide, the map body would never
-// run, and the function would return a zero-filled FoldResult table as if it had
-// succeeded — silent data corruption. ATX_CHECK aborts loudly in BOTH debug and
-// release, so misuse is fail-safe (no corrupt table) while these overloads keep
-// their plain std::vector<FoldResult> return. The process substrate routes these
-// workloads through the serialized submit() path in a later unit (S7.5c/d), never
-// through this in-process-only overload.
+// Wrap an IN-PROCESS IExecutor: parallel_for returns a Status. The closure-bodied
+// map is IN-PROCESS ONLY; an in-process executor (ThreadExecutor) always returns
+// Ok() for these non-throwing bodies. A non-Ok return means a MultiProcess substrate
+// reached this in-process dispatch despite the substrate() branch in the public
+// overloads — a defensive impossibility. We guard it with the ALWAYS-ON ATX_CHECK
+// (NOT debug-only ATX_ASSERT): under NDEBUG a debug assert would elide, the map body
+// would never run, and the function would return a zero-filled FoldResult table as if
+// it had succeeded — silent data corruption. ATX_CHECK aborts loudly in BOTH debug and
+// release, so an unknown/misrouted substrate is fail-safe (no corrupt table). The
+// MultiProcess substrate is routed through the serialized submit() path below, never
+// through this in-process-only dispatch.
 [[nodiscard]] Dispatch exec_dispatch(IExecutor &exec) {
   return [&exec](std::size_t n, const MapBody &body) {
     const atx::core::Status s = exec.parallel_for(n, body);
     ATX_CHECK(s.has_value()); // out-of-process executor here is misuse: abort, never corrupt
     (void)s;
   };
+}
+
+// ---------------------------------------------------------------------------
+//  Serialized SUBMIT path (MultiProcess substrate, S7.5b): the SAME map math runs
+//  in a worker process via the registered WorkloadId + serialized InputView seam.
+//  The parent serializes the input, builds an n-slot SlotView of sizeof(FoldResult)
+//  payloads, submits, then gathers each slot back into a FoldResult by raw memcpy
+//  (FoldResult is trivially copyable — static_assert in the header). Slot s is
+//  written ONLY by shard s, gathered in canonical ShardId order -> byte-identical
+//  to the in-process path and the sequential oracle (R1/§0.5).
+// ---------------------------------------------------------------------------
+
+// Run an already-serialized workload over `exec` and gather `n` FoldResults in slot
+// order. Aborts (ATX_CHECK) on a submit failure: these S7.5b workload bodies cannot
+// fail for a well-formed input (no eval step), so a non-Ok submit is a corrupt-input
+// / infrastructure fault, and returning a zero-filled table would be silent
+// corruption — fail loud instead, matching the in-process exec_dispatch contract.
+[[nodiscard]] std::vector<FoldResult> submit_and_gather(IExecutor &exec, WorkloadId workload,
+                                                        const std::vector<std::byte> &input,
+                                                        std::size_t n) {
+  std::vector<FoldResult> out(n);
+  if (n == 0) {
+    return out; // no shards: empty table (no segment, no spawn)
+  }
+  constexpr std::size_t kSlot = sizeof(FoldResult);
+  std::vector<std::byte> buf(slot_view_bytes(n, kSlot), std::byte{0});
+  SlotView slots = make_slot_view(buf, n, kSlot);
+  const atx::core::Status s =
+      exec.submit(workload, InputView{std::span<const std::byte>{input}}, n, slots);
+  ATX_CHECK(s.has_value()); // a well-formed S7.5b workload cannot fail; abort, never corrupt
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::span<const std::byte> cslot = slots.cslot(i);
+    ATX_ASSERT(cslot.size() >= kSlot);
+    std::memcpy(&out[i], cslot.data(), kSlot); // POD FoldResult back from the slot
+  }
+  return out;
 }
 
 // THE ONE parallel-CPCV map: every fold of a single alpha into out[f]. Shared by
@@ -164,15 +202,32 @@ parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
   return parallel_cpcv_impl(folds, streams, alpha_id, book_size, pool_dispatch(pool));
 }
 
-// S7.5a — the SAME parallel CPCV over the IExecutor seam (THREAD substrate). Shares
-// parallel_cpcv_impl with the DetPool& overload, substituting exec.parallel_for —
-// the map body (run_one_fold) is UNCHANGED, output byte-identical to the DetPool& /
-// sequential path and invariant across worker counts.
+// S7.5b — the SAME parallel CPCV over the IExecutor seam, SUBSTRATE-AWARE. The map
+// MATH (run_one_fold) is UNCHANGED across both substrates — only the TRANSPORT
+// differs:
+//   * InProcess (ThreadExecutor): the closure-bodied parallel_for path (S7.5a),
+//     shared with the DetPool& overload via parallel_cpcv_impl.
+//   * MultiProcess (ProcessExecutor): serialize the streams + folds, submit under
+//     WorkloadId::Cpcv (n = folds.size()), gather the per-fold FoldResults from the
+//     output slots in fold-id order.
+// Output is byte-identical across both substrates, worker counts, and the sequential
+// oracle (the §0.5 capstone). An unknown substrate aborts defensively (ATX_CHECK).
 std::vector<FoldResult>
 parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
               const atx::engine::alpha::AlphaStreams& streams, atx::usize alpha_id,
               atx::f64 book_size, IExecutor& exec) {
-  return parallel_cpcv_impl(folds, streams, alpha_id, book_size, exec_dispatch(exec));
+  switch (exec.substrate()) {
+  case Substrate::InProcess:
+    return parallel_cpcv_impl(folds, streams, alpha_id, book_size, exec_dispatch(exec));
+  case Substrate::MultiProcess: {
+    const std::vector<std::byte> input = serialize_cpcv_input(streams, alpha_id, book_size, folds);
+    return submit_and_gather(exec, WorkloadId::Cpcv, input, folds.size());
+  }
+  }
+  // Unknown substrate (a future IExecutor that returns neither): fail loud rather
+  // than silently return a zero-filled table (same fail-safe discipline as above).
+  ATX_CHECK(false && "parallel_cpcv: unknown executor substrate");
+  return {};
 }
 
 // ===========================================================================
@@ -186,14 +241,29 @@ parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 boo
   return parallel_backtests_impl(streams, book_size, pool_dispatch(pool));
 }
 
-// S7.5a — the SAME parallel backtests over the IExecutor seam (THREAD substrate).
-// Shares parallel_backtests_impl with the DetPool& overload, substituting
-// exec.parallel_for — the map body (run_full_backtest) is UNCHANGED, output
-// byte-identical to the DetPool& / sequential path and invariant across worker counts.
+// S7.5b — the SAME parallel backtests over the IExecutor seam, SUBSTRATE-AWARE. The
+// map MATH (run_full_backtest) is UNCHANGED across both substrates — only the
+// TRANSPORT differs:
+//   * InProcess (ThreadExecutor): the closure-bodied parallel_for path (S7.5a),
+//     shared with the DetPool& overload via parallel_backtests_impl.
+//   * MultiProcess (ProcessExecutor): serialize the streams, submit under
+//     WorkloadId::Backtests (n = n_alphas), gather the per-alpha FoldResults from the
+//     output slots in alpha-id order.
+// Output is byte-identical across both substrates, worker counts, and the sequential
+// oracle (the §0.5 capstone). An unknown substrate aborts defensively (ATX_CHECK).
 std::vector<FoldResult>
 parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 book_size,
                    IExecutor& exec) {
-  return parallel_backtests_impl(streams, book_size, exec_dispatch(exec));
+  switch (exec.substrate()) {
+  case Substrate::InProcess:
+    return parallel_backtests_impl(streams, book_size, exec_dispatch(exec));
+  case Substrate::MultiProcess: {
+    const std::vector<std::byte> input = serialize_backtests_input(streams, book_size);
+    return submit_and_gather(exec, WorkloadId::Backtests, input, streams.n_alphas());
+  }
+  }
+  ATX_CHECK(false && "parallel_backtests: unknown executor substrate");
+  return {};
 }
 
 // ===========================================================================

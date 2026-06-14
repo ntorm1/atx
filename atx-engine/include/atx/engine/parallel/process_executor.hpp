@@ -176,6 +176,10 @@ public:
 
   [[nodiscard]] atx::usize workers() const noexcept override { return n_workers_; }
 
+  // Multi-process substrate: the closure-bodied parallel_for path is rejected; the
+  // serialized submit(WorkloadId, ...) path is the supported transport (S7.5b).
+  [[nodiscard]] Substrate substrate() const noexcept override { return Substrate::MultiProcess; }
+
 private:
   atx::usize n_workers_; // resolved worker count (never 0); capped to n per-submit
 };
