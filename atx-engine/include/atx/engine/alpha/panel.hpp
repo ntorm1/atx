@@ -119,6 +119,15 @@ public:
   [[nodiscard]] atx::usize cells() const noexcept { return dates_ * instruments_; }
   [[nodiscard]] atx::usize num_fields() const noexcept { return field_names_.size(); }
 
+  // Name of field `i` (== its position in the field dictionary). Precondition:
+  // `i` < num_fields() (caller-validated). Lets a consumer that holds only a
+  // `const Panel&` re-enumerate the field dictionary (e.g. to rebuild a date-
+  // truncated sub-Panel via create()) without a separate name list.
+  [[nodiscard]] const std::string &field_name(atx::usize i) const noexcept {
+    ATX_ASSERT(i < field_names_.size());
+    return field_names_[i];
+  }
+
   // Resolve a field name to its id, or Err(NotFound) if absent.
   [[nodiscard]] atx::core::Result<FieldId> field_id(std::string_view name) const {
     for (atx::usize i = 0; i < field_names_.size(); ++i) {

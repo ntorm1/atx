@@ -56,6 +56,7 @@
 #include "atx/engine/alpha/panel.hpp"        // alpha::Panel
 #include "atx/engine/alpha/registry.hpp"     // alpha::Library
 #include "atx/engine/combine/gate.hpp"       // combine::AlphaGate
+#include "atx/engine/eval/regime_slice.hpp"  // eval::RobustnessConfig (S4.5 gate seam)
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
@@ -79,11 +80,24 @@ namespace atx::engine::factory {
 //  master_seed : the engine root entropy; the per-run seed is
 //                detail::seed_for_run(master_seed, run). Surfaced as rep.seed.
 // =========================================================================
+//  robustness_gate : the S4.4b SEAM that S4.5 flips ON. DEFAULT-OFF and digest-
+//                    NEUTRAL: when false (the default), run() takes EXACTLY today's
+//                    path — same admissions, same digest, same manifest_version_id
+//                    — because the only code it guards is skipped (no compute, no
+//                    RNG, no ordering change, no digest fold). When true, S4.5
+//                    measures a RobustnessVerdict per admitted survivor (over the
+//                    SealedPanel.visible() region, via eval/regime_slice.hpp) and
+//                    report-only-records or rejects non-robust survivors. S4.4b
+//                    ships ONLY the off seam; the live gating is S4.5's.
+//  robustness_cfg  : the RobustnessConfig the gate WOULD use (unused while
+//                    robustness_gate is false — a pure config slot here).
 struct ResearchConfig {
-  FactoryConfig per_run;   // inner mine config (per_run.search.master_seed is overwritten)
-  atx::usize max_runs{1};  // hard upper bound on runs
-  atx::usize patience{0};  // stop after this many consecutive zero-admit runs (0 disables)
-  atx::u64 master_seed{0}; // engine seed; per-run seed = seed_for_run(master_seed, run)
+  FactoryConfig per_run;       // inner mine config (per_run.search.master_seed is overwritten)
+  atx::usize max_runs{1};      // hard upper bound on runs
+  atx::usize patience{0};      // stop after this many consecutive zero-admit runs (0 disables)
+  atx::u64 master_seed{0};     // engine seed; per-run seed = seed_for_run(master_seed, run)
+  bool robustness_gate{false}; // S4.5 seam; OFF == today's exact path (S4.4b)
+  eval::RobustnessConfig robustness_cfg{}; // knobs the S4.5 gate would screen on (unused while OFF)
 };
 
 // =========================================================================
@@ -122,7 +136,10 @@ struct ResearchReport {
   atx::f64 dedup_pct{0.0};                         // see field doc for the exact definition
   atx::u64 digest{0};                              // per-run digests folded in run order (F1)
   atx::u32 manifest_version_id{0};
-  atx::u64 seed{0}; // == master_seed
+  atx::u64 seed{0};                   // == master_seed
+  bool robustness_gate_active{false}; // ECHO of cfg.robustness_gate (S4.4b seam; OFF by default).
+                                      // NOT folded into digest — a report-only flag, so toggling
+                                      // the seam never shifts the engine fingerprint.
 };
 
 namespace detail {
