@@ -43,6 +43,7 @@ add_library(atx-engine STATIC
     src/fund/meta_allocator.cpp
     src/fund/cross_sleeve_risk.cpp
     src/fund/netting.cpp
+    src/fund/meta_book.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
