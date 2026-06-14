@@ -58,6 +58,11 @@ struct TrainConfig {
   atx::usize ckpt_every = 10;   // eval + maybe-checkpoint every N epochs
   atx::usize ensemble_size = 5; // number of independently-seeded members
   atx::u64 master_seed = 0;
+  // L2 weight-decay coefficient (DECOUPLED convention): each minibatch step, after
+  // backward fills grads, grad[i] += l2 * param[i] is added in ascending param
+  // order, then opt.step runs. 0.0 (the default) is a no-op, so a config that does
+  // not set it trains exactly as before (R1: deterministic ascending fold, no RNG).
+  atx::f64 l2 = 0.0;
 };
 
 // The model factory: build + seed-initialise a fresh architecture for `seed`.

@@ -34,6 +34,8 @@ add_library(atx-engine STATIC
     src/learn/linear_alpha.cpp
     src/learn/pipeline.cpp
     src/learn/sequence_features.cpp
+    # sequence alphas (p2 S5-2b-ii — TCN + GRU-lite learned alphas over windows)
+    src/learn/tcn_alpha.cpp
     src/learn/train.cpp
     # nn substrate (p2 S5-2a — deterministic CPU NN framework + generic layers)
     src/learn/nn/layers.cpp

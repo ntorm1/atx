@@ -48,7 +48,7 @@ void seeded_shuffle(std::vector<atx::usize> &order, atx::u64 seed) {
 // One full-pass training epoch over the order-fixed minibatches of `order`.
 void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
                const lin::MatX &y_train, const std::vector<atx::usize> &order,
-               atx::usize batch_size) {
+               atx::usize batch_size, atx::f64 l2) {
   const atx::usize n = order.size();
   for (atx::usize lo = 0; lo < n; lo += batch_size) {
     const atx::usize hi = (lo + batch_size < n) ? lo + batch_size : n;
@@ -62,6 +62,18 @@ void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_tra
     const lin::MatX pred = model.forward(xb);
     const lin::MatX dpred = loss.grad(pred, yb);
     static_cast<void>(model.backward(dpred));
+    // L2 weight-decay (DECOUPLED convention): after backward fills the data
+    // gradient and before opt.step, add l2 * param[i] to each grad in ASCENDING
+    // param order (R1: deterministic scalar fold, no RNG, no reordering). l2 == 0
+    // makes this a no-op, so the default config is byte-identical to before. The
+    // penalty rides the SAME grad span the optimizer consumes, so it inherits the
+    // optimizer's update rule (it is not a separate, reorderable path).
+    if (l2 != 0.0) {
+      const std::span<atx::f64> params = model.params();
+      for (atx::usize i = 0; i < g.size(); ++i) {
+        g[i] += l2 * params[i];
+      }
+    }
     opt.step(model.params(), model.grads());
   }
 }
@@ -128,7 +140,7 @@ train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::Mat
       seeded_shuffle(order, seed_for(cfg.master_seed, "nn-shuffle", m, epoch));
 
       model->train(true);
-      run_epoch(*model, opt, loss, x_train, y_train, order, cfg.batch_size);
+      run_epoch(*model, opt, loss, x_train, y_train, order, cfg.batch_size, cfg.l2);
 
       // Checkpoint-at-best every ckpt_every epochs and always on the last epoch.
       const bool is_last = (epoch + 1 == cfg.epochs);
