@@ -54,20 +54,33 @@
 //  Header-only, every function inline; the fitness path is COLD (one call per
 //  distinct candidate, never on the VM hot loop), so std::vector is fine.
 
-#include <span>      // std::span
-#include <vector>    // std::vector (fold-sliced streams)
+#include <array>  // std::array (the multi-objective vector, S4.1)
+#include <span>   // std::span
+#include <vector> // std::vector (fold-sliced streams)
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
-#include "atx/core/types.hpp" // atx::f64, atx::usize
+#include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
 
-#include "atx/engine/alpha/panel.hpp"    // alpha::Panel, alpha::SignalSet
-#include "atx/engine/combine/store.hpp"       // combine::AlphaStore, AlphaId
-#include "atx/engine/eval/cpcv.hpp"           // eval::cpcv_folds, CpcvFold, LabelSpan
-#include "atx/engine/exec/execution_sim.hpp"   // exec::ExecutionSimulator
-#include "atx/engine/factory/genome.hpp"       // factory::Genome
-#include "atx/engine/loop/weight_policy.hpp"   // engine::WeightPolicy
+#include "atx/engine/alpha/panel.hpp"        // alpha::Panel, alpha::SignalSet
+#include "atx/engine/combine/store.hpp"      // combine::AlphaStore, AlphaId
+#include "atx/engine/eval/cpcv.hpp"          // eval::cpcv_folds, CpcvFold, LabelSpan
+#include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
+#include "atx/engine/factory/genome.hpp"     // factory::Genome
+#include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
 namespace atx::engine::factory {
+
+// =========================================================================
+//  kMaxObjectives — the fixed capacity of a candidate's objective vector (S4.1).
+//
+//  S4.1 ships three objectives {wq, diversify, robust} (a re-projection of the
+//  existing FitnessReport fields — NO new fitness math). The capacity is sized to
+//  5 to leave room for S4.2 (behavioral novelty) and S4.3 (a pre-negated cost
+//  objective) WITHOUT touching this constant or any struct layout again. The
+//  std::array<f64, kMaxObjectives> is a fixed-size, allocation-free inline buffer
+//  — it carries through Scored (search_driver.hpp) into the NSGA-II ObjMatrix.
+// =========================================================================
+inline constexpr atx::usize kMaxObjectives = 5;
 
 // =========================================================================
 //  Reduce — how corr_to_pool folds the per-member |corr| over the pool.
@@ -110,6 +123,12 @@ enum class Reduce : atx::u8 { Max, Mean };
 //  dsr           : deflated Sharpe (F4) at the running trial count N — the
 //                  admission statistic; higher N -> lower dsr.
 //  haircut_sharpe: max(0, sharpe − SR*_N) — the selection-adjusted point estimate.
+//  objectives    : the S4.1 multi-objective vector {wq, diversify, robust, ...},
+//                  a RE-PROJECTION of the fields above (no new fitness math). The
+//                  search's MultiObjective mode ranks genomes by NSGA-II over the
+//                  first `n_objectives` entries; ScalarRaw collapses to `raw`.
+//  n_objectives  : how many leading entries of `objectives` are live (3 in S4.1;
+//                  grows to +novelty (S4.2) / +cost (S4.3) without a layout change).
 //
 //  Trivial aggregate (Rule of Zero). Matches the fwd.hpp forward declaration.
 // =========================================================================
@@ -121,6 +140,8 @@ struct FitnessReport {
   atx::f64 raw;
   atx::f64 dsr;
   atx::f64 haircut_sharpe;
+  std::array<atx::f64, kMaxObjectives> objectives{}; // {wq, diversify, robust, ...}
+  atx::u8 n_objectives{0};                           // live leading entries
 };
 
 // =========================================================================
@@ -197,9 +218,8 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 //  Returns Err only if the candidate fails to compile/evaluate/extract.
 // =========================================================================
 [[nodiscard]] atx::core::Result<FitnessReport>
-pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool,
-                   const alpha::Panel &panel, const WeightPolicy &policy,
-                   const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
-                   const alpha::Panel *weak_panel = nullptr);
+pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
+                   const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
+                   const FitnessCfg &cfg, const alpha::Panel *weak_panel = nullptr);
 
 } // namespace atx::engine::factory

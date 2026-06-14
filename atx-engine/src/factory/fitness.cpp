@@ -7,11 +7,11 @@
 #include <utility>   // std::move (OosAggregate hand-off)
 #include <vector>    // std::vector (fold-sliced streams)
 
-#include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program
-#include "atx/engine/alpha/streams.hpp"  // alpha::extract_streams, AlphaStreams
-#include "atx/engine/alpha/vm.hpp"       // alpha::Engine
-#include "atx/engine/combine/correlation.hpp" // combine::pairwise_complete_corr
-#include "atx/engine/combine/metrics.hpp"     // combine::compute_metrics, AlphaMetrics
+#include "atx/engine/alpha/bytecode.hpp"       // alpha::compile, alpha::Program
+#include "atx/engine/alpha/streams.hpp"        // alpha::extract_streams, AlphaStreams
+#include "atx/engine/alpha/vm.hpp"             // alpha::Engine
+#include "atx/engine/combine/correlation.hpp"  // combine::pairwise_complete_corr
+#include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics, AlphaMetrics
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis
 
@@ -57,9 +57,8 @@ struct OosAggregate {
 
 // Slice a flat per-period stream by an ascending index set (one fold's TEST
 // indices). `width` == 1 for the PnL stream; == n_instruments for positions.
-[[nodiscard]] std::vector<atx::f64> slice_by_idx(std::span<const atx::f64> flat,
-                                                 std::span<const atx::usize> idx,
-                                                 atx::usize width) {
+[[nodiscard]] std::vector<atx::f64>
+slice_by_idx(std::span<const atx::f64> flat, std::span<const atx::usize> idx, atx::usize width) {
   std::vector<atx::f64> out;
   out.reserve(idx.size() * width);
   for (const atx::usize t : idx) {
@@ -111,9 +110,8 @@ struct OosAggregate {
     }
     const std::vector<atx::f64> test_pnl =
         slice_by_idx(pnl0, std::span<const atx::usize>{fold.test_idx}, 1U);
-    const std::vector<atx::f64> test_pos =
-        slice_by_idx(std::span<const atx::f64>{pos0}, std::span<const atx::usize>{fold.test_idx},
-                     n_instruments);
+    const std::vector<atx::f64> test_pos = slice_by_idx(
+        std::span<const atx::f64>{pos0}, std::span<const atx::usize>{fold.test_idx}, n_instruments);
     const combine::AlphaMetrics m =
         combine::compute_metrics(test_pnl, test_pos, n_instruments, book_size);
     // A degenerate fold (zero-variance / single-obs) yields NaN moments; skip it
@@ -219,17 +217,26 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 [[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy) {
   const atx::f64 diversify = std::clamp(1.0 - redundancy, 0.0, 1.0);
   const atx::f64 raw = core.wq * diversify * core.robust;
-  return FitnessReport{core.wq, redundancy, diversify, core.robust,
-                       raw,     core.dsr,   core.haircut_sharpe};
+  FitnessReport rep{core.wq, redundancy, diversify,          core.robust,
+                    raw,     core.dsr,   core.haircut_sharpe};
+  // S4.1: project the existing fields into the multi-objective vector (NO new
+  // fitness math — these are the SAME wq/diversify/robust already assembled into
+  // `raw`). MultiObjective mode ranks over these via NSGA-II; ScalarRaw ignores
+  // them and uses `raw`. The product raw == objectives[0]*objectives[1]*objectives[2]
+  // is the boundary-pin collapse target.
+  rep.objectives[0] = core.wq;
+  rep.objectives[1] = diversify;
+  rep.objectives[2] = core.robust;
+  rep.n_objectives = 3;
+  return rep;
 }
 
 } // namespace detail
 
 [[nodiscard]] atx::core::Result<FitnessReport>
-pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool,
-                   const alpha::Panel &panel, const WeightPolicy &policy,
-                   const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
-                   const alpha::Panel *weak_panel) {
+pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
+                   const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
+                   const FitnessCfg &cfg, const alpha::Panel *weak_panel) {
   // Steps 1, 3, 5 (pool-INDEPENDENT) — written once in fitness_core (byte-identical
   // to the original body for those steps).
   ATX_TRY(const detail::FitnessCore core,
