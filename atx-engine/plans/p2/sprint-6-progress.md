@@ -19,8 +19,8 @@
 | Unit  | Title                                                              | Status      | Commit | Tests | Notes |
 |-------|--------------------------------------------------------------------|-------------|--------|-------|-------|
 | S6-0  | Marker + ledger + as-built recon-verify + seam map                 | ✅ done     | TBD    | —     | This file. Recon confirms all §0 signatures hold. One drift note: `library::Library::admit` signature is `admit(const AlphaCandidate &c, const AlphaGate &gate)` — takes both args; no source-level drift vs plan §0.4. Full seam map below. |
-| S6-1  | `data::Dataset` + `DatasetSchema`                                  | ⏳ pending  | —      | —     | — |
-| S6-2  | `data::DatasetCatalog` + as-of index + lineage                     | ⏳ pending  | —      | —     | — |
+| S6-1  | `data::Dataset` + `DatasetSchema`                                  | ✅ done     | 729d084 | 10   | dataset.hpp + dataset.cpp + data_dataset_test.cpp |
+| S6-2  | `data::DatasetCatalog` + as-of index + lineage                     | ✅ done     | TBD    | 9     | catalog.hpp + catalog.cpp + data_catalog_test.cpp; resolve() returns `Result<reference_wrapper<const Dataset>>` (tl::expected cannot hold references) |
 | S6-3  | PIT alignment rail (date×inst grid join, NaN/drop/count)           | ⏳ pending  | —      | —     | — |
 | S6-4  | `adapt_panel` (Price→Panel) + `adapt_feature` (Feature merge)      | ⏳ pending  | —      | —     | — |
 | S6-5  | `adapt_signal` (Signal→AlphaCandidate via extract_streams)         | ⏳ pending  | —      | —     | — |
