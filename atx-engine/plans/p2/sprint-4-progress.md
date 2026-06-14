@@ -1,6 +1,6 @@
 # Sprint S4 (p2) — Genetic Search & Robust Signal Pipeline — Implementation Progress
 
-**Status:** 🟡 OPEN — 2026-06-13 (S4.0 marker; baseline 1284 pass / 2 disabled)
+**Status:** 🟡 OPEN — 2026-06-14 (S4.1 shipped; suite 1302 pass / 5 disabled)
 **Worktree:** `C:\Users\natha\atx-wt\p2-s4` (isolated — one branch per worktree, no shared-branch race)
 **Branch:** `feat/p2-s4-genetic-search`
 **Base:** `main @ 2a500f1` (docs commit freezing the S4 plan; code-identical to the S3 merge `65f4ccb`)
@@ -59,7 +59,7 @@ op_catalog, mutation, generate}`, `combine::{combiner, gate, store}`, `eval::{de
 | Unit | Title | Status | SHA | Tests | Notes |
 |---|---|---|---|---|---|
 | S4.0 | Marker + ledger + recon | 🟡 | — | — | impl plan frozen; baseline 1284 pass / 2 disabled; §0 seams confirmed at base SHA |
-| S4.1 | Multi-objective NSGA-II Pareto selection (`pareto.hpp` + 4 seams + boundary pin) | ⬜ | — | — | — |
+| S4.1 | Multi-objective NSGA-II Pareto selection (`pareto.hpp` + 4 seams + boundary pin) | ✅ | `1ec0fcd` | 21 | `pareto.hpp` (`dominates`/`fast_nondominated_sort`/`crowding_distance`, NaN→−∞, canon tie-break); `FitnessReport.objectives[{wq,diversify,robust}]` re-projection (`kMaxObjectives=5`); 4 seams rewired (`ObjectiveMode::{ScalarRaw,MultiObjective}`, default MultiObjective); **boundary pin `0xa83f0d3e0b41a18d` byte-identical** in ScalarRaw; DetPool {1,2,4,8} invariant both modes; S3.5 generation wired behind `seed_from_grammar` (default off, axis `0xFFFF…` disjoint from reproduction streams); fitness cache value `u64→CachedScore`; 1302 pass / 5 disabled |
 | S4.2 | Behavioral / phenotypic diversity (`behavior.hpp` + novelty objective) | ⬜ | — | — | — |
 | S4.3 | Cost-aware mining fitness (route `cost_aware.hpp`/`capacity.hpp` into the objective) | ⬜ | — | — | — |
 | S4.4 | Robustness battery (synthetic recovery + regime/walk-forward + lockbox) | ⬜ | — | — | — |
