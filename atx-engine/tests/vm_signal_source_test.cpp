@@ -50,7 +50,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/portfolio/portfolio.hpp"
 
-namespace {
+namespace atxtest_vm_signal_source_test {
 
 using atx::f64;
 using atx::i64;
@@ -440,4 +440,5 @@ TEST(VmSignalSource, DefaultDelayIsNext_FirewallIntact) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_vm_signal_source_test

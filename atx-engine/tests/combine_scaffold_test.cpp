@@ -9,7 +9,7 @@
 
 #include "atx/engine/combine/fwd.hpp"
 
-namespace {
+namespace atxtest_combine_scaffold_test {
 
 // CombineScaffold — caught by `ctest -R Combine`.
 TEST(CombineScaffold, NamespaceCompilesAndLinks) {
@@ -19,4 +19,5 @@ TEST(CombineScaffold, NamespaceCompilesAndLinks) {
   SUCCEED();
 }
 
-} // namespace
+
+}  // namespace atxtest_combine_scaffold_test

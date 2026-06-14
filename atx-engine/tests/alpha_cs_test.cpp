@@ -36,7 +36,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_cs_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -441,4 +441,5 @@ TEST(AlphaCs_Scale, ZeroL1Norm_StaysZeroNoInf) {
   expect_vm_matches_oracle("scale(close, 5)", panel);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_cs_test

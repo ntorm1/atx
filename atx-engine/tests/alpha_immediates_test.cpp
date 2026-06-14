@@ -11,6 +11,8 @@
 #include "atx/engine/alpha/oracle.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
+namespace atxtest_alpha_immediates_test {
+
 using namespace atx::engine::alpha;
 
 TEST(AlphaImmediates, ConstStillWorksWithImmArray) {
@@ -46,3 +48,6 @@ TEST(AlphaImmediates, ConstStillWorksWithImmArray) {
   ASSERT_EQ(out.value().alphas[0].values.size(), 1u);
   EXPECT_DOUBLE_EQ(out.value().alphas[0].values[0], 5.5);
 }
+
+
+}  // namespace atxtest_alpha_immediates_test

@@ -34,7 +34,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_recurrence_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -199,4 +199,5 @@ TEST(AlphaKalmanReg, VmMatchesOracle) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_recurrence_test

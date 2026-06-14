@@ -22,7 +22,7 @@
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 
-namespace {
+namespace atxtest_alpha_dag_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::Ast;
@@ -295,4 +295,5 @@ TEST(AlphaDag, SharedComputeOnePinPerProjection) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_dag_test

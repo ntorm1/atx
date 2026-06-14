@@ -50,7 +50,7 @@
 #include "atx/engine/loop/panel_types.hpp"     // PanelView
 #include "atx/engine/loop/types.hpp"           // InstrumentId
 
-namespace {
+namespace atxtest_linear_alpha_test {
 
 using atx::f64;
 using atx::u16;
@@ -446,4 +446,5 @@ TEST(LinearAlpha, EmitsAsISignalSource_CrossSectionLength) {
   EXPECT_TRUE(any_finite);
 }
 
-} // namespace
+
+}  // namespace atxtest_linear_alpha_test

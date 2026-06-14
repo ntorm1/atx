@@ -39,7 +39,7 @@
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/specific_risk.hpp"
 
-namespace {
+namespace atxtest_risk_specific_risk_test {
 
 using atx::f64;
 using atx::u32;
@@ -479,4 +479,5 @@ TEST(SpecificRisk, DefaultMethodReproducesPopVariancePath) {
   EXPECT_NEAR(dd2, popvar(u_wls[2]), 1e-9);
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_specific_risk_test

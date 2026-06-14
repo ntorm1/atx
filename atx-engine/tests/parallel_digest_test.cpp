@@ -7,6 +7,8 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/parallel/digest.hpp"
 
+namespace atxtest_parallel_digest_test {
+
 using atx::engine::alpha::SignalSet;
 using atx::engine::parallel::signal_set_digest;
 
@@ -53,3 +55,6 @@ TEST(ParallelDigest, ShapeMatters) {
   b.instruments = 2; // same value count, different shape
   EXPECT_NE(signal_set_digest(a), signal_set_digest(b));
 }
+
+
+}  // namespace atxtest_parallel_digest_test

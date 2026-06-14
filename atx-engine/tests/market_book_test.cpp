@@ -37,7 +37,7 @@
 #include "atx/engine/loop/panel_types.hpp" // MarketSlice, SliceRow
 #include "atx/engine/loop/types.hpp"       // InstrumentId
 
-namespace {
+namespace atxtest_market_book_test {
 
 using atx::core::domain::Bar;
 using atx::core::domain::Price;
@@ -226,4 +226,5 @@ TEST(MarketDeathTest, ShiftMark_BeforeAnyPrice_Aborts) {
   EXPECT_DEATH({ mkt.shift_mark(inst(10), 1.0); }, "");
 }
 
-} // namespace
+
+}  // namespace atxtest_market_book_test

@@ -33,7 +33,7 @@
 #include "atx/engine/library/manifest.hpp" // the unit under test
 #include "atx/engine/library/record.hpp"   // Provenance, SegmentReaderLite
 
-namespace {
+namespace atxtest_library_manifest_test {
 
 using atx::f64;
 using atx::u32;
@@ -215,4 +215,5 @@ TEST(LibraryManifest, RebuildEqualsHolds) { // rebuild_equals byte-check
   EXPECT_TRUE(lib::rebuild_equals(m, dirA, default_gate_cfg(), {kMasterSeed}));
 }
 
-} // namespace
+
+}  // namespace atxtest_library_manifest_test

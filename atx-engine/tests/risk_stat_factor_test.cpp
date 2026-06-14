@@ -44,7 +44,7 @@
 #include "atx/engine/loop/types.hpp"       // InstrumentId (Symbol)
 #include "atx/engine/risk/factor_model.hpp"
 
-namespace {
+namespace atxtest_risk_stat_factor_test {
 
 using atx::f64;
 using atx::u32;
@@ -683,4 +683,5 @@ TEST(RiskStatFactor, GlsReweightChangesEstimateBothSpd) {
   EXPECT_NE(rk_gls, rk_ew); // GLS materially changes the estimate
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_stat_factor_test

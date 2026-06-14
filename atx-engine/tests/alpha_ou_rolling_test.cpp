@@ -30,7 +30,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_ou_rolling_test {
 
 using atx::engine::alpha::Engine;
 using atx::engine::alpha::Library;
@@ -155,4 +155,5 @@ TEST(AlphaOuRolling, VmMatchesOracle_SingleOp_OuTheta) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_ou_rolling_test

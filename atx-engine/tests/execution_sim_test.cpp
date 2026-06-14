@@ -40,7 +40,7 @@
 #include "atx/engine/loop/panel_types.hpp"   // MarketSlice, SliceRow
 #include "atx/engine/loop/types.hpp"         // InstrumentId
 
-namespace {
+namespace atxtest_execution_sim_test {
 
 using atx::core::Decimal;
 using atx::core::domain::Bar;
@@ -586,4 +586,5 @@ TEST(ExecSim, SpreadFloor_ZeroSlippage_StillCrossesHalfSpread) {
   EXPECT_NEAR(f[0].price.to_double(), 101.0, 1e-6); // mid + half-spread
 }
 
-} // namespace
+
+}  // namespace atxtest_execution_sim_test

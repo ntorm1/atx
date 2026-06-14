@@ -42,7 +42,7 @@
 #include "atx/engine/risk/multi_horizon.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 
-namespace {
+namespace atxtest_fund_sleeve_test {
 
 using atx::f64;
 using atx::usize;
@@ -227,4 +227,5 @@ TEST(FundSleeve, TagAndCapacity_RoundTrip) {
   EXPECT_EQ(s.cfg.capacity_gross, 2.5e6);
 }
 
-} // namespace
+
+}  // namespace atxtest_fund_sleeve_test

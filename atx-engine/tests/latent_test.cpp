@@ -31,7 +31,7 @@
 #include "atx/engine/learn/feature_matrix.hpp" // FeatureMatrix
 #include "atx/engine/learn/latent.hpp"         // fit_latent, apply_latent, select_interactions
 
-namespace {
+namespace atxtest_latent_test {
 
 using atx::f64;
 using atx::u16;
@@ -238,4 +238,5 @@ TEST(Latent, Interactions_Deterministic) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_latent_test

@@ -27,7 +27,7 @@
 #include "atx/engine/combine/metrics.hpp"     // combine::AlphaMetrics
 #include "atx/engine/library/record.hpp"      // the unit under test
 
-namespace {
+namespace atxtest_library_record_test {
 
 using atx::f64;
 using atx::u32;
@@ -195,4 +195,5 @@ TEST(LibraryRecord, AttachExposesRowsAndDir) {
   EXPECT_EQ(pr.seed, fx.provenance[1].seed);
 }
 
-} // namespace
+
+}  // namespace atxtest_library_record_test

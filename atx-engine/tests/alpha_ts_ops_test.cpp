@@ -12,6 +12,8 @@
 
 #include <gtest/gtest.h>
 
+namespace atxtest_alpha_ts_ops_test {
+
 using namespace atx::engine::alpha::detail;
 
 // ===========================================================================
@@ -133,3 +135,6 @@ TEST(OuDeriv, NaNBGivesNaNForAll) {
   EXPECT_TRUE(ts_is_nan(ou_mean_of(f)));
   EXPECT_TRUE(ts_is_nan(ou_zscore_of(f, 5.0)));
 }
+
+
+}  // namespace atxtest_alpha_ts_ops_test

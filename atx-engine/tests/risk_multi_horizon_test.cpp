@@ -49,7 +49,7 @@
 #include "atx/engine/risk/optimizer.hpp"
 #include "atx/engine/risk/qp_solver.hpp"
 
-namespace {
+namespace atxtest_risk_multi_horizon_test {
 
 using atx::f64;
 using atx::usize;
@@ -580,4 +580,5 @@ TEST(RiskMultiHorizon, SingleNameUniverse) {
   EXPECT_TRUE(std::isfinite(got->books[0][0]));
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_multi_horizon_test

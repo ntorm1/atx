@@ -42,7 +42,7 @@
 #include "atx/engine/loop/types.hpp"          // InstrumentId
 #include "atx/engine/portfolio/portfolio.hpp" // Portfolio, Holding
 
-namespace {
+namespace atxtest_portfolio_test {
 
 using atx::core::Decimal;
 using atx::core::domain::Bar;
@@ -452,4 +452,5 @@ TEST(PortfolioDeathTest, ApplyFill_ZeroQty_Aborts) {
   EXPECT_DEATH({ pf.apply_fill(fill(10, 0, 50)); }, "");
 }
 
-} // namespace
+
+}  // namespace atxtest_portfolio_test

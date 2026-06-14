@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <vector>
 #include "atx/engine/eval/pbo.hpp"
+
+namespace atxtest_eval_pbo_test {
+
 using namespace atx::engine::eval;
 // Deterministic zero-edge noise matrix (NO rng): m[c*T+t] in [-0.5,0.5) via a
 // SplitMix64 hash of (c,t). No per-candidate persistent mean, so a correct CSCV
@@ -42,3 +45,6 @@ TEST(EvalPbo, Deterministic_TwoRunsEqual) {
 TEST(EvalPbo, OddSplitOrTooFew_Errors) {
   EXPECT_FALSE(pbo_cscv_checked(noise_matrix(4,16),4,/*S=*/3).has_value());   // S odd -> Err
 }
+
+
+}  // namespace atxtest_eval_pbo_test

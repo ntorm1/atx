@@ -8,6 +8,8 @@
 
 #include "atx/engine/parallel/det_pool.hpp"
 
+namespace atxtest_parallel_det_pool_test {
+
 using atx::engine::parallel::DetPool;
 
 TEST(ParallelDetPool, ProcessesEveryIndexExactlyOnce) {
@@ -82,3 +84,6 @@ TEST(ParallelDetPool, ForEachWorkerExceptionRethrown) {
                    }),
                std::exception);
 }
+
+
+}  // namespace atxtest_parallel_det_pool_test

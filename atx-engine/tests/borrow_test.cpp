@@ -33,7 +33,7 @@
 #include "atx/engine/loop/types.hpp"         // InstrumentId
 #include "atx/engine/portfolio/portfolio.hpp" // Portfolio
 
-namespace {
+namespace atxtest_borrow_test {
 
 using atx::f64;
 using atx::i64;
@@ -132,4 +132,5 @@ TEST(Borrow, LongOnlyBook_NoBorrowCharge) {
   EXPECT_TRUE(cost::daily_borrow(b, pf, mkt, std::span<const InstrumentId>{uni}) == Decimal{});
 }
 
-} // namespace
+
+}  // namespace atxtest_borrow_test

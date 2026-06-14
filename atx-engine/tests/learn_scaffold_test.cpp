@@ -40,7 +40,7 @@
 
 #include "atx/engine/learn/fwd.hpp" // the layer doc block + forward decls
 
-namespace {
+namespace atxtest_learn_scaffold_test {
 
 using atx::f64;
 
@@ -79,4 +79,5 @@ TEST(LearnScaffold, Xoshiro_SameSeed_SameSequence) {
   EXPECT_EQ(a.next_u64(), b.next_u64());
 }
 
-} // namespace
+
+}  // namespace atxtest_learn_scaffold_test

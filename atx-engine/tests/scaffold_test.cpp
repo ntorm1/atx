@@ -6,6 +6,10 @@
 #include "atx/engine/fwd.hpp"
 #include "atx/engine/loop/types.hpp"
 
+#include "atx/engine/alpha/fwd.hpp"
+
+namespace atxtest_scaffold_test {
+
 // Engine scaffold smoke test: proves the atx-engine test target compiles,
 // links GoogleTest, and can include the engine forward-declaration headers.
 // Real behaviour is covered by the per-unit *_test.cpp suites (P1-1..P1-6,
@@ -43,7 +47,6 @@ TEST(Scaffold, Phase2TypesAliasResolves) {
 //  Phase-3 — alpha-expression DSL scaffold (P3-0)
 // =====================================================================
 
-#include "atx/engine/alpha/fwd.hpp"
 
 TEST(EngineScaffold, Phase3AlphaFwdLinks) {
   // Touch a forward-declared alpha spine type so the fwd header is genuinely
@@ -51,3 +54,6 @@ TEST(EngineScaffold, Phase3AlphaFwdLinks) {
   atx::engine::alpha::Engine *eng = nullptr;
   EXPECT_EQ(eng, nullptr);
 }
+
+
+}  // namespace atxtest_scaffold_test

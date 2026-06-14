@@ -37,7 +37,7 @@
 
 #include "atx/engine/learn/hmm.hpp" // HmmCfg, Hmm, baum_welch, forward_log, backward_loglik, ...
 
-namespace {
+namespace atxtest_hmm_test {
 
 using atx::f64;
 using atx::u32;
@@ -270,4 +270,5 @@ TEST(Hmm, SameSeed_ByteIdenticalParams) {
   EXPECT_EQ(hash_hmm(a), hash_hmm(b)) << "same seed must produce byte-identical HMM params";
 }
 
-} // namespace
+
+}  // namespace atxtest_hmm_test

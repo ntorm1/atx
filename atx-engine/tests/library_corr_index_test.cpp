@@ -41,7 +41,7 @@
 #include "atx/engine/library/corr_index.hpp"  // the unit under test
 #include "atx/engine/library/store.hpp"       // LibraryStore, Provenance
 
-namespace {
+namespace atxtest_library_corr_index_test {
 
 using atx::f64;
 using atx::u32;
@@ -224,4 +224,5 @@ TEST(LibraryCorrIndex, SameSeedSameSignatures) { // determinism (L7)
   EXPECT_EQ(a.signature(one[0]), b.signature(one[0]));
 }
 
-} // namespace
+
+}  // namespace atxtest_library_corr_index_test

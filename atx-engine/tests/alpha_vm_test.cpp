@@ -59,7 +59,7 @@
 #define ATX_VM_HAVE_CRT_HEAP 0
 #endif
 
-namespace {
+namespace atxtest_alpha_vm_test {
 
 #if ATX_VM_HAVE_CRT_HEAP
 // Hook state: a simple gross-allocation counter, armed only inside the window.
@@ -442,4 +442,6 @@ TEST(AlphaVm_Bench, AddMulSelect_NsPerCell_Informational) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_vm_test
+#undef ATX_VM_HAVE_CRT_HEAP

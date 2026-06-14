@@ -36,7 +36,7 @@
 #include "atx/engine/loop/types.hpp"       // InstrumentId (Symbol)
 #include "atx/engine/risk/exposures.hpp"
 
-namespace {
+namespace atxtest_risk_exposures_test {
 
 using atx::f64;
 using atx::u32;
@@ -437,4 +437,5 @@ TEST(RiskExposures, SpanLengthMismatchIsError) {
   EXPECT_FALSE(r.has_value());
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_exposures_test

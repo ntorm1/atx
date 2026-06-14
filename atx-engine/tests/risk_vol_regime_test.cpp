@@ -42,7 +42,7 @@
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/vol_regime.hpp"
 
-namespace {
+namespace atxtest_risk_vol_regime_test {
 
 using atx::f64;
 using atx::u32;
@@ -374,4 +374,5 @@ TEST(RiskVolRegime, ZeroHalfLifeIsByteIdenticalNoOp) {
   EXPECT_EQ(m_def->risk(ws), m_zero->risk(ws)); // vra_halflife==0 ⇒ byte-identical
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_vol_regime_test

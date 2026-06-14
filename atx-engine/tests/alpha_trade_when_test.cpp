@@ -45,7 +45,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_trade_when_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -487,4 +487,5 @@ TEST(AlphaTradeWhen_Boundary, AllNaNInputs_FastEqualsOracle) {
   assert_differential("a = hump(close, 0.5)\n", pd);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_trade_when_test

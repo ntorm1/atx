@@ -49,7 +49,7 @@
 #include "atx/engine/learn/hmm.hpp"            // Hmm, HmmCfg, baum_welch
 #include "atx/engine/learn/pipeline.hpp"       // PipelineCfg + the thin e2e harness
 
-namespace {
+namespace atxtest_learn_integration_test {
 
 using atx::f64;
 using atx::u16;
@@ -350,4 +350,5 @@ TEST(LearnIntegration, ThreadCountInvariance_DigestUnchanged) {
       << "the single-threaded order-fixed pipeline must give a worker-invariant digest";
 }
 
-} // namespace
+
+}  // namespace atxtest_learn_integration_test

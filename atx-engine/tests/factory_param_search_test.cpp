@@ -27,7 +27,7 @@
 #include "atx/engine/factory/genome.hpp"
 #include "atx/engine/factory/param_search.hpp"
 
-namespace {
+namespace atxtest_factory_param_search_test {
 
 using atx::core::Xoshiro256pp;
 using atx::engine::alpha::analyze;
@@ -171,4 +171,5 @@ TEST(FactoryParamSearch, ZeroFreeConstantsIsNoOp) {
   EXPECT_TRUE(analyze(best->ast).has_value());
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_param_search_test

@@ -39,7 +39,7 @@
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
-namespace {
+namespace atxtest_risk_multi_period_test {
 
 using atx::f64;
 using atx::usize;
@@ -346,4 +346,5 @@ TEST(MultiPeriodOptimizer, RejectsInvalidTradeRate) {
   EXPECT_FALSE(MultiPeriodOptimizer{over_cfg}.run(sched, alpha_at, model_at, cost).has_value());
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_multi_period_test

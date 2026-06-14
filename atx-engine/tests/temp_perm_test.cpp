@@ -36,7 +36,7 @@
 #include "atx/engine/loop/panel_types.hpp"   // MarketSlice, SliceRow
 #include "atx/engine/loop/types.hpp"         // InstrumentId
 
-namespace {
+namespace atxtest_temp_perm_test {
 
 using atx::core::Decimal;
 using atx::core::domain::Bar;
@@ -197,4 +197,5 @@ TEST(TempPerm, SplitRatio_PositiveAndStable) {
   EXPECT_TRUE(std::isfinite(ratio));
 }
 
-} // namespace
+
+}  // namespace atxtest_temp_perm_test

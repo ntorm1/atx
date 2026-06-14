@@ -42,7 +42,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_ops_brain_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -525,4 +525,5 @@ TEST(AlphaBrain_Boundary, WindowExceedsHistory_FastEqualsOracle) {
   assert_differential("a = ts_count_nans(close, 10)\n", pd);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_ops_brain_test

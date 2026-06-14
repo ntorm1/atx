@@ -28,7 +28,7 @@
 #include "atx/engine/factory/crossover.hpp"
 #include "atx/engine/factory/genome.hpp"
 
-namespace {
+namespace atxtest_factory_crossover_test {
 
 using atx::core::Xoshiro256pp;
 using atx::engine::alpha::analyze;
@@ -186,4 +186,5 @@ TEST(FactoryCrossover, SameSeedSameChild) { // F1
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_crossover_test

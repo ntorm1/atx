@@ -37,8 +37,14 @@
 #include <windows.h>
 // NOLINTEND(misc-include-cleaner)
 #endif
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
-namespace {
+namespace atxtest_shm_determinism_test {
 
 // Return a unique temp file path (not yet created). Uses Win32 secure temp APIs
 // on Windows to avoid the MSVC CRT tmpnam deprecation (which is fatal under /WX).
@@ -78,7 +84,6 @@ atx::u64 drain_hash(atx::engine::EventBus<> &bus) {
   return static_cast<atx::u64>(h);
 }
 
-} // namespace
 
 TEST(ShmDeterminism_ShmFeedEqualsInMemory_ByteStream, SameDigest) {
   // --- shared data: two symbols, two timestamps, dense ----------------------
@@ -148,3 +153,6 @@ TEST(ShmDeterminism_ShmFeedEqualsInMemory_ByteStream, SameDigest) {
   EXPECT_EQ(shm_digest, mem_digest);
   static_cast<void>(std::remove(path.c_str()));
 }
+
+
+}  // namespace atxtest_shm_determinism_test

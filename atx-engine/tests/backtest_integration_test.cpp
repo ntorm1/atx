@@ -51,7 +51,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/portfolio/portfolio.hpp"
 
-namespace {
+namespace atxtest_backtest_integration_test {
 
 using atx::f64;
 using atx::i64;
@@ -485,4 +485,5 @@ TEST(BacktestIntegration, Survivorship_DelistedTradesToFinalBar_NotRetroactively
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_backtest_integration_test

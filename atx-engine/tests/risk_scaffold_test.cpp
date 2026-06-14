@@ -9,7 +9,7 @@
 
 #include "atx/engine/risk/fwd.hpp"
 
-namespace {
+namespace atxtest_risk_scaffold_test {
 
 // RiskScaffold — caught by `ctest -R RiskScaffold`.
 TEST(RiskScaffold, NamespaceCompilesAndLinks) {
@@ -19,4 +19,5 @@ TEST(RiskScaffold, NamespaceCompilesAndLinks) {
   SUCCEED();
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_scaffold_test

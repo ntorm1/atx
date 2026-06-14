@@ -40,7 +40,7 @@
 #include "atx/engine/parallel/det_pool.hpp"   // parallel::DetPool
 #include "atx/engine/parallel/digest.hpp"     // parallel::signal_set_digest
 
-namespace {
+namespace atxtest_factory_search_driver_test {
 
 using atx::f64;
 using atx::usize;
@@ -293,4 +293,5 @@ TEST(FactorySearchDriver, EvalDigestIsWorkerInvariantAndMatchesSingleThread) {
          "warm-up+reuse is unverified for arbitrary EVOLVED candidates)";
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_search_driver_test

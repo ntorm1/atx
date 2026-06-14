@@ -36,7 +36,7 @@
 
 #include "atx/engine/fund/meta_allocator.hpp" // the unit under test
 
-namespace {
+namespace atxtest_fund_meta_allocator_test {
 
 using atx::f64;
 using atx::usize;
@@ -508,4 +508,5 @@ TEST(FundMetaAllocator, Allocate_InvalidConfigScalars_ReturnInvalidArgument) {
   reject(zero_iters);
 }
 
-} // namespace
+
+}  // namespace atxtest_fund_meta_allocator_test

@@ -50,7 +50,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/portfolio/portfolio.hpp"
 
-namespace {
+namespace atxtest_combine_combined_source_test {
 
 using atx::f64;
 using atx::i64;
@@ -477,4 +477,5 @@ TEST(CombinedSignalSource, RealLoop_RepeatRun_IsByteIdentical) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_combine_combined_source_test

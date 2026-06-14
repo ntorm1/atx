@@ -22,7 +22,7 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
 
-namespace {
+namespace atxtest_alpha_panel_test {
 
 using atx::core::ErrorCode;
 using atx::engine::alpha::Panel;
@@ -257,4 +257,5 @@ TEST(AlphaPanel_OwnedCopy_RepointsSpans, OwnedCopySafe) {
   EXPECT_DOUBLE_EQ(copy.field_all(copy.field_id("close").value())[3], 4.0);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_panel_test

@@ -52,7 +52,7 @@
 #include "atx/engine/risk/factor_model.hpp" // FactorModel, FactorComponents, FactorModelBuilder
 #include "atx/engine/risk/optimizer.hpp"    // PortfolioOptimizer, OptimizerConfig
 
-namespace {
+namespace atxtest_risk_dead_factor_test {
 
 using atx::f64;
 using atx::u32;
@@ -538,4 +538,5 @@ TEST(DeadFactorBuild, BuildComponentsMatchesBuild) {
   EXPECT_EQ(full2->risk(std::span<const f64>{probe}), full->risk(std::span<const f64>{probe}));
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_dead_factor_test

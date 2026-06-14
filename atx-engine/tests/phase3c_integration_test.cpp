@@ -67,7 +67,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/portfolio/portfolio.hpp"
 
-namespace {
+namespace atxtest_phase3c_integration_test {
 
 using atx::f64;
 using atx::i64;
@@ -641,4 +641,5 @@ TEST(Phase3cIntegration_Phase4Readiness, FlatStream_SharpeIsZero_NotNan) {
   EXPECT_DOUBLE_EQ(sharpe, 0.0) << "a flat (single-instrument, zero-weight) stream -> 0 Sharpe";
 }
 
-} // namespace
+
+}  // namespace atxtest_phase3c_integration_test

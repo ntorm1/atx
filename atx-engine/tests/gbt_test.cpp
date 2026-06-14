@@ -42,7 +42,7 @@
 #include "atx/engine/learn/learned_source.hpp" // LearnedModel, GbtNode/Tree/Forest
 #include "atx/engine/learn/linear_alpha.hpp"   // fit_linear, predict_at, oos_deflated_sharpe
 
-namespace {
+namespace atxtest_gbt_test {
 
 using atx::f64;
 using atx::i32;
@@ -302,4 +302,5 @@ TEST(Gbt, NoEdgePanel_RejectedByDeflation) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_gbt_test

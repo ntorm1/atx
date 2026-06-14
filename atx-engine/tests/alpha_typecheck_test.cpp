@@ -25,7 +25,7 @@
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 
-namespace {
+namespace atxtest_alpha_typecheck_test {
 
 using atx::core::ErrorCode;
 using atx::engine::alpha::Analysis;
@@ -378,4 +378,5 @@ TEST(AlphaTypecheck, OuMeanRollingLookback) {
   EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 9U); // (d-1)+0
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_typecheck_test

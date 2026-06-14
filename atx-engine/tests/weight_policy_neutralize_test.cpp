@@ -32,7 +32,7 @@
 #include "atx/engine/loop/types.hpp"         // InstrumentId, Universe
 #include "atx/engine/loop/weight_policy.hpp" // WeightPolicy, Transform
 
-namespace {
+namespace atxtest_weight_policy_neutralize_test {
 
 using atx::f64;
 using atx::u32;
@@ -316,4 +316,5 @@ TEST(WeightPolicyNeutralize, StagesOff_ByteIdenticalToPhase2Pipeline) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_weight_policy_neutralize_test

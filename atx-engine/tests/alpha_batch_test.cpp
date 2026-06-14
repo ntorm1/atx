@@ -39,7 +39,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_batch_test {
 
 using atx::core::hash_combine;
 using atx::engine::alpha::analyze;
@@ -394,4 +394,5 @@ TEST(AlphaBatch_Errors, WellFormedBatch_MapsOneToOne_RootsMatchSrcCount) {
   EXPECT_EQ(prog.value().roots.size(), srcs.size());
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_batch_test

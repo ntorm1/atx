@@ -36,7 +36,7 @@
 
 #include "atx/engine/risk/factor_model.hpp"
 
-namespace {
+namespace atxtest_risk_factor_model_test {
 
 using atx::f64;
 using atx::usize;
@@ -292,4 +292,5 @@ TEST(RiskFactorModel, CreateRejectsFactorCountAboveStackBound) {
   EXPECT_FALSE(FactorModel::create(x, f, d, 0U, 1U).has_value());
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_factor_model_test

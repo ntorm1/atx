@@ -33,7 +33,7 @@
 
 #include "atx/engine/combine/metrics.hpp" // combine::AlphaMetrics, compute_metrics
 
-namespace {
+namespace atxtest_combine_metrics_test {
 
 using atx::f64;
 using atx::usize;
@@ -267,4 +267,5 @@ TEST(AlphaMetrics, EmptyStreamHasNaNMomentsAndZeroDrawdown) {
   EXPECT_EQ(m.turnover, 0.0);
 }
 
-} // namespace
+
+}  // namespace atxtest_combine_metrics_test

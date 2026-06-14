@@ -63,7 +63,7 @@
 
 #include "atx/engine/book/pipeline.hpp" // the unit under test
 
-namespace {
+namespace atxtest_book_pipeline_test {
 
 using atx::f64;
 using atx::u32;
@@ -402,7 +402,6 @@ TEST(BookPipeline, EndToEndRunIsByteIdentical) {
 //  PanelView/build path the BookPipeline uses (RESIDUAL #2). The book-prefix truncation
 //  harness is the documented deferred extension.
 // =============================================================================
-namespace {
 // Minimal PanelView backing (the PanelFixture pattern). Row 0 == newest.
 class PanelBack {
 public:
@@ -450,7 +449,6 @@ private:
   std::vector<f64> fields_;
   std::vector<u64> mask_;
 };
-} // namespace
 
 TEST(BookPipeline, NoLookAheadTruncationInvariant) {
   constexpr usize kRows = 40U;
@@ -667,4 +665,5 @@ TEST(BookPipeline, DeadFactorAugmentationIsReal) {
       << "the pre-retired dead pool must yield >=1 extracted dead risk factor (R6)";
 }
 
-} // namespace
+
+}  // namespace atxtest_book_pipeline_test

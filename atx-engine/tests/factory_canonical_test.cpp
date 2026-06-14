@@ -39,7 +39,7 @@
 #include "atx/engine/factory/canonical.hpp"
 #include "atx/engine/factory/genome.hpp"
 
-namespace {
+namespace atxtest_factory_canonical_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::Ast;
@@ -261,4 +261,5 @@ TEST(FactoryCanonical, CanonSetDedupsOnHit) {
   EXPECT_TRUE(seen.insert(canonical_hash(z.ast, root(z))));   // genuinely different
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_canonical_test

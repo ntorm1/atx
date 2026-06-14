@@ -28,7 +28,7 @@
 
 #include "atx/engine/cost/robust_ls.hpp" // irls_huber, RobustCfg, RobustFit
 
-namespace {
+namespace atxtest_robust_ls_test {
 
 using atx::f64;
 using atx::u64;
@@ -143,4 +143,5 @@ TEST(RobustLs, ReportsBoundedIterationsAndResiduals) {
   EXPECT_TRUE(std::isfinite(rob.r2));
 }
 
-} // namespace
+
+}  // namespace atxtest_robust_ls_test

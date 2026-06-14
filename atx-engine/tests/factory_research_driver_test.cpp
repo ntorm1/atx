@@ -37,7 +37,7 @@
 #include "atx/engine/library/library.hpp"  // library::Library, rebuild_equals
 #include "atx/engine/library/manifest.hpp" // library::LibraryManifest
 
-namespace {
+namespace atxtest_factory_research_driver_test {
 
 using atx::f64;
 using atx::u32;
@@ -339,4 +339,5 @@ TEST(ResearchDriver, SeededEngineDigestIsDeterministic) {
   EXPECT_EQ(a.runs, b.runs);
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_research_driver_test

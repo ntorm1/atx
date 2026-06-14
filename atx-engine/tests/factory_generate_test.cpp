@@ -28,7 +28,7 @@
 
 #include "atx/engine/factory/generate.hpp"
 
-namespace {
+namespace atxtest_factory_generate_test {
 
 using atx::core::Xoshiro256pp;
 using atx::engine::alpha::analyze;
@@ -162,4 +162,5 @@ TEST(GrammarGen, GeneratedGenomes_RunOracleEqualsVm) {
   EXPECT_EQ(evaluated, 300); // every generated genome was VM-safe
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_generate_test

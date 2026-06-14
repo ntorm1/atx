@@ -25,7 +25,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_cs_gapfill_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -293,4 +293,5 @@ TEST(VecReduce, RandomAndComposed_MatchesOracle) {
   expect_vm_matches_oracle("rank(close / vec_avg(volume))", panel);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_cs_gapfill_test

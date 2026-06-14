@@ -24,8 +24,14 @@
 #include <windows.h>
 // NOLINTEND(misc-include-cleaner)
 #endif
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
-namespace {
+namespace atxtest_multi_segment_bar_feed_test {
 
 // Return a unique temp file path (not yet created). Uses Win32 secure temp APIs
 // on Windows to avoid the MSVC CRT tmpnam deprecation (which is fatal under /WX).
@@ -67,7 +73,6 @@ std::string make_seg(const std::string &name, const std::string &sym, atx::i64 t
   return path;
 }
 
-} // namespace
 
 TEST(MultiSegmentBarFeed, StreamsSegmentsInDateOrder) {
   const std::string s1 = make_seg("ms1", "AAA", 100, 11.0);
@@ -137,3 +142,6 @@ TEST(MultiSegmentBarFeed, SameSymbolAcrossDaysInternsOnce) {
   static_cast<void>(std::remove(s1.c_str()));
   static_cast<void>(std::remove(s2.c_str()));
 }
+
+
+}  // namespace atxtest_multi_segment_bar_feed_test

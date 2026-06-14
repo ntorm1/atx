@@ -39,7 +39,7 @@
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
-namespace {
+namespace atxtest_risk_optimizer_test {
 
 using atx::f64;
 using atx::usize;
@@ -552,4 +552,5 @@ TEST(RiskOptimizer, OutputsAreFinite) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_optimizer_test

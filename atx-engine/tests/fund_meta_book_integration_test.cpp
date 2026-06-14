@@ -50,7 +50,7 @@
 #include "atx/engine/risk/multi_horizon.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 
-namespace {
+namespace atxtest_fund_meta_book_integration_test {
 
 using atx::f64;
 using atx::usize;
@@ -647,4 +647,5 @@ TEST(FundMetaBook, NullReturnsCallback_ReturnsErr) {
   EXPECT_EQ(got.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-} // namespace
+
+}  // namespace atxtest_fund_meta_book_integration_test

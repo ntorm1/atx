@@ -24,8 +24,14 @@
 #include <windows.h>
 // NOLINTEND(misc-include-cleaner)
 #endif
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
-namespace {
+namespace atxtest_shm_bar_feed_test {
 
 // Return a unique temp file path (not yet created). Uses Win32 secure temp APIs
 // on Windows to avoid the MSVC CRT tmpnam deprecation (which is fatal under /WX).
@@ -67,7 +73,6 @@ std::string make_ohlcv(const std::string &name) {
   return path;
 }
 
-} // namespace
 
 TEST(ShmBarFeed_StepPublishesPresentBars_NoLookAhead, PublishesBars) {
   const std::string path = make_ohlcv("feed1");
@@ -105,3 +110,6 @@ TEST(ShmBarFeed_StepPublishesPresentBars_NoLookAhead, PublishesBars) {
   EXPECT_FALSE(feed.step());
   static_cast<void>(std::remove(path.c_str()));
 }
+
+
+}  // namespace atxtest_shm_bar_feed_test

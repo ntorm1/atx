@@ -35,7 +35,7 @@
 
 #include "atx/engine/factory/factory.hpp" // factory::Factory, FactoryConfig, FactoryReport
 
-namespace {
+namespace atxtest_factory_integration_test {
 
 using atx::f64;
 using atx::usize;
@@ -270,4 +270,5 @@ TEST(FactoryIntegration, ReuseS1BiasAuditVerbatim) {
   EXPECT_TRUE(atx::engine::validation::catches_overfit_synthetic());
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_integration_test

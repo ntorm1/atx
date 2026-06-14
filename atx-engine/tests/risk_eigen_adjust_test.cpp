@@ -32,7 +32,7 @@
 
 #include "atx/engine/risk/eigen_adjust.hpp"
 
-namespace {
+namespace atxtest_risk_eigen_adjust_test {
 
 using atx::f64;
 using atx::u64;
@@ -209,4 +209,5 @@ TEST(EigenAdjust, ZeroSimsIsNoOpIdentity) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_eigen_adjust_test

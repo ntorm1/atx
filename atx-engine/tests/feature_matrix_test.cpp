@@ -32,7 +32,7 @@
 #include "atx/engine/learn/feature_matrix.hpp"
 #include "atx/engine/learn/train.hpp"
 
-namespace {
+namespace atxtest_feature_matrix_test {
 
 using atx::engine::alpha::Panel;
 using atx::engine::combine::AlphaId;
@@ -190,4 +190,5 @@ TEST(TrainScaffold, DateFold_ExpandsToRows_NoTestDateInTrain) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_feature_matrix_test

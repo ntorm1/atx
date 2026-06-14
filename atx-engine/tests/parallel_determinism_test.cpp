@@ -55,7 +55,7 @@
 #include "atx/engine/parallel/digest.hpp"
 #include "atx/engine/parallel/parallel_run.hpp"
 
-namespace {
+namespace atxtest_parallel_determinism_test {
 
 namespace eval = atx::engine::eval;
 
@@ -293,4 +293,5 @@ TEST(ParallelDeterminism, BatchEvalRunToRunStable) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_parallel_determinism_test

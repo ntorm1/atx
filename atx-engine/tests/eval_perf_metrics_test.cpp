@@ -4,6 +4,9 @@
 #include <cmath>
 #include "atx/engine/eval/perf_metrics.hpp"
 #include "atx/engine/combine/metrics.hpp"
+
+namespace atxtest_eval_perf_metrics_test {
+
 using namespace atx::engine::eval;
 TEST(EvalPerfMetrics, Sharpe_MatchesCombineBitForBit) {
   std::vector<double> pnl{0.0, 0.01, -0.005, 0.02, 0.0, 0.015};
@@ -40,3 +43,6 @@ TEST(EvalPerfMetrics, EmptyAndSingle_Degenerate) {
   EXPECT_NO_FATAL_FAILURE((void)compute_return_metrics(std::span<const double>{}, {}));
   std::vector<double> one{0.0}; (void)compute_return_metrics(one, {});
 }
+
+
+}  // namespace atxtest_eval_perf_metrics_test

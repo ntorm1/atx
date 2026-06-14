@@ -37,7 +37,7 @@
 #include "atx/engine/loop/signal_source.hpp" // ISignalSource, SignalView, ScriptedSignalSource
 #include "atx/engine/loop/types.hpp"         // InstrumentId
 
-namespace {
+namespace atxtest_signal_source_test {
 
 using atx::core::ErrorCode;
 using atx::engine::InstrumentId;
@@ -283,4 +283,5 @@ TEST(ScriptedSignalSource, ThroughBaseInterface_EvaluateAndLookback) {
   EXPECT_DOUBLE_EQ(r->values[1], 2.0);
 }
 
-} // namespace
+
+}  // namespace atxtest_signal_source_test

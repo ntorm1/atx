@@ -38,7 +38,7 @@
 #include "atx/engine/risk/psd_repair.hpp"
 #include "atx/engine/risk/shrinkage.hpp"
 
-namespace {
+namespace atxtest_risk_shrinkage_psd_test {
 
 using atx::f64;
 using atx::usize;
@@ -424,4 +424,5 @@ TEST(RiskShrinkagePsd, EigenvalueClipFloorsSpectrum) {
   EXPECT_GE(min_eig(clipped), eps - 1e-9);
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_shrinkage_psd_test

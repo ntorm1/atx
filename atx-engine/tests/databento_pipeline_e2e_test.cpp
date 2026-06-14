@@ -36,10 +36,11 @@
 
 #include "dbn_fixture.hpp" // atx::test::{OhlcvRow, SymMap, build_dbn, zstd_compress, build_zip}
 
+namespace atxtest_databento_pipeline_e2e_test {
+
 namespace db = atx::external::databento;
 namespace fs = std::filesystem;
 
-namespace {
 
 // ts in ns for 2024-01-02 and 2024-01-03 at 00:00:00 UTC (mirrors databento_test).
 constexpr std::uint64_t kJan02 = 1'704'153'600'000'000'000ULL;
@@ -115,7 +116,6 @@ std::vector<Published> drive_feed(atx::engine::data::MultiSegmentBarFeed &feed,
   return pubs;
 }
 
-} // namespace
 
 // Loader -> bridge -> feed round-trip. Asserts the published bar closes equal the
 // fixture's close_i64 * 1e-9 per (day, symbol), the clock crosses the day
@@ -190,3 +190,6 @@ TEST(DatabentoPipelineE2E, LoaderBridgeFeedRoundTrip) {
   fs::remove_all(seg_dir);
   static_cast<void>(std::remove(zip_path.string().c_str()));
 }
+
+
+}  // namespace atxtest_databento_pipeline_e2e_test

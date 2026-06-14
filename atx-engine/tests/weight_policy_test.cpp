@@ -36,7 +36,7 @@
 #include "atx/core/domain/domain.hpp"      // Bar, Price, Quantity
 #include "atx/engine/loop/panel_types.hpp" // MarketSlice, SliceRow
 
-namespace {
+namespace atxtest_weight_policy_test {
 
 using atx::f64;
 using atx::i64;
@@ -420,4 +420,5 @@ TEST(WeightPolicy, ReconcileTruncatesTowardZero_FractionalSharesDropped) {
   EXPECT_EQ(orders[0].qty, 16);
 }
 
-} // namespace
+
+}  // namespace atxtest_weight_policy_test

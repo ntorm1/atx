@@ -42,7 +42,7 @@
 #include "atx/engine/risk/cov_ewma.hpp"
 #include "atx/engine/risk/factor_model.hpp" // detail::factor_covariance (single-MLE reference)
 
-namespace {
+namespace atxtest_risk_cov_ewma_test {
 
 using atx::f64;
 using atx::u32;
@@ -415,4 +415,5 @@ TEST(CovEwma, DefaultConfigReproducesP4AndEwmaDiffers) {
   EXPECT_NE(m_ewma->risk(ws), m_def->risk(ws)); // opt-in path changes the result
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_cov_ewma_test

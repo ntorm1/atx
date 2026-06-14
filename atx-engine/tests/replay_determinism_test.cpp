@@ -47,7 +47,7 @@
 #include "atx/engine/data/market.hpp"
 #include "atx/engine/event/event.hpp"
 
-namespace {
+namespace atxtest_replay_determinism_test {
 
 using atx::i64;
 using atx::u32;
@@ -309,4 +309,5 @@ TEST(ReplayDeterminism, CoalescedSlice_SymbolOrder_StableAcrossRuns) {
   EXPECT_EQ(run_a[3], 20U) << "tie slice: higher source_idx (symbol 20) second";
 }
 
-} // namespace
+
+}  // namespace atxtest_replay_determinism_test

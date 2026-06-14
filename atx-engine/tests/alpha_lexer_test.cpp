@@ -24,7 +24,7 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/lexer.hpp"
 
-namespace {
+namespace atxtest_alpha_lexer_test {
 
 using atx::core::ErrorCode;
 using atx::engine::alpha::lex;
@@ -487,4 +487,5 @@ TEST(AlphaLexer, NumberDotNotSplit) {
   EXPECT_EQ(toks.value()[0].kind, TokenKind::Number); // 3.5 stays one numeric literal
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_lexer_test

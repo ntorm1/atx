@@ -63,7 +63,7 @@
 #include "atx/engine/library/record.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
-namespace {
+namespace atxtest_factory_pool_view_test {
 
 using atx::f64;
 using atx::u32;
@@ -419,4 +419,5 @@ TEST(FactoryPoolView, EmptyPoolWorstCorrIsZero) {
   EXPECT_NEAR(LibraryPool{empty_lib}.worst_corr(probe), 0.0, 1e-12);
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_pool_view_test

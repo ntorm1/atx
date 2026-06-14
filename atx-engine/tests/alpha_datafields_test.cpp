@@ -29,7 +29,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_datafields_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -222,4 +222,5 @@ TEST(Datafields, MissingVolume_IsError) {
   EXPECT_FALSE(p.has_value());
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_datafields_test

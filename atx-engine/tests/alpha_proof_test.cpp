@@ -65,7 +65,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_proof_test {
 
 using atx::core::hash_combine;
 using atx::engine::alpha::analyze;
@@ -521,4 +521,5 @@ TEST(AlphaProof_Bench, HighCseProgram_ReportsRatioAndThroughput) {
   SUCCEED() << "informational bench; no thresholds asserted (machine + Debug dependent)";
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_proof_test

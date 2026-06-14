@@ -32,7 +32,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_ts_brain_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -281,4 +281,5 @@ TEST(AlphaTsBrain_Hparam, OutOfRange_Rejected) {
   EXPECT_FALSE(compiles("ts_entropy(close, 4, 0)"));      // buckets must be >= 1
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_ts_brain_test

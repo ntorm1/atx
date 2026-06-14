@@ -46,7 +46,7 @@
 #include "atx/engine/risk/horizon_blend.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
-namespace {
+namespace atxtest_risk_covariance_integration_test {
 
 using atx::f64;
 using atx::u32;
@@ -398,4 +398,5 @@ TEST(RiskCovarianceIntegration, AllFeaturesTruncationInvariant) {
   EXPECT_EQ(ma->risk(ws), mb->risk(ws)); // older rows beyond the window are invisible
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_covariance_integration_test

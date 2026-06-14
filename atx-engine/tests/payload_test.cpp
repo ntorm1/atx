@@ -23,7 +23,7 @@
 #include "atx/engine/event/event.hpp"   // Event, EventType, kPayloadBytes
 #include "atx/engine/exec/payloads.hpp" // SignalPayload, OrderPayload, FillPayload, make_*_event
 
-namespace {
+namespace atxtest_payload_test {
 
 using atx::core::Decimal;
 using atx::core::ErrorCode;
@@ -402,4 +402,5 @@ TEST(OrderTypeToString, IsConstexpr) {
   EXPECT_EQ(market_sv, std::string_view{"Market"});
 }
 
-} // namespace
+
+}  // namespace atxtest_payload_test
