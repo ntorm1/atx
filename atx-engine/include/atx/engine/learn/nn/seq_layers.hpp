@@ -343,4 +343,104 @@ private:
   atx::usize c_;
 };
 
+// ===========================================================================
+//  Attention1Head — a single-head causal scaled-dot-product attention layer.
+//
+//    Q = X·Wq, K = X·Wk, V = X·Wv          (each T×d_model; X is the T×C_in window)
+//    S = Q·Kᵀ / sqrt(d_model)               (T×T raw scores)
+//    S[i,j] = -inf  for j > i               (CAUSAL MASK — the structural R2 guard)
+//    A = softmax(S) row-wise                (each output row i mixes only j <= i)
+//    O = A·V                                (T×d_model)
+//
+//  forward : MatX(B, T*C_in) -> MatX(B, T*d_model). Each sample row is reshaped to
+//            (T, C_in), the math above runs per sample, and the (T, d_model) output
+//            is re-flattened time-major (col t*d_model + o).
+//  backward: MatX(B, T*d_model) -> MatX(B, T*C_in). The hand-written adjoint threads
+//            dL/dO -> (dA, dV) through O=A·V, the row-wise softmax Jacobian
+//            dS_i = A_i ⊙ (dA_i − (dA_i·A_i)), the causal mask (masked entries get
+//            ZERO grad — never written), and S=QKᵀ/√d -> (dQ, dK); then the three
+//            projections give dWq/dWk/dWv [+ biases] and dL/dx. Every reduction is
+//            an ASCENDING SCALAR FOLD (R1) — the softmax max-subtract + exp + sum +
+//            normalize are all ordered; no simd::*. The FD gradient check in the
+//            test is the correctness proof (R3 — the #1 risk: softmax adjoint).
+//
+//  =====================================================================
+//   Causality (R2 — the structural look-ahead guard)
+//  =====================================================================
+//  Output position i attends ONLY to key/value positions j <= i: the causal mask
+//  sets S[i,j] = -inf for every future j > i, so softmax assigns those entries zero
+//  weight and O[i] is a function of X[0..i] alone. Perturbing the INPUT at any step
+//  > i therefore leaves O[i] bit-identical (the truncation/no-look-ahead test).
+//
+//  =====================================================================
+//   Parameter contract (flat layout, ascending) — C = C_in, D = d_model
+//  =====================================================================
+//    [ Wq : C*D scalars, index (i*D + o) ]  (input ci slowest, output o fastest)
+//    [ Wk : C*D scalars, index (i*D + o) ]
+//    [ Wv : C*D scalars, index (i*D + o) ]
+//    [ bq : D scalars ] [ bk : D scalars ] [ bv : D scalars ]   (when biased)
+//  bind_params / state_to / state_from all walk THIS order (R1: digest byte order
+//  == ascending param order). Matches the sibling layers' row-major W[i*D+o].
+// ===========================================================================
+class Attention1Head final : public Module {
+public:
+  Attention1Head(atx::usize time_steps, atx::usize in_channels, atx::usize d_model,
+                 bool bias = true);
+
+  [[nodiscard]] lin::MatX forward(const lin::MatX &x) override;
+  [[nodiscard]] lin::MatX backward(const lin::MatX &grad_out) override;
+
+  [[nodiscard]] atx::usize param_count() const noexcept override { return n_params_; }
+  void bind_params(std::span<atx::f64> params, std::span<atx::f64> grads) override;
+  [[nodiscard]] std::span<atx::f64> params() noexcept override { return params_; }
+  [[nodiscard]] std::span<atx::f64> grads() noexcept override { return grads_; }
+
+  void state_to(std::vector<atx::f64> &out) const override;
+  void state_from(std::span<const atx::f64> in) override;
+
+  [[nodiscard]] atx::usize time_steps() const noexcept { return T_; }
+  [[nodiscard]] atx::usize in_channels() const noexcept { return c_in_; }
+  [[nodiscard]] atx::usize d_model() const noexcept { return d_; }
+  [[nodiscard]] bool has_bias() const noexcept { return bias_; }
+
+private:
+  // Project the window row of one sample b into Q/K/V (each T×D), filling the
+  // per-sample cache rows. Pure ascending scalar folds over the C_in axis.
+  void project_qkv(Eigen::Index b, const lin::MatX &x);
+  // Compute the causal masked-softmax attention weights A (T×T) and the output
+  // O (T×D) for one sample b, from the cached Q/K/V. Ascending softmax fold.
+  void attend(Eigen::Index b, lin::MatX &out);
+  // Backward through O=A·V and the softmax for one sample b: given dL/dO rows,
+  // produce dQ/dK/dV caches (each T×D). The softmax Jacobian + causal mask live here.
+  void attend_backward(Eigen::Index b, const lin::MatX &grad_out, std::vector<atx::f64> &dQ,
+                       std::vector<atx::f64> &dK, std::vector<atx::f64> &dV) const;
+  // Fold dQ/dK/dV for one sample b into the param grads (+ biases) and dL/dx.
+  void project_backward(Eigen::Index b, const std::vector<atx::f64> &dQ,
+                        const std::vector<atx::f64> &dK, const std::vector<atx::f64> &dV,
+                        lin::MatX &dx);
+
+  // Flat index of projection-weight (ci, o) within one C*D block (row-major).
+  [[nodiscard]] atx::usize w_index(atx::usize ci, atx::usize o) const noexcept;
+
+  atx::usize T_;
+  atx::usize c_in_;
+  atx::usize d_;
+  bool bias_;
+  atx::usize wq_;       // offset of Wq (== 0)
+  atx::usize wk_;       // offset of Wk
+  atx::usize wv_;       // offset of Wv
+  atx::usize bq_;       // offset of bq (when biased)
+  atx::usize bk_;       // offset of bk
+  atx::usize bv_;       // offset of bv
+  atx::usize n_params_; // 3*C*D + (bias ? 3*D : 0)
+  std::span<atx::f64> params_;
+  std::span<atx::f64> grads_;
+  lin::MatX x_cache_; // B x T*C_in (last forward input), for dWq/dWk/dWv + dL/dx
+  // Per-sample caches refilled each forward (sized in ctor where possible, R6):
+  lin::MatX q_cache_; // B x T*D : Q rows (q_cache_(b, t*D+o))
+  lin::MatX k_cache_; // B x T*D : K rows
+  lin::MatX v_cache_; // B x T*D : V rows
+  lin::MatX a_cache_; // B x T*T : softmax attention weights A (a_cache_(b, i*T+j))
+};
+
 } // namespace atx::engine::learn::nn

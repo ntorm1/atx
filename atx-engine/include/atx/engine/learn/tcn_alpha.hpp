@@ -98,13 +98,31 @@ struct GruAlphaCfg {
 };
 
 // ===========================================================================
-//  fit_tcn / fit_gru — assemble the deployed multi-horizon learned SEQUENCE alpha.
+//  AttnAlphaCfg — the learned ATTENTION-LITE-alpha knobs (p2 S5-3a).
+//
+//  d_model : the single attention head's projection width (Q/K/V each F -> d_model);
+//            the causal-attention summary at the trailing step feeds a d_model -> 1
+//            head. The rest (dropout / l2 / cpcv / horizons / train) mirrors the
+//            TCN/GRU configs exactly — only the per-fold network differs.
+// ===========================================================================
+struct AttnAlphaCfg {
+  atx::usize d_model = 24;
+  atx::f64 dropout = 0.1;
+  atx::f64 l2 = 1e-4;
+  eval::CpcvConfig cpcv{};
+  std::vector<atx::u16> horizons{1, 5, 21};
+  nn::TrainConfig train{};
+};
+
+// ===========================================================================
+//  fit_tcn / fit_gru / fit_attn — assemble the deployed multi-horizon learned
+//  SEQUENCE alpha.
 //
 //  See the header: per-horizon CPCV OOS fit (trial_count per fold fit), a single
 //  deployed seed-ensemble refit on the full trailing window against the
 //  blend-weighted target, and §0.6 horizon-blend weights from the OOS IC. PURE in
-//  (seq, cfg). The two differ ONLY in the ModelFactory + the stored arch dims; the
-//  CPCV / OOF / blend / gate core is shared (fit_seq_alpha in the .cpp).
+//  (seq, cfg). The three differ ONLY in the ModelFactory + the stored arch dims;
+//  the CPCV / OOF / blend / gate core is shared (fit_seq_alpha in the .cpp).
 //
 //  Errors (expected failures, travel in the Result):
 //    - seq.n_samples == 0  => Err(InvalidArgument)
@@ -115,5 +133,7 @@ struct GruAlphaCfg {
                                                       const TcnAlphaCfg &cfg);
 [[nodiscard]] atx::core::Result<LearnedModel> fit_gru(const SequenceTensor &seq,
                                                       const GruAlphaCfg &cfg);
+[[nodiscard]] atx::core::Result<LearnedModel> fit_attn(const SequenceTensor &seq,
+                                                       const AttnAlphaCfg &cfg);
 
 } // namespace atx::engine::learn

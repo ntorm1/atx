@@ -3,8 +3,11 @@
 #include "atx/engine/learn/nn/layers.hpp" // Conv skip uses Conv1dCausal; block uses LayerNorm/ReLU/Dropout
 #include "atx/engine/learn/nn/module.hpp"
 
-#include <cmath>  // std::tanh, std::exp
-#include <memory> // std::make_unique
+#include <algorithm> // std::fill (attention adjoint scratch reset)
+#include <cmath>     // std::tanh, std::exp, std::sqrt
+#include <limits>    // std::numeric_limits (attention causal -inf mask)
+#include <memory>    // std::make_unique
+#include <vector>    // std::vector (attention per-sample adjoint scratch)
 
 #include <Eigen/Dense> // Eigen::Index
 
@@ -713,6 +716,217 @@ lin::MatX SeqLastStep::backward(const lin::MatX &grad_out) {
     }
   }
   return dx;
+}
+
+// =====================================================================
+//  Attention1Head — single-head causal scaled-dot-product attention. Flat param
+//  layout (ascending): [Wq (C*D)][Wk (C*D)][Wv (C*D)][bq (D)][bk (D)][bv (D)],
+//  each projection matrix row-major W[ci*D + o]. See the header for the math.
+// =====================================================================
+
+Attention1Head::Attention1Head(atx::usize time_steps, atx::usize in_channels, atx::usize d_model,
+                               bool bias)
+    : T_{time_steps}, c_in_{in_channels}, d_{d_model}, bias_{bias} {
+  ATX_CHECK(time_steps > 0);
+  ATX_CHECK(in_channels > 0);
+  ATX_CHECK(d_model > 0);
+  const atx::usize cd = in_channels * d_model; // one projection block (C*D)
+  wq_ = 0;
+  wk_ = cd;
+  wv_ = 2 * cd;
+  bq_ = 3 * cd;
+  bk_ = 3 * cd + d_model;
+  bv_ = 3 * cd + 2 * d_model;
+  n_params_ = 3 * cd + (bias ? 3 * d_model : 0);
+}
+
+atx::usize Attention1Head::w_index(atx::usize ci, atx::usize o) const noexcept {
+  return ci * d_ + o; // input ci slowest, output o fastest (row-major, sibling style)
+}
+
+void Attention1Head::bind_params(std::span<atx::f64> params, std::span<atx::f64> grads) {
+  ATX_ASSERT(params.size() == n_params_);
+  ATX_ASSERT(grads.size() == n_params_);
+  params_ = params;
+  grads_ = grads;
+}
+
+// Project sample b's window into Q/K/V caches (each T×D), ascending C_in fold.
+void Attention1Head::project_qkv(Eigen::Index b, const lin::MatX &x) {
+  for (atx::usize t = 0; t < T_; ++t) {
+    for (atx::usize o = 0; o < d_; ++o) {
+      atx::f64 q = bias_ ? params_[bq_ + o] : 0.0;
+      atx::f64 k = bias_ ? params_[bk_ + o] : 0.0;
+      atx::f64 v = bias_ ? params_[bv_ + o] : 0.0;
+      for (atx::usize ci = 0; ci < c_in_; ++ci) {
+        const atx::f64 xv = x(b, idx(t * c_in_ + ci));
+        const atx::usize wi = w_index(ci, o);
+        q += params_[wq_ + wi] * xv;
+        k += params_[wk_ + wi] * xv;
+        v += params_[wv_ + wi] * xv;
+      }
+      q_cache_(b, idx(t * d_ + o)) = q;
+      k_cache_(b, idx(t * d_ + o)) = k;
+      v_cache_(b, idx(t * d_ + o)) = v;
+    }
+  }
+}
+
+// Causal masked-softmax attention for sample b: fill a_cache_ (T×T) and write the
+// output O (T×D) into `out`. Row i attends only to j <= i; the softmax fold is
+// ascending with the standard max-subtract for stability (R1, no simd).
+void Attention1Head::attend(Eigen::Index b, lin::MatX &out) {
+  const atx::f64 inv_scale = 1.0 / std::sqrt(static_cast<atx::f64>(d_));
+  for (atx::usize i = 0; i < T_; ++i) {
+    // 1) raw scores S[i,j] = (Q_i · K_j) / sqrt(D) for j <= i; find the row max.
+    atx::f64 smax = -std::numeric_limits<atx::f64>::infinity();
+    for (atx::usize j = 0; j <= i; ++j) {
+      atx::f64 s = 0.0;
+      for (atx::usize o = 0; o < d_; ++o) {
+        s += q_cache_(b, idx(i * d_ + o)) * k_cache_(b, idx(j * d_ + o));
+      }
+      s *= inv_scale;
+      a_cache_(b, idx(i * T_ + j)) = s; // stash raw score; normalised below
+      if (s > smax) {
+        smax = s;
+      }
+    }
+    // 2) exp(S - max) and the ascending normaliser sum over the unmasked range.
+    atx::f64 denom = 0.0;
+    for (atx::usize j = 0; j <= i; ++j) {
+      const atx::f64 e = std::exp(a_cache_(b, idx(i * T_ + j)) - smax);
+      a_cache_(b, idx(i * T_ + j)) = e;
+      denom += e;
+    }
+    // 3) normalise to weights A[i,j]; masked (j > i) entries are exactly zero.
+    for (atx::usize j = 0; j <= i; ++j) {
+      a_cache_(b, idx(i * T_ + j)) /= denom;
+    }
+    for (atx::usize j = i + 1; j < T_; ++j) {
+      a_cache_(b, idx(i * T_ + j)) = 0.0; // future positions carry no weight (R2)
+    }
+    // 4) output O[i,o] = Σ_{j<=i} A[i,j] · V[j,o] (ascending j fold).
+    for (atx::usize o = 0; o < d_; ++o) {
+      atx::f64 acc = 0.0;
+      for (atx::usize j = 0; j <= i; ++j) {
+        acc += a_cache_(b, idx(i * T_ + j)) * v_cache_(b, idx(j * d_ + o));
+      }
+      out(b, idx(i * d_ + o)) = acc;
+    }
+  }
+}
+
+lin::MatX Attention1Head::forward(const lin::MatX &x) {
+  ATX_ASSERT(static_cast<atx::usize>(x.cols()) == T_ * c_in_);
+  x_cache_ = x;
+  const Eigen::Index B = x.rows();
+  q_cache_.resize(B, idx(T_ * d_));
+  k_cache_.resize(B, idx(T_ * d_));
+  v_cache_.resize(B, idx(T_ * d_));
+  a_cache_.resize(B, idx(T_ * T_));
+  lin::MatX out(B, idx(T_ * d_));
+  for (Eigen::Index b = 0; b < B; ++b) {
+    project_qkv(b, x);
+    attend(b, out);
+  }
+  return out;
+}
+
+// Backward through O=A·V and the row-wise softmax (with the causal mask) for one
+// sample b. Produces dQ/dK/dV (each length T*D, ascending t*D+o). The softmax
+// Jacobian dS_i = A_i ⊙ (dA_i − (dA_i·A_i)) and the masked-entry zeroing are the
+// load-bearing adjoint math (R3). All folds ascending (R1).
+void Attention1Head::attend_backward(Eigen::Index b, const lin::MatX &grad_out,
+                                     std::vector<atx::f64> &dQ, std::vector<atx::f64> &dK,
+                                     std::vector<atx::f64> &dV) const {
+  const atx::f64 inv_scale = 1.0 / std::sqrt(static_cast<atx::f64>(d_));
+  std::fill(dQ.begin(), dQ.end(), 0.0);
+  std::fill(dK.begin(), dK.end(), 0.0);
+  std::fill(dV.begin(), dV.end(), 0.0);
+  // Per output row i (only j <= i is unmasked / contributes).
+  for (atx::usize i = 0; i < T_; ++i) {
+    // dA[i,j] = Σ_o dO[i,o]·V[j,o]; dV[j,o] += A[i,j]·dO[i,o] (ascending folds).
+    std::vector<atx::f64> dA(i + 1, 0.0);
+    for (atx::usize j = 0; j <= i; ++j) {
+      const atx::f64 a = a_cache_(b, idx(i * T_ + j));
+      atx::f64 da = 0.0;
+      for (atx::usize o = 0; o < d_; ++o) {
+        const atx::f64 go = grad_out(b, idx(i * d_ + o));
+        da += go * v_cache_(b, idx(j * d_ + o));
+        dV[j * d_ + o] += a * go;
+      }
+      dA[j] = da;
+    }
+    // Softmax Jacobian: dot = Σ_{k<=i} dA[k]·A[i,k]; dS[i,j] = A[i,j]·(dA[j] − dot).
+    atx::f64 dot = 0.0;
+    for (atx::usize j = 0; j <= i; ++j) {
+      dot += dA[j] * a_cache_(b, idx(i * T_ + j));
+    }
+    // dS[i,j] feeds the scores S=QKᵀ/√d: dQ[i,o] += dS·K[j,o]/√d (over j),
+    // dK[j,o] += dS·Q[i,o]/√d. Masked j > i contribute nothing (never iterated).
+    for (atx::usize j = 0; j <= i; ++j) {
+      const atx::f64 a = a_cache_(b, idx(i * T_ + j));
+      const atx::f64 ds = a * (dA[j] - dot) * inv_scale;
+      for (atx::usize o = 0; o < d_; ++o) {
+        dQ[i * d_ + o] += ds * k_cache_(b, idx(j * d_ + o));
+        dK[j * d_ + o] += ds * q_cache_(b, idx(i * d_ + o));
+      }
+    }
+  }
+}
+
+// Fold sample b's dQ/dK/dV into the param grads (+ biases) and dL/dx. Ascending.
+void Attention1Head::project_backward(Eigen::Index b, const std::vector<atx::f64> &dQ,
+                                      const std::vector<atx::f64> &dK,
+                                      const std::vector<atx::f64> &dV, lin::MatX &dx) {
+  for (atx::usize t = 0; t < T_; ++t) {
+    if (bias_) {
+      for (atx::usize o = 0; o < d_; ++o) {
+        grads_[bq_ + o] += dQ[t * d_ + o];
+        grads_[bk_ + o] += dK[t * d_ + o];
+        grads_[bv_ + o] += dV[t * d_ + o];
+      }
+    }
+    for (atx::usize ci = 0; ci < c_in_; ++ci) {
+      const atx::f64 xv = x_cache_(b, idx(t * c_in_ + ci));
+      atx::f64 dxv = 0.0;
+      for (atx::usize o = 0; o < d_; ++o) {
+        const atx::usize wi = w_index(ci, o);
+        const atx::f64 dq = dQ[t * d_ + o];
+        const atx::f64 dk = dK[t * d_ + o];
+        const atx::f64 dv = dV[t * d_ + o];
+        grads_[wq_ + wi] += xv * dq;
+        grads_[wk_ + wi] += xv * dk;
+        grads_[wv_ + wi] += xv * dv;
+        dxv += dq * params_[wq_ + wi] + dk * params_[wk_ + wi] + dv * params_[wv_ + wi];
+      }
+      dx(b, idx(t * c_in_ + ci)) += dxv;
+    }
+  }
+}
+
+lin::MatX Attention1Head::backward(const lin::MatX &grad_out) {
+  ATX_ASSERT(static_cast<atx::usize>(grad_out.cols()) == T_ * d_);
+  const Eigen::Index B = grad_out.rows();
+  lin::MatX dx = lin::MatX::Zero(B, idx(T_ * c_in_));
+  std::vector<atx::f64> dQ(T_ * d_, 0.0);
+  std::vector<atx::f64> dK(T_ * d_, 0.0);
+  std::vector<atx::f64> dV(T_ * d_, 0.0);
+  for (Eigen::Index b = 0; b < B; ++b) {
+    attend_backward(b, grad_out, dQ, dK, dV);
+    project_backward(b, dQ, dK, dV, dx);
+  }
+  return dx;
+}
+
+void Attention1Head::state_to(std::vector<atx::f64> &out) const {
+  out.insert(out.end(), params_.begin(), params_.end()); // ascending == bind order
+}
+void Attention1Head::state_from(std::span<const atx::f64> in) {
+  ATX_ASSERT(in.size() == n_params_);
+  for (atx::usize i = 0; i < n_params_; ++i) {
+    params_[i] = in[i];
+  }
 }
 
 } // namespace atx::engine::learn::nn

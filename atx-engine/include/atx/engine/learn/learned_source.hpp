@@ -82,9 +82,10 @@ namespace atx::engine::learn {
 //  S5-3 ships only Linear. S5-4 adds Gbt by extending this enum and the
 //  predict dispatch's exhaustive switch (no default) — a compile error there
 //  flags the missing arm, which is the intended guard. p2 S5-2b adds the two
-//  sequence-NN arms Tcn + Gru (see NnPayload below + predict_nn in tcn_alpha.cpp).
+//  sequence-NN arms Tcn + Gru (see NnPayload below + predict_nn in tcn_alpha.cpp);
+//  p2 S5-3a adds the single-head causal-attention arm Attn (same NnPayload path).
 // ===========================================================================
-enum class ModelKind : atx::u8 { Linear, Gbt, Tcn, Gru };
+enum class ModelKind : atx::u8 { Linear, Gbt, Tcn, Gru, Attn };
 
 // ===========================================================================
 //  GBT forest representation (S5-4) — the deployed parameters of a histogram
@@ -169,7 +170,8 @@ struct GbtForest {
 //                window row is the flattened (L*F) standardized window, so
 //                lookback * n_seq_features == augmented_dim() == n_base_features.
 //  arch_dims   : the kind-specific integer architecture (TCN: {blocks, kernel,
-//                channels}; GRU: {hidden}). predict_nn rebuilds the same factory.
+//                channels}; GRU: {hidden}; ATTN: {d_model}). predict_nn rebuilds
+//                the same factory.
 //  arch_params : the kind-specific scalar architecture (here: {dropout} — eval is
 //                identity, but the factory is reconstructed identically anyway).
 //  member_states: one serialized nn::Module state per ensemble member, in the
@@ -354,7 +356,8 @@ struct LearnedModel {
   }
   case ModelKind::Tcn:
   case ModelKind::Gru:
-    // The sequence-NN arms (p2 S5-2b). `augmented_row` IS the standardized
+  case ModelKind::Attn:
+    // The sequence-NN arms (p2 S5-2b/S5-3a). `augmented_row` IS the standardized
     // flattened (L*F) window — n_base_features == L*F and aug is empty, so
     // build_augmented_row produced it. The horizon blend is baked into the
     // deployed ensemble's training target (see tcn_alpha.cpp), so inference is a

@@ -17,11 +17,11 @@
 
 #include "atx/engine/eval/cpcv.hpp"        // eval::CpcvConfig, eval::cpcv_folds, eval::LabelSpan
 #include "atx/engine/learn/latent.hpp"     // detail::pearson (reused, order-fixed)
-#include "atx/engine/learn/nn/layers.hpp"  // nn::Linear
+#include "atx/engine/learn/nn/layers.hpp"  // nn::Linear, nn::Dropout
 #include "atx/engine/learn/nn/loss.hpp"    // nn::MseLoss
 #include "atx/engine/learn/nn/module.hpp"  // nn::Module, nn::Sequential
 #include "atx/engine/learn/nn/optimizer.hpp"  // nn::Adam
-#include "atx/engine/learn/nn/seq_layers.hpp" // nn::TcnResidualBlock, nn::GruCell, nn::SeqLastStep
+#include "atx/engine/learn/nn/seq_layers.hpp" // nn::TcnResidualBlock, nn::GruCell, nn::SeqLastStep, nn::Attention1Head
 #include "atx/engine/learn/nn/trainer.hpp"    // nn::train, nn::ensemble_mean_predict, nn::ModelFactory
 #include "atx/engine/learn/train.hpp"         // seed_for
 
@@ -81,6 +81,28 @@ void seed_init(nn::Module &net, atx::u64 seed) {
     auto seq = std::make_unique<nn::Sequential>();
     seq->add(std::make_unique<nn::GruCell>(L, F, hidden));
     seq->add(std::make_unique<nn::Linear>(hidden, static_cast<atx::usize>(1), /*bias=*/true));
+    seq->build();
+    seed_init(*seq, seed);
+    return seq;
+  };
+}
+
+// The ATTENTION-LITE factory (p2 S5-3a): Sequential{ Attention1Head(F->d_model)
+// [-> Dropout] -> SeqLastStep(T=L, C=d_model) -> Linear(d_model->1) }. The single
+// causal head maps each window to a (L, d_model) sequence; SeqLastStep pools the
+// trailing step (the newest causal summary, R2) and the Linear head scores it. The
+// Dropout (when dropout > 0) bases its mask stream on a per-build seed (tag
+// "attn-drop"); the member seed seed-inits the whole flat param buffer.
+[[nodiscard]] nn::ModelFactory attn_factory(atx::usize L, atx::usize F, atx::usize d_model,
+                                            atx::f64 dropout) {
+  return [L, F, d_model, dropout](atx::u64 seed) -> std::unique_ptr<nn::Module> {
+    auto seq = std::make_unique<nn::Sequential>();
+    seq->add(std::make_unique<nn::Attention1Head>(L, F, d_model, /*bias=*/true));
+    if (dropout > 0.0) {
+      seq->add(std::make_unique<nn::Dropout>(dropout, seed_for(seed, "attn-drop", 0U, 0U)));
+    }
+    seq->add(std::make_unique<nn::SeqLastStep>(L, d_model));
+    seq->add(std::make_unique<nn::Linear>(d_model, static_cast<atx::usize>(1), /*bias=*/true));
     seq->build();
     seed_init(*seq, seed);
     return seq;
@@ -445,7 +467,11 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
   if (m.kind == ModelKind::Tcn) {
     return m.nn.arch_dims.size() >= 3U && !m.nn.arch_params.empty();
   }
-  // ModelKind::Gru.
+  if (m.kind == ModelKind::Attn) {
+    // arch_dims = {d_model}; arch_params = {dropout}.
+    return !m.nn.arch_dims.empty() && !m.nn.arch_params.empty();
+  }
+  // ModelKind::Gru — arch_dims = {hidden}.
   return !m.nn.arch_dims.empty();
 }
 
@@ -463,6 +489,12 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
     const atx::usize channels = m.nn.arch_dims[2];
     const atx::f64 dropout = m.nn.arch_params[0];
     return tcn_factory(L, F, blocks, kernel, channels, dropout);
+  }
+  if (m.kind == ModelKind::Attn) {
+    // arch_dims = {d_model}; arch_params = {dropout}.
+    const atx::usize d_model = m.nn.arch_dims[0];
+    const atx::f64 dropout = m.nn.arch_params[0];
+    return attn_factory(L, F, d_model, dropout);
   }
   // ModelKind::Gru — arch_dims = {hidden}.
   const atx::usize hidden = m.nn.arch_dims[0];
@@ -494,6 +526,20 @@ atx::core::Result<LearnedModel> fit_gru(const SequenceTensor &seq, const GruAlph
   nn::TrainConfig train = cfg.train;
   train.l2 = cfg.l2;
   return detail::fit_seq_alpha(seq, ModelKind::Gru, build, std::move(arch_dims),
+                               std::move(arch_params), cfg.horizons, cfg.cpcv, train);
+}
+
+atx::core::Result<LearnedModel> fit_attn(const SequenceTensor &seq, const AttnAlphaCfg &cfg) {
+  detail::FactoryBuilder build = [&cfg](atx::usize L, atx::usize F) -> nn::ModelFactory {
+    return detail::attn_factory(L, F, cfg.d_model, cfg.dropout);
+  };
+  // arch_dims = {d_model}, arch_params = {dropout} (factory_from_payload rebuild).
+  std::vector<atx::usize> arch_dims{cfg.d_model};
+  std::vector<atx::f64> arch_params{cfg.dropout};
+  // Thread the advertised L2 knob into the Trainer (decoupled weight-decay).
+  nn::TrainConfig train = cfg.train;
+  train.l2 = cfg.l2;
+  return detail::fit_seq_alpha(seq, ModelKind::Attn, build, std::move(arch_dims),
                                std::move(arch_params), cfg.horizons, cfg.cpcv, train);
 }
 
