@@ -228,6 +228,11 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   rep.objectives[1] = diversify;
   rep.objectives[2] = core.robust;
   rep.n_objectives = 3;
+  // S4.2: carry the candidate's realized OOS PnL profile (the behavioral
+  // descriptor / phenotype) out of the core so the SearchDriver can canon-cache it
+  // and compute population-relative behavioral novelty without a re-eval. Copy (not
+  // move) — `core` is borrowed const and may be read again by the caller.
+  rep.descriptor = core.oos_pnl;
   return rep;
 }
 

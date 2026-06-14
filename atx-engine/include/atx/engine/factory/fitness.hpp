@@ -129,8 +129,15 @@ enum class Reduce : atx::u8 { Max, Mean };
 //                  first `n_objectives` entries; ScalarRaw collapses to `raw`.
 //  n_objectives  : how many leading entries of `objectives` are live (3 in S4.1;
 //                  grows to +novelty (S4.2) / +cost (S4.3) without a layout change).
+//  descriptor    : the candidate's realized OOS PnL profile (== detail::FitnessCore
+//                  .oos_pnl). S4.2 BEHAVIORAL descriptor — the phenotype the
+//                  population-relative novelty objective is computed from. A pure
+//                  function of (genome, panel), so it is canon-cacheable (the
+//                  SearchDriver copies it into CachedScore); the novelty itself is
+//                  population-relative and is NOT cached. Empty on an eval failure.
 //
-//  Trivial aggregate (Rule of Zero). Matches the fwd.hpp forward declaration.
+//  Rule of Zero (the `descriptor` vector self-manages). Matches the fwd.hpp
+//  forward declaration.
 // =========================================================================
 struct FitnessReport {
   atx::f64 wq;
@@ -142,6 +149,7 @@ struct FitnessReport {
   atx::f64 haircut_sharpe;
   std::array<atx::f64, kMaxObjectives> objectives{}; // {wq, diversify, robust, ...}
   atx::u8 n_objectives{0};                           // live leading entries
+  std::vector<atx::f64> descriptor{};                // S4.2 OOS PnL profile (phenotype)
 };
 
 // =========================================================================

@@ -42,6 +42,14 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   std::unordered_map<atx::u64, CachedScore> fitness_cache;
   parallel::DetPool det_pool{cfg.n_workers};
 
+  // S4.2 behavioral archive: a per-RUN ring of past-elite descriptors (declared
+  // here, not a member, so a second run() with the same seed replays from a clean
+  // slate — F1). Empty + unused when the behavioral objective is inactive. `nbr`
+  // is the per-generation k-nearest population scratch, sized once and reused (no
+  // hot-path alloc in the inner generation loop).
+  BehavioralArchive behavior_archive{cfg.behavior_archive_cap};
+  std::vector<std::span<const atx::f64>> nbr;
+
   std::vector<Genome> pop = init_population(cfg);
   res.candidates_generated += pop.size();
 
@@ -55,12 +63,25 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // (d) novelty pressure -> selection fitness (anti-collapse, deterministic).
     novelty_penalize(scored, pool, cfg);
 
+    // (d2) S4.2 behavioral-novelty pass: write the population-relative phenotypic
+    // novelty into objectives[3] (n_objectives -> 4) BEFORE ranking, but ONLY when
+    // the objective is active (MultiObjective && novelty_w > 0). A no-op otherwise
+    // -> n_objectives stays 3 and the boundary pin is byte-untouched.
+    behavioral_novelty_pass(scored, behavior_archive, cfg, nbr);
+
     // (d') NSGA-II rank + crowding (S4.1), assigned ONCE per generation in
     // canonical-id order BEFORE any reproduction RNG draw (F1/F2). In ScalarRaw
     // this collapses to a total order by RAW fitness (the pre-S4 path); in
     // MultiObjective it is the Pareto front rank + per-front crowding distance.
+    // Reads n_objectives dynamically -> the 4th (behavioral) column enters here
+    // automatically when active.
     const std::vector<atx::usize> canon_order = canon_ordered_indices(scored);
     assign_pareto_ranks(scored, canon_order, cfg);
+
+    // (d3) S4.2 archive update: insert this generation's Pareto FRONT (rank-0
+    // elites) in canonical-id order, evict oldest past C. After ranks are known,
+    // before reproduction. No-op when the objective is inactive.
+    update_archive(scored, canon_order, cfg, behavior_archive);
 
     // Track the best RAW fitness this generation (the maximized search signal,
     // NOT the novelty-penalized selection score). A best-raw elite is carried
@@ -221,6 +242,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
         cs.raw = rep->raw;
         cs.objectives = rep->objectives; // S4.1 seam :180 — cache the objectives too
         cs.n_objectives = rep->n_objectives;
+        cs.descriptor = std::move(rep->descriptor); // S4.2: canon-cache the phenotype
       }
       canon.insert(g.canon_hash);
       fitness_cache.emplace(g.canon_hash, cs);
@@ -229,12 +251,13 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     } else {
       const auto it = fitness_cache.find(g.canon_hash);
       if (it != fitness_cache.end()) {
-        cs = it->second; // reuse cached score (raw + objectives), F6 dedup
+        cs = it->second; // reuse cached score (raw + objectives + descriptor), F6 dedup
       }
     }
     Scored s{g.clone(), cs.raw, cs.raw};
     s.objectives = cs.objectives;
     s.n_objectives = cs.n_objectives;
+    s.descriptor = std::move(cs.descriptor); // S4.2: phenotype for the novelty pass
     s.genome.canon_hash = g.canon_hash;
     out.push_back(std::move(s));
   }
@@ -274,6 +297,67 @@ void SearchDriver::novelty_penalize(std::vector<Scored> &scored, const combine::
     // novelty in [0,1]; penalty = novelty_w * (1 - novelty) (redundant => bigger).
     const atx::f64 penalty = cfg.novelty_w * (1.0 - mean_dist);
     scored[i].selection = scored[i].fitness - penalty;
+  }
+}
+
+// ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
+
+// The single S4.2 activation gate (referenced by every S4.2 seam): the behavioral
+// objective is live ONLY in MultiObjective mode with a positive novelty weight.
+// ScalarRaw, or novelty_w == 0 -> off -> n_objectives stays 3 -> boundary pin holds.
+[[nodiscard]] bool SearchDriver::behavioral_active(const SearchConfig &cfg) noexcept {
+  return cfg.objective_mode == ObjectiveMode::MultiObjective && cfg.novelty_w > 0.0;
+}
+
+// Write each genome's population-relative behavioral novelty into objectives[3]
+// and bump n_objectives to 4 — phenotypic diversity, DISTINCT from the marginal-
+// corr `diversify` objective (objectives[1]). For genome i: novelty = mean
+// behavioral_distance to the k nearest descriptors in (population minus self) ∪
+// archive. `nbr` is the reused population-span scratch (sized once per generation;
+// no inner-loop alloc). Deterministic, RNG-free. No-op when inactive (the boundary
+// pin / ScalarRaw path is byte-untouched).
+void SearchDriver::behavioral_novelty_pass(std::vector<Scored> &scored,
+                                           const BehavioralArchive &archive,
+                                           const SearchConfig &cfg,
+                                           std::vector<std::span<const atx::f64>> &nbr) const {
+  if (!behavioral_active(cfg)) {
+    return; // gate closed: objectives[3] untouched, n_objectives stays at 3
+  }
+  const atx::usize n = scored.size();
+  nbr.reserve(n); // size the scratch once; cleared + refilled per genome (no realloc)
+  for (atx::usize i = 0; i < n; ++i) {
+    // Population neighbourhood = every OTHER genome's descriptor (exclude self so a
+    // genome's own 0-distance never collapses its novelty). Reuse `nbr`'s capacity.
+    nbr.clear();
+    for (atx::usize j = 0; j < n; ++j) {
+      if (j == i) {
+        continue;
+      }
+      nbr.push_back(std::span<const atx::f64>{scored[j].descriptor});
+    }
+    const atx::f64 nov = archive.novelty(std::span<const atx::f64>{scored[i].descriptor},
+                                         std::span<const std::span<const atx::f64>>{nbr},
+                                         cfg.behavior_k, cfg.behavior_metric);
+    scored[i].objectives[3] = nov; // the 4th NSGA-II objective (maximization)
+    scored[i].n_objectives = 4;    // active path only -> assign_pareto_ranks reads 4 cols
+  }
+}
+
+// Insert this generation's Pareto FRONT (rank-0 elites) into the behavioral archive
+// in CANONICAL-ID order, evicting oldest past C. After assign_pareto_ranks (reads
+// .rank), before reproduction. No-op when the objective is inactive (archive stays
+// empty). The canonical-id insert order makes the archive contents + FIFO eviction
+// byte-deterministic and worker-count-invariant.
+void SearchDriver::update_archive(const std::vector<Scored> &scored,
+                                  const std::vector<atx::usize> &canon_order,
+                                  const SearchConfig &cfg, BehavioralArchive &archive) {
+  if (!behavioral_active(cfg)) {
+    return;
+  }
+  for (const atx::usize i : canon_order) {
+    if (scored[i].rank == 0) { // the non-dominated front: the generation's elites
+      archive.insert(std::span<const atx::f64>{scored[i].descriptor});
+    }
   }
 }
 

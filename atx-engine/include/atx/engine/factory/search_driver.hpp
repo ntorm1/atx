@@ -83,6 +83,7 @@
 
 #include "atx/engine/parallel/det_pool.hpp" // parallel::DetPool (wired S2 handle)
 
+#include "atx/engine/factory/behavior.hpp" // factory::BehavioralArchive, behavioral_distance (S4.2)
 #include "atx/engine/factory/canonical.hpp"  // factory::canonical_hash, CanonSet
 #include "atx/engine/factory/crossover.hpp"  // factory::subtree_crossover
 #include "atx/engine/factory/fitness.hpp"    // factory::pool_aware_fitness, kMaxObjectives
@@ -123,6 +124,17 @@ struct SearchConfig {
   atx::f64 novelty_w{0.1};    // weight of the anti-collapse novelty penalty
   atx::u16 max_lookback{250}; // crossover/jitter window cap (in-grammar rail)
   atx::usize n_workers{1};    // DetPool fan-out; affects digest SPEED, never bits
+  // S4.2 behavioral / phenotypic diversity knobs. The behavioral novelty objective
+  // (objectives[3]) is ACTIVE only when objective_mode == MultiObjective AND
+  // novelty_w > 0 (the same lever that gates the ScalarRaw canonical-hash penalty;
+  // the pinned ScalarRaw path sets novelty_w == 0, so neither fires and the
+  // boundary pin holds). `behavior_metric` selects the profile distance (PnlCorr
+  // default; RankIc fork). `behavior_archive_cap` is the FIFO capacity C of the
+  // past-elite descriptor archive; `behavior_k` is the k-nearest count for the
+  // mean-distance novelty. Defaults are a documented, deterministic starting point.
+  BehaviorMetric behavior_metric{BehaviorMetric::PnlCorr};
+  atx::usize behavior_archive_cap{64}; // C: past-elite behavioral descriptor ring
+  atx::usize behavior_k{3};            // k-nearest neighbours for the novelty mean
   // S4.1 selection mode. Defaults to MultiObjective (the new behavior); the
   // boundary-pin / replay tests set ScalarRaw to reproduce the frozen pre-S4 path.
   ObjectiveMode objective_mode{ObjectiveMode::MultiObjective};
@@ -223,6 +235,11 @@ struct Scored {
   atx::u8 n_objectives{0}; // live leading entries of `objectives`
   atx::u16 rank{0};        // NSGA-II non-dominated front (0 == best)
   atx::f64 crowding{0.0};  // crowding distance within the rank (larger == better)
+  // S4.2 behavioral descriptor (the candidate's realized OOS PnL profile / phenotype,
+  // copied from the cached FitnessReport). Read by the per-generation behavioral-
+  // novelty pass to compute objectives[3] = mean k-nearest behavioral distance over
+  // population ∪ archive. Owned by value (canon-cacheable; novelty itself is not).
+  std::vector<atx::f64> descriptor{};
 };
 
 // =========================================================================
@@ -237,6 +254,11 @@ struct CachedScore {
   atx::f64 raw{0.0};
   std::array<atx::f64, kMaxObjectives> objectives{};
   atx::u8 n_objectives{0};
+  // S4.2: the candidate's behavioral descriptor (OOS PnL profile). Pure function of
+  // (genome, panel) -> canon-cacheable: a dedup-hit reuses this WITHOUT a re-eval.
+  // The behavioral NOVELTY computed from it is population-relative and is recomputed
+  // fresh each generation (NOT cached). Empty if the candidate's fitness errored.
+  std::vector<atx::f64> descriptor{};
 };
 
 // =========================================================================
@@ -293,6 +315,36 @@ private:
   // this is fully deterministic and F1-safe.
   void novelty_penalize(std::vector<Scored> &scored, const combine::AlphaStore &pool,
                         const SearchConfig &cfg) const;
+
+  // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
+  // Compute the population-relative BEHAVIORAL novelty for every Scored and write
+  // it into objectives[3], bumping n_objectives to 4 — but ONLY when the objective
+  // is ACTIVE (objective_mode == MultiObjective && novelty_w > 0). Runs AFTER all
+  // descriptors for the generation are known and BEFORE assign_pareto_ranks (so the
+  // 4th objective enters NSGA-II this generation). For genome i the novelty is the
+  // mean behavioral_distance to the k nearest descriptors in (population minus self)
+  // ∪ archive — phenotypic diversity, DISTINCT from the marginal-corr `diversify`
+  // objective (which prices distance to the admitted POOL). `scratch` is a reused
+  // span buffer sized once per generation (zero hot-path alloc). RNG-free,
+  // deterministic. When inactive this is a no-op and n_objectives stays 3 (the
+  // boundary pin / ScalarRaw path is byte-untouched).
+  void behavioral_novelty_pass(std::vector<Scored> &scored, const BehavioralArchive &archive,
+                               const SearchConfig &cfg,
+                               std::vector<std::span<const atx::f64>> &scratch) const;
+
+  // Update the behavioral archive with the current generation's Pareto FRONT (the
+  // rank-0 non-dominated elites) in CANONICAL-ID order, evicting oldest past C. No
+  // RNG. Requires assign_pareto_ranks to have run (reads Scored.rank). Inactive
+  // (objective off) -> no-op so the archive stays empty and adds no state. The
+  // canonical-id insert order makes the archive contents — and the FIFO eviction
+  // sequence — byte-deterministic and worker-count-invariant.
+  static void update_archive(const std::vector<Scored> &scored,
+                             const std::vector<atx::usize> &canon_order, const SearchConfig &cfg,
+                             BehavioralArchive &archive);
+
+  // True iff the S4.2 behavioral objective is active for this config (the single
+  // activation gate, referenced by every S4.2 seam). MultiObjective && novelty_w>0.
+  [[nodiscard]] static bool behavioral_active(const SearchConfig &cfg) noexcept;
 
   // ----- (4) reproduce -------------------------------------------------------
   // Produce the next population: carry the top `elites` by RAW fitness, then fill
