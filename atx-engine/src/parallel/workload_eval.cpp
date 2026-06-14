@@ -591,7 +591,13 @@ Status eval_shard(InputView in, ShardId k, std::span<std::byte> slot) noexcept {
   // j*col_bytes < nroots*col_bytes = need_bytes <= slot.size() stays in-bounds.
   const atx::usize col_bytes = cells * sizeof(atx::f64);
   for (atx::usize j = 0; j < nroots; ++j) {
-    ATX_ASSERT(ss.alphas[j].values.size() == cells);
+    // ALWAYS-ON guard (not ATX_ASSERT): the memcpy below reads col_bytes == cells*8
+    // from values.data(). Each Engine alpha column is `cells` f64 by construction, but
+    // a debug-only assert would be ELIDED under NDEBUG and a short column would then
+    // OOB-read into the slot (silent corruption), so this stays a checked Err.
+    if (ss.alphas[j].values.size() != cells) {
+      return Err(ErrorCode::Internal, "eval_shard: alpha column size != cells");
+    }
     if (col_bytes != 0) {
       std::memcpy(slot.data() + j * col_bytes, ss.alphas[j].values.data(), col_bytes);
     }
