@@ -62,10 +62,11 @@
 // per-generation Program allocation is acceptable (F8: no allocation on the VM hot
 // loop; the cold compile path may allocate, documented).
 
-#include <bit>       // std::popcount (canonical-structure novelty distance)
-#include <span>      // std::span
-#include <string>    // std::string (seed-expression source input)
-#include <string_view> // std::string_view (field-swap candidate names)
+#include <array>         // std::array (per-genome multi-objective vector, S4.1)
+#include <bit>           // std::popcount (canonical-structure novelty distance)
+#include <span>          // std::span
+#include <string>        // std::string (seed-expression source input)
+#include <string_view>   // std::string_view (field-swap candidate names)
 #include <unordered_map> // std::unordered_map (per-run fitness cache, F6 throughput)
 #include <vector>
 
@@ -73,40 +74,78 @@
 #include "atx/core/random.hpp" // atx::core::Xoshiro256pp
 #include "atx/core/types.hpp"  // atx::u64, atx::usize, atx::f64
 
-#include "atx/engine/alpha/panel.hpp"    // alpha::Panel, alpha::SignalSet
-#include "atx/engine/alpha/parser.hpp"   // alpha::parse_expr, alpha::Library
+#include "atx/engine/alpha/panel.hpp"  // alpha::Panel, alpha::SignalSet
+#include "atx/engine/alpha/parser.hpp" // alpha::parse_expr, alpha::Library
 
-#include "atx/engine/combine/store.hpp" // combine::AlphaStore
+#include "atx/engine/combine/store.hpp"      // combine::AlphaStore
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
 #include "atx/engine/parallel/det_pool.hpp" // parallel::DetPool (wired S2 handle)
 
-#include "atx/engine/factory/canonical.hpp" // factory::canonical_hash, CanonSet
-#include "atx/engine/factory/crossover.hpp" // factory::subtree_crossover
-#include "atx/engine/factory/fitness.hpp"   // factory::pool_aware_fitness
-#include "atx/engine/factory/genome.hpp"    // factory::Genome
-#include "atx/engine/factory/mutation.hpp"  // factory::op_swap/field_swap/jitter_const
+#include "atx/engine/factory/behavior.hpp" // factory::BehavioralArchive, behavioral_distance (S4.2)
+#include "atx/engine/factory/canonical.hpp"  // factory::canonical_hash, CanonSet
+#include "atx/engine/factory/crossover.hpp"  // factory::subtree_crossover
+#include "atx/engine/factory/fitness.hpp"    // factory::pool_aware_fitness, kMaxObjectives
+#include "atx/engine/factory/generate.hpp"   // factory::generate_genome, GenConfig (S3.5 wire)
+#include "atx/engine/factory/genome.hpp"     // factory::Genome
+#include "atx/engine/factory/mutation.hpp"   // factory::op_swap/field_swap/jitter_const
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
+#include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
 
 namespace atx::engine::factory {
 
 using atx::core::Xoshiro256pp;
 
 // =========================================================================
+//  ObjectiveMode — how the search ranks a generation (S4.1).
+//
+//  ScalarRaw     : the pre-S4 behavior — collapse every candidate to the scalar
+//                  `raw = wq * diversify * robust` and maximize it (total order by
+//                  raw fitness + canonical tie-break). This is the boundary-pin
+//                  path; with novelty off + a fixed seed it reproduces the frozen
+//                  pre-S4 digest BYTE-IDENTICALLY.
+//  MultiObjective: NSGA-II over the FitnessReport.objectives vector (front rank
+//                  asc, crowding desc, canonical tie-break) — a high-wq/low-
+//                  diversify and a low-wq/high-diversify candidate can BOTH survive.
+// =========================================================================
+enum class ObjectiveMode : atx::u8 { ScalarRaw, MultiObjective };
+
+// =========================================================================
 //  SearchConfig — the §4.7 knobs.
 // =========================================================================
 struct SearchConfig {
-  atx::u64 master_seed{0};   // the F1 root entropy; the recorded artifact key
-  atx::usize population{16}; // genomes per generation
-  atx::usize generations{5}; // search depth (budget = generations * population)
-  atx::usize elites{2};      // top-k carried verbatim each generation
-  atx::usize k_tournament{3};// tournament size for parent selection
-  atx::f64 p_cross{0.5};     // P(crossover) vs P(mutation) per child
-  atx::f64 novelty_w{0.1};   // weight of the anti-collapse novelty penalty
-  atx::u16 max_lookback{250};// crossover/jitter window cap (in-grammar rail)
-  atx::usize n_workers{1};   // DetPool fan-out; affects digest SPEED, never bits
-  FitnessCfg fitness{};      // CPCV geometry + trial-count base for deflation
+  atx::u64 master_seed{0};    // the F1 root entropy; the recorded artifact key
+  atx::usize population{16};  // genomes per generation
+  atx::usize generations{5};  // search depth (budget = generations * population)
+  atx::usize elites{2};       // top-k carried verbatim each generation
+  atx::usize k_tournament{3}; // tournament size for parent selection
+  atx::f64 p_cross{0.5};      // P(crossover) vs P(mutation) per child
+  atx::f64 novelty_w{0.1};    // weight of the anti-collapse novelty penalty
+  atx::u16 max_lookback{250}; // crossover/jitter window cap (in-grammar rail)
+  atx::usize n_workers{1};    // DetPool fan-out; affects digest SPEED, never bits
+  // S4.2 behavioral / phenotypic diversity knobs. The behavioral novelty objective
+  // (objectives[3]) is ACTIVE only when objective_mode == MultiObjective AND
+  // novelty_w > 0 (the same lever that gates the ScalarRaw canonical-hash penalty;
+  // the pinned ScalarRaw path sets novelty_w == 0, so neither fires and the
+  // boundary pin holds). `behavior_metric` selects the profile distance (PnlCorr
+  // default; RankIc fork). `behavior_archive_cap` is the FIFO capacity C of the
+  // past-elite descriptor archive; `behavior_k` is the k-nearest count for the
+  // mean-distance novelty. Defaults are a documented, deterministic starting point.
+  BehaviorMetric behavior_metric{BehaviorMetric::PnlCorr};
+  atx::usize behavior_archive_cap{64}; // C: past-elite behavioral descriptor ring
+  atx::usize behavior_k{3};            // k-nearest neighbours for the novelty mean
+  // S4.1 selection mode. Defaults to MultiObjective (the new behavior); the
+  // boundary-pin / replay tests set ScalarRaw to reproduce the frozen pre-S4 path.
+  ObjectiveMode objective_mode{ObjectiveMode::MultiObjective};
+  // S3.5 generation wire (plan §0.5/§0.6). When ON, init_population fills any
+  // population slot the seed expressions do NOT cover via generate_genome (the
+  // type-correct grammar sampler), and the immigration path reuses it. GATED OFF
+  // for the pinned ScalarRaw path so gen-0 reproduces the pre-S4 seed-cycle fill
+  // EXACTLY (the digest stays byte-identical). `gen_cfg` is the sampler config.
+  bool seed_from_grammar{false};
+  GenConfig gen_cfg{};  // grammar-sampler knobs (max_lookback/depth, fields)
+  FitnessCfg fitness{}; // CPCV geometry + trial-count base for deflation
   // op_swap is ENABLED (S3.4 fixed the root cause). The original defect — a swap
   // could rebuild an analyze-VALID genome that corrupted the VM SlotPool — is
   // closed by (a) analyze's validate_node_contract (materialized operand-arity +
@@ -121,17 +160,17 @@ struct SearchConfig {
 //  SearchResult — the §4.7 return value (fields the verbatim tests read).
 // =========================================================================
 struct SearchResult {
-  atx::u64 digest{0};              // F1/F2 byte-identical run fingerprint
-  atx::usize trial_count{0};       // distinct candidates scored (canon.size())
-  atx::usize candidates_generated{0}; // total genomes produced across the run
-  atx::f64 dedup_pct{0.0};         // 1 - trial_count/candidates_generated (F6)
+  atx::u64 digest{0};                         // F1/F2 byte-identical run fingerprint
+  atx::usize trial_count{0};                  // distinct candidates scored (canon.size())
+  atx::usize candidates_generated{0};         // total genomes produced across the run
+  atx::f64 dedup_pct{0.0};                    // 1 - trial_count/candidates_generated (F6)
   std::vector<atx::f64> best_fitness_per_gen; // best RAW fitness per gen (the
                                               // maximized search signal; elites
                                               // carry it forward so this is
                                               // non-decreasing by construction)
-  std::vector<Genome> all_scored;  // every distinct genome that was scored (F5)
-  std::vector<Genome> admitted_candidates; // top survivors of the final gen
-  atx::u64 seed{0};                // == cfg.master_seed (artifact key)
+  std::vector<Genome> all_scored;             // every distinct genome that was scored (F5)
+  std::vector<Genome> admitted_candidates;    // top survivors of the final gen
+  atx::u64 seed{0};                           // == cfg.master_seed (artifact key)
 };
 
 namespace detail {
@@ -186,8 +225,40 @@ namespace detail {
 // =========================================================================
 struct Scored {
   Genome genome;
-  atx::f64 fitness{0.0}; // pool_aware_fitness raw (the maximized signal)
+  atx::f64 fitness{0.0};   // pool_aware_fitness raw (the maximized signal)
   atx::f64 selection{0.0}; // fitness MINUS the novelty penalty (used for ranking)
+  // S4.1 multi-objective fields. `objectives` is the cached FitnessReport vector
+  // {wq, diversify, robust, ...}; `rank`/`crowding` are filled ONCE per generation
+  // by assign_pareto_ranks (NSGA-II over `objectives`) BEFORE any reproduction RNG
+  // draw. In ScalarRaw mode rank/crowding collapse to a total order by `fitness`.
+  std::array<atx::f64, kMaxObjectives> objectives{};
+  atx::u8 n_objectives{0}; // live leading entries of `objectives`
+  atx::u16 rank{0};        // NSGA-II non-dominated front (0 == best)
+  atx::f64 crowding{0.0};  // crowding distance within the rank (larger == better)
+  // S4.2 behavioral descriptor (the candidate's realized OOS PnL profile / phenotype,
+  // copied from the cached FitnessReport). Read by the per-generation behavioral-
+  // novelty pass to compute objectives[3] = mean k-nearest behavioral distance over
+  // population ∪ archive. Owned by value (canon-cacheable; novelty itself is not).
+  std::vector<atx::f64> descriptor{};
+};
+
+// =========================================================================
+//  CachedScore — the per-canon_hash fitness cache value (F6 throughput, S4.1).
+//
+//  Pre-S4 this cache held only the scalar `raw`. S4.1 also caches the multi-
+//  objective vector so a dedup-hit reuses the SAME objectives (not just raw)
+//  without a re-eval — the MultiObjective ranking is then identical for an
+//  equivalent structure however many times it recurs. Trivial aggregate.
+// =========================================================================
+struct CachedScore {
+  atx::f64 raw{0.0};
+  std::array<atx::f64, kMaxObjectives> objectives{};
+  atx::u8 n_objectives{0};
+  // S4.2: the candidate's behavioral descriptor (OOS PnL profile). Pure function of
+  // (genome, panel) -> canon-cacheable: a dedup-hit reuses this WITHOUT a re-eval.
+  // The behavioral NOVELTY computed from it is population-relative and is recomputed
+  // fresh each generation (NOT cached). Empty if the candidate's fitness errored.
+  std::vector<atx::f64> descriptor{};
 };
 
 // =========================================================================
@@ -205,9 +276,9 @@ public:
   // `seed_exprs` are the in-grammar starting templates; `panel_fields` are the
   // field-swap candidate names (the Panel exposes no field-name iterator, so the
   // caller supplies them — they MUST be the panel's actual field spellings).
-  SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
-               const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
-               std::vector<std::string> seed_exprs, std::vector<std::string> panel_fields);
+  SearchDriver(const alpha::Library &lib, const alpha::Panel &panel, const WeightPolicy &policy,
+               const exec::ExecutionSimulator &sim, std::vector<std::string> seed_exprs,
+               std::vector<std::string> panel_fields);
 
   // Run the deterministic search. Same cfg + same pool => byte-identical result
   // (F1). `pool` is borrowed read-only for the marginal-correlation fitness term.
@@ -232,7 +303,7 @@ private:
   [[nodiscard]] std::vector<Scored>
   evaluate_generation(const std::vector<Genome> &pop, const SearchConfig &cfg, atx::usize gen,
                       const combine::AlphaStore &pool, CanonSet &canon,
-                      std::unordered_map<atx::u64, atx::f64> &fitness_cache,
+                      std::unordered_map<atx::u64, CachedScore> &fitness_cache,
                       parallel::DetPool &det_pool, SearchResult &res);
 
   // ----- (3) novelty_penalize ------------------------------------------------
@@ -244,6 +315,36 @@ private:
   // this is fully deterministic and F1-safe.
   void novelty_penalize(std::vector<Scored> &scored, const combine::AlphaStore &pool,
                         const SearchConfig &cfg) const;
+
+  // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
+  // Compute the population-relative BEHAVIORAL novelty for every Scored and write
+  // it into objectives[3], bumping n_objectives to 4 — but ONLY when the objective
+  // is ACTIVE (objective_mode == MultiObjective && novelty_w > 0). Runs AFTER all
+  // descriptors for the generation are known and BEFORE assign_pareto_ranks (so the
+  // 4th objective enters NSGA-II this generation). For genome i the novelty is the
+  // mean behavioral_distance to the k nearest descriptors in (population minus self)
+  // ∪ archive — phenotypic diversity, DISTINCT from the marginal-corr `diversify`
+  // objective (which prices distance to the admitted POOL). `scratch` is a reused
+  // span buffer sized once per generation (zero hot-path alloc). RNG-free,
+  // deterministic. When inactive this is a no-op and n_objectives stays 3 (the
+  // boundary pin / ScalarRaw path is byte-untouched).
+  void behavioral_novelty_pass(std::vector<Scored> &scored, const BehavioralArchive &archive,
+                               const SearchConfig &cfg,
+                               std::vector<std::span<const atx::f64>> &scratch) const;
+
+  // Update the behavioral archive with the current generation's Pareto FRONT (the
+  // rank-0 non-dominated elites) in CANONICAL-ID order, evicting oldest past C. No
+  // RNG. Requires assign_pareto_ranks to have run (reads Scored.rank). Inactive
+  // (objective off) -> no-op so the archive stays empty and adds no state. The
+  // canonical-id insert order makes the archive contents — and the FIFO eviction
+  // sequence — byte-deterministic and worker-count-invariant.
+  static void update_archive(const std::vector<Scored> &scored,
+                             const std::vector<atx::usize> &canon_order, const SearchConfig &cfg,
+                             BehavioralArchive &archive);
+
+  // True iff the S4.2 behavioral objective is active for this config (the single
+  // activation gate, referenced by every S4.2 seam). MultiObjective && novelty_w>0.
+  [[nodiscard]] static bool behavioral_active(const SearchConfig &cfg) noexcept;
 
   // ----- (4) reproduce -------------------------------------------------------
   // Produce the next population: carry the top `elites` by RAW fitness, then fill
@@ -297,19 +398,46 @@ private:
 
   // Indices of `scored` ranked by DESCENDING RAW fitness (the maximized search
   // signal); ties broken by canonical order so the rank is deterministic (F1).
-  // This is the elitism + admitted-candidate ordering: carrying the best-raw genome
-  // verbatim each gen (and re-scoring it from the canon-keyed cache to the SAME raw
-  // value) makes best_fitness_per_gen non-decreasing BY CONSTRUCTION.
+  // This is the ScalarRaw elitism + admitted-candidate ordering: carrying the
+  // best-raw genome verbatim each gen (and re-scoring it from the canon-keyed cache
+  // to the SAME raw value) makes best_fitness_per_gen non-decreasing BY CONSTRUCTION.
   [[nodiscard]] static std::vector<atx::usize>
   raw_ordered_indices(const std::vector<Scored> &scored);
 
+  // S4.1: assign NSGA-II rank + crowding to every Scored, ONCE per generation,
+  // BEFORE any reproduction RNG draw. MultiObjective: builds an ObjMatrix over the
+  // first n_objectives columns, runs fast_nondominated_sort (canon_order) -> rank,
+  // and crowding_distance per front -> crowding. ScalarRaw: collapses to a total
+  // order by RAW fitness (rank == descending-raw position, crowding 0), so the
+  // pre-S4 raw ordering is reproduced exactly. `canon_order` is the value-based
+  // permutation established before this call (no RNG has been drawn yet).
+  static void assign_pareto_ranks(std::vector<Scored> &scored,
+                                  const std::vector<atx::usize> &canon_order,
+                                  const SearchConfig &cfg);
+
+  // S4.1: indices of `scored` in NSGA-II survivor order — (rank asc, crowding desc,
+  // canon_less). Elitism keeps the first front then crowding up to `elites`; the
+  // admitted-candidate list reads the same order. In ScalarRaw this reduces to the
+  // exact pre-S4 raw_ordered_indices (rank is the raw-descending position, crowding
+  // 0, canonical tie-break). Requires assign_pareto_ranks to have run.
+  [[nodiscard]] static std::vector<atx::usize>
+  pareto_ordered_indices(const std::vector<Scored> &scored);
+
+  // S4.1: the NSGA-II crowded-comparison operator <_n (Deb §III-C). `a` is BETTER
+  // than `b` iff (rank_a < rank_b) OR (rank_a == rank_b AND crowding_a > crowding_b).
+  // Used by both pareto_ordered_indices and tournament_pick (MultiObjective). NO
+  // canonical tie-break here — the callers apply canon_less as the final key so the
+  // resolution is a strict-weak-ordering. RNG-free, value-based, noexcept.
+  [[nodiscard]] static bool crowded_better(const Scored &a, const Scored &b) noexcept;
+
   // k-tournament over the canonical-id-ordered parent pool: draw k indices into
-  // `canon_order` with the seeded rng, return the one with the highest selection
-  // fitness (ties -> the earlier canonical-id slot, deterministic). The candidate
-  // set is iterated in fixed canonical order, so the draw is fully replayable (F2).
+  // `canon_order` with the seeded rng, return the BETTER candidate. MultiObjective
+  // compares (rank asc, crowding desc); ScalarRaw compares .selection > (the exact
+  // pre-S4 rule). Ties -> the earlier canonical-id slot (deterministic). The
+  // candidate set is iterated in fixed canonical order, so the draw is replayable (F2).
   [[nodiscard]] static const Genome &tournament_pick(const std::vector<Scored> &scored,
                                                      const std::vector<atx::usize> &canon_order,
-                                                     atx::usize k, Xoshiro256pp &rng);
+                                                     const SearchConfig &cfg, Xoshiro256pp &rng);
 
   // ----- result assembly -----------------------------------------------------
 
