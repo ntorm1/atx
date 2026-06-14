@@ -10,12 +10,14 @@
 //   * MissingFeatureCellMakesRowInvalid   — uncovered (NaN) feature cell ->
 //       row_valid == 0 (M8).
 //   * FeatureNameCollisionErrs            — feature column named "close" ->
-//       merge_features_into_panel returns Err.
+//       merge_features_into_panel returns Err(InvalidArgument).
+//   * FeatureColumnDuplicateWithinDatasetErrs — duplicate feature field name is
+//       rejected: schema layer rejects a dup-within-one-Dataset; merge layer
+//       rejects a second merge that re-adds an already-merged feature name.
 //   * PriceOnlyUnaffected                 — merge is opt-in: original fields and
 //       values are byte-identical to panel_in.
 
 #include <cmath>
-#include <cstdint>
 #include <cstring>
 #include <span>
 #include <string>
@@ -254,6 +256,46 @@ TEST(DataAdaptFeature, FeatureNameCollisionErrs) {
 
   auto res = merge_features_into_panel(panel_in, price, feature);
   EXPECT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// Two identical feature field names cannot both land in the Panel. There are two
+// layers in front of that:
+//   (a) Dataset::create's schema_is_coherent (S6.1) already rejects a single
+//       feature Dataset carrying TWO columns of the same name — so the merge
+//       function never even sees a dup-within-one-dataset. We pin that here.
+//   (b) merge_features_into_panel's own collision loop catches the case where a
+//       SECOND merge tries to add a feature column whose name duplicates a
+//       feature already merged into the Panel — Panel::create does NOT dedupe
+//       field names, so this guard is load-bearing. We pin that too.
+TEST(DataAdaptFeature, FeatureColumnDuplicateWithinDatasetErrs) {
+  // (a) schema layer: a Dataset with two same-named columns is NOT constructible.
+  DatasetSchema dup_schema;
+  dup_schema.columns = {"sentiment", "sentiment"};
+  dup_schema.dtypes = {ColumnDType::F64, ColumnDType::F64};
+  dup_schema.role = Role::Feature;
+  std::vector<std::vector<atx::f64>> dup_data = {{0.5}, {0.7}};
+  auto dup_res =
+      Dataset::create(dup_schema, /*dates=*/{1}, /*instruments=*/{10u}, std::move(dup_data),
+                      /*mask=*/{}, DatasetProvenance{"test", "dup"});
+  EXPECT_FALSE(dup_res.has_value()) << "schema_is_coherent should reject duplicate column names";
+  EXPECT_EQ(dup_res.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  // (b) merge layer: merging a second feature whose column name duplicates an
+  // already-merged feature column must be rejected by merge's collision guard.
+  const Dataset price = make_price_dataset();
+  const Panel panel_in = make_price_panel(price);
+  const Dataset feat1 = make_sentiment_dataset(/*col_name=*/"sentiment");
+
+  auto first = merge_features_into_panel(panel_in, price, feat1);
+  ASSERT_TRUE(first.has_value()) << first.error().message();
+  const Panel merged_once = std::move(first).value();
+
+  // Second merge: a different feature Dataset, same column name "sentiment".
+  const Dataset feat2 = make_sentiment_dataset(/*col_name=*/"sentiment");
+  auto second = merge_features_into_panel(merged_once, price, feat2);
+  EXPECT_FALSE(second.has_value());
+  EXPECT_EQ(second.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 // Merge is OPT-IN: the original price Panel is untouched. We assert that for every

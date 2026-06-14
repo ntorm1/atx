@@ -18,8 +18,6 @@
 //
 // Cold path; copies are intentional.
 
-#include <span>
-
 #include "atx/core/error.hpp"
 
 #include "atx/engine/alpha/panel.hpp"

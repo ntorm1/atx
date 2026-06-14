@@ -6,11 +6,13 @@
 #include "atx/engine/data/adapt_feature.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
@@ -55,6 +57,10 @@ merge_features_into_panel(const alpha::Panel &panel_in, const Dataset &price,
   // 2. Combined field set: existing panel fields first (unchanged, in order),
   //    then the aligned feature columns. Reject a name collision.
   const atx::usize nf = panel_in.num_fields();
+  // FieldId is u32; the loop below narrows the field index to FieldId for
+  // field_all/field_name. Guard the narrowing (a Panel never holds more than
+  // u32-max fields, so this is a programmer-error abort, not a runtime path).
+  ATX_ASSERT(nf <= std::numeric_limits<alpha::FieldId>::max());
   std::vector<std::string> field_names;
   std::vector<std::vector<atx::f64>> field_data;
   field_names.reserve(nf + av.columns.size());
@@ -67,9 +73,10 @@ merge_features_into_panel(const alpha::Panel &panel_in, const Dataset &price,
   for (atx::usize c = 0; c < av.columns.size(); ++c) {
     for (const std::string &existing : field_names) {
       if (existing == av.columns[c]) {
-        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                              std::string{"merge_features_into_panel: feature column '"} +
-                                  av.columns[c] + "' collides with an existing panel field");
+        return atx::core::Err(
+            atx::core::ErrorCode::InvalidArgument,
+            std::string{"merge_features_into_panel: feature column '"} + av.columns[c] +
+                "' collides with an existing field or a previously-added feature column");
       }
     }
     field_names.push_back(std::move(av.columns[c]));
