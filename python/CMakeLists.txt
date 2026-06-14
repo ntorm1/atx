@@ -24,7 +24,9 @@ pybind11_add_module(_core
     src/_bindings/bind_backtest.cpp
     src/_bindings/bind_eval.cpp
     src/_bindings/bind_risk.cpp
+    src/_bindings/bind_factory.cpp
     src/_bindings/shim/backtest_shim.cpp
+    src/_bindings/shim/mining_shim.cpp
 )
 target_include_directories(_core PRIVATE src/_bindings)
 target_link_libraries(_core PRIVATE atx::engine)

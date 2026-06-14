@@ -32,6 +32,8 @@ from . import eval as eval  # noqa: A004  (submodule: atxpy.eval.performance, ..
 from . import risk as risk
 from .eval import Metrics, performance, return_metrics
 from .risk import factor_model, optimize
+from . import mining as mining
+from .mining import mine_alphas, combine_pool
 
 __version__ = "0.1.0"
 
@@ -76,5 +78,9 @@ __all__ = [
     "PortfolioOptimizer",
     "factor_model",
     "optimize",
+    # mining / combine
+    "mining",
+    "mine_alphas",
+    "combine_pool",
     "__version__",
 ]

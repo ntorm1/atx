@@ -64,6 +64,7 @@ void bind_alpha_module(py::module_ &m);
 void bind_backtest_module(py::module_ &m);
 void bind_eval_module(py::module_ &m);
 void bind_risk_module(py::module_ &m);
+void bind_factory_module(py::module_ &m);
 
 void bind_core(py::module_ &m) {
   bind_decimal(m);
@@ -73,4 +74,5 @@ void bind_core(py::module_ &m) {
   bind_backtest_module(m);
   bind_eval_module(m);
   bind_risk_module(m);
+  bind_factory_module(m);
 }
