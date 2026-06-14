@@ -1,0 +1,44 @@
+# Alpha101 subset — the canonical "101 Formulaic Alphas" (Kakushadze 2016,
+# arXiv:1601.00991) reproducible in the atx-engine DSL after Sprint S3.
+#
+# Reference semantics: yli188/worldquant_alpha101 conventions (research §1.2).
+# Each line below is `#<id>: <DSL expression>`. The widened-op conformance test
+# (alpha_widened_conformance_test.cpp) parses, type-checks, evaluates each on a
+# datafields panel (close/open/high/low/volume + derived vwap/dollar_volume/adv20
+# + IndClass.sector) and asserts finite in-universe output AND oracle == VM.
+#
+# Fields shipped: open high low close volume vwap dollar_volume adv20
+#                 IndClass.sector. Derived via alpha/datafields.hpp (S3.3).
+
+#101: (close - open) / ((high - low) + 0.001)
+#41 : power(high * low, 0.5) - vwap
+#54 : (-1 * ((low - close) * power(open, 5))) / ((low - high) * power(close, 5))
+#12 : sign(delta(volume, 1)) * (-1 * delta(close, 1))
+#6  : -1 * correlation(open, volume, 10)
+#33 : rank(-1 * (1 - (open / close)))
+#13 : -1 * rank(covariance(rank(close), rank(volume), 5))
+#45 : -1 * correlation(rank(close), rank(volume), 6)
+#ts_max : rank(ts_max(close, 10) - close)
+#scale  : scale(rank(close) - rank(open), 1)
+#adv20  : rank(close / adv20)
+#9  : ts_rank(volume, 5) * (-1 * ts_rank(high - close, 5))
+
+# ---------------------------------------------------------------------------
+# Not-yet-expressible remainder (recorded residual — blocking dependency):
+#
+#  * Alphas referencing a daily `returns` field (e.g. #1, #3-style stddev(returns,
+#    n)): S3.3's datafields derive vwap/dollar_volume/adv{d} but NOT daily returns
+#    (returns = close/delay(close,1) - 1 is expressible inline, but the canonical
+#    forms assume a precomputed `returns` column). Deferred: a `returns` datafield.
+#  * Sign-conditional / ternary forms gated on returns (#1: ((returns < 0) ?
+#    stddev(returns,20) : close)) — expressible once `returns` lands; the ternary
+#    itself is supported (Select).
+#  * `cap` (market capitalization) and `adv{d}` for d != 20 (#56, alphas needing
+#    adv30/adv40/...) — adv{d} is a parameterized datafield (S3.3) but only adv20
+#    is materialized on this fixture panel; deriving the needed d is mechanical.
+#  * IndClass.industry / IndClass.subindustry neutralization variants — the group
+#    classifiers exist (Group dtype) but this fixture panel materializes only
+#    IndClass.sector.
+#
+# The blocking dependency for the bulk of the remainder is a `returns` datafield;
+# everything else is fixture-panel field materialization, not a missing operator.

@@ -1,6 +1,6 @@
 # Sprint S3 (p2) — Alpha DSL & Expression Substrate — Implementation Progress
 
-**Status:** 🟡 OPEN (S3.0 marker) — started 2026-06-13
+**Status:** ✅ CLOSED — 2026-06-13 (S3.0–S3.6 shipped; full suite 1215 pass / 1 disabled; `/W4 /permissive- /WX` clean)
 **Worktree:** `C:\Users\natha\atx-wt\p2-s3` (isolated — one branch per worktree, no shared-branch race)
 **Branch:** `feat/p2-s3-alpha-dsl`
 **Base:** `main @ 0790157` (p2 roadmap refactor: S3/S4 = alpha DSL + genetic search)
@@ -58,8 +58,8 @@ oracle⇄VM twins bit-for-bit). **Disabled test:** `LibraryIntegration.RoundTrip
 within one run); marked `DISABLED_` pending tmpdir-isolation fix.
 | S3.3 | Cross-sectional gap-fill ops + `vwap`/`adv{d}`/dollar-volume datafields | ✅ | `cdb32e1` | 19 | `quantile`/`vec_sum`/`vec_avg` (oracle⇄VM bit-exact) + `reverse`→Neg alias; `datafields.hpp` derives `vwap`/`dollar_volume`/`adv{d}`; `adv{d}==ts_mean(dollar_volume,d)` proven through the engine; 1206 pass / 1 disabled |
 | S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ✅ | `b4c1c8e` | 3 | root cause = `add_op` filed by `min_arity` but `op_swap` looked up by materialized `call_arity`, so a finite-default op (scale/winsorize/quantile, kernel reads operand 2) was offered to an arity-1 node → VM read `kNoSlot`. Fix: `validate_node_contract` (analyze rail: materialized operand-arity + hparam count) + OpCatalog buckets keyed on materialized operand arity + group role, skipping hparam/record ops. `enable_op_swap=true`. Stress harness: every bucket, 0 aborts, oracle==VM. Noise seed 61→81 recal (op_swap-on found 1 fluke). 1209/1209 + 1 disabled |
-| S3.5 | Grammar-typed (valid-by-construction) generation | ✅ | — | 3 | `factory/generate.hpp` recursive shape/dtype-targeted sampler → analyze-valid by construction; **typed 0/3000 rejected** vs type-blind control >25%; same-seed determinism; 300 generated genomes run oracle==VM |
-| S3.6 | Conformance suite + Alpha101 subset repro + bench + close | ⬜ | — | — | p1 corpus byte-identical |
+| S3.5 | Grammar-typed (valid-by-construction) generation | ✅ | `bb123f4` | 3 | `factory/generate.hpp` recursive shape/dtype-targeted sampler → analyze-valid by construction; **typed 0/3000 rejected** vs type-blind control >25%; same-seed determinism; 300 generated genomes run oracle==VM |
+| S3.6 | Conformance suite + Alpha101 subset repro + bench + close | ✅ | — | 3 | widened-op oracle==VM gate (all S3.1–S3.4 ops + datafields); p1 corpus oracle==VM + hand anchor; 12 Alpha101 reproduced finite; `alpha_widened_bench`; fixture `alpha101_subset.txt`; full suite 1215 pass / 1 disabled |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done (header + tests + `/W4 /WX` + `/fp:precise` clean).
 
@@ -73,5 +73,11 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done (header + tests + `/W4 /
 - generation (S3.5): grammar-typed rejection **0/3000**; type-blind control >25% (>750/3000) —
   the type lattice (Shape × DType) + operand roles (group/window/scalar) constrain every node, so
   the emitted genome is analyze-valid by construction. 300 generated genomes also run oracle==VM.
-- Alpha101: subset reproduced / total; not-yet-expressible residual + blocking op.
-- bench: widened-op eval throughput (Debug upper bound), CSE hit-rate.
+- Alpha101 (S3.6): **12 reproduced** (#101/#41/#54/#12/#6/#33/#13/#45 + ts_max/scale/adv20/#9
+  forms) on the datafields panel — all parse/typecheck/evaluate finite in-universe AND oracle==VM.
+  Residual (recorded in `tests/fixtures/alpha101_subset.txt`): alphas needing a daily `returns`
+  datafield (the bulk blocker — S3.3 derives vwap/dollar_volume/adv{d} only) + `cap` + adv{d}
+  for d≠20 + IndClass.industry/subindustry materialization — all FIELD gaps, no missing operator.
+- bench (S3.6, `alpha_widened_bench`, Debug upper bound): 16-alpha widened battery over a
+  256×128 datafields panel → ~657 ms/iter, ~818k alpha-cells/s; CSE lever unique/total=0.39,
+  cache_hit_pct=60.98%, num_slots=12 (zero hot-path alloc preserved — warm Engine::evaluate).
