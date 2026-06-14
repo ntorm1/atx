@@ -1,0 +1,43 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "atxpy"
+version = "0.1.0"
+description = "Python wrapper for the atx-engine quant backtesting engine"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Nathan Tormaschy", email = "nathan.tormaschy@gmail.com" }]
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2.0"]
+test = ["pytest>=7", "numpy>=1.23", "pandas>=2.0"]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/atxpy"]
+build.verbose = true
+
+[tool.scikit-build.cmake]
+build-type = "Release"
+# clang-cl is a single-config compiler; force the Ninja generator.
+args = ["-GNinja"]
+
+[tool.scikit-build.cmake.define]
+# Match CMakePresets.json so the extension is ABI-compatible with the atx libs.
+CMAKE_C_COMPILER = "clang-cl"
+CMAKE_CXX_COMPILER = "clang-cl"
+# vcpkg toolchain + the repo's manifest. Reuse the already-populated installed
+# tree so we do not re-run `vcpkg install` for arrow/parquet/zstd/openssl.
+CMAKE_TOOLCHAIN_FILE = "C:/Users/natha/vcpkg/scripts/buildsystems/vcpkg.cmake"
+VCPKG_TARGET_TRIPLET = "x64-windows"
+VCPKG_MANIFEST_DIR = "C:/Users/natha/OneDrive/Desktop/atx"
+VCPKG_INSTALLED_DIR = "C:/Users/natha/OneDrive/Desktop/atx/build/vcpkg_installed"
+# Engine tests/bench are off when the monorepo is consumed as a subdirectory;
+# keep them off explicitly and drop the warnings-as-errors gate for this build.
+ATX_BUILD_TESTS = "OFF"
+ATX_BUILD_BENCH = "OFF"
+ATX_WERROR = "OFF"
