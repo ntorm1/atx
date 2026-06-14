@@ -1,7 +1,8 @@
 #include "atx/engine/alpha/oracle.hpp"
 
 #include <algorithm> // std::stable_sort, std::sort, std::min_element, std::max_element
-#include <cmath>     // std::sqrt, std::fabs, std::log, std::exp
+#include <array>     // std::array (entropy bucket counts)
+#include <cmath>     // std::sqrt, std::fabs, std::log, std::exp, std::pow
 #include <span>      // std::span
 #include <vector>    // std::vector
 
@@ -329,14 +330,16 @@ atx::core::Status Oracle::eval_time_series(const Instr &in) {
     }
   }
   const atx::usize d = detail::window_of(src_col(in, last));
-  // Binary-series ops (corr/cov) read a second series from src[1].
-  const bool binary_series = (in.op == OpCode::TsCorr || in.op == OpCode::TsCov);
+  // Binary-series ops (corr/cov + S3.2 ts_regression) read a second series.
+  const bool binary_series =
+      (in.op == OpCode::TsCorr || in.op == OpCode::TsCov || in.op == OpCode::TsRegression);
   const std::span<const atx::f64> y = binary_series ? src_col(in, 1) : std::span<const atx::f64>{};
+  const atx::f64 p0 = in.imm[0]; // peeled hparam (decay f / moment k / entropy buckets)
 
   for (atx::usize j = 0; j < instruments_; ++j) {
     for (atx::usize t = 0; t < dates_; ++t) {
       out[t * instruments_ + j] =
-          binary_series ? ts_binary_at(in.op, x, y, t, j, d) : ts_unary_at(in.op, x, t, j, d);
+          binary_series ? ts_binary_at(in.op, x, y, t, j, d) : ts_unary_at(in.op, x, t, j, d, p0);
     }
   }
   return atx::core::Ok();
@@ -511,8 +514,8 @@ atx::f64 ou_unary_at(OpCode op, const std::vector<atx::f64> &w) noexcept {
 
 // ts_unary_at — single-cell value of a unary-series Ts op at (t, j). delay/delta
 // short-circuit (they need only the shifted observation, not a full window).
-atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
-                             atx::usize j, atx::usize d) const {
+atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize t, atx::usize j,
+                             atx::usize d, atx::f64 p0) const {
   // delay/delta: x[t-d] with min_periods==1; NaN if the shift falls off the top.
   if (op == OpCode::TsDelay || op == OpCode::TsDelta) {
     if (d == 0 || t < d) {
@@ -700,6 +703,65 @@ atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize 
     const atx::f64 range = hi - lo;
     return range == 0.0 ? 0.0 : (w.back() - lo) / range;
   }
+  case OpCode::TsDecayExp: {
+    // Exponential decay: weight p0^(n-1-i), newest (i=n-1) heaviest (p0^0==1).
+    atx::f64 acc = 0.0;
+    atx::f64 wsum = 0.0;
+    for (atx::usize i = 0; i < n; ++i) {
+      const atx::f64 wt = std::pow(p0, static_cast<atx::f64>(n - 1 - i));
+      acc += wt * w[i];
+      wsum += wt;
+    }
+    return wsum == 0.0 ? detail::kNaN : acc / wsum;
+  }
+  case OpCode::TsMoment: {
+    // k-th central moment (1/n) Σ (v - mean)^k; p0 is the integer order k.
+    const int kord = static_cast<int>(p0);
+    const atx::f64 m = detail::sum_of(w) / static_cast<atx::f64>(n);
+    atx::f64 s = 0.0;
+    for (const atx::f64 v : w) {
+      const atx::f64 dv = v - m;
+      atx::f64 p = 1.0;
+      for (int e = 0; e < kord; ++e) {
+        p *= dv;
+      }
+      s += p;
+    }
+    return s / static_cast<atx::f64>(n);
+  }
+  case OpCode::TsEntropy: {
+    // Shannon entropy over `nb` equal-width buckets across [min, max]; flat -> 0.
+    constexpr atx::usize kMaxBuckets = 256;
+    atx::usize nb = static_cast<atx::usize>(p0);
+    if (nb < 1) {
+      nb = 1;
+    }
+    if (nb > kMaxBuckets) {
+      nb = kMaxBuckets;
+    }
+    const atx::f64 lo = *std::min_element(w.begin(), w.end());
+    const atx::f64 hi = *std::max_element(w.begin(), w.end());
+    const atx::f64 range = hi - lo;
+    if (range == 0.0) {
+      return 0.0;
+    }
+    std::array<atx::usize, kMaxBuckets> cnt{};
+    for (const atx::f64 v : w) {
+      atx::usize b = static_cast<atx::usize>((v - lo) / range * static_cast<atx::f64>(nb));
+      if (b >= nb) {
+        b = nb - 1;
+      }
+      ++cnt[b];
+    }
+    atx::f64 entropy = 0.0;
+    for (atx::usize b = 0; b < nb; ++b) {
+      if (cnt[b] > 0) {
+        const atx::f64 pb = static_cast<atx::f64>(cnt[b]) / static_cast<atx::f64>(n);
+        entropy -= pb * std::log(pb);
+      }
+    }
+    return entropy;
+  }
   case OpCode::OuTheta:
   case OpCode::OuHalflife:
   case OpCode::OuMean:
@@ -719,6 +781,23 @@ atx::f64 Oracle::ts_binary_at(OpCode op, std::span<const atx::f64> x,
   if (!detail::gather_window(x, t, j, d, instruments_, wx) ||
       !detail::gather_window(y, t, j, d, instruments_, wy)) {
     return detail::kNaN;
+  }
+  if (op == OpCode::TsRegression) {
+    // Rolling OLS slope of the dependent (wx) on the predictor (wy):
+    // beta = Σ(wy-my)(wx-mx) / Σ(wy-my)². Zero predictor variance -> NaN.
+    const atx::usize n = wx.size();
+    if (n < 2) {
+      return detail::kNaN;
+    }
+    const atx::f64 mx = detail::sum_of(wx) / static_cast<atx::f64>(n);
+    const atx::f64 my = detail::sum_of(wy) / static_cast<atx::f64>(n);
+    atx::f64 sab = 0.0;
+    atx::f64 sbb = 0.0;
+    for (atx::usize i = 0; i < n; ++i) {
+      sab += (wy[i] - my) * (wx[i] - mx);
+      sbb += (wy[i] - my) * (wy[i] - my);
+    }
+    return sbb == 0.0 ? detail::kNaN : sab / sbb;
   }
   return op == OpCode::TsCorr ? detail::pearson(wx, wy) : detail::sample_cov(wx, wy);
 }

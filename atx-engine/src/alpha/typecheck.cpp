@@ -40,6 +40,11 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::TsQuantile:
   case OpCode::TsScale:
   case OpCode::TsCountNans:
+  // BRAIN-superset rolling ops (S3.2): all trailing-window, same lookback rule.
+  case OpCode::TsRegression:
+  case OpCode::TsDecayExp:
+  case OpCode::TsEntropy:
+  case OpCode::TsMoment:
   // OU rolling-fit ops (P3d-E3): windowed, same lookback rule as ts_mean.
   case OpCode::OuTheta:
   case OpCode::OuHalflife:
@@ -267,6 +272,27 @@ atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e) {
     if (e.hparams[1] <= 0.0) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "kalman: R (observation noise) must be > 0");
+    }
+    break;
+  case OpCode::TsDecayExp:
+    // ts_decay_exp(x, d, f): decay base f must be strictly positive.
+    if (e.hparams[0] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ts_decay_exp: decay factor f must be > 0");
+    }
+    break;
+  case OpCode::TsMoment:
+    // ts_moment(x, d, k): central-moment order k must be an integer >= 1.
+    if (e.hparams[0] < 1.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ts_moment: moment order k must be >= 1");
+    }
+    break;
+  case OpCode::TsEntropy:
+    // ts_entropy(x, d, b): bucket count b must be in [1, 256].
+    if (e.hparams[0] < 1.0 || e.hparams[0] > 256.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ts_entropy: bucket count must be in [1, 256]");
     }
     break;
   default:

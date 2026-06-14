@@ -412,6 +412,11 @@ private:
     case OpCode::TsQuantile:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
+    // BRAIN-superset rolling ops (S3.2): same windowed path.
+    case OpCode::TsRegression:
+    case OpCode::TsDecayExp:
+    case OpCode::TsEntropy:
+    case OpCode::TsMoment:
     // OU rolling-fit ops (P3d-E3): same windowed path as Ts* rolling ops.
     case OpCode::OuTheta:
     case OpCode::OuHalflife:
@@ -702,7 +707,8 @@ private:
       }
     }
     const atx::usize d = detail::tsv_window_of(src_col(in, last));
-    const bool binary_series = (in.op == OpCode::TsCorr || in.op == OpCode::TsCov);
+    const bool binary_series =
+        (in.op == OpCode::TsCorr || in.op == OpCode::TsCov || in.op == OpCode::TsRegression);
     const std::span<const atx::f64> y =
         binary_series ? src_col(in, 1) : std::span<const atx::f64>{};
     // OU rolling-fit ops (P3d-E4) fit AR(1) over the trailing window per cell;
@@ -723,7 +729,8 @@ private:
                 ? detail::ou_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_)
             : binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
                                                  ts_scratch_b_)
-                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_);
+                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_,
+                                                  in.imm[0]);
       }
     }
     return atx::core::Ok();

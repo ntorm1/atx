@@ -64,6 +64,7 @@
 // (oldest->newest) order to mirror the oracle's vector loops exactly.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -290,7 +291,7 @@ struct TsvFit {
 // ===========================================================================
 [[nodiscard]] inline atx::f64 ts_value_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
                                           atx::usize j, atx::usize d, atx::usize instruments,
-                                          std::vector<atx::f64> &sort_buf) {
+                                          std::vector<atx::f64> &sort_buf, atx::f64 p0) {
   // delay/delta: x[t-d] with min_periods==1; NaN if the shift falls off the top.
   if (op == OpCode::TsDelay || op == OpCode::TsDelta) {
     if (d == 0 || t < d) {
@@ -455,6 +456,80 @@ struct TsvFit {
     const atx::f64 range = hi - lo;
     return range == 0.0 ? 0.0 : (x[t * instruments + j] - lo) / range;
   }
+  case OpCode::TsDecayExp: {
+    // Exponential decay: weight p0^k at offset k from the NEWEST (k=0). Walk the
+    // window oldest->newest (i): element i carries weight p0^(d-1-i), so the
+    // newest (i=d-1) gets p0^0 == 1. Normalized by the weight sum.
+    const atx::usize base = (t + 1 - d) * instruments + j;
+    atx::f64 acc = 0.0;
+    atx::f64 wsum = 0.0;
+    for (atx::usize i = 0; i < d; ++i) {
+      const atx::f64 wt = std::pow(p0, static_cast<atx::f64>(d - 1 - i));
+      acc += wt * x[base + i * instruments];
+      wsum += wt;
+    }
+    return wsum == 0.0 ? kTsNaN : acc / wsum;
+  }
+  case OpCode::TsMoment: {
+    // k-th central moment (1/d) Σ (v - mean)^k. p0 is the integer order k (>= 1,
+    // ranged by analyze). Integer power via repeated multiply for a deterministic
+    // result identical to the oracle.
+    const int kord = static_cast<int>(p0);
+    const atx::f64 m = tsv_sum(x, t, j, d, instruments) / nf;
+    atx::f64 s = 0.0;
+    for (atx::usize k = t + 1 - d; k <= t; ++k) {
+      const atx::f64 dv = x[k * instruments + j] - m;
+      atx::f64 p = 1.0;
+      for (int e = 0; e < kord; ++e) {
+        p *= dv;
+      }
+      s += p;
+    }
+    return s / nf;
+  }
+  case OpCode::TsEntropy: {
+    // Shannon entropy (natural log) of the windowed value distribution over `nb`
+    // equal-width buckets across [min, max]. A flat window (range 0) -> 0. The
+    // bucket counts live in a fixed stack array (no per-cell heap alloc); analyze
+    // rails nb into [1, kMaxBuckets].
+    constexpr atx::usize kMaxBuckets = 256;
+    atx::usize nb = static_cast<atx::usize>(p0);
+    if (nb < 1) {
+      nb = 1;
+    }
+    if (nb > kMaxBuckets) {
+      nb = kMaxBuckets;
+    }
+    const atx::usize base = (t + 1 - d) * instruments + j;
+    atx::f64 lo = x[base];
+    atx::f64 hi = x[base];
+    for (atx::usize i = 1; i < d; ++i) {
+      const atx::f64 v = x[base + i * instruments];
+      lo = v < lo ? v : lo;
+      hi = v > hi ? v : hi;
+    }
+    const atx::f64 range = hi - lo;
+    if (range == 0.0) {
+      return 0.0;
+    }
+    std::array<atx::usize, kMaxBuckets> cnt{};
+    for (atx::usize i = 0; i < d; ++i) {
+      const atx::f64 v = x[base + i * instruments];
+      atx::usize b = static_cast<atx::usize>((v - lo) / range * static_cast<atx::f64>(nb));
+      if (b >= nb) {
+        b = nb - 1; // the max value lands in the last bucket
+      }
+      ++cnt[b];
+    }
+    atx::f64 entropy = 0.0;
+    for (atx::usize b = 0; b < nb; ++b) {
+      if (cnt[b] > 0) {
+        const atx::f64 pb = static_cast<atx::f64>(cnt[b]) / nf;
+        entropy -= pb * std::log(pb);
+      }
+    }
+    return entropy;
+  }
   default:
     ATX_UNREACHABLE();
   }
@@ -488,6 +563,18 @@ struct TsvFit {
   }
   const atx::f64 ma = sxa / nf;
   const atx::f64 mb = sya / nf;
+  if (op == OpCode::TsRegression) {
+    // Rolling OLS slope of the FIRST operand (dependent, bx) on the SECOND
+    // (predictor, by): beta = Σ(by-mb)(bx-ma) / Σ(by-mb)². Zero predictor
+    // variance -> NaN. Same summation order as the oracle twin.
+    atx::f64 sab = 0.0;
+    atx::f64 sbb = 0.0;
+    for (atx::usize i = 0; i < d; ++i) {
+      sab += (by[i] - mb) * (bx[i] - ma);
+      sbb += (by[i] - mb) * (by[i] - mb);
+    }
+    return sbb == 0.0 ? kTsNaN : sab / sbb;
+  }
   if (op == OpCode::TsCov) {
     atx::f64 s = 0.0;
     for (atx::usize i = 0; i < d; ++i) {

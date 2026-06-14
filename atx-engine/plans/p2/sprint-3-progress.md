@@ -38,7 +38,14 @@ preset `dev`; target `atx-engine-tests`.
 |---|---|---|---|---|---|
 | S3.0 | Marker + ledger + recon | ✅ | `8ce3db5` | — | impl plan frozen; baseline 92/92 |
 | S3.1 | Regression-residual neutralization (`CsResidualize`) | ✅ | — | 6 | demean boundary pin bit-for-bit; FWL covariate; VM⇄oracle parity; 150/150 no-regression |
-| S3.2 | BRAIN-superset `ts_*` (`ts_regression`/`ts_decay_exp`/`ts_entropy`/`ts_moment`) + backfill/quantile audit | ⬜ | — | — | |
+| S3.2 | BRAIN-superset `ts_*` (`ts_regression`/`ts_decay_exp`/`ts_entropy`/`ts_moment`) + backfill/quantile audit | ✅ | — | 8 | VM⇄oracle twins bit-for-bit; hparam rails; full suite green |
+
+**S3.2 backfill/quantile parity audit (research §1.4):** `ts_backfill` matches §1.4 — most-recent-valid
+fill scanning newest→oldest, deliberately looking *past* NaNs (its own policy, not the any-NaN→NaN gate);
+causal (`t >= i` underflow guard), order-independent → bit-exact VM⇄oracle. **No fix needed.** `ts_quantile`
+as-built is the **rolling median** (quantile 0.5), identical kernel to `ts_med`; internally consistent
+(oracle==VM). BRAIN's fuller `ts_quantile(x, d, driver)` (arbitrary quantile + gaussian/uniform driver) is a
+**recorded extension**, not shipped (would be a new hparam op) — no behavior change to the existing median.
 | S3.3 | Cross-sectional gap-fill ops + `vwap`/`adv{d}`/dollar-volume datafields | ⬜ | — | — | |
 | S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ⬜ | — | — | analyzer contract check load-bearing |
 | S3.5 | Grammar-typed (valid-by-construction) generation | ⬜ | — | — | report rejection-rate vs control |

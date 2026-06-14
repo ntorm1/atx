@@ -17,7 +17,7 @@ namespace detail {
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
   // initializers — existing rows omit them and pick up {0, {}} automatically.
-  static constexpr std::array<OpSig, 66> kOps = {{
+  static constexpr std::array<OpSig, 70> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -94,6 +94,17 @@ namespace detail {
       {"ts_skew", 2, 2, OpCode::TsSkew, DType::F64, true, {}, &shape_panel},
       {"ts_kurt", 2, 2, OpCode::TsKurt, DType::F64, true, {}, &shape_panel},
       {"ts_corr", 3, 3, OpCode::TsCorr, DType::F64, true, {}, &shape_panel},
+      // ---- BRAIN-superset rolling ops (S3.2) --------------------------------
+      // ts_regression(y, x, d): rolling OLS slope of y on x — binary-series like
+      // correlation/covariance (n_hparams=0; window is the 3rd operand).
+      {"ts_regression", 3, 3, OpCode::TsRegression, DType::F64, true, {}, &shape_panel},
+      // ts_decay_exp(x, d, f): exponential decay, weight f^k (newest heaviest);
+      // ts_moment(x, d, k): k-th central moment; ts_entropy(x, d, b): rolling
+      // Shannon entropy over b buckets. The trailing arg (f/k/b) is peeled as a
+      // compile-time hparam (n_hparams=1) into imm[0]; operands are (x, window).
+      {"ts_decay_exp", 3, 3, OpCode::TsDecayExp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_moment", 3, 3, OpCode::TsMoment, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_entropy", 3, 3, OpCode::TsEntropy, DType::F64, true, {}, &shape_panel, 1, {}},
       // ---- stateful recurrence (P3b-3): output Panel; both are CAUSAL (the
       //      forward scan seeds at the panel's first date and reads only the
       //      prior state + inputs <= t) so lookahead_safe = true. shape_panel

@@ -149,6 +149,14 @@ enum class OpCode : atx::u8 {
   TsQuantile,
   TsScale,
   TsCountNans,
+  // BRAIN-superset rolling ops (S3.2): rolling OLS slope of y on x; exponential
+  // decay (f^k weights, peeled hparam f); rolling Shannon entropy (peeled hparam
+  // = bucket count); k-th central moment (peeled hparam k). Each registers in
+  // is_rolling_ts; the three hparam ops bake their immediate into imm[0].
+  TsRegression,
+  TsDecayExp,
+  TsEntropy,
+  TsMoment,
   // ---- stateful recurrence (P3b-3): carry TRUE cross-date state from the
   //      panel's first date forward (no trailing window). Causal by
   //      construction — the forward scan reads only state[t-1] + inputs <= t.

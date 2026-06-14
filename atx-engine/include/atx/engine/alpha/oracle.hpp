@@ -402,6 +402,11 @@ private:
     case OpCode::TsQuantile:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
+    // BRAIN-superset rolling ops (S3.2): same windowed path.
+    case OpCode::TsRegression:
+    case OpCode::TsDecayExp:
+    case OpCode::TsEntropy:
+    case OpCode::TsMoment:
     // OU rolling-fit ops (P3d-E3): same windowed path as Ts* rolling ops.
     case OpCode::OuTheta:
     case OpCode::OuHalflife:
@@ -601,9 +606,11 @@ private:
   // Helpers for the two big families (defined out-of-line below the class).
   void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
                    std::span<const atx::f64> z, atx::f64 a, std::span<atx::f64> out) const;
-  // Single-cell time-series kernels at (t, j) over trailing window `d`.
+  // Single-cell time-series kernels at (t, j) over trailing window `d`. `p0` is
+  // the peeled hparam immediate (decay factor / moment order / entropy buckets);
+  // 0 for ops that carry none.
   [[nodiscard]] atx::f64 ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
-                                     atx::usize j, atx::usize d) const;
+                                     atx::usize j, atx::usize d, atx::f64 p0) const;
   [[nodiscard]] atx::f64 ts_binary_at(OpCode op, std::span<const atx::f64> x,
                                       std::span<const atx::f64> y, atx::usize t, atx::usize j,
                                       atx::usize d) const;
