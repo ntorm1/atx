@@ -44,3 +44,120 @@ class SymbolTable:
     def name(self, symbol: Symbol) -> str: ...
     def size(self) -> int: ...
     def __len__(self) -> int: ...
+
+import enum
+from typing import Tuple
+
+import numpy as np
+
+class Transform(enum.Enum):
+    Rank = ...
+    ZScore = ...
+
+class SlippageMode(enum.Enum):
+    VolumeShare = ...
+    FixedBps = ...
+
+class CommissionMode(enum.Enum):
+    PerShare = ...
+    PerDollar = ...
+
+class OrderType(enum.Enum):
+    Market = ...
+    Limit = ...
+
+class FillCfg:
+    allow_same_bar_fill: bool
+    def __init__(self) -> None: ...
+
+class SlippageCfg:
+    mode: SlippageMode
+    k: float
+    bps: float
+    cap_volshare: float
+    cap_bps: float
+    def __init__(self) -> None: ...
+
+class ImpactCfg:
+    Y: float
+    delta: float
+    gamma: float
+    def __init__(self) -> None: ...
+
+class CommissionCfg:
+    mode: CommissionMode
+    per_share: float
+    min_fee: float
+    max_pct: float
+    per_dollar_bps: float
+    def __init__(self) -> None: ...
+
+class LatencyCfg:
+    latency_nanos: int
+    def __init__(self) -> None: ...
+
+class VolumeCapCfg:
+    volume_limit: float
+    def __init__(self) -> None: ...
+
+class InstrumentStats:
+    adv: float
+    sigma: float
+    spread: float
+    def __init__(self) -> None: ...
+
+class WeightPolicy:
+    transform: Transform
+    industry_neutral: bool
+    dollar_neutral: bool
+    gross_leverage: float
+    truncation: float
+    winsorize_limit: float
+    def __init__(self) -> None: ...
+
+class BarsForSymbol:
+    ts_nanos: list[int]
+    open: list[float]
+    high: list[float]
+    low: list[float]
+    close: list[float]
+    volume: list[float]
+    def __init__(self) -> None: ...
+
+class BacktestParams:
+    symbols: list[str]
+    bars: list[BarsForSymbol]
+    starting_cash: str
+    signals: list[list[float]]
+    max_lookback: int
+    every: int
+    delay_same: bool
+    policy: WeightPolicy
+    fill: FillCfg
+    slip: SlippageCfg
+    impact: ImpactCfg
+    comm: CommissionCfg
+    latency: LatencyCfg
+    volcap: VolumeCapCfg
+    stats: list[InstrumentStats]
+    def __init__(self) -> None: ...
+
+class BacktestResult:
+    @property
+    def slices(self) -> int: ...
+    @property
+    def rebalances(self) -> int: ...
+    @property
+    def turnover(self) -> float: ...
+    @property
+    def final_equity(self) -> float: ...
+    @property
+    def final_cash(self) -> Decimal: ...
+    def equity_columns(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: ...
+    def fills_columns(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: ...
+
+def run_backtest(params: BacktestParams) -> BacktestResult: ...

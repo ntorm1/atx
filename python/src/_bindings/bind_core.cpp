@@ -57,10 +57,14 @@ void bind_decimal(py::module_ &m) {
 
 } // namespace
 
-// Defined in bind_symbol.cpp.
+// Defined in bind_symbol.cpp / bind_config.cpp / bind_backtest.cpp.
 void bind_symbol(py::module_ &m);
+void bind_config(py::module_ &m);
+void bind_backtest_module(py::module_ &m);
 
 void bind_core(py::module_ &m) {
   bind_decimal(m);
   bind_symbol(m);
+  bind_config(m);
+  bind_backtest_module(m);
 }
