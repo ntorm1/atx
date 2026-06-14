@@ -9,6 +9,14 @@
 **Build env:** `cmd /c "call C:\Users\natha\atx-wt\p2-s4-env.cmd && <cmd>"` (VS2022 + vcpkg + sccache + ninja);
 preset `dev`; target `atx-engine-tests`; exe `build\bin\atx-engine-tests.exe`.
 
+**Dev-loop speed (2026-06-14):** full suite was ~251 s, half of it three `MultiHorizonIntegration`
+augmented-QP tests (`R1_FullPipelineDeterministicByteIdentical` 42 s, `R2_TruncationInvarianceNoLookAhead`
+54 s, `R3_AugmentedConstraintsExactEveryPeriod` 31 s — each invokes the augmented QP over a full 4-period
+schedule, ~20 s/run). `DISABLED_`-prefixed for the S4 dev loop (suite → ~124 s); the fast siblings
+`R2_TrajectoryIsPureFunctionOfCurrentAlpha` + `R7_DegenerateReducesToMultiPeriodByteIdentical` keep the
+no-look-ahead / boundary-pin coverage. **Re-enable at S4 close** (or run with `--gtest_also_run_disabled_tests`).
+New baseline: **1281 pass / 5 disabled** (the prior 2 + these 3).
+
 ---
 
 ## §0 As-built recon (the plan's §0, confirmed at base SHA) — the seams each unit edits
