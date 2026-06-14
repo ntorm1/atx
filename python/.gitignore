@@ -1,0 +1,11 @@
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyd
+*.so
+*.pyc
+*.log
+.pytest_cache/
+_atxpy_editable.py
+__editable__.*
