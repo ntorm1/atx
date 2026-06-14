@@ -14,7 +14,11 @@ OpCatalog::OpCatalog(const alpha::Library &lib) {
 [[nodiscard]] std::optional<const OpSig *>
 OpCatalog::sample_compatible(Shape shape, DType dtype, atx::usize arity, const OpSig *current,
                              Xoshiro256pp &rng) const {
-  const Bucket *b = find_bucket(shape, dtype, arity);
+  // The node satisfies its CURRENT op's group-classifier requirement, so only
+  // ops with the same requirement keep its operands valid (S3.4 bucket key).
+  const bool group =
+      current != nullptr && alpha::detail::needs_group_arg(current->opcode);
+  const Bucket *b = find_bucket(shape, dtype, arity, group);
   if (b == nullptr) {
     return std::nullopt;
   }

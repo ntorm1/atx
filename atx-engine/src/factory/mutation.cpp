@@ -84,8 +84,11 @@ namespace detail {
   std::vector<ExprId> cands;
   for (atx::usize i = 0; i < arena.size(); ++i) {
     const Expr &e = arena[i];
+    // A named Call is swappable unless it is a record op (pins) or an
+    // hparam-peeling op (n_hparams > 0): hparam ops are swap-inert (their peeled
+    // immediates are not re-derived on swap), matching add_op's bucket exclusion.
     const bool is_named_call =
-        e.kind == Expr::Kind::Call && e.op != nullptr && e.op->pins.empty();
+        e.kind == Expr::Kind::Call && e.op != nullptr && e.op->pins.empty() && e.n_hparams == 0;
     const bool is_bare_op = e.kind == Expr::Kind::Unary || e.kind == Expr::Kind::Binary;
     if (is_named_call || is_bare_op) {
       cands.push_back(static_cast<ExprId>(i));

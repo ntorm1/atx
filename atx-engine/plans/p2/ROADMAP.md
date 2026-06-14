@@ -276,13 +276,13 @@ OpCatalog** — opens first on the alpha-depth track.
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S3.0 | Marker + ledger + as-built recon vs `alpha::{registry, vm, oracle, ts_ops, cs_ops, typecheck}` + `factory::OpCatalog` | S | ⏳ |
-| S3.1 | Regression-residual neutralization — general cross-sectional residualizer (regress signal on group dummies + log-cap/style factors per date, keep residual; `indneutralize` = demean special case); oracle + bit-exact differential + look-ahead rail | M | ⏳ |
-| S3.2 | BRAIN-superset time-series operators (`ts_regression`/`ts_decay_exp`/`ts_entropy`/`ts_moment` + audit `ts_backfill`/`ts_quantile` parity); each with oracle reference, lookback propagation, explicit `min_periods`/NaN policy | L | ⏳ |
-| S3.3 | Cross-sectional/vector gap-fill (`quantile`, `reverse`, `vec_sum`/`vec_avg`, winsorize/normalize variants) + vwap/adv/volume datafield family on the `Panel` | M | ⏳ |
-| S3.4 | **Fix the `op_swap` VM-corruption defect** (p1 S3-1 residual: analyze-valid genome corrupts the VM SlotPool at evaluate) + re-enable `op_swap`; differential VM/oracle stress across every `(shape, dtype, arity)` bucket | M | ⏳ |
-| S3.5 | Grammar-typed expression generation (shape/dtype-aware genome init + mutation-candidate buckets → valid-by-construction, not random-then-reject; raises generation yield, cuts wasted eval) | M | ⏳ |
-| S3.6 | Operator differential-conformance suite (oracle == VM bit-exact across the widened op set) + **Alpha101-subset reproduction fixtures** (encode + evaluate the canonical public alphas) + DSL bench + close | M | ⏳ |
+| S3.0 | Marker + ledger + as-built recon vs `alpha::{registry, vm, oracle, ts_ops, cs_ops, typecheck}` + `factory::OpCatalog` | S | ✅ |
+| S3.1 | Regression-residual neutralization — general cross-sectional residualizer (regress signal on group dummies + log-cap/style factors per date, keep residual; `indneutralize` = demean special case); oracle + bit-exact differential + look-ahead rail | M | ✅ |
+| S3.2 | BRAIN-superset time-series operators (`ts_regression`/`ts_decay_exp`/`ts_entropy`/`ts_moment` + audit `ts_backfill`/`ts_quantile` parity); each with oracle reference, lookback propagation, explicit `min_periods`/NaN policy | L | ✅ |
+| S3.3 | Cross-sectional/vector gap-fill (`quantile`, `reverse`, `vec_sum`/`vec_avg`, winsorize/normalize variants) + vwap/adv/volume datafield family on the `Panel` | M | ✅ |
+| S3.4 | **Fix the `op_swap` VM-corruption defect** (p1 S3-1 residual: analyze-valid genome corrupts the VM SlotPool at evaluate) + re-enable `op_swap`; differential VM/oracle stress across every `(shape, dtype, arity)` bucket | M | ✅ |
+| S3.5 | Grammar-typed expression generation (shape/dtype-aware genome init + mutation-candidate buckets → valid-by-construction, not random-then-reject; raises generation yield, cuts wasted eval) | M | ✅ |
+| S3.6 | Operator differential-conformance suite (oracle == VM bit-exact across the widened op set) + **Alpha101-subset reproduction fixtures** (encode + evaluate the canonical public alphas) + DSL bench + close | M | ✅ |
 
 > **Boundary pin:** every pre-existing `p1` alpha formula must compile and evaluate **bit-for-bit identically** after
 > S3 — the widened op set and grammar-typed generation are *additive*; the differential oracle (`oracle == VM`) is the

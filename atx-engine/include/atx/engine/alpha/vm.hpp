@@ -380,6 +380,10 @@ private:
     case OpCode::CsCountG:
     case OpCode::CsMeanG:
     case OpCode::CsScaleG:
+    case OpCode::CsResidualize:
+    case OpCode::CsQuantile:
+    case OpCode::CsVecSum:
+    case OpCode::CsVecAvg:
       return eval_cross_section(in, dates, instruments);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -411,6 +415,11 @@ private:
     case OpCode::TsQuantile:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
+    // BRAIN-superset rolling ops (S3.2): same windowed path.
+    case OpCode::TsRegression:
+    case OpCode::TsDecayExp:
+    case OpCode::TsEntropy:
+    case OpCode::TsMoment:
     // OU rolling-fit ops (P3d-E3): same windowed path as Ts* rolling ops.
     case OpCode::OuTheta:
     case OpCode::OuHalflife:
@@ -596,14 +605,19 @@ private:
     const bool grouped =
         (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
          in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
-         in.op == OpCode::CsScaleG);
+         in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize);
     std::span<const atx::f64> g{};
+    std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
     // The scalar 2nd operand: CsScale's target L1 norm `a`, or CsWinsorize's
     // std multiplier `k`. Read EXACTLY as CsScale does (cell [0] of the slot).
     atx::f64 scale_a = 1.0;
     if (grouped) {
       g = src_col(in, 1);
-    } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize) {
+      if (in.op == OpCode::CsResidualize && in.src[2] != kNoSlot) {
+        z = src_col(in, 2); // present only for the arity-3 cs_residualize(x, g, z)
+      }
+    } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize ||
+               in.op == OpCode::CsQuantile) {
       const std::span<const atx::f64> col = src_col(in, 1);
       scale_a = col.empty() ? detail::kVmNaN : col.front();
     }
@@ -614,7 +628,9 @@ private:
       const std::span<atx::f64> orow = out.subspan(d * instruments, instruments);
       const std::span<const atx::f64> grow =
           grouped ? g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
-      cs_one_date(in.op, xr, grow, scale_a, orow, valid);
+      const std::span<const atx::f64> zrow =
+          z.empty() ? std::span<const atx::f64>{} : z.subspan(d * instruments, instruments);
+      cs_one_date(in.op, xr, grow, zrow, scale_a, orow, valid);
     }
     return atx::core::Ok();
   }
@@ -623,7 +639,7 @@ private:
   // NaN here (out-of-set cells stay NaN — scratch slots are recycled), the
   // valid set is rebuilt into `valid` (caller-owned scratch), then dispatched.
   static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
-                          atx::f64 scale_a, std::span<atx::f64> out,
+                          std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
                           std::vector<atx::usize> &valid) {
     valid.clear();
     for (atx::usize i = 0; i < x.size(); ++i) {
@@ -651,6 +667,18 @@ private:
     case OpCode::CsDemeanG:
     case OpCode::CsNeutG: // SAFETY: residualize-on-group-dummies == per-group demean
       detail::cs_group_demean_row(x, g, valid, out);
+      break;
+    case OpCode::CsResidualize: // demean (z empty) or FWL partial-out (z present)
+      detail::cs_residualize_row(x, g, z, valid, out);
+      break;
+    case OpCode::CsQuantile: // discretize the valid set into `scale_a` buckets
+      detail::cs_quantile_row(x, valid, scale_a, out);
+      break;
+    case OpCode::CsVecSum:
+      detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/false);
+      break;
+    case OpCode::CsVecAvg:
+      detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/true);
       break;
     case OpCode::CsRankG:
       detail::cs_group_row(x, g, valid, out, /*zscore=*/false);
@@ -692,7 +720,8 @@ private:
       }
     }
     const atx::usize d = detail::tsv_window_of(src_col(in, last));
-    const bool binary_series = (in.op == OpCode::TsCorr || in.op == OpCode::TsCov);
+    const bool binary_series =
+        (in.op == OpCode::TsCorr || in.op == OpCode::TsCov || in.op == OpCode::TsRegression);
     const std::span<const atx::f64> y =
         binary_series ? src_col(in, 1) : std::span<const atx::f64>{};
     // OU rolling-fit ops (P3d-E4) fit AR(1) over the trailing window per cell;
@@ -713,7 +742,8 @@ private:
                 ? detail::ou_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_)
             : binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
                                                  ts_scratch_b_)
-                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_);
+                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_,
+                                                  in.imm[0]);
       }
     }
     return atx::core::Ok();

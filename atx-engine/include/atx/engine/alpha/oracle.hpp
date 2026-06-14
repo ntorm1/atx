@@ -370,6 +370,10 @@ private:
     case OpCode::CsCountG:
     case OpCode::CsMeanG:
     case OpCode::CsScaleG:
+    case OpCode::CsResidualize:
+    case OpCode::CsQuantile:
+    case OpCode::CsVecSum:
+    case OpCode::CsVecAvg:
       return eval_cross_section(in);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -401,6 +405,11 @@ private:
     case OpCode::TsQuantile:
     case OpCode::TsScale:
     case OpCode::TsCountNans:
+    // BRAIN-superset rolling ops (S3.2): same windowed path.
+    case OpCode::TsRegression:
+    case OpCode::TsDecayExp:
+    case OpCode::TsEntropy:
+    case OpCode::TsMoment:
     // OU rolling-fit ops (P3d-E3): same windowed path as Ts* rolling ops.
     case OpCode::OuTheta:
     case OpCode::OuHalflife:
@@ -598,11 +607,13 @@ private:
   [[nodiscard]] atx::core::Status eval_kalman_reg(const Instr &in);
 
   // Helpers for the two big families (defined out-of-line below the class).
-  void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g, atx::f64 a,
-                   std::span<atx::f64> out) const;
-  // Single-cell time-series kernels at (t, j) over trailing window `d`.
+  void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
+                   std::span<const atx::f64> z, atx::f64 a, std::span<atx::f64> out) const;
+  // Single-cell time-series kernels at (t, j) over trailing window `d`. `p0` is
+  // the peeled hparam immediate (decay factor / moment order / entropy buckets);
+  // 0 for ops that carry none.
   [[nodiscard]] atx::f64 ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
-                                     atx::usize j, atx::usize d) const;
+                                     atx::usize j, atx::usize d, atx::f64 p0) const;
   [[nodiscard]] atx::f64 ts_binary_at(OpCode op, std::span<const atx::f64> x,
                                       std::span<const atx::f64> y, atx::usize t, atx::usize j,
                                       atx::usize d) const;
@@ -656,6 +667,17 @@ void cs_group_demean(std::span<const atx::f64> x, std::span<const atx::f64> g,
 // group of the valid set. `zscore` selects the variant.
 void cs_group(std::span<const atx::f64> x, std::span<const atx::f64> g,
               const std::vector<atx::usize> &valid, std::span<atx::f64> out, bool zscore);
+
+// CsQuantile (S3.3): discretize the valid set into `n` quantile buckets
+// (value = bucket/(n-1), ordinal rank as cs_rank); n < 2 -> NaN. Bit-identical
+// to cs_ops.hpp's cs_quantile_row.
+void cs_quantile(std::span<const atx::f64> x, const std::vector<atx::usize> &valid, atx::f64 n_real,
+                 std::span<atx::f64> out);
+
+// CsVecSum / CsVecAvg (S3.3): reduce over the valid set (sum / mean) and
+// broadcast the scalar back to every valid cell. `want_avg` selects the variant.
+void cs_vec_reduce(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                   std::span<atx::f64> out, bool want_avg);
 
 // CsNormalize (P3b-2): cross-sectional demean — x - mean over the valid set.
 void cs_normalize(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,

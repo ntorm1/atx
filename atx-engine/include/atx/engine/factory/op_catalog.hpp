@@ -32,6 +32,7 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/typecheck.hpp" // needs_group_arg (group-role bucket key)
 
 namespace atx::engine::factory {
 
@@ -113,12 +114,19 @@ private:
   // swap stays in the same result slot (the analyze backstop catches residue).
   enum class ShapeCat : atx::u8 { Panel, CrossSection, Elementwise };
 
+  // Bucket key (S3.4): result-shape family + out dtype + MATERIALIZED operand
+  // arity (a/b/c slots, excluding peeled hparams) + whether arg 2 is a Group
+  // classifier. `arity` is the materialized count (NOT the static min_arity), so
+  // a finite-default op (scale/winsorize/quantile, materialized arity 2) is filed
+  // apart from a true arity-1 op (rank) — closing the swap that left operand 2
+  // unmaterialized. `group` keeps group-classifier ops out of the scalar buckets.
   struct Key {
     ShapeCat cat{ShapeCat::Elementwise};
     DType dtype{DType::F64};
     atx::usize arity{0};
+    bool group{false};
     [[nodiscard]] bool operator==(const Key &o) const noexcept {
-      return cat == o.cat && dtype == o.dtype && arity == o.arity;
+      return cat == o.cat && dtype == o.dtype && arity == o.arity && group == o.group;
     }
   };
 
@@ -211,7 +219,23 @@ private:
     if (!sig.pins.empty()) {
       return; // record op: not a swappable single-value slot
     }
-    const Key key{shape_cat_of(sig), sig.out_dtype, static_cast<atx::usize>(sig.min_arity)};
+    if (sig.n_hparams > 0) {
+      return; // hparam-peeling op: never offered as a swap (its hparams are not
+              // re-peeled on swap, so it stays swap-inert — see op_swap's filter)
+    }
+    const ShapeCat cat = shape_cat_of(sig);
+    const bool group = alpha::detail::needs_group_arg(sig.opcode);
+    // File the op under EVERY materialized operand arity it can legally take, so
+    // a node looking up its own materialized arity only ever finds ops that
+    // accept exactly that many operand slots.
+    const atx::usize lo = alpha::operand_min_arity(sig);
+    const atx::usize hi = alpha::operand_max_arity(sig);
+    for (atx::usize a = lo; a <= hi; ++a) {
+      add_op_to_bucket(Key{cat, sig.out_dtype, a, group}, sig);
+    }
+  }
+
+  void add_op_to_bucket(const Key &key, const OpSig &sig) {
     for (Bucket &b : buckets_) {
       if (b.key == key) {
         b.ops.push_back(&sig);
@@ -232,13 +256,14 @@ private:
     opcode_buckets_.push_back(OpcodeBucket{key, std::vector<OpCode>{row.op}});
   }
 
-  [[nodiscard]] const Bucket *find_bucket(Shape shape, DType dtype, atx::usize arity) const {
+  [[nodiscard]] const Bucket *find_bucket(Shape shape, DType dtype, atx::usize arity,
+                                          bool group) const {
     // Try the exact shape-derived category first, then the element-wise fallback
     // (an element-wise op produces Panel/CrossSection/Scalar by broadcast, so a
     // Panel-result element-wise node is filed under Elementwise, not Panel).
     for (const ShapeCat cat :
          {cat_for_lookup(shape, ShapeCat::Elementwise), ShapeCat::Elementwise}) {
-      const Key key{cat, dtype, arity};
+      const Key key{cat, dtype, arity, group};
       for (const Bucket &b : buckets_) {
         if (b.key == key) {
           return &b;

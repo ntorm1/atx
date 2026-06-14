@@ -97,6 +97,10 @@ namespace detail {
   case OpCode::CsCountG:
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
+  case OpCode::CsResidualize:
+  case OpCode::CsQuantile:
+  case OpCode::CsVecSum:
+  case OpCode::CsVecAvg:
     return true;
   default:
     return false;
@@ -105,11 +109,11 @@ namespace detail {
 
 // The group-aware cross-sectional ops: their 2nd argument must carry a Group
 // classifier dtype (the four neutralize/rank/zscore variants + the P3b-2
-// group aggregates group_count/group_mean/group_scale).
+// group aggregates group_count/group_mean/group_scale + S3.1 cs_residualize).
 [[nodiscard]] inline bool needs_group_arg(OpCode op) noexcept {
   return op == OpCode::CsDemeanG || op == OpCode::CsNeutG || op == OpCode::CsRankG ||
          op == OpCode::CsZscoreG || op == OpCode::CsCountG || op == OpCode::CsMeanG ||
-         op == OpCode::CsScaleG;
+         op == OpCode::CsScaleG || op == OpCode::CsResidualize;
 }
 
 // ----- field classification ---------------------------------------------
@@ -191,6 +195,16 @@ namespace detail {
 // has no hparam ranges, so a `default: break` is correct here (this is NOT an
 // exhaustive-over-all-OpCodes switch — it only handles the filter ops).
 [[nodiscard]] atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e);
+
+// Validate a Call node's STRUCTURE against its op's declared contract (S3.4):
+// the peeled-hparam count matches `op->n_hparams`, and the number of
+// materialized operand slots (a/b/c) lies in the op's [operand_min, operand_max]
+// range. This is the load-bearing rail that makes "analyze-valid ⟹ VM-safe" hold
+// for EVERY mutation/crossover, not just parser output — it rejects a swapped
+// node that, e.g., carries a finite-default op (scale/winsorize/quantile, whose
+// kernel unconditionally reads operand 2) without having materialized operand 2.
+// Precondition: `e.kind == Call` and `e.op != nullptr`.
+[[nodiscard]] atx::core::Status validate_node_contract(const Expr &e);
 
 // Call node: shape from the op's table-driven rule, dtype from the registry row
 // (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops

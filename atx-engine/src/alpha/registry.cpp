@@ -1,5 +1,6 @@
 #include "atx/engine/alpha/registry.hpp"
 
+#include <limits>
 #include <string>
 
 namespace atx::engine::alpha {
@@ -16,7 +17,7 @@ namespace detail {
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
   // initializers — existing rows omit them and pick up {0, {}} automatically.
-  static constexpr std::array<OpSig, 65> kOps = {{
+  static constexpr std::array<OpSig, 74> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -49,6 +50,22 @@ namespace detail {
       {"group_count", 2, 2, OpCode::CsCountG, DType::F64, true, {}, &shape_cross_section},
       {"group_mean", 2, 2, OpCode::CsMeanG, DType::F64, true, {}, &shape_cross_section},
       {"group_scale", 2, 2, OpCode::CsScaleG, DType::F64, true, {}, &shape_cross_section},
+      // Regression-residual neutralization (S3.1). cs_residualize(x, g) is the
+      // per-group demean (the boundary pin == indneutralize); cs_residualize(x,
+      // g, z) adds a continuous style covariate (FWL partial-out). The optional
+      // 3rd arg carries a NaN-sentinel default, so an omitted z is left ABSENT
+      // (arg c == kNoExpr) rather than materialized — the kernel handles both.
+      {"cs_residualize", 2, 3, OpCode::CsResidualize, DType::F64, true,
+       {std::numeric_limits<atx::f64>::quiet_NaN()}, &shape_cross_section},
+      // Cross-sectional gap-fill ops (S3.3). quantile(x[, n]) discretizes the
+      // valid set into n buckets (default 5; n read from the scalar 2nd operand
+      // exactly like winsorize's std/CsScale's factor); reverse(x) = -x (routes
+      // to Neg — the rank-reversal idiom, no new opcode); vec_sum/vec_avg reduce
+      // over the valid set and broadcast the scalar back to every valid cell.
+      {"quantile", 1, 2, OpCode::CsQuantile, DType::F64, true, {5.0}, &shape_cross_section},
+      {"reverse", 1, 1, OpCode::Neg, DType::F64, true, {}, &shape_unary},
+      {"vec_sum", 1, 1, OpCode::CsVecSum, DType::F64, true, {}, &shape_cross_section},
+      {"vec_avg", 1, 1, OpCode::CsVecAvg, DType::F64, true, {}, &shape_cross_section},
       // ---- time-series (P→P) ----
       {"delay", 2, 2, OpCode::TsDelay, DType::F64, true, {}, &shape_panel},
       {"delta", 2, 2, OpCode::TsDelta, DType::F64, true, {}, &shape_panel},
@@ -86,6 +103,17 @@ namespace detail {
       {"ts_skew", 2, 2, OpCode::TsSkew, DType::F64, true, {}, &shape_panel},
       {"ts_kurt", 2, 2, OpCode::TsKurt, DType::F64, true, {}, &shape_panel},
       {"ts_corr", 3, 3, OpCode::TsCorr, DType::F64, true, {}, &shape_panel},
+      // ---- BRAIN-superset rolling ops (S3.2) --------------------------------
+      // ts_regression(y, x, d): rolling OLS slope of y on x — binary-series like
+      // correlation/covariance (n_hparams=0; window is the 3rd operand).
+      {"ts_regression", 3, 3, OpCode::TsRegression, DType::F64, true, {}, &shape_panel},
+      // ts_decay_exp(x, d, f): exponential decay, weight f^k (newest heaviest);
+      // ts_moment(x, d, k): k-th central moment; ts_entropy(x, d, b): rolling
+      // Shannon entropy over b buckets. The trailing arg (f/k/b) is peeled as a
+      // compile-time hparam (n_hparams=1) into imm[0]; operands are (x, window).
+      {"ts_decay_exp", 3, 3, OpCode::TsDecayExp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_moment", 3, 3, OpCode::TsMoment, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_entropy", 3, 3, OpCode::TsEntropy, DType::F64, true, {}, &shape_panel, 1, {}},
       // ---- stateful recurrence (P3b-3): output Panel; both are CAUSAL (the
       //      forward scan seeds at the panel's first date and reads only the
       //      prior state + inputs <= t) so lookahead_safe = true. shape_panel

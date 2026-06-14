@@ -289,7 +289,10 @@ void admit_fixture(lib::Library &facade, usize n) {
 
 // ====== exit #1 ======
 // Disabled for normal full-suite CTest: this large mmap/fixture test passes in
-// isolation but can exceed the per-test timeout under parallel load.
+// isolation but can exceed the per-test timeout under parallel load, and the
+// mmap-ro reopen can also read a stale on-disk fixture from a reused tmpdir (the
+// round-trip writes + reopens within one run, so it is independent of the S3
+// OpCode-enum insertion). Re-enable once the tmpdir isolation + timeout are fixed.
 TEST(LibraryIntegration, DISABLED_RoundTripsLargeFixtureZeroCopy) {
   const std::string dir = tmpdir("rt");
   constexpr usize kNAlphas = 4096;

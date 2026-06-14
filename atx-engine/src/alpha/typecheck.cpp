@@ -40,6 +40,11 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::TsQuantile:
   case OpCode::TsScale:
   case OpCode::TsCountNans:
+  // BRAIN-superset rolling ops (S3.2): all trailing-window, same lookback rule.
+  case OpCode::TsRegression:
+  case OpCode::TsDecayExp:
+  case OpCode::TsEntropy:
+  case OpCode::TsMoment:
   // OU rolling-fit ops (P3d-E3): windowed, same lookback rule as ts_mean.
   case OpCode::OuTheta:
   case OpCode::OuHalflife:
@@ -87,6 +92,10 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::CsCountG:
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
+  case OpCode::CsResidualize:
+  case OpCode::CsQuantile:
+  case OpCode::CsVecSum:
+  case OpCode::CsVecAvg:
   case OpCode::TradeWhen:
   case OpCode::Hump:
   case OpCode::KalmanLevel:
@@ -268,8 +277,49 @@ atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e) {
                             "kalman: R (observation noise) must be > 0");
     }
     break;
+  case OpCode::TsDecayExp:
+    // ts_decay_exp(x, d, f): decay base f must be strictly positive.
+    if (e.hparams[0] <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ts_decay_exp: decay factor f must be > 0");
+    }
+    break;
+  case OpCode::TsMoment:
+    // ts_moment(x, d, k): central-moment order k must be an integer >= 1.
+    if (e.hparams[0] < 1.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ts_moment: moment order k must be >= 1");
+    }
+    break;
+  case OpCode::TsEntropy:
+    // ts_entropy(x, d, b): bucket count b must be in [1, 256].
+    if (e.hparams[0] < 1.0 || e.hparams[0] > 256.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "ts_entropy: bucket count must be in [1, 256]");
+    }
+    break;
   default:
     break; // non-filter ops: no hparam ranges
+  }
+  return atx::core::Ok();
+}
+
+atx::core::Status validate_node_contract(const Expr &e) {
+  const OpSig &sig = *e.op;
+  // The peeled-hparam count must match the op's declared count. A swap that
+  // changed the op keeps these in sync (mutation sets e.n_hparams = op n_hparams);
+  // a mismatch means the node's hparam structure is inconsistent with the op.
+  if (e.n_hparams != sig.n_hparams) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "op contract: hparam count does not match the operator");
+  }
+  // The materialized operand-slot count must be a valid arity for this op. This
+  // is what rejects a finite-default op (kernel reads operand 2) swapped onto a
+  // node that only materialized operand 1, or a node carrying too many operands.
+  const atx::usize ar = call_arity(e);
+  if (ar < operand_min_arity(sig) || ar > operand_max_arity(sig)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "op contract: materialized operand count is out of range for the operator");
   }
   return atx::core::Ok();
 }
@@ -277,6 +327,7 @@ atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e) {
 atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInfo> out,
                                          const Expr &e) {
   ATX_TRY_VOID(reject_record_operands(out, e));
+  ATX_TRY_VOID(validate_node_contract(e));
   // Hparam finite-constant check: each peeled hparam must be a finite literal.
   for (atx::u8 k = 0; k < e.n_hparams; ++k) {
     if (!std::isfinite(e.hparams[k])) {
@@ -302,6 +353,18 @@ atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInf
   if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "group operator requires a classifier (Group) 2nd argument");
+  }
+  // cs_residualize's optional style covariate (3rd arg, when present) must be a
+  // non-scalar numeric (F64) panel/cross-section column — a continuous regressor.
+  if (op == OpCode::CsResidualize && e.c != kNoExpr) {
+    if (out[e.c].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "cs_residualize style covariate (arg 3) must be numeric (f64)");
+    }
+    if (out[e.c].shape == Shape::Scalar) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "cs_residualize style covariate (arg 3) must be a panel/cross-section");
+    }
   }
   ATX_TRY_VOID(validate_stateful_op_dtypes(op, out, e));
   // Filter hparam range checks (hparams already verified finite by the loop above).

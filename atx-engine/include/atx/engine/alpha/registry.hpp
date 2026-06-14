@@ -114,6 +114,18 @@ enum class OpCode : atx::u8 {
   CsCountG,
   CsMeanG,
   CsScaleG,
+  // Regression-residual neutralization (S3.1): regress the cross-section on a
+  // group-dummy design (+ an optional continuous style covariate) and emit the
+  // residual. Demean (CsDemeanG) is the special case with no style covariate.
+  CsResidualize,
+  // Cross-sectional gap-fill ops (S3.3). CsQuantile buckets the valid set into
+  // `n` quantiles (value = bucket/(n-1), like CsRank but discretized; `n` read
+  // from the scalar 2nd operand). CsVecSum/CsVecAvg reduce over the valid set
+  // (sum / mean) and broadcast the scalar back to every valid cell. (`reverse`
+  // is `-x` and routes to the existing Neg opcode — no new enumerator.)
+  CsQuantile,
+  CsVecSum,
+  CsVecAvg,
   // ---- time-series ----
   TsDelay,
   TsDelta,
@@ -145,6 +157,14 @@ enum class OpCode : atx::u8 {
   TsQuantile,
   TsScale,
   TsCountNans,
+  // BRAIN-superset rolling ops (S3.2): rolling OLS slope of y on x; exponential
+  // decay (f^k weights, peeled hparam f); rolling Shannon entropy (peeled hparam
+  // = bucket count); k-th central moment (peeled hparam k). Each registers in
+  // is_rolling_ts; the three hparam ops bake their immediate into imm[0].
+  TsRegression,
+  TsDecayExp,
+  TsEntropy,
+  TsMoment,
   // ---- stateful recurrence (P3b-3): carry TRUE cross-date state from the
   //      panel's first date forward (no trailing window). Causal by
   //      construction — the forward scan reads only state[t-1] + inputs <= t.
@@ -289,6 +309,54 @@ struct OpSig {
   // Invariant (register_op enforces): either empty OR size >= 2.
   std::span<const PinSig> pins{};
 };
+
+// =========================================================================
+//  Materialized-operand-arity helpers (S3.4) — the contract op-swap and the
+//  type-checker share so "analyze-valid ⟹ VM-safe" holds for ALL mutation.
+//
+//  A Call carries materialized OPERAND slots (a/b/c) PLUS up-to-`n_hparams`
+//  trailing literals peeled into Expr::hparams (NOT operand slots). The parser's
+//  default-fill ALWAYS materializes an optional whose default is a finite
+//  literal (a NaN sentinel marks "absent" and is filled only when the caller
+//  passes it). So the count of materialized operand slots a well-formed call of
+//  `sig` carries lies in [operand_min_arity, operand_max_arity]. op-swap buckets
+//  on this range (not the static min_arity); the type-checker rejects any node
+//  whose materialized count falls outside it — closing the gap that let a
+//  finite-default op (scale/winsorize/quantile, whose kernel unconditionally
+//  reads operand 2) be swapped onto a node that never materialized it.
+// =========================================================================
+
+// Count of optional args with a FINITE default — always materialized by
+// default-fill. The arg-ordering invariant (a finite default never follows a
+// NaN sentinel) means the finite defaults form the LEADING optional run, so we
+// count it and stop at the first NaN sentinel. `d == d` is false iff `d` is NaN.
+[[nodiscard]] inline atx::u8 forced_default_count(const OpSig &sig) noexcept {
+  const atx::u8 n_opt = static_cast<atx::u8>(sig.max_arity - sig.min_arity);
+  atx::u8 n = 0;
+  for (atx::u8 k = 0; k < n_opt && k < kMaxDefaults; ++k) {
+    const atx::f64 d = sig.defaults[k];
+    if (d == d) {
+      ++n;
+    } else {
+      break; // NaN sentinel: this and every later optional are absent by default
+    }
+  }
+  return n;
+}
+
+// Minimum materialized operand-slot count (excludes peeled hparams; includes the
+// always-materialized finite-default optionals).
+[[nodiscard]] inline atx::usize operand_min_arity(const OpSig &sig) noexcept {
+  const int v = static_cast<int>(sig.min_arity) + static_cast<int>(forced_default_count(sig)) -
+                static_cast<int>(sig.n_hparams);
+  return static_cast<atx::usize>(v < 0 ? 0 : v);
+}
+
+// Maximum materialized operand-slot count (excludes peeled hparams).
+[[nodiscard]] inline atx::usize operand_max_arity(const OpSig &sig) noexcept {
+  const int v = static_cast<int>(sig.max_arity) - static_cast<int>(sig.n_hparams);
+  return static_cast<atx::usize>(v < 0 ? 0 : v);
+}
 
 // =========================================================================
 //  Library — name → OpSig catalogue.

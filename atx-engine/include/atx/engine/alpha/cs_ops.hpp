@@ -176,6 +176,124 @@ inline void cs_group_demean_row(std::span<const atx::f64> x, std::span<const atx
 }
 
 // ===========================================================================
+//  CsResidualize (S3.1) — per-date regression-residual neutralization. Regress
+//  the cross-section on a group-dummy design plus an optional continuous style
+//  covariate `z`; emit the residual over the valid set.
+//
+//  With `z` EMPTY this dispatches to cs_group_demean_row, so it IS the per-group
+//  demean BIT-FOR-BIT (the boundary pin == indneutralize). With `z` present it
+//  is the Frisch–Waugh–Lovell partial-out: within-group-demean x and z, then
+//  remove the global OLS slope beta = Σ x~·z~ / Σ z~² of demeaned-x on
+//  demeaned-z; residual r = x~ - beta·z~. The regression valid set is the valid
+//  cells with a non-NaN group label AND a non-NaN covariate; all others stay NaN
+//  (out-of-set). A zero within-group covariate variance (Σ z~² == 0) yields
+//  beta = 0, collapsing the residual back to the demean. Summation order is
+//  ascending instrument index (matches the oracle twin bit-for-bit).
+// ===========================================================================
+inline void cs_residualize_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                               std::span<const atx::f64> z, const std::vector<atx::usize> &valid,
+                               std::span<atx::f64> out) {
+  if (z.empty()) {
+    cs_group_demean_row(x, g, valid, out); // boundary pin: bit-for-bit demean
+    return;
+  }
+  std::vector<atx::usize> rset; // valid cells with a group label AND a covariate
+  rset.reserve(valid.size());
+  for (const atx::usize i : valid) {
+    if (!cs_is_nan(g[i]) && !cs_is_nan(z[i])) {
+      rset.push_back(i);
+    }
+  }
+  std::vector<atx::f64> xtil(rset.size()); // within-group demeaned x, parallel to rset
+  std::vector<atx::f64> ztil(rset.size()); // within-group demeaned z, parallel to rset
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    const atx::usize i = rset[p];
+    atx::f64 sx = 0.0;
+    atx::f64 sz = 0.0;
+    atx::usize cnt = 0;
+    for (const atx::usize j : rset) {
+      if (g[j] == g[i]) {
+        sx += x[j];
+        sz += z[j];
+        ++cnt;
+      }
+    }
+    const atx::f64 cntf = static_cast<atx::f64>(cnt);
+    xtil[p] = x[i] - sx / cntf;
+    ztil[p] = z[i] - sz / cntf;
+  }
+  atx::f64 sxz = 0.0;
+  atx::f64 szz = 0.0;
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    sxz += xtil[p] * ztil[p];
+    szz += ztil[p] * ztil[p];
+  }
+  const atx::f64 beta = (szz == 0.0) ? 0.0 : sxz / szz;
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    out[rset[p]] = xtil[p] - beta * ztil[p];
+  }
+}
+
+// ===========================================================================
+//  CsQuantile (S3.3) — bucket the valid set into `n` quantiles (like CsRank but
+//  discretized). Ordinal-rank each valid cell (ascending value, tie-broken by
+//  ascending instrument index, exactly as cs_rank_row), map its percentile
+//  p in [0,1] to a bucket b = floor(p·n) clamped to [0, n-1], and emit
+//  b/(n-1) so the output spans [0,1] in n discrete levels. A singleton valid set
+//  ranks to p == 0.5 (centred), matching cs_rank_row. `n_real` is the scalar 2nd
+//  operand truncated toward zero; a degenerate n < 2 has no defined spacing
+//  (b/(n-1) would divide by zero) and yields NaN for every valid cell.
+// ===========================================================================
+inline void cs_quantile_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                            atx::f64 n_real, std::span<atx::f64> out) {
+  const atx::usize m = valid.size();
+  if (m == 0) {
+    return;
+  }
+  const int nb = static_cast<int>(n_real); // bucket count (truncate toward zero)
+  if (nb < 2) {
+    for (const atx::usize i : valid) {
+      out[i] = kCsNaN; // no defined quantile spacing
+    }
+    return;
+  }
+  std::vector<atx::usize> order = valid; // already ascending in instrument index
+  std::stable_sort(order.begin(), order.end(),
+                   [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+  const atx::f64 denom = static_cast<atx::f64>(nb - 1);
+  for (atx::usize r = 0; r < m; ++r) {
+    const atx::f64 p = (m == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(m - 1);
+    int b = static_cast<int>(p * static_cast<atx::f64>(nb)); // p>=0 -> trunc == floor
+    if (b >= nb) {
+      b = nb - 1; // p == 1.0 -> floor lands on nb; clamp into [0, nb-1]
+    }
+    out[order[r]] = static_cast<atx::f64>(b) / denom;
+  }
+}
+
+// ===========================================================================
+//  CsVecSum / CsVecAvg (S3.3) — reduce over the valid set (sum or mean) and
+//  broadcast the single scalar back to EVERY valid cell. `want_avg` selects the
+//  variant. Out-of-set cells stay NaN. Summation is ascending instrument index
+//  (matches the oracle twin bit-for-bit). An empty valid set writes nothing
+//  (every cell stays NaN).
+// ===========================================================================
+inline void cs_vec_reduce_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                              std::span<atx::f64> out, bool want_avg) {
+  if (valid.empty()) {
+    return;
+  }
+  atx::f64 sum = 0.0;
+  for (const atx::usize i : valid) {
+    sum += x[i];
+  }
+  const atx::f64 v = want_avg ? sum / static_cast<atx::f64>(valid.size()) : sum;
+  for (const atx::usize i : valid) {
+    out[i] = v;
+  }
+}
+
+// ===========================================================================
 //  CsRankG / CsZscoreG — rank (ordinal percentile) or sample-zscore WITHIN each
 //  group of the valid set. `zscore` selects the variant. A cell with a NaN
 //  group label stays NaN. Mirrors oracle.hpp's `cs_group` exactly: per valid
