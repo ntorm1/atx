@@ -1,6 +1,6 @@
 # Sprint 6 (p2) — Data / Signal / Feature / Reference Abstraction Layer — Implementation Progress
 
-**Status:** 🟡 IN PROGRESS — S6.0–S6.8 done (incl. the S6.8 boundary pin: price-only DataContext ⇒ byte-identical book+report digests vs legacy run). S6.9 (E2E BYO capstone + ingest bench + ROADMAP close) pending.
+**Status:** ✅ COMPLETE (2026-06-14) — S6.0–S6.9 all done. The S6.8 boundary pin holds (price-only DataContext ⇒ byte-identical book+report digests vs legacy run) AND the S6.9 capstone proves all four BYO plugs simultaneously (price + feature + signal + factor) through `BookPipeline::run_with_context`, deterministic across fresh-library re-runs. See the **Sprint close summary** at the bottom of this file.
 **Worktree:** `C:\Users\natha\atx-wt\p2-s6` (isolated; one branch per worktree)
 **Branch:** `feat/p2-s6-data-layer`
 **Base:** `main` @ `76f295e70a582f86083dfaf352d44d4ea0fc2712`
@@ -27,7 +27,7 @@
 | S6-6  | `FactorModelArtifact` + `adapt_factor` (BYO factor model)          | ✅ done     | db4bb19 | 6     | `data/factor_model_artifact.hpp` + `data/adapt_factor.{hpp,cpp}` + `data_adapt_factor_test.cpp`. `artifact_to_factor_model` forwards to `FactorModel::create` (single validation source, byte-identical apply). `reference_spans` aligns market_cap/group_id onto price axis as-of a date; missing inst → NaN/default_group. 6/6 DataAdaptFactor green; 226/226 Data*+Risk* green. |
 | S6-7  | Alt-data subsumption test (no new ingestion code needed)           | ✅ done     | 4e59b79 | 3   | `tests/data_altdata_subsumption_test.cpp` — ZERO production code. Three alt-data shapes proven to subsume through existing S6.1–S6.6 machinery via `register_dataset` + schema only: (1) `FundamentalIngestsAsReferenceDataset` — Role::Reference + restatement as-of versioning; PIT no-look-ahead proven (future restatement row invisible at as_of_date < restatement date); FactorComponents == hand-built call; (2) `NewsSentimentGatesViaTradeWhen` — Role::Feature sentiment column; merge_features_into_panel → DSL `trade_when(sentiment > 0, close, sentiment < 0)` gates signal; gated output == hand-computed expected AND == hand-built Panel path (bit-identical); (3) `AnalystFeatureFeedsFeatureMatrix` — Role::Feature analyst_eps_revision; merge → FeatureSpec::raw_fields → build_features; analyst values reach FeatureMatrix, inst with missing coverage → NaN + row_valid=0; values == hand-built Panel path. **Residuals recorded** (schema boundary — explicitly NOT in S6 contract): (a) text/blob payloads (raw news article body), (b) ragged intra-day event timestamps with irregular cadence. Both require a different storage model outside `DatasetSchema`. |
 | S6-8  | `DataContext` facade + `BookPipeline::run_with_context` + BOUNDARY PIN | ✅ done     | e560433 (+ polish) | 4   | `data/context.{hpp,cpp}` + `book/pipeline.hpp` (`run_with_context` + `run_impl(cfg, optional<FactorModel>)` factor-override hook) + `data_context_test.cpp` (3 tests) + `data_boundary_pin_test.cpp` (THE PIN). **BOUNDARY PIN PASSES**: a price-only `DataContext` (RAW `Panel::create` lowering, empty `adv_windows`) driving `run_with_context` produces a **byte-identical `book_digest` AND `report_digest`** to legacy `BookPipeline::run` over the same hand-built fixed `{"close","rev"}` Panel — the panels are first asserted byte-identical, then both digests `EXPECT_EQ`. Legacy `run()` is byte-identical to pre-S6.8: it now delegates `run_impl(cfg, nullopt)`, and the full **BookPipeline suite stays 7/7 green** (the guard). Factor override wired via `run_impl`'s `std::optional<risk::FactorModel>` arg (present ⇒ V verbatim, dead_factors=0; nullopt ⇒ exact legacy build+augment). Signal admit-gate = the BookPipeline-held `gate_` (`combine::AlphaGate`, which `Library::admit` takes directly). `DataContext` move-only (owns cached Panel + `vector<SignalAdmission>`); `price_panel()` returns `Result<reference_wrapper<const Panel>>` (vendored tl::expected rejects reference T). Tests: 3/3 DataContext + 1/1 DataBoundaryPin + 7/7 BookPipeline green; 92/92 Data* green. **Polish commit** (code-quality fixes, on top of e560433): `factor_model_override()` now returns `Result<optional<reference_wrapper<const FactorModel>>>` (by-ref, no per-call 5-Eigen-alloc deep copy — the override path copies into `V` once, only when present); `names_with_role` returns `Result` and `ATX_TRY`s `role_of` (no silent error swallow); dropped redundant `factor_lowered_` bool (use `factor_cache_.has_value()`); `signal_admit_candidates` pins `cached_admit_as_of_` + `ATX_ASSERT(as_of == cached_admit_as_of_)` on the cached path (walk-forward stale-epoch guard); move ops NULL `catalog_` on move-from (use-after-move fails loudly). Pin + suites re-verified green. |
-| S6-9  | E2E BYO capstone test + ingest bench + ROADMAP close               | ⏳ pending  | —      | —     | — |
+| S6-9  | E2E BYO capstone test + catalog/lineage report + ingest bench + close | ✅ done   | 1186c1c / 583e2a1 / 0cd4e13 | 2 + bench | `tests/data_e2e_byo_capstone_test.cpp` (`DataE2EByoCapstone.ByoPriceSignalFactorRunsDeterministic`: all four BYO plugs through `run_with_context` — signal admitted + grows lib vs no-signal control, "sentiment" feature in the panel, BYO factor override drove optimize (`dead_factors==0`), and byte-identical `book_digest`+`report_digest` on a fresh-library re-run) + `data/catalog_report.{hpp,cpp}` deterministic byte-reproducible catalog/lineage report writer (`CatalogReport.CatalogReportIsReproducible`) + `bench/data_ingest_bench.cpp` (ingest/align/lower throughput, compiles+links clean; running the bench exe is blocked by the pre-existing executor_bench static-init ProcessExecutor crash). |
 
 ---
 
@@ -316,9 +316,79 @@ extract_streams(const SignalSet &signals, const WeightPolicy &policy, const Pane
 | 4f7b13f | S6-4a | feat(s6-4a): PriceDataset->Panel adapter (== with_datafields) |
 | f5801ca | S6-4a | refactor(s6-4a): drop unused includes |
 | 444bb15 | S6-4b | feat(s6-4b): FeatureDataset->Panel merge + FeatureMatrix injection |
+| 1186c1c | S6-9 | test(s6-9): E2E BYO price+feature+signal+factor capstone |
+| 583e2a1 | S6-9 | feat(s6-9): catalog/lineage report (reproducible headless artifact) |
+| 0cd4e13 | S6-9 | bench(s6-9): ingest/align/lowering throughput |
 
 ---
 
 ## Open cross-platform residuals
 
 None introduced in S6.0. Carried from S7: POSIX SHM/process backends are Linux-CI-pending (not S6 scope).
+
+---
+
+## Sprint close summary (S6.9 — 2026-06-14, branch `feat/p2-s6-data-layer`)
+
+**Sprint COMPLETE.** The BYO-data abstraction layer is shipped: a price-required `DatasetCatalog`,
+typed PIT-versioned `Dataset`s (Price/Feature/Signal/Reference), an as-of alignment rail, the
+price/feature/signal/factor adapters, and the `DataContext` facade that `BookPipeline::run_with_context`
+reads through. The price-only path pins **bit-for-bit** to the legacy fixed-`Panel` run (S6.8 boundary
+pin); the four-plug BYO path runs deterministically (S6.9 capstone).
+
+### Per-unit SHAs + test counts
+
+| Unit | SHA(s) | New tests |
+|------|--------|-----------|
+| S6.1 `Dataset`+`DatasetSchema` | 729d084 | DataDataset 12 |
+| S6.2 `DatasetCatalog` | 2a62605 | DataCatalog 9 |
+| S6.3 alignment rail | a86d148 | DataAlign 7 |
+| S6.4 price+feature adapters | 4f7b13f / f5801ca / 444bb15 | DataAdaptPanel 5 + DataAdaptFeature 6 |
+| S6.5 signal adapter | b5fecb5 | DataAdaptSignal 5 |
+| S6.6 factor artifact + reference | db4bb19 | DataAdaptFactor 8 |
+| S6.7 alt-data subsumption | 4e59b79 / d7e51d8 | DataAltdataSubsumption 3 |
+| S6.8 `DataContext` + run_with_context + pin | e560433 / 0167aa1 | DataContext 3 + DataBoundaryPin 1 |
+| S6.9 capstone + report + bench | 1186c1c / 583e2a1 / 0cd4e13 | DataE2EByoCapstone 1 + CatalogReport 1 |
+
+**Total new S6 `Data*` / `CatalogReport` tests: 61** (all green: `ctest -R "DataDataset|DataCatalog|DataAlign|DataAdapt|DataAltdata|DataContext|DataBoundaryPin|DataE2EByoCapstone|CatalogReport"` ⇒ 61/61). Excludes pre-S6 `DataHandler` (11), `Datafields` (5), `DatabentoPipelineE2E` (1).
+
+### Boundary-pin result
+
+`DataBoundaryPin.PriceOnlyContextDigestEqualsLegacy` ✅ — a price-only `DataContext` (RAW `Panel::create`
+lowering, empty `adv_windows`) driving `run_with_context` yields a **byte-identical `book_digest` AND
+`report_digest`** to the legacy `BookPipeline::run` over the same hand-built `{"close","rev"}` Panel
+(panels first asserted byte-identical, then both digests `EXPECT_EQ`). The full `BookPipeline` suite (7/7)
+and the boundary pin stayed green through S6.9 (no regression).
+
+### S6.9 capstone result
+
+`DataE2EByoCapstone.ByoPriceSignalFactorRunsDeterministic` ✅ — all four plugs proven SIMULTANEOUSLY
+through `run_with_context`: (i) the strong planted external **signal** admits through the live gate and
+grows the library beyond a no-signal control (`n_alphas`); (ii) the **feature** (`"sentiment"`) resolves
+as a panel field; (iii) the BYO **factor** override drove optimize (`dead_factors == 0`, the override-path
+signature); (iv) **deterministic** — a fresh-library re-run yields byte-identical `book_digest` +
+`report_digest`. The catalog/lineage report (`write_catalog_report`) is byte-reproducible.
+
+### Recorded residuals (carried, NOT in the S6 contract)
+
+- **Schema boundary (S6.7):** text/blob payloads (e.g. raw news article bodies) and ragged intra-day event
+  timestamps with irregular cadence require a different storage model outside the rectangular
+  `(date × instrument)` `DatasetSchema` — explicitly out of S6 scope.
+- **External-signal `canon_hash` cross-run stability (S6.5):** the external candidate hash is a deterministic
+  content hash over an `"external"` tag + source + column, disjoint from the genome-hash space by
+  construction; cross-run stability is pinned within a run, but a formal cross-process/persisted-journal
+  stability harness is deferred.
+- **Dtype validation + O(N²) reference lookup (S6.6):** `ColumnDType` is recorded but not enforced beyond
+  coherence (I64/Category widen to f64 like Panel classifier fields); `reference_spans` resolves each
+  instrument by a linear scan (O(M) per inst, cold-path acceptable) — a map index is the deferred
+  optimization if reference universes grow large.
+- **Bench runtime (S6.9):** `data_ingest_bench.cpp` compiles + links clean into `atx-engine-bench`, but
+  *running* that exe aborts at static-init in `executor_bench.cpp`'s `g_speedup_report` global (it spawns
+  `ProcessExecutor` workers — the same pre-existing SHM/process path that fails the ~22
+  `Parallel*`/`FaultTolerance*` tests on this Windows box). Unrelated to the ingest bench, which never
+  touches the parallel layer.
+
+### Cross-platform residuals
+
+None introduced by S6. Carried from S7: POSIX SHM/process backends are Linux-CI-pending (the
+`Parallel*`/`FaultTolerance*` failures above), not S6 scope.
