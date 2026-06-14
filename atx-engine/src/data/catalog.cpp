@@ -6,7 +6,6 @@
 #include "atx/engine/data/catalog.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <limits>
 #include <string>
 
@@ -167,20 +166,15 @@ atx::core::Result<atx::f64> DatasetCatalog::value_at(std::string_view name, std:
   }
   const Dataset &ds = ds_it->second;
 
-  // 2. Resolve column index (O(n_columns) — expected to be small).
-  const auto &col_names = ds.schema().columns;
-  atx::usize col_idx = col_names.size(); // sentinel "not found"
-  for (atx::usize c = 0; c < col_names.size(); ++c) {
-    if (col_names[c] == col) {
-      col_idx = c;
-      break;
-    }
-  }
-  if (col_idx == col_names.size()) {
+  // 2. Resolve the column by name (Dataset::column_by_name does the scan and
+  //    returns the flat date-major span directly — DRY, no local index).
+  auto col_res = ds.column_by_name(col);
+  if (!col_res.has_value()) {
     return atx::core::Err(atx::core::ErrorCode::NotFound,
                           "DatasetCatalog::value_at: column '" + std::string{col} +
                               "' not found in dataset '" + std::string{name} + "'");
   }
+  const std::span<const atx::f64> flat = *col_res;
 
   // 3. Resolve instrument index (O(n_instruments) linear scan).
   std::span<const InstKey> insts = ds.instruments();
@@ -210,7 +204,6 @@ atx::core::Result<atx::f64> DatasetCatalog::value_at(std::string_view name, std:
   const DateKey *ub = std::upper_bound(dates.data(), dates.data() + dates.size(), canonical_date);
   const atx::usize row = static_cast<atx::usize>((ub - 1) - dates.data());
 
-  std::span<const atx::f64> flat = ds.column(col_idx);
   return atx::core::Ok(flat[row * ds.num_instruments() + inst_idx]);
 }
 

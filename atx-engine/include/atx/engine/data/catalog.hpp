@@ -32,7 +32,6 @@
 // synchronises if needed).
 
 #include <functional>
-#include <limits>
 #include <map>
 #include <string>
 #include <string_view>

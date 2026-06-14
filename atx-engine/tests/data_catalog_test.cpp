@@ -6,8 +6,6 @@
 #include "atx/engine/data/catalog.hpp"
 
 #include <cmath>
-#include <functional>
-#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
