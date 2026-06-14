@@ -35,6 +35,7 @@ add_library(atx-engine STATIC
     src/learn/pipeline.cpp
     src/learn/train.cpp
     src/data/data_handler.cpp
+    src/data/dataset.cpp
     src/data/shm_bar_feed.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
