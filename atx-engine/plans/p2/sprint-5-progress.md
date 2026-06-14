@@ -49,7 +49,7 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 | S5-0  | Marker + ledger + kickoff recon (K1–K7) + baseline build green                                  | ✅     | `d309a9b`  | green | ledger + recon; baseline `atx-engine-tests` green (44s, dev preset PCH) before S5.1. |
 | S5-1  | Sequence-feature tensor builder — `learn/nn/tensor.hpp` (Seq3) + `learn/sequence_features.{hpp,cpp}` | ✅ | `fe978a6`  | 10/10 | PIT trailing windows `[t-L+1..t]` over `FeatureMatrix`; truncation-invariance + `L=1`→tabular pin + insufficient-history NaN. Spec+CQ review passed. |
 | S5-2a | NN framework substrate — `learn/nn/{module.hpp,layers,optimizer,loss,trainer}`                   | ✅     | `a01e53c`  | 25/25 | `Module`/`Sequential`/`Residual` + Linear/act/Dropout/LayerNorm + Sgd/Adam + Mse/Huber/Ic + Trainer (fixed-epoch, ckpt-at-best-val, seed-ensemble). **Finite-diff grad check per layer (R3)** + two-builds byte-identical (R1) + linear-net→atx-core `ridge()` pin (R7). Spec+CQ review passed. |
-| S5-2b-i | Sequence layers — `learn/nn/seq_layers.{hpp,cpp}` (Conv1dCausal/TCN-block/Gru-Mgu cell + temporal pool) | ⏳     | —          | —     | dilated causal conv + TCN residual block + GRU-lite/MGU cell (BPTT) + last-step pool; finite-diff grad check each (R3) + causal-mask structural test (R2). |
+| S5-2b-i | Sequence layers — `learn/nn/seq_layers.{hpp,cpp}` (Conv1dCausal/TCN-block/Gru-Mgu cell + temporal pool) | ✅     | `4d438cc`  | 18/18 | dilated causal conv + TCN residual block + GRU-lite/MGU cell (BPTT) + last-step pool; finite-diff grad check each incl. BPTT (R3) + causal-mask bit-identical structural test (R2). Spec+CQ review passed. |
 | S5-2b-ii | TCN + GRU-lite alphas — `learn/tcn_alpha.{hpp,cpp}` + `LearnedModel` NN payload + `predict_nn`     | ⏳     | —          | —     | `ModelKind::{Tcn,Gru}` + NN payload + `predict_nn` (window→ensemble-mean); `fit_tcn`/`fit_gru` over trailing CPCV folds fill `oos_score_series`/`trial_count`; causal-no-look-ahead (R2) + seed-ensemble determinism (R8). |
 | S5-3  | Autoencoder + attention-lite — `learn/autoencoder_alpha.{hpp,cpp}`                               | ⏳     | —          | —     | `fit_autoencoder_factors` (GKX-style) + `fit_attn`; **linear-AE→atx-core `pca()` pin (R7)** + attention backward (R3). |
 | S5-4  | NN deflation + PBO gate                                                                          | ⏳     | —          | —     | `oos_deflated_sharpe` + `eval::pbo` reused verbatim; trial count incl architecture×seed sweep (R4); planted-signal admit / noise reject pin. |
@@ -64,6 +64,7 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 | `d309a9b` | S5-0 | docs(s5-0): open p2 sprint-5 deep-learning-alphas ledger + kickoff recon (K1–K7) |
 | `fe978a6` | S5-1 | feat(s5-1): PIT trailing sequence-window tensor builder over FeatureMatrix (learn/sequence_features + nn/tensor.hpp) |
 | `a01e53c` | S5-2a | feat(s5-2a): deterministic CPU NN substrate — Module/Layer/Optimizer/Loss/Trainer + finite-diff grad checks + ridge pin (learn/nn) |
+| `4d438cc` | S5-2b-i | feat(s5-2b-i): causal-conv / TCN-block / GRU-lite-MGU sequence layers + BPTT grad checks (learn/nn/seq_layers) |
 
 ---
 
