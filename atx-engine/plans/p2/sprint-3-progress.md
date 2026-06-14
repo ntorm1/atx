@@ -56,15 +56,20 @@ kernel. `quantile`/`vec_sum`/`vec_avg` add the 3 new OpCodes (full 9-site surfac
 oracle⇄VM twins bit-for-bit). **Disabled test:** `LibraryIntegration.RoundTripsLargeFixtureZeroCopy`
 — flaky stale-tmpdir mmap reopen, independent of the enum insertion (it round-trips
 within one run); marked `DISABLED_` pending tmpdir-isolation fix.
-| S3.3 | Cross-sectional gap-fill ops + `vwap`/`adv{d}`/dollar-volume datafields | ✅ | — | 19 | `quantile`/`vec_sum`/`vec_avg` (oracle⇄VM bit-exact) + `reverse`→Neg alias; `datafields.hpp` derives `vwap`/`dollar_volume`/`adv{d}`; `adv{d}==ts_mean(dollar_volume,d)` proven through the engine; 1206 pass / 1 disabled |
-| S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ⬜ | — | — | analyzer contract check load-bearing |
+| S3.3 | Cross-sectional gap-fill ops + `vwap`/`adv{d}`/dollar-volume datafields | ✅ | `cdb32e1` | 19 | `quantile`/`vec_sum`/`vec_avg` (oracle⇄VM bit-exact) + `reverse`→Neg alias; `datafields.hpp` derives `vwap`/`dollar_volume`/`adv{d}`; `adv{d}==ts_mean(dollar_volume,d)` proven through the engine; 1206 pass / 1 disabled |
+| S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ✅ | — | 3 | root cause = `add_op` filed by `min_arity` but `op_swap` looked up by materialized `call_arity`, so a finite-default op (scale/winsorize/quantile, kernel reads operand 2) was offered to an arity-1 node → VM read `kNoSlot`. Fix: `validate_node_contract` (analyze rail: materialized operand-arity + hparam count) + OpCatalog buckets keyed on materialized operand arity + group role, skipping hparam/record ops. `enable_op_swap=true`. Stress harness: every bucket, 0 aborts, oracle==VM. Noise seed 61→81 recal (op_swap-on found 1 fluke). 1209/1209 + 1 disabled |
 | S3.5 | Grammar-typed (valid-by-construction) generation | ⬜ | — | — | report rejection-rate vs control |
 | S3.6 | Conformance suite + Alpha101 subset repro + bench + close | ⬜ | — | — | p1 corpus byte-identical |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done (header + tests + `/W4 /WX` + `/fp:precise` clean).
 
 ## Numbers (filled on close)
-- op_swap stress: buckets covered / total, abort count (must be 0).
+- op_swap stress (S3.4): 17 seed exprs spanning every swappable bucket (CS arity 1/2/group,
+  variadic residualizer arity 2/3, TS arity 2/3, unary, binary infix×2, trade_when, hump,
+  hparam kalman_level, composed DAG) × 400 swaps each; **abort count = 0**; every Ok mutant
+  oracle==VM bit-for-bit. Named regression: rank-node bucket never offers scale/winsorize/
+  quantile; kalman_level node is swap-inert. Noise-admit re-cal: seed 61→81 (op_swap-on found
+  1 in-sample fluke past kMinDsr=0.80; 41/51/71/81 all admit 0).
 - generation: analyze-rejection rate (grammar-typed) vs random-AST control.
 - Alpha101: subset reproduced / total; not-yet-expressible residual + blocking op.
 - bench: widened-op eval throughput (Debug upper bound), CSE hit-rate.

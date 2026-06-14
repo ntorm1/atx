@@ -196,6 +196,16 @@ namespace detail {
 // exhaustive-over-all-OpCodes switch — it only handles the filter ops).
 [[nodiscard]] atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e);
 
+// Validate a Call node's STRUCTURE against its op's declared contract (S3.4):
+// the peeled-hparam count matches `op->n_hparams`, and the number of
+// materialized operand slots (a/b/c) lies in the op's [operand_min, operand_max]
+// range. This is the load-bearing rail that makes "analyze-valid ⟹ VM-safe" hold
+// for EVERY mutation/crossover, not just parser output — it rejects a swapped
+// node that, e.g., carries a finite-default op (scale/winsorize/quantile, whose
+// kernel unconditionally reads operand 2) without having materialized operand 2.
+// Precondition: `e.kind == Call` and `e.op != nullptr`.
+[[nodiscard]] atx::core::Status validate_node_contract(const Expr &e);
+
 // Call node: shape from the op's table-driven rule, dtype from the registry row
 // (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops
 // reject a pure-scalar primary operand.

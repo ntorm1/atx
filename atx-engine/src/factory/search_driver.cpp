@@ -301,12 +301,12 @@ void SearchDriver::novelty_penalize(std::vector<Scored> &scored, const combine::
 // degenerate genome (e.g. no literal to jitter) still yields a child when ANY
 // operator applies. Each operator self-validates (analyze backstop, F5).
 //
-// op_swap is gated behind cfg.enable_op_swap (default OFF): as-built it can emit
-// an analyze-valid genome that corrupts the VM at evaluate (an uncatchable abort
-// — an S3-1 defect; field_swap / jitter_const are clean). The seeded draw uses a
-// FIXED modulus (3) regardless of the gate so the RNG stream — and therefore the
-// replay (F1) — does not shift when the gate flips; a drawn-but-disabled op_swap
-// simply falls through to jitter_const.
+// op_swap is gated behind cfg.enable_op_swap (default ON since S3.4 fixed the
+// root cause — analyze's validate_node_contract + the materialized-arity buckets
+// make analyze-valid ⟹ VM-safe). The seeded draw uses a FIXED modulus (3)
+// regardless of the gate so the RNG stream — and therefore the replay (F1) —
+// does not shift when the gate flips; a drawn-but-disabled op_swap simply falls
+// through to jitter_const.
 [[nodiscard]] atx::core::Result<Genome> SearchDriver::mutate_one(const Genome &g,
                                                                  const SearchConfig &cfg,
                                                                  Xoshiro256pp &rng) {

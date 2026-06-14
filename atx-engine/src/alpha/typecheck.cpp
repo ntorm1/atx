@@ -304,9 +304,30 @@ atx::core::Status validate_hparam_ranges(OpCode op, const Expr &e) {
   return atx::core::Ok();
 }
 
+atx::core::Status validate_node_contract(const Expr &e) {
+  const OpSig &sig = *e.op;
+  // The peeled-hparam count must match the op's declared count. A swap that
+  // changed the op keeps these in sync (mutation sets e.n_hparams = op n_hparams);
+  // a mismatch means the node's hparam structure is inconsistent with the op.
+  if (e.n_hparams != sig.n_hparams) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "op contract: hparam count does not match the operator");
+  }
+  // The materialized operand-slot count must be a valid arity for this op. This
+  // is what rejects a finite-default op (kernel reads operand 2) swapped onto a
+  // node that only materialized operand 1, or a node carrying too many operands.
+  const atx::usize ar = call_arity(e);
+  if (ar < operand_min_arity(sig) || ar > operand_max_arity(sig)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "op contract: materialized operand count is out of range for the operator");
+  }
+  return atx::core::Ok();
+}
+
 atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInfo> out,
                                          const Expr &e) {
   ATX_TRY_VOID(reject_record_operands(out, e));
+  ATX_TRY_VOID(validate_node_contract(e));
   // Hparam finite-constant check: each peeled hparam must be a finite literal.
   for (atx::u8 k = 0; k < e.n_hparams; ++k) {
     if (!std::isfinite(e.hparams[k])) {
