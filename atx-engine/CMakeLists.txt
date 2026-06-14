@@ -32,6 +32,8 @@ add_library(atx-engine STATIC
     src/learn/latent.cpp
     src/learn/learned_source.cpp
     src/learn/linear_alpha.cpp
+    # live NN signal source + NN library bridge (p2 S5-5a — integration capstone)
+    src/learn/nn_source.cpp
     src/learn/pipeline.cpp
     src/learn/sequence_features.cpp
     # sequence alphas (p2 S5-2b-ii — TCN + GRU-lite learned alphas over windows)
