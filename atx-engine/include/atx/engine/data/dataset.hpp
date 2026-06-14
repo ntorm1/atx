@@ -99,6 +99,12 @@ public:
 
   [[nodiscard]] const DatasetProvenance &provenance() const noexcept { return provenance_; }
 
+  // Raw universe mask as stored (empty span iff the Dataset was built with an
+  // empty mask, which means "all cells in-universe"). Expose the stored bytes
+  // verbatim so callers (e.g. adapt_panel) can forward the exact representation
+  // to Panel::create / with_datafields without re-encoding.
+  [[nodiscard]] std::span<const std::uint8_t> mask() const noexcept { return mask_; }
+
 private:
   Dataset() = default; // built only via create()
 
