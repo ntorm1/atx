@@ -26,7 +26,6 @@
 // "explicitly NOT" in-scope for the current S6 contract.
 
 #include <cmath>
-#include <cstdint>
 #include <limits>
 #include <span>
 #include <string>
@@ -206,7 +205,7 @@ private:
 }
 
 // ---------------------------------------------------------------------------
-//  Price Dataset / Panel helpers (used by all three tests).
+//  Price Dataset / Panel helper (used by Test 3 — AnalystFeatureFeedsFeatureMatrix).
 // ---------------------------------------------------------------------------
 
 // 3 dates × 2 instruments price Dataset with OHLCV.
@@ -344,6 +343,9 @@ TEST(DataAltdataSubsumption, FundamentalIngestsAsReferenceDataset) {
   const FactorComponents &comp = comp_res.value();
 
   // Hand-built call with identical span values — must produce byte-identical X/F/D.
+  // NOTE: feeding the SAME literal spans, this byte-compare proves only that the
+  // adapter→builder path is deterministic (no hidden state). The PIT/no-look-ahead
+  // proof is the as-of EXPECTs above (future restatement invisible at as_of=70).
   const std::vector<f64> hand_mc = {1e9, 2e9}; // same as spans (pre-restatement)
   const std::vector<u32> hand_grp = {1U, 2U};
   auto hand_res = builder.build_components(fx.view(), window, std::span<const f64>{hand_mc},
@@ -383,45 +385,57 @@ TEST(DataAltdataSubsumption, FundamentalIngestsAsReferenceDataset) {
 //  A news-sentiment Dataset (Role::Feature, "sentiment" column) is merged into
 //  a price Panel via merge_features_into_panel.
 //
-//  Setup (1 instrument, 5 dates):
-//    date: 0     1     2     3     4
-//    close: 10   20    30    40    50
-//    sentiment: 0.8  -0.3   0.5  -0.6   0.7   (>0 means bullish)
+//  This test EXERCISES trade_when's defining STATE-LATCHING behavior: the
+//  sentiment series carries NEUTRAL (0.0) days where neither the enter trigger
+//  (sentiment > 0) nor the exit trigger (sentiment < 0) fires. On such a day the
+//  operator must HOLD out[t-1] (the latched prior signal), NOT recompute from
+//  the current alpha. A strictly-alternating-sign series would degenerate into a
+//  stateless pointwise gate and never test this — so we include hold days.
+//
+//  Setup (1 instrument, 6 dates):
+//    date:       0     1     2     3     4     5
+//    close:      10    20    30    40    50    60
+//    sentiment:  0.8   0.0   0.0  -0.6   0.0   0.7
 //
 //  DSL formula:
 //    "a = trade_when(sentiment > 0, close, sentiment < 0)\n"
 //
-//  Semantics of trade_when(trigger, alpha, exit):
-//    exit fires when sentiment < 0 (bearish); trigger fires when sentiment > 0
-//    (bullish); alpha = close is the signal carried while in position.
+//  Semantics of trade_when(trigger, alpha, exit) — from the op definition:
+//    out[t] = NaN      if exit[t]  > 0         (sentiment < 0: close position)
+//           = alpha[t] elif trigger[t] > 0     (sentiment > 0: (re)enter w/ close[t])
+//           = out[t-1] else                    (NEUTRAL: HOLD the latched prior)
+//    out[0] = (trigger[0]>0 && !(exit[0]>0)) ? alpha[0] : NaN
 //
-//  Hand-computed expected:
-//    d0: sentiment=0.8>0 → trigger, exit=0 → enter → close=10
-//    d1: sentiment=-0.3<0 → exit fires → NaN (close position)
-//    d2: sentiment=0.5>0 → re-enter → close=30
-//    d3: sentiment=-0.6<0 → exit → NaN
-//    d4: sentiment=0.7>0 → re-enter → close=50
+//  Hand-computed expected (the LATCH is what the neutral days prove):
+//    d0: sent=0.8>0      → enter            → close[0]=10
+//    d1: sent=0.0 neutral → HOLD out[0]     → 10   (LATCH: NOT close[1]=20)
+//    d2: sent=0.0 neutral → HOLD out[1]     → 10   (LATCH: still 10, NOT 30)
+//    d3: sent=-0.6<0     → exit fires       → NaN
+//    d4: sent=0.0 neutral → HOLD out[3]     → NaN  (LATCH: stays flat/closed)
+//    d5: sent=0.7>0      → re-enter         → close[5]=60
+//  ⇒ expected = [10, 10, 10, NaN, NaN, 60]
 //
-//  Assert: gated output == hand-computed expected.
+//  Assert: gated output == this hand-computed STATEFUL expected (and bit-equal
+//  to a hand-built Panel path).
 // ===========================================================================
 TEST(DataAltdataSubsumption, NewsSentimentGatesViaTradeWhen) {
   // ------------------------------------------------------------------
-  // Build price Dataset (5 dates, 1 instrument).
+  // Build price Dataset (6 dates, 1 instrument).
   // ------------------------------------------------------------------
   DatasetSchema price_schema;
   price_schema.columns = {"open", "high", "low", "close", "volume"};
   price_schema.dtypes = {ColumnDType::F64, ColumnDType::F64, ColumnDType::F64, ColumnDType::F64,
                          ColumnDType::F64};
   price_schema.role = Role::Price;
-  const std::vector<DateKey> dates = {1, 2, 3, 4, 5};
+  const std::vector<DateKey> dates = {1, 2, 3, 4, 5, 6};
   const std::vector<InstKey> insts = {10u};
-  const std::vector<f64> close_vals = {10.0, 20.0, 30.0, 40.0, 50.0};
+  const std::vector<f64> close_vals = {10.0, 20.0, 30.0, 40.0, 50.0, 60.0};
   std::vector<std::vector<f64>> price_data = {
-      close_vals,                          // open (reuse close for simplicity)
-      close_vals,                          // high
-      close_vals,                          // low
-      close_vals,                          // close
-      {100.0, 100.0, 100.0, 100.0, 100.0}, // volume
+      close_vals,                                 // open (reuse close for simplicity)
+      close_vals,                                 // high
+      close_vals,                                 // low
+      close_vals,                                 // close
+      {100.0, 100.0, 100.0, 100.0, 100.0, 100.0}, // volume
   };
   auto price_res = Dataset::create(price_schema, dates, insts, std::move(price_data), /*mask=*/{},
                                    DatasetProvenance{"test:price", "sentiment gate"});
@@ -430,13 +444,14 @@ TEST(DataAltdataSubsumption, NewsSentimentGatesViaTradeWhen) {
 
   // ------------------------------------------------------------------
   // Build news-sentiment Dataset (Role::Feature, "sentiment" column).
-  // Same 5 dates, same 1 instrument.
+  // Same 6 dates, same 1 instrument. NEUTRAL (0.0) days at d1,d2,d4 are the
+  // hold days that exercise trade_when's state latch.
   // ------------------------------------------------------------------
   DatasetSchema sent_schema;
   sent_schema.columns = {"sentiment"};
   sent_schema.dtypes = {ColumnDType::F64};
   sent_schema.role = Role::Feature;
-  const std::vector<f64> sentiment = {0.8, -0.3, 0.5, -0.6, 0.7};
+  const std::vector<f64> sentiment = {0.8, 0.0, 0.0, -0.6, 0.0, 0.7};
   auto sent_res = Dataset::create(sent_schema, dates, insts, {{sentiment}}, /*mask=*/{},
                                   DatasetProvenance{"external:news_sentiment", "sentiment column"});
   ASSERT_TRUE(sent_res.has_value()) << sent_res.error().message();
@@ -474,14 +489,18 @@ TEST(DataAltdataSubsumption, NewsSentimentGatesViaTradeWhen) {
   const SignalSet result = eval_panel(prog, merged);
   ASSERT_EQ(result.alphas.size(), usize{1});
   const std::vector<f64> &v = result.alphas[0].values;
-  ASSERT_EQ(v.size(), usize{5}); // 5 dates × 1 instrument
+  ASSERT_EQ(v.size(), usize{6}); // 6 dates × 1 instrument
 
-  // Hand-computed expected (see header comment above).
+  // Hand-computed STATEFUL expected = [10, 10, 10, NaN, NaN, 60] (see header).
+  // The d1/d2 holds at 10 (NOT close[1]=20 / close[2]=30) and the d4 hold at NaN
+  // are the LATCH — they only pass if trade_when carries out[t-1] across a
+  // non-trigger day rather than gating pointwise.
   EXPECT_DOUBLE_EQ(v[0], 10.0) << "d0: bullish trigger → enter → close=10";
-  EXPECT_TRUE(std::isnan(v[1])) << "d1: bearish exit fires → NaN";
-  EXPECT_DOUBLE_EQ(v[2], 30.0) << "d2: bullish re-enter → close=30";
-  EXPECT_TRUE(std::isnan(v[3])) << "d3: bearish exit → NaN";
-  EXPECT_DOUBLE_EQ(v[4], 50.0) << "d4: bullish re-enter → close=50";
+  EXPECT_DOUBLE_EQ(v[1], 10.0) << "d1: neutral → HOLD latched 10 (NOT close[1]=20)";
+  EXPECT_DOUBLE_EQ(v[2], 10.0) << "d2: neutral → HOLD latched 10 (NOT close[2]=30)";
+  EXPECT_TRUE(std::isnan(v[3])) << "d3: bearish exit fires → NaN";
+  EXPECT_TRUE(std::isnan(v[4])) << "d4: neutral → HOLD latched NaN (stays flat)";
+  EXPECT_DOUBLE_EQ(v[5], 60.0) << "d5: bullish re-enter → close=60";
 
   // ------------------------------------------------------------------
   // DIFFERENTIAL equality: gated output == hand-built Panel fed directly.
@@ -492,8 +511,8 @@ TEST(DataAltdataSubsumption, NewsSentimentGatesViaTradeWhen) {
   // transparent pass-through with no numeric transformation.
   // ------------------------------------------------------------------
   auto hand_panel_res = Panel::create(
-      /*dates=*/5, /*instruments=*/1, std::vector<std::string>{"close", "sentiment"},
-      std::vector<std::vector<f64>>{close_vals, sentiment}, std::vector<u8>(5, u8{1}));
+      /*dates=*/6, /*instruments=*/1, std::vector<std::string>{"close", "sentiment"},
+      std::vector<std::vector<f64>>{close_vals, sentiment}, std::vector<u8>(6, u8{1}));
   ASSERT_TRUE(hand_panel_res.has_value()) << hand_panel_res.error().message();
   const Panel hand_panel = std::move(hand_panel_res).value();
 
