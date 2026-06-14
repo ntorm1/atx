@@ -191,7 +191,7 @@ established seams.
 ```
                  p1 complete (S1–S8 closed: DSL+VM, GA factory, library, ML, cost, covariance)
                                           │
-  S6 BYO-DATA ABSTRACTION LAYER (FOUNDATIONAL data substrate — a price-required dataset catalog;
+  S6 BYO-DATA ABSTRACTION LAYER  ✅ DONE 2026-06-14  (FOUNDATIONAL data substrate — a price-required dataset catalog;
    features / external signals / factor-model / reference are optional typed plug-ins; the whole
    pipeline below reads its inputs through the DataContext facade; alt-data is subsumed as a
    plugged dataset) ── retrofit under the existing seams; price-only path pins bit-for-bit to today
@@ -392,7 +392,7 @@ S4 (the robustness battery it must also pass).
 | S5.4 | Deflated-Sharpe + PBO admission gate for NN alphas (reuses `p1` S1 verbatim; the anti-overfit firewall) + S4 robustness-battery pass | M | ✅ `747da91` |
 | S5.5 | NN-alpha → library + combiner/sleeve integration + bench + close | M | ✅ `a193552`·`93a9c41` |
 
-### S6 — Data / Signal / Feature / Reference Abstraction Layer — the BYO-Data Engine  ⏳ proposed ([spec](sprint-6-data-signal-feature-reference-abstraction-layer.md) · [impl-plan](sprint-6-data-signal-feature-reference-abstraction-layer-implementation-plan.md)) · split **S6-a / S6-b** (>7 units)
+### S6 — Data / Signal / Feature / Reference Abstraction Layer — the BYO-Data Engine  ✅ DONE (2026-06-14, branch `feat/p2-s6-data-layer`) ([spec](sprint-6-data-signal-feature-reference-abstraction-layer.md) · [impl-plan](sprint-6-data-signal-feature-reference-abstraction-layer-implementation-plan.md) · [progress](sprint-6-progress.md) · [user ref](sprint6.md)) · split **S6-a / S6-b** (>7 units)
 **Theme:** Turn the engine into a **bring-your-own-data pipeline.** Today atx-engine is wired to *one fixed in-memory
 `alpha::Panel` per run*, and every exogenous input — features, factor model, reference classifications — is computed
 *internally from price* (`FeatureMatrix` reads Panel fields + pool alphas; `FactorModelBuilder` regresses style/sector
@@ -432,21 +432,21 @@ and is consumed by the S8 capstone.
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S6.0 | Marker + ledger + as-built recon vs `data::*`, `alpha::Panel`/`datafields`, `learn::FeatureMatrix`, `risk::{FactorModel, exposures}`, `library::Library`, `book::BookPipeline` seams | S | ⏳ |
-| S6.1 | `data::Dataset` + `DatasetSchema` — typed, PIT-versioned *(date × instrument)* named-column store (roles Price/Feature/Signal/Reference; dtype; provenance record) + differential tests | M | ⏳ |
-| S6.2 | `data::DatasetCatalog` registry — register/resolve-by-name, schema enforcement, lineage/provenance graph, deterministic ordering, PIT as-of version resolution — atx-core **L9 `as_of_frame`** edge | L | ⏳ |
-| S6.3 | Ingestion + alignment + PIT-validation rail — reconcile heterogeneous grids onto the canonical date/universe axis; enforce no-look-ahead / no-survivorship / NaN policy / as-of versioning **at ingest**; truncation-invariant | L | ⏳ |
-| S6.4 | PriceDataset → `alpha::Panel` adapter (subsumes `with_datafields`; **price-only fallback** = today's path) + FeatureDataset → `learn::FeatureMatrix` external-feature injection | M | ⏳ |
+| S6.0 | Marker + ledger + as-built recon vs `data::*`, `alpha::Panel`/`datafields`, `learn::FeatureMatrix`, `risk::{FactorModel, exposures}`, `library::Library`, `book::BookPipeline` seams | S | ✅ |
+| S6.1 | `data::Dataset` + `DatasetSchema` — typed, PIT-versioned *(date × instrument)* named-column store (roles Price/Feature/Signal/Reference; dtype; provenance record) + differential tests | M | ✅ |
+| S6.2 | `data::DatasetCatalog` registry — register/resolve-by-name, schema enforcement, lineage/provenance graph, deterministic ordering, PIT as-of version resolution — atx-core **L9 `as_of_frame`** edge | L | ✅ |
+| S6.3 | Ingestion + alignment + PIT-validation rail — reconcile heterogeneous grids onto the canonical date/universe axis; enforce no-look-ahead / no-survivorship / NaN policy / as-of versioning **at ingest**; truncation-invariant | L | ✅ |
+| S6.4 | PriceDataset → `alpha::Panel` adapter (subsumes `with_datafields`; **price-only fallback** = today's path) + FeatureDataset → `learn::FeatureMatrix` external-feature injection | M | ✅ |
 
 **S6-b — signal + factor-model + reference + subsumption + wiring + capstone**
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S6.5 | SignalDataset — external precomputed signals enter **both** as ML features **and** as direct `library::Library` admissions, gated by the deflated-Sharpe + S4 robustness battery (the BYO-signal first-class path) | L | ⏳ |
-| S6.6 | BYO factor model — `FactorModelArtifact` ingestion (external X/F/D → `risk::FactorModel::create`) + ReferenceDataset ingestion (sector/group_id, market_cap, custom styles → internal `FactorModelBuilder`); price-only fallback computes internally as today | L | ⏳ |
-| S6.7 | Alt-data subsumption — re-express fundamental/analyst/news/sentiment as `Feature`/`Reference` dataset instances (no bespoke per-source code; news/sentiment event-gated via existing `trade_when`); proves the abstraction generalizes the deferred frontier | M | ⏳ |
-| S6.8 | `DataContext` facade wiring through `factory::{Factory, ResearchDriver}` + `book::BookPipeline` + `fund::` meta-book (replace bare-`Panel` args via adapter; **boundary pin** — price-only DataContext ≡ today bit-for-bit) | M | ⏳ |
-| S6.9 | E2E BYO capstone test (price + plugged feature + plugged signal + plugged factor model → mine/admit/combine → multi-horizon book → portfolio; deterministic digest) + catalog/lineage report + ingestion/DSL bench + close | L | ⏳ |
+| S6.5 | SignalDataset — external precomputed signals enter **both** as ML features **and** as direct `library::Library` admissions, gated by the deflated-Sharpe + S4 robustness battery (the BYO-signal first-class path) | L | ✅ |
+| S6.6 | BYO factor model — `FactorModelArtifact` ingestion (external X/F/D → `risk::FactorModel::create`) + ReferenceDataset ingestion (sector/group_id, market_cap, custom styles → internal `FactorModelBuilder`); price-only fallback computes internally as today | L | ✅ |
+| S6.7 | Alt-data subsumption — re-express fundamental/analyst/news/sentiment as `Feature`/`Reference` dataset instances (no bespoke per-source code; news/sentiment event-gated via existing `trade_when`); proves the abstraction generalizes the deferred frontier | M | ✅ |
+| S6.8 | `DataContext` facade wiring through `factory::{Factory, ResearchDriver}` + `book::BookPipeline` + `fund::` meta-book (replace bare-`Panel` args via adapter; **boundary pin** — price-only DataContext ≡ today bit-for-bit) | M | ✅ |
+| S6.9 | E2E BYO capstone test (price + plugged feature + plugged signal + plugged factor model → mine/admit/combine → multi-horizon book → portfolio; deterministic digest) + catalog/lineage report + ingestion/DSL bench + close | L | ✅ |
 
 > **Boundary pin:** with **only** a price dataset registered and no optional plug-ins, the `DataContext` path must reduce
 > **bit-for-bit** to today's fixed-`alpha::Panel` `BookPipeline` path — the regression anchor that proves the abstraction

@@ -48,7 +48,17 @@ add_library(atx-engine STATIC
     src/learn/nn/trainer.cpp
     # nn sequence layers (p2 S5-2b-i — causal conv / TCN block / GRU-lite + MGU / pool)
     src/learn/nn/seq_layers.cpp
+    # data / signal / feature / reference abstraction layer (p2 S6 — BYO-data)
+    src/data/adapt_factor.cpp
+    src/data/adapt_feature.cpp
+    src/data/adapt_panel.cpp
+    src/data/adapt_signal.cpp
+    src/data/align.cpp
+    src/data/catalog.cpp
+    src/data/catalog_report.cpp
+    src/data/context.cpp
     src/data/data_handler.cpp
+    src/data/dataset.cpp
     src/data/shm_bar_feed.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
