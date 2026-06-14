@@ -1,5 +1,6 @@
 #include "atx/engine/alpha/registry.hpp"
 
+#include <limits>
 #include <string>
 
 namespace atx::engine::alpha {
@@ -16,7 +17,7 @@ namespace detail {
   // required arg, 1 optional with a finite default of 1.0 (P3b-1).
   // P3d-B3 adds two trailing OpSig fields (n_hparams, pins) with member-
   // initializers — existing rows omit them and pick up {0, {}} automatically.
-  static constexpr std::array<OpSig, 65> kOps = {{
+  static constexpr std::array<OpSig, 66> kOps = {{
       // ---- unary element-wise functions (P→P) ----
       {"abs", 1, 1, OpCode::Abs, DType::F64, true, {}, &shape_unary},
       {"sign", 1, 1, OpCode::Sign, DType::F64, true, {}, &shape_unary},
@@ -49,6 +50,13 @@ namespace detail {
       {"group_count", 2, 2, OpCode::CsCountG, DType::F64, true, {}, &shape_cross_section},
       {"group_mean", 2, 2, OpCode::CsMeanG, DType::F64, true, {}, &shape_cross_section},
       {"group_scale", 2, 2, OpCode::CsScaleG, DType::F64, true, {}, &shape_cross_section},
+      // Regression-residual neutralization (S3.1). cs_residualize(x, g) is the
+      // per-group demean (the boundary pin == indneutralize); cs_residualize(x,
+      // g, z) adds a continuous style covariate (FWL partial-out). The optional
+      // 3rd arg carries a NaN-sentinel default, so an omitted z is left ABSENT
+      // (arg c == kNoExpr) rather than materialized — the kernel handles both.
+      {"cs_residualize", 2, 3, OpCode::CsResidualize, DType::F64, true,
+       {std::numeric_limits<atx::f64>::quiet_NaN()}, &shape_cross_section},
       // ---- time-series (P→P) ----
       {"delay", 2, 2, OpCode::TsDelay, DType::F64, true, {}, &shape_panel},
       {"delta", 2, 2, OpCode::TsDelta, DType::F64, true, {}, &shape_panel},

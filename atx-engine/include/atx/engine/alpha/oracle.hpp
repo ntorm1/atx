@@ -370,6 +370,7 @@ private:
     case OpCode::CsCountG:
     case OpCode::CsMeanG:
     case OpCode::CsScaleG:
+    case OpCode::CsResidualize:
       return eval_cross_section(in);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -598,8 +599,8 @@ private:
   [[nodiscard]] atx::core::Status eval_kalman_reg(const Instr &in);
 
   // Helpers for the two big families (defined out-of-line below the class).
-  void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g, atx::f64 a,
-                   std::span<atx::f64> out) const;
+  void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
+                   std::span<const atx::f64> z, atx::f64 a, std::span<atx::f64> out) const;
   // Single-cell time-series kernels at (t, j) over trailing window `d`.
   [[nodiscard]] atx::f64 ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
                                      atx::usize j, atx::usize d) const;

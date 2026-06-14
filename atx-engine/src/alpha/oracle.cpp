@@ -78,6 +78,58 @@ void cs_group_demean(std::span<const atx::f64> x, std::span<const atx::f64> g,
   }
 }
 
+// CsResidualize (S3.1): per-date regression-residual neutralization. With `z`
+// empty this IS the per-group demean (cs_group_demean) bit-for-bit (the boundary
+// pin). With `z` present it is the Frisch-Waugh-Lovell partial-out: within-group
+// demean x and z, then remove the OLS slope beta = Σ x~·z~ / Σ z~² of demeaned-x
+// on demeaned-z; residual r = x~ - beta·z~. The regression set is the valid
+// cells with a non-NaN group label AND a non-NaN covariate; others stay NaN. A
+// zero covariate variance yields beta = 0 (collapses to the demean). Summation
+// order ascending — bit-identical to vm.hpp's cs_residualize_row.
+void cs_residualize(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                    std::span<const atx::f64> z, const std::vector<atx::usize> &valid,
+                    std::span<atx::f64> out) {
+  if (z.empty()) {
+    cs_group_demean(x, g, valid, out);
+    return;
+  }
+  std::vector<atx::usize> rset;
+  rset.reserve(valid.size());
+  for (const atx::usize i : valid) {
+    if (!is_nan(g[i]) && !is_nan(z[i])) {
+      rset.push_back(i);
+    }
+  }
+  std::vector<atx::f64> xtil(rset.size());
+  std::vector<atx::f64> ztil(rset.size());
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    const atx::usize i = rset[p];
+    atx::f64 sx = 0.0;
+    atx::f64 sz = 0.0;
+    atx::usize cnt = 0;
+    for (const atx::usize j : rset) {
+      if (g[j] == g[i]) {
+        sx += x[j];
+        sz += z[j];
+        ++cnt;
+      }
+    }
+    const atx::f64 cntf = static_cast<atx::f64>(cnt);
+    xtil[p] = x[i] - sx / cntf;
+    ztil[p] = z[i] - sz / cntf;
+  }
+  atx::f64 sxz = 0.0;
+  atx::f64 szz = 0.0;
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    sxz += xtil[p] * ztil[p];
+    szz += ztil[p] * ztil[p];
+  }
+  const atx::f64 beta = (szz == 0.0) ? 0.0 : sxz / szz;
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    out[rset[p]] = xtil[p] - beta * ztil[p];
+  }
+}
+
 // CsRankG / CsZscoreG: rank (ordinal percentile) or sample-zscore WITHIN each
 // group of the valid set. `zscore` selects the variant.
 void cs_group(std::span<const atx::f64> x, std::span<const atx::f64> g,
@@ -177,11 +229,15 @@ atx::core::Status Oracle::eval_cross_section(const Instr &in) {
   const bool grouped =
       (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
        in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
-       in.op == OpCode::CsScaleG);
+       in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize);
   std::span<const atx::f64> g{};
+  std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
   atx::f64 scale_a = 1.0;
   if (grouped) {
     g = src_col(in, 1);
+    if (in.op == OpCode::CsResidualize && in.src[2] != kNoSlot) {
+      z = src_col(in, 2); // present only for arity-3 cs_residualize(x, g, z)
+    }
   } else if (in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize) {
     scale_a = detail::scalar_of(src_col(in, 1));
   }
@@ -190,7 +246,9 @@ atx::core::Status Oracle::eval_cross_section(const Instr &in) {
     const std::span<atx::f64> orow = out.subspan(d * instruments_, instruments_);
     const std::span<const atx::f64> grow =
         grouped ? g.subspan(d * instruments_, instruments_) : std::span<const atx::f64>{};
-    cs_one_date(in.op, xr, grow, scale_a, orow);
+    const std::span<const atx::f64> zrow =
+        z.empty() ? std::span<const atx::f64>{} : z.subspan(d * instruments_, instruments_);
+    cs_one_date(in.op, xr, grow, zrow, scale_a, orow);
   }
   return atx::core::Ok();
 }
@@ -200,7 +258,8 @@ atx::core::Status Oracle::eval_cross_section(const Instr &in) {
 // CsScale factor. `out` starts as all-NaN (run() pre-fills the SignalSet, but
 // scratch slots are reused, so we MUST write every cell — invalid cells -> NaN).
 void Oracle::cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
-                         atx::f64 scale_a, std::span<atx::f64> out) const {
+                         std::span<const atx::f64> z, atx::f64 scale_a,
+                         std::span<atx::f64> out) const {
   // The valid set: in-universe at this date AND non-NaN. The Panel universe was
   // already folded into NaN by LoadField, so "non-NaN" captures both here.
   std::vector<atx::usize> valid;
@@ -230,6 +289,9 @@ void Oracle::cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const
   case OpCode::CsDemeanG:
   case OpCode::CsNeutG: // SAFETY: residualize-on-group-dummies == per-group demean
     cs_group_demean(x, g, valid, out);
+    return;
+  case OpCode::CsResidualize: // demean (z empty) or FWL partial-out (z present)
+    cs_residualize(x, g, z, valid, out);
     return;
   case OpCode::CsRankG:
     cs_group(x, g, valid, out, /*zscore=*/false);

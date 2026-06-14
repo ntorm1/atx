@@ -36,8 +36,8 @@ preset `dev`; target `atx-engine-tests`.
 
 | Unit | Title | Status | SHA | Tests | Notes |
 |---|---|---|---|---|---|
-| S3.0 | Marker + ledger + recon | 🟡 in progress | — | — | impl plan frozen; baseline build verifying |
-| S3.1 | Regression-residual neutralization (`CsResidualize`) | ⬜ | — | — | demean special case = boundary pin |
+| S3.0 | Marker + ledger + recon | ✅ | `8ce3db5` | — | impl plan frozen; baseline 92/92 |
+| S3.1 | Regression-residual neutralization (`CsResidualize`) | ✅ | — | 6 | demean boundary pin bit-for-bit; FWL covariate; VM⇄oracle parity; 150/150 no-regression |
 | S3.2 | BRAIN-superset `ts_*` (`ts_regression`/`ts_decay_exp`/`ts_entropy`/`ts_moment`) + backfill/quantile audit | ⬜ | — | — | |
 | S3.3 | Cross-sectional gap-fill ops + `vwap`/`adv{d}`/dollar-volume datafields | ⬜ | — | — | |
 | S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ⬜ | — | — | analyzer contract check load-bearing |

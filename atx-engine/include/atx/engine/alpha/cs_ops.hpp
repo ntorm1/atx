@@ -176,6 +176,65 @@ inline void cs_group_demean_row(std::span<const atx::f64> x, std::span<const atx
 }
 
 // ===========================================================================
+//  CsResidualize (S3.1) — per-date regression-residual neutralization. Regress
+//  the cross-section on a group-dummy design plus an optional continuous style
+//  covariate `z`; emit the residual over the valid set.
+//
+//  With `z` EMPTY this dispatches to cs_group_demean_row, so it IS the per-group
+//  demean BIT-FOR-BIT (the boundary pin == indneutralize). With `z` present it
+//  is the Frisch–Waugh–Lovell partial-out: within-group-demean x and z, then
+//  remove the global OLS slope beta = Σ x~·z~ / Σ z~² of demeaned-x on
+//  demeaned-z; residual r = x~ - beta·z~. The regression valid set is the valid
+//  cells with a non-NaN group label AND a non-NaN covariate; all others stay NaN
+//  (out-of-set). A zero within-group covariate variance (Σ z~² == 0) yields
+//  beta = 0, collapsing the residual back to the demean. Summation order is
+//  ascending instrument index (matches the oracle twin bit-for-bit).
+// ===========================================================================
+inline void cs_residualize_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                               std::span<const atx::f64> z, const std::vector<atx::usize> &valid,
+                               std::span<atx::f64> out) {
+  if (z.empty()) {
+    cs_group_demean_row(x, g, valid, out); // boundary pin: bit-for-bit demean
+    return;
+  }
+  std::vector<atx::usize> rset; // valid cells with a group label AND a covariate
+  rset.reserve(valid.size());
+  for (const atx::usize i : valid) {
+    if (!cs_is_nan(g[i]) && !cs_is_nan(z[i])) {
+      rset.push_back(i);
+    }
+  }
+  std::vector<atx::f64> xtil(rset.size()); // within-group demeaned x, parallel to rset
+  std::vector<atx::f64> ztil(rset.size()); // within-group demeaned z, parallel to rset
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    const atx::usize i = rset[p];
+    atx::f64 sx = 0.0;
+    atx::f64 sz = 0.0;
+    atx::usize cnt = 0;
+    for (const atx::usize j : rset) {
+      if (g[j] == g[i]) {
+        sx += x[j];
+        sz += z[j];
+        ++cnt;
+      }
+    }
+    const atx::f64 cntf = static_cast<atx::f64>(cnt);
+    xtil[p] = x[i] - sx / cntf;
+    ztil[p] = z[i] - sz / cntf;
+  }
+  atx::f64 sxz = 0.0;
+  atx::f64 szz = 0.0;
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    sxz += xtil[p] * ztil[p];
+    szz += ztil[p] * ztil[p];
+  }
+  const atx::f64 beta = (szz == 0.0) ? 0.0 : sxz / szz;
+  for (atx::usize p = 0; p < rset.size(); ++p) {
+    out[rset[p]] = xtil[p] - beta * ztil[p];
+  }
+}
+
+// ===========================================================================
 //  CsRankG / CsZscoreG — rank (ordinal percentile) or sample-zscore WITHIN each
 //  group of the valid set. `zscore` selects the variant. A cell with a NaN
 //  group label stays NaN. Mirrors oracle.hpp's `cs_group` exactly: per valid

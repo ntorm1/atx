@@ -114,6 +114,10 @@ enum class OpCode : atx::u8 {
   CsCountG,
   CsMeanG,
   CsScaleG,
+  // Regression-residual neutralization (S3.1): regress the cross-section on a
+  // group-dummy design (+ an optional continuous style covariate) and emit the
+  // residual. Demean (CsDemeanG) is the special case with no style covariate.
+  CsResidualize,
   // ---- time-series ----
   TsDelay,
   TsDelta,

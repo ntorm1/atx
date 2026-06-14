@@ -97,6 +97,7 @@ namespace detail {
   case OpCode::CsCountG:
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
+  case OpCode::CsResidualize:
     return true;
   default:
     return false;
@@ -105,11 +106,11 @@ namespace detail {
 
 // The group-aware cross-sectional ops: their 2nd argument must carry a Group
 // classifier dtype (the four neutralize/rank/zscore variants + the P3b-2
-// group aggregates group_count/group_mean/group_scale).
+// group aggregates group_count/group_mean/group_scale + S3.1 cs_residualize).
 [[nodiscard]] inline bool needs_group_arg(OpCode op) noexcept {
   return op == OpCode::CsDemeanG || op == OpCode::CsNeutG || op == OpCode::CsRankG ||
          op == OpCode::CsZscoreG || op == OpCode::CsCountG || op == OpCode::CsMeanG ||
-         op == OpCode::CsScaleG;
+         op == OpCode::CsScaleG || op == OpCode::CsResidualize;
 }
 
 // ----- field classification ---------------------------------------------

@@ -87,6 +87,7 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::CsCountG:
   case OpCode::CsMeanG:
   case OpCode::CsScaleG:
+  case OpCode::CsResidualize:
   case OpCode::TradeWhen:
   case OpCode::Hump:
   case OpCode::KalmanLevel:
@@ -302,6 +303,18 @@ atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInf
   if (needs_group_arg(op) && out[e.b].dtype != DType::Group) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "group operator requires a classifier (Group) 2nd argument");
+  }
+  // cs_residualize's optional style covariate (3rd arg, when present) must be a
+  // non-scalar numeric (F64) panel/cross-section column — a continuous regressor.
+  if (op == OpCode::CsResidualize && e.c != kNoExpr) {
+    if (out[e.c].dtype != DType::F64) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "cs_residualize style covariate (arg 3) must be numeric (f64)");
+    }
+    if (out[e.c].shape == Shape::Scalar) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "cs_residualize style covariate (arg 3) must be a panel/cross-section");
+    }
   }
   ATX_TRY_VOID(validate_stateful_op_dtypes(op, out, e));
   // Filter hparam range checks (hparams already verified finite by the loop above).
