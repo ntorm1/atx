@@ -20,9 +20,11 @@
 //       -> NaN market_cap / default_group group_id.
 //   * NoPlugFallsBackToPriceDerived           — build_components with empty spans
 //       still builds a valid FactorComponents (price-derived, no reference needed).
+//   * GroupIdNegativeFallsBackToDefault       — a non-representable group_id f64
+//       (-2.0 sentinel, 1e12 overflow) -> default_group, never a UB cast.
+//   * ReferenceSpansRejectsNonReferenceRole   — a non-Reference-role dataset passed
+//       as `reference` -> Err(InvalidArgument) (swapped-argument guard).
 
-#include <array>
-#include <bit>     // std::bit_cast (NaN-safe bit comparison)
 #include <cmath>   // std::isnan
 #include <cstdint> // uint64_t
 #include <limits>  // quiet_NaN
@@ -289,8 +291,8 @@ TEST(DataAdaptFactor, ArtifactLowersToCreateByteIdentical) {
     static_assert(sizeof(f64) == sizeof(u64));
     __builtin_memcpy(&bits_a, &out_a[i], sizeof(u64));
     __builtin_memcpy(&bits_b, &out_b[i], sizeof(u64));
-    EXPECT_EQ(bits_a, bits_b) << "apply() output differs at i=" << i
-                               << " out_a=" << out_a[i] << " out_b=" << out_b[i];
+    EXPECT_EQ(bits_a, bits_b) << "apply() output differs at i=" << i << " out_a=" << out_a[i]
+                              << " out_b=" << out_b[i];
   }
 }
 
@@ -355,8 +357,7 @@ TEST(DataAdaptFactor, ReferenceSpansFeedBuildComponents) {
 
   FactorModelBuilder builder;
   builder.cfg = single_sector_cfg();
-  auto comp_r = builder.build_components(fx.view(), window,
-                                         std::span<const f64>{mkt_caps},
+  auto comp_r = builder.build_components(fx.view(), window, std::span<const f64>{mkt_caps},
                                          std::span<const u32>{group_ids});
   ASSERT_TRUE(comp_r.has_value()) << comp_r.error().message();
   const FactorComponents &comp = comp_r.value();
@@ -371,9 +372,8 @@ TEST(DataAdaptFactor, ReferenceSpansFeedBuildComponents) {
   EXPECT_EQ(comp.fit_end, window);
 
   // Same hand call with the same span values yields byte-identical X/F/D (determinism pin).
-  auto comp_hand_r = builder.build_components(fx.view(), window,
-                                               std::span<const f64>{mkt_caps},
-                                               std::span<const u32>{group_ids});
+  auto comp_hand_r = builder.build_components(fx.view(), window, std::span<const f64>{mkt_caps},
+                                              std::span<const u32>{group_ids});
   ASSERT_TRUE(comp_hand_r.has_value()) << comp_hand_r.error().message();
   const FactorComponents &comp_hand = comp_hand_r.value();
 
@@ -402,9 +402,8 @@ TEST(DataAdaptFactor, ReferenceMissingColumnErrs) {
   s.dtypes = {ColumnDType::F64};
   s.role = Role::Reference;
   std::vector<std::vector<f64>> data = {{1e9, 2e9}};
-  auto ref_r =
-      Dataset::create(std::move(s), {100}, {10u, 20u}, std::move(data), /*mask=*/{},
-                      DatasetProvenance{"test:ref_no_grp", ""});
+  auto ref_r = Dataset::create(std::move(s), {100}, {10u, 20u}, std::move(data), /*mask=*/{},
+                               DatasetProvenance{"test:ref_no_grp", ""});
   ASSERT_TRUE(ref_r.has_value()) << ref_r.error().message();
   const Dataset ref = std::move(ref_r).value();
   const Dataset price = make_price_dataset({10u, 20u}, {150});
@@ -454,19 +453,18 @@ TEST(DataAdaptFactor, MissingInstrumentGivesNanDefault) {
 TEST(DataAdaptFactor, NoPlugFallsBackToPriceDerived) {
   // Liquidity = bit 4 in StyleFactor enum (Size=0,Momentum=1,Volatility=2,Beta=3,Liquidity=4).
   constexpr atx::u8 kLiquidityOnly = static_cast<atx::u8>(1U << 4U);
-  const usize window = 21U;        // >= 20 rows needed for adv20; also >= K=1
+  const usize window = 21U;         // >= 20 rows needed for adv20; also >= K=1
   const usize n_rows = window + 1U; // 1 extra row so the oldest step_return is finite
   const usize n_inst = 3U;
   const PanelFixture fx = make_panel_fixture(n_rows, n_inst);
 
   FactorModelBuilder builder;
-  builder.cfg.sector_factors = false; // no sectors (no group_id needed)
+  builder.cfg.sector_factors = false;      // no sectors (no group_id needed)
   builder.cfg.style_mask = kLiquidityOnly; // price-derived Liquidity column only
 
   // Empty market_cap + empty group_id — price-only path.
-  auto comp_empty_r = builder.build_components(fx.view(), window,
-                                                std::span<const f64>{},
-                                                std::span<const u32>{});
+  auto comp_empty_r =
+      builder.build_components(fx.view(), window, std::span<const f64>{}, std::span<const u32>{});
   ASSERT_TRUE(comp_empty_r.has_value()) << comp_empty_r.error().message();
   const FactorComponents &comp = comp_empty_r.value();
 
@@ -479,10 +477,64 @@ TEST(DataAdaptFactor, NoPlugFallsBackToPriceDerived) {
   EXPECT_EQ(comp.fit_end, window);
 
   // build() (the thin wrapper) must also succeed on the price-only path.
-  auto model_r = builder.build(fx.view(), window, std::span<const f64>{},
-                                std::span<const u32>{});
+  auto model_r = builder.build(fx.view(), window, std::span<const f64>{}, std::span<const u32>{});
   ASSERT_TRUE(model_r.has_value()) << model_r.error().message();
   EXPECT_EQ(model_r->n_factors(), static_cast<usize>(comp.X.cols()));
+}
+
+// A non-representable group_id f64 (negative sentinel / overflow) must fall back to
+// default_group, NEVER a UB f64->u32 cast. A "-2.0" unclassified sentinel and a huge
+// 1e12 value (> UINT32_MAX) both resolve to default_group; a well-formed value passes.
+TEST(DataAdaptFactor, GroupIdNegativeFallsBackToDefault) {
+  // Reference: 3 instruments {10, 20, 30}, 1 date {100}.
+  //   inst 10 -> group_id  4.0   (valid, representable)
+  //   inst 20 -> group_id -2.0   (negative "unclassified" sentinel -> default)
+  //   inst 30 -> group_id  1e12  (> UINT32_MAX -> default)
+  const std::vector<InstKey> ref_insts = {10u, 20u, 30u};
+  const std::vector<DateKey> ref_dates = {100};
+  const std::vector<f64> mc_flat = {1e9, 2e9, 3e9};
+  const std::vector<f64> grp_flat = {4.0, -2.0, 1e12};
+  const Dataset ref = make_reference_dataset(ref_insts, ref_dates, mc_flat, grp_flat);
+
+  const Dataset price = make_price_dataset({10u, 20u, 30u}, {100});
+
+  constexpr u32 kDefaultGroup = 9U;
+  auto res = reference_spans(ref, price, /*as_of_date=*/100, kDefaultGroup);
+  ASSERT_TRUE(res.has_value()) << res.error().message();
+  const RefSpans &spans = res.value();
+
+  ASSERT_EQ(spans.group_id.size(), usize{3});
+  EXPECT_EQ(spans.group_id[0], u32{4});        // valid -> passes through
+  EXPECT_EQ(spans.group_id[1], kDefaultGroup); // negative sentinel -> default
+  EXPECT_EQ(spans.group_id[2], kDefaultGroup); // overflow (> UINT32_MAX) -> default
+
+  // market_cap is unaffected by the group_id guard (all valid here).
+  EXPECT_DOUBLE_EQ(spans.market_cap[0], 1e9);
+  EXPECT_DOUBLE_EQ(spans.market_cap[1], 2e9);
+  EXPECT_DOUBLE_EQ(spans.market_cap[2], 3e9);
+}
+
+// Swapped-argument guard: a dataset whose role is NOT Role::Reference passed as the
+// `reference` parameter is rejected with Err(InvalidArgument) — a transposed call
+// (price first) cannot silently misread the price block as the reference block.
+TEST(DataAdaptFactor, ReferenceSpansRejectsNonReferenceRole) {
+  // A Price-role dataset that DOES carry the required columns (so the role check,
+  // not a missing-column check, is what rejects it).
+  DatasetSchema s;
+  s.columns = {"market_cap", "group_id"};
+  s.dtypes = {ColumnDType::F64, ColumnDType::Category};
+  s.role = Role::Price; // NOT Reference
+  std::vector<std::vector<f64>> data = {{1e9, 2e9}, {1.0, 2.0}};
+  auto wrong_r = Dataset::create(std::move(s), {100}, {10u, 20u}, std::move(data),
+                                 /*mask=*/{}, DatasetProvenance{"test:wrong_role", ""});
+  ASSERT_TRUE(wrong_r.has_value()) << wrong_r.error().message();
+  const Dataset wrong_role = std::move(wrong_r).value();
+
+  const Dataset price = make_price_dataset({10u, 20u}, {150});
+
+  auto res = reference_spans(wrong_role, price, /*as_of_date=*/150);
+  ASSERT_FALSE(res.has_value()) << "expected InvalidArgument for non-Reference role";
+  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 } // namespace atxtest_data_adapt_factor_test

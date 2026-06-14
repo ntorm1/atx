@@ -24,7 +24,6 @@
 //
 // Cold-path (once per backtest window). Deterministic; no RNG.
 
-#include <cstdint> // std::uint32_t (u32)
 #include <vector>
 
 #include "atx/core/error.hpp" // Result, Err
@@ -85,8 +84,8 @@ struct RefSpans {
 //      Read reference.column_by_name("group_id")  [row * ref_ni + ref_inst_idx].
 //      group_id value is stored as f64/Category -> cast to u32
 //      (NaN value -> default_group).
-[[nodiscard]] atx::core::Result<RefSpans>
-reference_spans(const Dataset &reference, const Dataset &price, DateKey as_of_date,
-                atx::u32 default_group = 0U);
+[[nodiscard]] atx::core::Result<RefSpans> reference_spans(const Dataset &reference,
+                                                          const Dataset &price, DateKey as_of_date,
+                                                          atx::u32 default_group = 0U);
 
 } // namespace atx::engine::data

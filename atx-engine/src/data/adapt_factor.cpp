@@ -16,7 +16,15 @@ artifact_to_factor_model(const FactorModelArtifact &a) {
 }
 
 atx::core::Result<RefSpans> reference_spans(const Dataset &reference, const Dataset &price,
-                                             DateKey as_of_date, atx::u32 default_group) {
+                                            DateKey as_of_date, atx::u32 default_group) {
+  // Swapped-argument guard: both params are adjacent `const Dataset&`, so a
+  // transposed call (price first) would silently read price as the reference.
+  // Require the reference to actually carry Role::Reference.
+  if (reference.role() != Role::Reference) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "reference_spans: 'reference' dataset must have Role::Reference");
+  }
+
   // Validate that the required columns are present in the reference dataset.
   auto cap_col_r = reference.column_by_name("market_cap");
   if (!cap_col_r.has_value()) {
@@ -38,12 +46,18 @@ atx::core::Result<RefSpans> reference_spans(const Dataset &reference, const Data
   const std::span<const InstKey> ref_insts = reference.instruments();
   const std::span<const DateKey> ref_dates = reference.dates();
 
-  // Resolve the as-of row index once (same for all instruments on this date).
-  const std::optional<atx::usize> maybe_row = as_of_index(ref_dates, as_of_date);
-
   RefSpans out;
   out.market_cap.resize(price_ni, std::numeric_limits<atx::f64>::quiet_NaN());
   out.group_id.resize(price_ni, default_group);
+
+  // Resolve the as-of row index once (loop-invariant). nullopt => as_of_date
+  // precedes all reference dates: the defaults (NaN / default_group) are already
+  // set, so we return immediately without scanning instruments.
+  const std::optional<atx::usize> maybe_row = as_of_index(ref_dates, as_of_date);
+  if (!maybe_row.has_value()) {
+    return atx::core::Ok(std::move(out));
+  }
+  const atx::usize row = maybe_row.value();
 
   for (atx::usize i = 0; i < price_ni; ++i) {
     const InstKey inst = price_insts[i];
@@ -62,18 +76,18 @@ atx::core::Result<RefSpans> reference_spans(const Dataset &reference, const Data
       continue;
     }
 
-    if (!maybe_row.has_value()) {
-      // as_of_date precedes all reference dates -> NaN / default_group (already set).
-      continue;
-    }
-
-    const atx::usize row = maybe_row.value();
     const atx::usize flat = row * ref_ni + ref_idx;
 
     out.market_cap[i] = cap_col[flat];
 
+    // f64 -> u32 group_id cast. Casting a NaN / negative / overflowing / ±Inf
+    // double to u32 is UB ([conv.fpint]); a "-1.0" unclassified sentinel or a bad
+    // upstream +Inf must NOT corrupt the group. Fall back to default_group for
+    // every non-representable value (NaN, < 0, > UINT32_MAX); +Inf > UINT32_MAX
+    // and -Inf < 0 are both caught by the range bounds.
     const atx::f64 grp_f64 = grp_col[flat];
-    if (std::isnan(grp_f64)) {
+    if (std::isnan(grp_f64) || grp_f64 < 0.0 ||
+        grp_f64 > static_cast<atx::f64>(std::numeric_limits<atx::u32>::max())) {
       out.group_id[i] = default_group;
     } else {
       out.group_id[i] = static_cast<atx::u32>(grp_f64);
