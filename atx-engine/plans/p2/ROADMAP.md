@@ -176,7 +176,7 @@ established seams.
 
 ---
 
-### S1 — Constrained Multi-Horizon Portfolio Optimization  ⏳ proposed ([impl-plan](sprint-1-multi-horizon-optimization-implementation-plan.md))
+### S1 — Constrained Multi-Horizon Portfolio Optimization  ✅ DONE (branch `feat/p2-s1-multi-horizon`, pending merge — merge is the user's gate) ([impl-plan](sprint-1-multi-horizon-optimization-implementation-plan.md) · [progress](sprint-1-progress.md))
 **Theme:** The spine — **the optimizer everything routes through.** `p1` S7 ships a *receding-horizon driver* that
 chains single-period proximal solves over a schedule (threading `w_prev`, executing only the first move). That is
 multi-*period* but not multi-*horizon*: each inner solve optimizes a single-period objective and the constraint set is
@@ -195,12 +195,12 @@ WorldQuant §6.1/§6.5 (bounded regression, turnover-as-cost), Boyd 2017, Gârle
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S1.0 | Marker + ledger + as-built recon vs `risk::MultiPeriodOptimizer`/`PortfolioOptimizer` | S | ⏳ |
-| S1.1 | Constraint-algebra layer (composable factor-exposure / sector / beta / gross-net / position / turnover-budget descriptors over S8's `X`) | M | ⏳ |
-| S1.2 | Fixed-iteration constrained QP/ADMM solver (OSQP-style pre-factorized KKT; deterministic; generalizes S7 proximal loop) — atx-core L7 request | L | ⏳ |
-| S1.3 | Multi-horizon forecast model (signal-horizon taxonomy; per-horizon decay; forward trajectory `α_{t…t+H}`; PIT/trailing-fit) | M | ⏳ |
-| S1.4 | Multi-horizon objective + Gârleanu-Pedersen aim portfolio (forward-blended target; MPC execute-first-move) | L | ⏳ |
-| S1.5 | Integrate over S7 `MultiPeriodOptimizer` + S8 cleaned `V`; determinism (two-builds-equal) + look-ahead (truncation-invariance) proofs + bench + close | M | ⏳ |
+| S1.0 | Marker + ledger + as-built recon vs `risk::MultiPeriodOptimizer`/`PortfolioOptimizer` (D1–D8) | S | ✅ `1ec419f` |
+| S1.1 | Constraint-algebra layer (composable factor-exposure / sector / beta / gross-net / position / turnover-budget descriptors over S8's `X`) — `risk/constraints.hpp`, 25 tests | M | ✅ `971cc6b` |
+| S1.2 | Fixed-iteration constrained QP/ADMM solver (OSQP-style, matrix-free factored-`V` via new `FactorModel::apply`; deterministic, no early-exit) — `risk/qp_solver.hpp`, 13 tests; atx-core L7 `qp_admm` recorded as the lift | L | ✅ `1ebf01f` |
+| S1.3 | Multi-horizon forecast model (signal-horizon taxonomy; per-horizon decay; forward trajectory `α_{t…t+H}`; PIT pure kernel D8) — `risk/horizon.hpp`, 12 tests | M | ✅ `66a1542` |
+| S1.4 | Multi-horizon objective + Gârleanu-Pedersen aim portfolio (forward-blended target; MPC execute-first-move; boundary-pin dispatch D9) — `risk/multi_horizon.hpp`, 15 tests | L | ✅ `70f93ca` |
+| S1.5 | Integrate over S7 `MultiPeriodOptimizer` + S8 cleaned `V`; 4-gates integration test (R1/R2/R3/R7) + `bench/multi_horizon_bench.cpp` + close | M | ✅ `dedd3fd` |
 
 > **Boundary pin:** with one horizon, `trade_rate=1`, and the `{Σw=0,Σ|w|≤L,|w_i|≤cap}` constraint set only, S1 must
 > reduce **bit-for-bit** to `p1` S7's chained single-period book — the regression anchor against the proven layer.

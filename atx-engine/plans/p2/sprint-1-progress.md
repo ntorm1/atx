@@ -1,6 +1,6 @@
 # Sprint S1 (p2) — Constrained Multi-Horizon Portfolio Optimization — Implementation Progress
 
-**Status:** 🚧 IN PROGRESS — opened 2026-06-13. Subagent-driven development (fresh implementer per unit + two-stage spec/quality review).
+**Status:** ✅ SHIPPED — opened & closed 2026-06-13. Subagent-driven development (fresh implementer per unit + two-stage spec/quality review). All 70 S1 tests green; pending user merge.
 **Worktree:** `C:/Users/natha/atx-wt/p2-s1-multi-horizon` (dedicated, isolated)
 **Branch:** `feat/p2-s1-multi-horizon`
 **Base:** `main` @ `f85f3d3` (the merged p1 S1–S8 engine)
@@ -36,7 +36,9 @@ supersede the plan's §0 sketch where they conflict; each is briefed verbatim in
 
 - **D6 — Canonical Sharpe / metrics:** `combine::compute_metrics(...)` is the one Sharpe convention (`eval::compute_return_metrics` delegates; it lives in `src/eval/perf_metrics.cpp`, link-only). Reuse, do not reinvent (R8 / API discipline).
 
-- **D7 — Boundary-pin reality (R7/§0.5):** the oracle `PortfolioOptimizer::solve` is a projected/proximal loop (`kStep=0.5`, `kCapIters=8`, `max_iters=64`); `MultiPeriodOptimizer::blend_toward` full-step (`trade_rate==1.0`) assigns `target[i]` verbatim (signed-zero-exact — the `bit_cast<u64>` pin mechanism). Because the S1-2 ADMM is a **different algorithm**, exact bitwise parity on the minimal set is unlikely; the plan's §0.5 **dispatch fallback** (minimal `ConstraintSet` ⇒ route to the as-built proximal `PortfolioOptimizer::solve`; the ADMM owns only the augmented-constraint path) is the **expected** outcome and is the sanctioned, recorded path — not a silent divergence. Decided concretely at S1-2; confirmed at S1-4 (the byte-identical `MultiPeriodOptimizer.run` reduction).
+- **D7 — Boundary-pin reality (R7/§0.5):** the oracle `PortfolioOptimizer::solve` is a projected/proximal loop (`kStep=0.5`, `kCapIters=8`, `max_iters=64`); it enforces `Σ|w|=L` **exactly** via gross-normalize (a NONLINEAR projection), not the QP's `Σ|w|≤L` inequality; `MultiPeriodOptimizer::blend_toward` full-step (`trade_rate==1.0`) assigns `target[i]` verbatim (signed-zero-exact — the `bit_cast<u64>` pin mechanism). Because the S1-2 ADMM is a **different algorithm** with a different feasible region, exact bitwise parity on the minimal set is impossible; the plan's §0.5 **dispatch fallback** (minimal `ConstraintSet` ⇒ route to the as-built proximal `PortfolioOptimizer::solve`; the ADMM owns only the augmented-constraint path) is the **mandated** path — S1-4 MUST dispatch the degenerate config through `PortfolioOptimizer::solve` to make R7 byte-identical to `MultiPeriodOptimizer.run`. Not a silent divergence; the architectural directive for S1-4.
+
+- **D8 — `forecast_trajectory` ships as a PURE projection kernel (S1-3), decoupled from `ISignalSource`.** The plan §4.3 signature `forecast_trajectory(span<pair<ISignalSource*, SignalHorizon>>, as_of, H)` cannot be honored verbatim: `ISignalSource::evaluate` (namespace `atx::engine`, header `loop/signal_source.hpp`) needs a full `PanelView` (not an `as_of` index), is non-`const`, and returns a borrowed `SignalView` invalidated on the next call; coupling `horizon.hpp` to the alpha-VM stack is undesirable. **Decision:** S1-3 is the pure numeric kernel `forecast_trajectory(span<pair<span<const f64> alpha_now, SignalHorizon>>, M, H) -> Result<HorizonForecast>` (decay projection + horizon-weighted superposition, NaN⇒0, order-fixed). The S1-4 driver — which already holds the PIT panel — evaluates the `ISignalSource`s at the as-of panel and passes the resulting α_t cross-sections to the kernel. R2 truncation-invariance is proven end-to-end in S1-5's integration test; the kernel proves no-look-ahead structurally (the trajectory is a pure deterministic function of the current α_t only). `ScriptedSignalSource` ignores its panel (baked replay), so a meaningful panel-read R2 test uses `VmSignalSource` or a panel-reading test double at S1-5.
 
 ---
 
@@ -44,12 +46,58 @@ supersede the plan's §0 sketch where they conflict; each is briefed verbatim in
 
 | Unit  | Title                                                                                  | Status   | Commit SHA(s) | Tests | Notes |
 |-------|----------------------------------------------------------------------------------------|----------|---------------|-------|-------|
-| S1-0  | Marker + ledger + kickoff recon amendment (D1–D7)                                       | 🚧       | —             | —     | this ledger; plan + p2 ROADMAP committed. |
-| S1-1  | Constraint algebra → `(A,l,u)` (`risk/constraints.hpp`)                                 | ⏳       | —             | —     | `GrossNet/PositionCap/FactorExposure/GroupCap/BetaNeutral/TurnoverBudget` + `ConstraintSet::materialize`. |
-| S1-2  | Fixed-iteration constrained ADMM (`risk/qp_solver.hpp`)                                 | ⏳       | —             | —     | OSQP-form, factored-V KKT (own Woodbury via D3 accessors), no early-exit; boundary pin / §0.5 dispatch. |
-| S1-3  | PIT forward forecast trajectory (`risk/horizon.hpp`)                                    | ⏳       | —             | —     | `SignalHorizon`/`HorizonForecast`/`forecast_trajectory`; truncation-invariant. |
-| S1-4  | Multi-horizon optimizer + GP aim + boundary pin (`risk/multi_horizon.hpp`)              | ⏳       | —             | —     | reuses S7 schedule walk; `gp_aim` (G&P Eq.15); byte-identical-to-`MultiPeriodOptimizer` regression. |
-| S1-5  | Integration test + bench + close ceremony                                              | ⏳       | —             | —     | four gates simultaneously; `multi_horizon_bench.cpp`; ROADMAP flip + `sprint1.md`. |
+| S1-0  | Marker + ledger + kickoff recon amendment (D1–D8)                                       | ✅       | `1ec419f`     | —     | this ledger; plan + p2 ROADMAP committed. |
+| S1-1  | Constraint algebra → `(A,l,u)` (`risk/constraints.hpp`)                                 | ✅       | `971cc6b`     | 25    | `GrossNet/PositionCap/FactorExposure/GroupCap/BetaNeutral/TurnoverBudget` + `ConstraintSet::materialize`; A is R×M linear-only, L1 budgets carried as metadata; spec+quality reviewed. |
+| S1-2  | Fixed-iteration constrained ADMM (`risk/qp_solver.hpp`)                                 | ✅       | `1ebf01f`     | 13    | OSQP-form ADMM, matrix-free P=2λV via new `FactorModel::apply`/`specific_var`; full L1 aux-split; fixed-iter no early-exit; feasibility→Err (msg names infeasible-OR-unconverged). Default `iters=600` (aux-split convergence). spec COMPLIANT + quality APPROVED post-fix. |
+| S1-3  | PIT forward forecast trajectory (`risk/horizon.hpp`)                                    | ✅       | `66a1542`     | 12    | pure kernel (D8): `SignalHorizon::decay`/`identity`, `HorizonForecast`, `forecast_trajectory`; NaN-all-sources preserved, identity⇒constant; spec COMPLIANT + APPROVED. |
+| S1-4  | Multi-horizon optimizer + GP aim + boundary pin (`risk/multi_horizon.hpp`)              | ✅       | `70f93ca`     | 15    | reuses S7 schedule walk; `gp_aim`=horizon-AVERAGE (D9, degenerate⇒α_t exact); minimal-constraint dispatch→`PortfolioOptimizer::solve` ⇒ **R7 byte-identical (3 pins: full/partial/capacity-clip)**; augmented→`ConstrainedQpSolver` (all-constraints-satisfied R3). spec COMPLIANT + quality APPROVED. 2 🟢 polish nits deferred. |
+| S1-5  | Integration test + bench + close ceremony                                              | ✅       | `dedd3fd`     | 5     | four gates simultaneously (R1/R2/R3/R7) all non-vacuous; `bench/multi_horizon_bench.cpp` (matrix-free O(N·K) witness); 2 polish nits folded; spec COMPLIANT + APPROVED (reviewer reran 20/20). |
+
+---
+
+## Sprint commits
+
+| SHA | Unit | Subject |
+|-----|------|---------|
+| `1ec419f` | S1-0 | docs(s1-0): open p2 sprint-1 multi-horizon ledger + kickoff recon amendment |
+| `971cc6b` | S1-1 | feat(s1-1): constraint algebra -> (A,l,u) materialization (risk/constraints.hpp) |
+| `1ebf01f` | S1-2 | feat(s1-2): deterministic fixed-iteration constrained ADMM (risk/qp_solver.hpp) + FactorModel forward apply |
+| `66a1542` | S1-3 | feat(s1-3): PIT multi-horizon forecast trajectory (risk/horizon.hpp) |
+| `70f93ca` | S1-4 | feat(s1-4): constrained multi-horizon optimizer + GP aim + S7 boundary pin (risk/multi_horizon.hpp) |
+| `dedd3fd` | S1-5 | feat(s1-5): multi-horizon integration capstone (4 gates) + bench + polish |
+| _(this)_ | close | docs(s1): close ceremony — ROADMAP flip, residuals, sprint1.md, ledger finalize |
+
+**Test totals:** S1 adds **70** new GoogleTests (25 constraints + 13 qp_solver + 12 horizon + 15 multi_horizon + 5 integration) — all green; full engine suite green (no regression). Each unit two-stage reviewed (spec-compliance then code-quality); the S1-4 boundary pin + the S1-5 four-gates capstone are the load-bearing regressions.
+
+---
+
+## What S1 proves
+
+S1 generalizes `p1` S7's receding-horizon *driver* into a **true constrained multi-horizon optimizer**, and pins it to the proven layer:
+- **R1 (determinism):** the new fixed-iteration ADMM (`ConstrainedQpSolver`) runs a fixed outer/inner iteration count with **no residual early-exit**; the trajectory build, gp_aim blend, KKT/PCG, and every clip are order-fixed ⇒ two builds produce a byte-identical book schedule + digest (integration `R1_*`).
+- **R2 (no look-ahead):** the forward trajectory is a **pure causal projection** `α_{t+h}=Σ_s decay_s(h)·α_t,s` (D8 pure kernel) and the driver executes only the realized first move ⇒ truncation-invariant at the schedule boundary (integration `R2_*`).
+- **R3 (constraint exactness):** the constraint algebra materializes factor-exposure / group / beta / gross-net / position / turnover into exact `l≤Aw≤u` (+ L1 aux-split); every claimed constraint holds at every period's realized book within `feas_tol`; an infeasible/unconverged set returns `Err`, never a silently-clamped book (integration `R3_*`).
+- **R4 (factored `V`):** `P=2λV` is consumed matrix-free through the new `FactorModel::apply` (Woodbury-class); no dense M×M is ever formed — the bench witnesses O(N·K) not O(N²).
+- **R5/R6 (GP aim + calibrated cost):** trades toward the Gârleanu-Pedersen horizon-decay-weighted aim (D9 horizon-average, persistence-weighted), priced with the S6-calibrated κ via `book::CostInputs`.
+- **R7 (reduction to S7):** with one identity-decay horizon, the minimal constraint set, and full trade-rate, `MultiHorizonOptimizer.run` dispatches to the as-built proximal `PortfolioOptimizer::solve` and is **byte-identical** to `MultiPeriodOptimizer.run` (the §0.5 dispatch fallback, D7) — proven at S1-4 (3 pins) and re-affirmed at S1-5 integration.
+
+The two genuinely-new numeric kernels — the fixed-iteration constrained ADMM (R1/R3/R4) and the GP multi-horizon aim (R5) — are each differential-tested against an obvious reference (dense-ADMM and hand-rolled decay/average). The `p2` spine exists.
+
+## Residuals → p2 / atx-core backlog
+- **L7 `core::linalg::qp_admm`** (Pattern-B lift): the dedicated, KKT-pre-factorized OSQP solver. Shipped on the engine-local `ConstrainedQpSolver` (matrix-free factored-`V`); the atx-core kernel with Ruiz-equilibration + warm-start + infeasibility certificates is the recorded lift (§2.1).
+- **ADMM iteration-count for dense augmented sets:** the L1 aux-split (gross/turnover) roughly triples primal dim; tight-feasibility on a dense augmented set needs `qp.iters≈1200–2000` (R3 integration used 1600/120). The default is 600 (clears the common augmented path). The atx-core `qp_admm` (warm-started, equilibrated) and/or a true infeasibility certificate (to distinguish infeasible from unconverged — currently both surface as `InvalidArgument`) is the resolution.
+- **Stacked-MPC QP** (`stacked_mpc=true`): the full O(N·H) stacked horizon QP — currently `Err(NotImplemented)`; the GP aim-collapse is the production path (§0.6). Benchable lift.
+- **Horizon-from-IC estimation → S2:** `SignalHorizon` is caller-supplied (fixtures here); estimating it from realized IC-decay is the S2 sleeve's job (§0.7).
+- **Sparse constraint matrix `A`:** S1-1 materializes `A` dense (R×M); box rows make it M×M-ish at scale. A sparse `A` (most rows 1-hot / X-columns) is the efficiency lift for the 3–5k-name regime (recorded with the `qp_admm` request).
+
+## Close-out notes
+- `p2/ROADMAP.md` S1 row flipped `⏳ proposed → ✅ DONE` with per-unit SHAs; `Last reviewed` current. **Merge is the user's gate** (branch `feat/p2-s1-multi-horizon`, not pushed) — mirrors the `p1` S7/S8 close discipline.
+- User reference [`sprint1.md`](sprint1.md) created (the plain-language "what S1 shipped").
+- Engine-source touch outside new `risk/` headers: **only** `risk/factor_model.hpp` (+`apply`/`specific_var` read-accessors, D3) — additive, behavior-preserving, FactorModel suites stay green. No `atx-core/*` / `atx-tsdb/*` touched.
+- **Full-suite ctest caveat (not a regression):** a full `ctest --preset ninja` reports "4 tests failed out of 1246" — all four are **outside S1's diff** and confirmed not S1-caused: (1) `atx-core-tests_NOT_BUILT` + (2) `atx-tsdb-tests_NOT_BUILT` are sentinel "Not Run" markers because only the `atx-engine-tests` target is built (not those sibling targets); (3) `LibraryIntegration.RoundTripsLargeFixtureZeroCopy` + (4) `LibraryIntegration.IncrementalGateMatchesExactGate` are slow large-fixture/mmap-zero-copy tests (~80s / ~18s) that **exceed the per-test ctest timeout under full-parallel load** — both **PASS in isolation** (`--gtest_filter=LibraryIntegration.*`). S1 touches zero `library/`/`store/`/`tsdb` files (`git diff --name-only f85f3d3..HEAD` is risk-only), so these are pre-existing timeout flakiness in an untouched subsystem. The 70 S1 tests + the FactorModel suites are green.
+
+## Baton → S2
+S2 (multi-strategy meta-book) wraps `MultiHorizonOptimizer` directly: a `Sleeve` = a universe × horizon × signal-family book = one `MultiHorizonOptimizer` + its `SignalHorizon` assignment (the horizon-from-IC estimation S1 batoned). S2's meta-allocator nets the sleeve books into one fund under a cross-sleeve risk budget. S1 also hands **S4** the target/turnover series its execution scheduler trades, and **S8** the optimizer the full-fund orchestrator routes every signal through. With S1 closed, the `p2` spine is live.
 
 ---
 

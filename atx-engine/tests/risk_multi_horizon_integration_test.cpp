@@ -34,10 +34,9 @@
 
 #include <array>   // std::array (per-period model store)
 #include <bit>     // std::bit_cast
-#include <cmath>   // std::fabs, std::isnan, std::isfinite
+#include <cmath>   // std::fabs
 #include <cstdint> // std::uint64_t
 #include <functional>
-#include <limits> // std::numeric_limits
 #include <span>
 #include <utility> // std::move, std::pair
 #include <vector>
