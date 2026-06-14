@@ -49,7 +49,8 @@
 //  admit per run), so the per-run std::vector / Factory allocation is acceptable
 //  (the VM hot loop is untouched — F8).
 
-#include <array> // std::array (lifecycle_histogram)
+#include <array>  // std::array (lifecycle_histogram)
+#include <vector> // std::vector (S4.5 robustness-gate regime labels)
 
 #include "atx/core/types.hpp" // atx::u32, atx::u64, atx::usize, atx::f64
 
@@ -140,6 +141,15 @@ struct ResearchReport {
   bool robustness_gate_active{false}; // ECHO of cfg.robustness_gate (S4.4b seam; OFF by default).
                                       // NOT folded into digest — a report-only flag, so toggling
                                       // the seam never shifts the engine fingerprint.
+  // S4.5 robustness-gate telemetry (additive; default 0 so the gate-OFF path and every
+  // pre-S4.5 test are byte-untouched). Populated ONLY when cfg.robustness_gate is true:
+  // robust_screened counts survivors run through the per-survivor RobustnessVerdict over
+  // the visible panel (every admit of every run), robust_passed counts those whose
+  // worst_regime AND worst_window OOS Sharpe both clear robustness_cfg.min_regime_sharpe.
+  // When the gate is ON these counts AND each survivor's verdict are folded into `digest`
+  // (so the ON-path fingerprint is S4.5's own — the boundary pin keeps the gate OFF).
+  atx::usize robust_screened{0};
+  atx::usize robust_passed{0};
 };
 
 namespace detail {
@@ -198,6 +208,23 @@ public:
   [[nodiscard]] ResearchReport run(const ResearchConfig &cfg);
 
 private:
+  // S4.5 robustness gate (run() fill point). Screen the survivors a single run
+  // admitted — ids [n_before, n_after), the half-open range mine_into reports — with
+  // a per-survivor eval::RobustnessVerdict over their stored OOS PnL (sliced by the
+  // visible-panel vol-tercile `labels` + the walk-forward windows). For each survivor
+  // it bumps rep.robust_screened, bumps rep.robust_passed when the verdict clears the
+  // floor, and folds (worst_regime_sharpe, worst_window_sharpe, is_robust) into
+  // `digest_acc` IN ASCENDING ID ORDER — so turning the gate ON shifts the engine
+  // fingerprint deterministically (S4.5 owns the ON-path digest) while the gate-OFF
+  // path never calls this and stays byte-identical. `labels` is the vol-tercile
+  // partition of panel_ (computed ONCE per run() call). PURE: no RNG, reads only the
+  // caller's library spans within each iteration (no store growth). Returns the
+  // updated accumulator (the caller threads it back into digest_acc).
+  [[nodiscard]] atx::u64 screen_run_robustness(const FactoryReport &fr,
+                                               const std::vector<atx::u8> &labels,
+                                               const eval::RobustnessConfig &robustness_cfg,
+                                               atx::u64 digest_acc, ResearchReport &rep) const;
+
   // SAFETY: each borrow is held for the engine's lifetime. lib_ is grown in place;
   // dsl_ owns every OpSig the mined genomes' Expr::op pointers alias and must outlive
   // the engine and all produced genomes (genome.hpp SAFETY). panel_ is the fixed
