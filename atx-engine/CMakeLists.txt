@@ -33,6 +33,7 @@ add_library(atx-engine STATIC
     src/learn/learned_source.cpp
     src/learn/linear_alpha.cpp
     src/learn/pipeline.cpp
+    src/learn/sequence_features.cpp
     src/learn/train.cpp
     src/data/data_handler.cpp
     src/data/shm_bar_feed.cpp
