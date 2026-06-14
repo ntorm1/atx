@@ -195,11 +195,20 @@ void Scheduler::pin_and_first_touch(atx::usize worker_id,
   const atx::usize n_pus = (topo.n_pus == 0) ? atx::usize{1} : topo.n_pus;
   const atx::usize pu = worker_id % n_pus;
 
-  cpu_set_t set;
-  CPU_ZERO(&set);
-  CPU_SET(static_cast<int>(pu), &set);
-  if (::sched_setaffinity(0, sizeof(set), &set) != 0) {
-    ATX_WARN("scheduler: sched_setaffinity failed for worker {} (pin is best-effort)", worker_id);
+  // cpu_set_t is a FIXED-SIZE bitset (CPU_SETSIZE, typically 1024); CPU_SET with
+  // an index >= CPU_SETSIZE is an out-of-bounds write (UB). Guard symmetrically to
+  // the Win32 `pu < 64` mask-width guard: a PU past the static set is simply not
+  // pinned. BEST-EFFORT (R1) — skipping the pin is non-fatal and changes no bit.
+  if (pu < static_cast<atx::usize>(CPU_SETSIZE)) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(static_cast<int>(pu), &set);
+    if (::sched_setaffinity(0, sizeof(set), &set) != 0) {
+      ATX_WARN("scheduler: sched_setaffinity failed for worker {} (pin is best-effort)", worker_id);
+    }
+  } else {
+    ATX_WARN("scheduler: PU {} >= CPU_SETSIZE for worker {}; skipping pin (best-effort)", pu,
+             worker_id);
   }
   first_touch(my_slots);
 }
