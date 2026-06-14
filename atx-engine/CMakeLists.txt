@@ -34,6 +34,7 @@ add_library(atx-engine STATIC
     src/learn/linear_alpha.cpp
     src/learn/pipeline.cpp
     src/learn/train.cpp
+    src/data/adapt_feature.cpp
     src/data/adapt_panel.cpp
     src/data/align.cpp
     src/data/catalog.cpp
