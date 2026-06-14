@@ -6,6 +6,12 @@ file(GLOB ATX_ENGINE_TEST_SOURCES CONFIGURE_DEPENDS
 
 add_executable(atx-engine-tests ${ATX_ENGINE_TEST_SOURCES})
 
+# Opt-in PCH (dev speed): the 145 test TUs each parse gtest + Eigen; with the PCH
+# they are parsed once. PRIVATE; CI keeps ATX_USE_PCH OFF. See tests/pch.hpp.
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-tests PRIVATE pch.hpp)
+endif()
+
 target_link_libraries(atx-engine-tests
     PRIVATE
         atx::engine

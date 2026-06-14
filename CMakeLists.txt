@@ -90,6 +90,16 @@ else()
     endif()
 endif()
 
+# ---- Precompiled headers (opt-in; fast cold / fresh-worktree builds) ----
+# OFF by default so the canonical `ninja` / CI build compiles every TU with its
+# own includes (catching missing/unused includes). The `dev` preset turns it ON:
+# the heavy+stable headers (Eigen, gtest, atx-core vocabulary) are parsed once
+# into a PCH and reused by every TU, cutting a cold/fresh-worktree build of the
+# ~189 first-party TUs from ~10 min to a couple. sccache cannot share first-party
+# objects across worktrees (its cache keys embed per-worktree absolute paths), so
+# the PCH — not the object cache — is what makes a fresh worktree compile fast.
+option(ATX_USE_PCH "Use precompiled headers on atx targets (dev speed; keep OFF in CI)" OFF)
+
 # ---- Benchmarks (opt-in; Google Benchmark is a test/bench-only dep) ----
 option(ATX_BUILD_BENCH "Build ATX benchmarks" OFF)
 if(ATX_BUILD_BENCH)

@@ -55,6 +55,12 @@ target_include_directories(atx-engine
 
 target_compile_features(atx-engine PUBLIC cxx_std_20)
 
+# Opt-in PCH (dev speed): parse Eigen + atx-core vocabulary once, not once per TU.
+# PRIVATE so it never leaks into consumers' include hygiene. See atx-engine/pch.hpp.
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine PRIVATE pch.hpp)
+endif()
+
 # Engine builds on top of core; the warnings gate (§8) applies to engine TUs.
 # atx::tsdb is PUBLIC: ShmBarFeed (a header in this target's public include tree)
 # exposes atx::tsdb::SegmentReader in its interface, so consumers need it too.
