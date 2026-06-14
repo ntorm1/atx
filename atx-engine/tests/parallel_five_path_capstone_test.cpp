@@ -44,6 +44,7 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/error.hpp"
+#include "atx/core/macro.hpp" // ATX_CHECK — builders fail loudly (never a vacuous degraded test)
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/bytecode.hpp"
@@ -198,19 +199,23 @@ constexpr SubstratePlan kSubstratePlan[] = {
   }
   std::vector<std::uint8_t> universe(cells, std::uint8_t{1});
   auto p = Panel::create(dates, instruments, names, cols, universe);
-  EXPECT_TRUE(p.has_value());
-  return p.value_or(Panel::create(0, 0, {}, {}, {}).value());
+  // ALWAYS-ON: a silently-degraded empty panel would make every five-path leg agree on a
+  // degenerate digest (a VACUOUS pass), so abort loudly rather than EXPECT_TRUE + value_or.
+  ATX_CHECK(p.has_value() && "make_eval_panel: Panel::create failed");
+  return std::move(p).value();
 }
 
 [[nodiscard]] Program compile_named(usize k, std::string_view src) {
   const std::string text = "a" + std::to_string(k) + " = " + std::string(src);
   auto ast = parse_program(text, shared_lib());
-  EXPECT_TRUE(ast.has_value()) << (ast ? "" : ast.error().message());
+  // ALWAYS-ON: a degraded empty Program would make the eval legs agree vacuously, so abort
+  // loudly on any compile-pipeline failure rather than EXPECT_TRUE + value_or(Program{}).
+  ATX_CHECK(ast.has_value() && "compile_named: parse_program failed");
   auto ana = analyze(ast.value());
-  EXPECT_TRUE(ana.has_value()) << (ana ? "" : ana.error().message());
+  ATX_CHECK(ana.has_value() && "compile_named: analyze failed");
   auto prog = compile(ast.value(), ana.value());
-  EXPECT_TRUE(prog.has_value()) << (prog ? "" : prog.error().message());
-  return prog.value_or(Program{});
+  ATX_CHECK(prog.has_value() && "compile_named: compile failed");
+  return std::move(prog).value();
 }
 
 [[nodiscard]] std::vector<Program> compile_fan() {
