@@ -54,7 +54,8 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 | S5-3a | Attention-lite alpha — `Attention1Head` (seq_layers) + `fit_attn` (tcn_alpha) + `ModelKind::Attn`   | ✅     | `417a1f8`  | 12/12 | single-head causal dot-product attention (causal mask = R2 guard) + softmax adjoint (R3, incl. dbk≡0 floor verified) + `fit_attn` reusing `fit_seq_alpha`; R1/R2/ensemble/dispatch. Spec+CQ review passed (2 accepted cold-path/cosmetic minors). |
 | S5-3b | Autoencoder factor extractor — `learn/autoencoder_alpha.{hpp,cpp}` + `ModelKind::Autoencoder`        | ✅     | `10724f5`  | 11/11 | `fit_autoencoder_factors` (GKX-style, centered last-step design, trailing-fit/OOS-encode); **linear-AE→atx-core `pca()` subspace pin (R7)** (recon-MSE + projector ‖P_ae−P_pca‖<1e-2) + `predict_ae` leading-factor; **Trainer L1 wiring**. Spec+CQ review passed. |
 | S5-4  | NN deflation + PBO gate — `learn/nn_gate.hpp` (`gate_nn_sweep`)                                  | ✅     | `747da91`  | 10/10 | `gate_nn_sweep` reuses `eval::deflated_sharpe` + `eval::pbo_cscv` verbatim; **deflation N = Σ sweep trial_count (R4 honesty)** + winner DSR + CSCV PBO; planted-admit / pure-noise-reject (PBO channel) + trial-count-honesty pins; 1 real-fit wiring test + 9 hand-built. Spec+CQ review passed. |
-| S5-5  | `nn_source` integration + bench + close — `learn/nn_source.{hpp,cpp}`                            | ⏳     | —          | —     | `ModelKind::{Tcn,Gru,Attn,Autoencoder}` + `predict_blended` cases + `SeqLearnedSignalSource` (real `Result<SignalView>` sig, K2) + library bridge + all-gates capstone + `nn_alpha_bench.cpp`. |
+| S5-5a | `nn_source` integration — `learn/nn_source.{hpp,cpp}` (SeqLearnedSignalSource + NN library bridge)  | ✅     | `a193552`  | 8/8   | `SeqLearnedSignalSource` (real `Result<SignalView>`, K2; trailing-window reversal `(L-1)-l`) + `nn_to_candidate`→`Library::admit`; all-gates capstone: live↔offline bit-identical pin, R2 truncation-invariance, R1 two-builds, R4 gate flow, expr_source. Spec+CQ review passed (R6 zero-alloc claim qualified honestly). |
+| S5-5b | Bench — `bench/nn_alpha_bench.cpp`                                                                 | ⏳     | —          | —     | fit + predict throughput across (arch, L, N, channels); seed-ensemble cost; train-vs-predict split. Compile+link under `ATX_BUILD_BENCH=ON` (not perf-gated). |
 
 ---
 
@@ -70,6 +71,7 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 | `417a1f8` | S5-3a | feat(s5-3a): single-head causal attention layer + attention-lite sequence alpha (learn/nn/seq_layers + tcn_alpha) |
 | `10724f5` | S5-3b | feat(s5-3b): autoencoder statistical-factor alpha — linear-AE→PCA pin + GKX seed-ensemble + Trainer L1 (learn/autoencoder_alpha) |
 | `747da91` | S5-4 | feat(s5-4): NN-alpha deflation + PBO gate — sweep trial-count aggregation + planted-admit/noise-reject (learn/nn_gate) |
+| `a193552` | S5-5a | feat(s5-5a): SeqLearnedSignalSource lookback adapter + NN library bridge + all-gates integration (learn/nn_source) |
 
 ---
 
