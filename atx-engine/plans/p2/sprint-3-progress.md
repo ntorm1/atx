@@ -57,8 +57,8 @@ oracle⇄VM twins bit-for-bit). **Disabled test:** `LibraryIntegration.RoundTrip
 — flaky stale-tmpdir mmap reopen, independent of the enum insertion (it round-trips
 within one run); marked `DISABLED_` pending tmpdir-isolation fix.
 | S3.3 | Cross-sectional gap-fill ops + `vwap`/`adv{d}`/dollar-volume datafields | ✅ | `cdb32e1` | 19 | `quantile`/`vec_sum`/`vec_avg` (oracle⇄VM bit-exact) + `reverse`→Neg alias; `datafields.hpp` derives `vwap`/`dollar_volume`/`adv{d}`; `adv{d}==ts_mean(dollar_volume,d)` proven through the engine; 1206 pass / 1 disabled |
-| S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ✅ | — | 3 | root cause = `add_op` filed by `min_arity` but `op_swap` looked up by materialized `call_arity`, so a finite-default op (scale/winsorize/quantile, kernel reads operand 2) was offered to an arity-1 node → VM read `kNoSlot`. Fix: `validate_node_contract` (analyze rail: materialized operand-arity + hparam count) + OpCatalog buckets keyed on materialized operand arity + group role, skipping hparam/record ops. `enable_op_swap=true`. Stress harness: every bucket, 0 aborts, oracle==VM. Noise seed 61→81 recal (op_swap-on found 1 fluke). 1209/1209 + 1 disabled |
-| S3.5 | Grammar-typed (valid-by-construction) generation | ⬜ | — | — | report rejection-rate vs control |
+| S3.4 | Fix `op_swap` at root + re-enable + per-bucket stress harness | ✅ | `b4c1c8e` | 3 | root cause = `add_op` filed by `min_arity` but `op_swap` looked up by materialized `call_arity`, so a finite-default op (scale/winsorize/quantile, kernel reads operand 2) was offered to an arity-1 node → VM read `kNoSlot`. Fix: `validate_node_contract` (analyze rail: materialized operand-arity + hparam count) + OpCatalog buckets keyed on materialized operand arity + group role, skipping hparam/record ops. `enable_op_swap=true`. Stress harness: every bucket, 0 aborts, oracle==VM. Noise seed 61→81 recal (op_swap-on found 1 fluke). 1209/1209 + 1 disabled |
+| S3.5 | Grammar-typed (valid-by-construction) generation | ✅ | — | 3 | `factory/generate.hpp` recursive shape/dtype-targeted sampler → analyze-valid by construction; **typed 0/3000 rejected** vs type-blind control >25%; same-seed determinism; 300 generated genomes run oracle==VM |
 | S3.6 | Conformance suite + Alpha101 subset repro + bench + close | ⬜ | — | — | p1 corpus byte-identical |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done (header + tests + `/W4 /WX` + `/fp:precise` clean).
@@ -70,6 +70,8 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done (header + tests + `/W4 /
   oracle==VM bit-for-bit. Named regression: rank-node bucket never offers scale/winsorize/
   quantile; kalman_level node is swap-inert. Noise-admit re-cal: seed 61→81 (op_swap-on found
   1 in-sample fluke past kMinDsr=0.80; 41/51/71/81 all admit 0).
-- generation: analyze-rejection rate (grammar-typed) vs random-AST control.
+- generation (S3.5): grammar-typed rejection **0/3000**; type-blind control >25% (>750/3000) —
+  the type lattice (Shape × DType) + operand roles (group/window/scalar) constrain every node, so
+  the emitted genome is analyze-valid by construction. 300 generated genomes also run oracle==VM.
 - Alpha101: subset reproduced / total; not-yet-expressible residual + blocking op.
 - bench: widened-op eval throughput (Debug upper bound), CSE hit-rate.
