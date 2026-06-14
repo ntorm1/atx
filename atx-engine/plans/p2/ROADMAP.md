@@ -1,6 +1,6 @@
 # Module p2 — atx-engine v3: The Robust Alpha Engine — Multi-Horizon Backtesting & Provable Alpha Discovery at Scale (`p2`)
 
-**Last reviewed:** 2026-06-13
+**Last reviewed:** 2026-06-14
 **Started:** planned; no sprint open yet (assumes `p1` S1–S8 closed — S7/S8 treated as DONE per the user's kickoff directive).
 **Source:** distills [`../../research/alpha-expression-dsl-deep-dive.md`](../../research/alpha-expression-dsl-deep-dive.md)
 + [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md)
@@ -289,7 +289,7 @@ OpCatalog** — opens first on the alpha-depth track.
 > S3 — the widened op set and grammar-typed generation are *additive*; the differential oracle (`oracle == VM`) is the
 > non-regression anchor on the proven 65-op core.
 
-### S4 — Genetic Search & Robust Signal Pipeline  ⏳ proposed
+### S4 — Genetic Search & Robust Signal Pipeline  ✅ shipped (2026-06-14, merged `--no-ff` into `main`)
 **Theme:** The spine, part two — **search smarter, and PROVE the alpha is robust.** `p1`'s GA is a solid seeded
 evolutionary loop but a *shallow optimizer of a shallow objective*: it maximizes a single scalar
 `raw = wq × diversify × robust`, measures novelty only as **canonical-hash distance** (two behaviorally-identical
@@ -314,16 +314,38 @@ RenTech §7 (ruthless OOS), `p1` S1/S3/S4b/S6.* Consumes S3 (the substrate), `p1
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S4.0 | Marker + ledger + as-built recon vs `factory::{search_driver, fitness, research_driver, op_catalog}` | S | ⏳ |
-| S4.1 | Multi-objective Pareto selection (NSGA-II — deterministic non-dominated sort + crowding distance over {return, diversification, robustness, cost}; replaces scalar `raw`; seeded, order-fixed) | L | ⏳ |
-| S4.2 | Behavioral/phenotypic diversity (signal-return-profile novelty + behavioral archive, beyond canonical-hash distance; anti-collapse pressure) | M | ⏳ |
-| S4.3 | Cost-aware mining fitness (S6-calibrated impact/turnover at target AUM into the objective — net-of-cost mining, not the 0.125 turnover-floor proxy) | M | ⏳ |
-| S4.4 | Robustness battery — synthetic-alpha recovery (plant → recover → noise-reject) · regime/walk-forward re-eval (out-of-regime survivors only) · **lockbox reservation** (seal terminal holdout for S8) | L | ⏳ |
-| S4.5 | E2E robust signal-generation pipeline (mine → multi-obj gate → library admit → combine → multi-horizon book backtest; deterministic; the proof the library holds robust net-of-cost alpha) + bench + close | L | ⏳ |
+| S4.0 | Marker + ledger + as-built recon vs `factory::{search_driver, fitness, research_driver, op_catalog}` | S | ✅ `c32cd85` |
+| S4.1 | Multi-objective Pareto selection (NSGA-II — deterministic non-dominated sort + crowding distance over {return, diversification, robustness, cost}; replaces scalar `raw`; seeded, order-fixed) | L | ✅ `1ec0fcd` |
+| S4.2 | Behavioral/phenotypic diversity (signal-return-profile novelty + behavioral archive, beyond canonical-hash distance; anti-collapse pressure) | M | ✅ `06876cb` |
+| S4.3 | Cost-aware mining fitness (S6-calibrated impact/turnover at target AUM into the objective — net-of-cost mining, not the 0.125 turnover-floor proxy) | M | ✅ `286efc8` |
+| S4.4 | Robustness battery — synthetic-alpha recovery (plant → recover → noise-reject) · regime/walk-forward re-eval (out-of-regime survivors only) · **lockbox reservation** (seal terminal holdout for S8) *(shipped as S4.4a measurement + S4.4b lockbox/hook)* | L | ✅ `15808cc`·`ee3d881` |
+| S4.5 | E2E robust signal-generation pipeline (mine → multi-obj gate → library admit → combine → multi-horizon book backtest; deterministic; the proof the library holds robust net-of-cost alpha) + bench + close | L | ✅ `378c523` |
 
 > **Boundary pin:** in the degenerate single-objective limit (collapse the Pareto front to the lone `raw` objective,
 > disable behavioral novelty and cost-awareness), S4's search must reduce **bit-for-bit** to `p1` S3's seeded
 > evolutionary loop — the regression anchor against the proven miner.
+
+> **What S4 proved (shipped 2026-06-14, full suite 1345 pass / 5 disabled, `/W4 /WX /fp:precise` clean):** the search is now
+> **multi-objective** — engine-local NSGA-II (`factory/pareto.hpp`: deterministic non-dominated sort + crowding, canon-id
+> tie-break) over a {wq, diversify, robust, behavioral-novelty, −cost} vector, with the **boundary pin held bit-for-bit**
+> (`SearchResult.digest == 0xa83f0d3e0b41a18d`) through every unit and at the pipeline level (collapsed `RobustResearchDriver`
+> == plain `ResearchDriver`). Novelty is **behavioral** (OOS-PnL `1−|corr|` + a FIFO archive) — proven to invert the
+> structural-hash ranking on a headline fixture. Mining is **cost-aware** (`cost::round_trip_cost_bps` book-aggregate at
+> `target_aum`, hand-checked 369.65 bps). Robustness is **proven**: synthetic-alpha recovery (plant→recover, β=0 noise→0),
+> vol-tercile regime + walk-forward survival, and a content-addressed **sealed lockbox** (`eval/lockbox.hpp`; reads into the
+> sealed region trap; S8.2 opens it once). The **E2E `factory/robust_pipeline.hpp`** (mine→multi-obj gate→admit→combine→p2-S1
+> book) grows a robust library by ~0 on noise and replays byte-identically across {1,2,4,8} workers. Determinism axis
+> `(master,run,gen,idx)` + DetPool worker-invariance held throughout.
+>
+> **Residual backlog (lifted from the S4 ledger):** (1) optimize the augmented-QP `MultiHorizonOptimizer::run` perf
+> (~20 s/run) and re-enable the 3 `DISABLED_` `MultiHorizonIntegration` R1/R2/R3 tests (disabled at S4 for dev-loop speed);
+> (2) the S4.5 book stage uses a K=1 placeholder SPD `FactorModel` — wire a trailing-fit risk model over the visible panel;
+> (3) the robust subset is re-screened in the pipeline combine/book stage (append-only lifecycle records but does not
+> un-admit) — a future sprint could wire a true pre-admit robustness gate inside `mine_into` so the library is robust-only.
+>
+> **Next sprint priorities:** the spine continues at **S5** (deep-learning sequence alphas — must pass this S4 robustness
+> battery + the `p1` S1 deflated gate) and converges with the book-construction track (S1→S2) at the **S8** robust-alpha
+> capstone, where the lockbox `eval/lockbox.hpp` reserved here is opened exactly once.
 
 ### S5 — Deep-Learning Sequence Alphas  ⏳ proposed
 **Theme:** A richer **signal family** — `p1` anti-roadmap #7: *"NN ensembles are p2-or-later, gated by evidence the
