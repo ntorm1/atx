@@ -42,6 +42,7 @@ add_library(atx-engine STATIC
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
     src/fund/cross_sleeve_risk.cpp
+    src/fund/netting.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
