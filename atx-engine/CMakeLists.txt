@@ -35,6 +35,11 @@ add_library(atx-engine STATIC
     src/learn/pipeline.cpp
     src/learn/sequence_features.cpp
     src/learn/train.cpp
+    # nn substrate (p2 S5-2a — deterministic CPU NN framework + generic layers)
+    src/learn/nn/layers.cpp
+    src/learn/nn/loss.cpp
+    src/learn/nn/optimizer.cpp
+    src/learn/nn/trainer.cpp
     src/data/data_handler.cpp
     src/data/shm_bar_feed.cpp
     src/parallel/batch_eval.cpp
