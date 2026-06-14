@@ -191,11 +191,11 @@ public:
   // horizon stays NaN (never coerced to 0). Averaging normalizes scale so the
   // identity/H=1 single-source case yields aim == α_t EXACTLY (the byte pin). STATIC +
   // [[nodiscard]] so the unit test can exercise it directly.
-  [[nodiscard]] static std::vector<atx::f64> gp_aim(const HorizonForecast &traj, atx::usize M) {
-    std::vector<atx::f64> aim(M, std::numeric_limits<atx::f64>::quiet_NaN());
+  [[nodiscard]] static std::vector<atx::f64> gp_aim(const HorizonForecast &traj, atx::usize m) {
+    std::vector<atx::f64> aim(m, std::numeric_limits<atx::f64>::quiet_NaN());
     const atx::usize rows = traj.alpha.size(); // == H+1
     // Order-fixed reduction: name i ascending, then horizon h ascending (R1).
-    for (atx::usize i = 0; i < M; ++i) {
+    for (atx::usize i = 0; i < m; ++i) {
       atx::f64 acc = 0.0;
       atx::usize n_finite = 0;
       for (atx::usize h = 0; h < rows; ++h) {

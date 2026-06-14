@@ -146,7 +146,7 @@ constexpr usize kK = 2U; // factors
 
 // Constant alphas (length M) — the SAME values the S7 oracle is fed.
 const std::vector<f64> kAlpha = {2.0, -1.0, 0.5, 3.0, -0.5, 1.2, -2.0, 0.8};
-std::vector<f64> kAlphaNeg = [] {
+const std::vector<f64> kAlphaNeg = [] {
   std::vector<f64> v = kAlpha;
   for (f64 &x : v) {
     x = -x;
@@ -154,7 +154,7 @@ std::vector<f64> kAlphaNeg = [] {
   return v;
 }();
 // A NaN-holed alpha to prove the NaN reduction is identical across both drivers.
-std::vector<f64> kAlphaNaN = [] {
+const std::vector<f64> kAlphaNaN = [] {
   std::vector<f64> v = kAlpha;
   v[2] = std::numeric_limits<f64>::quiet_NaN();
   v[5] = std::numeric_limits<f64>::quiet_NaN();
