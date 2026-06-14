@@ -33,15 +33,31 @@ enum class ShmAccess { ReadOnly, ReadWrite };
 class ShmSegment {
 public:
   /// Create a NEW named segment of `bytes`, mapped ReadWrite (the parent).
-  /// Err(InvalidArgument) if `name` is empty or `bytes == 0`,
-  /// Err(AlreadyExists) if a segment with that name already exists,
-  /// Err(IoError) on any other OS failure.
+  ///
+  /// `name` constraints (validated, not silently rewritten): non-empty, must
+  /// NOT contain '/', and ≤ 249 chars (a leading '/' is prepended for the OS
+  /// object, fitting the portable NAME_MAX of 250). The OS object is a 1:1 image
+  /// of `name`; an interior '/' or over-long name is rejected.
+  ///
+  /// SECURITY: the OS shm namespace is assumed cooperative — a local process can
+  /// pre-create or squat a name. This API does not defend against a hostile peer
+  /// choosing the same name.
+  ///
+  /// Err(InvalidArgument) if `name` is empty / contains '/' / too long, or
+  /// `bytes == 0` / overflows; Err(AlreadyExists) if a segment with that name
+  /// already exists; Err(IoError) on any other OS failure.
   [[nodiscard]] static atx::core::Result<ShmSegment> create(std::string_view name, atx::usize bytes);
 
   /// Open an EXISTING named segment (a worker, or a second in-process handle).
   /// `access == ReadOnly` maps PROT_READ / FILE_MAP_READ (a write faults);
-  /// `access == ReadWrite` maps it writable. Err(InvalidArgument) if `name` is
-  /// empty, Err(NotFound) if no such segment exists, Err(IoError) otherwise.
+  /// `access == ReadWrite` maps it writable. Same `name` constraints and
+  /// SECURITY caveat as create(); on open we additionally validate the segment's
+  /// embedded length header against the real mapped size and reject a segment
+  /// whose header overruns the mapping (defends against a hostile creator).
+  ///
+  /// Err(InvalidArgument) if `name` is empty / contains '/' / too long, or the
+  /// segment's header is inconsistent with its mapped size; Err(NotFound) if no
+  /// such segment exists; Err(IoError) otherwise.
   [[nodiscard]] static atx::core::Result<ShmSegment> open(std::string_view name, ShmAccess access);
 
   ShmSegment() noexcept = default;

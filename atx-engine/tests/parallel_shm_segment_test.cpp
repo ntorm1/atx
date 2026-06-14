@@ -70,6 +70,31 @@ TEST(ParallelShmSegment, OpenNonExistentFailsNotFound) {
   EXPECT_EQ(seg.error().code(), ErrorCode::NotFound);
 }
 
+// Ambiguous names are rejected, never silently rewritten: an interior '/' (would
+// otherwise collide with another logical name) and an over-long name both fail
+// InvalidArgument on create AND open — so two distinct caller names can never
+// alias onto one OS object.
+TEST(ParallelShmSegment, RejectsNameWithInteriorSlash) {
+  auto created = ShmSegment::create("atx/s7/slash", 64);
+  ASSERT_FALSE(created.has_value());
+  EXPECT_EQ(created.error().code(), ErrorCode::InvalidArgument);
+
+  auto opened = ShmSegment::open("atx/s7/slash", ShmAccess::ReadOnly);
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(ParallelShmSegment, RejectsOverlongName) {
+  const std::string too_long(512, 'x'); // far beyond the portable NAME_MAX bound
+  auto created = ShmSegment::create(too_long, 64);
+  ASSERT_FALSE(created.has_value());
+  EXPECT_EQ(created.error().code(), ErrorCode::InvalidArgument);
+
+  auto opened = ShmSegment::open(too_long, ShmAccess::ReadOnly);
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().code(), ErrorCode::InvalidArgument);
+}
+
 TEST(ParallelShmSegment, CreateDuplicateFailsAlreadyExists) {
   const std::string name = unique_name("dup");
   auto first = ShmSegment::create(name, 128);

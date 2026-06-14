@@ -41,21 +41,31 @@ namespace {
 // keep ONE uniform codepath). The payload begins immediately after the header.
 constexpr atx::usize kHeaderBytes = sizeof(atx::u64);
 
-// POSIX shm names must start with '/' and contain no other '/'. Normalize on
-// every backend (so the OS name is identical cross-platform): prepend '/',
-// replace any interior '/' with '_', and clamp the total length to a portable
-// bound (NAME_MAX on most systems is 255; leave headroom for the leading '/').
-[[nodiscard]] std::string normalize_name(std::string_view name) {
-  constexpr std::size_t kMaxLen = 250;
+// SECURITY: the shared-memory name lives in a cooperative OS namespace — any
+// local process can pre-create or squat a name. We do NOT defend against a
+// malicious peer choosing the same name; we DO refuse to silently rewrite a
+// caller's name into a different OS object (which would alias two distinct
+// logical segments onto one, causing spurious AlreadyExists or wrong-segment
+// opens). Validation is therefore strict-reject, not normalize-and-hope.
+//
+// POSIX shm names must start with '/' and contain no other '/' and fit a
+// portable length bound (NAME_MAX is 255 on most systems; we leave headroom for
+// the leading '/'). The ONLY normalization we perform is prepending the leading
+// '/'; an interior '/' or an over-bound name is rejected with InvalidArgument so
+// the OS object is an unambiguous 1:1 image of the caller's name.
+constexpr std::size_t kMaxNameLen = 250; // includes the leading '/'
+
+[[nodiscard]] Result<std::string> normalize_name(std::string_view name) {
+  if (name.find('/') != std::string_view::npos) {
+    return Err(ErrorCode::InvalidArgument, "ShmSegment: name must not contain '/'");
+  }
+  if (name.size() + 1U > kMaxNameLen) {
+    return Err(ErrorCode::InvalidArgument, "ShmSegment: name too long");
+  }
   std::string out;
   out.reserve(name.size() + 1U);
   out.push_back('/');
-  for (const char ch : name) {
-    out.push_back(ch == '/' ? '_' : ch);
-  }
-  if (out.size() > kMaxLen) {
-    out.resize(kMaxLen);
-  }
+  out.append(name);
   return out;
 }
 
@@ -183,7 +193,7 @@ Result<ShmSegment> ShmSegment::create(std::string_view name, atx::usize bytes) {
   if (bytes > (static_cast<atx::usize>(-1) - kHeaderBytes)) {
     return Err(ErrorCode::InvalidArgument, "ShmSegment::create: bytes + header overflows usize");
   }
-  const std::string norm = normalize_name(name);
+  ATX_TRY(const std::string norm, normalize_name(name));
   const std::wstring wname = widen(norm);
   if (wname.empty()) {
     return Err(ErrorCode::InvalidArgument, "ShmSegment::create: name not valid UTF-8");
@@ -201,7 +211,9 @@ Result<ShmSegment> ShmSegment::create(std::string_view name, atx::usize bytes) {
     CloseHandle(handle);
     return Err(ErrorCode::AlreadyExists, "ShmSegment::create: name already exists");
   }
-  void *view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS | FILE_MAP_WRITE, 0, 0, 0);
+  // Least privilege: FILE_MAP_WRITE implies read; FILE_MAP_ALL_ACCESS would add
+  // execute-class rights a data segment never needs.
+  void *view = MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, 0);
   if (view == nullptr) {
     CloseHandle(handle);
     return Err(ErrorCode::IoError, "ShmSegment::create: MapViewOfFile failed");
@@ -230,7 +242,7 @@ Result<ShmSegment> ShmSegment::open(std::string_view name, ShmAccess access) {
   if (name.empty()) {
     return Err(ErrorCode::InvalidArgument, "ShmSegment::open: empty name");
   }
-  const std::string norm = normalize_name(name);
+  ATX_TRY(const std::string norm, normalize_name(name));
   const std::wstring wname = widen(norm);
   if (wname.empty()) {
     return Err(ErrorCode::InvalidArgument, "ShmSegment::open: name not valid UTF-8");
@@ -247,6 +259,19 @@ Result<ShmSegment> ShmSegment::open(std::string_view name, ShmAccess access) {
     CloseHandle(handle);
     return Err(ErrorCode::IoError, "ShmSegment::open: MapViewOfFile failed");
   }
+  // Query the ACTUAL mapped region size; OpenFileMapping exposes no size, so the
+  // on-segment length header is untrusted until validated against the real
+  // mapping. NOTE: guards an untrusted/hostile-creator scenario — a peer process
+  // sharing the OS name namespace could pre-create a segment with a bogus header
+  // (not reachable through this API's own writers, which always write a correct
+  // header). Without this, an oversized `stored` would yield an OOB view_* span.
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (VirtualQuery(view, &mbi, sizeof(mbi)) == 0) {
+    UnmapViewOfFile(view);
+    CloseHandle(handle);
+    return Err(ErrorCode::IoError, "ShmSegment::open: VirtualQuery failed");
+  }
+  const auto region = static_cast<atx::usize>(mbi.RegionSize);
   // SAFETY: view is the MapViewOfFile address; the first sizeof(u64) bytes are
   // the length header written by create(). reinterpret to a byte cursor is
   // required to read it and to offset to the payload.
@@ -254,11 +279,16 @@ Result<ShmSegment> ShmSegment::open(std::string_view name, ShmAccess access) {
   auto *raw = reinterpret_cast<std::byte *>(view);
   atx::u64 stored = 0;
   std::memcpy(&stored, raw, sizeof(stored));
+  if (region < kHeaderBytes || stored > static_cast<atx::u64>(region - kHeaderBytes)) {
+    UnmapViewOfFile(view);
+    CloseHandle(handle);
+    return Err(ErrorCode::InvalidArgument, "ShmSegment::open: shm header length exceeds mapping");
+  }
 
   ShmSegment seg;
   seg.map_base_ = view;
+  seg.map_bytes_ = region; // the ACTUAL mapped length, not stored + header
   seg.size_ = static_cast<atx::usize>(stored);
-  seg.map_bytes_ = seg.size_ + kHeaderBytes; // whole-section view (header + payload)
   seg.base_ = raw + kHeaderBytes;
   seg.access_ = access;
   seg.owner_ = false;
@@ -307,7 +337,7 @@ Result<ShmSegment> ShmSegment::create(std::string_view name, atx::usize bytes) {
   if (bytes > (static_cast<atx::usize>(-1) - kHeaderBytes)) {
     return Err(ErrorCode::InvalidArgument, "ShmSegment::create: bytes + header overflows usize");
   }
-  const std::string norm = normalize_name(name);
+  ATX_TRY(const std::string norm, normalize_name(name));
   const atx::usize total = bytes + kHeaderBytes;
 
   const int fd = ::shm_open(norm.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
@@ -351,7 +381,7 @@ Result<ShmSegment> ShmSegment::open(std::string_view name, ShmAccess access) {
   if (name.empty()) {
     return Err(ErrorCode::InvalidArgument, "ShmSegment::open: empty name");
   }
-  const std::string norm = normalize_name(name);
+  ATX_TRY(const std::string norm, normalize_name(name));
   const bool rw = (access == ShmAccess::ReadWrite);
   const int oflag = rw ? O_RDWR : O_RDONLY;
   const int prot = rw ? (PROT_READ | PROT_WRITE) : PROT_READ;
@@ -382,6 +412,16 @@ Result<ShmSegment> ShmSegment::open(std::string_view name, ShmAccess access) {
   auto *raw = reinterpret_cast<std::byte *>(addr);
   atx::u64 stored = 0;
   std::memcpy(&stored, raw, sizeof(stored));
+  // Validate the untrusted on-disk header against the REAL mapped size (`total`,
+  // from fstat) before exposing a payload span. NOTE: guards an untrusted/
+  // hostile-creator scenario — a peer process sharing the shm namespace could
+  // pre-create a segment with a bogus header (not reachable through this API's
+  // own writers). Without this, an oversized `stored` would yield an OOB span.
+  if (stored > static_cast<atx::u64>(total - kHeaderBytes)) {
+    ::munmap(addr, total);
+    ::close(fd);
+    return Err(ErrorCode::InvalidArgument, "ShmSegment::open: shm header length exceeds mapping");
+  }
 
   ShmSegment seg;
   seg.map_base_ = addr;
