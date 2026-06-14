@@ -19,7 +19,9 @@
 //   include/…/dataset.hpp  — class definition + inline accessors
 //   src/data/dataset.cpp   — Dataset::create validation body
 
+#include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -110,5 +112,29 @@ private:
   std::vector<std::uint8_t> mask_; // empty -> all in-universe
   DatasetProvenance provenance_;
 };
+
+// ---------------------------------------------------------------------------
+//  Free axis utility
+// ---------------------------------------------------------------------------
+
+// Greatest index i with ascending_dates[i] <= canonical_date; nullopt if
+// ascending_dates is empty or canonical_date precedes the first date.
+//
+// Truncation-invariant: appending later dates never changes the result for an
+// earlier canonical_date (upper_bound-then-step-back; binary search on a
+// prefix has the same answer as on the full span).
+[[nodiscard]] inline std::optional<atx::usize> as_of_index(std::span<const DateKey> ascending_dates,
+                                                           DateKey canonical_date) noexcept {
+  if (ascending_dates.empty()) {
+    return std::nullopt;
+  }
+  // upper_bound returns iterator to first element > canonical_date.
+  auto it = std::upper_bound(ascending_dates.begin(), ascending_dates.end(), canonical_date);
+  if (it == ascending_dates.begin()) {
+    return std::nullopt; // canonical_date precedes the first date
+  }
+  --it;
+  return static_cast<atx::usize>(it - ascending_dates.begin());
+}
 
 } // namespace atx::engine::data
