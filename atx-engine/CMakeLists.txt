@@ -41,6 +41,7 @@ add_library(atx-engine STATIC
     src/validation/bias_audit.cpp
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
+    src/fund/cross_sleeve_risk.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
