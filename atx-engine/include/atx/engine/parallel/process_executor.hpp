@@ -32,6 +32,7 @@
 // `alignas(64)` claim cursor which is `usize` (same-binary same-machine, so the
 // atomic width matches in parent and worker).
 
+#include <atomic> // std::atomic_ref (cursor alignment static_assert)
 #include <cstddef>
 #include <span>
 #include <type_traits>
@@ -68,10 +69,18 @@ struct ControlBlock {
   atx::u64 slot_size;   // logical POD payload bytes per slot (<= slot_stride)
   char input_name[256]; // NUL-terminated OS name of the input segment
   char output_name[256]; // NUL-terminated OS name of the output segment
-  // The cross-process work dispenser. 64B-aligned so it satisfies
-  // std::atomic_ref<usize>::required_alignment AND sits alone on its cache line
-  // (no false sharing with the surrounding fields, R6). `usize` (not a fixed
-  // width) is sound here because parent and worker are the SAME binary on the
+  // The cross-process work dispenser, addressed via std::atomic_ref by every
+  // worker. ALIGNMENT (the load-bearing invariant): ShmSegment prepends an
+  // 8-byte length header, so the ControlBlock is mapped at page+8 — NOT a 64B
+  // boundary. The atomic_ref is nonetheless well-defined because
+  // std::atomic_ref<usize>::required_alignment is 8 (asserted below), `usize` is
+  // 8-aligned, offsetof(claim_cursor) is a multiple of 8, and page+8 is 8-aligned
+  // — so &claim_cursor is 8-aligned, which satisfies required_alignment. The
+  // `alignas(64)` is kept only as a best-effort cache-line hint; the +8 header
+  // offset defeats true physical line isolation, so it is a PERF nuance, not a
+  // correctness guarantee (the cursor shares no segment with result data anyway,
+  // so it cannot false-share with a result bit — R6 is unaffected). `usize` (not
+  // a fixed width) is sound because parent and worker are the SAME binary on the
   // SAME machine, so the atomic operand width is identical in both (§0.3).
   alignas(64) atx::usize claim_cursor;
 };
@@ -83,6 +92,16 @@ struct ControlBlock {
 static_assert(std::is_trivially_copyable_v<ErrorSlot>, "ErrorSlot must be a POD wire type");
 static_assert(std::is_trivially_copyable_v<ControlBlock>, "ControlBlock must be a POD wire type");
 static_assert(std::is_standard_layout_v<ControlBlock>, "ControlBlock must be standard-layout");
+
+// The claim cursor is only 8-aligned within the mapped segment (ControlBlock at
+// page+8, see the field comment). atomic_ref over it is UB unless its required
+// alignment is satisfied by that 8-alignment — assert the toolchain agrees. If a
+// future target needed >8 alignment, the segment header would have to be padded
+// to restore 64B isolation; this static_assert is the tripwire for that.
+static_assert(std::atomic_ref<atx::usize>::required_alignment <= 8,
+              "cursor is only 8-aligned within the shm segment (ControlBlock at page+8)");
+static_assert(offsetof(ControlBlock, claim_cursor) % 8 == 0,
+              "claim_cursor must be 8-aligned within ControlBlock for the atomic_ref");
 
 // Sanity magic the parent stamps and every worker checks ('ATX7' big-endian).
 inline constexpr atx::u32 kControlMagic = 0x41545837U;

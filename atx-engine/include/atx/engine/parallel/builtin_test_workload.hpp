@@ -19,6 +19,7 @@
 // Header-only `inline` so both the worker exe and the test link the SAME bytes.
 
 #include <cstddef>
+#include <cstdlib> // std::_Exit (crash_at sentinel)
 #include <cstring> // std::memcpy
 #include <span>
 
@@ -30,11 +31,17 @@
 
 namespace atx::engine::parallel {
 
-// Sentinel meaning "no shard is forced to fail" — the happy path. Encoded as the
-// bytes[8..16] field of the `Test` input so the kernel stays pure (the failure id
-// travels in the read-only input, not in any out-of-band state). SIZE_MAX can
-// never equal a real dense ShardId in [0, n), so the happy path is unperturbed.
+// Sentinel meaning "no shard is forced to fail/crash" — the happy path. The fail
+// and crash ids travel in the read-only input (bytes[8..16] / bytes[16..24]) so
+// the kernel stays pure. SIZE_MAX can never equal a real dense ShardId in [0, n),
+// so the happy path is unperturbed.
 inline constexpr atx::u64 kTestNoFail = static_cast<atx::u64>(-1);
+
+// Process exit code the kernel uses for the crash_at path (a clean nonzero exit —
+// NOT abort()/an access violation — so no Windows Error Reporting popup blocks a
+// CI run; the parent must still treat it as an abnormal exit since the worker
+// never wrote its ErrorSlot).
+inline constexpr int kTestCrashExitCode = 7;
 
 // Pure deterministic scalar for shard `id` under `seed`: a SplitMix64 finalizer
 // over (id ^ seed). The result is a normalized f64 in [0, 1) derived from the top
@@ -58,7 +65,9 @@ inline constexpr atx::u64 kTestNoFail = static_cast<atx::u64>(-1);
 // not fully present. Pure; no UB (bounds-checked memcpy from the span).
 [[nodiscard]] inline atx::u64 read_u64_le(std::span<const std::byte> bytes, atx::usize off,
                                           atx::u64 fallback) noexcept {
-  if (bytes.size() < off + sizeof(atx::u64)) {
+  // Overflow-clean bound: `off + sizeof(u64)` could wrap for a huge `off`, so test
+  // it the subtraction way (off past the end, or fewer than 8 bytes remaining).
+  if (off > bytes.size() || bytes.size() - off < sizeof(atx::u64)) {
     return fallback;
   }
   atx::u64 v = 0;
@@ -68,19 +77,28 @@ inline constexpr atx::u64 kTestNoFail = static_cast<atx::u64>(-1);
 
 // The `ShardFn`-compatible (plain free function, no captures) body for the `Test`
 // workload. Input layout (all little-endian, optional fields default safely):
-//   bytes[0 .. 8)   : u64 seed         (0 if the input is empty / too short)
-//   bytes[8 .. 16)  : u64 fail_at      (kTestNoFail if absent => never fails)
+//   bytes[0  .. 8)  : u64 seed         (0 if the input is empty / too short)
+//   bytes[8  .. 16) : u64 fail_at      (kTestNoFail if absent => never fails)
+//   bytes[16 .. 24) : u64 crash_at     (kTestNoFail if absent => never crashes)
 // Writes `test_value(id, seed)` as raw f64 bytes into `out_slot`. Returns
-// Err(OutOfRange) iff `id == fail_at` — the deterministic forced-failure used to
-// exercise the cross-process lowest-id error reduction. The happy path is
-// untouched (fail_at defaults to kTestNoFail, which no dense id can equal).
+// Err(OutOfRange) iff `id == fail_at` (the deterministic forced-failure that
+// exercises the cross-process lowest-id reduction). If `id == crash_at` the
+// worker process _Exit()s with a nonzero code WITHOUT writing its ErrorSlot —
+// reproducing the silent-corruption path the parent must still catch via the OS
+// exit code. The happy path is untouched (both default to kTestNoFail).
 [[nodiscard]] inline atx::core::Status test_shard(InputView inputs, ShardId id,
                                                   std::span<std::byte> out_slot) noexcept {
   ATX_ASSERT(out_slot.size() >= sizeof(atx::f64)); // the parent sizes slots >= sizeof(f64)
 
   const atx::u64 seed = read_u64_le(inputs.bytes, 0, 0);
   const atx::u64 fail_at = read_u64_le(inputs.bytes, sizeof(atx::u64), kTestNoFail);
+  const atx::u64 crash_at = read_u64_le(inputs.bytes, 2 * sizeof(atx::u64), kTestNoFail);
 
+  if (static_cast<atx::u64>(id) == crash_at) {
+    // Hard process exit BEFORE any ErrorSlot write — the parent must detect this
+    // purely from the abnormal exit code. _Exit (not abort) avoids a WER popup.
+    std::_Exit(kTestCrashExitCode);
+  }
   if (static_cast<atx::u64>(id) == fail_at) {
     return atx::core::Err(atx::core::ErrorCode::OutOfRange, "test_shard: forced failure at id");
   }

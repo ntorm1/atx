@@ -48,11 +48,14 @@ using atx::engine::parallel::WorkloadId;
 
 constexpr usize kSlotSize = sizeof(f64);
 
-// Build a Test input buffer: 8-byte seed, plus an optional 8-byte fail_at field.
-[[nodiscard]] std::vector<std::byte> make_input(u64 seed, u64 fail_at = kTestNoFail) {
-  std::vector<std::byte> buf(2 * sizeof(u64));
+// Build a Test input buffer: 8-byte seed, an 8-byte fail_at, and an 8-byte
+// crash_at (both default to kTestNoFail => the unperturbed happy path).
+[[nodiscard]] std::vector<std::byte> make_input(u64 seed, u64 fail_at = kTestNoFail,
+                                                u64 crash_at = kTestNoFail) {
+  std::vector<std::byte> buf(3 * sizeof(u64));
   std::memcpy(buf.data(), &seed, sizeof(seed));
   std::memcpy(buf.data() + sizeof(u64), &fail_at, sizeof(fail_at));
+  std::memcpy(buf.data() + 2 * sizeof(u64), &crash_at, sizeof(crash_at));
   return buf;
 }
 
@@ -232,6 +235,28 @@ TEST_F(ParallelProcessExecutor, ForcedFailureIsTheLowestIdInvariantOfWorkerCount
     EXPECT_EQ(s.error().code(), ErrorCode::OutOfRange) << "process@" << w;
     EXPECT_NE(s.error().message().find("shard 10"), std::string::npos)
         << "process@" << w << " message: " << s.error().message();
+  }
+}
+
+// --- Silent-corruption guard: an abnormal worker exit must surface as error ---
+
+TEST_F(ParallelProcessExecutor, WorkerAbnormalExitSurfacesAsError) {
+  // crash_at makes a worker _Exit(nonzero) mid-shard WITHOUT writing its
+  // ErrorSlot — the exact path that, unguarded, would gather a half-written
+  // output and return Ok(). The parent must catch the abnormal OS exit and FAIL,
+  // invariant across worker counts. (No ErrorSlot is set, so the surfaced error
+  // is the Internal "exited abnormally" tripwire, not a shard-level error.)
+  constexpr u64 kSeed = 11ULL;
+  constexpr usize kN = 96;
+  constexpr u64 kCrashAt = 40ULL;
+  const std::vector<std::byte> input = make_input(kSeed, kTestNoFail, kCrashAt);
+
+  for (usize w : {usize{1}, usize{2}, usize{4}}) {
+    ProcessExecutor pe{ExecutorConfig{w, false}};
+    std::vector<std::byte> buf;
+    const Status s = run(pe, input, kN, buf);
+    ASSERT_FALSE(s.has_value()) << "process@" << w << " returned Ok despite a crashed worker";
+    EXPECT_EQ(s.error().code(), ErrorCode::Internal) << "process@" << w;
   }
 }
 
