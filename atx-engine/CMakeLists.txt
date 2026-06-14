@@ -40,6 +40,8 @@ add_library(atx-engine STATIC
     src/learn/nn/loss.cpp
     src/learn/nn/optimizer.cpp
     src/learn/nn/trainer.cpp
+    # nn sequence layers (p2 S5-2b-i — causal conv / TCN block / GRU-lite + MGU / pool)
+    src/learn/nn/seq_layers.cpp
     src/data/data_handler.cpp
     src/data/shm_bar_feed.cpp
     src/parallel/batch_eval.cpp
