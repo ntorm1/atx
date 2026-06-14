@@ -32,8 +32,9 @@
 // `alignas(64)` claim cursor which is `usize` (same-binary same-machine, so the
 // atomic width matches in parent and worker).
 
-#include <atomic> // std::atomic_ref (cursor alignment static_assert)
+#include <atomic>     // std::atomic_ref (cursor alignment static_assert)
 #include <cstddef>
+#include <functional> // std::function — IExecutor::parallel_for body (rejected here)
 #include <span>
 #include <type_traits>
 
@@ -160,6 +161,18 @@ public:
   [[nodiscard]] atx::core::Status
   submit(WorkloadId workload, InputView inputs, atx::usize n, SlotView out,
          std::span<const ShardId> dispatch_order = {}) override;
+
+  // See IExecutor::parallel_for. UNSUPPORTED on the process substrate: the body is
+  // a std::function (a captured closure), which CANNOT cross a process boundary —
+  // a worker process links the same TU but cannot receive the parent's closure.
+  // ProcessExecutor's contract is the process-portable submit(WorkloadId, ...)
+  // path (a closed enum -> pure free function). So this returns Err(NotImplemented)
+  // with a message pointing the caller at submit(); the in-process workloads that
+  // need a closure-bodied map run on ThreadExecutor (this unit) and gain their
+  // serialized multi-process path in a later unit (S7.5c/d). NotImplemented is the
+  // closest existing ErrorCode (error.hpp has no Unimplemented).
+  [[nodiscard]] atx::core::Status
+  parallel_for(atx::usize n, const std::function<void(ShardId, atx::usize)>& body) override;
 
   [[nodiscard]] atx::usize workers() const noexcept override { return n_workers_; }
 

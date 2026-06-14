@@ -1,10 +1,11 @@
 #include "atx/engine/parallel/parallel_run.hpp"
 
-#include <algorithm> // std::stable_sort
-#include <cmath>     // std::abs (Neumaier branch)
-#include <cstddef>   // std::size_t (pool body params)
-#include <span>      // std::span (read-only inputs)
-#include <vector>    // std::vector (owned result table / gather buffers)
+#include <algorithm>  // std::stable_sort
+#include <cmath>      // std::abs (Neumaier branch)
+#include <cstddef>    // std::size_t (pool body params)
+#include <functional> // std::function (dispatch wrapper signature)
+#include <span>       // std::span (read-only inputs)
+#include <vector>     // std::vector (owned result table / gather buffers)
 
 #include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // f64 / u64 / usize
@@ -15,6 +16,73 @@
 #include "atx/engine/parallel/det_pool.hpp" // DetPool
 
 namespace atx::engine::parallel {
+
+namespace {
+
+// The per-item map body: body(item, worker_id), invoked once per item.
+using MapBody = std::function<void(std::size_t, std::size_t)>;
+
+// Substrate-agnostic dispatch: run body(item, worker_id) for item in [0, n),
+// blocking until all complete and rethrowing the lowest-index body exception
+// (the DetPool::parallel_for / IExecutor::parallel_for contract). Both the
+// DetPool& and IExecutor& workload overloads build one of these so there is a
+// SINGLE map per workload — the body (run_one_fold / run_full_backtest) is
+// shared, only the dispatch differs.
+using Dispatch = std::function<void(std::size_t, const MapBody &)>;
+
+// Wrap a DetPool: parallel_for returns void and rethrows the lowest-index
+// exception — no Status to check.
+[[nodiscard]] Dispatch pool_dispatch(DetPool &pool) {
+  return [&pool](std::size_t n, const MapBody &body) { pool.parallel_for(n, body); };
+}
+
+// Wrap an IExecutor: parallel_for returns a Status. These workloads are IN-PROCESS
+// ONLY (the body is a closure); an in-process executor (ThreadExecutor) always
+// returns Ok() for these non-throwing bodies. A non-Ok return means the caller
+// handed an out-of-process substrate (ProcessExecutor) to an in-process-only map
+// — a programmer-error precondition violation, guarded by ATX_ASSERT (debug) per
+// the cpp profile. The serialized multi-process path for these workloads is a
+// later unit (S7.5c/d).
+[[nodiscard]] Dispatch exec_dispatch(IExecutor &exec) {
+  return [&exec](std::size_t n, const MapBody &body) {
+    const atx::core::Status s = exec.parallel_for(n, body);
+    ATX_ASSERT(s.has_value()); // in-process-only API: an out-of-process executor is misuse
+    (void)s;
+  };
+}
+
+// THE ONE parallel-CPCV map: every fold of a single alpha into out[f]. Shared by
+// both overloads; only `dispatch` differs. out is pre-sized before the parallel
+// region and item f writes ONLY out[f] — byte-identical across substrates / worker
+// counts by construction (the §4 no-bit-contact map).
+[[nodiscard]] std::vector<FoldResult>
+parallel_cpcv_impl(std::span<const atx::engine::eval::CpcvFold> folds,
+                   const atx::engine::alpha::AlphaStreams &streams, atx::usize alpha_id,
+                   atx::f64 book_size, const Dispatch &dispatch) {
+  std::vector<FoldResult> out(folds.size());
+  // SAFETY: each f writes only out[f]; streams + folds are const; no cross-worker
+  // FP accumulation -> byte-identical across {1,2,4,8} workers by construction.
+  dispatch(folds.size(), [&](std::size_t f, std::size_t /*worker_id*/) {
+    out[f] = run_one_fold(streams, alpha_id, f, folds[f], book_size);
+  });
+  return out;
+}
+
+// THE ONE parallel-backtests map: one full-sample backtest per alpha into out[a].
+// Shared by both overloads; only `dispatch` differs.
+[[nodiscard]] std::vector<FoldResult>
+parallel_backtests_impl(const atx::engine::alpha::AlphaStreams &streams, atx::f64 book_size,
+                        const Dispatch &dispatch) {
+  std::vector<FoldResult> out(streams.n_alphas());
+  // SAFETY: each a writes only out[a]; streams is const; no cross-worker FP
+  // accumulation -> byte-identical across {1,2,4,8} workers by construction.
+  dispatch(streams.n_alphas(), [&](std::size_t a, std::size_t /*worker_id*/) {
+    out[a] = run_full_backtest(streams, a, book_size);
+  });
+  return out;
+}
+
+} // namespace
 
 // ===========================================================================
 //  run_one_fold — the per-fold metric (the pure map primitive).
@@ -87,13 +155,18 @@ std::vector<FoldResult>
 parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
               const atx::engine::alpha::AlphaStreams& streams, atx::usize alpha_id,
               atx::f64 book_size, DetPool& pool) {
-  std::vector<FoldResult> out(folds.size());
-  // SAFETY: each f writes only out[f]; streams + folds are const; no cross-worker
-  // FP accumulation -> byte-identical across {1,2,4,8} workers by construction.
-  pool.parallel_for(folds.size(), [&](std::size_t f, std::size_t /*worker_id*/) {
-    out[f] = run_one_fold(streams, alpha_id, f, folds[f], book_size);
-  });
-  return out;
+  return parallel_cpcv_impl(folds, streams, alpha_id, book_size, pool_dispatch(pool));
+}
+
+// S7.5a — the SAME parallel CPCV over the IExecutor seam (THREAD substrate). Shares
+// parallel_cpcv_impl with the DetPool& overload, substituting exec.parallel_for —
+// the map body (run_one_fold) is UNCHANGED, output byte-identical to the DetPool& /
+// sequential path and invariant across worker counts.
+std::vector<FoldResult>
+parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
+              const atx::engine::alpha::AlphaStreams& streams, atx::usize alpha_id,
+              atx::f64 book_size, IExecutor& exec) {
+  return parallel_cpcv_impl(folds, streams, alpha_id, book_size, exec_dispatch(exec));
 }
 
 // ===========================================================================
@@ -104,13 +177,17 @@ parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
 std::vector<FoldResult>
 parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 book_size,
                    DetPool& pool) {
-  std::vector<FoldResult> out(streams.n_alphas());
-  // SAFETY: each a writes only out[a]; streams is const; no cross-worker FP
-  // accumulation -> byte-identical across {1,2,4,8} workers by construction.
-  pool.parallel_for(streams.n_alphas(), [&](std::size_t a, std::size_t /*worker_id*/) {
-    out[a] = run_full_backtest(streams, a, book_size);
-  });
-  return out;
+  return parallel_backtests_impl(streams, book_size, pool_dispatch(pool));
+}
+
+// S7.5a — the SAME parallel backtests over the IExecutor seam (THREAD substrate).
+// Shares parallel_backtests_impl with the DetPool& overload, substituting
+// exec.parallel_for — the map body (run_full_backtest) is UNCHANGED, output
+// byte-identical to the DetPool& / sequential path and invariant across worker counts.
+std::vector<FoldResult>
+parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 book_size,
+                   IExecutor& exec) {
+  return parallel_backtests_impl(streams, book_size, exec_dispatch(exec));
 }
 
 // ===========================================================================

@@ -28,7 +28,8 @@
 // in this unit (the OS-touching .cpp's arrive in S7.2 / S7.3).
 
 #include <cstddef>
-#include <new> // std::hardware_destructive_interference_size
+#include <functional> // std::function — in-process parallel_for body (cold dispatch)
+#include <new>        // std::hardware_destructive_interference_size
 #include <span>
 
 #include "atx/core/error.hpp"
@@ -209,6 +210,24 @@ public:
   [[nodiscard]] virtual atx::core::Status
   submit(WorkloadId workload, InputView inputs, atx::usize n, SlotView out,
          std::span<const ShardId> dispatch_order = {}) = 0;
+
+  // In-process deterministic map (S7.5a): invoke body(shard_id, worker_id) once
+  // per shard_id in [0, n), worker_id in [0, workers()). Block until all shards
+  // finish; the LOWEST-shard body exception is rethrown deterministically (the
+  // SAME contract as DetPool::parallel_for). n == 0 is a no-op.
+  //
+  // WHY THIS LIVES BESIDE submit(): the engine's three as-built parallel
+  // workloads (parallel_evaluate / parallel_cpcv / parallel_backtests) are pure
+  // in-process maps whose body needs the WORKER ID — each worker owns its own
+  // stateful Engine (Engine is NOT thread-safe) — and relies on the lowest-index
+  // exception being rethrown. A std::function body cannot cross a process
+  // boundary, so this entry is IN-PROCESS ONLY: ThreadExecutor forwards it to
+  // DetPool; ProcessExecutor MUST reject it (those workloads take the serialized
+  // submit(WorkloadId, ...) path in a later unit). std::function is fine here —
+  // this is cold, coarse-grained dispatch (n shards, not n cells), so the one
+  // allocation per call is immaterial.
+  [[nodiscard]] virtual atx::core::Status
+  parallel_for(atx::usize n, const std::function<void(ShardId, atx::usize)>& body) = 0;
 
   // Number of workers this substrate runs (the resolved count, never 0).
   [[nodiscard]] virtual atx::usize workers() const noexcept = 0;

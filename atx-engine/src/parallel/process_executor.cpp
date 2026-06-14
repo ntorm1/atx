@@ -314,6 +314,24 @@ Status ProcessExecutor::submit(WorkloadId workload, InputView inputs, atx::usize
   // segs (all three ShmSegments) freed here by RAII; the owner unlinks the names.
 }
 
+// ---------------------------------------------------------------------------
+// ProcessExecutor::parallel_for — UNSUPPORTED on the process substrate.
+//
+// The body is a std::function (a captured closure). A worker is a SEPARATE
+// process: it links the same workload TU but cannot receive the parent's closure
+// — only the process-portable submit(WorkloadId, ...) path (closed enum -> pure
+// free function) crosses the boundary. So we reject this entry deterministically
+// rather than silently running nothing. NotImplemented is the closest existing
+// ErrorCode (error.hpp has no Unimplemented); n is unused on this rejecting path.
+// ---------------------------------------------------------------------------
+Status ProcessExecutor::parallel_for(atx::usize n,
+                                     const std::function<void(ShardId, atx::usize)> &body) {
+  (void)n;
+  (void)body;
+  return Err(ErrorCode::NotImplemented,
+             "ProcessExecutor: in-process parallel_for unsupported; use submit(WorkloadId, ...)");
+}
+
 // ===========================================================================
 // run_shm_worker — the WORKER side (OS-agnostic; only segment IO + the kernel).
 // ===========================================================================

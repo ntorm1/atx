@@ -54,6 +54,7 @@
 #include "atx/engine/alpha/panel.hpp"    // alpha::Panel, alpha::SignalSet
 
 #include "atx/engine/parallel/det_pool.hpp" // DetPool
+#include "atx/engine/parallel/executor.hpp" // IExecutor (S7.5a substrate-agnostic overload)
 
 namespace atx::engine::parallel {
 
@@ -65,5 +66,17 @@ namespace atx::engine::parallel {
 [[nodiscard]] atx::core::Result<atx::engine::alpha::SignalSet>
 parallel_evaluate(std::span<const atx::engine::alpha::Program> progs,
                   const atx::engine::alpha::Panel &panel, DetPool &pool);
+
+// S7.5a — the SAME deterministic batch eval over the substrate-agnostic IExecutor
+// seam (THREAD substrate this unit). The map BODY is UNCHANGED — this overload
+// shares the one map implementation with the DetPool& overload above (no copy-
+// paste divergence), substituting exec.parallel_for / exec.workers() for the
+// pool's. Output is byte-identical to the DetPool& / single-thread path and
+// invariant across worker counts. Returns the LOWEST-index program's evaluate
+// error, if any, or an Err if the executor itself rejects the in-process map
+// (e.g. ProcessExecutor — its workloads use the serialized submit() path later).
+[[nodiscard]] atx::core::Result<atx::engine::alpha::SignalSet>
+parallel_evaluate(std::span<const atx::engine::alpha::Program> progs,
+                  const atx::engine::alpha::Panel &panel, IExecutor &exec);
 
 } // namespace atx::engine::parallel

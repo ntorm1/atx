@@ -22,6 +22,7 @@
 // IExecutor base already deletes copy/assign; DetPool deletes move, which deletes
 // ours implicitly — Rule of Zero, nothing to declare).
 
+#include <functional> // std::function — IExecutor::parallel_for body
 #include <span>
 #include <vector>
 
@@ -43,6 +44,20 @@ public:
   explicit ThreadExecutor(ExecutorConfig c = {}) : pool_{c.workers} {}
 
   [[nodiscard]] atx::usize workers() const noexcept override { return pool_.n_workers(); }
+
+  // See IExecutor::parallel_for. THIN forward to DetPool::parallel_for: the pool
+  // already runs every index in [0, n) exactly once, erects the completion
+  // barrier, and rethrows the LOWEST-index body exception — exactly the seam's
+  // contract. ThreadExecutor adds no scheduling logic, so the existing workloads
+  // run over the seam with ZERO behavior change (byte-identical to the DetPool&
+  // path). Always returns Ok(); a body failure surfaces by the rethrown exception
+  // (the in-process workloads either report via a captured Status slot or throw),
+  // never as an Err here.
+  [[nodiscard]] atx::core::Status
+  parallel_for(atx::usize n, const std::function<void(ShardId, atx::usize)>& body) override {
+    pool_.parallel_for(n, body); // rethrows the lowest-index exception, if any
+    return atx::core::Ok();
+  }
 
   // See IExecutor::submit. Validates geometry, resolves the workload to its
   // ShardFn, fans the shards across DetPool, then reduces the per-shard Statuses

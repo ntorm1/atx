@@ -57,6 +57,7 @@
 #include "atx/engine/alpha/streams.hpp"     // alpha::AlphaStreams
 #include "atx/engine/eval/cpcv.hpp"         // eval::CpcvFold
 #include "atx/engine/parallel/det_pool.hpp" // DetPool
+#include "atx/engine/parallel/executor.hpp" // IExecutor (S7.5a substrate-agnostic overloads)
 #include "atx/engine/parallel/fwd.hpp"      // struct FoldResult; (forward-declared)
 
 namespace atx::engine::parallel {
@@ -131,6 +132,19 @@ parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
               const atx::engine::alpha::AlphaStreams& streams, atx::usize alpha_id,
               atx::f64 book_size, DetPool& pool);
 
+// S7.5a — the SAME parallel CPCV over the substrate-agnostic IExecutor seam
+// (THREAD substrate this unit). The map BODY (run_one_fold) is UNCHANGED — this
+// overload shares the one map with the DetPool& overload, substituting
+// exec.parallel_for for pool.parallel_for. Output is byte-identical to the
+// DetPool& / sequential path and invariant across worker counts. IN-PROCESS ONLY:
+// passing an out-of-process substrate (ProcessExecutor, whose parallel_for rejects
+// a closure body) is a programmer-error precondition violation (ATX_ASSERT in
+// debug) — those workloads use the serialized submit() path in a later unit.
+[[nodiscard]] std::vector<FoldResult>
+parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
+              const atx::engine::alpha::AlphaStreams& streams, atx::usize alpha_id,
+              atx::f64 book_size, IExecutor& exec);
+
 // ===========================================================================
 //  parallel_backtests — one full-sample backtest per alpha (different alphas are
 //  independent items), into out[a] (alpha-id order). Pure map; out pre-sized
@@ -139,6 +153,15 @@ parallel_cpcv(std::span<const atx::engine::eval::CpcvFold> folds,
 [[nodiscard]] std::vector<FoldResult>
 parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 book_size,
                    DetPool& pool);
+
+// S7.5a — the SAME parallel backtests over the substrate-agnostic IExecutor seam
+// (THREAD substrate this unit). The map BODY (run_full_backtest) is UNCHANGED —
+// shares the one map with the DetPool& overload, substituting exec.parallel_for /
+// exec.workers(). Output is byte-identical to the DetPool& / sequential path and
+// invariant across worker counts. In-process only (see parallel_cpcv note).
+[[nodiscard]] std::vector<FoldResult>
+parallel_backtests(const atx::engine::alpha::AlphaStreams& streams, atx::f64 book_size,
+                   IExecutor& exec);
 
 // ===========================================================================
 //  cpcv_aggregate_mean_sharpe — reduce-by-sort (R3): the mean of the per-row
