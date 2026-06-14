@@ -1,6 +1,6 @@
 # Sprint S5 (p2) — Deep-Learning Sequence Alphas — Implementation Progress
 
-**Status:** 🟡 IN PROGRESS — 2026-06-14. Building the deterministic CPU-only NN substrate + four tiny sequence/factor architectures over the as-built `p1` S5 `atx::engine::learn` layer. Subagent-driven development (fresh implementer per unit + two-stage spec/quality review).
+**Status:** ✅ CODE-COMPLETE — 2026-06-14 (all 6 implementation units S5-0…S5-5b shipped + 2-stage spec/quality reviewed; pending the full-suite close gate + user merge). Built the deterministic CPU-only NN substrate + four tiny sequence/factor architectures (TCN, GRU-lite, attention-lite, autoencoder) over the as-built `p1` S5 `atx::engine::learn` layer. Subagent-driven development (fresh implementer per unit + two-stage spec/quality review).
 **Worktree:** `C:/Users/natha/atx-wt/p2-s5` (dedicated, isolated)
 **Branch:** `feat/p2-s5-dl-alphas`
 **Base:** `main` @ `f7f4e01` (the merged `p1` S1–S8 engine **+ `p2` S1/S2/S3/S4**; S5 consumes S4's robustness battery)
@@ -55,7 +55,7 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 | S5-3b | Autoencoder factor extractor — `learn/autoencoder_alpha.{hpp,cpp}` + `ModelKind::Autoencoder`        | ✅     | `10724f5`  | 11/11 | `fit_autoencoder_factors` (GKX-style, centered last-step design, trailing-fit/OOS-encode); **linear-AE→atx-core `pca()` subspace pin (R7)** (recon-MSE + projector ‖P_ae−P_pca‖<1e-2) + `predict_ae` leading-factor; **Trainer L1 wiring**. Spec+CQ review passed. |
 | S5-4  | NN deflation + PBO gate — `learn/nn_gate.hpp` (`gate_nn_sweep`)                                  | ✅     | `747da91`  | 10/10 | `gate_nn_sweep` reuses `eval::deflated_sharpe` + `eval::pbo_cscv` verbatim; **deflation N = Σ sweep trial_count (R4 honesty)** + winner DSR + CSCV PBO; planted-admit / pure-noise-reject (PBO channel) + trial-count-honesty pins; 1 real-fit wiring test + 9 hand-built. Spec+CQ review passed. |
 | S5-5a | `nn_source` integration — `learn/nn_source.{hpp,cpp}` (SeqLearnedSignalSource + NN library bridge)  | ✅     | `a193552`  | 8/8   | `SeqLearnedSignalSource` (real `Result<SignalView>`, K2; trailing-window reversal `(L-1)-l`) + `nn_to_candidate`→`Library::admit`; all-gates capstone: live↔offline bit-identical pin, R2 truncation-invariance, R1 two-builds, R4 gate flow, expr_source. Spec+CQ review passed (R6 zero-alloc claim qualified honestly). |
-| S5-5b | Bench — `bench/nn_alpha_bench.cpp`                                                                 | ⏳     | —          | —     | fit + predict throughput across (arch, L, N, channels); seed-ensemble cost; train-vs-predict split. Compile+link under `ATX_BUILD_BENCH=ON` (not perf-gated). |
+| S5-5b | Bench — `bench/nn_alpha_bench.cpp`                                                                 | ✅     | `93a9c41`  | 7 cases | fit (tcn/gru/attn/ae) + predict (predict_nn + SeqLearnedSignalSource) throughput; seed-ensemble ×cost (1 vs 5); bounded down-scaled diagonal subset; /WX-clean, runs exit 0 (predict ~4ms vs fit ~1.6s, ensemble ×5≈4.5×). |
 
 ---
 
@@ -72,9 +72,33 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 | `10724f5` | S5-3b | feat(s5-3b): autoencoder statistical-factor alpha — linear-AE→PCA pin + GKX seed-ensemble + Trainer L1 (learn/autoencoder_alpha) |
 | `747da91` | S5-4 | feat(s5-4): NN-alpha deflation + PBO gate — sweep trial-count aggregation + planted-admit/noise-reject (learn/nn_gate) |
 | `a193552` | S5-5a | feat(s5-5a): SeqLearnedSignalSource lookback adapter + NN library bridge + all-gates integration (learn/nn_source) |
+| `93a9c41` | S5-5b | bench(s5-5b): NN-alpha fit/predict micro-benchmarks — TCN/GRU/Attn/AE across (L,N,channels) + seed-ensemble cost (bench/nn_alpha_bench) |
 
 ---
 
 ## Shared-branch / discipline
 Dedicated worktree `feat/p2-s5-dl-alphas` (true isolation). Explicit-pathspec commits only (`git add -- <paths>`; never `git add -A`); `git show HEAD --stat` after each commit (only this sprint's files); NEVER touch `atx-core/*` or `atx-tsdb/*` (READ-only reuse); engine-source touch limited to new `learn/` + `learn/nn/` files + the additive `atx-engine/CMakeLists.txt` source-list lines (K3); do not push. Commit trailer:
 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+
+---
+
+## What S5 proves (close baton)
+
+S5 adds a **deep-learning signal family** to the as-built `p1` S5 learned layer, **additively and compositionally** — nothing existing was rewritten:
+
+- A **deterministic CPU-only NN substrate** (`learn/nn/`): `Module`/`Sequential`/`Residual` + generic layers (Linear, activations, Dropout, LayerNorm) + sequence layers (dilated **causal** Conv1d, TCN residual block, GRU-lite/MGU cell with BPTT, single-head causal attention) + `Sgd`/`Adam` + `Mse`/`Huber`/`Ic` loss + a fixed-epoch, checkpoint-at-best-val, seed-ensemble `Trainer` with decoupled L1/L2. **Every layer's backward is finite-difference gradient-checked (R3 — the #1 risk, the autodiff replacement).**
+- **Four tiny architectures** over it: **TCN** (default), **GRU-lite**, **attention-lite** (the predictive track), and an **autoencoder statistical-factor** alpha (the GKX factor track) — each filling a `LearnedModel` NN payload that **inherits `oos_deflated_sharpe`/`predict_blended`/the blend** (§0.2), admitted through the **same** `Library`/combiner/sleeve seams as a formulaic alpha.
+- The **load-bearing invariants are pinned**: **R1** two-builds byte-identical weights + alpha digest (no `simd::dot`, single-thread, order-fixed); **R2** trailing windows + trailing-CPCV folds + causal conv, with the live `SeqLearnedSignalSource` ↔ offline `predict_nn` **bit-identical** window-reversal pin; **R4** deflation `N = the full architecture×seed sweep` + CSCV PBO (planted-admit / pure-noise-reject); **R7** the linear-net→atx-core `ridge()` and linear-AE→atx-core `pca()` boundary reductions.
+
+**Baton → S6 / S8.** S6 (alt-data / multi-asset / intraday) feeds the sequence builder richer features (and an intraday window unlocks a sub-daily sequence alpha). S8 (robust-alpha capstone) routes the NN family — alongside formulaic (S3/S4) and classical-ML (`p1` S5) — through the pipeline + sealed lockbox. The abstract `nn::` framework is the substrate S6/S8 **extend, never rewrite**.
+
+## Residuals → ROADMAP backlog (recorded, not shipped)
+
+1. **Allocation-free live NN forward** (R6 honesty): `SeqLearnedSignalSource::evaluate` pre-sizes its own `window_`/`out_` scratch, but `predict_nn` rebuilds the ensemble + allocates `Module::forward`'s `MatX` per call. A fully alloc-free live path (pre-built ensemble cached in the ctor + pre-sized activation scratch) needs a substrate-level allocation-free `forward` — recorded, not shipped.
+2. **`core::linalg` NN-kernel / autodiff tier** (the §2.1 Pattern-B lift): the engine-local `learn::nn` framework is the shippable fallback; a dedicated atx-core deterministic autodiff + conv1d/GRU/attention/layernorm/softmax kernels is the recorded request.
+3. **AE library-emission test**: `nn_to_candidate`'s `Autoencoder` arm (`predict_ae` over the F-dim last-step) is correct-by-construction + wired but not exercised end-to-end in the capstone (covered at unit level by `LearnAutoencoderAlpha`). A light AE-candidate admit test is a follow-up.
+4. **Full GKX conditional-autoencoder** (characteristics-conditioned beta-net), a learned attention/AE feature feeding S3's datafield family, an intraday-window sequence alpha once S6.4 lands, and a multithreaded-deterministic GEMM (MKL CBWR) if scale demands it (§0.10) — all recorded refinements.
+
+## Close gate + merge (user's gate)
+
+Full **un-excluded** `ctest --preset dev` (incl. the slow MHO suites excluded per-unit during dev) run once at close as the regression gate: **1444/1444 engine tests PASS (414 s, MHO suites RiskMultiHorizon/FundMetaBook/FundSleeve included).** (The only ctest non-passes are the `atx-core-tests_NOT_BUILT` / `atx-tsdb-tests_NOT_BUILT` placeholder targets — not built in this engine worktree; atx-core/atx-tsdb are read-only and untouched.) Merge to `main` (`--no-ff`) is the **user's** decision — this branch is NOT auto-merged or pushed.

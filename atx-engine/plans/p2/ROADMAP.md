@@ -326,7 +326,7 @@ RenTech §7 (ruthless OOS), `p1` S1/S3/S4b/S6.* Consumes S3 (the substrate), `p1
 > disable behavioral novelty and cost-awareness), S4's search must reduce **bit-for-bit** to `p1` S3's seeded
 > evolutionary loop — the regression anchor against the proven miner.
 
-### S5 — Deep-Learning Sequence Alphas  ⏳ proposed ([impl-plan](sprint-5-deep-learning-sequence-alphas-implementation-plan.md))
+### S5 — Deep-Learning Sequence Alphas  ✅ done ([impl-plan](sprint-5-deep-learning-sequence-alphas-implementation-plan.md) · [progress](sprint-5-progress.md))
 **Theme:** A richer **signal family** — `p1` anti-roadmap #7: *"NN ensembles are p2-or-later, gated by evidence the
 simpler combiners are saturated."* S5 honors that gate by building NN signals **only behind `p1` S1's deflated-Sharpe
 / PBO admission battery** (the validation spine exists precisely so this is safe) and feeding them through the **same
@@ -342,12 +342,12 @@ S4 (the robustness battery it must also pass).
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S5.0 | Marker + ledger | S | ⏳ |
-| S5.1 | PIT sequence-feature tensor builder (temporal windows over `p1` S5 features; no look-ahead) | M | ⏳ |
-| S5.2 | Deterministic NN training substrate (seeded, fixed-iteration, order-fixed) + temporal-conv/GRU-lite alpha — atx-core L7 NN request | L | ⏳ |
-| S5.3 | Attention-lite / autoencoder statistical-factor alpha (latent-state heritage) | L | ⏳ |
-| S5.4 | Deflated-Sharpe + PBO admission gate for NN alphas (reuses `p1` S1 verbatim; the anti-overfit firewall) + S4 robustness-battery pass | M | ⏳ |
-| S5.5 | NN-alpha → library + combiner/sleeve integration + bench + close | M | ⏳ |
+| S5.0 | Marker + ledger | S | ✅ `d309a9b` |
+| S5.1 | PIT sequence-feature tensor builder (temporal windows over `p1` S5 features; no look-ahead) | M | ✅ `fe978a6` |
+| S5.2 | Deterministic NN training substrate (seeded, fixed-iteration, order-fixed) + temporal-conv/GRU-lite alpha — atx-core L7 NN request | L | ✅ `a01e53c`·`4d438cc`·`d28691d` |
+| S5.3 | Attention-lite / autoencoder statistical-factor alpha (latent-state heritage) | L | ✅ `417a1f8`·`10724f5` |
+| S5.4 | Deflated-Sharpe + PBO admission gate for NN alphas (reuses `p1` S1 verbatim; the anti-overfit firewall) + S4 robustness-battery pass | M | ✅ `747da91` |
+| S5.5 | NN-alpha → library + combiner/sleeve integration + bench + close | M | ✅ `a193552`·`93a9c41` |
 
 ### S6 — Alternative Data & Multi-Asset Universe  ⏳ proposed
 **Theme:** More **signal breadth** — the deferred data frontier (`p1` anti-roadmap #3), opened **cautiously, behind the
