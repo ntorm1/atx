@@ -12,6 +12,7 @@
 #include "atx/engine/alpha/vm.hpp"             // alpha::Engine
 #include "atx/engine/combine/correlation.hpp"  // combine::pairwise_complete_corr
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics, AlphaMetrics
+#include "atx/engine/cost/cost_aware.hpp"      // cost::round_trip_cost_bps (S4.3 ONE cost model)
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis
 
@@ -40,6 +41,86 @@ namespace atx::engine::factory {
 }
 
 namespace detail {
+
+// ===========================================================================
+//  S4.3 cost-window helpers — the per-name participation / ADV / σ sizing over
+//  the DATE-MAJOR alpha::Panel (date 0 = earliest; date dates-1 = the newest /
+//  current mark). These mirror risk::capacity.hpp's PanelView arithmetic EXACTLY
+//  (same windows, same NaN/degenerate guards) but read the alpha::Panel layout
+//  the fitness eval already holds. The √-impact COEFFICIENTS are not here — the
+//  one cost model lives in cost::round_trip_cost_bps; only the sizing is local.
+// ===========================================================================
+
+// Dollar-ADV lookback (the P4-6 adv20 convention) and return-volatility lookback
+// (the P4-6 vol convention) — the SAME named windows risk::capacity.hpp pins.
+inline constexpr atx::usize kCostAdvWindow = 20U;
+inline constexpr atx::usize kCostVolWindow = 60U;
+
+// Per-step return ret_i(t) = close(t,i)/close(t-1,i) − 1 over the date-major
+// `close` column (length dates*insts). A NaN/non-positive prior close yields 0.
+[[nodiscard]] atx::f64 dm_step_return(std::span<const atx::f64> close, atx::usize insts,
+                                      atx::usize t, atx::usize i) noexcept {
+  const atx::f64 prev = close[(t - 1U) * insts + i];
+  const atx::f64 cur = close[t * insts + i];
+  if (std::isnan(prev) || std::isnan(cur) || prev <= 0.0) {
+    return 0.0;
+  }
+  return cur / prev - 1.0;
+}
+
+// Dollar ADV of instrument i: mean of close*volume over the newest `w` rows
+// [dates-w, dates). Skips NaN close/volume; 0 if no valid row (-> name skipped).
+[[nodiscard]] atx::f64 dm_dollar_adv(std::span<const atx::f64> close,
+                                     std::span<const atx::f64> volume, atx::usize dates,
+                                     atx::usize insts, atx::usize i, atx::usize w) noexcept {
+  const atx::usize start = (dates > w) ? (dates - w) : 0U;
+  atx::f64 sum = 0.0;
+  atx::usize n = 0U;
+  for (atx::usize t = start; t < dates; ++t) { // ascending row -> order-fixed
+    const atx::f64 c = close[t * insts + i];
+    const atx::f64 v = volume[t * insts + i];
+    if (!std::isnan(c) && !std::isnan(v)) {
+      sum += c * v;
+      ++n;
+    }
+  }
+  return (n == 0U) ? 0.0 : sum / static_cast<atx::f64>(n);
+}
+
+// Population stddev of the newest `w` per-step returns of instrument i, skipping
+// NaN terms. 0 when fewer than two valid returns remain (no measurable spread).
+// Window covers returns at rows [dates-w, dates); a return at row t needs row t-1,
+// so the oldest usable return row is 1 — the start is clamped to >= 1.
+[[nodiscard]] atx::f64 dm_return_volatility(std::span<const atx::f64> close, atx::usize dates,
+                                            atx::usize insts, atx::usize i, atx::usize w) noexcept {
+  if (dates < 2U) {
+    return 0.0;
+  }
+  const atx::usize start = (dates > w) ? (dates - w) : 1U;
+  const atx::usize lo = (start < 1U) ? 1U : start;
+  atx::f64 sum = 0.0;
+  atx::usize n = 0U;
+  for (atx::usize t = lo; t < dates; ++t) {
+    const atx::f64 r = dm_step_return(close, insts, t, i);
+    if (!std::isnan(r)) {
+      sum += r;
+      ++n;
+    }
+  }
+  if (n < 2U) {
+    return 0.0;
+  }
+  const atx::f64 mean = sum / static_cast<atx::f64>(n);
+  atx::f64 ss = 0.0;
+  for (atx::usize t = lo; t < dates; ++t) {
+    const atx::f64 r = dm_step_return(close, insts, t, i);
+    if (!std::isnan(r)) {
+      const atx::f64 d = r - mean;
+      ss += d * d;
+    }
+  }
+  return std::sqrt(ss / static_cast<atx::f64>(n)); // population std
+}
 
 // The aggregate OOS metrics produced by averaging compute_metrics().fitness/
 // .sharpe over the CPCV TEST folds, plus the candidate's full realized OOS PnL
@@ -206,15 +287,27 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
       eval::deflated_sharpe(per_period_sharpe, T, eval::skewness(moments),
                             eval::excess_kurtosis(moments), cfg.trial_count, std::nullopt);
 
+  // (6) S4.3 book round-trip cost (bps) at the recorded target_aum — the cost
+  // objective. GUARDED on target_aum > 0: when off (the default) NO cost compute
+  // runs at all, cost_bps stays 0, and the eval path is byte-identical to pre-S4.3
+  // (the boundary pin holds). When on, it is the |w|-weighted round-trip cost over
+  // the candidate's LAST-period weights (book_cost_bps reuses the ONE cost model).
+  atx::f64 cost_bps = 0.0;
+  if (cfg.target_aum > 0.0) {
+    cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.target_aum);
+  }
+
   return atx::core::Ok(
-      FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr, dsr.haircut_sharpe});
+      FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr, dsr.haircut_sharpe, cost_bps});
 }
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
 // `redundancy` is the (Mean for the legacy AlphaStore path, Max for the PoolView
 // path) |corr-to-pool| of core.oos_pnl; diversify = clamp(1−redundancy, 0, 1) and
-// raw = wq * diversify * robust — identical to the original assembly.
-[[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy) {
+// raw = wq * diversify * robust — identical to the original assembly. `cost_active`
+// (FitnessCfg.target_aum > 0) gates the S4.3 cost objective (objectives[4]).
+[[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy,
+                                          bool cost_active) {
   const atx::f64 diversify = std::clamp(1.0 - redundancy, 0.0, 1.0);
   const atx::f64 raw = core.wq * diversify * core.robust;
   FitnessReport rep{core.wq, redundancy, diversify,          core.robust,
@@ -228,6 +321,18 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   rep.objectives[1] = diversify;
   rep.objectives[2] = core.robust;
   rep.n_objectives = 3;
+  // S4.3: when the cost objective is active (target_aum > 0) push the NEGATED book
+  // round-trip cost into the FIXED cost slot (index 4) so pareto.hpp's pure-max
+  // dominance treats a CHEAPER alpha as better, and bump n_objectives to cover it.
+  // Slot 3 (novelty) is left at its default 0 here — uniform across genomes scored
+  // by finish_report, hence INERT in NSGA dominance; the search_driver novelty pass
+  // fills it later when active. When inactive, cost_bps stays 0, objectives[4] is
+  // untouched, and n_objectives stays 3 — the boundary-pin no-op (NO digest drift).
+  if (cost_active) {
+    rep.cost_bps = core.cost_bps;
+    rep.objectives[4] = -core.cost_bps;
+    rep.n_objectives = 5;
+  }
   // S4.2: carry the candidate's realized OOS PnL profile (the behavioral
   // descriptor / phenotype) out of the core so the SearchDriver can canon-cache it
   // and compute population-relative behavioral novelty without a re-eval. Copy (not
@@ -237,6 +342,63 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 }
 
 } // namespace detail
+
+[[nodiscard]] atx::f64 book_cost_bps(const alpha::AlphaStreams &strm, const alpha::Panel &panel,
+                                     const cost::CalibratedCost &cost,
+                                     atx::f64 target_aum) noexcept {
+  if (target_aum <= 0.0 || strm.n_alphas() == 0U || strm.n_periods() == 0U) {
+    return 0.0; // cost off / no streams -> no cost (the boundary-pin no-op guard)
+  }
+  const atx::usize dates = panel.dates();
+  const atx::usize insts = panel.instruments();
+  // The cost reads the candidate's LAST-period target weights (capacity_for_alpha
+  // convention: the most recent rebalance is what is sized to target_aum).
+  const std::span<const atx::f64> w = strm.positions(0U, strm.n_periods() - 1U);
+
+  // "close" is mandatory (extract_streams already required it). "volume" gives the
+  // dollar-ADV; a panel WITHOUT volume -> 0 ADV everywhere -> 0 cost (documented
+  // degenerate, no NaN/Inf leak). Resolve once (cold path).
+  const auto close_id = panel.field_id("close");
+  const auto volume_id = panel.field_id("volume");
+  if (!close_id.has_value() || !volume_id.has_value()) {
+    return 0.0;
+  }
+  const std::span<const atx::f64> close = panel.field_all(*close_id);
+  const std::span<const atx::f64> volume = panel.field_all(*volume_id);
+  if (dates == 0U || insts == 0U) {
+    return 0.0;
+  }
+
+  // Book aggregate: Σ_i |w_i| · round_trip_cost_bps(cost, part_i, σ_i). A dead/NaN
+  // weight, non-positive price, zero ADV, zero participation, or zero σ makes a
+  // name contribute nothing (mirrors risk::capacity_curve's guards exactly).
+  atx::f64 acc = 0.0;
+  const atx::usize n = (insts < w.size()) ? insts : w.size();
+  for (atx::usize i = 0U; i < n; ++i) { // ascending inst -> order-fixed reduction
+    const atx::f64 wi = w[i];
+    if (std::isnan(wi) || wi == 0.0) {
+      continue;
+    }
+    const atx::f64 abs_w = (wi < 0.0) ? -wi : wi;
+    const atx::f64 price = close[(dates - 1U) * insts + i]; // newest mark (date dates-1)
+    if (std::isnan(price) || price <= 0.0) {
+      continue;
+    }
+    const atx::f64 adv =
+        detail::dm_dollar_adv(close, volume, dates, insts, i, detail::kCostAdvWindow);
+    if (adv <= 0.0) {
+      continue;
+    }
+    const atx::f64 part = (target_aum * abs_w / price) / adv; // (AUM·|w|/price)/ADV
+    const atx::f64 sigma =
+        detail::dm_return_volatility(close, dates, insts, i, detail::kCostVolWindow);
+    if (part <= 0.0 || sigma <= 0.0) {
+      continue;
+    }
+    acc += abs_w * cost::round_trip_cost_bps(cost, part, sigma); // the ONE cost model
+  }
+  return acc;
+}
 
 [[nodiscard]] atx::core::Result<FitnessReport>
 pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
@@ -252,8 +414,10 @@ pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const al
   const atx::f64 redundancy =
       corr_to_pool(std::span<const atx::f64>{core.oos_pnl}, pool, Reduce::Mean);
 
-  // (4) raw = wq * diversify * robust, assembled into the report.
-  return atx::core::Ok(detail::finish_report(core, redundancy));
+  // (4) raw = wq * diversify * robust, assembled into the report. S4.3: the cost
+  // objective (objectives[4]) is active iff target_aum > 0 (cost_bps is already in
+  // `core`, computed by fitness_core under the same guard).
+  return atx::core::Ok(detail::finish_report(core, redundancy, cfg.target_aum > 0.0));
 }
 
 } // namespace atx::engine::factory

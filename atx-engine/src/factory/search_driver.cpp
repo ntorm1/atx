@@ -339,7 +339,12 @@ void SearchDriver::behavioral_novelty_pass(std::vector<Scored> &scored,
                                          std::span<const std::span<const atx::f64>>{nbr},
                                          cfg.behavior_k, cfg.behavior_metric);
     scored[i].objectives[3] = nov; // the 4th NSGA-II objective (maximization)
-    scored[i].n_objectives = 4;    // active path only -> assign_pareto_ranks reads 4 cols
+    // Fixed-slot bookkeeping (S4.3): novelty owns slot 3; cost owns slot 4. Bump
+    // n_objectives to COVER slot 3 without CLOBBERING a higher active slot — when
+    // the cost objective is on, finish_report already set n_objectives to 5, and
+    // max() preserves it so assign_pareto_ranks keeps reading all 5 columns. With
+    // cost off this is exactly 4 (the pre-S4.3 behavior).
+    scored[i].n_objectives = static_cast<atx::u8>(std::max<atx::usize>(scored[i].n_objectives, 4U));
   }
 }
 

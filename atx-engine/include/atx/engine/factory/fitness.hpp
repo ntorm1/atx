@@ -62,7 +62,9 @@
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
 
 #include "atx/engine/alpha/panel.hpp"        // alpha::Panel, alpha::SignalSet
+#include "atx/engine/alpha/streams.hpp"      // alpha::AlphaStreams (cost book aggregate input)
 #include "atx/engine/combine/store.hpp"      // combine::AlphaStore, AlphaId
+#include "atx/engine/cost/calibration.hpp"   // cost::CalibratedCost (the calibrated coeffs, S4.3)
 #include "atx/engine/eval/cpcv.hpp"          // eval::cpcv_folds, CpcvFold, LabelSpan
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
@@ -112,6 +114,33 @@ enum class Reduce : atx::u8 { Max, Mean };
                                     const combine::AlphaStore &pool, Reduce reduce) noexcept;
 
 // =========================================================================
+//  book_cost_bps — the S4.3 book-aggregate round-trip impact cost (bps).
+//
+//  For the candidate's LAST-period target weights (strm.positions(0, last) — the
+//  capacity_for_alpha convention: the most recent rebalance is what is sized to
+//  `target_aum`), prices each name at `target_aum` and aggregates the per-name
+//  round-trip cost into a single |w|-weighted book figure:
+//
+//    price_i   = close(last_date, i)                     (the current mark)
+//    adv_i     = mean_{last kAdvWindow rows} close*volume (dollar ADV)
+//    part_i    = (target_aum·|w_i|/price_i) / adv_i       (participation)
+//    sigma_i   = popstd_{last kVolWindow returns} ret_i   (return volatility)
+//    cost_bps  = Σ_i |w_i| · cost::round_trip_cost_bps(cost, part_i, sigma_i)
+//
+//  REUSES the ONE cost model (cost::round_trip_cost_bps) verbatim and the SAME
+//  participation / ADV / σ sizing arithmetic risk::capacity_curve uses — no second
+//  formula. A dead/NaN weight, non-positive price, zero ADV, zero participation,
+//  or zero σ makes a name contribute nothing (no NaN/Inf/div-by-zero leak). The
+//  panel needs "close" (mark + returns) and "volume" (ADV); a panel WITHOUT a
+//  volume field yields 0 ADV everywhere ⇒ cost 0 (a documented degenerate). PURE
+//  given (strm, panel, cost, target_aum); NO RNG; bit-deterministic. A non-positive
+//  target_aum returns 0 (the caller also guards this — the cost objective is off).
+// =========================================================================
+[[nodiscard]] atx::f64 book_cost_bps(const alpha::AlphaStreams &strm, const alpha::Panel &panel,
+                                     const cost::CalibratedCost &cost,
+                                     atx::f64 target_aum) noexcept;
+
+// =========================================================================
 //  FitnessReport — one candidate's scored result (plan §4.6 step 5).
 //
 //  wq            : OOS WorldQuant fitness, mean over CPCV TEST folds.
@@ -123,12 +152,23 @@ enum class Reduce : atx::u8 { Max, Mean };
 //  dsr           : deflated Sharpe (F4) at the running trial count N — the
 //                  admission statistic; higher N -> lower dsr.
 //  haircut_sharpe: max(0, sharpe − SR*_N) — the selection-adjusted point estimate.
+//  cost_bps      : the S4.3 book-aggregate ROUND-TRIP impact cost (bps) at the
+//                  recorded FitnessCfg.target_aum — a |w|-weighted mean of
+//                  cost::round_trip_cost_bps over the candidate's last-period
+//                  target weights. EXACTLY 0 when target_aum == 0 (cost off, the
+//                  boundary-pin no-op). A pure function of (genome, panel, cfg) ⇒
+//                  canon-cacheable. objectives[4] carries its NEGATION.
 //  objectives    : the S4.1 multi-objective vector {wq, diversify, robust, ...},
 //                  a RE-PROJECTION of the fields above (no new fitness math). The
 //                  search's MultiObjective mode ranks genomes by NSGA-II over the
 //                  first `n_objectives` entries; ScalarRaw collapses to `raw`.
+//                  Index 4 = -cost_bps (NEGATED so pareto.hpp's pure-max dominance
+//                  treats a CHEAPER alpha as better); set only when target_aum > 0.
 //  n_objectives  : how many leading entries of `objectives` are live (3 in S4.1;
-//                  grows to +novelty (S4.2) / +cost (S4.3) without a layout change).
+//                  grows to +novelty (S4.2, slot 3) / +cost (S4.3, slot 4) without
+//                  a layout change). Fixed-slot scheme: 0,1,2 always; 3=novelty;
+//                  4=cost. n_objectives covers the highest ACTIVE slot, an inactive
+//                  intermediate slot left at its uniform default (inert in NSGA).
 //  descriptor    : the candidate's realized OOS PnL profile (== detail::FitnessCore
 //                  .oos_pnl). S4.2 BEHAVIORAL descriptor — the phenotype the
 //                  population-relative novelty objective is computed from. A pure
@@ -147,7 +187,8 @@ struct FitnessReport {
   atx::f64 raw;
   atx::f64 dsr;
   atx::f64 haircut_sharpe;
-  std::array<atx::f64, kMaxObjectives> objectives{}; // {wq, diversify, robust, ...}
+  atx::f64 cost_bps{};                               // S4.3 book round-trip cost (0 if cost off)
+  std::array<atx::f64, kMaxObjectives> objectives{}; // {wq, diversify, robust, _, -cost_bps}
   atx::u8 n_objectives{0};                           // live leading entries
   std::vector<atx::f64> descriptor{};                // S4.2 OOS PnL profile (phenotype)
 };
@@ -160,11 +201,21 @@ struct FitnessReport {
 //  cpcv        : the CPCV fold geometry (TEST folds are the OOS partitions).
 //  book_size   : the notional divisor for turnover (1.0 when weights are already
 //                gross-normalized fractions, the extract_streams convention).
+//  target_aum  : the recorded artifact AUM at which the S4.3 cost objective is
+//                priced. 0 (the default) ⇒ the cost objective is OFF: no cost
+//                compute, no 5th objective, no eval-path change — a PURE no-op
+//                that keeps the boundary pin (and every existing digest) byte-
+//                identical. > 0 ⇒ the book round-trip cost is computed at this AUM
+//                and pushed (negated) into objectives[4] (n_objectives → 5).
+//  cost        : the calibrated cost coefficients (cost::round_trip_cost_bps reads
+//                its impact Y/δ/γ + slippage). Only consulted when target_aum > 0.
 // =========================================================================
 struct FitnessCfg {
   atx::usize trial_count = 1;
   eval::CpcvConfig cpcv{};
   atx::f64 book_size = 1.0;
+  atx::f64 target_aum = 0.0;   // S4.3: 0 ⇒ cost objective off (boundary-pin no-op)
+  cost::CalibratedCost cost{}; // S4.3: calibrated impact/slippage for the cost objective
 };
 
 namespace detail {
@@ -187,6 +238,11 @@ struct FitnessCore {
   atx::f64 robust;
   atx::f64 dsr;
   atx::f64 haircut_sharpe;
+  // S4.3 book round-trip cost (bps) at FitnessCfg.target_aum. EXACTLY 0 when the
+  // cost objective is off (target_aum == 0) — the boundary-pin no-op. Computed in
+  // fitness_core from the candidate's own streams (positions) + panel while they
+  // are still live, so finish_report can project it into objectives[4] = -cost_bps.
+  atx::f64 cost_bps{0.0};
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:
@@ -203,8 +259,15 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
 // `redundancy` is the (Mean for the legacy AlphaStore path, Max for the PoolView
 // path) |corr-to-pool| of core.oos_pnl; diversify = clamp(1−redundancy, 0, 1) and
-// raw = wq * diversify * robust — identical to the original assembly.
-[[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy);
+// raw = wq * diversify * robust — identical to the original assembly. S4.3: when
+// `cost_active` (FitnessCfg.target_aum > 0) the report's cost_bps = core.cost_bps
+// is projected into objectives[4] = -cost_bps and n_objectives bumped to 5 (slot 3
+// left at its inert default 0); when inactive the objective vector is the exact
+// S4.1 {wq,diversify,robust} with n_objectives 3 and cost_bps 0 (boundary-pin
+// no-op). `cost_active` (not core.cost_bps != 0) is the gate, so a genuinely-zero
+// cost at a positive target_aum still registers the (uniform, inert) 5th objective.
+[[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy,
+                                          bool cost_active);
 
 } // namespace detail
 
