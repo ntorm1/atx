@@ -58,14 +58,15 @@ to die.
 | Doc | Type | Covers |
 |---|---|---|
 | [`sprint-1-multi-horizon-optimization-implementation-plan.md`](sprint-1-multi-horizon-optimization-implementation-plan.md) | implementation plan | **S1** frozen *how* — constraint algebra, fixed-iteration QP/ADMM, multi-horizon forecast trajectory, Gârleanu-Pedersen aim portfolio, integration with S7/S8. The book-construction track's per-unit plan. |
+| [`sprint-2-multi-strategy-meta-book-implementation-plan.md`](sprint-2-multi-strategy-meta-book-implementation-plan.md) | implementation plan | **S2** frozen *how* — the `Sleeve` abstraction (wraps an S1 optimizer over a library subset), the cross-sleeve risk-budget meta-allocator (ERC/HRP + portfolio-of-books fractional-Kelly), shared-`V` cross-sleeve risk aggregation, internal trade crossing/netting (priced in-sim), Euler-exact attribution-by-sleeve. Pinned bit-for-bit to S1 on the one-sleeve boundary. The book-construction track's second per-unit plan. |
 | [`sprint-7-distributed-scale-out-compute-implementation-plan.md`](sprint-7-distributed-scale-out-compute-implementation-plan.md) | implementation plan | **S7** frozen *how* — the substrate-agnostic `IExecutor` seam, cross-platform multi-process shared-memory substrate (Win32 + POSIX), deterministic heterogeneous-cost scheduler, library partition-and-merge, the five-path digest-invariance proof. Reframed (per kickoff) to **single-box multi-process + scale-out-ready**: ships threads + processes on one machine; the N-node network transport is the recorded atx-core L4 lift. |
 
 **Pending (created at each sprint kickoff/close):**
 - `sprint-3-alpha-dsl-expression-substrate.md` and `sprint-4-genetic-search-robust-signal-pipeline.md` — the **two new
   sprint specs** (the *what*), written alongside this re-theme; the per-unit implementation plans (the *how*) freeze at
   each sprint's kickoff (NOT now).
-- `sprint-{N}-<theme>.md` — sprint spec (the *what*) for the remaining sprints (S2, S5, S6, S8), written at their
-  kickoffs. **For S1, the embedded ROADMAP section below + the existing impl-plan are the spec.**
+- `sprint-{N}-<theme>.md` — sprint spec (the *what*) for the remaining sprints (S5, S6, S8), written at their
+  kickoffs. **For S1 and S2, the embedded ROADMAP section below + the existing impl-plan are the spec.**
 - `sprint-{N}-<theme>-implementation-plan.md` — frozen per-unit *how*, written at each sprint kickoff (NOT now).
 - `sprint-{N}-progress.md` — sprint ledgers, opened at kickoff (sub-sprints `Sn-a/Sn-b` if a sprint exceeds ~7 units,
   per the `p0` 4a/4b/4c precedent).
@@ -235,7 +236,7 @@ WorldQuant §6.1/§6.5 (bounded regression, turnover-as-cost), Boyd 2017, Gârle
 > **Boundary pin:** with one horizon, `trade_rate=1`, and the `{Σw=0,Σ|w|≤L,|w_i|≤cap}` constraint set only, S1 must
 > reduce **bit-for-bit** to `p1` S7's chained single-period book — the regression anchor against the proven layer.
 
-### S2 — Multi-Strategy Meta-Book & Risk Budgeting  ⏳ proposed
+### S2 — Multi-Strategy Meta-Book & Risk Budgeting  ⏳ proposed ([impl-plan](sprint-2-multi-strategy-meta-book-implementation-plan.md))
 **Theme:** Measure admitted alpha at the **fund** level — Laufer's single unified book, made multi-sleeve, as a
 portfolio-scale lens on library breadth. A **`Strategy`/`Sleeve`** abstraction (each sleeve = a universe × horizon ×
 signal-family book wrapping its own S1 optimizer + library subset), a **meta-allocator** that combines sleeves into one
