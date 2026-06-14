@@ -36,6 +36,7 @@ add_library(atx-engine STATIC
     src/learn/train.cpp
     src/data/adapt_feature.cpp
     src/data/adapt_panel.cpp
+    src/data/adapt_signal.cpp
     src/data/align.cpp
     src/data/catalog.cpp
     src/data/data_handler.cpp
