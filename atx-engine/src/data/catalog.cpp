@@ -7,26 +7,17 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <string>
 
 #include "atx/core/error.hpp"
+#include "atx/engine/data/dataset.hpp"
 
 namespace atx::engine::data {
 
 // ---------------------------------------------------------------------------
 //  Helpers (file-local)
 // ---------------------------------------------------------------------------
-
-// Returns true iff the span is strictly ascending (each element > previous).
-// An empty or single-element span is vacuously ascending.
-static bool is_strictly_ascending(std::span<const DateKey> dates) noexcept {
-  for (atx::usize i = 1; i < dates.size(); ++i) {
-    if (dates[i] <= dates[i - 1]) {
-      return false;
-    }
-  }
-  return true;
-}
 
 // Look up key in a std::map<string,...> using string_view (avoids allocation).
 template <class Map>
@@ -191,20 +182,15 @@ atx::core::Result<atx::f64> DatasetCatalog::value_at(std::string_view name, std:
                               std::string{name} + "'");
   }
 
-  // 4. PIT as-of: find greatest DateKey ≤ canonical_date via upper_bound then
-  //    step back one. dates() is strictly ascending (enforced at registration).
-  std::span<const DateKey> dates = ds.dates();
-  if (dates.empty() || canonical_date < dates[0]) {
+  // 4. PIT as-of: greatest row with DateKey ≤ canonical_date (shared helper;
+  //    dates() is strictly ascending, enforced at registration).
+  const std::optional<atx::usize> row = as_of_index(ds.dates(), canonical_date);
+  if (!row) {
     // No row qualifies — return NaN, not an error.
     return atx::core::Ok(std::numeric_limits<atx::f64>::quiet_NaN());
   }
 
-  // upper_bound returns first element > canonical_date.
-  // Stepping back one gives the greatest element ≤ canonical_date.
-  const DateKey *ub = std::upper_bound(dates.data(), dates.data() + dates.size(), canonical_date);
-  const atx::usize row = static_cast<atx::usize>((ub - 1) - dates.data());
-
-  return atx::core::Ok(flat[row * ds.num_instruments() + inst_idx]);
+  return atx::core::Ok(flat[*row * ds.num_instruments() + inst_idx]);
 }
 
 } // namespace atx::engine::data

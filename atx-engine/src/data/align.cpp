@@ -1,35 +1,23 @@
 // atx::engine::data — align_onto: PIT alignment-rail implementation.
 //
-// See align.hpp for the contract. Three private helpers keep each function
-// short and the invariants legible: strict-ascent validation, the plug
-// InstKey→index lookup, and the DropReport position classification.
+// See align.hpp for the contract. Two private helpers keep each function short
+// and the invariants legible: the plug InstKey→index lookup and the DropReport
+// position classification. Strict-ascent validation and as-of resolution are
+// the shared free utilities in dataset.hpp.
 
 #include "atx/engine/data/align.hpp"
 
 #include <limits>
-#include <optional>
-#include <span>
-#include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/data/dataset.hpp"
-#include "atx/engine/data/dataset_schema.hpp"
 
 namespace atx::engine::data {
 
 namespace {
-
-// True iff `dates` is strictly ascending (required for as-of binary search).
-[[nodiscard]] bool is_strictly_ascending(std::span<const DateKey> dates) noexcept {
-  for (atx::usize i = 1; i < dates.size(); ++i) {
-    if (dates[i] <= dates[i - 1]) {
-      return false;
-    }
-  }
-  return true;
-}
 
 // Lookup-only map plug InstKey → plug instrument index. The map never affects
 // output order (the canonical axis is the fixed output order), so determinism
@@ -49,10 +37,10 @@ build_plug_index(std::span<const InstKey> plug_instruments) {
 // (InstKey canonical but DateKey later than the last canonical date). In-axis
 // positions are not counted. Counts positions, not per-column cells.
 [[nodiscard]] DropReport classify_drops(const Dataset &canonical, const Dataset &plug) {
-  std::unordered_map<InstKey, char> canonical_universe;
+  std::unordered_set<InstKey> canonical_universe;
   canonical_universe.reserve(canonical.num_instruments());
   for (const InstKey inst : canonical.instruments()) {
-    canonical_universe.emplace(inst, char{1});
+    canonical_universe.insert(inst);
   }
 
   const std::span<const DateKey> canonical_dates = canonical.dates();
@@ -63,7 +51,7 @@ build_plug_index(std::span<const InstKey> plug_instruments) {
   const std::span<const InstKey> plug_instruments = plug.instruments();
   const std::span<const DateKey> plug_dates = plug.dates();
   for (atx::usize pi = 0; pi < plug_instruments.size(); ++pi) {
-    const bool in_universe = canonical_universe.count(plug_instruments[pi]) != 0;
+    const bool in_universe = canonical_universe.contains(plug_instruments[pi]);
     for (atx::usize pd = 0; pd < plug_dates.size(); ++pd) {
       if (!in_universe) {
         ++drops.extra_instrument_cells;
@@ -104,17 +92,18 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
   view.aligned_columns.assign(ncols, std::vector<atx::f64>(nd * ni, nan));
 
   for (atx::usize d = 0; d < nd; ++d) {
-    const DateKey canonical_date = canonical_dates[d];
+    // As-of resolution is invariant across instruments — compute once per date.
+    const auto pd = as_of_index(plug_dates, canonical_dates[d]);
+    if (!pd) {
+      continue; // no plug row on/before this date — whole row stays NaN
+    }
+    const atx::usize pd_base = *pd * plug_ni;
     for (atx::usize i = 0; i < ni; ++i) {
       const auto found = plug_index.find(canonical_instruments[i]);
       if (found == plug_index.end()) {
         continue; // missing coverage — cell stays NaN
       }
-      const std::optional<atx::usize> pd = as_of_index(plug_dates, canonical_date);
-      if (!pd) {
-        continue; // no plug row on/before this date — cell stays NaN
-      }
-      const atx::usize flat = (*pd * plug_ni) + found->second;
+      const atx::usize flat = pd_base + found->second;
       const atx::usize out = (d * ni) + i;
       for (atx::usize c = 0; c < ncols; ++c) {
         view.aligned_columns[c][out] = plug.column(c)[flat];

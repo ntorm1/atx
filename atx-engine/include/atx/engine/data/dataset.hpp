@@ -114,8 +114,21 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-//  Free axis utility
+//  Free axis utilities
 // ---------------------------------------------------------------------------
+
+// True iff `dates` is strictly ascending (each element > previous). An empty or
+// single-element span is vacuously ascending. Strict ascent is the precondition
+// for as-of binary search (as_of_index) — consumers validate it once at their
+// ingestion boundary (catalog register, align_onto).
+[[nodiscard]] inline bool is_strictly_ascending(std::span<const DateKey> dates) noexcept {
+  for (atx::usize i = 1; i < dates.size(); ++i) {
+    if (dates[i] <= dates[i - 1]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // Greatest index i with ascending_dates[i] <= canonical_date; nullopt if
 // ascending_dates is empty or canonical_date precedes the first date.
