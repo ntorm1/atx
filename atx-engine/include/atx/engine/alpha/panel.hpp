@@ -131,6 +131,13 @@ public:
                               "'");
   }
 
+  // The name of field `field` (== its dictionary entry). Precondition: `field` <
+  // num_fields() (caller-validated). Borrows the Panel's storage — never outlives it.
+  [[nodiscard]] std::string_view field_name(FieldId field) const noexcept {
+    ATX_ASSERT(field < field_names_.size());
+    return field_names_[field];
+  }
+
   // One date's cross-section for a field (length == instruments()). Precondition:
   // `field` < num_fields() and `date` < dates() (caller-validated; the oracle
   // only ever passes ids it resolved from this Panel).
