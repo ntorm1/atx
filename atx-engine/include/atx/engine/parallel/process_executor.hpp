@@ -149,8 +149,17 @@ public:
   // lowest-id error, then copies the output back into `out.bytes`. The seam is
   // IDENTICAL to ThreadExecutor's (heap-backed spans in, heap-backed spans out);
   // the SHM is an internal implementation detail, not a caller concern.
-  [[nodiscard]] atx::core::Status submit(WorkloadId workload, InputView inputs, atx::usize n,
-                                         SlotView out) override;
+  //
+  // S7-4 NOTE: `dispatch_order` is accepted for seam parity but is currently
+  // IGNORED here — the cross-process claim cursor already dispenses ids
+  // dynamically, and threading a permutation through the control segment is
+  // deferred to S7.6 (the digest is invariant to dispatch order regardless, so
+  // ignoring the hint costs only the tail-shortening, never a bit). The
+  // ThreadExecutor (the in-process oracle) honours the order and PROVES no bit
+  // contact for the whole seam.
+  [[nodiscard]] atx::core::Status
+  submit(WorkloadId workload, InputView inputs, atx::usize n, SlotView out,
+         std::span<const ShardId> dispatch_order = {}) override;
 
   [[nodiscard]] atx::usize workers() const noexcept override { return n_workers_; }
 

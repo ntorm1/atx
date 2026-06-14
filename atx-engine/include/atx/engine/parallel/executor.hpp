@@ -197,8 +197,18 @@ public:
   // Returns the LOWEST-id failing shard's Status (deterministic), else Ok().
   // No cross-shard state: which worker runs which shard MUST NOT change a result
   // bit (R1). Precondition out.n() == n (else Err(InvalidArgument)).
-  [[nodiscard]] virtual atx::core::Status submit(WorkloadId workload, InputView inputs,
-                                                 atx::usize n, SlotView out) = 0;
+  //
+  // `dispatch_order` (S7-4) is an OPTIONAL permutation of [0, n): a worker claims
+  // a POSITION p and processes shard `dispatch_order[p]`, writing slot
+  // `dispatch_order[p]`. It only changes the ORDER shards are dispatched (a
+  // scheduling hint — e.g. cost-sorted to shorten the tail), NEVER which slot a
+  // shard writes, so the gathered output is byte-identical for ANY valid
+  // permutation (the §4.4 no-bit-contact proof). An empty span (the default)
+  // means identity order — ZERO behavior change for existing callers. If supplied
+  // it must be a valid permutation of exactly [0, n) (else Err(InvalidArgument)).
+  [[nodiscard]] virtual atx::core::Status
+  submit(WorkloadId workload, InputView inputs, atx::usize n, SlotView out,
+         std::span<const ShardId> dispatch_order = {}) = 0;
 
   // Number of workers this substrate runs (the resolved count, never 0).
   [[nodiscard]] virtual atx::usize workers() const noexcept = 0;

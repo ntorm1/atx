@@ -263,7 +263,14 @@ struct AbnormalExit {
 // ---------------------------------------------------------------------------
 ProcessExecutor::ProcessExecutor(ExecutorConfig c) noexcept : n_workers_{resolve_workers(c.workers)} {}
 
-Status ProcessExecutor::submit(WorkloadId workload, InputView inputs, atx::usize n, SlotView out) {
+Status ProcessExecutor::submit(WorkloadId workload, InputView inputs, atx::usize n, SlotView out,
+                               std::span<const ShardId> dispatch_order) {
+  // S7-4: dispatch_order is accepted for seam parity but ignored here — the
+  // cross-process claim cursor already dispenses ids dynamically; honouring the
+  // permutation across the control segment is deferred to S7.6 (the digest is
+  // invariant to dispatch order regardless, so this costs only tail-shortening,
+  // never a bit). The ThreadExecutor honours the order and proves no bit contact.
+  (void)dispatch_order;
   if (out.n() != n) {
     return Err(ErrorCode::InvalidArgument, "ProcessExecutor: SlotView slot count != n");
   }

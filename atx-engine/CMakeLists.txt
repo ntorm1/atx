@@ -39,6 +39,7 @@ add_library(atx-engine STATIC
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
     src/parallel/process_executor.cpp
+    src/parallel/scheduler.cpp
     src/parallel/shm_segment.cpp
     src/validation/bias_audit.cpp
 )
