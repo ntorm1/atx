@@ -25,7 +25,7 @@
 #include "atx/engine/loop/panel_types.hpp"     // PanelView, PanelField, kPanelFieldCount
 #include "atx/engine/loop/types.hpp"           // InstrumentId (Symbol)
 
-namespace {
+namespace atxtest_capacity_test {
 
 using atx::f64;
 using atx::u32;
@@ -209,4 +209,5 @@ TEST(Capacity, PerAlpha_FromStreams) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_capacity_test

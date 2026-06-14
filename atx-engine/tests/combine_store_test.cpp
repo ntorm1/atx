@@ -31,7 +31,7 @@
 #include "atx/engine/combine/metrics.hpp" // combine::AlphaMetrics
 #include "atx/engine/combine/store.hpp"   // combine::AlphaId, AlphaRecord, AlphaStore
 
-namespace {
+namespace atxtest_combine_store_test {
 
 using atx::f64;
 using atx::u32;
@@ -235,4 +235,5 @@ TEST(AlphaStore, IngestStreamsRoundTrip) {
   EXPECT_DOUBLE_EQ(store.get(AlphaId{1}).metrics.sharpe, sample_metrics(1.0).sharpe);
 }
 
-} // namespace
+
+}  // namespace atxtest_combine_store_test

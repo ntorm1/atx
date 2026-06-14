@@ -52,7 +52,7 @@
 #include "atx/engine/library/lifecycle.hpp"  // LifecycleState
 #include "atx/engine/library/record.hpp"     // Provenance
 
-namespace {
+namespace atxtest_book_decay_monitor_test {
 
 using atx::f64;
 using atx::u32;
@@ -415,4 +415,5 @@ TEST(DecayController, DrivesLifecyclePitAndAsymmetric) {
   EXPECT_EQ(*s_early, LifecycleState::Live) << "PIT: earlier state must not be retroactively relabeled";
 }
 
-} // namespace
+
+}  // namespace atxtest_book_decay_monitor_test

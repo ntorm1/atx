@@ -41,7 +41,7 @@
 #include "atx/engine/library/library.hpp" // library::Library, AlphaCandidate, AdmitKind
 #include "atx/engine/library/record.hpp"  // library::Provenance
 
-namespace {
+namespace atxtest_factory_mine_into_test {
 
 using atx::f64;
 using atx::u64;
@@ -322,4 +322,5 @@ TEST(FactoryMineInto, SeededRunFoldsAdmissionsIntoDigest) {
   EXPECT_EQ(a.admitted, b.admitted); // identical mine+admit -> identical outcome
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_mine_into_test

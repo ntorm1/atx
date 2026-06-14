@@ -35,7 +35,7 @@
 #include "atx/engine/factory/mutation.hpp"
 #include "atx/engine/factory/op_catalog.hpp"
 
-namespace {
+namespace atxtest_alpha_op_swap_stress_test {
 
 using atx::core::Xoshiro256pp;
 using atx::engine::alpha::analyze;
@@ -212,4 +212,5 @@ TEST(OpSwapStress, KalmanLevelNode_IsSwapInert) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_op_swap_stress_test

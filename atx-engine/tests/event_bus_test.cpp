@@ -30,6 +30,8 @@
 #include "atx/engine/bus/event_bus.hpp"
 #include "atx/engine/event/event.hpp"
 
+namespace atxtest_event_bus_test {
+
 // ---------------------------------------------------------------------------
 //  Global heap-allocation counter. Overriding the global operator new/new[] in
 //  this translation unit lets the zero-allocation test prove the publish/drain
@@ -43,12 +45,12 @@
 //  allocator, it is test-only, and it forwards to malloc/free exactly as the
 //  default operator new/delete do.
 // ---------------------------------------------------------------------------
-namespace {
 // The global allocation counter must be mutable global state to observe the
 // global allocator from the operator new override.
 std::atomic<atx::u64> g_alloc_count{
     0}; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
-} // namespace
+
+}  // namespace atxtest_event_bus_test
 
 // SAFETY: these are the standard replaceable global allocation functions. We
 // forward to std::malloc and throw std::bad_alloc on failure exactly as the
@@ -59,7 +61,7 @@ std::atomic<atx::u64> g_alloc_count{
 // param `_Block` (a reserved identifier) — renaming to match it would be worse.
 // NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,clang-analyzer-cplusplus.NewDelete,misc-include-cleaner,readability-inconsistent-declaration-parameter-name)
 void *operator new(std::size_t n) {
-  g_alloc_count.fetch_add(1, std::memory_order_relaxed);
+  atxtest_event_bus_test::g_alloc_count.fetch_add(1, std::memory_order_relaxed);
   void *p = std::malloc(n == 0 ? 1 : n);
   if (p == nullptr) {
     throw std::bad_alloc{};
@@ -73,7 +75,7 @@ void operator delete(void *p, std::size_t /*n*/) noexcept { std::free(p); }
 void operator delete[](void *p, std::size_t /*n*/) noexcept { std::free(p); }
 // NOLINTEND(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,clang-analyzer-cplusplus.NewDelete,misc-include-cleaner,readability-inconsistent-declaration-parameter-name)
 
-namespace {
+namespace atxtest_event_bus_test {
 
 using atx::i64;
 using atx::u64;
@@ -347,4 +349,5 @@ TEST(EventBus, TwoThreadSmoke_ProducerConsumer_DeliversAllInOrder) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_event_bus_test

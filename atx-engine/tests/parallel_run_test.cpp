@@ -14,6 +14,8 @@
 #include "atx/engine/parallel/det_pool.hpp"
 #include "atx/engine/parallel/parallel_run.hpp"
 
+namespace atxtest_parallel_run_test {
+
 namespace eval = atx::engine::eval;
 namespace combine = atx::engine::combine;
 using atx::engine::alpha::AlphaStreams;
@@ -166,3 +168,6 @@ TEST(ParallelRun, EmptyFoldsYieldEmptyTable) {
   // Aggregate of an empty table is the documented sentinel (0.0).
   EXPECT_EQ(cpcv_aggregate_mean_sharpe(std::span<const FoldResult>{}), 0.0);
 }
+
+
+}  // namespace atxtest_parallel_run_test

@@ -34,7 +34,7 @@
 #include "atx/engine/loop/market.hpp"        // Market, InstrumentStats
 #include "atx/engine/loop/types.hpp"         // InstrumentId
 
-namespace {
+namespace atxtest_calibration_test {
 
 using atx::f64;
 using atx::i64;
@@ -183,4 +183,5 @@ TEST(Calibration, AllDegenerate_FallsBackToPrior) {
   EXPECT_EQ(cc.report.n_fills, 0u);
 }
 
-} // namespace
+
+}  // namespace atxtest_calibration_test

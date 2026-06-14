@@ -42,7 +42,7 @@
 #include "atx/engine/risk/exposures.hpp"   // ExposureMatrix, ColumnTag, detail helpers (S8.1)
 #include "atx/engine/risk/factor_model.hpp"
 
-namespace {
+namespace atxtest_risk_robust_regression_test {
 
 using atx::f64;
 using atx::u32;
@@ -550,4 +550,5 @@ TEST(RobustRegression, IndustrySumToZeroSingleSector_DegradesGracefully) {
   EXPECT_FALSE(m.has_value());
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_robust_regression_test

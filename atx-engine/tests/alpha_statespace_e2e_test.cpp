@@ -27,7 +27,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_statespace_e2e_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -174,4 +174,5 @@ TEST(AlphaStatespaceE2E, NoLookAhead) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_statespace_e2e_test

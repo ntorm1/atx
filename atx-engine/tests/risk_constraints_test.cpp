@@ -34,7 +34,7 @@
 
 #include "atx/engine/risk/constraints.hpp"
 
-namespace {
+namespace atxtest_risk_constraints_test {
 
 using atx::f64;
 using atx::usize;
@@ -481,4 +481,5 @@ TEST(RiskConstraints, GrossNetOnly_NotDollarNeutral_ZeroRows) {
   EXPECT_DOUBLE_EQ(mc.gross_l1_budget, 1.0);
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_constraints_test

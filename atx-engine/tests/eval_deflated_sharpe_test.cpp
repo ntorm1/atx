@@ -2,6 +2,9 @@
 #include <cmath>
 #include <optional>
 #include "atx/engine/eval/deflated_sharpe.hpp"
+
+namespace atxtest_eval_deflated_sharpe_test {
+
 using namespace atx::engine::eval;
 TEST(EvalDsr, N1_EqualsProbabilisticSharpeAtZero) {
   auto d = deflated_sharpe(0.10, 250, 0.0, 0.0, 1, std::nullopt);
@@ -53,3 +56,6 @@ TEST(EvalDsr, DegenerateT_ReturnsNaN) {
   EXPECT_TRUE(std::isnan(probabilistic_sharpe(0.10, 0.0, 1, 0.0, 0.0)));  // T<2 degenerate
   EXPECT_TRUE(std::isnan(probabilistic_sharpe(0.10, 0.0, 0, 0.0, 0.0)));
 }
+
+
+}  // namespace atxtest_eval_deflated_sharpe_test

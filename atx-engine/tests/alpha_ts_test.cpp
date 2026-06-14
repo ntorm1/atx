@@ -38,7 +38,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_ts_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -397,4 +397,5 @@ TEST(AlphaTs_Boundary, NestedTimeSeries_MatchesOracle) {
   expect_vm_matches_oracle("rank(ts_mean(close, 3))", panel);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_ts_test

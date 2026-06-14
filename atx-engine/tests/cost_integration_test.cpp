@@ -40,7 +40,7 @@
 #include "atx/engine/loop/panel_types.hpp"   // PanelView, PanelField, kPanelFieldCount
 #include "atx/engine/loop/types.hpp"         // InstrumentId (Symbol)
 
-namespace {
+namespace atxtest_cost_integration_test {
 
 using atx::f64;
 using atx::i64;
@@ -255,4 +255,5 @@ TEST(CostIntegration, CostModelNeverPeeks_TruncationInvariant) {
   EXPECT_EQ(hash_impact(a.impact), hash_impact(b.impact));
 }
 
-} // namespace
+
+}  // namespace atxtest_cost_integration_test

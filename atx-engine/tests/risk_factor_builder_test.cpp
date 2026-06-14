@@ -44,7 +44,7 @@
 #include "atx/engine/loop/types.hpp"       // InstrumentId (Symbol)
 #include "atx/engine/risk/factor_model.hpp"
 
-namespace {
+namespace atxtest_risk_factor_builder_test {
 
 using atx::f64;
 using atx::u32;
@@ -459,4 +459,5 @@ TEST(RiskFactorBuilder, DeadFactorRungIsStillNotImplemented) {
   EXPECT_EQ(m.error().code(), atx::core::ErrorCode::NotImplemented);
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_factor_builder_test

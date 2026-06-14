@@ -35,7 +35,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_widened_conformance_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -234,4 +234,5 @@ TEST(WidenedConformance, Alpha101Subset_FiniteAndConsistent) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_widened_conformance_test

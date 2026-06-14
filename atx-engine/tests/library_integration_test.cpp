@@ -48,7 +48,7 @@
 #include "atx/engine/library/manifest.hpp"  // LibraryManifest
 #include "atx/engine/library/record.hpp"    // Provenance, SegmentReaderLite
 
-namespace {
+namespace atxtest_library_integration_test {
 
 using atx::f64;
 using atx::u32;
@@ -489,4 +489,5 @@ TEST(LibraryIntegration, SnapshotReplaysByteIdentical) {
   EXPECT_FALSE(segment_crcs(dirA).empty());
 }
 
-} // namespace
+
+}  // namespace atxtest_library_integration_test

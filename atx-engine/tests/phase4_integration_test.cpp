@@ -93,7 +93,7 @@
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
-namespace {
+namespace atxtest_phase4_integration_test {
 
 using atx::f64;
 using atx::i64;
@@ -797,4 +797,5 @@ TEST(Phase4Integration, WalkForward_CostsOn_EquityStrictlyBelowFrictionless) {
       << "spread + slippage + temp impact + commission must drain equity below frictionless";
 }
 
-} // namespace
+
+}  // namespace atxtest_phase4_integration_test

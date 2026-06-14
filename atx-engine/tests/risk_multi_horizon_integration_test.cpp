@@ -57,7 +57,7 @@
 #include "atx/engine/risk/optimizer.hpp"
 #include "atx/engine/risk/qp_solver.hpp"
 
-namespace {
+namespace atxtest_risk_multi_horizon_integration_test {
 
 using atx::f64;
 using atx::usize;
@@ -477,4 +477,5 @@ TEST(MultiHorizonIntegration, R7_DegenerateReducesToMultiPeriodByteIdentical) {
   EXPECT_EQ(digest(*got), digest(*oracle)) << "R7 whole-result digest diverged";
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_multi_horizon_integration_test

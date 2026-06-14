@@ -32,7 +32,7 @@
 #include "atx/engine/loop/rolling_panel.hpp" // RollingPanel<Cap>
 #include "atx/engine/loop/types.hpp"         // InstrumentId
 
-namespace {
+namespace atxtest_rolling_panel_test {
 
 using atx::core::domain::Bar;
 using atx::core::domain::Price;
@@ -403,4 +403,5 @@ TEST(RollingPanelDeathTest, View_InstrumentOutOfRange_Aborts) {
   EXPECT_DEATH({ (void)view.close(0, 1); }, ".*");
 }
 
-} // namespace
+
+}  // namespace atxtest_rolling_panel_test

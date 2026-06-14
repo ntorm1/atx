@@ -36,7 +36,7 @@
 
 #include "atx/engine/risk/horizon.hpp"
 
-namespace {
+namespace atxtest_risk_horizon_test {
 
 using atx::f64;
 using atx::usize;
@@ -286,4 +286,5 @@ TEST(RiskHorizon, SingleNameUniverse) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_horizon_test

@@ -50,7 +50,7 @@
 
 #include "atx/engine/book/report.hpp" // the unit under test
 
-namespace {
+namespace atxtest_book_report_test {
 
 using atx::f64;
 using atx::u64;
@@ -415,4 +415,5 @@ TEST(BookReport, RejectsDimMismatch) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_book_report_test

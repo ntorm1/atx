@@ -34,7 +34,7 @@
 #include "atx/engine/cost/cost_aware.hpp"    // round_trip_cost_bps, cost_aware_knobs, ...
 #include "atx/engine/exec/execution_sim.hpp" // ImpactCfg, SlippageCfg
 
-namespace {
+namespace atxtest_cost_aware_test {
 
 using atx::f64;
 using atx::engine::combine::AlphaMetrics;
@@ -126,4 +126,5 @@ TEST(CostAware, LongerHorizonWidensGate) {
   EXPECT_LE(slow.gate.max_turnover, 0.70); // never above the default ceiling
 }
 
-} // namespace
+
+}  // namespace atxtest_cost_aware_test

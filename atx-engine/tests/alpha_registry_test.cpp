@@ -19,7 +19,7 @@
 #include "atx/core/error.hpp"
 #include "atx/engine/alpha/registry.hpp"
 
-namespace {
+namespace atxtest_alpha_registry_test {
 
 using atx::core::ErrorCode;
 using atx::engine::alpha::DType;
@@ -270,4 +270,5 @@ TEST(AlphaRegistry, Split2IsRecordWithTwoPins) {
   EXPECT_EQ(s->pins[1].name, "lo");
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_registry_test

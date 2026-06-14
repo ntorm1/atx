@@ -40,7 +40,7 @@
 
 #include "atx/engine/learn/elastic_net.hpp" // elastic_net, ElasticNetCfg
 
-namespace {
+namespace atxtest_elastic_net_test {
 
 using atx::f64;
 using atx::u64;
@@ -184,4 +184,5 @@ TEST(ElasticNet, SameInput_Deterministic_ByteIdentical) {
   EXPECT_EQ(hash_vec(b1), hash_vec(b2));
 }
 
-} // namespace
+
+}  // namespace atxtest_elastic_net_test

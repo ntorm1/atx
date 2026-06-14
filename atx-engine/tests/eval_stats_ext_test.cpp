@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <vector>
 #include "atx/engine/eval/stats_ext.hpp"
+
+namespace atxtest_eval_stats_ext_test {
+
 using namespace atx::engine::eval;
 TEST(EvalStatsExt, NormCdf_KnownPoints) {
   EXPECT_NEAR(norm_cdf(0.0), 0.5, 1e-12);
@@ -27,3 +30,6 @@ TEST(EvalStatsExt, ReturnsFromEquity_SimpleSteps) {
   std::vector<double> eq{100,110,99}; auto r = returns_from_equity(eq);
   ASSERT_EQ(r.size(), 2U); EXPECT_NEAR(r[0], 0.10, 1e-12); EXPECT_NEAR(r[1], -0.10, 1e-12);
 }
+
+
+}  // namespace atxtest_eval_stats_ext_test

@@ -39,7 +39,7 @@
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/qp_solver.hpp"
 
-namespace {
+namespace atxtest_risk_qp_solver_test {
 
 using atx::f64;
 using atx::usize;
@@ -622,4 +622,5 @@ TEST(RiskQpSolver, ZeroObjectiveFeasibleBook) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_qp_solver_test

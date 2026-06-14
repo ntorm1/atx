@@ -42,7 +42,7 @@
 #include "atx/engine/combine/metrics.hpp"     // AlphaMetrics
 #include "atx/engine/combine/store.hpp"       // AlphaStore
 
-namespace {
+namespace atxtest_combine_gate_test {
 
 using atx::f64;
 using atx::usize;
@@ -318,4 +318,5 @@ TEST(AlphaGate, BoundaryAtMaxPoolCorrAccepts) {
   EXPECT_EQ(gate.admit(m, cand, pool), GateVerdict::Accept);
 }
 
-} // namespace
+
+}  // namespace atxtest_combine_gate_test

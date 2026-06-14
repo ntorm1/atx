@@ -35,7 +35,7 @@
 #include "atx/engine/library/record.hpp"  // Provenance
 #include "atx/engine/library/store.hpp"   // the unit under test
 
-namespace {
+namespace atxtest_library_store_test {
 
 using atx::f64;
 using atx::u32;
@@ -258,4 +258,5 @@ TEST(LibraryStore, FlushEmptyMemtableIsNoOp) {
   EXPECT_EQ(store.n_segments(), 0u);
 }
 
-} // namespace
+
+}  // namespace atxtest_library_store_test

@@ -12,6 +12,12 @@ if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-tests PRIVATE pch.hpp)
 endif()
 
+if(ATX_UNITY_BUILD)
+    set_target_properties(atx-engine-tests PROPERTIES
+        UNITY_BUILD ON
+        UNITY_BUILD_BATCH_SIZE 16)
+endif()
+
 target_link_libraries(atx-engine-tests
     PRIVATE
         atx::engine

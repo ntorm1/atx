@@ -22,7 +22,7 @@
 
 #include "atx/engine/book/allocation.hpp" // the unit under test
 
-namespace {
+namespace atxtest_book_allocation_test {
 
 using atx::f64;
 using atx::core::linalg::VecX;
@@ -106,4 +106,5 @@ TEST(BookAllocation, EffectiveBreadthAllNonPositiveIsZero) {
   EXPECT_EQ(effective_breadth(v), 0.0); // s2 <= 0 ⇒ 0 (no division by zero)
 }
 
-} // namespace
+
+}  // namespace atxtest_book_allocation_test

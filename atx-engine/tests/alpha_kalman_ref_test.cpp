@@ -36,7 +36,7 @@
 // Committed fixture: kRefT, kRefX[], kRefY[], kRefAlpha[], kRefBeta[], kRefResid[].
 #include "fixtures/kalman_reg_reference.hpp"
 
-namespace {
+namespace atxtest_alpha_kalman_ref_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -118,4 +118,5 @@ TEST(KalmanRef, MatchesNumpyReference) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_kalman_ref_test

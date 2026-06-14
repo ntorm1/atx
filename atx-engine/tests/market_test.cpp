@@ -8,7 +8,7 @@
 #include "atx/engine/data/market.hpp"
 #include "atx/engine/event/event.hpp"
 
-namespace {
+namespace atxtest_market_test {
 
 using atx::core::domain::Bar;
 using atx::core::domain::Price;
@@ -216,4 +216,5 @@ TEST(MarketData, MakeTick_KnowledgeBeforeEvent_Aborts) {
   EXPECT_DEATH({ (void)make_market_tick(sym, tick, earlier); }, "");
 }
 
-} // namespace
+
+}  // namespace atxtest_market_test

@@ -34,7 +34,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/validation/bias_audit.hpp"
 
-namespace {
+namespace atxtest_factory_fitness_test {
 
 using atx::f64;
 using atx::usize;
@@ -329,4 +329,5 @@ TEST(FactoryFitness, DeflationShrinksWithTrialCount) {
   EXPECT_GT(d1->dsr, d1k->dsr) << "same alpha, more trials -> lower deflated fitness (F4)";
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_fitness_test

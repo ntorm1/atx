@@ -22,7 +22,7 @@
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 
-namespace {
+namespace atxtest_alpha_bytecode_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -372,4 +372,5 @@ TEST(AlphaBytecode, MultiOutputCompilesOneComputeInstr) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_bytecode_test

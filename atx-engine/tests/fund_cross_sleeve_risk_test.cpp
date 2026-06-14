@@ -34,7 +34,7 @@
 #include "atx/engine/fund/cross_sleeve_risk.hpp" // UNIT UNDER TEST
 #include "atx/engine/risk/factor_model.hpp"      // risk::FactorModel fixture
 
-namespace {
+namespace atxtest_fund_cross_sleeve_risk_test {
 
 using atx::f64;
 using atx::usize;
@@ -463,4 +463,5 @@ TEST(FundCrossSleeveRisk, FundRisk_ShapeMismatch_ReturnsErr) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_fund_cross_sleeve_risk_test

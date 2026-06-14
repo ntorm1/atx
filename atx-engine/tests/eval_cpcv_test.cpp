@@ -3,6 +3,9 @@
 #include <vector>
 #include "atx/engine/eval/cpcv.hpp"
 #include "atx/core/macro.hpp"   // ATX_ASSERT (death test)
+
+namespace atxtest_eval_cpcv_test {
+
 using namespace atx::engine::eval;
 // label spans of a given horizon: obs i -> [i, i+h). h=1 => disjoint; h>1 => neighbors overlap.
 static std::vector<LabelSpan> spans_h(std::size_t n, std::size_t h) {
@@ -50,3 +53,6 @@ TEST(EvalCpcvDeathTest, NegativeEmbargoAborts) {
   // discarded; cast to void to keep the /WX build clean (-Wunused-result).
   EXPECT_DEATH((void)cpcv_folds(spans_h(60,1), CpcvConfig{6,2,-0.1}), ".*");
 }
+
+
+}  // namespace atxtest_eval_cpcv_test

@@ -99,6 +99,7 @@ endif()
 # objects across worktrees (its cache keys embed per-worktree absolute paths), so
 # the PCH — not the object cache — is what makes a fresh worktree compile fast.
 option(ATX_USE_PCH "Use precompiled headers on atx targets (dev speed; keep OFF in CI)" OFF)
+option(ATX_UNITY_BUILD "Unity/jumbo build atx test target (dev speed)" OFF)
 
 # ---- Benchmarks (opt-in; Google Benchmark is a test/bench-only dep) ----
 option(ATX_BUILD_BENCH "Build ATX benchmarks" OFF)

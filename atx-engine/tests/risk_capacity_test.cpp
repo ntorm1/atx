@@ -39,7 +39,7 @@
 #include "atx/engine/loop/types.hpp"         // InstrumentId (Symbol)
 #include "atx/engine/risk/capacity.hpp"
 
-namespace {
+namespace atxtest_risk_capacity_test {
 
 using atx::f64;
 using atx::u32;
@@ -405,4 +405,5 @@ TEST(RiskCapacity, HandComputedConstantReturnZeroSigma) {
   EXPECT_NEAR(pts[1].net_edge_bps, expected, 1e-6);
 }
 
-} // namespace
+
+}  // namespace atxtest_risk_capacity_test

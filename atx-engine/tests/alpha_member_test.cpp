@@ -9,7 +9,9 @@
 
 #include "atx/engine/alpha/parser.hpp"
 
-namespace {
+#include "atx/engine/alpha/typecheck.hpp"
+
+namespace atxtest_alpha_member_test {
 
 using atx::engine::alpha::Expr;
 using atx::engine::alpha::ExprId;
@@ -47,15 +49,12 @@ TEST(AlphaMember, IndClassStillField) {
   ASSERT_TRUE(ast) << ast.error().message();
 }
 
-} // namespace
 
 // ---------------------------------------------------------------------------
 // B6 — type-checker tests (appended after B5 parser tests per plan)
 // ---------------------------------------------------------------------------
 
-#include "atx/engine/alpha/typecheck.hpp"
 
-namespace {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::DType;
@@ -93,13 +92,11 @@ TEST(AlphaMember, RecordRootRejected) {
   EXPECT_FALSE(analyze(ast.value())); // a bare record cannot be an alpha root
 }
 
-} // namespace
 
 // ---------------------------------------------------------------------------
 // D2 — KalmanReg registry + typecheck tests
 // ---------------------------------------------------------------------------
 
-namespace {
 
 TEST(AlphaKalmanReg, PinsResolve) {
   Library lib;
@@ -141,4 +138,5 @@ TEST(AlphaKalmanReg, RejectsBadR) {
   EXPECT_FALSE(analyze(ast.value())); // R must be > 0
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_member_test

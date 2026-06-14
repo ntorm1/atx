@@ -2,6 +2,9 @@
 #include <cstddef>
 #include <vector>
 #include "atx/engine/validation/bias_audit.hpp"
+
+namespace atxtest_validation_bias_audit_test {
+
 using namespace atx::engine::validation;
 TEST(ValidationBiasAudit, NoLookahead_PassesTruncationInvariant) {
   auto causal = [](std::size_t n_visible){ std::vector<double> out; for (std::size_t i=0;i<n_visible;++i) out.push_back(double(i)); return out; };
@@ -20,3 +23,6 @@ TEST(ValidationBiasAudit, Survivorship_DelistedPresentAndFrozen) {
 TEST(ValidationBiasAudit, Snooping_CatchesPlantedOverfit) {
   EXPECT_TRUE(catches_overfit_synthetic());
 }
+
+
+}  // namespace atxtest_validation_bias_audit_test

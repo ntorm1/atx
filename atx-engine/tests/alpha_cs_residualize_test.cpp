@@ -36,7 +36,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_cs_residualize_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -234,4 +234,5 @@ TEST(CsResidualize_Boundary, SingletonAndOneByOne_MatchesOracle) {
   expect_vm_matches_oracle("cs_residualize(close, IndClass.sector, open)", p2);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_cs_residualize_test

@@ -40,7 +40,7 @@
 #include "atx/engine/portfolio/portfolio.hpp" // Portfolio
 #include "atx/engine/risk/optimizer.hpp"     // OptimizerConfig
 
-namespace {
+namespace atxtest_cost_scaffold_test {
 
 using atx::core::Decimal;
 using atx::engine::InstrumentId;
@@ -119,4 +119,5 @@ TEST(CostScaffold, FwdHppForwardDeclarationsVisible) {
   SUCCEED();
 }
 
-} // namespace
+
+}  // namespace atxtest_cost_scaffold_test

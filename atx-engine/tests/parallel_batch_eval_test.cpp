@@ -47,7 +47,7 @@
 #include "atx/engine/parallel/det_pool.hpp"
 #include "atx/engine/parallel/digest.hpp"
 
-namespace {
+namespace atxtest_parallel_batch_eval_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -315,4 +315,5 @@ TEST(ParallelBatchEval, ErrorPropagatesLowestIndex) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_parallel_batch_eval_test

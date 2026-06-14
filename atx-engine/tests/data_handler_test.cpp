@@ -38,7 +38,7 @@
 #include "atx/engine/data/market.hpp"
 #include "atx/engine/event/event.hpp"
 
-namespace {
+namespace atxtest_data_handler_test {
 
 using atx::i64;
 using atx::u32;
@@ -356,4 +356,5 @@ TEST(DataHandler, UnsortedSource_BackwardKnowledgeTs_Aborts) {
   EXPECT_DEATH({ (void)feed.step(); }, ".*");
 }
 
-} // namespace
+
+}  // namespace atxtest_data_handler_test

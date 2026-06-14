@@ -46,7 +46,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/portfolio/portfolio.hpp"
 
-namespace {
+namespace atxtest_alpha_streams_test {
 
 using atx::f64;
 using atx::i64;
@@ -480,4 +480,5 @@ TEST(AlphaStreams, NoCloseField_ReturnsErr) {
   EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_streams_test

@@ -30,8 +30,14 @@
 #include <windows.h>
 // NOLINTEND(misc-include-cleaner)
 #endif
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
-namespace {
+namespace atxtest_segment_panel_test {
 
 std::string temp_path(const std::string &name) {
 #if defined(_WIN32)
@@ -80,7 +86,6 @@ using atx::engine::alpha::TimeWindow;
 using atx::engine::alpha::UniverseKind;
 using atx::engine::alpha::UniversePolicy;
 
-} // namespace
 
 TEST(SegmentPanel_FullWindowAllFields_Mirrors, FullWindow) {
   const std::string path = make_seg("sp1");
@@ -139,7 +144,6 @@ TEST(SegmentPanel_MovePreservesBorrow, MoveSafe) {
   std::remove(path.c_str());
 }
 
-namespace {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -232,7 +236,6 @@ struct PairedData {
   return PairedData{path, std::move(cols), dates, instruments};
 }
 
-} // namespace
 
 TEST(SegmentPanel_Golden_VmShmEqualsVmOwnedEqualsOracle, Differential) {
   const PairedData pd = make_paired("golden", /*dates=*/8, /*instruments=*/5);
@@ -267,3 +270,6 @@ TEST(SegmentPanel_Golden_VmShmEqualsVmOwnedEqualsOracle, Differential) {
   }
   std::remove(pd.path.c_str());
 }
+
+
+}  // namespace atxtest_segment_panel_test

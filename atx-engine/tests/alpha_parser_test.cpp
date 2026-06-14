@@ -23,7 +23,7 @@
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
 
-namespace {
+namespace atxtest_alpha_parser_test {
 
 using atx::core::ErrorCode;
 using atx::engine::alpha::Ast;
@@ -498,4 +498,5 @@ TEST(AlphaProgram_Error, MissingTarget_IsParseError) {
   EXPECT_EQ(res.error().code(), ErrorCode::ParseError);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_parser_test

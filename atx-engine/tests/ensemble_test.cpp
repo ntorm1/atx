@@ -46,7 +46,7 @@
 #include "atx/engine/learn/hmm.hpp"            // Hmm, HmmCfg, baum_welch
 #include "atx/engine/library/library.hpp"      // library::Library, AlphaCandidate, AdmitKind
 
-namespace {
+namespace atxtest_ensemble_test {
 
 using atx::f64;
 using atx::u16;
@@ -338,4 +338,5 @@ TEST(Ensemble, SameSeed_ByteIdenticalVerdict) {
   EXPECT_EQ(v1.oos_dsr_nonlinear, v2.oos_dsr_nonlinear);
 }
 
-} // namespace
+
+}  // namespace atxtest_ensemble_test

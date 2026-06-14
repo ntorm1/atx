@@ -21,7 +21,8 @@
 #include "atx/engine/alpha/unparse.hpp"
 #include "atx/engine/factory/canonical.hpp"
 
-namespace {
+namespace atxtest_alpha_unparse_test {
+
 using namespace atx::engine;
 
 // Parse `src`, unparse the root, re-parse, and assert the two canonical hashes
@@ -92,4 +93,6 @@ TEST(AlphaUnparse, AnonRootOverloadMatches) {
   ASSERT_TRUE(a.has_value());
   EXPECT_EQ(alpha::unparse(*a), alpha::unparse(*a, a->roots().front().root));
 }
-} // namespace
+
+
+}  // namespace atxtest_alpha_unparse_test

@@ -29,7 +29,7 @@
 #include "atx/engine/factory/mutation.hpp"
 #include "atx/engine/factory/op_catalog.hpp"
 
-namespace {
+namespace atxtest_factory_mutation_test {
 
 using atx::core::Xoshiro256pp;
 using atx::engine::alpha::analyze;
@@ -245,4 +245,5 @@ TEST(FactoryMutation, OpSwapReachesInfixArithmetic) {
   EXPECT_EQ(reached.count(OpCode::Add), 0U); // never a no-op swap back to itself
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_mutation_test

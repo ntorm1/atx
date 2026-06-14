@@ -1,7 +1,10 @@
 #include "atx/engine/alpha/bytecode.hpp"
 #include <gtest/gtest.h>
-using namespace atx::engine::alpha;
-using namespace atx::engine::alpha::detail;
+
+namespace atxtest_alpha_slotpool_test {
+
+using atx::engine::alpha::SlotId;
+using atx::engine::alpha::detail::SlotPool;
 
 TEST(SlotPoolBlock, ContiguousBlockThenRelease) {
   SlotPool pool;
@@ -18,3 +21,6 @@ TEST(SlotPoolBlock, SingleAcquireUnaffected) {
   const SlotId b = pool.acquire();
   EXPECT_NE(a, b);
 }
+
+
+}  // namespace atxtest_alpha_slotpool_test

@@ -32,7 +32,7 @@
 #include "atx/engine/fund/netting.hpp"       // UNIT UNDER TEST
 #include "atx/engine/risk/multi_period.hpp"  // book::CostInputs
 
-namespace {
+namespace atxtest_fund_netting_test {
 
 using atx::f64;
 using atx::usize;
@@ -357,4 +357,5 @@ TEST(FundNetting, ShapeMismatch_ReturnsErr) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_fund_netting_test

@@ -22,7 +22,7 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/clock/sim_clock.hpp"
 
-namespace {
+namespace atxtest_sim_clock_test {
 
 using atx::core::time::Timestamp;
 using atx::engine::SimClock;
@@ -197,4 +197,5 @@ TEST(SimClock, Restatement_VisibilityFlipsAtKnowledgeBoundary) {
   EXPECT_TRUE(clock.is_visible(kT2));
 }
 
-} // namespace
+
+}  // namespace atxtest_sim_clock_test

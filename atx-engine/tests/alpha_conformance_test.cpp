@@ -52,7 +52,7 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
-namespace {
+namespace atxtest_alpha_conformance_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -700,4 +700,5 @@ TEST(AlphaConformance_Meta, InBatteryCount_AndOutOfBatteryCount_AreReported) {
   EXPECT_EQ(out_count, 36);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_conformance_test

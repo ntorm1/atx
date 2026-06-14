@@ -28,7 +28,8 @@
         "CMAKE_POLICY_DEFAULT_CMP0141": "NEW",
         "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded",
         "FETCHCONTENT_BASE_DIR": "$env{ATX_DEPS_DIR}",
-        "ATX_USE_PCH": "ON"
+        "ATX_USE_PCH": "ON",
+        "ATX_UNITY_BUILD": "ON"
       }
     },
     {

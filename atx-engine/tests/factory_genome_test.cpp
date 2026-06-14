@@ -29,7 +29,7 @@
 
 #include "atx/engine/factory/genome.hpp"
 
-namespace {
+namespace atxtest_factory_genome_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::Ast;
@@ -198,4 +198,5 @@ TEST(FactoryGenome, ValidateRejectsRecordRoot) {
   EXPECT_FALSE(analyze(g.value()).has_value()); // §0.2: record root -> InvalidArgument
 }
 
-} // namespace
+
+}  // namespace atxtest_factory_genome_test

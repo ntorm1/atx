@@ -56,7 +56,7 @@
 #include "atx/engine/library/record.hpp"  // library::Provenance
 #include "atx/engine/library/store.hpp"   // library::AlphaRecordView
 
-namespace {
+namespace atxtest_research_engine_test {
 
 using atx::f64;
 using atx::u32;
@@ -460,4 +460,5 @@ TEST(ResearchEngine, UnparseRoundTripsThroughCanonicalHash) {
   }
 }
 
-} // namespace
+
+}  // namespace atxtest_research_engine_test

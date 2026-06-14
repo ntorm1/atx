@@ -10,7 +10,7 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/event/event.hpp"
 
-namespace {
+namespace atxtest_event_test {
 
 using atx::engine::event::Event;
 using atx::engine::event::EventType;
@@ -157,4 +157,5 @@ TEST(EventTaxonomy, ToString_IsConstexpr) {
   EXPECT_EQ(market, std::string_view{"Market"});
 }
 
-} // namespace
+
+}  // namespace atxtest_event_test

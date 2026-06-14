@@ -10,6 +10,8 @@
 
 #include <gtest/gtest.h>
 
+namespace atxtest_alpha_state_ops_test {
+
 using namespace atx::engine::alpha::detail;
 
 // ---------------------------------------------------------------------------
@@ -97,3 +99,6 @@ TEST(KalmanRegStep, NanObsPredictOnlyOutputsNaN) {
   EXPECT_DOUBLE_EQ(s.a, a_before); // beta unchanged (predict-only)
   EXPECT_DOUBLE_EQ(s.b, b_before);
 }
+
+
+}  // namespace atxtest_alpha_state_ops_test

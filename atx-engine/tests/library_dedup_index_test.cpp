@@ -37,7 +37,7 @@
 #include "atx/engine/factory/genome.hpp"    // factory::Genome
 #include "atx/engine/library/dedup_index.hpp" // the unit under test
 
-namespace {
+namespace atxtest_library_dedup_index_test {
 
 using atx::u64;
 using atx::engine::alpha::analyze;
@@ -169,4 +169,5 @@ TEST(LibraryDedup, Persists64BitHashFidelity) { // guards the i64 round-trip
   EXPECT_FALSE(reopened.contains(kHighBit ^ 0x1ull));
 }
 
-} // namespace
+
+}  // namespace atxtest_library_dedup_index_test

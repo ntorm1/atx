@@ -34,7 +34,7 @@
 #include "atx/engine/combine/metrics.hpp" // AlphaMetrics
 #include "atx/engine/combine/store.hpp"   // AlphaStore
 
-namespace {
+namespace atxtest_combine_combiner_test {
 
 using atx::f64;
 using atx::usize;
@@ -455,4 +455,5 @@ TEST(AlphaCombiner, WindowBeyondPeriodsReturnsErr) {
   EXPECT_FALSE(comb.fit(pool, 0, 10).has_value()); // window exceeds the streams
 }
 
-} // namespace
+
+}  // namespace atxtest_combine_combiner_test

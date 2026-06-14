@@ -33,7 +33,7 @@
 #include "atx/engine/combine/store.hpp"      // combine::AlphaId
 #include "atx/engine/library/lifecycle.hpp"  // the unit under test
 
-namespace {
+namespace atxtest_library_lifecycle_test {
 
 using atx::engine::combine::AlphaId;
 using atx::engine::library::LifecycleJournal;
@@ -107,4 +107,5 @@ TEST(LibraryLifecycle, PersistsAcrossReopen) { // append-only durable
   EXPECT_EQ(r.state_as_of(AlphaId{0}, 999), LifecycleState::Admitted);
 }
 
-} // namespace
+
+}  // namespace atxtest_library_lifecycle_test

@@ -7,7 +7,7 @@
 
 #include "atx/engine/alpha/parser.hpp"
 
-namespace {
+namespace atxtest_alpha_bindings_test {
 
 using atx::engine::alpha::Expr;
 using atx::engine::alpha::ExprId;
@@ -65,4 +65,5 @@ TEST(AlphaBindings, NoBindingUseNoWarning) {
   EXPECT_TRUE(warnings.empty());
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_bindings_test

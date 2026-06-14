@@ -34,7 +34,7 @@
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 
-namespace {
+namespace atxtest_alpha_oracle_test {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
@@ -272,4 +272,5 @@ TEST(AlphaOracle_Validate, MissingField_ReturnsErr) {
   EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotFound);
 }
 
-} // namespace
+
+}  // namespace atxtest_alpha_oracle_test

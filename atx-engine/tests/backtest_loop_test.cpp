@@ -33,7 +33,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/portfolio/portfolio.hpp"
 
-namespace {
+namespace atxtest_backtest_loop_test {
 
 using atx::f64;
 using atx::i64;
@@ -297,4 +297,5 @@ TEST(BacktestLoop, EmptyFeed_NoSlices) {
   EXPECT_NEAR(o.cash, 100'000.0, 1e-6);
 }
 
-} // namespace
+
+}  // namespace atxtest_backtest_loop_test
