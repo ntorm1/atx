@@ -24,7 +24,7 @@
 //   * SignalAsFeatureReferenceable           — path (1): a merged signal column
 //       resolves as a panel field by name.
 
-#include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <vector>
@@ -35,7 +35,9 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/parser.hpp" // parse_expr, alpha::Library (mined-hash probe)
 #include "atx/engine/alpha/streams.hpp"
+#include "atx/engine/alpha/typecheck.hpp" // analyze (mined-hash probe)
 #include "atx/engine/combine/gate.hpp"
 #include "atx/engine/combine/metrics.hpp"
 #include "atx/engine/data/adapt_feature.hpp"
@@ -44,10 +46,10 @@
 #include "atx/engine/data/dataset.hpp"
 #include "atx/engine/data/dataset_schema.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
+#include "atx/engine/factory/canonical.hpp" // factory::canonical_hash (mined-hash probe)
+#include "atx/engine/factory/genome.hpp"    // factory::Genome (mined-hash probe)
 #include "atx/engine/library/library.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
-
-#include <filesystem>
 
 namespace atxtest_data_adapt_signal_test {
 
@@ -126,6 +128,23 @@ constexpr usize kN = 4;  // four instruments (graded long/short book)
   return base_ret(i) + wiggle(t, i);
 }
 
+// A guaranteed-coherent trivial Dataset, returned by a fixture helper when its
+// (always-true) Dataset::create precondition unexpectedly fails — so a failed
+// precondition records ADD_FAILURE and returns a VALID object rather than calling
+// .value() on an error Result (which is UB; EXPECT does not stop the function).
+[[nodiscard]] Dataset valid_default_dataset() {
+  DatasetSchema s;
+  s.columns = {"close", "volume"};
+  s.dtypes = {ColumnDType::F64, ColumnDType::F64};
+  s.role = Role::Price;
+  std::vector<std::vector<f64>> data = {{1.0}, {1.0}}; // 1 date x 1 instrument
+  auto res = Dataset::create(std::move(s), /*dates=*/{1}, /*instruments=*/{0u}, std::move(data),
+                             /*mask=*/{}, DatasetProvenance{"test:default", ""});
+  // This construction is unconditionally coherent; ATX-assert via gtest if not.
+  EXPECT_TRUE(res.has_value());
+  return std::move(res).value();
+}
+
 // A price Dataset whose close column realizes ret_at(t,i): close[0]=100, then
 // close[t]=close[t-1]*(1+ret_at(t,i)). open/high/low/volume are filled positive so
 // with_datafields (vwap/dollar_volume) is well-formed. Date keys are 1..kT (strictly
@@ -163,7 +182,10 @@ constexpr usize kN = 4;  // four instruments (graded long/short book)
   }
   auto res = Dataset::create(std::move(s), std::move(dates), {10u, 20u, 30u, 40u}, std::move(data),
                              /*mask=*/{}, DatasetProvenance{"test:prices", "planted"});
-  EXPECT_TRUE(res.has_value()) << (res.has_value() ? "" : res.error().message());
+  if (!res.has_value()) {
+    ADD_FAILURE() << "make_price_dataset: " << res.error().message();
+    return valid_default_dataset();
+  }
   return std::move(res).value();
 }
 
@@ -198,14 +220,26 @@ constexpr usize kN = 4;  // four instruments (graded long/short book)
   }
   auto res = Dataset::create(std::move(s), std::move(dates), {10u, 20u, 30u, 40u}, std::move(data),
                              /*mask=*/{}, DatasetProvenance{source, "planted-signal"});
-  EXPECT_TRUE(res.has_value()) << (res.has_value() ? "" : res.error().message());
+  if (!res.has_value()) {
+    ADD_FAILURE() << "make_signal_dataset: " << res.error().message();
+    return valid_default_dataset();
+  }
   return std::move(res).value();
 }
 
+// Panel has no public default ctor (built only via price_to_panel here), so on an
+// unexpected failure we fall back to a panel over the guaranteed-coherent default
+// price Dataset rather than calling .value() on an error Result (UB).
 [[nodiscard]] Panel make_price_panel(const Dataset &price) {
-  std::vector<atx::u16> adv{};
+  const std::vector<atx::u16> adv{};
   auto res = price_to_panel(price, std::span<const atx::u16>{adv});
-  EXPECT_TRUE(res.has_value()) << (res.has_value() ? "" : res.error().message());
+  if (!res.has_value()) {
+    ADD_FAILURE() << "make_price_panel: " << res.error().message();
+    const Dataset fallback = valid_default_dataset();
+    auto def = price_to_panel(fallback, std::span<const atx::u16>{adv});
+    EXPECT_TRUE(def.has_value());
+    return std::move(def).value();
+  }
   return std::move(res).value();
 }
 
@@ -295,7 +329,7 @@ TEST(DataAdaptSignal, AdmitVerdictMatchesExtractStreamsPath) {
   const auto hand_pnl = hs.pnl(0);
   const usize np = hs.n_periods();
   const usize ni = hs.n_instruments();
-  std::span<const f64> hand_pos{hs.pos_flat.data() + 0 * np * ni, np * ni};
+  std::span<const f64> hand_pos{hs.pos_flat.data(), np * ni}; // alpha 0 is the first block
   const auto hand_metrics = compute_metrics(hand_pnl, hand_pos, ni, /*book_size=*/1.0);
 
   // The adapter's column-0 streams must equal the hand path bit-for-bit.
@@ -355,8 +389,9 @@ TEST(DataAdaptSignal, ProvenanceFlagsExternalSource) {
 }
 
 // canon_hash is deterministic (same inputs -> same hash), distinct across columns,
-// and distinct from a representative mined-genome canonical_hash (the external tag
-// guarantees it cannot collide with the genome-hash space).
+// distinct across dataset sources, AND concretely distinct from a representative
+// mined-genome factory::canonical_hash ("rank(close)") — the external tag guarantees
+// it cannot collide with the genome-hash space.
 TEST(DataAdaptSignal, CanonHashDistinctFromMinedGenome) {
   const Dataset price = make_price_dataset();
   const Dataset signal = make_signal_dataset("external:src_x");
@@ -384,12 +419,22 @@ TEST(DataAdaptSignal, CanonHashDistinctFromMinedGenome) {
   ASSERT_TRUE(adm3.has_value());
   EXPECT_NE(a1.candidates[0].canon_hash, adm3.value().candidates[0].canon_hash);
 
-  // Distinct from the genome-hash space: the adapter's hash is content-addressed over
-  // an "external" tag, so it cannot collide with a mined canonical_hash (which hashes
-  // a DSL genome, never the external tag). We assert the documented guarantee by
-  // checking the hash is non-zero and stable (the tag-space disjointness is structural;
-  // see adapt_signal.hpp's canon_hash contract).
   EXPECT_NE(a1.candidates[0].canon_hash, u64{0});
+
+  // CONCRETE genome-hash disjointness: build a representative mined genome
+  // ("rank(close)") and compute its factory::canonical_hash (the persisted mined
+  // dedup key) the same way the search driver does. The external canon_hash must
+  // differ from it. (Structurally it must: canonical_hash folds an Ast and never
+  // hashes the "external" tag; this pins the guarantee with a real mined key.)
+  atx::engine::alpha::Library dsl; // built-ins (rank, etc.) pre-registered
+  auto parsed = atx::engine::alpha::parse_expr("rank(close)", dsl);
+  ASSERT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().message());
+  auto info = atx::engine::alpha::analyze(*parsed);
+  ASSERT_TRUE(info.has_value()) << (info ? "" : info.error().message());
+  const atx::engine::factory::Genome g{std::move(*parsed), std::move(*info), 0};
+  const u64 mined_hash = atx::engine::factory::canonical_hash(g);
+  EXPECT_NE(a1.candidates[0].canon_hash, mined_hash);
+  EXPECT_NE(a1.candidates[1].canon_hash, mined_hash);
 }
 
 // ---------------------------------------------------------------------------

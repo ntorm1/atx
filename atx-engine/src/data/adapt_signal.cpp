@@ -63,6 +63,20 @@ constexpr std::string_view kExternalTag = "external";
 // RNG / clock input. Distinct columns / sources -> distinct hashes; the same inputs
 // always hash identically. The literal "external" tag keeps this disjoint from the
 // mined genome-hash space (which never hashes that tag).
+//
+// SAFETY (cross-run dedup-key stability): this canon_hash is persisted as the
+// library DedupIndex key, but atx::core::hash_bytes is wyhash with a COMPILE-TIME
+// secret — its header documents it is NOT stable across process restarts /
+// platforms / library upgrades (only WITHIN one process). So cross-run dedup of
+// external signals relies on the pinned wyhash secret staying fixed; if the
+// ankerl/wyhash pin changes, every persisted external canon_hash shifts and the
+// dedup DB must be regenerated (an existing external entry would no longer dedup
+// against a re-ingested identical signal). NOTE: the MINED path's persisted key
+// (factory::canonical_hash) deliberately uses a cross-run-STABLE FNV-1a fold for
+// exactly this reason — but that fold is private to factory/canonical.cpp and
+// operates on an Ast, not raw bytes, so there is no reusable cross-process-stable
+// byte-hash to match here. If one is exposed in core, switch to it and drop this
+// caveat. Within-run determinism (what every S6.5 test asserts) holds regardless.
 [[nodiscard]] atx::u64 external_canon_hash(const std::string &source, const std::string &name) {
   std::string buf;
   buf.reserve(kExternalTag.size() + source.size() + name.size() + 2U);

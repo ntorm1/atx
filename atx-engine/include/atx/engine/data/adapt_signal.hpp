@@ -66,10 +66,24 @@ namespace atx::engine::data {
 //  SignalAdmission is alive (and across its move). The caller admits each
 //  candidate via library::Library::admit(candidate, gate) BEFORE this value is
 //  destroyed.
+//
+//  MOVE-ONLY by design (the copy ctor would silently dangle): a COPY deep-copies
+//  `streams` (new buffers) AND copies `candidates` — but a copied candidate's
+//  pnl / pos_flat spans still alias the SOURCE's `streams`, not the copy's. Move
+//  is pointer-stable for std::vector (the AlphaStreams buffers' addresses are
+//  preserved), so the candidate spans survive a move. We therefore delete copy
+//  and default move, making the dangling state UNREPRESENTABLE.
 // ===========================================================================
 struct SignalAdmission {
   alpha::AlphaStreams streams;                     // owns pnl_flat / pos_flat
   std::vector<library::AlphaCandidate> candidates; // one per signal column; spans into `streams`
+
+  SignalAdmission() = default;
+  SignalAdmission(SignalAdmission &&) = default;
+  SignalAdmission &operator=(SignalAdmission &&) = default;
+  SignalAdmission(const SignalAdmission &) = delete;
+  SignalAdmission &operator=(const SignalAdmission &) = delete;
+  ~SignalAdmission() = default;
 };
 
 // ===========================================================================
