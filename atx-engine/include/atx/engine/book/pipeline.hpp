@@ -88,9 +88,9 @@
 
 #include "atx/engine/combine/combined_source.hpp" // combine::CombinedSignalSource
 #include "atx/engine/combine/combiner.hpp" // combine::AlphaCombiner, CombinerConfig, Combination, CombineMethod
-#include "atx/engine/combine/gate.hpp"     // combine::AlphaGate, GateConfig
-#include "atx/engine/combine/metrics.hpp"  // combine::AlphaMetrics
-#include "atx/engine/combine/store.hpp"    // combine::AlphaStore, AlphaId
+#include "atx/engine/combine/gate.hpp"    // combine::AlphaGate, GateConfig
+#include "atx/engine/combine/metrics.hpp" // combine::AlphaMetrics
+#include "atx/engine/combine/store.hpp"   // combine::AlphaStore, AlphaId
 
 #include "atx/engine/cost/calibration.hpp" // cost::CalibratedCost
 #include "atx/engine/cost/capacity.hpp"    // cost::capacity_point
@@ -103,17 +103,19 @@
 #include "atx/engine/library/library.hpp"   // library::Library
 #include "atx/engine/library/lifecycle.hpp" // library::LifecycleState
 
-#include "atx/engine/loop/panel_types.hpp"   // PanelView, PanelField, kPanelFieldCount, InstrumentId
+#include "atx/engine/loop/panel_types.hpp" // PanelView, PanelField, kPanelFieldCount, InstrumentId
 #include "atx/engine/loop/signal_source.hpp" // loop::ScriptedSignalSource, ISignalSource
 #include "atx/engine/loop/types.hpp"         // InstrumentId
 #include "atx/engine/loop/weight_policy.hpp" // WeightPolicy
 
-#include "atx/engine/book/allocation.hpp"   // book::size_book, AllocationConfig, effective_breadth
+#include "atx/engine/book/allocation.hpp"    // book::size_book, AllocationConfig, effective_breadth
 #include "atx/engine/book/decay_monitor.hpp" // book::DecayController, DecayConfig
-#include "atx/engine/book/report.hpp"        // book::accumulate_report, write_report, BookReport, CostInputs
+#include "atx/engine/book/report.hpp" // book::accumulate_report, write_report, BookReport, CostInputs
 
-#include "atx/engine/risk/capacity.hpp"     // risk::capacity_curve, CapacityPoint
-#include "atx/engine/risk/dead_factor.hpp"  // risk::extract_dead_factors, augment_factor_model, DeadAlphaFactors
+#include "atx/engine/data/context.hpp" // data::DataContext (S6.8 run_with_context overload)
+
+#include "atx/engine/risk/capacity.hpp" // risk::capacity_curve, CapacityPoint
+#include "atx/engine/risk/dead_factor.hpp" // risk::extract_dead_factors, augment_factor_model, DeadAlphaFactors
 #include "atx/engine/risk/exposures.hpp"    // risk::FactorModelConfig
 #include "atx/engine/risk/factor_model.hpp" // risk::FactorModel, FactorModelBuilder, FactorComponents
 #include "atx/engine/risk/multi_period.hpp" // risk::MultiPeriodOptimizer, MultiPeriodConfig, RebalanceSchedule
@@ -124,28 +126,28 @@ namespace atx::engine::book {
 //  PipelineConfig — the end-to-end knobs (all deterministic).
 // ===========================================================================
 struct PipelineConfig {
-  factory::ResearchConfig research{};        // the mine->admit engine config (carries master_seed)
-  atx::u64 library_master_seed = 0xC0FFEEu;  // persistent-library corr-index rebuild seed (L7)
-  risk::RebalanceSchedule schedule{};        // ascending as-of period indices for the book chain
-  combine::CombinerConfig combiner{};        // blend method for the mega-alpha
-  AllocationConfig alloc{};                  // fractional-Kelly / max-gross knobs
-  DecayConfig decay = default_decay_cfg();   // detector + hysteresis knobs
-  risk::MultiPeriodConfig optimizer{};       // single-period cfg + trade rate + capacity bound
-  risk::FactorModelConfig factor{};          // exposure-builder config (sectors-only by default below)
-  atx::usize factor_window = 0;              // trailing rows for build_components (0 => panel rows)
-  atx::usize dead_lifecycle_as_of = 0;       // journal period at which a pre-retired alpha reads Dead
-  atx::usize dead_holdings_period = 0;        // positions period whose holdings seed the dead overlap
-  atx::usize forward_window = 60;            // # of forward periods the DecayController observes
-  std::string returns_field = "rev";         // the realized-return field accumulate_report reads
-  std::string out_dir{};                     // write_report output dir ("" => skip the write)
-  atx::f64 ref_participation = 0.05;         // cost_aware_knobs reference participation
-  atx::f64 ref_sigma = 0.02;                 // cost_aware_knobs reference per-step volatility
-  atx::f64 cost_horizon_days = 2.0;          // cost_aware_knobs rebalance horizon (RenTech ~2-day hold)
+  factory::ResearchConfig research{};       // the mine->admit engine config (carries master_seed)
+  atx::u64 library_master_seed = 0xC0FFEEu; // persistent-library corr-index rebuild seed (L7)
+  risk::RebalanceSchedule schedule{};       // ascending as-of period indices for the book chain
+  combine::CombinerConfig combiner{};       // blend method for the mega-alpha
+  AllocationConfig alloc{};                 // fractional-Kelly / max-gross knobs
+  DecayConfig decay = default_decay_cfg();  // detector + hysteresis knobs
+  risk::MultiPeriodConfig optimizer{};      // single-period cfg + trade rate + capacity bound
+  risk::FactorModelConfig factor{};    // exposure-builder config (sectors-only by default below)
+  atx::usize factor_window = 0;        // trailing rows for build_components (0 => panel rows)
+  atx::usize dead_lifecycle_as_of = 0; // journal period at which a pre-retired alpha reads Dead
+  atx::usize dead_holdings_period = 0; // positions period whose holdings seed the dead overlap
+  atx::usize forward_window = 60;      // # of forward periods the DecayController observes
+  std::string returns_field = "rev";   // the realized-return field accumulate_report reads
+  std::string out_dir{};               // write_report output dir ("" => skip the write)
+  atx::f64 ref_participation = 0.05;   // cost_aware_knobs reference participation
+  atx::f64 ref_sigma = 0.02;           // cost_aware_knobs reference per-step volatility
+  atx::f64 cost_horizon_days = 2.0;    // cost_aware_knobs rebalance horizon (RenTech ~2-day hold)
   // The deployed book capital used to convert the capacity AUM (cost::capacity_point, a
   // dollar figure) into a deployable GROSS-LEVERAGE ceiling: capacity_gross =
   // clamp(capacity_aum / reference_aum, 0, alloc.max_gross). A LARGER reference_aum (more
   // capital chasing the same capacity) yields a TIGHTER leverage ceiling. (§0.9.)
-  atx::f64 reference_aum = 1.0e5;            // deployed book capital (AUM->leverage divisor)
+  atx::f64 reference_aum = 1.0e5; // deployed book capital (AUM->leverage divisor)
   // The sim exposes impact_cfg() but NOT a slippage accessor, so the calibrated cost's
   // slippage coefficient is taken from here (a default 1 bp one-way slippage). Keeps the
   // round-trip cost strictly positive so the net-below-gross invariant (R3) is non-vacuous.
@@ -216,8 +218,44 @@ public:
       : lib_{lib}, dsl_{dsl}, panel_{panel}, sim_{sim}, policy_{policy}, gate_{gate} {}
 
   // Execute the full mine -> ... -> report flow once. Deterministic: same cfg + same
-  // starting library contents => byte-identical book_digest AND report_digest.
+  // starting library contents => byte-identical book_digest AND report_digest. This is
+  // the LEGACY entry point — it delegates to run_impl with NO factor-model override, so
+  // its output is byte-identical to the pre-S6.8 behavior (the BookPipeline suite guards
+  // this).
   [[nodiscard]] atx::core::Result<PipelineReport> run(const PipelineConfig &cfg) {
+    return run_impl(cfg, std::nullopt);
+  }
+
+  // S6.8 — the data-layer entry point. Same flow as run(), but (1) admits the
+  // DataContext's external-signal candidates into lib_ BEFORE mining (via the held
+  // gate_), and (2) if the context supplies a factor-model override, uses it as V in
+  // place of build_base_components + augment_with_dead. A price-only context (no
+  // signals, no override) => byte-identical to run() (the boundary pin).
+  [[nodiscard]] atx::core::Result<PipelineReport> run_with_context(data::DataContext &ctx,
+                                                                   const PipelineConfig &cfg) {
+    // 1. Admit the context's external-signal candidates through the SAME gate the mine
+    //    path uses (gate_). The candidate spans live in the DataContext's owned
+    //    SignalAdmissions (valid for ctx's lifetime). The as_of mirrors the promote
+    //    boundary (schedule front, or 0). A price-only context yields ZERO candidates,
+    //    so this loop is empty and cannot perturb the legacy digest (the pin holds).
+    const atx::usize admit_as_of = cfg.schedule.periods.empty() ? 0U : cfg.schedule.periods.front();
+    ATX_TRY(const std::span<const library::AlphaCandidate> cands,
+            ctx.signal_admit_candidates(sim_, policy_, admit_as_of));
+    for (const library::AlphaCandidate &c : cands) {
+      (void)lib_.admit(c, gate_); // gated by the EXISTING admission battery; verdict ignored
+    }
+    // 2. Resolve the optional BYO factor-model override and drive the shared flow.
+    ATX_TRY(std::optional<risk::FactorModel> override, ctx.factor_model_override());
+    return run_impl(cfg, std::move(override));
+  }
+
+private:
+  // The shared mine -> ... -> report flow. `factor_override`: if present, it is used
+  // VERBATIM as the risk model V (skipping build_base_components + augment_with_dead);
+  // if nullopt, V is built EXACTLY as the legacy run() did. run(cfg) == run_impl(cfg,
+  // nullopt) is byte-identical to the pre-S6.8 path.
+  [[nodiscard]] atx::core::Result<PipelineReport>
+  run_impl(const PipelineConfig &cfg, std::optional<risk::FactorModel> factor_override) {
     PipelineReport out;
     returns_field_id_cached_ = returns_field_id(cfg); // resolved once for the const helpers
 
@@ -228,7 +266,8 @@ public:
     // 2. PROMOTE every freshly-Admitted alpha Admitted -> Live (the as_of is the
     //    schedule's first period, or 0 for an empty schedule). A NON-Admitted alpha
     //    (none here, but defensive) is skipped — mark only drives the legal edge.
-    const atx::usize promote_as_of = cfg.schedule.periods.empty() ? 0U : cfg.schedule.periods.front();
+    const atx::usize promote_as_of =
+        cfg.schedule.periods.empty() ? 0U : cfg.schedule.periods.front();
     promote_admitted_to_live(promote_as_of);
 
     // 3. COMBINE: build the pool over held-alive constituent doubles + fit + freeze.
@@ -236,9 +275,10 @@ public:
     ATX_TRY(combine::Combination combo, build_combined_source(cfg, universe));
     (void)combo; // combo is owned by combined_; retained only to surface fit errors.
 
-    // 4. RISK + DEAD: real base factor model, dead-factor extraction + augmentation.
-    ATX_TRY(risk::FactorComponents base, build_base_components(cfg, universe));
-    ATX_TRY(risk::FactorModel V, augment_with_dead(cfg, base, universe, out));
+    // 4. RISK + DEAD: a BYO override (if supplied) is used verbatim; else the real base
+    //    factor model + dead-factor extraction + augmentation (the legacy path).
+    ATX_TRY(risk::FactorModel V,
+            resolve_factor_model(cfg, universe, out, std::move(factor_override)));
 
     // 5. ALLOCATE: capacity ceiling, calibrated cost knobs, fractional-Kelly gross.
     const CostInputs cost = build_cost_inputs(cfg, universe, out);
@@ -252,9 +292,8 @@ public:
 
     // 9. REPORT: roll the realized book chain into a BookReport + (optionally) write.
     const atx::usize report_as_of = report_as_of_period(cfg);
-    ATX_TRY(BookReport rep,
-            accumulate_report(books, panel_, returns_field_id(cfg), cfg.schedule, V,
-                              cost.capacity_gross, lib_, report_as_of));
+    ATX_TRY(BookReport rep, accumulate_report(books, panel_, returns_field_id(cfg), cfg.schedule, V,
+                                              cost.capacity_gross, lib_, report_as_of));
     if (!cfg.out_dir.empty()) {
       ATX_TRY_VOID(write_report(rep, cfg.out_dir));
     }
@@ -266,7 +305,20 @@ public:
     return atx::core::Ok(std::move(out));
   }
 
-private:
+  // --- step 4 (override hook) ----------------------------------------------
+  // Produce the risk model V the optimizer/report consume. With a BYO override present,
+  // V is the override VERBATIM (build + augment skipped; out.dead_factors stays 0). With
+  // nullopt, V is EXACTLY build_base_components + augment_with_dead — the legacy path, so
+  // run_impl(cfg, nullopt) is byte-identical to the pre-S6.8 run().
+  [[nodiscard]] atx::core::Result<risk::FactorModel>
+  resolve_factor_model(const PipelineConfig &cfg, atx::usize universe, PipelineReport &out,
+                       std::optional<risk::FactorModel> factor_override) {
+    if (factor_override.has_value()) {
+      return atx::core::Ok(std::move(*factor_override));
+    }
+    ATX_TRY(risk::FactorComponents base, build_base_components(cfg, universe));
+    return augment_with_dead(cfg, base, universe, out);
+  }
   // --- step 2 --------------------------------------------------------------
   // Mark every alpha currently in Admitted state Admitted->Live as of `as_of`.
   void promote_admitted_to_live(atx::usize as_of) {
@@ -382,8 +434,9 @@ private:
     // row (window-1) needs row `window` to exist: window <= rows-1. Cap accordingly so
     // the per-date return read never indexes past the valid PanelView window (no abort).
     const atx::usize max_window = (rows >= 2U) ? rows - 1U : rows;
-    atx::usize window =
-        (cfg.factor_window == 0U || cfg.factor_window > max_window) ? max_window : cfg.factor_window;
+    atx::usize window = (cfg.factor_window == 0U || cfg.factor_window > max_window)
+                            ? max_window
+                            : cfg.factor_window;
     if (window < 2U) {
       window = (max_window >= 2U) ? max_window : 2U;
     }
@@ -413,9 +466,11 @@ private:
     }
     const atx::usize n_per = lib_.n_periods();
     const atx::usize scan =
-        (n_per == 0U) ? 0U : (cfg.dead_holdings_period < n_per ? cfg.dead_holdings_period : n_per - 1U);
-    ATX_TRY(risk::DeadAlphaFactors df,
-            risk::extract_dead_factors(lib_, std::span<const combine::AlphaId>{dead}, scan, universe));
+        (n_per == 0U) ? 0U
+                      : (cfg.dead_holdings_period < n_per ? cfg.dead_holdings_period : n_per - 1U);
+    ATX_TRY(
+        risk::DeadAlphaFactors df,
+        risk::extract_dead_factors(lib_, std::span<const combine::AlphaId>{dead}, scan, universe));
     out.dead_factors = df.k_dead;
     return risk::augment_factor_model(base, df);
   }
@@ -428,10 +483,11 @@ private:
   [[nodiscard]] CostInputs build_cost_inputs(const PipelineConfig &cfg, atx::usize universe,
                                              PipelineReport &out) {
     const PanelView pv = panel_view();
-    std::vector<atx::f64> flat(universe, 1.0 / static_cast<atx::f64>(universe == 0U ? 1U : universe));
+    std::vector<atx::f64> flat(universe,
+                               1.0 / static_cast<atx::f64>(universe == 0U ? 1U : universe));
     const std::vector<atx::f64> aum_grid{1e5, 1e6, 1e7, 1e8};
-    const std::vector<risk::CapacityPoint> curve =
-        risk::capacity_curve(std::span<const atx::f64>{flat}, pv, sim_, std::span<const atx::f64>{aum_grid});
+    const std::vector<risk::CapacityPoint> curve = risk::capacity_curve(
+        std::span<const atx::f64>{flat}, pv, sim_, std::span<const atx::f64>{aum_grid});
     // cost::capacity_point returns the capacity AUM (a DOLLAR figure where net edge
     // crosses zero), NOT a leverage multiple. CostInputs.capacity_gross is a GROSS-
     // LEVERAGE ceiling, so convert §0.9 "expressed as a deployable gross given AUM":
@@ -536,8 +592,8 @@ private:
     DecayController controller{cfg.decay};
     const atx::usize base_as_of = monitor_base_period(cfg);
     const atx::u64 n = lib_.n_alphas();
-    std::vector<combine::AlphaId> live;          // alphas observed by the decay monitor
-    std::vector<combine::AlphaId> pre_dead;      // the pre-retired pool to recycle
+    std::vector<combine::AlphaId> live;     // alphas observed by the decay monitor
+    std::vector<combine::AlphaId> pre_dead; // the pre-retired pool to recycle
     for (atx::u64 a = 0; a < n; ++a) {
       const combine::AlphaId id{static_cast<atx::u32>(a)};
       const auto st = lib_.state_as_of(id, base_as_of);
@@ -639,7 +695,7 @@ private:
         set_field(PanelField::Low, phys, i, c);
         set_field(PanelField::Close, phys, i, c);
         set_field(PanelField::Volume, phys, i, 1.0e6); // a benign constant ADV
-        if (!(c != c)) { // not-NaN
+        if (!(c != c)) {                               // not-NaN
           pv_mask_[phys * pv_mask_words_ + (i >> 6U)] |= (1ULL << (i & 63U));
         }
       }
@@ -649,12 +705,8 @@ private:
   }
 
   [[nodiscard]] PanelView panel_view() const noexcept {
-    return PanelView{pv_fields_.data(),
-                     pv_mask_.data(),
-                     std::span<const InstrumentId>{pv_uni_},
-                     pv_cap_,
-                     pv_head_(),
-                     pv_rows_,
+    return PanelView{pv_fields_.data(), pv_mask_.data(), std::span<const InstrumentId>{pv_uni_},
+                     pv_cap_,           pv_head_(),      pv_rows_,
                      pv_mask_words_};
   }
 
@@ -739,7 +791,9 @@ private:
     pv_fields_[block + phys * pv_universe_size_ + inst] = v;
   }
 
-  [[nodiscard]] atx::usize pv_head_() const noexcept { return (pv_rows_ == 0U) ? 0U : pv_rows_ - 1U; }
+  [[nodiscard]] atx::usize pv_head_() const noexcept {
+    return (pv_rows_ == 0U) ? 0U : pv_rows_ - 1U;
+  }
 
   [[nodiscard]] static atx::usize pow2_ceil(atx::usize n) noexcept {
     atx::usize p = 1U;

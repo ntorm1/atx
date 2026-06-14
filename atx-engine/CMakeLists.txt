@@ -40,6 +40,7 @@ add_library(atx-engine STATIC
     src/data/adapt_signal.cpp
     src/data/align.cpp
     src/data/catalog.cpp
+    src/data/context.cpp
     src/data/data_handler.cpp
     src/data/dataset.cpp
     src/data/shm_bar_feed.cpp
