@@ -25,6 +25,8 @@ pybind11_add_module(_core
     src/_bindings/bind_eval.cpp
     src/_bindings/bind_risk.cpp
     src/_bindings/bind_factory.cpp
+    src/_bindings/bind_learn.cpp
+    src/_bindings/bind_fund.cpp
     src/_bindings/shim/backtest_shim.cpp
     src/_bindings/shim/mining_shim.cpp
 )

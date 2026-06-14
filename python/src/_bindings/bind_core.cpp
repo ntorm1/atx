@@ -65,6 +65,8 @@ void bind_backtest_module(py::module_ &m);
 void bind_eval_module(py::module_ &m);
 void bind_risk_module(py::module_ &m);
 void bind_factory_module(py::module_ &m);
+void bind_learn_module(py::module_ &m);
+void bind_fund_module(py::module_ &m);
 
 void bind_core(py::module_ &m) {
   bind_decimal(m);
@@ -75,4 +77,6 @@ void bind_core(py::module_ &m) {
   bind_eval_module(m);
   bind_risk_module(m);
   bind_factory_module(m);
+  bind_learn_module(m);
+  bind_fund_module(m);
 }

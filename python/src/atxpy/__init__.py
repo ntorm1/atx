@@ -34,6 +34,8 @@ from .eval import Metrics, performance, return_metrics
 from .risk import factor_model, optimize
 from . import mining as mining
 from .mining import mine_alphas, combine_pool
+from . import learn as learn
+from . import fund as fund
 
 __version__ = "0.1.0"
 
@@ -82,5 +84,8 @@ __all__ = [
     "mining",
     "mine_alphas",
     "combine_pool",
+    # learn (ML alphas) + fund (meta-book)
+    "learn",
+    "fund",
     "__version__",
 ]
