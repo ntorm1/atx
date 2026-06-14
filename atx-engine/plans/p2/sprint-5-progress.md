@@ -46,8 +46,8 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 
 | Unit  | Title                                                                                          | Status | Commit SHA | Tests | Notes |
 |-------|------------------------------------------------------------------------------------------------|--------|------------|-------|-------|
-| S5-0  | Marker + ledger + kickoff recon (K1–K7) + baseline build green                                  | 🟡     | _(this)_   | —     | this ledger; baseline `atx-engine-tests` green on the branch before S5.1 dispatch. |
-| S5-1  | Sequence-feature tensor builder — `learn/nn/tensor.hpp` (Seq3) + `learn/sequence_features.{hpp,cpp}` | ⏳ | —          | —     | PIT trailing windows `[t-L+1..t]` over `FeatureMatrix`; truncation-invariance + `L=1`→tabular pin + insufficient-history NaN. |
+| S5-0  | Marker + ledger + kickoff recon (K1–K7) + baseline build green                                  | ✅     | `d309a9b`  | green | ledger + recon; baseline `atx-engine-tests` green (44s, dev preset PCH) before S5.1. |
+| S5-1  | Sequence-feature tensor builder — `learn/nn/tensor.hpp` (Seq3) + `learn/sequence_features.{hpp,cpp}` | ✅ | `fe978a6`  | 10/10 | PIT trailing windows `[t-L+1..t]` over `FeatureMatrix`; truncation-invariance + `L=1`→tabular pin + insufficient-history NaN. Spec+CQ review passed. |
 | S5-2a | NN framework substrate — `learn/nn/{module.hpp,layers,optimizer,loss,trainer}`                   | ⏳     | —          | —     | `Module`/`Layer`/`Optimizer`/`Loss`/`Trainer`; **finite-diff gradient check per layer (R3)** + two-builds determinism (R1) + linear-net→`p1` S5 linear-alpha pin (R7). |
 | S5-2b | TCN + GRU-lite alphas — `learn/tcn_alpha.{hpp,cpp}`                                              | ⏳     | —          | —     | `fit_tcn`/`fit_gru` over trailing CPCV folds; causal-no-look-ahead (R2) + seed-ensemble determinism (R8). |
 | S5-3  | Autoencoder + attention-lite — `learn/autoencoder_alpha.{hpp,cpp}`                               | ⏳     | —          | —     | `fit_autoencoder_factors` (GKX-style) + `fit_attn`; **linear-AE→atx-core `pca()` pin (R7)** + attention backward (R3). |
@@ -60,7 +60,8 @@ The plan's §0.1–§0.10 ARE the as-built ML-framework code review (authored la
 
 | SHA | Unit | Subject |
 |-----|------|---------|
-| _(this)_ | S5-0 | docs(s5-0): open p2 sprint-5 deep-learning-alphas ledger + kickoff recon (K1–K7) |
+| `d309a9b` | S5-0 | docs(s5-0): open p2 sprint-5 deep-learning-alphas ledger + kickoff recon (K1–K7) |
+| `fe978a6` | S5-1 | feat(s5-1): PIT trailing sequence-window tensor builder over FeatureMatrix (learn/sequence_features + nn/tensor.hpp) |
 
 ---
 
