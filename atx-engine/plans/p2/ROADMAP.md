@@ -365,7 +365,7 @@ RenTech §7 (ruthless OOS), `p1` S1/S3/S4b/S6.* Consumes S3 (the substrate), `p1
 > battery + the `p1` S1 deflated gate) and converges with the book-construction track (S1→S2) at the **S8** robust-alpha
 > capstone, where the lockbox `eval/lockbox.hpp` reserved here is opened exactly once.
 
-### S5 — Deep-Learning Sequence Alphas  ⏳ proposed ([impl-plan](sprint-5-deep-learning-sequence-alphas-implementation-plan.md))
+### S5 — Deep-Learning Sequence Alphas  ✅ done ([impl-plan](sprint-5-deep-learning-sequence-alphas-implementation-plan.md) · [progress](sprint-5-progress.md))
 **Theme:** A richer **signal family** — `p1` anti-roadmap #7: *"NN ensembles are p2-or-later, gated by evidence the
 simpler combiners are saturated."* S5 honors that gate by building NN signals **only behind `p1` S1's deflated-Sharpe
 / PBO admission battery** (the validation spine exists precisely so this is safe) and feeding them through the **same
@@ -381,12 +381,12 @@ S4 (the robustness battery it must also pass).
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S5.0 | Marker + ledger | S | ⏳ |
-| S5.1 | PIT sequence-feature tensor builder (temporal windows over `p1` S5 features; no look-ahead) | M | ⏳ |
-| S5.2 | Deterministic NN training substrate (seeded, fixed-iteration, order-fixed) + temporal-conv/GRU-lite alpha — atx-core L7 NN request | L | ⏳ |
-| S5.3 | Attention-lite / autoencoder statistical-factor alpha (latent-state heritage) | L | ⏳ |
-| S5.4 | Deflated-Sharpe + PBO admission gate for NN alphas (reuses `p1` S1 verbatim; the anti-overfit firewall) + S4 robustness-battery pass | M | ⏳ |
-| S5.5 | NN-alpha → library + combiner/sleeve integration + bench + close | M | ⏳ |
+| S5.0 | Marker + ledger | S | ✅ `d309a9b` |
+| S5.1 | PIT sequence-feature tensor builder (temporal windows over `p1` S5 features; no look-ahead) | M | ✅ `fe978a6` |
+| S5.2 | Deterministic NN training substrate (seeded, fixed-iteration, order-fixed) + temporal-conv/GRU-lite alpha — atx-core L7 NN request | L | ✅ `a01e53c`·`4d438cc`·`d28691d` |
+| S5.3 | Attention-lite / autoencoder statistical-factor alpha (latent-state heritage) | L | ✅ `417a1f8`·`10724f5` |
+| S5.4 | Deflated-Sharpe + PBO admission gate for NN alphas (reuses `p1` S1 verbatim; the anti-overfit firewall) + S4 robustness-battery pass | M | ✅ `747da91` |
+| S5.5 | NN-alpha → library + combiner/sleeve integration + bench + close | M | ✅ `a193552`·`93a9c41` |
 
 ### S6 — Data / Signal / Feature / Reference Abstraction Layer — the BYO-Data Engine  ⏳ proposed ([spec](sprint-6-data-signal-feature-reference-abstraction-layer.md) · [impl-plan](sprint-6-data-signal-feature-reference-abstraction-layer-implementation-plan.md)) · split **S6-a / S6-b** (>7 units)
 **Theme:** Turn the engine into a **bring-your-own-data pipeline.** Today atx-engine is wired to *one fixed in-memory

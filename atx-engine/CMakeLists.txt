@@ -32,8 +32,22 @@ add_library(atx-engine STATIC
     src/learn/latent.cpp
     src/learn/learned_source.cpp
     src/learn/linear_alpha.cpp
+    # live NN signal source + NN library bridge (p2 S5-5a — integration capstone)
+    src/learn/nn_source.cpp
     src/learn/pipeline.cpp
+    src/learn/sequence_features.cpp
+    # sequence alphas (p2 S5-2b-ii — TCN + GRU-lite learned alphas over windows)
+    src/learn/tcn_alpha.cpp
+    # autoencoder statistical-factor alpha (p2 S5-3b — GKX latent-factor extractor)
+    src/learn/autoencoder_alpha.cpp
     src/learn/train.cpp
+    # nn substrate (p2 S5-2a — deterministic CPU NN framework + generic layers)
+    src/learn/nn/layers.cpp
+    src/learn/nn/loss.cpp
+    src/learn/nn/optimizer.cpp
+    src/learn/nn/trainer.cpp
+    # nn sequence layers (p2 S5-2b-i — causal conv / TCN block / GRU-lite + MGU / pool)
+    src/learn/nn/seq_layers.cpp
     src/data/data_handler.cpp
     src/data/shm_bar_feed.cpp
     src/parallel/batch_eval.cpp

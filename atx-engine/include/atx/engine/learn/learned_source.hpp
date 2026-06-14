@@ -81,9 +81,16 @@ namespace atx::engine::learn {
 //
 //  S5-3 ships only Linear. S5-4 adds Gbt by extending this enum and the
 //  predict dispatch's exhaustive switch (no default) — a compile error there
-//  flags the missing arm, which is the intended guard.
+//  flags the missing arm, which is the intended guard. p2 S5-2b adds the two
+//  sequence-NN arms Tcn + Gru (see NnPayload below + predict_nn in tcn_alpha.cpp);
+//  p2 S5-3a adds the single-head causal-attention arm Attn (same NnPayload path).
+//  p2 S5-3b adds the AUTOENCODER statistical-factor arm (Gu-Kelly-Xiu): it reuses
+//  the NnPayload (the encoder/decoder seed-ensemble + arch dims) but is a SEPARATE
+//  predict path (predict_ae, declared after predict_blended, defined in
+//  src/learn/autoencoder_alpha.cpp). The AE input is the F-dim cross-sectional
+//  feature vector (NOT the L*F window), so it cannot share predict_nn.
 // ===========================================================================
-enum class ModelKind : atx::u8 { Linear, Gbt };
+enum class ModelKind : atx::u8 { Linear, Gbt, Tcn, Gru, Attn, Autoencoder };
 
 // ===========================================================================
 //  GBT forest representation (S5-4) — the deployed parameters of a histogram
@@ -156,6 +163,35 @@ struct GbtForest {
 }
 
 // ===========================================================================
+//  NnPayload (kind == Tcn|Gru, p2 S5-2b) — the deployed seed-ensemble + the arch
+//  dims needed to rebuild the module for inference. POD-only by design: this
+//  header is widely included, so it must NOT pull in any nn/ header. predict_nn
+//  (declared after predict_blended, defined in src/learn/tcn_alpha.cpp — the TU
+//  that owns the nn/ includes) reads these to rebuild the factory and run the
+//  ascending-member-mean forward. Empty / default for non-NN kinds, so existing
+//  Linear/Gbt construction is unchanged.
+//
+//  lookback / n_seq_features: the window shape L / F. For an NN model the deployed
+//                window row is the flattened (L*F) standardized window, so
+//                lookback * n_seq_features == augmented_dim() == n_base_features.
+//  arch_dims   : the kind-specific integer architecture (TCN: {blocks, kernel,
+//                channels}; GRU: {hidden}; ATTN: {d_model}). predict_nn rebuilds
+//                the same factory.
+//  arch_params : the kind-specific scalar architecture (here: {dropout} — eval is
+//                identity, but the factory is reconstructed identically anyway).
+//  member_states: one serialized nn::Module state per ensemble member, in the
+//                ascending member order the Trainer emitted them (R1). predict_nn
+//                reloads each via Module::state_from and averages (ascending).
+// ===========================================================================
+struct NnPayload {
+  atx::usize lookback{0};       // L (time steps per window)
+  atx::usize n_seq_features{0}; // F (channels per step); L*F == augmented_dim()
+  std::vector<atx::usize> arch_dims;   // architecture integers (kind-specific)
+  std::vector<atx::f64> arch_params;   // architecture scalars (e.g. {dropout})
+  std::vector<std::vector<atx::f64>> member_states; // one nn::Module state per member
+};
+
+// ===========================================================================
 //  LearnedModel — the immutable deployed parameters of a fitted learned alpha.
 //
 //  kind        : which arm's parameters are populated (Linear for S5-3).
@@ -194,6 +230,10 @@ struct LearnedModel {
   // Empty for a Linear model, so existing Linear construction is unchanged; the
   // Gbt predict arm reads these instead of coeffs.
   std::vector<GbtForest> forests{};
+  // p2 S5-2b sequence-NN payload (kind == Tcn|Gru): the deployed seed-ensemble +
+  // the arch dims to rebuild the module for inference. Default-empty so existing
+  // Linear/Gbt construction is unchanged; predict_nn reads it.
+  NnPayload nn{};
 
   // The augmented feature dimension this model's coeffs operate on:
   // base + latent-k + interaction-pairs. The single source of that arithmetic so
@@ -270,6 +310,43 @@ struct LearnedModel {
 }
 
 // ===========================================================================
+//  predict_nn — the sequence-NN inference forward (kind == Tcn|Gru, p2 S5-2b).
+//
+//  Defined in src/learn/tcn_alpha.cpp (the TU that owns the nn/ includes — kept
+//  out of this widely-included header). Reshapes the length-(L*F) standardized
+//  window row into the (1, L*F) MatX the Trainer expects (col t*F + f == feature
+//  f at time t — the S5-1 / seq_layers time-major encoding), rebuilds the
+//  seed-ensemble factory from m.nn (kind decides TCN vs GRU; arch_dims /
+//  arch_params give the shape), reloads the ascending member states, and returns
+//  the ascending-member-mean forward prediction (R1). PRECONDITION: m.kind is Tcn
+//  or Gru and window_row.size() == m.nn.lookback * m.nn.n_seq_features.
+//
+//  Declared BEFORE predict_blended so the (inline) Tcn/Gru switch arm below can
+//  call it; the definition is in the .cpp.
+// ===========================================================================
+[[nodiscard]] atx::f64 predict_nn(const LearnedModel &m, std::span<const atx::f64> window_row);
+
+// ===========================================================================
+//  predict_ae — the AUTOENCODER statistical-factor inference (kind == Autoencoder,
+//  p2 S5-3b).
+//
+//  Defined in src/learn/autoencoder_alpha.cpp (the TU that owns the nn/ includes —
+//  kept out of this widely-included header, like predict_nn). The AE input is the
+//  F-dim CROSS-SECTIONAL feature vector (NOT a flattened L*F window): predict_ae
+//  centers `feature_row` with m.feat_mean, rebuilds the ENCODER seed-ensemble from
+//  m.nn (arch_dims = {F, K, beta_hidden...}), reloads each member's encoder prefix,
+//  runs ONLY the encoder to the K-dim latent Z, and returns the ascending-member
+//  mean of Z[0] (the leading latent factor) as the scalar alpha (R1). A guarded
+//  payload (empty member_states / malformed arch) returns 0.0 ("no opinion").
+//  PRECONDITION: m.kind == Autoencoder and feature_row.size() == F (== feat_mean
+//  size == augmented_dim(), aug empty).
+//
+//  Declared BEFORE predict_blended so the (inline) Autoencoder switch arm below can
+//  call it; the definition is in the .cpp.
+// ===========================================================================
+[[nodiscard]] atx::f64 predict_ae(const LearnedModel &m, std::span<const atx::f64> feature_row);
+
+// ===========================================================================
 //  predict_blended — the horizon-blended scalar score for one augmented row.
 //
 //  Sum over horizons of blend_w[h] * (coeff_h . augmented_row). The exhaustive
@@ -302,6 +379,23 @@ struct LearnedModel {
     }
     return acc;
   }
+  case ModelKind::Tcn:
+  case ModelKind::Gru:
+  case ModelKind::Attn:
+    // The sequence-NN arms (p2 S5-2b/S5-3a). `augmented_row` IS the standardized
+    // flattened (L*F) window — n_base_features == L*F and aug is empty, so
+    // build_augmented_row produced it. The horizon blend is baked into the
+    // deployed ensemble's training target (see tcn_alpha.cpp), so inference is a
+    // single ascending-member-mean forward — delegated to predict_nn, which owns
+    // the nn/ includes (kept out of this widely-included header).
+    return predict_nn(m, augmented_row);
+  case ModelKind::Autoencoder:
+    // The statistical-factor arm (p2 S5-3b). `augmented_row` IS the F-dim
+    // cross-sectional feature vector (n_base_features == F and aug is empty, so
+    // build_augmented_row produced it). Inference runs ONLY the encoder to the
+    // K-dim latent and returns the leading factor Z[0] — delegated to predict_ae,
+    // which owns the nn/ includes (kept out of this widely-included header).
+    return predict_ae(m, augmented_row);
   }
   return 0.0; // unreachable: every ModelKind is handled above (no default).
 }
