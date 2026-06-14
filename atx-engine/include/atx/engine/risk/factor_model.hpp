@@ -220,6 +220,30 @@ public:
     out_v = t1 - dinv_.cwiseProduct(t4);                         // D⁻¹in − D⁻¹X·  (M)
   }
 
+  // V·in = X F (Xᵀ in) + D ∘ in (the FORWARD apply — the dual of apply_inverse;
+  // S1-2 QP needs P = 2λV as a matvec). O(MK + K²) via the K-dimensional factor
+  // space: t = Xᵀin (K), then X(F t) (M) + D∘in (M) — NEVER an M×M materialization.
+  // The K-sized temporaries (t, ft) are the documented apply-path allocation, exactly
+  // as apply_inverse's t2/t3 are. Deterministic given (X, F, D): same in → same out.
+  void apply(std::span<const atx::f64> in, std::span<atx::f64> out) const {
+    const Eigen::Index m = x_.rows();
+    ATX_ASSERT(in.size() == static_cast<atx::usize>(m));
+    ATX_ASSERT(out.size() == static_cast<atx::usize>(m));
+
+    Eigen::Map<const atx::core::linalg::VecX> in_v(in.data(), m);
+    Eigen::Map<atx::core::linalg::VecX> out_v(out.data(), m);
+
+    const atx::core::linalg::VecX t = x_.transpose() * in_v; // Xᵀ in          (K)
+    const atx::core::linalg::VecX ft = f_ * t;               // F Xᵀ in        (K)
+    out_v = x_ * ft + d_.cwiseProduct(in_v);                 // X F Xᵀ in + D∘in (M)
+  }
+
+  // The M specific variances D (read-only) — the diagonal of V (floored, > 0). The
+  // S1-2 QP solver uses it as a cheap deterministic Jacobi-preconditioner diagonal
+  // for the matrix-free 2λV block (diag(V)_i = Σ_k X(i,k)F(k,l)X(i,l) + D_i; D alone
+  // is the dominant, trivially-available part — a valid SPD preconditioner term).
+  [[nodiscard]] const atx::core::linalg::VecX &specific_var() const noexcept { return d_; }
+
   // Factor-neutralize a signal IN PLACE: s ← s − X (XᵀX)⁻¹ Xᵀ s, the residual of s
   // on the factor exposures. A tiny ridge (kNeutralizeRidge) on XᵀX keeps a
   // collinear exposure block solvable. NaN cells propagate (see header note).
