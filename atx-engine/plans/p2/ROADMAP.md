@@ -237,7 +237,7 @@ WorldQuant §6.1/§6.5 (bounded regression, turnover-as-cost), Boyd 2017, Gârle
 > **Boundary pin:** with one horizon, `trade_rate=1`, and the `{Σw=0,Σ|w|≤L,|w_i|≤cap}` constraint set only, S1 must
 > reduce **bit-for-bit** to `p1` S7's chained single-period book — the regression anchor against the proven layer.
 
-### S2 — Multi-Strategy Meta-Book & Risk Budgeting  ⏳ proposed ([impl-plan](sprint-2-multi-strategy-meta-book-implementation-plan.md))
+### S2 — Multi-Strategy Meta-Book & Risk Budgeting  ✅ DELIVERED (2026-06-14) ([impl-plan](sprint-2-multi-strategy-meta-book-implementation-plan.md) · [progress](sprint-2-progress.md))
 **Theme:** Measure admitted alpha at the **fund** level — Laufer's single unified book, made multi-sleeve, as a
 portfolio-scale lens on library breadth. A **`Strategy`/`Sleeve`** abstraction (each sleeve = a universe × horizon ×
 signal-family book wrapping its own S1 optimizer + library subset), a **meta-allocator** that combines sleeves into one
@@ -250,12 +250,12 @@ book), WorldQuant §6.2 (internal crossing), Grinold-Kahn (risk budgeting across
 
 | # | Unit | Effort | Status |
 |---|---|---|---|
-| S2.0 | Marker + ledger | S | ⏳ |
-| S2.1 | `Sleeve` abstraction (universe × horizon × signal-family; wraps an S1 optimizer + a library subset; PIT) | M | ⏳ |
-| S2.2 | Meta-allocator (sleeves → one fund; cross-sleeve risk budget; portfolio-of-books Kelly extending `book::allocation`) | L | ⏳ |
-| S2.3 | Cross-sleeve risk model (shared `FactorModel`; aggregate exposure; sleeve-return correlation) | M | ⏳ |
-| S2.4 | Internal trade crossing/netting (net sleeve targets into one fund order; net-cost saving measured in-sim) | M | ⏳ |
-| S2.5 | Fund-level report + attribution-by-sleeve + close | M | ⏳ |
+| S2.0 | Marker + ledger | S | ✅ `f93fece` |
+| S2.1 | `Sleeve` abstraction (universe × horizon × signal-family; wraps an S1 optimizer + a library subset; PIT) | M | ✅ `2d4718e` |
+| S2.2 | Meta-allocator (sleeves → one fund; cross-sleeve risk budget; portfolio-of-books Kelly extending `book::allocation`) | L | ✅ `7c25c49` |
+| S2.3 | Cross-sleeve risk model (shared `FactorModel`; aggregate exposure; sleeve-return correlation) | M | ✅ `014756f` |
+| S2.4 | Internal trade crossing/netting (net sleeve targets into one fund order; net-cost saving measured in-sim) | M | ✅ `ca4d181` |
+| S2.5 | Fund-level report + attribution-by-sleeve + close | M | ✅ `03c208d` |
 
 ### S3 — Alpha DSL & Expression Substrate  ⏳ proposed
 **Theme:** The spine, part one — **widen and correct WHAT the factory can express.** `p1`'s DSL is production-grade
