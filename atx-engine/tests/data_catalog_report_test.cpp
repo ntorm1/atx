@@ -136,4 +136,26 @@ TEST(CatalogReport, CatalogReportIsReproducible) {
   EXPECT_EQ(a.find(dir_b), std::string::npos) << "no absolute path may leak into the report";
 }
 
+// =============================================================================
+//  CatalogReportEmptyCatalog — the zero-dataset path: succeeds + deterministic.
+// =============================================================================
+TEST(CatalogReport, CatalogReportEmptyCatalog) {
+  const DatasetCatalog empty; // no datasets registered
+
+  const std::string dir_a = tmpdir("empty_a");
+  const std::string dir_b = tmpdir("empty_b");
+  ASSERT_TRUE(write_catalog_report(empty, dir_a).has_value())
+      << "an empty catalog must still write a (header-only) report";
+  ASSERT_TRUE(write_catalog_report(empty, dir_b).has_value());
+
+  const std::string a = read_file(std::filesystem::path{dir_a} / "catalog_report.txt");
+  const std::string b = read_file(std::filesystem::path{dir_b} / "catalog_report.txt");
+
+  // Deterministic: two writes of the empty catalog are byte-identical.
+  EXPECT_EQ(a, b) << "the empty-catalog report must be byte-reproducible";
+  // Header-only: the report version header is present, but no dataset block.
+  EXPECT_NE(a.find("catalog_report"), std::string::npos) << "the report header must be present";
+  EXPECT_EQ(a.find("dataset:"), std::string::npos) << "an empty catalog lists no datasets";
+}
+
 } // namespace atxtest_data_catalog_report_test

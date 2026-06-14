@@ -232,6 +232,10 @@ constexpr f64 kMinDsr = 0.5;
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
   std::filesystem::create_directories(dir, ec);
+  // Surface a setup failure HERE (clear message) rather than as a confusing
+  // downstream library-open / write assertion.
+  EXPECT_FALSE(ec) << "tmpdir create_directories failed for " << dir.string() << ": "
+                   << ec.message();
   return dir.string();
 }
 

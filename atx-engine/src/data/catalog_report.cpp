@@ -9,11 +9,11 @@
 
 #include <filesystem>
 #include <fstream>
-#include <string>
 #include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/macro.hpp" // ATX_UNREACHABLE (exhaustive-switch trap)
 #include "atx/core/types.hpp"
 
 #include "atx/engine/data/dataset.hpp"
@@ -34,7 +34,9 @@ namespace {
   case Role::Reference:
     return "Reference";
   }
-  return "Unknown";
+  // SAFETY: enum class, all enumerators covered above; out-of-range is UB at the
+  // call site — trap (abort in debug) rather than silently render a garbage label.
+  ATX_UNREACHABLE();
 }
 
 [[nodiscard]] std::string_view dtype_name(ColumnDType dt) noexcept {
@@ -46,7 +48,9 @@ namespace {
   case ColumnDType::Category:
     return "Category";
   }
-  return "Unknown";
+  // SAFETY: enum class, all enumerators covered above; out-of-range is UB at the
+  // call site — trap (abort in debug) rather than silently render a garbage label.
+  ATX_UNREACHABLE();
 }
 
 // Serialize ONE dataset's name/role/schema/provenance/lineage block to `out`.

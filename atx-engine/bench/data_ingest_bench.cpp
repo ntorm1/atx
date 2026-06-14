@@ -7,13 +7,14 @@
 //                         join rail onto the canonical axis.
 //   * BM_PriceToPanel   — price_to_panel(price): the raw OHLCV/close lowering into
 //                         an alpha::Panel (the with_datafields augmentation path).
-//   * BM_PriceOnlyLower  — the steady-state price-only lowering: a fixed pre-built
-//                         Dataset lowered repeatedly. The lowering allocates the
-//                         Panel ONCE per call (the output Panel buffers) — there is
-//                         NO hidden per-call growth beyond that one output (no
-//                         catalog re-walk, no intermediate align). The bench reports
-//                         a fixed bytes/iter via SetBytesProcessed so a regression
-//                         that adds steady-state work would show up as throughput.
+//   * BM_PricePanelPath — the SHIPPED product surface S6 adds: register a price
+//                         Dataset in a DatasetCatalog -> DataContext::create ->
+//                         price_panel(). This is what users actually call (distinct
+//                         from the raw price_to_panel above), so it captures the
+//                         catalog register + context build + lazy lowering as one
+//                         end-to-end cost. A fresh catalog + context are built INSIDE
+//                         the timed loop (price_panel is lazy+cached, so a reused
+//                         context would only lower once).
 //
 // NOTE (repo convention): this is a Debug / clang-cl build. The absolute ns/op
 // figures here are UPPER BOUNDS, NOT release numbers — do not quote them as release
@@ -33,6 +34,8 @@
 
 #include "atx/engine/data/adapt_panel.hpp"
 #include "atx/engine/data/align.hpp"
+#include "atx/engine/data/catalog.hpp"
+#include "atx/engine/data/context.hpp"
 #include "atx/engine/data/dataset.hpp"
 #include "atx/engine/data/dataset_schema.hpp"
 
@@ -45,7 +48,9 @@ using atx::engine::alpha::Panel;
 using atx::engine::data::align_onto;
 using atx::engine::data::AlignedView;
 using atx::engine::data::ColumnDType;
+using atx::engine::data::DataContext;
 using atx::engine::data::Dataset;
+using atx::engine::data::DatasetCatalog;
 using atx::engine::data::DatasetProvenance;
 using atx::engine::data::DatasetSchema;
 using atx::engine::data::DateKey;
@@ -170,23 +175,27 @@ void BM_PriceToPanel(benchmark::State &state) {
 }
 BENCHMARK(BM_PriceToPanel)->Unit(benchmark::kMicrosecond);
 
-// The steady-state price-only lowering: a FIXED pre-built Dataset lowered each call.
-// price_to_panel allocates exactly the OUTPUT Panel per call (no catalog re-walk, no
-// intermediate align) — so bytes/iter is constant and a regression that adds
-// steady-state per-call work shows up as a throughput drop here. (Debug upper-bound
-// only — see the file header.)
-void BM_PriceOnlyLower(benchmark::State &state) {
-  const Dataset price = make_price_dataset();
-  const std::vector<u16> adv{};
+// The SHIPPED product path: register a price Dataset -> DataContext::create ->
+// price_panel(). This is what users actually call to drive the engine from a catalog
+// (distinct from the raw price_to_panel above), so it captures the catalog register +
+// context build + lazy lowering as one end-to-end cost. A fresh catalog + context are
+// built INSIDE the timed loop because price_panel() is lazy+cached — a reused context
+// would lower exactly once and the loop would then time a no-op cache hit. (Debug
+// upper-bound only — see the file header.)
+void BM_PricePanelPath(benchmark::State &state) {
   for (auto _ : state) {
-    auto r = price_to_panel(price, std::span<const u16>{adv});
-    benchmark::DoNotOptimize(r);
+    DatasetCatalog catalog;
+    (void)catalog.register_dataset("prices", make_price_dataset());
+    auto ctx = DataContext::create(catalog, "prices"); // empty adv_windows => raw lowering
+    if (ctx.has_value()) {
+      auto panel = ctx->price_panel(); // lazy lowering happens here (first call)
+      benchmark::DoNotOptimize(panel);
+    }
+    benchmark::DoNotOptimize(catalog);
     benchmark::ClobberMemory();
   }
-  // Fixed bytes/iter: the lowered price columns (a stable per-call footprint).
-  state.SetBytesProcessed(state.iterations() *
-                          static_cast<std::int64_t>(kDates * kInsts * sizeof(f64)));
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(kDates * kInsts));
 }
-BENCHMARK(BM_PriceOnlyLower)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_PricePanelPath)->Unit(benchmark::kMicrosecond);
 
 } // namespace
