@@ -13,7 +13,6 @@
 //                              called with an empty universe.
 //   * MissingCloseErrs  — Dataset lacking "close" → price_to_panel is_err().
 
-#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <limits>

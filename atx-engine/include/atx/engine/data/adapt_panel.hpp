@@ -16,7 +16,6 @@
 // Cold path; copies are intentional.
 
 #include <span>
-#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
