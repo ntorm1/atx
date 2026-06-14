@@ -50,6 +50,7 @@
 #include "atx/engine/parallel/digest.hpp"
 #include "atx/engine/parallel/executor.hpp"
 #include "atx/engine/parallel/parallel_run.hpp"
+#include "atx/engine/parallel/process_executor.hpp"
 #include "atx/engine/parallel/thread_executor.hpp"
 
 namespace {
@@ -73,6 +74,7 @@ using atx::engine::parallel::FoldResult;
 using atx::engine::parallel::parallel_backtests;
 using atx::engine::parallel::parallel_cpcv;
 using atx::engine::parallel::parallel_evaluate;
+using atx::engine::parallel::ProcessExecutor;
 using atx::engine::parallel::result_table_digest;
 using atx::engine::parallel::run_one_fold;
 using atx::engine::parallel::signal_set_digest;
@@ -416,6 +418,34 @@ TEST(ParallelWorkloadPort, BacktestsWorkerCountInvariant) {
   const atx::u64 d1 = result_table_digest(parallel_backtests(streams, 1.0e6, exec1));
   const atx::u64 d8 = result_table_digest(parallel_backtests(streams, 1.0e6, exec8));
   EXPECT_EQ(d1, d8) << "IExecutor& backtests digest must be invariant from 1 to 8 workers";
+}
+
+// ===========================================================================
+//  OUT-OF-PROCESS MISUSE — the vector-returning IExecutor& overloads are
+//  IN-PROCESS ONLY: their map body is a closure, which a ProcessExecutor's
+//  parallel_for cannot run (it returns Err(NotImplemented)). exec_dispatch
+//  guards that with the ALWAYS-ON ATX_CHECK, so passing a ProcessExecutor
+//  ABORTS in both debug and release rather than silently returning a
+//  zero-filled FoldResult table. These death tests are NOT #ifndef-NDEBUG
+//  guarded — ATX_CHECK fires under NDEBUG too (that is the whole point of the
+//  fix). The process substrate routes these workloads through the serialized
+//  submit() path in a later unit, never through these overloads.
+// ===========================================================================
+
+TEST(ParallelWorkloadPortDeathTest, CpcvOnProcessExecutorAborts) {
+  const auto streams = make_streams(1, 8, 2, 0xC0FFEEULL);
+  const auto folds = make_cpcv_folds(8);
+  ProcessExecutor exec{ExecutorConfig{2}};
+  // ProcessExecutor::parallel_for returns Err(NotImplemented); exec_dispatch's
+  // ATX_CHECK then aborts rather than returning a zero-filled table.
+  EXPECT_DEATH({ (void)parallel_cpcv(folds, streams, 0, 1.0e6, exec); }, ".*");
+}
+
+TEST(ParallelWorkloadPortDeathTest, BacktestsOnProcessExecutorAborts) {
+  const auto streams = make_streams(4, 8, 2, 0x1234ULL);
+  ProcessExecutor exec{ExecutorConfig{2}};
+  // Same in-process-only contract: an out-of-process executor aborts loudly.
+  EXPECT_DEATH({ (void)parallel_backtests(streams, 1.0e6, exec); }, ".*");
 }
 
 } // namespace

@@ -7,7 +7,7 @@
 #include <span>       // std::span (read-only inputs)
 #include <vector>     // std::vector (owned result table / gather buffers)
 
-#include "atx/core/macro.hpp" // ATX_ASSERT
+#include "atx/core/macro.hpp" // ATX_ASSERT, ATX_CHECK
 #include "atx/core/types.hpp" // f64 / u64 / usize
 
 #include "atx/engine/alpha/streams.hpp"     // alpha::AlphaStreams
@@ -39,14 +39,20 @@ using Dispatch = std::function<void(std::size_t, const MapBody &)>;
 // Wrap an IExecutor: parallel_for returns a Status. These workloads are IN-PROCESS
 // ONLY (the body is a closure); an in-process executor (ThreadExecutor) always
 // returns Ok() for these non-throwing bodies. A non-Ok return means the caller
-// handed an out-of-process substrate (ProcessExecutor) to an in-process-only map
-// — a programmer-error precondition violation, guarded by ATX_ASSERT (debug) per
-// the cpp profile. The serialized multi-process path for these workloads is a
-// later unit (S7.5c/d).
+// handed an out-of-process substrate (ProcessExecutor, whose parallel_for rejects
+// a closure body with Err(NotImplemented)) to an in-process-only map — a
+// programmer error. We guard it with the ALWAYS-ON ATX_CHECK (NOT debug-only
+// ATX_ASSERT): under NDEBUG a debug assert would elide, the map body would never
+// run, and the function would return a zero-filled FoldResult table as if it had
+// succeeded — silent data corruption. ATX_CHECK aborts loudly in BOTH debug and
+// release, so misuse is fail-safe (no corrupt table) while these overloads keep
+// their plain std::vector<FoldResult> return. The process substrate routes these
+// workloads through the serialized submit() path in a later unit (S7.5c/d), never
+// through this in-process-only overload.
 [[nodiscard]] Dispatch exec_dispatch(IExecutor &exec) {
   return [&exec](std::size_t n, const MapBody &body) {
     const atx::core::Status s = exec.parallel_for(n, body);
-    ATX_ASSERT(s.has_value()); // in-process-only API: an out-of-process executor is misuse
+    ATX_CHECK(s.has_value()); // out-of-process executor here is misuse: abort, never corrupt
     (void)s;
   };
 }
