@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 
 #include <filesystem>
@@ -1312,6 +1313,67 @@ Result<std::vector<std::string_view>> ParquetTable::strings(std::string_view nam
   catch (const std::bad_alloc&) { throw; }
   catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
   catch (...) { return Err(ErrorCode::Internal, "strings: unknown exception"); }
+}
+
+// DATE32 accessor: epoch-days (int32) per row. Arrow stores date32 as a raw
+// int32 buffer (days since the Unix epoch), but its type id is DATE32 (not
+// INT32), so the numeric column_view<int32_t> path rejects it. We copy the
+// values explicitly; null slots become the documented INT32_MIN sentinel.
+Result<std::vector<i32>> ParquetTable::date32_days(std::string_view name) const {
+  try {
+    const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+    if (idx < 0) {
+      return Err(ErrorCode::InvalidArgument, "date32_days: column not found");
+    }
+    auto col = impl_->table->column(idx);
+    if (col->type()->id() != arrow::Type::DATE32) {
+      return Err(ErrorCode::InvalidArgument, "date32_days: column is not DATE32");
+    }
+    std::vector<i32> out;
+    if (col->length() == 0 || col->num_chunks() == 0) {
+      return Ok(std::move(out));
+    }
+    // SAFETY: single-chunk after CombineChunks; id()==DATE32 so chunk(0)'s
+    // dynamic type is arrow::Date32Array. Value(i) returns the stored int32 day.
+    auto& arr = static_cast<arrow::Date32Array&>(*col->chunk(0));
+    out.reserve(static_cast<usize>(arr.length()));
+    for (int64_t i = 0; i < arr.length(); ++i) {
+      out.push_back(arr.IsNull(i) ? (std::numeric_limits<i32>::min)() : arr.Value(i));
+    }
+    return Ok(std::move(out));
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "date32_days: unknown exception"); }
+}
+
+// Per-row validity mask (1==null) for any column type. The typed bridges drop
+// Arrow's validity bitmap, so PIT-correct ingestion (null shares vs a real 0)
+// reads this mask to restore "missing" cells to NaN/sentinel.
+Result<std::vector<u8>> ParquetTable::null_mask(std::string_view name) const {
+  try {
+    const int idx = impl_->table->schema()->GetFieldIndex(std::string{name});
+    if (idx < 0) {
+      return Err(ErrorCode::InvalidArgument, "null_mask: column not found");
+    }
+    auto col = impl_->table->column(idx);
+    std::vector<u8> out;
+    if (col->length() == 0 || col->num_chunks() == 0) {
+      return Ok(std::move(out));
+    }
+    // SAFETY: single-chunk after CombineChunks; Array::IsNull is defined for every
+    // array type (an array with no validity buffer reports IsNull==false for all
+    // rows), so this stays total without a per-type cast.
+    const auto& arr = *col->chunk(0);
+    out.reserve(static_cast<usize>(arr.length()));
+    for (int64_t i = 0; i < arr.length(); ++i) {
+      out.push_back(arr.IsNull(i) ? u8{1} : u8{0});
+    }
+    return Ok(std::move(out));
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) { return Err(ErrorCode::Internal, "null_mask: unknown exception"); }
 }
 
 // Converts an Arrow timestamp `raw` (in `unit`) to an atx Timestamp (i64 ns).

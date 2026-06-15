@@ -66,7 +66,7 @@ Full atx-engine suite on the worktree base, Unity OFF: **`ctest --preset dev` �
 |-------|--------|---------|-------|
 | S1-0  | ✅ done | `a47959c` | Marker. Worktree `atx-wt/p3-s1` off `main @ b796a3b`; databento-cpp submodule checked out; `dev` preset configured with `ATX_UNITY_BUILD=OFF`; baseline 1657/0/0 atx-engine tests green; S5/S6 merge-base recorded (real merge, not synthetic); §0 S6 seams + on-disk data verified present. No engine code. |
 | S1-1  | ⏳ pending | — | alpha-pipeline-reference.md + data-ingestion-reference.md |
-| S1-2  | ⏳ pending | — | `data/corporate_actions.{hpp,cpp}` + test |
+| S1-2  | ✅ done | `<S1-2-sha>` | `data/corporate_actions.{hpp,cpp}` + `data_corporate_actions_test.cpp`. Loads `security_master.parquet` into a Reference-role PIT `Dataset` keyed (date×instrument) with the canonical 6 columns (`cum_adj_factor`, `cash_dividend`, `shares_outstanding`, `shares_filed_date`, `gics_sector_code`, `sic_code`). **PIT leak guard** on `shares_filed_date`: `shares_outstanding` is resolved by as-of on filing knowledge-events (greatest `filed_date ≤ d`), so a not-yet-filed share count never appears before its filing date — verified at two boundaries (AAPL 895.8M filed 2009-07-22, and the 2026-05-01 14.687B filing vs the prior-knowable 14.681B). Corporate-action facts (`cum_adj_factor`/`cash_dividend`) joined on event date; missing dividend→0.0, missing sector→`-1` sentinel, missing shares/factor→NaN; non-USD `dividend_currency`→`Err`; symbol interning is first-seen deterministic. **Required an atx-core lift** (`ParquetTable::date32_days` + `null_mask`): the as-built parquet bridge could not read date32 columns or distinguish null numerics — both blockers for reading `date`/`shares_filed_date` and NaN-ing null shares. 6 new tests (the 5 named + a partitioned-loader order test); suite **1663/0/0** atx-engine (1665 total incl. the 2 `*_NOT_BUILT` sentinels). `/W4 /permissive- /WX` + `/fp:precise` clean. |
 | S1-3  | ⏳ pending | — | `data/adjust.{hpp,cpp}` + test |
 | S1-4  | ⏳ pending | — | `data/universe.{hpp,cpp}` + test |
 | S1-5  | ⏳ pending | — | `data/real_panel.{hpp,cpp}` + E2E test |
@@ -78,6 +78,7 @@ Full atx-engine suite on the worktree base, Unity OFF: **`ctest --preset dev` �
 | Commit  | Unit | Test counts |
 |---------|------|-------------|
 | `a47959c` | S1-0 | — (baseline 1657/0/0) |
+| `<S1-2-sha>` | S1-2 | +6 (suite 1663/0/0; +`date32_days`/`null_mask` atx-core lift) |
 
 ## What S1 proves / Next sprint priorities
 

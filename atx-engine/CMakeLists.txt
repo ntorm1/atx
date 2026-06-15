@@ -57,6 +57,8 @@ add_library(atx-engine STATIC
     src/data/catalog.cpp
     src/data/catalog_report.cpp
     src/data/context.cpp
+    # security-master ingestion -> PIT corporate-action Dataset (p3 S1-2)
+    src/data/corporate_actions.cpp
     src/data/data_handler.cpp
     src/data/dataset.cpp
     src/data/shm_bar_feed.cpp
