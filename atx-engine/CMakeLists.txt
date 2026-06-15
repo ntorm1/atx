@@ -53,6 +53,8 @@ add_library(atx-engine STATIC
     src/data/adapt_feature.cpp
     src/data/adapt_panel.cpp
     src/data/adapt_signal.cpp
+    # split + dividend total-return adjustment (p3 S1-3)
+    src/data/adjust.cpp
     src/data/align.cpp
     src/data/catalog.cpp
     src/data/catalog_report.cpp
