@@ -64,7 +64,7 @@ Full atx-engine suite on the worktree base, Unity OFF: **`ctest --preset dev` �
 
 | Unit  | Status | Commit  | Notes |
 |-------|--------|---------|-------|
-| S1-0  | ✅ done | `<marker>` | Marker. Worktree `atx-wt/p3-s1` off `main @ b796a3b`; databento-cpp submodule checked out; `dev` preset configured with `ATX_UNITY_BUILD=OFF`; baseline 1657/0/0 atx-engine tests green; S5/S6 merge-base recorded (real merge, not synthetic); §0 S6 seams + on-disk data verified present. No engine code. |
+| S1-0  | ✅ done | `a47959c` | Marker. Worktree `atx-wt/p3-s1` off `main @ b796a3b`; databento-cpp submodule checked out; `dev` preset configured with `ATX_UNITY_BUILD=OFF`; baseline 1657/0/0 atx-engine tests green; S5/S6 merge-base recorded (real merge, not synthetic); §0 S6 seams + on-disk data verified present. No engine code. |
 | S1-1  | ⏳ pending | — | alpha-pipeline-reference.md + data-ingestion-reference.md |
 | S1-2  | ⏳ pending | — | `data/corporate_actions.{hpp,cpp}` + test |
 | S1-3  | ⏳ pending | — | `data/adjust.{hpp,cpp}` + test |
@@ -77,7 +77,7 @@ Full atx-engine suite on the worktree base, Unity OFF: **`ctest --preset dev` �
 
 | Commit  | Unit | Test counts |
 |---------|------|-------------|
-| `<marker>` | S1-0 | — (baseline 1657/0/0) |
+| `a47959c` | S1-0 | — (baseline 1657/0/0) |
 
 ## What S1 proves / Next sprint priorities
 

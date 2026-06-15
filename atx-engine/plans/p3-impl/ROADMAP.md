@@ -127,7 +127,7 @@ p3 builds strictly **on top of** the following and must **not** re-duplicate any
 
 | # | Item | Effort | Status | Ledger unit | Files (or Notes) |
 |---|------|--------|--------|-------------|------------------|
-| 1.0 | Marker — open ledger, as-built recon, **record S5/S6 merge-base reality** + seam map | Light | ✅ (marker) | S1-0 | `sprint-1-progress.md` |
+| 1.0 | Marker — open ledger, as-built recon, **record S5/S6 merge-base reality** + seam map | Light | ✅ `a47959c` | S1-0 | `sprint-1-progress.md` |
 | 1.1 | **Documentation** — author `alpha-pipeline-reference.md` (Panel→DSL→backtest→fitness→search→robust→lockbox) + `data-ingestion-reference.md` (parquet→segment→`Dataset`→`Catalog`→`adapt_panel`→`Panel`; adjustment/dividend/universe semantics). The user's "to start" ask | Moderate | ⏳ pending | S1-1 | two `.md` docs under `p3-impl/` |
 | 1.2 | **Security-master ingestion** — load `security_master.parquet` + by-symbol partitions into a typed PIT `data::Dataset` (Reference/corporate-action role); as-of + lineage; PIT (knowledge-date, not effective-date, leak guard) | Moderate | ⏳ pending | S1-2 | `data/corporate_actions.{hpp,cpp}` + test |
 | 1.3 | **Total-return adjustment** — fold split (`cumulative_adjustment_factor`) + reinvested `cash_dividend` into an adjusted total-return close field; PIT-correct; validated vs known AAPL split/div events, cross-checked vs `--mode adjclose` builder output | Moderate | ⏳ pending | S1-3 | `data/adjust.{hpp,cpp}` + test |
