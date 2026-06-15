@@ -137,7 +137,7 @@ All boxes left unchecked at S8.0 (this unit writes no solver math); S8.1/S8.3/S8
 
 | Unit  | Status | Commit  | Notes |
 |-------|--------|---------|-------|
-| S8.0  | done   | `<bench-sha>` | Marker + ledger open (`Base: main @ 0b950bd`), full §0 file:line reconciliation (all signatures confirmed, anchors drifted ≤2 lines, dense-Ã anchor `qp_solver.hpp:193` exact), 8-pin checklist locked, `bench/optimizer_scale_bench.cpp` added (M∈{500,1500,3000,5000}×K∈{16,64} augmented-path sweep) + baseline captured (table below), 3 `DISABLED_MultiHorizonIntegration` tests renamed off `DISABLED_` + `GTEST_SKIP()`-guarded so they compile-but-skip (S8.3 flips green). Build env: `dev` preset, VS2022 DevShell + clang-cl; `databento-cpp` submodule init'd in the fresh worktree. |
+| S8.0  | done   | `0bd6389` | Marker + ledger open (`Base: main @ 0b950bd`), full §0 file:line reconciliation (all signatures confirmed, anchors drifted ≤2 lines, dense-Ã anchor `qp_solver.hpp:193` exact), 8-pin checklist locked, `bench/optimizer_scale_bench.cpp` added (M∈{500,1500,3000,5000}×K∈{16,64} augmented-path sweep) + baseline captured (table below), 3 `DISABLED_MultiHorizonIntegration` tests renamed off `DISABLED_` + `GTEST_SKIP()`-guarded so they compile-but-skip (S8.3 flips green). Build env: `dev` preset, VS2022 DevShell + clang-cl; `databento-cpp` submodule init'd in the fresh worktree. |
 
 ### S8.0 measured baseline — augmented-path `MultiHorizonOptimizer::run` (as-built solver)
 
@@ -199,8 +199,8 @@ and `R7_DegenerateReducesToMultiPeriodByteIdentical` — are untouched; R7 is th
 
 | Commit  | Unit | Test counts |
 |---------|------|-------------|
-| `<marker-sha>` | marker | — |
-| `<bench-sha>` | S8.0 | risk_multi_horizon_integration: 5 tests (2 run / 3 skip); bench builds |
+| `8a312b6` | marker | — |
+| `0bd6389` | S8.0 | risk_multi_horizon_integration: 5 tests (2 passed / 3 skipped / 0 failed); atx-engine-bench builds + runs |
 
 ## What S8.0 proves / Next sprint priorities
 
