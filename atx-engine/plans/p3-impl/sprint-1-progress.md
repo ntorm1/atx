@@ -87,4 +87,75 @@ Full atx-engine suite on the worktree base, Unity OFF: **`ctest --preset dev` �
 
 ## What S1 proves / Next sprint priorities
 
-*(written at S1-close — the baton to S2.)*
+**The baton to S2 (written at S1-close).**
+
+### What S1 delivered
+
+A **PIT-correct, digest-pinned real-data path**: `build_real_panel(RealDataConfig)`
+([`real_panel.hpp`](../../include/atx/engine/data/real_panel.hpp)) assembles the on-disk
+databento daily OHLCV ⋈ the corporate-action security master ⋈ the derived universe
+into one deterministic `alpha::Panel` + a golden digest, reusing the unchanged p2 S6
+`Dataset`/`Catalog`/`adapt_*` layer. The user-facing recipe is [`sprint1.md`](sprint1.md).
+
+7 of 8 units done; S1-6 ⚠️ partial (coverage crawl deferred, recorded). **15 commits**
+(`a47959c..ff14687`), **+23 tests** (S1-2..S1-5: 6+6+6+5), suite **1657 → 1681/0/0**
+atx-engine green, 0 skips, `/W4 /permissive- /WX` + `/fp:precise` clean throughout.
+
+### What S1 proves (the de-risked claims)
+
+1. **The engine ingests real US equity data correctly.** A real databento parquet hive
+   lands in an `alpha::Panel` through the S6 layer; the E2E test runs over the *actual*
+   on-disk smoke data, not a synthetic fixture.
+2. **Returns are not fabricated.** Total-return adjustment (S1-3) is validated against
+   known AAPL split (4:1 2020-08-31, 7:1 2014-06-09) + dividend ex-dates vs a published
+   hand-fixture oracle; an unknown split factor is a gap, never defaulted to 1.0.
+3. **The future is not leaked.** The PIT guard is on the fundamental as-of join
+   (`shares_filed_date` knowledge-date, S1-2) and causal ADV (S1-4); price back-adjustment
+   is return-invariant (bit-identical under rescale) so it cannot leak.
+4. **The real-data Panel is deterministic.** Golden digest `0x2a22a873483d9157` over the
+   smoke window, byte-identical on rebuild — the same pinning discipline as every
+   synthetic fixture.
+
+### Hand-offs S2 inherits
+
+- **The Panel + its public surface** — `build_real_panel` → a mine-ready `Panel`; feed it
+  to `Factory::mine` / `ResearchDriver::run` / `RobustResearchDriver::run` unchanged.
+- **A real (survivorship-caveated) universe** — market-cap / ADV / sector / membership,
+  with the listed-only bias documented as a first-class caveat (S2-3 scorecard must
+  report it, ROADMAP §"Strategic positioning").
+- **The smoke-3 coverage reality** — S2 runs on AAPL+2 until S1-6's expansion crawl is
+  run; the one-command polite resume + selection rule are in
+  [`data-ingestion-reference.md`](data-ingestion-reference.md) §6.1. Coverage is thin, so
+  treat any S2 admission count as provisional until the universe widens.
+
+### Strategic-decision forks S1 settled
+
+- **S1-3 reinvestment-tolerance fork → resolved.** The total-return oracle cross-check uses
+  the documented **hand-fixture fallback** (5 published AAPL ex-date triples) at
+  `ε_oracle = 1e-9` (exact algebraic match), with the split-continuity event check at
+  `ε_event = 1e-6` (absorbs only 8-digit on-disk factor rounding). The `--mode adjclose`
+  web-crawl oracle was not needed.
+- **Liquidity threshold (S1-4)** — defaults shipped as `adv_window=21`, `min_adv_usd=1e6`,
+  `min_mktcap_usd=0`, `top_n_by_adv=0` (no count cap). The *final* benchmark threshold +
+  universe size remains an **open S2-1 fork** (depends on the expanded coverage).
+
+### Residuals lifted to the P4 backlog (ROADMAP §"Phase 1d / future-work backlog")
+
+Already-seeded backlog items confirmed at close (dividend cash-flow sim, delisted/
+survivorship recovery, broad GICS, intraday/options/multi-asset, PIT fundamental
+restatement). **New cross-module residuals recorded this sprint:**
+
+- **atx-core lift (S1-2)** — `ParquetTable::date32_days` + `null_mask` were added to atx-core
+  to read date32 columns + distinguish null numerics (the as-built bridge could not).
+  Additive/read-only; a Pattern-B cross-module edge to note for atx-core's own ledger.
+- **tsdb segment seam can't consume the real databento hive (S1-5)** —
+  `build_dated_segments` hard-codes `data.parquet` per partition (real hive holds
+  `part-00000.parquet`) and `load_parquet_scaled` assumes i64 fixed-point × scale (real
+  OHLCV are f64 dollars). S1-5 worked around it with a direct `read_parquet`; a proper
+  fix (hive-pattern + f64 path in the tsdb loader) is backlogged so the `.seg` cache path
+  becomes usable for real data.
+- **Build script + source-data doc not on the engine branch** — `python/scripts/
+  build_us_split_adjustments.py` and `docs/us_split_adjustment_factors.md` are referenced
+  by the new docs but live only in the main working tree (untracked). Committing them is
+  outside this engine sprint's pathspec scope; flagged so the references resolve once
+  those files are committed upstream.
