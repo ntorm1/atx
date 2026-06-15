@@ -141,25 +141,43 @@ All boxes left unchecked at S8.0 (this unit writes no solver math); S8.1/S8.3/S8
 
 ### S8.0 measured baseline — augmented-path `MultiHorizonOptimizer::run` (as-built solver)
 
-Preset: `dev` (Ninja + clang-cl, **Debug**, PCH+unity+sccache). QpConfig shipped default
-(iters=600, kkt_iters=50, rho=1, sigma=1e-6). One `run()` == one densified-Ã ADMM solve over a
-single-period schedule. **Debug build ⇒ upper-bound latency; the S8.3 comparison is
-apples-to-apples (same preset/bench).** `bench/optimizer_scale_bench.cpp::BM_OptimizerScaleAugmented`.
+Preset: `dev` (Ninja + clang-cl, **Debug**, PCH+unity+sccache). One `run()` == one densified-Ã
+ADMM solve over a single-period schedule. `bench/optimizer_scale_bench.cpp::BM_OptimizerScaleAugmented`,
+run `--benchmark_min_time=1x` (exactly one execution/case). `--benchmark_out` JSON at
+`build/s8_baseline.json`.
 
-| M | K | ms/run (as-built) |
-|---|---|---|
-| 500  | 16 | `<TBD>` |
-| 500  | 64 | `<TBD>` |
-| 1500 | 16 | `<TBD>` |
-| 1500 | 64 | `<TBD>` |
-| 3000 | 16 | `<TBD>` |
-| 3000 | 64 | `<TBD>` |
-| 5000 | 16 | `<TBD>` |
-| 5000 | 64 | `<TBD>` |
+**Fixed iteration budget = iters=4, kkt_iters=4 (16 dense-Ã PCG matvecs/solve) — NOT the
+shipped iters=600/kkt_iters=50 (30,000 matvecs).** The shipped budget is intractable as a
+Debug baseline: at iters=80/kkt=20 a single **M=500** solve already measured **~83 s**, and the
+dense Ã is ~M×3M so the per-solve cost is **O(M²) in M** — M=5000 at the shipped budget would be
+**many hours**. Wall time is **linear in the matvec count**, so the shipped-budget equivalent ≈
+measured × (30000/16) ≈ **measured × 1875**. Holding iters FIXED isolates exactly what the S8.3
+gate measures — the per-iteration dense-Ã cost and its O(M²) scaling — without the iteration count
+confounding it. **S8.3 re-runs THIS bench at THIS SAME fixed budget**, so the ≥20× comparison is
+apples-to-apples (the rewrite's win is the per-iteration matvec going O(M²)→O(M·K²)).
 
-> **S8.3 perf gate (G-PERF) is measured against the M=3000,K=64 row:** ≥20× speedup, target
-> < 500 ms/run, scaling exponent ≤ ~1.3 (sub-O(M²)). The plan expects ~20 s/run at the large
-> end — the actual measured numbers are recorded above.
+| M | K | ms/run @ 4×4 budget (measured) | ≈ shipped-budget equiv (×1875) |
+|---|---|---|---|
+| 500  | 16 | 1,660.8   | ~0.86 h |
+| 500  | 64 | 1,535.6   | ~0.80 h |
+| 1500 | 16 | 16,318.8  | ~8.5 h |
+| 1500 | 64 | 14,847.0  | ~7.7 h |
+| 3000 | 16 | 58,337.6  | ~30 h |
+| 3000 | 64 | 62,033.7  | ~32 h |
+| 5000 | 16 | 167,241.3 | ~87 h |
+| 5000 | 64 | 180,094.5 | ~94 h |
+
+**Scaling (real_time, K=64, the dominant column):** M 500→1500 (3×) is 1.54s→14.85s ≈ **9.6×**;
+1500→3000 (2×) is 14.85s→62.03s ≈ **4.2×**; 3000→5000 (1.67×) is 62.03s→180.09s ≈ **2.9×**. Each
+ratio tracks **M² almost exactly** (3²=9, 2²=4, 1.67²=2.8) — empirical confirmation of the
+as-built **O(M²) dense-Ã defect** (§0.2). The log-log fit exponent is **≈ 2.0**.
+
+> **S8.3 perf gate (G-PERF), measured against the M=3000,K=64 row (62,033.7 ms @ 4×4 budget):**
+> ≥ 20× speedup, target < 500 ms/run, scaling exponent ≤ ~1.3 (sub-O(M²)). The plan's "~20 s/run"
+> estimate was at M≤1000 (the old `multi_horizon_bench` scale) and the shipped 600×50 budget; at
+> M=3000 the O(M²) dense path is dramatically worse (~30+ h projected at the shipped budget). The
+> actual measured per-(M,K) numbers (at the documented fixed baseline budget) are recorded above —
+> S8.3 compares like-for-like against them.
 
 ### S8.0 re-enabled-but-skipped tests
 
