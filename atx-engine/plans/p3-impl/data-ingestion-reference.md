@@ -31,7 +31,7 @@ data/us_split_adjustment_factors/                 (and .../us_security_master_sm
     schema: date, symbol, cumulative_adjustment_factor, cash_dividend, dividend_currency,
             shares_outstanding, shares_as_of_date, shares_filed_date, sec_cik, sec_sic,
             sec_sic_description, gics_sector_code, gics_sector, gics_sub_industry, gics_source
-    coverage: 3 symbols (AAPL + 2), 1962→2026  [EXPANDED in S1-6]
+    coverage: 3 symbols (AAPL + 2), 1962→2026  [expansion deferred — see §6.1]
   factors_by_symbol/symbol=SYM/data_0.parquet     schema: symbol,date,return_factor   (canonical, split-only)
   dividends_by_symbol/symbol=SYM/data_0.parquet   schema: symbol,date,cash_dividend,currency,source
   split_events_by_symbol/, shares_outstanding_by_symbol/, sectors_by_symbol/
@@ -163,4 +163,16 @@ python scripts/build_us_split_adjustments.py --datasets security-master --overwr
 - `--backoff-max-seconds` (default `180.0`) — max sleep between retries after a transient HTTP failure / rate-limit.
 - `--sec-user-agent` (default `"atx-security-master/0.1 contact@example.com"`) — **set this to a real app/contact string for production runs** (SEC EDGAR requires it).
 
-**Known coverage gaps** (forward to the S1-6 coverage crawl + the §4 survivorship caveat): the smoke master is 3 symbols (AAPL + 2); `gics_*` is licensed/sparse with SEC SIC as the open fallback; the universe is listed-only (the survivorship bias above). S1-6 re-runs the builder over the databento universe to give corporate-action coverage on a liquid subset for the S2 benchmark.
+**Known coverage gaps** (the §4 survivorship caveat + the licensed-GICS sparsity): the current master is 3 symbols (AAPL + 2); `gics_*` is licensed/sparse with SEC SIC as the open fallback; the universe is listed-only (the survivorship bias above).
+
+### 6.1 S1-6 status — coverage expansion deferred (⚠️ partial)
+
+S1-6's scope is to re-run the builder over the databento universe so the S2 benchmark has corporate-action coverage on a **liquid subset** rather than the smoke 3. That step is a live, identity-bearing crawl of **open Yahoo + SEC EDGAR sources**; per the plan it is **independent, non-blocking, and `⚠️ partial`-tolerant** — S1 closes on whatever coverage is present (down to the smoke 3 with this recorded caveat), and S2 can run on it. **For p3 S1 the live crawl was not run** (deferred by an explicit operator decision; no external request was issued). The expanded master is therefore **not** on disk yet; the current real-data path runs over the 3-symbol smoke master.
+
+**Selection rule for the expansion (recorded so the crawl is reproducible):** the target symbol set is the databento `equs_ohlcv_1d` universe filtered to the **top-N by trailing 21-day dollar-volume** over the available databento window (from 2024-07-01), ties broken by ascending canonical symbol, with **N kept tractable for a polite crawl (≈500 — hundreds, not thousands)**. This is the same causal `dollar_volume`/`adv{21}` liquidity measure §4 uses, computed over the databento panel.
+
+**Resume command** (run from the repo-root tree that holds the builder; substitute the derived liquid subset for `<liquid-subset>`, and set a real SEC contact UA — EDGAR requires it):
+```powershell
+python python/scripts/build_us_split_adjustments.py --symbols <liquid-subset> --datasets yahoo sec security-master --incremental --sec-user-agent "atx-research <nathan.tormaschy@gmail.com>" --yahoo-min-interval 0.20 --sec-min-interval 0.35 --request-delay 0.05 --sec-request-delay 0.12 --backoff-max-seconds 180
+```
+`--incremental` is self-healing (preserves existing partitions, rebuilds only named symbols); on completion verify row/symbol counts, date coverage, and schema parity against the smoke master, and spot-check 2–3 expanded symbols against Yahoo adjusted closes before pinning S2 results to the wider universe.
