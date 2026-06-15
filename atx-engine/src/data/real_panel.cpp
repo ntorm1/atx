@@ -21,7 +21,6 @@
 #include "atx/engine/data/real_panel.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <filesystem>
 #include <limits>
 #include <span>
@@ -36,7 +35,6 @@
 #include "atx/core/io/parquet.hpp"
 #include "atx/core/types.hpp"
 
-#include "atx/engine/alpha/datafields.hpp" // datafields::kClose etc.
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/parallel/digest.hpp" // signal_set_digest
 
