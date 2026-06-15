@@ -63,6 +63,8 @@ add_library(atx-engine STATIC
     src/data/corporate_actions.cpp
     src/data/data_handler.cpp
     src/data/dataset.cpp
+    # real-data end-to-end Panel assembly: databento ⋈ corp-actions ⋈ universe (p3 S1-5)
+    src/data/real_panel.cpp
     src/data/shm_bar_feed.cpp
     # universe construction: market-cap / ADV / sector / PIT membership (p3 S1-4)
     src/data/universe.cpp
