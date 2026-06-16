@@ -138,6 +138,7 @@ All boxes left unchecked at S8.0 (this unit writes no solver math); S8.1/S8.3/S8
 | Unit  | Status | Commit  | Notes |
 |-------|--------|---------|-------|
 | S8.0  | done   | `0bd6389` | Marker + ledger open (`Base: main @ 0b950bd`), full §0 file:line reconciliation (all signatures confirmed, anchors drifted ≤2 lines, dense-Ã anchor `qp_solver.hpp:193` exact), 8-pin checklist locked, `bench/optimizer_scale_bench.cpp` added (M∈{500,1500,3000,5000}×K∈{16,64} augmented-path sweep) + baseline captured (table below), 3 `DISABLED_MultiHorizonIntegration` tests renamed off `DISABLED_` + `GTEST_SKIP()`-guarded so they compile-but-skip (S8.3 flips green). Build env: `dev` preset, VS2022 DevShell + clang-cl; `databento-cpp` submodule init'd in the fresh worktree. |
+| S8.1  | done   | `16b00de`→`ff304d2` | Factor-augmented sparse QP reformulation. 6 commits: `16b00de` preserve as-built dense-Ã solver as `qp_solver_reference.hpp` (the diff oracle — verified byte-for-byte identical to as-built bar the `risk`→`risk::reference` namespace), `edd49a3` `qp_augment.hpp` assembly (`y=Xᵀw` factor-definition rows, `P=blkdiag(2λD,2λF)`, all-sparse Ã — no dense materialization), `484747a` rewrite `ConstrainedQpSolver` onto the augmented sparse KKT (interim `Eigen::SimplicialLDLT`, tagged for S8.2 replacement; public `solve(const QpProblem&)` unchanged), `950e824`+`6b1508f` diff-gate test (`risk_qp_augment_test.cpp`), `ff304d2` review nits. **Tests:** `RiskQpAugment` 6/6 green — 3 structural (Hessian block-diag-DF, factor-definition rows, gross/turnover sparse aux rows), `DollarNeutralRecoversAnalyticOptimum`, `TwoSolvesByteIdentical` (same-path determinism via `bit_cast`), and `MatchesDenseOracleAcrossBattery` (the G-DIFF gate). `RiskQpSolver` 13/13 still green. Built via `ninja` CI preset (PCH-off non-unity; the `dev` preset has a pre-existing unrelated ODR clash in `data_*_test.cpp`, not ours). |
 
 ### S8.0 measured baseline — augmented-path `MultiHorizonOptimizer::run` (as-built solver)
 
@@ -195,12 +196,65 @@ renamed off the `DISABLED_` prefix (so they COMPILE and are discoverable) and gu
 (The two already-running fast tests in the file — `R2_TrajectoryIsPureFunctionOfCurrentAlpha`
 and `R7_DegenerateReducesToMultiPeriodByteIdentical` — are untouched; R7 is the live S7 boundary pin.)
 
+### S8.1 G-DIFF gate result + review gates
+
+**G-DIFF (the augmented solver matches the as-built dense-Ã oracle at the optimum).**
+`RiskQpAugment.MatchesDenseOracleAcrossBattery` — 11-case M×K battery (M∈{50,120}, K∈{4,16,64},
+every constraint family: box / factor / group / beta / gross / turnover, alone and combined),
+both solvers run to the same per-case converged fixed ADMM budget. Asserted
+`‖w_new − w_ref‖∞ ≤ kDiffTol = 1e-11`; achieved battery-wide worst is **2.9e-15** (every case at
+1e-15…1e-16 machine precision). The gate is **agreement-at-optimum, NOT bit-identity** between the
+PCG oracle and the direct-KKT augmented solver — the two solvers target the identical QP (same ρ=1,
+σ=1e-6, feas_tol, α=1 no over-relaxation) and converge to the same unique minimizer, but mid-iteration
+iterates differ. **PASS** (the dense O(M²) oracle makes this a ~24-min Debug run; the in-test M is
+capped at 120 because the differential cost is dominated by the oracle, and the reformulation's
+correctness is M-independent — a wider M-spread to 800 was verified out-of-test to the same bound).
+
+**Diff-gate tolerance plan-text correction:** the plan §3 S8.1 line phrases the target as
+"bit-identical on the minimal set" with a ≤1e-10/1e-8 fallback. The implemented gate is
+agreement-at-optimum at 1e-11 (PCG vs direct-KKT cannot be bit-identical mid-iteration). This is the
+correct invariant for S8.1; **minimal-set bit-identity is an S8.4 fast-path-dispatch pin, not an S8.1
+deliverable** (no `GrossNet`-only case is in the S8.1 battery — every case runs the augmented path).
+
+**Review gates (both two-stage subagent reviews — reserved for the solver-math units):**
+- **Spec/math review — VERDICT: SHIP-WITH-NITS, zero blockers.** 9/9 claims PASS: P=blkdiag(2λD,2λF)
+  with the factor-of-2 and λ matching the as-built `P=2λV` convention; factor rows encode `y−Xᵀw=0`
+  exactly (correct sign, correct Xᵀ orientation); no dense Ã on the augmented path; oracle is a
+  faithful byte-for-byte copy; diff gate uses a genuinely non-diagonal SPD F; determinism (R1) holds
+  with no RNG and fixed iteration counts; public API unchanged; interim Eigen LDLT clearly tagged for
+  S8.2; all 6 constraint families correctly encoded with gross/turnover L1-split rows byte-identical
+  between augment and oracle.
+- **Code-quality review — VERDICT: SHIP-WITH-NITS, zero blockers.** Compiles clean under the real
+  `-W4 -WX` flags (zero warnings); triplet emission fully deterministic (no unordered containers,
+  fixed ascending traversal); index/width arithmetic safe at the stated scale; no needless
+  MatX/SparseMatrix copies (RVO + `std::move`); const/noexcept consistent with the risk module; the
+  `build_kkt` per-column σ-insertion is correct even at λ=0.
+
+**Nit dispositions:**
+- FIXED (`ff304d2`): dropped the unused `#include <utility>` in `qp_augment.hpp`; corrected the
+  stale "≤ kDiffTol (1e-9)" docstring to 1e-11 in the battery test.
+- DEFERRED to S8.2: `qp_solver.hpp` KKT index widths are `int` (Eigen default `StorageIndex`), safe
+  at n≈3·M scale but unguarded — S8.2 (which owns the production factorization) should add a debug
+  `ATX_CHECK` on `dim` width. The interim `kkt_iters` config field is a no-op in the rewritten solver
+  (retained for API compat).
+- ACCEPTED as-is: the `GrossAndTurnoverSplitsAreSparseAuxRows` sparsity assertion is soft
+  (`nnz/rows < n`, near-tautological); the two value-exact assembly tests (Hessian block-diag,
+  factor-definition rows) carry the structural coverage, so this is adequate.
+- DOC drift (plan, not edited — `sprint.md` discipline): plan §2 file-map lists the test under
+  `tests/src/`; the actual file lives in `atx-engine/tests/` (the root), which is what the
+  `CONFIGURE_DEPENDS *_test.cpp` glob picks up. Cosmetic; the gate compiles and runs.
+
+**Pins:** S8.1 ticks none of the 8 regression pins directly (they live on the as-built fast path,
+which the augmented rewrite does not touch — the dispatch contract protects them). The full-pipeline
+pin checks (the 3 re-enabled `R1/R2/R3` tests) remain `GTEST_SKIP`-guarded until S8.3.
+
 ## Phase 2 S8 sprint commits
 
 | Commit  | Unit | Test counts |
 |---------|------|-------------|
 | `8a312b6` | marker | — |
 | `0bd6389` | S8.0 | risk_multi_horizon_integration: 5 tests (2 passed / 3 skipped / 0 failed); atx-engine-bench builds + runs |
+| `16b00de`→`ff304d2` (6) | S8.1 | RiskQpAugment 6/6 (incl. G-DIFF battery PASS @ 1e-11, worst 2.9e-15); RiskQpSolver 13/13; both review gates SHIP-WITH-NITS, zero blockers |
 
 ## What S8.0 proves / Next sprint priorities
 
