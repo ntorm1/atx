@@ -64,9 +64,8 @@
 //  patterns of P and Ã are a pure function of (M, K, the constraint shape). The
 //  numeric values are a pure function of (D, F, λ, X, A, l, u, budgets).
 
-#include <span>    // std::span (q)
-#include <utility> // std::move
-#include <vector>  // std::vector (triplet scratch)
+#include <span>   // std::span (q)
+#include <vector> // std::vector (triplet scratch)
 
 #include <Eigen/Dense>
 #include <Eigen/SparseCore>

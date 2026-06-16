@@ -389,7 +389,7 @@ constexpr f64 kDiffTol = 1e-11;
 TEST(RiskQpAugment, MatchesDenseOracleAcrossBattery) {
   // M × K grid with varied constraint mixes. Both solvers run to the same per-case
   // converged fixed budget and reach the same unique QP minimizer; the achieved
-  // ‖w_new−w_ref‖∞ is asserted ≤ kDiffTol (1e-9). The tightest observed bound is
+  // ‖w_new−w_ref‖∞ is asserted ≤ kDiffTol (1e-11). The tightest observed bound is
   // logged for the ledger.
   // Per-case iters: pure-linear (no L1) cases converge in ~600–800; the gross/turnover
   // L1 aux-splits converge slower (a fixed-iteration ADMM trades iterations for
