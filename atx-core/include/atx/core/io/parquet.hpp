@@ -95,6 +95,21 @@ public:
   [[nodiscard]] Result<series::Frame> to_frame() const;
   [[nodiscard]] Result<std::vector<std::string_view>> strings(std::string_view name) const;
 
+  // DATE32 accessor: returns one epoch-day (days since 1970-01-01) per row.
+  // Arrow date32 is physically int32 but carries a distinct type id, so the
+  // numeric column_view<int32_t> path rejects it; this bridge reads it explicitly.
+  // Null slots read as the sentinel std::numeric_limits<i32>::min() (callers that
+  // must distinguish null from a real date use null_mask()). Err(InvalidArgument)
+  // if the column is absent or not DATE32.
+  [[nodiscard]] Result<std::vector<i32>> date32_days(std::string_view name) const;
+
+  // Per-row null indicator for ANY column type: out[i]==1 iff row i is null in
+  // `name`, else 0. The numeric/string/date bridges do NOT propagate validity
+  // (a null reads as a stored/sentinel value), so callers needing PIT-correct
+  // "missing vs zero" semantics consult this mask. Err(InvalidArgument) if the
+  // column is absent. A column with no validity buffer yields an all-zero mask.
+  [[nodiscard]] Result<std::vector<u8>> null_mask(std::string_view name) const;
+
   struct Impl;
   explicit ParquetTable(std::unique_ptr<Impl> impl) noexcept;
 private:

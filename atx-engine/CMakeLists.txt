@@ -53,13 +53,21 @@ add_library(atx-engine STATIC
     src/data/adapt_feature.cpp
     src/data/adapt_panel.cpp
     src/data/adapt_signal.cpp
+    # split + dividend total-return adjustment (p3 S1-3)
+    src/data/adjust.cpp
     src/data/align.cpp
     src/data/catalog.cpp
     src/data/catalog_report.cpp
     src/data/context.cpp
+    # security-master ingestion -> PIT corporate-action Dataset (p3 S1-2)
+    src/data/corporate_actions.cpp
     src/data/data_handler.cpp
     src/data/dataset.cpp
+    # real-data end-to-end Panel assembly: databento ⋈ corp-actions ⋈ universe (p3 S1-5)
+    src/data/real_panel.cpp
     src/data/shm_bar_feed.cpp
+    # universe construction: market-cap / ADV / sector / PIT membership (p3 S1-4)
+    src/data/universe.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
     src/parallel/process_executor.cpp
