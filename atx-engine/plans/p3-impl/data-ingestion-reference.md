@@ -31,7 +31,8 @@ data/us_split_adjustment_factors/                 (and .../us_security_master_sm
     schema: date, symbol, cumulative_adjustment_factor, cash_dividend, dividend_currency,
             shares_outstanding, shares_as_of_date, shares_filed_date, sec_cik, sec_sic,
             sec_sic_description, gics_sector_code, gics_sector, gics_sub_industry, gics_source
-    coverage: 3 symbols (AAPL + 2), 1962→2026  [expansion deferred — see §6.1]
+    coverage: 5321 common-equity symbols, 1962-01-02→2026-06-12 after the S1-6 crawl  [§6.1]
+              (the committed C++ test fixture .../us_security_master_smoke/ stays 3 symbols)
   factors_by_symbol/symbol=SYM/data_0.parquet     schema: symbol,date,return_factor   (canonical, split-only)
   dividends_by_symbol/symbol=SYM/data_0.parquet   schema: symbol,date,cash_dividend,currency,source
   split_events_by_symbol/, shares_outstanding_by_symbol/, sectors_by_symbol/
@@ -163,16 +164,20 @@ python scripts/build_us_split_adjustments.py --datasets security-master --overwr
 - `--backoff-max-seconds` (default `180.0`) — max sleep between retries after a transient HTTP failure / rate-limit.
 - `--sec-user-agent` (default `"atx-security-master/0.1 contact@example.com"`) — **set this to a real app/contact string for production runs** (SEC EDGAR requires it).
 
-**Known coverage gaps** (the §4 survivorship caveat + the licensed-GICS sparsity): the current master is 3 symbols (AAPL + 2); `gics_*` is licensed/sparse with SEC SIC as the open fallback; the universe is listed-only (the survivorship bias above).
+**Known coverage gaps** (the §4 survivorship caveat + the licensed-GICS sparsity): after the S1-6 crawl the on-disk master is **5321 common-equity symbols** (§6.1); `gics_*` is licensed/sparse (non-null on ~18% of rows) with SEC SIC as the open fallback; the universe is listed-only (the survivorship bias above). The committed C++ **test fixture** stays the 3-symbol smoke master at `data/us_security_master_smoke/` — the E2E digest pin is against the smoke, not the expanded master.
 
-### 6.1 S1-6 status — coverage expansion deferred (⚠️ partial)
+### 6.1 S1-6 status — coverage expansion **run** (2026-06-15)
 
-S1-6's scope is to re-run the builder over the databento universe so the S2 benchmark has corporate-action coverage on a **liquid subset** rather than the smoke 3. That step is a live, identity-bearing crawl of **open Yahoo + SEC EDGAR sources**; per the plan it is **independent, non-blocking, and `⚠️ partial`-tolerant** — S1 closes on whatever coverage is present (down to the smoke 3 with this recorded caveat), and S2 can run on it. **For p3 S1 the live crawl was not run** (deferred by an explicit operator decision; no external request was issued). The expanded master is therefore **not** on disk yet; the current real-data path runs over the 3-symbol smoke master.
+S1-6 re-runs the builder over the databento universe so the S2 benchmark has corporate-action coverage on a **liquid subset** rather than the smoke 3. It is a live, identity-bearing crawl of **open Yahoo + SEC EDGAR sources**; per the plan it is independent, non-blocking, and partial-tolerant. It was **deferred at S1-close** (commit `e3f01f8`) and then **run post-merge on 2026-06-15** on operator request. The result is a data-build only: the output lives in gitignored `data/`, so there is no engine commit and no test change.
 
-**Selection rule for the expansion (recorded so the crawl is reproducible):** the target symbol set is the databento `equs_ohlcv_1d` universe filtered to the **top-N by trailing 21-day dollar-volume** over the available databento window (from 2024-07-01), ties broken by ascending canonical symbol, with **N kept tractable for a polite crawl (≈500 — hundreds, not thousands)**. This is the same causal `dollar_volume`/`adv{21}` liquidity measure §4 uses, computed over the databento panel.
+**Selection rule (reproducible).** `python/scripts/derive_liquid_universe.py` ranks the databento `equs_ohlcv_1d` universe by **trailing-21d average dollar-volume** (close×volume over the most recent 21 date partitions) and intersects it with the Nasdaq-Trader **common-equity** set — reusing the builder's own `looks_common_equity` (drops ETFs / test issues / non-common issues) — ties broken by ascending canonical symbol, keeping the **top-500**. Cutoff ≈ $277M/day; top-10 = MU, NVDA, TSLA, SNDK, AMD, MSFT, INTC, AAPL, GOOGL, AVGO. This is the same causal `dollar_volume`/`adv{21}` liquidity measure §4 uses.
 
-**Resume command** (run from the repo-root tree that holds the builder; substitute the derived liquid subset for `<liquid-subset>`, and set a real SEC contact UA — EDGAR requires it):
+**Command run** (polite defaults — `--yahoo-min-interval 0.20`, `--sec-min-interval 0.35`, `--backoff-max-seconds 180`):
 ```powershell
-python python/scripts/build_us_split_adjustments.py --symbols <liquid-subset> --datasets yahoo sec security-master --incremental --sec-user-agent "atx-research <nathan.tormaschy@gmail.com>" --yahoo-min-interval 0.20 --sec-min-interval 0.35 --request-delay 0.05 --sec-request-delay 0.12 --backoff-max-seconds 180
+python python/scripts/derive_liquid_universe.py --top-n 500 --out data/databento_liquid_top500.txt
+python python/scripts/build_us_split_adjustments.py --symbol-file data/databento_liquid_top500.txt --datasets all --mode split --incremental --sec-user-agent "atx-research <nathan.tormaschy@gmail.com>"
 ```
-`--incremental` is self-healing (preserves existing partitions, rebuilds only named symbols); on completion verify row/symbol counts, date coverage, and schema parity against the smoke master, and spot-check 2–3 expanded symbols against Yahoo adjusted closes before pinning S2 results to the wider universe.
+
+**Outcome.** Yahoo built 500/500 (10 batches, ~40s); the SEC planner reported 500 already complete (prior-crawl partitions on disk), so no fresh EDGAR requests were issued; the `security-master` join then rebuilt the master from **all** on-disk by-symbol partitions. The expanded `data/us_split_adjustment_factors/security_master/security_master.parquet` carries **5321 symbols** (the full common-equity universe present on disk; the top-500 liquid subset all present), **23,197,482 rows**, dates **1962-01-02 → 2026-06-12**, **schema parity with the smoke master = true**, `gics_sector_code` non-null on 4.28M/23.2M rows, `shares_outstanding` for 4303/5321 symbols, `dividend_currency ∈ {None, USD}`. Spot-check: AAPL 11,467 rows → 2026-06-12, last `cum_adj_factor`=1.0, last `shares_outstanding`=14,687,356,000 (matches the S1-2-verified 14.687B filing). `--incremental` was non-destructive (prior partitions preserved, only the 500 refreshed).
+
+**To refresh / re-run later:** re-issue the two commands above (the ranker is deterministic over the current hive; `--incremental` self-heals). Before pinning S2 results to the wider universe, re-verify row/symbol/date counts + schema parity and spot-check 2–3 names against Yahoo adjusted closes.
