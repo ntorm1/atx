@@ -159,6 +159,28 @@ p3 builds strictly **on top of** the following and must **not** re-duplicate any
 
 ---
 
+### S3 — Single-File ORATS History Loader *(open — feeds S2)*
+
+**Theme:** A pure high-performance C++ loader for the self-contained ORATS `tbltickerhistory3_10y` export (one file = OHLCV + shares + GICS + total-return `cumulReturnFactor` + an IV term-structure surface, PIT symbology via `securityID`). Streams the zip into an on-disk atx-tsdb per-date `.seg` partition, wires it into the data interface (a new multi-segment Panel attach), applies corporate actions via `cumulReturnFactor`, and proves it with a full E2E smoke of the **unchanged** p2 pipeline on the US equity universe. Supersedes the databento ⋈ security-master smoke as S2's data foundation (longer history, less survivorship bias, single source). **No new alpha-discovery capability** (p3 anti-roadmap holds — the IV surface is ingested, not mined, until p4).
+
+**Sprint merge:** ⏳ open (worktree `atx-wt/p3-s3`, branch `feat/p3-s3-orats-loader`).
+**Plan + ledger:** [`../../../docs/superpowers/plans/2026-06-16-orats-history-loader.md`](../../../../docs/superpowers/plans/2026-06-16-orats-history-loader.md) · [`sprint-3-progress.md`](sprint-3-progress.md) · spec [`../../../docs/superpowers/specs/2026-06-16-orats-history-loader-design.md`](../../../../docs/superpowers/specs/2026-06-16-orats-history-loader-design.md).
+
+| # | Item | Effort | Status | Ledger unit |
+|---|------|--------|--------|-------------|
+| 3.0 | Marker — worktree, ledger, roadmap, seed spec/plan | Light | 🔄 | S3-0 |
+| 3.1 | atx-core `io::ZipEntryReader` — streaming single-entry inflate | Heavy | ⏳ | S3-1 |
+| 3.2 | `load_orats_history` — zip TSV → per-date `.seg` partition + side-cars | Heavy | ⏳ | S3-2 |
+| 3.3 | `orats_total_return_close` — `cumulReturnFactor` TRI via adjust reuse | Moderate | ⏳ | S3-3 |
+| 3.4 | `attach_multi_segment_panel` — union per-date segments → one Panel | Heavy | ⏳ | S3-4 |
+| 3.5 | `build_history_panel` orchestrator + shared digest pin | Heavy | ⏳ | S3-5 |
+| 3.6 | Full E2E smoke through the unchanged p2 pipeline | Heavy | ⏳ | S3-6 |
+| 3.7 | Close — docs, `sprint3.md`, residuals→backlog, `--no-ff` merge | Light | ⏳ | S3-close |
+
+**Note for S2:** when S2 opens, its benchmark harness may consume `build_history_panel` over the S3 ORATS partition instead of `build_real_panel` over the databento ⋈ master join — a longer-history, less-survivorship-biased, single-source universe.
+
+---
+
 ## ROADMAP-item ↔ ledger-unit mapping
 
 p3's ROADMAP items map **1:1** to ledger units (`1.N` ↔ `S1-N`, `2.N` ↔ `S2-N`), so no separate bridge table is needed (per `module.md` §7, the bridge is only required when they diverge — as p0 Phase 4 did). If a unit sub-splits (`S1-5a/S1-5b`) during execution, record the split in the ledger and add a bridge row here at that time.
