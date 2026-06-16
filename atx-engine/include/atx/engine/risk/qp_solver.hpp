@@ -34,8 +34,9 @@
 //  − z_k) + y_k). So the box projection (z-clamp), the over-relaxation (none — α=1,
 //  as in the as-built), and the dual update (y += ρ(Ãx − z)) are UNCHANGED; only the
 //  linear solve swaps from dense PCG to the sparse KKT factorization. V is NEVER
-//  densified (R4); the KKT is sparse quasi-definite (R5 — S8.2 owns the no-pivot
-//  static factorization that makes it cross-thread deterministic).
+//  densified (R4); the KKT is sparse quasi-definite (R5) and is factored by the
+//  deterministic no-pivot QuasiDefiniteLdl (kkt_ldl.hpp, S8.2) — a static AMD-ordered
+//  LDLᵀ that is byte-identical across threads/builds (no Bunch-Kaufman pivot branch).
 //
 // ===========================================================================
 //  Determinism (R1)
@@ -43,10 +44,11 @@
 //  The OUTER ADMM runs EXACTLY cfg.iters passes; there is NO residual / convergence
 //  early-exit. Duals y and the splitting variable z are zero-initialized. The KKT is
 //  assembled in a fixed CSC traversal order (qp_augment.hpp) and factored ONCE per
-//  solve (the matrix is constant for fixed ρ, σ) then reused every iteration. No RNG.
-//  All hand-rolled reductions run in canonical ascending order. Same inputs ⇒
-//  byte-identical book on a single thread (cross-thread bit-determinism is S8.2's
-//  gate — the interim Eigen LDLT here proves the REFORMULATION is correct).
+//  solve (the matrix is constant for fixed ρ, σ) then reused every iteration. The
+//  factorization is the no-pivot QuasiDefiniteLdl (S8.2): symbolic (AMD order +
+//  elimination tree) then numeric, both order-fixed and purely serial. No RNG. All
+//  hand-rolled reductions run in canonical ascending order. Same inputs ⇒ a
+//  byte-identical book on ANY thread count (G-DET).
 //
 // ===========================================================================
 //  Feasibility gate (R3)
@@ -62,7 +64,6 @@
 #include <vector>  // std::vector (result)
 
 #include <Eigen/Dense>
-#include <Eigen/SparseCholesky> // Eigen::SimplicialLDLT (interim KKT solver — S8.2 swaps it)
 #include <Eigen/SparseCore>
 
 #include "atx/core/error.hpp"         // Result, Ok, Err, ErrorCode
@@ -71,6 +72,7 @@
 
 #include "atx/engine/risk/constraints.hpp"  // MaterializedConstraints
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (apply / specific_var / factor_cov)
+#include "atx/engine/risk/kkt_ldl.hpp"      // QuasiDefiniteLdl (deterministic no-pivot KKT solve)
 #include "atx/engine/risk/qp_augment.hpp"   // build_augmented / AugmentedQp
 
 namespace atx::engine::risk {
@@ -236,34 +238,37 @@ private:
     const Eigen::Index r = aug.A_tilde.rows();
     const Eigen::Index dim = n + r;
 
-    // Factor the KKT ONCE per solve (constant for fixed ρ, σ — R5/R6).
-    // S8.2: replace Eigen::SimplicialLDLT with deterministic no-pivot QuasiDefiniteLdl.
+    // Factor the KKT ONCE per solve (constant for fixed ρ, σ — R5/R6) with the
+    // deterministic no-pivot QuasiDefiniteLdl. The symbolic (AMD + etree) and numeric
+    // passes run once here; the factor is then reused every outer iteration. The
+    // symbolic/numeric seam supports cross-solve caching of the symbolic structure
+    // (the KKT pattern is fixed for a fixed constraint set), but that is DEFERRED:
+    // factor-once-per-solve is the required behavior and keeps `solve()` const without
+    // a mutable cache member churning the public API.
     const SpMat kkt = build_kkt(aug);
-    Eigen::SimplicialLDLT<SpMat> ldlt;
-    ldlt.compute(kkt);
-    if (ldlt.info() != Eigen::Success) {
-      // The regularized KKT is quasi-definite (σ, ρ > 0) so this is unreachable for a
-      // well-posed problem; report rather than return a bogus book (R3).
-      return co::Err(co::ErrorCode::Internal,
-                     "ConstrainedQpSolver::solve: KKT factorization failed (non-quasi-definite)");
-    }
+    QuasiDefiniteLdl ldl;
+    ATX_TRY_VOID(ldl.factor_symbolic(kkt));
+    ATX_TRY_VOID(ldl.factor_numeric(kkt));
 
     const atx::f64 rho_inv = 1.0 / cfg.rho;
     cl::VecX x = cl::VecX::Zero(n);
     cl::VecX z = cl::VecX::Zero(r);
     cl::VecX y = cl::VecX::Zero(r);
-    cl::VecX rhs(dim);
+    std::vector<atx::f64> rhs(static_cast<atx::usize>(dim), 0.0);
+    std::vector<atx::f64> sol(static_cast<atx::usize>(dim), 0.0);
 
     for (atx::usize it = 0; it < cfg.iters; ++it) { // FIXED — no early-exit
       // (1) x-update: solve the KKT system. RHS top = σx − q̃; bottom = z − ρ⁻¹y.
       for (Eigen::Index i = 0; i < n; ++i) {
-        rhs[i] = cfg.sigma * x[i] - aug.q_aug[i];
+        rhs[static_cast<atx::usize>(i)] = cfg.sigma * x[i] - aug.q_aug[i];
       }
       for (Eigen::Index i = 0; i < r; ++i) {
-        rhs[n + i] = z[i] - rho_inv * y[i];
+        rhs[static_cast<atx::usize>(n + i)] = z[i] - rho_inv * y[i];
       }
-      const cl::VecX sol = ldlt.solve(rhs);
-      x = sol.head(n); // the x-block (the ν-block is implied by the z/y update below)
+      ldl.solve(std::span<const atx::f64>(rhs), std::span<atx::f64>(sol));
+      for (Eigen::Index i = 0; i < n; ++i) { // the x-block (ν-block implied by z/y below)
+        x[i] = sol[static_cast<atx::usize>(i)];
+      }
 
       // (2) z-update: clamp(Ã x + y/ρ, l̃, ũ) elementwise (order-fixed). VERBATIM.
       const cl::VecX ax = aug.A_tilde * x;
