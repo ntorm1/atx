@@ -244,6 +244,12 @@ public:
   // is the dominant, trivially-available part — a valid SPD preconditioner term).
   [[nodiscard]] const atx::core::linalg::VecX &specific_var() const noexcept { return d_; }
 
+  // The K×K factor covariance F (read-only, SPD). The S8.1 factor-augmented QP
+  // exposes y = Xᵀw and puts 2λF on the y-block of the augmented Hessian P =
+  // blkdiag(2λD, 2λF) — F is the cached factor capacitance (R7), the dense XFXᵀ
+  // M×M risk term re-expressed in K factor space so V is never densified (R4).
+  [[nodiscard]] const atx::core::linalg::MatX &factor_cov() const noexcept { return f_; }
+
   // Factor-neutralize a signal IN PLACE: s ← s − X (XᵀX)⁻¹ Xᵀ s, the residual of s
   // on the factor exposures. A tiny ridge (kNeutralizeRidge) on XᵀX keeps a
   // collinear exposure block solvable. NaN cells propagate (see header note).
