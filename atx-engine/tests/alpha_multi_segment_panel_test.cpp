@@ -75,3 +75,25 @@ TEST(AlphaMultiSegmentPanel, WindowExcludesOutOfRangeDates) {
   ASSERT_TRUE(fid.has_value());
   EXPECT_DOUBLE_EQ(panel->field_all(*fid)[0], 11.0);
 }
+
+TEST(AlphaMultiSegmentPanel, NonexistentDirectoryIsInvalidArgument) {
+  const fs::path dir = fs::temp_directory_path() / "atx_multi_seg_does_not_exist";
+  fs::remove_all(dir); // ensure it really does not exist
+  auto panel = attach_multi_segment_panel(dir.string());
+  ASSERT_FALSE(panel.has_value());
+  EXPECT_EQ(panel.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(AlphaMultiSegmentPanel, WindowSelectsNoDatesIsInvalidArgument) {
+  const fs::path dir = fs::temp_directory_path() / "atx_multi_seg_empty_win";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  write_seg(dir / "2020-01-01.seg", day_nanos(18262), {"A"}, {10.0});
+
+  TimeWindow w;
+  w.start_nanos = day_nanos(18263); // entirely after the only date (18262)
+  w.end_nanos = day_nanos(18270);
+  auto panel = attach_multi_segment_panel(dir.string(), w);
+  ASSERT_FALSE(panel.has_value());
+  EXPECT_EQ(panel.error().code(), atx::core::ErrorCode::InvalidArgument);
+}

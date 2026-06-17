@@ -116,6 +116,10 @@ attach_multi_segment_panel(const std::string &seg_dir, TimeWindow window,
   for (const auto &e : fs::directory_iterator(seg_dir, ec)) {
     if (e.path().extension() == ".seg") paths.push_back(e.path().string());
   }
+  if (ec)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "attach_multi_segment_panel: cannot open directory '" + seg_dir +
+                              "': " + ec.message());
   if (paths.empty())
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "attach_multi_segment_panel: no .seg files in " + seg_dir);
