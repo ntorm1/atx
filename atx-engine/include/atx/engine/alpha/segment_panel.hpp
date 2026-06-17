@@ -95,4 +95,22 @@ universe_from_field(const atx::tsdb::SegmentReader &reader, atx::u32 field, atx:
 attach_segment_panel(const std::string &path, TimeWindow window = {},
                      std::span<const std::string> fields = {}, UniversePolicy universe = {});
 
+/// Span a directory of per-date sealed segments into ONE owned alpha::Panel over
+/// [window). Enumerates `*.seg` in `seg_dir`, sorts lexicographically (ISO
+/// YYYY-MM-DD names sort chronologically), unions the per-segment securityID
+/// instrument axes (join by symbol NAME, first-seen across dates in ascending date
+/// order), and MATERIALIZES an owned date-major Panel (each per-date segment is a
+/// separate mmap with its own instrument ordering, so a borrowed cross-segment
+/// Panel is not possible without a global build-time axis — owned is correct here).
+///
+/// `fields` empty => the field set of the first in-window segment, in segment order;
+/// otherwise exactly the named fields (Err(NotFound) if any segment lacks one).
+/// A cell absent on a date reads NaN; the universe mask follows `universe` (the
+/// present-bitmap by default). Err(InvalidArgument) if no .seg files / no in-window
+/// dates. Returns an OWNED Panel (the readers are released before return).
+[[nodiscard]] atx::core::Result<Panel>
+attach_multi_segment_panel(const std::string &seg_dir, TimeWindow window = {},
+                           std::span<const std::string> fields = {},
+                           UniversePolicy universe = {});
+
 } // namespace atx::engine::alpha
