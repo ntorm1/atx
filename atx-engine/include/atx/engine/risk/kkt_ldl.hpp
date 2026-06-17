@@ -57,10 +57,12 @@
 //   * Division-free inner loop: D⁻¹ is precomputed once in factor_numeric.
 //   * Same input ⇒ byte-identical Lx, D, perm and byte-identical solve output.
 
-#include <cassert> // assert (solve() span-length precondition)
-#include <span>    // std::span (solve I/O)
-#include <string>  // std::to_string (zero-pivot diagnostic message)
-#include <vector>  // std::vector (CSC factor storage + symbolic workspaces)
+#include <algorithm> // std::sort (per-column ascending-row ordering)
+#include <cassert>   // assert (solve() span-length precondition)
+#include <numeric>   // std::iota (column-sort index permutation)
+#include <span>      // std::span (solve I/O)
+#include <string>    // std::to_string (zero-pivot diagnostic message)
+#include <vector>    // std::vector (CSC factor storage + symbolic workspaces)
 
 #include <Eigen/Dense>           // Eigen::MatrixXd (reconstruct() diagnostic)
 #include <Eigen/OrderingMethods> // Eigen::AMDOrdering (fill-reducing permutation)
@@ -496,24 +498,44 @@ private:
       }
     }
 
-    // Sort each column's entries by ascending row (insertion sort on indices —
-    // columns are short; this is a fixed, deterministic permutation of indices, NOT
-    // a sort on floating data: ties are impossible because each (urow,ucol) is
-    // unique here). Keeps the upper-triangle CSC canonical for the etree pass.
+    // Sort each column's entries by ascending row. This is a fixed, deterministic
+    // permutation of indices, NOT a sort on floating data: ties are impossible because
+    // each (urow, ucol) is unique here. Keeps the upper-triangle CSC canonical for the
+    // etree pass.
+    //
+    // PERF (S8.3): an insertion sort here is O(col_len²), which is O(M²) on the few
+    // STRUCTURALLY-DENSE columns — the demoted aggregate-constraint duals (dollar-
+    // neutral, gross/turnover budgets, beta, factor-exposure) and the K factor-
+    // definition duals each carry O(M) entries, and `build_permuted_upper` runs in
+    // BOTH the symbolic and numeric phases — so the quadratic sort dominated the whole
+    // factorization (measured: ~6.6 s of a 6.7 s factor at M=3000/K=64, with linear
+    // L_nnz). std::sort makes it O(col_len·log col_len) → near-linear overall. The sort
+    // is on UNIQUE integer row keys, so it is deterministic (R5) regardless of the
+    // std::sort tie-break (there are no ties). We sort an index permutation and gather
+    // both parallel arrays through it.
+    std::vector<atx::usize> sort_perm; // reused per column (capacity grows to the max)
+    std::vector<atx::usize> tmp_i;
+    std::vector<atx::f64> tmp_x;
     for (atx::usize c = 0; c < n_; ++c) {
       const atx::usize s = Kup_p_[c];
       const atx::usize e = Kup_p_[c + 1];
-      for (atx::usize a = s + 1; a < e; ++a) {
-        const atx::usize ri = Kup_i_[a];
-        const atx::f64 vi = Kup_x_[a];
-        atx::usize b = a;
-        while (b > s && Kup_i_[b - 1] > ri) {
-          Kup_i_[b] = Kup_i_[b - 1];
-          Kup_x_[b] = Kup_x_[b - 1];
-          --b;
-        }
-        Kup_i_[b] = ri;
-        Kup_x_[b] = vi;
+      const atx::usize len = e - s;
+      if (len < 2) {
+        continue;
+      }
+      sort_perm.resize(len);
+      std::iota(sort_perm.begin(), sort_perm.end(), s); // absolute slot indices [s, e)
+      std::sort(sort_perm.begin(), sort_perm.end(),
+                [this](atx::usize a, atx::usize b) { return Kup_i_[a] < Kup_i_[b]; });
+      tmp_i.resize(len);
+      tmp_x.resize(len);
+      for (atx::usize a = 0; a < len; ++a) {
+        tmp_i[a] = Kup_i_[sort_perm[a]];
+        tmp_x[a] = Kup_x_[sort_perm[a]];
+      }
+      for (atx::usize a = 0; a < len; ++a) {
+        Kup_i_[s + a] = tmp_i[a];
+        Kup_x_[s + a] = tmp_x[a];
       }
     }
   }
