@@ -11,7 +11,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -58,8 +57,6 @@ using atx::core::ErrorCode;
 using atx::core::Ok;
 using atx::core::Result;
 
-constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
-
 // Catalog registration names (minimal lineage for the history path).
 constexpr std::string_view kDatasetOratsHistory = "orats_history";
 constexpr std::string_view kDatasetHistUniverse = "universe";
@@ -76,9 +73,12 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // Step 1: Raw panel via attach_multi_segment_panel.
   // The panel's `close` field is the raw as-traded close (pre-cumret).
   // D = dates, N = instruments.
-  // Use empty fields → auto-discover from the first in-window segment.
+  // Request the curated 16 fields explicitly (the on-disk SEGMENT names) so the
+  // attach fails fast if a required field is missing and never silently admits
+  // an unexpected extra segment column.
   // -------------------------------------------------------------------------
-  ATX_TRY(auto raw, alpha::attach_multi_segment_panel(cfg.seg_dir, cfg.window));
+  const std::vector<std::string> want_fields(kOratsFields.begin(), kOratsFields.end());
+  ATX_TRY(auto raw, alpha::attach_multi_segment_panel(cfg.seg_dir, cfg.window, want_fields));
   const atx::usize D = raw.dates();
   const atx::usize N = raw.instruments();
 
@@ -228,11 +228,13 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   names.emplace_back(kHistFieldMarketCap);
   data.push_back(uni.market_cap);
 
-  // sector — widen i32 sector_code to f64
+  // sector — widen i32 sector_code to f64 (every cell is set; sector_code already
+  // carries kNoSectorCode = -1 for absent sectors, so there is no missing-cell case).
   {
-    std::vector<atx::f64> sector_f64(cells, kNaN);
+    std::vector<atx::f64> sector_f64;
+    sector_f64.reserve(cells);
     for (atx::usize k = 0; k < cells; ++k) {
-      sector_f64[k] = static_cast<atx::f64>(uni.sector_code[k]);
+      sector_f64.push_back(static_cast<atx::f64>(uni.sector_code[k]));
     }
     names.emplace_back(kHistFieldSector);
     data.push_back(std::move(sector_f64));

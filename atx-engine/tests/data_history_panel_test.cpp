@@ -26,7 +26,7 @@ void write_day(const fs::path &dir, const char *name, atx::i64 dn,
   cols.times.assign(r, dn);
   cols.symbols = syms;
   cols.values.assign(kOratsFields.size(), std::vector<atx::f64>(r, 0.0));
-  // indices into kOratsFields: 3=close, 7=shares, 10=cumulReturnFactor, 6=volume
+  // indices into kOratsFields: 3=close, 7=shares, 10=cumReturnFactor, 6=volume
   cols.values[3] = close;
   cols.values[6] = std::vector<atx::f64>(r, 1e7); // volume
   cols.values[7] = shares;
