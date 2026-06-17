@@ -20,7 +20,6 @@
 //   reversal expressions.  The library's panel_fields is set to {"close", "volume"}
 //   to match.
 
-#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <optional>
