@@ -34,7 +34,7 @@
 | S3-2 | `load_orats_history` — zip TSV → per-date `.seg` + side-cars | Heavy | ⏳ pending | — | `data/orats_history.{hpp,cpp}` + test |
 | S3-3 | `orats_total_return_close` — TRI via `adjust_total_return` reuse | Moderate | ⏳ pending | — | `data/history_panel.*` helper + test |
 | S3-4 | `attach_multi_segment_panel` — union per-date segments → owned Panel | Heavy | ⏳ pending | — | `alpha/segment_panel.*` + test |
-| S3-5 | `build_history_panel` orchestrator + shared `digest_panel` | Heavy | ⏳ pending | — | `data/history_panel.*`, `data/panel_digest.hpp`, refactor `real_panel.cpp` |
+| S3-5 | `build_history_panel` orchestrator + shared `digest_panel` | Heavy | ✅ done (reviewed) | ae2b394, 24aca6f, 5a9bb06, b39d47c | digest extraction byte-identical (golden `0x2a22a873483d9157`); cumReturnFactor 15-char rename + consteval guard; review fixes applied; suite 2545/2545 |
 | S3-6 | Guarded E2E smoke through unchanged `RobustResearchDriver` | Heavy | ⏳ pending | — | `tests/orats_e2e_smoke_test.cpp` + operator data-build |
 | S3-close | Docs, `sprint3.md`, residuals→backlog, `--no-ff` merge | Light | ⏳ pending | — | — |
 
