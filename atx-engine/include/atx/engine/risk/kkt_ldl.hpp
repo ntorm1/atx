@@ -116,6 +116,77 @@ public:
       }
     }
 
+    // (1b) DENSE-COLUMN DEMOTION (S8.3 perf — kills the O(M²) fill defect). AMD is a
+    //      local-greedy heuristic and orders a few STRUCTURALLY-DENSE columns (the
+    //      dollar-neutral Σw=0 row, the Σs≤gross / Σr≤turn budget rows, the beta row,
+    //      and the K factor-definition rows — each touching O(M) variables) too early.
+    //      Eliminating an O(M)-degree column early fills its entire neighborhood → an
+    //      O(M²) factor (measured: L_nnz ~ M² and factor_numeric blowing up to minutes
+    //      at M=1500). The standard fix (Davis, "Direct Methods," §7.1; SuiteSparse
+    //      dense-row handling) is to eliminate dense columns LAST. We post-process the
+    //      AMD elimination order: STABLE-partition it so every dense column is demoted
+    //      to the tail, keeping the AMD-relative order within each group. This is a
+    //      PURE function of the pattern (a count + a stable partition) — fully
+    //      deterministic (R5), no values, no RNG. The result is an O(M·K²) factor.
+    {
+      // Column degree (nnz) of the SYMMETRIC pattern, per OLD index. We stored only
+      // the upper triangle, so accumulate both (i in col j) and (j in col i).
+      std::vector<atx::usize> deg(n_, 0);
+      for (int col = 0; col < static_cast<int>(n_); ++col) {
+        for (SpMat::InnerIterator it(K, col); it; ++it) {
+          const atx::usize i = static_cast<atx::usize>(it.row());
+          const atx::usize j = static_cast<atx::usize>(it.col());
+          if (i > j) {
+            continue; // count each symmetric off-diagonal pair once (from the upper part)
+          }
+          ++deg[i];
+          if (i != j) {
+            ++deg[j];
+          }
+        }
+      }
+      // Dense threshold: a column is "dense" if its degree exceeds 16× the MEAN
+      // column degree (= nnz/n). This discriminator is SCALE-STABLE: the structurally-
+      // sparse columns (w with ~K factor entries + a few box rows; the constraint
+      // duals with O(1) entries) keep a mean degree that stays ~constant as M grows,
+      // while the genuinely-dense rows (Σw=0, Σs≤gross, beta, the K factor-definition
+      // duals — each O(M) entries) blow past 16× the mean at every M. A √n threshold
+      // is NOT scale-stable (it overtakes the O(M) dense degree only at large M); the
+      // mean-relative one catches them uniformly. Pure function of the pattern (R5).
+      const atx::f64 mean_deg =
+          (n_ > 0U) ? static_cast<atx::f64>(K.nonZeros()) / static_cast<atx::f64>(n_) : 1.0;
+      const atx::f64 thr_f = 16.0 * mean_deg;
+      const atx::usize thresh = static_cast<atx::usize>(thr_f < 32.0 ? 32.0 : thr_f);
+
+      // Old indices in AMD elimination order (ascending new position).
+      std::vector<atx::usize> order(n_, 0);
+      for (atx::usize old = 0; old < n_; ++old) {
+        order[perm_[old]] = old;
+      }
+      // Stable-partition: non-dense first (in AMD order), then dense (in AMD order).
+      std::vector<atx::usize> demoted;
+      demoted.reserve(n_);
+      std::vector<atx::usize> kept;
+      kept.reserve(n_);
+      for (atx::usize pos = 0; pos < n_; ++pos) {
+        const atx::usize old = order[pos];
+        if (deg[old] > thresh) {
+          demoted.push_back(old);
+        } else {
+          kept.push_back(old);
+        }
+      }
+      if (!demoted.empty() && !kept.empty()) {
+        atx::usize np = 0;
+        for (const atx::usize old : kept) {
+          perm_[old] = np++;
+        }
+        for (const atx::usize old : demoted) {
+          perm_[old] = np++;
+        }
+      }
+    }
+
     // (2) Materialize the upper triangle of the PERMUTED matrix Kp = P K Pᵀ in CSC.
     //     We only need the pattern here, but we reuse the same permuted-assembly
     //     routine numerically below, so build values too (cheap, and keeps the two
