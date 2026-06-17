@@ -41,6 +41,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 
 #include "atx/engine/data/history_panel.hpp" // data::build_history_panel, HistoryDataConfig
+#include "atx/engine/data/orats_history.hpp" // data::detail::date_to_nanos
 
 namespace atxtest_orats_e2e_smoke {
 
@@ -271,18 +272,17 @@ TEST(OratsE2ESmoke, RealPartitionRunsUnchangedRobustPipeline) {
   const std::string seg_dir = (*root / "data" / "orats_history_1d").string();
 
   // ---- assemble the history Panel (S3-5) -------------------------------------
-  // 2020-Q1 window — small enough for a time-boxed smoke.
-  constexpr atx::i64 kNsPerDay = 86'400LL * 1'000'000'000LL;
-  // 2020-01-02 and 2020-04-01 in unix-nanos (days_from_civil × ns/day).
-  // days_from_civil(2020,1,2)  = 18263  →  18263 * kNsPerDay
-  // days_from_civil(2020,4,1)  = 18353  →  18353 * kNsPerDay
-  constexpr atx::i64 kStart = 18263LL * kNsPerDay; // 2020-01-02
-  constexpr atx::i64 kEnd   = 18353LL * kNsPerDay; // 2020-04-01
+  // 2020-Q1 window — small enough for a time-boxed smoke.  Bounds come from the
+  // loader's own date_to_nanos helper (midnight-UTC) so they stay self-documenting.
+  const auto start_ns = atx::engine::data::detail::date_to_nanos("2020-01-02");
+  const auto end_ns   = atx::engine::data::detail::date_to_nanos("2020-04-01");
+  ASSERT_TRUE(start_ns.has_value()) << "date_to_nanos(2020-01-02) failed";
+  ASSERT_TRUE(end_ns.has_value())   << "date_to_nanos(2020-04-01) failed";
 
   atx::engine::data::HistoryDataConfig hcfg;
   hcfg.seg_dir = seg_dir;
-  hcfg.window.start_nanos = kStart;
-  hcfg.window.end_nanos   = kEnd;
+  hcfg.window.start_nanos = *start_ns;
+  hcfg.window.end_nanos   = *end_ns;
   hcfg.universe.min_adv_usd     = 5.0e6; // liquid subset
   hcfg.universe.top_n_by_adv    = 200;   // cap for time-boxing
 
@@ -317,14 +317,15 @@ TEST(OratsE2ESmoke, RealPartitionRunsUnchangedRobustPipeline) {
   // ResearchDriver actually executed its mine/gate/admit loop.
   EXPECT_NE(report->research.digest, 0u) << "pipeline returned a zero digest (did not run?)";
 
-  // Log a brief summary for the operator's ledger record.
-  std::cout << "[OratsE2ESmoke] instruments=" << hp->panel.instruments()
-            << " dates=" << hp->panel.dates()
-            << " admitted=" << report->research.total_admitted
-            << " robust_size=" << report->robust_size
-            << " book.ran=" << report->book.ran
-            << " digest=0x" << std::hex << report->research.digest << std::dec
-            << "\n";
+  // Log a brief summary for the operator's ledger record.  GTEST_LOG_(INFO)
+  // keeps test output pristine (a tagged info line, not raw stdout) when an
+  // operator runs this with the real partition present.
+  GTEST_LOG_(INFO) << "[OratsE2ESmoke] instruments=" << hp->panel.instruments()
+                   << " dates=" << hp->panel.dates()
+                   << " admitted=" << report->research.total_admitted
+                   << " robust_size=" << report->robust_size
+                   << " book.ran=" << report->book.ran
+                   << " digest=0x" << std::hex << report->research.digest << std::dec;
 }
 
 } // namespace atxtest_orats_e2e_smoke
