@@ -157,6 +157,11 @@ public:
       // mean-relative one catches them uniformly. Pure function of the pattern (R5).
       const atx::f64 mean_deg =
           (n_ > 0U) ? static_cast<atx::f64>(K.nonZeros()) / static_cast<atx::f64>(n_) : 1.0;
+      // thresh = max(32, floor(16·mean_deg)). The absolute floor of 32 keeps a tiny /
+      // degenerate KKT (mean_deg ≲ 2) from demoting ordinary columns; above it the
+      // 16×-mean term dominates and catches the genuinely-dense aggregate-constraint
+      // duals. The cast truncates toward zero (deterministic; the column degrees are
+      // exact integers so no boundary ambiguity matters).
       const atx::f64 thr_f = 16.0 * mean_deg;
       const atx::usize thresh = static_cast<atx::usize>(thr_f < 32.0 ? 32.0 : thr_f);
 
@@ -233,6 +238,16 @@ public:
     if (static_cast<atx::usize>(K.rows()) != n_ || static_cast<atx::usize>(K.cols()) != n_) {
       return co::Err(co::ErrorCode::InvalidArgument,
                      "QuasiDefiniteLdl: factor_numeric K dimension differs from symbolic");
+    }
+    // Pattern guard (R5 hardening): the numeric value-gather indexes K's flat CSC array
+    // through the source map cached at symbolic, which is valid only if K carries the
+    // SAME sparsity pattern. A differing nnz proves the pattern changed — refuse rather
+    // than silently read wrong values. (A same-nnz-different-layout K cannot arise from
+    // the documented contract: identical pattern + setFromTriplets ⇒ identical layout.)
+    if (static_cast<atx::usize>(K.nonZeros()) != sym_knnz_) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "QuasiDefiniteLdl: factor_numeric K sparsity pattern differs from symbolic "
+                     "(nnz mismatch) — re-run factor_symbolic for the new pattern");
     }
 
     // Refresh the permuted upper-triangle VALUES from the cached pattern + source map
@@ -459,6 +474,7 @@ private:
     assert(K.isCompressed() && "QuasiDefiniteLdl: K must be compressed for factorization");
     const int *Kp = K.outerIndexPtr();
     const int *Ki = K.innerIndexPtr();
+    sym_knnz_ = static_cast<atx::usize>(K.nonZeros()); // numeric must match this (pattern guard)
 
     // First pass: count per-column nonzeros of the permuted upper triangle.
     Kup_p_.assign(n_ + 1, 0);
@@ -605,6 +621,7 @@ private:
   std::vector<atx::usize> Kup_i_;   // row indices (ascending within a column)
   std::vector<atx::f64> Kup_x_;     // values (refreshed each numeric phase)
   std::vector<atx::usize> kup_src_; // per-slot SOURCE flat CSC index in K (numeric value gather)
+  atx::usize sym_knnz_ = 0;         // K.nonZeros() recorded at symbolic — numeric pattern guard
 
   // ---- Symbolic structure ------------------------------------------------
   std::vector<atx::usize> etree_; // elimination tree parent (kInvalid = root)
