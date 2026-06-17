@@ -68,6 +68,8 @@ add_library(atx-engine STATIC
     src/data/shm_bar_feed.cpp
     # universe construction: market-cap / ADV / sector / PIT membership (p3 S1-4)
     src/data/universe.cpp
+    # ORATS history loader: stream zip TSV -> per-date .seg partition (p3 S3-2)
+    src/data/orats_history.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
     src/parallel/process_executor.cpp
