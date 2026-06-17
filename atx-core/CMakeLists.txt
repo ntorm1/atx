@@ -73,6 +73,7 @@ add_library(atx-core STATIC
     src/symbol.cpp
     src/io/parquet.cpp
     src/io/parquet_writer.cpp
+    src/io/zip_reader.cpp
     src/db/sqlite.cpp
     src/external/dbn.cpp
     src/external/databento.cpp
