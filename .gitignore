@@ -2,6 +2,7 @@
 build/
 build-ninja/
 build-vs/
+build-bench/
 out/
 cmake-build-*/
 
