@@ -231,7 +231,6 @@ constexpr usize kAugKktIters = 120U;
 // ~20s as-built path this test invokes twice (~42s). S8.3 removes the GTEST_SKIP()
 // guard to flip it green once the factor-augmented sparse QP makes the run fast.
 TEST(MultiHorizonIntegration, R1_FullPipelineDeterministicByteIdentical) {
-  GTEST_SKIP() << "S8.3: full-size re-enable — skipped at S8.0 (as-built ~20s/run path)";
   const ModelStore store;
   const RebalanceSchedule sched{{0U, 1U, 2U, 3U}};
   const CostInputs cost{/*kappa=*/0.25, /*round_trip_cost_bps=*/7.5, /*capacity_gross=*/1e9};
@@ -280,7 +279,6 @@ TEST(MultiHorizonIntegration, R1_FullPipelineDeterministicByteIdentical) {
 // full and truncated schedules (~54s) on the as-built solver. S8.3 removes the
 // GTEST_SKIP() guard to flip it green once the rewrite makes the run fast.
 TEST(MultiHorizonIntegration, R2_TruncationInvarianceNoLookAhead) {
-  GTEST_SKIP() << "S8.3: full-size re-enable — skipped at S8.0 (as-built ~20s/run path)";
   const ModelStore store;
   const CostInputs cost{0.25, 7.5, 1e9};
   const auto sources_at = [&](usize s) { return two_source_pack(s); };
@@ -358,7 +356,6 @@ TEST(MultiHorizonIntegration, R2_TrajectoryIsPureFunctionOfCurrentAlpha) {
 // constraint re-materialization (~31s) on the as-built solver. S8.3 removes the
 // GTEST_SKIP() guard to flip it green once the rewrite makes the run fast.
 TEST(MultiHorizonIntegration, R3_AugmentedConstraintsExactEveryPeriod) {
-  GTEST_SKIP() << "S8.3: full-size re-enable — skipped at S8.0 (as-built ~20s/run path)";
   const ModelStore store;
   const RebalanceSchedule sched{{0U, 1U, 2U, 3U}};
   const CostInputs cost{0.0, 0.0, 1e9};
