@@ -81,7 +81,10 @@ inline atx::f64 parse_f64(std::string_view s) {
   if (s.empty()) return std::numeric_limits<atx::f64>::quiet_NaN();
   atx::f64 v{};
   const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
-  if (r.ec != std::errc{}) return std::numeric_limits<atx::f64>::quiet_NaN();
+  // Reject partial parses ("1.2x") as well as hard failures — NaN, never a
+  // truncated value.
+  if (r.ec != std::errc{} || r.ptr != s.data() + s.size())
+    return std::numeric_limits<atx::f64>::quiet_NaN();
   return v;
 }
 
@@ -128,6 +131,95 @@ atx::core::Status flush_date(DateAccumulator &acc, const std::string &out_dir,
   return atx::tsdb::build_from_long(cols, path, created_at_nanos);
 }
 
+// Mutable per-load state threaded through process_line. Holds everything the row
+// projector mutates so the SAME code path serves the main streaming loop and the
+// final carry flush (no duplication).
+struct LoadState {
+  const OratsLoadConfig &cfg;
+  const detail::ColumnIndex &idx;
+  OratsLoadStats &stats;
+  DateAccumulator &acc;
+  atx::i64 &current_date_nanos;
+  std::unordered_map<atx::i64, std::pair<std::string, std::string>> &symbology;
+  std::vector<std::string_view> &fields; // reusable scratch
+};
+
+// Process ONE data line (header already consumed). Increments rows_read, then
+// classifies the row into exactly one of {malformed, filtered, kept} so the
+// invariant rows_read == rows_filtered + rows_malformed + rows_kept holds on
+// every path. A date regression (raw input, BEFORE the floor) fails closed.
+atx::core::Status process_line(std::string_view line, LoadState &st) {
+  ++st.stats.rows_read;
+
+  split_tabs(line, st.fields);
+  const int max_col = static_cast<int>(st.fields.size()) - 1;
+  auto field_at = [&](int col) -> std::string_view {
+    return (col >= 0 && col <= max_col) ? st.fields[static_cast<atx::usize>(col)]
+                                        : std::string_view{};
+  };
+
+  // 1) Parse trading date.
+  const std::string_view date_sv = field_at(st.idx.tradingDate);
+  const auto date_opt = detail::date_to_nanos(date_sv);
+  if (!date_opt.has_value()) {
+    ++st.stats.rows_malformed;
+    return atx::core::Ok();
+  }
+  const atx::i64 date_nanos = *date_opt;
+
+  // 2) Monotonic date-major guard — on ALL rows, BEFORE the floor filter. The
+  //    contract is "input MUST be date-major"; a regression among sub-floor rows
+  //    is still a malformed input, not a silent drop.
+  if (date_nanos < st.current_date_nanos) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "orats load: non-monotonic tradingDate");
+  }
+
+  // 3) Date floor filter.
+  if (date_nanos < st.cfg.min_date_nanos) {
+    ++st.stats.rows_filtered;
+    return atx::core::Ok();
+  }
+
+  // 4) securityID required.
+  const std::string_view secid_sv = field_at(st.idx.securityID);
+  if (secid_sv.empty()) {
+    ++st.stats.rows_malformed;
+    return atx::core::Ok();
+  }
+
+  // 5) Date boundary: flush the previous date's segment, then start a new one.
+  if (date_nanos != st.current_date_nanos) {
+    if (!st.acc.empty()) {
+      ATX_TRY_VOID(flush_date(st.acc, st.cfg.out_dir, st.cfg.created_at_nanos));
+      ++st.stats.dates_written;
+    }
+    st.acc.clear(date_nanos, std::string(date_sv));
+    st.current_date_nanos = date_nanos;
+  }
+
+  // 6) Accumulate the projected fields (empty/unparseable -> NaN).
+  st.acc.symbols.emplace_back(secid_sv);
+  for (atx::usize f = 0; f < kOratsFields.size(); ++f) {
+    st.acc.values[f].push_back(parse_f64(field_at(st.idx.field[f])));
+  }
+
+  // 7) Symbology side-car: first-seen ticker info, keyed by securityID as i64.
+  atx::i64 secid_i64 = 0;
+  {
+    const auto r =
+        std::from_chars(secid_sv.data(), secid_sv.data() + secid_sv.size(), secid_i64);
+    if (r.ec != std::errc{}) secid_i64 = 0;
+  }
+  if (st.symbology.find(secid_i64) == st.symbology.end()) {
+    st.symbology.emplace(secid_i64, std::make_pair(std::string(field_at(st.idx.ticker_tk)),
+                                                   std::string(field_at(st.idx.todayTicker))));
+  }
+
+  ++st.stats.rows_kept;
+  return atx::core::Ok();
+}
+
 } // namespace
 
 atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg) {
@@ -147,13 +239,15 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   detail::ColumnIndex idx;
   bool header_parsed = false;
 
+  std::vector<std::string_view> fields;
+  fields.reserve(128);
+
+  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, fields};
+
   constexpr atx::usize kChunk = 1u << 20; // 1 MiB
   std::vector<char> buf(kChunk);
   std::string carry;
   carry.reserve(4096);
-
-  std::vector<std::string_view> fields;
-  fields.reserve(128);
 
   for (;;) {
     auto read_res = reader.read(std::span<char>(buf.data(), buf.size()));
@@ -175,174 +269,47 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
     while (pos < chunk.size()) {
       const atx::usize nl = chunk.find('\n', pos);
       if (nl == std::string_view::npos) {
-        // Partial trailing line — save for next chunk
+        // Partial trailing line — save for next chunk.
         carry.assign(chunk.data() + pos, chunk.size() - pos);
         break;
       }
-      // Strip trailing \r if present
+      // Strip trailing \r if present.
       atx::usize end = nl;
       if (end > pos && chunk[end - 1] == '\r') --end;
       const std::string_view line = chunk.substr(pos, end - pos);
       pos = nl + 1;
 
       if (!header_parsed) {
-        auto res = detail::resolve_header(line);
-        if (!res.has_value()) return tl::unexpected(res.error());
-        idx = *res;
+        ATX_TRY(auto resolved, detail::resolve_header(line));
+        idx = resolved;
         header_parsed = true;
         continue;
       }
 
       if (line.empty()) continue;
-      ++stats.rows_read;
-
-      split_tabs(line, fields);
-      const int max_col = static_cast<int>(fields.size()) - 1;
-
-      // Parse trading date
-      const std::string_view date_sv =
-          (idx.tradingDate <= max_col) ? fields[idx.tradingDate] : std::string_view{};
-      auto date_opt = detail::date_to_nanos(date_sv);
-      if (!date_opt.has_value()) {
-        ++stats.rows_malformed;
-        continue;
-      }
-      const atx::i64 date_nanos = *date_opt;
-      const std::string_view date_str_sv = date_sv; // YYYY-MM-DD
-
-      // Date floor filter
-      if (date_nanos < cfg.min_date_nanos) {
-        ++stats.rows_filtered;
-        continue;
-      }
-
-      // Parse securityID
-      const std::string_view secid_sv =
-          (idx.securityID <= max_col) ? fields[idx.securityID] : std::string_view{};
-      if (secid_sv.empty()) {
-        ++stats.rows_malformed;
-        continue;
-      }
-
-      // Date-major guard
-      if (date_nanos < current_date_nanos) {
-        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                              "orats load: non-monotonic tradingDate");
-      }
-
-      // Date boundary: flush previous date
-      if (date_nanos != current_date_nanos && current_date_nanos != std::numeric_limits<atx::i64>::min()) {
-        if (!acc.empty()) {
-          ATX_TRY_VOID(flush_date(acc, cfg.out_dir, cfg.created_at_nanos));
-          ++stats.dates_written;
-        }
-        acc.clear(date_nanos, std::string(date_str_sv));
-        current_date_nanos = date_nanos;
-      } else if (current_date_nanos == std::numeric_limits<atx::i64>::min()) {
-        current_date_nanos = date_nanos;
-        acc.clear(date_nanos, std::string(date_str_sv));
-      }
-
-      // Accumulate row
-      acc.symbols.emplace_back(secid_sv);
-      for (atx::usize f = 0; f < kOratsFields.size(); ++f) {
-        const int col = idx.field[f];
-        const std::string_view val_sv = (col <= max_col) ? fields[col] : std::string_view{};
-        acc.values[f].push_back(parse_f64(val_sv));
-      }
-
-      // Symbology: record first-seen ticker info; key by securityID as i64
-      atx::i64 secid_i64 = 0;
-      {
-        const auto r = std::from_chars(secid_sv.data(), secid_sv.data() + secid_sv.size(), secid_i64);
-        if (r.ec != std::errc{}) secid_i64 = 0;
-      }
-      if (symbology.find(secid_i64) == symbology.end()) {
-        const std::string_view tk_sv =
-            (idx.ticker_tk <= max_col) ? fields[idx.ticker_tk] : std::string_view{};
-        const std::string_view today_sv =
-            (idx.todayTicker <= max_col) ? fields[idx.todayTicker] : std::string_view{};
-        symbology.emplace(secid_i64, std::make_pair(std::string(tk_sv), std::string(today_sv)));
-      }
-
-      ++stats.rows_kept;
+      ATX_TRY_VOID(process_line(line, st));
     }
 
     if (n == 0) break; // EOF
   }
 
-  // Flush any remaining carry (no trailing newline case)
+  // Flush any remaining carry (final line with no trailing newline). Reuses the
+  // SAME process_line path so all classification/guard/counting rules apply.
   if (!carry.empty() && header_parsed) {
     std::string_view line = carry;
-    if (!line.empty() && line.back() == '\r')
-      line = line.substr(0, line.size() - 1);
-    if (!line.empty()) {
-      ++stats.rows_read;
-      split_tabs(line, fields);
-      const int max_col = static_cast<int>(fields.size()) - 1;
-      const std::string_view date_sv =
-          (idx.tradingDate <= max_col) ? fields[idx.tradingDate] : std::string_view{};
-      auto date_opt = detail::date_to_nanos(date_sv);
-      if (date_opt.has_value()) {
-        const atx::i64 date_nanos = *date_opt;
-        const std::string_view secid_sv =
-            (idx.securityID <= max_col) ? fields[idx.securityID] : std::string_view{};
-        if (!secid_sv.empty() && date_nanos >= cfg.min_date_nanos) {
-          if (date_nanos < current_date_nanos) {
-            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                                  "orats load: non-monotonic tradingDate");
-          }
-          if (date_nanos != current_date_nanos &&
-              current_date_nanos != std::numeric_limits<atx::i64>::min()) {
-            if (!acc.empty()) {
-              ATX_TRY_VOID(flush_date(acc, cfg.out_dir, cfg.created_at_nanos));
-              ++stats.dates_written;
-            }
-            acc.clear(date_nanos, std::string(date_sv));
-            current_date_nanos = date_nanos;
-          }
-          acc.symbols.emplace_back(secid_sv);
-          for (atx::usize f = 0; f < kOratsFields.size(); ++f) {
-            const int col = idx.field[f];
-            const std::string_view val_sv = (col <= max_col) ? fields[col] : std::string_view{};
-            acc.values[f].push_back(parse_f64(val_sv));
-          }
-          atx::i64 secid_i64 = 0;
-          {
-            const auto r =
-                std::from_chars(secid_sv.data(), secid_sv.data() + secid_sv.size(), secid_i64);
-            if (r.ec != std::errc{}) secid_i64 = 0;
-          }
-          if (symbology.find(secid_i64) == symbology.end()) {
-            const std::string_view tk_sv =
-                (idx.ticker_tk <= max_col) ? fields[idx.ticker_tk] : std::string_view{};
-            const std::string_view today_sv =
-                (idx.todayTicker <= max_col) ? fields[idx.todayTicker] : std::string_view{};
-            symbology.emplace(secid_i64,
-                              std::make_pair(std::string(tk_sv), std::string(today_sv)));
-          }
-          ++stats.rows_kept;
-        } else if (date_nanos < cfg.min_date_nanos) {
-          ++stats.rows_filtered;
-        } else {
-          ++stats.rows_malformed;
-        }
-      } else {
-        ++stats.rows_malformed;
-      }
-    }
+    if (!line.empty() && line.back() == '\r') line = line.substr(0, line.size() - 1);
+    if (!line.empty()) ATX_TRY_VOID(process_line(line, st));
   }
 
-  // Flush final date
+  // Flush the final accumulated date.
   if (!acc.empty()) {
     ATX_TRY_VOID(flush_date(acc, cfg.out_dir, cfg.created_at_nanos));
     ++stats.dates_written;
   }
 
-  // Distinct securities
   stats.distinct_securities = static_cast<atx::i64>(symbology.size());
 
-  // Write _symbology.parquet
+  // Write _symbology.parquet (write_parquet returns a Status — propagate it).
   {
     std::vector<atx::i64> sid;
     std::vector<std::string> tk, today;
@@ -362,10 +329,14 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
         atx::core::io::write_parquet(man, (fs::path(cfg.out_dir) / "_symbology.parquet").string()));
   }
 
-  // Write _manifest.json
+  // Write _manifest.json — check the stream open AND the final state so write
+  // errors (full disk, bad path) surface as Err(IoError), not silent data loss.
   {
     const fs::path manifest_path = fs::path(cfg.out_dir) / "_manifest.json";
     std::ofstream mf(manifest_path);
+    if (!mf)
+      return atx::core::Err(atx::core::ErrorCode::IoError,
+                            "orats load: cannot open manifest: " + manifest_path.string());
     mf << "{\n";
     mf << "  \"rows_read\": " << stats.rows_read << ",\n";
     mf << "  \"rows_kept\": " << stats.rows_kept << ",\n";
@@ -381,6 +352,10 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
     }
     mf << "]\n";
     mf << "}\n";
+    mf.flush();
+    if (!mf)
+      return atx::core::Err(atx::core::ErrorCode::IoError,
+                            "orats load: failed writing manifest: " + manifest_path.string());
   }
 
   return atx::core::Ok(stats);

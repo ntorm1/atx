@@ -58,31 +58,27 @@ TEST(DataOratsHistory, ResolveHeaderRejectsMissingColumn) {
 }
 
 namespace {
-std::string make_orats_zip() {
-  // header + 1 pre-2020 row (filtered) + date A (2 securities) + date B (1 security)
-  std::string body = std::string(kHeader) + "\n";
-  auto row = [](const char *date, const char *secid, const char *tk, const char *today,
-                double close, double cumret, double shares) {
-    // 71 tab-separated fields; fill only the ones the loader projects, zeros elsewhere.
-    std::array<std::string, 71> f;
-    for (auto &x : f) x = "0";
-    f[0] = date; f[1] = secid; f[2] = tk; f[3] = today;
-    f[5] = "1"; f[6] = "1"; f[7] = "1";              // open/high/low
-    f[8] = std::to_string(close);                    // close (col 9, idx 8)
-    f[10] = std::to_string(static_cast<long long>(shares)); // volume placeholder
-    f[11] = std::to_string(static_cast<long long>(shares)); // shares (idx 11)
-    f[62] = "5";                                     // GICS (idx 62)
-    f[65] = std::to_string(cumret);                  // cumulReturnFactor (idx 65)
-    std::string line;
-    for (size_t i = 0; i < f.size(); ++i) { line += f[i]; if (i + 1 < f.size()) line += '\t'; }
-    return line + "\n";
-  };
-  body += row("2019-12-31", "33449", "AAPL", "AAPL", 290.0, 0.9, 4000000000); // FILTERED
-  body += row("2020-01-02", "33449", "AAPL", "AAPL", 300.0, 1.0, 4000000000);
-  body += row("2020-01-02", "33008", "AA",   "HWM",  20.0,  0.5, 1000000000);
-  body += row("2020-01-03", "33449", "AAPL", "AAPL", 303.0, 1.0, 4000000000);
+// One TSV data row: 71 tab-separated fields; fill only the ones the loader
+// projects, zeros elsewhere.
+std::string make_orats_row(const char *date, const char *secid, const char *tk, const char *today,
+                           double close, double cumret, double shares) {
+  std::array<std::string, 71> f;
+  for (auto &x : f) x = "0";
+  f[0] = date; f[1] = secid; f[2] = tk; f[3] = today;
+  f[5] = "1"; f[6] = "1"; f[7] = "1";              // open/high/low
+  f[8] = std::to_string(close);                    // close (col 9, idx 8)
+  f[10] = std::to_string(static_cast<long long>(shares)); // volume placeholder
+  f[11] = std::to_string(static_cast<long long>(shares)); // shares (idx 11)
+  f[62] = "5";                                     // GICS (idx 62)
+  f[65] = std::to_string(cumret);                  // cumulReturnFactor (idx 65)
+  std::string line;
+  for (size_t i = 0; i < f.size(); ++i) { line += f[i]; if (i + 1 < f.size()) line += '\t'; }
+  return line + "\n";
+}
 
-  const fs::path p = fs::temp_directory_path() / "atx_orats_tiny.zip";
+// Write `body` (header + rows) into a zip entry named like the real ORATS file.
+std::string write_orats_zip(const std::string &body, const char *file_name) {
+  const fs::path p = fs::temp_directory_path() / file_name;
   fs::remove(p);
   mz_zip_archive zip{};
   EXPECT_TRUE(mz_zip_writer_init_file(&zip, p.string().c_str(), 0));
@@ -91,6 +87,16 @@ std::string make_orats_zip() {
   EXPECT_TRUE(mz_zip_writer_finalize_archive(&zip));
   EXPECT_TRUE(mz_zip_writer_end(&zip));
   return p.string();
+}
+
+std::string make_orats_zip() {
+  // header + 1 pre-2020 row (filtered) + date A (2 securities) + date B (1 security)
+  std::string body = std::string(kHeader) + "\n";
+  body += make_orats_row("2019-12-31", "33449", "AAPL", "AAPL", 290.0, 0.9, 4000000000); // FILTERED
+  body += make_orats_row("2020-01-02", "33449", "AAPL", "AAPL", 300.0, 1.0, 4000000000);
+  body += make_orats_row("2020-01-02", "33008", "AA",   "HWM",  20.0,  0.5, 1000000000);
+  body += make_orats_row("2020-01-03", "33449", "AAPL", "AAPL", 303.0, 1.0, 4000000000);
+  return write_orats_zip(body, "atx_orats_tiny.zip");
 }
 } // namespace
 
@@ -112,6 +118,12 @@ TEST(DataOratsHistory, LoadsTinyZipIntoPerDateSegments) {
   EXPECT_EQ(st->rows_kept, 3);
   EXPECT_EQ(st->dates_written, 2);     // 2020-01-02, 2020-01-03
   EXPECT_EQ(st->distinct_securities, 2);
+  // Counting invariant: every data row lands in exactly one bucket.
+  EXPECT_EQ(st->rows_read, st->rows_filtered + st->rows_malformed + st->rows_kept);
+
+  // Side-cars are written alongside the per-date segments.
+  EXPECT_TRUE(fs::exists(out / "_symbology.parquet"));
+  EXPECT_TRUE(fs::exists(out / "_manifest.json"));
 
   // The 2020-01-02 segment has 2 instruments; close field carries 300 and 20.
   auto rdr = atx::tsdb::SegmentReader::attach((out / "2020-01-02.seg").string());
@@ -124,4 +136,26 @@ TEST(DataOratsHistory, LoadsTinyZipIntoPerDateSegments) {
   EXPECT_EQ(rdr->symbol_name(0), "33449");
   EXPECT_DOUBLE_EQ(rdr->value(*close_fid, 0, 0), 300.0);
   EXPECT_DOUBLE_EQ(rdr->value(*close_fid, 0, 1), 20.0);
+}
+
+TEST(DataOratsHistory, RejectsNonMonotonicDates) {
+  // Two rows, both >= floor, but the dates regress (01-03 then 01-02). The input
+  // contract is date-major; a regression must fail closed with InvalidArgument.
+  std::string body = std::string(kHeader) + "\n";
+  body += make_orats_row("2020-01-03", "33449", "AAPL", "AAPL", 303.0, 1.0, 4000000000);
+  body += make_orats_row("2020-01-02", "33449", "AAPL", "AAPL", 300.0, 1.0, 4000000000);
+  const std::string zip = write_orats_zip(body, "atx_orats_ooo.zip");
+
+  const fs::path out = fs::temp_directory_path() / "atx_orats_ooo_out";
+  fs::remove_all(out);
+
+  OratsLoadConfig cfg;
+  cfg.zip_path = zip;
+  cfg.out_dir = out.string();
+  cfg.min_date_nanos = *detail::date_to_nanos("2020-01-01");
+  cfg.created_at_nanos = 0;
+
+  auto st = load_orats_history(cfg);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
