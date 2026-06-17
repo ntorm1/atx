@@ -45,10 +45,12 @@ TEST(DataOratsHistory, ResolveHeaderFindsProjectedColumns) {
   EXPECT_EQ(idx->securityID, 1);
   EXPECT_EQ(idx->ticker_tk, 2);
   EXPECT_EQ(idx->todayTicker, 3);
-  // field[0] == "open" is column 5; field[10] == "cumulReturnFactor" is column 65.
+  // field[0] == "open" is column 5. Segment field[10] is the 15-char name
+  // "cumReturnFactor"; resolve_header maps it back to the real TSV header
+  // "cumulReturnFactor" (column 65) — the same special-casing as gics->GICS.
   EXPECT_EQ(idx->field[0], 5);
-  EXPECT_EQ(kOratsFields[10], "cumulReturnFactor");
-  EXPECT_EQ(idx->field[10], 65);
+  EXPECT_EQ(kOratsFields[10], "cumReturnFactor");
+  EXPECT_EQ(idx->field[10], 65); // resolved to the TSV "cumulReturnFactor" column
 }
 
 TEST(DataOratsHistory, ResolveHeaderRejectsMissingColumn) {

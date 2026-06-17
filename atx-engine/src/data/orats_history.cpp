@@ -61,10 +61,15 @@ atx::core::Result<ColumnIndex> resolve_header(std::string_view header_line) {
   };
   bool ok = need("tradingDate", idx.tradingDate) && need("securityID", idx.securityID) &&
             need("ticker_tk", idx.ticker_tk) && need("todayTicker", idx.todayTicker);
-  // kOratsFields map by identical name EXCEPT gics->"GICS", earnFlag->"earnFlag".
+  // kOratsFields are SEGMENT field names; map each back to its TSV header column.
+  // Most match by identical name EXCEPT:
+  //   * gics -> "GICS"
+  //   * cumReturnFactor (15-char segment name) -> "cumulReturnFactor" (real TSV
+  //     header; the segment name was shortened to fit the atx-tsdb 15-char limit).
   for (atx::usize f = 0; ok && f < kOratsFields.size(); ++f) {
     std::string_view src = kOratsFields[f];
     if (src == "gics") src = "GICS";
+    else if (src == "cumReturnFactor") src = "cumulReturnFactor";
     ok = need(src, idx.field[f]);
   }
   if (!ok)

@@ -27,6 +27,7 @@
 #include "atx/engine/data/corporate_actions.hpp"
 #include "atx/engine/data/dataset.hpp"
 #include "atx/engine/data/dataset_schema.hpp"
+#include "atx/engine/data/orats_history.hpp" // kOratsFields (canonical segment names)
 #include "atx/engine/data/panel_digest.hpp"
 #include "atx/engine/data/universe.hpp"
 
@@ -63,10 +64,10 @@ constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 constexpr std::string_view kDatasetOratsHistory = "orats_history";
 constexpr std::string_view kDatasetHistUniverse = "universe";
 
-// The atx-tsdb segment format truncates field names to 15 chars (kFieldNameLen-1).
-// "cumulReturnFactor" (17 chars) is stored as "cumulReturnFact" (15 chars).
-// Use the actual on-disk name for all field_id lookups.
-constexpr std::string_view kFldCumulReturnFactor = "cumulReturnFact";
+// The cumulative-return-factor SEGMENT field name (kOratsFields[10]). This is the
+// 15-char on-disk name ("cumReturnFactor"); we reference the canonical constant so
+// a future rename stays in lockstep with the loader and the static_assert guard.
+constexpr std::string_view kFldCumReturnFactor = kOratsFields[10];
 
 } // namespace
 
@@ -76,9 +77,6 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // The panel's `close` field is the raw as-traded close (pre-cumret).
   // D = dates, N = instruments.
   // Use empty fields → auto-discover from the first in-window segment.
-  // NOTE: the atx-tsdb segment format truncates field names to 15 chars
-  // (kFieldNameLen-1); "cumulReturnFactor" is stored as "cumulReturnFact".
-  // All field_id lookups below use the on-disk (possibly truncated) names.
   // -------------------------------------------------------------------------
   ATX_TRY(auto raw, alpha::attach_multi_segment_panel(cfg.seg_dir, cfg.window));
   const atx::usize D = raw.dates();
@@ -91,7 +89,7 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
 
   // Resolve field IDs we need from the raw panel.
   ATX_TRY(auto close_fid,  raw.field_id("close"));
-  ATX_TRY(auto cumret_fid, raw.field_id(kFldCumulReturnFactor));
+  ATX_TRY(auto cumret_fid, raw.field_id(kFldCumReturnFactor));
   ATX_TRY(auto volume_fid, raw.field_id("volume"));
   ATX_TRY(auto high_fid,   raw.field_id("high"));
   ATX_TRY(auto low_fid,    raw.field_id("low"));
