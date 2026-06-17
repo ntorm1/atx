@@ -1,6 +1,7 @@
 #include "atx/core/io/zip_reader.hpp"
 
 #include <cstring>
+#include <string>
 
 #include <miniz.h>
 
