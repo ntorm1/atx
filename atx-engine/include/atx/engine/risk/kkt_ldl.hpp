@@ -193,7 +193,7 @@ public:
     //     We only need the pattern here, but we reuse the same permuted-assembly
     //     routine numerically below, so build values too (cheap, and keeps the two
     //     passes structurally identical — fewer ways to diverge).
-    build_permuted_upper(K);
+    build_permuted_pattern(K);
 
     // (3) Elimination tree + per-column L nonzero counts from the permuted pattern.
     if (!build_etree()) {
@@ -235,8 +235,9 @@ public:
                      "QuasiDefiniteLdl: factor_numeric K dimension differs from symbolic");
     }
 
-    // Refresh the permuted upper-triangle VALUES (pattern is identical to symbolic).
-    build_permuted_upper(K);
+    // Refresh the permuted upper-triangle VALUES from the cached pattern + source map
+    // (pattern is identical to symbolic) — O(nnz), no re-sort.
+    refresh_permuted_values(K);
 
     // QDLDL numeric kernel. Dense scatter workspaces, all length n.
     //   yMarkers[i] : 1 if column i's accumulator yVals[i] is "live" this column.
@@ -442,31 +443,33 @@ private:
   static constexpr atx::usize kInvalid = static_cast<atx::usize>(-1);
 
   // -------------------------------------------------------------------------
-  //  Assemble the UPPER triangle of the permuted matrix Kp = P K Pᵀ in CSC.
-  //  We walk the lower OR upper stored entries of the symmetric K, map each (i,j)
-  //  through perm_, and keep the upper-triangular permuted entries (row ≤ col).
-  //  Built in a fixed per-column, ascending-row order (determinism). Our assembly
-  //  is duplicate-free by construction (each permuted (i,j) is written once), so no
-  //  cell summing occurs; the diagonal is seeded by assignment in factor_numeric.
+  //  Assemble the UPPER-triangle PATTERN of the permuted matrix Kp = P K Pᵀ in CSC
+  //  (symbolic phase). We map each stored upper entry (si≤sj) of the symmetric K
+  //  through perm_ to (urow, ucol) and keep it in the larger permuted-index column,
+  //  in ascending-row order (determinism). Duplicate-free by construction.
+  //
+  //  This ALSO caches, per final (sorted) slot, the SOURCE flat CSC index in K
+  //  (`kup_src_`) so the numeric phase can refresh values in O(nnz) without
+  //  recomputing the pattern or re-sorting — see refresh_permuted_values(). We iterate
+  //  K's raw CSC (outer/inner pointers) rather than InnerIterator, both to record the
+  //  flat source index and because raw traversal is markedly faster in Debug builds.
+  //  K MUST be compressed (all call sites makeCompressed() before factoring).
   // -------------------------------------------------------------------------
-  void build_permuted_upper(const SpMat &K) {
+  void build_permuted_pattern(const SpMat &K) {
+    assert(K.isCompressed() && "QuasiDefiniteLdl: K must be compressed for factorization");
+    const int *Kp = K.outerIndexPtr();
+    const int *Ki = K.innerIndexPtr();
+
     // First pass: count per-column nonzeros of the permuted upper triangle.
     Kup_p_.assign(n_ + 1, 0);
-    // Walk K once; K is symmetric so each stored (i,j) with value v contributes a
-    // permuted entry at (pi, pj). We only keep the upper-triangular permuted cell
-    // (min(pi,pj), max(pi,pj)); the off-diagonal is stored ONCE in the upper part.
-    // To stay duplicate-free we read only K's stored upper triangle (it is built
-    // symmetric in qp_solver, but we canonicalize by always taking i<=j source).
-    // Count.
-    for (int col = 0; col < static_cast<int>(n_); ++col) {
-      for (SpMat::InnerIterator it(K, col); it; ++it) {
-        const atx::usize si = static_cast<atx::usize>(it.row());
-        const atx::usize sj = static_cast<atx::usize>(it.col());
-        if (si > sj) {
-          continue; // use only the source upper triangle; symmetry gives the rest
+    for (atx::usize col = 0; col < n_; ++col) {
+      for (int vp = Kp[col]; vp < Kp[col + 1]; ++vp) {
+        const atx::usize si = static_cast<atx::usize>(Ki[vp]);
+        if (si > col) {
+          continue; // read only K's stored upper triangle; symmetry gives the rest
         }
         const atx::usize pi = perm_[si];
-        const atx::usize pj = perm_[sj];
+        const atx::usize pj = perm_[col];
         const atx::usize ucol = pi < pj ? pj : pi; // store in the larger permuted index col
         Kup_p_[ucol + 1]++;
       }
@@ -476,46 +479,42 @@ private:
     }
     const atx::usize nnz = Kup_p_[n_];
     Kup_i_.assign(nnz, 0);
-    Kup_x_.assign(nnz, 0.0);
+    Kup_x_.assign(nnz, 0.0); // values are filled in refresh_permuted_values() (numeric)
+    kup_src_.assign(nnz, 0);
 
-    // Second pass: scatter into per-column slots, then sort each column's rows
-    // ascending (fixed order). We fill with a per-column write cursor.
+    // Second pass: scatter into per-column slots, recording the source flat CSC index.
     std::vector<atx::usize> cursor(Kup_p_.begin(), Kup_p_.end() - 1);
-    for (int col = 0; col < static_cast<int>(n_); ++col) {
-      for (SpMat::InnerIterator it(K, col); it; ++it) {
-        const atx::usize si = static_cast<atx::usize>(it.row());
-        const atx::usize sj = static_cast<atx::usize>(it.col());
-        if (si > sj) {
+    for (atx::usize col = 0; col < n_; ++col) {
+      for (int vp = Kp[col]; vp < Kp[col + 1]; ++vp) {
+        const atx::usize si = static_cast<atx::usize>(Ki[vp]);
+        if (si > col) {
           continue;
         }
         const atx::usize pi = perm_[si];
-        const atx::usize pj = perm_[sj];
+        const atx::usize pj = perm_[col];
         const atx::usize urow = pi < pj ? pi : pj;
         const atx::usize ucol = pi < pj ? pj : pi;
         const atx::usize slot = cursor[ucol]++;
         Kup_i_[slot] = urow;
-        Kup_x_[slot] = it.value();
+        kup_src_[slot] = static_cast<atx::usize>(vp);
       }
     }
 
-    // Sort each column's entries by ascending row. This is a fixed, deterministic
-    // permutation of indices, NOT a sort on floating data: ties are impossible because
-    // each (urow, ucol) is unique here. Keeps the upper-triangle CSC canonical for the
-    // etree pass.
+    // Sort each column's entries by ascending row. A fixed, deterministic permutation
+    // of indices, NOT a sort on floating data: ties are impossible because each
+    // (urow, ucol) is unique here. Keeps the upper-triangle CSC canonical for the etree.
     //
-    // PERF (S8.3): an insertion sort here is O(col_len²), which is O(M²) on the few
-    // STRUCTURALLY-DENSE columns — the demoted aggregate-constraint duals (dollar-
+    // PERF (S8.3): the original insertion sort was O(col_len²), which is O(M²) on the
+    // few STRUCTURALLY-DENSE columns — the demoted aggregate-constraint duals (dollar-
     // neutral, gross/turnover budgets, beta, factor-exposure) and the K factor-
-    // definition duals each carry O(M) entries, and `build_permuted_upper` runs in
-    // BOTH the symbolic and numeric phases — so the quadratic sort dominated the whole
-    // factorization (measured: ~6.6 s of a 6.7 s factor at M=3000/K=64, with linear
-    // L_nnz). std::sort makes it O(col_len·log col_len) → near-linear overall. The sort
-    // is on UNIQUE integer row keys, so it is deterministic (R5) regardless of the
-    // std::sort tie-break (there are no ties). We sort an index permutation and gather
-    // both parallel arrays through it.
+    // definition duals each carry O(M) entries — so it dominated the factorization.
+    // std::sort over an index permutation makes it O(col_len·log col_len) → near-linear.
+    // The key is the UNIQUE integer row index, so the result is deterministic (R5)
+    // regardless of std::sort's tie-break. We gather Kup_i_ and the source map kup_src_
+    // through the permutation (values are filled later by refresh_permuted_values).
     std::vector<atx::usize> sort_perm; // reused per column (capacity grows to the max)
     std::vector<atx::usize> tmp_i;
-    std::vector<atx::f64> tmp_x;
+    std::vector<atx::usize> tmp_src;
     for (atx::usize c = 0; c < n_; ++c) {
       const atx::usize s = Kup_p_[c];
       const atx::usize e = Kup_p_[c + 1];
@@ -528,15 +527,32 @@ private:
       std::sort(sort_perm.begin(), sort_perm.end(),
                 [this](atx::usize a, atx::usize b) { return Kup_i_[a] < Kup_i_[b]; });
       tmp_i.resize(len);
-      tmp_x.resize(len);
+      tmp_src.resize(len);
       for (atx::usize a = 0; a < len; ++a) {
         tmp_i[a] = Kup_i_[sort_perm[a]];
-        tmp_x[a] = Kup_x_[sort_perm[a]];
+        tmp_src[a] = kup_src_[sort_perm[a]];
       }
       for (atx::usize a = 0; a < len; ++a) {
         Kup_i_[s + a] = tmp_i[a];
-        Kup_x_[s + a] = tmp_x[a];
+        kup_src_[s + a] = tmp_src[a];
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  //  Refresh the permuted-upper VALUES (numeric phase) from K, reusing the pattern
+  //  and source map cached by build_permuted_pattern(). O(nnz) — no count, scatter, or
+  //  sort. K MUST have the SAME sparsity pattern (identical compressed CSC layout) as
+  //  the symbolic K so the flat source indices align — the documented factor_numeric
+  //  contract. Produces byte-identical Kup_x_ to a full rebuild (same values, same
+  //  sorted slots), so the factorization stays deterministic (R5).
+  // -------------------------------------------------------------------------
+  void refresh_permuted_values(const SpMat &K) {
+    assert(K.isCompressed() && "QuasiDefiniteLdl: K must be compressed for factorization");
+    const atx::f64 *Kx = K.valuePtr();
+    const atx::usize nnz = Kup_p_[n_];
+    for (atx::usize slot = 0; slot < nnz; ++slot) {
+      Kup_x_[slot] = Kx[kup_src_[slot]];
     }
   }
 
@@ -585,9 +601,10 @@ private:
   std::vector<atx::usize> perm_; // perm_[old] = new position (solve() applies it both ways)
 
   // ---- Permuted upper-triangle CSC (Kp = P K Pᵀ, upper part) -------------
-  std::vector<atx::usize> Kup_p_; // column pointers (n+1)
-  std::vector<atx::usize> Kup_i_; // row indices (ascending within a column)
-  std::vector<atx::f64> Kup_x_;   // values
+  std::vector<atx::usize> Kup_p_;   // column pointers (n+1)
+  std::vector<atx::usize> Kup_i_;   // row indices (ascending within a column)
+  std::vector<atx::f64> Kup_x_;     // values (refreshed each numeric phase)
+  std::vector<atx::usize> kup_src_; // per-slot SOURCE flat CSC index in K (numeric value gather)
 
   // ---- Symbolic structure ------------------------------------------------
   std::vector<atx::usize> etree_; // elimination tree parent (kInvalid = root)
