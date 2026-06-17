@@ -100,6 +100,7 @@ Authoritative sources, in precedence order when they conflict:
 - `EXPECT_*` for soft checks; `ASSERT_*` when later lines would crash/UB on failure. `EXPECT_DEATH`/assertion tests for documented preconditions.
 - Deterministic, isolated, fast. No sleeps, no real network/clock — inject them. Fixtures (`TEST_F`) for shared setup.
 - New bug → reproduce with a failing test *first*, then fix. Cover `atx-core`/`atx-engine` logic; don't chase 100% on trivial glue.
+- **Engine tests are grouped by subsystem, one executable per group.** A new `*_test.cpp` goes in `atx-engine/tests/<group>/` — match the file prefix to the folder (`risk_*` → `risk/`); cross-cutting/misc lands in `core/`. Groups: `alpha risk data factory parallel learn eval library combine fund book core`. CMake auto-globs each dir (`CONFIGURE_DEPENDS` — no manual source list); the file builds into `atx-engine-<group>-tests`. Engine includes are absolute (`atx/...`), so a test compiles the same in any folder. Worktrees compile a slice via `-DATX_TEST_GROUPS="risk;data"`; master builds all. Touching one group relinks only that group — keep a test in the folder of the subsystem it exercises so the blast radius stays small.
 
 ---
 
@@ -109,7 +110,8 @@ Authoritative sources, in precedence order when they conflict:
 - **Sanitizers in CI:** ASan + UBSan on every test run; TSan for threaded code. A sanitizer hit fails the build.
 - **clang-tidy is disabled in this repo.** Do not run it or treat it as a gate unless the user explicitly re-enables it. The root `.clang-tidy` intentionally sets `Checks: '-*'` because the broad profile is prohibitively slow on umbrella-header translation units. **clang-format** remains enforced; formatting is not a review topic.
 - Static analysis (clang-analyzer / cppcheck) in CI. Treat findings as defects.
-- Reproducible builds; pin dependency versions (GoogleTest tag). No build-time network beyond pinned fetches.
+- **Build presets:** `ninja` (default — PCH ON, fast cold builds) / `dev` (worktrees — +sccache + shared deps + unity) / `hygiene` (PCH OFF — strict per-TU include build). PCH parses Eigen+gtest once but **hides missing/unused includes** — so include hygiene is gated by the `hygiene` preset, not the default build. Run `cmake --preset hygiene && cmake --build --preset hygiene` before claiming include-clean. Don't add volatile (frequently-edited) headers to `pch.hpp` — it invalidates the shared PCH and forces a full rebuild.
+- Reproducible builds; dependencies are pinned via the **vcpkg manifest** (`vcpkg.json` + `builtin-baseline`), incl. GoogleTest — restored from the vcpkg binary cache, not rebuilt per build dir. Header-only deps (Eigen, spdlog, xsimd) come via pinned `FetchContent` tags. No build-time network beyond those pinned fetches.
 
 ---
 
@@ -131,6 +133,7 @@ Authoritative sources, in precedence order when they conflict:
 - [ ] Every `switch`/branch exhaustive; loops bounded; functions small.
 - [ ] Tests written first, cover boundaries + failures, pass under ASan/UBSan/TSan.
 - [ ] Warnings clean at `/W4 -Werror`; clang-format clean. Do not run clang-tidy.
+- [ ] Includes verified under the `hygiene` preset (PCH-on default build masks missing/unused includes); new `*_test.cpp` placed in the correct `tests/<group>/` folder.
 - [ ] Public API documents contract; deviations carry `// SAFETY:` rationale.
 
 > When a rule and a deadline conflict, the rule wins. Slow-and-correct beats fast-and-undefined. If a guideline genuinely doesn't fit, deviate **explicitly** with a written reason — never silently.

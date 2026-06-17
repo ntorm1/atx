@@ -116,7 +116,8 @@ target_link_libraries(atx-engine
 
 # The dedicated multi-process executor worker (S7-3, §0.8). ProcessExecutor spawns
 # this beside the test/host module; it lands in build/bin/ via the global
-# CMAKE_RUNTIME_OUTPUT_DIRECTORY, so it sits next to atx-engine-tests.exe.
+# CMAKE_RUNTIME_OUTPUT_DIRECTORY, so it sits next to the atx-engine-<group>-tests
+# binaries.
 add_executable(atx-shm-worker src/parallel/shm_worker_main.cpp)
 target_link_libraries(atx-shm-worker PRIVATE atx::engine atx_warnings)
 

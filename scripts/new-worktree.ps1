@@ -46,7 +46,8 @@ try {
   cmake --preset dev
   Write-Host ''
   Write-Host ('ready: ' + $wt) -ForegroundColor Green
-  Write-Host '  build : cmake --build --preset dev --target atx-engine-tests'
+  Write-Host '  build : cmake --build --preset dev --target atx-engine-<group>-tests   (groups: alpha risk data factory parallel learn eval library combine fund book core)'
+  Write-Host '  partial suite (faster worktree builds): reconfigure with  cmake --preset dev -DATX_TEST_GROUPS="risk;data"  to drop the groups you are not touching'
   Write-Host '  test  : ctest --preset dev -R <Suite>'
   Write-Host '  clangd: auto-loads build/compile_commands.json (no setup)'
   if (Get-Command sccache -ErrorAction SilentlyContinue) { sccache --show-stats | Select-Object -First 12 }

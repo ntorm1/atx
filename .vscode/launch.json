@@ -12,14 +12,26 @@
       "preLaunchTask": "cmake: build (ninja)"
     },
     {
-      "name": "Debug atx-engine-tests",
+      "name": "Debug atx-engine-tests (pick group)",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/bin/atx-engine-tests.exe",
+      "program": "${workspaceFolder}/build/bin/atx-engine-${input:atxTestGroup}-tests.exe",
       "args": [],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "cmake: build (ninja)"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "atxTestGroup",
+      "type": "pickString",
+      "description": "Which atx-engine test group exe to debug?",
+      "options": [
+        "alpha", "risk", "data", "factory", "parallel", "learn",
+        "eval", "library", "combine", "fund", "book", "core"
+      ],
+      "default": "core"
     }
   ]
 }

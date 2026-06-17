@@ -90,15 +90,17 @@ else()
     endif()
 endif()
 
-# ---- Precompiled headers (opt-in; fast cold / fresh-worktree builds) ----
-# OFF by default so the canonical `ninja` / CI build compiles every TU with its
-# own includes (catching missing/unused includes). The `dev` preset turns it ON:
-# the heavy+stable headers (Eigen, gtest, atx-core vocabulary) are parsed once
-# into a PCH and reused by every TU, cutting a cold/fresh-worktree build of the
-# ~189 first-party TUs from ~10 min to a couple. sccache cannot share first-party
-# objects across worktrees (its cache keys embed per-worktree absolute paths), so
-# the PCH — not the object cache — is what makes a fresh worktree compile fast.
-option(ATX_USE_PCH "Use precompiled headers on atx targets (dev speed; keep OFF in CI)" OFF)
+# ---- Precompiled headers (fast cold / fresh-worktree builds) ----
+# ON by default in the `ninja` and `dev` presets: the heavy+stable headers (Eigen,
+# gtest, atx-core vocabulary) are parsed once into a PCH and reused by every TU,
+# cutting a cold/fresh-worktree build of the ~189 first-party TUs from ~10 min to a
+# couple. The PCH — not the object cache — is what makes a fresh worktree fast:
+# sccache cannot share first-party objects across worktrees (its cache keys embed
+# per-worktree absolute paths). Include-hygiene enforcement (every TU compiled with
+# its own includes, catching missing/unused ones) lives in the `hygiene` preset
+# (ATX_USE_PCH OFF) for CI/nightly, so the PCH never hides an include defect.
+# The option default stays OFF so a bare `cmake` (no preset) gets the strict build.
+option(ATX_USE_PCH "Use precompiled headers on atx targets (dev speed; ON in ninja/dev presets, OFF in hygiene)" OFF)
 option(ATX_UNITY_BUILD "Unity/jumbo build atx test target (dev speed)" OFF)
 
 # ---- Benchmarks (opt-in; Google Benchmark is a test/bench-only dep) ----
@@ -122,16 +124,12 @@ option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
 if(ATX_BUILD_TESTS)
     enable_testing()
 
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.15.2
-        SYSTEM
-    )
-    # For Windows/MSVC: keep CRT linkage consistent.
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+    # GoogleTest comes from vcpkg (manifest dep), not a per-build-dir FetchContent
+    # clone+compile. The vcpkg binary cache builds gtest once and every fresh build
+    # dir / worktree links the cached binary instead of recompiling the framework
+    # from source — that source build was pure tax on every cold build. CRT linkage
+    # follows the active triplet (x64-windows = dynamic /MD), matching the engine.
+    find_package(GTest CONFIG REQUIRED)
 endif()
 
 add_subdirectory(atx-core)

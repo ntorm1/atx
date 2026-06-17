@@ -5,7 +5,7 @@
     {
       "name": "ninja",
       "displayName": "Ninja + clang-cl (clangd)",
-      "description": "Ninja generator with clang-cl; emits compile_commands.json for clangd. Run from a VS Developer shell or via the VSCode CMake Tools extension so the MSVC environment is present.",
+      "description": "Ninja generator with clang-cl; emits compile_commands.json for clangd. PCH ON by default: heavy/stable headers (Eigen, gtest, atx-core vocab) are parsed once, not once per TU — this is the fast cold/fresh-build path. Include-hygiene enforcement (strict per-TU includes) moved to the `hygiene` preset for CI/nightly. Run from a VS Developer shell or via the VSCode CMake Tools extension so the MSVC environment is present.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
@@ -14,7 +14,18 @@
         "CMAKE_C_COMPILER": "clang-cl",
         "CMAKE_CXX_COMPILER": "clang-cl",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "ATX_USE_PCH": "ON"
+      }
+    },
+    {
+      "name": "hygiene",
+      "inherits": "ninja",
+      "displayName": "Ninja + clang-cl, PCH OFF (include hygiene / CI nightly)",
+      "description": "Strict build: PCH OFF so every TU compiles with its own includes, catching any missing/unused include the PCH would otherwise mask. Slower (full per-TU header re-parse) — run on CI/nightly, not for local iteration.",
+      "binaryDir": "${sourceDir}/build-hygiene",
+      "cacheVariables": {
+        "ATX_USE_PCH": "OFF"
       }
     },
     {
@@ -45,6 +56,7 @@
   ],
   "buildPresets": [
     { "name": "ninja", "configurePreset": "ninja" },
+    { "name": "hygiene", "configurePreset": "hygiene" },
     { "name": "dev", "configurePreset": "dev" },
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],
@@ -52,6 +64,11 @@
     {
       "name": "ninja",
       "configurePreset": "ninja",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "hygiene",
+      "configurePreset": "hygiene",
       "output": { "outputOnFailure": true }
     },
     {

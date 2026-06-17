@@ -4,7 +4,8 @@
   "dependencies": [
     { "name": "arrow", "features": ["parquet"] },
     "zstd",
-    "openssl"
+    "openssl",
+    "gtest"
   ],
   "builtin-baseline": "9e9398f90a6c386bbd6ed89714ddb036b2e969eb"
 }

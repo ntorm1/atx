@@ -1,0 +1,121 @@
+You are a C++ build-performance engineer. Make the atx-engine GoogleTest suite
+unity-build (jumbo) safe so a clean build drops from ~6 min to under ~2 min on a
+16-core machine. This is an opt-in build-config + mechanical-source change. Do NOT
+change any test's behavior, assertions, or its gtest suite/name strings.
+
+=========================== CONTEXT (measured) ===========================
+Repo: atx monorepo (atx-core + atx-tsdb + atx-engine). Windows, clang-cl + Ninja,
+GoogleTest, Eigen. Build via CMake presets. The engine test exe `atx-engine-tests`
+is ONE monolithic target that globs all 145 `atx-engine/tests/*_test.cpp`.
+
+Clean-build profiling (16 cores):
+  - PCH already committed on main (commit 43a549c): option ATX_USE_PCH (default OFF;
+    ON in the `dev` preset) applies atx-engine/pch.hpp (Eigen + core) to the engine
+    lib and atx-engine/tests/pch.hpp (+gtest) to the test exe.
+  - WITH PCH, a clean `atx-engine-tests` build is 378 s. The suite is
+    template-INSTANTIATION-bound (Eigen), not parse-bound, so PCH alone is not
+    enough. ~24 s/TU * 189 first-party TUs / 16 cores.
+TARGET: clean `atx-engine-tests` (dev preset) build < ~120 s, all tests still pass.
+
+=========================== WHY NAIVE UNITY FAILS ===========================
+Setting UNITY_BUILD ON makes every batch fail: the 145 test files share file-scope
+helper NAMES that collide when CMake concatenates them into one unity TU. Two error
+classes, both from the same cause:
+  - "redefinition of 'X'": kNaN, make_panel, Lcg, PanelFixture, shared_lib,
+    same_cell, compile_ok, ts, inst, kCap, kA/kB/kC, make_genome, register_aliases,
+    seed_exprs, Fixture, ProbePayload, default function arguments, etc.
+  - "call to 'Y' is ambiguous" / "reference to 'Z' is ambiguous": from per-file
+    `using namespace ...;` directives leaking into the next file in the batch, which
+    then sees two same-named helpers (random_cols, bar_row, make_streams, row, SlotPool).
+ANONYMOUS NAMESPACES DO NOT FIX THIS: all files' anonymous namespaces collapse into
+the single anonymous namespace of the unity TU, so they still collide (confirmed:
+`(anonymous namespace)::Fixture` and `::ProbePayload` clashed).
+
+=========================== THE FIX (per test file) ===========================
+Wrap each test file's body in a FILE-UNIQUE NAMED namespace, placed BELOW the
+`#include` block. Rule, applied to every atx-engine/tests/*_test.cpp:
+  1. Leave ONLY the `#include ...` lines at the top, OUTSIDE the namespace.
+     (Including a header inside a namespace is illegal — never wrap includes.)
+  2. Open `namespace atxtest_<stem> {` immediately AFTER the last top-of-file
+     include, where <stem> = the filename without `.cpp`, already a valid C identifier
+     (e.g. backtest_loop_test.cpp -> `namespace atxtest_backtest_loop_test {`).
+  3. Put EVERYTHING else inside it: `using` directives/declarations, file-scope
+     constants, helper functions, fixtures/structs, and ALL TEST()/TEST_F() macros.
+     Putting the `using` directives INSIDE the named namespace is REQUIRED — it stops
+     them leaking to the next file in the batch (fixes the "ambiguous" errors).
+  4. Close `}  // namespace atxtest_<stem>` at end of file.
+  5. If a file already wraps its body in `namespace { ... }`, REPLACE that anonymous
+     `namespace {` with the named one (do not nest).
+This is valid in BOTH unity and non-unity builds. gtest TEST/TEST_F work inside a
+named namespace (registration is runtime + name-string based; the C++ namespace does
+not change the "Suite.Name" gtest id). TEST_F fixtures resolve within the same file's
+namespace. Do them ALL up front (don't iterate file-by-file) to minimize rebuilds.
+
+Watch for (rare) and handle case-by-case:
+  - A file-scope `#define` that another file redefines: a macro leaks across unity
+    regardless of namespace. If a "macro redefinition" appears, add `#undef NAME` at
+    that file's end, or as a last resort exclude that one file:
+    `set_source_files_properties(<file>.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)`.
+  - A test file that genuinely shares a symbol with another file via a common header:
+    that symbol lives in the header, not the .cpp — leave it; only wrap the .cpp's own
+    file-local decls. If wrapping breaks a cross-file reference, exclude that file via
+    SKIP_UNITY_BUILD_INCLUSION rather than forcing it.
+
+=========================== CMAKE WIRING ===========================
+Add a dedicated option so CI stays strict (per-TU include hygiene) and only dev is fast:
+  - Root CMakeLists.txt: `option(ATX_UNITY_BUILD "Unity/jumbo build atx test target (dev speed)" OFF)`.
+  - CMakePresets.json `dev` preset cacheVariables: add `"ATX_UNITY_BUILD": "ON"`
+    (it already sets ATX_USE_PCH ON). The canonical `ninja` preset leaves both OFF.
+  - atx-engine/tests/CMakeLists.txt, after the existing ATX_USE_PCH block:
+        if(ATX_UNITY_BUILD)
+            set_target_properties(atx-engine-tests PROPERTIES
+                UNITY_BUILD ON
+                UNITY_BUILD_BATCH_SIZE <N>)
+        endif()
+    Keep PCH ON together with unity (they compose). Tune <N> for 16 cores: 145 files /
+    ~16 jumbo TUs ≈ batch 8–10. MEASURE batch sizes {8, 12, 16} and keep the fastest.
+  - STRETCH (optional, measure separately): the engine lib (44 src TUs) also re-parses
+    Eigen. Do NOT wrap lib .cpp bodies in extra namespaces (their definitions must stay
+    in their declared namespaces — wrapping breaks linkage). If you unity the lib, only
+    fix its anon-namespace/file-local HELPER clashes (named-namespace just the helper
+    section) or exclude offenders; prioritize the 145-TU test target first.
+
+=========================== BUILD / TEST / MEASURE (exact) ===========================
+A fresh worktree needs submodules: `git submodule update --init --recursive`.
+Use the VS Developer environment for every build:
+  Import-Module "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+  Enter-VsDevShell -VsInstallPath "C:\Program Files\Microsoft Visual Studio\2022\Community" -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64" | Out-Null
+  Set-Location "<your worktree root>"
+  cmake --preset dev
+  # collect ALL clashes in one pass while iterating:
+  cmake --build --preset dev --target atx-engine-tests -- -k 0
+  # final timed clean build (this is the number that must beat ~120s):
+  cmake --build --preset dev --target atx-engine-tests --clean-first
+  # tests must still pass (the slow MPC suites can be skipped during iteration):
+  ctest --preset dev -E "RiskMultiHorizon|FundMetaBook|FundSleeve"
+CI PARITY: also verify the strict per-TU path still builds + passes with unity OFF:
+  configure a second build dir with `cmake --preset ninja` (ATX_UNITY_BUILD + ATX_USE_PCH
+  both OFF), build atx-engine-tests, run ctest. Must be green — the namespace wraps are
+  behavior-neutral there.
+
+=========================== DISCIPLINE ===========================
+  - This is build infra: work on a dedicated branch off `main` (e.g. chore/unity-test-build)
+    in its own git worktree.
+  - NEVER edit atx-core/* or atx-tsdb/*.
+  - Explicit-pathspec commits only: `git add -- <paths>`; never `git add -A`. Run
+    `git show HEAD --stat` after each commit (only your files).
+  - Keep the change behind ATX_UNITY_BUILD (default OFF) so CI/`ninja` is unaffected.
+  - Warnings gate `/W4 /permissive- /WX` (ATX_WERROR=ON) must stay clean. clang-tidy is
+    disabled in this repo — do not run it. clangd squiggles are not a gate.
+  - Do not push. Commit trailer:
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+=========================== ACCEPTANCE CRITERIA ===========================
+  1. `atx-engine-tests` clean build (dev preset, unity+PCH ON) < ~120 s on 16 cores —
+     report the measured seconds and the chosen UNITY_BUILD_BATCH_SIZE.
+  2. ctest green: same test count as before, no behavior change (no test renamed/skipped).
+  3. `ninja` preset (unity OFF) still builds green and passes — CI parity.
+  4. Only test sources (namespace-wrapped) + the 3 CMake/preset files changed; zero
+     atx-core/atx-tsdb edits.
+  5. Report: before/after build seconds, batch size, files touched, any files excluded
+     via SKIP_UNITY_BUILD_INCLUSION and why.
