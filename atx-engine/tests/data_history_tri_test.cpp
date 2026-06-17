@@ -18,7 +18,7 @@ TEST(DataHistoryTri, EqualsCloseTimesCumReturnFactor) {
   for (size_t i = 0; i < close.size(); ++i)
     EXPECT_NEAR(tri[i], close[i] * caf[i], 1e-9) << "i=" << i;
   // AAPL 2012-03-26 present-basis adjusted close ≈ 18.17 (606.98 * 0.0299354).
-  // Tolerance 0.02 to accommodate the ≈ annotation; the per-element loop above
+  // Tolerance 0.01 to accommodate the ≈ annotation; the per-element loop above
   // verifies the exact product to 1e-9.
   EXPECT_NEAR(tri[0], 18.17, 0.01);
 }

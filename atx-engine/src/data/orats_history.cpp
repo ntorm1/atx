@@ -1,5 +1,6 @@
 #include "atx/engine/data/orats_history.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <filesystem>
 #include <fstream>
@@ -69,7 +70,7 @@ atx::core::Result<ColumnIndex> resolve_header(std::string_view header_line) {
   for (atx::usize f = 0; ok && f < kOratsFields.size(); ++f) {
     std::string_view src = kOratsFields[f];
     if (src == "gics") src = "GICS";
-    else if (src == "cumReturnFactor") src = "cumulReturnFactor";
+    else if (src == kOratsFields[10]) src = "cumulReturnFactor";
     ok = need(src, idx.field[f]);
   }
   if (!ok)
@@ -315,16 +316,25 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   stats.distinct_securities = static_cast<atx::i64>(symbology.size());
 
   // Write _symbology.parquet (write_parquet returns a Status — propagate it).
+  // Sort by securityID ascending for byte-reproducible output across builds.
   {
+    std::vector<atx::i64> sorted_keys;
+    sorted_keys.reserve(symbology.size());
+    for (const auto &kv : symbology) {
+      sorted_keys.push_back(kv.first);
+    }
+    std::sort(sorted_keys.begin(), sorted_keys.end());
+
     std::vector<atx::i64> sid;
     std::vector<std::string> tk, today;
     sid.reserve(symbology.size());
     tk.reserve(symbology.size());
     today.reserve(symbology.size());
-    for (const auto &kv : symbology) {
-      sid.push_back(kv.first);
-      tk.push_back(kv.second.first);
-      today.push_back(kv.second.second);
+    for (const atx::i64 key : sorted_keys) {
+      const auto &pair = symbology.at(key);
+      sid.push_back(key);
+      tk.push_back(pair.first);
+      today.push_back(pair.second);
     }
     const std::vector<atx::core::io::WriteColumn> man = {
         {"securityID", std::span<const atx::i64>(sid)},
