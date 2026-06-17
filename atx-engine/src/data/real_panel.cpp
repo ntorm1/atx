@@ -36,7 +36,6 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
-#include "atx/engine/parallel/digest.hpp" // signal_set_digest
 
 #include "atx/engine/data/adapt_panel.hpp"
 #include "atx/engine/data/adjust.hpp"
@@ -45,6 +44,7 @@
 #include "atx/engine/data/corporate_actions.hpp"
 #include "atx/engine/data/dataset.hpp"
 #include "atx/engine/data/dataset_schema.hpp"
+#include "atx/engine/data/panel_digest.hpp"
 #include "atx/engine/data/universe.hpp"
 
 namespace atx::engine::data {
@@ -322,23 +322,6 @@ void put_field(std::vector<std::string> &names, std::vector<std::vector<atx::f64
   }
   names.emplace_back(name);
   data.push_back(std::move(col));
-}
-
-// Digest the Panel's fields in canonical order: one SignalSet alpha per field
-// (name = field name, values = the field's date-major column), in the Panel's
-// field-dictionary order. This is signal_set_digest over the fields in the order
-// build_real_panel landed them (the pin).
-[[nodiscard]] atx::u64 digest_panel(const alpha::Panel &panel) {
-  alpha::SignalSet ss;
-  ss.dates = panel.dates();
-  ss.instruments = panel.instruments();
-  ss.alphas.reserve(panel.num_fields());
-  for (atx::usize f = 0; f < panel.num_fields(); ++f) {
-    const std::span<const atx::f64> col = panel.field_all(static_cast<alpha::FieldId>(f));
-    ss.alphas.push_back(alpha::SignalSet::Alpha{std::string{panel.field_name(f)},
-                                                std::vector<atx::f64>(col.begin(), col.end())});
-  }
-  return parallel::signal_set_digest(ss);
 }
 
 } // namespace
