@@ -138,6 +138,7 @@ All boxes left unchecked at S8.0 (this unit writes no solver math); S8.1/S8.3/S8
 | Unit  | Status | Commit  | Notes |
 |-------|--------|---------|-------|
 | S8.0  | done   | `0bd6389` | Marker + ledger open (`Base: main @ 0b950bd`), full §0 file:line reconciliation (all signatures confirmed, anchors drifted ≤2 lines, dense-Ã anchor `qp_solver.hpp:193` exact), 8-pin checklist locked, `bench/optimizer_scale_bench.cpp` added (M∈{500,1500,3000,5000}×K∈{16,64} augmented-path sweep) + baseline captured (table below), 3 `DISABLED_MultiHorizonIntegration` tests renamed off `DISABLED_` + `GTEST_SKIP()`-guarded so they compile-but-skip (S8.3 flips green). Build env: `dev` preset, VS2022 DevShell + clang-cl; `databento-cpp` submodule init'd in the fresh worktree. |
+| S8.2  | done   | `b78ad99`→`a1bd42b` | Deterministic no-pivot quasi-definite LDLᵀ. 3 commits: `b78ad99` `kkt_ldl.hpp` (`QuasiDefiniteLdl` — `factor_symbolic` = AMD ordering via `Eigen::AMDOrdering<int>` + elimination tree + L pattern; `factor_numeric` = QDLDL-style no-pivot numeric pass, no sqrt, mixed-sign D; `solve` = fwd-L/D⁻¹/bwd-Lᵀ, division-free) + `risk_kkt_ldl_test.cpp`, `5867092` wire into `run_admm` (factor once per solve, reuse every iteration; dropped `<Eigen/SparseCholesky>` + the interim `SimplicialLDLT`; public API unchanged), `a1bd42b` relax the augmented diff gate to 1e-8 + fold in review nits. **Tests:** `RiskKktLdl` 7/7 green; `RiskQpSolver` 13/13; `RiskMultiHorizon` 15/15; `RiskQpAugment` 6/6 (the diff-gate battery re-confirmed at the relaxed 1e-8 — see the regression note below). QDLDL algorithm reimplemented from scratch (NOT linked — osqp/qdldl is Apache-2.0, idea vendored only). |
 | S8.1  | done   | `16b00de`→`ff304d2` | Factor-augmented sparse QP reformulation. 6 commits: `16b00de` preserve as-built dense-Ã solver as `qp_solver_reference.hpp` (the diff oracle — verified byte-for-byte identical to as-built bar the `risk`→`risk::reference` namespace), `edd49a3` `qp_augment.hpp` assembly (`y=Xᵀw` factor-definition rows, `P=blkdiag(2λD,2λF)`, all-sparse Ã — no dense materialization), `484747a` rewrite `ConstrainedQpSolver` onto the augmented sparse KKT (interim `Eigen::SimplicialLDLT`, tagged for S8.2 replacement; public `solve(const QpProblem&)` unchanged), `950e824`+`6b1508f` diff-gate test (`risk_qp_augment_test.cpp`), `ff304d2` review nits. **Tests:** `RiskQpAugment` 6/6 green — 3 structural (Hessian block-diag-DF, factor-definition rows, gross/turnover sparse aux rows), `DollarNeutralRecoversAnalyticOptimum`, `TwoSolvesByteIdentical` (same-path determinism via `bit_cast`), and `MatchesDenseOracleAcrossBattery` (the G-DIFF gate). `RiskQpSolver` 13/13 still green. Built via `ninja` CI preset (PCH-off non-unity; the `dev` preset has a pre-existing unrelated ODR clash in `data_*_test.cpp`, not ours). |
 
 ### S8.0 measured baseline — augmented-path `MultiHorizonOptimizer::run` (as-built solver)
@@ -248,13 +249,69 @@ deliverable** (no `GrossNet`-only case is in the S8.1 battery — every case run
 which the augmented rewrite does not touch — the dispatch contract protects them). The full-pipeline
 pin checks (the 3 re-enabled `R1/R2/R3` tests) remain `GTEST_SKIP`-guarded until S8.3.
 
+### S8.2 result — deterministic no-pivot quasi-definite LDLᵀ + the diff-gate regression it forced
+
+**The factorization (G-DIFF for the LDL kernel itself, R11).** `risk_kkt_ldl_test.cpp` — `RiskKktLdl`
+7/7. Reconstruction `‖PᵀLDLᵀP − K‖∞/‖K‖∞`: well-conditioned synthetic battery ≤ 1e-12; real
+augmented KKTs (σ=1e-6 ⇒ κ~1e6) worst ≈ 2.3e-10 (gate 1e-9). Inertia cross-check: the count of
+NEGATIVE D pivots equals the constraint-row count `r` on every case (real + synthetic) — confirms the
+quasi-definite sign structure held with no pivot reordering. Solve accuracy `‖Kx−rhs‖∞ ≤ 1e-9`,
+cross-checked `‖x − x_dense_LDLT‖∞ ≤ 1e-9` vs a dense (pivoting) `Eigen::LDLT` reference.
+
+**G-DET (determinism — first unit to tick this gate).** Same K factored twice ⇒ byte-identical
+perm/Lp/Li/Lx/D (`bit_cast<u64>`); the full augmented book is byte-identical across
+`Eigen::setNbThreads({1,2,4,8})`. The factorization is purely serial + order-fixed (ascending CSC
+reductions, no unordered container governs accumulation, AMD ordering is a pure function of the
+sparsity pattern), and the zero-pivot path returns `Err` (R3) rather than dividing. **G-DET: PASS.**
+
+**Review gates (both two-stage subagent reviews — this was flagged the riskiest unit of the sprint):**
+- **Spec/math review — VERDICT: SHIP-WITH-NITS, zero blockers.** 9/9 claims PASS. The reviewer ran an
+  INDEPENDENT 2000-trial randomized adversarial battery (varied coupling, skewed block sizes):
+  reconstruction ≤ 5.5e-16 well-conditioned, inertia exact every trial, zero failures. It independently
+  adjudicated the σ=1e-6 reconstruction gap as HONEST conditioning, not a bug: recon error (3.1e-10 at
+  κ up to 1.6e7) sits BELOW κ·eps (3.5e-9) — normwise-backward-stable; Eigen's dense LDLᵀ reconstructs
+  tighter (4.4e-12) only because it pivots (Bunch-Kaufman), the accepted determinism-for-pivoting
+  tradeoff.
+- **Code-quality review — VERDICT: SHIP-WITH-NITS, zero blockers.** The hand-rolled sparse-kernel index
+  arithmetic is sound: every L-column write is bounded by `Lnz_[c]` (reach-count invariant verified),
+  workspaces reset per consumed column (no stale read), no retained pointer to K after factor, no
+  unordered container / float-sort governing order. Warning-clean under clang-cl `/W4 /permissive- /WX`.
+
+**THE DIFF-GATE REGRESSION (key decision record).** Swapping the ADMM x-update from the interim
+`Eigen::SimplicialLDLT` to the production no-pivot `QuasiDefiniteLdl` regressed the S8.1 augmented diff
+gate (`RiskQpAugment.MatchesDenseOracleAcrossBattery`), which was asserting agreement-with-oracle at
+**1e-11**. Full-battery diagnosis (every case's gap captured): only **3 of 11** cases exceed 1e-11 —
+the gross/turnover **L1-split** cases, whose σ=1e-6-only aux-column diagonals make the KKT
+ill-conditioned (κ~1e6) — sitting in a tight band **3.7e-10…5.9e-10** (battery-wide worst **5.9e-10**);
+the other 8 cases stay at machine precision. This is honest no-pivot conditioning at the
+backward-stability floor (~κ·eps ≈ 1e-9), NOT a defect: the interim Eigen LDLT hit 2.9e-15 only because
+it PIVOTS — precision deliberately traded for determinism (R1/R5), and the factor's correctness is
+proven independently by the kkt_ldl gates above. **Resolution:** relax `kDiffTol` 1e-11 → **1e-8** (the
+plan §3 S8.1 target; ~17× margin over the achieved worst). The 1e-11 was an S8.1 over-tightening that
+measured Eigen's pivoting precision rather than the reformulation's correctness. **S8.3's planned
+deterministic polish (iterative refinement on the KKT solve) is the lever to tighten this back** if a
+sub-1e-8 augmented-vs-oracle agreement is later wanted. Committed in `a1bd42b`.
+
+**Nit dispositions (both reviews):**
+- FIXED (`a1bd42b`): dropped the write-only `perm_inv_` member (`solve()` applies `perm_` both
+  directions); added a `solve()` span-length precondition `assert`; corrected the `build_permuted_upper`
+  comment (assembly is duplicate-free, the diagonal is seeded by assignment not summed); formatted the
+  `RecordProperty` bounds in scientific notation (`std::to_string` rounded ~1e-10 to `"0.000000"`).
+- DEFERRED: exact-zero pivot guard (`D_[k]==0.0`) could use a relative-magnitude floor for robustness on
+  near-singular non-QD input — out of contract for the regularized KKT (σ,ρ>0 bound pivots away from 0),
+  both reviews call it optional. Cross-solve symbolic caching (keyed by constraint sparsity pattern on a
+  mutable solver member) is deferred — the clean `factor_symbolic`/`factor_numeric` seam ships and
+  `WarmSymbolicMatchesColdFactorByteForByte` proves a re-numeric over an existing symbolic is bit-identical
+  to a cold factor, so caching is addable later without API churn.
+
 ## Phase 2 S8 sprint commits
 
 | Commit  | Unit | Test counts |
 |---------|------|-------------|
 | `8a312b6` | marker | — |
 | `0bd6389` | S8.0 | risk_multi_horizon_integration: 5 tests (2 passed / 3 skipped / 0 failed); atx-engine-bench builds + runs |
-| `16b00de`→`ff304d2` (6) | S8.1 | RiskQpAugment 6/6 (incl. G-DIFF battery PASS @ 1e-11, worst 2.9e-15); RiskQpSolver 13/13; both review gates SHIP-WITH-NITS, zero blockers |
+| `16b00de`→`ff304d2` (6) | S8.1 | RiskQpAugment 6/6 (incl. G-DIFF battery PASS @ 1e-11, worst 2.9e-15 — gate later moved to 1e-8 at S8.2); RiskQpSolver 13/13; both review gates SHIP-WITH-NITS, zero blockers |
+| `b78ad99`→`a1bd42b` (3) | S8.2 | RiskKktLdl 7/7 (recon ≤2.3e-10, inertia exact, G-DET bit-identical across {1,2,4,8} threads); RiskQpAugment 6/6 (G-DIFF battery re-confirmed @ 1e-8, worst 5.9e-10 — no-pivot honest conditioning); RiskQpSolver 13/13; RiskMultiHorizon 15/15; both review gates SHIP-WITH-NITS, zero blockers (riskiest unit; independent 2000-trial adversarial battery clean) |
 
 ## What S8.0 proves / Next sprint priorities
 
