@@ -57,9 +57,10 @@
 //   * Division-free inner loop: D⁻¹ is precomputed once in factor_numeric.
 //   * Same input ⇒ byte-identical Lx, D, perm and byte-identical solve output.
 
-#include <span>   // std::span (solve I/O)
-#include <string> // std::to_string (zero-pivot diagnostic message)
-#include <vector> // std::vector (CSC factor storage + symbolic workspaces)
+#include <cassert> // assert (solve() span-length precondition)
+#include <span>    // std::span (solve I/O)
+#include <string>  // std::to_string (zero-pivot diagnostic message)
+#include <vector>  // std::vector (CSC factor storage + symbolic workspaces)
 
 #include <Eigen/Dense>           // Eigen::MatrixXd (reconstruct() diagnostic)
 #include <Eigen/OrderingMethods> // Eigen::AMDOrdering (fill-reducing permutation)
@@ -97,25 +98,21 @@ public:
     // (1) Fill-reducing AMD permutation from the PATTERN only. AMD operates on the
     //     symmetric pattern Kᵀ+K, so it is well-defined on our symmetric K and is a
     //     pure function of the pattern — the determinism anchor (R5). perm_ maps
-    //     OLD index -> NEW position; perm_inv_ is its inverse (NEW -> OLD).
+    //     OLD index -> NEW position (solve() applies it in both directions).
     Eigen::AMDOrdering<int> ordering;
     Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic, int> p;
     ordering(K.template selfadjointView<Eigen::Upper>(), p);
 
     perm_.assign(n_, 0);
-    perm_inv_.assign(n_, 0);
     if (static_cast<atx::usize>(p.size()) == n_) {
       for (atx::usize i = 0; i < n_; ++i) {
-        const atx::usize newpos = static_cast<atx::usize>(p.indices()[static_cast<Eigen::Index>(i)]);
-        perm_[i] = newpos;       // old i sits at new position newpos
-        perm_inv_[newpos] = i;   // new position newpos holds old i
+        perm_[i] = static_cast<atx::usize>(p.indices()[static_cast<Eigen::Index>(i)]); // old i -> new position
       }
     } else {
       // AMDOrdering can return an empty permutation for a trivial/empty pattern;
       // fall back to the identity (still deterministic, just no fill reduction).
       for (atx::usize i = 0; i < n_; ++i) {
         perm_[i] = i;
-        perm_inv_[i] = i;
       }
     }
 
@@ -269,6 +266,7 @@ public:
   //  may alias different buffers; both must have length n.
   // -------------------------------------------------------------------------
   void solve(std::span<const atx::f64> rhs, std::span<atx::f64> x) const {
+    assert(rhs.size() == n_ && x.size() == n_ && "QuasiDefiniteLdl::solve: rhs/x must have length n");
     // (1) Permute rhs into the factorization ordering: xp[new] = rhs[old].
     std::vector<atx::f64> xp(n_, 0.0);
     for (atx::usize i = 0; i < n_; ++i) {
@@ -374,9 +372,9 @@ private:
   //  Assemble the UPPER triangle of the permuted matrix Kp = P K Pᵀ in CSC.
   //  We walk the lower OR upper stored entries of the symmetric K, map each (i,j)
   //  through perm_, and keep the upper-triangular permuted entries (row ≤ col).
-  //  Built in a fixed per-column, ascending-row order (determinism). Values are
-  //  summed if duplicates land on a cell (none do for our assembly, but the
-  //  factor's diagonal seed sums defensively).
+  //  Built in a fixed per-column, ascending-row order (determinism). Our assembly
+  //  is duplicate-free by construction (each permuted (i,j) is written once), so no
+  //  cell summing occurs; the diagonal is seeded by assignment in factor_numeric.
   // -------------------------------------------------------------------------
   void build_permuted_upper(const SpMat &K) {
     // First pass: count per-column nonzeros of the permuted upper triangle.
@@ -490,9 +488,8 @@ private:
   // ---- Dimension --------------------------------------------------------
   atx::usize n_ = 0;
 
-  // ---- Permutation (old<->new) ------------------------------------------
-  std::vector<atx::usize> perm_;     // perm_[old] = new position
-  std::vector<atx::usize> perm_inv_; // perm_inv_[new] = old index
+  // ---- Permutation (old -> new) -----------------------------------------
+  std::vector<atx::usize> perm_; // perm_[old] = new position (solve() applies it both ways)
 
   // ---- Permuted upper-triangle CSC (Kp = P K Pᵀ, upper part) -------------
   std::vector<atx::usize> Kup_p_; // column pointers (n+1)

@@ -375,21 +375,31 @@ struct CaseSpec {
 
 // The differential tolerance. The oracle (PCG ADMM) and the rewrite (direct-KKT
 // ADMM) are TWO DIFFERENT linear solves, so they are NOT bit-identical mid-iteration
-// — the invariant is agreement AT THE OPTIMUM (the unique QP minimizer). With the
-// per-case converged budgets below the measured battery-wide worst ‖w_new−w_ref‖∞ is
-// 2.9e-15 (every case sits at 1e-15…1e-16 machine precision). The gate is asserted at
-// 1e-11 — three orders above the achieved bound (headroom for platform FP / iteration
-// jitter) and far tighter than the plan's ≤1e-10/1e-8 target. NO bit-identity is
-// claimed between the two solvers. (A wider M-spread {to 800} agrees to the same
-// ~6e-11 — verified out-of-test; the in-test battery caps M at 120 because the
-// differential cost is dominated by the as-built O(M²) dense-Ã oracle and the
-// reformulation's correctness is M-independent.)
-constexpr f64 kDiffTol = 1e-11;
+// — the invariant is agreement AT THE OPTIMUM (the unique QP minimizer). NO bit-identity
+// is claimed between the two solvers.
+//
+// The gate is 1e-8 (the plan §3 S8.1 target). The measured battery-wide worst
+// ‖w_new−w_ref‖∞ is 5.9e-10 — 8 of 11 cases sit at machine precision (1e-15…1e-16);
+// the 3 cases carrying gross/turnover L1-split AUX rows drift to 3.7e-10…5.9e-10. That
+// drift is the S8.2 production factorization's signature: the deterministic NO-PIVOT
+// quasi-definite LDLᵀ (QuasiDefiniteLdl) trades ~3 orders of agreement-with-oracle for
+// determinism, relative to the interim Eigen::SimplicialLDLT it replaced (which PIVOTS,
+// so it hit 2.9e-15 here under S8.1). The σ=1e-6-only aux-column diagonals make the KKT
+// ill-conditioned (κ~1e6) on exactly those 3 cases, and a no-pivot factor's backward
+// error there is ~κ·eps ≈ 1e-9 — so 5.9e-10 is at the backward-stability floor, not a
+// defect. The factor's own correctness is proven independently in risk_kkt_ldl_test.cpp
+// (reconstruction, inertia, and a ‖x−x_dense_LDLT‖ cross-check vs a pivoting reference,
+// all bounded). 1e-8 leaves ~17× margin over the achieved worst; S8.3's planned
+// deterministic polish (iterative refinement on the KKT solve) can tighten it further.
+// (A wider M-spread {to 800} stays in the same band — verified out-of-test; the in-test
+// battery caps M at 120 because the differential cost is dominated by the as-built
+// O(M²) dense-Ã oracle and the reformulation's correctness is M-independent.)
+constexpr f64 kDiffTol = 1e-8;
 
 TEST(RiskQpAugment, MatchesDenseOracleAcrossBattery) {
   // M × K grid with varied constraint mixes. Both solvers run to the same per-case
   // converged fixed budget and reach the same unique QP minimizer; the achieved
-  // ‖w_new−w_ref‖∞ is asserted ≤ kDiffTol (1e-11). The tightest observed bound is
+  // ‖w_new−w_ref‖∞ is asserted ≤ kDiffTol (1e-8). The tightest observed bound is
   // logged for the ledger.
   // Per-case iters: pure-linear (no L1) cases converge in ~600–800; the gross/turnover
   // L1 aux-splits converge slower (a fixed-iteration ADMM trades iterations for

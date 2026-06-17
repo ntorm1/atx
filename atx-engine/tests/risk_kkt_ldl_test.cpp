@@ -22,9 +22,11 @@
 // These are SMALL/FAST (dense reference on small KKTs) — well under a minute total.
 
 #include <algorithm> // std::max
+#include <array>     // std::array (sci() format buffer)
 #include <bit>       // std::bit_cast (determinism)
 #include <cmath>     // std::fabs, std::isfinite
 #include <cstdint>   // std::uint64_t
+#include <cstdio>    // std::snprintf (sci() formatter)
 #include <random>    // std::mt19937_64 (FIXED seed)
 #include <span>
 #include <string>
@@ -61,6 +63,15 @@ using atx::engine::risk::QuasiDefiniteLdl;
 using atx::engine::risk::TurnoverBudget;
 
 using SpMat = Eigen::SparseMatrix<f64>;
+
+// Scientific-notation formatter for RecordProperty. std::to_string(double) uses 6
+// fixed decimals, so a ~1e-10 bound rounds to "0.000000" — a dead regression
+// record. Format with enough significant digits to actually track drift.
+[[nodiscard]] std::string sci(f64 v) {
+  std::array<char, 32> buf{};
+  std::snprintf(buf.data(), buf.size(), "%.3e", v);
+  return std::string(buf.data());
+}
 
 // ---------------------------------------------------------------------------
 //  KKT assembly mirror — identical structure/order to ConstrainedQpSolver::build_kkt
@@ -297,7 +308,7 @@ TEST(RiskKktLdl, ReconstructsAugmentedKktAndInertia) {
     EXPECT_EQ(ldl.negative_inertia(), kc.r)
         << "M=" << s.m << " K=" << s.k << " expected " << kc.r << " negative pivots";
   }
-  RecordProperty("worst_recon_rel", std::to_string(worst_rel));
+  RecordProperty("worst_recon_rel", sci(worst_rel));
 }
 
 // ===========================================================================
@@ -387,8 +398,8 @@ TEST(RiskKktLdl, SolveMatchesDenseLdltReference) {
     worst_dense_gap = std::max(worst_dense_gap, gap);
     EXPECT_LE(gap, 1e-9) << "M=" << s.m << " K=" << s.k << " ‖x − x_dense‖∞=" << gap;
   }
-  RecordProperty("worst_resid", std::to_string(worst_resid));
-  RecordProperty("worst_dense_gap", std::to_string(worst_dense_gap));
+  RecordProperty("worst_resid", sci(worst_resid));
+  RecordProperty("worst_dense_gap", sci(worst_dense_gap));
 }
 
 // ===========================================================================
