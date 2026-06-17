@@ -70,6 +70,8 @@ add_library(atx-engine STATIC
     src/data/universe.cpp
     # ORATS history loader: stream zip TSV -> per-date .seg partition (p3 S3-2)
     src/data/orats_history.cpp
+    # ORATS history panel helpers: orats_total_return_close (p3 S3-3)
+    src/data/history_panel.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
     src/parallel/process_executor.cpp
