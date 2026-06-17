@@ -29,19 +29,37 @@
 
 | # | Item | Effort | Status | Commits | Notes |
 |---|------|--------|--------|---------|-------|
-| S3-0 | Marker — worktree, ledger, roadmap, seed spec/plan | Light | 🔄 in progress | — | this file |
-| S3-1 | atx-core `io::ZipEntryReader` — streaming single-entry inflate | Heavy | ⏳ pending | — | `atx/core/io/zip_reader.{hpp,cpp}` + test |
-| S3-2 | `load_orats_history` — zip TSV → per-date `.seg` + side-cars | Heavy | ⏳ pending | — | `data/orats_history.{hpp,cpp}` + test |
-| S3-3 | `orats_total_return_close` — TRI via `adjust_total_return` reuse | Moderate | ⏳ pending | — | `data/history_panel.*` helper + test |
-| S3-4 | `attach_multi_segment_panel` — union per-date segments → owned Panel | Heavy | ⏳ pending | — | `alpha/segment_panel.*` + test |
-| S3-5 | `build_history_panel` orchestrator + shared `digest_panel` | Heavy | ✅ done (reviewed) | ae2b394, 24aca6f, 5a9bb06, b39d47c | digest extraction byte-identical (golden `0x2a22a873483d9157`); cumReturnFactor 15-char rename + consteval guard; review fixes applied; suite 2545/2545 |
-| S3-6 | Guarded E2E smoke through unchanged `RobustResearchDriver` | Heavy | ⏳ pending | — | `tests/orats_e2e_smoke_test.cpp` + operator data-build |
-| S3-close | Docs, `sprint3.md`, residuals→backlog, `--no-ff` merge | Light | ⏳ pending | — | — |
+| S3-0 | Marker — worktree, ledger, roadmap, seed spec/plan | Light | ✅ done | cf53140 | spec + plan + ledger + ROADMAP S3 section |
+| S3-1 | atx-core `io::ZipEntryReader` — streaming single-entry inflate | Heavy | ✅ done (reviewed) | 40d64e4, 7c35dc1 | miniz pImpl (PRIVATE to atx-core); 2/2 + suite green |
+| S3-2 | `load_orats_history` — zip TSV → per-date `.seg` + side-cars | Heavy | ✅ done (reviewed) | b578238, 63267ef | `process_line` extraction, date-guard-before-floor, parse_f64 strictness, manifest errors; securityID key |
+| S3-3 | `orats_total_return_close` — TRI via `adjust_total_return` reuse | Moderate | ✅ done (reviewed) | fc3edc3 | AAPL split spot-check 18.17 ≈ Yahoo |
+| S3-4 | `attach_multi_segment_panel` — union per-date segments → owned Panel | Heavy | ✅ done (reviewed) | ec452db, 375ef63 | owned union Panel; directory_iterator ec check + error-path tests |
+| S3-5 | `build_history_panel` orchestrator + shared `digest_panel` | Heavy | ✅ done (reviewed) | ae2b394, 24aca6f, 5a9bb06, b39d47c | digest extraction byte-identical (golden `0x2a22a873483d9157`); cumReturnFactor 15-char rename + consteval guard; review fixes (dead-init, explicit fields) |
+| S3-6 | Guarded E2E smoke through unchanged `RobustResearchDriver` | Heavy | ✅ done (reviewed) | 26a5f36, 45a1da9 | guarded real-partition smoke; date_to_nanos helper + GTEST_LOG |
+| S3-final | Final whole-branch review fix wave | — | ✅ done (re-reviewed, Approved) | c9f7479, d39230c | synthetic always-run E2E (driver runs over history Panel, digest `0x884dac53dc47fe01`), operator caller (`ATX_ORATS_ZIP`), deterministic symbology sort, resolve_header decouple, comment |
+| S3-close | Docs, `sprint3.md`, ledger, `--no-ff` merge | Light | 🔄 in progress | — | data-ingestion §7, sprint3.md, this table |
 
-## Backlog residuals (seeded; finalized at close)
+**Final suite:** 2548/2548 passed, 0 failed (engine), output pristine. New S3 tests:
+DataOratsHistory (×5), DataHistoryPanel, DataHistoryTri (×3), OratsE2ESmoke (×3:
+Synthetic always-runs, RealPartition + OperatorOratsZip skip in CI). Golden real-panel
+digest `0x2a22a873483d9157` unchanged by the shared-`digest_panel` extraction.
+
+**Reviews:** every unit task-reviewed (Approved after fixes); broad final whole-branch
+review (Opus) returned "merge with fixes" — 0 Critical, 2 Important (CI never ran the
+driver over a history Panel; no committed loader caller) + 3 Minor, all closed by the
+S3-final fix wave and re-reviewed **Approved — ready to merge**.
+
+**Operator data-build:** DEFERRED (user choice at close). The headline full-US-universe
+E2E is the manual 11 GB build — see `data-ingestion-reference.md` §7.6 for the one-command
+`OratsE2ESmoke.OperatorOratsZip` invocation. The code path is proven by the synthetic
+always-run integration test in the interim.
+
+## Backlog residuals → ROADMAP
 
 - Borrowed/zero-copy multi-segment attach via a global build-time instrument axis (perf lever; S3-4 materializes for correctness).
-- Parse-parallelism with chunk-boundary line stitching (S3-2 uses a single parse thread first per the spec).
-- IV-surface alpha operators consuming `atmCenI_*` (p4 — p3 ingests, adds no new search capability).
-- `closePr` column semantics (documented if still unverified at close).
+- Parse-parallelism with chunk-boundary line stitching (S3-2 single parse thread first per the spec).
+- IV-surface alpha operators consuming `atmCenI_*`/`nEarnCnt_5d` (p4 — p3 ingests, adds no new search surface).
+- `closePr` / `closeUnadjPr` column-semantics verification before S2 screens on them.
 - GICS single-digit encoding → `sector_code` mapping table.
+- Operator full-US-universe 11 GB data-build (deferred manual step; §7.6).
+- `smoke_tmpdir()` shared between the two guarded operator tests (cosmetic; both skip in CI) — give each its own temp dir if a second guarded test is added.
