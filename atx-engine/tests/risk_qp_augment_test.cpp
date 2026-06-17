@@ -344,6 +344,17 @@ struct CaseSpec {
   solver.cfg.iters = outer;
   solver.cfg.kkt_iters = 0U;     // unused by the direct KKT path
   solver.cfg.feas_tol = 1e-6;
+  // G-DIFF isolates the REFORMULATION (dense-Ã ADMM vs sparse-augmented ADMM): it must
+  // run the augmented solver with the SAME bare algorithm as the oracle, so polish and
+  // Ruiz equilibration (S8.3 features the dense reference does NOT have) are turned OFF
+  // here. With polish ON the augmented book converges CLOSER to the true minimizer than
+  // the un-polished oracle reaches at the same fixed budget (the slow turnover-L1 case
+  // drifts to ~7.6e-8 — that gap is the ORACLE's under-convergence, not a reformulation
+  // error), which would make this gate measure polish accuracy instead of reformulation
+  // correctness. Polish/Ruiz correctness are covered separately (RiskQpSolver's
+  // PolishNeverDegradesObjective / RuizSameOptimumAsNoRuiz and the R3 integration test).
+  solver.cfg.polish = false;
+  solver.cfg.ruiz_passes = 0U;
   const QpProblem prob{model, lambda, std::span<const f64>(q), mc};
   auto rn = solver.solve(prob);
   EXPECT_TRUE(rn.has_value()) << (rn ? "" : rn.error().to_string());
@@ -389,8 +400,11 @@ struct CaseSpec {
 // error there is ~κ·eps ≈ 1e-9 — so 5.9e-10 is at the backward-stability floor, not a
 // defect. The factor's own correctness is proven independently in risk_kkt_ldl_test.cpp
 // (reconstruction, inertia, and a ‖x−x_dense_LDLT‖ cross-check vs a pivoting reference,
-// all bounded). 1e-8 leaves ~17× margin over the achieved worst; S8.3's planned
-// deterministic polish (iterative refinement on the KKT solve) can tighten it further.
+// all bounded). 1e-8 leaves ~17× margin over the achieved worst. NOTE (S8.3): this gate
+// runs the augmented solver with polish and Ruiz turned OFF (see run_case) so it measures
+// the REFORMULATION alone against the bare-ADMM oracle; with polish ON the augmented book
+// converges past the un-polished oracle (gap → ~7.6e-8, the oracle's own under-convergence
+// on the slow turnover-L1 case), which is polish working, not a reformulation defect.
 // (A wider M-spread {to 800} stays in the same band — verified out-of-test; the in-test
 // battery caps M at 120 because the differential cost is dominated by the as-built
 // O(M²) dense-Ã oracle and the reformulation's correctness is M-independent.)

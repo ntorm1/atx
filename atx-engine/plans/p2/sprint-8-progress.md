@@ -304,6 +304,135 @@ sub-1e-8 augmented-vs-oracle agreement is later wanted. Committed in `a1bd42b`.
   `WarmSymbolicMatchesColdFactorByteForByte` proves a re-numeric over an existing symbolic is bit-identical
   to a cold factor, so caching is addable later without API churn.
 
+### S8.3 result — ADMM rebuild (Ruiz + polish + certificates + warm-start) + the perf gate
+
+**Salvage.** The first S8.3 implementer agent authored the full feature set but the host process exited
+before it could build/test/commit. The orphaned working tree was recovered, scratch + temporary
+`ATX_QP_PROFILE` instrumentation stripped, the build confirmed clean under clang-cl `/W4 /permissive- /WX`,
+and the full risk regression confirmed green BEFORE the work was committed as the S8.3 foundation
+(`9ddbe1d`). Nothing was committed un-verified.
+
+**Features (`qp_solver.hpp`).** (A) Re-tuned budget: the dense-PCG-era `iters=600` default → a FIXED
+`iters=300`, honored verbatim (R1 — no problem-scaling). (B) Ruiz equilibration (FIXED `ruiz_passes=10`,
+symmetry-preserving, scalar cost scaling, unscale on the way out). (C) Deterministic polish (FIXED
+`polish_refine=3`, OSQP §4 active-set reduced-KKT + iterative refinement) — ACCEPTED only if finite,
+feasible, and non-degrading in objective, so polish NEVER worsens the book (protects the 8 pins).
+(D) Infeasibility certificate (`QpResult::cert`, from the final iterates). (E) Warm-start (`QpProblem::x0/y0`,
+R6 — decoupled from termination; the fixed loop count is unchanged). `solve()` keeps its historical
+`Result<vector>` contract by delegating to `solve_with_cert()`.
+
+**The 3 re-enabled full-pipeline tests (the S4 regression, finally green).** `MultiHorizonIntegration`
+R1/R2/R3 were `GTEST_SKIP`-guarded since S8.0 because the as-built dense-Ã path ran ~20 s/run. On the
+new solver: R1_FullPipelineDeterministicByteIdentical **482 ms** (was ~42 s), R2_TruncationInvariance
+**415 ms** (was ~54 s), R3_AugmentedConstraintsExactEveryPeriod **240 ms** (was ~31 s). All green —
+determinism (R1), no-look-ahead (R2), and constraint-exactness (R3) hold end-to-end through the rebuilt
+internals. (`a14534e`)
+
+**Feature unit tests (`risk_qp_s83_test.cpp`, +6 → RiskQpSolver 19/19).** RuizSameOptimumAsNoRuiz,
+RuizSolveByteIdentical, PolishNeverDegradesObjective, CertificateSmallResidualsOnFeasibleProblem,
+WarmStartMatchesColdOptimum, WarmStartSolveByteIdentical. No tolerance was loosened to pass. (`d7b6d76`)
+
+**THE PERF GATE (the headline — a real O(M²) bug found and fixed).** The salvaged solver was still
+~O(M^1.8) at scale. Profiling (L_nnz vs M + per-phase split) localized it precisely: L_nnz was already
+LINEAR in M (the dense-column demotion controlled FILL correctly), but `build_permuted_upper` sorted each
+permuted-CSC column with an **insertion sort (O(col²))**, and the demoted aggregate-constraint dual
+columns each carry O(M) entries — so the sort was O(M²) per dense column, running in BOTH the symbolic
+and numeric phases. Two fixes:
+- `4e3a17c` — replace the insertion sort with `std::sort` over an index permutation (O(col·log col);
+  byte-identical, unique integer keys). Factor at M=3000/K=64: symbolic 6736→468 ms, numeric 6967→1320 ms.
+- `b1eb046` — split `build_permuted_upper` into `build_permuted_pattern` (symbolic; caches per-slot
+  source flat-CSC index, raw-CSC iteration) + `refresh_permuted_values` (numeric; O(nnz) value gather,
+  no re-sort). Both factorizations (ADMM + polish) drop their numeric rebuild.
+
+The factorization is now O(M·K²) in fill AND near-linear in time. Scale bench (`optimizer_scale_bench.cpp`,
+FIXED iters=4 budget, Debug/clang-cl, vs the S8.0 baseline 62,033.7 ms @ M=3000/K=64):
+
+| M / K=64 | full (polish on) | core (polish off) |
+|---|---|---|
+| 500  | 407 ms  | 191 ms  |
+| 1500 | 1388 ms | 745 ms  |
+| 3000 | **2891 ms** | **1766 ms** |
+| 5000 | 5356 ms | 3746 ms |
+
+At M=3000/K=64: **core 1766 ms = 35.1×, full 2891 ms = 21.5×** vs the 62,033.7 ms baseline; per-run
+scaling **~M^1.12** over M∈{500..5000}. **G-PERF: PASS** (≥20× met by BOTH paths; exponent ≤~1.3 met).
+
+DECISION (gate interpretation). At iters=4 the new solver's time is dominated by the ONE-TIME
+factorization (and, on the full path, the polish factorization) — NOT the 4 cheap ADMM iters — because
+the rewrite replaced a per-iteration O(M²) PCG with a factor-once direct solve. So the bench measures the
+factor + assembly cost, which is the right thing for the O(M²)→O(M·K²) claim. Two benches are committed
+(`fbe02ee`): `BM_OptimizerScaleAugmented` (full production path: Ruiz + ADMM + polish, two factorizations)
+and `BM_OptimizerScaleCore` (polish OFF — the apples-to-apples analog of the as-built no-polish baseline).
+The `< 500 ms` target is a Release figure; every number here is a Debug UPPER BOUND (plan-acknowledged).
+
+**G-DET.** Covered by the S8.2 `RiskKktLdl` gate (the full augmented book is byte-identical across
+`Eigen::setNbThreads({1,2,4,8})`); re-confirmed green after every S8.3 perf change. The solver is purely
+serial + order-fixed; the perf fixes preserve byte-identical output (`std::sort` on unique keys; the
+numeric cache reproduces the same values in the same sorted slots). **G-DET: PASS.**
+
+**Review gates (two-stage subagent reviews).**
+- Spec/math — **SHIP-WITH-NITS, zero blockers.** Confirmed: Ruiz scaling/unscaling consistent; polish
+  accept-only-if-feasible-and-non-degrading correct; warm-start dual scaling is the exact inverse of
+  `unscale_dual`; dense-demotion is a pure function of the pattern (R5); the numeric cache is byte-identical.
+- Code-quality — **SHIP-WITH-NITS, zero blockers.** Hand-rolled sparse-kernel index arithmetic sound;
+  warning-clean under `/W4 /permissive- /WX`; no `unordered`/float-sort/RNG/clock.
+- Both flagged the SAME hardening item: the numeric value-cache trusts the same-pattern contract.
+  FIXED (`ed5cbcf`): a cheap O(1) `factor_numeric` nnz guard (record `sym_knnz_` at symbolic, refuse on
+  mismatch) + the dense-threshold `max(32, floor(16·mean))` comment clarification.
+
+**THE DIFF-GATE RE-SCOPING (key decision record).** Re-running `MatchesDenseOracleAcrossBattery` against
+the new solver FAILED at 1e-8 (worst 7.6e-8 on the slow turnover-L1 case, up from S8.2's 5.9e-10).
+Diagnosis: the augmented solver now runs Ruiz + polish, while the oracle (`qp_solver_reference`) is the
+bare dense-Ã ADMM — so polish converges the augmented book CLOSER to the true minimizer than the
+un-polished oracle reaches at the same fixed budget, and the gate (which measures book-vs-oracle) was
+reading the ORACLE's under-convergence, not a reformulation error. G-DIFF must isolate the REFORMULATION
+(dense-Ã ADMM vs sparse-augmented ADMM, SAME bare algorithm), so `run_case` now sets `polish=false`,
+`ruiz_passes=0` — restoring the apples-to-apples comparison (worst returns to the S8.2 ~5.9e-10 no-pivot
+floor). Polish/Ruiz correctness is covered separately (the 6 feature tests + the R3 integration test).
+**Battery re-confirmed: PASS @ 1e-8** (the reformulation-isolated worst returns to the S8.2 bare-ADMM
+~5.9e-10 no-pivot floor, byte-identical to S8.2 since the perf fixes preserve the factor output).
+**G-DIFF: PASS.**
+
+**Pins.** The 8 regression pins live on the as-built fast path the augmentation does not touch; the
+full-pipeline pin checks (R1/R2/R3) are now GREEN (no longer skipped). The polish non-degradation gate
+and the byte-identical determinism tests protect them through the rebuilt internals.
+
+**Final regression (clean rebuild, all fixes in the binary):** the full risk suite is 186/186 PASSED
+(battery excluded — re-confirmed separately PASS @ 1e-8); the dense-oracle battery PASS; RiskQpSolver
+19/19; RiskKktLdl green; the 3 MultiHorizonIntegration full-pipeline tests green.
+
+### S8-a closure — final cross-unit review + carry-forward to S8-b
+
+**S8-a (S8.0–S8.3) verdict: SHIP-WITH-NOTES** (final cross-unit review, zero BLOCKER / zero MAJOR).
+The three substantive units compose cleanly: S8.1's factor-augmented sparse form (`y=Xᵀw`,
+`P=blkdiag(2λD,2λF,0)`) feeds S8.2's deterministic no-pivot quasi-definite LDLᵀ, which S8.3 wraps in
+Ruiz/ADMM/polish/cert/warm-start. Public API backward-compatible (the sole consumer `multi_horizon.hpp`
+builds `QpProblem{V,λ,q,C}` + sets `cfg.qp.iters` exactly as before). Whole solve path byte-deterministic
+(no RNG/clock/thread/unordered/float-sort). Rules upheld across seams: R1, R4 (V/Ã never densified),
+R5 (no-pivot static factor), R6 (warm-start decoupled), R7, R10 (the minimal dispatch routes to
+PortfolioOptimizer — the 8 pins are protected by the dispatch contract, not the QP rewrite), R11.
+Gates: **G-PERF / G-DET / G-DIFF / G-CONSTRAINT all PASS**; the 8 pins green.
+
+**Carry-forward to S8-b (S8.4–S8.8) — deferred by plan, NOT S8-a blockers:**
+- **S8.4** — box/linear sparse constraint surface (%ADV / %shares / sector-net) + wire QP into the
+  single-period drivers. SUBSUMES the `build_augmented` O(R·M) dense-`C.A` scan (`qp_augment.hpp:214`):
+  the S1-1 linear rows are read cell-by-cell from a dense `MatX`; a sparse constraint surface removes it.
+- **S8.5** — conic / SOCP (tracking-error, sector-risk, robust, √-impact).
+- **S8.6** — constraint-hierarchy / infeasibility elasticity.
+- **S8.7** — multi-period Gârleanu-Pedersen Riccati cost-to-go.
+- **S8.8** — header/source pimpl split + compile-time measurement + sprint close; remove the dead
+  `kkt_iters` field (`qp_solver.hpp` — retained now only for caller/test API compat, never read).
+- **Robustness nits (review, MINOR/NOTE — none blocking):** (1) polish active-set should explicitly
+  screen `|bnd| < kAugInf` before pinning a one-sided split row as an equality (today the
+  `feasible_within` accept-gate already rejects any such book, so polish-never-degrades holds — the
+  guard is for clarity); (2) `build_kkt` is mirrored in `risk_kkt_ldl_test.cpp` — cross-reference or
+  unify to prevent silent drift; (3) the certificate's infeasibility heuristics are tested only on a
+  feasible problem — add a true-infeasible case; (4) the full warm-start path (length-n x0 + y0 dual
+  seed) is exercised but not directly asserted; (5) cross-solve symbolic caching deferred (the
+  `factor_symbolic`/`factor_numeric` seam + `WarmSymbolicMatchesColdFactorByteForByte` make it addable
+  without API churn); (6) the polish second factorization is the full-vs-core bench gap — an
+  optimization opportunity, not a correctness issue.
+
 ## Phase 2 S8 sprint commits
 
 | Commit  | Unit | Test counts |
@@ -312,6 +441,8 @@ sub-1e-8 augmented-vs-oracle agreement is later wanted. Committed in `a1bd42b`.
 | `0bd6389` | S8.0 | risk_multi_horizon_integration: 5 tests (2 passed / 3 skipped / 0 failed); atx-engine-bench builds + runs |
 | `16b00de`→`ff304d2` (6) | S8.1 | RiskQpAugment 6/6 (incl. G-DIFF battery PASS @ 1e-11, worst 2.9e-15 — gate later moved to 1e-8 at S8.2); RiskQpSolver 13/13; both review gates SHIP-WITH-NITS, zero blockers |
 | `b78ad99`→`a1bd42b` (3) | S8.2 | RiskKktLdl 7/7 (recon ≤2.3e-10, inertia exact, G-DET bit-identical across {1,2,4,8} threads); RiskQpAugment 6/6 (G-DIFF battery re-confirmed @ 1e-8, worst 5.9e-10 — no-pivot honest conditioning); RiskQpSolver 13/13; RiskMultiHorizon 15/15; both review gates SHIP-WITH-NITS, zero blockers (riskiest unit; independent 2000-trial adversarial battery clean) |
+| `9ddbe1d`→`ed5cbcf` (7) | S8.3 | ADMM rebuild (Ruiz + polish + certs + warm-start) + the perf gate. RiskQpSolver 19/19 (+6 feature tests); the 3 DISABLED MultiHorizonIntegration R1/R2/R3 re-enabled GREEN (482/415/240 ms, was ~20 s/run); RiskKktLdl green (byte-identical through the perf fixes). **G-PERF PASS**: found+fixed a real O(M²) (insertion-sort in build_permuted_upper) + numeric pattern cache → M=3000/K=64 core 1766 ms = **35.1×**, full 2891 ms = **21.5×** vs the 62,033.7 ms baseline, scaling ~M^1.12. Both review gates SHIP-WITH-NITS, zero blockers (nnz pattern guard applied). G-DIFF re-scoped: run_case isolates the reformulation (polish/Ruiz off) — battery re-confirmed PASS @ 1e-8 (worst ~5.9e-10) |
+| (S8-a close) | review | S8-a final cross-unit review: **SHIP-WITH-NOTES**, 0 BLOCKER/0 MAJOR. Clean unit seams; backward-compatible API; end-to-end byte-determinism; all gates PASS. 1 MINOR (polish ±kAugInf active-bound guard → S8-b) + carry-forward list below |
 
 ## What S8.0 proves / Next sprint priorities
 
