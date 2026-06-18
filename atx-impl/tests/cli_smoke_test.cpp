@@ -61,7 +61,7 @@ TEST(AtxImplCli, UnknownSubcommandFails) {
 
 // ---------------------------------------------------------------------------
 // Test 3: implemented stages return exit code 1 on bad/missing args;
-// unimplemented stages (discover, etc.) still return "not implemented".
+// unimplemented stages still return "not implemented".
 // ---------------------------------------------------------------------------
 TEST(AtxImplCli, UnimplementedStageExitsNonzero) {
     // load is implemented — missing --min-date causes InvalidArgument.
@@ -72,12 +72,13 @@ TEST(AtxImplCli, UnimplementedStageExitsNonzero) {
         EXPECT_EQ(rc, 1);
         EXPECT_FALSE(err.empty()) << "expected error message on stderr";
     }
-    // panel is now implemented — missing --segs/--panel-out causes InvalidArgument.
+    // NOTE: each sprint that implements a stage must re-point this at a stage that is still a stub.
     {
         std::string out, err;
-        int rc = run_dispatch({"atx-impl", "panel"}, out, err);
+        int rc = run_dispatch({"atx-impl", "discover"}, out, err);
         EXPECT_EQ(rc, 1);
-        EXPECT_FALSE(err.empty()) << "expected error message on stderr for panel stage";
+        EXPECT_NE(err.find("not implemented"), std::string::npos)
+            << "expected 'not implemented' in stderr for stub stage, got: '" << err << "'";
     }
 }
 

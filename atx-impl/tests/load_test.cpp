@@ -12,15 +12,19 @@
 namespace {
 namespace fs = std::filesystem;
 
-// Helper: build the canonical tiny fixture zip and return its path.
-// Must be called from a void-returning context (write_orats_zip uses ASSERT_TRUE).
-// Since test bodies are void, calling this directly from TEST() is correct.
-// Returns the path on success; if write_orats_zip fails ASSERT_TRUE aborts the test.
-std::string make_orats_zip() {
+// Helper: build the canonical tiny fixture zip, writing its path to `out_zip`.
+//
+// VOID with an out-param (matches panel_test.cpp's inline build-path + void
+// write_orats_zip pattern). write_orats_zip uses ASSERT_TRUE, which performs a
+// `return` on failure; that return must land in a VOID frame so the failure
+// actually aborts the helper. A non-void wrapper would let make_orats_zip keep
+// running past a failed write and hand the caller a path to an unwritten file
+// (the original S1 bug). Callers also ASSERT no abort propagated.
+void make_orats_zip(std::string& out_zip) {
     const std::string path = atx_impl_test::make_orats_zip_path();
     const std::string body = atx_impl_test::make_orats_zip_body();
-    atx_impl_test::write_orats_zip(body, path);
-    return path;
+    atx_impl_test::write_orats_zip(body, path);  // ASSERT_TRUE aborts THIS void frame on failure
+    out_zip = path;
 }
 
 } // anonymous namespace
@@ -29,7 +33,8 @@ std::string make_orats_zip() {
 // Test 1: happy path — tiny zip loads correctly, kvs and output files present
 // ---------------------------------------------------------------------------
 TEST(AtxImplLoad, LoadsTinyZip) {
-    const std::string zip = make_orats_zip();
+    std::string zip;
+    ASSERT_NO_FATAL_FAILURE(make_orats_zip(zip));
     const fs::path out = fs::temp_directory_path() / "atx_impl_load_tiny_out";
     fs::remove_all(out);
 
@@ -66,7 +71,8 @@ TEST(AtxImplLoad, LoadsTinyZip) {
 // Test 2: digest is stable across two independent runs with the same inputs
 // ---------------------------------------------------------------------------
 TEST(AtxImplLoad, DigestStableAcrossRuns) {
-    const std::string zip = make_orats_zip();
+    std::string zip;
+    ASSERT_NO_FATAL_FAILURE(make_orats_zip(zip));
 
     auto run_once = [&](const char* tag) {
         const fs::path out =
@@ -94,7 +100,8 @@ TEST(AtxImplLoad, DigestStableAcrossRuns) {
 // Test 3: malformed min_date => Err(InvalidArgument)
 // ---------------------------------------------------------------------------
 TEST(AtxImplLoad, MalformedMinDateFails) {
-    const std::string zip = make_orats_zip();
+    std::string zip;
+    ASSERT_NO_FATAL_FAILURE(make_orats_zip(zip));
     const fs::path out = fs::temp_directory_path() / "atx_impl_load_baddate_out";
 
     atx::impl::RunConfig cfg;
