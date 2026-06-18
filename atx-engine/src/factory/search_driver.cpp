@@ -4,6 +4,7 @@
 #include <cstddef>       // std::size_t (hash_combine seed type)
 #include <cstdint>       // std::uint8_t (compiled[] flag vector)
 #include <memory>        // std::unique_ptr, std::make_unique
+#include <optional>      // std::optional (per-child single-writer reproduce slots, Tier 5)
 #include <span>          // std::span
 #include <unordered_map> // std::unordered_map (score_j_of_ptr: Genome* -> j)
 #include <unordered_set> // std::unordered_set (seen_this_gen dedup)
@@ -113,7 +114,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // (e)-(g) reproduce into the next population (skip on the final generation —
     // the last scored set is the result).
     if (gen + 1 < cfg.generations) {
-      pop = reproduce(scored, cfg, gen, res);
+      pop = reproduce(scored, cfg, gen, det_pool, res);
     }
   }
 
@@ -527,41 +528,70 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
 // explore/anti-collapse pressure — only the elite carry switches to raw.)
 [[nodiscard]] std::vector<Genome> SearchDriver::reproduce(const std::vector<Scored> &scored,
                                                           const SearchConfig &cfg, atx::usize gen,
+                                                          parallel::DetPool &det_pool,
                                                           SearchResult &res) {
   if (scored.empty()) {
     return {};
   }
   // Canonical-id order BEFORE any RNG draw (F2). Index into this order for the
   // value-based parent pool; rank elites by NSGA-II survivor order (S4.1) — in
-  // ScalarRaw this is exactly the pre-S4 raw-descending order.
-  std::vector<atx::usize> canon_order = canon_ordered_indices(scored);
-  std::vector<atx::usize> elite_order = pareto_ordered_indices(scored);
+  // ScalarRaw this is exactly the pre-S4 raw-descending order. Both are pure,
+  // RNG-free permutations of `scored`, computed ONCE here and read-only thereafter.
+  const std::vector<atx::usize> canon_order = canon_ordered_indices(scored);
+  const std::vector<atx::usize> elite_order = pareto_ordered_indices(scored);
 
+  const atx::usize n_elites = std::min(cfg.elites, scored.size());
+  const atx::usize n_children = (cfg.population > n_elites) ? cfg.population - n_elites : 0;
+
+  // (e) reproduction (PARALLEL): id-seeded children fill the non-elite slots.
+  //
+  // SAFETY: child slot p (population index i = n_elites + p) is written by EXACTLY
+  // one shard -> disjoint single-writer slots (the DetPool contract proven for
+  // evaluate_generation). Its RNG is Xoshiro256pp{seed_for(master_seed, gen, i)} —
+  // a PURE function of (master_seed, gen, i), never worker/thread/claim-order (F1).
+  // The make_child path (tournament_pick + crossover/mutation + analyze +
+  // canonical_hash) and the F5-reject elite-clone fallback (elite_order[i %
+  // max(n_elites,1)] — pure in i, NO shared counter / NO order dependence) read
+  // ONLY shared-CONST state (scored, canon_order, elite_order, cfg, catalog_,
+  // panel_field_views_, lib_) plus per-call locals — audited reentrant, with no
+  // static/thread_local/mutable/shared-scratch state. So child_slot[p] depends only
+  // on (i, scored, cfg), independent of worker count and claim order -> byte-identical
+  // across {1,2,4} workers. No LPT remap: per-child cost is not known a priori (the
+  // tournament parent is drawn inside make_child), and determinism rests on the
+  // single-writer slots + per-index seed, NOT on dispatch order.
+  std::vector<std::optional<Genome>> child_slot(n_children);
+  det_pool.parallel_for(n_children, [&](atx::usize p, atx::usize /*wid*/) {
+    const atx::usize i = n_elites + p;
+    Xoshiro256pp rng{detail::seed_for(cfg.master_seed, gen, i)};
+    auto child = make_child(scored, canon_order, cfg, rng);
+    if (child.has_value()) {
+      child->canon_hash = canonical_hash(*child);
+      child_slot[p] = std::move(*child);
+    } else {
+      // F5 reject -> hold population size with an elite clone (deterministic, pure in i).
+      const atx::usize fallback = elite_order[i % std::max<atx::usize>(n_elites, 1)];
+      Genome clone = scored[fallback].genome.clone();
+      clone.canon_hash = scored[fallback].genome.canon_hash;
+      child_slot[p] = std::move(clone);
+    }
+  });
+
+  // candidates_generated is order-INDEPENDENT: exactly n_children children are
+  // produced regardless of which shard ran which slot. Folded as a closed-form add
+  // OUTSIDE the parallel region (the old per-child `++` was a shared-counter write).
+  res.candidates_generated += n_children;
+
+  // Serial assembly in POPULATION order (elites first, then children in slot order)
+  // — byte-identical to the prior sequential push_back sequence. Elite clones are
+  // cheap and stay serial (no parallel benefit; avoids cloning into the slot vector).
   std::vector<Genome> next;
   next.reserve(cfg.population);
-
-  // (g) elitism: carry the top-k survivors (first front, then crowding; ScalarRaw
-  // -> top-k by RAW fitness). F5-valid by construction.
-  const atx::usize n_elites = std::min(cfg.elites, scored.size());
   for (atx::usize e = 0; e < n_elites; ++e) {
     next.push_back(scored[elite_order[e]].genome.clone());
     next.back().canon_hash = scored[elite_order[e]].genome.canon_hash;
   }
-
-  // (e) reproduction: id-seeded children fill the remainder.
-  for (atx::usize i = n_elites; i < cfg.population; ++i) {
-    Xoshiro256pp rng{detail::seed_for(cfg.master_seed, gen, i)};
-    auto child = make_child(scored, canon_order, cfg, rng);
-    ++res.candidates_generated;
-    if (child.has_value()) {
-      child->canon_hash = canonical_hash(*child);
-      next.push_back(std::move(*child));
-    } else {
-      // F5 reject -> hold population size with an elite clone (deterministic).
-      const atx::usize fallback = elite_order[i % std::max<atx::usize>(n_elites, 1)];
-      next.push_back(scored[fallback].genome.clone());
-      next.back().canon_hash = scored[fallback].genome.canon_hash;
-    }
+  for (atx::usize p = 0; p < n_children; ++p) {
+    next.push_back(std::move(*child_slot[p]));
   }
   return next;
 }

@@ -367,7 +367,7 @@ private:
   // explore/anti-collapse pressure — only the elite carry switches to raw.)
   [[nodiscard]] std::vector<Genome> reproduce(const std::vector<Scored> &scored,
                                               const SearchConfig &cfg, atx::usize gen,
-                                              SearchResult &res);
+                                              parallel::DetPool &det_pool, SearchResult &res);
 
   // Produce one child from the canonical-id-ordered parent pool with a single
   // id-seeded rng: bernoulli(p_cross) ? crossover(two tournament picks) :
