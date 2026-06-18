@@ -1,15 +1,20 @@
 #include "atx/engine/data/orats_history.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -267,6 +272,63 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
   ++st.stats.rows_kept;
   return atx::core::Ok();
 }
+
+// One trading date's projected columns, sealed and ready to pivot+write.
+struct DateJob {
+  std::string out_path;                      // <out_dir>/YYYY-MM-DD.seg
+  atx::i64 date_nanos{};
+  atx::i64 created_at_nanos{};
+  std::vector<std::string> symbols;          // securityID per row
+  std::vector<std::vector<atx::f64>> values; // [16][rows]
+};
+
+// Bounded, blocking MPMC handoff. Coarse granularity (one job == one date,
+// thousands of rows), so a mutex/condvar queue is the right tool — the
+// lock-free ring buffers in atx-core/concurrent target per-event hot paths.
+template <class T>
+class BoundedQueue {
+public:
+  explicit BoundedQueue(std::size_t cap) : cap_{cap} {}
+
+  // Returns false if the queue was closed before this push could be accepted.
+  bool push(T v) {
+    std::unique_lock lk(m_);
+    not_full_.wait(lk, [&] { return q_.size() < cap_ || closed_; });
+    if (closed_) return false;
+    q_.push_back(std::move(v));
+    lk.unlock();
+    not_empty_.notify_one();
+    return true;
+  }
+
+  // Returns false once the queue is closed AND drained.
+  bool pop(T &out) {
+    std::unique_lock lk(m_);
+    not_empty_.wait(lk, [&] { return !q_.empty() || closed_; });
+    if (q_.empty()) return false;
+    out = std::move(q_.front());
+    q_.pop_front();
+    lk.unlock();
+    not_full_.notify_one();
+    return true;
+  }
+
+  void close() {
+    {
+      std::lock_guard lk(m_);
+      closed_ = true;
+    }
+    not_empty_.notify_all();
+    not_full_.notify_all();
+  }
+
+private:
+  std::size_t cap_;
+  std::deque<T> q_;
+  std::mutex m_;
+  std::condition_variable not_full_, not_empty_;
+  bool closed_{false};
+};
 
 } // namespace
 
