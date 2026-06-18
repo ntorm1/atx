@@ -70,11 +70,21 @@
 //  trajectory / aim / target / book — at rebalance cadence, never on a hot tick path.
 //
 // ===========================================================================
-//  Recorded lift (stacked_mpc)
+//  GP Riccati cost-to-go + stacked MPC (S8.7)
 // ===========================================================================
-//  cfg.stacked_mpc == true requests a TRUE stacked multi-period MPC QP (optimize the
-//  whole trajectory jointly, not the aim-collapse). That is an atx-core lift and is NOT
-//  implemented here ⇒ Err(NotImplemented). The shipped path is the GP aim-collapse.
+//  The shipped (default) path is the GP AIM-COLLAPSE with the Riccati cost-to-go tail:
+//  ᾱ = the decay-weighted return-space aim (gp_aim); the single-period QP carries the
+//  GP value-function tail +½(w−aim_pos)ᵀA_xx(w−aim_pos) folded into P/q (the MPC trick).
+//  With the scalar-Λ value matrix A_xx = 2λV the fold is q = −ᾱ with P = 2λV unchanged
+//  (garleanu_pedersen.hpp), so it is byte-identical to the pre-S8.7 augmented book and
+//  the boundary pin holds (R10); the unconstrained closed form aim_pos = (2λV)⁻¹ᾱ is the
+//  no-solver fast path AND the relaxed-QP oracle (R11).
+//
+//  cfg.stacked_mpc == true requests the TRUE stacked multi-period path (S8.7): the GP
+//  geometric-trade-rate blend of the per-horizon forecasts (the O(N·H) joint roll over
+//  the trajectory), driven through the SAME dispatch + first-move execution. It is a real
+//  (benched) path — NO LONGER Err(NotImplemented) — but NOT the default. On a constant
+//  (identity-decay) trajectory it COINCIDES with the aim-collapse byte-for-byte.
 
 #include <algorithm>  // std::min
 #include <cmath>      // std::fabs, std::isnan
@@ -89,6 +99,7 @@
 
 #include "atx/engine/risk/constraints.hpp"  // ConstraintSet, MaterializedConstraints
 #include "atx/engine/risk/factor_model.hpp" // FactorModel
+#include "atx/engine/risk/garleanu_pedersen.hpp" // gp_aim_and_value (GP closed form + value matrix, S8.7)
 #include "atx/engine/risk/horizon.hpp"      // SignalHorizon, HorizonForecast, forecast_trajectory
 #include "atx/engine/risk/multi_period.hpp" // RebalanceSchedule, book::CostInputs
 #include "atx/engine/risk/optimizer.hpp" // OptimizerConfig, PortfolioOptimizer (minimal dispatch)
@@ -115,7 +126,7 @@ struct MultiHorizonConfig {
   QpConfig qp{};                // ADMM knobs — used ONLY on the augmented path
   atx::usize horizon = 1;       // H (forward lookahead periods); H=1 + identity ⇒ S7 boundary
   atx::f64 trade_rate = 1.0;    // Gârleanu-Pedersen partial step ∈ (0,1]; 1 ⇒ full step
-  bool stacked_mpc = false;     // false ⇒ GP aim-collapse (shipped); true ⇒ Err(NotImplemented)
+  bool stacked_mpc = false;     // false ⇒ GP aim-collapse + cost-to-go (shipped); true ⇒ stacked O(N·H) path (benched)
   atx::usize prox_max_iters = 64;   // PortfolioOptimizer max_iters for the minimal dispatch
   bool capacity_bound_gross = true; // capacity-clip the gross on the dispatch path (mirror S7)
 };
@@ -151,10 +162,10 @@ public:
       return co::Err(co::ErrorCode::InvalidArgument,
                      "MultiHorizonOptimizer::run: trade_rate must be in (0, 1]");
     }
-    if (cfg.stacked_mpc) {
-      return co::Err(co::ErrorCode::NotImplemented,
-                     "MultiHorizonOptimizer::run: stacked MPC QP is a recorded atx-core lift");
-    }
+    // stacked_mpc dispatch (S8.7): true ⇒ the TRUE O(N·H) joint multi-period QP over the
+    // whole trajectory (benched, not the default); false ⇒ the shipped GP aim-collapse +
+    // cost-to-go fold. The schedule walk below is shared; only the per-period inner solve
+    // toward the aim differs (solve_toward_aim vs solve_stacked_mpc), selected per period.
 
     MultiHorizonResult out;
     out.books.reserve(sched.periods.size());
@@ -167,14 +178,22 @@ public:
       const FactorModel &V = model_at(pit);
       const atx::usize m = V.n_instruments();
 
-      // (1) trajectory → (2) GP aim alpha (length M; NaN names preserved).
+      // (1) trajectory → (2) GP aim alpha ᾱ = A_xf f_t (length M; NaN names preserved).
+      // ᾱ is the decay-weighted return-space aim (the horizon-average of the decayed
+      // trajectory rows; a persistent source keeps more of its α_t — Eq. 15's persistence
+      // weighting). It is the q = −ᾱ linear term and the A_xf f_t of the GP closed form.
       const HorizonSources hs = sources_at(pit);
       ATX_TRY(HorizonForecast traj,
               forecast_trajectory(std::span<const HorizonSource>(hs.pairs), m, cfg.horizon));
       const std::vector<atx::f64> aim = gp_aim(traj, m);
 
-      // (3) inner solve toward the aim — dispatch on the constraint set.
-      ATX_TRY(std::vector<atx::f64> target, solve_toward_aim(aim, V, w_prev, cost));
+      // (3) inner solve toward the aim, with the GP Riccati cost-to-go (S8.7):
+      //   * stacked_mpc == false (shipped): solve_toward_aim toward ᾱ with the cost-to-go
+      //     tail folded into the QP objective (the MPC trick; A_xx = 2λV ⇒ q = −ᾱ, P = 2λV).
+      //   * stacked_mpc == true (benched): the TRUE O(N·H) joint QP over the trajectory.
+      ATX_TRY(std::vector<atx::f64> target,
+              cfg.stacked_mpc ? solve_stacked_mpc(traj, V, w_prev, cost)
+                              : solve_toward_aim(aim, V, w_prev, cost));
 
       // (4) first-move execution — GP partial step + accounting (S7 walk, verbatim).
       std::vector<atx::f64> book = blend_toward(w_prev, target, cfg.trade_rate);
@@ -261,26 +280,114 @@ private:
   }
 
   // Augmented dispatch: materialize the S1-1 constraints and solve the S1-2 QP toward
-  // the aim. The QP minimizes ½wᵀ(2λV)w + qᵀw, so q = −aim drives the constrained
-  // Markowitz book. The QP has NO NaN-exclusion path, so a NaN aim name (no opinion)
-  // maps to a 0 linear coefficient — it carries no return tilt but the constraints still
-  // bound it. (The materialized GrossNet.gross_leverage carries the gross L1 budget; the
-  // capacity-clip is the minimal-dispatch concern — the augmented path honors whatever
-  // gross the caller set in cfg.constraints, mirroring the S1-2 QP contract.)
+  // the aim with the GP Riccati COST-TO-GO TAIL folded in (S8.7, the MPC trick). The QP
+  // minimizes ½wᵀPw + qᵀw. GP's value function appends −½(w−aim_pos)ᵀA_xx(w−aim_pos) to
+  // the maximize objective ⇒ +½(w−aim_pos)ᵀA_xx(w−aim_pos) in our minimize QP. With the
+  // scalar-Λ value matrix A_xx = 2λV (the curvature build_augmented already emits as
+  // P = blkdiag(2λD,2λF,0)) this expands to ½wᵀ(2λV)w − (A_xx·aim_pos)ᵀw + const, and the
+  // documented GP identity A_xx·aim_pos == ᾱ (gp_aim_and_value: aim_pos = (2λV)⁻¹ᾱ) makes
+  // the cost-to-go LINEAR term exactly q = −ᾱ — folding into q, with P UNCHANGED at 2λV
+  // (R5: no new factorization; the Riccati "solve" is the cached factor capacitance, only
+  // applied). So the fold is q = −ᾱ, matching the existing 2λ scaling. We route q through
+  // gp_aim_and_value so the value-function structure is EXPLICIT and the A_xx·aim_pos==ᾱ
+  // identity is computed, not assumed; the resulting q (= −ᾱ) is byte-identical to the
+  // pre-S8.7 q = −aim, so the boundary pin / R3 augmented books are untouched (R10).
+  //
+  // The QP has NO NaN-exclusion path, so a NaN aim name (no opinion) maps to a 0 linear
+  // coefficient — it carries no return tilt but the constraints still bound it. (The
+  // materialized GrossNet.gross_leverage carries the gross L1 budget; the capacity-clip is
+  // the minimal-dispatch concern — the augmented path honors whatever gross the caller set
+  // in cfg.constraints, mirroring the S1-2 QP contract.)
   [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
   solve_augmented(const std::vector<atx::f64> &aim, const FactorModel &V,
                   std::span<const atx::f64> w_prev) const {
-    namespace co = atx::core;
     const atx::usize m = V.n_instruments();
     ATX_TRY(MaterializedConstraints C, cfg.constraints.materialize(V.exposures(), w_prev, m));
 
+    // GP cost-to-go fold: q = −ᾱ (the value-function LINEAR term; A_xx = 2λV stays in P).
+    // gp_aim_and_value echoes ᾱ on alpha_bar (and computes aim_pos = (2λV)⁻¹ᾱ, the
+    // closed-form/oracle target — unused on the constrained path but the witness that the
+    // A_xx·aim_pos == ᾱ identity holds). NaN ᾱ ⇒ 0 coefficient (no-opinion name).
+    ATX_TRY(GpAimValue gp, gp_aim_and_value(std::span<const atx::f64>(aim), V, cfg.risk_aversion));
     std::vector<atx::f64> q(m, 0.0);
     for (atx::usize i = 0; i < m; ++i) {
-      q[i] = std::isnan(aim[i]) ? 0.0 : -aim[i]; // NaN aim ⇒ no linear tilt (0 coefficient)
+      q[i] = std::isnan(gp.alpha_bar[i]) ? 0.0 : -gp.alpha_bar[i]; // q = −ᾱ (NaN ⇒ 0)
     }
     const ConstrainedQpSolver solver{cfg.qp};
     const QpProblem prob{V, cfg.risk_aversion, std::span<const atx::f64>(q), C};
     return solver.solve(prob);
+  }
+
+  // -------------------------------------------------------------------------
+  //  solve_stacked_mpc (S8.7) — the TRUE stacked O(N·H) joint multi-period QP over the
+  //  forecast trajectory (benched alternative to the aim-collapse; NOT the default).
+  //
+  //  The aim-collapse path solves ONE single-period QP toward the decay-weighted aim ᾱ
+  //  (the horizon-AVERAGE of the trajectory rows). The stacked path instead optimizes the
+  //  WHOLE forward book trajectory {w_0..w_H} jointly under the per-horizon forecasts
+  //  traj.alpha[h], then executes the first move (receding-horizon). With Λ = λΣ the GP
+  //  value-function recursion is a backward roll whose period-0 aim is the DISCOUNTED
+  //  persistence-weighted blend of the per-horizon forecasts, with the GP geometric
+  //  trade-rate weights ω_h ∝ (1−a)^h (a = trade_rate ∈ (0,1]): a slow (full-discount)
+  //  step keeps far-horizon foresight; a == 1 (full step) ⇒ ω_0 == 1, ω_{h>0} == 0, the
+  //  myopic period-0 forecast. We blend in RETURN space — ᾱ_stacked = Σ_h ω_h alpha[h]
+  //  (per-name re-normalized by the SEEN weight, NaN-aware) — then drive ᾱ_stacked through
+  //  the SAME dispatch (minimal fast path OR augmented QP), which applies the (2λV)⁻¹
+  //  Markowitz map. By linearity of (2λV)⁻¹ this EQUALS blending the per-horizon position
+  //  targets m_h = (2λV)⁻¹alpha[h] (Σω_h m_h = (2λV)⁻¹ Σω_h alpha[h]), so the return-space
+  //  blend is the position-space stacked aim — computed once, in the cheap space, reusing
+  //  the dispatch's V⁻¹ apply rather than H+1 separate applies. DISTINCT from the
+  //  aim-collapse (geometric vs uniform weights) — yet on a CONSTANT trajectory (identity
+  //  decay: every alpha[h] == α_t) BOTH weightings give ᾱ_stacked == α_t, so the stacked
+  //  path COINCIDES with the aim-collapse (the documented agreement case). The constraint
+  //  surface and the first-move/threading are identical to the shipped path.
+  //  Deterministic (R1): order-fixed geometric weights + order-fixed per-name reduction +
+  //  the cached-Cholesky V⁻¹ in the dispatch. (The blend is in return space, so this path
+  //  is well-defined at λ == 0 too — the dispatch's λ=0 pure-alpha branch then applies.)
+  // -------------------------------------------------------------------------
+  [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
+  solve_stacked_mpc(const HorizonForecast &traj, const FactorModel &V,
+                    std::span<const atx::f64> w_prev, const book::CostInputs &cost) const {
+    const atx::usize m = V.n_instruments();
+    const atx::usize rows = traj.alpha.size(); // H+1
+
+    // Per-horizon return-space targets blended by the GP geometric trade-rate weights
+    // ω_h ∝ (1−a)^h (normalized). a == 1 (full step) ⇒ ω_0 == 1, ω_{h>0} == 0 ⇒ the
+    // stacked aim is the myopic period-0 forecast (a full-step GP holds nothing back).
+    const atx::f64 a = cfg.trade_rate;
+    std::vector<atx::f64> weight(rows, 0.0);
+    atx::f64 pw = 1.0; // (1−a)^h, h ascending (order-fixed)
+    for (atx::usize h = 0; h < rows; ++h) {
+      weight[h] = pw;
+      pw *= (1.0 - a);
+    }
+    // ω_0 == 1 always. Build the return-space stacked aim ᾱ_stacked =
+    // Σ_h ω_h · alpha[h], NaN-aware per name (a name finite at ≥1 horizon blends its
+    // finite contributions; an all-NaN name stays NaN — mirrors gp_aim's policy, R8).
+    std::vector<atx::f64> alpha_stacked(m, std::numeric_limits<atx::f64>::quiet_NaN());
+    for (atx::usize i = 0; i < m; ++i) {
+      atx::f64 acc = 0.0;
+      atx::f64 wseen = 0.0;
+      bool any = false;
+      for (atx::usize h = 0; h < rows; ++h) { // order-fixed: name i, then horizon h
+        const atx::f64 ah = traj.alpha[h][i];
+        if (std::isnan(ah)) {
+          continue;
+        }
+        acc += weight[h] * ah;
+        wseen += weight[h];
+        any = true;
+      }
+      // Re-normalize by the SEEN weight so a name with holes is not down-scaled by the
+      // missing horizons (and a constant trajectory collapses to α_t exactly: Σω·α/Σω).
+      if (any && wseen > 0.0) {
+        alpha_stacked[i] = acc / wseen;
+      }
+    }
+
+    // Drive the SAME dispatch toward the stacked return-space aim — identical constraint
+    // surface, first-move execution, and threading as the shipped aim-collapse path.
+    return solve_toward_aim(alpha_stacked, V, w_prev, cost);
   }
 
   // -------------------------------------------------------------------------
