@@ -117,9 +117,12 @@ struct LoadProfile {
   }
   void report(const OratsLoadStats &s) const {
     if (!enabled) return;
+    // build_write is summed across worker threads (overlapped behind the producer
+    // wall, not added to it) -> labeled "(workers,summed)" so the total is not
+    // mistaken for serial time.
     std::fprintf(stderr,
-                 "[orats-profile] inflate=%.1fms parse=%.1fms build_write=%.1fms "
-                 "rows_kept=%lld dates=%lld\n",
+                 "[orats-profile] inflate=%.1fms parse=%.1fms "
+                 "build_write(workers,summed)=%.1fms rows_kept=%lld dates=%lld\n",
                  ms(inflate), ms(parse), ms(build_write),
                  static_cast<long long>(s.rows_kept),
                  static_cast<long long>(s.dates_written));
@@ -390,6 +393,10 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   const unsigned hw = std::thread::hardware_concurrency();
   const std::size_t W = std::clamp<std::size_t>(hw == 0 ? 1 : hw - 1, 1, 8);
   WorkerError werr;
+  // Worker-summed build+write time (nanoseconds). One fetch_add per date (~hundreds
+  // total) -> negligible contention. This is OVERLAPPED wall time hidden behind the
+  // producer, not added to it; report() labels it as such.
+  std::atomic<long long> build_write_ns{0};
   BoundedQueue<DateJob> jobs{2 * W}; // small backlog so the producer rarely stalls
 
   // seal: hand a completed date's accumulator to the pool. Empty -> no-op. If a
@@ -417,10 +424,15 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   std::vector<std::thread> pool;
   pool.reserve(W);
   for (std::size_t i = 0; i < W; ++i) {
-    pool.emplace_back([&jobs, &werr] {
+    pool.emplace_back([&jobs, &werr, &build_write_ns] {
       DateJob job;
       while (jobs.pop(job)) {
+        const auto tbw = LoadProfile::clock::now();
         const auto s = run_job(job);
+        const auto elapsed = LoadProfile::clock::now() - tbw;
+        build_write_ns.fetch_add(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(),
+            std::memory_order_relaxed);
         if (!s.has_value()) {
           werr.set(s.error());
           // Keep draining: stopping here would let the queue fill and deadlock
@@ -514,6 +526,10 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
     std::lock_guard<std::mutex> lk(werr.m);
     return atx::core::Err(werr.err);
   }
+  // All workers joined -> build_write_ns is fully synchronized. Record the
+  // worker-summed build+write time for the profile (overlapped wall time).
+  prof.build_write = std::chrono::duration_cast<LoadProfile::clock::duration>(
+      std::chrono::nanoseconds(build_write_ns.load(std::memory_order_relaxed)));
 
   // ---- Below here is producer-only post-processing: it MUST run after the join
   //      so symbology/manifest are built once, deterministically, on this
