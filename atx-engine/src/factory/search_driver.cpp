@@ -14,7 +14,8 @@
 #include "atx/engine/alpha/typecheck.hpp" // alpha::analyze
 #include "atx/engine/alpha/vm.hpp"        // alpha::Engine (digest eval, fresh per program)
 
-#include "atx/engine/parallel/digest.hpp" // parallel::signal_set_digest
+#include "atx/engine/parallel/digest.hpp"    // parallel::signal_set_digest
+#include "atx/engine/parallel/scheduler.hpp" // parallel::Scheduler, ShardId (Tier 1 LPT dispatch)
 
 namespace atx::engine::factory {
 
@@ -238,7 +239,36 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   std::vector<atx::u64> digest_slot(n_fresh, atx::u64{0});
   std::vector<std::uint8_t> compiled(n_fresh, std::uint8_t{0});
 
-  det_pool.parallel_for(n_fresh, [&](atx::usize k, atx::usize /*wid*/) {
+  // One stateless Scheduler for both parallel regions' Tier 1 LPT dispatch order.
+  // Default-constructed: the single-node fallback topology, NO OS query;
+  // `dispatch_order` reads ONLY its cost-hint argument (a PURE function — no
+  // clock, no thread id, no topology), so it cannot touch a result bit.
+  const parallel::Scheduler lpt{};
+
+  // -----------------------------------------------------------------------
+  // Tier 1 LPT (longest-processing-time-first) dispatch order for Phase 2.
+  //
+  // `order_fresh` is a PURE permutation of [0, n_fresh) sorted by DESCENDING
+  // genome size — the AST node count is a finite, NaN-free monotone proxy for
+  // compile+eval cost. Dispatching the heaviest candidates first overlaps their
+  // long tail with the many short ones, shrinking the generation's makespan.
+  //
+  // DETERMINISM: the permutation only remaps WHICH claim-position p runs WHICH
+  // canonical slot k (k == order_fresh[p]). Slot k is still written by exactly
+  // one shard, and the serial fold below reads digest_slot in canonical k-order,
+  // so the accumulated digest is byte-identical to ANY dispatch order (the
+  // Scheduler §4.4 "no bit contact" proof + the DetPool single-writer contract).
+  // A uniform-cost population degenerates to the ascending-id identity order, i.e.
+  // exactly the prior Tier 0 dispatch.
+  // -----------------------------------------------------------------------
+  std::vector<atx::f64> cost_fresh(n_fresh);
+  for (atx::usize k = 0; k < n_fresh; ++k) {
+    cost_fresh[k] = static_cast<atx::f64>(fresh[k]->ast.nodes().size());
+  }
+  const std::vector<parallel::ShardId> order_fresh = lpt.dispatch_order(cost_fresh);
+
+  det_pool.parallel_for(n_fresh, [&](atx::usize p, atx::usize /*wid*/) {
+    const atx::usize k = order_fresh[p]; // LPT remap: claim-position p -> canonical slot k
     auto prog = alpha::compile(fresh[k]->ast, fresh[k]->analysis);
     if (!prog.has_value()) {
       return; // compiled[k] stays 0 — skip in the serial fold below (F5 backstop)
@@ -275,7 +305,20 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   const atx::usize n_to_score = to_score.size();
   std::vector<CachedScore> score_slot(n_to_score);
 
-  det_pool.parallel_for(n_to_score, [&](atx::usize j, atx::usize /*wid*/) {
+  // Tier 1 LPT dispatch order for the fitness pass — same construction and the
+  // same byte-identity guarantee as Phase 2: the permutation remaps only the
+  // claim-position p -> logical slot j (j == order_score[p]); each slot is written
+  // by exactly one shard and the serial merge in Phase 4 reads score_slot in
+  // fixed to_score order, so worker scheduling AND the LPT order cannot perturb
+  // canon/fitness_cache/all_scored.
+  std::vector<atx::f64> cost_score(n_to_score);
+  for (atx::usize j = 0; j < n_to_score; ++j) {
+    cost_score[j] = static_cast<atx::f64>(to_score[j]->ast.nodes().size());
+  }
+  const std::vector<parallel::ShardId> order_score = lpt.dispatch_order(cost_score);
+
+  det_pool.parallel_for(n_to_score, [&](atx::usize p, atx::usize /*wid*/) {
+    const atx::usize j = order_score[p]; // LPT remap: claim-position p -> logical slot j
     auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, cfg.fitness);
     if (rep.has_value()) {
       score_slot[j].raw = rep->raw;
