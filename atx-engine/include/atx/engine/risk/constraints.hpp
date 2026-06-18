@@ -145,13 +145,21 @@ struct OwnershipCap {
   bool elastic = false;
 };
 
-// Sector risk budget — NET-WEIGHT variant (S8.4): |Σ_{i ∈ g} w_i| <= cap[g], sectors
-// keyed by sector_id[i]. The linear (net-weight) variant is a sparse 0/1 group row,
-// structurally identical to GroupCap; the SOC (‖V^{1/2}(mask_g∘w)‖₂ ≤ σ_g) variant
-// lands in S8.5. Emitted AFTER the GroupCap rows in the fixed order (R1).
+// Sector risk budget — sectors keyed by sector_id[i]. TWO variants:
+//   * NET-WEIGHT (S8.4, DEFAULT soc=false): |Σ_{i ∈ g} w_i| <= cap[g], a sparse 0/1
+//     group row structurally identical to GroupCap; emitted as a linear A-row AFTER
+//     the GroupCap rows in the fixed order (R1).
+//   * SOC (S8.5b, soc=true): ‖V^{1/2}(mask_g∘w)‖₂ <= sigma[g], a second-order cone (a
+//     ball with NO benchmark / offset 0) over the masked holdings of sector g. Like the
+//     tracking-error cone it is NOT a linear A-row — it materializes into a SectorRiskSpec
+//     and build_augmented assembles the K+M cone rows (needs L_F = chol(F), sqrt(D) — only
+//     reachable there, R4). The SOC variant emits NO net-weight A-rows.
+// The two variants are mutually exclusive per descriptor (the `soc` flag selects one).
 struct SectorRiskBudget {
   std::span<const atx::usize> sector_id; // length-M sector label per instrument
-  std::vector<atx::f64> cap;             // per-sector net-weight cap (length = #sectors)
+  std::vector<atx::f64> cap;             // per-sector net-weight cap (length = #sectors; net-weight variant)
+  bool soc = false;                      // true ⇒ the S8.5b SOC variant (uses `sigma`, not `cap`)
+  std::vector<atx::f64> sigma = {};      // per-sector ‖V^{1/2}(mask_g∘w)‖₂ budget (length = #sectors; SOC variant)
   atx::usize priority = 0;
   bool elastic = false;
 };
@@ -177,6 +185,21 @@ struct MaterializedConstraints {
   // carries the RAW request (a w_bench snapshot + the te budget) and build_augmented
   // assembles the SocBlock. `tracking.active == false` ⇒ no cone (the box-only path).
   TrackingErrorSpec tracking;          // tracking-error SOC request (active iff a TrackingError was set)
+
+  // SECTOR-RISK SOC metadata (S8.5b — NOT linear in w; the ADMM owns the SOC z-projection,
+  // exactly like tracking). The SOC variant of SectorRiskBudget materializes its sector_id
+  // snapshot + per-sector σ here; build_augmented assembles one K+M cone block per sector
+  // with a finite σ_g (it needs L_F = chol(F) / sqrt(D)). `sector_risk.active == false` ⇒
+  // no sector cones (the net-weight variant, or no SectorRiskBudget, stays the box path).
+  SectorRiskSpec sector_risk;          // sector-risk SOC request (active iff a soc=true SectorRiskBudget was set)
+
+  // √-IMPACT COST SURROGATE metadata (S8.5b, R9). PRE-COMPUTED per-name quadratic
+  // coefficients c_i ≥ 0 (from the ONE cost surface, exec::ImpactCfg) that build_augmented
+  // folds into the Hessian P w-diagonal (P[i,i] += 2 c_i) and the linear term
+  // (q[i] += −2 c_i·turnover_ref_i). materialize() does NOT compute these — the caller
+  // populates `impact.coeff` from impact_cost_bps's coefficients (no impact constants live
+  // in the optimizer). EMPTY / all-zero ⇒ INERT (P, q byte-identical to pre-S8.5b, R10).
+  ImpactSurrogateSpec impact;          // √-impact quadratic surrogate (active iff coeff is populated)
 };
 
 // ===========================================================================
@@ -233,6 +256,8 @@ struct ConstraintSet {
     fill_turnover(mc, w_prev, M);
     // --- cone metadata (S8.5a tracking-error SOC; assembled in build_augmented) ---
     fill_tracking(mc, M);
+    // --- sector-risk SOC metadata (S8.5b; assembled in build_augmented) ---
+    fill_sector_soc(mc, M);
     return co::Ok(std::move(mc));
   }
 
@@ -302,8 +327,10 @@ private:
     return co::Ok();
   }
 
-  // Sector net-weight rows: sector_id length == M, cap length == #sectors, caps >= 0
-  // (mirrors validate_grp — the net-weight variant is structurally a GroupCap).
+  // Sector budget validation. sector_id length == M always. The active variant's
+  // per-sector budget vector (net-weight `cap`, or SOC `sigma`) must have length
+  // #sectors and be >= 0. (Mirrors validate_grp for the net-weight variant; the SOC
+  // variant adds the same shape/sign checks on `sigma`.)
   [[nodiscard]] atx::core::Status validate_sector(atx::usize M) const {
     namespace co = atx::core;
     if (!sector) {
@@ -312,6 +339,18 @@ private:
     if (sector->sector_id.size() != M) {
       return co::Err(co::ErrorCode::InvalidArgument,
                      "SectorRiskBudget: sector_id length must equal M");
+    }
+    if (sector->soc) {
+      if (sector->sigma.size() != sector_count()) {
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "SectorRiskBudget(SOC): sigma length must equal the number of sectors");
+      }
+      for (const atx::f64 s : sector->sigma) {
+        if (s < 0.0) {
+          return co::Err(co::ErrorCode::InvalidArgument, "SectorRiskBudget(SOC): sigma must be >= 0");
+        }
+      }
+      return co::Ok();
     }
     if (sector->cap.size() != sector_count()) {
       return co::Err(co::ErrorCode::InvalidArgument,
@@ -445,7 +484,9 @@ private:
     r += fexp ? fexp->factor_cols.size() : 0U; // (3) one row per selected factor
     r += grp ? group_count() : 0U;             // (4) one row per group
     r += beta ? 1U : 0U;                       // (5) βᵀw row
-    r += sector ? sector_count() : 0U;         // (6) one row per sector (net-weight)
+    // (6) net-weight sector rows ONLY for the net-weight variant; the SOC variant emits
+    //     NO linear A-rows (its cone rows are assembled in build_augmented).
+    r += (sector && !sector->soc) ? sector_count() : 0U;
     return r;
   }
 
@@ -563,8 +604,8 @@ private:
   // net-weight SectorRiskBudget variant (the SOC variant is S8.5) — structurally a
   // GroupCap, emitted LAST so the offsets stay reproducible (R1).
   void emit_sector(MaterializedConstraints &mc, atx::usize M, Eigen::Index &next) const noexcept {
-    if (!sector) {
-      return;
+    if (!sector || sector->soc) {
+      return; // no descriptor, or the SOC variant (no net-weight A-rows — cone, not linear)
     }
     const atx::usize s_count = sector_count();
     for (atx::usize g = 0; g < s_count; ++g) {
@@ -617,6 +658,26 @@ private:
     for (atx::usize i = 0; i < M && i < track->w_bench.size(); ++i) {
       mc.tracking.w_bench[i] = track->w_bench[i];
     }
+  }
+
+  // -------------------------------------------------------------------------
+  //  Sector-risk SOC metadata (S8.5b) — snapshot the SOC variant's sector_id labels
+  //  + per-sector σ into the SectorRiskSpec. The K+M cone rows per sector are assembled
+  //  later in build_augmented (they need L_F = chol(F) / sqrt(D) from the FactorModel;
+  //  R4 — no V here). Inactive for the net-weight variant or no descriptor.
+  // -------------------------------------------------------------------------
+  // NOT noexcept: the vector copies allocate the snapshots (cold path, once).
+  void fill_sector_soc(MaterializedConstraints &mc, atx::usize M) const {
+    if (!sector || !sector->soc) {
+      mc.sector_risk.active = false;
+      return;
+    }
+    mc.sector_risk.active = true;
+    mc.sector_risk.sector_id.assign(M, 0U);
+    for (atx::usize i = 0; i < M && i < sector->sector_id.size(); ++i) {
+      mc.sector_risk.sector_id[i] = sector->sector_id[i];
+    }
+    mc.sector_risk.sigma = sector->sigma; // per-sector budget (length == #sectors, validated)
   }
 };
 

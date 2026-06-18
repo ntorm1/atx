@@ -115,6 +115,49 @@ struct TrackingErrorSpec {
   std::vector<atx::f64> w_bench;  // length-M benchmark book (empty ⇒ treated as all-zero)
 };
 
+// ===========================================================================
+//  SectorRiskSpec — the materialized sector-risk SOC REQUEST (S8.5b). The SOC
+//  variant of SectorRiskBudget materializes into this; build_augmented consumes it
+//  with the FactorModel's F/D to assemble, PER SECTOR g with a finite σ_g, the
+//  K+M cone rows for  ‖V^{1/2}(mask_g∘w)‖₂ ≤ σ_g  (a BALL with offset 0 — there is
+//  NO benchmark, unlike tracking-error). Carried on MaterializedConstraints for the
+//  same reason TrackingErrorSpec is: the cone-argument math needs L_F = chol(F) and
+//  sqrt(D), only reachable in build_augmented (R4 — materialize() never touches V).
+//
+//  `sector_id` is the length-M sector label per instrument (a snapshot, so the spec
+//  is self-contained); `sigma` is the per-sector risk budget (length = #sectors).
+//  A sector with a NON-POSITIVE σ_g is SKIPPED (no cone emitted) — a 0 budget is a
+//  degenerate ball {0} and is treated as "no SOC requested for that sector" rather
+//  than a hard pin-to-zero (document the convention). Cones are emitted in ASCENDING
+//  sector_id order (fixed, R1).
+// ===========================================================================
+struct SectorRiskSpec {
+  bool active = false;                // a SectorRiskBudget with soc=true was set
+  std::vector<atx::usize> sector_id;  // length-M sector label per instrument (snapshot)
+  std::vector<atx::f64> sigma;        // per-sector ‖V^{1/2}(mask_g∘w)‖₂ budget (length = #sectors)
+};
+
+// ===========================================================================
+//  ImpactSurrogateSpec — the materialized √-impact COST surrogate (S8.5b, R9). The
+//  honest temporary √-impact (capacity.hpp::impact_cost_bps, temp_i = Y·σ_i·part_i^δ)
+//  is convex but a 3/2-power, NOT a QP term; this carries a QUADRATIC surrogate of it
+//  folded into the existing Hessian P w-diagonal + linear q:
+//      cost ≈ Σ_i c_i · (w_i − w_prev_i)²   ⇒   P[i,i] += 2 c_i ,  q[i] += −2 c_i w_prev_i
+//  (the constant Σ c_i w_prev_i² is dropped — irrelevant to the argmin). The trade
+//  reference w_prev IS the turnover L1's MaterializedConstraints::turnover_ref (reused).
+//
+//  ONE COST SURFACE (§0-G / R9): the per-name `coeff` (c_i ≥ 0) must be PRE-COMPUTED by
+//  the caller from the SAME exec::ImpactCfg (Y, δ) and per-name σ_i / participation the
+//  engine's impact_cost_bps uses — a local quadratic fit to Y·σ_i·part^δ near the
+//  expected trade size. The optimizer does NOT own impact constants (no second model);
+//  it consumes the already-priced coefficients. c_i ≥ 0 keeps the P w-block PSD.
+//  EMPTY / all-zero coeff ⇒ the surrogate is INERT (P, q byte-identical to pre-S8.5b).
+// ===========================================================================
+struct ImpactSurrogateSpec {
+  bool active = false;            // a √-impact surrogate was requested
+  std::vector<atx::f64> coeff;    // per-name c_i ≥ 0 (length M; empty ⇒ inert)
+};
+
 // Order-fixed Euclidean norm of a vector slice: single accumulator, ASCENDING index
 // (R1 — bitwise-reproducible regardless of thread count). Sqrt of Σ vᵢ². The span is
 // the cone-argument block; the reduction order is the canonical row order.

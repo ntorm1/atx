@@ -57,6 +57,12 @@
 //        te in the ADMM z-update (qp_solver.hpp), where offset = [ −L_Fᵀ Xᵀw_bench ;
 //        −sqrt(D)∘w_bench ] is carried on the appended SocBlock. EMPTY ⇒ box-only path
 //        (zero cones ⇒ byte-identical to S8.4, R10).
+//    (5) sector-risk SOC (S8.5b, if sector_risk.active): one K + M cone block PER sector
+//        with a finite σ_g > 0, in ascending sector_id order. Each block's Ãx is
+//        [ L_Fᵀ Xᵀ(mask_g∘w) ; sqrt(D)∘(mask_g∘w) ] with offset = 0 (NO benchmark) and
+//        is ball-projected to radius σ_g. ROUTE 1 (direct w-block rows — no aux vars):
+//        adds NO column / factorization (R5), never densifies V (R4). The √-impact
+//        surrogate is NOT a row here — it folds into P's w-diagonal + q (above).
 //
 //  Every triplet is inserted in a FIXED traversal order (ascending row, then the
 //  documented per-row column order) and the CSC is built once via a deterministic
@@ -120,6 +126,24 @@ struct AugmentedQp {
 
 namespace detail {
 
+// Count of sector-risk SOC cones with a FINITE, STRICTLY-POSITIVE budget σ_g — the
+// sectors that actually emit a (K+M)-row cone (a non-positive σ_g is a degenerate
+// ball {0}, treated as "no SOC for that sector" and skipped; R1 — fixed convention).
+// Order-irrelevant for the count (it is a tally), but the EMISSION below walks the same
+// ascending sector_id (== ascending sigma index) order.
+[[nodiscard]] inline atx::usize active_sector_cone_count(const MaterializedConstraints &c) noexcept {
+  if (!c.sector_risk.active) {
+    return 0U;
+  }
+  atx::usize n = 0U;
+  for (const atx::f64 s : c.sector_risk.sigma) {
+    if (s > 0.0) {
+      ++n;
+    }
+  }
+  return n;
+}
+
 // Fixed-order count of the augmented constraint rows. MUST mirror the emission
 // order in build_augmented EXACTLY (R1).
 [[nodiscard]] inline atx::usize aug_total_rows(atx::usize m, atx::usize k,
@@ -136,6 +160,8 @@ namespace detail {
   if (c.tracking.active) {
     r += k + m;                                  // (4) tracking-error SOC: K + M cone rows
   }
+  // (5) sector-risk SOC (S8.5b): K + M cone rows per sector with a finite σ_g > 0.
+  r += active_sector_cone_count(c) * (k + m);
   return r;
 }
 
@@ -176,16 +202,39 @@ namespace detail {
 
   const atx::f64 two_lambda = 2.0 * lambda;
 
+  // √-impact quadratic surrogate (S8.5b, R9): the PRE-COMPUTED per-name coefficient
+  // c_i ≥ 0 (from the ONE cost surface — exec::ImpactCfg — populated by the caller on
+  // C.impact.coeff). The surrogate cost Σ_i c_i (w_i − w_prev_i)² folds into P's w-diag
+  // (P[i,i] += 2 c_i) and q (q[i] += −2 c_i w_prev_i). INERT (returns 0) when the spec is
+  // inactive / a coeff is absent ⇒ the +0.0 fold is byte-identical to the pre-S8.5b P/q
+  // (R10). c_i is clamped to ≥ 0 so the w-block stays PSD even if a caller mis-prices.
+  const bool has_impact = C.impact.active && !C.impact.coeff.empty();
+  const auto impact_c = [&](atx::usize i) noexcept -> atx::f64 {
+    if (!has_impact || i >= C.impact.coeff.size()) {
+      return 0.0;
+    }
+    const atx::f64 ci = C.impact.coeff[i];
+    return (ci > 0.0) ? ci : 0.0; // PSD guard: negative coeff cannot enter P
+  };
+  // w_prev for the surrogate IS the turnover L1 reference (reused). Absent ⇒ flat zero.
+  const auto impact_wprev = [&](atx::usize i) noexcept -> atx::f64 {
+    return (C.has_turnover && i < C.turnover_ref.size()) ? C.turnover_ref[i] : 0.0;
+  };
+
   // -------------------------------------------------------------------------
   //  (A) Hessian  P = blkdiag(2λD on w, 2λF on y, 0 on aux).  Fixed insertion
   //      order: every w diagonal (ascending i), then the full y block in column-
   //      major order (factor column b, then row a) so the CSC is reproducible.
+  //      The √-impact surrogate adds 2 c_i to the w-diagonal VALUE only (R5 — the
+  //      sparsity pattern is unchanged; a zero c_i adds an exact +0.0 ⇒ byte-identical).
   // -------------------------------------------------------------------------
   std::vector<Trip> p_trips;
   p_trips.reserve(m + k * k);
-  for (atx::usize i = 0; i < m; ++i) { // 2λ·D on the w diagonal
-    p_trips.emplace_back(static_cast<int>(w_off + i), static_cast<int>(w_off + i),
-                         two_lambda * D[static_cast<Eigen::Index>(i)]);
+  for (atx::usize i = 0; i < m; ++i) { // 2λ·D (+ 2 c_i for √-impact) on the w diagonal
+    const atx::f64 ci = impact_c(i);
+    const atx::f64 diag = (ci > 0.0) ? (two_lambda * D[static_cast<Eigen::Index>(i)] + 2.0 * ci)
+                                     : two_lambda * D[static_cast<Eigen::Index>(i)];
+    p_trips.emplace_back(static_cast<int>(w_off + i), static_cast<int>(w_off + i), diag);
   }
   for (atx::usize b = 0; b < k; ++b) {   // 2λ·F on the y block (column-major: col b, row a)
     for (atx::usize a = 0; a < k; ++a) {
@@ -199,16 +248,22 @@ namespace detail {
   out.P.makeCompressed();
 
   // -------------------------------------------------------------------------
-  //  (B) The augmented linear term  q_aug = [q; 0; 0; 0].
+  //  (B) The augmented linear term  q_aug = [q; 0; 0; 0]. The √-impact surrogate
+  //      adds −2 c_i w_prev_i to the w-block (the linear part of c_i(w_i−w_prev_i)²;
+  //      the constant c_i w_prev_i² is dropped — irrelevant to the argmin). Not added
+  //      when c_i == 0 ⇒ byte-identical to the pre-S8.5b q when the surrogate is off (R10).
   // -------------------------------------------------------------------------
   out.q_aug = cl::VecX::Zero(static_cast<Eigen::Index>(n));
   for (atx::usize i = 0; i < m; ++i) {
-    out.q_aug[static_cast<Eigen::Index>(w_off + i)] = q[i];
+    const atx::f64 ci = impact_c(i);
+    out.q_aug[static_cast<Eigen::Index>(w_off + i)] =
+        (ci > 0.0) ? (q[i] - 2.0 * ci * impact_wprev(i)) : q[i];
   }
 
   // -------------------------------------------------------------------------
   //  (C) The augmented constraint matrix Ã, with bounds [l, u]. Fixed row order:
-  //      (0) y − Xᵀw = 0   (1) S1-1 linear rows   (2) gross split   (3) turnover.
+  //      (0) y − Xᵀw = 0   (1) S1-1 linear rows   (2) gross split   (3) turnover
+  //      (4) tracking-error SOC   (5) sector-risk SOC (one K+M cone per finite-σ sector).
   // -------------------------------------------------------------------------
   const atx::usize r_total = detail::aug_total_rows(m, k, C, has_gross, has_turn);
   out.l = cl::VecX::Zero(static_cast<Eigen::Index>(r_total));
@@ -371,6 +426,73 @@ namespace detail {
     }
 
     out.cones.push_back(std::move(blk));
+  }
+
+  // (5) sector-risk SOC (S8.5b): for each sector g with a finite σ_g > 0, the cone
+  //     ‖V^{1/2}(mask_g∘w)‖₂ ≤ σ_g. With u = mask_g∘w and V = X F Xᵀ + D this is
+  //     ‖a_g‖₂ ≤ σ_g where a_g = [ L_Fᵀ(Xᵀ(mask_g∘w)) ; sqrt(D)∘(mask_g∘w) ] — the SAME
+  //     low-rank identity as tracking-error but with NO benchmark ⇒ offset = 0. We use
+  //     ROUTE 1 (direct rows on the w-block — NO per-sector aux vars): it adds NO new
+  //     columns / factorization (R5) and never densifies V (R4 — the factor part is the
+  //     K×K-per-masked-name product L_Fᵀ Xᵀ restricted to the mask, the specific part is
+  //     sqrt(D) on the masked diagonal). dim = K + M (we emit M specific rows, the
+  //     unmasked names carrying an exact-zero row — simplest fixed pattern, R1). Cones
+  //     emitted in ASCENDING sector_id (== ascending σ index) order (R1).
+  if (detail::active_sector_cone_count(C) > 0U) {
+    // L_F = chol(F) (lower). SPD by FactorModel::create's contract — cannot fail here.
+    const Eigen::LLT<cl::MatX> f_llt(V.factor_cov());
+    ATX_ASSERT(f_llt.info() == Eigen::Success); // invariant: FactorModel::create enforces SPD
+    const cl::MatX L_F = f_llt.matrixL();        // K×K lower-triangular factor (L_F L_Fᵀ = F)
+
+    const std::vector<atx::usize> &sec = C.sector_risk.sector_id; // length M (snapshot)
+    const atx::usize n_sectors = C.sector_risk.sigma.size();
+    for (atx::usize g = 0; g < n_sectors; ++g) {
+      const atx::f64 sigma_g = C.sector_risk.sigma[g];
+      if (!(sigma_g > 0.0)) {
+        continue; // non-positive budget ⇒ degenerate ball; skip (no cone for this sector)
+      }
+      SocBlock blk;
+      blk.row_start = row;
+      blk.dim = k + m;
+      blk.radius = sigma_g;
+      blk.offset = cl::VecX::Zero(static_cast<Eigen::Index>(k + m)); // NO benchmark ⇒ b = 0
+
+      // (5a) factor part — K rows. Row c maps w via (L_Fᵀ Xᵀ diag(mask_g)): entry
+      //      (cone row c, w_off+j) = Σ_a L_F(a,c)·X(j,a), emitted ONLY for masked names
+      //      j ∈ g (unmasked columns are exact zero). Column order: ascending j.
+      for (atx::usize c = 0; c < k; ++c) {
+        for (atx::usize j = 0; j < m; ++j) {
+          if (sec[j] != g) {
+            continue; // not in sector g ⇒ zero contribution (mask)
+          }
+          atx::f64 v = 0.0; // (L_Fᵀ)[c,:]·X[j,:] = Σ_a L_F(a,c)·X(j,a) — order-fixed ascending a
+          for (atx::usize a = 0; a < k; ++a) {
+            v += L_F(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(c)) *
+                 X(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(a));
+          }
+          if (v != 0.0) {
+            a_trips.emplace_back(static_cast<int>(row), static_cast<int>(w_off + j), v);
+          }
+        }
+        out.l[static_cast<Eigen::Index>(row)] = -kAugInf; // inert box band — projection owns these rows
+        out.u[static_cast<Eigen::Index>(row)] = kAugInf;
+        ++row;
+      }
+
+      // (5b) specific part — M rows. Row i is sqrt(D_i) at w_off+i ONLY for masked names
+      //      i ∈ g (unmasked names ⇒ exact-zero row). offset = 0 (no benchmark).
+      for (atx::usize i = 0; i < m; ++i) {
+        if (sec[i] == g) {
+          const atx::f64 sd = std::sqrt(D[static_cast<Eigen::Index>(i)]);
+          a_trips.emplace_back(static_cast<int>(row), static_cast<int>(w_off + i), sd);
+        }
+        out.l[static_cast<Eigen::Index>(row)] = -kAugInf;
+        out.u[static_cast<Eigen::Index>(row)] = kAugInf;
+        ++row;
+      }
+
+      out.cones.push_back(std::move(blk));
+    }
   }
 
   out.A_tilde.resize(static_cast<int>(r_total), static_cast<int>(n));

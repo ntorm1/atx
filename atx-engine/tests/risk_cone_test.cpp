@@ -55,6 +55,7 @@ using atx::engine::risk::PositionCap;
 using atx::engine::risk::QpProblem;
 using atx::engine::risk::soc_project;
 using atx::engine::risk::TrackingError;
+using atx::engine::risk::SectorRiskBudget;
 
 // ---------------------------------------------------------------------------
 //  Fixtures
@@ -91,6 +92,18 @@ using atx::engine::risk::TrackingError;
   std::vector<f64> u(m, 0.0);
   for (usize i = 0; i < m; ++i) {
     u[i] = w[i] - (i < w_bench.size() ? w_bench[i] : 0.0);
+  }
+  return std::sqrt(model.risk(std::span<const f64>(u)));
+}
+
+// ‖V^{1/2}(mask_g∘w)‖₂ via the factored V: mask w to sector g (zero elsewhere), then
+// sqrt(uᵀVu) = sqrt(FactorModel::risk(mask_g∘w)). The G-CONSTRAINT (sector) reference.
+[[nodiscard]] f64 sector_risk(const FactorModel &model, const std::vector<f64> &w,
+                              const std::vector<usize> &sector_id, usize g) {
+  const usize m = model.n_instruments();
+  std::vector<f64> u(m, 0.0);
+  for (usize i = 0; i < m; ++i) {
+    u[i] = (i < sector_id.size() && sector_id[i] == g) ? w[i] : 0.0;
   }
   return std::sqrt(model.risk(std::span<const f64>(u)));
 }
@@ -410,6 +423,307 @@ TEST(RiskCone, ZeroConeIsByteIdenticalToS84Path) {
   // Emit the actual digest so we can read it off the first run (printed on FAILURE).
   EXPECT_EQ(h, kZeroConeGolden) << "box-only augmented book drifted from the S8.4 golden digest"
                                  << "; actual digest = 0x" << std::hex << h;
+}
+
+// ===========================================================================
+//  S8.5b — Piece 1: the sector-risk SOC cone.
+//
+//  G-CONSTRAINT (sector risk): a sector-risk-constrained solve returns a book with
+//  ‖V^{1/2}(mask_g∘w)‖₂ ≤ σ_g + feas_tol, asserted PER SECTOR against the factored V.
+//  Proven to BIND (the box-only book violates the same σ_g), over ≥ 2 sectors at once.
+// ===========================================================================
+TEST(RiskCone, SectorRiskConeIsSatisfiedAndBindsAcrossTwoSectors) {
+  const usize m = 10U;
+  const FactorModel model = make_multi_model(m);
+  const f64 lambda = 0.1; // low risk aversion ⇒ alpha dominates ⇒ a high-risk free book
+
+  // Two sectors: even indices ⇒ sector 0, odd ⇒ sector 1 (5 names each).
+  std::vector<usize> sector_id(m, 0U);
+  for (usize i = 0; i < m; ++i) {
+    sector_id[i] = i % 2U;
+  }
+
+  // Alpha that drives a large per-sector book risk absent the cone.
+  VecX alpha(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(m); ++i) {
+    alpha[i] = 0.4 * static_cast<f64>((i % 4) - 1);
+  }
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -alpha[static_cast<Eigen::Index>(i)];
+  }
+
+  ConstrainedQpSolver solver;
+  solver.cfg.rho = 10.0;     // SOC-coupled rows converge best at a larger ADMM penalty
+  solver.cfg.iters = 1500U;
+
+  // --- 1. Box-only book to measure the natural per-sector risk. ---
+  ConstraintSet cs_free;
+  cs_free.gross.dollar_neutral = true;
+  cs_free.pos = PositionCap{0.5};
+  auto mc_free_r = cs_free.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc_free_r.has_value()) << (mc_free_r ? "" : mc_free_r.error().to_string());
+  MaterializedConstraints mc_free = std::move(*mc_free_r);
+  mc_free.gross_l1_budget = -1.0;
+  QpProblem prob_free{model, lambda, std::span<const f64>(q), mc_free};
+  auto r_free = solver.solve(prob_free);
+  ASSERT_TRUE(r_free.has_value()) << (r_free ? "" : r_free.error().to_string());
+  const f64 sr0_free = sector_risk(model, *r_free, sector_id, 0U);
+  const f64 sr1_free = sector_risk(model, *r_free, sector_id, 1U);
+
+  // Tight per-sector budgets the free book VIOLATES (proves both cones bind).
+  const f64 sigma0 = 0.5 * sr0_free;
+  const f64 sigma1 = 0.5 * sr1_free;
+  ASSERT_GT(sr0_free, sigma0) << "free sector-0 risk must exceed its budget";
+  ASSERT_GT(sr1_free, sigma1) << "free sector-1 risk must exceed its budget";
+
+  // --- 2. Sector-risk-SOC-constrained solve (two sectors). ---
+  SectorRiskBudget srb;
+  srb.sector_id = std::span<const usize>(sector_id);
+  srb.soc = true;
+  srb.sigma = {sigma0, sigma1};
+  ConstraintSet cs;
+  cs.gross.dollar_neutral = true;
+  cs.pos = PositionCap{0.5};
+  cs.sector = srb;
+  auto mc_r = cs.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc_r.has_value()) << (mc_r ? "" : mc_r.error().to_string());
+  MaterializedConstraints mc = std::move(*mc_r);
+  mc.gross_l1_budget = -1.0;
+
+  // Two cone blocks must be assembled (one per finite-σ sector).
+  const auto aug = atx::engine::risk::build_augmented(model, lambda, std::span<const f64>(q), mc);
+  EXPECT_EQ(aug.cones.size(), 2U) << "expected one SocBlock per finite-σ sector";
+
+  QpProblem prob{model, lambda, std::span<const f64>(q), mc};
+  auto r_con = solver.solve(prob);
+  ASSERT_TRUE(r_con.has_value()) << (r_con ? "" : r_con.error().to_string());
+  const std::vector<f64> &w = *r_con;
+
+  const f64 sr0 = sector_risk(model, w, sector_id, 0U);
+  const f64 sr1 = sector_risk(model, w, sector_id, 1U);
+  EXPECT_LE(sr0, sigma0 + solver.cfg.feas_tol) << "sector-0 risk " << sr0 << " over budget " << sigma0;
+  EXPECT_LE(sr1, sigma1 + solver.cfg.feas_tol) << "sector-1 risk " << sr1 << " over budget " << sigma1;
+  EXPECT_LT(sr0, sr0_free) << "sector-0 cone did not reduce risk";
+  EXPECT_LT(sr1, sr1_free) << "sector-1 cone did not reduce risk";
+}
+
+// G-DET (a) — two sector-risk-constrained solves ⇒ byte-identical book.
+TEST(RiskCone, SectorRiskSolveIsDeterministic) {
+  const usize m = 8U;
+  const FactorModel model = make_multi_model(m);
+  std::vector<usize> sector_id(m, 0U);
+  for (usize i = 0; i < m; ++i) {
+    sector_id[i] = i % 2U;
+  }
+  VecX alpha(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(m); ++i) {
+    alpha[i] = 0.3 * static_cast<f64>((i % 5) - 2);
+  }
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -alpha[static_cast<Eigen::Index>(i)];
+  }
+
+  SectorRiskBudget srb;
+  srb.sector_id = std::span<const usize>(sector_id);
+  srb.soc = true;
+  srb.sigma = {0.06, 0.06};
+  ConstraintSet cs;
+  cs.gross.dollar_neutral = true;
+  cs.pos = PositionCap{0.5};
+  cs.sector = srb;
+  auto mc_r = cs.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc_r.has_value());
+  MaterializedConstraints mc = std::move(*mc_r);
+  mc.gross_l1_budget = -1.0;
+
+  QpProblem prob{model, 0.5, std::span<const f64>(q), mc};
+  ConstrainedQpSolver solver;
+  solver.cfg.rho = 10.0;
+  solver.cfg.iters = 1500U;
+  auto r1 = solver.solve(prob);
+  auto r2 = solver.solve(prob);
+  ASSERT_TRUE(r1.has_value()) << (r1 ? "" : r1.error().to_string());
+  ASSERT_TRUE(r2.has_value()) << (r2 ? "" : r2.error().to_string());
+  const std::vector<f64> &a = *r1;
+  const std::vector<f64> &b = *r2;
+  ASSERT_EQ(a.size(), b.size());
+  for (usize i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a[i]), std::bit_cast<std::uint64_t>(b[i])) << "i=" << i;
+  }
+}
+
+// ===========================================================================
+//  S8.5b — Piece 2: the √-impact quadratic cost surrogate.
+//
+//  G-DIFF (√-impact): the surrogate folds into the augmented P/q EXACTLY as the closed
+//  form Σ_i c_i (w_i − w_prev_i)² ⇒ P[i,i] = 2λD_i + 2 c_i, q[i] = q0_i − 2 c_i w_prev_i,
+//  asserted to ULP against build_augmented's P/q; c_i ≥ 0 keeps the w-block PSD.
+// ===========================================================================
+TEST(RiskCone, ImpactSurrogateFoldsIntoPqClosedForm) {
+  const usize m = 6U;
+  const FactorModel model = make_multi_model(m);
+  const f64 lambda = 0.3;
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = 0.1 * static_cast<f64>(i) - 0.2;
+  }
+
+  // A turnover reference (the surrogate's w_prev) + per-name impact coefficients c_i ≥ 0.
+  std::vector<f64> w_prev(m);
+  std::vector<f64> coeff(m);
+  for (usize i = 0; i < m; ++i) {
+    w_prev[i] = 0.02 * static_cast<f64>((i % 3)) - 0.02;
+    coeff[i] = 0.5 + 0.25 * static_cast<f64>(i); // strictly positive
+  }
+
+  ConstraintSet cs;
+  cs.gross.dollar_neutral = true;
+  cs.pos = PositionCap{0.5};
+  cs.turn = atx::engine::risk::TurnoverBudget{1.0}; // populates turnover_ref = w_prev
+  auto mc_r = cs.materialize(model.exposures(), std::span<const f64>(w_prev), m);
+  ASSERT_TRUE(mc_r.has_value()) << (mc_r ? "" : mc_r.error().to_string());
+  MaterializedConstraints mc = std::move(*mc_r);
+  mc.impact.active = true;
+  mc.impact.coeff = coeff;
+
+  const auto aug = atx::engine::risk::build_augmented(model, lambda, std::span<const f64>(q), mc);
+
+  // P[i,i] == 2λ D_i + 2 c_i  (ULP-exact: the same arithmetic the assembler does).
+  const VecX &D = model.specific_var();
+  for (usize i = 0; i < m; ++i) {
+    const f64 want = 2.0 * lambda * D[static_cast<Eigen::Index>(i)] + 2.0 * coeff[i];
+    const f64 got = aug.P.coeff(static_cast<int>(i), static_cast<int>(i));
+    EXPECT_TRUE(bits_eq(got, want)) << "P[" << i << "] got " << got << " want " << want;
+  }
+  // q[i] == q0_i − 2 c_i w_prev_i  (ULP-exact).
+  for (usize i = 0; i < m; ++i) {
+    const f64 want = q[i] - 2.0 * coeff[i] * w_prev[i];
+    const f64 got = aug.q_aug[static_cast<Eigen::Index>(i)];
+    EXPECT_TRUE(bits_eq(got, want)) << "q[" << i << "] got " << got << " want " << want;
+  }
+}
+
+// G-CONSTRAINT (√-impact behavior): the surrogate ON ⇒ the optimizer trades LESS than
+// OFF on the same problem; a LARGER coefficient ⇒ even less turnover (monotone pin).
+TEST(RiskCone, ImpactSurrogateReducesTurnoverMonotonically) {
+  const usize m = 8U;
+  const FactorModel model = make_multi_model(m);
+  const f64 lambda = 0.1; // alpha-dominated ⇒ the free book trades a lot off w_prev
+
+  std::vector<f64> w_prev(m, 0.0); // start flat ⇒ turnover == Σ|w|
+  VecX alpha(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(m); ++i) {
+    alpha[i] = 0.4 * static_cast<f64>((i % 4) - 1);
+  }
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -alpha[static_cast<Eigen::Index>(i)];
+  }
+
+  auto turnover = [&](const std::vector<f64> &w) {
+    f64 t = 0.0;
+    for (usize i = 0; i < m; ++i) {
+      t += std::fabs(w[i] - w_prev[i]);
+    }
+    return t;
+  };
+  auto solve_with_impact = [&](f64 c) -> std::vector<f64> {
+    ConstraintSet cs;
+    cs.gross.dollar_neutral = true;
+    cs.pos = PositionCap{0.5};
+    cs.turn = atx::engine::risk::TurnoverBudget{10.0}; // loose ⇒ turnover governed by the surrogate
+    auto mc_r = cs.materialize(model.exposures(), std::span<const f64>(w_prev), m);
+    EXPECT_TRUE(mc_r.has_value());
+    MaterializedConstraints mc = std::move(*mc_r);
+    mc.gross_l1_budget = -1.0;
+    if (c > 0.0) {
+      mc.impact.active = true;
+      mc.impact.coeff.assign(m, c);
+    }
+    QpProblem prob{model, lambda, std::span<const f64>(q), mc};
+    ConstrainedQpSolver solver;
+    solver.cfg.iters = 800U;
+    auto r = solver.solve(prob);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
+    return r ? *r : std::vector<f64>(m, 0.0);
+  };
+
+  const f64 t_off = turnover(solve_with_impact(0.0));
+  const f64 t_lo = turnover(solve_with_impact(0.5));
+  const f64 t_hi = turnover(solve_with_impact(4.0));
+  EXPECT_LT(t_lo, t_off) << "surrogate ON must reduce turnover (off=" << t_off << " on=" << t_lo << ")";
+  EXPECT_LT(t_hi, t_lo) << "larger impact coeff must reduce turnover further (lo=" << t_lo
+                        << " hi=" << t_hi << ")";
+}
+
+// ===========================================================================
+//  G-DET (b) — zero sector cones + zero √-impact ⇒ byte-identical to the S8.5a path.
+//  (1) An empty SectorRiskSpec + empty ImpactSurrogateSpec carries zero SocBlocks and a
+//      P/q byte-identical to the build with NO such specs. (2) The box-only golden pin
+//      (kZeroConeGolden) still holds with the (inert) S8.5b specs present.
+// ===========================================================================
+TEST(RiskCone, ZeroSectorConeZeroImpactIsByteIdenticalToS85aPath) {
+  const usize m = 12U;
+  const FactorModel model = make_multi_model(m);
+  VecX alpha(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(m); ++i) {
+    alpha[i] = 0.2 * static_cast<f64>((i % 4) - 1);
+  }
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -alpha[static_cast<Eigen::Index>(i)];
+  }
+
+  // The S8.4/S8.5a surface: dollar-neutral + box + gross L1, NO cones, NO impact.
+  ConstraintSet cs;
+  cs.gross.dollar_neutral = true;
+  cs.gross.gross_leverage = 1.5;
+  cs.pos = PositionCap{0.4};
+  auto mc_r = cs.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc_r.has_value());
+  MaterializedConstraints mc = std::move(*mc_r);
+
+  // The S8.5b specs are inactive by default — assert that explicitly.
+  EXPECT_FALSE(mc.sector_risk.active);
+  EXPECT_FALSE(mc.impact.active);
+
+  const auto aug = atx::engine::risk::build_augmented(model, 0.7, std::span<const f64>(q), mc);
+  EXPECT_TRUE(aug.cones.empty()) << "no-sector-cone problem must carry zero SocBlocks";
+
+  // Explicitly setting an INERT impact spec (active but all-zero coeff) must not perturb
+  // P or q (byte-identical to the spec-absent build).
+  MaterializedConstraints mc_inert = mc;
+  mc_inert.impact.active = true;
+  mc_inert.impact.coeff.assign(m, 0.0);
+  const auto aug_inert =
+      atx::engine::risk::build_augmented(model, 0.7, std::span<const f64>(q), mc_inert);
+  ASSERT_EQ(aug.P.nonZeros(), aug_inert.P.nonZeros());
+  for (usize i = 0; i < m; ++i) {
+    EXPECT_TRUE(bits_eq(aug.P.coeff(static_cast<int>(i), static_cast<int>(i)),
+                        aug_inert.P.coeff(static_cast<int>(i), static_cast<int>(i))))
+        << "inert impact perturbed P[" << i << "]";
+    EXPECT_TRUE(bits_eq(aug.q_aug[static_cast<Eigen::Index>(i)],
+                        aug_inert.q_aug[static_cast<Eigen::Index>(i)]))
+        << "inert impact perturbed q[" << i << "]";
+  }
+  EXPECT_TRUE(aug_inert.cones.empty()) << "inert impact must not add cones";
+
+  // The box-only golden pin still holds (the S8.5b specs are inert when off).
+  QpProblem prob{model, 0.7, std::span<const f64>(q), mc};
+  ConstrainedQpSolver solver;
+  solver.cfg.iters = 400U;
+  auto r1 = solver.solve(prob);
+  ASSERT_TRUE(r1.has_value()) << (r1 ? "" : r1.error().to_string());
+  const std::vector<f64> &a = *r1;
+  std::uint64_t h = 1469598103934665603ULL;
+  for (usize i = 0; i < a.size(); ++i) {
+    h ^= std::bit_cast<std::uint64_t>(a[i]);
+    h *= 1099511628211ULL;
+  }
+  EXPECT_EQ(h, kZeroConeGolden) << "box-only book drifted with the (inert) S8.5b specs present"
+                                << "; actual digest = 0x" << std::hex << h;
 }
 
 } // namespace atxtest_risk_cone_test
