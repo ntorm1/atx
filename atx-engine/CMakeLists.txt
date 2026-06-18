@@ -81,6 +81,8 @@ add_library(atx-engine STATIC
     src/parallel/workload_mine.cpp
     src/parallel/workload_streams.cpp
     src/validation/bias_audit.cpp
+    # conviction (S10-1) — continuous [0,1] confidence from DSR/PBO/stability/explainability
+    src/combine/conviction.cpp
     # risk (p2 S8.8a — header/source split: heavy method bodies moved out of the
     # header-only risk module into the library to collapse the include fan-out).
     # NOT auto-globbed — list each src/risk/*.cpp explicitly.
