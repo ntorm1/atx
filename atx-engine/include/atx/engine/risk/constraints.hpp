@@ -221,6 +221,14 @@ struct MaterializedConstraints {
   // ‖Ω_f^{1/2} y‖₂ ≤ t, and the +κt cost (it needs the Cholesky of Ω_f / the y-block).
   // `robust.active == false` (or κ ≤ 0) ⇒ no robust cone (byte-identical to S8.5b, R10).
   RobustAlphaSpec robust;              // robust alpha-uncertainty cone (active iff a RobustAlpha with κ>0 was set)
+
+  // ELASTICITY metadata (S8.6 — NOT part of the exact surface; CONSUMED only by the
+  // constraint-hierarchy / minimize-violation layer, risk/elasticity.hpp). Records, per
+  // ELASTIC descriptor, the materialized rows / cone it owns + its priority (lower =
+  // relaxed first). EMPTY when no descriptor set `elastic=true` ⇒ elasticity is a pure
+  // no-op (the relaxed builder emits zero slack columns ⇒ byte-identical to S8.5, R10).
+  // See cone.hpp::ElasticSpec for the two carriers + the augmented-frame mapping.
+  ElasticSpec elastic;                 // S8.6 relaxation metadata (empty ⇒ nothing relaxes)
 };
 
 // ===========================================================================
@@ -282,6 +290,8 @@ struct ConstraintSet {
     fill_sector_soc(mc, M);
     // --- robust alpha-uncertainty SOC metadata (S8.5c; assembled in build_augmented) ---
     fill_robust(mc);
+    // --- S8.6 elasticity metadata (CONSUMED only by risk/elasticity.hpp on infeasibility) ---
+    fill_elastic(mc, M);
     return co::Ok(std::move(mc));
   }
 
@@ -743,6 +753,101 @@ private:
     mc.robust.active = true;
     mc.robust.kappa = robust->kappa;
     mc.robust.omega_f = robust->omega_f; // empty ⇒ build_augmented uses the identity
+  }
+
+  // -------------------------------------------------------------------------
+  //  S8.6 elasticity metadata — record, per ELASTIC descriptor, the materialized
+  //  rows / cone it owns + its priority. CONSUMED only by risk/elasticity.hpp (on the
+  //  infeasible re-solve). This walks the SAME fixed order the emitters use (R1) so the
+  //  recorded ranges match C.A exactly; it does NOT touch (A, l, u) — the exact surface
+  //  is unchanged. SCOPE: elastic LINEAR A-rows (dollar-neutral, box, factor-exposure,
+  //  group, beta, sector net-weight) and elastic CONES (tracking-error, sector-risk SOC,
+  //  robust). The gross / turnover L1 BUDGETS ride the aux-split metadata, not A-rows, so
+  //  they are NOT relaxable here (a documented S8.6 scope boundary — the minimize-
+  //  violation layer relaxes the linear + conic surface; L1-budget elasticity is a
+  //  recorded follow-on). Only descriptors with `elastic == true` are recorded; an empty
+  //  result ⇒ elasticity is a pure no-op (R10).
+  // -------------------------------------------------------------------------
+  void fill_elastic(MaterializedConstraints &mc, atx::usize M) const {
+    atx::usize row = 0U; // running A-row cursor, mirrors the emit_* order EXACTLY
+    // (1) dollar-neutral (GrossNet) — 1 row when present.
+    if (gross.dollar_neutral) {
+      if (gross.elastic) {
+        mc.elastic.linear_rows.push_back({row, 1U, gross.priority});
+      }
+      row += 1U;
+    }
+    // (2) position box — M rows when any box-fold descriptor is present. The box belongs
+    //     to PositionCap (the %ADV / %shares folds are caps, not separately relaxable);
+    //     elastic iff PositionCap.elastic.
+    if (has_box()) {
+      if (pos && pos->elastic) {
+        mc.elastic.linear_rows.push_back({row, M, pos->priority});
+      }
+      row += M;
+    }
+    // (3) factor exposure — one row per selected factor.
+    if (fexp) {
+      const atx::usize cnt = fexp->factor_cols.size();
+      if (fexp->elastic && cnt > 0U) {
+        mc.elastic.linear_rows.push_back({row, cnt, fexp->priority});
+      }
+      row += cnt;
+    }
+    // (4) group — one row per group.
+    if (grp) {
+      const atx::usize cnt = group_count();
+      if (grp->elastic && cnt > 0U) {
+        mc.elastic.linear_rows.push_back({row, cnt, grp->priority});
+      }
+      row += cnt;
+    }
+    // (5) beta — 1 row.
+    if (beta) {
+      if (beta->elastic) {
+        mc.elastic.linear_rows.push_back({row, 1U, beta->priority});
+      }
+      row += 1U;
+    }
+    // (6) sector NET-WEIGHT rows — one per sector (the SOC variant emits NO A-rows; it is
+    //     handled as a cone below). The net-weight rows belong to SectorRiskBudget.
+    if (sector && !sector->soc) {
+      const atx::usize cnt = sector_count();
+      if (sector->elastic && cnt > 0U) {
+        mc.elastic.linear_rows.push_back({row, cnt, sector->priority});
+      }
+      row += cnt;
+    }
+
+    // Cones, in the AUGMENTED-cone emission order build_augmented uses (R1): (a) tracking-
+    // error (1 block iff active), (b) sector-risk SOC (one block per FINITE-σ sector, in
+    // ascending sector order), (c) robust (1 block iff active). cone_index tracks the
+    // position in AugmentedQp::cones; we record only the elastic ones.
+    atx::usize cone_index = 0U;
+    if (mc.tracking.active) {
+      if (track && track->elastic) {
+        mc.elastic.cones.push_back({cone_index, track->priority});
+      }
+      ++cone_index;
+    }
+    if (mc.sector_risk.active) {
+      // One cone per sector with σ_g > 0 (mirrors build_augmented's skip of σ_g ≤ 0).
+      for (const atx::f64 s : mc.sector_risk.sigma) {
+        if (!(s > 0.0)) {
+          continue;
+        }
+        if (sector && sector->elastic) {
+          mc.elastic.cones.push_back({cone_index, sector->priority});
+        }
+        ++cone_index;
+      }
+    }
+    if (mc.robust.active && mc.robust.kappa > 0.0) {
+      if (robust && robust->elastic) {
+        mc.elastic.cones.push_back({cone_index, robust->priority});
+      }
+      ++cone_index;
+    }
   }
 };
 

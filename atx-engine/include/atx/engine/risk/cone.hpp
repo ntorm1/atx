@@ -198,6 +198,45 @@ struct RobustAlphaSpec {
   atx::core::linalg::MatX omega_f;    // K×K SPD factor-premia error covariance (empty ⇒ identity)
 };
 
+// ===========================================================================
+//  S8.6 — ElasticSpec: the relaxation metadata the constraint-hierarchy / minimize-
+//  violation layer (risk/elasticity.hpp) CONSUMES. S8.4 added the per-descriptor
+//  `priority` (lower = relaxed first) / `elastic` fields, but the EXACT materialized
+//  surface (A, l, u, cone budgets) NEVER carries them — a relaxed row is an S8.6
+//  concern, NOT part of the exact surface (constraints.hpp design comment). So
+//  materialize() collects, for each ELASTIC descriptor, WHICH part of the materialized
+//  problem it owns + at what priority into this spec; elasticity.hpp reads it to attach
+//  penalized slack columns ONLY to the elastic rows / cones.
+//
+//  TWO carriers, in the FIXED materialize emission order (R1):
+//    * `linear_rows` — one entry per elastic descriptor that emitted LINEAR A-rows
+//      (dollar-neutral, box, factor-exposure, group, beta, sector net-weight). Each
+//      entry names the contiguous [row_begin, row_begin+count) range in C.A's frame and
+//      the descriptor's priority. elasticity.hpp shifts these by the +K factor-definition
+//      rows to reach the augmented Ã frame.
+//    * `cones` — one entry per elastic CONE, in the augmented-cone emission order
+//      (tracking-error, then each finite-σ sector, then robust). `cone_index` is the
+//      position in AugmentedQp::cones; `priority` is the owning descriptor's.
+//
+//  EMPTY (no elastic descriptor) ⇒ elasticity.hpp emits ZERO slack columns ⇒ the relaxed
+//  assembly is byte-identical to the hard one (R10). It is in any case only ever built on
+//  the infeasible re-solve — the feasible hard solve never touches it.
+// ===========================================================================
+struct ElasticRow {
+  atx::usize row_begin = 0; // first row in C.A's frame (pre-augmentation)
+  atx::usize count = 0;     // number of contiguous A-rows this descriptor emitted
+  atx::usize priority = 0;  // S8.6 relaxation rank (lower = relaxed first)
+};
+struct ElasticCone {
+  atx::usize cone_index = 0; // index into AugmentedQp::cones (augmented-cone emission order)
+  atx::usize priority = 0;   // S8.6 relaxation rank (lower = relaxed first)
+};
+struct ElasticSpec {
+  std::vector<ElasticRow> linear_rows; // elastic linear-row descriptors (materialize order)
+  std::vector<ElasticCone> cones;      // elastic cone descriptors (augmented-cone order)
+  [[nodiscard]] bool empty() const noexcept { return linear_rows.empty() && cones.empty(); }
+};
+
 // Order-fixed Euclidean norm of a vector slice: single accumulator, ASCENDING index
 // (R1 — bitwise-reproducible regardless of thread count). Sqrt of Σ vᵢ². The span is
 // the cone-argument block; the reduction order is the canonical row order.

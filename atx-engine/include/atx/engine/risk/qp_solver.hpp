@@ -212,13 +212,32 @@ public:
   // Solve and also return the deterministic certificate (S8.3). Same fixed-iteration
   // algorithm; the certificate is computed from the final iterates.
   [[nodiscard]] atx::core::Result<QpResult> solve_with_cert(const QpProblem &p) const {
-    namespace co = atx::core;
-    namespace cl = atx::core::linalg;
     const atx::usize m = p.V.n_instruments();
     ATX_TRY_VOID(validate(p, m));
 
     // (1) Build the factor-augmented sparse form  x = [w; y; s; r]  (R4 — no dense Ã).
     const AugmentedQp aug = build_augmented(p.V, p.risk_aversion, p.q, p.C);
+
+    // (2..8) The augmented-form solve, extracted so the S8.6 elasticity layer can re-solve
+    //        a RELAXED AugmentedQp (penalized slack columns) through the IDENTICAL pipeline
+    //        (same Ruiz / ADMM / polish / certificate / gate — NO new factorization, R5).
+    //        The hard path runs this VERBATIM ⇒ a feasible solve stays byte-identical (R10).
+    return solve_augmented_form(aug, p);
+  }
+
+  // Solve a PRE-BUILT augmented form. The hard path (solve_with_cert) calls this directly
+  // after build_augmented; the S8.6 elasticity layer (risk/elasticity.hpp) calls it with a
+  // RELAXED AugmentedQp it assembled (the minimize-violation slack columns + penalty appended
+  // to the w/y/aux variable space, the elastic rows widened by the slacks). `aug.n_w` is the
+  // M weight block in BOTH cases, so the returned book is the first M entries either way. NO
+  // new factorization (R5): the SAME Ruiz-conditioned no-pivot LDLᵀ ADMM as the hard solve.
+  // The book of a NON-relaxed aug equals the hard solve's book bit-for-bit (it IS the hard
+  // solve's tail).
+  [[nodiscard]] atx::core::Result<QpResult> solve_augmented_form(const AugmentedQp &aug,
+                                                                 const QpProblem &p) const {
+    namespace co = atx::core;
+    namespace cl = atx::core::linalg;
+    const atx::usize m = p.V.n_instruments();
 
     // (2) Ruiz equilibration (R1, fixed cfg.ruiz_passes) — build the conditioned
     //     problem (P̄, Ã̄, q̄, l̄, ū) and the unscaling vectors (D_x, c). Disabled
