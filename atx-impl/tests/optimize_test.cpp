@@ -299,3 +299,25 @@ TEST_F(AtxImplOptimize, MissingArgsFails) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test 5: RejectsUnknownRebalance — invalid --rebalance returns InvalidArgument.
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplOptimize, RejectsUnknownRebalance) {
+    const fs::path books_path = tmp_dir_ / "books_bad_rebalance.bin";
+
+    atx::impl::RunConfig cfg;
+    cfg.panel        = research_path_;
+    cfg.combo        = combo_path_;
+    cfg.books_out    = books_path.string();
+    cfg.gross        = 1.0;
+    cfg.name_cap     = 0.10;
+    cfg.risk_aversion = 1.0;
+    cfg.rebalance    = "monthly";  // not a valid value
+
+    auto r = atx::impl::run_optimize(cfg);
+    EXPECT_FALSE(r.has_value());
+    if (!r.has_value()) {
+        EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+    }
+}

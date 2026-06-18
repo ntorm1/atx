@@ -65,7 +65,7 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     // 1. Validate required flags.
     if (cfg.panel.empty() || cfg.alphas.empty() || cfg.combo_out.empty()) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                              "combine: --panel, --alphas, and --out required");
+                              "combine: --panel, --alphas, and --combo-out required");
     }
 
     // 2. Load the research panel.

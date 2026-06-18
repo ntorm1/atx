@@ -53,7 +53,14 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
 
     ATX_TRY(auto model, diagonal_risk_model(research));
 
-    // 4. Rebalance schedule from the time axis.
+    // 4. Validate --rebalance, then derive step.
+    if (!cfg.rebalance.empty() &&
+        cfg.rebalance != "daily" &&
+        cfg.rebalance != "weekly") {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "optimize: --rebalance must be 'daily' or 'weekly' (got: " +
+                                  cfg.rebalance + ")");
+    }
     const atx::usize step = (cfg.rebalance == "daily") ? 1U : 5U;  // default weekly
     risk::RebalanceSchedule sched;
     for (atx::usize d = 0; d < D; d += step) {

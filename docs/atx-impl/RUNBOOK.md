@@ -163,8 +163,7 @@ atx-impl discover \
     --population 200 \
     --generations 50 \
     --seed-expr "rank(close)" \
-    --seed-expr "ts_mean(close,5)" \
-    --min-dsr   0.5
+    --seed-expr "ts_mean(close,5)"
 ```
 
 - `--panel` — path to `panel.bin` from stage 2.
@@ -176,8 +175,11 @@ atx-impl discover \
 - `--generations` — number of generations to evolve.
 - `--seed-expr` — repeatable flag; each occurrence adds one seed expression to
   the initial population. Provide at least one.
-- `--min-dsr` — minimum daily Sharpe ratio for an alpha to be admitted to
-  `alphas/`.
+- `--min-dsr` — **reserved no-op.** Parsed and recorded for forward-compatibility
+  but not yet enforced. The `SearchDriver` path used by `discover` exposes no
+  per-genome deflated-Sharpe; DSR gating is a planned future enhancement via the
+  `mine`/`AlphaGate` path. Setting this flag currently has no effect on which
+  alphas are admitted.
 
 Expected output line:
 
@@ -349,7 +351,7 @@ population=200
 generations=50
 seed-expr=rank(close)
 seed-expr=ts_mean(close,5)
-min-dsr=0.5
+# min-dsr=0.5  # reserved no-op — not yet enforced (see §3 Stage 3 notes)
 
 # combine
 method=equal
@@ -503,8 +505,8 @@ has no inputs.
 
 **Causes and remedies:**
 
-1. `--min-dsr` is too high for the date window and universe. Lower it (e.g.
-   from `0.5` to `0.2`) as a diagnostic step.
+1. The date window is too narrow. Widen it by moving `--start` earlier or
+   `--end` later to include more history.
 2. The universe screen is too tight — only a handful of names with insufficient
    cross-sectional spread remain after the ADV filter. Widen with a lower
    `--min-adv-usd` or a higher `--top-n-by-adv`.
@@ -515,6 +517,9 @@ has no inputs.
    Increase both.
 5. Verify `--seed` is set explicitly so the run is reproducible while
    diagnosing.
+
+Note: `--min-dsr` is currently a reserved no-op and is **not** a lever for
+`admitted=0` outcomes — see the flag description above.
 
 ### Out of memory during `load` or `discover`
 
