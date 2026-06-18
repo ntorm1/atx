@@ -140,6 +140,13 @@ All boxes left unchecked at S8.0 (this unit writes no solver math); S8.1/S8.3/S8
 | S8.0  | done   | `0bd6389` | Marker + ledger open (`Base: main @ 0b950bd`), full §0 file:line reconciliation (all signatures confirmed, anchors drifted ≤2 lines, dense-Ã anchor `qp_solver.hpp:193` exact), 8-pin checklist locked, `bench/optimizer_scale_bench.cpp` added (M∈{500,1500,3000,5000}×K∈{16,64} augmented-path sweep) + baseline captured (table below), 3 `DISABLED_MultiHorizonIntegration` tests renamed off `DISABLED_` + `GTEST_SKIP()`-guarded so they compile-but-skip (S8.3 flips green). Build env: `dev` preset, VS2022 DevShell + clang-cl; `databento-cpp` submodule init'd in the fresh worktree. |
 | S8.2  | done   | `b78ad99`→`a1bd42b` | Deterministic no-pivot quasi-definite LDLᵀ. 3 commits: `b78ad99` `kkt_ldl.hpp` (`QuasiDefiniteLdl` — `factor_symbolic` = AMD ordering via `Eigen::AMDOrdering<int>` + elimination tree + L pattern; `factor_numeric` = QDLDL-style no-pivot numeric pass, no sqrt, mixed-sign D; `solve` = fwd-L/D⁻¹/bwd-Lᵀ, division-free) + `risk_kkt_ldl_test.cpp`, `5867092` wire into `run_admm` (factor once per solve, reuse every iteration; dropped `<Eigen/SparseCholesky>` + the interim `SimplicialLDLT`; public API unchanged), `a1bd42b` relax the augmented diff gate to 1e-8 + fold in review nits. **Tests:** `RiskKktLdl` 7/7 green; `RiskQpSolver` 13/13; `RiskMultiHorizon` 15/15; `RiskQpAugment` 6/6 (the diff-gate battery re-confirmed at the relaxed 1e-8 — see the regression note below). QDLDL algorithm reimplemented from scratch (NOT linked — osqp/qdldl is Apache-2.0, idea vendored only). |
 | S8.1  | done   | `16b00de`→`ff304d2` | Factor-augmented sparse QP reformulation. 6 commits: `16b00de` preserve as-built dense-Ã solver as `qp_solver_reference.hpp` (the diff oracle — verified byte-for-byte identical to as-built bar the `risk`→`risk::reference` namespace), `edd49a3` `qp_augment.hpp` assembly (`y=Xᵀw` factor-definition rows, `P=blkdiag(2λD,2λF)`, all-sparse Ã — no dense materialization), `484747a` rewrite `ConstrainedQpSolver` onto the augmented sparse KKT (interim `Eigen::SimplicialLDLT`, tagged for S8.2 replacement; public `solve(const QpProblem&)` unchanged), `950e824`+`6b1508f` diff-gate test (`risk_qp_augment_test.cpp`), `ff304d2` review nits. **Tests:** `RiskQpAugment` 6/6 green — 3 structural (Hessian block-diag-DF, factor-definition rows, gross/turnover sparse aux rows), `DollarNeutralRecoversAnalyticOptimum`, `TwoSolvesByteIdentical` (same-path determinism via `bit_cast`), and `MatchesDenseOracleAcrossBattery` (the G-DIFF gate). `RiskQpSolver` 13/13 still green. Built via `ninja` CI preset (PCH-off non-unity; the `dev` preset has a pre-existing unrelated ODR clash in `data_*_test.cpp`, not ours). |
+| S8.4  | done   | `4ef7f2f`+`8719a5a` | Box/linear constraint surface: %ADV/%shares/sector-net caps, diagonal-box min-fold, priority/elastic fields; minimal-vs-augmented dispatch wired into PortfolioOptimizer + MultiPeriodOptimizer (solve_fast effective-config translation). Risk 205/205; 80/80 dispatch+pin+constraint-filter; byte-pins unchanged. Review: re-review Approved, 0 issues. |
+| S8.5a | done   | `546994a`+`f727024` | cone.hpp foundation (ordered_norm2, soc_project, ball_project, SocBlock, TrackingError); ADMM z-update cone step; tracking-error cone (K+M rows, Ruiz-excluded, Polish-excluded); kZeroConeGolden=0xffed7ec6c177aad2 frozen. Review Approved (1 Important + 2 Minor, all fixed). RiskCone 6/6; Risk 199/199; G-DET(a)+(b) + G-CONSTRAINT + G-DIFF green. |
+| S8.5b | done   | `d753274` | Sector-risk SOC (one K+M SocBlock per finite-σ sector, ascending sector_id); √-impact quadratic surrogate folded into P/q diagonals (inert/byte-identical when off). Review Approved; Important = tracked follow-up (√-impact pricing not wired end-to-end from exec::ImpactCfg). RiskCone 11/11; Risk 204/204; MultiPeriodOptimizer 8/8. |
+| S8.5c | done   | `83c1b86`+`3a18bbe` | Robust Goldfarb-Iyengar uncertainty cone: epigraph var t≥‖Ω_f^{1/2}y‖₂, variable_apex SOC; κ≤0 ⇒ byte-identical no-op. QpResult.cone_apex surfaced; 3-point κ sweep 0.025→0.05→0.1. Review Approved (Important fixed). RiskCone 15/15; Risk 208/208; all byte-identity pins green. |
+| S8.6  | done   | `427ab4d`+`01a276c` | Infeasibility elasticity: solve_elastic (hard solve → byte-identical on feasible; on Err, γ_p=2·4^priority weighted slack re-solve; gross/turnover L1 budgets get budget-row slack). Hard rows never relaxed. Review Approved (3 Importants + 2 Minors, all fixed). RiskElasticity 5/5; Risk 213/213; all prior byte-pins unchanged. |
+| S8.7  | done   | `a1d7365`+`838dc50` | GP multi-period cost-to-go: gp_aim_and_value returns ᾱ + A_xx=2λV (scalar-Λ reduction, §0.6) + aim_pos; S7 boundary pin holds bit-for-bit. Hand-derived oracle (ClosedFormMatchesHandDerivedGroundTruth) using neither gp_aim_and_value nor FactorModel. stacked_mpc relabeled geometric-horizon-blend stand-in; matrix-Riccati lift recorded. Review Needs-fixes→resolved. RiskGarleanuPedersen+MultiHorizon+MultiPeriod 30/30; Risk 220/220. |
+| S8.8a | done   | `b66b5b2`+`9cd0a95`+`ea0816b`+`b535b7d` | FactorModel pimpl split (42-fan-out hub); garleanu_pedersen + multi_horizon split to src/risk/*.cpp; dead kkt_iters removed (ea0816b). G-COMPILE: 191.58s → ~132s median (~31%) on PCH-off -j8. Risk* 220/220; all byte-identity pins PASS. Pristine /W4 /permissive- /WX. |
 
 ### S8.0 measured baseline — augmented-path `MultiHorizonOptimizer::run` (as-built solver)
 
@@ -443,6 +450,14 @@ Gates: **G-PERF / G-DET / G-DIFF / G-CONSTRAINT all PASS**; the 8 pins green.
 | `b78ad99`→`a1bd42b` (3) | S8.2 | RiskKktLdl 7/7 (recon ≤2.3e-10, inertia exact, G-DET bit-identical across {1,2,4,8} threads); RiskQpAugment 6/6 (G-DIFF battery re-confirmed @ 1e-8, worst 5.9e-10 — no-pivot honest conditioning); RiskQpSolver 13/13; RiskMultiHorizon 15/15; both review gates SHIP-WITH-NITS, zero blockers (riskiest unit; independent 2000-trial adversarial battery clean) |
 | `9ddbe1d`→`ed5cbcf` (7) | S8.3 | ADMM rebuild (Ruiz + polish + certs + warm-start) + the perf gate. RiskQpSolver 19/19 (+6 feature tests); the 3 DISABLED MultiHorizonIntegration R1/R2/R3 re-enabled GREEN (482/415/240 ms, was ~20 s/run); RiskKktLdl green (byte-identical through the perf fixes). **G-PERF PASS**: found+fixed a real O(M²) (insertion-sort in build_permuted_upper) + numeric pattern cache → M=3000/K=64 core 1766 ms = **35.1×**, full 2891 ms = **21.5×** vs the 62,033.7 ms baseline, scaling ~M^1.12. Both review gates SHIP-WITH-NITS, zero blockers (nnz pattern guard applied). G-DIFF re-scoped: run_case isolates the reformulation (polish/Ruiz off) — battery re-confirmed PASS @ 1e-8 (worst ~5.9e-10) |
 | (S8-a close) | review | S8-a final cross-unit review: **SHIP-WITH-NOTES**, 0 BLOCKER/0 MAJOR. Clean unit seams; backward-compatible API; end-to-end byte-determinism; all gates PASS. 1 MINOR (polish ±kAugInf active-bound guard → S8-b) + carry-forward list below |
+| `4ef7f2f`+`8719a5a` | S8.4 | Box/linear constraint surface (%ADV/%shares/sector-net caps, diagonal-box min-fold, priority/elastic fields) + single-period driver dispatch (minimal→pinned fast path, augmented→PortfolioOptimizer+MultiPeriodOptimizer); re-review Approved, 0 issues. Risk 205/205; dispatch+pin+constraint-filter tests 80/80; byte-pins unchanged. Fix 8719a5a: solve_fast honors attached minimal-set gross/pos via effective-config translation (mirrors MultiHorizon); no-set path byte-identical; Important#2 capacity_bound_gross scope comment; Minor#3 blank line. |
+| `546994a`+`f727024` | S8.5a | cone.hpp foundation (ordered_norm2, soc_project, ball_project, SocBlock, TrackingError); ADMM z-update cone step; tracking-error cone wired (K+M rows, Ruiz-excluded, Polish-excluded); ZeroConeIsByteIdenticalToS84Path upgraded to frozen FNV-1a golden pin kZeroConeGolden=0xffed7ec6c177aad2. Review Approved (1 Important fixed, 2 Minor fixed). RiskCone 6/6; Risk 199/199; G-DIFF + G-CONSTRAINT + G-DET(a)+(b) green. |
+| `d753274` | S8.5b | Sector-risk SOC variant (direct w-block rows: a_g=[L_FᵀXᵀ(mask_g∘w); sqrt(D)∘(mask_g∘w)], one K+M SocBlock per finite-σ sector, ascending sector_id); √-impact quadratic surrogate (P[i,i]+=2c_i, q[i]+=−2c_i·w_prev_i — inert/byte-identical when off; kZeroConeGolden intact). Review Approved; Important = tracked follow-up (√-impact pricing NOT wired end-to-end), 3 Minor declined. RiskCone 11/11; Risk 204/204; MultiPeriodOptimizer 8/8. |
+| `83c1b86`+`3a18bbe` | S8.5c | Robust (Goldfarb-Iyengar) alpha-uncertainty cone: worst-case-α over factor-structured ellipsoid → epigraph var t≥‖Ω_f^{1/2}y‖₂, linear cost +κt; κ≤0 ⇒ no cone (byte-identical). SocBlock gained bool variable_apex; shared project_block_arg helper. Fix 3a18bbe: QpResult.cone_apex surfaced; epigraph tightness assertion added; 3-point κ sweep 0.025→0.05→0.1; +1.0 probe proved teeth (RED→GREEN). Review Approved (Important fixed). RiskCone 15/15; Risk 208/208; all byte-identity pins green. |
+| `427ab4d`+`01a276c` | S8.6 | Constraint-hierarchy / infeasibility elasticity: solve_elastic wraps a hard solve (feasible ⇒ byte-identical to S8.5, elastic path unreached); on Err, re-solves with γ_p=2·4^priority weighted slack ladder (elastic linear rows + ball cones rebuilt as variable-apex SOC + gross/turnover L1 budget rows). Hard rows never slacked; hard-infeasible ⇒ distinct Err. Fix 01a276c: γ doc/constants reconciled; ordering test de-tautologized; gross/turnover L1 elasticity + tight-gross scenario test; dead <cmath> dropped; warm-start-empty guard. Review Approved (3 Importants + 2 Minors all fixed). RiskElasticity 5/5; Risk 213/213; kZeroConeGolden + S8.5a/b/c pins unchanged. |
+| `a1d7365`+`838dc50` | S8.7 | GP multi-period: gp_aim_and_value returns ᾱ (horizon-decay-weighted blend) + A_xx=2λV (scalar-Λ reduction, §0.6 convention) + aim_pos=(2λV)⁻¹ᾱ; cost-to-go fold +½(w−aim)ᵀA_xx(w−aim) reduces to q=−ᾱ/P=2λV; S7 boundary pin holds bit-for-bit. Fix 838dc50: header honesty (states scalar-Λ reduction + cites §0.6 + names matrix-Riccati as recorded lift); self-referential oracle replaced with hand-derived ClosedFormMatchesHandDerivedGroundTruth (raw 2^{-h} decay + hand-inverted 2×2 V × 1/2λ; neither gp_aim_and_value NOR FactorModel used). Review Needs-fixes→resolved. RiskGarleanuPedersen+MultiHorizon+MultiPeriod 30/30; Risk 220/220; S7 boundary pin + S8.5/S8.6 byte-pins green. |
+| `b66b5b2`+`9cd0a95`+`ea0816b`+`b535b7d` | S8.8a | FactorModel pimpl split (42-fan-out hub → private Eigen state behind unique_ptr<Impl>, deep-copy preserved); garleanu_pedersen + multi_horizon split to src/risk/*.cpp; dead QpConfig::kkt_iters removed (ea0816b). qp_solver/kkt_ldl/exposures left header-only (justified: ~900-line ADMM / low-fan-out sparse LDL / inline-semantic hot helpers). G-COMPILE (PCH-off, 27 risk TUs @-j8): 191.58s → ~132s median (~31% reduction). Controller-verified green: Risk* (battery excluded) 220/220; all byte-identity pins (ZeroConeIsByteIdenticalToS84Path / BoundaryPinByteIdenticalToMultiPeriodFullStep / FeasibleProblemIsByteIdenticalNoOp / RobustConeKappaZeroIsByteIdenticalToNominal) PASS. Pristine /W4 /permissive- /WX. |
+| (S8-b close) | review | S8-b final whole-branch review (6c70e6e..b535b7d, opus): **✅ MERGEABLE. ZERO Critical, ZERO Important.** Cross-cutting integration verified consistent (cone-emission order; [w;y;s;r;t] layout; elasticity↔cone composition; pimpl byte-identity; end-to-end determinism; GP fold oracle). 3 post-merge Minors (aim_pos cold-path wart; O(cones·dim·nnz) full-Ã scan on cold infeasible path; elastic-ROBUST-cone branch ships untested). All deferred items triaged as legitimate post-merge ROADMAP residuals. |
 
 ## What S8.0 proves / Next sprint priorities
 
@@ -454,3 +469,113 @@ S8.1** — add `risk/qp_augment.hpp` (`y=Xᵀw`, `P=blkdiag(D,F)`), rewrite `Con
 internals to consume the augmented sparse form (public `solve(const QpProblem&)` unchanged),
 and prove the augmented QP matches the as-built dense-Ã solver (kept compiled as `_reference`)
 to tolerance (G-DIFF). The dense-Ã anchor for the rewrite is **`qp_solver.hpp:193`**.
+
+---
+
+## What S8 proves / S8-b close verdict / Residuals + next sprint priorities
+
+### S8-b close verdict
+
+Final whole-branch review (S8-b, commits `6c70e6e`..`b535b7d`, opus): **✅ Mergeable. ZERO Critical,
+ZERO Important.** The cross-cutting integration was verified consistent end-to-end: the
+tracking→sector→robust cone-emission order is honored identically by `build_augmented` +
+`aug_total_rows` + `fill_elastic`; the augmented `[w;y;s;r;t]` layout + robust epigraph column
++ elastic slack columns do not collide; the elasticity↔cone composition (ball→variable-apex
+rebuild in `build_relaxed`) is correct and exercised; the FactorModel pimpl split is a verbatim
+byte-identity move with correct null-guarded deep copy; determinism holds end-to-end (order-fixed
+reductions, integer-keyed stable_sort, no RNG/clock); the GP fold and the independent hand-derived
+oracle are sound. Three post-merge Minors were noted (cold-path `aim_pos` wart in
+`multi_horizon.cpp`; O(cones·dim·nnz) full-Ã scan on the cold infeasible re-build path; the
+elastic-ROBUST-cone branch ships without a dedicated `RiskElasticity.RobustConeRelaxes` test —
+algebra mirrors the tested ball path). No fix subagent was dispatched (no Critical/Important).
+
+### What S8 proves
+
+Sprint 8 delivers a **commercial-grade factor-augmented quadratic programming portfolio optimizer**
+on top of the S8-a (S8.0–S8.3) solver-core rebuild. Together, S8-a and S8-b prove:
+
+**Performance.** The as-built O(M²) dense-Ã defect is eliminated. The factor-augmented sparse KKT
+(S8.1) + no-pivot quasi-definite LDLᵀ (S8.2) + Ruiz/ADMM/polish/warm-start rebuild (S8.3) achieve
+a measured **35.1× core / 21.5× full** speedup at M=3000,K=64 over the S8.0 baseline, with
+scaling ~M^1.12 over M∈{500..5000}. G-PERF PASS.
+
+**Determinism.** The full solve path is byte-deterministic: no RNG, no pivoting, no clock, no
+unordered containers, fixed iteration counts (Ruiz 10 passes, ADMM outer fixed count, polish 3
+refinement passes, cone projection inner steps). Golden-hash stable across `Eigen::setNbThreads`
+∈{1,2,4,8}. The 8 regression pins (§0.4) are held bit-for-bit through every unit; the S7
+boundary pin holds through S8.4/S8.7. G-DET PASS; G-PIN PASS.
+
+**Constraint surface.** The optimizer now enforces the full commercial constraint surface:
+- Dollar-neutral / gross-leverage / net-leverage (linear rows)
+- Position caps, %ADV caps, %shares-outstanding caps (diagonal box + linear mix)
+- Factor-exposure budgets, beta neutrality, sector-net budgets (linear rows over Xᵀ)
+- Tracking-error budget as a second-order cone (‖[L_Fᵀy; sqrt(D)∘w]‖₂ ≤ te, SOCP)
+- Per-sector risk budgets as second-order cones (one K+M SocBlock per sector, SOCP)
+- Robust optimization: worst-case-α over a factor-structured Goldfarb-Iyengar ellipsoid
+  (epigraph variable t≥‖Ω_f^{1/2}y‖₂, added to objective as +κt, SOCP)
+- √-impact cost surrogate (quadratic P/q surrogate, c_i≥0, folded into the existing solve)
+- Turnover budgets (L1-split auxiliary rows)
+- Constraint-hierarchy elasticity (S8.6): feasible problems are byte-identical to the hard path;
+  infeasible problems get a γ_p=2·4^priority weighted slack re-solve (higher priority → relaxed
+  less); gross/turnover L1 budgets participate; hard rows are never relaxed.
+
+G-CONSTRAINT PASS; G-ELASTIC PASS; G-DIFF PASS (each cone projection verified vs closed form;
+augmented QP vs as-built dense-Ã oracle at 1e-8).
+
+**Multi-period cost-to-go.** S8.7 implements the Gârleanu-Pedersen aim portfolio with the scalar-Λ
+A_xx=2λV reduction (the §0.6 principled default for the sprint-1 scalar trade-rate convention).
+`gp_aim_and_value` returns the horizon-decay-weighted ᾱ, A_xx, and aim_pos; the cost-to-go fold
+reduces to q=−ᾱ/P=2λV — byte-identical to the S8.6 augmented book and pin-compatible with the S7
+boundary pin. The full stacked MPC QP and matrix-Riccati A_xx≠2λV are the recorded lift. G-DIFF
+PASS (hand-derived oracle, 1e-9/1e-12).
+
+**Header/source split.** S8.8a splits the dominant include hub (FactorModel, 42 fan-out) and
+garleanu_pedersen + multi_horizon to `src/risk/*.cpp`, reducing PCH-off clean build of the 27
+risk TUs at -j8 by ~31% (191.58s → ~132s median). The dead `QpConfig::kkt_iters` field was
+removed in ea0816b. qp_solver/kkt_ldl/exposures remain header-only (justified: intricate ADMM /
+inline hot helpers; byte-identity risk disproportionate to the win). G-COMPILE PASS.
+
+**G-DISABLED.** The 3 `DISABLED_MultiHorizonIntegration` R1/R2/R3 tests were re-enabled green in
+S8.3 (482/415/240 ms). G-DISABLED PASS.
+
+### Gate summary
+
+| Gate | Result | Unit(s) |
+|------|--------|---------|
+| G-PERF | **PASS** — 35.1× core / 21.5× full @ M=3000/K=64; exponent ~M^1.12 | S8.3 |
+| G-PIN | **PASS** — all 8 regression pins + S7 boundary pin held bit-for-bit | S8.1/S8.3/S8.4/S8.7 |
+| G-DET | **PASS** — golden-hash stable across {1,2,4,8} threads; end-to-end | S8.2/S8.3/S8.5 |
+| G-DIFF | **PASS** — augmented QP @ 1e-8; cone projections vs closed form; GP oracle @ 1e-9 | S8.1/S8.2/S8.5/S8.7 |
+| G-CONSTRAINT | **PASS** — all constraint families proven per-constraint | S8.4/S8.5 |
+| G-ELASTIC | **PASS** — feasible ⇒ byte-identical; infeasible ⇒ relaxation report | S8.6 |
+| G-DISABLED | **PASS** — R1/R2/R3 re-enabled green (482/415/240 ms) | S8.3 |
+| G-COMPILE | **PASS** — ~31% PCH-off build reduction; zero behavior change | S8.8a |
+
+### Known residuals (post-merge, not blockers — lifted to ROADMAP)
+
+1. **√-impact pricing end-to-end wiring** — optimizer-side surrogate is complete; `exec::ImpactCfg`
+   / `capacity.hpp::impact_cost_bps` → single-period driver coefficient derivation is not yet wired
+   (tests inject `coeff` by hand). A driver-side task that derives `c_i` from a local quadratic fit
+   to `Y·σ_i·part^δ` at expected trade size is the residual.
+2. **Elasticity driver auto-wiring** — `solve_elastic` is the opt-in entry; `PortfolioOptimizer` and
+   `MultiHorizonOptimizer::solve_augmented` return `Result<vector>` with no relaxation-report channel.
+   Auto-relaxation would change the contract and risk multi-horizon byte-identity pins; a report-carrying
+   return + seam swap is the lift.
+3. **Matrix-Riccati A_xx + true O(N·H) stacked-MPC QP** — S8.7 ships the scalar-Λ §0.6 default;
+   a finite-horizon backward-Riccati A_xx(H) reducing to 2λV at H=1 and the joint O(N·H) stacked QP
+   with inter-period turnover coupling are the recorded generalization lift.
+4. **qp_solver / kkt_ldl / exposures header→.cpp split** — FactorModel (42 fan-out) + garleanu_pedersen
+   + multi_horizon were split; the remaining three (qp_solver ~900 LOC, kkt_ldl sparse LDL, exposures
+   hot inline helpers) are the next fan-out reduction cycle.
+5. **Iter-budget / auto-rho tuning pass** — cone-bearing and elastic-relaxed solves need per-caller
+   rho/iters above `QpConfig` defaults (cones: rho=10/iters=1500; elastic relaxed: rho=50/iters×8
+   min 12000); production callers wiring tight box or cone constraints need problem-scaled defaults or
+   an auto-rho heuristic to avoid spurious infeasibility Errs.
+
+### Next sprint priorities (post-S8 on the book-construction track)
+
+S8 closes the optimizer track. The `feat/p2-s8-optimizer` branch is ready to merge (user/controller
+gate). Downstream work on the book-construction track: S2 (multi-strategy meta-book) consumes the
+S1 multi-horizon optimizer and the S8 constraint surface; the S4 robustness-battery + S8 lockbox
+capstone converge at the p2 S8 capstone sprint. The five residuals above are the punch list for a
+dedicated follow-up cycle before those downstream sprints rely on end-to-end driver wiring.

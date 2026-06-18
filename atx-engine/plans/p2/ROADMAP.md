@@ -259,6 +259,20 @@ WorldQuant §6.1/§6.5 (bounded regression, turnover-as-cost), Boyd 2017, Gârle
 > **Boundary pin:** with one horizon, `trade_rate=1`, and the `{Σw=0,Σ|w|≤L,|w_i|≤cap}` constraint set only, S1 must
 > reduce **bit-for-bit** to `p1` S7's chained single-period book — the regression anchor against the proven layer.
 
+> **Optimizer upgrade (sprint-8-optimizer, branch `feat/p2-s8-optimizer`) — ✅ Mergeable (whole-branch review 2026-06-18, zero Critical/Important).** S8-a (S8.0–S8.3) rebuilt the QP solver core: factor-augmented sparse KKT (`y=Xᵀw`, O(M·K²)), no-pivot quasi-definite LDLᵀ, Ruiz + ADMM + polish + warm-start (35.1× core speedup at M=3000/K=64; scaling ~M^1.12). S8-b (S8.4–S8.8a) added the full commercial constraint + cone surface (box/%ADV/%shares/sector-net; tracking-error/sector-risk/robust SOCP; √-impact surrogate; infeasibility elasticity; GP multi-period cost-to-go) and the FactorModel pimpl split (~31% PCH-off build reduction). All 8 regression pins + S7 boundary pin held bit-for-bit. Gates: G-PERF/G-PIN/G-DET/G-DIFF/G-CONSTRAINT/G-ELASTIC/G-DISABLED/G-COMPILE — all PASS. Merge is the user/controller gate.
+
+**Post-merge residuals (legitimate follow-up work — not blockers):**
+
+1. **√-impact coefficient pricing wiring.** The optimizer-side √-impact surrogate (P[i,i]+=2c_i, q[i]+=−2c_i·w_prev_i) is complete and tested. The missing piece is the single-period driver deriving `c_i` from `exec::ImpactCfg` / `capacity.hpp::impact_cost_bps` (a local quadratic fit to `Y·σ_i·part^δ` at expected trade size, populating `mc.impact.coeff`). Tests currently inject `coeff` by hand. Wiring the pricing path into `PortfolioOptimizer` / `MultiHorizonOptimizer` completes the end-to-end "√-impact priced from CostInputs" trace.
+
+2. **Elasticity driver auto-wiring.** `solve_elastic` is the opt-in entry point. `PortfolioOptimizer::solve_augmented` and `MultiHorizonOptimizer::solve_augmented` return `Result<vector>` with no relaxation-report channel; auto-relaxing would change the contract and risk multi-horizon byte-identity pins. The lift is a report-carrying return type + the seam swap so the single-period drivers can auto-invoke elasticity and surface the relaxation report to the caller.
+
+3. **Matrix-Riccati A_xx + true O(N·H) stacked-MPC QP.** S8.7 ships the scalar-Λ §0.6 default (A_xx=2λV, aim-collapse to single-period Markowitz at the boundary). The richer generalization is (a) a finite-horizon backward-Riccati A_xx(H) that reduces to 2λV at H=1 and bends the constrained book for H>1 (non-trivial, pin-compatible by construction), and (b) the true joint O(N·H) stacked QP with inter-period turnover coupling. This is a dedicated follow-up sprint, not a correctness gap in what shipped.
+
+4. **qp_solver / kkt_ldl / exposures header→.cpp split.** FactorModel (42 fan-out hub) + garleanu_pedersen + multi_horizon were split in S8.8a. The remaining three headers — `qp_solver.hpp` (~900-line ADMM, 12 fan-out), `kkt_ldl.hpp` (2 fan-out, intricate sparse LDL), `exposures.hpp` (13 fan-out, inline-semantic hot helpers) — are the next fan-out reduction cycle. A dedicated pass can split qp_solver (the largest unrealized fan-out reduction) with the same byte-identity discipline used in S8.8a.
+
+5. **Iter-budget / auto-rho tuning pass.** Cone-bearing solves need rho=10/iters=1500 and elastic-relaxed solves need rho=50/iters×8 (min 12000) above the `QpConfig` defaults (iters=300/600, rho=1.0). Defaults are unchanged (byte-identity preserved); these are local per-solve knobs set in tests/drivers. A production tuning pass should set problem-scaled defaults or an auto-rho heuristic so callers wiring tight box caps or cones do not see spurious infeasibility Errs at the default budget.
+
 ### S2 — Multi-Strategy Meta-Book & Risk Budgeting  ✅ DELIVERED (2026-06-14) ([impl-plan](sprint-2-multi-strategy-meta-book-implementation-plan.md) · [progress](sprint-2-progress.md))
 **Theme:** Measure admitted alpha at the **fund** level — Laufer's single unified book, made multi-sleeve, as a
 portfolio-scale lens on library breadth. A **`Strategy`/`Sleeve`** abstraction (each sleeve = a universe × horizon ×
