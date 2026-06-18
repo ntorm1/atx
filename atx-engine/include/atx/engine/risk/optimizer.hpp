@@ -133,12 +133,31 @@ public:
   // header block above. Allocates its scratch once; const (pure configuration).
   //
   // DISPATCH (S8.4 §0.5): a non-minimal `constraints` set routes to the augmented QP;
-  // otherwise (the default) the projected/proximal fast path below runs verbatim.
+  // a MINIMAL set is HONORED by translating it into an effective OptimizerConfig
+  // (gross/dollar-neutral from set.gross, name_cap from set.pos) and running the fast
+  // path with THAT config — mirroring MultiHorizonOptimizer::solve_minimal so an
+  // attached minimal set is never silently discarded in favor of cfg. With NO set
+  // attached, `cfg` governs the fast path byte-identically (the regression pins).
   [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
   solve(std::span<const atx::f64> alpha, const FactorModel &V,
         std::span<const atx::f64> w_prev) const {
     if (constraints && !is_minimal_constraint_set(*constraints)) {
       return solve_augmented(alpha, V, w_prev);
+    }
+    if (constraints) {
+      // Minimal set attached: honor it. Build the effective config from the set —
+      // gross_leverage + dollar_neutral from set.gross; name_cap from set.pos when
+      // present, else gross_leverage so the cap can never bind (PortfolioOptimizer
+      // skips the clip when cap >= gross). λ, κ, max_iters stay from cfg (the set
+      // carries no risk/turnover/iteration knobs). This is the exact MultiHorizon
+      // translation (multi_horizon.hpp::solve_minimal). A fresh optimizer carrying
+      // the effective config runs the UNCHANGED fast-path algebra against it.
+      const ConstraintSet &cs = *constraints;
+      OptimizerConfig eff = cfg;
+      eff.gross_leverage = cs.gross.gross_leverage;
+      eff.dollar_neutral = cs.gross.dollar_neutral;
+      eff.name_cap = cs.pos ? cs.pos->name_cap : cs.gross.gross_leverage; // can't bind
+      return PortfolioOptimizer{eff}.solve_fast(alpha, V, w_prev);
     }
     return solve_fast(alpha, V, w_prev);
   }
@@ -246,7 +265,6 @@ private:
     const QpProblem prob{V, cfg.risk_aversion, std::span<const atx::f64>(q), C};
     return solver.solve(prob);
   }
-
 
   // Smooth-surrogate gradient-step size. The loop minimizes ½‖w − t‖² toward the
   // target t; a step of kStep on (w − t) is w ← (1 − kStep)·w + kStep·t. kStep = 1

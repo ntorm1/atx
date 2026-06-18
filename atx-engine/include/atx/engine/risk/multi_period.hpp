@@ -149,6 +149,14 @@ public:
     OptimizerConfig oc = cfg.single;
     oc.turnover_penalty = cost.kappa;
     if (cfg.capacity_bound_gross) {
+      // NOTE: this capacity_bound_gross clip governs ONLY the fast path — it lands in
+      // `oc.gross_leverage`, which the inner solve reads when NO set is attached, and
+      // which an attached MINIMAL set's translation re-derives from set.gross (so the
+      // clip does NOT reach a minimal set's gross). On the AUGMENTED path the QP
+      // materializes the constraint set's gross independently of `oc`, so the clip is
+      // not applied there: the augmented path honors whatever gross the caller set in
+      // cfg.constraints.gross (mirroring MultiHorizonOptimizer::solve_augmented's
+      // docstring — the capacity-clip is the minimal/fast-path concern only).
       oc.gross_leverage = std::min(oc.gross_leverage, cost.capacity_gross);
     }
     // Thread the optional augmented constraint set + QP knobs + capacity reference into

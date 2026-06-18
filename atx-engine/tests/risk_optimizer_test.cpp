@@ -661,6 +661,59 @@ TEST(RiskOptimizer, WiredMinimalDispatch_Pin3LambdaTilt_ByteIdentical) {
   expect_minimal_dispatch_byte_identical(cfg, std::span<const f64>(alpha), v, {});
 }
 
+// Fix round 1 / Finding #1: a MINIMAL ConstraintSet whose gross_leverage AND
+// name_cap DIFFER from cfg must be HONORED (mirrors the MultiHorizon translation),
+// not silently discarded in favor of cfg. The set's tighter gross + name_cap must
+// bind the returned book; cfg's looser values must NOT govern. (Before the fix the
+// minimal dispatch fed cfg straight to solve_fast and the set was ignored — RED.)
+TEST(RiskOptimizer, WiredMinimalDispatch_HonorsAttachedSetOverCfg) {
+  const std::vector<f64> alpha = {2.0, -1.0, 0.5, 3.0, -0.5, 1.2, -1.8, 0.9};
+  const FactorModel v = benign_model(alpha.size());
+
+  // cfg is DELIBERATELY loose: a big gross and an effectively-uncapped name_cap.
+  OptimizerConfig cfg;
+  cfg.risk_aversion = 0.0;
+  cfg.turnover_penalty = 0.0;
+  cfg.gross_leverage = 4.0;  // loose gross
+  cfg.name_cap = 10.0;       // effectively uncapped
+  cfg.dollar_neutral = true;
+
+  // The attached MINIMAL set tightens BOTH knobs well below cfg's.
+  const f64 set_gross = 1.0;
+  const f64 set_cap = 0.2; // < set_gross/n-style binder ⇒ must clip several names
+  PortfolioOptimizer opt{cfg};
+  ConstraintSet cs;
+  cs.gross = GrossNet{set_gross, true};
+  cs.pos = PositionCap{set_cap};
+  opt.constraints = cs;
+
+  auto r = opt.solve(std::span<const f64>(alpha), v, {});
+  ASSERT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
+
+  // The book must honor the SET, not cfg: gross == set_gross (not cfg's 4.0) and
+  // every name capped at set_cap (not cfg's 10.0). With cfg ignored as before, the
+  // gross would be 4.0 and no name would be clipped at 0.2 — these EXPECTs fail RED.
+  EXPECT_NEAR(l1(*r), set_gross, 1e-9) << "gross must match the attached set, not cfg";
+  for (usize i = 0; i < r->size(); ++i) {
+    EXPECT_LE(std::fabs((*r)[i]), set_cap + 1e-9)
+        << "name " << i << " must respect the set's name_cap, not cfg's";
+  }
+  // And it must equal what an explicit effective-config fast solve produces (the
+  // MultiHorizon translation): gross/cap/neutral from the set.
+  OptimizerConfig eff = cfg;
+  eff.gross_leverage = set_gross;
+  eff.name_cap = set_cap;
+  eff.dollar_neutral = true;
+  PortfolioOptimizer ref_opt{eff};
+  auto rr = ref_opt.solve(std::span<const f64>(alpha), v, {});
+  ASSERT_TRUE(rr.has_value()) << (rr ? "" : rr.error().to_string());
+  ASSERT_EQ(r->size(), rr->size());
+  for (usize i = 0; i < r->size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>((*r)[i]), std::bit_cast<std::uint64_t>((*rr)[i]))
+        << "honored set must match the effective-config fast solve at name " << i;
+  }
+}
+
 // ===========================================================================
 //  S8.4 — augmented dispatch through the single-period driver (G-CONSTRAINT). An
 //  attached ParticipationCap routes to the ConstrainedQpSolver and the %ADV box is
