@@ -74,6 +74,7 @@ add_library(atx-engine STATIC
     # NOT auto-globbed — list each src/risk/*.cpp explicitly.
     src/risk/factor_model.cpp
     src/risk/garleanu_pedersen.cpp
+    src/risk/multi_horizon.cpp
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
     src/fund/cross_sleeve_risk.cpp
