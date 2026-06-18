@@ -36,8 +36,12 @@
 #include "atx/core/linalg/linalg.hpp"
 #include "atx/core/types.hpp"
 
+#include <bit> // std::bit_cast (wired-path byte-pin)
+
+#include "atx/engine/risk/constraints.hpp"
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/optimizer.hpp"
+#include "atx/engine/risk/reference_data.hpp"
 
 namespace atxtest_risk_optimizer_test {
 
@@ -45,9 +49,14 @@ using atx::f64;
 using atx::usize;
 using atx::core::linalg::MatX;
 using atx::core::linalg::VecX;
+using atx::engine::risk::CapacityRef;
+using atx::engine::risk::ConstraintSet;
 using atx::engine::risk::FactorModel;
+using atx::engine::risk::GrossNet;
 using atx::engine::risk::OptimizerConfig;
+using atx::engine::risk::ParticipationCap;
 using atx::engine::risk::PortfolioOptimizer;
+using atx::engine::risk::PositionCap;
 
 // Construct a FactorModel from raw buffers (copies). Asserts success.
 [[nodiscard]] FactorModel make_model(const MatX &x, const MatX &f, const VecX &d, usize fb = 0U,
@@ -552,5 +561,141 @@ TEST(RiskOptimizer, OutputsAreFinite) {
   }
 }
 
+
+// ===========================================================================
+//  S8.4 — wired-path dispatch (G-PIN). PortfolioOptimizer::solve gains a minimal-
+//  vs-augmented dispatch: a MINIMAL constraint set (GrossNet [+ PositionCap]) keeps
+//  the as-built projected/proximal fast path BYTE-IDENTICAL; any extra constraint
+//  routes through the ConstrainedQpSolver. These tests re-prove the relevant pins on
+//  the newly-wired path: attaching a minimal ConstraintSet is bit-for-bit the same
+//  book as the no-constraints fast path (so pins #1-#4 + NaN + empty-w_prev, which
+//  the fast path already passes, are preserved through the dispatch).
+// ===========================================================================
+
+// Helper: solve with an attached minimal ConstraintSet (GrossNet + PositionCap)
+// matching cfg, and assert the book is BYTE-IDENTICAL to the un-attached fast path.
+void expect_minimal_dispatch_byte_identical(const OptimizerConfig& cfg,
+                                            std::span<const f64> alpha, const FactorModel& v,
+                                            std::span<const f64> w_prev) {
+  // Fast path: no ConstraintSet attached (the as-built behavior).
+  PortfolioOptimizer fast{cfg};
+  auto rf = fast.solve(alpha, v, w_prev);
+  ASSERT_TRUE(rf.has_value()) << (rf ? "" : rf.error().to_string());
+
+  // Wired minimal path: a ConstraintSet carrying ONLY GrossNet + PositionCap.
+  PortfolioOptimizer wired{cfg};
+  ConstraintSet cs;
+  cs.gross = GrossNet{cfg.gross_leverage, cfg.dollar_neutral};
+  cs.pos = PositionCap{cfg.name_cap};
+  wired.constraints = cs;
+  auto rw = wired.solve(alpha, v, w_prev);
+  ASSERT_TRUE(rw.has_value()) << (rw ? "" : rw.error().to_string());
+
+  ASSERT_EQ(rf->size(), rw->size());
+  for (usize i = 0; i < rf->size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>((*rf)[i]), std::bit_cast<std::uint64_t>((*rw)[i]))
+        << "BYTE DIVERGENCE at name " << i;
+  }
+}
+
+// Pin #1 (λ=κ=0) on the wired minimal path.
+TEST(RiskOptimizer, WiredMinimalDispatch_Pin1_ByteIdentical) {
+  const std::vector<f64> alpha = {2.0, -1.0, 0.5, 3.0, -0.5};
+  const FactorModel v = benign_model(alpha.size());
+  OptimizerConfig cfg;
+  cfg.risk_aversion = 0.0;
+  cfg.turnover_penalty = 0.0;
+  cfg.gross_leverage = 1.0;
+  cfg.name_cap = 10.0;
+  expect_minimal_dispatch_byte_identical(cfg, std::span<const f64>(alpha), v, {});
+}
+
+// Pin (NaN-hole) on the wired minimal path.
+TEST(RiskOptimizer, WiredMinimalDispatch_NaNHole_ByteIdentical) {
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const std::vector<f64> alpha = {2.0, nan, 0.5, 3.0, nan, -1.0};
+  const FactorModel v = benign_model(alpha.size());
+  OptimizerConfig cfg;
+  cfg.risk_aversion = 0.0;
+  cfg.gross_leverage = 1.0;
+  cfg.name_cap = 10.0;
+  expect_minimal_dispatch_byte_identical(cfg, std::span<const f64>(alpha), v, {});
+}
+
+// Pins #2/#4 (κ>0) + empty-w_prev on the wired minimal path: a real risk-aware,
+// turnover-penalized, cap-binding solve with a w_prev still reduces bit-for-bit.
+TEST(RiskOptimizer, WiredMinimalDispatch_RiskAwareTurnover_ByteIdentical) {
+  const std::vector<f64> alpha = {1.3, -0.7, 2.1, -1.4, 0.6, -0.9, 0.2};
+  MatX x(7, 2);
+  x << 1.0, 0.0, 0.5, 1.0, -1.0, 0.5, 0.2, -0.7, 0.9, 0.3, -0.4, 0.8, 0.1, -0.2;
+  MatX f(2, 2);
+  f << 0.05, 0.01, 0.01, 0.03;
+  VecX d(7);
+  d << 0.10, 0.15, 0.08, 0.20, 0.12, 0.18, 0.09;
+  const FactorModel v = make_model(x, f, d);
+  OptimizerConfig cfg;
+  cfg.risk_aversion = 2.0;
+  cfg.turnover_penalty = 0.1;
+  cfg.gross_leverage = 1.0;
+  cfg.name_cap = 0.5;
+  const std::vector<f64> w_prev = {0.1, -0.1, 0.2, -0.2, 0.0, 0.1, -0.1};
+  expect_minimal_dispatch_byte_identical(cfg, std::span<const f64>(alpha), v,
+                                         std::span<const f64>(w_prev));
+  // empty-w_prev boundary also reduces.
+  expect_minimal_dispatch_byte_identical(cfg, std::span<const f64>(alpha), v, {});
+}
+
+// Pin #3 (λ>0) on the wired minimal path.
+TEST(RiskOptimizer, WiredMinimalDispatch_Pin3LambdaTilt_ByteIdentical) {
+  const std::vector<f64> alpha = {1.0, -1.0, 1.0, -1.0};
+  MatX x = MatX::Zero(4, 1);
+  MatX fm(1, 1);
+  fm << 0.01;
+  VecX d(4);
+  d << 0.05, 0.05, 1.00, 1.00;
+  const FactorModel v = make_model(x, fm, d);
+  OptimizerConfig cfg;
+  cfg.risk_aversion = 50.0;
+  cfg.gross_leverage = 1.0;
+  cfg.name_cap = 10.0;
+  expect_minimal_dispatch_byte_identical(cfg, std::span<const f64>(alpha), v, {});
+}
+
+// ===========================================================================
+//  S8.4 — augmented dispatch through the single-period driver (G-CONSTRAINT). An
+//  attached ParticipationCap routes to the ConstrainedQpSolver and the %ADV box is
+//  satisfied at the returned book within the QP feas_tol.
+// ===========================================================================
+TEST(RiskOptimizer, WiredAugmentedDispatch_ParticipationCapSatisfied) {
+  const std::vector<f64> alpha = {2.0, -1.0, 0.5, 1.5, -2.0, 0.8};
+  const usize m = alpha.size();
+  const FactorModel v = benign_model(m);
+
+  // A participation cap that genuinely binds (small ADV ⇒ small box).
+  const std::vector<f64> adv(m, 4000.0);
+  const std::vector<f64> shares(m, 1e12); // ownership never binds
+  const std::vector<f64> price(m, 10.0);
+  const f64 nav = 1.0e6, H = 1.0, rho = 0.05;
+  const f64 cap = rho * H * 4000.0 * 10.0 / nav; // == 0.002 per name
+
+  OptimizerConfig cfg;
+  cfg.risk_aversion = 0.5;
+  cfg.gross_leverage = 1.0;
+  cfg.dollar_neutral = true;
+  PortfolioOptimizer opt{cfg};
+  ConstraintSet cs;
+  cs.gross = GrossNet{1.0, true};
+  cs.part = ParticipationCap{rho};
+  opt.constraints = cs;
+  opt.ref = CapacityRef{std::span<const f64>(adv), std::span<const f64>(shares),
+                        std::span<const f64>(price), nav, H};
+  opt.qp.iters = 1500U; // headroom for the aux-split to clear feas_tol
+
+  auto r = opt.solve(std::span<const f64>(alpha), v, {});
+  ASSERT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
+  for (usize i = 0; i < m; ++i) {
+    EXPECT_LE(std::fabs((*r)[i]), cap + opt.qp.feas_tol) << "name " << i;
+  }
+}
 
 }  // namespace atxtest_risk_optimizer_test

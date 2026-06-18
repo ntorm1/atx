@@ -48,19 +48,31 @@
 //  Materialization is a COLD-PATH, rebalance-cadence operation; it allocates the
 //  result (A, l, u, turnover_ref) once. There is no hot path here.
 
-#include <optional> // std::optional descriptors
-#include <span>     // std::span (group_id / beta / w_prev — weakest sufficient type)
-#include <utility>  // std::move
-#include <vector>   // descriptor payloads + result metadata
+#include <algorithm> // std::min (per-name box fold)
+#include <optional>  // std::optional descriptors
+#include <span>      // std::span (group_id / beta / w_prev — weakest sufficient type)
+#include <utility>   // std::move
+#include <vector>    // descriptor payloads + result metadata
 
 #include "atx/core/error.hpp"         // Result, Ok, Err, ErrorCode
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // f64, usize
 
+#include "atx/engine/risk/reference_data.hpp" // CapacityRef (%ADV / %shares box inputs, S8.4)
+
 namespace atx::engine::risk {
 
 // ===========================================================================
 //  Descriptors — each is a small value type describing one constraint family.
+//
+//  Per-descriptor PRIORITY / ELASTIC metadata (S8.4): every descriptor carries an
+//  integer `priority` (lower = relaxed first) and an `elastic` flag. S8.4 ADDS these
+//  fields ONLY — it does NOT act on them (the constraint surface is enforced EXACTLY
+//  here, R3). The S8.6 constraint-hierarchy / minimize-violation layer consumes them
+//  to relax the lowest-priority elastic rows when a set is infeasible. They are
+//  trailing aggregate members with defaults, so existing brace-initializations are
+//  unaffected. (priority/elastic do NOT enter materialize's (A, l, u) — a relaxed
+//  row is an S8.6 concern, not part of the exact materialized surface.)
 // ===========================================================================
 
 // Gross leverage (L1 budget Σ|w| <= gross_leverage) plus the optional linear
@@ -69,34 +81,78 @@ namespace atx::engine::risk {
 struct GrossNet {
   atx::f64 gross_leverage = 1.0; // Σ|w| <= this (L1 budget metadata)
   bool dollar_neutral = true;    // Σ w = 0 (a linear row when true)
+  atx::usize priority = 0;       // S8.6 relaxation rank (lower = relaxed first)
+  bool elastic = false;          // S8.6 may relax this row when infeasible
 };
 
 // Per-name box: |w_i| <= name_cap for every i (M box rows).
 struct PositionCap {
   atx::f64 name_cap = 1.0;
+  atx::usize priority = 0;
+  bool elastic = false;
 };
 
 // Bounded factor exposure: |(Xᵀw)_k| <= bound[j], for k = factor_cols[j].
 struct FactorExposure {
   std::vector<atx::usize> factor_cols; // factor column indices into X (k = factor_cols[j])
   std::vector<atx::f64> bound;         // per-selected-factor exposure bound
+  atx::usize priority = 0;
+  bool elastic = false;
 };
 
 // Bounded group net: |Σ_{i ∈ g} w_i| <= cap[g], groups keyed by group_id[i].
 struct GroupCap {
   std::span<const atx::usize> group_id; // length-M group label per instrument
   std::vector<atx::f64> cap;            // per-group cap (length = #groups)
+  atx::usize priority = 0;
+  bool elastic = false;
 };
 
 // Beta neutrality: |βᵀw| <= tol (a single linear row).
 struct BetaNeutral {
   std::span<const atx::f64> beta; // length-M beta vector
   atx::f64 tol = 0.0;
+  atx::usize priority = 0;
+  bool elastic = false;
 };
 
 // Turnover budget (L1 budget Σ|w − w_prev| <= max_turnover); metadata-only.
 struct TurnoverBudget {
   atx::f64 max_turnover = 0.0;
+  atx::usize priority = 0;
+  bool elastic = false;
+};
+
+// Participation cap (%ADV, S8.4): |w_i| <= ρ·H·ADV_i·price_i/NAV, ρ = adv_frac, H =
+// CapacityRef.horizon_days. A POSITION-BOX descriptor — it folds (elementwise min,
+// per name) into the diagonal box rather than adding a separate row (it IS a bound on
+// |w_i|, the cheapest constraint in the QP — R4). Needs CapacityRef.adv / price / nav;
+// an empty adv/price span ⇒ the cap is not evaluable and does not bind (the fold
+// leaves the other caps to govern).
+struct ParticipationCap {
+  atx::f64 adv_frac = 1.0; // ρ — allowed fraction of (H-day) dollar ADV
+  atx::usize priority = 0;
+  bool elastic = false;
+};
+
+// Ownership cap (%shares-outstanding, S8.4): |w_i| <= κ·shares_out_i·price_i/NAV,
+// κ = shares_frac. Like ParticipationCap, a POSITION-BOX descriptor that folds
+// (elementwise min) into the diagonal box. Needs CapacityRef.shares_out / price / nav.
+struct OwnershipCap {
+  atx::f64 shares_frac = 1.0; // κ — allowed fraction of the name's dollar float
+  atx::usize priority = 0;
+  bool elastic = false;
+};
+
+// Sector risk budget — NET-WEIGHT variant (S8.4): |Σ_{i ∈ g} w_i| <= cap[g], sectors
+// keyed by sector_id[i]. The linear (net-weight) variant is a sparse 0/1 group row,
+// structurally identical to GroupCap; the SOC (‖V^{1/2}(mask_g∘w)‖₂ ≤ σ_g) variant
+// lands in S8.5. Emitted AFTER the GroupCap rows in the fixed order (R1).
+struct SectorRiskBudget {
+  std::span<const atx::usize> sector_id; // length-M sector label per instrument
+  std::vector<atx::f64> cap;             // per-sector net-weight cap (length = #sectors)
+  atx::usize priority = 0;
+  bool elastic = false;
 };
 
 // ===========================================================================
@@ -125,15 +181,21 @@ struct ConstraintSet {
   std::optional<GroupCap> grp;
   std::optional<BetaNeutral> beta;
   std::optional<TurnoverBudget> turn;
+  std::optional<ParticipationCap> part;   // %ADV box fold (S8.4)
+  std::optional<OwnershipCap> own;         // %shares-out box fold (S8.4)
+  std::optional<SectorRiskBudget> sector;  // sector net-weight rows (S8.4)
 
   // Materialize l <= A w <= u over the M-dim weight space. `X` is the M×K
   // exposure matrix (FactorComponents.X); `w_prev` keys the turnover L1 (an
-  // EMPTY span ⇒ a flat all-zero reference). ORDER-FIXED row emission (R1):
-  // (1) dollar-neutral, (2) position box, (3) factor exposure, (4) group,
-  // (5) beta. Σ|w|<=L and turnover go into the L1-budget metadata. PURE const.
+  // EMPTY span ⇒ a flat all-zero reference); `ref` carries the per-name %ADV /
+  // %shares reference panel (S8.4 — empty/default ⇒ participation/ownership do not
+  // bind). ORDER-FIXED row emission (R1):
+  // (1) dollar-neutral, (2) position box (with the %ADV/%shares fold), (3) factor
+  // exposure, (4) group, (5) beta, (6) sector net-weight. Σ|w|<=L and turnover go
+  // into the L1-budget metadata. PURE const.
   [[nodiscard]] atx::core::Result<MaterializedConstraints>
-  materialize(const atx::core::linalg::MatX &X, std::span<const atx::f64> w_prev,
-              atx::usize M) const {
+  materialize(const atx::core::linalg::MatX &X, std::span<const atx::f64> w_prev, atx::usize M,
+              const CapacityRef &ref = {}) const {
     namespace co = atx::core;
     // --- validate every descriptor up front (R3); fail before allocating ----
     ATX_TRY_VOID(validate(X, M));
@@ -151,10 +213,11 @@ struct ConstraintSet {
     // --- emit rows in the fixed order; `next` is the running row cursor ------
     Eigen::Index next = 0;
     emit_dollar_neutral(mc, M, next);
-    emit_position_box(mc, M, next);
+    emit_position_box(mc, M, ref, next);
     emit_factor_exposure(mc, X, M, next);
     emit_group(mc, M, next);
     emit_beta(mc, M, next);
+    emit_sector(mc, M, next);
 
     // --- L1-budget metadata (non-linear; carried for the S1-2 ADMM) ---------
     mc.gross_l1_budget = gross.gross_leverage;
@@ -163,6 +226,12 @@ struct ConstraintSet {
   }
 
 private:
+  // The "no active cap" sentinel for the per-name box min-fold: a finite, very large
+  // bound (far above any realistic |w_i|) so a present-but-unevaluable participation /
+  // ownership cap never spuriously zeroes the box. Mirrors qp_augment.hpp's kAugInf
+  // ethos — finite so the band stays well-ordered through scaling/clamp (no inf math).
+  static constexpr atx::f64 kUnboundedBox = 1e30;
+
   // -------------------------------------------------------------------------
   //  Validation — provably-contradictory inputs only; do not over-reject.
   // -------------------------------------------------------------------------
@@ -178,6 +247,8 @@ private:
     ATX_TRY_VOID(validate_grp(M));
     ATX_TRY_VOID(validate_beta(M));
     ATX_TRY_VOID(validate_turn());
+    ATX_TRY_VOID(validate_capacity_caps());
+    ATX_TRY_VOID(validate_sector(M));
     return co::Ok();
   }
 
@@ -185,6 +256,41 @@ private:
     namespace co = atx::core;
     if (pos && pos->name_cap < 0.0) {
       return co::Err(co::ErrorCode::InvalidArgument, "PositionCap: name_cap must be >= 0");
+    }
+    return co::Ok();
+  }
+
+  // %ADV / %shares fractions must be >= 0 (a negative cap is provably contradictory).
+  [[nodiscard]] atx::core::Status validate_capacity_caps() const {
+    namespace co = atx::core;
+    if (part && part->adv_frac < 0.0) {
+      return co::Err(co::ErrorCode::InvalidArgument, "ParticipationCap: adv_frac must be >= 0");
+    }
+    if (own && own->shares_frac < 0.0) {
+      return co::Err(co::ErrorCode::InvalidArgument, "OwnershipCap: shares_frac must be >= 0");
+    }
+    return co::Ok();
+  }
+
+  // Sector net-weight rows: sector_id length == M, cap length == #sectors, caps >= 0
+  // (mirrors validate_grp — the net-weight variant is structurally a GroupCap).
+  [[nodiscard]] atx::core::Status validate_sector(atx::usize M) const {
+    namespace co = atx::core;
+    if (!sector) {
+      return co::Ok();
+    }
+    if (sector->sector_id.size() != M) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "SectorRiskBudget: sector_id length must equal M");
+    }
+    if (sector->cap.size() != sector_count()) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "SectorRiskBudget: cap length must equal the number of sectors");
+    }
+    for (const atx::f64 c : sector->cap) {
+      if (c < 0.0) {
+        return co::Err(co::ErrorCode::InvalidArgument, "SectorRiskBudget: cap must be >= 0");
+      }
     }
     return co::Ok();
   }
@@ -276,16 +382,40 @@ private:
     return mx + 1;
   }
 
+  // Number of sectors = (max sector_id) + 1; 0 for an empty sector_id (mirrors
+  // group_count for the net-weight SectorRiskBudget variant).
+  [[nodiscard]] atx::usize sector_count() const noexcept {
+    if (!sector || sector->sector_id.empty()) {
+      return 0;
+    }
+    atx::usize mx = 0;
+    for (const atx::usize g : sector->sector_id) {
+      if (g > mx) {
+        mx = g;
+      }
+    }
+    return mx + 1;
+  }
+
+  // The position box emits M diagonal rows whenever ANY box-fold descriptor is
+  // present: PositionCap (name_cap) and/or ParticipationCap / OwnershipCap (which fold
+  // into the box, §0.3). The per-name bound is the elementwise min of whichever caps
+  // are active for that name.
+  [[nodiscard]] bool has_box() const noexcept {
+    return pos.has_value() || part.has_value() || own.has_value();
+  }
+
   // -------------------------------------------------------------------------
   //  Row counting — must mirror the emission order/cardinality exactly.
   // -------------------------------------------------------------------------
   [[nodiscard]] atx::usize linear_row_count(atx::usize M) const noexcept {
     atx::usize r = 0;
     r += gross.dollar_neutral ? 1U : 0U;       // (1) Σw = 0
-    r += pos ? M : 0U;                         // (2) M box rows
+    r += has_box() ? M : 0U;                   // (2) M box rows (PositionCap / %ADV / %shares)
     r += fexp ? fexp->factor_cols.size() : 0U; // (3) one row per selected factor
     r += grp ? group_count() : 0U;             // (4) one row per group
     r += beta ? 1U : 0U;                       // (5) βᵀw row
+    r += sector ? sector_count() : 0U;         // (6) one row per sector (net-weight)
     return r;
   }
 
@@ -308,19 +438,44 @@ private:
     ++next;
   }
 
-  // (2) position box: M rows, row i = e_i, bounds [-cap, +cap] (|w_i| <= cap).
-  void emit_position_box(MaterializedConstraints &mc, atx::usize M,
+  // (2) position box: M rows, row i = e_i, bounds [-cap_i, +cap_i] (|w_i| <= cap_i).
+  // The per-name cap_i is the elementwise MIN of whichever box-fold descriptors are
+  // active (§0.3): the PositionCap name_cap, the %ADV participation bound
+  // ρ·H·ADV_i·price_i/NAV, and the %shares ownership bound κ·shares_out_i·price_i/NAV.
+  // A descriptor whose CapacityRef inputs are absent (empty span) or whose NAV<=0 is
+  // NOT evaluable for that name and is simply skipped (it does not bind). When ONLY
+  // PositionCap is set this reduces EXACTLY to the as-built uniform box (the pin).
+  void emit_position_box(MaterializedConstraints &mc, atx::usize M, const CapacityRef &ref,
                          Eigen::Index &next) const noexcept {
-    if (!pos) {
+    if (!has_box()) {
       return;
     }
-    const atx::f64 cap = pos->name_cap;
     for (atx::usize i = 0; i < M; ++i) {
+      const atx::f64 cap = name_box_cap(i, ref);
       mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
       mc.l[next] = -cap;
       mc.u[next] = cap;
       ++next;
     }
+  }
+
+  // The per-name box cap = min over the active box-fold descriptors. A descriptor that
+  // is not present, or whose reference inputs are unavailable, contributes no bound.
+  // kUnbounded stands in when NO descriptor binds name i (a finite large sentinel so a
+  // present-but-unevaluable cap never spuriously zeroes the box). Order: name_cap,
+  // then participation (needs adv/price/nav), then ownership (needs shares_out/price/nav).
+  [[nodiscard]] atx::f64 name_box_cap(atx::usize i, const CapacityRef &ref) const noexcept {
+    atx::f64 cap = kUnboundedBox;
+    if (pos) {
+      cap = std::min(cap, pos->name_cap);
+    }
+    if (part && ref.nav > 0.0 && i < ref.adv.size() && i < ref.price.size()) {
+      cap = std::min(cap, part->adv_frac * ref.horizon_days * ref.adv[i] * ref.price[i] / ref.nav);
+    }
+    if (own && ref.nav > 0.0 && i < ref.shares_out.size() && i < ref.price.size()) {
+      cap = std::min(cap, own->shares_frac * ref.shares_out[i] * ref.price[i] / ref.nav);
+    }
+    return cap;
   }
 
   // (3) factor exposure: one row per selected factor, entries X(i, col) across i;
@@ -371,6 +526,27 @@ private:
     mc.l[next] = -beta->tol;
     mc.u[next] = beta->tol;
     ++next;
+  }
+
+  // (6) sector net-weight: one row per sector g with 1.0 at every i where
+  // sector_id[i] == g; bounds [-cap[g], +cap[g]] for |Σ_{i ∈ g} w_i| <= cap[g]. The
+  // net-weight SectorRiskBudget variant (the SOC variant is S8.5) — structurally a
+  // GroupCap, emitted LAST so the offsets stay reproducible (R1).
+  void emit_sector(MaterializedConstraints &mc, atx::usize M, Eigen::Index &next) const noexcept {
+    if (!sector) {
+      return;
+    }
+    const atx::usize s_count = sector_count();
+    for (atx::usize g = 0; g < s_count; ++g) {
+      for (atx::usize i = 0; i < M; ++i) {
+        if (sector->sector_id[i] == g) {
+          mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+        }
+      }
+      mc.l[next] = -sector->cap[g];
+      mc.u[next] = sector->cap[g];
+      ++next;
+    }
   }
 
   // -------------------------------------------------------------------------
