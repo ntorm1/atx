@@ -3,6 +3,7 @@
 #include <algorithm>    // std::clamp, std::sort, std::max, std::min
 #include <cstddef>      // std::size_t (hash_combine seed type)
 #include <cstdint>      // std::uint8_t (compiled[] flag vector)
+#include <memory>       // std::unique_ptr, std::make_unique
 #include <span>         // std::span
 #include <unordered_set> // std::unordered_set (seen_this_gen dedup)
 #include <utility>      // std::move
@@ -219,21 +220,24 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // SAFETY: `digest_slot` and `compiled` are pre-sized to fresh.size() before
   // the parallel region; shard k writes ONLY slot k (disjoint single-writer
   // slots). `panel_` is shared CONST (never mutated). `fresh[k]` is a const
-  // pointer to a const Genome (read-only). `alpha::compile`, `alpha::Engine`,
-  // and `alpha::Engine::evaluate` are reentrant (no static/thread_local mutable
-  // state; each shard builds purely local state from const inputs). No shared-
-  // mutable write occurs inside the parallel region. The serial fold below reads
-  // digest_slot + compiled in fixed index order, so the accumulated digest is
-  // byte-identical across all worker counts — worker scheduling CANNOT affect
-  // the fold order or any slot value.
+  // pointer to a const Genome (read-only). `alpha::compile` and
+  // `alpha::Engine::evaluate` are reentrant (no static/thread_local mutable
+  // state). Worker `wid` touches ONLY `engines[wid]` (disjoint single-owner):
+  // no cross-worker Engine access. No shared-mutable write occurs inside the
+  // parallel region. The serial fold below reads digest_slot + compiled in
+  // fixed index order, so the accumulated digest is byte-identical across all
+  // worker counts — worker scheduling CANNOT affect the fold order or any slot
+  // value.
   //
-  // EVAL-PATH NOTE (§0.8 switch, as-built S2 reality): a FRESH Engine per
-  // program (never reused, no warm-up) is used here — same as the prior serial
-  // path. This sidesteps the residual S2 warm-up+reuse concern for arbitrary
-  // evolved candidates without sacrificing parallelism: each shard k constructs
-  // its own local Engine{panel_} and evaluates fresh[k]. The digest is worker-
-  // count-invariant BY CONSTRUCTION (each slot is written by exactly one shard
-  // from purely const inputs; the fold is serial in fixed order).
+  // EVAL-PATH NOTE: each worker reuses its own `engines[wid]` Engine across
+  // all programs it processes (Engine::evaluate is IDEMPOTENT — output depends
+  // ONLY on (program, panel_), never on prior engine state: field_remap_
+  // reassigned per call, output buffers re-assigned per call, SlotPool slots
+  // written-before-read, recurrence state_ seeded at t==0 on every call). The
+  // SlotPool inside each Engine therefore grows monotonically to the peak
+  // allocation for that worker and is reused thereafter. The digest is worker-
+  // count-invariant BY CONSTRUCTION: slot k's value depends only on
+  // (fresh[k], panel_), and the fold is serial in fixed canonical order.
   // -----------------------------------------------------------------------
   const atx::usize n_fresh = fresh.size();
   std::vector<atx::u64> digest_slot(n_fresh, atx::u64{0});
@@ -267,14 +271,25 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
   const std::vector<parallel::ShardId> order_fresh = lpt.dispatch_order(cost_fresh);
 
-  det_pool.parallel_for(n_fresh, [&](atx::usize p, atx::usize /*wid*/) {
+  // One reusable Engine per worker, bound to panel_, shared by BOTH parallel phases.
+  // Engine holds a const Panel& (not move-assignable) -> unique_ptr so the vector
+  // never assigns on growth (mirrors parallel_evaluate, batch_eval.cpp:89-93).
+  // Reused across every candidate: Engine::evaluate is idempotent (output depends
+  // only on (program, panel)), so slot k's value is independent of which worker ran
+  // it or what it evaluated before -> worker-count + Tier 1 LPT-order invariance hold.
+  std::vector<std::unique_ptr<alpha::Engine>> engines;
+  engines.reserve(det_pool.n_workers());
+  for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
+    engines.push_back(std::make_unique<alpha::Engine>(panel_));
+  }
+
+  det_pool.parallel_for(n_fresh, [&](atx::usize p, atx::usize wid) {
     const atx::usize k = order_fresh[p]; // LPT remap: claim-position p -> canonical slot k
     auto prog = alpha::compile(fresh[k]->ast, fresh[k]->analysis);
     if (!prog.has_value()) {
       return; // compiled[k] stays 0 — skip in the serial fold below (F5 backstop)
     }
-    alpha::Engine engine{panel_}; // fresh Engine per shard (no reuse, no warm-up)
-    auto ss = engine.evaluate(*prog);
+    auto ss = engines[wid]->evaluate(*prog); // reused per-worker engine (idempotent)
     digest_slot[k] = ss.has_value() ? parallel::signal_set_digest(*ss) : atx::u64{0};
     compiled[k] = std::uint8_t{1};
   });
@@ -295,12 +310,15 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // SAFETY: `score_slot` is pre-sized to to_score.size() before the parallel
   // region; shard j writes ONLY score_slot[j] (disjoint single-writer slots).
   // `pool`, `panel_`, `policy_`, `sim_`, `cfg.fitness` are shared CONST (never
-  // mutated). `factory::pool_aware_fitness` is reentrant (no static/thread_local
-  // mutable state; it constructs a fresh Engine internally and reads only const
-  // panel/policy/sim inputs). No shared-mutable write occurs in the region.
-  // The serial merge in Phase 4 reads score_slot in fixed to_score order, so
-  // canon/fitness_cache/all_scored are mutated only serially, preserving the
-  // exact insertion order of the sequential implementation.
+  // mutated). Worker `wid` passes `engines[wid].get()` to pool_aware_fitness
+  // (disjoint single-owner): no cross-worker Engine access. `pool_aware_fitness`
+  // is reentrant (no static/thread_local mutable state; when an engine is
+  // supplied it is used directly rather than constructing a fresh one, so the
+  // SlotPool allocation is paid once per worker and reused). No shared-mutable
+  // write occurs in the region. The serial merge in Phase 4 reads score_slot in
+  // fixed to_score order, so canon/fitness_cache/all_scored are mutated only
+  // serially, preserving the exact insertion order of the sequential
+  // implementation.
   // -----------------------------------------------------------------------
   const atx::usize n_to_score = to_score.size();
   std::vector<CachedScore> score_slot(n_to_score);
@@ -317,9 +335,10 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
   const std::vector<parallel::ShardId> order_score = lpt.dispatch_order(cost_score);
 
-  det_pool.parallel_for(n_to_score, [&](atx::usize p, atx::usize /*wid*/) {
+  det_pool.parallel_for(n_to_score, [&](atx::usize p, atx::usize wid) {
     const atx::usize j = order_score[p]; // LPT remap: claim-position p -> logical slot j
-    auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, cfg.fitness);
+    auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, cfg.fitness,
+                                 /*weak_panel=*/nullptr, /*engine=*/engines[wid].get());
     if (rep.has_value()) {
       score_slot[j].raw = rep->raw;
       score_slot[j].objectives = rep->objectives; // S4.1: cache the objectives
