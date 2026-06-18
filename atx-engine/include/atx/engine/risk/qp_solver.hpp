@@ -39,8 +39,8 @@
 //  S8.3 — Ruiz equilibration + re-tuned budget + polish + certificates + warm-start
 // ===========================================================================
 //  (A) RE-TUNED BUDGET. The dense-PCG-era `iters=600` default is gone. The sparse
-//      direct-KKT x-update is EXACT (no inner PCG — `kkt_iters` is dead, kept only
-//      for API compat), so the only thing the outer count buys is ADMM
+//      direct-KKT x-update is EXACT (no inner PCG — the old `kkt_iters` count was
+//      removed in S8.8a), so the only thing the outer count buys is ADMM
 //      primal/dual convergence. The default is a FIXED iters=300 (see QpConfig::iters)
 //      — honored VERBATIM, never problem-scaled (R1: the budget IS the algorithm). The
 //      Ruiz conditioning + polish let 300 clear the common augmented path; NO early-exit.
@@ -123,7 +123,7 @@ struct QpConfig {
   // outer count: the loop runs exactly this many passes, never more or fewer (it is
   // never a floor/ceiling on a residual early-exit — there is none). S8.3 re-tune: the
   // dense-PCG-era 600 default is replaced by 300, because the sparse rewrite's x-update
-  // is an EXACT direct KKT solve (no inner PCG to amortize — `kkt_iters` is dead) AND
+  // is an EXACT direct KKT solve (no inner PCG to amortize — the old `kkt_iters` is gone) AND
   // S8.3's Ruiz equilibration conditions the KKT + the deterministic polish recovers
   // the final-digit accuracy the old solver chased with raw outer iterations. 300
   // clears the common augmented path (pure-linear AND the gross/turnover L1 aux-split,
@@ -133,9 +133,9 @@ struct QpConfig {
   // honored VERBATIM — no silent problem-scaled bump (that would break the bench's
   // fixed-budget comparison and R1's "the budget IS the algorithm").
   atx::usize iters = 300;
-  atx::usize kkt_iters = 50; // DEAD — the old inner-PCG count. The direct KKT solve is
-                             // exact, so this is unused. RETAINED for API compatibility
-                             // (callers / tests still set it; it is ignored).
+  // (S8.8a) The dead `kkt_iters` field — the old inner-PCG count, unused since the
+  // S8.1 direct-KKT rewrite made the x-update exact — is REMOVED. The reference/oracle
+  // solver (qp_solver_reference.hpp) keeps its own real `kkt_iters` (a genuine PCG depth).
   atx::f64 rho = 1.0;        // ADMM constraint penalty
   atx::f64 sigma = 1e-6;     // proximal regularization (KKT well-posedness / quasi-definiteness)
   atx::f64 feas_tol = 1e-6;  // post-loop feasibility tolerance (R3)

@@ -342,7 +342,6 @@ struct CaseSpec {
 
   ConstrainedQpSolver solver;
   solver.cfg.iters = outer;
-  solver.cfg.kkt_iters = 0U;     // unused by the direct KKT path
   solver.cfg.feas_tol = 1e-6;
   // G-DIFF isolates the REFORMULATION (dense-Ã ADMM vs sparse-augmented ADMM): it must
   // run the augmented solver with the SAME bare algorithm as the oracle, so polish and

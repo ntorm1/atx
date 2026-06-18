@@ -118,16 +118,15 @@ using atx::engine::risk::SignalHorizon;
 }
 
 // Augmented constraint set (adds FactorExposure on factors 0/1 + BetaNeutral) ⇒ the
-// S1-2 ADMM QP path. iters/kkt_iters kept modest so the grid finishes in seconds in
-// Debug (a feasibility-clearing budget is the R3 test's concern, not the bench's).
+// S1-2 ADMM QP path. iters kept modest so the grid finishes in seconds in Debug (a
+// feasibility-clearing budget is the R3 test's concern, not the bench's).
 [[nodiscard]] MultiHorizonConfig augmented_cfg(usize horizon, std::span<const f64> beta) {
   MultiHorizonConfig cfg = minimal_cfg(horizon);
   cfg.risk_aversion = 0.5;
   cfg.constraints.pos = PositionCap{0.4};
   cfg.constraints.fexp = FactorExposure{{0U, 1U}, {0.2, 0.2}};
   cfg.constraints.beta = BetaNeutral{beta, 0.1};
-  cfg.qp.iters = 200U;     // bench-only budget (NOT a feasibility-clearing value)
-  cfg.qp.kkt_iters = 25U;
+  cfg.qp.iters = 200U; // bench-only budget (NOT a feasibility-clearing value)
   return cfg;
 }
 

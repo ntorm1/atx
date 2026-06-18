@@ -70,12 +70,12 @@ using atx::engine::risk::PositionCap;
 using atx::engine::risk::RebalanceSchedule;
 using atx::engine::risk::SignalHorizon;
 
-// FIXED baseline ADMM budget (NOT the shipped iters=600/kkt_iters=50) — see the file
-// header note: a modest fixed count so the M∈{500..5000} sweep completes, while the
-// dense-Ã code path and its O(M²)-in-M scaling are exactly the as-built ones. S8.3
-// re-runs at THIS budget so the >=20x speedup comparison is apples-to-apples.
-constexpr atx::usize kBaselineIters = 4U;    // FIXED outer ADMM (NOT shipped 600)
-constexpr atx::usize kBaselineKktIters = 4U; // FIXED inner PCG  (NOT shipped 50)
+// FIXED baseline ADMM budget (NOT the shipped iters=600) — see the file header note:
+// a modest fixed count so the M∈{500..5000} sweep completes, while the dense-Ã code
+// path and its O(M²)-in-M scaling are exactly the as-built ones. S8.3 re-runs at THIS
+// budget so the >=20x speedup comparison is apples-to-apples. (The old inner-PCG count
+// was removed in S8.8a — the direct KKT solve is exact, so it was already dead.)
+constexpr atx::usize kBaselineIters = 4U; // FIXED outer ADMM (NOT shipped 600)
 
 // ---------------------------------------------------------------------------
 //  Synthetic fixture: an M-instrument, K-factor FactorModel + two distinct-horizon
@@ -129,9 +129,8 @@ constexpr atx::usize kBaselineKktIters = 4U; // FIXED inner PCG  (NOT shipped 50
   cfg.constraints.beta = BetaNeutral{beta, 0.1};
   cfg.horizon = 1U;     // single forward step — the per-run augmented-solve cost
   cfg.trade_rate = 1.0; // full first-move step
-  cfg.qp.iters = kBaselineIters;        // FIXED baseline budget (not shipped 600)
-  cfg.qp.kkt_iters = kBaselineKktIters; // FIXED baseline budget (dead post-S8.1, API-compat)
-  cfg.qp.polish = polish;               // the CORE bench turns this OFF (see BM_OptimizerScaleCore)
+  cfg.qp.iters = kBaselineIters; // FIXED baseline budget (not shipped 600)
+  cfg.qp.polish = polish;        // the CORE bench turns this OFF (see BM_OptimizerScaleCore)
   // rho=1, sigma=1e-6, feas_tol=1e-6, ruiz_passes=10 left at shipped defaults.
   return cfg;
 }

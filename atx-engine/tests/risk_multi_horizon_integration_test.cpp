@@ -207,7 +207,6 @@ const std::vector<f64> kBeta = {1.0, 0.8, 1.2, 0.9, 1.1, 0.7, 1.3, 1.0};
 // (documented in the S1-5 report). The whole-run digest stays byte-deterministic at any
 // fixed budget — this value is chosen purely so the feasibility gate passes.
 constexpr usize kAugIters = 1600U;
-constexpr usize kAugKktIters = 120U;
 
 [[nodiscard]] MultiHorizonConfig augmented_cfg() {
   MultiHorizonConfig cfg;
@@ -217,7 +216,6 @@ constexpr usize kAugKktIters = 120U;
   cfg.trade_rate = 1.0; // full first-move step
   cfg.stacked_mpc = false;
   cfg.qp.iters = kAugIters;
-  cfg.qp.kkt_iters = kAugKktIters;
   return cfg;
 }
 

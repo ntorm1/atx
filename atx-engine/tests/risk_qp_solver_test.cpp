@@ -224,7 +224,6 @@ TEST(RiskQpSolver, DollarNeutralRecoversAnalyticOptimum) {
   QpProblem prob{model, lambda, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   solver.cfg.iters = 400U;
-  solver.cfg.kkt_iters = 80U;
   auto res = solver.solve(prob);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   const std::vector<f64> &w = *res;
@@ -288,7 +287,6 @@ TEST(RiskQpSolver, FactoredAdmmMatchesDenseAdmmLinear) {
 
   QpConfig cfg;
   cfg.iters = 300U;
-  cfg.kkt_iters = 120U; // enough PCG to match the dense exact x-update closely
   cfg.rho = 1.0;
   cfg.sigma = 1e-6;
 
@@ -348,7 +346,6 @@ TEST(RiskQpSolver, ReturnedBookSatisfiesLinearConstraints) {
   QpProblem prob{model, lambda, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   solver.cfg.iters = 400U;
-  solver.cfg.kkt_iters = 100U;
   auto res = solver.solve(prob);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   const std::vector<f64> &w = *res;
@@ -392,7 +389,6 @@ TEST(RiskQpSolver, GrossL1BudgetHoldsAtBook) {
   QpProblem prob{model, lambda, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   // Rely on the shipped default iters (600) — the gross aux-split converges under it.
-  solver.cfg.kkt_iters = 80U;
   auto res = solver.solve(prob);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   const std::vector<f64> &w = *res;
@@ -439,7 +435,6 @@ TEST(RiskQpSolver, TurnoverL1BudgetHoldsAtBook) {
   QpProblem prob{model, lambda, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   // Rely on the shipped default iters (600) — the turnover aux-split converges under it.
-  solver.cfg.kkt_iters = 80U;
   auto res = solver.solve(prob);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   const std::vector<f64> &w = *res;
@@ -499,7 +494,6 @@ TEST(RiskQpSolver, ZeroGrossBudgetForcesZeroBook) {
   QpProblem prob{model, 1.0, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   solver.cfg.iters = 400U;
-  solver.cfg.kkt_iters = 60U;
   auto res = solver.solve(prob);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   const std::vector<f64> &w = *res;
@@ -533,7 +527,6 @@ TEST(RiskQpSolver, TwoSolvesByteIdentical) {
   QpProblem prob{model, 0.8, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   // Rely on the shipped default iters (600) — clears the gross aux-split feas gate.
-  solver.cfg.kkt_iters = 60U;
 
   auto r1 = solver.solve(prob);
   auto r2 = solver.solve(prob);
@@ -587,7 +580,6 @@ TEST(RiskQpSolver, SingleNameUniverse) {
   QpProblem prob{model, 1.0, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   solver.cfg.iters = 300U;
-  solver.cfg.kkt_iters = 40U;
   auto res = solver.solve(prob);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   const std::vector<f64> &w = *res;
@@ -612,7 +604,6 @@ TEST(RiskQpSolver, ZeroObjectiveFeasibleBook) {
   QpProblem prob{model, 1.0, std::span<const f64>(q), mc};
   ConstrainedQpSolver solver;
   solver.cfg.iters = 200U;
-  solver.cfg.kkt_iters = 40U;
   auto res = solver.solve(prob);
   ASSERT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   const std::vector<f64> &w = *res;

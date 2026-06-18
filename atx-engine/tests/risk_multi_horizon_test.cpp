@@ -395,7 +395,6 @@ TEST(RiskMultiHorizon, AugmentedConstraintsSatisfiedEveryPeriod) {
   cfg.horizon = 1U;
   cfg.trade_rate = 1.0;
   cfg.qp.iters = 1200U; // headroom for the aux-split + extra rows to clear feas_tol
-  cfg.qp.kkt_iters = 100U;
 
   MultiHorizonOptimizer mh{cfg};
   auto got = mh.run(
