@@ -1,5 +1,7 @@
 #include <array>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 
@@ -201,4 +203,52 @@ TEST(DataOratsHistory, FramingAcrossBufferBoundary) {
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
   EXPECT_EQ(st->rows_kept, kRows);
   EXPECT_EQ(st->dates_written, 1);
+}
+
+TEST(DataOratsHistory, ParallelOutputIsDeterministicAcrossRuns) {
+  // Multi-date fixture: 40 dates x 500 symbols — enough to exercise the queue
+  // and multiple workers concurrently.
+  std::string body = std::string(kHeader) + "\n";
+  for (int d = 0; d < 40; ++d) {
+    char date[11];
+    std::snprintf(date, sizeof(date), "2020-%02d-%02d", 1 + d / 28, 1 + d % 28);
+    for (int s = 0; s < 500; ++s) {
+      body += make_orats_row(date, std::to_string(30000 + s).c_str(), "T", "T",
+                             100.0 + s + d, 1.0, 1000000);
+    }
+  }
+  const std::string zip = write_orats_zip(body, "atx_orats_det.zip");
+
+  auto run = [&](const char *tag) {
+    const fs::path out = fs::temp_directory_path() / (std::string("atx_orats_det_") + tag);
+    fs::remove_all(out);
+    OratsLoadConfig cfg;
+    cfg.zip_path = zip;
+    cfg.out_dir = out.string();
+    cfg.min_date_nanos = *detail::date_to_nanos("2020-01-01");
+    cfg.created_at_nanos = 0;
+    auto st = load_orats_history(cfg);
+    // ASSERT_TRUE can't be used here (lambda returns fs::path, not void).
+    // ADD_FAILURE works in any return type and surfaces the real loader error
+    // immediately, instead of a confusing downstream "missing in run b".
+    if (!st.has_value()) {
+      ADD_FAILURE() << "load (" << tag << ") failed: " << st.error().to_string();
+    }
+    return out;
+  };
+
+  const fs::path a = run("a");
+  const fs::path b = run("b");
+
+  // Every .seg and the symbology parquet must be byte-identical across runs.
+  for (const auto &e : fs::directory_iterator(a)) {
+    const fs::path rel = e.path().filename();
+    const fs::path bp = b / rel;
+    ASSERT_TRUE(fs::exists(bp)) << "missing in run b: " << rel.string();
+    ASSERT_EQ(fs::file_size(e.path()), fs::file_size(bp)) << "size differs: " << rel.string();
+    std::ifstream fa(e.path(), std::ios::binary), fb(bp, std::ios::binary);
+    std::string sa((std::istreambuf_iterator<char>(fa)), {});
+    std::string sb((std::istreambuf_iterator<char>(fb)), {});
+    EXPECT_EQ(sa, sb) << "content differs: " << rel.string();
+  }
 }
