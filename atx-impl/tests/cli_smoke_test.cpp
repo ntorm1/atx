@@ -73,10 +73,10 @@ TEST(AtxImplCli, UnimplementedStageExitsNonzero) {
         EXPECT_FALSE(err.empty()) << "expected error message on stderr";
     }
     // NOTE: each sprint that implements a stage must re-point this at a stage that is still a stub.
-    // S4 implements combine; re-pointed to optimize (still a stub).
+    // S5 implements optimize; re-pointed to report (still a stub).
     {
         std::string out, err;
-        int rc = run_dispatch({"atx-impl", "optimize"}, out, err);
+        int rc = run_dispatch({"atx-impl", "report"}, out, err);
         EXPECT_EQ(rc, 1);
         EXPECT_NE(err.find("not implemented"), std::string::npos)
             << "expected 'not implemented' in stderr for stub stage, got: '" << err << "'";
