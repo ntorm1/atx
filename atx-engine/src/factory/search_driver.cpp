@@ -47,6 +47,21 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   std::unordered_map<atx::u64, CachedScore> fitness_cache;
   parallel::DetPool det_pool{cfg.n_workers};
 
+  // One reusable Engine per worker, bound to panel_, built ONCE per run() and reused
+  // across EVERY generation (Tier 4). Engine holds a const Panel& (not move-assignable)
+  // -> unique_ptr so the vector never assigns on growth (mirrors parallel_evaluate,
+  // batch_eval.cpp:89-93). Engine::evaluate is idempotent (output depends only on
+  // (program, panel_)) and panel_ is constant for the whole run, so reusing each engine
+  // across generations is byte-identical to a fresh-per-generation engine — the SlotPool
+  // simply grows ONCE to its peak and is reused, eliminating per-generation reallocation.
+  // Run-LOCAL (not a member) so a second run() with the same seed replays from a clean
+  // slate (F1) — the same lifecycle discipline as det_pool / fitness_cache / behavior_archive.
+  std::vector<std::unique_ptr<alpha::Engine>> engines;
+  engines.reserve(det_pool.n_workers());
+  for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
+    engines.push_back(std::make_unique<alpha::Engine>(panel_));
+  }
+
   // S4.2 behavioral archive: a per-RUN ring of past-elite descriptors (declared
   // here, not a member, so a second run() with the same seed replays from a clean
   // slate — F1). Empty + unused when the behavioral objective is inactive. `nbr`
@@ -63,7 +78,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   for (atx::usize gen = 0; gen < cfg.generations; ++gen) {
     // (a)-(c): evaluate the fresh (not-yet-seen) candidates of `pop`, fold the
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
-    scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, res);
+    scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res);
 
     // (d) novelty pressure -> selection fitness (anti-collapse, deterministic).
     novelty_penalize(scored, pool, cfg);
@@ -183,7 +198,9 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
 SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchConfig &cfg,
                                   atx::usize gen, const combine::AlphaStore &pool, CanonSet &canon,
                                   std::unordered_map<atx::u64, CachedScore> &fitness_cache,
-                                  parallel::DetPool &det_pool, SearchResult &res) {
+                                  parallel::DetPool &det_pool,
+                                  std::vector<std::unique_ptr<alpha::Engine>> &engines,
+                                  SearchResult &res) {
   // -----------------------------------------------------------------------
   // Phase 1 (serial): dedup + plan
   //
@@ -287,17 +304,15 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
   const std::vector<parallel::ShardId> order_fresh = lpt.dispatch_order(cost_fresh);
 
-  // One reusable Engine per worker, bound to panel_. Engine holds a const
-  // Panel& (not move-assignable) -> unique_ptr so the vector never assigns on
-  // growth (mirrors parallel_evaluate, batch_eval.cpp:89-93). Reused across
-  // every candidate: Engine::evaluate is idempotent (output depends only on
-  // (program, panel)), so slot k's value is independent of which worker ran it
-  // or what it evaluated before -> worker-count + Tier 1 LPT-order invariance hold.
-  std::vector<std::unique_ptr<alpha::Engine>> engines;
-  engines.reserve(det_pool.n_workers());
-  for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
-    engines.push_back(std::make_unique<alpha::Engine>(panel_));
-  }
+  // `engines` (one reusable Engine per worker, bound to panel_) is owned by run()
+  // and passed in: it is built ONCE per run and reused across every generation
+  // (Tier 4), so its SlotPool grows once to peak instead of being reallocated each
+  // generation. engines.size() == det_pool.n_workers() (run() sizes it from the
+  // same pool). Worker `wid` touches ONLY engines[wid] (disjoint single-owner).
+  // Reuse is byte-identical because Engine::evaluate is idempotent (output depends
+  // only on (program, panel_)) and panel_ is constant across the run -> slot k's
+  // value is independent of which worker ran it or what it evaluated before, so
+  // worker-count + Tier 1 LPT-order invariance hold.
 
   // Pointer -> to_score index map (serial, built after to_score is finalized).
   // Each to_score[j] is the SAME pop object as exactly one fresh[k] (a pop
