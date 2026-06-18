@@ -38,13 +38,22 @@ Status build_from_long(const LongColumns &cols, const std::string &path,
   }
 
   // --- time axis: unique sorted timestamps -> row index --------------------
-  std::vector<atx::i64> axis = cols.times;
-  std::sort(axis.begin(), axis.end());
-  axis.erase(std::unique(axis.begin(), axis.end()), axis.end());
+  // Fast path: a single-date segment (the ORATS loader's per-date flush) has
+  // every timestamp identical — skip the O(R log R) sort + the R hash inserts.
+  std::vector<atx::i64> axis;
   std::unordered_map<atx::i64, atx::u64> time_to_row;
-  time_to_row.reserve(axis.size());
-  for (atx::u64 i = 0; i < axis.size(); ++i) {
-    time_to_row.emplace(axis[i], i);
+  const bool all_equal =
+      rows > 0 && std::all_of(cols.times.begin(), cols.times.end(),
+                              [&](atx::i64 t) { return t == cols.times.front(); });
+  if (all_equal) {
+    axis.push_back(cols.times.front());
+    time_to_row.emplace(cols.times.front(), 0);
+  } else {
+    axis = cols.times;
+    std::sort(axis.begin(), axis.end());
+    axis.erase(std::unique(axis.begin(), axis.end()), axis.end());
+    time_to_row.reserve(axis.size());
+    for (atx::u64 i = 0; i < axis.size(); ++i) time_to_row.emplace(axis[i], i);
   }
 
   // --- symbols: first-seen interning order -> instrument index -------------

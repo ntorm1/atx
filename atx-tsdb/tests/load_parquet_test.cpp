@@ -74,6 +74,22 @@ TEST(LoadPivot_LongRows_BuildsDenseGrid, Pivots) {
   static_cast<void>(std::remove(path.c_str()));
 }
 
+TEST(BuildFromLong, SingleTimestampAxisCollapsesToOneRow) {
+  atx::tsdb::LongColumns cols;
+  cols.field_names = {"close"};
+  cols.times = {1000, 1000, 1000};
+  cols.symbols = {"A", "B", "C"};
+  cols.values = {{10.0, 20.0, 30.0}};
+  const std::string path = (std::filesystem::temp_directory_path() / "axis1.seg").string();
+  auto st = atx::tsdb::build_from_long(cols, path, 0);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  auto rdr = atx::tsdb::SegmentReader::attach(path);
+  ASSERT_TRUE(rdr.has_value());
+  EXPECT_EQ(rdr->time_count(), 1u);
+  EXPECT_EQ(rdr->instrument_count(), 3u);
+  static_cast<void>(std::remove(path.c_str()));
+}
+
 TEST(BuildDatedSegments, ScalesI64FieldsAndPartitions) {
   namespace io = atx::core::io;
   namespace fs = std::filesystem;
