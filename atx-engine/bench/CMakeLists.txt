@@ -19,3 +19,7 @@ target_link_libraries(atx-engine-bench
 # Threads for the event bus throughput benchmarks (std::thread).
 find_package(Threads REQUIRED)
 target_link_libraries(atx-engine-bench PRIVATE Threads::Threads)
+
+# orats_history_bench writes a synthetic zip via miniz directly; atx-core links
+# atx_miniz PRIVATE so the include dir and symbols don't propagate — add it here.
+target_link_libraries(atx-engine-bench PRIVATE atx_miniz)

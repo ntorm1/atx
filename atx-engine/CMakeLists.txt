@@ -114,6 +114,10 @@ target_link_libraries(atx-engine
         atx_warnings
 )
 
+# The ORATS loader's writer pool uses std::thread; link the platform thread lib.
+find_package(Threads REQUIRED)
+target_link_libraries(atx-engine PUBLIC Threads::Threads)
+
 # The dedicated multi-process executor worker (S7-3, §0.8). ProcessExecutor spawns
 # this beside the test/host module; it lands in build/bin/ via the global
 # CMAKE_RUNTIME_OUTPUT_DIRECTORY, so it sits next to the atx-engine-<group>-tests
