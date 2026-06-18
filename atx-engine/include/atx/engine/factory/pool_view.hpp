@@ -50,10 +50,13 @@
 #include "atx/engine/library/library.hpp"      // library::Library
 #include "atx/engine/loop/weight_policy.hpp"   // engine::WeightPolicy
 
-// Forward declaration — a pointer parameter needs only a forward decl (also
+// Forward declarations — pointer parameters need only forward decls (also
 // declared in fitness.hpp, included above; kept here so this header is
 // self-documenting and does not rely on transitive include order).
-namespace atx::engine::alpha { class Engine; }
+namespace atx::engine::alpha {
+class Engine;
+struct SignalSet;
+}
 
 namespace atx::engine::factory {
 
@@ -116,6 +119,7 @@ private:
 pool_aware_fitness(const Genome &cand, const PoolView &view, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel = nullptr,
-                   alpha::Engine *engine = nullptr);
+                   alpha::Engine *engine = nullptr,
+                   const alpha::SignalSet *signals = nullptr);
 
 } // namespace atx::engine::factory

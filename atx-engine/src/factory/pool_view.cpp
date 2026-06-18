@@ -8,10 +8,10 @@ namespace atx::engine::factory {
 pool_aware_fitness(const Genome &cand, const PoolView &view, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel,
-                   alpha::Engine *engine) {
+                   alpha::Engine *engine, const alpha::SignalSet *signals) {
   // Steps 1, 3, 5 (pool-INDEPENDENT) — shared with the legacy overload.
   ATX_TRY(const detail::FitnessCore core,
-          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine));
+          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine, signals));
 
   // (2) diversification discount: MAX |corr-to-pool| of the OOS PnL, served by the
   // PoolView's chosen backing (O(N) exact AlphaStore, or O(neighbors) library).

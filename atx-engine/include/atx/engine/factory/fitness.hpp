@@ -70,9 +70,12 @@
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
-// Forward declaration — a pointer parameter needs only a forward decl; pulling in
-// vm.hpp here would add it to every fitness consumer's translation unit.
-namespace atx::engine::alpha { class Engine; }
+// Forward declarations — pointer parameters need only forward decls; pulling in
+// vm.hpp / panel.hpp here would add them to every fitness consumer's translation unit.
+namespace atx::engine::alpha {
+class Engine;
+struct SignalSet;
+}
 
 namespace atx::engine::factory {
 
@@ -258,7 +261,8 @@ struct FitnessCore {
 [[nodiscard]] atx::core::Result<FitnessCore>
 fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
-             const alpha::Panel *weak_panel, alpha::Engine *engine = nullptr);
+             const alpha::Panel *weak_panel, alpha::Engine *engine = nullptr,
+             const alpha::SignalSet *signals = nullptr);
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
 // `redundancy` is the (Mean for the legacy AlphaStore path, Max for the PoolView
@@ -296,6 +300,7 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel = nullptr,
-                   alpha::Engine *engine = nullptr);
+                   alpha::Engine *engine = nullptr,
+                   const alpha::SignalSet *signals = nullptr);
 
 } // namespace atx::engine::factory
