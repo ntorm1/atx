@@ -21,6 +21,10 @@ write_genome(const atx::engine::factory::Genome& g, const std::string& path)
     }
     const std::string s = atx::engine::alpha::unparse(g.ast);
     ofs << s << '\n';
+    if (!ofs) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "write_genome: write failed: " + path);
+    }
     return atx::core::Ok();
 }
 

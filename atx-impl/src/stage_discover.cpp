@@ -3,7 +3,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -26,7 +25,7 @@
 
 namespace atx::impl {
 
-using namespace atx::engine;
+namespace exec = atx::engine::exec;
 
 // ---------------------------------------------------------------------------
 // frictionless_sim — verbatim from factory_search_driver_test.cpp (brief §3)
@@ -46,6 +45,11 @@ static exec::ExecutionSimulator frictionless_sim() {
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
 {
+    namespace alpha   = atx::engine::alpha;
+    namespace combine = atx::engine::combine;
+    namespace factory = atx::engine::factory;
+    using atx::engine::WeightPolicy;
+
     // 1. Validate required flags.
     if (cfg.panel.empty() || cfg.alpha_out.empty()) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,

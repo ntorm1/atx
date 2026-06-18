@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 #include <cmath>
@@ -20,7 +21,6 @@
 #include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"   // alpha::parse_expr, alpha::Library
-#include "atx/engine/alpha/unparse.hpp"  // alpha::unparse
 #include "atx/engine/alpha/vm.hpp"       // alpha::Engine
 #include "atx/engine/factory/genome.hpp" // factory::analyze_into, factory::Genome
 
@@ -76,11 +76,16 @@ static std::vector<f64> noisy_close(usize dates, usize insts, std::uint64_t seed
     return close;
 }
 
-// Build a 96x6 single-field "close" Panel (momentum fixture).
-static Panel make_momentum_panel(usize dates = 96, usize insts = 6) {
+// Build a 96x6 single-field "close" Panel (momentum fixture). Returns nullopt
+// on a Panel::create failure (ADD_FAILURE marks the test failed) so a caller's
+// ASSERT_TRUE stops the test before dereferencing an error (no UB).
+static std::optional<Panel> make_momentum_panel(usize dates = 96, usize insts = 6) {
     const std::vector<f64> close = noisy_close(dates, insts, 0xBEEFCAFEULL);
     auto r = Panel::create(dates, insts, {"close"}, {close}, {});
-    EXPECT_TRUE(r.has_value()) << "panel fixture must build";
+    if (!r.has_value()) {
+        ADD_FAILURE() << "panel fixture must build: " << r.error().to_string();
+        return std::nullopt;
+    }
     return std::move(r.value());
 }
 
@@ -108,7 +113,9 @@ static std::string write_panel_tmp(const Panel& panel, const std::string& stem) 
 TEST(AtxImplDiscover, GenomeRoundTrip) {
     namespace fs = std::filesystem;
 
-    const Panel panel = make_momentum_panel();
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
     Library lib{};
 
     // Build a reference Genome from a known safe expression.
@@ -169,7 +176,9 @@ TEST(AtxImplDiscover, GenomeRoundTrip) {
 // Test 4a: MissingSeedExprFails
 // ---------------------------------------------------------------------------
 TEST(AtxImplDiscover, MissingSeedExprFails) {
-    const Panel panel = make_momentum_panel();
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
     const std::string panel_path = write_panel_tmp(panel, "missing_seed");
 
     atx::impl::RunConfig cfg;
@@ -209,7 +218,9 @@ TEST(AtxImplDiscover, MissingPanelFails) {
 TEST(AtxImplDiscover, AdmitsAtLeastOneAlpha) {
     namespace fs = std::filesystem;
 
-    const Panel panel = make_momentum_panel();
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
     const std::string panel_path = write_panel_tmp(panel, "admits_alpha");
     const std::string alpha_out  =
         (fs::temp_directory_path() / "atx_impl_discover_admits_out").string();
@@ -262,7 +273,9 @@ TEST(AtxImplDiscover, AdmitsAtLeastOneAlpha) {
 TEST(AtxImplDiscover, SameSeedDeterministic) {
     namespace fs = std::filesystem;
 
-    const Panel panel = make_momentum_panel();
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
     const std::string panel_path = write_panel_tmp(panel, "deterministic");
     const std::string alpha_out1 =
         (fs::temp_directory_path() / "atx_impl_discover_det_out1").string();

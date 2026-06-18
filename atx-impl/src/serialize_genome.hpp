@@ -13,7 +13,6 @@
 // and re-derives the Analysis.
 
 #include <string>
-#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/engine/alpha/parser.hpp"   // alpha::Library
