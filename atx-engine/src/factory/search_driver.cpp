@@ -189,11 +189,12 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
 
 // ----- (2) evaluate_generation --------------------------------------------
 // Collect the fresh (un-seen) genomes (F6), compile them to single-root Programs,
-// evaluate each (fresh Engine per program — see the EVAL-PATH NOTE below) and
-// fold its worker-invariant digest into the run digest (F2), then score each NEW
-// population member via pool_aware_fitness (dedup-hits reuse the cached score).
-// A fresh candidate that fails to compile is dropped from the digest (F5
-// backstop); every distinct structure is recorded in all_scored + the CanonSet.
+// evaluate each on its per-worker `engines[wid]` (owned by run(), reused across
+// every generation — see the EVAL-PATH NOTE below) and fold its worker-invariant
+// digest into the run digest (F2), then score each NEW population member via
+// pool_aware_fitness (dedup-hits reuse the cached score). A fresh candidate that
+// fails to compile is dropped from the digest (F5 backstop); every distinct
+// structure is recorded in all_scored + the CanonSet.
 [[nodiscard]] std::vector<Scored>
 SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchConfig &cfg,
                                   atx::usize gen, const combine::AlphaStore &pool, CanonSet &canon,
