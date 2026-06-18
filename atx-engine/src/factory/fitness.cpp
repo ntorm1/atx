@@ -223,12 +223,16 @@ slice_by_idx(std::span<const atx::f64> flat, std::span<const atx::usize> idx, at
 // Compile + evaluate a genome over `panel` and extract its per-alpha streams.
 // Single-thread Engine path (the correct, slower fallback; S3-5 swaps in the S2
 // parallel path at the driver). Err propagates compile/eval/extract failures.
+// PRECONDITION (when engine != nullptr): the passed engine MUST be bound to `panel`.
+// Reusing it is byte-identical to a fresh engine because Engine::evaluate is
+// idempotent — output depends only on (program, panel), never on prior engine state.
 [[nodiscard]] atx::core::Result<alpha::AlphaStreams>
 eval_streams(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
-             const exec::ExecutionSimulator &sim) {
+             const exec::ExecutionSimulator &sim, alpha::Engine *engine = nullptr) {
   ATX_TRY(const alpha::Program prog, alpha::compile(cand.ast, cand.analysis));
-  alpha::Engine engine{panel};
-  ATX_TRY(const alpha::SignalSet ss, engine.evaluate(prog));
+  alpha::Engine local{panel};
+  alpha::Engine &eng = (engine != nullptr) ? *engine : local;
+  ATX_TRY(const alpha::SignalSet ss, eng.evaluate(prog));
   return alpha::extract_streams(ss, policy, panel, sim);
 }
 
@@ -241,13 +245,14 @@ eval_streams(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 [[nodiscard]] atx::core::Result<FitnessCore>
 fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
-             const alpha::Panel *weak_panel) {
+             const alpha::Panel *weak_panel, alpha::Engine *engine) {
   // SAFETY (eps): the robustness ratio divides by wq; floor the denominator so a
   //               near-zero full-universe wq cannot blow the ratio to ±inf.
   constexpr atx::f64 kEps = 1e-12;
 
-  // (1) full-universe eval -> OOS fold aggregate.
-  ATX_TRY(const alpha::AlphaStreams strm, eval_streams(cand, panel, policy, sim));
+  // (1) full-universe eval -> OOS fold aggregate. Pass through the optional reusable
+  // engine (nullptr -> fresh engine, non-null -> reuse the caller-supplied instance).
+  ATX_TRY(const alpha::AlphaStreams strm, eval_streams(cand, panel, policy, sim, engine));
   const atx::usize insts = strm.n_instruments();
   const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
   const std::vector<eval::CpcvFold> folds =
@@ -403,11 +408,12 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 [[nodiscard]] atx::core::Result<FitnessReport>
 pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
-                   const FitnessCfg &cfg, const alpha::Panel *weak_panel) {
+                   const FitnessCfg &cfg, const alpha::Panel *weak_panel,
+                   alpha::Engine *engine) {
   // Steps 1, 3, 5 (pool-INDEPENDENT) — written once in fitness_core (byte-identical
   // to the original body for those steps).
   ATX_TRY(const detail::FitnessCore core,
-          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel));
+          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine));
 
   // (2) diversification discount (F7): MEAN |corr-to-pool| of the OOS PnL — the
   // legacy AlphaStore semantics (UNCHANGED; the green S3 suite gates this).
