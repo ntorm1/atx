@@ -70,11 +70,11 @@
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
-// Forward declarations — pointer parameters need only forward decls; pulling in
-// vm.hpp / panel.hpp here would add them to every fitness consumer's translation unit.
+// Forward declaration — an `alpha::Engine*` parameter needs only a forward decl;
+// pulling in vm.hpp here would add it to every fitness consumer's translation unit.
+// (alpha::SignalSet is already a complete type via panel.hpp above, so it needs none.)
 namespace atx::engine::alpha {
 class Engine;
-struct SignalSet;
 }
 
 namespace atx::engine::factory {
