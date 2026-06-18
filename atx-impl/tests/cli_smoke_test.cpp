@@ -60,27 +60,21 @@ TEST(AtxImplCli, UnknownSubcommandFails) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: implemented stages return exit code 1 on bad/missing args;
-// unimplemented stages still return "not implemented".
+// Test 3: implemented stages return exit code 1 on bad/missing args.
+//
+// S6 implements the last two stubs (report + run). All stages are now
+// implemented, so this test is re-pointed to verify that a known-implemented
+// stage (load) returns nonzero + an error message when required flags are
+// missing. The former "stub returns not-implemented" sub-case is removed;
+// there are no remaining stubs to target.
 // ---------------------------------------------------------------------------
-TEST(AtxImplCli, UnimplementedStageExitsNonzero) {
-    // load is implemented — missing --min-date causes InvalidArgument.
-    {
-        std::string out, err;
-        int rc = run_dispatch({"atx-impl", "load", "--zip", "x", "--out", "y"},
-                              out, err);
-        EXPECT_EQ(rc, 1);
-        EXPECT_FALSE(err.empty()) << "expected error message on stderr";
-    }
-    // NOTE: each sprint that implements a stage must re-point this at a stage that is still a stub.
-    // S5 implements optimize; re-pointed to report (still a stub).
-    {
-        std::string out, err;
-        int rc = run_dispatch({"atx-impl", "report"}, out, err);
-        EXPECT_EQ(rc, 1);
-        EXPECT_NE(err.find("not implemented"), std::string::npos)
-            << "expected 'not implemented' in stderr for stub stage, got: '" << err << "'";
-    }
+TEST(AtxImplCli, StageErrorsExitNonzero) {
+    // load is implemented — missing --min-date causes InvalidArgument -> exit 1.
+    std::string out, err;
+    int rc = run_dispatch({"atx-impl", "load", "--zip", "x", "--out", "y"},
+                          out, err);
+    EXPECT_EQ(rc, 1);
+    EXPECT_FALSE(err.empty()) << "expected error message on stderr";
 }
 
 // ---------------------------------------------------------------------------
