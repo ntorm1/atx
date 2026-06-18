@@ -13,8 +13,10 @@
 //                 (RiskCone.TrackingErrorConstraintIsSatisfiedAndBinds)
 //   G-DET       — (a) the book is byte-identical across two solves;
 //                 (b) cone count 0 ⇒ the augmented book is byte-identical to the
-//                 pre-S8.5a (S8.4) path (no cone block ⇒ inert). (RiskCone.*Deterministic*,
-//                 RiskCone.ZeroConeIsByteIdenticalToS84Path)
+//                 pre-S8.5a (S8.4) path (no cone block ⇒ inert). ALSO a frozen
+//                 golden-digest pin (kZeroConeGolden, FNV-1a over ascending book
+//                 elements) — any drift in the box-only iterates fails the pin.
+//                 (RiskCone.*Deterministic*, RiskCone.ZeroConeIsByteIdenticalToS84Path)
 
 #include <bit>     // std::bit_cast
 #include <cmath>   // std::fabs, std::sqrt, std::isfinite, std::nextafter
@@ -340,15 +342,23 @@ TEST(RiskCone, TrackingErrorSolveIsDeterministic) {
 }
 
 // ===========================================================================
-//  G-DET (b) — cone count 0 ⇒ byte-identical to the pre-S8.5a (S8.4) augmented path.
-//  We build the SAME problem with NO TrackingError descriptor and assert the book is
-//  bitwise unchanged whether or not the cone machinery is present in AugmentedQp. The
-//  reference is the augmented solve over a MaterializedConstraints that never touched
-//  the tracking-error fields (the S8.4 surface). Two solves of the no-cone problem must
-//  be byte-identical, and — critically — the no-cone augmented assembly must be
-//  structurally identical to the pre-cone path (proven by an explicit assertion that
-//  AugmentedQp carries zero SocBlocks for the no-cone problem).
+//  G-DET (b) — GOLDEN-DIGEST PIN against the box-only (S8.4) path.
+//  We build the problem with NO TrackingError descriptor (zero cones) and assert:
+//    (1) AugmentedQp carries exactly zero SocBlocks (box-only structural gate).
+//    (2) Two solves of the no-cone problem are byte-identical (self-consistency).
+//    (3) A 64-bit FNV-1a digest over the bit pattern of every book element matches
+//        kZeroConeGolden — a FROZEN constant computed once and pinned here. Any
+//        future change that silently perturbs the box-only iterates fails this pin
+//        (G-DET(b) absolute baseline, not merely a self-consistency check).
+//  FNV-1a parameters: basis = 1469598103934665603ULL, prime = 1099511628211ULL,
+//  accumulation order: ascending book index.
 // ===========================================================================
+
+// Frozen golden digest of the box-only augmented book (M=12, lambda=0.7, 400 iters).
+// Computed on first run and pinned. Regenerate only when the S8.4 box-only path
+// is intentionally changed (update the constant and the commit message to say why).
+static constexpr std::uint64_t kZeroConeGolden = 0xffed7ec6c177aad2ULL;
+
 TEST(RiskCone, ZeroConeIsByteIdenticalToS84Path) {
   const usize m = 12U;
   const FactorModel model = make_multi_model(m);
@@ -370,7 +380,7 @@ TEST(RiskCone, ZeroConeIsByteIdenticalToS84Path) {
   ASSERT_TRUE(mc_r.has_value());
   const MaterializedConstraints mc = std::move(*mc_r);
 
-  // The augmented assembly carries ZERO cone blocks when no TrackingError is present.
+  // (1) The augmented assembly carries ZERO cone blocks when no TrackingError is present.
   const auto aug = atx::engine::risk::build_augmented(model, 0.7, std::span<const f64>(q), mc);
   EXPECT_TRUE(aug.cones.empty()) << "no-cone problem must carry zero SocBlocks";
 
@@ -384,9 +394,22 @@ TEST(RiskCone, ZeroConeIsByteIdenticalToS84Path) {
   const std::vector<f64> &a = *r1;
   const std::vector<f64> &b = *r2;
   ASSERT_EQ(a.size(), b.size());
+
+  // (2) Byte-identity across two solves of the same problem (self-consistency).
   for (usize i = 0; i < a.size(); ++i) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(a[i]), std::bit_cast<std::uint64_t>(b[i])) << "i=" << i;
   }
+
+  // (3) Golden-digest pin: FNV-1a over the bit pattern of every book element,
+  //     ascending index. Fails if the box-only iterates drift from the S8.4 baseline.
+  std::uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit basis
+  for (usize i = 0; i < a.size(); ++i) {
+    h ^= std::bit_cast<std::uint64_t>(a[i]);
+    h *= 1099511628211ULL; // FNV-1a 64-bit prime
+  }
+  // Emit the actual digest so we can read it off the first run (printed on FAILURE).
+  EXPECT_EQ(h, kZeroConeGolden) << "box-only augmented book drifted from the S8.4 golden digest"
+                                 << "; actual digest = 0x" << std::hex << h;
 }
 
 } // namespace atxtest_risk_cone_test

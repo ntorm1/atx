@@ -62,7 +62,6 @@
 
 #include <cmath>   // std::sqrt
 #include <span>    // std::span (w_bench)
-#include <utility> // std::move
 #include <vector>  // std::vector (offset, w_bench snapshot)
 
 #include "atx/core/linalg/linalg.hpp" // VecX

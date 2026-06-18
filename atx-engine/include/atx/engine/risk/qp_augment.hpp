@@ -82,6 +82,8 @@
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // f64, usize
 
+#include "atx/core/macro.hpp"               // ATX_ASSERT (LLT SPD invariant)
+
 #include "atx/engine/risk/cone.hpp"         // SocBlock (the cone-block descriptor, S8.5a)
 #include "atx/engine/risk/constraints.hpp"  // MaterializedConstraints
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (exposures / specific_var)
@@ -318,6 +320,7 @@ namespace detail {
     // L_F = chol(F) (lower). F is SPD by FactorModel::create's contract (its own
     // Cholesky succeeded at construction), so this LLT cannot fail for a valid model.
     const Eigen::LLT<cl::MatX> f_llt(V.factor_cov());
+    ATX_ASSERT(f_llt.info() == Eigen::Success); // invariant: FactorModel::create enforces SPD
     const cl::MatX L_F = f_llt.matrixL(); // K×K lower-triangular factor (L_F L_Fᵀ = F)
 
     // Xᵀw_bench (K) — the constant factor exposure of the benchmark book.
