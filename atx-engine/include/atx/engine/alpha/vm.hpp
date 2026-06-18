@@ -621,8 +621,12 @@ private:
       const std::span<const atx::f64> col = src_col(in, 1);
       scale_a = col.empty() ? detail::kVmNaN : col.front();
     }
-    std::vector<atx::usize> valid; // per-row scratch, reused across dates
-    valid.reserve(instruments);
+    // Per-date valid-index scratch: an Engine member reused across dates AND across
+    // evaluate() calls (grown once to peak, no per-instruction heap alloc). cs_one_date
+    // clear()s it before each rebuild, so no stale entry is ever read -> byte-identical
+    // to the previous fresh-per-call vector. The Engine is single-owner per worker, so
+    // this member is touched by exactly one thread at a time (no cross-worker sharing).
+    cs_valid_.reserve(instruments);
     for (atx::usize d = 0; d < dates; ++d) {
       const std::span<const atx::f64> xr = x.subspan(d * instruments, instruments);
       const std::span<atx::f64> orow = out.subspan(d * instruments, instruments);
@@ -630,7 +634,7 @@ private:
           grouped ? g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
       const std::span<const atx::f64> zrow =
           z.empty() ? std::span<const atx::f64>{} : z.subspan(d * instruments, instruments);
-      cs_one_date(in.op, xr, grow, zrow, scale_a, orow, valid);
+      cs_one_date(in.op, xr, grow, zrow, scale_a, orow, cs_valid_);
     }
     return atx::core::Ok();
   }
@@ -901,6 +905,7 @@ private:
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
+  std::vector<atx::usize> cs_valid_;   // Cs* per-date valid-index scratch; grown once, cleared per date
 };
 
 } // namespace atx::engine::alpha
