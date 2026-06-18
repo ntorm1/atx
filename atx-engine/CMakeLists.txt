@@ -73,6 +73,7 @@ add_library(atx-engine STATIC
     # header-only risk module into the library to collapse the include fan-out).
     # NOT auto-globbed — list each src/risk/*.cpp explicitly.
     src/risk/factor_model.cpp
+    src/risk/garleanu_pedersen.cpp
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
     src/fund/cross_sleeve_risk.cpp
