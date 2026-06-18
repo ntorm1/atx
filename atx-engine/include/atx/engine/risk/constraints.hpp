@@ -145,6 +145,20 @@ struct OwnershipCap {
   bool elastic = false;
 };
 
+// Robust alpha uncertainty (S8.5c) — the Goldfarb-Iyengar worst-case-alpha cone. Models
+// the true alpha as uncertain within a FACTOR-STRUCTURED ellipsoid; the worst case over
+// that set adds a convex +κ‖Ω_f^{1/2}(Xᵀw)‖₂ penalty to the (minimize) objective. It is
+// NOT a linear A-row — it materializes into a RobustAlphaSpec and build_augmented adds the
+// epigraph aux variable t, the variable-apex SOC ‖Ω_f^{1/2} y‖₂ ≤ t, and the linear cost
+// +κt (needs L_F-style Cholesky of Ω_f, only reachable there, R4). `omega_f` is OPTIONAL
+// (empty ⇒ identity ⇒ the penalty is κ‖Xᵀw‖₂). κ ≤ 0 ⇒ NO cone (reduces to nominal, R10).
+struct RobustAlpha {
+  atx::f64 kappa = 0.0;                       // uncertainty radius κ ≥ 0 (κ ≤ 0 ⇒ inert / nominal)
+  atx::core::linalg::MatX omega_f = {};       // K×K SPD factor-premia error cov (empty ⇒ identity)
+  atx::usize priority = 0;                    // S8.6 relaxation rank (lower = relaxed first)
+  bool elastic = false;                       // S8.6 may relax this cone when infeasible
+};
+
 // Sector risk budget — sectors keyed by sector_id[i]. TWO variants:
 //   * NET-WEIGHT (S8.4, DEFAULT soc=false): |Σ_{i ∈ g} w_i| <= cap[g], a sparse 0/1
 //     group row structurally identical to GroupCap; emitted as a linear A-row AFTER
@@ -200,6 +214,13 @@ struct MaterializedConstraints {
   // populates `impact.coeff` from impact_cost_bps's coefficients (no impact constants live
   // in the optimizer). EMPTY / all-zero ⇒ INERT (P, q byte-identical to pre-S8.5b, R10).
   ImpactSurrogateSpec impact;          // √-impact quadratic surrogate (active iff coeff is populated)
+
+  // ROBUST ALPHA metadata (S8.5c — NOT linear in w; the ADMM owns the variable-apex SOC
+  // z-projection). A RobustAlpha descriptor materializes its κ + optional Ω_f here;
+  // build_augmented — when κ > 0 — adds the epigraph aux var t, the variable-apex SOC
+  // ‖Ω_f^{1/2} y‖₂ ≤ t, and the +κt cost (it needs the Cholesky of Ω_f / the y-block).
+  // `robust.active == false` (or κ ≤ 0) ⇒ no robust cone (byte-identical to S8.5b, R10).
+  RobustAlphaSpec robust;              // robust alpha-uncertainty cone (active iff a RobustAlpha with κ>0 was set)
 };
 
 // ===========================================================================
@@ -216,6 +237,7 @@ struct ConstraintSet {
   std::optional<OwnershipCap> own;         // %shares-out box fold (S8.4)
   std::optional<SectorRiskBudget> sector;  // sector net-weight rows (S8.4)
   std::optional<TrackingError> track;      // tracking-error SOC (S8.5a; cone, not a linear row)
+  std::optional<RobustAlpha> robust;       // robust alpha-uncertainty SOC (S8.5c; cone, not a linear row)
 
   // Materialize l <= A w <= u over the M-dim weight space. `X` is the M×K
   // exposure matrix (FactorComponents.X); `w_prev` keys the turnover L1 (an
@@ -258,6 +280,8 @@ struct ConstraintSet {
     fill_tracking(mc, M);
     // --- sector-risk SOC metadata (S8.5b; assembled in build_augmented) ---
     fill_sector_soc(mc, M);
+    // --- robust alpha-uncertainty SOC metadata (S8.5c; assembled in build_augmented) ---
+    fill_robust(mc);
     return co::Ok(std::move(mc));
   }
 
@@ -286,6 +310,29 @@ private:
     ATX_TRY_VOID(validate_capacity_caps());
     ATX_TRY_VOID(validate_sector(M));
     ATX_TRY_VOID(validate_track(M));
+    ATX_TRY_VOID(validate_robust(X));
+    return co::Ok();
+  }
+
+  // Robust alpha (S8.5c): κ must be >= 0 (a negative uncertainty radius is provably
+  // contradictory), and a SUPPLIED Ω_f must be square K×K with K == X.cols() (an empty
+  // Ω_f is accepted as the identity). SPD-ness of Ω_f is re-checked at assembly (its
+  // Cholesky, ATX_ASSERT-guarded) exactly as the tracking/sector cones re-check F.
+  [[nodiscard]] atx::core::Status validate_robust(const atx::core::linalg::MatX &X) const {
+    namespace co = atx::core;
+    if (!robust) {
+      return co::Ok();
+    }
+    if (robust->kappa < 0.0) {
+      return co::Err(co::ErrorCode::InvalidArgument, "RobustAlpha: kappa must be >= 0");
+    }
+    const auto &om = robust->omega_f;
+    if (om.rows() != 0 || om.cols() != 0) { // a supplied (non-empty) Ω_f must be K×K
+      if (om.rows() != om.cols() || om.rows() != X.cols()) {
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "RobustAlpha: Omega_f must be K×K with K == X.cols() (or empty for identity)");
+      }
+    }
     return co::Ok();
   }
 
@@ -678,6 +725,24 @@ private:
       mc.sector_risk.sector_id[i] = sector->sector_id[i];
     }
     mc.sector_risk.sigma = sector->sigma; // per-sector budget (length == #sectors, validated)
+  }
+
+  // -------------------------------------------------------------------------
+  //  Robust alpha-uncertainty metadata (S8.5c) — snapshot κ + the optional Ω_f into the
+  //  RobustAlphaSpec. The epigraph aux var t, the variable-apex SOC rows (Ω_f^{1/2} y),
+  //  and the +κt cost are assembled later in build_augmented (it needs the Cholesky of
+  //  Ω_f and the y-block; R4 — no V here). Active ONLY when a RobustAlpha with κ > 0 is
+  //  set (κ ≤ 0 ⇒ inert ⇒ build_augmented emits no cone ⇒ byte-identical to S8.5b, R10).
+  // -------------------------------------------------------------------------
+  // NOT noexcept: the Ω_f matrix copy allocates the snapshot (cold path, once).
+  void fill_robust(MaterializedConstraints &mc) const {
+    if (!robust || !(robust->kappa > 0.0)) {
+      mc.robust.active = false; // no descriptor, or κ ≤ 0 ⇒ nominal (no robust cone)
+      return;
+    }
+    mc.robust.active = true;
+    mc.robust.kappa = robust->kappa;
+    mc.robust.omega_f = robust->omega_f; // empty ⇒ build_augmented uses the identity
   }
 };
 

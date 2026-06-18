@@ -108,7 +108,7 @@
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // f64, usize
 
-#include "atx/engine/risk/cone.hpp"         // SocBlock + ball_project (deterministic SOC z-projection, S8.5a)
+#include "atx/engine/risk/cone.hpp"         // SocBlock + ball_project + soc_project (deterministic SOC z-projection, S8.5a/c)
 #include "atx/engine/risk/constraints.hpp"  // MaterializedConstraints
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (apply / specific_var / factor_cov)
 #include "atx/engine/risk/kkt_ldl.hpp"      // QuasiDefiniteLdl (deterministic no-pivot KKT solve)
@@ -845,8 +845,11 @@ private:
     return cones_feasible(aug, ax);
   }
 
-  // Each cone block's ball constraint ‖Ãx + offset‖₂ ≤ radius + feas_tol (order-fixed
-  // norm, R1). True (vacuously) when aug.cones is empty ⇒ box-only path unchanged.
+  // Each cone block's SOC constraint within feas_tol (order-fixed norm, R1). For a
+  // fixed-radius ball: ‖Ãx + offset‖₂ ≤ radius. For a variable-apex SOC (S8.5c): the apex
+  // is arg[0] (the epigraph t) and the vector is arg[1..], so the constraint is
+  // ‖vector‖₂ ≤ apex (NOT ‖whole block‖₂ ≤ radius). True (vacuously) when aug.cones is
+  // empty ⇒ box-only path unchanged.
   [[nodiscard]] bool cones_feasible(const AugmentedQp &aug,
                                     const atx::core::linalg::VecX &ax) const {
     for (const SocBlock &blk : aug.cones) {
@@ -855,11 +858,23 @@ private:
         arg[j] = ax[static_cast<Eigen::Index>(blk.row_start + j)] +
                  blk.offset[static_cast<Eigen::Index>(j)];
       }
-      if (ordered_norm2(std::span<const atx::f64>(arg)) > blk.radius + cfg.feas_tol) {
+      if (cone_violation(blk, arg) > cfg.feas_tol) {
         return false;
       }
     }
     return true;
+  }
+
+  // The signed SOC violation of a cone block given its argument `arg` (length blk.dim,
+  // already offset-shifted): for a ball, ‖arg‖₂ − radius; for a variable-apex SOC,
+  // ‖arg[1..]‖₂ − arg[0] (‖v‖₂ − t). > feas_tol ⇒ infeasible. Order-fixed norm (R1).
+  [[nodiscard]] static atx::f64 cone_violation(const SocBlock &blk,
+                                               const std::vector<atx::f64> &arg) {
+    if (!blk.variable_apex) {
+      return ordered_norm2(std::span<const atx::f64>(arg)) - blk.radius;
+    }
+    const std::span<const atx::f64> v(arg.data() + 1, arg.size() - 1U);
+    return ordered_norm2(v) - arg[0]; // ‖v‖₂ ≤ t
   }
 
   // -------------------------------------------------------------------------
@@ -913,7 +928,8 @@ private:
         return co::Err(co::ErrorCode::InvalidArgument, infeasible_msg(i, under));
       }
     }
-    // Cone (SOC / ball) feasibility — order-fixed norm per block (R1).
+    // Cone (SOC / ball) feasibility — order-fixed norm per block (R1). A variable-apex
+    // SOC checks ‖v‖₂ ≤ t (apex = arg[0]); a ball checks ‖arg‖₂ ≤ radius (cone_violation).
     for (atx::usize b = 0; b < aug.cones.size(); ++b) {
       const SocBlock &blk = aug.cones[b];
       std::vector<atx::f64> arg(blk.dim, 0.0);
@@ -921,8 +937,7 @@ private:
         arg[j] = ax[static_cast<Eigen::Index>(blk.row_start + j)] +
                  blk.offset[static_cast<Eigen::Index>(j)];
       }
-      const atx::f64 norm = ordered_norm2(std::span<const atx::f64>(arg));
-      const atx::f64 viol = norm - blk.radius;
+      const atx::f64 viol = cone_violation(blk, arg);
       if (viol > cfg.feas_tol) {
         return co::Err(co::ErrorCode::InvalidArgument, infeasible_cone_msg(b, viol));
       }
@@ -966,15 +981,16 @@ private:
       return; // box-only path ⇒ z untouched (byte-identical to S8.4, R10)
     }
     for (const SocBlock &blk : aug.cones) {
-      // Loop target_j = ax[row] + y[row]/ρ, projected onto the ball, offset subtracted.
+      // Loop target_j = ax[row] + y[row]/ρ; offset added before / subtracted after so z
+      // stays in Ãx units. The geometry (ball vs variable-apex SOC) is delegated below.
       const atx::usize d = blk.dim;
       std::vector<atx::f64> arg(d, 0.0);  // (target + offset) — the cone argument a
-      std::vector<atx::f64> proj(d, 0.0); // ball-projected argument
+      std::vector<atx::f64> proj(d, 0.0); // projected argument
       for (atx::usize j = 0; j < d; ++j) {
         const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
         arg[j] = (ax[row] + y[row] / cfg.rho) + blk.offset[static_cast<Eigen::Index>(j)];
       }
-      ball_project(std::span<const atx::f64>(arg), blk.radius, std::span<atx::f64>(proj));
+      project_block_arg(blk, arg, proj);
       for (atx::usize j = 0; j < d; ++j) {
         const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
         z[row] = proj[j] - blk.offset[static_cast<Eigen::Index>(j)]; // back to Ãx units
@@ -982,8 +998,33 @@ private:
     }
   }
 
+  // Project the cone argument `arg` (length blk.dim) onto the block's geometry, writing
+  // the projection into `proj`. Two geometries (S8.5c):
+  //   * variable_apex == false (S8.5a/b): the FIXED-radius ball ‖arg‖₂ ≤ radius, via
+  //     ball_project — the apex is the constant `radius`, only the vector is touched.
+  //   * variable_apex == true  (S8.5c robust): the GENERAL SOC {(t,v): ‖v‖₂ ≤ t} whose
+  //     apex t is arg[0] (the epigraph variable) and vector v is arg[1..], via the
+  //     general soc_project — which writes BOTH the projected apex into proj[0] and the
+  //     projected vector into proj[1..]. (A ball would pin proj[0]=radius; the variable
+  //     apex must MOVE — this is the design-novel branch the G-DIFF gate checks.)
+  // Order-fixed (both ball_project and soc_project use the ascending ordered_norm2, R1).
+  static void project_block_arg(const SocBlock &blk, const std::vector<atx::f64> &arg,
+                                std::vector<atx::f64> &proj) {
+    if (!blk.variable_apex) {
+      ball_project(std::span<const atx::f64>(arg), blk.radius, std::span<atx::f64>(proj));
+      return;
+    }
+    // Variable-apex SOC: arg[0] is the apex t, arg[1..] is the vector v.
+    const atx::usize d = blk.dim; // == 1 + (vector length)
+    std::span<const atx::f64> v_in(arg.data() + 1, d - 1U);
+    std::span<atx::f64> v_out(proj.data() + 1, d - 1U);
+    proj[0] = soc_project(arg[0], v_in, v_out); // projected apex t*; v* written into v_out
+  }
+
   // The warm-start-seed variant: target_j = ax[row] (no y/ρ term). Same project-and-
-  // shift bookkeeping so the seed lands the cone rows where the loop would.
+  // shift bookkeeping (and the same ball/variable-apex delegation) so the seed lands the
+  // cone rows EXACTLY where the loop's z-update would (the cold and warm paths must not
+  // diverge on the cone rows — including the variable-apex apex, S8.5c).
   static void project_cone_block(const SocBlock &blk, const atx::core::linalg::VecX &ax,
                                  atx::core::linalg::VecX &z) {
     const atx::usize d = blk.dim;
@@ -993,7 +1034,7 @@ private:
       const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
       arg[j] = ax[row] + blk.offset[static_cast<Eigen::Index>(j)];
     }
-    ball_project(std::span<const atx::f64>(arg), blk.radius, std::span<atx::f64>(proj));
+    project_block_arg(blk, arg, proj);
     for (atx::usize j = 0; j < d; ++j) {
       const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
       z[row] = proj[j] - blk.offset[static_cast<Eigen::Index>(j)];

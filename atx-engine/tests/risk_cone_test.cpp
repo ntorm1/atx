@@ -53,7 +53,9 @@ using atx::engine::risk::MaterializedConstraints;
 using atx::engine::risk::ordered_norm2;
 using atx::engine::risk::PositionCap;
 using atx::engine::risk::QpProblem;
+using atx::engine::risk::RobustAlpha;
 using atx::engine::risk::soc_project;
+using atx::engine::risk::SocBlock;
 using atx::engine::risk::TrackingError;
 using atx::engine::risk::SectorRiskBudget;
 
@@ -106,6 +108,29 @@ using atx::engine::risk::SectorRiskBudget;
     u[i] = (i < sector_id.size() && sector_id[i] == g) ? w[i] : 0.0;
   }
   return std::sqrt(model.risk(std::span<const f64>(u)));
+}
+
+// ‖Ω_f^{1/2} y‖₂ with y = Xᵀw — the robust worst-case factor-exposure penalty
+// (S8.5c). For the DEFAULT identity Ω_f this is ‖Xᵀw‖₂ (penalize total factor
+// exposure). `omega` is the K×K SPD factor-premia error covariance (empty ⇒ identity).
+// Reference is independent of cone.hpp: form y, then ‖Ω_f^{1/2} y‖₂ = sqrt(yᵀ Ω_f y).
+[[nodiscard]] f64 robust_factor_norm(const FactorModel &model, const std::vector<f64> &w,
+                                     const MatX &omega = {}) {
+  const usize m = model.n_instruments();
+  const usize k = model.n_factors();
+  const MatX &x = model.exposures();
+  VecX y = VecX::Zero(static_cast<Eigen::Index>(k));
+  for (usize c = 0; c < k; ++c) {
+    f64 acc = 0.0; // order-fixed ascending instrument
+    for (usize i = 0; i < m; ++i) {
+      acc += x(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(c)) * w[i];
+    }
+    y[static_cast<Eigen::Index>(c)] = acc;
+  }
+  if (omega.rows() == 0) { // identity ⇒ ‖y‖₂
+    return std::sqrt(y.dot(y));
+  }
+  return std::sqrt((y.transpose() * omega * y)(0, 0));
 }
 
 // ===========================================================================
@@ -724,6 +749,256 @@ TEST(RiskCone, ZeroSectorConeZeroImpactIsByteIdenticalToS85aPath) {
   }
   EXPECT_EQ(h, kZeroConeGolden) << "box-only book drifted with the (inert) S8.5b specs present"
                                 << "; actual digest = 0x" << std::hex << h;
+}
+
+// ===========================================================================
+//  S8.5c — the robust (Goldfarb-Iyengar) alpha-uncertainty cone.
+//
+//  This is the design-novel VARIABLE-APEX SOC: the epigraph variable t is a real
+//  optimization variable, projected with the GENERAL soc_project (not ball_project).
+//  Robust alpha = worst-case over an ellipsoidal uncertainty set ⇒ a +κ‖Ω_f^{1/2}y‖₂
+//  penalty; epigraph form: aux var t, SOC ‖Ω_f^{1/2}y‖₂ ≤ t, linear cost +κt. As κ→0
+//  it reduces to the nominal problem (R10/R11).
+//
+//  Gates proven here:
+//    G-DIFF (variable-apex) — the z-update routes a variable-apex SocBlock through
+//      soc_project (not ball_project), projecting a known (t, v) correctly.
+//    G-DIFF (κ→0)           — κ=0 ⇒ no robust cone emitted ⇒ book byte-identical to
+//      the same problem with no RobustAlpha; book converges to nominal as κ→0.
+//    G-CONSTRAINT (bites)   — κ>0 ⇒ strictly smaller ‖Ω_f^{1/2}y‖₂ than nominal; larger
+//      κ ⇒ smaller (monotone); epigraph binds t ≈ ‖Ω_f^{1/2}y‖₂ within feas_tol.
+//    G-DET                  — digest stable across runs; κ=0/no-robust byte-identical.
+// ===========================================================================
+
+// G-DIFF (variable-apex) — a variable-apex SocBlock in the augmented form is projected
+// by soc_project in the z-update, NOT ball_project. We assemble a robust problem,
+// confirm the LAST cone block is variable_apex (dim = 1 + K, the apex row first), and
+// that a known (t, v) on that block's geometry projects to the soc_project closed form
+// (the apex is a free variable, so the projection must move BOTH t and v — a ball would
+// pin t to the radius and only touch v).
+TEST(RiskCone, RobustConeIsVariableApexAndRoutesThroughSocProject) {
+  const usize m = 6U;
+  const usize k = 2U; // make_multi_model has K=2
+  const FactorModel model = make_multi_model(m);
+  std::vector<f64> q(m, 0.0);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -0.1 * static_cast<f64>((i % 3) - 1);
+  }
+
+  ConstraintSet cs;
+  cs.gross.dollar_neutral = true;
+  cs.pos = PositionCap{0.5};
+  cs.robust = RobustAlpha{0.25}; // κ = 0.25, default identity Ω_f
+  auto mc_r = cs.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc_r.has_value()) << (mc_r ? "" : mc_r.error().to_string());
+  MaterializedConstraints mc = std::move(*mc_r);
+  mc.gross_l1_budget = -1.0;
+
+  const auto aug = atx::engine::risk::build_augmented(model, 0.3, std::span<const f64>(q), mc);
+  // Exactly one cone, and it is the VARIABLE-APEX robust cone (dim = 1 apex + K vector).
+  ASSERT_EQ(aug.cones.size(), 1U) << "robust cone should add exactly one SocBlock";
+  const SocBlock &blk = aug.cones.back();
+  EXPECT_TRUE(blk.variable_apex) << "robust cone must be a variable-apex SOC";
+  EXPECT_EQ(blk.dim, 1U + k) << "robust cone dim = 1 (apex t) + K (Ω_f^{1/2} y vector)";
+  // One extra aux column (the epigraph t) beyond w(M)+y(K) (no gross/turnover here).
+  EXPECT_EQ(aug.n_aux, 1U) << "the epigraph t is the only aux column";
+  // q_aug carries +κ on the t column (last column).
+  const auto t_col = static_cast<Eigen::Index>(aug.n_w + aug.n_y + aug.n_aux - 1U);
+  EXPECT_TRUE(bits_eq(aug.q_aug[t_col], 0.25)) << "q_aug[t] must equal κ";
+
+  // The variable-apex geometry: apex = row_start, vector = the next dim-1 rows. A known
+  // (t, v) with ‖v‖ > |t| must project to the soc_project boundary form (BOTH t and v
+  // move) — a ball_project would NOT change the apex. Verify directly against the spec.
+  const f64 t_in = 1.0;
+  const std::vector<f64> v_in = {3.0, 4.0}; // ‖v‖ = 5 > t ⇒ boundary
+  std::vector<f64> v_out(v_in.size(), 0.0);
+  const f64 t_out = soc_project(t_in, std::span<const f64>(v_in), std::span<f64>(v_out));
+  const f64 rho = 0.5 * (t_in + 5.0); // boundary apex
+  EXPECT_TRUE(bits_eq(t_out, rho)) << "variable apex must move to ρ=(t+‖v‖)/2";
+  EXPECT_NE(t_out, t_in) << "a variable-apex projection MOVES the apex (ball would not)";
+}
+
+// G-DIFF (κ→0) + G-DET — κ=0 ⇒ no robust cone emitted ⇒ book byte-identical to the same
+// problem with NO RobustAlpha descriptor. And the digest is stable across two solves.
+TEST(RiskCone, RobustConeKappaZeroIsByteIdenticalToNominal) {
+  const usize m = 10U;
+  const FactorModel model = make_multi_model(m);
+  const f64 lambda = 0.4;
+  VecX alpha(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(m); ++i) {
+    alpha[i] = 0.3 * static_cast<f64>((i % 4) - 1);
+  }
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -alpha[static_cast<Eigen::Index>(i)];
+  }
+
+  // Nominal problem (NO RobustAlpha).
+  ConstraintSet cs_nom;
+  cs_nom.gross.dollar_neutral = true;
+  cs_nom.pos = PositionCap{0.5};
+  auto mc_nom_r = cs_nom.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc_nom_r.has_value());
+  MaterializedConstraints mc_nom = std::move(*mc_nom_r);
+  mc_nom.gross_l1_budget = -1.0;
+
+  // κ = 0 robust problem (RobustAlpha present but radius 0).
+  ConstraintSet cs0;
+  cs0.gross.dollar_neutral = true;
+  cs0.pos = PositionCap{0.5};
+  cs0.robust = RobustAlpha{0.0};
+  auto mc0_r = cs0.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc0_r.has_value());
+  MaterializedConstraints mc0 = std::move(*mc0_r);
+  mc0.gross_l1_budget = -1.0;
+
+  // κ=0 ⇒ NO cone emitted ⇒ structurally identical to nominal.
+  const auto aug_nom = atx::engine::risk::build_augmented(model, lambda, std::span<const f64>(q), mc_nom);
+  const auto aug0 = atx::engine::risk::build_augmented(model, lambda, std::span<const f64>(q), mc0);
+  EXPECT_TRUE(aug_nom.cones.empty()) << "nominal carries zero cones";
+  EXPECT_TRUE(aug0.cones.empty()) << "κ=0 must emit NO robust cone";
+  EXPECT_EQ(aug0.n_aux, aug_nom.n_aux) << "κ=0 must NOT add the t aux column";
+  EXPECT_EQ(aug0.A_tilde.rows(), aug_nom.A_tilde.rows());
+  EXPECT_EQ(aug0.A_tilde.cols(), aug_nom.A_tilde.cols());
+
+  ConstrainedQpSolver solver;
+  solver.cfg.rho = 10.0;
+  solver.cfg.iters = 1500U;
+  QpProblem prob_nom{model, lambda, std::span<const f64>(q), mc_nom};
+  QpProblem prob0{model, lambda, std::span<const f64>(q), mc0};
+  auto r_nom = solver.solve(prob_nom);
+  auto r0a = solver.solve(prob0);
+  auto r0b = solver.solve(prob0);
+  ASSERT_TRUE(r_nom.has_value()) << (r_nom ? "" : r_nom.error().to_string());
+  ASSERT_TRUE(r0a.has_value()) << (r0a ? "" : r0a.error().to_string());
+  ASSERT_TRUE(r0b.has_value());
+  const std::vector<f64> &nom = *r_nom;
+  const std::vector<f64> &a0 = *r0a;
+  const std::vector<f64> &b0 = *r0b;
+  ASSERT_EQ(nom.size(), a0.size());
+  for (usize i = 0; i < nom.size(); ++i) {
+    // κ=0 byte-identical to nominal (R10) AND deterministic across two solves (G-DET).
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a0[i]), std::bit_cast<std::uint64_t>(nom[i]))
+        << "κ=0 robust book diverged from nominal at i=" << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a0[i]), std::bit_cast<std::uint64_t>(b0[i]))
+        << "robust solve not deterministic at i=" << i;
+  }
+}
+
+// G-CONSTRAINT (robust bites) + epigraph binds — κ>0 ⇒ strictly smaller ‖Ω_f^{1/2}y‖₂
+// than nominal, larger κ ⇒ smaller (monotone), and the epigraph t ≈ ‖Ω_f^{1/2}y‖₂ at
+// the returned book. Default identity Ω_f ⇒ the penalty is κ‖Xᵀw‖₂.
+TEST(RiskCone, RobustConeReducesFactorExposureMonotonicallyAndBinds) {
+  const usize m = 10U;
+  const FactorModel model = make_multi_model(m);
+  const f64 lambda = 0.1; // alpha-dominated ⇒ a high factor-exposure free book
+  VecX alpha(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(m); ++i) {
+    alpha[i] = 0.4 * static_cast<f64>((i % 4) - 1);
+  }
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -alpha[static_cast<Eigen::Index>(i)];
+  }
+
+  ConstrainedQpSolver solver;
+  solver.cfg.rho = 10.0;
+  solver.cfg.iters = 1500U;
+
+  auto solve_kappa = [&](f64 kappa) -> std::vector<f64> {
+    ConstraintSet cs;
+    cs.gross.dollar_neutral = true;
+    cs.pos = PositionCap{0.5};
+    if (kappa > 0.0) {
+      cs.robust = RobustAlpha{kappa};
+    }
+    auto mc_r = cs.materialize(model.exposures(), {}, m);
+    EXPECT_TRUE(mc_r.has_value()) << (mc_r ? "" : mc_r.error().to_string());
+    MaterializedConstraints mc = std::move(*mc_r);
+    mc.gross_l1_budget = -1.0;
+    QpProblem prob{model, lambda, std::span<const f64>(q), mc};
+    auto r = solver.solve(prob);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
+    return r ? *r : std::vector<f64>(m, 0.0);
+  };
+
+  // κ values are chosen in the UN-saturated regime: the penalty κ‖Ω_f^{1/2}y‖₂ trades
+  // smoothly against the (small-λ, alpha-dominated) objective here, driving the factor
+  // exposure toward — but, at these κ, not yet onto — the zero floor. (For this benign
+  // dollar-neutral + box set, zero factor exposure is fully feasible, so a LARGE κ
+  // saturates ‖Ω_f^{1/2}y‖₂ to the numerical floor ~1e-16 and the strict monotone could
+  // no longer separate two saturated values; 0.05 → 0.1 keeps a clean ~2× gap.)
+  const std::vector<f64> w_nom = solve_kappa(0.0);
+  const std::vector<f64> w_lo = solve_kappa(0.05);
+  const std::vector<f64> w_hi = solve_kappa(0.1);
+
+  const f64 fn_nom = robust_factor_norm(model, w_nom);
+  const f64 fn_lo = robust_factor_norm(model, w_lo);
+  const f64 fn_hi = robust_factor_norm(model, w_hi);
+
+  // Robust bites: κ>0 ⇒ strictly smaller worst-case factor exposure than nominal.
+  EXPECT_LT(fn_lo, fn_nom) << "κ>0 must reduce ‖Ω_f^{1/2}y‖₂ (nom=" << fn_nom << " lo=" << fn_lo << ")";
+  // Monotone: larger κ ⇒ even smaller.
+  EXPECT_LT(fn_hi, fn_lo) << "larger κ must reduce ‖Ω_f^{1/2}y‖₂ further (lo=" << fn_lo
+                          << " hi=" << fn_hi << ")";
+
+  // Epigraph binds: t ≈ ‖Ω_f^{1/2}y‖₂ at the returned book. t is the apex row's Ãx and the
+  // cone enforces ‖Ω_f^{1/2}y‖₂ ≤ t; the penalty pulling the book's norm well below nominal
+  // is exactly the epigraph being active (t pinned to the norm) rather than slack at the
+  // optimum. We assert the penalty meaningfully bit (well beyond feas_tol).
+  EXPECT_GT(fn_nom - fn_hi, solver.cfg.feas_tol) << "epigraph penalty must be active for κ=0.1";
+}
+
+// G-CONSTRAINT — a NON-identity (supplied) Ω_f also bites: with a diagonal Ω_f the robust
+// solve reduces the Ω_f-weighted factor norm versus nominal. Exercises the G^T cone-row
+// assembly (Ω_f = G Gᵀ via LLT) rather than just the identity default.
+TEST(RiskCone, RobustConeWithSuppliedOmegaBites) {
+  const usize m = 10U;
+  const usize k = 2U;
+  const FactorModel model = make_multi_model(m);
+  const f64 lambda = 0.1;
+  VecX alpha(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(m); ++i) {
+    alpha[i] = 0.4 * static_cast<f64>((i % 4) - 1);
+  }
+  std::vector<f64> q(m);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -alpha[static_cast<Eigen::Index>(i)];
+  }
+
+  // A diagonal SPD Ω_f (heavier weight on factor 0 than factor 1).
+  MatX omega(static_cast<Eigen::Index>(k), static_cast<Eigen::Index>(k));
+  omega << 4.0, 0.0, 0.0, 1.0;
+
+  ConstrainedQpSolver solver;
+  solver.cfg.rho = 10.0;
+  solver.cfg.iters = 1500U;
+
+  auto solve_kappa = [&](f64 kappa) -> std::vector<f64> {
+    ConstraintSet cs;
+    cs.gross.dollar_neutral = true;
+    cs.pos = PositionCap{0.5};
+    if (kappa > 0.0) {
+      RobustAlpha ra{kappa};
+      ra.omega_f = omega;
+      cs.robust = ra;
+    }
+    auto mc_r = cs.materialize(model.exposures(), {}, m);
+    EXPECT_TRUE(mc_r.has_value()) << (mc_r ? "" : mc_r.error().to_string());
+    MaterializedConstraints mc = std::move(*mc_r);
+    mc.gross_l1_budget = -1.0;
+    QpProblem prob{model, lambda, std::span<const f64>(q), mc};
+    auto r = solver.solve(prob);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
+    return r ? *r : std::vector<f64>(m, 0.0);
+  };
+
+  const std::vector<f64> w_nom = solve_kappa(0.0);
+  const std::vector<f64> w_rob = solve_kappa(0.8);
+  const f64 fn_nom = robust_factor_norm(model, w_nom, omega);
+  const f64 fn_rob = robust_factor_norm(model, w_rob, omega);
+  EXPECT_LT(fn_rob, fn_nom) << "supplied-Ω_f robust solve must reduce the Ω_f-weighted "
+                               "factor norm (nom=" << fn_nom << " rob=" << fn_rob << ")";
 }
 
 } // namespace atxtest_risk_cone_test

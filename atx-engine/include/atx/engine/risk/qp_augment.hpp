@@ -162,6 +162,11 @@ namespace detail {
   }
   // (5) sector-risk SOC (S8.5b): K + M cone rows per sector with a finite σ_g > 0.
   r += active_sector_cone_count(c) * (k + m);
+  // (6) robust alpha SOC (S8.5c): when κ > 0, ONE variable-apex cone = 1 apex row + K
+  //     cone-argument rows (the epigraph t + Ω_f^{1/2} y). κ ≤ 0 ⇒ no rows (R10).
+  if (c.robust.active && c.robust.kappa > 0.0) {
+    r += 1U + k;
+  }
   return r;
 }
 
@@ -187,18 +192,22 @@ namespace detail {
 
   const bool has_gross = C.gross_l1_budget >= 0.0;
   const bool has_turn = C.has_turnover;
+  // S8.5c robust alpha: ONE epigraph aux column t when κ > 0 (κ ≤ 0 ⇒ no column, no cone
+  // ⇒ byte-identical to S8.5b, R10). Appended AFTER the gross/turnover aux columns.
+  const bool has_robust = C.robust.active && C.robust.kappa > 0.0;
 
   AugmentedQp out;
   out.n_w = m;
   out.n_y = k;
-  out.n_aux = (has_gross ? m : 0U) + (has_turn ? m : 0U);
+  out.n_aux = (has_gross ? m : 0U) + (has_turn ? m : 0U) + (has_robust ? 1U : 0U);
   const atx::usize n = out.n_w + out.n_y + out.n_aux;
 
-  // Column offsets (fixed): w | y | s | r.
+  // Column offsets (fixed): w | y | s | r | t.
   const atx::usize w_off = 0U;
   const atx::usize y_off = m;
   const atx::usize s_off = m + k;                       // gross aux, present iff has_gross
   const atx::usize r_off = s_off + (has_gross ? m : 0U); // turnover aux, present iff has_turn
+  const atx::usize t_off = r_off + (has_turn ? m : 0U);  // robust epigraph aux, present iff has_robust
 
   const atx::f64 two_lambda = 2.0 * lambda;
 
@@ -258,6 +267,13 @@ namespace detail {
     const atx::f64 ci = impact_c(i);
     out.q_aug[static_cast<Eigen::Index>(w_off + i)] =
         (ci > 0.0) ? (q[i] - 2.0 * ci * impact_wprev(i)) : q[i];
+  }
+  // S8.5c robust epigraph cost: q_aug[t_col] = κ (the linear +κt term that, against the
+  // SOC ‖Ω_f^{1/2} y‖₂ ≤ t, makes the effective penalty κ‖Ω_f^{1/2} y‖₂ at the optimum).
+  // The t column's P block is 0 (no quadratic on the epigraph — like the gross/turnover
+  // aux columns). Not written when has_robust is false ⇒ q_aug byte-identical to S8.5b.
+  if (has_robust) {
+    out.q_aug[static_cast<Eigen::Index>(t_off)] = C.robust.kappa;
   }
 
   // -------------------------------------------------------------------------
@@ -493,6 +509,60 @@ namespace detail {
 
       out.cones.push_back(std::move(blk));
     }
+  }
+
+  // (6) robust alpha-uncertainty SOC (S8.5c): the variable-apex cone ‖Ω_f^{1/2} y‖₂ ≤ t
+  //     with the epigraph aux var t. Emits 1 + K rows: an APEX row (Ãx == t, a single
+  //     +1.0 at the t column) FIRST, then K cone-argument rows producing Ω_f^{1/2} y on
+  //     the y-block. With Ω_f = G Gᵀ (G = lower Cholesky, K×K via Eigen::LLT) the map
+  //     Ω_f^{1/2} is realized as Gᵀ: row c of (Gᵀ y) is Σ_a G(a,c)·y_a, so entry
+  //     (cone row c, y_off + a) = G(a, c), giving ‖Ω_f^{1/2} y‖₂² = yᵀ G Gᵀ y = yᵀ Ω_f y.
+  //     Ω_f EMPTY ⇒ the identity (G = I) ⇒ the cone argument is y directly (entry +1.0 at
+  //     y_off + c on row c) ⇒ the penalty is κ‖y‖₂ = κ‖Xᵀw‖₂. offset = 0 (no benchmark /
+  //     constant). The block is marked variable_apex so the z-update routes it through
+  //     soc_project (apex t is a real variable), NOT ball_project. NEVER densifies V (R4 —
+  //     all K×K / K work on the y-block; reuses the factor aux y, Goldfarb-Iyengar).
+  if (has_robust) {
+    const atx::usize cone_start = row;
+    SocBlock blk;
+    blk.row_start = cone_start;
+    blk.dim = 1U + k;                 // 1 apex row (t) + K cone-argument rows
+    blk.radius = 0.0;                 // IGNORED for a variable-apex SOC (the apex IS t)
+    blk.offset = cl::VecX::Zero(static_cast<Eigen::Index>(1U + k)); // no benchmark ⇒ b = 0
+    blk.variable_apex = true;         // ⇒ soc_project in the z-update (not ball_project)
+
+    // (6a) apex row — Ãx on this row == t (a single +1.0 at the epigraph column t_off).
+    a_trips.emplace_back(static_cast<int>(row), static_cast<int>(t_off), 1.0);
+    out.l[static_cast<Eigen::Index>(row)] = -kAugInf; // inert box band — the SOC owns this row
+    out.u[static_cast<Eigen::Index>(row)] = kAugInf;
+    ++row;
+
+    // (6b) K cone-argument rows — Ω_f^{1/2} y. Empty Ω_f ⇒ identity (G = I); else G = chol(Ω_f).
+    if (C.robust.omega_f.rows() == 0) { // identity ⇒ cone argument is y directly
+      for (atx::usize c = 0; c < k; ++c) {
+        a_trips.emplace_back(static_cast<int>(row), static_cast<int>(y_off + c), 1.0);
+        out.l[static_cast<Eigen::Index>(row)] = -kAugInf;
+        out.u[static_cast<Eigen::Index>(row)] = kAugInf;
+        ++row;
+      }
+    } else { // supplied Ω_f = G Gᵀ (G = lower-triangular Cholesky); emit Gᵀ on the y-block
+      const Eigen::LLT<cl::MatX> om_llt(C.robust.omega_f);
+      ATX_ASSERT(om_llt.info() == Eigen::Success); // Ω_f SPD invariant (validated K×K up front)
+      const cl::MatX G = om_llt.matrixL(); // K×K lower-triangular factor (G Gᵀ = Ω_f)
+      for (atx::usize c = 0; c < k; ++c) {
+        for (atx::usize a = 0; a < k; ++a) {
+          const atx::f64 gac = G(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(c));
+          if (gac != 0.0) { // G lower-triangular ⇒ a < c entries are exact zero
+            a_trips.emplace_back(static_cast<int>(row), static_cast<int>(y_off + a), gac);
+          }
+        }
+        out.l[static_cast<Eigen::Index>(row)] = -kAugInf;
+        out.u[static_cast<Eigen::Index>(row)] = kAugInf;
+        ++row;
+      }
+    }
+
+    out.cones.push_back(std::move(blk));
   }
 
   out.A_tilde.resize(static_cast<int>(r_total), static_cast<int>(n));

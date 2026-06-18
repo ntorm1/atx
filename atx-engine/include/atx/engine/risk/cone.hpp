@@ -79,12 +79,27 @@ namespace atx::engine::risk {
 //  (a fixed-apex SOC): `radius` is te, `offset` is b = [−L_Fᵀ Xᵀw_bench ; −sqrt(D)∘w_bench]
 //  (length == dim). The z-update projects (Ãx-target + offset) onto the ball of radius
 //  `radius`, then subtracts `offset` so z stays in Ã x units.
+//
+//  S8.5c — the VARIABLE-APEX extension (the robust alpha-uncertainty cone). When
+//  `variable_apex == true` the block is a GENERAL second-order cone whose apex is a real
+//  optimization variable rather than a fixed radius: the FIRST row of the block
+//  (`row_start`) carries the epigraph apex variable t (Ãx on that row == t), and the
+//  remaining `dim − 1` rows carry the cone-argument vector (Ω_f^{1/2} y for the robust
+//  cone). The z-update projects (t, vector) with the GENERAL soc_project onto
+//  {(t,v): ‖v‖₂ ≤ t} — writing BOTH the projected apex and the projected vector back —
+//  instead of the fixed-radius ball_project (which only touches the vector). `radius` is
+//  IGNORED for a variable-apex block (the apex IS the variable t). `offset` is still
+//  applied per row before projection and subtracted back after (the robust cone uses an
+//  all-zero offset: no benchmark, no constant). DEFAULT false ⇒ the ball geometry, so the
+//  S8.5a/b tracking-error / sector-risk blocks keep their EXACT byte-identical ball path.
 // ===========================================================================
 struct SocBlock {
   atx::usize row_start = 0;        // first Ã-row of the block (block spans [row_start, row_start+dim))
   atx::usize dim = 0;              // number of rows projected jointly (K + M for tracking-error)
   atx::f64 radius = 0.0;           // ball radius (te for tracking-error); ≤ 0 ⇒ the block collapses to {0}
   atx::core::linalg::VecX offset;  // constant b added to Ãx before projection (length dim)
+  bool variable_apex = false;      // S8.5c: true ⇒ general SOC (apex = row_start, projected with
+                                   // soc_project); false ⇒ fixed-radius ball (ball_project, S8.5a/b)
 };
 
 // ===========================================================================
@@ -156,6 +171,31 @@ struct SectorRiskSpec {
 struct ImpactSurrogateSpec {
   bool active = false;            // a √-impact surrogate was requested
   std::vector<atx::f64> coeff;    // per-name c_i ≥ 0 (length M; empty ⇒ inert)
+};
+
+// ===========================================================================
+//  RobustAlphaSpec — the materialized robust (Goldfarb-Iyengar) alpha-uncertainty
+//  REQUEST (S8.5c). A RobustAlpha descriptor materializes into this (the κ radius + the
+//  optional K×K SPD Ω_f). build_augmented consumes it to assemble — when κ > 0 — ONE
+//  epigraph aux column t plus the variable-apex SOC: an apex row (Ãx == t) and K
+//  cone-argument rows producing Ω_f^{1/2} y (the linear map Ω_f^{1/2} = Gᵀ on the
+//  y-block, with Ω_f = G Gᵀ via Eigen::LLT). The penalty κ‖Ω_f^{1/2} y‖₂ enters the
+//  objective via the linear cost q_aug[t_col] = κ on the epigraph (so at the optimum
+//  t = ‖Ω_f^{1/2} y‖₂). Reusing the existing factor aux y = Xᵀw makes the cone
+//  dimension-K (Goldfarb-Iyengar). NEVER densifies V (R4 — all K×K work on the y-block).
+//
+//  κ ≤ 0 ⇒ NO robust cone is emitted (the augmented path is byte-identical to S8.5b, R10);
+//  as κ → 0 the robust solution reduces to the nominal one (R11). `omega_f` is K×K SPD
+//  (its Cholesky is the assembly's only factorization, .info()-guarded by ATX_ASSERT like
+//  the tracking/sector cones); EMPTY ⇒ Ω_f defaults to the identity, so the cone argument
+//  is y directly and the penalty is κ‖y‖₂ = κ‖Xᵀw‖₂ (penalize total factor exposure — the
+//  simplest dimension-K robust form). Carried on MaterializedConstraints because the cone
+//  argument reuses the FactorModel's y-block, only reachable in build_augmented.
+// ===========================================================================
+struct RobustAlphaSpec {
+  bool active = false;                // a RobustAlpha descriptor was set
+  atx::f64 kappa = 0.0;               // uncertainty radius κ ≥ 0 (κ ≤ 0 ⇒ NO cone emitted)
+  atx::core::linalg::MatX omega_f;    // K×K SPD factor-premia error covariance (empty ⇒ identity)
 };
 
 // Order-fixed Euclidean norm of a vector slice: single accumulator, ASCENDING index
