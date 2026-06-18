@@ -4,6 +4,7 @@
   "dependencies": [
     { "name": "arrow", "features": ["parquet"] },
     "zstd",
+    "zlib-ng",
     "openssl",
     "gtest"
   ],

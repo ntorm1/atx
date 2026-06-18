@@ -1,4 +1,6 @@
 #include <filesystem>
+#include <fstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -57,4 +59,47 @@ TEST(IoZipReader, MissingEntrySubstringIsNotFound) {
   auto r = ZipEntryReader::open(zip, "does-not-exist");
   ASSERT_FALSE(r.has_value());
   EXPECT_EQ(r.error().code(), atx::core::ErrorCode::NotFound);
+}
+
+// A byte flipped inside the compressed payload must be rejected — either as an
+// inflate structural error or a CRC32 mismatch. Path-agnostic: the miniz default
+// path and the zlib-ng fast path (ATX_FAST_INFLATE) both fail closed here.
+TEST(IoZipReader, CorruptedDeflateStreamSurfacesParseError) {
+  std::string content;
+  for (int i = 0; i < 5000; ++i) content += "line" + std::to_string(i) + "\n";
+  const std::string zip = make_zip("history.txt", content);
+
+  // Flip a byte ~50 bytes in: past the ~41-byte local header (so the central
+  // directory miniz reads at open() stays intact) and well before the trailing
+  // central directory, i.e. squarely inside the deflate stream.
+  {
+    std::fstream f(zip, std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(f.is_open());
+    f.seekg(0, std::ios::end);
+    const std::streamoff sz = f.tellg();
+    ASSERT_GT(sz, 80);
+    constexpr std::streamoff pos = 50;
+    f.seekg(pos);
+    char b = 0;
+    f.read(&b, 1);
+    b = static_cast<char>(static_cast<unsigned char>(b) ^ 0xFFu);
+    f.seekp(pos);
+    f.write(&b, 1);
+  }
+
+  auto r = ZipEntryReader::open(zip, "history");
+  ASSERT_TRUE(r.has_value()) << r.error().to_string(); // central dir intact -> opens fine
+
+  std::vector<char> buf(256);
+  bool saw_error = false;
+  for (;;) {
+    auto n = r->read(std::span<char>(buf.data(), buf.size()));
+    if (!n.has_value()) {
+      EXPECT_EQ(n.error().code(), atx::core::ErrorCode::ParseError);
+      saw_error = true;
+      break;
+    }
+    if (*n == 0) break;
+  }
+  EXPECT_TRUE(saw_error) << "corrupted deflate stream was not rejected";
 }

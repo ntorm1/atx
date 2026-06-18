@@ -116,6 +116,15 @@ target_compile_definitions(atx-core
         SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
 )
 
+# Opt-in fast inflate (Phase 4): link zlib-ng and flip ATX_FAST_INFLATE in
+# zip_reader.cpp. PRIVATE/local — miniz still parses the central directory; only
+# the inflate step changes, and the public ZipEntryReader interface is unchanged.
+if(ATX_FAST_INFLATE)
+    find_package(zlib-ng CONFIG REQUIRED)
+    target_link_libraries(atx-core PRIVATE zlib-ng::zlib)
+    target_compile_definitions(atx-core PRIVATE ATX_FAST_INFLATE=1)
+endif()
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()

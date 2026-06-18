@@ -76,6 +76,13 @@ FetchContent_MakeAvailable(xsimd)
 # Applied PRIVATE to atx targets only; third-party deps are SYSTEM includes so
 # their headers never trip our warnings-as-errors.
 option(ATX_WERROR "Treat warnings as errors on atx targets" ON)
+
+# Opt-in faster zip inflate (Phase 4): when ON, ZipEntryReader decompresses zip
+# entries via zlib-ng (2-4x faster than the vendored miniz inflate) behind the
+# unchanged read() interface, validating CRC32 against the central directory.
+# Default OFF -> the miniz path is used verbatim and zlib-ng is not linked.
+option(ATX_FAST_INFLATE "Use zlib-ng for zip inflate in ZipEntryReader" OFF)
+
 add_library(atx_warnings INTERFACE)
 if(MSVC)
     target_compile_options(atx_warnings INTERFACE /W4 /permissive-)
