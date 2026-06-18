@@ -180,3 +180,25 @@ TEST(DataOratsHistory, RejectsNonMonotonicDates) {
   ASSERT_FALSE(st.has_value());
   EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
+
+TEST(DataOratsHistory, FramingAcrossBufferBoundary) {
+  std::string body = std::string(kHeader) + "\n";
+  // ~50k rows on one date >> any single inflate read won't align to line ends.
+  constexpr int kRows = 50000;
+  for (int i = 0; i < kRows; ++i) {
+    body += make_orats_row("2020-01-02", std::to_string(20000 + i).c_str(),
+                           "T", "T", 100.0 + i, 1.0, 1000000);
+  }
+  const std::string zip = write_orats_zip(body, "atx_orats_boundary.zip");
+  const fs::path out = fs::temp_directory_path() / "atx_orats_boundary_out";
+  fs::remove_all(out);
+  OratsLoadConfig cfg;
+  cfg.zip_path = zip;
+  cfg.out_dir = out.string();
+  cfg.min_date_nanos = *detail::date_to_nanos("2020-01-01");
+  cfg.created_at_nanos = 0;
+  auto st = load_orats_history(cfg);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  EXPECT_EQ(st->rows_kept, kRows);
+  EXPECT_EQ(st->dates_written, 1);
+}

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -289,41 +290,32 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
 
   LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, fields, nullptr};
 
-  constexpr atx::usize kChunk = 1u << 20; // 1 MiB
+  constexpr atx::usize kChunk = 1u << 22; // 4 MiB inflate reads
   std::vector<char> buf(kChunk);
-  std::string carry;
-  carry.reserve(4096);
+  atx::usize fill = 0;        // valid bytes currently in buf[0, fill)
+  bool eof = false;
 
   LoadProfile prof;
   st.build_write = &prof.build_write;
 
-  for (;;) {
+  while (!eof) {
+    // Ensure room to read: if buf is full of an unconsumed partial line, grow it
+    // (a single line longer than the buffer is pathological but handled).
+    if (fill == buf.size()) buf.resize(buf.size() * 2);
+
     const auto t0 = LoadProfile::clock::now();
-    auto read_res = reader.read(std::span<char>(buf.data(), buf.size()));
+    auto read_res = reader.read(std::span<char>(buf.data() + fill, buf.size() - fill));
     prof.inflate += LoadProfile::clock::now() - t0;
     if (!read_res.has_value()) return tl::unexpected(read_res.error());
     const atx::usize n = *read_res;
+    fill += n;
+    if (n == 0) eof = true;
 
-    std::string_view chunk;
-    std::string combined;
-    if (!carry.empty()) {
-      combined = std::move(carry);
-      carry.clear();
-      combined.append(buf.data(), n);
-      chunk = std::string_view(combined);
-    } else {
-      chunk = std::string_view(buf.data(), n);
-    }
-
+    std::string_view chunk(buf.data(), fill);
     atx::usize pos = 0;
-    while (pos < chunk.size()) {
+    for (;;) {
       const atx::usize nl = chunk.find('\n', pos);
-      if (nl == std::string_view::npos) {
-        // Partial trailing line — save for next chunk.
-        carry.assign(chunk.data() + pos, chunk.size() - pos);
-        break;
-      }
-      // Strip trailing \r if present.
+      if (nl == std::string_view::npos) break; // no more complete lines this fill
       atx::usize end = nl;
       if (end > pos && chunk[end - 1] == '\r') --end;
       const std::string_view line = chunk.substr(pos, end - pos);
@@ -335,22 +327,23 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
         header_parsed = true;
         continue;
       }
-
       if (line.empty()) continue;
-      {
-        const auto tp = LoadProfile::clock::now();
-        ATX_TRY_VOID(process_line(line, st));
-        prof.parse += LoadProfile::clock::now() - tp;
-      }
+      const auto tp = LoadProfile::clock::now();
+      ATX_TRY_VOID(process_line(line, st));
+      prof.parse += LoadProfile::clock::now() - tp;
     }
 
-    if (n == 0) break; // EOF
+    // Compact: keep the unconsumed tail [pos, fill) at the front of buf.
+    if (pos > 0) {
+      const atx::usize tail = fill - pos;
+      std::memmove(buf.data(), buf.data() + pos, tail);
+      fill = tail;
+    }
   }
 
-  // Flush any remaining carry (final line with no trailing newline). Reuses the
-  // SAME process_line path so all classification/guard/counting rules apply.
-  if (!carry.empty() && header_parsed) {
-    std::string_view line = carry;
+  // Final line with no trailing newline lives in buf[0, fill).
+  if (fill > 0 && header_parsed) {
+    std::string_view line(buf.data(), fill);
     if (!line.empty() && line.back() == '\r') line = line.substr(0, line.size() - 1);
     if (!line.empty()) {
       const auto tp = LoadProfile::clock::now();
