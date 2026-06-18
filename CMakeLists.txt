@@ -110,6 +110,18 @@ endif()
 option(ATX_USE_PCH "Use precompiled headers on atx targets (dev speed; ON in ninja/dev presets, OFF in hygiene)" OFF)
 option(ATX_UNITY_BUILD "Unity/jumbo build atx test target (dev speed)" OFF)
 
+# Cross-sectional VM kernels: the default fast O(n) grouped path (cs_ops.hpp) is
+# byte-identical to the O(n^2) reference (the alpha_cs_test oracle differential
+# proves it). This switch compiles the literal O(n^2) reference loops instead —
+# an audit / bisection hatch only. It MUST be a WHOLE-BUILD define: cs_ops.hpp's
+# kernels are inline, so a per-target definition would be an ODR violation. The
+# global add_compile_definitions below (before any add_subdirectory) guarantees
+# every TU sees the same definition.
+option(ATX_ALPHA_CS_REFERENCE "Compile the O(n^2) reference cross-sectional VM kernels (byte-identical audit path; default OFF = fast O(n))" OFF)
+if(ATX_ALPHA_CS_REFERENCE)
+    add_compile_definitions(ATX_ALPHA_CS_REFERENCE)
+endif()
+
 # ---- Benchmarks (opt-in; Google Benchmark is a test/bench-only dep) ----
 option(ATX_BUILD_BENCH "Build ATX benchmarks" OFF)
 if(ATX_BUILD_BENCH)

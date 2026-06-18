@@ -634,7 +634,7 @@ private:
           grouped ? g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
       const std::span<const atx::f64> zrow =
           z.empty() ? std::span<const atx::f64>{} : z.subspan(d * instruments, instruments);
-      cs_one_date(in.op, xr, grow, zrow, scale_a, orow, cs_valid_);
+      cs_one_date(in.op, xr, grow, zrow, scale_a, orow, cs_valid_, cs_scratch_);
     }
     return atx::core::Ok();
   }
@@ -644,7 +644,7 @@ private:
   // valid set is rebuilt into `valid` (caller-owned scratch), then dispatched.
   static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
                           std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
-                          std::vector<atx::usize> &valid) {
+                          std::vector<atx::usize> &valid, detail::CsScratch &scratch) {
     valid.clear();
     for (atx::usize i = 0; i < x.size(); ++i) {
       out[i] = detail::kVmNaN; // default every cell (out-of-set stays NaN)
@@ -654,7 +654,7 @@ private:
     }
     switch (op) {
     case OpCode::CsRank:
-      detail::cs_rank_row(x, valid, out);
+      detail::cs_rank_row(x, valid, out, scratch);
       break;
     case OpCode::CsZscore:
       detail::cs_zscore_row(x, valid, out);
@@ -670,13 +670,13 @@ private:
       break;
     case OpCode::CsDemeanG:
     case OpCode::CsNeutG: // SAFETY: residualize-on-group-dummies == per-group demean
-      detail::cs_group_demean_row(x, g, valid, out);
+      detail::cs_group_demean_row(x, g, valid, out, scratch);
       break;
     case OpCode::CsResidualize: // demean (z empty) or FWL partial-out (z present)
-      detail::cs_residualize_row(x, g, z, valid, out);
+      detail::cs_residualize_row(x, g, z, valid, out, scratch);
       break;
     case OpCode::CsQuantile: // discretize the valid set into `scale_a` buckets
-      detail::cs_quantile_row(x, valid, scale_a, out);
+      detail::cs_quantile_row(x, valid, scale_a, out, scratch);
       break;
     case OpCode::CsVecSum:
       detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/false);
@@ -685,19 +685,19 @@ private:
       detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/true);
       break;
     case OpCode::CsRankG:
-      detail::cs_group_row(x, g, valid, out, /*zscore=*/false);
+      detail::cs_group_row(x, g, valid, out, /*zscore=*/false, scratch);
       break;
     case OpCode::CsZscoreG:
-      detail::cs_group_row(x, g, valid, out, /*zscore=*/true);
+      detail::cs_group_row(x, g, valid, out, /*zscore=*/true, scratch);
       break;
     case OpCode::CsCountG:
-      detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/false);
+      detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/false, scratch);
       break;
     case OpCode::CsMeanG:
-      detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/true);
+      detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/true, scratch);
       break;
     case OpCode::CsScaleG:
-      detail::cs_group_scale_row(x, g, valid, out);
+      detail::cs_group_scale_row(x, g, valid, out, scratch);
       break;
     default:
       ATX_UNREACHABLE();
@@ -906,6 +906,7 @@ private:
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
   std::vector<atx::usize> cs_valid_;   // Cs* per-date valid-index scratch; grown once, cleared per date
+  detail::CsScratch cs_scratch_;       // Cs* grouped/sort scratch; grown once, reset per date
 };
 
 } // namespace atx::engine::alpha

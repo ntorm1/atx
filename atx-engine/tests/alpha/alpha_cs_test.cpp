@@ -179,6 +179,46 @@ TEST(AlphaCs_Differential, NeutralizeAliasAndManySectors_MatchesOracle) {
   expect_vm_matches_oracle("group_zscore(close, IndClass.sector)", panel);
 }
 
+// Large panel with many small groups — stresses the fast path's group hash
+// table (growth + linear probing across collisions) at a scale where the old
+// O(n²) rescans are no longer indistinguishable from O(n). Every grouped op
+// must still match the O(n²) oracle bit-for-bit.
+TEST(AlphaCs_Differential, LargeManyGroups_MatchesOracle) {
+  const atx::usize dates = 5;
+  const atx::usize instruments = 96;
+  const Panel panel = make_panel(
+      dates, instruments, random_cols(dates * instruments, 0xB1664EULL, /*num_sectors=*/17));
+  expect_vm_matches_oracle("indneutralize(close, IndClass.sector)", panel);
+  expect_vm_matches_oracle("group_neutralize(close, IndClass.sector)", panel);
+  expect_vm_matches_oracle("group_rank(close, IndClass.sector)", panel);
+  expect_vm_matches_oracle("group_zscore(close, IndClass.sector)", panel);
+}
+
+// Signed-zero group labels: -0.0 and +0.0 compare EQUAL under the oracle's
+// `g[j] == g[i]`, so they form ONE group. The fast path keys groups on the
+// label's bit pattern after `+ 0.0` (which folds -0.0 -> +0.0) precisely so it
+// partitions identically. A regression that hashed raw bits would split the
+// two zeros and diverge; this differential pins that it does not.
+TEST(AlphaCs_Group, SignedZeroLabels_SameGroupAsOracle) {
+  const atx::usize dates = 1;
+  const atx::usize instruments = 5;
+  auto cols = random_cols(dates * instruments, 0xDULL);
+  cols[0] = {10.0, 20.0, 30.0, 40.0, 50.0};
+  cols[5] = {-0.0, 0.0, -0.0, 1.0, 1.0}; // {i0,i1,i2} one group despite ±0.0 bits
+  const Panel panel = make_panel(dates, instruments, std::move(cols));
+
+  expect_vm_matches_oracle("indneutralize(close, IndClass.sector)", panel);
+  expect_vm_matches_oracle("group_rank(close, IndClass.sector)", panel);
+  expect_vm_matches_oracle("group_zscore(close, IndClass.sector)", panel);
+
+  // And concretely: the ±0.0 cells share group 0's mean (10+20+30)/3 = 20.
+  const std::vector<atx::f64> gd = vm_values("group_neutralize(close, IndClass.sector)", panel);
+  ASSERT_EQ(gd.size(), instruments);
+  EXPECT_DOUBLE_EQ(gd[0], 10.0 - 20.0);
+  EXPECT_DOUBLE_EQ(gd[1], 20.0 - 20.0);
+  EXPECT_DOUBLE_EQ(gd[2], 30.0 - 20.0);
+}
+
 // A nested program where a Cs op feeds an element-wise op and another Cs op:
 // proves the cross-sectional result composes correctly inside a larger DAG.
 TEST(AlphaCs_Differential, NestedComposition_MatchesOracle) {
