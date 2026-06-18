@@ -757,24 +757,23 @@ private:
 
   // -------------------------------------------------------------------------
   //  S8.6 elasticity metadata — record, per ELASTIC descriptor, the materialized
-  //  rows / cone it owns + its priority. CONSUMED only by risk/elasticity.hpp (on the
-  //  infeasible re-solve). This walks the SAME fixed order the emitters use (R1) so the
-  //  recorded ranges match C.A exactly; it does NOT touch (A, l, u) — the exact surface
-  //  is unchanged. SCOPE: elastic LINEAR A-rows (dollar-neutral, box, factor-exposure,
-  //  group, beta, sector net-weight) and elastic CONES (tracking-error, sector-risk SOC,
-  //  robust). The gross / turnover L1 BUDGETS ride the aux-split metadata, not A-rows, so
-  //  they are NOT relaxable here (a documented S8.6 scope boundary — the minimize-
-  //  violation layer relaxes the linear + conic surface; L1-budget elasticity is a
-  //  recorded follow-on). Only descriptors with `elastic == true` are recorded; an empty
-  //  result ⇒ elasticity is a pure no-op (R10).
+  //  rows / cone / budget it owns + its priority. CONSUMED only by risk/elasticity.hpp (on
+  //  the infeasible re-solve). This walks the SAME fixed order the emitters use (R1) so the
+  //  recorded ranges match C.A exactly; it does NOT touch (A, l, u) — the exact surface is
+  //  unchanged. SCOPE: elastic LINEAR A-rows (box, factor-exposure, group, beta, sector
+  //  net-weight), elastic CONES (tracking-error, sector-risk SOC, robust), and elastic L1
+  //  BUDGETS (gross Σ|w| ≤ L and turnover Σ|w−w_prev| ≤ T — each a single augmented budget
+  //  row, relaxed by a slack in elasticity.hpp). The GrossNet DOLLAR-NEUTRAL Σw=0 row is
+  //  STRUCTURAL and is NEVER made elastic — `GrossNet.elastic` governs the gross L1 BUDGET
+  //  (the soft leverage cap, the plan's "tight gross" scenario), not the equality. Only
+  //  descriptors with `elastic == true` are recorded; an empty result ⇒ elasticity is a
+  //  pure no-op (R10).
   // -------------------------------------------------------------------------
   void fill_elastic(MaterializedConstraints &mc, atx::usize M) const {
     atx::usize row = 0U; // running A-row cursor, mirrors the emit_* order EXACTLY
-    // (1) dollar-neutral (GrossNet) — 1 row when present.
+    // (1) dollar-neutral (GrossNet) — 1 STRUCTURAL row when present; NEVER elastic (the
+    //     gross L1 budget, relaxed below, is what `GrossNet.elastic` governs). Advance only.
     if (gross.dollar_neutral) {
-      if (gross.elastic) {
-        mc.elastic.linear_rows.push_back({row, 1U, gross.priority});
-      }
       row += 1U;
     }
     // (2) position box — M rows when any box-fold descriptor is present. The box belongs
@@ -847,6 +846,18 @@ private:
         mc.elastic.cones.push_back({cone_index, robust->priority});
       }
       ++cone_index;
+    }
+
+    // L1 BUDGETS — each is a single augmented budget row build_augmented emits when the
+    // budget is present (gross `Σ s_i ≤ L` iff gross_l1_budget ≥ 0; turnover `Σ r_i ≤ T`
+    // iff has_turnover). Record the elastic ones for elasticity.hpp to relax via a slack on
+    // the budget upper bound. The gross budget is governed by GrossNet.elastic/priority; the
+    // turnover budget by TurnoverBudget.elastic/priority.
+    if (gross.elastic && mc.gross_l1_budget >= 0.0) {
+      mc.elastic.budgets.push_back({ElasticBudget::Kind::Gross, gross.priority});
+    }
+    if (turn && turn->elastic && mc.has_turnover) {
+      mc.elastic.budgets.push_back({ElasticBudget::Kind::Turnover, turn->priority});
     }
   }
 };

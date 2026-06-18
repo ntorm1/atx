@@ -208,15 +208,22 @@ struct RobustAlphaSpec {
 //  problem it owns + at what priority into this spec; elasticity.hpp reads it to attach
 //  penalized slack columns ONLY to the elastic rows / cones.
 //
-//  TWO carriers, in the FIXED materialize emission order (R1):
-//    * `linear_rows` — one entry per elastic descriptor that emitted LINEAR A-rows
-//      (dollar-neutral, box, factor-exposure, group, beta, sector net-weight). Each
-//      entry names the contiguous [row_begin, row_begin+count) range in C.A's frame and
-//      the descriptor's priority. elasticity.hpp shifts these by the +K factor-definition
-//      rows to reach the augmented Ã frame.
+//  THREE carriers, in the FIXED materialize emission order (R1):
+//    * `linear_rows` — one entry per elastic descriptor that emitted LINEAR A-rows (box,
+//      factor-exposure, group, beta, sector net-weight). Each entry names the contiguous
+//      [row_begin, row_begin+count) range in C.A's frame and the descriptor's priority.
+//      elasticity.hpp shifts these by the +K factor-definition rows to reach the augmented
+//      Ã frame. (The GrossNet dollar-neutral Σw=0 row is STRUCTURAL and is NEVER made
+//      elastic — `GrossNet.elastic` governs the gross L1 BUDGET, see `budgets` below.)
 //    * `cones` — one entry per elastic CONE, in the augmented-cone emission order
 //      (tracking-error, then each finite-σ sector, then robust). `cone_index` is the
 //      position in AugmentedQp::cones; `priority` is the owning descriptor's.
+//    * `budgets` — one entry per elastic L1 BUDGET (gross Σ|w| ≤ L and/or turnover
+//      Σ|w−w_prev| ≤ T). Each L1 budget is a SINGLE augmented row (`Σ s_i ≤ L` for gross,
+//      `Σ r_i ≤ T` for turnover; qp_augment.hpp). `kind` selects which budget; `priority`
+//      is the GrossNet / TurnoverBudget descriptor's. elasticity.hpp finds the budget row
+//      in the augmented frame from the same fixed layout and relaxes its upper bound with a
+//      penalized slack (`Σ s_i − e ≤ L`, e ≥ 0, +γ_p·e).
 //
 //  EMPTY (no elastic descriptor) ⇒ elasticity.hpp emits ZERO slack columns ⇒ the relaxed
 //  assembly is byte-identical to the hard one (R10). It is in any case only ever built on
@@ -225,16 +232,25 @@ struct RobustAlphaSpec {
 struct ElasticRow {
   atx::usize row_begin = 0; // first row in C.A's frame (pre-augmentation)
   atx::usize count = 0;     // number of contiguous A-rows this descriptor emitted
-  atx::usize priority = 0;  // S8.6 relaxation rank (lower = relaxed first)
+  atx::usize priority = 0;  // S8.6 relaxation rank (lower priority ⇒ relaxed more)
 };
 struct ElasticCone {
   atx::usize cone_index = 0; // index into AugmentedQp::cones (augmented-cone emission order)
-  atx::usize priority = 0;   // S8.6 relaxation rank (lower = relaxed first)
+  atx::usize priority = 0;   // S8.6 relaxation rank (lower priority ⇒ relaxed more)
+};
+// An elastic L1 BUDGET (a single augmented row: gross `Σ s_i ≤ L` or turnover `Σ r_i ≤ T`).
+struct ElasticBudget {
+  enum class Kind { Gross, Turnover };
+  Kind kind = Kind::Gross;
+  atx::usize priority = 0; // S8.6 relaxation rank (lower priority ⇒ relaxed more)
 };
 struct ElasticSpec {
   std::vector<ElasticRow> linear_rows; // elastic linear-row descriptors (materialize order)
   std::vector<ElasticCone> cones;      // elastic cone descriptors (augmented-cone order)
-  [[nodiscard]] bool empty() const noexcept { return linear_rows.empty() && cones.empty(); }
+  std::vector<ElasticBudget> budgets;  // elastic L1 budgets (gross / turnover)
+  [[nodiscard]] bool empty() const noexcept {
+    return linear_rows.empty() && cones.empty() && budgets.empty();
+  }
 };
 
 // Order-fixed Euclidean norm of a vector slice: single accumulator, ASCENDING index

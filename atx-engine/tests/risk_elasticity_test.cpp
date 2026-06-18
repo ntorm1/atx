@@ -128,7 +128,11 @@ struct ElasticProblem {
   MaterializedConstraints mc;
 };
 
-[[nodiscard]] ElasticProblem make_over_constrained(usize m) {
+// `track_priority` / `fexp_priority` let a test SWAP which elastic constraint is the
+// lower-priority (cheaper-to-violate) one — the lever that proves the γ ladder actually
+// steers the relaxation by priority (not a tautological sorted-field check).
+[[nodiscard]] ElasticProblem make_over_constrained(usize m, usize track_priority = 0U,
+                                                   usize fexp_priority = 1U) {
   FactorModel model = make_multi_model(m);
   // A benchmark with genuine factor exposure (dollar-neutral over each block of 5).
   std::vector<f64> w_bench(m, 0.0);
@@ -146,16 +150,16 @@ struct ElasticProblem {
 
   FactorExposure fe;
   fe.factor_cols = {0U, 1U};
-  fe.bound = {0.0, 0.0}; // factor-NEUTRAL on both factors (ELASTIC, priority 1)
+  fe.bound = {0.0, 0.0}; // factor-NEUTRAL on both factors (ELASTIC)
   fe.elastic = true;
-  fe.priority = 1U;
+  fe.priority = fexp_priority;
   cs.fexp = fe;
 
   // Tracking-error vs a factor-exposed benchmark, tight enough to force w ≈ w_bench (which
-  // conflicts with factor-neutral). ELASTIC, priority 0 (relaxed first).
+  // conflicts with factor-neutral). ELASTIC.
   TrackingError te{std::span<const f64>(w_bench), 0.02};
   te.elastic = true;
-  te.priority = 0U;
+  te.priority = track_priority;
   cs.track = te;
 
   auto mc_r = cs.materialize(model.exposures(), {}, m);
@@ -166,6 +170,17 @@ struct ElasticProblem {
   return ElasticProblem{std::move(model), std::move(q), std::move(w_bench), std::move(mc)};
 }
 
+// Pull a report entry's achieved violation by Kind (the test asserts on these MAGNITUDES,
+// not the sorted priority field — proving the γ ladder steered the relaxation).
+[[nodiscard]] f64 violation_of(const ElasticResult &res, RelaxationEntry::Kind kind) {
+  for (const RelaxationEntry &e : res.report.entries) {
+    if (e.kind == kind) {
+      return e.violation;
+    }
+  }
+  return -1.0; // sentinel: not found
+}
+
 [[nodiscard]] ConstrainedQpSolver cone_solver() {
   ConstrainedQpSolver solver;
   solver.cfg.rho = 10.0;     // SOC-coupled rows converge best at a larger ADMM penalty
@@ -174,54 +189,160 @@ struct ElasticProblem {
 }
 
 // ===========================================================================
-//  G-ELASTIC (infeasible → closest-feasible + ordered report).
+//  G-ELASTIC (infeasible → closest-feasible + report ordered by ACHIEVED relaxation).
+//
+//  The γ ladder must STEER the relaxation: the lower-priority (cheaper) elastic constraint
+//  is relaxed MORE than the higher-priority one. We prove this NON-tautologically by solving
+//  the SAME over-constrained problem with the tracking/factor priorities SWAPPED and showing
+//  the achieved relaxation FLIPS — the constraint given the lower priority absorbs more of
+//  the violation. (Asserting only that the report is sorted by priority would pass no matter
+//  what the solver did; asserting the magnitudes flip cannot.)
 // ===========================================================================
 TEST(RiskElasticity, InfeasibleReturnsClosestFeasibleWithOrderedReport) {
   const usize m = 10U;
-  ElasticProblem prob = make_over_constrained(m);
   const ConstrainedQpSolver solver = cone_solver();
 
-  // The HARD solve (no elasticity) must report infeasible — proves the set is genuinely
-  // over-constrained, so the elastic path is actually exercised.
-  QpProblem qp{prob.model, 0.1, std::span<const f64>(prob.q), prob.mc};
-  auto hard = solver.solve(qp);
-  ASSERT_FALSE(hard.has_value()) << "the over-constrained set must be infeasible to the hard solve";
+  // Variant A: tracking cheaper (priority 0) than factor-neutral (priority 1).
+  ElasticProblem a = make_over_constrained(m, /*track_priority=*/0U, /*fexp_priority=*/1U);
+  QpProblem qpa{a.model, 0.1, std::span<const f64>(a.q), a.mc};
+  ASSERT_FALSE(solver.solve(qpa).has_value()) << "the over-constrained set must be infeasible";
+  auto ra = solve_elastic(qpa, solver);
+  ASSERT_TRUE(ra.has_value()) << (ra ? "" : ra.error().to_string());
+  const ElasticResult &resA = *ra;
+  ASSERT_EQ(resA.book.size(), m);
+  EXPECT_TRUE(resA.report.relaxed) << "an infeasible elastic problem must relax something";
 
-  // The elastic solve returns a closest-feasible book + a report.
+  // Variant B: priorities SWAPPED — factor-neutral cheaper (0), tracking protected (1).
+  ElasticProblem b = make_over_constrained(m, /*track_priority=*/1U, /*fexp_priority=*/0U);
+  QpProblem qpb{b.model, 0.1, std::span<const f64>(b.q), b.mc};
+  auto rb = solve_elastic(qpb, solver);
+  ASSERT_TRUE(rb.has_value()) << (rb ? "" : rb.error().to_string());
+  const ElasticResult &resB = *rb;
+
+  // The report lists entries in ascending priority (the documented order), AND every entry
+  // is a genuine (non-negative) relaxation.
+  ASSERT_FALSE(resA.report.entries.empty());
+  for (usize i = 1; i < resA.report.entries.size(); ++i) {
+    EXPECT_LE(resA.report.entries[i - 1].priority, resA.report.entries[i].priority);
+  }
+  for (const RelaxationEntry &e : resA.report.entries) {
+    EXPECT_GE(e.violation, -solver.cfg.feas_tol) << "a reported relaxation must be ≥ 0";
+  }
+
+  // The BEHAVIORAL pin: the γ ladder steered the relaxation. Measure the achieved
+  // relaxation of each family directly from the returned book (independent of the report).
+  // Variant A (tracking cheaper): tracking is relaxed MORE than in variant B.
+  const f64 teA = tracking_error(a.model, resA.book, a.w_bench);
+  const f64 teB = tracking_error(b.model, resB.book, b.w_bench);
+  const f64 feA = factor_exposure(a.model, resA.book, 0U) + factor_exposure(a.model, resA.book, 1U);
+  const f64 feB = factor_exposure(b.model, resB.book, 0U) + factor_exposure(b.model, resB.book, 1U);
+
+  // When tracking is the LOWER priority (A) it is relaxed MORE (larger TE) than when it is
+  // the HIGHER priority (B); symmetrically factor-neutral is relaxed more in B than in A.
+  EXPECT_GT(teA, teB) << "tracking must be relaxed MORE when it is the lower-priority tier "
+                      << "(A te=" << teA << " vs B te=" << teB << ")";
+  EXPECT_GT(feB, feA) << "factor-neutral must be relaxed MORE when it is the lower-priority tier "
+                      << "(B fe=" << feB << " vs A fe=" << feA << ")";
+
+  // The report's achieved violations agree with the directly-measured relaxation flip (the
+  // report is not a fiction): tracking's reported violation is larger in A than in B.
+  const f64 teViolA = violation_of(resA, RelaxationEntry::Kind::Cone);
+  const f64 teViolB = violation_of(resB, RelaxationEntry::Kind::Cone);
+  EXPECT_GT(teViolA, teViolB) << "reported tracking relaxation must flip with priority";
+}
+
+// A DIAGONAL-DOMINANT FactorModel (D ≫ F): V ≈ diag(D) ≈ I, so the tracking-error V-ball is
+// L1-TIGHT (‖V^{1/2}(w−w_bench)‖ ≈ ‖w−w_bench‖₂ componentwise). A tight tracking budget then
+// genuinely pins w ≈ w_bench, forcing Σ|w| ≈ Σ|w_bench| — the lever that makes a tight gross
+// cap a GENUINE infeasibility. (make_multi_model's V-ball is L1-LOOSE: a low-L1 book can sit
+// inside its tracking ball, so a tight gross there is satisfiable WITHOUT relaxing — which is
+// why this scenario needs a diagonal-dominant model to force the gross conflict.)
+[[nodiscard]] FactorModel make_diagonal_dominant_model(usize m) {
+  const auto em = static_cast<Eigen::Index>(m);
+  MatX x(em, 2);
+  for (Eigen::Index i = 0; i < em; ++i) {
+    x(i, 0) = 0.02 * static_cast<f64>(i % 3) - 0.02; // tiny exposures
+    x(i, 1) = 0.01 * static_cast<f64>(i % 2);
+  }
+  MatX f(2, 2);
+  f << 1e-4, 0.0, 0.0, 1e-4; // negligible factor variance ⇒ V ≈ diag(D)
+  VecX d(em);
+  for (Eigen::Index i = 0; i < em; ++i) {
+    d[i] = 1.0; // dominant specific variance ⇒ V ≈ I
+  }
+  return make_model(x, f, d);
+}
+
+// ===========================================================================
+//  G-ELASTIC (the plan's "tight gross" scenario): a tight ELASTIC GROSS L1 budget conflicts
+//  with a HARD tracking-error that pins w ≈ w_bench (over a DIAGONAL-DOMINANT model whose
+//  V-ball is L1-tight, so the pin genuinely forces Σ|w| ≈ Σ|w_bench| ≫ the gross cap). Gross
+//  is the ONLY elastic tier, so the closest-feasible book MUST relax it — proving gross L1
+//  budget elasticity (a single augmented budget-row slack) end-to-end, AND that the HARD
+//  tracking constraint is satisfied at the relaxed book (a hard constraint never relaxes).
+// ===========================================================================
+TEST(RiskElasticity, TightGrossBudgetIsRelaxedClosestFeasible) {
+  const usize m = 10U;
+  const FactorModel model = make_diagonal_dominant_model(m);
+  std::vector<f64> w_bench(m, 0.0);
+  for (usize i = 0; i < m; ++i) {
+    w_bench[i] = 0.05 * (static_cast<f64>(i % 5) - 2.0); // dollar-neutral per block; Σ|w_bench| = 0.6
+  }
+  std::vector<f64> q(m, 0.0);
+  for (usize i = 0; i < m; ++i) {
+    q[i] = -0.4 * (static_cast<f64>(i % 4) - 1.0);
+  }
+
+  ConstraintSet cs;
+  cs.gross.dollar_neutral = true;
+  cs.gross.gross_leverage = 0.1; // tight (≪ Σ|w_bench| = 0.6 the HARD tracking pins w toward)
+  cs.gross.elastic = true;       // the ONLY elastic tier ⇒ it MUST relax for feasibility
+  cs.gross.priority = 0U;
+  cs.pos = PositionCap{0.5};     // HARD + loose
+  // HARD, tight tracking over the diagonal-dominant V ⇒ w is pinned ≈ w_bench (Σ|w| ≈ 0.6),
+  // which cannot fit the 0.1 gross cap. Tracking is HARD so the ONLY route to feasibility is
+  // relaxing the (elastic) gross budget — no "relax tracking instead" escape.
+  TrackingError te{std::span<const f64>(w_bench), 0.02};
+  te.elastic = false; // HARD
+  cs.track = te;
+
+  auto mc_r = cs.materialize(model.exposures(), {}, m);
+  ASSERT_TRUE(mc_r.has_value()) << (mc_r ? "" : mc_r.error().to_string());
+  MaterializedConstraints mc = std::move(*mc_r);
+  ASSERT_GE(mc.gross_l1_budget, 0.0) << "the gross L1 budget must be active for this scenario";
+  // The gross BUDGET is the ONLY elastic entry recorded.
+  ASSERT_EQ(mc.elastic.budgets.size(), 1U);
+  ASSERT_EQ(mc.elastic.budgets.front().kind, atx::engine::risk::ElasticBudget::Kind::Gross);
+  ASSERT_TRUE(mc.elastic.linear_rows.empty());
+  ASSERT_TRUE(mc.elastic.cones.empty());
+
+  const ConstrainedQpSolver solver = cone_solver();
+  QpProblem qp{model, 0.1, std::span<const f64>(q), mc};
+  ASSERT_FALSE(solver.solve(qp).has_value()) << "tight-gross set must be infeasible to the hard solve";
+
   auto er = solve_elastic(qp, solver);
   ASSERT_TRUE(er.has_value()) << (er ? "" : er.error().to_string());
   const ElasticResult &res = *er;
-  ASSERT_EQ(res.book.size(), m);
-  EXPECT_TRUE(res.report.relaxed) << "an infeasible elastic problem must relax something";
+  EXPECT_TRUE(res.report.relaxed);
 
-  // Report order: lowest priority FIRST (the γ ladder dictates tracking(0) → factor(1) →
-  // box(2)). Each reported entry's priority is ascending and the FIRST relaxed entry is
-  // the lowest priority present.
-  ASSERT_FALSE(res.report.entries.empty());
-  for (usize i = 1; i < res.report.entries.size(); ++i) {
-    EXPECT_LE(res.report.entries[i - 1].priority, res.report.entries[i].priority)
-        << "report not in ascending-priority (lowest-relaxed-first) order at entry " << i;
-  }
-  // The lowest-priority elastic constraint (tracking-error, priority 0) is relaxed first.
-  EXPECT_EQ(res.report.entries.front().priority, 0U)
-      << "the lowest-priority elastic constraint must head the report";
+  // The HARD tracking-error is SATISFIED at the closest-feasible book (a hard constraint is
+  // never relaxed) — within feas_tol against the factored V.
+  const f64 te_at = tracking_error(model, res.book, w_bench);
+  EXPECT_LE(te_at, 0.02 + 50.0 * solver.cfg.feas_tol)
+      << "the HARD tracking-error must hold at the relaxed book: te=" << te_at;
 
-  // The book is FEASIBLE for the HARD part and only the elastic constraints are violated,
-  // each only as reported. Here ALL three are elastic, so we assert the achieved
-  // relaxation is consistent: a relaxed constraint's reported violation is ≥ 0, and the
-  // book's actual violation does not exceed the reported slack beyond feas_tol.
-  const f64 te = tracking_error(prob.model, res.book, prob.w_bench);
-  const f64 fe0 = factor_exposure(prob.model, res.book, 0U);
-  const f64 fe1 = factor_exposure(prob.model, res.book, 1U);
-  // Tracking-error budget was 1e-4; the achieved TE is the relaxed budget. The book must
-  // not wildly exceed a sane relaxed level (sanity, not a hard pin).
-  EXPECT_GE(te, 0.0);
-  EXPECT_GE(fe0, 0.0);
-  EXPECT_GE(fe1, 0.0);
-  // Every reported violation magnitude is non-negative (a relaxation, never negative).
-  for (const RelaxationEntry &e : res.report.entries) {
-    EXPECT_GE(e.violation, -solver.cfg.feas_tol) << "a reported relaxation must be ≥ 0";
+  // The gross budget is reported relaxed with a positive achieved slack (Σ|w| > 0.1 budget).
+  const f64 gross_viol = violation_of(res, RelaxationEntry::Kind::Budget);
+  EXPECT_GT(gross_viol, solver.cfg.feas_tol)
+      << "the tight gross budget must be relaxed (achieved Σ|w| − 0.1 > 0): " << gross_viol;
+  f64 l1 = 0.0;
+  for (usize i = 0; i < m; ++i) {
+    l1 += std::fabs(res.book[i]);
   }
+  EXPECT_GT(l1, 0.1 + solver.cfg.feas_tol) << "the book's gross L1 must exceed the relaxed budget";
+  // The gross budget (the only elastic tier) heads the report.
+  ASSERT_EQ(res.report.entries.size(), 1U);
+  EXPECT_EQ(res.report.entries.front().kind, RelaxationEntry::Kind::Budget);
 }
 
 // ===========================================================================

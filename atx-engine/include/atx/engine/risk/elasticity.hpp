@@ -32,23 +32,25 @@
 //  the slacks are sparse columns; cones reuse the low-rank cone-argument rows).
 //
 // ===========================================================================
-//  The γ ladder — strict lowest-priority-first hierarchy (R1)
+//  The γ ladder — a WEIGHTED priority ladder (R1)
 // ===========================================================================
-//  Each elastic constraint at priority p gets penalty weight
-//      γ_p = kGammaBase · kGammaRho^(p_max − p)
-//  where p_max is the LARGEST elastic priority present. So the HIGHEST priority (p_max)
-//  gets the SMALLEST weight kGammaBase and the LOWEST priority (p=0) gets the LARGEST
-//  weight kGammaBase·kGammaRho^p_max. Minimizing Σ γ_p·(violation_p) therefore relaxes the
-//  LOWEST-priority constraint FIRST (it is cheapest per unit to leave un-relaxed only if it
-//  has the LARGEST weight — wait: a LARGER weight makes a violation MORE expensive, so the
-//  solver avoids violating it). To get "lowest priority relaxed FIRST" the cheapest-to-
-//  violate must be the lowest priority ⇒ the SMALLEST weight goes to the LOWEST priority:
-//      γ_p = kGammaBase · kGammaRho^p              (p=0 cheapest, p_max most protected)
-//  kGammaRho is chosen large enough that one unit of a higher-priority violation costs more
-//  than fully relaxing every lower-priority constraint, yielding a STRICT hierarchy: the
-//  solve exhausts the lowest-priority slack before paying for any higher-priority one. The
-//  schedule is a pure function of the priorities (no RNG / clock); ties (equal priority)
-//  share a weight and relax together — the report still lists them in fixed order.
+//  Each elastic constraint at priority p gets the penalty weight
+//      γ_p = kGammaBase · kGammaRho^p              (p = 0 cheapest, larger p more protected)
+//  so a HIGHER-priority constraint carries a STRICTLY LARGER per-unit violation penalty.
+//  Decision A is ONE joint convex solve minimizing ½xᵀPx + qᵀx + Σ_p γ_p·(violation_p): the
+//  γ_p are the relative PRICES of violating each tier. The property this guarantees is a
+//  WEIGHTED hierarchy, NOT strict lexicographic relaxation:
+//    * a higher-priority constraint is STRICTLY MORE EXPENSIVE to violate per unit, so the
+//      minimizer relaxes it LESS (and a lower-priority one MORE) whenever they trade off —
+//      the achieved violations are ordered by priority (lower priority ⇒ larger slack);
+//    * it is NOT a guarantee that the lowest tier is FULLY exhausted before ANY higher tier
+//      gives — that strict-lexicographic property needs ρ large enough to dominate the
+//      conditioning of the whole relaxed QP, which a moderate ρ does not provide. We
+//      deliberately do NOT claim it (see the kGammaRho note for why ρ is kept moderate).
+//  kGammaBase is set well above the QP's own objective scale so the penalty dominates the
+//  α-objective (no over-relaxing — the slacks settle at their minimal-feasibility value, the
+//  closest-feasible point). The schedule is a pure function of the priorities (no RNG /
+//  clock); ties (equal priority) share a weight — the report still lists them in fixed order.
 //
 // ===========================================================================
 //  Integration — a WRAPPER around the hard solve (R10)
@@ -69,10 +71,9 @@
 //  achieved-violation values are read from the returned book against the ORIGINAL surface
 //  (an order-fixed reduction) ⇒ byte-identical across runs / thread counts.
 
-#include <algorithm> // std::stable_sort, std::max
-#include <cmath>     // std::fabs, std::pow
+#include <algorithm> // std::stable_sort
 #include <span>
-#include <string>    // std::to_string (distinct hard-infeasible Err)
+#include <string>    // std::string (distinct hard-infeasible Err message)
 #include <utility>   // std::move
 #include <vector>
 
@@ -91,20 +92,24 @@ namespace atx::engine::risk {
 
 // ===========================================================================
 //  γ-ladder constants (R1 — fixed, no RNG). γ_p = kGammaBase · kGammaRho^priority.
-//  kGammaBase is set well ABOVE the portfolio QP's own objective scale (‖q‖≈O(α)≈O(1),
-//  ‖P‖≈2λ·D≈O(1)) so the penalty dominates — the solver never trades a slack for alpha
-//  (no over-relaxing); the slacks are driven to their MINIMAL feasibility value (the
-//  closest-feasible point). kGammaRho makes each priority tier strictly dominate all lower
-//  tiers (one unit of a tier-(p+1) violation costs kGammaRho× a tier-p unit) so the solve
-//  EXHAUSTS the lowest-priority slack before paying for any higher-priority one — a strict
-//  lowest-priority-first hierarchy. The magnitudes are kept MODERATE (not 1eN huge) because
-//  the no-pivot LDLᵀ + Ruiz equilibration condition the KKT only so far: a 1e9-scale penalty
-//  wrecks the conditioning and the fixed-budget ADMM diverges. base=64, ρ=64 gives the
-//  ladder 64, 4096, 262144, … — each tier ≥64× the objective AND ≥64× the tier below, which
-//  empirically clears the feasibility gate at the cone budget (rho=10, iters=1500).
+//  kGammaBase (4.0) is set well ABOVE the portfolio QP's own objective scale (‖q‖≈O(α)≈O(1),
+//  ‖P‖≈2λ·D≈O(1)) so even the cheapest tier's penalty dominates the α-objective — the solver
+//  never trades a slack for alpha (no over-relaxing); the slacks settle at their MINIMAL
+//  feasibility value (the closest-feasible point). kGammaRho (8.0) makes each higher priority
+//  tier STRICTLY MORE EXPENSIVE per unit of violation (a tier-(p+1) unit costs 8× a tier-p
+//  unit), so the joint minimizer relaxes higher-priority constraints LESS — a WEIGHTED ladder
+//  (NOT strict lexicographic; see the γ-ladder header block). The magnitudes are kept MODERATE
+//  on purpose: a large ρ (e.g. 1eN) would, in principle, push the ladder toward strict
+//  lexicographic domination, but it ALSO ill-conditions the relaxed KKT (the no-pivot LDLᵀ +
+//  Ruiz equilibration condition it only so far) and the fixed-budget ADMM then fails to clear
+//  feas_tol on the HARD rows. base=2, ρ=4 (ladder 2, 8, 32, …) is the conditioning-safe
+//  choice that converges the relaxed cone- AND gross-split-bearing problems to feas_tol on
+//  their HARD rows (re-solved at kRelaxedRho / the scaled iter budget); a larger base/ρ leaves
+//  the HARD dollar-neutral / box / aux-split rows a hair outside feas_tol on the stiffer
+//  gross-split relaxed form. base=2 still sits ~5× above the α-objective scale (no over-relax).
 // ===========================================================================
-inline constexpr atx::f64 kGammaBase = 4.0;
-inline constexpr atx::f64 kGammaRho = 8.0;
+inline constexpr atx::f64 kGammaBase = 2.0;
+inline constexpr atx::f64 kGammaRho = 4.0;
 
 // The RELAXED minimize-violation QP is strictly HARDER than the hard solve (it adds the
 // penalized slack columns + the e ≥ 0 rows + the rebuilt variable-apex cone), so the
@@ -114,33 +119,34 @@ inline constexpr atx::f64 kGammaRho = 8.0;
 // so the relaxed solve clears the gate. Still a FIXED count (R1) — no convergence early-exit,
 // no data-dependent control flow; it is a pure function of the caller's budget. The caller's
 // solver cfg is NOT mutated (we re-solve through a local copy).
-inline constexpr atx::usize kRelaxedIterScale = 6U;
-inline constexpr atx::usize kRelaxedIterMin = 9000U;
+inline constexpr atx::usize kRelaxedIterScale = 8U;
+inline constexpr atx::usize kRelaxedIterMin = 12000U;
 
 // The relaxed form adds many slack-bound rows (e ≥ 0) and the rebuilt variable-apex cone —
 // equality/penalty-coupled rows that an ADMM converges TIGHTER at a larger constraint
 // penalty ρ. We re-solve at max(caller ρ, kRelaxedRho) so the HARD equality rows (e.g. the
 // dollar-neutral Σw=0 row) clear feas_tol on the relaxed form. FIXED (R1); the caller's
 // solver cfg is not mutated (local copy). A caller already using a larger ρ keeps it.
-inline constexpr atx::f64 kRelaxedRho = 30.0;
+inline constexpr atx::f64 kRelaxedRho = 50.0;
 
 // One relaxed constraint in the report. `kind` distinguishes a linear-row block from a
 // cone; `index` is the augmented row_begin (LinearRow) or the cone index (Cone); `count`
 // is the number of A-rows in the block (1 for a cone); `priority` is the descriptor's
-// (lower = relaxed first); `violation` is the achieved relaxation (how much the ORIGINAL
-// constraint is violated at the returned book — the "by how much").
+// (lower priority ⇒ cheaper to violate ⇒ relaxed MORE); `violation` is the achieved
+// relaxation (how much the ORIGINAL constraint is violated at the returned book — the
+// "by how much", the realized slack).
 struct RelaxationEntry {
-  enum class Kind { LinearRow, Cone };
+  enum class Kind { LinearRow, Cone, Budget };
   Kind kind = Kind::LinearRow;
-  atx::usize index = 0;
+  atx::usize index = 0; // augmented row_begin (LinearRow), cone index (Cone), or budget row (Budget)
   atx::usize count = 0;
   atx::usize priority = 0;
   atx::f64 violation = 0.0;
 };
 
-// The relaxation report: which elastic constraints were relaxed (by how much), in the
-// fixed priority order (lowest priority first). `relaxed == false` ⇒ the problem was
-// feasible and elasticity did nothing (a pure no-op).
+// The relaxation report: which elastic constraints were relaxed (by how much), listed in
+// fixed ascending-priority order (lowest priority — the most-relaxed tier — first).
+// `relaxed == false` ⇒ the problem was feasible and elasticity did nothing (a pure no-op).
 struct RelaxationReport {
   bool relaxed = false;
   std::vector<RelaxationEntry> entries;
@@ -158,7 +164,7 @@ namespace detail {
 // The penalty weight for an elastic constraint at `priority` (the γ ladder, R1).
 [[nodiscard]] inline atx::f64 gamma_for(atx::usize priority) noexcept {
   // kGammaBase · kGammaRho^priority — order-fixed integer power (no std::pow rounding
-  // surprise; priorities are tiny). p=0 cheapest, larger p strictly more protected.
+  // surprise; priorities are tiny). p=0 cheapest, larger p more protected (larger penalty).
   atx::f64 g = kGammaBase;
   for (atx::usize i = 0; i < priority; ++i) {
     g *= kGammaRho;
@@ -208,10 +214,55 @@ namespace detail {
   return (viol > 0.0) ? viol : 0.0;
 }
 
+// The augmented-frame row index of an L1 BUDGET row (the single `Σ s_i ≤ L` gross row or
+// `Σ r_i ≤ T` turnover row), from build_augmented's FIXED layout (qp_augment.hpp):
+//   row 0..K           : K factor-definition rows
+//   K..K+A.rows()      : the S1-1 linear rows
+//   then gross split   : M (w−s≤0) + M (−w−s≤0) + M (s≥0) + 1 (Σs≤L)   [iff has_gross]
+//   then turnover split: M (w−r≤ref) + M (−w−r≤−ref) + M (r≥0) + 1 (Σr≤T) [iff has_turn]
+// The budget row is the LAST row of its 3M+1 sub-block (offset 3M within it). Order-fixed.
+[[nodiscard]] inline atx::usize budget_row_index(const AugmentedQp &hard,
+                                                 const MaterializedConstraints &C, atx::usize k,
+                                                 ElasticBudget::Kind kind) {
+  const atx::usize m = hard.n_w;
+  const bool has_gross = C.gross_l1_budget >= 0.0;
+  const atx::usize gross_block_start = k + static_cast<atx::usize>(C.A.rows());
+  if (kind == ElasticBudget::Kind::Gross) {
+    return gross_block_start + 3U * m; // the Σ s_i ≤ L row
+  }
+  // Turnover: after the gross block (3M+1 rows) when present.
+  const atx::usize turn_block_start = gross_block_start + (has_gross ? (3U * m + 1U) : 0U);
+  return turn_block_start + 3U * m; // the Σ r_i ≤ T row
+}
+
+// Achieved violation of an elastic L1 BUDGET at the returned book: max(0, Σ(budget LHS) −
+// budget). For gross the LHS Σ s_i at the optimum equals Σ|w_i| (the aux split binds s_i ≥
+// |w_i|); we read it directly from |w| against C.gross_l1_budget. For turnover Σ r_i =
+// Σ|w_i − ref_i| vs C.turnover_budget. Order-fixed (R1), read from the w-block book only.
+[[nodiscard]] inline atx::f64 budget_violation_at(const MaterializedConstraints &C,
+                                                  const std::vector<atx::f64> &book,
+                                                  ElasticBudget::Kind kind) {
+  atx::f64 lhs = 0.0; // ascending i (R1)
+  if (kind == ElasticBudget::Kind::Gross) {
+    for (atx::usize i = 0; i < book.size(); ++i) {
+      lhs += (book[i] < 0.0) ? -book[i] : book[i];
+    }
+    const atx::f64 v = lhs - C.gross_l1_budget;
+    return (v > 0.0) ? v : 0.0;
+  }
+  for (atx::usize i = 0; i < book.size(); ++i) {
+    const atx::f64 ref = (i < C.turnover_ref.size()) ? C.turnover_ref[i] : 0.0;
+    const atx::f64 d = book[i] - ref;
+    lhs += (d < 0.0) ? -d : d;
+  }
+  const atx::f64 v = lhs - C.turnover_budget;
+  return (v > 0.0) ? v : 0.0;
+}
+
 // Build the RELAXED augmented QP from the HARD one + the elastic spec + the γ ladder.
-// Appends penalized slack columns and widens the elastic rows / cones; HARD rows untouched.
-// Returns the relaxed AugmentedQp; the ORIGINAL `hard` is consumed read-only (the hard
-// solve's assembly is literally untouched — R10).
+// Appends penalized slack columns and widens the elastic rows / cones / budgets; HARD rows
+// untouched. Returns the relaxed AugmentedQp; the ORIGINAL `hard` is consumed read-only (the
+// hard solve's assembly is literally untouched — R10).
 [[nodiscard]] inline AugmentedQp build_relaxed(const AugmentedQp &hard,
                                                const MaterializedConstraints &C, atx::usize k) {
   using Trip = Eigen::Triplet<atx::f64>;
@@ -224,6 +275,8 @@ namespace detail {
   // Cone (ball→variable-apex): 1 slack column e, + 1 e≥0 bound row, + (1 apex + dim arg)
   //   new contiguous cone rows. Cone (already variable-apex): 1 slack column e + 1 e≥0 row
   //   (the apex row gains +1·e in place — no new cone rows).
+  // Budget (gross / turnover): 1 slack column e, + 1 e≥0 bound row (the budget row gains a
+  //   −1·e in place — Σs − e ≤ L widens the upper bound to L + e).
   atx::usize n_slack = 0U;
   atx::usize r_extra = 0U;
   for (const ElasticRow &er : es.linear_rows) {
@@ -238,6 +291,8 @@ namespace detail {
       r_extra += 1U + blk.dim; // a fresh contiguous variable-apex block (apex + dim arg rows)
     }
   }
+  n_slack += es.budgets.size();
+  r_extra += es.budgets.size(); // one e ≥ 0 row per budget slack
 
   const atx::usize n_new = n_old + n_slack;
   const atx::usize r_new = r_old + r_extra;
@@ -380,6 +435,23 @@ namespace detail {
     }
   }
 
+  // (D) elastic L1 BUDGETS — the single budget row `Σ s_i ≤ L` (gross) or `Σ r_i ≤ T`
+  //     (turnover) gains a −1·e term ⇒ `Σ s_i − e ≤ L` ⇒ the achievable Σ s_i widens to
+  //     L + e; e ≥ 0 penalized +γ_p·e. The budget row stays in place (it is already in
+  //     a_trips with its [−kAugInf, L] band); we only add the slack column + its e≥0 row.
+  for (const ElasticBudget &eb : es.budgets) {
+    const atx::f64 g = gamma_for(eb.priority);
+    const atx::usize budget_row = budget_row_index(hard, C, k, eb.kind);
+    const atx::usize e_col = next_col++;
+    out.q_aug[static_cast<Eigen::Index>(e_col)] = g;
+    a_trips.emplace_back(static_cast<int>(budget_row), static_cast<int>(e_col), -1.0); // −e
+    // e ≥ 0 bound row.
+    a_trips.emplace_back(static_cast<int>(next_row), static_cast<int>(e_col), 1.0);
+    out.l[static_cast<Eigen::Index>(next_row)] = 0.0;
+    out.u[static_cast<Eigen::Index>(next_row)] = kAugInf;
+    ++next_row;
+  }
+
   out.A_tilde.resize(static_cast<int>(r_new), static_cast<int>(n_new));
   out.A_tilde.setFromTriplets(a_trips.begin(), a_trips.end());
   out.A_tilde.makeCompressed();
@@ -424,6 +496,20 @@ solve_elastic(const QpProblem &p, const ConstrainedQpSolver &solver) {
     return co::Err(co::ErrorCode::InvalidArgument,
                    "solve_elastic: the constraint set is infeasible and carries NO elastic "
                    "constraints to relax (a HARD constraint is binding)");
+  }
+
+  // Warm-start guard: p.x0/p.y0 are sized to the HARD augmented system (n / n_w cols, R̃
+  // rows). The RELAXED system is WIDER (extra slack columns) and TALLER (extra e ≥ 0 rows),
+  // so seeding it from `p`'s warm-start would mis-map the iterate. The solver's seeding is
+  // length-tolerant (it silently ignores a mismatched-length x0/y0), so a warm-started
+  // caller would get a SILENT cold relaxed re-solve — correct, but surprising. Refuse it
+  // explicitly so a future warm-started caller can't quietly mis-seed the relaxed system.
+  if (!p.x0.empty() || !p.y0.empty()) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "solve_elastic: warm-start (QpProblem::x0/y0) is not supported on the elastic "
+                   "re-solve — the relaxed system has extra slack columns/rows, so a hard-system "
+                   "warm-start cannot seed it (solve the hard problem with warm-start, then call "
+                   "solve_elastic on a cold QpProblem)");
   }
 
   // Build the hard augmented form (same assembly the solver used) + the relaxed form.
@@ -493,6 +579,15 @@ solve_elastic(const QpProblem &p, const ConstrainedQpSolver &solver) {
     e.count = 1U;
     e.priority = ec.priority;
     e.violation = detail::cone_violation_at(hard, x, ec.cone_index);
+    entries.push_back(e);
+  }
+  for (const ElasticBudget &eb : p.C.elastic.budgets) {
+    RelaxationEntry e;
+    e.kind = RelaxationEntry::Kind::Budget;
+    e.index = detail::budget_row_index(hard, p.C, k, eb.kind); // augmented budget row
+    e.count = 1U;
+    e.priority = eb.priority;
+    e.violation = detail::budget_violation_at(p.C, out.book, eb.kind);
     entries.push_back(e);
   }
   // Stable-sort by ascending priority (lowest relaxed first); ties keep their materialize
