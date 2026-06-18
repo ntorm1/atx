@@ -15,7 +15,6 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/book/report.hpp"
 #include "atx/engine/library/library.hpp"
-#include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 
 #include "artifacts.hpp"
@@ -175,6 +174,11 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                                       "report: cannot create report/_lib dir");
             }
         }
+        // NOTE: Library::open returns a plain Library (NOT a Result) — it directly
+        // constructs the object; the ctor opens SQLite via open_or_abort (an
+        // always-on ATX_CHECK on a genuine environment fault). There is no Result
+        // to ATX_TRY here. The fs::create_directories above is what makes the open
+        // succeed on the happy path (SQLite cannot create parent dirs).
         auto libr = lib_ns::Library::open(
             (fs::path{cfg.report_out} / "_lib").string(),
             lib_ns::GateConfig{},
@@ -187,6 +191,29 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
 
         // 7. Write canonical TSVs via write_report.
         ATX_TRY_VOID(book::write_report(rep, cfg.report_out));
+
+        // Summary stats — computed ONCE here and reused for both summary.txt and
+        // the StageResult kvs (no double std::accumulate; bytes/digest unchanged).
+        const atx::f64 final_equity =
+            rep.equity_curve.empty() ? 0.0 : rep.equity_curve.back();
+        const atx::f64 total_pnl_gross =
+            std::accumulate(rep.pnl_gross.begin(), rep.pnl_gross.end(), 0.0);
+        const atx::f64 total_pnl_net =
+            std::accumulate(rep.pnl_net.begin(), rep.pnl_net.end(), 0.0);
+        const atx::f64 total_pnl_cost =
+            std::accumulate(rep.pnl_cost.begin(), rep.pnl_cost.end(), 0.0);
+        const atx::f64 avg_gross_leverage =
+            S > 0
+            ? std::accumulate(rep.gross_leverage.begin(),
+                              rep.gross_leverage.end(), 0.0)
+                  / static_cast<atx::f64>(S)
+            : 0.0;
+        const atx::f64 avg_turnover =
+            S > 0
+            ? std::accumulate(rep.turnover.begin(),
+                              rep.turnover.end(), 0.0)
+                  / static_cast<atx::f64>(S)
+            : 0.0;
 
         // 7b. Write convenience files (not R8-pinned).
         {
@@ -211,27 +238,6 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                     return atx::core::Err(atx::core::ErrorCode::IoError,
                                           "report: cannot write summary.txt");
                 }
-                const atx::f64 final_equity =
-                    rep.equity_curve.empty() ? 0.0 : rep.equity_curve.back();
-                const atx::f64 total_pnl_gross =
-                    std::accumulate(rep.pnl_gross.begin(), rep.pnl_gross.end(), 0.0);
-                const atx::f64 total_pnl_net =
-                    std::accumulate(rep.pnl_net.begin(), rep.pnl_net.end(), 0.0);
-                const atx::f64 total_pnl_cost =
-                    std::accumulate(rep.pnl_cost.begin(), rep.pnl_cost.end(), 0.0);
-                const atx::f64 avg_gross_leverage =
-                    S > 0
-                    ? std::accumulate(rep.gross_leverage.begin(),
-                                      rep.gross_leverage.end(), 0.0)
-                          / static_cast<atx::f64>(S)
-                    : 0.0;
-                const atx::f64 avg_turnover =
-                    S > 0
-                    ? std::accumulate(rep.turnover.begin(),
-                                      rep.turnover.end(), 0.0)
-                          / static_cast<atx::f64>(S)
-                    : 0.0;
-
                 sm_file << "final_equity=" << std::to_string(final_equity) << "\n";
                 sm_file << "total_pnl_gross=" << std::to_string(total_pnl_gross) << "\n";
                 sm_file << "total_pnl_net=" << std::to_string(total_pnl_net) << "\n";
@@ -256,25 +262,13 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
             digest_buf.data(),
             digest_buf.size() * sizeof(atx::f64));
 
-        // Compute summary stats for kvs.
-        const atx::f64 final_eq =
-            rep.equity_curve.empty() ? 0.0 : rep.equity_curve.back();
-        const atx::f64 sum_pnl_net =
-            std::accumulate(rep.pnl_net.begin(), rep.pnl_net.end(), 0.0);
-        const atx::f64 avg_gross =
-            S > 0
-            ? std::accumulate(rep.gross_leverage.begin(),
-                              rep.gross_leverage.end(), 0.0)
-                  / static_cast<atx::f64>(S)
-            : 0.0;
-
         StageResult sr;
         sr.digest = digest;
         sr.kvs = {
             {"periods",       std::to_string(S)},
-            {"final_equity",  std::to_string(final_eq)},
-            {"pnl_net",       std::to_string(sum_pnl_net)},
-            {"avg_gross",     std::to_string(avg_gross)},
+            {"final_equity",  std::to_string(final_equity)},
+            {"pnl_net",       std::to_string(total_pnl_net)},
+            {"avg_gross",     std::to_string(avg_gross_leverage)},
         };
         return atx::core::Ok(std::move(sr));
     }

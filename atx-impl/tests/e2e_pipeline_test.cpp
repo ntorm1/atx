@@ -4,26 +4,24 @@
 // Then StagedEqualsRun (pins staged == run digest guarantee) and
 // ReportBytesDeterministic (R8 byte-identical assertion).
 //
-// Fixture: 30 instruments x 100 trading dates built as a synthetic ORATS zip.
+// Fixture: 10 instruments x 100 trading dates built as a synthetic ORATS zip.
 // This sizing is chosen to:
 //   - give discover sufficient history for rank(close)/ts_mean(close,5) to
 //     have a finite positive Sharpe (min_date range, momentum drift per instrument)
 //   - produce >= 1 admitted alpha so combine/optimize/report all have real data
 //   - stay fast (in-process zip build, no disk seg files needed for run mode)
 
-#include <algorithm>
 #include <array>
-#include <cmath>
-#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <miniz.h>
 
+#include "artifacts.hpp"
 #include "config.hpp"
 #include "stages.hpp"
 
@@ -354,21 +352,11 @@ TEST_F(AtxImplE2E, StagedEqualsRun) {
         return "";
     };
 
-    // Re-run each stage individually through the run work dir to get digests
-    // comparable to staged (run_all's kvs are hex strings; staged are raw u64).
-    // We compare by re-running the same load/panel/.../report against the run
-    // work dir artifacts — but since run_all wrote them, we can also just load
-    // the artifacts and compare digests. Simplest: run_all kvs are hex16 digests
-    // of each stage; staged are raw u64 we computed above. Convert staged->hex16.
-    auto to_hex16 = [](atx::u64 v) -> std::string {
-        static constexpr char kHex[] = "0123456789abcdef";
-        std::string s(16, '0');
-        for (int i = 15; i >= 0; --i) {
-            s[static_cast<std::size_t>(i)] = kHex[v & 0xfU];
-            v >>= 4U;
-        }
-        return s;
-    };
+    // run_all's kvs are hex16 digests of each stage; the staged digests we
+    // captured above are raw u64. Convert via the PRODUCTION to_hex16 (rather
+    // than a local copy) so the test cannot silently diverge from the formatter
+    // run_all itself uses.
+    using atx::impl::to_hex16;
 
     EXPECT_EQ(to_hex16(staged.load),     find_kv("load"))
         << "load digest mismatch: staged vs run";
