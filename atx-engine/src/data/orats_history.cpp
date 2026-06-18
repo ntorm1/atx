@@ -11,6 +11,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -170,18 +171,6 @@ struct DateAccumulator {
   bool empty() const { return symbols.empty(); }
 };
 
-atx::core::Status flush_date(DateAccumulator &acc, const std::string &out_dir,
-                              atx::i64 created_at_nanos) {
-  atx::tsdb::LongColumns cols;
-  cols.field_names.assign(kOratsFields.begin(), kOratsFields.end());
-  const atx::usize rows = acc.symbols.size();
-  cols.times.assign(rows, acc.date_nanos); // all rows share this date's midnight nanos
-  cols.symbols = std::move(acc.symbols);
-  cols.values = std::move(acc.values);
-  const std::string path = (fs::path(out_dir) / (acc.date_str + ".seg")).string();
-  return atx::tsdb::build_from_long(cols, path, created_at_nanos);
-}
-
 // Mutable per-load state threaded through process_line. Holds everything the row
 // projector mutates so the SAME code path serves the main streaming loop and the
 // final carry flush (no duplication).
@@ -193,7 +182,10 @@ struct LoadState {
   atx::i64 &current_date_nanos;
   std::unordered_map<atx::i64, std::pair<std::string, std::string>> &symbology;
   std::vector<std::string_view> &fields; // reusable scratch
-  LoadProfile::clock::duration *build_write{}; // non-owning; nullptr => no timing
+  // Seals a completed date's accumulator into a writer-pool job (the loader
+  // supplies this). Routing the date-boundary flush through a callback keeps
+  // process_line oblivious to threading: it just hands off the previous date.
+  std::function<atx::core::Status(DateAccumulator &)> flush;
 };
 
 // Process ONE data line (header already consumed). Increments rows_read, then
@@ -240,14 +232,11 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
     return atx::core::Ok();
   }
 
-  // 5) Date boundary: flush the previous date's segment, then start a new one.
+  // 5) Date boundary: seal the previous date into a writer-pool job (the loader's
+  //    callback counts it + enqueues it), then start a new accumulator. The seal
+  //    is a near-instant enqueue; the build+write happens on a worker thread.
   if (date_nanos != st.current_date_nanos) {
-    if (!st.acc.empty()) {
-      const auto tbw = LoadProfile::clock::now();
-      ATX_TRY_VOID(flush_date(st.acc, st.cfg.out_dir, st.cfg.created_at_nanos));
-      if (st.build_write) *st.build_write += LoadProfile::clock::now() - tbw;
-      ++st.stats.dates_written;
-    }
+    ATX_TRY_VOID(st.flush(st.acc)); // no-op if empty; the callback owns the count
     st.acc.clear(date_nanos, std::string(date_sv));
     st.current_date_nanos = date_nanos;
   }
@@ -330,6 +319,34 @@ private:
   bool closed_{false};
 };
 
+// Holds the first worker error (if any) under a mutex; workers race to set it.
+// The atomic flag is the fast path (lock-free check from the producer's seal);
+// the mutex only guards reading/writing the Error payload itself.
+struct WorkerError {
+  std::mutex m;
+  std::atomic<bool> failed{false};
+  atx::core::Error err;
+  void set(atx::core::Error e) {
+    if (failed.exchange(true)) return; // keep only the first
+    std::lock_guard<std::mutex> lk(m);
+    err = std::move(e);
+  }
+};
+
+// Pivot one job's columns and write its .seg. Mirrors the old flush_date body
+// but operates on an owned (moved) DateJob — safe to run on any thread because
+// SegmentBuilder is build-once/instance-local and each job writes a distinct
+// file (one per trading date), so workers never contend on shared output.
+atx::core::Status run_job(DateJob &job) {
+  atx::tsdb::LongColumns cols;
+  cols.field_names.assign(kOratsFields.begin(), kOratsFields.end());
+  const atx::usize rows = job.symbols.size();
+  cols.times.assign(rows, job.date_nanos); // all rows share this date's midnight nanos
+  cols.symbols = std::move(job.symbols);
+  cols.values = std::move(job.values);
+  return atx::tsdb::build_from_long(cols, job.out_path, job.created_at_nanos);
+}
+
 } // namespace
 
 atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg) {
@@ -352,7 +369,7 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   std::vector<std::string_view> fields;
   fields.reserve(128);
 
-  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, fields, nullptr};
+  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, fields, {}};
 
   constexpr atx::usize kChunk = 1u << 22; // 4 MiB inflate reads
   std::vector<char> buf(kChunk);
@@ -360,7 +377,75 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   bool eof = false;
 
   LoadProfile prof;
-  st.build_write = &prof.build_write;
+
+  // -------------------------------------------------------------------------
+  //  Writer pool: producer (this thread) parses + routes; workers build+write.
+  //
+  //  The producer stays single-threaded and ordered (inflate -> frame ->
+  //  process_line: date parse, monotonic guard, floor, securityID, accumulate,
+  //  symbology). Only the per-date pivot+write (run_job) runs on workers. Each
+  //  <date>.seg is fully determined by that date's rows, so output is
+  //  byte-identical regardless of W or worker scheduling.
+  // -------------------------------------------------------------------------
+  const unsigned hw = std::thread::hardware_concurrency();
+  const std::size_t W = std::clamp<std::size_t>(hw == 0 ? 1 : hw - 1, 1, 8);
+  WorkerError werr;
+  BoundedQueue<DateJob> jobs{2 * W}; // small backlog so the producer rarely stalls
+
+  // seal: hand a completed date's accumulator to the pool. Empty -> no-op. If a
+  // worker has already failed, surface that error promptly so the producer stops
+  // pushing (and the read loop unwinds). The producer owns dates_written: it
+  // knows exactly which dates were sealed, independent of worker timing.
+  auto seal = [&](DateAccumulator &a) -> atx::core::Status {
+    if (a.empty()) return atx::core::Ok();
+    if (werr.failed.load(std::memory_order_acquire)) {
+      std::lock_guard<std::mutex> lk(werr.m);
+      return atx::core::Err(werr.err); // a worker already failed; abort the load
+    }
+    DateJob job;
+    job.out_path = (fs::path(cfg.out_dir) / (a.date_str + ".seg")).string();
+    job.date_nanos = a.date_nanos;
+    job.created_at_nanos = cfg.created_at_nanos;
+    job.symbols = std::move(a.symbols);
+    job.values = std::move(a.values);
+    jobs.push(std::move(job));
+    ++stats.dates_written;
+    return atx::core::Ok();
+  };
+  st.flush = seal;
+
+  std::vector<std::thread> pool;
+  pool.reserve(W);
+  for (std::size_t i = 0; i < W; ++i) {
+    pool.emplace_back([&jobs, &werr] {
+      DateJob job;
+      while (jobs.pop(job)) {
+        const auto s = run_job(job);
+        if (!s.has_value()) {
+          werr.set(s.error());
+          // Keep draining: stopping here would let the queue fill and deadlock
+          // the producer's push(). Once failed is set, remaining jobs are popped
+          // and built anyway (cheap relative to a hang); the first error wins.
+        }
+      }
+    });
+  }
+
+  // RAII safety net: on EVERY return path (inflate error, header-parse error,
+  // non-monotonic-date error, or normal completion) this closes the queue and
+  // joins every still-joinable worker. Without it an early return would leave
+  // workers blocked in pop() and ~std::thread would std::terminate. The normal
+  // path also closes+joins explicitly below (to check werr); joining an already
+  // joined thread is skipped via joinable().
+  struct PoolJoiner {
+    BoundedQueue<DateJob> &q;
+    std::vector<std::thread> &p;
+    ~PoolJoiner() {
+      q.close();
+      for (auto &t : p)
+        if (t.joinable()) t.join();
+    }
+  } joiner{jobs, pool};
 
   while (!eof) {
     // Ensure room to read: if buf is full of an unconsumed partial line, grow it
@@ -416,14 +501,23 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
     }
   }
 
-  // Flush the final accumulated date.
-  if (!acc.empty()) {
-    const auto tbw = LoadProfile::clock::now();
-    ATX_TRY_VOID(flush_date(acc, cfg.out_dir, cfg.created_at_nanos));
-    prof.build_write += LoadProfile::clock::now() - tbw;
-    ++stats.dates_written;
+  // Seal the final accumulated date (no-op if empty).
+  ATX_TRY_VOID(seal(acc));
+
+  // Drain + join the pool, then surface the first worker error (if any). The
+  // RAII PoolJoiner would also do this, but we join explicitly here so a worker
+  // build/write failure is reported as the load result rather than swallowed.
+  jobs.close();
+  for (auto &t : pool)
+    if (t.joinable()) t.join();
+  if (werr.failed.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lk(werr.m);
+    return atx::core::Err(werr.err);
   }
 
+  // ---- Below here is producer-only post-processing: it MUST run after the join
+  //      so symbology/manifest are built once, deterministically, on this
+  //      thread. Workers never touch symbology. ----
   stats.distinct_securities = static_cast<atx::i64>(symbology.size());
 
   // Write _symbology.parquet (write_parquet returns a Status — propagate it).
