@@ -36,6 +36,7 @@
 #include <Eigen/Dense>
 
 #include "atx/core/error.hpp"
+#include "atx/core/linalg/decompose.hpp" // symmetric_eig (was transitively via factor_model.hpp pre-S8.8a)
 #include "atx/core/linalg/linalg.hpp"
 #include "atx/core/random.hpp"
 #include "atx/core/types.hpp"

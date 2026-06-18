@@ -37,6 +37,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"
+#include "atx/core/linalg/regression.hpp" // wls (plain-WLS oracle; was transitively via factor_model.hpp pre-S8.8a)
 #include "atx/core/types.hpp"
 
 #include "atx/engine/combine/combiner.hpp" // combine::detail::ledoit_wolf_intensity (LW oracle)
