@@ -5,6 +5,7 @@ add_library(atx-impl-core STATIC
     src/config.cpp
     src/dispatch.cpp
     src/artifacts.cpp
+    src/serialize_panel.cpp
     src/stage_load.cpp
     src/stage_panel.cpp
     src/stage_discover.cpp
