@@ -158,6 +158,9 @@ struct DateAccumulator {
     date_str = std::move(ds);
     symbols.clear();
     values.assign(kOratsFields.size(), {});  // rebuild 16 empty columns (move-safe)
+    constexpr atx::usize kRowsPerDateHint = 8192;
+    symbols.reserve(kRowsPerDateHint);
+    for (auto &v : values) v.reserve(kRowsPerDateHint);
   }
   bool empty() const { return symbols.empty(); }
 };
@@ -257,10 +260,9 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
         std::from_chars(secid_sv.data(), secid_sv.data() + secid_sv.size(), secid_i64);
     if (r.ec != std::errc{}) secid_i64 = 0;
   }
-  if (st.symbology.find(secid_i64) == st.symbology.end()) {
-    st.symbology.emplace(secid_i64, std::make_pair(std::string(field_at(st.idx.ticker_tk)),
-                                                   std::string(field_at(st.idx.todayTicker))));
-  }
+  st.symbology.try_emplace(secid_i64,
+                           std::string(field_at(st.idx.ticker_tk)),
+                           std::string(field_at(st.idx.todayTicker)));
 
   ++st.stats.rows_kept;
   return atx::core::Ok();
