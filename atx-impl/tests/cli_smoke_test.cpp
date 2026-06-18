@@ -144,3 +144,74 @@ TEST(AtxImplCli, DigestLineFormat) {
     EXPECT_EQ(oss.str(), expected)
         << "got: '" << oss.str() << "'";
 }
+
+// ---------------------------------------------------------------------------
+// Test 6: CLI explicit value wins over a file value, even when it is 0.0.
+// Mirrors the dispatch run-mode merge: parse_args (CLI base) then
+// merge_config_file (file fills only the gaps the CLI left unset).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCli, CliOverridesFileOnExplicitZero) {
+    namespace fs = std::filesystem;
+    const fs::path tmp_path =
+        fs::temp_directory_path() / "atx_impl_CliOverridesFileOnExplicitZero.cfg";
+    {
+        std::ofstream f(tmp_path);
+        ASSERT_TRUE(f.is_open()) << "failed to open temp config: " << tmp_path;
+        f << "gross=1.0\n";
+    }
+
+    // run optimize --config <file> --gross 0.0   (explicit CLI zero must win)
+    const std::string path_str = tmp_path.string();
+    const std::vector<const char*> argv = {
+        "atx-impl", "optimize",
+        "--config", path_str.c_str(),
+        "--gross",  "0.0",
+    };
+    auto cli_result = atx::impl::parse_args(
+        static_cast<int>(argv.size()),
+        const_cast<char**>(argv.data()));
+    ASSERT_TRUE(cli_result.has_value()) << cli_result.error().message();
+
+    atx::impl::RunConfig cfg = *cli_result;
+    auto merge_result = atx::impl::merge_config_file(cfg, path_str);
+    ASSERT_TRUE(merge_result.has_value()) << merge_result.error().message();
+
+    EXPECT_DOUBLE_EQ(cfg.gross, 0.0) << "explicit CLI --gross 0.0 must win over file gross=1.0";
+
+    std::error_code ec;
+    fs::remove(tmp_path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: file supplies the value when the CLI omits the flag.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCli, FileSuppliesValueWhenCliOmits) {
+    namespace fs = std::filesystem;
+    const fs::path tmp_path =
+        fs::temp_directory_path() / "atx_impl_FileSuppliesValueWhenCliOmits.cfg";
+    {
+        std::ofstream f(tmp_path);
+        ASSERT_TRUE(f.is_open()) << "failed to open temp config: " << tmp_path;
+        f << "gross=1.0\n";
+    }
+
+    // run optimize --config <file>   (no --gross on the CLI: file fills it)
+    const std::string path_str = tmp_path.string();
+    const std::vector<const char*> argv = {
+        "atx-impl", "optimize",
+        "--config", path_str.c_str(),
+    };
+    auto cli_result = atx::impl::parse_args(
+        static_cast<int>(argv.size()),
+        const_cast<char**>(argv.data()));
+    ASSERT_TRUE(cli_result.has_value()) << cli_result.error().message();
+
+    atx::impl::RunConfig cfg = *cli_result;
+    auto merge_result = atx::impl::merge_config_file(cfg, path_str);
+    ASSERT_TRUE(merge_result.has_value()) << merge_result.error().message();
+
+    EXPECT_DOUBLE_EQ(cfg.gross, 1.0) << "file gross=1.0 must fill the gap when CLI omits --gross";
+
+    std::error_code ec;
+    fs::remove(tmp_path, ec);
+}

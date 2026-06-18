@@ -1,11 +1,19 @@
 #pragma once
 
+#include <array>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
 
 namespace atx::impl {
+
+// The single source of truth for valid subcommand names. parse_args validates
+// against this; dispatch's routing if-chain consumes the same names.
+inline constexpr std::array<std::string_view, 7> kSubcommands = {
+    "load", "panel", "discover", "combine", "optimize", "report", "run"};
 
 // ----------------------------------------------------------------------------
 // RunConfig — all CLI flags / config-file keys for every subcommand.
@@ -67,6 +75,13 @@ struct RunConfig {
     bool help        = false;
     bool quiet       = false;
     bool digest_only = false;
+
+    // Canonical names of flags explicitly supplied by the parsed source (CLI
+    // args or config-file keys). Used by the run-mode merge so a CLI-present
+    // flag always wins over a file value, regardless of its value (e.g. an
+    // explicit --gross 0.0 must not be treated as "unset"). Names are the same
+    // keys apply_flag matches on (e.g. "gross", "seed-expr", "config").
+    std::set<std::string> set_flags;
 };
 
 // Parse CLI arguments.
@@ -79,5 +94,12 @@ struct RunConfig {
 [[nodiscard]] atx::core::Result<RunConfig> parse_config_file(
         const std::string& path,
         const std::string& subcommand);
+
+// Merge a config file into an existing (CLI-parsed) config. Flags already
+// present in base.set_flags (i.e. explicitly supplied on the CLI) are NOT
+// overridden; the file only fills gaps the CLI left unset. This makes a CLI
+// flag win regardless of its value (including an explicit 0.0).
+[[nodiscard]] atx::core::Status merge_config_file(RunConfig& base,
+                                                  const std::string& path);
 
 } // namespace atx::impl

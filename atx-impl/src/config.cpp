@@ -10,13 +10,13 @@
 namespace atx::impl {
 
 // ---------------------------------------------------------------------------
-// Shared helper: apply one (flag, value) pair to a RunConfig.
-// 'flag' must NOT have a leading "--".
-// Returns Err(InvalidArgument) for unknown flags.
+// Worker: apply one recognized (flag, value) pair to a RunConfig.
+// 'flag' must NOT have a leading "--". Returns Err(InvalidArgument) for unknown
+// flags. Does NOT touch cfg.set_flags — that bookkeeping lives in apply_flag.
 // ---------------------------------------------------------------------------
-static atx::core::Result<void> apply_flag(RunConfig& cfg,
-                                          std::string_view flag,
-                                          std::string_view value) {
+static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
+                                                std::string_view flag,
+                                                std::string_view value) {
     using EC = atx::core::ErrorCode;
 
     // Boolean flags (value is ignored / empty for valueless booleans).
@@ -106,6 +106,20 @@ static atx::core::Result<void> apply_flag(RunConfig& cfg,
 }
 
 // ---------------------------------------------------------------------------
+// Shared helper: apply one (flag, value) pair, recording the canonical flag
+// name into cfg.set_flags on success. Used uniformly by CLI and config-file
+// parsing so the "was this flag explicitly supplied?" signal is symmetric.
+// ---------------------------------------------------------------------------
+static atx::core::Result<void> apply_flag(RunConfig& cfg,
+                                          std::string_view flag,
+                                          std::string_view value) {
+    auto r = apply_flag_value(cfg, flag, value);
+    if (!r) return r;
+    cfg.set_flags.emplace(flag);
+    return atx::core::Ok();
+}
+
+// ---------------------------------------------------------------------------
 // parse_args
 // ---------------------------------------------------------------------------
 atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
@@ -123,12 +137,8 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         }
         // Subcommand must not start with '-'.
         if (!a.empty() && a[0] != '-') {
-            static constexpr std::string_view kSubcmds[] = {
-                "load", "panel", "discover", "combine",
-                "optimize", "report", "run"
-            };
             bool found = false;
-            for (auto& sc : kSubcmds) {
+            for (auto sc : kSubcommands) {
                 if (a == sc) { found = true; break; }
             }
             if (!found) {
@@ -173,13 +183,16 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
 }
 
 // ---------------------------------------------------------------------------
-// parse_config_file
+// Core config-file reader: apply each `flag=value` line to `cfg`. Lines whose
+// flag name is already in `skip` are ignored (used by the run-mode merge so a
+// flag explicitly supplied on the CLI is never overridden by the file). When
+// `skip` is empty, every recognized flag is applied.
 // ---------------------------------------------------------------------------
-atx::core::Result<RunConfig> parse_config_file(const std::string& path,
-                                                const std::string& subcommand) {
+static atx::core::Status read_config_file_into(
+        RunConfig& cfg,
+        const std::string& path,
+        const std::set<std::string>& skip) {
     using EC = atx::core::ErrorCode;
-    RunConfig cfg{};
-    cfg.subcommand = subcommand;
 
     std::ifstream file(path);
     if (!file.is_open()) {
@@ -204,8 +217,12 @@ atx::core::Result<RunConfig> parse_config_file(const std::string& path,
                 + ": malformed line (expected flag=value): '" + line + "'");
         }
 
-        std::string_view flag{line.data(), eq};
+        std::string flag = line.substr(0, eq);
         std::string_view value{line.data() + eq + 1, line.size() - eq - 1};
+
+        // A flag already supplied on the CLI wins: do not let the file override
+        // it (regardless of value, including an explicit 0.0).
+        if (skip.find(flag) != skip.end()) continue;
 
         auto r = apply_flag(cfg, flag, value);
         if (!r) {
@@ -215,7 +232,30 @@ atx::core::Result<RunConfig> parse_config_file(const std::string& path,
         }
     }
 
+    return atx::core::Ok();
+}
+
+// ---------------------------------------------------------------------------
+// parse_config_file
+// ---------------------------------------------------------------------------
+atx::core::Result<RunConfig> parse_config_file(const std::string& path,
+                                                const std::string& subcommand) {
+    RunConfig cfg{};
+    cfg.subcommand = subcommand;
+    auto r = read_config_file_into(cfg, path, /*skip=*/{});
+    if (!r) return atx::core::Err(std::move(r).error());
     return atx::core::Ok(cfg);
+}
+
+// ---------------------------------------------------------------------------
+// merge_config_file
+// ---------------------------------------------------------------------------
+atx::core::Status merge_config_file(RunConfig& base, const std::string& path) {
+    // CLI-present flags (already in base.set_flags) are skipped, so the file
+    // only fills gaps the CLI left unset. Capture the skip-set by copy because
+    // applying file flags mutates base.set_flags as we go.
+    const std::set<std::string> skip = base.set_flags;
+    return read_config_file_into(base, path, skip);
 }
 
 } // namespace atx::impl
