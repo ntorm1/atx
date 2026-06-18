@@ -156,7 +156,7 @@ struct DateAccumulator {
     date_nanos = dn;
     date_str = std::move(ds);
     symbols.clear();
-    for (auto &v : values) v.clear();
+    values.assign(kOratsFields.size(), {});  // rebuild 16 empty columns (move-safe)
   }
   bool empty() const { return symbols.empty(); }
 };
@@ -167,8 +167,8 @@ atx::core::Status flush_date(DateAccumulator &acc, const std::string &out_dir,
   cols.field_names.assign(kOratsFields.begin(), kOratsFields.end());
   const atx::usize rows = acc.symbols.size();
   cols.times.assign(rows, acc.date_nanos); // all rows share this date's midnight nanos
-  cols.symbols = acc.symbols;
-  cols.values = acc.values;
+  cols.symbols = std::move(acc.symbols);
+  cols.values = std::move(acc.values);
   const std::string path = (fs::path(out_dir) / (acc.date_str + ".seg")).string();
   return atx::tsdb::build_from_long(cols, path, created_at_nanos);
 }

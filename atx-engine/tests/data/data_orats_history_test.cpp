@@ -140,6 +140,25 @@ TEST(DataOratsHistory, LoadsTinyZipIntoPerDateSegments) {
   EXPECT_DOUBLE_EQ(rdr->value(*close_fid, 0, 1), 20.0);
 }
 
+TEST(DataOratsHistory, MoveFlushPreservesValues) {
+  const std::string zip = make_orats_zip();
+  const fs::path out = fs::temp_directory_path() / "atx_orats_move_out";
+  fs::remove_all(out);
+  OratsLoadConfig cfg;
+  cfg.zip_path = zip;
+  cfg.out_dir = out.string();
+  cfg.min_date_nanos = *detail::date_to_nanos("2020-01-01");
+  cfg.created_at_nanos = 0;
+  auto st = load_orats_history(cfg);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  auto rdr = atx::tsdb::SegmentReader::attach((out / "2020-01-02.seg").string());
+  ASSERT_TRUE(rdr.has_value()) << rdr.error().to_string();
+  const auto close_fid = rdr->field_index("close");
+  ASSERT_TRUE(close_fid.has_value());
+  EXPECT_DOUBLE_EQ(rdr->value(*close_fid, 0, 0), 300.0);
+  EXPECT_DOUBLE_EQ(rdr->value(*close_fid, 0, 1), 20.0);
+}
+
 TEST(DataOratsHistory, RejectsNonMonotonicDates) {
   // Two rows, both >= floor, but the dates regress (01-03 then 01-02). The input
   // contract is date-major; a regression must fail closed with InvalidArgument.
