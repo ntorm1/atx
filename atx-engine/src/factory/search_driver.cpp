@@ -1,12 +1,13 @@
 #include "atx/engine/factory/search_driver.hpp"
 
-#include <algorithm>    // std::clamp, std::sort, std::max, std::min
-#include <cstddef>      // std::size_t (hash_combine seed type)
-#include <cstdint>      // std::uint8_t (compiled[] flag vector)
-#include <memory>       // std::unique_ptr, std::make_unique
-#include <span>         // std::span
+#include <algorithm>     // std::clamp, std::sort, std::max, std::min
+#include <cstddef>       // std::size_t (hash_combine seed type)
+#include <cstdint>       // std::uint8_t (compiled[] flag vector)
+#include <memory>        // std::unique_ptr, std::make_unique
+#include <span>          // std::span
+#include <unordered_map> // std::unordered_map (score_j_of_ptr: Genome* -> j)
 #include <unordered_set> // std::unordered_set (seen_this_gen dedup)
-#include <utility>      // std::move
+#include <utility>       // std::move
 #include <vector>
 
 #include "atx/core/hash.hpp" // atx::core::hash_combine
@@ -215,19 +216,30 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
 
   // -----------------------------------------------------------------------
-  // Phase 2 (PARALLEL): per-fresh program compile + eval -> digest slot.
+  // Phase 2+3 (PARALLEL): single merged eval pass — digest + fitness share
+  // ONE evaluate per genome.
   //
-  // SAFETY: `digest_slot` and `compiled` are pre-sized to fresh.size() before
-  // the parallel region; shard k writes ONLY slot k (disjoint single-writer
-  // slots). `panel_` is shared CONST (never mutated). `fresh[k]` is a const
-  // pointer to a const Genome (read-only). `alpha::compile` and
+  // Each fresh[k] is compiled and evaluated ONCE. The digest is folded as
+  // before (serial, canonical order). When fresh[k] is a to_score
+  // representative (exact pointer match via score_j_of_ptr), fitness is
+  // computed from the SAME SignalSet produced by that evaluate — eliminating
+  // the redundant second evaluate that Phase 3 previously performed.
+  //
+  // SAFETY: `digest_slot`, `compiled`, and `score_slot` are pre-sized before
+  // the parallel region; shard k writes ONLY digest_slot[k] and compiled[k]
+  // (disjoint single-writer slots). When fresh[k] matches to_score[j], shard
+  // k ALSO writes score_slot[j] — each j has EXACTLY ONE matching k (a pop
+  // object's address appears in fresh at most once, and to_score contains only
+  // one entry per canon_hash), so score_slot[j] is also a disjoint
+  // single-writer slot. `panel_` is shared CONST (never mutated). `fresh[k]`
+  // is a const pointer to a const Genome (read-only). `alpha::compile` and
   // `alpha::Engine::evaluate` are reentrant (no static/thread_local mutable
   // state). Worker `wid` touches ONLY `engines[wid]` (disjoint single-owner):
   // no cross-worker Engine access. No shared-mutable write occurs inside the
   // parallel region. The serial fold below reads digest_slot + compiled in
-  // fixed index order, so the accumulated digest is byte-identical across all
-  // worker counts — worker scheduling CANNOT affect the fold order or any slot
-  // value.
+  // fixed canonical index order, so the accumulated digest is byte-identical
+  // across all worker counts — worker scheduling CANNOT affect the fold order
+  // or any slot value.
   //
   // EVAL-PATH NOTE: each worker reuses its own `engines[wid]` Engine across
   // all programs it processes (Engine::evaluate is IDEMPOTENT — output depends
@@ -238,19 +250,23 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // allocation for that worker and is reused thereafter. The digest is worker-
   // count-invariant BY CONSTRUCTION: slot k's value depends only on
   // (fresh[k], panel_), and the fold is serial in fixed canonical order.
+  // No cross-genome substitution: fresh[k] digests from its OWN eval; fitness
+  // for to_score[j] uses that SAME genome's SignalSet.
   // -----------------------------------------------------------------------
   const atx::usize n_fresh = fresh.size();
   std::vector<atx::u64> digest_slot(n_fresh, atx::u64{0});
   std::vector<std::uint8_t> compiled(n_fresh, std::uint8_t{0});
 
-  // One stateless Scheduler for both parallel regions' Tier 1 LPT dispatch order.
-  // Default-constructed: the single-node fallback topology, NO OS query;
-  // `dispatch_order` reads ONLY its cost-hint argument (a PURE function — no
-  // clock, no thread id, no topology), so it cannot touch a result bit.
+  // One stateless Scheduler for the merged parallel region's Tier 1 LPT
+  // dispatch order. Default-constructed: the single-node fallback topology, NO
+  // OS query; `dispatch_order` reads ONLY its cost-hint argument (a PURE
+  // function — no clock, no thread id, no topology), so it cannot touch a
+  // result bit.
   const parallel::Scheduler lpt{};
 
   // -----------------------------------------------------------------------
-  // Tier 1 LPT (longest-processing-time-first) dispatch order for Phase 2.
+  // Tier 1 LPT (longest-processing-time-first) dispatch order for the merged
+  // Phase 2+3 pass.
   //
   // `order_fresh` is a PURE permutation of [0, n_fresh) sorted by DESCENDING
   // genome size — the AST node count is a finite, NaN-free monotone proxy for
@@ -271,32 +287,68 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
   const std::vector<parallel::ShardId> order_fresh = lpt.dispatch_order(cost_fresh);
 
-  // One reusable Engine per worker, bound to panel_, shared by BOTH parallel phases.
-  // Engine holds a const Panel& (not move-assignable) -> unique_ptr so the vector
-  // never assigns on growth (mirrors parallel_evaluate, batch_eval.cpp:89-93).
-  // Reused across every candidate: Engine::evaluate is idempotent (output depends
-  // only on (program, panel)), so slot k's value is independent of which worker ran
-  // it or what it evaluated before -> worker-count + Tier 1 LPT-order invariance hold.
+  // One reusable Engine per worker, bound to panel_. Engine holds a const
+  // Panel& (not move-assignable) -> unique_ptr so the vector never assigns on
+  // growth (mirrors parallel_evaluate, batch_eval.cpp:89-93). Reused across
+  // every candidate: Engine::evaluate is idempotent (output depends only on
+  // (program, panel)), so slot k's value is independent of which worker ran it
+  // or what it evaluated before -> worker-count + Tier 1 LPT-order invariance hold.
   std::vector<std::unique_ptr<alpha::Engine>> engines;
   engines.reserve(det_pool.n_workers());
   for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
     engines.push_back(std::make_unique<alpha::Engine>(panel_));
   }
 
+  // Pointer -> to_score index map (serial, built after to_score is finalized).
+  // Each to_score[j] is the SAME pop object as exactly one fresh[k] (a pop
+  // object's address is unique -> appears in `fresh` at most once). This lets
+  // the single merged pass score a representative from the SAME SignalSet it
+  // evaluated for the digest, eliminating Phase 3's redundant evaluate.
+  // score_slot[j] therefore has exactly one writer (the unique matching shard)
+  // -> the disjoint single-writer contract holds.
+  std::unordered_map<const Genome *, atx::usize> score_j_of_ptr;
+  score_j_of_ptr.reserve(to_score.size());
+  for (atx::usize j = 0; j < to_score.size(); ++j) {
+    score_j_of_ptr.emplace(to_score[j], j);
+  }
+
+  const atx::usize n_to_score = to_score.size();
+  std::vector<CachedScore> score_slot(n_to_score);
+
   det_pool.parallel_for(n_fresh, [&](atx::usize p, atx::usize wid) {
-    const atx::usize k = order_fresh[p]; // LPT remap: claim-position p -> canonical slot k
+    const atx::usize k = order_fresh[p]; // LPT remap -> canonical slot k
     auto prog = alpha::compile(fresh[k]->ast, fresh[k]->analysis);
     if (!prog.has_value()) {
-      return; // compiled[k] stays 0 — skip in the serial fold below (F5 backstop)
+      return; // compiled[k] stays 0 (F5 backstop): no digest, no fitness for this k
     }
     auto ss = engines[wid]->evaluate(*prog); // reused per-worker engine (idempotent)
     digest_slot[k] = ss.has_value() ? parallel::signal_set_digest(*ss) : atx::u64{0};
     compiled[k] = std::uint8_t{1};
+    // Representative? Score it from the SAME SignalSet (no second evaluate). On
+    // eval-failure (!ss) leave score_slot[j] default — matches the prior code where
+    // Phase 3's own eval would fail to a default score.
+    const auto it = score_j_of_ptr.find(fresh[k]);
+    if (it != score_j_of_ptr.end() && ss.has_value()) {
+      const atx::usize j = it->second;
+      auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, cfg.fitness,
+                                   /*weak_panel=*/nullptr, /*engine=*/engines[wid].get(),
+                                   /*signals=*/&*ss);
+      if (rep.has_value()) {
+        score_slot[j].raw = rep->raw;
+        score_slot[j].objectives = rep->objectives; // S4.1: cache the objectives
+        score_slot[j].n_objectives = rep->n_objectives;
+        score_slot[j].descriptor = std::move(rep->descriptor); // S4.2: canon-cache phenotype
+      }
+      // On Err: score_slot[j] stays default-constructed (raw=0, empty descriptor),
+      // matching the prior code's behaviour for a fitness-error candidate.
+    }
   });
 
   // Serial fold in canonical-id index order (0..n_fresh): skip non-compilable
   // genomes (compiled[k]==0), exactly matching the prior sequential loop's
   // `continue` on compile failure. This reproduces the byte-identical digest.
+  // Each genome's digest comes from its OWN eval (no cross-genome substitution);
+  // the serial fold order is the same as before — golden digest preserved.
   for (atx::usize k = 0; k < n_fresh; ++k) {
     if (compiled[k] != std::uint8_t{0}) {
       res.digest = static_cast<atx::u64>(
@@ -305,56 +357,14 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
 
   // -----------------------------------------------------------------------
-  // Phase 3 (PARALLEL): fitness scoring of distinct-new genomes.
-  //
-  // SAFETY: `score_slot` is pre-sized to to_score.size() before the parallel
-  // region; shard j writes ONLY score_slot[j] (disjoint single-writer slots).
-  // `pool`, `panel_`, `policy_`, `sim_`, `cfg.fitness` are shared CONST (never
-  // mutated). Worker `wid` passes `engines[wid].get()` to pool_aware_fitness
-  // (disjoint single-owner): no cross-worker Engine access. `pool_aware_fitness`
-  // is reentrant (no static/thread_local mutable state; when an engine is
-  // supplied it is used directly rather than constructing a fresh one, so the
-  // SlotPool allocation is paid once per worker and reused). No shared-mutable
-  // write occurs in the region. The serial merge in Phase 4 reads score_slot in
-  // fixed to_score order, so canon/fitness_cache/all_scored are mutated only
-  // serially, preserving the exact insertion order of the sequential
-  // implementation.
-  // -----------------------------------------------------------------------
-  const atx::usize n_to_score = to_score.size();
-  std::vector<CachedScore> score_slot(n_to_score);
-
-  // Tier 1 LPT dispatch order for the fitness pass — same construction and the
-  // same byte-identity guarantee as Phase 2: the permutation remaps only the
-  // claim-position p -> logical slot j (j == order_score[p]); each slot is written
-  // by exactly one shard and the serial merge in Phase 4 reads score_slot in
-  // fixed to_score order, so worker scheduling AND the LPT order cannot perturb
-  // canon/fitness_cache/all_scored.
-  std::vector<atx::f64> cost_score(n_to_score);
-  for (atx::usize j = 0; j < n_to_score; ++j) {
-    cost_score[j] = static_cast<atx::f64>(to_score[j]->ast.nodes().size());
-  }
-  const std::vector<parallel::ShardId> order_score = lpt.dispatch_order(cost_score);
-
-  det_pool.parallel_for(n_to_score, [&](atx::usize p, atx::usize wid) {
-    const atx::usize j = order_score[p]; // LPT remap: claim-position p -> logical slot j
-    auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, cfg.fitness,
-                                 /*weak_panel=*/nullptr, /*engine=*/engines[wid].get());
-    if (rep.has_value()) {
-      score_slot[j].raw = rep->raw;
-      score_slot[j].objectives = rep->objectives; // S4.1: cache the objectives
-      score_slot[j].n_objectives = rep->n_objectives;
-      score_slot[j].descriptor = std::move(rep->descriptor); // S4.2: canon-cache phenotype
-    }
-    // On Err: score_slot[j] stays default-constructed (raw=0, empty descriptor),
-    // matching the prior code's behaviour for a fitness-error candidate.
-  });
-
-  // -----------------------------------------------------------------------
   // Phase 4 (serial): merge scores into canon/fitness_cache/all_scored, then
   // assemble the Scored output vector in population order.
   //
-  // Merge is in to_score order (== pop first-occurrence order), identical to the
-  // prior sequential implementation's per-pop-member insertion sequence.
+  // score_slot[j] was written inside the merged Phase 2+3 pass (above) by the
+  // unique shard that evaluated the corresponding fresh[k] representative;
+  // fitness was computed from that same evaluate's SignalSet. Merge is in
+  // to_score order (== pop first-occurrence order), identical to the prior
+  // sequential implementation's per-pop-member insertion sequence.
   // -----------------------------------------------------------------------
   for (atx::usize j = 0; j < n_to_score; ++j) {
     const atx::u64 hash = to_score[j]->canon_hash;
