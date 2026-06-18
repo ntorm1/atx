@@ -1,7 +1,7 @@
 #include "stages.hpp"
 
+#include <algorithm>
 #include <cmath>
-#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <string>
@@ -80,7 +80,7 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
             for (atx::f64 r : rets) {
                 s += (r - mean) * (r - mean);
             }
-            v = s / static_cast<atx::f64>(n);
+            v = std::max(1e-4, s / static_cast<atx::f64>(n));
         }
         dvar[static_cast<Eigen::Index>(i)] = v;
     }
@@ -115,7 +115,6 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     cost.round_trip_cost_bps = 0.0;
 
     // 6. Callbacks + run.
-    const atx::usize cm = combo.instruments();
     ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
 
     auto alpha_at = [&combo, alpha_fid](atx::usize period)
@@ -128,8 +127,6 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     };
 
     ATX_TRY(auto result, mpo.run(sched, alpha_at, model_at, cost));
-
-    (void)cm;  // validated == M above
 
     // 7. Serialize books as a weight panel (S periods x M instruments, field "weight").
     std::vector<atx::f64> flat;
