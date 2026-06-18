@@ -108,6 +108,7 @@
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // f64, usize
 
+#include "atx/engine/risk/cone.hpp"         // SocBlock + ball_project (deterministic SOC z-projection, S8.5a)
 #include "atx/engine/risk/constraints.hpp"  // MaterializedConstraints
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (apply / specific_var / factor_cov)
 #include "atx/engine/risk/kkt_ldl.hpp"      // QuasiDefiniteLdl (deterministic no-pivot KKT solve)
@@ -339,6 +340,16 @@ private:
         const atx::f64 cij = col_inf[j];
         delta[j] = (cij > 0.0) ? 1.0 / std::sqrt(cij) : 1.0;
       }
+      // (b') Cone rows are pinned UN-scaled (δ = 1) — a cone block is projected as a
+      //      EUCLIDEAN ball/SOC, and an anisotropic per-row scale would warp the ball
+      //      into an ellipsoid with no closed-form projection (R5/R1). Pinning the cone
+      //      rows keeps the projection isotropic and exact in Ãx units. NO-OP when
+      //      aug.cones is empty ⇒ the box-only equilibration is byte-identical to S8.4.
+      for (const SocBlock &blk : aug.cones) {
+        for (atx::usize j = 0; j < blk.dim; ++j) {
+          delta[n + blk.row_start + j] = 1.0;
+        }
+      }
 
       // (c) Apply D = diag(δ) symmetrically: P ← D_x P D_x, Ã ← E Ã D_x.
       apply_scale_sym(P, delta.data());                 // P uses δ[0..n)
@@ -398,6 +409,10 @@ private:
       out.l[static_cast<Eigen::Index>(i)] *= sc.e[i];
       out.u[static_cast<Eigen::Index>(i)] *= sc.e[i];
     }
+    // Carry the cone blocks onto the scaled problem UNCHANGED: their rows are pinned
+    // e = 1 (step b' above) so the scaled splitting variable on those rows is in the
+    // SAME Ãx units as the original — the ball radius and offset apply verbatim.
+    out.cones = aug.cones;
     return out;
   }
 
@@ -524,12 +539,16 @@ private:
         x[i] = sol[static_cast<atx::usize>(i)];
       }
 
-      // (2) z-update: clamp(Ã x + y/ρ, l̃, ũ) elementwise (order-fixed).
+      // (2) z-update: clamp(Ã x + y/ρ, l̃, ũ) elementwise (order-fixed), THEN overwrite
+      //     each cone block's row range with the SOC/ball projection. The box rows are
+      //     untouched by the cone step; with zero cone blocks the loop is byte-identical
+      //     to S8.4 (R10 — the cone is purely a z-projection swap, R5).
       const cl::VecX ax = aug.A_tilde * x;
       for (Eigen::Index i = 0; i < r; ++i) {
         const atx::f64 t = ax[i] + y[i] / cfg.rho;
         z[i] = clamp(t, aug.l[i], aug.u[i]);
       }
+      project_cones(aug, ax, y, z);
       // (3) y-update: y += ρ (Ã x − z).
       y += cfg.rho * (ax - z);
     }
@@ -567,12 +586,19 @@ private:
       seeded = true;
     }
     if (seeded) {
-      // Seed z consistently with the splitting variable: z = clamp(Ã̄ x̄, l̄, ū).
+      // Seed z consistently with the splitting variable: z = clamp(Ã̄ x̄, l̄, ū) on the
+      // box rows, then the SOC/ball projection on each cone block — the SAME operator the
+      // loop's z-update applies (with the seed target Ã̄ x̄, no y/ρ term, since y is being
+      // seeded separately). Keeping this consistent stops the warm-started and cold paths
+      // from diverging on the cone rows.
       const cl::VecX ax = aug.A_tilde * x;
       for (atx::usize i = 0; i < r; ++i) {
         z[static_cast<Eigen::Index>(i)] = clamp(ax[static_cast<Eigen::Index>(i)],
                                                 aug.l[static_cast<Eigen::Index>(i)],
                                                 aug.u[static_cast<Eigen::Index>(i)]);
+      }
+      for (const SocBlock &blk : aug.cones) {
+        project_cone_block(blk, ax, z);
       }
     }
   }
@@ -617,6 +643,18 @@ private:
       return; // no constraints ⇒ nothing to polish
     }
 
+    // Cone rows are NEVER linear-active: a SOC row is governed by the ball projection,
+    // not a finite [l, u] bound (its band is ±kAugInf), so it must be EXCLUDED from the
+    // active-set polish KKT — pinning it to ±kAugInf would corrupt the reduced solve.
+    // The mask is all-false when aug.cones is empty ⇒ the partition is byte-identical to
+    // S8.4 (R10).
+    std::vector<bool> is_cone_row(static_cast<atx::usize>(r), false);
+    for (const SocBlock &blk : aug.cones) {
+      for (atx::usize j = 0; j < blk.dim; ++j) {
+        is_cone_row[blk.row_start + j] = true;
+      }
+    }
+
     // (a) Active-set partition by dual sign (OSQP §4.1): a row is active-at-lower if
     //     y_i < −tol, active-at-upper if y_i > tol, else inactive. The active rows are
     //     enforced as equalities A_act x = bnd_act in the reduced KKT.
@@ -627,6 +665,9 @@ private:
     active.reserve(static_cast<atx::usize>(r));
     bnd.reserve(static_cast<atx::usize>(r));
     for (Eigen::Index i = 0; i < r; ++i) {
+      if (is_cone_row[static_cast<atx::usize>(i)]) {
+        continue; // cone row ⇒ handled by the projection, not the active-set KKT
+      }
       const atx::f64 yi = y[i];
       if (yi < -dual_tol) {
         active.push_back(static_cast<int>(i));
@@ -785,7 +826,11 @@ private:
     return 0.5 * quad + lin;
   }
 
-  // Feasibility of x within feas_tol (used by the polish acceptance gate).
+  // Feasibility of x within feas_tol (used by the polish acceptance gate). Checks BOTH
+  // the linear box bands AND each cone block's ball ‖Ãx + offset‖₂ ≤ radius — the polish
+  // KKT does not model the cone (cone rows are excluded), so a polished book that lowers
+  // the objective by VIOLATING the cone must be rejected here (else polish would silently
+  // break the SOC). Order-fixed cone norm (R1).
   [[nodiscard]] bool feasible_within(const AugmentedQp &aug, const atx::core::linalg::VecX &x,
                                      const QpProblem & /*p*/) const {
     const atx::core::linalg::VecX ax = aug.A_tilde * x;
@@ -794,6 +839,23 @@ private:
         return false;
       }
       if (aug.l[i] - ax[i] > cfg.feas_tol) {
+        return false;
+      }
+    }
+    return cones_feasible(aug, ax);
+  }
+
+  // Each cone block's ball constraint ‖Ãx + offset‖₂ ≤ radius + feas_tol (order-fixed
+  // norm, R1). True (vacuously) when aug.cones is empty ⇒ box-only path unchanged.
+  [[nodiscard]] bool cones_feasible(const AugmentedQp &aug,
+                                    const atx::core::linalg::VecX &ax) const {
+    for (const SocBlock &blk : aug.cones) {
+      std::vector<atx::f64> arg(blk.dim, 0.0);
+      for (atx::usize j = 0; j < blk.dim; ++j) {
+        arg[j] = ax[static_cast<Eigen::Index>(blk.row_start + j)] +
+                 blk.offset[static_cast<Eigen::Index>(j)];
+      }
+      if (ordered_norm2(std::span<const atx::f64>(arg)) > blk.radius + cfg.feas_tol) {
         return false;
       }
     }
@@ -832,7 +894,10 @@ private:
   }
 
   // -------------------------------------------------------------------------
-  //  Feasibility gate (R3): Ã x ∈ [l̃, ũ] within feas_tol, else Err naming the row.
+  //  Feasibility gate (R3): Ã x ∈ [l̃, ũ] within feas_tol on the box rows AND each cone
+  //  block's ball ‖Ãx + offset‖₂ ≤ radius + feas_tol, else Err naming the offending row /
+  //  cone. The cone rows carry ±kAugInf box bounds (so the elementwise scan passes them);
+  //  their REAL constraint is the SOC, checked separately here.
   // -------------------------------------------------------------------------
   [[nodiscard]] atx::core::Status check_feasible(const AugmentedQp &aug,
                                                  const atx::core::linalg::VecX &x) const {
@@ -848,7 +913,30 @@ private:
         return co::Err(co::ErrorCode::InvalidArgument, infeasible_msg(i, under));
       }
     }
+    // Cone (SOC / ball) feasibility — order-fixed norm per block (R1).
+    for (atx::usize b = 0; b < aug.cones.size(); ++b) {
+      const SocBlock &blk = aug.cones[b];
+      std::vector<atx::f64> arg(blk.dim, 0.0);
+      for (atx::usize j = 0; j < blk.dim; ++j) {
+        arg[j] = ax[static_cast<Eigen::Index>(blk.row_start + j)] +
+                 blk.offset[static_cast<Eigen::Index>(j)];
+      }
+      const atx::f64 norm = ordered_norm2(std::span<const atx::f64>(arg));
+      const atx::f64 viol = norm - blk.radius;
+      if (viol > cfg.feas_tol) {
+        return co::Err(co::ErrorCode::InvalidArgument, infeasible_cone_msg(b, viol));
+      }
+    }
     return co::Ok();
+  }
+
+  // Cone-feasibility-gate Err message (mirrors infeasible_msg: names BOTH causes —
+  // a genuinely infeasible cone OR an under-converged fixed budget).
+  [[nodiscard]] std::string infeasible_cone_msg(atx::usize block, atx::f64 violation) const {
+    return "ConstrainedQpSolver::solve: book violates cone block " + std::to_string(block) +
+           " (‖V^{1/2}(w−w_bench)‖₂ over budget) by " + std::to_string(violation) +
+           " after the fixed iteration budget — the cone may be infeasible OR the budget "
+           "(cfg.iters) is too low to converge (raise iters)";
   }
 
   // Compose the feasibility-gate Err message. It must NOT assert "infeasible" as
@@ -860,6 +948,56 @@ private:
            " by " + std::to_string(violation) + " after the fixed iteration budget — the set "
            "may be infeasible OR the budget (cfg.iters) is too low for the aux-split to "
            "converge (raise iters)";
+  }
+
+  // -------------------------------------------------------------------------
+  //  Cone z-projection (S8.5a, R5) — the ONLY place a cone enters the iteration.
+  //  For each SocBlock the splitting variable z on its row range is projected onto the
+  //  ball ‖Ãx + offset‖₂ ≤ radius: project (target + offset) onto the ball of `radius`,
+  //  then subtract `offset` back so z stays in Ãx units (the splitting metric). `target`
+  //  is the z-update target Ãx + y/ρ (loop) or Ãx (warm-start seed). Cone rows are pinned
+  //  e = 1 in Ruiz, so on the scaled problem these rows are already in Ãx units — the
+  //  ball stays a ball (no anisotropic warp). Order-fixed (ball_project's ‖·‖₂ is a
+  //  single-accumulator ascending reduction). NO-OP when aug.cones is empty (R10).
+  // -------------------------------------------------------------------------
+  void project_cones(const AugmentedQp &aug, const atx::core::linalg::VecX &ax,
+                     const atx::core::linalg::VecX &y, atx::core::linalg::VecX &z) const {
+    if (aug.cones.empty()) {
+      return; // box-only path ⇒ z untouched (byte-identical to S8.4, R10)
+    }
+    for (const SocBlock &blk : aug.cones) {
+      // Loop target_j = ax[row] + y[row]/ρ, projected onto the ball, offset subtracted.
+      const atx::usize d = blk.dim;
+      std::vector<atx::f64> arg(d, 0.0);  // (target + offset) — the cone argument a
+      std::vector<atx::f64> proj(d, 0.0); // ball-projected argument
+      for (atx::usize j = 0; j < d; ++j) {
+        const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
+        arg[j] = (ax[row] + y[row] / cfg.rho) + blk.offset[static_cast<Eigen::Index>(j)];
+      }
+      ball_project(std::span<const atx::f64>(arg), blk.radius, std::span<atx::f64>(proj));
+      for (atx::usize j = 0; j < d; ++j) {
+        const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
+        z[row] = proj[j] - blk.offset[static_cast<Eigen::Index>(j)]; // back to Ãx units
+      }
+    }
+  }
+
+  // The warm-start-seed variant: target_j = ax[row] (no y/ρ term). Same project-and-
+  // shift bookkeeping so the seed lands the cone rows where the loop would.
+  static void project_cone_block(const SocBlock &blk, const atx::core::linalg::VecX &ax,
+                                 atx::core::linalg::VecX &z) {
+    const atx::usize d = blk.dim;
+    std::vector<atx::f64> arg(d, 0.0);
+    std::vector<atx::f64> proj(d, 0.0);
+    for (atx::usize j = 0; j < d; ++j) {
+      const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
+      arg[j] = ax[row] + blk.offset[static_cast<Eigen::Index>(j)];
+    }
+    ball_project(std::span<const atx::f64>(arg), blk.radius, std::span<atx::f64>(proj));
+    for (atx::usize j = 0; j < d; ++j) {
+      const Eigen::Index row = static_cast<Eigen::Index>(blk.row_start + j);
+      z[row] = proj[j] - blk.offset[static_cast<Eigen::Index>(j)];
+    }
   }
 
   // -------------------------------------------------------------------------

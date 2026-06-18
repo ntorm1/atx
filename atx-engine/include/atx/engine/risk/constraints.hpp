@@ -58,6 +58,7 @@
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // f64, usize
 
+#include "atx/engine/risk/cone.hpp"           // TrackingError descriptor + TrackingErrorSpec (S8.5a)
 #include "atx/engine/risk/reference_data.hpp" // CapacityRef (%ADV / %shares box inputs, S8.4)
 
 namespace atx::engine::risk {
@@ -169,6 +170,13 @@ struct MaterializedConstraints {
   bool has_turnover = false;           // a TurnoverBudget was set
   atx::f64 turnover_budget = 0.0;      // Σ|w − w_prev| <= this (valid iff has_turnover)
   std::vector<atx::f64> turnover_ref;  // w_prev snapshot keying the turnover L1 (valid iff has_turnover)
+
+  // CONE metadata (S8.5a — NOT linear in w; the ADMM owns the SOC z-projection). The
+  // tracking-error SOC needs L_F = chol(F) and sqrt(D) from the FactorModel to form its
+  // K+M cone rows + offset, which only build_augmented can reach — so materialize()
+  // carries the RAW request (a w_bench snapshot + the te budget) and build_augmented
+  // assembles the SocBlock. `tracking.active == false` ⇒ no cone (the box-only path).
+  TrackingErrorSpec tracking;          // tracking-error SOC request (active iff a TrackingError was set)
 };
 
 // ===========================================================================
@@ -184,6 +192,7 @@ struct ConstraintSet {
   std::optional<ParticipationCap> part;   // %ADV box fold (S8.4)
   std::optional<OwnershipCap> own;         // %shares-out box fold (S8.4)
   std::optional<SectorRiskBudget> sector;  // sector net-weight rows (S8.4)
+  std::optional<TrackingError> track;      // tracking-error SOC (S8.5a; cone, not a linear row)
 
   // Materialize l <= A w <= u over the M-dim weight space. `X` is the M×K
   // exposure matrix (FactorComponents.X); `w_prev` keys the turnover L1 (an
@@ -222,6 +231,8 @@ struct ConstraintSet {
     // --- L1-budget metadata (non-linear; carried for the S1-2 ADMM) ---------
     mc.gross_l1_budget = gross.gross_leverage;
     fill_turnover(mc, w_prev, M);
+    // --- cone metadata (S8.5a tracking-error SOC; assembled in build_augmented) ---
+    fill_tracking(mc, M);
     return co::Ok(std::move(mc));
   }
 
@@ -249,6 +260,25 @@ private:
     ATX_TRY_VOID(validate_turn());
     ATX_TRY_VOID(validate_capacity_caps());
     ATX_TRY_VOID(validate_sector(M));
+    ATX_TRY_VOID(validate_track(M));
+    return co::Ok();
+  }
+
+  // Tracking-error SOC (S8.5a): a present w_bench must be length M (an EMPTY w_bench is
+  // accepted as the all-zero benchmark) and te_budget must be >= 0 (a negative ball
+  // radius is provably contradictory). The cone itself is assembled in build_augmented.
+  [[nodiscard]] atx::core::Status validate_track(atx::usize M) const {
+    namespace co = atx::core;
+    if (!track) {
+      return co::Ok();
+    }
+    if (!track->w_bench.empty() && track->w_bench.size() != M) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "TrackingError: w_bench length must equal M (or be empty for a zero benchmark)");
+    }
+    if (track->te_budget < 0.0) {
+      return co::Err(co::ErrorCode::InvalidArgument, "TrackingError: te_budget must be >= 0");
+    }
     return co::Ok();
   }
 
@@ -566,6 +596,26 @@ private:
     mc.turnover_ref.assign(M, 0.0);
     for (atx::usize i = 0; i < M && i < w_prev.size(); ++i) {
       mc.turnover_ref[i] = w_prev[i];
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  //  Tracking-error cone metadata — snapshot w_bench (empty ⇒ flat zero ref of
+  //  length M) into the TrackingErrorSpec. The K+M SOC rows + the offset b are
+  //  assembled later in build_augmented (they need L_F = chol(F) and sqrt(D) from
+  //  the FactorModel); materialize only carries the RAW request (R4 — no V here).
+  // -------------------------------------------------------------------------
+  // NOT noexcept: the w_bench.assign(M, …) allocates the snapshot (cold path, once).
+  void fill_tracking(MaterializedConstraints &mc, atx::usize M) const {
+    if (!track) {
+      mc.tracking.active = false;
+      return;
+    }
+    mc.tracking.active = true;
+    mc.tracking.te_budget = track->te_budget;
+    mc.tracking.w_bench.assign(M, 0.0);
+    for (atx::usize i = 0; i < M && i < track->w_bench.size(); ++i) {
+      mc.tracking.w_bench[i] = track->w_bench[i];
     }
   }
 };

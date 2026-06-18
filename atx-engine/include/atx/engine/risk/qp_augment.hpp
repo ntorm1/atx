@@ -51,6 +51,12 @@
 //        s_i ≥ 0 ; Σ s_i ≤ gross.  (structured sparse — never a dense block)
 //    (3) turnover L1 split (if has_turnover):  w_i − r_i ≤ ref_i ;
 //        −w_i − r_i ≤ −ref_i ; r_i ≥ 0 ; Σ r_i ≤ turnover.
+//    (4) tracking-error SOC (S8.5a, if tracking.active):  K + M cone rows whose product
+//        Ãx is [ L_Fᵀ y ; sqrt(D)∘w ]. These are NOT box rows — their [l, u] band is
+//        ±kAugInf and the row range is projected JOINTLY onto the ball ‖Ãx + offset‖₂ ≤
+//        te in the ADMM z-update (qp_solver.hpp), where offset = [ −L_Fᵀ Xᵀw_bench ;
+//        −sqrt(D)∘w_bench ] is carried on the appended SocBlock. EMPTY ⇒ box-only path
+//        (zero cones ⇒ byte-identical to S8.4, R10).
 //
 //  Every triplet is inserted in a FIXED traversal order (ascending row, then the
 //  documented per-row column order) and the CSC is built once via a deterministic
@@ -64,15 +70,19 @@
 //  patterns of P and Ã are a pure function of (M, K, the constraint shape). The
 //  numeric values are a pure function of (D, F, λ, X, A, l, u, budgets).
 
-#include <span>   // std::span (q)
-#include <vector> // std::vector (triplet scratch)
+#include <cmath>   // std::sqrt (sqrt(D) cone-argument block)
+#include <span>    // std::span (q)
+#include <utility> // std::move (SocBlock into out.cones)
+#include <vector>  // std::vector (triplet scratch)
 
+#include <Eigen/Cholesky> // Eigen::LLT (L_F = chol(F) for the tracking-error cone)
 #include <Eigen/Dense>
 #include <Eigen/SparseCore>
 
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // f64, usize
 
+#include "atx/engine/risk/cone.hpp"         // SocBlock (the cone-block descriptor, S8.5a)
 #include "atx/engine/risk/constraints.hpp"  // MaterializedConstraints
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (exposures / specific_var)
 
@@ -96,6 +106,14 @@ struct AugmentedQp {
   atx::usize n_w = 0;                    // M weight vars (block 0)
   atx::usize n_y = 0;                    // K factor aux vars  y = Xᵀw  (block 1)
   atx::usize n_aux = 0;                  // gross s (M) + turnover r (M) aux vars (block 2)
+
+  // CONE blocks (S8.5a) — contiguous Ã-row ranges projected JOINTLY onto a ball / SOC
+  // in the ADMM z-update instead of clamped elementwise (qp_solver.hpp). EMPTY for the
+  // box-only path (zero cones ⇒ the z-update is byte-identical to S8.4, R10). The cone
+  // rows are emitted AFTER the box rows (fixed order, R1); each row's [l, u] band is
+  // ±kAugInf so the inert elementwise clamp leaves them untouched before the projection
+  // overwrites them. (S8.5a uses exactly one block: the tracking-error ball.)
+  std::vector<SocBlock> cones;
 };
 
 namespace detail {
@@ -112,6 +130,9 @@ namespace detail {
   }
   if (has_turn) {
     r += m + m + m + 1U;                         // (3) ±w−r≤ref ; r≥0 ; Σr≤T
+  }
+  if (c.tracking.active) {
+    r += k + m;                                  // (4) tracking-error SOC: K + M cone rows
   }
   return r;
 }
@@ -281,6 +302,72 @@ namespace detail {
     out.l[static_cast<Eigen::Index>(row)] = -kAugInf;
     out.u[static_cast<Eigen::Index>(row)] = C.turnover_budget;
     ++row;
+  }
+
+  // (4) tracking-error SOC (S8.5a): K + M cone rows whose product Ãx is
+  //     [ L_Fᵀ y ; sqrt(D) ∘ w ], so with the SocBlock offset
+  //     b = [ −L_Fᵀ Xᵀw_bench ; −sqrt(D) ∘ w_bench ]  the cone argument is
+  //     a = Ãx + b = [ L_Fᵀ(Xᵀw − Xᵀw_bench) ; sqrt(D)∘(w − w_bench) ], and
+  //     ‖a‖₂ = ‖V^{1/2}(w − w_bench)‖₂. The constraint ‖a‖₂ ≤ te is enforced as a
+  //     BALL projection on this row range in the z-update (qp_solver.hpp). The rows'
+  //     [l, u] band is ±kAugInf so the elementwise box clamp is inert on them — the
+  //     projection overwrites them. NEVER densifies V (R4): L_F is the K×K Cholesky of
+  //     factor_cov(); sqrt(D) is elementwise on specific_var(); Xᵀw_bench is one Xᵀ
+  //     matvec on the constant benchmark book.
+  if (C.tracking.active) {
+    // L_F = chol(F) (lower). F is SPD by FactorModel::create's contract (its own
+    // Cholesky succeeded at construction), so this LLT cannot fail for a valid model.
+    const Eigen::LLT<cl::MatX> f_llt(V.factor_cov());
+    const cl::MatX L_F = f_llt.matrixL(); // K×K lower-triangular factor (L_F L_Fᵀ = F)
+
+    // Xᵀw_bench (K) — the constant factor exposure of the benchmark book.
+    cl::VecX xtb = cl::VecX::Zero(static_cast<Eigen::Index>(k));
+    for (atx::usize fk = 0; fk < k; ++fk) {
+      atx::f64 acc = 0.0; // order-fixed: ascending instrument i
+      for (atx::usize i = 0; i < m; ++i) {
+        acc += X(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(fk)) *
+               C.tracking.w_bench[i];
+      }
+      xtb[static_cast<Eigen::Index>(fk)] = acc;
+    }
+
+    const atx::usize cone_start = row;
+    SocBlock blk;
+    blk.row_start = cone_start;
+    blk.dim = k + m;
+    blk.radius = C.tracking.te_budget;
+    blk.offset = cl::VecX::Zero(static_cast<Eigen::Index>(k + m));
+
+    // (4a) factor part — K rows. Row c of L_Fᵀ y is Σ_a L_F(a,c)·y_a, so entry
+    //      (cone row c, y_off + a) = L_F(a, c). Offset b_c = −(L_Fᵀ Xᵀw_bench)_c =
+    //      −Σ_a L_F(a,c)·xtb_a. Column order: ascending factor a (the y-block).
+    for (atx::usize c = 0; c < k; ++c) {
+      atx::f64 off = 0.0;
+      for (atx::usize a = 0; a < k; ++a) {
+        const atx::f64 lac = L_F(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(c));
+        if (lac != 0.0) { // L_F is lower-triangular ⇒ a < c entries are exact zero
+          a_trips.emplace_back(static_cast<int>(row), static_cast<int>(y_off + a), lac);
+        }
+        off += lac * xtb[static_cast<Eigen::Index>(a)];
+      }
+      blk.offset[static_cast<Eigen::Index>(c)] = -off;
+      out.l[static_cast<Eigen::Index>(row)] = -kAugInf; // inert box band — projection owns these rows
+      out.u[static_cast<Eigen::Index>(row)] = kAugInf;
+      ++row;
+    }
+
+    // (4b) specific part — M rows. Row i is sqrt(D_i) at w_off+i; offset
+    //      b_{K+i} = −sqrt(D_i)·w_bench_i.
+    for (atx::usize i = 0; i < m; ++i) {
+      const atx::f64 sd = std::sqrt(D[static_cast<Eigen::Index>(i)]);
+      a_trips.emplace_back(static_cast<int>(row), static_cast<int>(w_off + i), sd);
+      blk.offset[static_cast<Eigen::Index>(k + i)] = -sd * C.tracking.w_bench[i];
+      out.l[static_cast<Eigen::Index>(row)] = -kAugInf;
+      out.u[static_cast<Eigen::Index>(row)] = kAugInf;
+      ++row;
+    }
+
+    out.cones.push_back(std::move(blk));
   }
 
   out.A_tilde.resize(static_cast<int>(r_total), static_cast<int>(n));
