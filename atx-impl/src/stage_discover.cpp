@@ -20,25 +20,13 @@
 
 #include "artifacts.hpp"
 #include "config.hpp"
+#include "research_sim.hpp"
 #include "serialize_genome.hpp"
 #include "serialize_panel.hpp"
 
 namespace atx::impl {
 
 namespace exec = atx::engine::exec;
-
-// ---------------------------------------------------------------------------
-// frictionless_sim — verbatim from factory_search_driver_test.cpp (brief §3)
-// ---------------------------------------------------------------------------
-static exec::ExecutionSimulator frictionless_sim() {
-    return exec::ExecutionSimulator{
-        exec::FillCfg{},
-        exec::SlippageCfg{exec::SlippageMode::VolumeShare, 0.0, 0.0, 0.0, 0.0},
-        exec::ImpactCfg{0.0, 0.5, 0.0},
-        exec::CommissionCfg{exec::CommissionMode::PerShare, 0.0, 0.0, 1.0, 0.0},
-        exec::LatencyCfg{},
-        exec::VolumeCapCfg{1.0}};
-}
 
 // ---------------------------------------------------------------------------
 // run_discover
