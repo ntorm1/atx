@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -83,6 +86,39 @@ atx::core::Result<ColumnIndex> resolve_header(std::string_view header_line) {
 namespace {
 namespace fs = std::filesystem;
 
+// Coarse wall-clock split of the serial pipeline, emitted to stderr only when
+// ATX_ORATS_PROFILE is set (any non-empty value). Off => zero overhead beyond a
+// few steady_clock reads, which are negligible vs. the work they bracket.
+struct LoadProfile {
+  using clock = std::chrono::steady_clock;
+  clock::duration inflate{}, parse{}, build_write{};
+  bool enabled{false};
+  LoadProfile() {
+#if defined(_MSC_VER) || defined(_WIN32)
+    char *e = nullptr;
+    std::size_t len = 0;
+    _dupenv_s(&e, &len, "ATX_ORATS_PROFILE");
+    enabled = (e != nullptr && e[0] != '\0');
+    free(e);
+#else
+    const char *e = std::getenv("ATX_ORATS_PROFILE");
+    enabled = (e != nullptr && e[0] != '\0');
+#endif
+  }
+  static double ms(clock::duration d) {
+    return std::chrono::duration<double, std::milli>(d).count();
+  }
+  void report(const OratsLoadStats &s) const {
+    if (!enabled) return;
+    std::fprintf(stderr,
+                 "[orats-profile] inflate=%.1fms parse=%.1fms build_write=%.1fms "
+                 "rows_kept=%lld dates=%lld\n",
+                 ms(inflate), ms(parse), ms(build_write),
+                 static_cast<long long>(s.rows_kept),
+                 static_cast<long long>(s.dates_written));
+  }
+};
+
 inline atx::f64 parse_f64(std::string_view s) {
   if (s.empty()) return std::numeric_limits<atx::f64>::quiet_NaN();
   atx::f64 v{};
@@ -148,6 +184,7 @@ struct LoadState {
   atx::i64 &current_date_nanos;
   std::unordered_map<atx::i64, std::pair<std::string, std::string>> &symbology;
   std::vector<std::string_view> &fields; // reusable scratch
+  LoadProfile::clock::duration *build_write{}; // non-owning; nullptr => no timing
 };
 
 // Process ONE data line (header already consumed). Increments rows_read, then
@@ -197,7 +234,9 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
   // 5) Date boundary: flush the previous date's segment, then start a new one.
   if (date_nanos != st.current_date_nanos) {
     if (!st.acc.empty()) {
+      const auto tbw = LoadProfile::clock::now();
       ATX_TRY_VOID(flush_date(st.acc, st.cfg.out_dir, st.cfg.created_at_nanos));
+      if (st.build_write) *st.build_write += LoadProfile::clock::now() - tbw;
       ++st.stats.dates_written;
     }
     st.acc.clear(date_nanos, std::string(date_sv));
@@ -248,15 +287,20 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   std::vector<std::string_view> fields;
   fields.reserve(128);
 
-  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, fields};
+  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, fields, nullptr};
 
   constexpr atx::usize kChunk = 1u << 20; // 1 MiB
   std::vector<char> buf(kChunk);
   std::string carry;
   carry.reserve(4096);
 
+  LoadProfile prof;
+  st.build_write = &prof.build_write;
+
   for (;;) {
+    const auto t0 = LoadProfile::clock::now();
     auto read_res = reader.read(std::span<char>(buf.data(), buf.size()));
+    prof.inflate += LoadProfile::clock::now() - t0;
     if (!read_res.has_value()) return tl::unexpected(read_res.error());
     const atx::usize n = *read_res;
 
@@ -293,7 +337,11 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
       }
 
       if (line.empty()) continue;
-      ATX_TRY_VOID(process_line(line, st));
+      {
+        const auto tp = LoadProfile::clock::now();
+        ATX_TRY_VOID(process_line(line, st));
+        prof.parse += LoadProfile::clock::now() - tp;
+      }
     }
 
     if (n == 0) break; // EOF
@@ -304,12 +352,18 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   if (!carry.empty() && header_parsed) {
     std::string_view line = carry;
     if (!line.empty() && line.back() == '\r') line = line.substr(0, line.size() - 1);
-    if (!line.empty()) ATX_TRY_VOID(process_line(line, st));
+    if (!line.empty()) {
+      const auto tp = LoadProfile::clock::now();
+      ATX_TRY_VOID(process_line(line, st));
+      prof.parse += LoadProfile::clock::now() - tp;
+    }
   }
 
   // Flush the final accumulated date.
   if (!acc.empty()) {
+    const auto tbw = LoadProfile::clock::now();
     ATX_TRY_VOID(flush_date(acc, cfg.out_dir, cfg.created_at_nanos));
+    prof.build_write += LoadProfile::clock::now() - tbw;
     ++stats.dates_written;
   }
 
@@ -373,6 +427,7 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
                             "orats load: failed writing manifest: " + manifest_path.string());
   }
 
+  prof.report(stats);
   return atx::core::Ok(stats);
 }
 
