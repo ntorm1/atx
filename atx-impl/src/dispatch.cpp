@@ -3,6 +3,7 @@
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "artifacts.hpp"
 #include "config.hpp"
@@ -11,13 +12,28 @@
 namespace atx::impl {
 
 // ---------------------------------------------------------------------------
-// emit_digest_line
+// emit_digest_line (initializer_list overload — used by tests)
 // Exactly: "[atx-impl] stage=<stage> digest=<hex16> k=v k=v\n"
 // ---------------------------------------------------------------------------
 void emit_digest_line(std::ostream& out,
                       std::string_view stage,
                       atx::u64 digest,
                       std::initializer_list<std::pair<std::string_view, std::string>> kvs) {
+    out << "[atx-impl] stage=" << stage
+        << " digest=" << to_hex16(digest);
+    for (const auto& [k, v] : kvs) {
+        out << ' ' << k << '=' << v;
+    }
+    out << '\n';
+}
+
+// ---------------------------------------------------------------------------
+// emit_digest_line (vector overload — used by dispatch with StageResult::kvs)
+// ---------------------------------------------------------------------------
+void emit_digest_line(std::ostream& out,
+                      std::string_view stage,
+                      atx::u64 digest,
+                      const std::vector<std::pair<std::string, std::string>>& kvs) {
     out << "[atx-impl] stage=" << stage
         << " digest=" << to_hex16(digest);
     for (const auto& [k, v] : kvs) {
@@ -76,7 +92,7 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
     // 4. Route to stage function.
     const std::string& sub = cfg.subcommand;
 
-    atx::core::Result<atx::u64> stage_result = [&]() -> atx::core::Result<atx::u64> {
+    atx::core::Result<StageResult> stage_result = [&]() -> atx::core::Result<StageResult> {
         if (sub == "load")     return run_load(cfg);
         if (sub == "panel")    return run_panel(cfg);
         if (sub == "discover") return run_discover(cfg);
@@ -95,7 +111,7 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
     }
 
     if (!cfg.quiet) {
-        emit_digest_line(out, sub, *stage_result);
+        emit_digest_line(out, sub, stage_result->digest, stage_result->kvs);
     }
     return 0;
 }

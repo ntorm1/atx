@@ -4,7 +4,7 @@
 
 namespace atx::impl {
 
-atx::core::Result<atx::u64> run_discover([[maybe_unused]] const RunConfig& cfg) {
+atx::core::Result<StageResult> run_discover([[maybe_unused]] const RunConfig& cfg) {
     return atx::core::Err(atx::core::ErrorCode::NotImplemented,
                           "discover not implemented");
 }
