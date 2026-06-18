@@ -72,14 +72,18 @@
 
 #include <algorithm> // std::clamp
 #include <cmath>     // std::isnan, std::fabs
+#include <optional>  // std::optional (the optional augmented ConstraintSet — S8.4)
 #include <span>      // std::span (alpha / w_prev / weight spans)
 #include <vector>    // std::vector (per-rebalance scratch + result)
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
 #include "atx/core/types.hpp" // f64, usize, u8
 
+#include "atx/engine/risk/constraints.hpp"  // ConstraintSet (the augmented-dispatch set — S8.4)
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (factored V apply path)
 #include "atx/engine/risk/fwd.hpp"          // OptimizerConfig / PortfolioOptimizer fwd decls
+#include "atx/engine/risk/qp_solver.hpp"    // ConstrainedQpSolver, QpProblem, QpConfig (S8.4 dispatch)
+#include "atx/engine/risk/reference_data.hpp" // CapacityRef (%ADV / %shares box inputs — S8.4)
 
 namespace atx::engine::risk {
 
@@ -100,7 +104,26 @@ struct OptimizerConfig {
 // ===========================================================================
 class PortfolioOptimizer {
 public:
+  // Constructors so the long-standing brace-init `PortfolioOptimizer{cfg}` keeps
+  // working AFTER the S8.4 optional augmented fields were added — without those fields
+  // turning every `{cfg}` site into a -Wmissing-field-initializers error (the new
+  // members default-construct). `PortfolioOptimizer{}` and `PortfolioOptimizer opt;`
+  // (default cfg) also remain valid.
+  PortfolioOptimizer() = default;
+  explicit PortfolioOptimizer(OptimizerConfig c) : cfg(c) {}
+
   OptimizerConfig cfg;
+
+  // ---- S8.4 augmented-dispatch fields (§0.5) ------------------------------------
+  // An OPTIONAL full constraint set. When ABSENT or MINIMAL (only GrossNet + optional
+  // PositionCap — exactly the algebra the projected/proximal fast path expresses), the
+  // as-built fast path runs UNCHANGED (the regression pins stay byte-identical). When
+  // it carries ANY extra row (factor/group/beta/turnover/participation/ownership/sector)
+  // the solve routes through the ConstrainedQpSolver with q = −alpha. Default empty ⇒
+  // the as-built behavior, so every existing caller / pin is untouched.
+  std::optional<ConstraintSet> constraints;
+  QpConfig qp{};      // ADMM knobs used ONLY on the augmented path
+  CapacityRef ref{};  // %ADV / %shares reference panel used ONLY on the augmented path
 
   // Solve the optimizer for the alpha signal `alpha` (length M, NaN == no opinion),
   // the factored risk model `V`, and the previous book `w_prev` (length M, or EMPTY
@@ -108,9 +131,43 @@ public:
   // length-M target weights. Err on a dimension mismatch (alpha.size() !=
   // V.n_instruments(), or w_prev non-empty and != M). The math is documented in the
   // header block above. Allocates its scratch once; const (pure configuration).
+  //
+  // DISPATCH (S8.4 §0.5): a non-minimal `constraints` set routes to the augmented QP;
+  // a MINIMAL set is HONORED by translating it into an effective OptimizerConfig
+  // (gross/dollar-neutral from set.gross, name_cap from set.pos) and running the fast
+  // path with THAT config — mirroring MultiHorizonOptimizer::solve_minimal so an
+  // attached minimal set is never silently discarded in favor of cfg. With NO set
+  // attached, `cfg` governs the fast path byte-identically (the regression pins).
   [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
   solve(std::span<const atx::f64> alpha, const FactorModel &V,
         std::span<const atx::f64> w_prev) const {
+    if (constraints && !is_minimal_constraint_set(*constraints)) {
+      return solve_augmented(alpha, V, w_prev);
+    }
+    if (constraints) {
+      // Minimal set attached: honor it. Build the effective config from the set —
+      // gross_leverage + dollar_neutral from set.gross; name_cap from set.pos when
+      // present, else gross_leverage so the cap can never bind (PortfolioOptimizer
+      // skips the clip when cap >= gross). λ, κ, max_iters stay from cfg (the set
+      // carries no risk/turnover/iteration knobs). This is the exact MultiHorizon
+      // translation (multi_horizon.hpp::solve_minimal). A fresh optimizer carrying
+      // the effective config runs the UNCHANGED fast-path algebra against it.
+      const ConstraintSet &cs = *constraints;
+      OptimizerConfig eff = cfg;
+      eff.gross_leverage = cs.gross.gross_leverage;
+      eff.dollar_neutral = cs.gross.dollar_neutral;
+      eff.name_cap = cs.pos ? cs.pos->name_cap : cs.gross.gross_leverage; // can't bind
+      return PortfolioOptimizer{eff}.solve_fast(alpha, V, w_prev);
+    }
+    return solve_fast(alpha, V, w_prev);
+  }
+
+  // The as-built projected/proximal fast path (the minimal-constraint book). Kept as a
+  // named method so the dispatch in solve() routes to it VERBATIM — the pins exercise
+  // exactly this code, unchanged from the as-built P4-9 / S7 solver.
+  [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
+  solve_fast(std::span<const atx::f64> alpha, const FactorModel &V,
+             std::span<const atx::f64> w_prev) const {
     const atx::usize m = V.n_instruments();
     if (alpha.size() != m) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -167,7 +224,48 @@ public:
     return atx::core::Ok(std::move(s.w));
   }
 
+  // A ConstraintSet is MINIMAL when it carries ONLY GrossNet (+ optional PositionCap):
+  // exactly the algebra the fast path expresses (dollar-neutral + gross + per-name cap).
+  // Any factor/group/beta/turnover/participation/ownership/sector row needs the QP.
+  // (Mirrors MultiHorizonOptimizer::is_minimal_constraint_set, plus the S8.4 caps.)
+  [[nodiscard]] static bool is_minimal_constraint_set(const ConstraintSet &cs) noexcept {
+    return !cs.fexp && !cs.grp && !cs.beta && !cs.turn && !cs.part && !cs.own && !cs.sector;
+  }
+
 private:
+  // -------------------------------------------------------------------------
+  //  Augmented dispatch (S8.4 §0.5) — materialize the attached ConstraintSet and
+  //  solve the S8.1/S8.2/S8.3 ConstrainedQpSolver toward the alpha. The QP minimizes
+  //  ½wᵀ(2λV)w + qᵀw, so q = −alpha drives the constrained Markowitz book. The QP has
+  //  NO NaN-exclusion path, so a NaN alpha name (no opinion) maps to a 0 linear
+  //  coefficient — it carries no return tilt but the constraints still bound it.
+  //  (Identical pattern to MultiHorizonOptimizer::solve_augmented, with the S8.4
+  //  CapacityRef threaded into materialize for the %ADV / %shares box fold.)
+  // -------------------------------------------------------------------------
+  [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
+  solve_augmented(std::span<const atx::f64> alpha, const FactorModel &V,
+                  std::span<const atx::f64> w_prev) const {
+    namespace co = atx::core;
+    const atx::usize m = V.n_instruments();
+    if (alpha.size() != m) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "PortfolioOptimizer::solve: alpha length must equal V.n_instruments()");
+    }
+    if (!w_prev.empty() && w_prev.size() != m) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "PortfolioOptimizer::solve: w_prev must be empty or length V.n_instruments()");
+    }
+    ATX_TRY(MaterializedConstraints C, constraints->materialize(V.exposures(), w_prev, m, ref));
+
+    std::vector<atx::f64> q(m, 0.0);
+    for (atx::usize i = 0; i < m; ++i) {
+      q[i] = std::isnan(alpha[i]) ? 0.0 : -alpha[i]; // NaN alpha ⇒ no linear tilt (0 coefficient)
+    }
+    const ConstrainedQpSolver solver{qp};
+    const QpProblem prob{V, cfg.risk_aversion, std::span<const atx::f64>(q), C};
+    return solver.solve(prob);
+  }
+
   // Smooth-surrogate gradient-step size. The loop minimizes ½‖w − t‖² toward the
   // target t; a step of kStep on (w − t) is w ← (1 − kStep)·w + kStep·t. kStep = 1
   // would snap straight to t (then project) — using a < 1 step lets the prox + cap

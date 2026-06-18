@@ -16,10 +16,9 @@
 //    neutralize(signal)    = s − X (XᵀX)⁻¹ Xᵀ s  (in place)    O(MK + K³)
 //  plus a carried fit window [fit_begin, fit_end).
 //
-//  P4-7a SCOPE: this unit is the orchestrator's split of plan-P4-7. It stores a
-//  GIVEN (X, F, D) and applies it. The per-date cross-sectional WLS that ESTIMATES
-//  X, F, D — `FactorModelBuilder::build` — is P4-7b and is ADDED to this same
-//  header later (see the marker near the bottom). Nothing here estimates anything.
+//  P4-7a SCOPE: this unit stores a GIVEN (X, F, D) and applies it. The per-date
+//  cross-sectional WLS that ESTIMATES X, F, D — `FactorModelBuilder::build` — is
+//  P4-7b. Nothing in FactorModel itself estimates anything.
 //
 // ===========================================================================
 //  Woodbury inverse + the cached capacitance (the WHOLE POINT)
@@ -55,37 +54,34 @@
 //  NO RNG. risk() reductions run in canonical ascending order (instrument, then
 //  factor). The apply/neutralize matvecs and the cached Cholesky are deterministic
 //  given (X, F, D). Same inputs → same outputs.
+//
+// ===========================================================================
+//  S8.8a header/source split (pure compilation refactor — R10, ZERO behavior change)
+// ===========================================================================
+//  The method BODIES (FactorModel apply-math, FactorModelBuilder estimation, the
+//  detail:: kernels) live in src/risk/factor_model.cpp, compiled INTO the
+//  atx-engine static library — collapsing the include fan-out (a body edit no longer
+//  recompiles the 42 dependents of this hub header). This header keeps the class
+//  DECLARATIONS + the POD config/result structs. FactorModel's private Eigen members
+//  (x_, f_, d_, dinv_, the cached Eigen::LLT cap_llt_) are hidden behind a PIMPL
+//  (`struct Impl`, defined in the .cpp) so the heavy estimation includes (Ledoit-Wolf
+//  combine, robust IRLS, EWMA/Newey-West, eigen-adjust, APCA, VRA, horizon-blend,
+//  specific-risk, regression) no longer leak through this header. The math is
+//  byte-identical: same factored apply, same no-pivot factorizations, same
+//  order-fixed reductions — only the translation unit changed.
 
-#include <algorithm> // std::clamp (fixed factor-cov shrink override)
-#include <cmath>     // std::isnan (FactorModelBuilder: per-date return drop)
-#include <span>      // std::span (risk / apply_inverse / neutralize args)
-#include <utility>   // std::move
-#include <vector>    // std::vector (FactorModelBuilder cold-path scratch)
+#include <memory> // std::unique_ptr (FactorModel pimpl)
+#include <span>   // std::span (risk / apply_inverse / neutralize args)
+#include <vector> // std::vector (FactorComponents members)
 
-#include <Eigen/Dense> // Eigen::LLT, Eigen::Index, Eigen::Map
+#include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
 
-#include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode, ATX_TRY
-#include "atx/core/macro.hpp" // ATX_ASSERT
-#include "atx/core/types.hpp" // f64, u32, usize
+#include "atx/core/linalg/linalg.hpp" // MatX, VecX (column-major Eigen; accessor return types)
+#include "atx/core/types.hpp"         // f64, u32, usize
 
-#include "atx/core/linalg/linalg.hpp"     // MatX, VecX (column-major Eigen)
-#include "atx/core/linalg/regression.hpp" // ols, wls (per-date factor-return solve)
-
-#include "atx/engine/combine/combiner.hpp" // combine::detail::ledoit_wolf_intensity (canonical LW)
-// PATTERN-B: reuse S6-1 cost::irls_huber; atx-core huber_irls is the eventual L7 home.
-// This is the (new in S8.1) risk→cost edge: the robust factor-return path composes a
-// √-cap / inverse-specific-variance PRIOR weight with the existing Huber IRLS kernel
-// rather than introducing a second engine-local IRLS loop.
-#include "atx/engine/cost/robust_ls.hpp" // cost::irls_huber, RobustCfg, RobustFit (S8.1 robust path)
 #include "atx/engine/loop/panel_types.hpp"  // PanelView (the trailing newest-first panel)
-#include "atx/engine/risk/cov_ewma.hpp"     // ewma_factor_covariance (S8.2 EWMA + Newey-West path)
-#include "atx/engine/risk/eigen_adjust.hpp" // eigen_adjust (S8.3 Monte-Carlo eigenfactor de-biasing)
-#include "atx/engine/risk/exposures.hpp"    // build_exposures, ExposureMatrix, detail::step_return
+#include "atx/engine/risk/exposures.hpp"    // FactorModelConfig (Builder member), ExposureMatrix
 #include "atx/engine/risk/fwd.hpp"          // FactorModel / FactorModelBuilder fwd decls
-#include "atx/engine/risk/horizon_blend.hpp" // blend_factor_cov, blend_specific (S8.8 horizon blend)
-#include "atx/engine/risk/specific_risk.hpp" // specific_risk_blend, SpecificRisk (S8.4 specific risk)
-#include "atx/engine/risk/stat_factor_model.hpp" // detail::{gram_matrix,…} (S8.6 APCA kernels)
-#include "atx/engine/risk/vol_regime.hpp"        // vol_regime_multiplier, RegimeAdjust (S8.5 VRA)
 
 namespace atx::engine::risk {
 
@@ -99,6 +95,11 @@ inline constexpr atx::f64 kNeutralizeRidge = 1e-10;
 
 // ===========================================================================
 //  FactorModel — factored covariance V = X F Xᵀ + D (apply-math; P4-7a).
+//
+//  The private (X, F, D, dinv, cached Cholesky) state is held behind a PIMPL
+//  (struct Impl, defined in src/risk/factor_model.cpp). The class is MOVE-ONLY
+//  (the unique_ptr is the only data member besides the two POD fit bounds); the
+//  out-of-line special members are defaulted in the .cpp where Impl is complete.
 // ===========================================================================
 class FactorModel {
 public:
@@ -107,344 +108,100 @@ public:
   // FLOORS D (kSpecificVarFloor), requires F to be SPD (its Cholesky succeeds), and
   // PRECOMPUTES + CACHES everything the apply path needs (dinv, the Cholesky of the
   // K×K capacitance C = F⁻¹ + Xᵀ D⁻¹ X). Err on a shape violation, an empty window,
-  // or a non-SPD F.
+  // a non-SPD F, or K exceeding the risk() stack-buffer bound.
   [[nodiscard]] static atx::core::Result<FactorModel>
   create(atx::core::linalg::MatX x, atx::core::linalg::MatX f, atx::core::linalg::VecX d,
-         atx::usize fit_begin, atx::usize fit_end) {
-    if (f.rows() != f.cols() || f.rows() != x.cols()) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModel::create: F must be K×K with K == X.cols()");
-    }
-    // Hard create-time bound: risk() accumulates g_k into a fixed K-stack buffer
-    // (kMaxFactorsStack) whose only run-time guard is a debug ATX_ASSERT (compiled
-    // out under NDEBUG). Rejecting K > kMaxFactorsStack HERE makes that buffer
-    // provably un-overrunnable in release without burdening the noexcept apply path.
-    if (x.cols() > kMaxFactorsStack) {
-      return atx::core::Err(
-          atx::core::ErrorCode::InvalidArgument,
-          "FactorModel::create: factor count exceeds the risk() stack buffer bound");
-    }
-    if (d.size() != x.rows()) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModel::create: D length must equal X.rows() (M)");
-    }
-    if (fit_begin >= fit_end) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModel::create: require fit_begin < fit_end");
-    }
+         atx::usize fit_begin, atx::usize fit_end);
 
-    // Floor D so D⁻¹ is finite and V is PD; cache dinv = 1/D.
-    atx::core::linalg::VecX dinv(d.size());
-    for (Eigen::Index i = 0; i < d.size(); ++i) {
-      const atx::f64 di = d[i] < kSpecificVarFloor ? kSpecificVarFloor : d[i];
-      d[i] = di;
-      dinv[i] = 1.0 / di;
-    }
+  // Value semantics, preserved EXACTLY from the pre-split (header-only) class: the
+  // old FactorModel held Eigen members by value and was copyable. The pimpl keeps
+  // that contract — copy deep-copies the Impl (X, F, D, dinv, cached Cholesky; all
+  // Eigen-copyable), move transfers the pointer. Defined out-of-line in the .cpp
+  // where Impl is complete. (std::optional<FactorModel> / by-value overrides in the
+  // book/data layer depend on copyability — R10: zero API change.)
+  FactorModel(const FactorModel &other);
+  FactorModel &operator=(const FactorModel &other);
+  FactorModel(FactorModel &&) noexcept;
+  FactorModel &operator=(FactorModel &&) noexcept;
+  ~FactorModel();
 
-    // F⁻¹ via a Cholesky of F (K×K). A failed LLT means F is not SPD → Err.
-    Eigen::LLT<atx::core::linalg::MatX> f_llt(f);
-    if (f_llt.info() != Eigen::Success) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModel::create: F is not symmetric positive-definite");
-    }
-    const atx::core::linalg::MatX f_inv =
-        f_llt.solve(atx::core::linalg::MatX::Identity(f.rows(), f.cols()));
+  [[nodiscard]] atx::usize n_factors() const noexcept;     // K
+  [[nodiscard]] atx::usize n_instruments() const noexcept; // M
 
-    // Capacitance C = F⁻¹ + Xᵀ diag(dinv) X (K×K, SPD). Cache its Cholesky.
-    const atx::core::linalg::MatX cap = f_inv + x.transpose() * dinv.asDiagonal() * x;
-    Eigen::LLT<atx::core::linalg::MatX> cap_llt(cap);
-    if (cap_llt.info() != Eigen::Success) {
-      // C is SPD in exact arithmetic; a failure here is a degenerate/ill-scaled X.
-      return atx::core::Err(atx::core::ErrorCode::Internal,
-                            "FactorModel::create: capacitance factorization failed");
-    }
-
-    return atx::core::Ok(FactorModel(std::move(x), std::move(f), std::move(d), std::move(dinv),
-                                     std::move(cap_llt), fit_begin, fit_end));
-  }
-
-  [[nodiscard]] atx::usize n_factors() const noexcept {
-    return static_cast<atx::usize>(x_.cols()); // K
-  }
-  [[nodiscard]] atx::usize n_instruments() const noexcept {
-    return static_cast<atx::usize>(x_.rows()); // M
-  }
   // The M×K exposure matrix X (read-only). Mirrors n_factors()/n_instruments():
   // FactorModel keeps V factored, so X is the only way a caller can form a per-
   // period book factor exposure Xᵀw (the S7-4 book report's factor_exposures row).
-  [[nodiscard]] const atx::core::linalg::MatX &exposures() const noexcept { return x_; }
+  [[nodiscard]] const atx::core::linalg::MatX &exposures() const noexcept;
 
   // wᵀ V w computed in factor space: (Xᵀw)ᵀ F (Xᵀw) + Σ D_i w_i². noexcept and
   // ALLOC-FREE — manual order-fixed loops (ascending i, then k), NOT Eigen
   // temporaries — so it is genuinely the per-rebalance apply path the optimizer can
   // call without heap traffic. g_k is accumulated into a fixed K-stack buffer.
-  [[nodiscard]] atx::f64 risk(std::span<const atx::f64> w) const noexcept {
-    const Eigen::Index m = x_.rows();
-    const Eigen::Index k = x_.cols();
-    ATX_ASSERT(w.size() == static_cast<atx::usize>(m));
-    ATX_ASSERT(k <= kMaxFactorsStack);
-
-    atx::f64 g[kMaxFactorsStack] = {}; // g_k = Σ_i X(i,k)·w_i
-    atx::f64 spec = 0.0;               // Σ_i D_i w_i²
-    for (Eigen::Index i = 0; i < m; ++i) {
-      const atx::f64 wi = w[static_cast<atx::usize>(i)];
-      spec += d_[i] * wi * wi;
-      for (Eigen::Index col = 0; col < k; ++col) {
-        g[col] += x_(i, col) * wi;
-      }
-    }
-    atx::f64 quad = 0.0; // Σ_k Σ_l g_k F(k,l) g_l
-    for (Eigen::Index a = 0; a < k; ++a) {
-      for (Eigen::Index b = 0; b < k; ++b) {
-        quad += g[a] * f_(a, b) * g[b];
-      }
-    }
-    return quad + spec;
-  }
+  [[nodiscard]] atx::f64 risk(std::span<const atx::f64> w) const noexcept;
 
   // V⁻¹·in via Woodbury, O(MK + K³): out = D⁻¹in − D⁻¹X C⁻¹ Xᵀ D⁻¹in, where C is the
   // cached capacitance. The K-sized temporaries (t2,t3) are a small documented
   // apply-path allocation; the M-sized work aliases the spans (no M×M anywhere).
-  void apply_inverse(std::span<const atx::f64> in, std::span<atx::f64> out) const {
-    const Eigen::Index m = x_.rows();
-    ATX_ASSERT(in.size() == static_cast<atx::usize>(m));
-    ATX_ASSERT(out.size() == static_cast<atx::usize>(m));
-
-    Eigen::Map<const atx::core::linalg::VecX> in_v(in.data(), m);
-    Eigen::Map<atx::core::linalg::VecX> out_v(out.data(), m);
-
-    const atx::core::linalg::VecX t1 = dinv_.cwiseProduct(in_v); // D⁻¹ in        (M)
-    const atx::core::linalg::VecX t2 = x_.transpose() * t1;      // Xᵀ D⁻¹ in     (K)
-    const atx::core::linalg::VecX t3 = cap_llt_.solve(t2);       // C⁻¹ ·         (K)
-    const atx::core::linalg::VecX t4 = x_ * t3;                  // X C⁻¹ ·       (M)
-    out_v = t1 - dinv_.cwiseProduct(t4);                         // D⁻¹in − D⁻¹X·  (M)
-  }
+  void apply_inverse(std::span<const atx::f64> in, std::span<atx::f64> out) const;
 
   // V·in = X F (Xᵀ in) + D ∘ in (the FORWARD apply — the dual of apply_inverse;
   // S1-2 QP needs P = 2λV as a matvec). O(MK + K²) via the K-dimensional factor
   // space: t = Xᵀin (K), then X(F t) (M) + D∘in (M) — NEVER an M×M materialization.
-  // The K-sized temporaries (t, ft) are the documented apply-path allocation, exactly
-  // as apply_inverse's t2/t3 are. Deterministic given (X, F, D): same in → same out.
-  void apply(std::span<const atx::f64> in, std::span<atx::f64> out) const {
-    const Eigen::Index m = x_.rows();
-    ATX_ASSERT(in.size() == static_cast<atx::usize>(m));
-    ATX_ASSERT(out.size() == static_cast<atx::usize>(m));
-
-    Eigen::Map<const atx::core::linalg::VecX> in_v(in.data(), m);
-    Eigen::Map<atx::core::linalg::VecX> out_v(out.data(), m);
-
-    const atx::core::linalg::VecX t = x_.transpose() * in_v; // Xᵀ in          (K)
-    const atx::core::linalg::VecX ft = f_ * t;               // F Xᵀ in        (K)
-    out_v = x_ * ft + d_.cwiseProduct(in_v);                 // X F Xᵀ in + D∘in (M)
-  }
+  void apply(std::span<const atx::f64> in, std::span<atx::f64> out) const;
 
   // The M specific variances D (read-only) — the diagonal of V (floored, > 0). The
   // S1-2 QP solver uses it as a cheap deterministic Jacobi-preconditioner diagonal
-  // for the matrix-free 2λV block (diag(V)_i = Σ_k X(i,k)F(k,l)X(i,l) + D_i; D alone
-  // is the dominant, trivially-available part — a valid SPD preconditioner term).
-  [[nodiscard]] const atx::core::linalg::VecX &specific_var() const noexcept { return d_; }
+  // for the matrix-free 2λV block.
+  [[nodiscard]] const atx::core::linalg::VecX &specific_var() const noexcept;
+
+  // The K×K factor covariance F (read-only, SPD). The S8.1 factor-augmented QP
+  // exposes y = Xᵀw and puts 2λF on the y-block of the augmented Hessian.
+  [[nodiscard]] const atx::core::linalg::MatX &factor_cov() const noexcept;
 
   // Factor-neutralize a signal IN PLACE: s ← s − X (XᵀX)⁻¹ Xᵀ s, the residual of s
   // on the factor exposures. A tiny ridge (kNeutralizeRidge) on XᵀX keeps a
   // collinear exposure block solvable. NaN cells propagate (see header note).
-  void neutralize(std::span<atx::f64> signal) const {
-    const Eigen::Index m = x_.rows();
-    const Eigen::Index k = x_.cols();
-    ATX_ASSERT(signal.size() == static_cast<atx::usize>(m));
+  void neutralize(std::span<atx::f64> signal) const;
 
-    Eigen::Map<atx::core::linalg::VecX> s(signal.data(), m);
-    const atx::core::linalg::VecX b = x_.transpose() * s;   // Xᵀ s            (K)
-    atx::core::linalg::MatX gram = x_.transpose() * x_;     // XᵀX             (K×K)
-    gram.diagonal().array() += kNeutralizeRidge;            // ridge guard
-    const atx::core::linalg::VecX z = gram.ldlt().solve(b); // (XᵀX+εI)⁻¹ Xᵀ s (K)
-    s.noalias() -= x_ * z;                                  // s − X z         (M)
-    ATX_UNUSED(k);
-  }
+  [[nodiscard]] atx::usize fit_begin() const noexcept;
+  [[nodiscard]] atx::usize fit_end() const noexcept;
 
-  [[nodiscard]] atx::usize fit_begin() const noexcept { return fit_begin_; }
-  [[nodiscard]] atx::usize fit_end() const noexcept { return fit_end_; }
-
-private:
   // Max K we materialize the risk() g-buffer for on the stack. K is the factor count
   // (sector dummies + ≤5 style factors); 256 is far above any realistic factor block
   // yet keeps the buffer tiny. ENFORCED at construction (create() rejects K > this),
-  // so risk()'s fixed buffer is provably never overrun; risk()'s ATX_ASSERT is a
-  // debug double-check, not the primary guard.
+  // so risk()'s fixed buffer is provably never overrun. PUBLIC so callers can size
+  // their own bounds against the same limit (was a private static constexpr; the
+  // value is unchanged — purely a visibility move during the S8.8a split).
   static constexpr Eigen::Index kMaxFactorsStack = 256;
 
-  FactorModel(atx::core::linalg::MatX x, atx::core::linalg::MatX f, atx::core::linalg::VecX d,
-              atx::core::linalg::VecX dinv, Eigen::LLT<atx::core::linalg::MatX> cap_llt,
-              atx::usize fit_begin, atx::usize fit_end)
-      : x_{std::move(x)}, f_{std::move(f)}, d_{std::move(d)}, dinv_{std::move(dinv)},
-        cap_llt_{std::move(cap_llt)}, fit_begin_{fit_begin}, fit_end_{fit_end} {}
+private:
+  // The private (X, F, D, dinv, cached Cholesky) state, defined in the .cpp.
+  struct Impl;
+  explicit FactorModel(std::unique_ptr<Impl> impl, atx::usize fit_begin, atx::usize fit_end);
 
-  atx::core::linalg::MatX x_;                   // M×K exposures
-  atx::core::linalg::MatX f_;                   // K×K factor covariance (SPD)
-  atx::core::linalg::VecX d_;                   // M specific variances (floored, > 0)
-  atx::core::linalg::VecX dinv_;                // M elementwise 1/D (cached for Woodbury)
-  Eigen::LLT<atx::core::linalg::MatX> cap_llt_; // cached Cholesky of C = F⁻¹ + Xᵀ D⁻¹ X
+  std::unique_ptr<Impl> impl_;
   atx::usize fit_begin_;
   atx::usize fit_end_;
 };
 
 // ===========================================================================
-//  FactorModelBuilder — per-date cross-sectional WLS estimating (X, F, D) (P4-7b).
+//  detail:: — the FactorModelBuilder estimation kernels.
 //
-//  build(panel, window, market_cap, group_id) ESTIMATES the factored covariance
-//  V = X[0] F X[0]ᵀ + diag(D) from a trailing newest-first PanelView, then calls
-//  FactorModel::create. The §4 build(panel, t, window) interface reconciles to the
-//  as-built PanelView (newest-first, NO absolute t): row 0 IS the current cross-
-//  section, so `t` collapses to row 0 and the model is built to apply at the
-//  present date, fit over the trailing rows [0, window).
-//
-//  Estimation (§5.4), a FIXED deterministic two-pass (no convergence loop):
-//    Pass A (OLS, equal weights) over each date s in [0, window): per-date factor
-//      returns f_ols[s], residuals u_ols[s]. Accumulate u_ols per universe
-//      instrument over the window -> an initial specific variance d0_i = var(u_ols_i)
-//      (floored to a tiny ε). This BOOTSTRAPS the WLS weights from an OLS pass.
-//    Pass B (WLS, weights 1/d0_i) over each date: factor returns f[s] (a window×K
-//      series), residuals u[s].
-//    F = LedoitWolf(cov(f over window)) — the CANONICAL combine LW closed form
-//      (REUSED from combine::detail::ledoit_wolf_intensity; the 4b plan mandates one
-//      canonical LW). cfg.factor_cov_shrink >= 0 overrides δ with the fixed value.
-//    D_i = var(u_i over window) per CURRENT cross-section instrument (X[0]).
-//
-//  PIT is STRUCTURAL: build_exposures(...,row=s,...) and step_return read only rows
-//  >= s (the past); no future bar can enter. market_cap / group_id are reused for
-//  EVERY X[s] (sector is static; cap-as-static is a documented approximation — the
-//  as-built world exposes only a CURRENT cap span). Under-determined dates (M_s < K)
-//  are SKIPPED (not fatal) as long as >= 2 usable dates remain. The PCA / dead-alpha
-//  rungs (cfg.n_stat_factors / n_dead_factors, DEFAULT 0) are a deferred 4b residual
-//  -> Err(NotImplemented), NOT a silent skip. Err if window < 2, window < K (T < K),
-//  too few usable dates, or FactorModel::create rejects (non-SPD F / dim / K bound).
-//
-//  COLD path (allocates window scratch). atx-core kernels for ALL regression; the
-//  only hand math is the order-fixed variance/cov reductions. NO RNG; deterministic.
+//  The kernel BODIES live in src/risk/factor_model.cpp. Only factor_covariance is
+//  DECLARED here (not defined inline) because a test (risk_cov_ewma_test) calls it
+//  directly as the single-window MLE reference; it resolves to the library symbol.
+//  The remaining kernels (date_returns / select_rows / pop_variance /
+//  robust_prior_weight) are file-local to the .cpp.
 // ===========================================================================
 namespace detail {
 
-// One date's cross-section returns over the surviving instruments of `xm`:
-// r_i = step_return(panel, s, inst) for inst in xm.instrument_rows. Any NaN return
-// drops that (date, instrument) listwise — the kept rows are reported via `keep`
-// (indices into xm.instrument_rows) so the caller can sub-select X[s]'s rows too.
-[[nodiscard]] inline atx::core::linalg::VecX date_returns(const PanelView &panel, atx::usize s,
-                                                          const ExposureMatrix &xm,
-                                                          std::vector<atx::usize> &keep) {
-  keep.clear();
-  keep.reserve(xm.instrument_rows.size());
-  std::vector<atx::f64> vals;
-  vals.reserve(xm.instrument_rows.size());
-  for (atx::usize j = 0U; j < xm.instrument_rows.size(); ++j) {
-    const atx::f64 r = step_return(panel, s, xm.instrument_rows[j]); // close(s)/close(s+1)−1 (P4-6)
-    if (!std::isnan(r)) {
-      keep.push_back(j);
-      vals.push_back(r);
-    }
-  }
-  atx::core::linalg::VecX out(static_cast<Eigen::Index>(vals.size()));
-  for (atx::usize j = 0U; j < vals.size(); ++j) {
-    out[static_cast<Eigen::Index>(j)] = vals[j];
-  }
-  return out;
-}
-
-// Sub-select the rows of `x` named by `keep` (the listwise-kept instruments of a
-// date). Keeps all K columns. Deterministic (keep is ascending by construction).
-[[nodiscard]] inline atx::core::linalg::MatX select_rows(const atx::core::linalg::MatX &x,
-                                                         const std::vector<atx::usize> &keep) {
-  atx::core::linalg::MatX out(static_cast<Eigen::Index>(keep.size()), x.cols());
-  for (atx::usize j = 0U; j < keep.size(); ++j) {
-    out.row(static_cast<Eigen::Index>(j)) = x.row(static_cast<Eigen::Index>(keep[j]));
-  }
-  return out;
-}
-
-// Population variance of a value series over the window (order-fixed two-pass mean
-// then sum-of-squares). 0 or 1 samples -> 0.0 (FactorModel::create floors D anyway).
-[[nodiscard]] inline atx::f64 pop_variance(const std::vector<atx::f64> &xs) noexcept {
-  const atx::usize n = xs.size();
-  if (n < 2U) {
-    return 0.0;
-  }
-  atx::f64 sum = 0.0;
-  for (const atx::f64 v : xs) {
-    sum += v;
-  }
-  const atx::f64 mean = sum / static_cast<atx::f64>(n);
-  atx::f64 ss = 0.0;
-  for (const atx::f64 v : xs) {
-    const atx::f64 d = v - mean;
-    ss += d * d;
-  }
-  return ss / static_cast<atx::f64>(n);
-}
-
 // The K×K Ledoit-Wolf shrunk covariance of a T×K factor-return series. REUSES the
 // CANONICAL combine LW intensity (combine::detail::ledoit_wolf_intensity) on the
-// column-demeaned series + its MLE covariance S (divisor T) — the SAME inputs that
-// helper is derived for. F = (1−δ)·S + δ·m·I, m = tr(S)/K. cfg_shrink >= 0 overrides
-// δ with the fixed value (clamped). Order-fixed demean; SPD by the shrinkage toward
-// m·I (FactorModel::create re-checks via its Cholesky).
-[[nodiscard]] inline atx::core::linalg::MatX factor_covariance(atx::core::linalg::MatX fseries,
-                                                               atx::f64 cfg_shrink) {
-  const Eigen::Index t = fseries.rows();
-  const Eigen::Index k = fseries.cols();
-  for (Eigen::Index c = 0; c < k; ++c) { // column-demean (each factor-return series)
-    const atx::f64 mean = fseries.col(c).mean();
-    fseries.col(c).array() -= mean;
-  }
-  const atx::core::linalg::MatX s =
-      (fseries.transpose() * fseries) / static_cast<atx::f64>(t); // MLE cov (divisor T)
-  const atx::f64 m = s.trace() / static_cast<atx::f64>(k);
-  const atx::f64 delta = (cfg_shrink >= 0.0)
-                             ? std::clamp(cfg_shrink, 0.0, 1.0)
-                             : combine::detail::ledoit_wolf_intensity(s, fseries); // canonical LW
-  atx::core::linalg::MatX f = (1.0 - delta) * s;
-  f.diagonal().array() += delta * m;
-  return f;
-}
-
-// S8.1 robust-prior weight over a date's KEPT instruments. The robust IRLS uses
-// w0_i as the FIXED prior weight (multiplied by the per-iteration Huber factor):
-//   * cap_weight && caps present ⇒ √-cap weighting from the exposures helper,
-//     w0_i = √(cap_i) / mean_j √(cap_j) (down-weights mega-caps without letting a few
-//     names dominate; flat caps reproduce Ones). Where that helper FLAGS a row (a
-//     non-positive cap, returned as 0.0) we substitute the 1/d0_i fallback so a single
-//     bad cap cannot zero a row out.
-//   * otherwise ⇒ w0_i = 1/d0_i, the SAME inverse-specific-variance weight the P4 WLS
-//     pass uses (so the robust fit keeps the WLS character, adding ONLY the Huber
-//     down-weighting).
-// `keep` indexes into `xm.instrument_rows`; d0 is indexed by the universe instrument.
-// The √-cap math itself lives in exposures::detail::sqrt_cap_weight (the spec's reuse
-// home); only the builder-specific 1/d0 composition stays here. Order-fixed.
-[[nodiscard]] inline atx::core::linalg::VecX
-robust_prior_weight(const ExposureMatrix &xm, const std::vector<atx::usize> &keep,
-                    const atx::core::linalg::VecX &d0, std::span<const atx::f64> market_cap,
-                    bool cap_weight) {
-  const Eigen::Index nk = static_cast<Eigen::Index>(keep.size());
-  // Universe-instrument index of each kept row (the order sqrt_cap_weight expects).
-  std::vector<atx::usize> kept_instrument_rows;
-  kept_instrument_rows.reserve(keep.size());
-  for (const atx::usize j : keep) {
-    kept_instrument_rows.push_back(xm.instrument_rows[j]);
-  }
-  atx::core::linalg::VecX w0(nk);
-  if (cap_weight && !market_cap.empty()) {
-    const atx::core::linalg::VecX cap_w = sqrt_cap_weight(market_cap, kept_instrument_rows);
-    for (atx::usize j = 0U; j < kept_instrument_rows.size(); ++j) {
-      const atx::f64 cw = cap_w[static_cast<Eigen::Index>(j)];
-      w0[static_cast<Eigen::Index>(j)] =
-          (cw > 0.0)
-              ? cw // valid √-cap weight (helper guarantees strictly positive)
-              : 1.0 / d0[static_cast<Eigen::Index>(kept_instrument_rows[j])]; // flagged ⇒ 1/d0
-    }
-    return w0;
-  }
-  for (atx::usize j = 0U; j < kept_instrument_rows.size(); ++j) {
-    w0[static_cast<Eigen::Index>(j)] = 1.0 / d0[static_cast<Eigen::Index>(kept_instrument_rows[j])];
-  }
-  return w0;
-}
+// column-demeaned series + its MLE covariance S (divisor T). F = (1−δ)·S + δ·m·I,
+// m = tr(S)/K. cfg_shrink >= 0 overrides δ with the fixed value (clamped). Order-fixed
+// demean; SPD by the shrinkage toward m·I (FactorModel::create re-checks via Cholesky).
+[[nodiscard]] atx::core::linalg::MatX factor_covariance(atx::core::linalg::MatX fseries,
+                                                        atx::f64 cfg_shrink);
 
 } // namespace detail
 
@@ -455,8 +212,7 @@ robust_prior_weight(const ExposureMatrix &xm, const std::vector<atx::usize> &kee
 //  loadings and blockdiag F with the dead variances BEFORE the create() assembly,
 //  without re-running the per-date WLS estimation. build() is a thin wrapper:
 //  build_components -> create (BEHAVIOR-PRESERVING split, §0.3 reserved-slot).
-//  Defined HERE (not in dead_factor.hpp) so build_components can return it without
-//  a circular include — dead_factor.hpp includes THIS header and uses the type.
+//  POD; kept in the header (other headers/tests name it directly).
 // ===========================================================================
 struct FactorComponents {
   atx::core::linalg::MatX X; // M×K exposures (X[0], the current cross-section)
@@ -465,40 +221,28 @@ struct FactorComponents {
   atx::usize fit_end;        // the fit window upper bound (== window)
 };
 
+// ===========================================================================
+//  FactorModelBuilder — per-date cross-sectional WLS estimating (X, F, D) (P4-7b).
+//
+//  build(panel, window, market_cap, group_id) ESTIMATES the factored covariance
+//  V = X[0] F X[0]ᵀ + diag(D) from a trailing newest-first PanelView, then calls
+//  FactorModel::create. The method BODIES live in src/risk/factor_model.cpp; the
+//  full estimation contract (the fixed deterministic two-pass OLS→WLS, the LW factor
+//  covariance, the S8.2–S8.8 covariance-cleaning rungs, PIT-structural reads) is
+//  documented at each method definition there. COLD path. NO RNG; deterministic.
+// ===========================================================================
 class FactorModelBuilder {
 public:
   FactorModelConfig cfg;
 
   // Estimate (X, F, D) over the trailing `window` cross-sections and assemble the
-  // FactorModel. COLD path. PIT-structural (reads only rows >= each date). See the
-  // header block above for the full estimation contract. `[[nodiscard]] const`.
-  // THIN WRAPPER (§0.3): runs build_components then FactorModel::create — the
-  // estimation body lives in build_components so the S7-3 dead-factor augmentation
-  // can intercept (X, F, D) before create. Behavior is identical to the pre-split
-  // build (build_components returns EXACTLY the (X, F, D, fit_end) create consumed).
+  // FactorModel. THIN WRAPPER (§0.3): runs build_components then FactorModel::create
+  // — the estimation body lives in build_components so the S7-3 dead-factor
+  // augmentation can intercept (X, F, D) before create. The stat (APCA) and dead
+  // rungs are dispatched here. `[[nodiscard]] const`.
   [[nodiscard]] atx::core::Result<FactorModel> build(const PanelView &panel, atx::usize window,
                                                      std::span<const atx::f64> market_cap,
-                                                     std::span<const atx::u32> group_id) const {
-    // Rung dispatch (in the thin wrapper). The dead-alpha rung is STILL a deferred
-    // residual (S7.3) → NotImplemented; the statistical (APCA) rung is now WIRED (S8.6),
-    // a DISTINCT model variant that builds + creates its OWN FactorModel (latent factors
-    // from the return panel, not style/sector regression). Dead takes precedence so a
-    // (stat>0 AND dead>0) config is rejected, not silently fit as statistical-only.
-    if (cfg.n_dead_factors > 0U) {
-      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
-                            "FactorModelBuilder::build: dead-alpha factor rung is a deferred "
-                            "residual"); // NOT a silent skip — an explicit deferral
-    }
-    if (cfg.n_stat_factors > 0U) {
-      return build_stat_factor_model(panel, window, market_cap, group_id, cfg, cfg.n_stat_factors,
-                                     cfg.cov.apca_gls_reweight, cfg.factor_cov_shrink);
-    }
-    // Fundamental path: estimate (X, F, D) in build_components (the S7-3 augmentation seam),
-    // then assemble. build_components returns EXACTLY the (X, F, D, fit_end) create consumes.
-    ATX_TRY(FactorComponents comp, build_components(panel, window, market_cap, group_id));
-    return FactorModel::create(std::move(comp.X), std::move(comp.F), std::move(comp.D),
-                               /*fit_begin=*/0U, /*fit_end=*/comp.fit_end);
-  }
+                                                     std::span<const atx::u32> group_id) const;
 
   // Estimate the factored covariance components (X, F, D) over the trailing `window`
   // cross-sections WITHOUT assembling the FactorModel — the FUNDAMENTAL estimation path
@@ -508,119 +252,7 @@ public:
   // FactorComponents{ X[0], F, D, window }. COLD path; PIT-structural. `[[nodiscard]] const`.
   [[nodiscard]] atx::core::Result<FactorComponents>
   build_components(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
-                   std::span<const atx::u32> group_id) const {
-    if (cfg.n_stat_factors > 0U || cfg.n_dead_factors > 0U) {
-      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
-                            "FactorModelBuilder::build_components: stat/dead rungs are dispatched "
-                            "by build()"); // build() handles APCA / the dead-alpha deferral
-    }
-    if (window < 2U) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build_components: require window >= 2");
-    }
-    // X[0] (the CURRENT cross-section) defines M and the emitted factor count K.
-    ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, market_cap, group_id));
-    const atx::usize k = x0.n_factors();
-    if (k == 0U) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build_components: no factor columns emitted");
-    }
-    if (window < k) { // T < K -> the factor-return cov is rank-deficient
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build_components: window < factor count (T < K)");
-    }
-
-    // Pass A (OLS) -> bootstrap specific variances d0; Pass B (WLS) -> f[s], u[s].
-    const atx::usize n_inst = panel.instruments();
-    atx::core::linalg::VecX d0(static_cast<Eigen::Index>(n_inst));
-    ATX_TRY(atx::usize used_a, accumulate_ols(panel, window, market_cap, group_id, k, d0));
-    if (used_a < 2U) {
-      return atx::core::Err(
-          atx::core::ErrorCode::InvalidArgument,
-          "FactorModelBuilder::build_components: too few usable dates (M_s < K everywhere)");
-    }
-
-    std::vector<std::vector<atx::f64>> u_by_inst(n_inst); // final residuals per universe inst
-    atx::core::linalg::MatX fseries(static_cast<Eigen::Index>(window),
-                                    static_cast<Eigen::Index>(k));
-    // Pass B dispatch: robust root-cap + Huber IRLS when opted in (cfg.cov), else the
-    // P4 plain inverse-specific-variance WLS. Both emit the SAME (window×K) factor-
-    // return series + per-instrument residuals downstream; the default keeps P4 exactly.
-    ATX_TRY(atx::usize used_b,
-            cfg.cov.robust_regression
-                ? accumulate_robust(panel, window, market_cap, group_id, d0, fseries, u_by_inst)
-                : accumulate_wls(panel, window, market_cap, group_id, d0, fseries, u_by_inst));
-    if (used_b < 2U) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build_components: too few usable WLS dates");
-    }
-    // Compact fseries to the rows actually filled (under-determined dates skipped).
-    const atx::core::linalg::MatX fkept = fseries.topRows(static_cast<Eigen::Index>(used_b));
-    if (fkept.rows() < static_cast<Eigen::Index>(k)) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "FactorModelBuilder::build_components: usable dates < K (factor cov rank)");
-    }
-
-    // Factor-covariance dispatch. DEFAULT (LedoitWolfSingle) is the as-built P4 path,
-    // byte-identical. EwmaNeweyWest (S8.2, opt-in) is the split vol/corr half-life EWMA
-    // covariance recombined F_ij=ρ_ij·σ_i·σ_j with a Newey-West Bartlett serial-corr add
-    // and an SPD eigenvalue floor. EXHAUSTIVE switch (no default — a new enumerator is a
-    // compile error). `fkept` rows are the compacted kept dates, newest (row 0) first.
-    atx::core::linalg::MatX f;
-    switch (cfg.cov.factor_cov_method) {
-    case FactorCovMethod::LedoitWolfSingle:
-      f = detail::factor_covariance(fkept, cfg.factor_cov_shrink);
-      break;
-    case FactorCovMethod::EwmaNeweyWest:
-      // S8.8 short/long-horizon blend (opt-in via cfg.cov.horizon_blend; the DEFAULT
-      // false is the single-horizon S8.2 path, byte-identical). Build the SAME `fkept`
-      // factor-return series at TWO half-life sets — the existing vol/corr half-lives
-      // (short horizon) and the `*_long` half-lives (long horizon) — and convex-blend
-      // them F = w·F_short + (1−w)·F_long. Both inputs are SPD (eigenvalue-floored by
-      // ewma_factor_covariance) so the convex combo is SPD (no extra PSD repair). The
-      // blend is the factor-cov CONSTRUCTION; the eigen_adjust + VRA steps below then
-      // clean/scale the blended F. (horizon_blend under LedoitWolfSingle is a no-op —
-      // the long-horizon half-life set only applies to this EWMA path.)
-      if (cfg.cov.horizon_blend) {
-        const atx::core::linalg::MatX f_short = ewma_factor_covariance(
-            fkept, cfg.cov.vol_halflife, cfg.cov.corr_halflife, cfg.cov.nw_lags);
-        const atx::core::linalg::MatX f_long = ewma_factor_covariance(
-            fkept, cfg.cov.vol_halflife_long, cfg.cov.corr_halflife_long, cfg.cov.nw_lags);
-        f = blend_factor_cov(f_short, f_long, cfg.cov.horizon_blend_weight);
-      } else {
-        f = ewma_factor_covariance(fkept, cfg.cov.vol_halflife, cfg.cov.corr_halflife,
-                                   cfg.cov.nw_lags);
-      }
-      break;
-    }
-    // S8.3 eigenfactor risk adjustment (opt-in via cfg.cov.eigen_adjust_sims > 0; the
-    // DEFAULT 0 is a no-op so the P4 / S8.2 covariance is untouched, byte-identical).
-    // Monte-Carlo de-biases the factor-covariance eigenvariances (Menchero-Wang-Orr)
-    // BEFORE create's SPD gate; the adjustment is PSD-preserving (γ²>0). This is the
-    // ONLY RNG site in the build — its Xoshiro256pp seed is cfg.cov.eigen_adjust_seed,
-    // recorded so the model is byte-identical on replay. ATX_TRY propagates a non-SPD F
-    // (symmetric_eig failure / non-positive eigenvalue) instead of silently skipping.
-    if (cfg.cov.eigen_adjust_sims > 0U) {
-      ATX_TRY(atx::core::linalg::MatX f_adj,
-              eigen_adjust(f, cfg.cov.eigen_adjust_sims, cfg.cov.eigen_adjust_amplify,
-                           cfg.cov.eigen_adjust_seed));
-      f = std::move(f_adj);
-    }
-    // S8.5 Volatility Regime Adjustment (opt-in via cfg.cov.vra_halflife > 0; the
-    // DEFAULT 0 is a no-op so F and D are the pre-S8.5 P4/S8.2 values, byte-identical).
-    // The market-wide regime multiplier λ² is computed ONCE from the kept factor-return
-    // series `fkept` and the FINALIZED (post-eigen-adjust) forecast F, then rescales BOTH
-    // F ← λ²·F (PSD-preserving — λ² > 0) and D ← λ²·D (the SAME multiplier on the specific
-    // variances; per-name specific VRA is a recorded backlog residual). RNG-free.
-    atx::core::linalg::VecX d = specific_variances(x0, u_by_inst, window);
-    if (cfg.cov.vra_halflife > 0U) {
-      const RegimeAdjust ra = vol_regime_multiplier(fkept, f, cfg.cov.vra_halflife);
-      f *= ra.lambda2;
-      d *= ra.lambda2;
-    }
-    return atx::core::Ok(
-        FactorComponents{std::move(x0.x), std::move(f), std::move(d), /*fit_end=*/window});
-  }
+                   std::span<const atx::u32> group_id) const;
 
 private:
   // ε floor for the bootstrap weights so 1/d0_i is finite for a zero-residual
@@ -628,305 +260,45 @@ private:
   // real return variance, so it never tilts a well-populated instrument's weight.
   static constexpr atx::f64 kBootstrapVarFloor = 1e-12;
 
-  // ===========================================================================
-  //  build_stat_factor_model — the S8.6 STATISTICAL (APCA) model variant.
-  //
-  //  A STATIC member (not a free function): keeps the APCA orchestration in the
-  //  same TU as FactorModel + detail::factor_covariance + detail::step_return so it
-  //  reuses them directly with NO include cycle (the pure linalg kernels live in
-  //  stat_factor_model.hpp, included at the top; this orchestrator stitches them to
-  //  the panel and the FactorModel assembly). The alternative — a free function in a
-  //  header included AFTER the class — would still need the kernels' header AND a
-  //  forward path to detail::factor_covariance; the static-member form is the one
-  //  that compiles cleanly with the existing single-header layout.
-  //
-  //  Steps (Connor-Korajczyk 2-pass; algorithm detail in stat_factor_model.hpp):
-  //    1. Cross-section = the row-0 build_exposures survivors (the SAME instrument
-  //       set the fundamental path's X[0] uses — so M aligns across both variants;
-  //       a single-sector / style-free cfg makes that the present cross-section).
-  //    2. Build the complete-case return panel R (N×T): keep an instrument only if
-  //       ALL T trailing returns step_return(panel,t,inst) are non-NaN (the
-  //       asymptotic argument needs a rectangular block). Column-demean each row.
-  //    3. Validate N > T, T > K, N > K (else InvalidArgument).
-  //    4. Pass 1 (equal-weight): Fhat = top-K of the T×T Gram; B, s_n from R.
-  //    5. Pass 2 (GLS, when gls_reweight): re-extract Fhat from the 1/√s_n-reweighted
-  //       Gram; recover the FINAL B, s_n from the UN-weighted R.
-  //    6. X = B, F = factor_covariance(Fhat, factor_cov_shrink), D = s_n; create.
-  //  PIT-structural (reads only rows >= 0; the window bounds the trailing returns).
-  //  RNG-free, order-fixed ⇒ byte-identical on replay (Fhat sign-pinned).
-  // ===========================================================================
+  // The S8.6 STATISTICAL (APCA) model variant (Connor-Korajczyk 2-pass). A static
+  // member so it shares the .cpp's detail:: kernels + FactorModel assembly with no
+  // include cycle. Body + full algorithm doc in src/risk/factor_model.cpp.
   [[nodiscard]] static atx::core::Result<FactorModel>
   build_stat_factor_model(const PanelView &panel, atx::usize window,
                           std::span<const atx::f64> market_cap, std::span<const atx::u32> group_id,
                           const FactorModelConfig &cfg, atx::usize n_stat, bool gls_reweight,
-                          atx::f64 factor_cov_shrink) {
-    if (window < 2U) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "build_stat_factor_model: require window >= 2");
-    }
-    // The current cross-section (row 0) defines the candidate instrument set — the
-    // SAME survivors the fundamental X[0] would use, so M aligns across variants.
-    ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, market_cap, group_id));
+                          atx::f64 factor_cov_shrink);
 
-    // Complete-case return panel R (N×T): an instrument survives only if all T
-    // trailing returns are clean. Order-fixed (ascending cross-section row, then
-    // ascending date). newest date t == column 0.
-    const atx::usize t_dates = window;
-    std::vector<atx::usize> kept_inst; // universe index of each surviving asset
-    std::vector<atx::f64> flat;        // row-major N×T scratch (asset-major)
-    kept_inst.reserve(x0.instrument_rows.size());
-    flat.reserve(x0.instrument_rows.size() * t_dates);
-    std::vector<atx::f64> series(t_dates); // hoisted: reused (overwritten) per instrument
-    for (const atx::usize inst : x0.instrument_rows) {
-      bool complete = true;
-      for (atx::usize t = 0U; t < t_dates && complete; ++t) {
-        const atx::f64 r = detail::step_return(panel, t, inst);
-        complete = !std::isnan(r);
-        series[t] = r;
-      }
-      if (complete) {
-        kept_inst.push_back(inst);
-        for (const atx::f64 v : series) {
-          flat.push_back(v);
-        }
-      }
-    }
-
-    const atx::usize n = kept_inst.size();
-    const atx::usize k = n_stat;
-    // The asymptotic-PCA validity conditions: N > T (the trick needs many names per
-    // date), T > K and N > K (K factors are estimable from T dates / N assets).
-    if (n <= t_dates || t_dates <= k || n <= k) {
-      return atx::core::Err(
-          atx::core::ErrorCode::InvalidArgument,
-          "build_stat_factor_model: require N > T > K and N > K (complete-case panel)");
-    }
-
-    // Pack R (N×T) into a column-major MatX (asset rows, date columns; column 0 =
-    // newest), then column-demean each asset row.
-    atx::core::linalg::MatX r_panel(static_cast<Eigen::Index>(n),
-                                    static_cast<Eigen::Index>(t_dates));
-    for (atx::usize a = 0U; a < n; ++a) {
-      for (atx::usize t = 0U; t < t_dates; ++t) {
-        r_panel(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(t)) = flat[a * t_dates + t];
-      }
-    }
-    detail::demean_rows(r_panel);
-
-    // Pass 1 (equal-weighted): Fhat from the T×T Gram of R; B, s_n from R.
-    ATX_TRY(atx::core::linalg::MatX fhat, detail::apca_factor_returns(r_panel, k));
-    ATX_TRY(atx::core::linalg::MatX b, detail::exposures(r_panel, fhat));
-    atx::core::linalg::VecX s = detail::specific_variances(r_panel, b, fhat);
-
-    // Pass 2 (GLS, opt-in): re-extract Fhat from the 1/√s_n-reweighted Gram, then
-    // recover the FINAL B and s_n from the UN-weighted R (original return scale).
-    if (gls_reweight) {
-      const atx::core::linalg::MatX r_w = detail::gls_reweight(r_panel, s);
-      ATX_TRY(atx::core::linalg::MatX fhat_gls, detail::apca_factor_returns(r_w, k));
-      fhat = std::move(fhat_gls);
-      ATX_TRY(atx::core::linalg::MatX b_gls, detail::exposures(r_panel, fhat));
-      b = std::move(b_gls);
-      s = detail::specific_variances(r_panel, b, fhat);
-    }
-
-    // Assemble: X = B (N×K), F = LW-shrunk covariance of the factor-return series,
-    // D = s_n. factor_covariance column-demeans Fhat + MLE-covs ÷T + canonical LW so
-    // F stays SPD; FactorModel::create re-checks via Cholesky and floors D.
-    atx::core::linalg::MatX f = detail::factor_covariance(fhat, factor_cov_shrink);
-    return FactorModel::create(std::move(b), std::move(f), std::move(s), /*fit_begin=*/0U,
-                               /*fit_end=*/window);
-  }
-
-  // Pass A: per date s, build X[s], read the date returns (listwise NaN-drop), run
-  // OLS (skip an under-determined date M_s < K), accumulate the per-instrument OLS
-  // residual series; emit d0_i = floored pop-var of that series. Returns the count
-  // of usable dates. A linalg kernel failure on a usable date is non-fatal (the date
-  // is skipped) — only a build_exposures failure (a bad span) propagates.
+  // Pass A (OLS, equal weights) -> bootstrap specific variances d0. Returns the count
+  // of usable dates. Body in src/risk/factor_model.cpp.
   [[nodiscard]] atx::core::Result<atx::usize>
   accumulate_ols(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
                  std::span<const atx::u32> group_id, atx::usize k,
-                 atx::core::linalg::VecX &d0_out) const {
-    const atx::usize n_inst = panel.instruments();
-    std::vector<std::vector<atx::f64>> resid(n_inst); // OLS residual series per universe inst
-    std::vector<atx::usize> keep;
-    atx::usize used = 0U;
-    for (atx::usize s = 0U; s < window; ++s) {
-      ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
-      const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
-      if (keep.size() < k) {
-        continue; // under-determined cross-section (M_s < K) -> skip this date
-      }
-      const atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
-      const auto fit = atx::core::linalg::ols(xsr, r);
-      if (!fit) {
-        continue; // rank-deficient date -> skip (e.g. a degenerate sector block)
-      }
-      ++used;
-      for (atx::usize j = 0U; j < keep.size(); ++j) {
-        resid[xs.instrument_rows[keep[j]]].push_back(fit->residuals[static_cast<Eigen::Index>(j)]);
-      }
-    }
-    for (atx::usize i = 0U; i < n_inst; ++i) {
-      const atx::f64 v = detail::pop_variance(resid[i]);
-      d0_out[static_cast<Eigen::Index>(i)] = (v < kBootstrapVarFloor) ? kBootstrapVarFloor : v;
-    }
-    return atx::core::Ok(used);
-  }
+                 atx::core::linalg::VecX &d0_out) const;
 
-  // Pass B: per date s, build X[s], read the date returns, run WLS with weights
-  // 1/d0_i over the kept instruments (skip M_s < K), store the factor return f[s] in
-  // the next free row of `fseries` and append the per-instrument WLS residual to
-  // `u_by_inst`. Returns the count of usable WLS dates (== filled fseries rows). A
-  // per-date kernel failure is non-fatal (skip); a bad span propagates.
+  // Pass B (WLS, weights 1/d0_i) -> factor-return series f[s] + per-instrument
+  // residuals. Returns the count of usable WLS dates. Body in the .cpp.
   [[nodiscard]] atx::core::Result<atx::usize>
   accumulate_wls(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
                  std::span<const atx::u32> group_id, const atx::core::linalg::VecX &d0,
                  atx::core::linalg::MatX &fseries,
-                 std::vector<std::vector<atx::f64>> &u_by_inst) const {
-    const atx::usize k = static_cast<atx::usize>(fseries.cols());
-    std::vector<atx::usize> keep;
-    atx::usize used = 0U;
-    for (atx::usize s = 0U; s < window; ++s) {
-      ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
-      const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
-      if (keep.size() < k) {
-        continue; // under-determined -> skip (matches Pass A's skip rule)
-      }
-      const atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
-      atx::core::linalg::VecX w(static_cast<Eigen::Index>(keep.size())); // weight 1/d0_i (P4-2 IVW)
-      for (atx::usize j = 0U; j < keep.size(); ++j) {
-        w[static_cast<Eigen::Index>(j)] =
-            1.0 / d0[static_cast<Eigen::Index>(xs.instrument_rows[keep[j]])];
-      }
-      const auto fit = atx::core::linalg::wls(xsr, r, w);
-      if (!fit) {
-        continue; // rank-deficient weighted date -> skip
-      }
-      for (atx::usize c = 0U; c < k; ++c) {
-        fseries(static_cast<Eigen::Index>(used), static_cast<Eigen::Index>(c)) =
-            fit->beta[static_cast<Eigen::Index>(c)];
-      }
-      ++used;
-      for (atx::usize j = 0U; j < keep.size(); ++j) {
-        u_by_inst[xs.instrument_rows[keep[j]]].push_back(
-            fit->residuals[static_cast<Eigen::Index>(j)]);
-      }
-    }
-    return atx::core::Ok(used);
-  }
+                 std::vector<std::vector<atx::f64>> &u_by_inst) const;
 
-  // Pass B (ROBUST, S8.1; opt-in via cfg.cov.robust_regression). Mirrors
-  // accumulate_wls but, per date, composes a FIXED √-cap / inverse-specific-variance
-  // PRIOR weight (detail::robust_prior_weight) with the S6-1 Huber IRLS kernel
-  // (cost::irls_huber) instead of a single WLS solve — the prior keeps the WLS
-  // character while Huber down-weights fat-tailed outlier instrument-dates. When
-  // cfg.cov.industry_sum_to_zero is set, the kept design's industry dummies are
-  // cap-weight mean-centered first (detail::apply_industry_sum_to_zero) to resolve the
-  // market/industry-dummy collinearity. Stores the robust factor-return beta into the
-  // next free fseries row and appends the per-instrument residuals — identical
-  // downstream to the WLS path. Runs EXACTLY cfg.cov.robust_iters IRLS steps: we pass
-  // tol = 0.0 so the kernel's `max_dh < tol` convergence test can never fire, making
-  // the loop a true FIXED-COUNT iteration (the project's determinism rule favors a
-  // fixed count over a convergence-dependent exit, and it moots any prior-weight
-  // interaction with the kernel's Huber-factor convergence test). RNG-free. A per-date
-  // kernel failure is non-fatal (skip); a bad span propagates. Returns the usable-date
-  // count. (The S6 calibration path keeps the kernel's default tol; only this risk path
-  // forces tol = 0.)
-  // PATTERN-B: reuse S6-1 cost::irls_huber; atx-core huber_irls is the eventual L7 home.
+  // Pass B (ROBUST, S8.1; opt-in) — √-cap / inverse-specific-variance prior composed
+  // with the Huber IRLS kernel (fixed cfg.cov.robust_iters steps, tol=0). Body in the
+  // .cpp. Returns the usable-date count.
   [[nodiscard]] atx::core::Result<atx::usize>
   accumulate_robust(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
                     std::span<const atx::u32> group_id, const atx::core::linalg::VecX &d0,
                     atx::core::linalg::MatX &fseries,
-                    std::vector<std::vector<atx::f64>> &u_by_inst) const {
-    const atx::usize k = static_cast<atx::usize>(fseries.cols());
-    const cost::RobustCfg rcfg{/*huber_k=*/cfg.cov.huber_c, /*max_iter=*/cfg.cov.robust_iters,
-                               /*tol=*/0.0};
-    std::vector<atx::usize> keep;
-    atx::usize used = 0U;
-    for (atx::usize s = 0U; s < window; ++s) {
-      ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
-      const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
-      if (keep.size() < k) {
-        continue; // under-determined -> skip (matches the WLS pass's skip rule)
-      }
-      atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
-      if (cfg.cov.industry_sum_to_zero) {
-        detail::apply_industry_sum_to_zero(xsr, xs, keep, market_cap);
-      }
-      // Rank probe: cost::irls_huber fails LOUD (ATX_CHECK) on a rank-deficient
-      // design, but a degenerate date must be SKIPPED here (matching the WLS pass's
-      // `if (!fit)` skip). An OLS solve on the post-constraint design is the same
-      // rank test wls/irls would apply, run once up front so the IRLS only ever sees a
-      // full-rank system.
-      if (!atx::core::linalg::ols(xsr, r)) {
-        continue; // rank-deficient (e.g. a collinear sector block) -> skip this date
-      }
-      const atx::core::linalg::VecX w0 =
-          detail::robust_prior_weight(xs, keep, d0, market_cap, cfg.cov.cap_weight);
-      const cost::RobustFit fit = cost::irls_huber(xsr, r, rcfg, &w0);
-      for (atx::usize c = 0U; c < k; ++c) {
-        fseries(static_cast<Eigen::Index>(used), static_cast<Eigen::Index>(c)) =
-            fit.beta[static_cast<Eigen::Index>(c)];
-      }
-      ++used;
-      for (atx::usize j = 0U; j < keep.size(); ++j) {
-        u_by_inst[xs.instrument_rows[keep[j]]].push_back(fit.residuals[j]);
-      }
-    }
-    return atx::core::Ok(used);
-  }
+                    std::vector<std::vector<atx::f64>> &u_by_inst) const;
 
-  // Specific (idiosyncratic) variances D over the current cross-section
-  // (X[0].instrument_rows order). EXHAUSTIVE dispatch on cfg.cov.specific_method (no
-  // default — a new enumerator is a compile error):
-  //   * PopVariance (DEFAULT, P4): D_i = pop-var of instrument i's final WLS residual
-  //     series; absent/short series -> 0 (create() floors to kSpecificVarFloor). This
-  //     branch is byte-identical to the as-built path.
-  //   * EwmaNeweyWestStructural (S8.4, opt-in): the blended estimator
-  //     (specific_risk_blend) — EWMA specific-vol × Newey-West autocorrelation
-  //     inflation, blended toward a ln-vol-on-exposures structural model by history
-  //     depth so thin-history names inherit a sane structural level instead of a noisy
-  //     near-zero pop variance. The ISC off-diagonal carrier is defined interface-only;
-  //     D stays strictly DIAGONAL this sprint (the carrier is not wired here).
-  // Length == M == X[0].n_instruments(). Member (not static) so it reads cfg.cov.
+  // Specific (idiosyncratic) variances D over the current cross-section. EXHAUSTIVE
+  // dispatch on cfg.cov.specific_method (PopVariance default = P4 byte-identical;
+  // EwmaNeweyWestStructural = S8.4 blended + S8.8 horizon-blend). Body in the .cpp.
   [[nodiscard]] atx::core::linalg::VecX
   specific_variances(const ExposureMatrix &x0, const std::vector<std::vector<atx::f64>> &u_by_inst,
-                     atx::usize window) const {
-    switch (cfg.cov.specific_method) {
-    case SpecificRiskMethod::PopVariance: {
-      const atx::usize m = x0.n_instruments();
-      atx::core::linalg::VecX d(static_cast<Eigen::Index>(m));
-      for (atx::usize r = 0U; r < m; ++r) {
-        const atx::usize inst = x0.instrument_rows[r];
-        d[static_cast<Eigen::Index>(r)] = detail::pop_variance(u_by_inst[inst]);
-      }
-      return d;
-    }
-    case SpecificRiskMethod::EwmaNeweyWestStructural: {
-      // S8.8 short/long-horizon blend for D (opt-in via cfg.cov.horizon_blend). Run
-      // the SAME structural specific-risk estimator at TWO specific half-lives — the
-      // existing spec_halflife (short) and spec_halflife_long (long) — and convex-blend
-      // the two positive variance vectors d = w·d_short + (1−w)·d_long (PSD-trivial:
-      // each entry stays positive). DEFAULT horizon_blend == false ⇒ the single-horizon
-      // S8.4 path, byte-identical. (specific_risk_blend takes the half-life as a param,
-      // so the two-horizon path is two calls; the structural-blend / NW-lag knobs are
-      // shared across both horizons.)
-      const atx::core::linalg::VecX d_short =
-          specific_risk_blend(x0, u_by_inst, window, cfg.cov.spec_halflife, cfg.cov.spec_nw_lags,
-                              cfg.cov.structural_blend)
-              .variances;
-      if (!cfg.cov.horizon_blend) {
-        return d_short;
-      }
-      const atx::core::linalg::VecX d_long =
-          specific_risk_blend(x0, u_by_inst, window, cfg.cov.spec_halflife_long,
-                              cfg.cov.spec_nw_lags, cfg.cov.structural_blend)
-              .variances;
-      return blend_specific(d_short, d_long, cfg.cov.horizon_blend_weight);
-    }
-    }
-    return {}; // unreachable (switch exhaustive over SpecificRiskMethod)
-  }
+                     atx::usize window) const;
 };
 
 } // namespace atx::engine::risk

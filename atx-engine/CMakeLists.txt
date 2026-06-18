@@ -81,6 +81,12 @@ add_library(atx-engine STATIC
     src/parallel/workload_mine.cpp
     src/parallel/workload_streams.cpp
     src/validation/bias_audit.cpp
+    # risk (p2 S8.8a — header/source split: heavy method bodies moved out of the
+    # header-only risk module into the library to collapse the include fan-out).
+    # NOT auto-globbed — list each src/risk/*.cpp explicitly.
+    src/risk/factor_model.cpp
+    src/risk/garleanu_pedersen.cpp
+    src/risk/multi_horizon.cpp
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
     src/fund/cross_sleeve_risk.cpp

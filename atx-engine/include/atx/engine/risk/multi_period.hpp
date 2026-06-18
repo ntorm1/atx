@@ -43,6 +43,7 @@
 #include <algorithm> // std::min
 #include <cmath>     // std::fabs
 #include <functional> // std::function (alpha_at / model_at callbacks)
+#include <optional>   // std::optional (the optional augmented ConstraintSet — S8.4)
 #include <span>       // std::span
 #include <utility>    // std::move
 #include <vector>     // std::vector (result books)
@@ -51,8 +52,11 @@
 #include "atx/core/types.hpp" // f64, usize
 
 #include "atx/engine/book/fwd.hpp"          // book::CostInputs (forward decl; full def below)
+#include "atx/engine/risk/constraints.hpp"  // ConstraintSet (the augmented-dispatch set — S8.4)
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (the trailing-fit risk model)
 #include "atx/engine/risk/optimizer.hpp"    // OptimizerConfig, PortfolioOptimizer (reused verbatim)
+#include "atx/engine/risk/qp_solver.hpp"      // QpConfig (ADMM knobs for the augmented dispatch — S8.4)
+#include "atx/engine/risk/reference_data.hpp" // CapacityRef (%ADV / %shares box inputs — S8.4)
 
 // ===========================================================================
 //  book::CostInputs — the calibrated scalar cost adapter (CANONICAL definition).
@@ -90,6 +94,16 @@ struct MultiPeriodConfig {
                                      // (κ is overridden to cost.kappa by run()).
   atx::f64 trade_rate = 1.0;         // Gârleanu-Pedersen partial step toward target ∈ (0,1]; 1 ⇒ full
   bool capacity_bound_gross = true;  // clip single.gross_leverage at the capacity ceiling
+
+  // ---- S8.4 augmented-dispatch fields (§0.5) ----------------------------------
+  // An OPTIONAL full constraint set threaded into the inner PortfolioOptimizer. ABSENT
+  // or MINIMAL (GrossNet + optional PositionCap) ⇒ the inner solve takes the as-built
+  // fast path, BYTE-IDENTICAL to the pre-S8.4 driver (the single-solve pin holds). Any
+  // extra row routes the inner solve through the ConstrainedQpSolver. Default empty ⇒
+  // the as-built behavior, so every existing caller / pin is untouched.
+  std::optional<ConstraintSet> constraints;
+  QpConfig qp{};     // ADMM knobs forwarded to the inner solve's augmented path
+  CapacityRef ref{}; // %ADV / %shares reference panel forwarded to the augmented path
 };
 
 // ===========================================================================
@@ -135,9 +149,23 @@ public:
     OptimizerConfig oc = cfg.single;
     oc.turnover_penalty = cost.kappa;
     if (cfg.capacity_bound_gross) {
+      // NOTE: this capacity_bound_gross clip governs ONLY the fast path — it lands in
+      // `oc.gross_leverage`, which the inner solve reads when NO set is attached, and
+      // which an attached MINIMAL set's translation re-derives from set.gross (so the
+      // clip does NOT reach a minimal set's gross). On the AUGMENTED path the QP
+      // materializes the constraint set's gross independently of `oc`, so the clip is
+      // not applied there: the augmented path honors whatever gross the caller set in
+      // cfg.constraints.gross (mirroring MultiHorizonOptimizer::solve_augmented's
+      // docstring — the capacity-clip is the minimal/fast-path concern only).
       oc.gross_leverage = std::min(oc.gross_leverage, cost.capacity_gross);
     }
-    const PortfolioOptimizer opt{oc};
+    // Thread the optional augmented constraint set + QP knobs + capacity reference into
+    // the inner solve (S8.4 §0.5). When absent/minimal the inner solve takes the
+    // as-built fast path off `oc`, byte-identical to the pre-S8.4 driver.
+    PortfolioOptimizer opt{oc};
+    opt.constraints = cfg.constraints;
+    opt.qp = cfg.qp;
+    opt.ref = cfg.ref;
 
     std::vector<atx::f64> w_prev; // EMPTY at s=0 ⇒ a flat all-zero previous book.
     for (atx::usize s = 0; s < sched.periods.size(); ++s) {

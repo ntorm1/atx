@@ -35,6 +35,7 @@
 #include "atx/core/linalg/linalg.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/risk/constraints.hpp"
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
@@ -46,12 +47,15 @@ using atx::usize;
 using atx::core::linalg::MatX;
 using atx::core::linalg::VecX;
 using atx::engine::book::CostInputs;
+using atx::engine::risk::ConstraintSet;
 using atx::engine::risk::FactorModel;
+using atx::engine::risk::GrossNet;
 using atx::engine::risk::MultiPeriodConfig;
 using atx::engine::risk::MultiPeriodOptimizer;
 using atx::engine::risk::MultiPeriodResult;
 using atx::engine::risk::OptimizerConfig;
 using atx::engine::risk::PortfolioOptimizer;
+using atx::engine::risk::PositionCap;
 using atx::engine::risk::RebalanceSchedule;
 
 constexpr usize kM = 8U; // instruments
@@ -346,5 +350,48 @@ TEST(MultiPeriodOptimizer, RejectsInvalidTradeRate) {
   EXPECT_FALSE(MultiPeriodOptimizer{over_cfg}.run(sched, alpha_at, model_at, cost).has_value());
 }
 
+
+// ===========================================================================
+//  TEST 8 (S8.4) — wired-path dispatch (G-PIN). MultiPeriodOptimizer::run gains the
+//  minimal-vs-augmented dispatch. A MINIMAL ConstraintSet (GrossNet [+ PositionCap])
+//  matching cfg.single keeps the as-built fast path BYTE-IDENTICAL across the whole
+//  book chain (so the single-solve pin + every downstream invariant are preserved).
+// ===========================================================================
+TEST(MultiPeriodOptimizer, WiredMinimalDispatchByteIdentical) {
+  const FactorModel v = make_model();
+  const RebalanceSchedule sched{{0U, 1U, 2U}};
+  const CostInputs cost{0.25, 7.5, 1e9};
+  const auto alpha_at = [&](usize s) {
+    return std::span<const f64>(s % 2U == 0U ? kAlpha : kAlphaNeg);
+  };
+  const auto model_at = [&](usize) -> const FactorModel & { return v; };
+
+  // Oracle: the as-built fast path (no ConstraintSet attached).
+  MultiPeriodConfig fast_cfg;
+  fast_cfg.single = default_oc();
+  fast_cfg.trade_rate = 1.0;
+  fast_cfg.capacity_bound_gross = true;
+  auto fast = MultiPeriodOptimizer{fast_cfg}.run(sched, alpha_at, model_at, cost);
+  ASSERT_TRUE(fast.has_value()) << (fast ? "" : fast.error().to_string());
+
+  // Wired minimal path: attach a GrossNet + PositionCap set matching cfg.single.
+  MultiPeriodConfig wired_cfg = fast_cfg;
+  ConstraintSet cs;
+  cs.gross = GrossNet{fast_cfg.single.gross_leverage, fast_cfg.single.dollar_neutral};
+  cs.pos = PositionCap{fast_cfg.single.name_cap};
+  wired_cfg.constraints = cs;
+  auto wired = MultiPeriodOptimizer{wired_cfg}.run(sched, alpha_at, model_at, cost);
+  ASSERT_TRUE(wired.has_value()) << (wired ? "" : wired.error().to_string());
+
+  ASSERT_EQ(fast->books.size(), wired->books.size());
+  EXPECT_EQ(digest(fast->books), digest(wired->books));
+  for (usize s = 0; s < fast->books.size(); ++s) {
+    for (usize i = 0; i < fast->books[s].size(); ++i) {
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(fast->books[s][i]),
+                std::bit_cast<std::uint64_t>(wired->books[s][i]))
+          << "BYTE DIVERGENCE period " << s << " name " << i;
+    }
+  }
+}
 
 }  // namespace atxtest_risk_multi_period_test

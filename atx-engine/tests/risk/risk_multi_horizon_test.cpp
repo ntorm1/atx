@@ -395,7 +395,6 @@ TEST(RiskMultiHorizon, AugmentedConstraintsSatisfiedEveryPeriod) {
   cfg.horizon = 1U;
   cfg.trade_rate = 1.0;
   cfg.qp.iters = 1200U; // headroom for the aux-split + extra rows to clear feas_tol
-  cfg.qp.kkt_iters = 100U;
 
   MultiHorizonOptimizer mh{cfg};
   auto got = mh.run(
@@ -498,17 +497,59 @@ TEST(RiskMultiHorizon, RejectsInvalidTradeRate) {
   EXPECT_FALSE(MultiHorizonOptimizer{over}.run(sched, sources_at, model_at, cost).has_value());
 }
 
-TEST(RiskMultiHorizon, RejectsStackedMpcAsNotImplemented) {
+// S8.7: stacked_mpc is no longer NotImplemented — it is the benched geometric horizon-
+// blend stand-in (NOT a true joint O(N·H) QP; that is the recorded lift). On a CONSTANT
+// (identity-decay, H=1) trajectory the geometric blend collapses to the period-0 forecast,
+// so it COINCIDES with the shipped aim-collapse path byte-for-byte (the agreement case).
+TEST(RiskMultiHorizon, StackedMpcAgreesWithAimCollapseOnConstantTrajectory) {
   const FactorModel v = make_model();
-  const RebalanceSchedule sched{{0U}};
+  const RebalanceSchedule sched{{0U, 1U}};
   const CostInputs cost{0.0, 0.0, 1e9};
-  MultiHorizonConfig cfg = minimal_mh_cfg(1.0);
-  cfg.stacked_mpc = true; // a recorded lift
-  auto res = MultiHorizonOptimizer{cfg}.run(
-      sched, [&](usize) { return identity_source(std::span<const f64>(kAlpha)); },
-      [&](usize) -> const FactorModel & { return v; }, cost);
-  ASSERT_FALSE(res.has_value());
-  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotImplemented);
+  const auto sources_at = [&](usize s) {
+    return identity_source(std::span<const f64>(s % 2U == 0U ? kAlpha : kAlphaNeg));
+  };
+  const auto model_at = [&](usize) -> const FactorModel & { return v; };
+
+  auto collapse = MultiHorizonOptimizer{minimal_mh_cfg(1.0)}.run(sched, sources_at, model_at, cost);
+  MultiHorizonConfig stacked_cfg = minimal_mh_cfg(1.0);
+  stacked_cfg.stacked_mpc = true;
+  auto stacked = MultiHorizonOptimizer{stacked_cfg}.run(sched, sources_at, model_at, cost);
+  ASSERT_TRUE(collapse.has_value()) << (collapse ? "" : collapse.error().to_string());
+  ASSERT_TRUE(stacked.has_value()) << (stacked ? "" : stacked.error().to_string());
+  EXPECT_EQ(digest(collapse->books), digest(stacked->books))
+      << "stacked MPC must coincide with the aim-collapse on a constant trajectory";
+}
+
+// Stacked MPC is deterministic (R1/G-DET): two runs ⇒ byte-identical books.
+TEST(RiskMultiHorizon, StackedMpcDeterministicTwoRuns) {
+  const FactorModel v = make_model();
+  const RebalanceSchedule sched{{0U, 1U}};
+  const CostInputs cost{0.1, 5.0, 1e9};
+  static const std::vector<f64> momentum = kAlpha;
+  static const std::vector<f64> reversal = kAlphaNeg;
+  const SignalHorizon slow{20.0};
+  const SignalHorizon fast{1.0};
+  MultiHorizonConfig cfg = minimal_mh_cfg(0.6);
+  cfg.horizon = 4U;
+  cfg.stacked_mpc = true;
+  const auto sources_at = [&](usize) {
+    HorizonSources hs;
+    hs.pairs.emplace_back(std::span<const f64>(momentum), slow);
+    hs.pairs.emplace_back(std::span<const f64>(reversal), fast);
+    return hs;
+  };
+  const auto model_at = [&](usize) -> const FactorModel & { return v; };
+  MultiHorizonOptimizer mh{cfg};
+  auto a = mh.run(sched, sources_at, model_at, cost);
+  auto b = mh.run(sched, sources_at, model_at, cost);
+  ASSERT_TRUE(a.has_value()) << (a ? "" : a.error().to_string());
+  ASSERT_TRUE(b.has_value()) << (b ? "" : b.error().to_string());
+  EXPECT_EQ(digest(a->books), digest(b->books));
+  for (const auto &book : a->books) {
+    for (const f64 w : book) {
+      EXPECT_TRUE(std::isfinite(w));
+    }
+  }
 }
 
 TEST(RiskMultiHorizon, EmptyScheduleGivesEmptyOkResult) {
