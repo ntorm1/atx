@@ -117,12 +117,14 @@ struct LoadProfile {
   }
   void report(const OratsLoadStats &s) const {
     if (!enabled) return;
-    // build_write is summed across worker threads (overlapped behind the producer
-    // wall, not added to it) -> labeled "(workers,summed)" so the total is not
-    // mistaken for serial time.
+    // Phase 3: the 16x from_chars value parse moved off the producer into the
+    // workers. So `parse` here is the producer's per-row ROUTING cost (line
+    // frame + 4 key-column extract + symbology), and the worker-summed metric now
+    // covers parse+build+write. Both worker terms are OVERLAPPED behind the
+    // producer wall (not added to it) -> labeled "(workers,summed)".
     std::fprintf(stderr,
-                 "[orats-profile] inflate=%.1fms parse=%.1fms "
-                 "build_write(workers,summed)=%.1fms rows_kept=%lld dates=%lld\n",
+                 "[orats-profile] inflate=%.1fms producer_route=%.1fms "
+                 "worker_parse_build_write(workers,summed)=%.1fms rows_kept=%lld dates=%lld\n",
                  ms(inflate), ms(parse), ms(build_write),
                  static_cast<long long>(s.rows_kept),
                  static_cast<long long>(s.dates_written));
@@ -155,21 +157,58 @@ void split_tabs(std::string_view line, std::vector<std::string_view> &out) {
   }
 }
 
+// The handful of columns the PRODUCER needs from each row: date (routing/guard/
+// floor), securityID (required-check + symbology key), ticker_tk + todayTicker
+// (symbology). Views into the source line — copy before the buffer is reused.
+struct KeyFields {
+  std::string_view date, secid, ticker, today;
+};
+
+// Single-pass partial split: walk tabs only as far as `max_needed` (the highest
+// of the four key column indices), capturing just those four fields. The 16 value
+// columns are deliberately NOT touched here — their raw bytes ride to a worker,
+// where the expensive from_chars parse runs in parallel (Phase 3). A column index
+// past the row's actual field count yields an empty view, matching the old
+// field_at() out-of-range behavior (-> malformed date / missing securityID).
+KeyFields extract_key_fields(std::string_view line, const detail::ColumnIndex &idx,
+                             int max_needed) {
+  KeyFields k;
+  int col = 0;
+  atx::usize start = 0;
+  for (;;) {
+    const atx::usize tab = line.find('\t', start);
+    const atx::usize end = (tab == std::string_view::npos) ? line.size() : tab;
+    const std::string_view f = line.substr(start, end - start);
+    if (col == idx.tradingDate) k.date = f;
+    if (col == idx.securityID) k.secid = f;
+    if (col == idx.ticker_tk) k.ticker = f;
+    if (col == idx.todayTicker) k.today = f;
+    if (tab == std::string_view::npos || col >= max_needed) break;
+    start = end + 1;
+    ++col;
+  }
+  return k;
+}
+
 // Accumulates one date's rows, then writes a sealed .seg via build_from_long.
+// Phase 3: the producer stores each kept row's RAW bytes (not parsed doubles) so
+// the 16x from_chars parse can run later on a worker thread. `symbols` and `raw`
+// stay in lockstep — one securityID and one '\n'-terminated line appended per row.
 struct DateAccumulator {
   atx::i64 date_nanos{};
-  std::string date_str;                        // YYYY-MM-DD for the filename
-  std::vector<std::string> symbols;            // securityID per row
-  std::vector<std::vector<atx::f64>> values;   // [16][rows]
-  DateAccumulator() : values(kOratsFields.size()) {}
+  std::string date_str;             // YYYY-MM-DD for the filename
+  std::vector<std::string> symbols; // securityID per kept row
+  std::string raw;                  // kept rows' raw bytes, '\n'-separated (worker parses)
+  DateAccumulator() = default;
   void clear(atx::i64 dn, std::string ds) {
     date_nanos = dn;
     date_str = std::move(ds);
     symbols.clear();
-    values.assign(kOratsFields.size(), {});  // rebuild 16 empty columns (move-safe)
+    raw.clear(); // seal() moves raw out, so this re-reserves a fresh buffer below
     constexpr atx::usize kRowsPerDateHint = 8192;
+    constexpr atx::usize kBytesPerRowHint = 200; // ~71 cols, mostly short numerics
     symbols.reserve(kRowsPerDateHint);
-    for (auto &v : values) v.reserve(kRowsPerDateHint);
+    raw.reserve(kRowsPerDateHint * kBytesPerRowHint);
   }
   bool empty() const { return symbols.empty(); }
 };
@@ -184,7 +223,7 @@ struct LoadState {
   DateAccumulator &acc;
   atx::i64 &current_date_nanos;
   std::unordered_map<atx::i64, std::pair<std::string, std::string>> &symbology;
-  std::vector<std::string_view> &fields; // reusable scratch
+  int max_needed_col; // highest key-column index the producer must scan to (set post-header)
   // Seals a completed date's accumulator into a writer-pool job (the loader
   // supplies this). Routing the date-boundary flush through a callback keeps
   // process_line oblivious to threading: it just hands off the previous date.
@@ -198,16 +237,12 @@ struct LoadState {
 atx::core::Status process_line(std::string_view line, LoadState &st) {
   ++st.stats.rows_read;
 
-  split_tabs(line, st.fields);
-  const int max_col = static_cast<int>(st.fields.size()) - 1;
-  auto field_at = [&](int col) -> std::string_view {
-    return (col >= 0 && col <= max_col) ? st.fields[static_cast<atx::usize>(col)]
-                                        : std::string_view{};
-  };
+  // Cheap partial split: pull only the four key columns (all early in the real
+  // header). The 16 value columns stay as raw bytes for a worker to parse.
+  const KeyFields k = extract_key_fields(line, st.idx, st.max_needed_col);
 
   // 1) Parse trading date.
-  const std::string_view date_sv = field_at(st.idx.tradingDate);
-  const auto date_opt = detail::date_to_nanos(date_sv);
+  const auto date_opt = detail::date_to_nanos(k.date);
   if (!date_opt.has_value()) {
     ++st.stats.rows_malformed;
     return atx::core::Ok();
@@ -229,49 +264,50 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
   }
 
   // 4) securityID required.
-  const std::string_view secid_sv = field_at(st.idx.securityID);
-  if (secid_sv.empty()) {
+  if (k.secid.empty()) {
     ++st.stats.rows_malformed;
     return atx::core::Ok();
   }
 
   // 5) Date boundary: seal the previous date into a writer-pool job (the loader's
   //    callback counts it + enqueues it), then start a new accumulator. The seal
-  //    is a near-instant enqueue; the build+write happens on a worker thread.
+  //    is a near-instant enqueue; the parse+build+write happens on a worker thread.
   if (date_nanos != st.current_date_nanos) {
     ATX_TRY_VOID(st.flush(st.acc)); // no-op if empty; the callback owns the count
-    st.acc.clear(date_nanos, std::string(date_sv));
+    st.acc.clear(date_nanos, std::string(k.date));
     st.current_date_nanos = date_nanos;
   }
 
-  // 6) Accumulate the projected fields (empty/unparseable -> NaN).
-  st.acc.symbols.emplace_back(secid_sv);
-  for (atx::usize f = 0; f < kOratsFields.size(); ++f) {
-    st.acc.values[f].push_back(parse_f64(field_at(st.idx.field[f])));
-  }
+  // 6) Keep the row: securityID (already extracted) + the raw line bytes. The 16
+  //    value columns are parsed later on a worker thread (run_job), not here.
+  //    symbols and raw stay in lockstep (one entry + one line per kept row).
+  st.acc.symbols.emplace_back(k.secid);
+  st.acc.raw.append(line.data(), line.size());
+  st.acc.raw.push_back('\n');
 
   // 7) Symbology side-car: first-seen ticker info, keyed by securityID as i64.
   atx::i64 secid_i64 = 0;
   {
     const auto r =
-        std::from_chars(secid_sv.data(), secid_sv.data() + secid_sv.size(), secid_i64);
+        std::from_chars(k.secid.data(), k.secid.data() + k.secid.size(), secid_i64);
     if (r.ec != std::errc{}) secid_i64 = 0;
   }
-  st.symbology.try_emplace(secid_i64,
-                           std::string(field_at(st.idx.ticker_tk)),
-                           std::string(field_at(st.idx.todayTicker)));
+  st.symbology.try_emplace(secid_i64, std::string(k.ticker), std::string(k.today));
 
   ++st.stats.rows_kept;
   return atx::core::Ok();
 }
 
-// One trading date's projected columns, sealed and ready to pivot+write.
+// One trading date's rows, sealed and ready for a worker to parse+pivot+write.
+// Phase 3: carries the kept rows' RAW bytes (not pre-parsed doubles) plus the
+// resolved column map; the worker runs the 16x from_chars in run_job.
 struct DateJob {
-  std::string out_path;                      // <out_dir>/YYYY-MM-DD.seg
+  std::string out_path;             // <out_dir>/YYYY-MM-DD.seg
   atx::i64 date_nanos{};
   atx::i64 created_at_nanos{};
-  std::vector<std::string> symbols;          // securityID per row
-  std::vector<std::vector<atx::f64>> values; // [16][rows]
+  std::vector<std::string> symbols; // securityID per kept row
+  std::string raw;                  // kept rows' raw bytes, '\n'-separated
+  detail::ColumnIndex idx;          // which TSV columns hold the 16 values (copied, ~80 B)
 };
 
 // Bounded, blocking MPMC handoff. Coarse granularity (one job == one date,
@@ -336,17 +372,43 @@ struct WorkerError {
   }
 };
 
-// Pivot one job's columns and write its .seg. Mirrors the old flush_date body
-// but operates on an owned (moved) DateJob — safe to run on any thread because
-// SegmentBuilder is build-once/instance-local and each job writes a distinct
-// file (one per trading date), so workers never contend on shared output.
-atx::core::Status run_job(DateJob &job) {
+// Parse one job's raw rows, pivot into columns, and write its .seg. Safe to run
+// on any thread: SegmentBuilder is build-once/instance-local and each job writes
+// a distinct file (one per trading date), so workers never contend on shared
+// output. Phase 3: the 16x from_chars value parse runs HERE (in parallel across
+// workers) instead of on the producer. `scratch` is a per-worker reusable split
+// buffer (one allocation amortized across all of a worker's jobs).
+//
+// Output is byte-identical to the serial parse: parse_f64 is a pure function of
+// the row bytes, rows are parsed in producer (input) order, and symbols[i] still
+// pairs with values[f][i] — so each .seg is unchanged regardless of W.
+atx::core::Status run_job(DateJob &job, std::vector<std::string_view> &scratch) {
+  const atx::usize rows = job.symbols.size();
   atx::tsdb::LongColumns cols;
   cols.field_names.assign(kOratsFields.begin(), kOratsFields.end());
-  const atx::usize rows = job.symbols.size();
   cols.times.assign(rows, job.date_nanos); // all rows share this date's midnight nanos
   cols.symbols = std::move(job.symbols);
-  cols.values = std::move(job.values);
+  cols.values.assign(kOratsFields.size(), {});
+  for (auto &v : cols.values) v.reserve(rows);
+
+  // Re-split each kept row and run the 16 from_chars (empty/unparseable -> NaN).
+  std::string_view raw(job.raw);
+  atx::usize pos = 0;
+  for (;;) {
+    const atx::usize nl = raw.find('\n', pos);
+    if (nl == std::string_view::npos) break; // raw is '\n'-terminated; last find -> npos
+    const std::string_view line = raw.substr(pos, nl - pos);
+    pos = nl + 1;
+    split_tabs(line, scratch);
+    const int max_col = static_cast<int>(scratch.size()) - 1;
+    for (atx::usize f = 0; f < kOratsFields.size(); ++f) {
+      const int c = job.idx.field[f];
+      const std::string_view fv =
+          (c >= 0 && c <= max_col) ? scratch[static_cast<atx::usize>(c)] : std::string_view{};
+      cols.values[f].push_back(parse_f64(fv));
+    }
+  }
+
   return atx::tsdb::build_from_long(cols, job.out_path, job.created_at_nanos);
 }
 
@@ -369,10 +431,9 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   detail::ColumnIndex idx;
   bool header_parsed = false;
 
-  std::vector<std::string_view> fields;
-  fields.reserve(128);
-
-  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, fields, {}};
+  // max_needed_col is set once the header resolves (the producer scans each row
+  // only this far); 0 until then — no data row is processed before the header.
+  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, 0, {}};
 
   constexpr atx::usize kChunk = 1u << 22; // 4 MiB inflate reads
   std::vector<char> buf(kChunk);
@@ -414,7 +475,8 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
     job.date_nanos = a.date_nanos;
     job.created_at_nanos = cfg.created_at_nanos;
     job.symbols = std::move(a.symbols);
-    job.values = std::move(a.values);
+    job.raw = std::move(a.raw);
+    job.idx = idx; // resolved before any data row is sealed; worker parses with it
     jobs.push(std::move(job));
     ++stats.dates_written;
     return atx::core::Ok();
@@ -425,10 +487,12 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
   pool.reserve(W);
   for (std::size_t i = 0; i < W; ++i) {
     pool.emplace_back([&jobs, &werr, &build_write_ns] {
+      std::vector<std::string_view> scratch; // per-worker split buffer (reused across jobs)
+      scratch.reserve(128);
       DateJob job;
       while (jobs.pop(job)) {
         const auto tbw = LoadProfile::clock::now();
-        const auto s = run_job(job);
+        const auto s = run_job(job, scratch);
         const auto elapsed = LoadProfile::clock::now() - tbw;
         build_write_ns.fetch_add(
             std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(),
@@ -485,6 +549,10 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
       if (!header_parsed) {
         ATX_TRY(auto resolved, detail::resolve_header(line));
         idx = resolved;
+        // Producer scans each row only to the highest key column (all early in
+        // the real header), then hands the rest off as raw bytes.
+        st.max_needed_col =
+            std::max({idx.tradingDate, idx.securityID, idx.ticker_tk, idx.todayTicker});
         header_parsed = true;
         continue;
       }
