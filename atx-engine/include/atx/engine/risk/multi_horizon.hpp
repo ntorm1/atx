@@ -70,21 +70,24 @@
 //  trajectory / aim / target / book — at rebalance cadence, never on a hot tick path.
 //
 // ===========================================================================
-//  GP Riccati cost-to-go + stacked MPC (S8.7)
+//  GP cost-to-go (scalar-Λ reduction) + stacked-MPC stand-in (S8.7)
 // ===========================================================================
-//  The shipped (default) path is the GP AIM-COLLAPSE with the Riccati cost-to-go tail:
-//  ᾱ = the decay-weighted return-space aim (gp_aim); the single-period QP carries the
-//  GP value-function tail +½(w−aim_pos)ᵀA_xx(w−aim_pos) folded into P/q (the MPC trick).
-//  With the scalar-Λ value matrix A_xx = 2λV the fold is q = −ᾱ with P = 2λV unchanged
-//  (garleanu_pedersen.hpp), so it is byte-identical to the pre-S8.7 augmented book and
-//  the boundary pin holds (R10); the unconstrained closed form aim_pos = (2λV)⁻¹ᾱ is the
-//  no-solver fast path AND the relaxed-QP oracle (R11).
+//  The shipped (default) path is the GP AIM-COLLAPSE with the cost-to-go tail under the
+//  SCALAR-Λ reduction (sprint-1 plan §0.6 / §0.4): ᾱ = the decay-weighted return-space aim
+//  (gp_aim); the single-period QP carries the GP value-function tail
+//  +½(w−aim_pos)ᵀA_xx(w−aim_pos) folded into P/q (the MPC trick). With Λ = λΣ the value
+//  matrix is A_xx = 2λV (the PLAIN one-period Hessian — NO Riccati is solved), so the fold
+//  is q = −ᾱ with P = 2λV UNCHANGED (garleanu_pedersen.hpp); it is byte-identical to the
+//  pre-S8.7 augmented book and the boundary pin holds (R10). The unconstrained closed form
+//  aim_pos = (2λV)⁻¹ᾱ is the no-solver fast path. (The full matrix-Riccati A_xx is the
+//  recorded lift, not shipped.)
 //
-//  cfg.stacked_mpc == true requests the TRUE stacked multi-period path (S8.7): the GP
-//  geometric-trade-rate blend of the per-horizon forecasts (the O(N·H) joint roll over
-//  the trajectory), driven through the SAME dispatch + first-move execution. It is a real
-//  (benched) path — NO LONGER Err(NotImplemented) — but NOT the default. On a constant
-//  (identity-decay) trajectory it COINCIDES with the aim-collapse byte-for-byte.
+//  cfg.stacked_mpc == true requests the GEOMETRIC HORIZON-BLEND (S8.7): a single-period
+//  dispatch solve toward the GP geometric-trade-rate-weighted blend of the per-horizon
+//  forecasts. It is NOT a true O(N·H) joint stacked QP (no stacked {w_0..w_H} variables /
+//  inter-period coupling — the true joint QP is the recorded lift, sprint-1 §0.6); it is a
+//  real, benched STAND-IN — NO LONGER Err(NotImplemented) — but NOT the default. On a
+//  constant (identity-decay) trajectory it COINCIDES with the aim-collapse byte-for-byte.
 
 #include <algorithm>  // std::min
 #include <cmath>      // std::fabs, std::isnan
@@ -187,10 +190,11 @@ public:
               forecast_trajectory(std::span<const HorizonSource>(hs.pairs), m, cfg.horizon));
       const std::vector<atx::f64> aim = gp_aim(traj, m);
 
-      // (3) inner solve toward the aim, with the GP Riccati cost-to-go (S8.7):
+      // (3) inner solve toward the aim, with the GP cost-to-go (scalar-Λ reduction, S8.7):
       //   * stacked_mpc == false (shipped): solve_toward_aim toward ᾱ with the cost-to-go
       //     tail folded into the QP objective (the MPC trick; A_xx = 2λV ⇒ q = −ᾱ, P = 2λV).
-      //   * stacked_mpc == true (benched): the TRUE O(N·H) joint QP over the trajectory.
+      //   * stacked_mpc == true (benched): the geometric horizon-blend stand-in (NOT a true
+      //     joint O(N·H) QP — that is the recorded lift, sprint-1 §0.6).
       ATX_TRY(std::vector<atx::f64> target,
               cfg.stacked_mpc ? solve_stacked_mpc(traj, V, w_prev, cost)
                               : solve_toward_aim(aim, V, w_prev, cost));
@@ -319,28 +323,32 @@ private:
   }
 
   // -------------------------------------------------------------------------
-  //  solve_stacked_mpc (S8.7) — the TRUE stacked O(N·H) joint multi-period QP over the
-  //  forecast trajectory (benched alternative to the aim-collapse; NOT the default).
+  //  solve_stacked_mpc (S8.7) — the GEOMETRIC HORIZON-BLEND, a benched alternative to the
+  //  uniform-average aim-collapse (NOT the default).
+  //
+  //  HONEST SCOPE: this is NOT a true O(N·H) joint stacked-MPC QP. It does NOT introduce
+  //  stacked {w_0..w_H} decision variables, inter-period turnover-coupling rows, or a joint
+  //  constraint surface. It is a single-period dispatch solve toward a GEOMETRICALLY
+  //  horizon-weighted return-space aim — the tell is the linearity collapse below (there is
+  //  no joint coupling to break that linearity). The TRUE O(N·H) joint stacked-MPC QP (the
+  //  full {w_0..w_H} program with inter-period coupling) remains the RECORDED LIFT
+  //  (sprint-1 plan §0.6); this benched blend is the shipped stand-in.
   //
   //  The aim-collapse path solves ONE single-period QP toward the decay-weighted aim ᾱ
-  //  (the horizon-AVERAGE of the trajectory rows). The stacked path instead optimizes the
-  //  WHOLE forward book trajectory {w_0..w_H} jointly under the per-horizon forecasts
-  //  traj.alpha[h], then executes the first move (receding-horizon). With Λ = λΣ the GP
-  //  value-function recursion is a backward roll whose period-0 aim is the DISCOUNTED
-  //  persistence-weighted blend of the per-horizon forecasts, with the GP geometric
-  //  trade-rate weights ω_h ∝ (1−a)^h (a = trade_rate ∈ (0,1]): a slow (full-discount)
-  //  step keeps far-horizon foresight; a == 1 (full step) ⇒ ω_0 == 1, ω_{h>0} == 0, the
-  //  myopic period-0 forecast. We blend in RETURN space — ᾱ_stacked = Σ_h ω_h alpha[h]
-  //  (per-name re-normalized by the SEEN weight, NaN-aware) — then drive ᾱ_stacked through
-  //  the SAME dispatch (minimal fast path OR augmented QP), which applies the (2λV)⁻¹
-  //  Markowitz map. By linearity of (2λV)⁻¹ this EQUALS blending the per-horizon position
-  //  targets m_h = (2λV)⁻¹alpha[h] (Σω_h m_h = (2λV)⁻¹ Σω_h alpha[h]), so the return-space
-  //  blend is the position-space stacked aim — computed once, in the cheap space, reusing
-  //  the dispatch's V⁻¹ apply rather than H+1 separate applies. DISTINCT from the
-  //  aim-collapse (geometric vs uniform weights) — yet on a CONSTANT trajectory (identity
-  //  decay: every alpha[h] == α_t) BOTH weightings give ᾱ_stacked == α_t, so the stacked
-  //  path COINCIDES with the aim-collapse (the documented agreement case). The constraint
-  //  surface and the first-move/threading are identical to the shipped path.
+  //  (the UNIFORM horizon-AVERAGE of the trajectory rows). This path instead weights the
+  //  per-horizon forecasts traj.alpha[h] by the GP geometric trade-rate weights
+  //  ω_h ∝ (1−a)^h (a = trade_rate ∈ (0,1]): a slow (full-discount) step keeps far-horizon
+  //  foresight; a == 1 (full step) ⇒ ω_0 == 1, ω_{h>0} == 0, the myopic period-0 forecast.
+  //  We blend in RETURN space — ᾱ_stacked = Σ_h ω_h alpha[h] (per-name re-normalized by the
+  //  SEEN weight, NaN-aware) — then drive ᾱ_stacked through the SAME dispatch (minimal fast
+  //  path OR augmented QP), which applies the (2λV)⁻¹ Markowitz map. By linearity of
+  //  (2λV)⁻¹ this EQUALS blending the per-horizon position targets m_h = (2λV)⁻¹alpha[h]
+  //  (Σω_h m_h = (2λV)⁻¹ Σω_h alpha[h]) — that linearity is precisely why this is a
+  //  single-aim blend and NOT a joint QP. DISTINCT from the aim-collapse (geometric vs
+  //  uniform weights) — yet on a CONSTANT trajectory (identity decay: every alpha[h] == α_t)
+  //  BOTH weightings give ᾱ_stacked == α_t, so this path COINCIDES with the aim-collapse
+  //  (the documented agreement case). The constraint surface and the first-move/threading
+  //  are identical to the shipped path.
   //  Deterministic (R1): order-fixed geometric weights + order-fixed per-name reduction +
   //  the cached-Cholesky V⁻¹ in the dispatch. (The blend is in return space, so this path
   //  is well-defined at λ == 0 too — the dispatch's λ=0 pure-alpha branch then applies.)

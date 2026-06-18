@@ -498,10 +498,10 @@ TEST(RiskMultiHorizon, RejectsInvalidTradeRate) {
   EXPECT_FALSE(MultiHorizonOptimizer{over}.run(sched, sources_at, model_at, cost).has_value());
 }
 
-// S8.7: stacked_mpc is no longer NotImplemented — it is a real (benched) O(N·H) joint
-// multi-period QP path. On a CONSTANT (identity-decay, H=1) trajectory the stacked aim
-// blend collapses to the period-0 forecast, so the stacked path COINCIDES with the
-// shipped aim-collapse path byte-for-byte (the documented agreement case).
+// S8.7: stacked_mpc is no longer NotImplemented — it is the benched geometric horizon-
+// blend stand-in (NOT a true joint O(N·H) QP; that is the recorded lift). On a CONSTANT
+// (identity-decay, H=1) trajectory the geometric blend collapses to the period-0 forecast,
+// so it COINCIDES with the shipped aim-collapse path byte-for-byte (the agreement case).
 TEST(RiskMultiHorizon, StackedMpcAgreesWithAimCollapseOnConstantTrajectory) {
   const FactorModel v = make_model();
   const RebalanceSchedule sched{{0U, 1U}};

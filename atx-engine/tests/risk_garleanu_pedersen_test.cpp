@@ -38,6 +38,7 @@
 #include "atx/engine/risk/garleanu_pedersen.hpp"
 #include "atx/engine/risk/horizon.hpp"
 #include "atx/engine/risk/multi_horizon.hpp"
+#include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/qp_solver.hpp"
 
 namespace atxtest_risk_garleanu_pedersen_test {
@@ -46,16 +47,21 @@ using atx::f64;
 using atx::usize;
 using atx::core::linalg::MatX;
 using atx::core::linalg::VecX;
+using atx::engine::book::CostInputs;
 using atx::engine::risk::ConstrainedQpSolver;
 using atx::engine::risk::FactorModel;
 using atx::engine::risk::forecast_trajectory;
 using atx::engine::risk::gp_aim_and_value;
 using atx::engine::risk::GpAimValue;
 using atx::engine::risk::HorizonForecast;
+using atx::engine::risk::HorizonSource;
+using atx::engine::risk::HorizonSources;
 using atx::engine::risk::MaterializedConstraints;
+using atx::engine::risk::MultiHorizonConfig;
 using atx::engine::risk::MultiHorizonOptimizer;
 using atx::engine::risk::QpConfig;
 using atx::engine::risk::QpProblem;
+using atx::engine::risk::RebalanceSchedule;
 using atx::engine::risk::SignalHorizon;
 
 constexpr usize kM = 8U; // instruments
@@ -79,11 +85,15 @@ constexpr usize kK = 2U; // factors
 const std::vector<f64> kAlpha = {2.0, -1.0, 0.5, 3.0, -0.5, 1.2, -2.0, 0.8};
 
 // ===========================================================================
-//  G-DIFF (oracle, R11): the RELAXED unconstrained QP book matches the closed-form
-//  aim_pos. The QP minimizes ½wᵀ(2λV)w + qᵀw with q = −ᾱ and NO constraints, so its
-//  argmin is (2λV)⁻¹ᾱ = aim_pos — computed by gp_aim_and_value WITHOUT a solver call.
+//  SOLVER-CONSISTENCY (NOT the mapping oracle): the relaxed unconstrained QP book equals
+//  the closed-form aim_pos. CAVEAT — this is SELF-REFERENTIAL w.r.t. the GP mapping: the
+//  QP is handed q = −ᾱ, P = 2λV, so its argmin is BY CONSTRUCTION (2λV)⁻¹ᾱ, which is how
+//  gp_aim_and_value defines aim_pos. So this only proves the SOLVER minimizes the quadratic
+//  it was given (the build_augmented / ADMM path agrees with the closed-form inverse) — it
+//  does NOT validate the GP aim mapping. The independent ground-truth oracle that WOULD
+//  fail on a wrong mapping is ClosedFormMatchesHandDerivedGroundTruth below.
 // ===========================================================================
-TEST(RiskGarleanuPedersen, RelaxedQpMatchesClosedFormOracle) {
+TEST(RiskGarleanuPedersen, RelaxedQpMatchesClosedFormSolverConsistency) {
   const FactorModel v = make_model();
   const f64 lambda = 1.5;
 
@@ -109,8 +119,80 @@ TEST(RiskGarleanuPedersen, RelaxedQpMatchesClosedFormOracle) {
   // The relaxed QP book reproduces the closed-form aim_pos within a documented tol
   // (the ADMM converges the unconstrained quadratic to its exact (2λV)⁻¹ᾱ minimizer).
   for (usize i = 0; i < kM; ++i) {
-    EXPECT_NEAR((*book)[i], gp->aim_pos[i], 1e-6) << "oracle mismatch at name " << i;
+    EXPECT_NEAR((*book)[i], gp->aim_pos[i], 1e-6) << "solver-consistency mismatch at name " << i;
   }
+}
+
+// ===========================================================================
+//  INDEPENDENT GROUND-TRUTH ORACLE (R11) — the test that would FAIL if the GP aim
+//  MAPPING were wrong. On a TINY 2-name, K=1 model with a 2-source trajectory of KNOWN
+//  decay, we hand-derive (a) the horizon-blended alpha ᾱ from the decay formula and (b)
+//  the Markowitz target via a HAND-INVERTED dense 2×2 V — using NEITHER gp_aim_and_value
+//  NOR the FactorModel Woodbury apply. We then check the SHIPPED gp_aim_and_value against
+//  this external truth. A wrong mapping (wrong rows blended, wrong decay weighting, wrong
+//  1/2λ scale, or wrong V⁻¹) would diverge from the hand math.
+// ===========================================================================
+TEST(RiskGarleanuPedersen, ClosedFormMatchesHandDerivedGroundTruth) {
+  // ---- The model (M=2, K=1), chosen so V is a known, hand-invertible 2×2 -----------
+  // V = F·X Xᵀ + diag(D). X = [0.5; −0.5], F = [2.0], D = [0.3, 0.4].
+  //   X Xᵀ = [[0.25,−0.25],[−0.25,0.25]] ⇒ F·X Xᵀ = [[0.5,−0.5],[−0.5,0.5]]
+  //   V    = [[0.8, −0.5], [−0.5, 0.9]]   (add D on the diagonal)
+  MatX x(2, 1);
+  x(0, 0) = 0.5;
+  x(1, 0) = -0.5;
+  MatX f = MatX::Constant(1, 1, 2.0);
+  VecX d(2);
+  d[0] = 0.3;
+  d[1] = 0.4;
+  auto mr = FactorModel::create(std::move(x), std::move(f), std::move(d), 0U, 1U);
+  ASSERT_TRUE(mr.has_value()) << (mr ? "" : mr.error().to_string());
+  const FactorModel v = std::move(*mr);
+
+  // ---- Hand-derived V and its inverse (NOT via FactorModel) -------------------------
+  const f64 v00 = 0.8, v01 = -0.5, v11 = 0.9;
+  const f64 det = v00 * v11 - v01 * v01; // 0.72 − 0.25 = 0.47
+  ASSERT_GT(det, 0.0);
+  // V⁻¹ = (1/det)·[[v11, −v01], [−v01, v00]]
+  const f64 iv00 = v11 / det, iv01 = -v01 / det, iv11 = v00 / det;
+
+  // ---- Hand-derived ᾱ from a 2-source KNOWN-decay trajectory ------------------------
+  // Source A: opinion 1.0 on name 0 ONLY, IDENTITY decay (decay(h)=1 ∀h).
+  // Source B: opinion 1.0 on name 1 ONLY, halflife=1 ⇒ decay(h)=2^{-h}.
+  // With H=2 the trajectory rows are (hand-computed from the decay formula):
+  //   name 0: [1, 1, 1]            ⇒ horizon-average ᾱ_0 = (1+1+1)/3 = 1.0
+  //   name 1: [1, 2^-1, 2^-2]      ⇒ horizon-average ᾱ_1 = (1+0.5+0.25)/3 = 0.583333…
+  const usize H = 2U;
+  const f64 abar0_hand = (1.0 + 1.0 + 1.0) / 3.0;
+  const f64 abar1_hand = (1.0 + 0.5 + 0.25) / 3.0;
+
+  // ---- Hand Markowitz position aim: aim_pos = (1/2λ)·V⁻¹·ᾱ --------------------------
+  const f64 lambda = 1.25;
+  const f64 sc = 1.0 / (2.0 * lambda);
+  const f64 aim0_hand = sc * (iv00 * abar0_hand + iv01 * abar1_hand);
+  const f64 aim1_hand = sc * (iv01 * abar0_hand + iv11 * abar1_hand);
+
+  // ---- The SHIPPED path: build the SAME trajectory, take gp_aim, then gp_aim_and_value
+  const std::vector<f64> srcA = {1.0, std::numeric_limits<f64>::quiet_NaN()};
+  const std::vector<f64> srcB = {std::numeric_limits<f64>::quiet_NaN(), 1.0};
+  std::vector<std::pair<std::span<const f64>, SignalHorizon>> sources = {
+      {std::span<const f64>(srcA), SignalHorizon::identity()},
+      {std::span<const f64>(srcB), SignalHorizon{1.0}}};
+  auto traj = forecast_trajectory(
+      std::span<const std::pair<std::span<const f64>, SignalHorizon>>(sources), 2U, H);
+  ASSERT_TRUE(traj.has_value()) << (traj ? "" : traj.error().to_string());
+  const std::vector<f64> abar = MultiHorizonOptimizer::gp_aim(*traj, 2U);
+  ASSERT_EQ(abar.size(), 2U);
+
+  // (a) the shipped ᾱ matches the hand-derived horizon-blend (the decay weighting).
+  EXPECT_NEAR(abar[0], abar0_hand, 1e-12) << "ᾱ_0 diverged from hand decay-blend";
+  EXPECT_NEAR(abar[1], abar1_hand, 1e-12) << "ᾱ_1 diverged from hand decay-blend";
+
+  // (b) the shipped position aim matches the hand Markowitz map (1/2λ)·V⁻¹·ᾱ.
+  auto gp = gp_aim_and_value(std::span<const f64>(abar), v, lambda);
+  ASSERT_TRUE(gp.has_value()) << (gp ? "" : gp.error().to_string());
+  ASSERT_EQ(gp->aim_pos.size(), 2U);
+  EXPECT_NEAR(gp->aim_pos[0], aim0_hand, 1e-9) << "aim_pos_0 diverged from hand Markowitz map";
+  EXPECT_NEAR(gp->aim_pos[1], aim1_hand, 1e-9) << "aim_pos_1 diverged from hand Markowitz map";
 }
 
 // The closed form is a pure (no-solver) function and is byte-stable across runs (G-DET).

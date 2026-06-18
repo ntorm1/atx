@@ -1,18 +1,36 @@
 #pragma once
 
-// atx::engine::risk — garleanu_pedersen: the closed-form Gârleanu-Pedersen aim +
-// value-function matrix (the algebraic-Riccati cost-to-go), S8.7.
+// atx::engine::risk — garleanu_pedersen: the Gârleanu-Pedersen aim + value-curvature,
+// the SCALAR-Λ (Λ = λΣ) one-period reduction of the GP cost-to-go, S8.7.
 //
 // ===========================================================================
-//  What this unit is
+//  What this unit is (and what it is NOT)
 // ===========================================================================
 //  Gârleanu & Pedersen, "Dynamic Trading with Predictable Returns and Transaction
 //  Costs," J. Finance 68(6):2309-2340, 2013. For QUADRATIC trading cost + MEAN-
-//  REVERTING signals the optimal dynamic policy is an affine feedback (the algebraic
-//  Riccati solution): each period TRADE PARTWAY toward an AIM portfolio, where the aim
-//  is the persistence-weighted Markowitz target and the value function carries the
-//  multi-period cost-to-go. This header is the PURE closed form — the unconstrained
-//  FAST PATH (no solver call) AND the differential ORACLE for the constrained QP.
+//  REVERTING signals the GP optimal dynamic policy is an affine feedback: each period
+//  TRADE PARTWAY toward an AIM portfolio under a value-function cost-to-go, where the
+//  general value matrix A_xx solves an ALGEBRAIC RICCATI equation.
+//
+//  WHAT WE SHIP (the adopted codebase convention, sprint-1 plan §0.6 / §0.4): the
+//  SCALAR-Λ reduction. With Λ = λΣ the GP trade rate degenerates to the scalar
+//  cfg.trade_rate, the aim is the MARKOWITZ portfolio of the horizon-blended alpha, and
+//  the cost-to-go value matrix is A_xx = 2λV — the PLAIN single-period Markowitz Hessian
+//  (NO Riccati solve is performed; A_xx is literally the one-period P = 2λV). Under this
+//  reduction the cost-to-go fold is provably INERT (q = −ᾱ, P = 2λV unchanged; see below),
+//  which is exactly why it stays byte-identical to the S7 single-period book on the
+//  boundary (sprint-1 §0.4 pins "full trade-rate ⇒ aim == single-period Markowitz target",
+//  §0.6 decides "S1.4 ships the GP aim-portfolio collapse" and records the full QP as a lift).
+//
+//  WHAT IS THE RECORDED LIFT (NOT shipped here): the full MATRIX-Riccati A_xx — a
+//  non-trivial H>1 cost-to-go CURVATURE (A_xx ≠ 2λV) that adds genuine multi-period
+//  curvature to P and only REDUCES to 2λV in the H=1 single-period limit. Computing that
+//  steady-state Riccati A_xx is the recorded refinement (a steady-state Riccati does NOT
+//  reduce to the one-period Hessian for H>1, so shipping it would change the augmented book
+//  and risk the boundary pin). This header does NOT solve a Riccati; it applies A_xx = 2λV.
+//
+//  This header is the PURE closed form of the scalar-Λ reduction — the unconstrained FAST
+//  PATH (no solver call) AND the differential anchor for the constrained QP.
 //
 //    aim_pos = A_xx⁻¹ A_xf f_t          (the position the policy trades toward)
 //    trade   = x_{t-1} + Λ⁻¹A_xx(aim_pos − x_{t-1})   (Λ = λΣ ⇒ scalar trade_rate)
@@ -36,12 +54,13 @@
 //                   large average; a fast source decays toward 0 so it is down-weighted
 //                   (Eq. 15's per-factor 1/(1+φ_k·a/λ) discounting, realized through the
 //                   decayed trajectory rows). ᾱ is the linear term q = −ᾱ.
-//    * A_xx        = the Markowitz value-curvature 2λV (the single-period Hessian P the
-//                   augmented QP already builds). In the degenerate case it IS the plain
-//                   2λV, so the cost-to-go tail reduces to the single-period objective and
-//                   is INERT (R10). (A richer matrix-Riccati A_xx is the recorded lift; the
-//                   scalar-Λ closed form ships A_xx = 2λV, which is exactly the curvature
-//                   the unconstrained fast path and the relaxed-QP oracle agree on.)
+//    * A_xx        = the Markowitz value-curvature 2λV — NOT a solved Riccati matrix but
+//                   literally the single-period Hessian P the augmented QP already builds.
+//                   Under the scalar-Λ reduction the cost-to-go value matrix IS the plain
+//                   2λV at EVERY H (not merely in a limit), so the cost-to-go tail reduces
+//                   to the single-period objective and is INERT (R10). The full matrix-
+//                   Riccati A_xx (≠ 2λV for H>1) is the recorded lift; this header ships
+//                   A_xx = 2λV, the curvature the unconstrained fast path uses.
 //
 //  ⇒ closed-form position aim  aim_pos = A_xx⁻¹ A_xf f_t = (2λV)⁻¹ ᾱ = (1/2λ)·V⁻¹ ᾱ.
 //
@@ -60,10 +79,9 @@
 //  A_xx = 2λV that expands to ½wᵀ(2λV)w − (2λV·aim_pos)ᵀw + const = ½wᵀ(2λV)w − ᾱᵀw +
 //  const, i.e. EXACTLY the curvature P = 2λV the augmented build already emits plus the
 //  linear term q = −ᾱ. So the fold is: q ← −ᾱ (the decay-weighted return-space aim), P
-//  unchanged at 2λV (R5 — no new factorization; the Riccati "solve" A_xx = 2λV is the
-//  cached factor capacitance, applied, never re-factored). The unconstrained argmin of
-//  this objective is (2λV)⁻¹ᾱ = aim_pos ⇒ the relaxed QP reproduces the closed form
-//  (the oracle, G-DIFF).
+//  unchanged at 2λV (R5 — no new factorization, and no Riccati is solved: A_xx IS the
+//  one-period 2λV, applied through the cached factor capacitance, never re-factored). The
+//  unconstrained argmin of this objective is (2λV)⁻¹ᾱ = aim_pos.
 //
 // ===========================================================================
 //  Determinism (R1)
@@ -90,9 +108,8 @@ namespace atx::engine::risk {
 //                 names ("no opinion") are PRESERVED here and mapped to a 0 linear
 //                 coefficient by the QP fold (mirrors the existing q = −aim policy).
 //  * aim_pos    : the POSITION-space closed-form aim (2λV)⁻¹ᾱ (length M) — the
-//                 unconstrained fast-path book direction and the relaxed-QP oracle
-//                 target. NaN ᾱ names are treated as 0 in the V⁻¹ apply (a no-opinion
-//                 name carries no return tilt).
+//                 unconstrained fast-path book direction. NaN ᾱ names are treated as 0
+//                 in the V⁻¹ apply (a no-opinion name carries no return tilt).
 //
 //  A_xx is the value-curvature 2λV; it is NOT materialized here (R4) — the QP fold
 //  reuses the P = 2λV the augmented build already emits, and aim_pos is computed via
