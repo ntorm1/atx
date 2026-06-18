@@ -21,6 +21,7 @@
 #include <bit>     // std::bit_cast
 #include <cmath>   // std::fabs, std::sqrt, std::isfinite, std::nextafter
 #include <cstdint> // std::uint64_t
+#include <limits>  // std::numeric_limits (κ=0 apex sentinel)
 #include <span>
 #include <utility> // std::move
 #include <vector>
@@ -886,8 +887,9 @@ TEST(RiskCone, RobustConeKappaZeroIsByteIdenticalToNominal) {
 }
 
 // G-CONSTRAINT (robust bites) + epigraph binds — κ>0 ⇒ strictly smaller ‖Ω_f^{1/2}y‖₂
-// than nominal, larger κ ⇒ smaller (monotone), and the epigraph t ≈ ‖Ω_f^{1/2}y‖₂ at
-// the returned book. Default identity Ω_f ⇒ the penalty is κ‖Xᵀw‖₂.
+// than nominal, larger κ ⇒ smaller (monotone over an ascending κ sweep), and the
+// epigraph t ≈ ‖Ω_f^{1/2}y‖₂ at the returned book (asserted DIRECTLY against the
+// achieved apex t surfaced on QpResult::cone_apex). Default identity Ω_f ⇒ κ‖Xᵀw‖₂.
 TEST(RiskCone, RobustConeReducesFactorExposureMonotonicallyAndBinds) {
   const usize m = 10U;
   const FactorModel model = make_multi_model(m);
@@ -905,7 +907,14 @@ TEST(RiskCone, RobustConeReducesFactorExposureMonotonicallyAndBinds) {
   solver.cfg.rho = 10.0;
   solver.cfg.iters = 1500U;
 
-  auto solve_kappa = [&](f64 kappa) -> std::vector<f64> {
+  // The book plus the achieved epigraph apex t (the variable-apex cone's row_start row of
+  // Ãx at the returned x, surfaced on QpResult::cone_apex). For κ=0 NO robust cone is
+  // emitted ⇒ cone_apex is empty and `apex` is left as a NaN sentinel (unused there).
+  struct KappaSolve {
+    std::vector<f64> book;
+    f64 apex = std::numeric_limits<f64>::quiet_NaN();
+  };
+  auto solve_kappa = [&](f64 kappa) -> KappaSolve {
     ConstraintSet cs;
     cs.gross.dollar_neutral = true;
     cs.pos = PositionCap{0.5};
@@ -917,9 +926,21 @@ TEST(RiskCone, RobustConeReducesFactorExposureMonotonicallyAndBinds) {
     MaterializedConstraints mc = std::move(*mc_r);
     mc.gross_l1_budget = -1.0;
     QpProblem prob{model, lambda, std::span<const f64>(q), mc};
-    auto r = solver.solve(prob);
+    auto r = solver.solve_with_cert(prob);
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().to_string());
-    return r ? *r : std::vector<f64>(m, 0.0);
+    KappaSolve out;
+    out.book = r ? r->book : std::vector<f64>(m, 0.0);
+    if (kappa > 0.0) {
+      // Exactly one variable-apex (robust) cone is emitted ⇒ one apex entry.
+      EXPECT_EQ(r ? r->cone_apex.size() : 0U, 1U)
+          << "κ>0 must surface exactly one variable-apex cone apex";
+      if (r && r->cone_apex.size() == 1U) {
+        out.apex = r->cone_apex[0];
+      }
+    } else {
+      EXPECT_TRUE(!r || r->cone_apex.empty()) << "κ=0 must emit NO variable-apex cone";
+    }
+    return out;
   };
 
   // κ values are chosen in the UN-saturated regime: the penalty κ‖Ω_f^{1/2}y‖₂ trades
@@ -927,26 +948,36 @@ TEST(RiskCone, RobustConeReducesFactorExposureMonotonicallyAndBinds) {
   // exposure toward — but, at these κ, not yet onto — the zero floor. (For this benign
   // dollar-neutral + box set, zero factor exposure is fully feasible, so a LARGE κ
   // saturates ‖Ω_f^{1/2}y‖₂ to the numerical floor ~1e-16 and the strict monotone could
-  // no longer separate two saturated values; 0.05 → 0.1 keeps a clean ~2× gap.)
-  const std::vector<f64> w_nom = solve_kappa(0.0);
-  const std::vector<f64> w_lo = solve_kappa(0.05);
-  const std::vector<f64> w_hi = solve_kappa(0.1);
+  // no longer separate two saturated values; the 0.025 → 0.05 → 0.1 sweep keeps clean
+  // ~2× gaps between consecutive unsaturated points.)
+  const KappaSolve s_nom = solve_kappa(0.0);
+  const KappaSolve s_a = solve_kappa(0.025);
+  const KappaSolve s_b = solve_kappa(0.05);
+  const KappaSolve s_c = solve_kappa(0.1);
 
-  const f64 fn_nom = robust_factor_norm(model, w_nom);
-  const f64 fn_lo = robust_factor_norm(model, w_lo);
-  const f64 fn_hi = robust_factor_norm(model, w_hi);
+  const f64 fn_nom = robust_factor_norm(model, s_nom.book);
+  const f64 fn_a = robust_factor_norm(model, s_a.book);
+  const f64 fn_b = robust_factor_norm(model, s_b.book);
+  const f64 fn_c = robust_factor_norm(model, s_c.book);
 
   // Robust bites: κ>0 ⇒ strictly smaller worst-case factor exposure than nominal.
-  EXPECT_LT(fn_lo, fn_nom) << "κ>0 must reduce ‖Ω_f^{1/2}y‖₂ (nom=" << fn_nom << " lo=" << fn_lo << ")";
-  // Monotone: larger κ ⇒ even smaller.
-  EXPECT_LT(fn_hi, fn_lo) << "larger κ must reduce ‖Ω_f^{1/2}y‖₂ further (lo=" << fn_lo
-                          << " hi=" << fn_hi << ")";
+  EXPECT_LT(fn_a, fn_nom) << "κ>0 must reduce ‖Ω_f^{1/2}y‖₂ (nom=" << fn_nom << " a=" << fn_a << ")";
+  // Monotone over the ascending κ sweep: each larger κ ⇒ strictly smaller (unsaturated).
+  EXPECT_LT(fn_b, fn_a) << "larger κ must reduce ‖Ω_f^{1/2}y‖₂ further (a=" << fn_a << " b=" << fn_b << ")";
+  EXPECT_LT(fn_c, fn_b) << "larger κ must reduce ‖Ω_f^{1/2}y‖₂ further (b=" << fn_b << " c=" << fn_c << ")";
 
-  // Epigraph binds: t ≈ ‖Ω_f^{1/2}y‖₂ at the returned book. t is the apex row's Ãx and the
-  // cone enforces ‖Ω_f^{1/2}y‖₂ ≤ t; the penalty pulling the book's norm well below nominal
-  // is exactly the epigraph being active (t pinned to the norm) rather than slack at the
-  // optimum. We assert the penalty meaningfully bit (well beyond feas_tol).
-  EXPECT_GT(fn_nom - fn_hi, solver.cfg.feas_tol) << "epigraph penalty must be active for κ=0.1";
+  // Epigraph binds: t ≈ ‖Ω_f^{1/2}y‖₂ at the returned book. t is the cone's apex row of Ãx
+  // (surfaced on QpResult::cone_apex) and the SOC enforces ‖Ω_f^{1/2}y‖₂ ≤ t; the linear
+  // +κt cost drives t DOWN until the SOC is TIGHT, so at the optimum t == ‖Ω_f^{1/2}y‖₂.
+  // We recompute ‖Ω_f^{1/2}y‖₂ independently from the returned book (y = Xᵀw, identity Ω_f)
+  // and assert |t − ‖Ω_f^{1/2}y‖₂| ≤ feas_tol — the epigraph is active (not slack), at EACH
+  // κ in the sweep.
+  EXPECT_NEAR(s_a.apex, fn_a, solver.cfg.feas_tol) << "epigraph must bind at κ=0.025";
+  EXPECT_NEAR(s_b.apex, fn_b, solver.cfg.feas_tol) << "epigraph must bind at κ=0.05";
+  EXPECT_NEAR(s_c.apex, fn_c, solver.cfg.feas_tol) << "epigraph must bind at κ=0.1";
+
+  // The penalty also meaningfully moves the book (well beyond feas_tol) at the top κ.
+  EXPECT_GT(fn_nom - fn_c, solver.cfg.feas_tol) << "epigraph penalty must be active for κ=0.1";
 }
 
 // G-CONSTRAINT — a NON-identity (supplied) Ω_f also bites: with a diagonal Ω_f the robust

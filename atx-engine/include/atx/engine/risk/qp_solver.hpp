@@ -183,6 +183,16 @@ struct QpProblem {
 struct QpResult {
   std::vector<atx::f64> book; // length-M weight vector (the w-block of x)
   QpCertificate cert;
+  // S8.5c diagnostic — the achieved epigraph apex t of each VARIABLE-APEX cone block,
+  // in cone-emission order (entry b is block b's apex; non-variable-apex / ball blocks
+  // contribute NO entry). The apex is the cone's row_start row of Ãx at the returned
+  // (un-scaled, polished) x: for the robust alpha cone Ãx[row_start] == t and the SOC
+  // enforces ‖Ω_f^{1/2} y‖₂ ≤ t, so at the optimum t == ‖Ω_f^{1/2} y‖₂ (the epigraph
+  // binds). Surfaced so a test can assert the SOC is TIGHT (not merely that the penalty
+  // moved the book) without a behavior change: the returned book and every byte-identity
+  // pin are untouched — `solve()` discards this field, and it is EMPTY whenever the
+  // problem carries no variable-apex cone (box-only / ball-only paths, R10).
+  std::vector<atx::f64> cone_apex;
 };
 
 class ConstrainedQpSolver {
@@ -247,6 +257,11 @@ public:
       out.book[i] = x[static_cast<Eigen::Index>(i)];
     }
     out.cert = cert;
+    // (8b) S8.5c diagnostic — surface the achieved epigraph apex t of each variable-apex
+    //      cone (the cone's row_start row of Ãx at the final x). PURELY a read of the
+    //      already-built Ã and the returned x; it does NOT touch out.book or the solve.
+    //      EMPTY when there is no variable-apex cone ⇒ no effect on any existing path.
+    fill_cone_apex(aug, x, out.cone_apex);
     return co::Ok(std::move(out));
   }
 
@@ -906,6 +921,30 @@ private:
     // are diagnostic only — the feasibility gate (R3) is the hard contract.
     cert.primal_infeasible = pr > 1e-3;
     cert.dual_infeasible = false; // bounded box ⇒ the QP is never dual-infeasible here
+  }
+
+  // -------------------------------------------------------------------------
+  //  S8.5c diagnostic — record the achieved epigraph apex t of each VARIABLE-APEX cone
+  //  block (its row_start row of Ãx at the final original-unit x). For the robust alpha
+  //  cone Ãx[row_start] == t (a single +1.0 at the epigraph column, offset 0), so this is
+  //  the achieved apex against which a test asserts the SOC binds: t ≈ ‖Ω_f^{1/2} y‖₂.
+  //  Fixed-apex (ball) blocks are SKIPPED — their apex is the constant radius, not a
+  //  variable. EMPTY when aug.cones carries no variable-apex block (box / ball paths). A
+  //  pure read of the already-built Ã and x: NO effect on the solve, book, or any pin.
+  // -------------------------------------------------------------------------
+  static void fill_cone_apex(const AugmentedQp &aug, const atx::core::linalg::VecX &x,
+                             std::vector<atx::f64> &apex) {
+    apex.clear();
+    if (aug.cones.empty()) {
+      return; // no cones ⇒ leave empty (box-only path)
+    }
+    const atx::core::linalg::VecX ax = aug.A_tilde * x;
+    for (const SocBlock &blk : aug.cones) {
+      if (!blk.variable_apex) {
+        continue; // fixed-radius ball ⇒ no variable apex to surface
+      }
+      apex.push_back(ax[static_cast<Eigen::Index>(blk.row_start)]);
+    }
   }
 
   // -------------------------------------------------------------------------
