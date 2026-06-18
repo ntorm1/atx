@@ -294,4 +294,63 @@ TEST(FactorySearchDriver, EvalDigestIsWorkerInvariantAndMatchesSingleThread) {
 }
 
 
+// =============================================================================
+//  DriverIsWorkerCountInvariant — byte-identity across n_workers in {1, 2, 4}.
+//
+//  NOTE ON TDD FRAMING (agent.md §0 explicit deviation): this is a behavior-
+//  preserving refactor, so classic red→green does not apply cleanly. The
+//  discipline is: confirm this test is VACUOUS-GREEN on the pre-change sequential
+//  code (worker count never entered the math), then IMPLEMENT the parallel
+//  refactor, then confirm it STAYS GREEN (now a real race/ordering guard). The
+//  full-suite golden digests (FactorySearchDriver.*, FactoryMineInto.*, etc.) are
+//  the byte-identity proof. This mirrors the rationale in
+//  EvalDigestIsWorkerInvariantAndMatchesSingleThread above.
+// =============================================================================
+TEST(FactorySearchDriver, DriverIsWorkerCountInvariant) {
+  Fixture fx;
+
+  // Population=32, generations=4 gives ample parallelism surface once the
+  // parallel refactor lands (≥32 fresh compiles + fitness evals per generation).
+  auto cfg = small_search_cfg(/*seed*/ 0xDEADBEEF42ULL, /*pop*/ 32, /*gens*/ 4);
+  cfg.elites = 2;
+  cfg.k_tournament = 3;
+
+  // Run at three worker counts — reset the driver each time so there is no
+  // shared state between runs (the driver is stateless across run() calls).
+  cfg.n_workers = 1;
+  const SearchResult r1 = fx.driver().run(cfg, empty_pool());
+
+  cfg.n_workers = 2;
+  const SearchResult r2 = fx.driver().run(cfg, empty_pool());
+
+  cfg.n_workers = 4;
+  const SearchResult r4 = fx.driver().run(cfg, empty_pool());
+
+  // Digest — the load-bearing byte-identity check.
+  EXPECT_EQ(r1.digest, r2.digest) << "digest must be worker-count-invariant (1 vs 2)";
+  EXPECT_EQ(r1.digest, r4.digest) << "digest must be worker-count-invariant (1 vs 4)";
+
+  // Trial count — distinct structures scored (CanonSet size) must be identical.
+  EXPECT_EQ(r1.trial_count, r2.trial_count) << "trial_count must be invariant (1 vs 2)";
+  EXPECT_EQ(r1.trial_count, r4.trial_count) << "trial_count must be invariant (1 vs 4)";
+
+  // all_scored size + per-index canon_hash sequence — order-identity guard.
+  ASSERT_EQ(r1.all_scored.size(), r2.all_scored.size())
+      << "all_scored size must be invariant (1 vs 2)";
+  ASSERT_EQ(r1.all_scored.size(), r4.all_scored.size())
+      << "all_scored size must be invariant (1 vs 4)";
+  for (atx::usize i = 0; i < r1.all_scored.size(); ++i) {
+    EXPECT_EQ(r1.all_scored[i].canon_hash, r2.all_scored[i].canon_hash)
+        << "all_scored[" << i << "].canon_hash mismatch (1 vs 2)";
+    EXPECT_EQ(r1.all_scored[i].canon_hash, r4.all_scored[i].canon_hash)
+        << "all_scored[" << i << "].canon_hash mismatch (1 vs 4)";
+  }
+
+  // best_fitness_per_gen vector — full sequence must be equal.
+  EXPECT_EQ(r1.best_fitness_per_gen, r2.best_fitness_per_gen)
+      << "best_fitness_per_gen must be invariant (1 vs 2)";
+  EXPECT_EQ(r1.best_fitness_per_gen, r4.best_fitness_per_gen)
+      << "best_fitness_per_gen must be invariant (1 vs 4)";
+}
+
 }  // namespace atxtest_factory_search_driver_test

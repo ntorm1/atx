@@ -64,6 +64,7 @@
 
 #include <array>         // std::array (per-genome multi-objective vector, S4.1)
 #include <bit>           // std::popcount (canonical-structure novelty distance)
+#include <memory>        // std::unique_ptr (per-worker Engine vector, Tier 4)
 #include <span>          // std::span
 #include <string>        // std::string (seed-expression source input)
 #include <string_view>   // std::string_view (field-swap candidate names)
@@ -295,16 +296,21 @@ private:
 
   // ----- (2) evaluate_generation --------------------------------------------
   // Collect the fresh (un-seen) genomes (F6), compile them to single-root Programs,
-  // evaluate each (fresh Engine per program — see the EVAL-PATH NOTE below) and
-  // fold its worker-invariant digest into the run digest (F2), then score each NEW
-  // population member via pool_aware_fitness (dedup-hits reuse the cached score).
-  // A fresh candidate that fails to compile is dropped from the digest (F5
-  // backstop); every distinct structure is recorded in all_scored + the CanonSet.
+  // evaluate each on a per-worker `engines[wid]` (reused across BOTH the digest and
+  // fitness work of one merged pass) and fold its worker-invariant digest into the
+  // run digest (F2), then score each NEW population member via pool_aware_fitness
+  // (dedup-hits reuse the cached score). A fresh candidate that fails to compile is
+  // dropped from the digest (F5 backstop); every distinct structure is recorded in
+  // all_scored + the CanonSet. `engines` is owned by run() and reused across every
+  // generation (Tier 4): Engine::evaluate is idempotent (output depends only on
+  // (program, panel_)) and panel_ is constant for the whole run, so reusing the
+  // engines across generations is byte-identical — the SlotPool grows ONCE to peak.
   [[nodiscard]] std::vector<Scored>
   evaluate_generation(const std::vector<Genome> &pop, const SearchConfig &cfg, atx::usize gen,
                       const combine::AlphaStore &pool, CanonSet &canon,
                       std::unordered_map<atx::u64, CachedScore> &fitness_cache,
-                      parallel::DetPool &det_pool, SearchResult &res);
+                      parallel::DetPool &det_pool,
+                      std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res);
 
   // ----- (3) novelty_penalize ------------------------------------------------
   // Subtract a deterministic behavioral-distance term from each genome's selection
@@ -361,7 +367,7 @@ private:
   // explore/anti-collapse pressure — only the elite carry switches to raw.)
   [[nodiscard]] std::vector<Genome> reproduce(const std::vector<Scored> &scored,
                                               const SearchConfig &cfg, atx::usize gen,
-                                              SearchResult &res);
+                                              parallel::DetPool &det_pool, SearchResult &res);
 
   // Produce one child from the canonical-id-ordered parent pool with a single
   // id-seeded rng: bernoulli(p_cross) ? crossover(two tournament picks) :
