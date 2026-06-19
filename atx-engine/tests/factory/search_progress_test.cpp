@@ -17,35 +17,15 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
-#include "atx/engine/alpha/parser.hpp"   // alpha::parse_expr, alpha::Library
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/search_driver.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
-namespace atxtest_search_progress_test {
-
-using atx::f64;
-using atx::u64;
-using atx::usize;
-using atx::engine::alpha::Library;
-using atx::engine::alpha::Panel;
-using atx::engine::combine::AlphaStore;
-using atx::engine::exec::CommissionCfg;
-using atx::engine::exec::CommissionMode;
-using atx::engine::exec::ExecutionSimulator;
-using atx::engine::exec::FillCfg;
-using atx::engine::exec::ImpactCfg;
-using atx::engine::exec::LatencyCfg;
-using atx::engine::exec::SlippageCfg;
-using atx::engine::exec::SlippageMode;
-using atx::engine::exec::VolumeCapCfg;
-using atx::engine::factory::Genome;
-using atx::engine::factory::SearchConfig;
-using atx::engine::factory::SearchDriver;
-using atx::engine::WeightPolicy;
-
 // ---- test-access friend -------------------------------------------------------
+// Must live in atx::engine::factory so the unqualified friend declaration in
+// SearchDriver (search_driver.hpp) resolves to this struct.
+namespace atx::engine::factory {
 
 // This struct is declared as a friend inside SearchDriver (see search_driver.hpp).
 // It calls private members on the driver so the test can exercise them without
@@ -67,6 +47,31 @@ struct SearchProgressTestAccess {
     return drv.deserialize_population(exprs);
   }
 };
+
+} // namespace atx::engine::factory
+
+namespace atxtest_search_progress_test {
+
+using atx::f64;
+using atx::u64;
+using atx::usize;
+using atx::engine::alpha::Library;
+using atx::engine::alpha::Panel;
+using atx::engine::combine::AlphaStore;
+using atx::engine::exec::CommissionCfg;
+using atx::engine::exec::CommissionMode;
+using atx::engine::exec::ExecutionSimulator;
+using atx::engine::exec::FillCfg;
+using atx::engine::exec::ImpactCfg;
+using atx::engine::exec::LatencyCfg;
+using atx::engine::exec::SlippageCfg;
+using atx::engine::exec::SlippageMode;
+using atx::engine::exec::VolumeCapCfg;
+using atx::engine::factory::Genome;
+using atx::engine::factory::SearchConfig;
+using atx::engine::factory::SearchDriver;
+using atx::engine::factory::SearchProgressTestAccess;
+using atx::engine::WeightPolicy;
 
 // ---- fixture helpers (mirrors factory_search_driver_test.cpp) -----------------
 

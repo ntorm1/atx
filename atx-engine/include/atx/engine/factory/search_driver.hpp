@@ -94,13 +94,6 @@
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
 
-// Forward declaration for the test-access friend (search_progress_test.cpp).
-// Placed outside the engine namespace so the friend decl can use the fully-
-// qualified name; the struct itself lives only in the test translation unit.
-namespace atxtest_search_progress_test {
-struct SearchProgressTestAccess;
-} // namespace atxtest_search_progress_test
-
 namespace atx::engine::factory {
 
 using atx::core::Xoshiro256pp;
@@ -479,7 +472,8 @@ private:
   deserialize_population(const std::vector<std::string> &exprs) const;
 
   // Test-access friend for the population checkpoint round-trip test.
-  friend struct ::atxtest_search_progress_test::SearchProgressTestAccess;
+  // Unqualified: introduces SearchProgressTestAccess into atx::engine::factory.
+  friend struct SearchProgressTestAccess;
 
   // SAFETY: each member borrows a const OpSig* from `lib_`; `lib_`/`panel_` etc.
   // are borrowed for the driver's lifetime and must outlive every produced genome.
