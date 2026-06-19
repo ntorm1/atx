@@ -125,6 +125,16 @@ struct FactoryConfig {
   std::vector<std::string> panel_fields; // field-swap candidate names (SearchDriver ctor)
   atx::f64 min_dsr = 0.5;                // S1 deflation bar (F4): admit iff dsr >= this
   atx::f64 book_size = 1.0;              // notional divisor for compute_metrics turnover
+  // --- P2a out-of-sample (holdout) validation (additive; 0.0 == OFF, default).
+  //  When oos_fraction > 0, mine_into SELECTS on a TRAIN window [0, lockbox_begin -
+  //  embargo) but CONFIRMS the AlphaGate floors + the DSR bar on the HELD-OUT
+  //  terminal window [lockbox_begin, T) the search never optimized on, and persists
+  //  the HOLDOUT (admission) metrics. The terminal `oos_fraction` of dates is held
+  //  out (eval::reserve_lockbox geometry); 0.0 keeps the legacy path byte-identical.
+  atx::f64 oos_fraction = 0.0;           // terminal holdout fraction; 0 == OFF (legacy path)
+  // Embargo gap fraction inserted BEFORE the holdout (eval::reserve_lockbox). 0 ⇒
+  //  the eval::CpcvConfig default embargo when oos is on. Ignored when oos is off.
+  atx::f64 oos_embargo = 0.0;
 };
 
 // =========================================================================
@@ -141,6 +151,19 @@ struct FactoryConfig {
 //               with every admission decision (so two runs that mine + admit
 //               identically replay to the same digest; F1/F2).
 // =========================================================================
+// =========================================================================
+//  OosReportEntry — per-admitted-alpha IS+OOS metrics for the impl manifest
+//  (P2a; additive). Surfaces BOTH the TRAIN (in-sample) metrics and the HOLDOUT
+//  (out-of-sample / admission) metrics WITHOUT changing the persistent .alib
+//  layout (the library stores ONE AlphaMetrics per alpha — the holdout/admission
+//  metrics). Populated ONLY by the oos branch; default-empty on the legacy path.
+// =========================================================================
+struct OosReportEntry {
+  atx::u64 canon_hash{0};            // the F6 dedup key (matches the library record)
+  combine::AlphaMetrics is_metrics{};  // TRAIN-window realized metrics (reporting only)
+  combine::AlphaMetrics oos_metrics{}; // HOLDOUT-window metrics (what was GATED + persisted)
+};
+
 struct FactoryReport {
   atx::usize admitted{0};
   atx::usize evaluated{0};
@@ -157,6 +180,11 @@ struct FactoryReport {
   atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
   atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
   std::array<atx::usize, 6> reject_histogram{}; // count per library::AdmitKind (0..5)
+
+  // --- P2a OOS telemetry (additive; default-EMPTY so the legacy path is byte-
+  //  identical). One entry per admitted alpha when oos_fraction > 0: its IS (train)
+  //  and OOS (holdout) metrics. P2b (impl) reads this for the discover manifest.
+  std::vector<OosReportEntry> oos_metrics;
 };
 
 // =========================================================================
@@ -251,6 +279,27 @@ private:
   // fitness oracle. Err propagates compile/eval/extract failure.
   [[nodiscard]] atx::core::Result<alpha::AlphaStreams>
   detail_eval_streams(const Genome &cand) const;
+
+  // P2a: compile genome `g`, evaluate over an ARBITRARY sub-panel (train OR
+  // holdout), extract_streams with this->policy_ / this->sim_, flatten positions,
+  // and return compute_metrics(pnl, pos, n_inst, book_size). The realized single-
+  // alpha PnL stream is returned via `pnl_out` so the caller can compute a holdout
+  // DSR via the fitness.cpp deflated-Sharpe recipe. Uses the SAME compile/eval path
+  // as detail_eval_streams, so metrics_on_panel(g, full_panel, ...) reproduces the
+  // in-loop metrics exactly. Err propagates compile/eval/extract failure (or a
+  // zero-alpha stream).
+  [[nodiscard]] atx::core::Result<combine::AlphaMetrics>
+  metrics_on_panel(const Genome &g, const alpha::Panel &sub_panel, atx::f64 book_size,
+                   std::vector<atx::f64> &pnl_out) const;
+
+  // P2a: the out-of-sample (holdout) admit path. Dispatched from mine_into when
+  // cfg.oos_fraction > 0. SELECTS the search on a TRAIN sub-panel, but CONFIRMS the
+  // AlphaGate floors + the DSR bar on a HELD-OUT terminal window the search never
+  // optimized on, and persists the HOLDOUT (admission) metrics. Returns both IS and
+  // OOS metrics per admitted alpha in FactoryReport::oos_metrics. The legacy
+  // mine_into body is left untouched (this is a TOP-of-function additive branch).
+  [[nodiscard]] FactoryReport mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
+                                            const combine::AlphaGate &gate);
 
   // Flatten alpha 0's per-period position cross-sections into the period-major,
   // instrument-minor layout AlphaStore::insert / compute_metrics expect

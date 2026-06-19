@@ -1,7 +1,9 @@
 #include "atx/engine/factory/factory.hpp"
 
 #include <algorithm> // std::sort, std::max
+#include <cmath>     // std::sqrt (P2a holdout DSR de-annualization)
 #include <cstddef>   // std::size_t (hash_combine seed type)
+#include <optional>  // std::nullopt (P2a deflated_sharpe variance arg)
 #include <span>      // std::span
 #include <utility>   // std::move (admitted provenance / streams)
 #include <vector>    // std::vector
@@ -13,6 +15,10 @@
 #include "atx/engine/alpha/vm.hpp"       // alpha::Engine
 
 #include "atx/engine/combine/metrics.hpp" // combine::compute_metrics, AlphaMetrics
+
+#include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe (P2a holdout DSR)
+#include "atx/engine/eval/lockbox.hpp"         // eval::reserve_lockbox, detail::slice_panel (P2a)
+#include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis (P2a DSR)
 
 #include "atx/engine/library/record.hpp" // library::Provenance (admitted-alpha lineage)
 
@@ -136,6 +142,15 @@ namespace atx::engine::factory {
 
 [[nodiscard]] FactoryReport Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                                                const combine::AlphaGate &gate) {
+  // P2a — out-of-sample (holdout) validation is an ADDITIVE branch at the TOP:
+  // when oos_fraction > 0 the search SELECTS on a train window and admission is
+  // CONFIRMED on a held-out window. When oos_fraction == 0 (the default) this is
+  // never taken and the EXISTING body below runs byte-identically to the legacy
+  // path (same digest / admitted count / version id / reject histogram).
+  if (cfg.oos_fraction > 0.0) {
+    return mine_into_oos(cfg, lib_lib, gate);
+  }
+
   FactoryReport rep;
   rep.library_n_alphas_before = lib_lib.n_alphas();
 
@@ -340,6 +355,16 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
 [[nodiscard]] FactoryReport Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                                                const combine::AlphaGate &gate,
                                                parallel::IExecutor &exec) {
+  // P2a — OOS validation requires a train/holdout panel split. The MultiProcess
+  // wire format serializes ONE panel and decodes streams sized to panel.dates(), so
+  // a split would need a wire-format change (OUT OF SCOPE for v1). When OOS is on we
+  // FALL BACK to the sequential OOS path (mine_into below dispatches to
+  // mine_into_oos): the rank+admit loop already runs in this parent process, so the
+  // digest/version_id are identical to the InProcess OOS run by construction.
+  if (cfg.oos_fraction > 0.0) {
+    return mine_into(cfg, lib_lib, gate);
+  }
+
   // InProcess: the existing in-process map IS the sound single-process path. Delegate
   // verbatim so the digest is, trivially, the sequential digest.
   switch (exec.substrate()) {
@@ -541,6 +566,225 @@ Factory::detail_eval_streams(const Genome &cand) const {
     out.insert(out.end(), cs.begin(), cs.end());
   }
   return out;
+}
+
+[[nodiscard]] atx::core::Result<combine::AlphaMetrics>
+Factory::metrics_on_panel(const Genome &g, const alpha::Panel &sub_panel, atx::f64 book_size,
+                          std::vector<atx::f64> &pnl_out) const {
+  // The SAME compile/eval/extract path as detail_eval_streams, but over an
+  // arbitrary sub-panel (train OR holdout). So metrics_on_panel(g, full, ...)
+  // reproduces the in-loop metrics exactly (train==holdout==full coincide).
+  ATX_TRY(const alpha::Program prog, alpha::compile(g.ast, g.analysis));
+  alpha::Engine engine{sub_panel};
+  ATX_TRY(const alpha::SignalSet ss, engine.evaluate(prog));
+  ATX_TRY(const alpha::AlphaStreams strm, alpha::extract_streams(ss, policy_, sub_panel, sim_));
+  if (strm.n_alphas() == 0U) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "Factory::metrics_on_panel: genome produced a zero-alpha stream");
+  }
+  const atx::usize n_inst = strm.n_instruments();
+  // OWNED pnl copy handed back to the caller (it computes the holdout DSR from it
+  // and the AlphaCandidate's pnl span aliases it across admit; §0.6).
+  pnl_out.assign(strm.pnl(0).begin(), strm.pnl(0).end());
+  const std::vector<atx::f64> pos = flatten_positions(strm);
+  return atx::core::Ok(combine::compute_metrics(std::span<const atx::f64>{pnl_out},
+                                                std::span<const atx::f64>{pos}, n_inst, book_size));
+}
+
+namespace {
+
+// P2a — the holdout DSR, replicating the fitness.cpp deflated-Sharpe recipe over a
+// REALIZED PnL stream (NOT the CPCV-aggregated stream): drop the structural index-0
+// zero, de-annualize the metrics Sharpe by sqrt(252), compute population skew /
+// excess-kurtosis of r[1..), and deflate by the running trial count N. Returns the
+// DSR (== PSR against the expected-max benchmark). A too-short stream (< 2 real
+// observations) returns 0.0 — it cannot clear any positive min_dsr bar.
+[[nodiscard]] atx::f64 holdout_dsr(const combine::AlphaMetrics &metrics,
+                                   std::span<const atx::f64> realized_pnl, atx::usize trial_count) {
+  // Moments over r[1..) — drop the structural period-0 zero (combine §0-F).
+  const std::span<const atx::f64> moments =
+      (realized_pnl.size() > 1U) ? realized_pnl.subspan(1) : realized_pnl;
+  const atx::usize T = moments.size();
+  if (T < 2U) {
+    return 0.0; // PSR is undefined for < 2 observations; fail the bar
+  }
+  // RECONCILIATION (§0.7): metrics.sharpe is ANNUALIZED; deflated_sharpe expects a
+  // per-period Sharpe, so de-annualize by sqrt(252) (skew/kurtosis are scale-free).
+  const atx::f64 per_period_sharpe = metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+  const eval::DsrResult dsr =
+      eval::deflated_sharpe(per_period_sharpe, T, eval::skewness(moments),
+                            eval::excess_kurtosis(moments), trial_count, std::nullopt);
+  return dsr.dsr;
+}
+
+} // namespace
+
+[[nodiscard]] FactoryReport Factory::mine_into_oos(const FactoryConfig &cfg,
+                                                   library::Library &lib_lib,
+                                                   const combine::AlphaGate &gate) {
+  FactoryReport rep;
+  rep.library_n_alphas_before = lib_lib.n_alphas();
+
+  // (0) carve the TRAIN / HOLDOUT split. The terminal cfg.oos_fraction of dates is
+  // the holdout; an embargo gap (cfg.oos_embargo, else the CpcvConfig default)
+  // precedes it. reserve_lockbox errors on a too-short panel / empty visible region.
+  const atx::usize T = panel_.dates();
+  const atx::usize embargo_len =
+      (cfg.oos_embargo > 0.0)
+          ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
+          : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
+  auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
+  if (!sealed_r.has_value()) {
+    // A too-short panel: surface a clear message (the controller may widen the panel
+    // or shrink the fraction). No library mutation has occurred.
+    return rep; // admitted == 0, oos_metrics empty; the caller reads n_alphas unchanged
+  }
+  const eval::SealedPanel &sealed = *sealed_r;
+  const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
+  const alpha::Panel &train = sealed.visible(); // [0, lockbox_begin - embargo_len)
+
+  auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
+  if (!holdout_r.has_value()) {
+    return rep; // holdout empty / unbuildable — nothing admitted
+  }
+  const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
+
+  // (1) run the S3-5 search over the TRAIN panel (NOT panel_). A fresh seeded driver
+  // re-derives clean per-run state, preserving F1 replay. Selection scores against an
+  // EMPTY scratch store (as the legacy path does); admission scores against the
+  // persistent library below.
+  combine::AlphaStore search_pool;
+  SearchDriver driver{lib_, train, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  const SearchResult res = driver.run(cfg.search, search_pool);
+
+  LibraryPool view{lib_lib};
+
+  rep.evaluated = res.trial_count;
+  rep.trials = res.trial_count;
+  rep.dedup_pct = res.dedup_pct;
+  rep.seed = res.seed;
+  rep.cse_pct = mean_cse_pct(res);
+  rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
+
+  // F4 — the admission deflation N is the search's running distinct-candidate count.
+  FitnessCfg admit_fit = cfg.search.fitness;
+  if (res.trial_count > 0U) {
+    admit_fit.trial_count = res.trial_count;
+  }
+
+  // (2) rank the distinct scored candidates by deflated fitness against the LIBRARY,
+  // scored over the TRAIN panel (the search's selection domain). Mirrors
+  // rank_by_deflated_fitness(PoolView) but over `train` rather than panel_, with the
+  // SAME total order (DESCENDING dsr, then raw, then canon_hash, then idx; F1).
+  std::vector<Ranked> ranked;
+  ranked.reserve(res.all_scored.size());
+  for (atx::usize i = 0U; i < res.all_scored.size(); ++i) {
+    atx::f64 dsr = 0.0;
+    atx::f64 raw = 0.0;
+    auto fit = pool_aware_fitness(res.all_scored[i], view, train, policy_, sim_, admit_fit);
+    if (fit.has_value()) {
+      dsr = fit->dsr;
+      raw = fit->raw;
+    }
+    ranked.push_back(Ranked{i, dsr, raw});
+  }
+  std::sort(ranked.begin(), ranked.end(), [&res](const Ranked &a, const Ranked &b) {
+    if (a.dsr != b.dsr) {
+      return a.dsr > b.dsr;
+    }
+    if (a.raw != b.raw) {
+      return a.raw > b.raw;
+    }
+    if (res.all_scored[a.idx].canon_hash != res.all_scored[b.idx].canon_hash) {
+      return res.all_scored[a.idx].canon_hash < res.all_scored[b.idx].canon_hash;
+    }
+    return a.idx < b.idx;
+  });
+
+  // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first.
+  for (const Ranked &r : ranked) {
+    const Genome &g = res.all_scored[r.idx];
+
+    // (3a) TRAIN metrics (for the manifest's is_metrics — reporting only). A genome
+    // that fails to evaluate on train is silently dropped (F5), exactly as the legacy
+    // path drops an un-evaluable candidate.
+    std::vector<atx::f64> train_pnl;
+    auto train_metrics_r = metrics_on_panel(g, train, cfg.book_size, train_pnl);
+    if (!train_metrics_r.has_value()) {
+      continue;
+    }
+    const combine::AlphaMetrics train_metrics = *train_metrics_r;
+
+    // (3b) HOLDOUT metrics + positions + DSR — the ADMISSION oracle. Evaluate the
+    // genome ONCE on the holdout panel and realize BOTH the metrics (and pnl) and the
+    // positions the durable record + the gate's corr-to-pool need. The owned hold_pnl
+    // / hold_pos_flat outlive the admit() call (§0.6); the AlphaCandidate spans alias
+    // them. A genome that cannot evaluate (or yields 0 alphas) on the holdout is
+    // dropped, exactly as the legacy path drops an un-evaluable candidate (F5).
+    std::vector<atx::f64> hold_pnl;
+    std::vector<atx::f64> hold_pos_flat;
+    combine::AlphaMetrics hold_metrics{};
+    {
+      auto prog_r = alpha::compile(g.ast, g.analysis);
+      if (!prog_r.has_value()) {
+        continue;
+      }
+      alpha::Engine engine{holdout};
+      auto ss_r = engine.evaluate(*prog_r);
+      if (!ss_r.has_value()) {
+        continue;
+      }
+      auto strm_r = alpha::extract_streams(*ss_r, policy_, holdout, sim_);
+      if (!strm_r.has_value() || strm_r->n_alphas() == 0U) {
+        continue;
+      }
+      const alpha::AlphaStreams &strm = *strm_r;
+      const atx::usize n_inst = strm.n_instruments();
+      hold_pnl.assign(strm.pnl(0).begin(), strm.pnl(0).end());
+      hold_pos_flat = flatten_positions(strm);
+      hold_metrics = combine::compute_metrics(std::span<const atx::f64>{hold_pnl},
+                                              std::span<const atx::f64>{hold_pos_flat}, n_inst,
+                                              cfg.book_size);
+    }
+
+    const atx::f64 hold_dsr = holdout_dsr(hold_metrics, std::span<const atx::f64>{hold_pnl},
+                                          admit_fit.trial_count);
+
+    // (3c) F6 dedup key (canon_hash is 0 on the S3 search path; compute the real key).
+    const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+
+    library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
+                             /*mutation_op=*/0, /*seed=*/res.seed};
+
+    // (3d) ADMISSION on the HOLDOUT: clear the factory deflation bar on the holdout
+    // DSR, then library::admit on the HOLDOUT metrics + holdout pnl (so the durable
+    // `metrics` are what was actually gated out-of-sample).
+    library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
+    if (hold_dsr >= cfg.min_dsr) {
+      const library::AlphaCandidate cand{canon_hash,
+                                         std::span<const atx::f64>{hold_pnl},
+                                         std::span<const atx::f64>{hold_pos_flat},
+                                         hold_metrics,
+                                         std::move(prov),
+                                         /*as_of=*/kAdmitAsOf,
+                                         /*source=*/nullptr};
+      const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+      kind = v.kind;
+      if (kind == library::AdmitKind::Accept) {
+        ++rep.admitted;
+        rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+      } else if (kind == library::AdmitKind::Duplicate) {
+        ++rep.duplicates;
+      }
+    }
+    ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+
+    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+        static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+  }
+
+  rep.library_n_alphas_after = lib_lib.n_alphas();
+  return rep;
 }
 
 [[nodiscard]] std::vector<Factory::Ranked>
