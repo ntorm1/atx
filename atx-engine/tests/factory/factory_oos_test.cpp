@@ -187,7 +187,7 @@ constexpr f64 kMinDsr = 0.5;
   cfg.search.elites = 2;
   cfg.search.k_tournament = 3;
   cfg.search.p_cross = 0.5;
-  cfg.search.novelty_w = 0.1;
+  cfg.search.enable_behavioral_novelty = true;
   cfg.search.fitness.trial_count = 4;
   cfg.seed_exprs = seed_exprs();
   cfg.panel_fields = panel_fields();
@@ -411,7 +411,7 @@ TEST(FactoryOos, MineIntoForwardsSinkPerGeneration) {
 
   FactoryConfig cfg = base_cfg(/*seed*/ 42, /*pop*/ 6, /*gens*/ 3);
   cfg.search.objective_mode = atx::engine::factory::ObjectiveMode::ScalarRaw;
-  cfg.search.novelty_w = 0.0;
+  cfg.search.enable_behavioral_novelty = false;
   ASSERT_EQ(cfg.oos_fraction, 0.0) << "must be off-path (non-OOS) for this test";
 
   CountingSink sink;

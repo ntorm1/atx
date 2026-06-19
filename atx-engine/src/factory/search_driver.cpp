@@ -184,13 +184,10 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
     scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res);
 
-    // (d) novelty pressure -> selection fitness (anti-collapse, deterministic).
-    novelty_penalize(scored, pool, cfg);
-
     // (d2) S4.2 behavioral-novelty pass: write the population-relative phenotypic
     // novelty into objectives[3] (n_objectives -> 4) BEFORE ranking, but ONLY when
-    // the objective is active (MultiObjective && novelty_w > 0). A no-op otherwise
-    // -> n_objectives stays 3 and the boundary pin is byte-untouched.
+    // the objective is active (MultiObjective && enable_behavioral_novelty). A no-op
+    // otherwise -> n_objectives stays 3 and the boundary pin is byte-untouched.
     behavioral_novelty_pass(scored, behavior_archive, cfg, nbr);
 
     // (d') NSGA-II rank + crowding (S4.1), assigned ONCE per generation in
@@ -547,49 +544,13 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   return out;
 }
 
-// ----- (3) novelty_penalize ------------------------------------------------
-// Subtract a deterministic behavioral-distance term from each genome's selection
-// fitness: the LESS novel a genome is (the smaller its mean canonical-structure
-// distance to the rest of the population), the LARGER the penalty — so the search
-// is pushed off a single collapsing motif. Distance is the normalized Hamming
-// distance of canonical hashes (RNG-free, value-based, order-independent), so
-// this is fully deterministic and F1-safe.
-void SearchDriver::novelty_penalize(std::vector<Scored> &scored, const combine::AlphaStore &pool,
-                                    const SearchConfig &cfg) const {
-  // DIVISION OF LABOR: distance-to-POOL is already priced into each candidate's
-  // fitness by pool_aware_fitness's `diversify` term (1 − mean|corr-to-pool|, F7),
-  // so a pool-redundant candidate enters here ALREADY discounted. This pass adds
-  // the orthogonal anti-collapse pressure the fitness score lacks: distance to the
-  // rest of the POPULATION (so the search does not pile onto one motif even when
-  // that motif is pool-diversifying). `pool` is therefore unused here.
-  static_cast<void>(pool);
-  const atx::usize n = scored.size();
-  if (n <= 1 || cfg.novelty_w == 0.0) {
-    return;
-  }
-  for (atx::usize i = 0; i < n; ++i) {
-    atx::f64 sum_dist = 0.0;
-    for (atx::usize j = 0; j < n; ++j) {
-      if (i == j) {
-        continue;
-      }
-      sum_dist +=
-          detail::canonical_distance(scored[i].genome.canon_hash, scored[j].genome.canon_hash);
-    }
-    const atx::f64 mean_dist = sum_dist / static_cast<atx::f64>(n - 1);
-    // novelty in [0,1]; penalty = novelty_w * (1 - novelty) (redundant => bigger).
-    const atx::f64 penalty = cfg.novelty_w * (1.0 - mean_dist);
-    scored[i].selection = scored[i].fitness - penalty;
-  }
-}
-
 // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
 
 // The single S4.2 activation gate (referenced by every S4.2 seam): the behavioral
-// objective is live ONLY in MultiObjective mode with a positive novelty weight.
-// ScalarRaw, or novelty_w == 0 -> off -> n_objectives stays 3 -> boundary pin holds.
+// objective is live ONLY in MultiObjective mode with enable_behavioral_novelty set.
+// ScalarRaw, or enable_behavioral_novelty==false -> off -> n_objectives stays 3 -> boundary pin holds.
 [[nodiscard]] bool SearchDriver::behavioral_active(const SearchConfig &cfg) noexcept {
-  return cfg.objective_mode == ObjectiveMode::MultiObjective && cfg.novelty_w > 0.0;
+  return cfg.objective_mode == ObjectiveMode::MultiObjective && cfg.enable_behavioral_novelty;
 }
 
 // Write each genome's population-relative behavioral novelty into objectives[3]

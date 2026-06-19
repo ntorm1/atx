@@ -19,6 +19,7 @@
 //       NsgaSearch suite extension at the bottom.)
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -200,7 +201,14 @@ TEST(BehavioralArchive, NoveltyUnionsPopulationAndArchive) {
 // ===========================================================================
 
 TEST(BehavioralHeadline, BehavioralRanksOppositeToCanonicalHash) {
-  namespace fd = atx::engine::factory::detail;
+  // NOTE: detail::canonical_distance (Hamming-over-hashes) was removed in Task 1
+  // because hash avalanche makes it a noise metric, not a structural one.
+  // This test documents WHY: the Hamming metric and the behavioral metric produce
+  // OPPOSITE rankings. We inline the Hamming popcount rather than calling the
+  // now-deleted function.
+  auto hamming_dist = [](atx::u64 a, atx::u64 b) -> f64 {
+    return static_cast<f64>(std::popcount(a ^ b)) / 64.0;
+  };
 
   // Pair A: hashes maximally far (all 64 bits differ) ...
   const atx::u64 a0_hash = 0x0000000000000000ULL;
@@ -216,12 +224,12 @@ TEST(BehavioralHeadline, BehavioralRanksOppositeToCanonicalHash) {
   const std::vector<f64> b0_desc{1.0, -1.0, 1.0, -1.0, 1.0, -1.0};
   const std::vector<f64> b1_desc{1.0, 1.0, -1.0, -1.0, 1.0, 1.0};
 
-  const f64 canon_A = fd::canonical_distance(a0_hash, a1_hash);
-  const f64 canon_B = fd::canonical_distance(b0_hash, b1_hash);
+  const f64 canon_A = hamming_dist(a0_hash, a1_hash);
+  const f64 canon_B = hamming_dist(b0_hash, b1_hash);
   const f64 behav_A = behavioral_distance(a0_desc, a1_desc);
   const f64 behav_B = behavioral_distance(b0_desc, b1_desc);
 
-  // Canonical-hash metric: A (all bits differ) >> B (one bit differs).
+  // Hamming-over-hashes metric: A (all bits differ) >> B (one bit differs).
   EXPECT_GT(canon_A, canon_B);
   // Behavioral metric: B (orthogonal) >> A (correlated). THE FLIP.
   EXPECT_GT(behav_B, behav_A);
@@ -232,8 +240,8 @@ TEST(BehavioralHeadline, BehavioralRanksOppositeToCanonicalHash) {
 
 // ===========================================================================
 //  (e) Search-level wiring: the behavioral-novelty objective is LIVE under
-//      MultiObjective && novelty_w > 0, deterministic, and DetPool worker-
-//      invariant; and it stays OFF (boundary pin intact) under ScalarRaw.
+//      MultiObjective && enable_behavioral_novelty, deterministic, and DetPool
+//      worker-invariant; and it stays OFF (boundary pin intact) under ScalarRaw.
 // ===========================================================================
 
 using atx::engine::WeightPolicy;
@@ -318,7 +326,7 @@ struct Lcg {
           "delta(close, 2)"};
 }
 
-// MultiObjective, behavioral novelty ON (novelty_w > 0). Gen-0 fixed (no grammar
+// MultiObjective, behavioral novelty ON (enable_behavioral_novelty=true). Gen-0 fixed (no grammar
 // sampling) so only the selection signal differs between runs.
 [[nodiscard]] SearchConfig multi_behavioral_config() {
   SearchConfig cfg;
@@ -328,16 +336,17 @@ struct Lcg {
   cfg.elites = 2;
   cfg.k_tournament = 3;
   cfg.p_cross = 0.5;
-  cfg.novelty_w = 0.1; // behavioral objective ACTIVE (gate: Multi && novelty_w>0)
+  cfg.enable_behavioral_novelty = true; // behavioral objective ACTIVE (gate: Multi && enable_behavioral_novelty)
   cfg.objective_mode = ObjectiveMode::MultiObjective;
   cfg.seed_from_grammar = false;
   return cfg;
 }
 
 // ---------------------------------------------------------------------------
-//  (e.1) The behavioral objective is LIVE: a MultiObjective run with novelty_w>0
-//        diverges from the SAME run with novelty_w==0 (behavioral objective off).
-//        Proves the per-generation behavioral pass actually enters NSGA-II.
+//  (e.1) The behavioral objective is LIVE: a MultiObjective run with
+//        enable_behavioral_novelty=true diverges from the SAME run with false
+//        (behavioral objective off). Proves the per-generation behavioral pass
+//        actually enters NSGA-II.
 // ---------------------------------------------------------------------------
 TEST(BehavioralSearch, NoveltyOnDivergesFromNoveltyOff) {
   Library lib{};
@@ -351,7 +360,7 @@ TEST(BehavioralSearch, NoveltyOnDivergesFromNoveltyOff) {
   const SearchResult r_on = driver.run(on, pool_on);
 
   SearchConfig off = multi_behavioral_config();
-  off.novelty_w = 0.0; // behavioral objective OFF -> n_objectives stays 3
+  off.enable_behavioral_novelty = false; // behavioral objective OFF -> n_objectives stays 3
   AlphaStore pool_off{};
   const SearchResult r_off = driver.run(off, pool_off);
 

@@ -229,7 +229,7 @@ TEST(SearchProgress, SinkCalledPerGeneration) {
   cfg.population = 6;
   cfg.generations = 4;
   cfg.objective_mode = ObjectiveMode::ScalarRaw; // pin determinism
-  cfg.novelty_w = 0.0;
+  cfg.enable_behavioral_novelty = false;
 
   RecordingSink sink;
   AlphaStore pool; // empty pool, as the existing search tests use
@@ -277,7 +277,7 @@ TEST(SearchProgress, ResumeProducesIdenticalSearch) {
   cfg.population = 6;
   cfg.generations = 5;
   cfg.objective_mode = ObjectiveMode::ScalarRaw;
-  cfg.novelty_w = 0.0;
+  cfg.enable_behavioral_novelty = false;
   AlphaStore pool;
 
   // Full uninterrupted run -> reference.
@@ -328,24 +328,24 @@ TEST(SearchProgress, ResumeProducesIdenticalSearch) {
 
 // =============================================================================
 //  ResumeIdenticalUnderMultiObjectiveDefaults — the headline F1 invariant under
-//  the REAL gated path's config (MultiObjective + novelty_w=0.1 + active behavioral
-//  archive). With the FULL accumulated state (canon / fitness_cache / behavior
-//  archive / res.digest / counters / best_fitness_per_gen) persisted in the
-//  checkpoint and restored on resume, an uninterrupted run and a (crash-after-gen-K
-//  + resume) run must be BYTE-IDENTICAL: same admitted hashes, same folded digest,
-//  same trial_count, same best_fitness_per_gen.
+//  the REAL gated path's config (MultiObjective + enable_behavioral_novelty=true +
+//  active behavioral archive). With the FULL accumulated state (canon /
+//  fitness_cache / behavior archive / res.digest / counters / best_fitness_per_gen)
+//  persisted in the checkpoint and restored on resume, an uninterrupted run and a
+//  (crash-after-gen-K + resume) run must be BYTE-IDENTICAL: same admitted hashes,
+//  same folded digest, same trial_count, same best_fitness_per_gen.
 //
-//  This is the test the prior ScalarRaw+novelty=0 test could NOT catch (it pinned
-//  off exactly the cross-generation state this exercises).
+//  This is the test the prior ScalarRaw+novelty=false test could NOT catch (it
+//  pinned off exactly the cross-generation state this exercises).
 // =============================================================================
 TEST(SearchProgress, ResumeIdenticalUnderMultiObjectiveDefaults) {
   Fixture fx;
   SearchDriver d = fx.driver();
-  SearchConfig cfg; // DEFAULTS: MultiObjective, novelty_w=0.1, behavior archive active.
+  SearchConfig cfg; // DEFAULTS: MultiObjective, enable_behavioral_novelty=true, behavior archive active.
   cfg.master_seed = 7;
   cfg.population = 12;  // >= 12 so the behavioral novelty pass is exercised
   cfg.generations = 5;  // >= 5
-  // Do NOT set ScalarRaw, do NOT zero novelty_w — keep the defaults.
+  // Do NOT set ScalarRaw, do NOT set enable_behavioral_novelty=false — keep the defaults.
   AlphaStore pool;
 
   // 1. Full uninterrupted run -> reference.

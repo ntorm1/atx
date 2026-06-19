@@ -127,20 +127,24 @@ struct Lcg {
           "delta(close, 2)"};
 }
 
-// The frozen boundary-pin config: ScalarRaw, novelty OFF, fixed seed 777, and the
-// generation-seeding gate OFF so gen-0 reproduces the pre-S4 seed-cycle fill.
-[[nodiscard]] SearchConfig pin_config() {
-  SearchConfig cfg;
-  cfg.master_seed = 777;
-  cfg.population = 16;
-  cfg.generations = 5;
-  cfg.elites = 2;
-  cfg.k_tournament = 3;
-  cfg.p_cross = 0.5;
-  cfg.novelty_w = 0.0;                           // novelty OFF
-  cfg.objective_mode = ObjectiveMode::ScalarRaw; // pre-S4 collapse
-  cfg.seed_from_grammar = false;                 // pre-S4 gen-0 fill
-  return cfg;
+// The frozen boundary-pin config: ScalarRaw + every quality knob at its LEGACY
+// value, so kGoldenDigest stays byte-identical as new knobs are added. Each new
+// task appends ONE line here pinning its knob's legacy value.
+[[nodiscard]] SearchConfig legacy_pin_cfg(atx::u64 seed) {
+  SearchConfig c;
+  c.master_seed = seed;
+  c.population = 16;
+  c.generations = 5;
+  c.elites = 2;
+  c.k_tournament = 3;
+  c.p_cross = 0.5;
+  c.objective_mode = ObjectiveMode::ScalarRaw;   // legacy ranking
+  c.enable_behavioral_novelty = false;           // Task 1: novelty off
+  // (Task 2 appends: c.enable_parsimony = false;)
+  // (Task 3 appends: c.seed_from_grammar = false;)
+  // (Task 4 appends: c.n_immigrants = 0; c.stagnation_patience = 0;)
+  // (Task 5 appends: c.adaptive_operators = false; c.jitter_anneal = false;)
+  return c;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +158,7 @@ TEST(NsgaSearch, ScalarRaw_ReproducesGoldenDigest) {
   SearchDriver driver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}};
 
   AlphaStore pool{};
-  const SearchResult r = driver.run(pin_config(), pool);
+  const SearchResult r = driver.run(legacy_pin_cfg(777), pool);
   EXPECT_EQ(r.digest, kGoldenDigest)
       << "ScalarRaw boundary pin broke: an S4 edit perturbed the pre-S4 path.";
 }
@@ -172,7 +176,7 @@ TEST(NsgaSearch, ScalarRaw_DigestInvariantAcrossWorkers) {
   const std::array<usize, 4> worker_counts{1, 2, 4, 8};
   atx::u64 first_digest = 0;
   for (usize wi = 0; wi < worker_counts.size(); ++wi) {
-    SearchConfig cfg = pin_config();
+    SearchConfig cfg = legacy_pin_cfg(777);
     cfg.n_workers = worker_counts[wi];
     AlphaStore pool{};
     const SearchResult r = driver.run(cfg, pool);
@@ -229,11 +233,11 @@ TEST(NsgaSearch, MultiObjective_DivergesFromScalarRaw) {
   ExecutionSimulator sim = frictionless_sim();
   SearchDriver driver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}};
 
-  SearchConfig scalar = pin_config();
+  SearchConfig scalar = legacy_pin_cfg(777);
   AlphaStore pool_s{};
   const SearchResult rs = driver.run(scalar, pool_s);
 
-  SearchConfig multi = pin_config();
+  SearchConfig multi = legacy_pin_cfg(777);
   multi.objective_mode = ObjectiveMode::MultiObjective;
   multi.seed_from_grammar = false; // hold gen-0 fixed; only the selection mode differs
   AlphaStore pool_m{};
@@ -262,7 +266,7 @@ TEST(NsgaSearch, MultiObjective_DigestInvariantAcrossWorkers) {
   const std::array<usize, 4> worker_counts{1, 2, 4, 8};
   atx::u64 first_digest = 0;
   for (usize wi = 0; wi < worker_counts.size(); ++wi) {
-    SearchConfig cfg = pin_config();
+    SearchConfig cfg = legacy_pin_cfg(777);
     cfg.objective_mode = ObjectiveMode::MultiObjective;
     cfg.seed_from_grammar = true; // exercise the generation wire under invariance
     cfg.n_workers = worker_counts[wi];

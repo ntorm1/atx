@@ -27,8 +27,8 @@
 //         signal), so the single best-raw genome ALWAYS survives — and because its
 //         raw fitness is cached by canon_hash, it re-scores to the identical value
 //         next gen, making best_fitness_per_gen non-decreasing BY CONSTRUCTION.
-//     (g) novelty pressure: novelty_penalize subtracts a deterministic
-//         canonical-structure distance term so the population does not collapse.
+//     (g) novelty pressure: the behavioral-novelty objective (S4.2) drives
+//         phenotypic diversity when enable_behavioral_novelty is active.
 //
 // ===========================================================================
 //  F1 — SEED BY ID. Every RNG draw comes from a Xoshiro256pp whose seed is a pure
@@ -63,7 +63,6 @@
 // loop; the cold compile path may allocate, documented).
 
 #include <array>         // std::array (per-genome multi-objective vector, S4.1)
-#include <bit>           // std::popcount (canonical-structure novelty distance)
 #include <memory>        // std::unique_ptr (per-worker Engine vector, Tier 4)
 #include <span>          // std::span
 #include <string>        // std::string (seed-expression source input)
@@ -124,17 +123,16 @@ struct SearchConfig {
   atx::usize elites{2};       // top-k carried verbatim each generation
   atx::usize k_tournament{3}; // tournament size for parent selection
   atx::f64 p_cross{0.5};      // P(crossover) vs P(mutation) per child
-  atx::f64 novelty_w{0.1};    // weight of the anti-collapse novelty penalty
   atx::u16 max_lookback{250}; // crossover/jitter window cap (in-grammar rail)
   atx::usize n_workers{1};    // DetPool fan-out; affects digest SPEED, never bits
-  // S4.2 behavioral / phenotypic diversity knobs. The behavioral novelty objective
-  // (objectives[3]) is ACTIVE only when objective_mode == MultiObjective AND
-  // novelty_w > 0 (the same lever that gates the ScalarRaw canonical-hash penalty;
-  // the pinned ScalarRaw path sets novelty_w == 0, so neither fires and the
-  // boundary pin holds). `behavior_metric` selects the profile distance (PnlCorr
-  // default; RankIc fork). `behavior_archive_cap` is the FIFO capacity C of the
-  // past-elite descriptor archive; `behavior_k` is the k-nearest count for the
-  // mean-distance novelty. Defaults are a documented, deterministic starting point.
+  // S4.2 behavioral / phenotypic diversity. The behavioral novelty objective
+  // (objectives[3]) is ACTIVE iff objective_mode == MultiObjective AND
+  // enable_behavioral_novelty. This is the ONLY novelty mechanism: the old
+  // structural canonical-hash penalty (a Hamming distance over hashes) was unsound
+  // and is removed. `behavior_metric` selects the profile distance (PnlCorr default;
+  // RankIc fork). `behavior_archive_cap` is the FIFO capacity C of the past-elite
+  // descriptor archive; `behavior_k` is the k-nearest count for the novelty mean.
+  bool enable_behavioral_novelty{true};
   BehaviorMetric behavior_metric{BehaviorMetric::PnlCorr};
   atx::usize behavior_archive_cap{64}; // C: past-elite behavioral descriptor ring
   atx::usize behavior_k{3};            // k-nearest neighbours for the novelty mean
@@ -211,16 +209,6 @@ namespace detail {
   return a.ast.roots().front().root < b.ast.roots().front().root;
 }
 
-// canonical_distance — a deterministic behavioral-distance proxy: the Hamming
-// distance of two genomes' canonical hashes (popcount of the XOR), normalized to
-// [0,1] over 64 bits. Two structurally-identical genomes => 0; genuinely-different
-// structures => a positive, value-based, RNG-free distance. Used by
-// novelty_penalize to keep the population diverse without any extra evaluation.
-[[nodiscard]] inline atx::f64 canonical_distance(atx::u64 a, atx::u64 b) noexcept {
-  const int bits = std::popcount(a ^ b);
-  return static_cast<atx::f64>(bits) / 64.0;
-}
-
 } // namespace detail
 
 // =========================================================================
@@ -229,7 +217,7 @@ namespace detail {
 struct Scored {
   Genome genome;
   atx::f64 fitness{0.0};   // pool_aware_fitness raw (the maximized signal)
-  atx::f64 selection{0.0}; // fitness MINUS the novelty penalty (used for ranking)
+  atx::f64 selection{0.0}; // equals fitness (ScalarRaw tournament ranking; no structural penalty)
   // S4.1 multi-objective fields. `objectives` is the cached FitnessReport vector
   // {wq, diversify, robust, ...}; `rank`/`crowding` are filled ONCE per generation
   // by assign_pareto_ranks (NSGA-II over `objectives`) BEFORE any reproduction RNG
@@ -309,20 +297,10 @@ private:
                       parallel::DetPool &det_pool,
                       std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res);
 
-  // ----- (3) novelty_penalize ------------------------------------------------
-  // Subtract a deterministic behavioral-distance term from each genome's selection
-  // fitness: the LESS novel a genome is (the smaller its mean canonical-structure
-  // distance to the rest of the population), the LARGER the penalty — so the search
-  // is pushed off a single collapsing motif. Distance is the normalized Hamming
-  // distance of canonical hashes (RNG-free, value-based, order-independent), so
-  // this is fully deterministic and F1-safe.
-  void novelty_penalize(std::vector<Scored> &scored, const combine::AlphaStore &pool,
-                        const SearchConfig &cfg) const;
-
   // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
   // Compute the population-relative BEHAVIORAL novelty for every Scored and write
   // it into objectives[3], bumping n_objectives to 4 — but ONLY when the objective
-  // is ACTIVE (objective_mode == MultiObjective && novelty_w > 0). Runs AFTER all
+  // is ACTIVE (objective_mode == MultiObjective && enable_behavioral_novelty). Runs AFTER all
   // descriptors for the generation are known and BEFORE assign_pareto_ranks (so the
   // 4th objective enters NSGA-II this generation). For genome i the novelty is the
   // mean behavioral_distance to the k nearest descriptors in (population minus self)
@@ -346,7 +324,7 @@ private:
                              BehavioralArchive &archive);
 
   // True iff the S4.2 behavioral objective is active for this config (the single
-  // activation gate, referenced by every S4.2 seam). MultiObjective && novelty_w>0.
+  // activation gate, referenced by every S4.2 seam). MultiObjective && enable_behavioral_novelty.
   [[nodiscard]] static bool behavioral_active(const SearchConfig &cfg) noexcept;
 
   // ----- (4) reproduce -------------------------------------------------------
