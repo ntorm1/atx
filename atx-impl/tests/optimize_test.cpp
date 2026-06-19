@@ -551,3 +551,246 @@ TEST_F(AtxImplOptimize, PositionModeBookEqualsShapedComboCrossSection) {
            "on the heterogeneous-variance panel — V^{-1} risk tilt not observable; "
            "position-mode branch may not be bypassing the optimizer.";
 }
+
+// ---------------------------------------------------------------------------
+// Helper: build a "whippy" combo panel whose alpha cross-section FLIPS sign
+// every period (odd periods positive, even negative). This maximises turnover
+// under the full-step position-mode deploy and gives the trade-rate partial
+// step a large effect to measure.
+// ---------------------------------------------------------------------------
+static atx::core::Result<std::string>
+make_whippy_combo_panel(const fs::path& out, atx::usize M, atx::usize D)
+{
+    std::vector<atx::f64> alpha_data;
+    alpha_data.reserve(D * M);
+    for (atx::usize t = 0; t < D; ++t) {
+        // Sign flips every period; magnitude is the centered rank.
+        const atx::f64 sign = (t % 2 == 0) ? 1.0 : -1.0;
+        for (atx::usize i = 0; i < M; ++i) {
+            alpha_data.push_back(
+                sign * (static_cast<atx::f64>(i) - static_cast<atx::f64>(M) / 2.0));
+        }
+    }
+    std::vector<std::uint8_t> uni(D * M, 1u);
+    ATX_TRY(auto panel,
+            alpha::Panel::create(D, M, {"alpha"}, {alpha_data}, uni));
+    ATX_TRY(auto digest,
+            atx::impl::write_panel(panel, out.string()));
+    (void)digest;
+    return atx::core::Ok(out.string());
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: TradeRateUnsetIsByteIdenticalToFullStep — no --trade-rate (i.e.
+// set_flags does NOT contain "trade-rate") produces the same books digest as
+// explicitly setting --trade-rate 1.0 (set_flags DOES contain "trade-rate").
+// Both should follow the full-step code path, so digests must be equal.
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplOptimize, TradeRateUnsetIsByteIdenticalToFullStep) {
+    const fs::path books_unset = tmp_dir_ / "books_tr_unset.bin";
+    const fs::path books_full  = tmp_dir_ / "books_tr_full.bin";
+
+    // Run A: trade-rate unset (legacy off-path).
+    {
+        atx::impl::RunConfig cfg;
+        cfg.panel         = research_path_;
+        cfg.combo         = combo_path_;
+        cfg.books_out     = books_unset.string();
+        cfg.position_mode = true;
+        cfg.rebalance     = "weekly";
+        cfg.gross         = 1.0;
+        cfg.name_cap      = 0.5;
+        // trade_rate field is default 1.0 but "trade-rate" is NOT in set_flags.
+        auto r = atx::impl::run_optimize(cfg);
+        ASSERT_TRUE(r.has_value()) << r.error().message();
+    }
+
+    // Run B: trade-rate 1.0 explicitly set.
+    {
+        atx::impl::RunConfig cfg;
+        cfg.panel         = research_path_;
+        cfg.combo         = combo_path_;
+        cfg.books_out     = books_full.string();
+        cfg.position_mode = true;
+        cfg.rebalance     = "weekly";
+        cfg.gross         = 1.0;
+        cfg.name_cap      = 0.5;
+        cfg.trade_rate    = 1.0;
+        cfg.set_flags.emplace("trade-rate");
+        auto r = atx::impl::run_optimize(cfg);
+        ASSERT_TRUE(r.has_value()) << r.error().message();
+    }
+
+    // Both files must be byte-identical.
+    std::ifstream fa(books_unset.string(), std::ios::binary);
+    std::ifstream fb(books_full.string(),  std::ios::binary);
+    ASSERT_TRUE(fa.is_open()) << "could not open books_unset";
+    ASSERT_TRUE(fb.is_open()) << "could not open books_full";
+    const std::vector<char> data_a((std::istreambuf_iterator<char>(fa)),
+                                    std::istreambuf_iterator<char>());
+    const std::vector<char> data_b((std::istreambuf_iterator<char>(fb)),
+                                    std::istreambuf_iterator<char>());
+    EXPECT_EQ(data_a, data_b)
+        << "books.bin not byte-identical: unset trade-rate vs --trade-rate 1.0";
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: TradeRatePartialStepReducesTurnover — with a sign-flipping alpha
+// combo, --trade-rate 0.25 must produce strictly lower total turnover than
+// --trade-rate 1.0, AND the period-1 book must equal prev + 0.25*(shaped-prev)
+// cell-for-cell to within 1e-9.
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplOptimize, TradeRatePartialStepReducesTurnover) {
+    // Build a whippy combo (sign-flipping) to maximise the turnover contrast.
+    const fs::path whippy_combo = tmp_dir_ / "combo_whippy.bin";
+    {
+        auto r = make_whippy_combo_panel(whippy_combo, kM, kD);
+        ASSERT_TRUE(r.has_value()) << r.error().message();
+    }
+
+    const fs::path books_full    = tmp_dir_ / "books_tr1.bin";
+    const fs::path books_partial = tmp_dir_ / "books_tr025.bin";
+
+    // Run A: trade-rate 1.0 (full step).
+    {
+        atx::impl::RunConfig cfg;
+        cfg.panel         = research_path_;
+        cfg.combo         = whippy_combo.string();
+        cfg.books_out     = books_full.string();
+        cfg.position_mode = true;
+        cfg.rebalance     = "weekly";
+        cfg.gross         = 1.0;
+        cfg.name_cap      = 0.5;
+        cfg.trade_rate    = 1.0;
+        cfg.set_flags.emplace("trade-rate");
+        auto r = atx::impl::run_optimize(cfg);
+        ASSERT_TRUE(r.has_value()) << r.error().message();
+    }
+
+    // Run B: trade-rate 0.25 (partial step).
+    {
+        atx::impl::RunConfig cfg;
+        cfg.panel         = research_path_;
+        cfg.combo         = whippy_combo.string();
+        cfg.books_out     = books_partial.string();
+        cfg.position_mode = true;
+        cfg.rebalance     = "weekly";
+        cfg.gross         = 1.0;
+        cfg.name_cap      = 0.5;
+        cfg.trade_rate    = 0.25;
+        cfg.set_flags.emplace("trade-rate");
+        auto r = atx::impl::run_optimize(cfg);
+        ASSERT_TRUE(r.has_value()) << r.error().message();
+    }
+
+    // Turnover check: partial < full.
+    const auto tv_full    = parse_sidecar_turnover(books_full.string()    + ".meta.txt");
+    const auto tv_partial = parse_sidecar_turnover(books_partial.string() + ".meta.txt");
+    ASSERT_FALSE(tv_full.empty())    << "could not parse full-step sidecar";
+    ASSERT_FALSE(tv_partial.empty()) << "could not parse partial-step sidecar";
+
+    const double sum_full    = std::accumulate(tv_full.begin(),    tv_full.end(),    0.0);
+    const double sum_partial = std::accumulate(tv_partial.begin(), tv_partial.end(), 0.0);
+    EXPECT_LT(sum_partial, sum_full)
+        << "expected partial-step total turnover (" << sum_partial
+        << ") < full-step (" << sum_full << ")";
+
+    // Cell-for-cell check at period 1 (s=1): w1 = prev1 + 0.25*(shaped1 - prev1).
+    // prev1 is the period-0 blended book (also partial-step from zero, but s=0
+    // starts from prev=0 so period-0 partial book = 0.25*shaped0).
+    // We verify by replicating the arithmetic and comparing to the stored book.
+    auto combo_r = atx::impl::read_panel(whippy_combo.string());
+    ASSERT_TRUE(combo_r.has_value()) << combo_r.error().message();
+    const auto& combo_panel = *combo_r;
+
+    auto research_r = atx::impl::read_panel(research_path_);
+    ASSERT_TRUE(research_r.has_value()) << research_r.error().message();
+    const auto& research_panel = *research_r;
+
+    auto books_r = atx::impl::read_panel(books_partial.string());
+    ASSERT_TRUE(books_r.has_value()) << books_r.error().message();
+    const auto& books = *books_r;
+
+    auto afid_r = combo_panel.field_id("alpha");
+    ASSERT_TRUE(afid_r.has_value());
+    const auto afid = *afid_r;
+
+    auto wfid_r = books.field_id("weight");
+    ASSERT_TRUE(wfid_r.has_value());
+    const auto wfid = *wfid_r;
+
+    ASSERT_GE(books.dates(), 2u) << "need at least 2 periods";
+
+    // Reconstruct prev (period-0 partial book: 0.25 * shaped0, since prev[-1]=0).
+    const atx::usize d0 = 0;  // weekly step=5, but period 0 maps to date 0
+    {
+        const auto cs0 = combo_panel.field_cross_section(afid, d0);
+        std::vector<atx::f64> shaped0(cs0.begin(), cs0.end());
+        std::vector<std::uint8_t> live0(kM);
+        for (atx::usize i = 0; i < kM; ++i)
+            live0[i] = research_panel.in_universe(d0, i) ? 1u : 0u;
+        atx::impl::shape_book(shaped0, std::span<const std::uint8_t>{live0}, 1.0, 0.5);
+        // partial-step from prev=0: w0 = 0 + 0.25*(shaped0 - 0) = 0.25*shaped0
+
+        // Build shaped1 (date 5 for weekly step=5).
+        const atx::usize d1 = 5;
+        const auto cs1 = combo_panel.field_cross_section(afid, d1);
+        std::vector<atx::f64> shaped1(cs1.begin(), cs1.end());
+        std::vector<std::uint8_t> live1(kM);
+        for (atx::usize i = 0; i < kM; ++i)
+            live1[i] = research_panel.in_universe(d1, i) ? 1u : 0u;
+        atx::impl::shape_book(shaped1, std::span<const std::uint8_t>{live1}, 1.0, 0.5);
+
+        // Expected: w1 = w0 + 0.25*(shaped1 - w0)
+        std::vector<atx::f64> expect1(kM);
+        for (atx::usize i = 0; i < kM; ++i) {
+            const atx::f64 w0_i = 0.25 * shaped0[i];  // prev at s=1 is the s=0 book
+            expect1[i] = w0_i + 0.25 * (shaped1[i] - w0_i);
+        }
+
+        const auto got1 = books.field_cross_section(wfid, 1);
+        ASSERT_EQ(got1.size(), kM);
+        for (atx::usize i = 0; i < kM; ++i) {
+            EXPECT_NEAR(got1[i], expect1[i], 1e-9)
+                << "period-1 cell mismatch at i=" << i
+                << " got=" << got1[i] << " expect=" << expect1[i];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: TradeRateRangeRejected — values <= 0 or > 1 must return
+// Err(InvalidArgument) from the config parser.
+// ---------------------------------------------------------------------------
+TEST(TradeRateConfig, TradeRateRangeRejected) {
+    // 0.0 — out of range (must be > 0).
+    {
+        const char* argv[] = {"atx", "optimize", "--trade-rate", "0"};
+        auto r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(r.has_value())
+            << "--trade-rate 0 should be rejected";
+        if (!r.has_value()) {
+            EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+        }
+    }
+    // 1.5 — out of range (must be <= 1).
+    {
+        const char* argv[] = {"atx", "optimize", "--trade-rate", "1.5"};
+        auto r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(r.has_value())
+            << "--trade-rate 1.5 should be rejected";
+        if (!r.has_value()) {
+            EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+        }
+    }
+    // Negative value — also invalid.
+    {
+        const char* argv[] = {"atx", "optimize", "--trade-rate", "-0.5"};
+        auto r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(r.has_value())
+            << "--trade-rate -0.5 should be rejected";
+        if (!r.has_value()) {
+            EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+        }
+    }
+}

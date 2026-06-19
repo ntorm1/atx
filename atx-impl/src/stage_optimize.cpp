@@ -132,6 +132,10 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
         std::vector<double>   turnover(S, 0.0);
         std::vector<double>   cost_bps(S, 0.0);
 
+        // Read trade-rate once; guard keeps byte-identical output when unset.
+        const double trade_rate_val = cfg.set_flags.count("trade-rate")
+                                          ? cfg.trade_rate : 1.0;
+
         std::vector<atx::f64> prev(M, 0.0);  // w[-1] = 0 (flat)
 
         for (atx::usize s = 0; s < S; ++s) {
@@ -143,6 +147,21 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
                 live[i] = research.in_universe(d, i) ? 1u : 0u;
             }
             shape_book(w, std::span<const std::uint8_t>{live}, gross_val, name_cap_val);
+
+            // Partial-step (Garleanu-Pedersen / WorldQuant trade-rate): deploy only
+            // part of the way from the prior book to the freshly-shaped target,
+            // smoothing the book and cutting turnover.
+            // w := prev + rate*(w - prev).
+            // Dollar-neutrality is preserved (linear blend of two dollar-neutral
+            // books) and name-cap is preserved (|blend| <= max(|prev|,|target|) <=
+            // cap); gross may drift slightly BELOW the target (intended — the
+            // partial step IS the deployed position, not re-normalized).
+            // Guard preserves byte-identical legacy output when trade_rate == 1.0.
+            if (trade_rate_val < 1.0) {
+                for (atx::usize i = 0; i < M; ++i) {
+                    w[i] = prev[i] + trade_rate_val * (w[i] - prev[i]);
+                }
+            }
 
             // Compute per-period turnover: Sigma_i |w[s] - w[s-1]|.
             double tv = 0.0;
@@ -156,7 +175,10 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
             }
         }
 
-        return write_books(books_flat, turnover, cost_bps);
+        // Build a position-mode-specific StageResult that includes trade_rate in kvs.
+        ATX_TRY(auto sr, write_books(books_flat, turnover, cost_bps));
+        sr.kvs.emplace_back("trade_rate", std::to_string(trade_rate_val));
+        return atx::core::Ok(std::move(sr));
     }
 
     // 5b. MVO path (default: position_mode=false).

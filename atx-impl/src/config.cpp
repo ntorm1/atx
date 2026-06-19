@@ -115,6 +115,14 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "turnover-penalty")  return parse_double(cfg.turnover_penalty);
     if (flag == "gross")             return parse_double(cfg.gross);
     if (flag == "name-cap")          return parse_double(cfg.name_cap);
+    if (flag == "trade-rate") {
+        ATX_TRY_VOID(parse_double(cfg.trade_rate));
+        if (cfg.trade_rate <= 0.0 || cfg.trade_rate > 1.0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--trade-rate must be in (0, 1]: got " + std::string(value));
+        }
+        return atx::core::Ok();
+    }
 
     return atx::core::Err(EC::InvalidArgument,
         std::string("unknown flag: --") + std::string(flag));

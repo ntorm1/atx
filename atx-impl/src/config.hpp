@@ -85,6 +85,7 @@ struct RunConfig {
     double      name_cap         = 0.0; // --name-cap
     std::string rebalance;             // --rebalance  "daily"|"weekly"
     bool        position_mode    = false; // --position-mode (signal-as-position deploy; skip mean-variance optimize)
+    double      trade_rate       = 1.0;  // --trade-rate (position-mode partial-step toward prior book; 1.0 = full step = legacy)
 
     // -- report --
     std::string books;                 // --books
