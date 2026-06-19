@@ -46,6 +46,31 @@ TEST(Promotion, PromotesAlphaIdentityIntoDestEnv) {
   // verify the alpha now exists in uat
   auto u = StoreDb::open(uat); ASSERT_TRUE(u.has_value());
   auto ex = cat::exists(u->db(), 0xABCull); ASSERT_TRUE(ex.has_value()); EXPECT_TRUE(*ex);
+
+  // lineage copied into uat (the dev alpha had parent 0x111)
+  auto ps = cat::parents(u->db(), 0xABCull);
+  ASSERT_TRUE(ps.has_value());
+  ASSERT_EQ(ps->size(), 1u);
+  EXPECT_EQ((*ps)[0], 0x111ull);
+
+  // promotion_ledger row written into uat
+  {
+    auto st = u->db().prepare("SELECT COUNT(*) FROM promotion_ledger WHERE canon_hash = ?1");
+    ASSERT_TRUE(st.has_value());
+    ASSERT_TRUE(st->bind(1, static_cast<atx::i64>(0xABCull)).has_value());
+    auto step = st->step(); ASSERT_TRUE(step.has_value());
+    ASSERT_EQ(*step, atx::core::db::Statement::Step::Row);
+    EXPECT_EQ(st->column_int(0), 1);
+  }
+  // 'promoted' alpha_event written into uat
+  {
+    auto st = u->db().prepare("SELECT COUNT(*) FROM alpha_event WHERE canon_hash = ?1 AND event_type = 'promoted'");
+    ASSERT_TRUE(st.has_value());
+    ASSERT_TRUE(st->bind(1, static_cast<atx::i64>(0xABCull)).has_value());
+    auto step = st->step(); ASSERT_TRUE(step.has_value());
+    ASSERT_EQ(*step, atx::core::db::Statement::Step::Row);
+    EXPECT_EQ(st->column_int(0), 1);
+  }
 }
 
 }  // namespace atxtest_store_promotion_test
