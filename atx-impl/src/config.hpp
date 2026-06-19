@@ -12,8 +12,8 @@ namespace atx::impl {
 
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
-inline constexpr std::array<std::string_view, 7> kSubcommands = {
-    "load", "panel", "discover", "combine", "optimize", "report", "run"};
+inline constexpr std::array<std::string_view, 8> kSubcommands = {
+    "load", "panel", "discover", "combine", "optimize", "report", "run", "regime"};
 
 // ----------------------------------------------------------------------------
 // RunConfig — all CLI flags / config-file keys for every subcommand.
@@ -87,6 +87,12 @@ struct RunConfig {
     // -- report --
     std::string books;                 // --books
     std::string report_out;            // --report-out
+
+    // -- regime (macro/regime data) --
+    std::string staging_dir;   // --staging-dir  (regime subcommand: dir of staged CSVs)
+    std::string regime_out;    // --regime-out   (regime subcommand: output .seg)
+    std::string regime_segs;   // --regime-segs  (panel stage: regime .seg to broadcast)
+    std::string regime_fields; // --regime-fields(panel stage: comma-separated series)
 
     // -- run --
     std::string config_file;           // --config

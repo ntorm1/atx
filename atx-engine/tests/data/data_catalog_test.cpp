@@ -24,7 +24,7 @@ using atx::core::ErrorCode;
 // ---------------------------------------------------------------------------
 
 // Build a minimal valid DatasetSchema with one column "val".
-DatasetSchema make_schema(Role role = Role::Feature) {
+DatasetSchema make_catalog_schema(Role role = Role::Feature) {
   DatasetSchema s;
   s.columns = {"val"};
   s.dtypes = {ColumnDType::F64};
@@ -43,7 +43,7 @@ Dataset make_dataset(std::vector<DateKey> dates, Role role = Role::Feature) {
   for (atx::usize i = 0; i < n; ++i) {
     col_data[i] = static_cast<atx::f64>(i + 1); // 1, 2, 3, ...
   }
-  auto res = Dataset::create(make_schema(role), std::move(dates), {InstKey{1}},
+  auto res = Dataset::create(make_catalog_schema(role), std::move(dates), {InstKey{1}},
                              {std::move(col_data)}, {}, {"test", ""});
   return std::move(res).value();
 }
@@ -51,7 +51,7 @@ Dataset make_dataset(std::vector<DateKey> dates, Role role = Role::Feature) {
 // Build a Dataset with explicit per-row values (one instrument).
 Dataset make_dataset_vals(std::vector<DateKey> dates, std::vector<atx::f64> vals,
                           Role role = Role::Feature) {
-  auto res = Dataset::create(make_schema(role), std::move(dates), {InstKey{1}}, {std::move(vals)},
+  auto res = Dataset::create(make_catalog_schema(role), std::move(dates), {InstKey{1}}, {std::move(vals)},
                              {}, {"test", ""});
   return std::move(res).value();
 }
@@ -77,7 +77,7 @@ TEST(DataCatalog, RegisterRejectsNonAscendingDates) {
   // Build a dataset with non-ascending dates {3, 1, 2}.
   // Dataset::create does NOT validate ordering — that's catalog's job.
   std::vector<atx::f64> vals = {1.0, 2.0, 3.0};
-  auto ds_res = Dataset::create(make_schema(), {DateKey{3}, DateKey{1}, DateKey{2}}, {InstKey{1}},
+  auto ds_res = Dataset::create(make_catalog_schema(), {DateKey{3}, DateKey{1}, DateKey{2}}, {InstKey{1}},
                                 {std::move(vals)}, {}, {"test", ""});
   ASSERT_TRUE(ds_res.has_value()) << "Dataset::create should accept any date order";
 

@@ -59,6 +59,8 @@
 //   RealPanel. Cold path (once per backtest window); std::vector allocation is
 //   intentional and explicit.
 
+#include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -109,6 +111,13 @@ struct RealDataConfig {
   std::string seg_cache_dir;        // reserved for the .seg cache (see real_panel.cpp note)
   alpha::TimeWindow window{};       // [start,end) trading dates (unix-nanos)
   UniverseConfig universe{};        // market-cap / ADV / sector / top-N screen
+
+  // Optional regime/macro overlay (off when regime_seg_path is empty): broadcast
+  // each requested series as a `regime_<series>` field, as-of the panel date axis.
+  // When empty, build_real_panel's panel + digest are byte-identical to the
+  // pre-regime path (no-regression).
+  std::string regime_seg_path;             // a sealed regime .seg (empty = off)
+  std::vector<std::string> regime_fields;  // requested series, e.g. {"vix","t10y2y"}
 };
 
 // =========================================================================
@@ -138,5 +147,21 @@ struct RealPanel {
 // for the fixed assembly order, the digest-pin contract, and the named error
 // cases. Two calls with identical inputs return identical `digest`.
 [[nodiscard]] atx::core::Result<RealPanel> build_real_panel(const RealDataConfig &cfg);
+
+// Finalize the assembled field set into a Panel, optionally overlaying regime
+// columns. When regime_seg_path is empty (or no series requested), this is exactly
+// alpha::Panel::create(dates, instruments, field_names, field_data, universe) — the
+// no-regression path (identical digest). Otherwise it opens the RegimeStore at
+// regime_seg_path and appends one `regime_<series>` column per requested series,
+// broadcast as-of `panel_dates_nanos` across in-universe instruments (out-of-universe
+// -> NaN). Err propagated from RegimeStore::open / with_regime_fields.
+[[nodiscard]] atx::core::Result<alpha::Panel> finalize_panel_with_regime(
+    atx::usize dates, atx::usize instruments,
+    std::span<const atx::i64> panel_dates_nanos,
+    std::vector<std::string> field_names,
+    std::vector<std::vector<atx::f64>> field_data,
+    std::vector<std::uint8_t> universe,
+    const std::string &regime_seg_path,
+    const std::vector<std::string> &requested_series);
 
 } // namespace atx::engine::data

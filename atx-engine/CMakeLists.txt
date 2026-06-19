@@ -92,6 +92,12 @@ add_library(atx-engine STATIC
     src/fund/cross_sleeve_risk.cpp
     src/fund/netting.cpp
     src/fund/meta_book.cpp
+    # regime (macro/regime data: offline CSV -> sealed segment + panel augmenter)
+    src/regime/source_csv.cpp
+    src/regime/align.cpp
+    src/regime/loader.cpp
+    src/regime/store.cpp
+    src/regime/with_regime_fields.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 

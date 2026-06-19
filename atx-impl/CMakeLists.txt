@@ -8,6 +8,7 @@ add_library(atx-impl-core STATIC
     src/serialize_panel.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
+    src/stage_regime.cpp
     src/stage_panel.cpp
     src/stage_discover.cpp
     src/stage_combine.cpp

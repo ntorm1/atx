@@ -13,7 +13,7 @@
 # Canonical group set. A subdir must exist per name; unknown names in
 # ATX_TEST_GROUPS are a hard error (catches typos in worktree selection).
 set(ATX_ALL_TEST_GROUPS
-    alpha risk data factory parallel learn eval library combine fund book core)
+    alpha risk data factory parallel learn eval library combine fund book core regime)
 
 set(ATX_TEST_GROUPS "all" CACHE STRING
     "Test groups to build: 'all', or a ;-list of: ${ATX_ALL_TEST_GROUPS}")

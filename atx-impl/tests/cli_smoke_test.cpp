@@ -30,7 +30,7 @@ static int run_dispatch(const std::vector<std::string>& args,
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: --help lists all 7 subcommands
+// Test 1: --help lists all 8 subcommands
 // ---------------------------------------------------------------------------
 TEST(AtxImplCli, HelpListsAllSubcommands) {
     std::string out, err;
@@ -38,7 +38,7 @@ TEST(AtxImplCli, HelpListsAllSubcommands) {
 
     EXPECT_EQ(rc, 0);
 
-    // All 7 subcommands must appear in usage output.
+    // All 8 subcommands must appear in usage output.
     EXPECT_NE(out.find("load"),     std::string::npos) << "missing 'load'";
     EXPECT_NE(out.find("panel"),    std::string::npos) << "missing 'panel'";
     EXPECT_NE(out.find("discover"), std::string::npos) << "missing 'discover'";
@@ -46,6 +46,7 @@ TEST(AtxImplCli, HelpListsAllSubcommands) {
     EXPECT_NE(out.find("optimize"), std::string::npos) << "missing 'optimize'";
     EXPECT_NE(out.find("report"),   std::string::npos) << "missing 'report'";
     EXPECT_NE(out.find("run"),      std::string::npos) << "missing 'run'";
+    EXPECT_NE(out.find("regime"),   std::string::npos) << "missing 'regime'";
 }
 
 // ---------------------------------------------------------------------------
@@ -219,4 +220,41 @@ TEST(AtxImplCli, FileSuppliesValueWhenCliOmits) {
 
     std::error_code ec;
     fs::remove(tmp_path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: regime-related CLI flags parse correctly
+// ---------------------------------------------------------------------------
+TEST(Config, ParsesRegimeFlags) {
+  const char* argv[] = {"atx", "panel", "--regime-segs", "r.seg",
+                        "--regime-fields", "vix,t10y2y"};
+  auto cfg = atx::impl::parse_args(6, const_cast<char**>(argv));
+  ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().message());
+  EXPECT_EQ(cfg.value().regime_segs, "r.seg");
+  EXPECT_EQ(cfg.value().regime_fields, "vix,t10y2y");
+}
+
+TEST(Config, AcceptsRegimeSubcommand) {
+  const char* argv[] = {"atx", "regime", "--staging-dir", "d", "--regime-out", "o.seg"};
+  auto cfg = atx::impl::parse_args(6, const_cast<char**>(argv));
+  ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().message());
+  EXPECT_EQ(cfg.value().subcommand, "regime");
+  EXPECT_EQ(cfg.value().staging_dir, "d");
+  EXPECT_EQ(cfg.value().regime_out, "o.seg");
+}
+
+TEST(AtxImplCli, RegimeStageBuildsSegment) {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "atx_impl_regime_smoke";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  std::ofstream(dir / "dgs2.csv",  std::ios::binary) << "DATE,VALUE\n2020-01-02,1.0\n2020-01-06,1.5\n";
+  std::ofstream(dir / "dgs10.csv", std::ios::binary) << "DATE,VALUE\n2020-01-02,2.0\n2020-01-06,2.5\n";
+  const std::string out = (dir / "regime.seg").string();
+  std::string o, e;
+  int rc = run_dispatch({"atx-impl", "regime", "--staging-dir", dir.string(),
+                         "--regime-out", out}, o, e);
+  EXPECT_EQ(rc, 0) << e;
+  EXPECT_TRUE(fs::exists(out)) << "regime.seg not written";
+  EXPECT_NE(o.find("stage=regime"), std::string::npos) << o;
 }
