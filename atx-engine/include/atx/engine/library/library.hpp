@@ -19,8 +19,8 @@
 //      candidate's SimHash neighbors (the §0.3 dangling-span discipline — the
 //      candidate pnl is the caller's own buffer, read before any store growth).
 //   3. the P4 AlphaGate floors, in the EXACT AlphaGate::admit order + operators:
-//         metrics.sharpe   <  cfg.min_sharpe    => RejectSharpe
-//         metrics.fitness  <  cfg.min_fitness   => RejectFitness
+//         metrics.fitness  <  cfg.min_fitness   => RejectFitness  (WQ-aligned primary)
+//         metrics.sharpe   <  cfg.min_sharpe    => RejectSharpe   (low sanity floor)
 //         metrics.turnover >  cfg.max_turnover  => RejectTurnover
 //         worst_corr       >  cfg.max_pool_corr => RejectCorrelated
 //      (replicated verbatim so admit_verdict_only matches AlphaGate::admit over
@@ -31,7 +31,12 @@
 //
 //  The verdict semantics MATCH AlphaGate::admit(metrics, pnl, equivalent_pool)
 //  EXACTLY, feeding the INCREMENTAL worst_corr in place of the gate's internal
-//  O(N) scan. The only approximation is the corr accelerator's RECALL (which ids
+//  O(N) scan. Check order matches §5.2:
+//    1. fitness  < min_fitness  => RejectFitness   (WQ-aligned primary gate)
+//    2. sharpe   < min_sharpe   => RejectSharpe    (low sanity floor)
+//    3. turnover > max_turnover => RejectTurnover
+//    4. corr     > max_pool_corr=> RejectCorrelated
+//  The only approximation is the corr accelerator's RECALL (which ids
 //  it returns) — on the S4-3 fixtures recall is ~1.0, so the verdict matches; a
 //  candidate sitting exactly on max_pool_corr where a missed neighbor flips the
 //  verdict is the known recall caveat (the probe fixture avoids that knife-edge).
@@ -321,12 +326,13 @@ private:
     // floor-rejected candidate never pays the corr cost — observationally identical
     // to the eager fixed order (the verdict of a floor-failing candidate is decided
     // before the corr gate is consulted). Match AlphaGate::admit's operators exactly.
+    // Order mirrors §5.2: fitness (WQ-aligned primary) first, sharpe sanity floor second.
     const GateConfig &cfg = gate.cfg;
-    if (c.metrics.sharpe < cfg.min_sharpe) {
-      return AdmitKind::RejectSharpe;
-    }
     if (c.metrics.fitness < cfg.min_fitness) {
       return AdmitKind::RejectFitness;
+    }
+    if (c.metrics.sharpe < cfg.min_sharpe) {
+      return AdmitKind::RejectSharpe;
     }
     if (c.metrics.turnover > cfg.max_turnover) {
       return AdmitKind::RejectTurnover;

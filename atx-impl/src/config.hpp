@@ -46,7 +46,7 @@ struct RunConfig {
     long        population   = 0;     // --population
     long        generations  = 0;     // --generations
     std::vector<std::string> seed_exprs; // --seed-expr (repeatable)
-    double      min_dsr      = 0.0;   // --min-dsr
+    double      min_dsr      = 0.5;   // --min-dsr
 
     // -- discover quality gate (opt-in; default path is the ungated top-N search) --
     // When --gated is set, discover routes through factory::Factory::mine_into:
@@ -55,7 +55,7 @@ struct RunConfig {
     // dsr >= min_dsr. This yields a robust, low-turnover, low-correlation,
     // high-fitness alpha database. Absent --gated, behavior is unchanged.
     bool        gated         = false; // --gated
-    double      min_sharpe    = 1.0;   // --min-sharpe    (AlphaGate standalone-Sharpe floor)
+    double      min_sharpe    = 0.25;  // --min-sharpe    (AlphaGate standalone-Sharpe sanity floor)
     double      min_fitness   = 1.0;   // --min-fitness   (AlphaGate WorldQuant-fitness floor)
     double      max_turnover  = 0.70;  // --max-turnover  (AlphaGate per-alpha turnover cap)
     double      max_pool_corr = 0.70;  // --max-pool-corr (AlphaGate max |corr| to any admitted alpha)

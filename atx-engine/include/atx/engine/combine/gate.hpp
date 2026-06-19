@@ -20,8 +20,8 @@
 //  admit() checks four conditions in THIS fixed order; the verdict is the FIRST
 //  one that fails (so a candidate failing several conditions has ONE deterministic
 //  verdict — the earliest in the order):
-//    1. metrics.sharpe   >= cfg.min_sharpe     else RejectSharpe
-//    2. metrics.fitness  >= cfg.min_fitness    else RejectFitness
+//    1. metrics.fitness  >= cfg.min_fitness    else RejectFitness   (WQ-aligned primary gate)
+//    2. metrics.sharpe   >= cfg.min_sharpe     else RejectSharpe    (low sanity floor; DSR is the sig gate)
 //    3. metrics.turnover <= cfg.max_turnover   else RejectTurnover
 //    4. corr_to_pool     <= cfg.max_pool_corr  else RejectCorrelated
 //    else                                           Accept
@@ -65,7 +65,7 @@ namespace atx::engine::combine {
 //  values (BRAIN "gold standard" fitness floor; WQ §6.5 cost-gate turnover).
 // ===========================================================================
 struct GateConfig {
-  atx::f64 min_sharpe = 1.0;    // standalone-Sharpe floor
+  atx::f64 min_sharpe = 0.25;   // standalone-Sharpe sanity floor (statistical-significance gate is DSR)
   atx::f64 min_fitness = 1.0;   // BRAIN "gold standard for submission" (WQ §4.4)
   atx::f64 max_turnover = 0.70; // generous default; cost-gate (WQ §6.5)
   atx::f64 max_pool_corr = 0.7; // reject if too correlated with an accepted alpha
@@ -104,11 +104,13 @@ struct AlphaGate {
                                   const AlphaStore &pool) const noexcept {
     // §5.2 checks 1–3: the standalone quality floors, in fixed order. First
     // failing condition is the verdict (deterministic).
-    if (metrics.sharpe < cfg.min_sharpe) {
-      return GateVerdict::RejectSharpe;
-    }
+    // Fitness (WQ-aligned) is the dominant primary gate; sharpe is a low
+    // sanity floor only (the statistical-significance gate is DSR, factory-side).
     if (metrics.fitness < cfg.min_fitness) {
       return GateVerdict::RejectFitness;
+    }
+    if (metrics.sharpe < cfg.min_sharpe) {
+      return GateVerdict::RejectSharpe;
     }
     if (metrics.turnover > cfg.max_turnover) {
       return GateVerdict::RejectTurnover;

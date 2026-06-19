@@ -2,12 +2,16 @@
 // shared pairwise-complete Pearson helper.
 //
 // AlphaGate::admit screens a candidate alpha against the GateConfig floors
-// (Sharpe / fitness / turnover) AND the diversification gate (max |pairwise-
+// (fitness / Sharpe / turnover) AND the diversification gate (max |pairwise-
 // complete Pearson| of the candidate's PnL vs each accepted pool member must be
 // <= max_pool_corr). The verdict is the FIRST failing condition in the fixed
-// order (Sharpe → fitness → turnover → correlation) so it is deterministic. The
+// order (fitness → Sharpe → turnover → correlation) so it is deterministic. The
 // correlation cost is paid LAZILY — only after the three floors pass — but the
 // resulting verdict is identical to the eager order.
+//
+// The check order aligns admission with the selection objective: fitness (WQ-
+// aligned) is the dominant primary gate; Sharpe is a low sanity floor (0.25)
+// with DSR (computed factory-side) as the real significance gate.
 //
 // pairwise_complete_corr (combine/correlation.hpp) is the one shared NaN policy
 // helper the combiner (P4-4) will reuse: Pearson over indices where BOTH legs are
@@ -16,14 +20,14 @@
 // gate falsely).
 //
 // Coverage (plan §8 P4-3):
-//   * below-Sharpe       -> RejectSharpe
-//   * below-fitness      -> RejectFitness
+//   * below-fitness      -> RejectFitness   (primary gate, WQ-aligned)
+//   * below-Sharpe       -> RejectSharpe    (sanity floor; below 0.25)
 //   * above-turnover     -> RejectTurnover
 //   * perfect copy (corr +1.0)   -> RejectCorrelated
 //   * anti-correlated (corr -1.0, |corr|=1) -> RejectCorrelated (magnitude gate)
 //   * first alpha (empty pool)   -> Accept (corr_to_pool = 0)
 //   * orthogonal (corr ~0) clearing floors -> Accept
-//   * fixed order: fail BOTH sharpe and turnover -> RejectSharpe (sharpe first)
+//   * fixed order: fail BOTH sharpe and turnover -> RejectSharpe (sharpe before turnover)
 //   * boundary: pairwise-complete with interleaved NaN gaps (hand value)
 //   * all-NaN candidate -> corr 0 -> Accept when floors are cleared
 //   * direct pairwise_complete_corr unit tests (hand Pearson + NaN-gap case)
@@ -55,7 +59,7 @@ using atx::engine::combine::pairwise_complete_corr;
 
 constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
 
-// Metrics that clear ALL default floors (min_sharpe=1, min_fitness=1,
+// Metrics that clear ALL default floors (min_sharpe=0.25, min_fitness=1.0,
 // max_turnover=0.70) so a test can isolate the correlation gate. Only the
 // floored fields matter; the rest are filler.
 [[nodiscard]] AlphaMetrics passing_metrics() {
@@ -164,7 +168,7 @@ TEST(Correlation, MismatchedLengthAbortsInDebug) {
 TEST(AlphaGate, BelowSharpeRejectsSharpe) {
   const AlphaGate gate{GateConfig{}};
   AlphaMetrics m = passing_metrics();
-  m.sharpe = 0.5; // below min_sharpe (1.0)
+  m.sharpe = 0.1; // below min_sharpe (0.25); fitness=2.0 passes (primary gate)
   const AlphaStore pool;
   const std::vector<f64> cand{0.0, 0.01, 0.02};
   EXPECT_EQ(gate.admit(m, cand, pool), GateVerdict::RejectSharpe);
@@ -173,7 +177,7 @@ TEST(AlphaGate, BelowSharpeRejectsSharpe) {
 TEST(AlphaGate, BelowFitnessRejectsFitness) {
   const AlphaGate gate{GateConfig{}};
   AlphaMetrics m = passing_metrics();
-  m.fitness = 0.5; // below min_fitness (1.0), sharpe still passing
+  m.fitness = 0.5; // below min_fitness (1.0); fitness is the primary gate (first check)
   const AlphaStore pool;
   const std::vector<f64> cand{0.0, 0.01, 0.02};
   EXPECT_EQ(gate.admit(m, cand, pool), GateVerdict::RejectFitness);
@@ -194,11 +198,12 @@ TEST(AlphaGate, AboveTurnoverRejectsTurnover) {
 
 TEST(AlphaGate, FailsSharpeAndTurnoverReturnsSharpeFirst) {
   // A candidate that fails BOTH the Sharpe and turnover floors must report
-  // RejectSharpe — Sharpe is checked FIRST in the fixed order.
+  // RejectSharpe — in the fixed order (fitness→Sharpe→turnover), fitness
+  // passes (2.0), then Sharpe=0.1 < min_sharpe=0.25 fires before turnover.
   const AlphaGate gate{GateConfig{}};
   AlphaMetrics m = passing_metrics();
-  m.sharpe = 0.1;    // fail
-  m.turnover = 0.99; // also fail
+  m.sharpe = 0.1;    // fail (below 0.25 sanity floor); fitness=2.0 passes first
+  m.turnover = 0.99; // also fail, but Sharpe is checked before turnover
   const AlphaStore pool;
   const std::vector<f64> cand{0.0, 0.01, 0.02};
   EXPECT_EQ(gate.admit(m, cand, pool), GateVerdict::RejectSharpe);
