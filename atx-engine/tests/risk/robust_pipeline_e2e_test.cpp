@@ -187,7 +187,7 @@ constexpr u64 kLibSeed = 0xC0FFEEu;
   cfg.search.elites = 2;
   cfg.search.k_tournament = 3;
   cfg.search.p_cross = 0.5;
-  cfg.search.novelty_w = 0.1;
+  cfg.search.enable_behavioral_novelty = true;
   cfg.search.fitness.trial_count = 4;
   cfg.seed_exprs = seed_exprs();
   cfg.panel_fields = panel_fields();
@@ -225,7 +225,7 @@ struct Fixture {
   cfg.research.per_run = per_run_cfg(12, 3);
   cfg.research.per_run.search.objective_mode =
       atx::engine::factory::ObjectiveMode::ScalarRaw;   // pre-S4 collapse
-  cfg.research.per_run.search.novelty_w = 0.0;          // novelty OFF
+  cfg.research.per_run.search.enable_behavioral_novelty = false; // novelty OFF
   cfg.research.per_run.search.fitness.target_aum = 0.0; // cost OFF
   cfg.research.per_run.search.n_workers = workers;
   cfg.research.max_runs = max_runs;
@@ -331,7 +331,7 @@ TEST(RobustPipelineE2E, NoiseGrowsRobustLibraryByZero) {
     RobustPipelineConfig pcfg = collapsed_cfg(seed, /*max_runs*/ 3, /*workers*/ 1);
     pcfg.research.per_run.search.objective_mode =
         atx::engine::factory::ObjectiveMode::MultiObjective; // the real robust-mining mode
-    pcfg.research.per_run.search.novelty_w = 0.1;
+    pcfg.research.per_run.search.enable_behavioral_novelty = true;
     pcfg.research.robustness_gate = true; // the robust pipeline gate ON
     pcfg.research.robustness_cfg.vol_window = 8;
     pcfg.research.robustness_cfg.min_regime_sharpe = 0.0;
@@ -368,7 +368,7 @@ TEST(RobustPipelineE2E, SyntheticPanelAdmitsRobustSurvivors) {
   RobustPipelineConfig pcfg = collapsed_cfg(/*seed*/ 23, /*max_runs*/ 3, /*workers*/ 1);
   pcfg.research.per_run = per_run_cfg(16, 4);
   pcfg.research.per_run.search.objective_mode = atx::engine::factory::ObjectiveMode::MultiObjective;
-  pcfg.research.per_run.search.novelty_w = 0.1;
+  pcfg.research.per_run.search.enable_behavioral_novelty = true;
   // The synthetic panel exposes "close" + "signal"; the GA is given only "close".
   pcfg.research.per_run.seed_exprs = {"rank(close)", "ts_mean(close, 5)",
                                       "rank(ts_mean(close, 10))", "delta(close, 2)"};

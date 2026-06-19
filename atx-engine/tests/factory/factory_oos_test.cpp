@@ -187,7 +187,7 @@ constexpr f64 kMinDsr = 0.5;
   cfg.search.elites = 2;
   cfg.search.k_tournament = 3;
   cfg.search.p_cross = 0.5;
-  cfg.search.novelty_w = 0.1;
+  cfg.search.enable_behavioral_novelty = true;
   cfg.search.fitness.trial_count = 4;
   cfg.seed_exprs = seed_exprs();
   cfg.panel_fields = panel_fields();
@@ -305,6 +305,10 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
 
   FactoryConfig cfg = real_signal_cfg(/*seed*/ 11);
   cfg.oos_fraction = 0.20; // hold out the terminal 20% — the noise-only regime
+  // legacy-init pin (consistent with the golden boundary pin): the grammar-init
+  // default changes the mined candidate set; this test verifies OOS-gate LOGIC, not
+  // init diversity.
+  cfg.search.seed_from_grammar = false;
 
   const FactoryReport rep = f.mine_into(cfg, library, gate);
 
@@ -320,6 +324,10 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
   lib::Library lib_is = lib::Library::open(tmpdir("is"), default_gate_cfg(), {0xC0FFEEu});
   Factory f_is = fx_is.factory();
   FactoryConfig cfg_is = real_signal_cfg(/*seed*/ 11); // oos_fraction stays 0 (OFF)
+  // legacy-init pin (consistent with the golden boundary pin): the grammar-init
+  // default changes the mined candidate set; this test verifies OOS-gate LOGIC, not
+  // init diversity.
+  cfg_is.search.seed_from_grammar = false;
   const FactoryReport rep_is = f_is.mine_into(cfg_is, lib_is, gate);
   EXPECT_GT(rep_is.admitted, 0u)
       << "the legacy in-sample path admits the overfit the OOS holdout rejects";
@@ -386,6 +394,90 @@ TEST(FactoryOos, OosDeterminism) {
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted);
   EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+}
+
+// ============================================================================
+//  CountingSink — minimal local recording sink for forwarding tests.
+// ============================================================================
+struct CountingSink : atx::engine::factory::SearchProgressSink {
+  int calls = 0;
+  atx::core::Status on_generation(const atx::engine::factory::GenerationSnapshot &) override {
+    ++calls;
+    return atx::core::Ok();
+  }
+};
+
+// =============================================================================
+//  MineIntoForwardsSinkPerGeneration — with oos OFF, mine_into forwards the sink
+//  to SearchDriver::run; on_generation is called once per completed generation.
+// =============================================================================
+TEST(FactoryOos, MineIntoForwardsSinkPerGeneration) {
+  Fixture fx{real_signal_panel()};
+  lib::Library library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  AlphaGate gate{default_gate_cfg()};
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = base_cfg(/*seed*/ 42, /*pop*/ 6, /*gens*/ 3);
+  cfg.search.objective_mode = atx::engine::factory::ObjectiveMode::ScalarRaw;
+  cfg.search.enable_behavioral_novelty = false;
+  ASSERT_EQ(cfg.oos_fraction, 0.0) << "must be off-path (non-OOS) for this test";
+
+  CountingSink sink;
+  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr);
+  (void)rep;
+
+  EXPECT_EQ(sink.calls, static_cast<int>(cfg.search.generations))
+      << "on_generation must fire once per completed generation";
+}
+
+// =============================================================================
+//  MineIntoOffPathDigestUnchanged — the legacy 3-arg call and the explicit
+//  nullptr/nullptr call produce byte-identical digest + admitted count.
+// =============================================================================
+TEST(FactoryOos, MineIntoOffPathDigestUnchanged) {
+  AlphaGate gate{default_gate_cfg()};
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 99);
+  ASSERT_EQ(cfg.oos_fraction, 0.0) << "must be off-path";
+
+  // Run A: legacy 3-arg call.
+  Fixture fxA{real_signal_panel()};
+  lib::Library libA = lib::Library::open(tmpdir("A"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  const FactoryReport repA = fA.mine_into(cfg, libA, gate);
+
+  // Run B: explicit nullptr/nullptr — must be byte-identical to A.
+  Fixture fxB{real_signal_panel()};
+  lib::Library libB = lib::Library::open(tmpdir("B"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fB = fxB.factory();
+  const FactoryReport repB = fB.mine_into(cfg, libB, gate, nullptr, nullptr);
+
+  EXPECT_EQ(repA.digest, repB.digest)
+      << "off-path nullptr params must produce byte-identical digest";
+  EXPECT_EQ(repA.admitted, repB.admitted)
+      << "off-path nullptr params must produce identical admitted count";
+}
+
+// =============================================================================
+//  MineIntoOosForwardsSink — with oos ON, mine_into_oos (via the top-guard)
+//  forwards the sink; on_generation fires >= 1 time (the train search runs).
+// =============================================================================
+TEST(FactoryOos, MineIntoOosForwardsSink) {
+  Fixture fx{real_signal_panel()}; // stationary panel: good on train AND holdout
+  lib::Library library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  AlphaGate gate{default_gate_cfg()};
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 77);
+  cfg.oos_fraction = 0.20;
+
+  CountingSink sink;
+  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr);
+  (void)rep;
+
+  EXPECT_GE(sink.calls, 1)
+      << "on_generation must fire at least once (train search generates >= 1 generation)";
+  EXPECT_EQ(sink.calls, static_cast<int>(cfg.search.generations))
+      << "on_generation must fire once per completed generation on the train search";
 }
 
 } // namespace atxtest_factory_oos_test

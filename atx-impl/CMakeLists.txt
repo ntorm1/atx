@@ -11,6 +11,7 @@ add_library(atx-impl-core STATIC
     src/stage_regime.cpp
     src/stage_panel.cpp
     src/stage_discover.cpp
+    src/store_progress_sink.cpp
     src/stage_combine.cpp
     src/stage_optimize.cpp
     src/stage_report.cpp

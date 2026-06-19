@@ -161,7 +161,7 @@ struct Lcg {
   cfg.elites = 2;
   cfg.k_tournament = 3;
   cfg.p_cross = 0.5;
-  cfg.novelty_w = (mode == ObjectiveMode::MultiObjective) ? 0.1 : 0.0;
+  cfg.enable_behavioral_novelty = (mode == ObjectiveMode::MultiObjective);
   cfg.objective_mode = mode;
   cfg.fitness.trial_count = 4;
   return cfg;
@@ -240,7 +240,7 @@ BENCHMARK(BM_SearchMultiObjective)->Arg(16)->Arg(32)->Unit(benchmark::kMilliseco
   per_run.search.elites = 2;
   per_run.search.k_tournament = 3;
   per_run.search.p_cross = 0.5;
-  per_run.search.novelty_w = 0.1;
+  per_run.search.enable_behavioral_novelty = true;
   per_run.search.objective_mode = ObjectiveMode::MultiObjective;
   per_run.search.fitness.trial_count = 4;
   per_run.seed_exprs = seed_exprs();

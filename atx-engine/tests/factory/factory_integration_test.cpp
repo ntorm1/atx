@@ -176,7 +176,7 @@ constexpr f64 kMinDsr = 0.5;
   cfg.search.elites = 2;
   cfg.search.k_tournament = 3;
   cfg.search.p_cross = 0.5;
-  cfg.search.novelty_w = 0.1;
+  cfg.search.enable_behavioral_novelty = true;
   // The deflation N is the running trial count; the search reports it. The CPCV
   // geometry is the S3-4 default (6 groups, 2 test). trial_count here is the BASE
   // N the fitness adds the search trials onto (kept small so the real panel's

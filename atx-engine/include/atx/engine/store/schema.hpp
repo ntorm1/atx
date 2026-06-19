@@ -8,7 +8,7 @@
 
 namespace atx::engine::store::schema {
 
-inline constexpr int kSchemaVersion = 1;
+inline constexpr int kSchemaVersion = 2;
 
 // Create every v2 table if absent and stamp schema_meta. Idempotent.
 [[nodiscard]] inline atx::core::Status create_all(atx::core::db::Database& db) {
@@ -83,14 +83,78 @@ inline constexpr int kSchemaVersion = 1;
     "CREATE INDEX IF NOT EXISTS ix_run_alpha_hash ON run_alpha(canon_hash);"
     "CREATE TABLE IF NOT EXISTS schema_meta ("
     " schema_version INTEGER NOT NULL, engine_version TEXT, applied_at INTEGER);"));
-  // Stamp the version once (only if empty).
-  ATX_TRY(auto* stmt, db.prepare_cached("SELECT COUNT(*) FROM schema_meta"));
-  ATX_TRY(const auto step, stmt->step());
+  // v2 pipeline progress tables.
+  ATX_TRY_VOID(db.exec(
+    "CREATE TABLE IF NOT EXISTS pipeline_run ("
+    " pipeline_run_id   TEXT PRIMARY KEY,"
+    " fingerprint       INTEGER UNIQUE NOT NULL,"
+    " stage             TEXT NOT NULL,"
+    " status            TEXT NOT NULL,"
+    " master_seed       INTEGER NOT NULL,"
+    " population        INTEGER NOT NULL,"
+    " total_generations INTEGER NOT NULL,"
+    " last_generation   INTEGER NOT NULL DEFAULT -1,"
+    " panel_path        TEXT,"
+    " config_json       TEXT,"
+    " engine_git_sha    TEXT,"
+    " created_at        INTEGER NOT NULL,"
+    " updated_at        INTEGER NOT NULL,"
+    " last_heartbeat_at INTEGER NOT NULL,"
+    " finished_at       INTEGER);"
+    "CREATE TABLE IF NOT EXISTS pipeline_checkpoint ("
+    " pipeline_run_id  TEXT NOT NULL,"
+    " generation       INTEGER NOT NULL,"
+    " population_blob  TEXT NOT NULL,"
+    " population_count INTEGER NOT NULL,"
+    " state_hash       INTEGER NOT NULL,"
+    // Resumable-discover (Task F1): the FULL cross-generation accumulated search
+    // state ENTERING `generation`, so a resume restores it byte-identically (canon
+    // dedup set, fitness_cache, behavioral-novelty archive, the folded run digest,
+    // and the candidates_generated counter). NEW columns on this branch (no external
+    // data to migrate). DEFAULT '' / 0 so a legacy population-only checkpoint reads
+    // back as an empty accumulated state (restores nothing — the pre-F1 behavior).
+    " canon_blob           TEXT    NOT NULL DEFAULT '',"
+    " cache_blob           TEXT    NOT NULL DEFAULT '',"
+    " archive_blob         TEXT    NOT NULL DEFAULT '',"
+    " best_per_gen_blob    TEXT    NOT NULL DEFAULT '',"
+    " digest               INTEGER NOT NULL DEFAULT 0,"
+    " candidates_generated INTEGER NOT NULL DEFAULT 0,"
+    " created_at       INTEGER NOT NULL,"
+    " PRIMARY KEY (pipeline_run_id, generation));"
+    "CREATE TABLE IF NOT EXISTS pipeline_iteration ("
+    " pipeline_run_id  TEXT NOT NULL,"
+    " generation       INTEGER NOT NULL,"
+    " best_fitness     REAL,"
+    " mean_fitness     REAL,"
+    " n_evaluated      INTEGER,"
+    " n_unique         INTEGER,"
+    " wall_ms          INTEGER,"
+    " ts               INTEGER NOT NULL,"
+    " PRIMARY KEY (pipeline_run_id, generation));"
+    "CREATE TABLE IF NOT EXISTS pipeline_event ("
+    " event_id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " pipeline_run_id TEXT NOT NULL,"
+    " ts              INTEGER NOT NULL,"
+    " event_type      TEXT NOT NULL,"
+    " generation      INTEGER,"
+    " payload         TEXT);"
+    "CREATE TABLE IF NOT EXISTS pipeline_log ("
+    " log_id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " pipeline_run_id TEXT NOT NULL,"
+    " ts              INTEGER NOT NULL,"
+    " level           TEXT NOT NULL,"
+    " generation      INTEGER,"
+    " message         TEXT NOT NULL);"
+    "CREATE INDEX IF NOT EXISTS ix_pipeline_event_run ON pipeline_event(pipeline_run_id, ts, event_id);"
+    "CREATE INDEX IF NOT EXISTS ix_pipeline_log_run   ON pipeline_log(pipeline_run_id, ts, log_id);"));
+  // Upward upsert: insert on first create, update version on reopen (v1 → v2).
+  ATX_TRY(auto* cnt_stmt, db.prepare_cached("SELECT COUNT(*) FROM schema_meta"));
+  ATX_TRY(const auto step, cnt_stmt->step());
   if (step != atx::core::db::Statement::Step::Row) {
     return atx::core::Err(atx::core::ErrorCode::Internal,
                           "schema::create_all: COUNT(*) returned no row");
   }
-  if (stmt->column_int(0) == 0) {
+  if (cnt_stmt->column_int(0) == 0) {
     ATX_TRY(auto* ins, db.prepare_cached(
         "INSERT INTO schema_meta(schema_version, engine_version, applied_at) VALUES (?1, 'v2', 0)"));
     ATX_TRY_VOID(ins->bind(1, static_cast<atx::i64>(kSchemaVersion)));
@@ -98,6 +162,15 @@ inline constexpr int kSchemaVersion = 1;
     if (ins_step != atx::core::db::Statement::Step::Done) {
       return atx::core::Err(atx::core::ErrorCode::Internal,
                             "schema::create_all: schema_meta stamp insert incomplete");
+    }
+  } else {
+    ATX_TRY(auto* upd, db.prepare_cached(
+        "UPDATE schema_meta SET schema_version = ?1, engine_version = 'v2'"));
+    ATX_TRY_VOID(upd->bind(1, static_cast<atx::i64>(kSchemaVersion)));
+    ATX_TRY(const auto upd_step, upd->step());
+    if (upd_step != atx::core::db::Statement::Step::Done) {
+      return atx::core::Err(atx::core::ErrorCode::Internal,
+                            "schema::create_all: schema_meta restamp incomplete");
     }
   }
   return atx::core::Ok();

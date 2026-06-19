@@ -37,7 +37,7 @@ MineResult mine_alphas(const MineParams &p) {
   cfg.search.elites = p.elites;
   cfg.search.k_tournament = p.k_tournament;
   cfg.search.p_cross = p.p_cross;
-  cfg.search.novelty_w = p.novelty_w;
+  cfg.search.enable_behavioral_novelty = p.enable_behavioral_novelty;
   cfg.search.max_lookback = p.max_lookback;
   cfg.search.fitness.trial_count = p.trial_count;
   cfg.search.fitness.book_size = p.book_size;

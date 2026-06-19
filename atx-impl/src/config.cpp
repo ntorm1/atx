@@ -26,6 +26,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "gated")          { cfg.gated         = true; return atx::core::Ok(); }
     if (flag == "sector-neutral") { cfg.sector_neutral = true; return atx::core::Ok(); }
     if (flag == "position-mode")  { cfg.position_mode  = true; return atx::core::Ok(); }
+    if (flag == "resume")         { cfg.resume         = true; return atx::core::Ok(); }
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -37,6 +38,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "end")          { cfg.end           = value; return atx::core::Ok(); }
     if (flag == "panel")        { cfg.panel         = value; return atx::core::Ok(); }
     if (flag == "alpha-out")    { cfg.alpha_out     = value; return atx::core::Ok(); }
+    if (flag == "run-db")       { cfg.run_db        = value; return atx::core::Ok(); }
     if (flag == "alphas")       { cfg.alphas        = value; return atx::core::Ok(); }
     if (flag == "combo-out")    { cfg.combo_out     = value; return atx::core::Ok(); }
     if (flag == "method")       { cfg.method        = value; return atx::core::Ok(); }
@@ -191,7 +193,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "position-mode") {
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "position-mode" || flag == "resume") {
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;
@@ -208,6 +210,12 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         auto r = apply_flag(cfg, flag, val);
         if (!r) return atx::core::Err(std::move(r).error());
         ++i;
+    }
+
+    // Cross-flag validation: --resume requires --run-db.
+    if (cfg.resume && cfg.run_db.empty()) {
+        return atx::core::Err(EC::InvalidArgument,
+            "--resume requires --run-db");
     }
 
     return atx::core::Ok(cfg);

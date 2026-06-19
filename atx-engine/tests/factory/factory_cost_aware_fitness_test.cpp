@@ -395,7 +395,7 @@ TEST(FactoryCostAwareFitness, CostBpsIsDeterministic) {
   cfg.elites = 2;
   cfg.k_tournament = 3;
   cfg.p_cross = 0.5;
-  cfg.novelty_w = 0.1;
+  cfg.enable_behavioral_novelty = true;
   cfg.objective_mode = ObjectiveMode::MultiObjective; // NSGA-II over 5 objectives
   cfg.seed_from_grammar = false;
   cfg.fitness.target_aum = 1.0e7; // cost objective ON

@@ -236,7 +236,9 @@ public:
   //  across the admit, so the spans never dangle.
   // =======================================================================
   [[nodiscard]] FactoryReport mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
-                                        const combine::AlphaGate &gate);
+                                        const combine::AlphaGate &gate,
+                                        SearchProgressSink *sink = nullptr,
+                                        const SearchResumeState *resume = nullptr);
 
   // =======================================================================
   //  mine_into (SUBSTRATE-AWARE, S7.5d) — the SAME mine_into admit path with the
@@ -299,7 +301,9 @@ private:
   // OOS metrics per admitted alpha in FactoryReport::oos_metrics. The legacy
   // mine_into body is left untouched (this is a TOP-of-function additive branch).
   [[nodiscard]] FactoryReport mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
-                                            const combine::AlphaGate &gate);
+                                            const combine::AlphaGate &gate,
+                                            SearchProgressSink *sink = nullptr,
+                                            const SearchResumeState *resume = nullptr);
 
   // Flatten alpha 0's per-period position cross-sections into the period-major,
   // instrument-minor layout AlphaStore::insert / compute_metrics expect

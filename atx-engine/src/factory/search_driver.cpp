@@ -1,6 +1,7 @@
 #include "atx/engine/factory/search_driver.hpp"
 
 #include <algorithm>     // std::clamp, std::sort, std::max, std::min
+#include <cmath>         // std::isfinite (mean_raw telemetry, NaN/inf-safe)
 #include <cstddef>       // std::size_t (hash_combine seed type)
 #include <cstdint>       // std::uint8_t (compiled[] flag vector)
 #include <memory>        // std::unique_ptr, std::make_unique
@@ -15,6 +16,7 @@
 
 #include "atx/engine/alpha/bytecode.hpp"  // alpha::compile, alpha::Program
 #include "atx/engine/alpha/typecheck.hpp" // alpha::analyze
+#include "atx/engine/alpha/unparse.hpp"   // alpha::unparse (population serialization)
 #include "atx/engine/alpha/vm.hpp"        // alpha::Engine (digest eval, fresh per program)
 
 #include "atx/engine/parallel/digest.hpp"    // parallel::signal_set_digest
@@ -35,7 +37,9 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
 }
 
 [[nodiscard]] SearchResult SearchDriver::run(const SearchConfig &cfg,
-                                             const combine::AlphaStore &pool) {
+                                             const combine::AlphaStore &pool,
+                                             SearchProgressSink *sink,
+                                             const SearchResumeState *resume) {
   SearchResult res;
   res.seed = cfg.master_seed;
   res.best_fitness_per_gen.reserve(cfg.generations);
@@ -71,23 +75,148 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   BehavioralArchive behavior_archive{cfg.behavior_archive_cap};
   std::vector<std::span<const atx::f64>> nbr;
 
-  std::vector<Genome> pop = init_population(cfg);
+  // Initial population + start generation. Off-path (resume == nullptr) this is
+  // EXACTLY the legacy `pop = init_population(cfg)` path. On a well-formed resume
+  // the loop starts at resume->start_generation from the checkpoint population
+  // (the canonical DSL strings captured in a prior GenerationSnapshot). The
+  // resume->start_generation must be a real interior generation [1, generations);
+  // a corrupt/incompatible blob (deserialize Err) returns an empty well-formed
+  // result rather than silently restarting from gen 0. The impl-side validates the
+  // blob hash before calling, so a valid resume always succeeds (deserialize Ok).
+  std::vector<Genome> pop;
+  atx::usize gen_start = 0;
+  bool resumed_state = false;
+  if (resume != nullptr && resume->start_generation > 0 &&
+      resume->start_generation < cfg.generations && !resume->population.empty()) {
+    auto restored = deserialize_population(resume->population);
+    if (!restored) { // corrupt/incompatible checkpoint -> fail loud, do NOT silently restart
+      SearchResult err_res;
+      err_res.seed = cfg.master_seed;
+      return err_res; // empty, well-formed result
+    }
+    pop = std::move(*restored);
+    gen_start = resume->start_generation;
+    resumed_state = true;
+  } else {
+    pop = init_population(cfg);
+  }
   res.candidates_generated += pop.size();
+
+  // RESUME: restore the FULL cross-generation accumulated state ENTERING gen_start so
+  // gens [gen_start..generations) replay BYTE-IDENTICALLY to an uninterrupted run
+  // (F1). Without this, canon / fitness_cache / behavior_archive start EMPTY and
+  // res.digest / counters start at 0, so the resumed trajectory (ranking -> selection
+  // -> reproduction -> admission) and the folded digest diverge. The blobs are bit-
+  // exact, deterministically ordered, and lossless (search_progress.hpp codecs). A
+  // malformed blob is a corrupt checkpoint -> fail loud (well-formed empty result),
+  // never a silent partial restore. Off-path (resume == nullptr) this whole block is
+  // skipped and the loop is the byte-identical legacy path.
+  if (resumed_state) {
+    auto canon_keys = deserialize_canon(resume->canon_blob);
+    auto archive_entries = deserialize_archive(resume->archive_blob);
+    auto best_pg = deserialize_f64_list(resume->best_per_gen_blob);
+    std::vector<atx::u64> cache_keys;
+    std::vector<CachedScore> cache_vals;
+    auto cache_st = deserialize_cache(resume->cache_blob, cache_keys, cache_vals);
+    if (!canon_keys || !archive_entries || !best_pg || !cache_st) {
+      SearchResult err_res; // corrupt accumulated-state blob -> fail loud
+      err_res.seed = cfg.master_seed;
+      return err_res;
+    }
+    for (atx::u64 h : *canon_keys) {
+      canon.insert(h);
+    }
+    for (atx::usize i = 0; i < cache_keys.size(); ++i) {
+      fitness_cache.emplace(cache_keys[i], std::move(cache_vals[i]));
+    }
+    // Replay archive inserts in ring order (oldest first) so the FIFO contents — and
+    // therefore every future novelty() neighbourhood — match the uninterrupted run.
+    for (const std::vector<atx::f64> &e : *archive_entries) {
+      behavior_archive.insert(std::span<const atx::f64>{e});
+    }
+    res.best_fitness_per_gen = std::move(*best_pg);
+    res.digest = resume->digest;
+    // Overwrite (NOT accumulate) candidates_generated with the value ENTERING
+    // gen_start: the `+= pop.size()` above counted the restored population, but the
+    // persisted counter already includes the full [0..gen_start) accrual.
+    res.candidates_generated = resume->candidates_generated;
+  }
 
   std::vector<Scored> scored; // current generation's scored population
 
-  for (atx::usize gen = 0; gen < cfg.generations; ++gen) {
+  // ----- Task 5: adaptive operator selection (run-local credit state) ---------
+  // `op_weights` (op_swap, field_swap, jitter) bias each generation's mutation-
+  // operator draw. They are updated SERIALLY here (before reproduce) from the
+  // realized fitness gain of the PREVIOUS generation's children, so every child of
+  // a generation draws against the SAME fixed weights -> worker-count-invariant
+  // (F1). Inert (stays uniform, never read) when cfg.adaptive_operators is false.
+  //
+  // DATA FLOW per generation g (g > the generation that produced the current pop):
+  //   1. reproduce(g-1) filled `prev_child_ops`[p] with the operator id (0/1/2, or
+  //      0xFF for crossover/immigrant/elite-clone) that made child slot p, written
+  //      by the single shard that owns slot p (no race).
+  //   2. Those children ARE this generation's population slots [prev_n_elites..),
+  //      and evaluate_generation assembles `scored` in population order, so
+  //      scored[prev_n_elites + p] is exactly the child from slot p.
+  //   3. mean_gain[o] = mean over mutation-children of operator o of
+  //      (child_raw - prev_parent_best), where prev_parent_best is the best raw of
+  //      the generation that PRODUCED them. op_weights[o] = max(0.05,
+  //      op_weights[o] + mean_gain[o]) so no operator starves.
+  // All RNG-free and computed from `scored` in population order -> deterministic.
+  // NOTE (resume): on a resume the credit history is not persisted, so a resumed
+  // adaptive run is NOT guaranteed byte-identical to an uninterrupted one; the
+  // resume-identity determinism tests pin adaptive_operators=false for that reason.
+  constexpr atx::f64 kOpWeightFloor = 0.05;
+  std::array<atx::f64, 3> op_weights{1.0, 1.0, 1.0};
+  std::vector<atx::u8> prev_child_ops;  // operator id per child slot of the last reproduce
+  atx::usize prev_n_elites = 0;         // population offset of those children
+  atx::f64 prev_parent_best = 0.0;      // best raw of the generation that produced them
+  bool have_prev_children = false;
+
+  for (atx::usize gen = gen_start; gen < cfg.generations; ++gen) {
+    // Capture the ACCUMULATED state ENTERING this generation (BEFORE
+    // evaluate_generation / update_archive mutate canon / fitness_cache /
+    // behavior_archive / res.digest). This is the exact state a resume must restore
+    // to be byte-identical, and it is consistent with the `pop` population snapshot
+    // (also the generation INPUT). Captured only when a sink is attached — off-path
+    // (sink == nullptr) this is skipped entirely (no work, byte-identical legacy
+    // loop). Serialized lazily into the snapshot below so a no-resume sink still pays
+    // only the serialize cost it already incurs for the population blob.
+    std::string entering_canon_blob;
+    std::string entering_cache_blob;
+    std::string entering_archive_blob;
+    std::string entering_best_pg_blob;
+    const atx::u64 entering_digest = res.digest;
+    const atx::usize entering_candidates = res.candidates_generated;
+    if (sink != nullptr) {
+      entering_canon_blob = serialize_canon(canon);
+      // fitness_cache serialized in sorted-by-canon-hash key order (deterministic).
+      {
+        std::vector<atx::u64> ck;
+        ck.reserve(fitness_cache.size());
+        for (const auto &kv : fitness_cache) {
+          ck.push_back(kv.first);
+        }
+        std::sort(ck.begin(), ck.end());
+        std::vector<CachedScore> cv;
+        cv.reserve(ck.size());
+        for (atx::u64 k : ck) {
+          cv.push_back(fitness_cache.at(k));
+        }
+        entering_cache_blob = serialize_cache(ck, cv);
+      }
+      entering_archive_blob = serialize_archive(behavior_archive.entries());
+      entering_best_pg_blob = serialize_f64_list(res.best_fitness_per_gen);
+    }
+
     // (a)-(c): evaluate the fresh (not-yet-seen) candidates of `pop`, fold the
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
     scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res);
 
-    // (d) novelty pressure -> selection fitness (anti-collapse, deterministic).
-    novelty_penalize(scored, pool, cfg);
-
     // (d2) S4.2 behavioral-novelty pass: write the population-relative phenotypic
     // novelty into objectives[3] (n_objectives -> 4) BEFORE ranking, but ONLY when
-    // the objective is active (MultiObjective && novelty_w > 0). A no-op otherwise
-    // -> n_objectives stays 3 and the boundary pin is byte-untouched.
+    // the objective is active (MultiObjective && enable_behavioral_novelty). A no-op
+    // otherwise -> n_objectives stays 3 and the boundary pin is byte-untouched.
     behavioral_novelty_pass(scored, behavior_archive, cfg, nbr);
 
     // (d') NSGA-II rank + crowding (S4.1), assigned ONCE per generation in
@@ -111,10 +240,91 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // guarantee).
     res.best_fitness_per_gen.push_back(best_raw(scored));
 
+    // Progress sink (resumable-discover). Off-path (sink == nullptr) this is a
+    // single null-pointer check — no work, byte-identical legacy loop. When set,
+    // hand the sink a snapshot of the population that ENTERED this generation
+    // (`pop` is NOT mutated by evaluate_generation — it scores into
+    // scored/canon/fitness_cache only — so serializing it here is correct without
+    // a loop-top copy). An Err return (real I/O failure or an injected test crash)
+    // aborts cleanly: finalize the current scored set into a well-formed partial
+    // result and return. canon.size() is the distinct-scored count (the CanonSet
+    // local). This call runs BEFORE reproduce, so the snapshot population is the
+    // exact blob a resume feeds back via SearchResumeState.
+    if (sink != nullptr) {
+      GenerationSnapshot snap;
+      snap.generation = gen;
+      snap.population = serialize_population(pop); // population that ENTERED gen `gen`
+      snap.best_fitness = best_raw(scored);
+      snap.mean_fitness = mean_raw(scored);
+      snap.n_evaluated = canon.size();
+      snap.n_unique = pop.size();
+      // Accumulated state ENTERING gen `gen` (captured above, consistent with the
+      // population snapshot) — the full payload a resume restores for byte-identity.
+      snap.canon_blob = std::move(entering_canon_blob);
+      snap.cache_blob = std::move(entering_cache_blob);
+      snap.archive_blob = std::move(entering_archive_blob);
+      snap.best_per_gen_blob = std::move(entering_best_pg_blob);
+      snap.digest = entering_digest;
+      snap.candidates_generated = entering_candidates;
+      auto st = sink->on_generation(snap);
+      if (!st) { // sink-requested abort -> clean stop with a well-formed partial result
+        finalize(scored, canon, res);
+        return res;
+      }
+    }
+
+    // Stagnation early-stop (pure fn of best_fitness_per_gen; F1-safe). Stop when
+    // best raw fitness has not strictly improved over the last `patience` gens. 0
+    // disables. Placed AFTER the sink checkpoint (so a stopped run still
+    // checkpoints its final generation) and BEFORE reproduce (so it skips the
+    // wasted reproduce). The break falls through to the post-loop finalize, so the
+    // run returns a well-formed result on the current scored set.
+    if (cfg.stagnation_patience > 0 &&
+        res.best_fitness_per_gen.size() > cfg.stagnation_patience) {
+      const atx::usize n = res.best_fitness_per_gen.size();
+      const atx::f64 recent = res.best_fitness_per_gen[n - 1];
+      const atx::f64 baseline = res.best_fitness_per_gen[n - 1 - cfg.stagnation_patience];
+      if (!(recent > baseline)) { break; }
+    }
+
+    // Task 5: credit the PREVIOUS generation's operators from the realized fitness
+    // gain of the children they produced (now scored, in population order), then
+    // bias this generation's operator weights toward what worked. SERIAL (before the
+    // parallel reproduce) so every child draws against FIXED weights. Pure fn of
+    // `scored` + the recorded operator ids -> RNG-free, worker-count-invariant. All
+    // gated behind adaptive_operators so the legacy path leaves op_weights uniform.
+    if (cfg.adaptive_operators && have_prev_children) {
+      std::array<atx::f64, 3> gain_sum{0.0, 0.0, 0.0};
+      std::array<atx::usize, 3> gain_cnt{0, 0, 0};
+      for (atx::usize p = 0; p < prev_child_ops.size(); ++p) {
+        const atx::u8 o = prev_child_ops[p];
+        if (o > 2) {
+          continue; // 0xFF: crossover / immigrant / elite-clone -> uncredited
+        }
+        const atx::usize idx = prev_n_elites + p; // population slot of this child
+        if (idx >= scored.size()) {
+          continue; // defensive (population shrank) — never expected
+        }
+        gain_sum[o] += scored[idx].fitness - prev_parent_best;
+        ++gain_cnt[o];
+      }
+      for (atx::usize o = 0; o < 3; ++o) {
+        if (gain_cnt[o] > 0) {
+          const atx::f64 mean_gain = gain_sum[o] / static_cast<atx::f64>(gain_cnt[o]);
+          op_weights[o] = std::max(kOpWeightFloor, op_weights[o] + mean_gain);
+        }
+      }
+    }
+
     // (e)-(g) reproduce into the next population (skip on the final generation —
     // the last scored set is the result).
     if (gen + 1 < cfg.generations) {
-      pop = reproduce(scored, cfg, gen, det_pool, res);
+      const atx::usize n_elites_this = std::min(cfg.elites, scored.size());
+      pop = reproduce(scored, cfg, gen, det_pool, res, op_weights, prev_child_ops);
+      // Stash the bookkeeping the NEXT generation needs to credit these children.
+      prev_n_elites = n_elites_this;
+      prev_parent_best = best_raw(scored);
+      have_prev_children = cfg.adaptive_operators;
     }
   }
 
@@ -169,21 +379,44 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     pop.push_back(seeds[i].clone());
     pop.back().canon_hash = seeds[i].canon_hash;
   }
-  // Fill the remainder from the grammar. The per-slot seed is a pure function of
-  // (master_seed, kGenSeedAxis, slot) — a fixed, gen-independent axis disjoint
-  // from the per-generation reproduction streams (seed_for uses gen in [0,
-  // generations)), so generation entropy never collides with reproduction (F1).
+  // Track gen-0 structures so the grammar fill maximizes DISTINCT members.
+  std::unordered_set<atx::u64> seen0;
+  for (const Genome &g : pop) { seen0.insert(g.canon_hash); }
   constexpr atx::u64 kGenSeedAxis = 0xFFFFFFFFFFFFFFFFULL;
+  constexpr atx::usize kMaxResample = 8U; // bounded retries; deterministic
+  const atx::usize dmax = std::max<atx::usize>(cfg.gen_cfg.max_depth, cfg.init_min_depth);
+  // Base gen config for grammar fill: always use the driver's panel fields as the
+  // numeric field source so grammar-generated expressions only reference fields the
+  // Panel can actually evaluate. group_fields are also set to panel fields — Group-
+  // typed ops that pick a panel field as their group arg will fail type-check inside
+  // generate_genome (F64 where Group is required), so they return Err and the
+  // attempt-loop continues; pick_field(group_fields, rng) requires a non-empty list
+  // so we must supply one. The panel_field_views_ are string_views into the owned
+  // panel_fields_ vector (driver lifetime), valid for the fill duration. Other gen_cfg
+  // knobs (max_lookback, max_depth, etc.) come from cfg.
+  GenConfig base_gc = cfg.gen_cfg;
+  base_gc.numeric_fields = panel_field_views_;
+  base_gc.group_fields = panel_field_views_; // non-empty but F64: Group-typed ops will Err
   for (atx::usize i = n_seed_slots; i < cfg.population; ++i) {
-    Xoshiro256pp rng{detail::seed_for(cfg.master_seed, kGenSeedAxis, i)};
-    auto gen = generate_genome(cfg.gen_cfg, lib_, rng);
-    if (gen.has_value()) {
+    Genome chosen = seeds[i % seeds.size()].clone(); // deterministic fallback
+    chosen.canon_hash = seeds[i % seeds.size()].canon_hash;
+    for (atx::usize attempt = 0; attempt < kMaxResample; ++attempt) {
+      // Ramped depth: slot i and the attempt index both perturb the seed AND the
+      // sampler depth, so distinct slots explore distinct shapes. Pure fn of
+      // (master_seed, axis, i, attempt) -> F1 deterministic.
+      GenConfig gc = base_gc;
+      const atx::usize span = (dmax >= cfg.init_min_depth) ? (dmax - cfg.init_min_depth + 1U) : 1U;
+      gc.max_depth = cfg.init_min_depth + ((i + attempt) % span);
+      Xoshiro256pp rng{detail::seed_for(cfg.master_seed,
+                                        kGenSeedAxis ^ static_cast<atx::u64>(attempt), i)};
+      auto gen = generate_genome(gc, lib_, rng);
+      if (!gen.has_value()) { continue; }
       gen->canon_hash = canonical_hash(*gen);
-      pop.push_back(std::move(*gen));
-    } else {
-      pop.push_back(seeds[i % seeds.size()].clone());
-      pop.back().canon_hash = seeds[i % seeds.size()].canon_hash;
+      if (seen0.insert(gen->canon_hash).second) { chosen = std::move(*gen); break; }
+      // collision: keep the last valid sample as a fallback even if not distinct
+      chosen = std::move(*gen);
     }
+    pop.push_back(std::move(chosen));
   }
   return pop;
 }
@@ -358,6 +591,19 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       }
       // On Err: score_slot[j] stays default-constructed (raw=0, empty descriptor),
       // matching the prior code's behaviour for a fitness-error candidate.
+      // S-quality: parsimony objective (slot 5). Set from the genome's node count
+      // for the representative regardless of fitness success (node count is a pure
+      // structural value, canon-cacheable). Bump n_objectives to cover slot 5; the
+      // intervening slots (3 novelty, 4 cost) stay at their inert defaults until
+      // their own passes fill them. MultiObjective-only effect (ScalarRaw ignores
+      // objectives). Errored genomes get a node-count value too, but cannot be
+      // ADMITTED (factory drops un-evaluable candidates), so no perverse incentive.
+      if (cfg.enable_parsimony) {
+        score_slot[j].objectives[kObjParsimony] =
+            -static_cast<atx::f64>(to_score[j]->ast.nodes().size());
+        score_slot[j].n_objectives = static_cast<atx::u8>(
+            std::max<atx::usize>(score_slot[j].n_objectives, kObjParsimony + 1U));
+      }
     }
   });
 
@@ -411,49 +657,13 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   return out;
 }
 
-// ----- (3) novelty_penalize ------------------------------------------------
-// Subtract a deterministic behavioral-distance term from each genome's selection
-// fitness: the LESS novel a genome is (the smaller its mean canonical-structure
-// distance to the rest of the population), the LARGER the penalty — so the search
-// is pushed off a single collapsing motif. Distance is the normalized Hamming
-// distance of canonical hashes (RNG-free, value-based, order-independent), so
-// this is fully deterministic and F1-safe.
-void SearchDriver::novelty_penalize(std::vector<Scored> &scored, const combine::AlphaStore &pool,
-                                    const SearchConfig &cfg) const {
-  // DIVISION OF LABOR: distance-to-POOL is already priced into each candidate's
-  // fitness by pool_aware_fitness's `diversify` term (1 − mean|corr-to-pool|, F7),
-  // so a pool-redundant candidate enters here ALREADY discounted. This pass adds
-  // the orthogonal anti-collapse pressure the fitness score lacks: distance to the
-  // rest of the POPULATION (so the search does not pile onto one motif even when
-  // that motif is pool-diversifying). `pool` is therefore unused here.
-  static_cast<void>(pool);
-  const atx::usize n = scored.size();
-  if (n <= 1 || cfg.novelty_w == 0.0) {
-    return;
-  }
-  for (atx::usize i = 0; i < n; ++i) {
-    atx::f64 sum_dist = 0.0;
-    for (atx::usize j = 0; j < n; ++j) {
-      if (i == j) {
-        continue;
-      }
-      sum_dist +=
-          detail::canonical_distance(scored[i].genome.canon_hash, scored[j].genome.canon_hash);
-    }
-    const atx::f64 mean_dist = sum_dist / static_cast<atx::f64>(n - 1);
-    // novelty in [0,1]; penalty = novelty_w * (1 - novelty) (redundant => bigger).
-    const atx::f64 penalty = cfg.novelty_w * (1.0 - mean_dist);
-    scored[i].selection = scored[i].fitness - penalty;
-  }
-}
-
 // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
 
 // The single S4.2 activation gate (referenced by every S4.2 seam): the behavioral
-// objective is live ONLY in MultiObjective mode with a positive novelty weight.
-// ScalarRaw, or novelty_w == 0 -> off -> n_objectives stays 3 -> boundary pin holds.
+// objective is live ONLY in MultiObjective mode with enable_behavioral_novelty set.
+// ScalarRaw, or enable_behavioral_novelty==false -> off -> n_objectives stays 3 -> boundary pin holds.
 [[nodiscard]] bool SearchDriver::behavioral_active(const SearchConfig &cfg) noexcept {
-  return cfg.objective_mode == ObjectiveMode::MultiObjective && cfg.novelty_w > 0.0;
+  return cfg.objective_mode == ObjectiveMode::MultiObjective && cfg.enable_behavioral_novelty;
 }
 
 // Write each genome's population-relative behavioral novelty into objectives[3]
@@ -473,11 +683,19 @@ void SearchDriver::behavioral_novelty_pass(std::vector<Scored> &scored,
   const atx::usize n = scored.size();
   nbr.reserve(n); // size the scratch once; cleared + refilled per genome (no realloc)
   for (atx::usize i = 0; i < n; ++i) {
+    // Skip genomes whose fitness errored (empty descriptor): they have no behavioral
+    // information and cannot be compared. Leave objectives[3] at its default (0).
+    if (scored[i].descriptor.empty()) {
+      continue;
+    }
     // Population neighbourhood = every OTHER genome's descriptor (exclude self so a
     // genome's own 0-distance never collapses its novelty). Reuse `nbr`'s capacity.
+    // Also skip neighbours with empty descriptors (fitness errors) — they lack a
+    // meaningful behavioral profile and pairwise_complete_corr requires equal-length
+    // spans (correlation.hpp:78).
     nbr.clear();
     for (atx::usize j = 0; j < n; ++j) {
-      if (j == i) {
+      if (j == i || scored[j].descriptor.empty()) {
         continue;
       }
       nbr.push_back(std::span<const atx::f64>{scored[j].descriptor});
@@ -529,7 +747,10 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
 [[nodiscard]] std::vector<Genome> SearchDriver::reproduce(const std::vector<Scored> &scored,
                                                           const SearchConfig &cfg, atx::usize gen,
                                                           parallel::DetPool &det_pool,
-                                                          SearchResult &res) {
+                                                          SearchResult &res,
+                                                          const std::array<atx::f64, 3> &op_weights,
+                                                          std::vector<atx::u8> &child_ops) {
+  child_ops.clear();
   if (scored.empty()) {
     return {};
   }
@@ -560,19 +781,27 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
   // tournament parent is drawn inside make_child), and determinism rests on the
   // single-writer slots + per-index seed, NOT on dispatch order.
   std::vector<std::optional<Genome>> child_slot(n_children);
+  // Task 5 (adaptive operators): per-child operator id, written by the single shard
+  // that produced slot p (disjoint single-writer -> no race, worker-count-invariant).
+  // 0xFF == "not a mutation child" (crossover / elite-clone fallback) -> excluded
+  // from credit. Sized to n_children; left all-0xFF when adaptation is off.
+  child_ops.assign(n_children, atx::u8{0xFF});
   det_pool.parallel_for(n_children, [&](atx::usize p, atx::usize /*wid*/) {
     const atx::usize i = n_elites + p;
     Xoshiro256pp rng{detail::seed_for(cfg.master_seed, gen, i)};
-    auto child = make_child(scored, canon_order, cfg, rng);
+    atx::u8 op_used = 0xFF;
+    auto child = make_child(scored, canon_order, cfg, rng, op_weights, gen, op_used);
     if (child.has_value()) {
       child->canon_hash = canonical_hash(*child);
       child_slot[p] = std::move(*child);
+      child_ops[p] = op_used; // 0xFF for a crossover child; 0/1/2 for a mutation child
     } else {
       // F5 reject -> hold population size with an elite clone (deterministic, pure in i).
       const atx::usize fallback = elite_order[i % std::max<atx::usize>(n_elites, 1)];
       Genome clone = scored[fallback].genome.clone();
       clone.canon_hash = scored[fallback].genome.canon_hash;
       child_slot[p] = std::move(clone);
+      // child_ops[p] stays 0xFF (elite clone is not credited to any operator).
     }
   });
 
@@ -580,6 +809,34 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
   // produced regardless of which shard ran which slot. Folded as a closed-form add
   // OUTSIDE the parallel region (the old per-child `++` was a shared-counter write).
   res.candidates_generated += n_children;
+
+  // Diversity injection: overwrite the LAST n_imm non-elite slots with fresh
+  // grammar genomes (deterministic seed per (gen, slot)). Skips when disabled or
+  // when grammar sampling fails (keeps the crossover/mutation child). F1-safe:
+  // seed is a pure fn of (master_seed, gen, slot). SERIAL (after the parallel_for)
+  // so the overwrite is race-free and byte-deterministic. Elites are never
+  // displaced — immigrants only touch child slots.
+  constexpr atx::u64 kImmigrantAxis = 0xA5A5A5A5A5A5A5A5ULL;
+  const atx::usize n_imm = std::min(cfg.n_immigrants, n_children);
+  for (atx::usize t = 0; t < n_imm; ++t) {
+    const atx::usize p = n_children - 1U - t; // last slots
+    // Restrict the sampler to the driver's panel fields EXACTLY as init_population
+    // does (numeric_fields/group_fields = panel_field_views_) so the immigrant only
+    // references fields the Panel can evaluate — without this the sampler emits
+    // fields absent from narrow panels and the immigrant crashes at eval.
+    GenConfig imm_gc = cfg.gen_cfg;
+    imm_gc.numeric_fields = panel_field_views_;
+    imm_gc.group_fields = panel_field_views_;
+    Xoshiro256pp rng{detail::seed_for(cfg.master_seed,
+                                      kImmigrantAxis ^ static_cast<atx::u64>(gen),
+                                      n_elites + p)};
+    auto imm = generate_genome(imm_gc, lib_, rng);
+    if (imm.has_value()) {
+      imm->canon_hash = canonical_hash(*imm);
+      child_slot[p] = std::move(*imm);
+      child_ops[p] = atx::u8{0xFF}; // immigrant overwrites the mutation child -> uncredited
+    }
+  }
 
   // Serial assembly in POPULATION order (elites first, then children in slot order)
   // — byte-identical to the prior sequential push_back sequence. Elite clones are
@@ -603,13 +860,15 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
 [[nodiscard]] atx::core::Result<Genome>
 SearchDriver::make_child(const std::vector<Scored> &scored,
                          const std::vector<atx::usize> &canon_order, const SearchConfig &cfg,
-                         Xoshiro256pp &rng) {
+                         Xoshiro256pp &rng, const std::array<atx::f64, 3> &op_w, atx::usize gen,
+                         atx::u8 &op_used) {
+  op_used = 0xFF; // default: a crossover child credits no mutation operator
   const Genome &p1 = tournament_pick(scored, canon_order, cfg, rng);
   if (rng.bernoulli(cfg.p_cross)) {
     const Genome &p2 = tournament_pick(scored, canon_order, cfg, rng);
     return subtree_crossover(p1, p2, rng, CrossoverCfg{cfg.max_lookback});
   }
-  return mutate_one(p1, cfg, rng);
+  return mutate_one(p1, cfg, rng, op_w, gen, op_used);
 }
 
 // Pick one type-safe mutation by a seeded draw, fallback-cascading so a
@@ -623,22 +882,50 @@ SearchDriver::make_child(const std::vector<Scored> &scored,
 // does not shift when the gate flips; a drawn-but-disabled op_swap simply falls
 // through to jitter_const.
 [[nodiscard]] atx::core::Result<Genome>
-SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp &rng) {
-  const atx::u64 which = rng.next_u64() % 3;
+SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp &rng,
+                         const std::array<atx::f64, 3> &op_w, atx::usize gen, atx::u8 &op_used) {
+  // ----- operator draw (flag-branched for RNG-stream parity) -----------------
+  // Both branches consume EXACTLY ONE rng word, so the stream length is identical.
+  // OFF: the literal legacy `% 3` draw — bit-identical to the pre-Task-5 path, so
+  // the ScalarRaw boundary golden is untouched. ON: a weighted draw over op_w
+  // (uniform01 from the top 53 bits x total weight; pick by cumulative weight),
+  // which is intentionally NOT bit-identical to `% 3` even under uniform weights —
+  // which is exactly why the two draws are branched, never unified.
+  atx::u64 which;
+  if (!cfg.adaptive_operators) {
+    which = rng.next_u64() % 3; // LEGACY stream — bit-identical
+  } else {
+    const atx::f64 total = op_w[0] + op_w[1] + op_w[2];
+    const atx::f64 u = (static_cast<atx::f64>(rng.next_u64() >> 11U) /
+                        static_cast<atx::f64>(1ULL << 53U)) *
+                       total;
+    which = (u < op_w[0]) ? 0U : (u < op_w[0] + op_w[1]) ? 1U : 2U;
+  }
+  // ----- jitter sigma (flag-branched anneal) ---------------------------------
+  // base_sigma is the current JitterCfg default (0.5); OFF keeps it constant, ON
+  // scales it by jitter_anneal_decay^gen (coarse early, fine late). Pure fn of gen
+  // -> no wall-clock / RNG; OFF leaves the jitter draw byte-identical.
   JitterCfg jc;
   jc.max_lookback = cfg.max_lookback;
+  if (cfg.jitter_anneal) {
+    const atx::f64 base_sigma = JitterCfg{}.sigma;
+    jc.sigma = base_sigma * std::pow(cfg.jitter_anneal_decay, static_cast<atx::f64>(gen));
+  }
   if (which == 0 && cfg.enable_op_swap) {
     auto r = op_swap(g, catalog_, rng);
     if (r.has_value()) {
+      op_used = 0; // op_swap made the child
       return r;
     }
   } else if (which == 1) {
     auto r = field_swap(g, std::span<const std::string_view>{panel_field_views_}, rng);
     if (r.has_value()) {
+      op_used = 1; // field_swap made the child
       return r;
     }
   }
   // Default / fallback: jitter a literal (the most broadly-applicable mutation).
+  op_used = 2; // jitter_const made the child (drawn, or fallback from op_swap/field_swap)
   return jitter_const(g, rng, jc);
 }
 
@@ -854,6 +1141,20 @@ SearchDriver::tournament_pick(const std::vector<Scored> &scored,
   return best;
 }
 
+// Mean RAW fitness over the scored set (telemetry for the progress sink; NOT part
+// of the digest or admission). NaN/inf-safe: skips non-finite members; empty -> 0.
+[[nodiscard]] atx::f64 SearchDriver::mean_raw(const std::vector<Scored> &scored) {
+  atx::f64 sum = 0.0;
+  atx::usize n = 0;
+  for (const auto &s : scored) {
+    if (std::isfinite(s.fitness)) {
+      sum += s.fitness;
+      ++n;
+    }
+  }
+  return n ? sum / static_cast<atx::f64>(n) : 0.0;
+}
+
 // dedup_pct + admitted candidates (top survivors of the final generation by
 // RAW fitness — same ordering as the structural elite carry, so the run's
 // reported best matches what was preserved across generations). trial_count ==
@@ -874,6 +1175,37 @@ void SearchDriver::finalize(const std::vector<Scored> &scored, const CanonSet &c
     res.admitted_candidates.push_back(scored[i].genome.clone());
     res.admitted_candidates.back().canon_hash = scored[i].genome.canon_hash;
   }
+}
+
+// ----- population checkpoint helpers (resumable-discover, Task 1) ------------
+
+std::vector<std::string>
+SearchDriver::serialize_population(const std::vector<Genome> &pop) const {
+  std::vector<atx::usize> order(pop.size());
+  for (atx::usize i = 0; i < pop.size(); ++i) {
+    order[i] = i;
+  }
+  std::sort(order.begin(), order.end(),
+            [&](atx::usize a, atx::usize b) { return detail::canon_less(pop[a], pop[b]); });
+  std::vector<std::string> out;
+  out.reserve(pop.size());
+  for (atx::usize i : order) {
+    out.push_back(alpha::unparse(pop[i].ast));
+  }
+  return out;
+}
+
+atx::core::Result<std::vector<Genome>>
+SearchDriver::deserialize_population(const std::vector<std::string> &exprs) const {
+  std::vector<Genome> out;
+  out.reserve(exprs.size());
+  for (const auto &src : exprs) {
+    ATX_TRY(auto ast, alpha::parse_expr(src, lib_));
+    ATX_TRY(auto g, analyze_into(std::move(ast)));
+    g.canon_hash = canonical_hash(g);
+    out.push_back(std::move(g));
+  }
+  return atx::core::Ok(std::move(out));
 }
 
 } // namespace atx::engine::factory

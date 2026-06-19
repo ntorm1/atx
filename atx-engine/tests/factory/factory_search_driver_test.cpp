@@ -148,7 +148,6 @@ struct Lcg {
   cfg.elites = 2;
   cfg.k_tournament = 3;
   cfg.p_cross = 0.5;
-  cfg.novelty_w = 0.1;
   return cfg;
 }
 

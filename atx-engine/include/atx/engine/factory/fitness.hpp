@@ -84,12 +84,17 @@ namespace atx::engine::factory {
 //
 //  S4.1 ships three objectives {wq, diversify, robust} (a re-projection of the
 //  existing FitnessReport fields — NO new fitness math). The capacity is sized to
-//  5 to leave room for S4.2 (behavioral novelty) and S4.3 (a pre-negated cost
-//  objective) WITHOUT touching this constant or any struct layout again. The
-//  std::array<f64, kMaxObjectives> is a fixed-size, allocation-free inline buffer
-//  — it carries through Scored (search_driver.hpp) into the NSGA-II ObjMatrix.
+//  6 to leave room for S4.2 (behavioral novelty), S4.3 (a pre-negated cost
+//  objective), and S4.4 (parsimony) WITHOUT touching this constant or any struct
+//  layout again. The std::array<f64, kMaxObjectives> is a fixed-size,
+//  allocation-free inline buffer — it carries through Scored (search_driver.hpp)
+//  into the NSGA-II ObjMatrix.
 // =========================================================================
-inline constexpr atx::usize kMaxObjectives = 5;
+inline constexpr atx::usize kMaxObjectives = 6;
+// Objective-slot indices (NSGA-II maximizes every column; inactive columns MUST be
+// uniform across genomes -> inert). 0 wq, 1 diversify, 2 robust, 3 novelty,
+// 4 -cost_bps, 5 -node_count (parsimony).
+inline constexpr atx::usize kObjParsimony = 5;
 
 // =========================================================================
 //  Reduce — how corr_to_pool folds the per-member |corr| over the pool.
@@ -195,7 +200,7 @@ struct FitnessReport {
   atx::f64 dsr;
   atx::f64 haircut_sharpe;
   atx::f64 cost_bps{};                               // S4.3 book round-trip cost (0 if cost off)
-  std::array<atx::f64, kMaxObjectives> objectives{}; // {wq, diversify, robust, _, -cost_bps}
+  std::array<atx::f64, kMaxObjectives> objectives{}; // {wq, diversify, robust, novelty, -cost_bps, -node_count}
   atx::u8 n_objectives{0};                           // live leading entries
   std::vector<atx::f64> descriptor{};                // S4.2 OOS PnL profile (phenotype)
 };

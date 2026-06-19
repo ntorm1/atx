@@ -14,7 +14,7 @@
 //  Why a WRAPPER (not an extended ResearchDriver)
 // ===========================================================================
 //  ResearchDriver::run already owns mine -> multi-objective gate (the SearchConfig
-//  knobs: objective_mode / novelty_w / fitness.target_aum) -> robustness gate (the
+//  knobs: objective_mode / enable_behavioral_novelty / fitness.target_aum) -> robustness gate (the
 //  S4.4b seam S4.5 filled) -> library admit, and emits the F1 engine fingerprint
 //  (digest + manifest_version_id). RobustResearchDriver REUSES it VERBATIM over the
 //  visible panel and layers ONLY the two downstream, read-only stages (combine +

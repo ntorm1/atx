@@ -27,8 +27,8 @@
 //         signal), so the single best-raw genome ALWAYS survives — and because its
 //         raw fitness is cached by canon_hash, it re-scores to the identical value
 //         next gen, making best_fitness_per_gen non-decreasing BY CONSTRUCTION.
-//     (g) novelty pressure: novelty_penalize subtracts a deterministic
-//         canonical-structure distance term so the population does not collapse.
+//     (g) novelty pressure: the behavioral-novelty objective (S4.2) drives
+//         phenotypic diversity when enable_behavioral_novelty is active.
 //
 // ===========================================================================
 //  F1 — SEED BY ID. Every RNG draw comes from a Xoshiro256pp whose seed is a pure
@@ -63,7 +63,6 @@
 // loop; the cold compile path may allocate, documented).
 
 #include <array>         // std::array (per-genome multi-objective vector, S4.1)
-#include <bit>           // std::popcount (canonical-structure novelty distance)
 #include <memory>        // std::unique_ptr (per-worker Engine vector, Tier 4)
 #include <span>          // std::span
 #include <string>        // std::string (seed-expression source input)
@@ -93,6 +92,8 @@
 #include "atx/engine/factory/mutation.hpp"   // factory::op_swap/field_swap/jitter_const
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
+#include "atx/engine/factory/search_state.hpp"    // factory::CachedScore (fitness-cache value)
+#include "atx/engine/factory/search_progress.hpp" // factory::SearchProgressSink, SearchResumeState (resumable-discover)
 
 namespace atx::engine::factory {
 
@@ -122,29 +123,33 @@ struct SearchConfig {
   atx::usize elites{2};       // top-k carried verbatim each generation
   atx::usize k_tournament{3}; // tournament size for parent selection
   atx::f64 p_cross{0.5};      // P(crossover) vs P(mutation) per child
-  atx::f64 novelty_w{0.1};    // weight of the anti-collapse novelty penalty
   atx::u16 max_lookback{250}; // crossover/jitter window cap (in-grammar rail)
   atx::usize n_workers{1};    // DetPool fan-out; affects digest SPEED, never bits
-  // S4.2 behavioral / phenotypic diversity knobs. The behavioral novelty objective
-  // (objectives[3]) is ACTIVE only when objective_mode == MultiObjective AND
-  // novelty_w > 0 (the same lever that gates the ScalarRaw canonical-hash penalty;
-  // the pinned ScalarRaw path sets novelty_w == 0, so neither fires and the
-  // boundary pin holds). `behavior_metric` selects the profile distance (PnlCorr
-  // default; RankIc fork). `behavior_archive_cap` is the FIFO capacity C of the
-  // past-elite descriptor archive; `behavior_k` is the k-nearest count for the
-  // mean-distance novelty. Defaults are a documented, deterministic starting point.
+  // S4.2 behavioral / phenotypic diversity. The behavioral novelty objective
+  // (objectives[3]) is ACTIVE iff objective_mode == MultiObjective AND
+  // enable_behavioral_novelty. This is the ONLY novelty mechanism: the old
+  // structural canonical-hash penalty (a Hamming distance over hashes) was unsound
+  // and is removed. `behavior_metric` selects the profile distance (PnlCorr default;
+  // RankIc fork). `behavior_archive_cap` is the FIFO capacity C of the past-elite
+  // descriptor archive; `behavior_k` is the k-nearest count for the novelty mean.
+  bool enable_behavioral_novelty{true};
   BehaviorMetric behavior_metric{BehaviorMetric::PnlCorr};
   atx::usize behavior_archive_cap{64}; // C: past-elite behavioral descriptor ring
   atx::usize behavior_k{3};            // k-nearest neighbours for the novelty mean
   // S4.1 selection mode. Defaults to MultiObjective (the new behavior); the
   // boundary-pin / replay tests set ScalarRaw to reproduce the frozen pre-S4 path.
   ObjectiveMode objective_mode{ObjectiveMode::MultiObjective};
-  // S3.5 generation wire (plan §0.5/§0.6). When ON, init_population fills any
-  // population slot the seed expressions do NOT cover via generate_genome (the
-  // type-correct grammar sampler), and the immigration path reuses it. GATED OFF
-  // for the pinned ScalarRaw path so gen-0 reproduces the pre-S4 seed-cycle fill
-  // EXACTLY (the digest stays byte-identical). `gen_cfg` is the sampler config.
-  bool seed_from_grammar{false};
+  // S3.5 generation wire (plan §0.5/§0.6). When ON (the new default), init_population
+  // fills any population slot the seed expressions do NOT cover via ramped grammar
+  // sampling (varied depth across [init_min_depth, gen_cfg.max_depth]) with
+  // canon-hash dedup, so gen-0 starts diverse. The boundary pin / ScalarRaw golden
+  // test sets this to false to reproduce the pre-Task-3 cycle-fill EXACTLY (the
+  // digest stays byte-identical). `gen_cfg` is the sampler config.
+  bool seed_from_grammar{true};
+  // Ramped init: the grammar fill samples tree depth across [init_min_depth,
+  // gen_cfg.max_depth] per slot (a ramped-half-and-half analogue) and resamples on
+  // a canon-hash collision (bounded retries) so gen-0 is maximally distinct.
+  atx::usize init_min_depth{2};
   GenConfig gen_cfg{};  // grammar-sampler knobs (max_lookback/depth, fields)
   FitnessCfg fitness{}; // CPCV geometry + trial-count base for deflation
   // op_swap is ENABLED (S3.4 fixed the root cause). The original defect — a swap
@@ -155,6 +160,25 @@ struct SearchConfig {
   // skipping hparam/record ops, so a swap only ever samples a contract-compatible
   // op. The alpha_op_swap_stress harness proves no abort across every bucket.
   bool enable_op_swap{true};
+  // Parsimony pressure: when ON (MultiObjective only), objectives[kObjParsimony] =
+  // -node_count makes a smaller, equally-fit tree Pareto-dominate a larger one.
+  // ScalarRaw ignores objectives, so this never perturbs the boundary pin.
+  bool enable_parsimony{true};
+  // Diversity insurance: replace the worst min(n_immigrants, n_children) non-elite
+  // child slots each generation with fresh grammar genomes (seed_for-seeded -> F1).
+  // 0 disables (legacy).
+  atx::usize n_immigrants{2};
+  // Stagnation early-stop: stop after this many generations with no strict
+  // best-raw improvement. 0 disables (run the full budget; legacy behavior).
+  atx::usize stagnation_patience{4};
+  // Adaptive operator selection: bias each generation's mutation-operator
+  // distribution toward operators that produced fitness gains last generation.
+  // OFF reproduces the fixed-uniform (% 3) draw bit-for-bit (boundary pin).
+  bool adaptive_operators{true};
+  // Jitter annealing: scale jitter_const's sigma by jitter_anneal_decay^gen
+  // (coarse early, fine late). OFF keeps the constant JitterCfg.sigma.
+  bool jitter_anneal{true};
+  atx::f64 jitter_anneal_decay{0.9};
 };
 
 // =========================================================================
@@ -209,16 +233,6 @@ namespace detail {
   return a.ast.roots().front().root < b.ast.roots().front().root;
 }
 
-// canonical_distance — a deterministic behavioral-distance proxy: the Hamming
-// distance of two genomes' canonical hashes (popcount of the XOR), normalized to
-// [0,1] over 64 bits. Two structurally-identical genomes => 0; genuinely-different
-// structures => a positive, value-based, RNG-free distance. Used by
-// novelty_penalize to keep the population diverse without any extra evaluation.
-[[nodiscard]] inline atx::f64 canonical_distance(atx::u64 a, atx::u64 b) noexcept {
-  const int bits = std::popcount(a ^ b);
-  return static_cast<atx::f64>(bits) / 64.0;
-}
-
 } // namespace detail
 
 // =========================================================================
@@ -227,7 +241,7 @@ namespace detail {
 struct Scored {
   Genome genome;
   atx::f64 fitness{0.0};   // pool_aware_fitness raw (the maximized signal)
-  atx::f64 selection{0.0}; // fitness MINUS the novelty penalty (used for ranking)
+  atx::f64 selection{0.0}; // equals fitness (ScalarRaw tournament ranking; no structural penalty)
   // S4.1 multi-objective fields. `objectives` is the cached FitnessReport vector
   // {wq, diversify, robust, ...}; `rank`/`crowding` are filled ONCE per generation
   // by assign_pareto_ranks (NSGA-II over `objectives`) BEFORE any reproduction RNG
@@ -243,24 +257,9 @@ struct Scored {
   std::vector<atx::f64> descriptor{};
 };
 
-// =========================================================================
-//  CachedScore — the per-canon_hash fitness cache value (F6 throughput, S4.1).
-//
-//  Pre-S4 this cache held only the scalar `raw`. S4.1 also caches the multi-
-//  objective vector so a dedup-hit reuses the SAME objectives (not just raw)
-//  without a re-eval — the MultiObjective ranking is then identical for an
-//  equivalent structure however many times it recurs. Trivial aggregate.
-// =========================================================================
-struct CachedScore {
-  atx::f64 raw{0.0};
-  std::array<atx::f64, kMaxObjectives> objectives{};
-  atx::u8 n_objectives{0};
-  // S4.2: the candidate's behavioral descriptor (OOS PnL profile). Pure function of
-  // (genome, panel) -> canon-cacheable: a dedup-hit reuses this WITHOUT a re-eval.
-  // The behavioral NOVELTY computed from it is population-relative and is recomputed
-  // fresh each generation (NOT cached). Empty if the candidate's fitness errored.
-  std::vector<atx::f64> descriptor{};
-};
+// CachedScore — the per-canon_hash fitness cache value (F6 throughput, S4.1) — is
+// defined in search_state.hpp (extracted so search_progress.hpp can serialize the
+// fitness_cache without a circular include). Re-included here below.
 
 // =========================================================================
 //  SearchDriver — the seeded population loop (§4.7).
@@ -283,7 +282,17 @@ public:
 
   // Run the deterministic search. Same cfg + same pool => byte-identical result
   // (F1). `pool` is borrowed read-only for the marginal-correlation fitness term.
-  [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool);
+  //
+  // `sink` (optional): invoked once per completed generation with a
+  // GenerationSnapshot so a caller may checkpoint progress; an Err return aborts
+  // the run cleanly (well-formed partial result). `resume` (optional): when
+  // well-formed, starts the loop at resume->start_generation from
+  // resume->population instead of init_population. With BOTH nullptr (the default)
+  // run() is the byte-identical legacy path — the only added work is two
+  // null-pointer checks (F1/F2 off-path invariant, tested by OffPathByteIdentical).
+  [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool,
+                                 SearchProgressSink *sink = nullptr,
+                                 const SearchResumeState *resume = nullptr);
 
 private:
   // ----- (1) init_population -------------------------------------------------
@@ -312,20 +321,10 @@ private:
                       parallel::DetPool &det_pool,
                       std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res);
 
-  // ----- (3) novelty_penalize ------------------------------------------------
-  // Subtract a deterministic behavioral-distance term from each genome's selection
-  // fitness: the LESS novel a genome is (the smaller its mean canonical-structure
-  // distance to the rest of the population), the LARGER the penalty — so the search
-  // is pushed off a single collapsing motif. Distance is the normalized Hamming
-  // distance of canonical hashes (RNG-free, value-based, order-independent), so
-  // this is fully deterministic and F1-safe.
-  void novelty_penalize(std::vector<Scored> &scored, const combine::AlphaStore &pool,
-                        const SearchConfig &cfg) const;
-
   // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
   // Compute the population-relative BEHAVIORAL novelty for every Scored and write
   // it into objectives[3], bumping n_objectives to 4 — but ONLY when the objective
-  // is ACTIVE (objective_mode == MultiObjective && novelty_w > 0). Runs AFTER all
+  // is ACTIVE (objective_mode == MultiObjective && enable_behavioral_novelty). Runs AFTER all
   // descriptors for the generation are known and BEFORE assign_pareto_ranks (so the
   // 4th objective enters NSGA-II this generation). For genome i the novelty is the
   // mean behavioral_distance to the k nearest descriptors in (population minus self)
@@ -349,7 +348,7 @@ private:
                              BehavioralArchive &archive);
 
   // True iff the S4.2 behavioral objective is active for this config (the single
-  // activation gate, referenced by every S4.2 seam). MultiObjective && novelty_w>0.
+  // activation gate, referenced by every S4.2 seam). MultiObjective && enable_behavioral_novelty.
   [[nodiscard]] static bool behavioral_active(const SearchConfig &cfg) noexcept;
 
   // ----- (4) reproduce -------------------------------------------------------
@@ -365,9 +364,19 @@ private:
   // SAME raw value next gen — makes best_fitness_per_gen non-decreasing BY
   // CONSTRUCTION. (Tournament parent selection below still uses .selection, the
   // explore/anti-collapse pressure — only the elite carry switches to raw.)
+  // Task 5: `op_weights` are the FIXED per-generation operator weights (computed
+  // serially by the caller before this call, so every child draws its operator
+  // against the same weights — F1-safe). `child_ops` is filled (sized n_children)
+  // with each child slot's chosen mutation-operator id (0=op_swap, 1=field_swap,
+  // 2=jitter; 0xFF for a non-mutation child — crossover, immigrant, or elite-clone
+  // fallback) so the caller can credit operators by realized fitness gain next gen.
+  // Each slot is written by the single shard that produced it (no race). Both are
+  // inert (uniform weights, ignored ids) when cfg.adaptive_operators is false.
   [[nodiscard]] std::vector<Genome> reproduce(const std::vector<Scored> &scored,
                                               const SearchConfig &cfg, atx::usize gen,
-                                              parallel::DetPool &det_pool, SearchResult &res);
+                                              parallel::DetPool &det_pool, SearchResult &res,
+                                              const std::array<atx::f64, 3> &op_weights,
+                                              std::vector<atx::u8> &child_ops);
 
   // Produce one child from the canonical-id-ordered parent pool with a single
   // id-seeded rng: bernoulli(p_cross) ? crossover(two tournament picks) :
@@ -375,7 +384,9 @@ private:
   // Ok child is F5-valid; an Err propagates (the caller substitutes an elite).
   [[nodiscard]] atx::core::Result<Genome> make_child(const std::vector<Scored> &scored,
                                                      const std::vector<atx::usize> &canon_order,
-                                                     const SearchConfig &cfg, Xoshiro256pp &rng);
+                                                     const SearchConfig &cfg, Xoshiro256pp &rng,
+                                                     const std::array<atx::f64, 3> &op_w,
+                                                     atx::usize gen, atx::u8 &op_used);
 
   // Pick one type-safe mutation by a seeded draw, fallback-cascading so a
   // degenerate genome (e.g. no literal to jitter) still yields a child when ANY
@@ -385,8 +396,17 @@ private:
   // root cause). The seeded draw uses a FIXED modulus (3) regardless of the gate
   // so the RNG stream — and therefore the replay (F1) — does not shift when the
   // gate flips; a drawn-but-disabled op_swap simply falls through to jitter_const.
+  //
+  // Task 5: under cfg.adaptive_operators the operator is drawn weighted by `op_w`
+  // (still ONE rng word, flag-branched so OFF keeps the literal % 3 stream); under
+  // cfg.jitter_anneal the jitter sigma is scaled by jitter_anneal_decay^gen. The
+  // selected operator's id (0=op_swap,1=field_swap,2=jitter) is reported via
+  // `op_used` for the per-generation credit accumulator (caller ignores it when
+  // adaptation is off).
   [[nodiscard]] atx::core::Result<Genome> mutate_one(const Genome &g, const SearchConfig &cfg,
-                                                     Xoshiro256pp &rng);
+                                                     Xoshiro256pp &rng,
+                                                     const std::array<atx::f64, 3> &op_w,
+                                                     atx::usize gen, atx::u8 &op_used);
 
   // ----- selection helpers ---------------------------------------------------
 
@@ -452,11 +472,32 @@ private:
   // structural elite carry guarantees it is non-decreasing across generations.
   [[nodiscard]] static atx::f64 best_raw(const std::vector<Scored> &scored);
 
+  // Mean RAW fitness over the scored set (telemetry for the progress sink; NOT part
+  // of the digest/admission). NaN/inf-safe: skips non-finite; empty -> 0.
+  [[nodiscard]] static atx::f64 mean_raw(const std::vector<Scored> &scored);
+
   // dedup_pct + admitted candidates (top survivors of the final generation by
   // RAW fitness — same ordering as the structural elite carry, so the run's
   // reported best matches what was preserved across generations). trial_count ==
   // the distinct structures scored (CanonSet).
   void finalize(const std::vector<Scored> &scored, const CanonSet &canon, SearchResult &res) const;
+
+  // ----- population checkpoint helpers (resumable-discover, Task 1) ----------
+
+  // Render each genome to its canonical DSL string, emitted in canonical-id
+  // order (sorted by detail::canon_less) so the blob is deterministic and
+  // insertion-order-independent (F1/F2 contracts).
+  [[nodiscard]] std::vector<std::string>
+  serialize_population(const std::vector<Genome> &pop) const;
+
+  // Parse + analyze each DSL string back into an F5-valid Genome with its
+  // canon_hash set. Propagates the first parse/analyze error (ATX_TRY).
+  [[nodiscard]] atx::core::Result<std::vector<Genome>>
+  deserialize_population(const std::vector<std::string> &exprs) const;
+
+  // Test-access friend for the population checkpoint round-trip test.
+  // Unqualified: introduces SearchProgressTestAccess into atx::engine::factory.
+  friend struct SearchProgressTestAccess;
 
   // SAFETY: each member borrows a const OpSig* from `lib_`; `lib_`/`panel_` etc.
   // are borrowed for the driver's lifetime and must outlive every produced genome.

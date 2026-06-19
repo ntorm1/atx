@@ -64,6 +64,8 @@ struct RunConfig {
                                        // Digest-invariant (F1): affects speed/memory, never bits.
     double      oos_fraction  = 0.0;   // --oos-fraction  (0 = off; fraction of the time axis held out for OOS admission)
     double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
+    std::string run_db;                // --run-db  (SQLite progress DB path; "" = off, no store I/O)
+    bool        resume        = false; // --resume  (requires --run-db; continue an incomplete matching run)
 
     // -- combine --
     std::string alphas;                // --alphas
