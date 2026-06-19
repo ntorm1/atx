@@ -581,17 +581,36 @@ make_whippy_combo_panel(const fs::path& out, atx::usize M, atx::usize D)
 }
 
 // ---------------------------------------------------------------------------
+// Helper: check whether a StageResult::kvs contains a key.
+// ---------------------------------------------------------------------------
+static bool kvs_has_key(
+    const std::vector<std::pair<std::string, std::string>>& kvs,
+    const std::string& key)
+{
+    for (const auto& kv : kvs) {
+        if (kv.first == key) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Test 7: TradeRateUnsetIsByteIdenticalToFullStep — no --trade-rate (i.e.
 // set_flags does NOT contain "trade-rate") produces the same books digest as
 // explicitly setting --trade-rate 1.0 (set_flags DOES contain "trade-rate").
 // Both should follow the full-step code path, so digests must be equal.
+//
+// Additionally asserts the off-path digest-line kvs guarantee:
+//   - Unset path: StageResult::kvs must NOT contain "trade_rate".
+//   - Set path (--trade-rate 1.0): StageResult::kvs MUST contain "trade_rate".
+//   - Set path (--trade-rate 0.5): StageResult::kvs MUST contain "trade_rate".
 // ---------------------------------------------------------------------------
 TEST_F(AtxImplOptimize, TradeRateUnsetIsByteIdenticalToFullStep) {
-    const fs::path books_unset = tmp_dir_ / "books_tr_unset.bin";
-    const fs::path books_full  = tmp_dir_ / "books_tr_full.bin";
+    const fs::path books_unset   = tmp_dir_ / "books_tr_unset.bin";
+    const fs::path books_full    = tmp_dir_ / "books_tr_full.bin";
+    const fs::path books_partial = tmp_dir_ / "books_tr_half.bin";
 
     // Run A: trade-rate unset (legacy off-path).
-    {
+    atx::core::Result<atx::impl::StageResult> r_unset = [&]() {
         atx::impl::RunConfig cfg;
         cfg.panel         = research_path_;
         cfg.combo         = combo_path_;
@@ -601,12 +620,12 @@ TEST_F(AtxImplOptimize, TradeRateUnsetIsByteIdenticalToFullStep) {
         cfg.gross         = 1.0;
         cfg.name_cap      = 0.5;
         // trade_rate field is default 1.0 but "trade-rate" is NOT in set_flags.
-        auto r = atx::impl::run_optimize(cfg);
-        ASSERT_TRUE(r.has_value()) << r.error().message();
-    }
+        return atx::impl::run_optimize(cfg);
+    }();
+    ASSERT_TRUE(r_unset.has_value()) << r_unset.error().message();
 
     // Run B: trade-rate 1.0 explicitly set.
-    {
+    atx::core::Result<atx::impl::StageResult> r_full = [&]() {
         atx::impl::RunConfig cfg;
         cfg.panel         = research_path_;
         cfg.combo         = combo_path_;
@@ -617,11 +636,41 @@ TEST_F(AtxImplOptimize, TradeRateUnsetIsByteIdenticalToFullStep) {
         cfg.name_cap      = 0.5;
         cfg.trade_rate    = 1.0;
         cfg.set_flags.emplace("trade-rate");
-        auto r = atx::impl::run_optimize(cfg);
-        ASSERT_TRUE(r.has_value()) << r.error().message();
-    }
+        return atx::impl::run_optimize(cfg);
+    }();
+    ASSERT_TRUE(r_full.has_value()) << r_full.error().message();
 
-    // Both files must be byte-identical.
+    // Run C: trade-rate 0.5 explicitly set (partial step).
+    atx::core::Result<atx::impl::StageResult> r_half = [&]() {
+        atx::impl::RunConfig cfg;
+        cfg.panel         = research_path_;
+        cfg.combo         = combo_path_;
+        cfg.books_out     = books_partial.string();
+        cfg.position_mode = true;
+        cfg.rebalance     = "weekly";
+        cfg.gross         = 1.0;
+        cfg.name_cap      = 0.5;
+        cfg.trade_rate    = 0.5;
+        cfg.set_flags.emplace("trade-rate");
+        return atx::impl::run_optimize(cfg);
+    }();
+    ASSERT_TRUE(r_half.has_value()) << r_half.error().message();
+
+    // --- kvs assertions ---
+    // Off-path (unset): "trade_rate" must NOT appear in the digest-line kvs.
+    EXPECT_FALSE(kvs_has_key(r_unset->kvs, "trade_rate"))
+        << "off-path (no --trade-rate): StageResult::kvs must NOT contain 'trade_rate'";
+
+    // Explicitly set 1.0: "trade_rate" MUST appear.
+    EXPECT_TRUE(kvs_has_key(r_full->kvs, "trade_rate"))
+        << "--trade-rate 1.0: StageResult::kvs must contain 'trade_rate'";
+
+    // Explicitly set 0.5: "trade_rate" MUST appear.
+    EXPECT_TRUE(kvs_has_key(r_half->kvs, "trade_rate"))
+        << "--trade-rate 0.5: StageResult::kvs must contain 'trade_rate'";
+
+    // --- byte-identical check for unset vs full-step ---
+    // Both files must be byte-identical (same code path, no partial blend).
     std::ifstream fa(books_unset.string(), std::ios::binary);
     std::ifstream fb(books_full.string(),  std::ios::binary);
     ASSERT_TRUE(fa.is_open()) << "could not open books_unset";

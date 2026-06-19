@@ -175,9 +175,12 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
             }
         }
 
-        // Build a position-mode-specific StageResult that includes trade_rate in kvs.
+        // Build a position-mode-specific StageResult that includes trade_rate in kvs
+        // only when the flag was explicitly provided, preserving the off-path
+        // byte-identical digest guarantee when --trade-rate is absent.
         ATX_TRY(auto sr, write_books(books_flat, turnover, cost_bps));
-        sr.kvs.emplace_back("trade_rate", std::to_string(trade_rate_val));
+        if (cfg.set_flags.count("trade-rate"))
+            sr.kvs.emplace_back("trade_rate", std::to_string(trade_rate_val));
         return atx::core::Ok(std::move(sr));
     }
 
