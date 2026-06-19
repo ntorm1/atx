@@ -491,6 +491,19 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       }
       // On Err: score_slot[j] stays default-constructed (raw=0, empty descriptor),
       // matching the prior code's behaviour for a fitness-error candidate.
+      // S-quality: parsimony objective (slot 5). Set from the genome's node count
+      // for the representative regardless of fitness success (node count is a pure
+      // structural value, canon-cacheable). Bump n_objectives to cover slot 5; the
+      // intervening slots (3 novelty, 4 cost) stay at their inert defaults until
+      // their own passes fill them. MultiObjective-only effect (ScalarRaw ignores
+      // objectives). Errored genomes get a node-count value too, but cannot be
+      // ADMITTED (factory drops un-evaluable candidates), so no perverse incentive.
+      if (cfg.enable_parsimony) {
+        score_slot[j].objectives[kObjParsimony] =
+            -static_cast<atx::f64>(to_score[j]->ast.nodes().size());
+        score_slot[j].n_objectives = static_cast<atx::u8>(
+            std::max<atx::usize>(score_slot[j].n_objectives, kObjParsimony + 1U));
+      }
     }
   });
 

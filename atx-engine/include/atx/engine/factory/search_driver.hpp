@@ -155,6 +155,10 @@ struct SearchConfig {
   // skipping hparam/record ops, so a swap only ever samples a contract-compatible
   // op. The alpha_op_swap_stress harness proves no abort across every bucket.
   bool enable_op_swap{true};
+  // Parsimony pressure: when ON (MultiObjective only), objectives[kObjParsimony] =
+  // -node_count makes a smaller, equally-fit tree Pareto-dominate a larger one.
+  // ScalarRaw ignores objectives, so this never perturbs the boundary pin.
+  bool enable_parsimony{true};
 };
 
 // =========================================================================

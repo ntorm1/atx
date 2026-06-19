@@ -65,4 +65,24 @@ TEST(SearchNoveltyKnob, BehavioralNoveltyTogglesDigest) {
   // Behavioral novelty is a live 4th objective when ON -> different survivor set/digest.
   EXPECT_NE(r_on.digest, r_off.digest);
 }
+
+// Parsimony pressure: with it ON, the final survivors are no LARGER (total node
+// count) than with it OFF, on the same seed/panel — and strictly smaller on at
+// least one run where bloat occurs. Asserted as: mean survivor node-count(ON) <=
+// mean survivor node-count(OFF).
+TEST(Parsimony, ShrinksOrTiesSurvivors) {
+  Fixture fx; auto d = fx.driver();
+  AlphaStore pool_on{}, pool_off{};
+  SearchConfig on = base_cfg(4242);
+  on.objective_mode = ObjectiveMode::MultiObjective;
+  on.generations = 6; on.enable_parsimony = true;
+  SearchConfig off = on; off.enable_parsimony = false;
+  const auto r_on  = d.run(on,  pool_on);
+  const auto r_off = d.run(off, pool_off);
+  auto mean_nodes = [](const std::vector<Genome>& gs) {
+    if (gs.empty()) return 0.0; atx::usize tot=0;
+    for (auto& g : gs) tot += g.ast.nodes().size();
+    return static_cast<double>(tot)/static_cast<double>(gs.size()); };
+  EXPECT_LE(mean_nodes(r_on.admitted_candidates), mean_nodes(r_off.admitted_candidates) + 1e-9);
+}
 } // namespace atx::engine::factory
