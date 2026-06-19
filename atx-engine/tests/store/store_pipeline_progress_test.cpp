@@ -87,4 +87,29 @@ TEST(PipelineRecorder, MarkFailedDeletedRunRejected) {
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::NotFound);
 }
 
+// IMPORTANT-1 regression: latest_population_blob must verify state_hash.
+// Tamper the blob in-place (leaving the original state_hash intact); the
+// recomputed hash will differ and latest_population_blob must return Err(Internal).
+TEST(PipelineRecorder, LatestPopulationBlobRejectsTamperedCheckpoint) {
+  auto db = StoreDb::open_memory(); ASSERT_TRUE(db.has_value());
+  auto rec = PipelineRecorder::begin(db->db(), MakeRow(777));
+  ASSERT_TRUE(rec.has_value());
+  // Save a legitimate checkpoint for generation 0.
+  ASSERT_TRUE(rec->save_checkpoint(0, "rank(close)\ndelta(close,5)", 2,
+                                   1.0, 0.5, 2, 2, 100, 1001).has_value());
+  // Verify it reads back correctly before tampering.
+  auto before = rec->latest_population_blob();
+  ASSERT_TRUE(before.has_value());
+  EXPECT_EQ(*before, "rank(close)\ndelta(close,5)");
+  // Tamper: overwrite population_blob with garbage, leave state_hash untouched.
+  auto* tamper = *db->db().prepare_cached(
+      "UPDATE pipeline_checkpoint SET population_blob='TAMPERED'"
+      " WHERE pipeline_run_id='run-777' AND generation=0");
+  ASSERT_EQ(*tamper->step(), atx::core::db::Statement::Step::Done);
+  // Now latest_population_blob must detect the hash mismatch.
+  auto result = rec->latest_population_blob();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::Internal);
+}
+
 }  // namespace atx::engine::store

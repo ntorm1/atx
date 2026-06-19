@@ -260,9 +260,11 @@ public:
   }
 
   /// SELECT the latest population blob, Err(NotFound) if none.
+  /// Verifies the stored state_hash against population_hash(blob); returns
+  /// Err(Internal) if they do not match (corrupt checkpoint blob).
   [[nodiscard]] atx::core::Result<std::string> latest_population_blob() const {
     ATX_TRY(auto* stmt, db_.prepare_cached(
-        "SELECT population_blob FROM pipeline_checkpoint"
+        "SELECT population_blob, state_hash FROM pipeline_checkpoint"
         " WHERE pipeline_run_id=?1 ORDER BY generation DESC LIMIT 1"));
     ATX_TRY_VOID(stmt->bind(1, pipeline_run_id_));
     ATX_TRY(const auto step, stmt->step());
@@ -270,7 +272,14 @@ public:
       return atx::core::Err(atx::core::ErrorCode::NotFound,
                             "PipelineRecorder::latest_population_blob: no checkpoint");
     }
-    return atx::core::Ok(std::string(stmt->column_text(0)));
+    std::string blob{stmt->column_text(0)};
+    const auto stored_hash = static_cast<atx::u64>(stmt->column_int(1));
+    if (population_hash(blob) != stored_hash) {
+      return atx::core::Err(atx::core::ErrorCode::Internal,
+                            "PipelineRecorder::latest_population_blob: state_hash mismatch"
+                            " (corrupt checkpoint blob)");
+    }
+    return atx::core::Ok(std::move(blob));
   }
 
   /// UPDATE last_heartbeat_at + updated_at.

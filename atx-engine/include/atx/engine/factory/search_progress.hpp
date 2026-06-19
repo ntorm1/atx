@@ -46,10 +46,12 @@ public:
 
 // Resume directive for SearchDriver::run. When supplied (and well-formed), the
 // loop starts at `start_generation` from `population` (the canonical DSL strings
-// captured in a prior GenerationSnapshot) instead of init_population. The impl
-// validates the blob hash before calling, so a valid resume always succeeds; the
-// driver's deserialize is a backstop that refuses a corrupt/incompatible blob
-// rather than silently restarting from generation 0.
+// captured in a prior GenerationSnapshot) instead of init_population.
+// PipelineRecorder::latest_population_blob verifies the stored checkpoint
+// state_hash against population_hash(blob) before returning the blob; a mismatch
+// returns Err(Internal) which aborts the resume rather than silently resuming
+// from a corrupt population. The driver's deserialize is a further backstop that
+// refuses an incompatible blob rather than silently restarting from generation 0.
 struct SearchResumeState {
   atx::usize start_generation{0};
   std::vector<std::string> population;
