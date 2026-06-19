@@ -83,6 +83,8 @@ add_library(atx-engine STATIC
     src/validation/bias_audit.cpp
     # conviction (S10-1) — continuous [0,1] confidence from DSR/PBO/stability/explainability
     src/combine/conviction.cpp
+    # regime-conditioned combination (S10-3)
+    src/combine/regime_combiner.cpp
     # risk (p2 S8.8a — header/source split: heavy method bodies moved out of the
     # header-only risk module into the library to collapse the include fan-out).
     # NOT auto-globbed — list each src/risk/*.cpp explicitly.
