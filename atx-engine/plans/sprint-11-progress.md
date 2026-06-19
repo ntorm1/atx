@@ -53,17 +53,20 @@ seed). S11-0 records these as TODO seams in the scaffold doc comments so S11-1..
 | Unit  | Status | Commit  | Notes |
 |-------|--------|---------|-------|
 | S11-0 | done   | `9845626` | Opened this ledger; laid down four declaration-only scaffold headers with no logic. atx-core: `linalg/rmt_clean.hpp` (`RmtConfig{Mode::Clip\|RIE, ridge, eps}`, `CleanedCorr{MatX corr, i64 clipped}`, `rmt_clean(const MatX&, f64 q, RmtConfig)`) and new dir `cluster/cluster.hpp` (`Linkage{Ward,Average}`, `Algo{Hierarchical,SpongeSym}`, `ClusterConfig{algo,linkage,k,eps}`, `Clustering{vector<int> cluster_id, i64 n_labels}`, `cluster(const MatX&, ClusterConfig)`). Engine: `alpha/cluster_panel.hpp` (`ClusterPanelConfig{window,recluster_every,k,Residualize{None,CAPM}}`, `ClusterPanel{Snapshot{date,cluster_id,n_labels}, kUnclustered=-1, snapshots, instruments}`, `build_cluster_panel(const Panel&, ClusterPanelConfig)`). Store: `store/cluster_panel.hpp` mirroring `segment_index.hpp` — `ClusterPanelRecord` (panel_id, universe_id, window_start/end, recluster_every, params_hash, asof_date, binary_path, content_hash, algo, k, created_at, created_by_run_id) + `register_panel` / `lookup` / `locate` / `compute_params_hash` declarations. All four free functions are DECLARED only (TODO(S11-1..S11-4)). The atx-core symmetric-matrix type targeted is `MatX` (column-major `Eigen::MatrixXd`), matching pca/spd/solve; failures travel via `Result<T>`. `ClusterScaffold 1/1/0/0` (rides `atx-engine-store-tests`; constructs every scaffold config/result type and asserts the frozen enum + numeric defaults). Builds green under `/W4 /permissive- /WX`-equivalent clang-cl. |
+| S11-1 | done   | `2b12a33` | Implemented `atx::core::linalg::rmt_clean` (header-only/inline in `linalg/rmt_clean.hpp`, matching pca/spd/decompose). Frozen seam honored exactly: `RmtConfig{Mode::Clip\|RIE, ridge=0.0, eps=1e-12}`, `CleanedCorr{MatX corr, i64 clipped=0}`, signature unchanged. Pipeline: symmetrize → optional `ridge`·I → ascending `symmetric_eig` → canonical eigenvector signs (first non-trivial component positive) → MP noise-variance fit (de Prado `findMaxEval`: Gaussian-KDE-vs-MP-PDF SSE minimized by deterministic golden-section search on σ², 80 iters, no RNG) → λ₊ = σ²(1+√q)² → reshape. **Clip** (default): replace every λ≤λ₊ by the Neumaier-averaged sub-edge block (trace-preserving), keep factors. **RIE**: Ledoit-Péché/Bouchaud bulk contraction toward σ²(1+q) with (1−q) damping, renormalized to conserve bulk mass; **guarded to q<1 (T>N)** else falls back to Clip with an identical `clipped` count (no extra flag). Output re-symmetrized, rescaled to unit diagonal, PSD-repaired (clamp negatives, no eigenvalue < −1e-12). Added a local `detail::NeumaierSum` (compensated summation; no shared atx-core helper existed) and `detail::canonicalize_signs`. No fields ADDED to the frozen structs. `RmtClean 12/12/0/0` (new `atx-core/tests/rmt_clean_test.cpp` wired into `atx-core-tests`): non-square/empty/q≤0 → InvalidArgument, planted-factor clip keeps the outlier (clipped==N−1), trace preserved (≤1e-9), PSD min-eig ≥ −1e-12, unit diagonal, identity near-no-op at q→0, RIE q≥1 byte-identical to Clip, RIE q<1 PSD+trace≈N, two-runs byte-identical, pinned FNV-1a-64 digest (`17595468881287217971`, same offset/prime as the store fingerprint scheme — atx-core `hash.hpp` wyhash is not cross-platform-stable so a local FNV-1a-64 over column-major double bytes is used). Full atx-core suite green (836 passed / 1 env-skipped) under `/W4 /permissive- /WX`-equivalent clang-cl. |
 
 ## Sprint S11 commits
 
 | Commit  | Unit | Test counts |
 |---------|------|-------------|
 | `9845626` | S11-0 | ClusterScaffold 1/1/0/0 |
+| `2b12a33` | S11-1 | RmtClean 12/12/0/0 |
 
 ## What Sprint S11 proves / Next sprint priorities
 
 S11-0 freezes the clustering seams (Pattern B: numerics in atx-core, consumed by the engine and
 indexed by the store) so S11-1 (RMT cleaner) and S11-2 (clusterer) can be implemented against stable
 `MatX`-typed signatures, and S11-3/S11-4 can bind to the engine result type and store record without
-re-litigating the shapes. The determinism contract is recorded in each header as TODO seams. Next:
-implement S11-1, then S11-2.
+re-litigating the shapes. The determinism contract is recorded in each header as TODO seams. S11-1
+landed the RMT cleaner (MP-fit clip + guarded RIE) against the frozen seam. Next: implement S11-2
+(clusterer), which consumes a cleaned `MatX` correlation from `rmt_clean`.
