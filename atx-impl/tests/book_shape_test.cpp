@@ -30,10 +30,12 @@ TEST(BookShape, NameCapBinds) {
 
 // Infeasible cap (cap * n_live < gross): every name pins at the cap and the book
 // cannot reach the target gross. The cap wins; Sigma|w| = n_live*cap < gross.
+// Fixture: 3 LIVE names (index 1 is dead) -> 3*0.30 = 0.90 < 1.0 gross, infeasible.
 TEST(BookShape, InfeasibleCapPinsAtCap) {
-  std::vector<f64> w = {10.0, 0.0, -5.0, -5.0};   // 3 active names
-  std::vector<std::uint8_t> live = {1,1,1,1};
+  std::vector<f64> w = {10.0, 0.0, -5.0, -5.0};
+  std::vector<std::uint8_t> live = {1,0,1,1};            // index 1 dead -> 3 active names
   atx::impl::shape_book(w, live, /*gross*/1.0, /*name_cap*/0.30); // 3*0.30=0.90 < 1.0
+  EXPECT_EQ(w[1], 0.0);                                  // dead name stays flat
   for (f64 x : w) EXPECT_LE(std::abs(x), 0.30 + 1e-9);   // caps respected
   f64 g = 0; for (f64 x : w) g += std::abs(x);
   EXPECT_LE(g, 1.0 + 1e-9);                              // gross NOT exceeded (cap wins)

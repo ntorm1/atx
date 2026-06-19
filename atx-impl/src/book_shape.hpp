@@ -14,6 +14,11 @@
 // every |w_i| <= cap; an INFEASIBLE cap (name_cap * n_live < gross) pins every name at
 // the cap and leaves Sigma|w| = n_live*cap < gross — the cap wins (documented
 // degenerate). A final clip guarantees no name exceeds the cap after the last rescale.
+//
+// CONTRACT NOTE: exact dollar-neutrality (Sigma w = 0) holds only immediately after
+// step 2. An asymmetric binding cap (more longs clipped than shorts, or vice versa)
+// can leave a small net residual, so downstream MUST NOT assume Sigma w == 0 after a
+// cap binds. Step 3's gross target is likewise best-effort under an infeasible cap.
 
 #include <cmath>
 #include <cstdint>
