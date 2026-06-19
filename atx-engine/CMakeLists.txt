@@ -85,6 +85,8 @@ add_library(atx-engine STATIC
     src/combine/conviction.cpp
     # regime-conditioned combination (S10-3)
     src/combine/regime_combiner.cpp
+    # crowding / capacity de-correlation (S10-4)
+    src/combine/crowding.cpp
     # risk (p2 S8.8a — header/source split: heavy method bodies moved out of the
     # header-only risk module into the library to collapse the include fan-out).
     # NOT auto-globbed — list each src/risk/*.cpp explicitly.
