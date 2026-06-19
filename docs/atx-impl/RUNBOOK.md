@@ -244,9 +244,22 @@ atx-impl combine \
 - `--panel` — path to `panel.bin`.
 - `--alphas` — path to `alphas/` directory from stage 3.
 - `--combo-out` — output path for `combo.bin`; `run_all` uses `<work>/combo.bin`.
-- `--method` — combination method (e.g. `equal`).
+- `--method` — combination method: `equal`, `rank`, `ic` (Sharpe-weighted),
+  `shrinkage-mv` (Ledoit-Wolf MV; default when omitted), or `bounded`
+  (bounded-regression in PC space — the Kakushadze method for blending many
+  alphas when N≫T; recommended for a mega-alpha blend).
+- `--sector-neutral` — opt-in (default off). Sector-demean each alpha's book
+  before blending (WorldQuant `indneutralize`), so the mega-alpha expresses
+  idiosyncratic views rather than sector bets. Requires a `sector` field in the
+  panel; no-op (silently) if absent. Mechanism: routes the per-alpha
+  `WeightPolicy` through `industry_neutral` with a group map built from `sector`.
 - `--fit-begin` / `--fit-end` — fit window bounds (integer date indices;
   `0` = default full window).
+
+The combined book is the equal/IC/bounded-weighted sum of the per-alpha
+**target-weight (position) streams** — NOT the raw signals — so each alpha
+enters on a comparable, dollar-neutral, gross-normalized scale in its validated
+orientation.
 
 Expected output line:
 
@@ -278,6 +291,13 @@ atx-impl optimize \
 - `--gross` — gross leverage target.
 - `--name-cap` — maximum weight per name (fraction of gross).
 - `--rebalance` — rebalance frequency: `daily` or `weekly`.
+- `--position-mode` — opt-in (default off). **Signal-as-position deploy**: treat
+  the combined book as the portfolio and deploy it directly at each rebalance
+  (dollar-neutralize → gross-scale → name-cap clip with budget redistribution),
+  SKIPPING the mean-variance optimization. Use this when the combine stage has
+  already produced position books (the WorldQuant paradigm). `--risk-aversion`
+  and `--turnover-penalty` are ignored in this mode. Without it, the default
+  mean-variance path runs (treats the combo as an expected-return forecast).
 
 Expected output line:
 
@@ -318,6 +338,36 @@ Expected output line:
 ```
 [atx-impl] stage=report digest=<hex16>
 ```
+
+### Mega-alpha (signal-as-position) chain
+
+The WorldQuant-style blend: sector-neutralize each alpha into an idiosyncratic
+position book, combine with bounded-regression weights, and deploy the combined
+book directly (no second mean-variance optimization).
+
+```
+atx-impl combine  --panel $WORK/panel.bin --alphas $WORK/alphas \
+                  --combo-out $WORK/combo.bin --method bounded --sector-neutral
+atx-impl optimize --panel $WORK/panel.bin --combo $WORK/combo.bin \
+                  --books-out $WORK/books.bin --position-mode \
+                  --gross 1 --name-cap 0.05 --rebalance weekly
+atx-impl report   --panel $WORK/panel.bin --books $WORK/books.bin \
+                  --report-out $WORK/report
+```
+
+Why this beats the default `--method equal` + mean-variance chain: the default
+re-optimizes the *combined position book* as if it were a fresh expected-return
+forecast (a double-optimization that erodes the signal). Deploying the book
+directly (`--position-mode`) preserves it. On a 21-alpha smoke run this lifted
+the backtest from +1.1% to +6.4% (gross-of-cost). Attribution: `--position-mode`
+is the dominant lever; `--sector-neutral` adds ~+0.8pp; `bounded` vs `equal` is
+negligible at 21 alphas (it matters as the pool grows to hundreds).
+
+CAVEAT: `--position-mode` applies no turnover smoothing (unlike the
+mean-variance path's `--turnover-penalty`), so it trades more — the smoke run's
+weekly turnover rose from ~0.20 to ~0.59. The reported PnL is gross of costs;
+net-of-cost performance needs a turnover control (signal decay / truncation /
+a position-mode turnover cap) — a planned follow-on.
 
 ### Digest comparison for cache validation
 
