@@ -98,6 +98,31 @@ promote(atx::core::db::Database& src, const PromotionRequest& req) {
       if (s4 != atx::core::db::Statement::Step::Done)
         return atx::core::Err(atx::core::ErrorCode::Internal, "promote: event insert failed");
     }
+    // S11-4: copy the env's cluster_panel artifact registry into dest. These rows
+    // are universe-scoped build artifacts (not keyed by canon_hash), so the
+    // promotion carries the whole registry forward; INSERT OR IGNORE keeps it
+    // idempotent against a dest that already holds some of the rows.
+    {
+      ATX_TRY(auto* c5, src.prepare_cached(
+          "INSERT OR IGNORE INTO dest.cluster_panel SELECT * FROM main.cluster_panel"));
+      ATX_TRY(const auto s5, c5->step());
+      if (s5 != atx::core::db::Statement::Step::Done)
+        return atx::core::Err(atx::core::ErrorCode::Internal, "promote: copy cluster_panel failed");
+    }
+    // Dual-write a cluster_panel_built event onto the destination timeline so the
+    // promoted panels are visible alongside the other artifact-type events.
+    {
+      ATX_TRY(auto* c6, src.prepare_cached(
+          "INSERT INTO dest.alpha_event(ts, canon_hash, event_type, run_id, actor, payload)"
+          " VALUES (?1,?2,'cluster_panel_built',?3,'user',?4)"));
+      ATX_TRY_VOID(c6->bind(1, req.ts));
+      ATX_TRY_VOID(c6->bind(2, h));
+      ATX_TRY_VOID(c6->bind(3, req.justifying_run_id));
+      ATX_TRY_VOID(c6->bind(4, std::string("{\"to_env\":\"") + req.to_env + "\"}"));
+      ATX_TRY(const auto s6, c6->step());
+      if (s6 != atx::core::db::Statement::Step::Done)
+        return atx::core::Err(atx::core::ErrorCode::Internal, "promote: cluster_panel event insert failed");
+    }
     ATX_TRY_VOID(src.exec("COMMIT"));
     committed = true;
     return atx::core::Ok();

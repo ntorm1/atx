@@ -67,6 +67,15 @@ inline constexpr int kSchemaVersion = 1;
     "CREATE TABLE IF NOT EXISTS segment_alpha ("
     " canon_hash INTEGER NOT NULL, segment_id TEXT NOT NULL, dir_index INTEGER NOT NULL,"
     " PRIMARY KEY(canon_hash, segment_id));"
+    // cluster_panel: registry over the external binary cluster-panel artifacts
+    // (S11-4). The DB row is metadata only; binary_path points at the on-disk
+    // labeling artifact, params_hash is the replay key, content_hash pins bytes.
+    "CREATE TABLE IF NOT EXISTS cluster_panel ("
+    " panel_id TEXT PRIMARY KEY, universe_id TEXT, window_start INTEGER, window_end INTEGER,"
+    " recluster_every INTEGER, params_hash INTEGER, asof_date INTEGER, binary_path TEXT,"
+    " content_hash INTEGER, algo TEXT, k INTEGER, created_at INTEGER, created_by_run_id TEXT);"
+    "CREATE INDEX IF NOT EXISTS ix_cluster_panel_lookup"
+    " ON cluster_panel(universe_id, asof_date, params_hash);"
     "CREATE INDEX IF NOT EXISTS ix_alpha_event_hash ON alpha_event(canon_hash, ts, event_id);"
     "CREATE INDEX IF NOT EXISTS ix_run_alpha_hash ON run_alpha(canon_hash);"
     "CREATE TABLE IF NOT EXISTS schema_meta ("

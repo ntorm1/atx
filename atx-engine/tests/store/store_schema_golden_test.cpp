@@ -21,9 +21,9 @@ TEST(StoreSchema, GoldenTableSet) {
     got.insert(std::string(stmt->column_text(0)));
   }
   const std::set<std::string> golden = {
-    "alpha", "alpha_event", "alpha_lineage", "alpha_metrics", "conviction", "data_snapshot",
-    "env_config", "eval_fold", "lifecycle_journal", "promotion_ledger", "run", "run_alpha",
-    "run_param", "schema_meta", "segment", "segment_alpha", "universe", "universe_member",
+    "alpha", "alpha_event", "alpha_lineage", "alpha_metrics", "cluster_panel", "conviction",
+    "data_snapshot", "env_config", "eval_fold", "lifecycle_journal", "promotion_ledger", "run",
+    "run_alpha", "run_param", "schema_meta", "segment", "segment_alpha", "universe", "universe_member",
   };
   EXPECT_EQ(got, golden);
 }
