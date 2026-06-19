@@ -52,7 +52,7 @@ Defer to a later sprint (lifted to ROADMAP backlog at close):
 |-------|--------|---------|-------|
 | S10-0 | done   | `<sha>` | Opened this ledger; added forward-decl scaffold headers `combine/conviction.hpp` (ExplainFlag, ConvictionConfig, ConvictionScore) and `risk/kelly_sizing.hpp` (KellyConfig, KellyWeights), plus a scaffold smoke test that proves both compile/link under `/W4 /permissive- /WX`. No logic. `ConvictionScaffold 1/0/0`. Baseline `atx-engine-combine-tests` built green (130s, full engine lib) before scaffold. |
 | S10-1 | done   | `<sha>` | Conviction score. `conviction()` blends four already-computed inputs into a continuous confidence in [0,1]: `clamp(dsr.dsr)` (DSR probability, weight 0.40), `clamp(1−pbo.pbo)` (less-overfit, weight 0.35), and `clamp(oos_is_ratio)` (OOS/IS Sharpe stability, weight 0.25) — the three weights sum to 1.0 so `base` ∈ [0,1] — then multiplies by an explainability factor (Explained 1.0, PartlyExplained 0.75, HeadScratcher 0.50 discount: "trade unexplained at reduced size"). It recomputes nothing, takes the OOS/IS ratio as a caller-supplied scalar (AlphaMetrics has no IS/OOS field), and returns the score plus its four component terms for report attribution. Fail-closed: a NaN DSR/PBO/ratio ATX_ASSERTs (abort) in debug. Pure, no RNG, order-fixed reduction (dsr→pbo→stability). `Conviction 9/0/0` (8 Conviction + 1 ConvictionDeathTest); `ConvictionScaffold 1/0/0` still green. |
-| S10-2 | pending | — | Fractional-Kelly sizing. |
+| S10-2 | done   | `<sha>` | Fractional-Kelly sizing. `kelly_size()` computes the full-Kelly target `f* = V^{-1}mu` over the FACTORED covariance via `FactorModel::apply_inverse` (Woodbury — never materializes the MxM inverse), scales it by `cfg.kelly_fraction` (default quarter-Kelly: full Kelly overbets — Samuelson), scales each name by its conviction in [0,1] (a zero-conviction name ⇒ exactly 0 weight), then clamps gross leverage `Sum|w|` to `cfg.max_gross` (uniform scale preserving relative tilt; `scale_applied` records the factor, 1.0 when slack/disabled). It is the GP optimizer's TARGET — not a replacement QP (the cost-to-go machinery is untouched). Fail-closed: a non-finite `expected_alpha`/`conviction`, a length mismatch, a conviction ∉ [0,1], or a negative `kelly_fraction` ATX_ASSERTs (abort) in debug. Pure, no RNG, order-fixed (ascending instrument i throughout). `KellySizing 8/0/0` (6 KellySizing + 2 KellySizingDeathTest); full risk group 246/0/0 stays green. |
 | S10-3 | pending | — | Regime-conditioned combination. |
 | S10-4 | pending | — | Crowding / capacity-aware de-correlation. |
 | S10-5 | pending | — | Breadth instrumentation. |
@@ -63,7 +63,7 @@ Defer to a later sprint (lifted to ROADMAP backlog at close):
 |---------|------|-------------|
 | `<sha>` | S10-0 | ConvictionScaffold 1/0/0 |
 | `<sha>` | S10-1 | Conviction 9/0/0 |
-| `<sha>` | S10-2 | KellySizing … |
+| `<sha>` | S10-2 | KellySizing 8/0/0 |
 | `<sha>` | S10-3 | RegimeCombine … |
 | `<sha>` | S10-4 | Crowding … |
 | `<sha>` | S10-5 | Breadth … |

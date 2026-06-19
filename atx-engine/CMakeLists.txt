@@ -89,6 +89,8 @@ add_library(atx-engine STATIC
     src/risk/factor_model.cpp
     src/risk/garleanu_pedersen.cpp
     src/risk/multi_horizon.cpp
+    # fractional-Kelly sizing (S10-2)
+    src/risk/kelly_sizing.cpp
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
     src/fund/cross_sleeve_risk.cpp
