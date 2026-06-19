@@ -25,7 +25,7 @@
 // once per candidate, never on the VM hot path), so std::vector / hash-map
 // allocation is fine.
 
-#include <unordered_map>
+#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -52,9 +52,11 @@ struct Genome {
   atx::u64 canon_hash{0}; // factory/canonical.hpp key (set in S3-2; 0 here)
   // INVARIANT: `analysis` is analyze(ast) and is Ok; `canon_hash` matches `ast`.
 
-  // A structural deep copy: rebuild the arena and re-derive the analysis. The
-  // copy shares the same Library (every `Expr::op` pointer is preserved), so it
-  // remains valid for the lifetime of that one Library.
+  // A structural deep copy: rebuild the arena, then REMAP the cached analysis
+  // through the clone's src->dst id map (analyze is NOT re-run — TypeInfo is a
+  // pure function of node structure, so the cached result transfers exactly).
+  // The copy shares the same Library (every `Expr::op` pointer is preserved), so
+  // it remains valid for the lifetime of that one Library.
   // SAFETY: every `Expr::op` in `ast` borrows a `const OpSig*` from the single
   // run-wide Library; the clone carries those pointers verbatim, so the clone
   // is valid only while that Library outlives it (the documented run contract).
@@ -95,28 +97,29 @@ namespace detail {
 
 template <class EditFn>
 [[nodiscard]] inline ExprId rebuild_visit(const Ast &src, ExprId s, ExprId target, Ast &dst,
-                                          std::unordered_map<ExprId, ExprId> &memo, EditFn &edit) {
-  if (const auto it = memo.find(s); it != memo.end()) {
-    return it->second;
+                                          std::vector<ExprId> &memo, EditFn &edit) {
+  if (memo[s] != kNoExpr) {
+    return memo[s];
   }
   Expr e = src.node(s);
-  if (e.a != kNoExpr) {
-    e.a = rebuild_visit(src, src.node(s).a, target, dst, memo, edit);
+  const ExprId ca = e.a, cb = e.b, cc = e.c;
+  if (ca != kNoExpr) {
+    e.a = rebuild_visit(src, ca, target, dst, memo, edit);
   }
-  if (e.b != kNoExpr) {
-    e.b = rebuild_visit(src, src.node(s).b, target, dst, memo, edit);
+  if (cb != kNoExpr) {
+    e.b = rebuild_visit(src, cb, target, dst, memo, edit);
   }
-  if (e.c != kNoExpr) {
-    e.c = rebuild_visit(src, src.node(s).c, target, dst, memo, edit);
+  if (cc != kNoExpr) {
+    e.c = rebuild_visit(src, cc, target, dst, memo, edit);
   }
   if (e.kind == Expr::Kind::Field || e.kind == Expr::Kind::Member) {
-    e.name_id = dst.intern(src.field_name(src.node(s).name_id));
+    e.name_id = dst.intern(src.field_name(e.name_id));
   }
   if (s == target) {
     edit(e, dst); // apply the edit AFTER children/names are remapped into dst
   }
   const ExprId d = dst.add(e);
-  memo.emplace(s, d);
+  memo[s] = d;
   return d;
 }
 
@@ -128,7 +131,8 @@ template <class EditFn>
 template <class EditFn>
 [[nodiscard]] inline Ast rebuild_with(const Genome &g, ExprId target, EditFn edit) {
   Ast dst;
-  std::unordered_map<ExprId, ExprId> memo;
+  dst.reserve(g.ast.nodes().size());
+  std::vector<ExprId> memo(g.ast.nodes().size(), kNoExpr);
   // S3-1 genomes carry a single root (built from parse_expr / a bare splice).
   const ExprId src_root = g.ast.roots().front().root;
   const ExprId new_root = detail::rebuild_visit(g.ast, src_root, target, dst, memo, edit);

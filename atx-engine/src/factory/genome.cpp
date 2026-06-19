@@ -1,8 +1,8 @@
 #include "atx/engine/factory/genome.hpp"
 
 #include <string>
-#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
@@ -12,27 +12,28 @@ namespace atx::engine::factory {
 namespace detail {
 
 [[nodiscard]] ExprId clone_visit(const Ast &src, ExprId s, Ast &dst,
-                                 std::unordered_map<ExprId, ExprId> &memo) {
-  if (const auto it = memo.find(s); it != memo.end()) {
-    return it->second;
+                                 std::vector<ExprId> &memo) {
+  if (memo[s] != kNoExpr) {
+    return memo[s];
   }
   // A value copy of the node (Expr is trivially copyable POD). Children are
   // remapped below; Field/Member names are re-interned into dst's pool.
   Expr e = src.node(s);
-  if (e.a != kNoExpr) {
-    e.a = clone_visit(src, src.node(s).a, dst, memo);
+  const ExprId ca = e.a, cb = e.b, cc = e.c;
+  if (ca != kNoExpr) {
+    e.a = clone_visit(src, ca, dst, memo);
   }
-  if (e.b != kNoExpr) {
-    e.b = clone_visit(src, src.node(s).b, dst, memo);
+  if (cb != kNoExpr) {
+    e.b = clone_visit(src, cb, dst, memo);
   }
-  if (e.c != kNoExpr) {
-    e.c = clone_visit(src, src.node(s).c, dst, memo);
+  if (cc != kNoExpr) {
+    e.c = clone_visit(src, cc, dst, memo);
   }
   if (e.kind == Expr::Kind::Field || e.kind == Expr::Kind::Member) {
-    e.name_id = dst.intern(src.field_name(src.node(s).name_id));
+    e.name_id = dst.intern(src.field_name(e.name_id));
   }
   const ExprId d = dst.add(e);
-  memo.emplace(s, d);
+  memo[s] = d;
   return d;
 }
 
@@ -42,7 +43,7 @@ namespace detail {
 // new root id in `dst`. Does NOT add a root binding (the caller decides whether
 // the spliced subtree is a whole-program root or an interior child).
 [[nodiscard]] ExprId clone_subtree(const Ast &src, ExprId root, Ast &dst) {
-  std::unordered_map<ExprId, ExprId> memo;
+  std::vector<ExprId> memo(src.nodes().size(), kNoExpr);
   return detail::clone_visit(src, root, dst, memo);
 }
 
@@ -64,16 +65,35 @@ namespace detail {
 
 Genome Genome::clone() const {
   Ast dst;
-  // SAFETY: clone_subtree carries each `Expr::op` verbatim — valid because the
-  // clone shares the genome's single run-wide Library (op rows outlive both).
-  const ExprId new_root = clone_subtree(ast, ast.roots().front().root, dst);
+  dst.reserve(ast.nodes().size());
+  // Rebuild the arena via the offset-remap deep copy, capturing the src->dst id
+  // map so the cached analysis can be remapped instead of recomputed.
+  // SAFETY: clone_visit carries each `Expr::op` verbatim — valid because the clone
+  // shares the genome's single run-wide Library (op rows outlive both arenas).
+  std::vector<ExprId> memo(ast.nodes().size(), kNoExpr);
+  const ExprId new_root = detail::clone_visit(ast, ast.roots().front().root, dst, memo);
   dst.add_root(std::string{}, new_root);
-  // Re-derive the analysis from the rebuilt arena (cheap, COLD path). The clone
-  // is a structural copy of a valid genome, so analyze must succeed; if it
-  // somehow does not, an empty Analysis is returned (the caller's validate()
-  // backstop would catch a corrupted clone, which never happens by construction).
-  auto info = analyze(dst);
-  return Genome{std::move(dst), info ? std::move(*info) : Analysis{}, canon_hash};
+
+  // Remap the cached Analysis through `memo` instead of re-running analyze():
+  // TypeInfo is a PURE function of node structure and the clone is a faithful
+  // structural copy, so analyze(dst).info(memo[s]) == analysis.info(s) for every
+  // src node s. This skips a full typecheck pass on every clone (clone is called
+  // per population member per generation). TypeInfo::pins spans the shared registry
+  // (outlives the clone), so carrying it verbatim is valid. required_lookback is the
+  // max over roots; clone copies the whole program, so it is unchanged.
+  Analysis dst_an;
+  std::vector<alpha::TypeInfo> remapped(dst.nodes().size());
+  for (ExprId s = 0; s < static_cast<ExprId>(ast.nodes().size()); ++s) {
+    if (memo[s] != kNoExpr) {
+      remapped[memo[s]] = analysis.info(s);
+    }
+  }
+  dst_an.reserve(remapped.size());
+  for (const alpha::TypeInfo &t : remapped) {
+    dst_an.push(t);
+  }
+  dst_an.set_required_lookback(analysis.required_lookback());
+  return Genome{std::move(dst), std::move(dst_an), canon_hash};
 }
 
 } // namespace atx::engine::factory

@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdint>
 #include <span>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 #include "atx/engine/alpha/parser.hpp"
@@ -73,9 +73,10 @@ enum class Tag : atx::u8 {
 }
 
 [[nodiscard]] atx::u64 canon_visit(const Ast &ast, ExprId id,
-                                   std::unordered_map<ExprId, atx::u64> &memo) {
-  if (const auto it = memo.find(id); it != memo.end()) {
-    return it->second;
+                                   std::vector<atx::u64> &memo,
+                                   std::vector<std::uint8_t> &seen) {
+  if (seen[id]) {
+    return memo[id];
   }
   const Expr &e = ast.node(id);
   atx::u64 h = 0;
@@ -90,13 +91,13 @@ enum class Tag : atx::u8 {
     break;
   case Expr::Kind::Unary: {
     h = fnv_byte(tagged(Tag::Unary), static_cast<atx::u8>(e.opcode));
-    const std::array<atx::u64, 1> ch{canon_visit(ast, e.a, memo)};
+    const std::array<atx::u64, 1> ch{canon_visit(ast, e.a, memo, seen)};
     h = mix_children(h, ch);
     break;
   }
   case Expr::Kind::Binary: {
     h = fnv_byte(tagged(Tag::Binary), static_cast<atx::u8>(e.opcode));
-    std::array<atx::u64, 2> ch{canon_visit(ast, e.a, memo), canon_visit(ast, e.b, memo)};
+    std::array<atx::u64, 2> ch{canon_visit(ast, e.a, memo, seen), canon_visit(ast, e.b, memo, seen)};
     if (is_hash_commutative(e.opcode) && ch[1] < ch[0]) {
       std::swap(ch[0], ch[1]); // the missing commutative-ordering pass
     }
@@ -114,34 +115,43 @@ enum class Tag : atx::u8 {
       h = fnv_u64(h, std::bit_cast<atx::u64>(e.hparams[k]));
     }
     // Materialized operand children (a/b/c), sorted only for a commutative call.
-    std::vector<atx::u64> ch;
+    std::array<atx::u64, 3> ch{};
+    atx::u8 nch = 0;
     for (const ExprId c : {e.a, e.b, e.c}) {
       if (c != kNoExpr) {
-        ch.push_back(canon_visit(ast, c, memo));
+        ch[nch++] = canon_visit(ast, c, memo, seen);
       }
     }
     if (is_hash_commutative(e.opcode)) {
-      std::sort(ch.begin(), ch.end());
+      // ascending sort of nch (<=3) elements — byte-identical ordering to std::sort.
+      if (nch == 2) {
+        if (ch[1] < ch[0]) std::swap(ch[0], ch[1]);
+      } else if (nch == 3) {
+        if (ch[1] < ch[0]) std::swap(ch[0], ch[1]);
+        if (ch[2] < ch[1]) std::swap(ch[1], ch[2]);
+        if (ch[1] < ch[0]) std::swap(ch[0], ch[1]);
+      }
     }
-    h = mix_children(h, std::span<const atx::u64>{ch});
+    h = mix_children(h, std::span<const atx::u64>{ch.data(), nch});
     break;
   }
   case Expr::Kind::Select: {
     h = fnv_byte(tagged(Tag::Select), static_cast<atx::u8>(e.opcode));
-    const std::array<atx::u64, 3> ch{canon_visit(ast, e.a, memo), canon_visit(ast, e.b, memo),
-                                     canon_visit(ast, e.c, memo)}; // FIXED slot order
+    const std::array<atx::u64, 3> ch{canon_visit(ast, e.a, memo, seen), canon_visit(ast, e.b, memo, seen),
+                                     canon_visit(ast, e.c, memo, seen)}; // FIXED slot order
     h = mix_children(h, ch);
     break;
   }
   case Expr::Kind::Member: {
     h = tagged(Tag::Member);
-    const std::array<atx::u64, 1> ch{canon_visit(ast, e.a, memo)};
+    const std::array<atx::u64, 1> ch{canon_visit(ast, e.a, memo, seen)};
     h = mix_children(h, ch);
     h = fnv_bytes(h, ast.field_name(e.name_id)); // pin name (stable)
     break;
   }
   }
-  memo.emplace(id, h);
+  seen[id] = std::uint8_t{1};
+  memo[id] = h;
   return h;
 }
 
@@ -150,8 +160,9 @@ enum class Tag : atx::u8 {
 // Stable, sound, discriminating canonical hash of the sub-DAG rooted at `root`.
 // Recursive + memoized over the sub-DAG so a shared sub-expression is hashed once.
 [[nodiscard]] atx::u64 canonical_hash(const Ast &ast, ExprId root) noexcept {
-  std::unordered_map<ExprId, atx::u64> memo;
-  return detail::canon_visit(ast, root, memo);
+  std::vector<atx::u64> memo(ast.nodes().size());
+  std::vector<std::uint8_t> seen(ast.nodes().size(), std::uint8_t{0});
+  return detail::canon_visit(ast, root, memo, seen);
 }
 
 // Convenience: hash a genome's single (first) root. A genome carries one root

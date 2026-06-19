@@ -147,6 +147,9 @@ public:
   void add_root(std::string name, ExprId root) {
     roots_.push_back(Assignment{std::move(name), root});
   }
+  // Pre-size the arena + string pool (a rebuild knows its final node count up
+  // front, so this avoids the geometric reallocation of nodes_/strings_).
+  void reserve(atx::usize n) { nodes_.reserve(n); strings_.reserve(n); }
 
 private:
   std::vector<Expr> nodes_;          // the arena; ExprId = index

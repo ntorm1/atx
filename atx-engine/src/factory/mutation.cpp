@@ -37,15 +37,27 @@ namespace atx::engine::factory {
     }
   }
   // Mark orphan literals that match a Call's peeled hparam value as Hparam.
+  // Collect every call's peeled hparam values once, then a single arena pass —
+  // O(num_nodes + orphan_literals * total_hparams) instead of rescanning the whole
+  // arena per (call, hparam). Result is identical: a node is Hparam iff it is an
+  // orphan Scale literal whose value equals some call's hparam (exact f64 equality;
+  // a NaN hparam matches nothing, as before).
+  std::vector<atx::f64> hparam_values;
   for (const Expr &e : arena) {
-    if (e.kind != Expr::Kind::Call) {
-      continue;
+    if (e.kind == Expr::Kind::Call) {
+      for (atx::u8 k = 0; k < e.n_hparams; ++k) {
+        hparam_values.push_back(e.hparams[k]);
+      }
     }
-    for (atx::u8 k = 0; k < e.n_hparams; ++k) {
-      for (atx::usize i = 0; i < arena.size(); ++i) {
-        if (is_literal[i] && !referenced[i] && kind[i] == ConstKind::Scale &&
-            arena[i].value == e.hparams[k]) {
-          kind[i] = ConstKind::Hparam;
+  }
+  if (!hparam_values.empty()) {
+    for (atx::usize i = 0; i < arena.size(); ++i) {
+      if (is_literal[i] && !referenced[i] && kind[i] == ConstKind::Scale) {
+        for (const atx::f64 v : hparam_values) {
+          if (arena[i].value == v) {
+            kind[i] = ConstKind::Hparam;
+            break;
+          }
         }
       }
     }

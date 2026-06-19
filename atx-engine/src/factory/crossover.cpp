@@ -1,7 +1,6 @@
 #include "atx/engine/factory/crossover.hpp"
 
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -15,29 +14,30 @@ namespace detail {
 // donor subtree (already deep-copied into `dst`) instead of A's own subtree. The
 // memo dedups shared sub-DAG nodes exactly as clone_visit does.
 ExprId splice_visit(const Ast &src, ExprId s, ExprId cut, ExprId spliced, Ast &dst,
-                    std::unordered_map<ExprId, ExprId> &memo) {
+                    std::vector<ExprId> &memo) {
   if (s == cut) {
     return spliced; // replace A's whole subtree at the cut with the donor copy
   }
-  if (const auto it = memo.find(s); it != memo.end()) {
-    return it->second;
+  if (memo[s] != kNoExpr) {
+    return memo[s];
   }
   Expr e = src.node(s);
-  if (e.a != kNoExpr) {
-    e.a = splice_visit(src, src.node(s).a, cut, spliced, dst, memo);
+  const ExprId ca = e.a, cb = e.b, cc = e.c;
+  if (ca != kNoExpr) {
+    e.a = splice_visit(src, ca, cut, spliced, dst, memo);
   }
-  if (e.b != kNoExpr) {
-    e.b = splice_visit(src, src.node(s).b, cut, spliced, dst, memo);
+  if (cb != kNoExpr) {
+    e.b = splice_visit(src, cb, cut, spliced, dst, memo);
   }
-  if (e.c != kNoExpr) {
-    e.c = splice_visit(src, src.node(s).c, cut, spliced, dst, memo);
+  if (cc != kNoExpr) {
+    e.c = splice_visit(src, cc, cut, spliced, dst, memo);
   }
   // Re-intern Field/Member names into dst's own pool (the pools differ — §0.1).
   if (e.kind == Expr::Kind::Field || e.kind == Expr::Kind::Member) {
-    e.name_id = dst.intern(src.field_name(src.node(s).name_id));
+    e.name_id = dst.intern(src.field_name(e.name_id));
   }
   const ExprId d = dst.add(e);
-  memo.emplace(s, d);
+  memo[s] = d;
   return d;
 }
 
@@ -95,10 +95,11 @@ subtree_crossover(const Genome &a, const Genome &b, Xoshiro256pp &rng, Crossover
 
   // (5) Rebuild A, splicing a deep copy of B's donor subtree at the cut.
   Ast dst;
+  dst.reserve(a.ast.nodes().size() + b.ast.nodes().size());
   // SAFETY: clone_subtree carries each donor `Expr::op` verbatim — valid because
   // A and B share the one run-wide Library (op rows outlive both arenas — §0.1).
   const ExprId spliced = clone_subtree(b.ast, donor, dst);
-  std::unordered_map<ExprId, ExprId> memo;
+  std::vector<ExprId> memo(a.ast.nodes().size(), kNoExpr);
   const ExprId new_root = detail::splice_visit(a.ast, a_root, cut, spliced, dst, memo);
   dst.add_root(std::string{}, new_root);
 
