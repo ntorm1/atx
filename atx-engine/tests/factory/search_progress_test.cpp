@@ -346,6 +346,13 @@ TEST(SearchProgress, ResumeIdenticalUnderMultiObjectiveDefaults) {
   cfg.population = 12;  // >= 12 so the behavioral novelty pass is exercised
   cfg.generations = 5;  // >= 5
   // Do NOT set ScalarRaw, do NOT set enable_behavioral_novelty=false — keep the defaults.
+  // Task 5: pin adaptive_operators OFF for the resume-identity invariant. The
+  // adaptive operator weights are credited from the per-generation child-operator
+  // history, which the frozen checkpoint schema does NOT persist (a Phase-2
+  // store-coupled item), so a resumed adaptive run restarts op_weights uniform and
+  // diverges from the uninterrupted run. jitter_anneal is left ON (its sigma is a
+  // pure fn of `gen`, fully restored on resume -> still byte-identical).
+  cfg.adaptive_operators = false;
   AlphaStore pool;
 
   // 1. Full uninterrupted run -> reference.
