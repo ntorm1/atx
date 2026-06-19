@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdint>
 #include <span>
 #include <string_view>
-#include <cstdint>
 #include <vector>
 
 #include "atx/engine/alpha/parser.hpp"

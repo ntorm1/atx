@@ -52,9 +52,11 @@ struct Genome {
   atx::u64 canon_hash{0}; // factory/canonical.hpp key (set in S3-2; 0 here)
   // INVARIANT: `analysis` is analyze(ast) and is Ok; `canon_hash` matches `ast`.
 
-  // A structural deep copy: rebuild the arena and re-derive the analysis. The
-  // copy shares the same Library (every `Expr::op` pointer is preserved), so it
-  // remains valid for the lifetime of that one Library.
+  // A structural deep copy: rebuild the arena, then REMAP the cached analysis
+  // through the clone's src->dst id map (analyze is NOT re-run — TypeInfo is a
+  // pure function of node structure, so the cached result transfers exactly).
+  // The copy shares the same Library (every `Expr::op` pointer is preserved), so
+  // it remains valid for the lifetime of that one Library.
   // SAFETY: every `Expr::op` in `ast` borrows a `const OpSig*` from the single
   // run-wide Library; the clone carries those pointers verbatim, so the clone
   // is valid only while that Library outlives it (the documented run contract).
