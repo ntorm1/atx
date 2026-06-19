@@ -248,6 +248,10 @@ public:
                               "save_checkpoint: run UPDATE incomplete");
       }
     }
+    if (db_.changes() != 1) {
+      return atx::core::Err(atx::core::ErrorCode::NotFound,
+                            "PipelineRecorder::save_checkpoint: pipeline_run_id not found");
+    }
     // 4. Two events — plain INSERTs (no nested txn; compose inside this txn)
     ATX_TRY_VOID(insert_event(db_, pipeline_run_id_, "generation_complete", generation, "", ts));
     ATX_TRY_VOID(insert_event(db_, pipeline_run_id_, "checkpoint_saved", generation, "", ts));
@@ -308,7 +312,7 @@ public:
           " WHERE pipeline_run_id=?1"));
       ATX_TRY_VOID(stmt->bind(1, pipeline_run_id_));
       ATX_TRY_VOID(stmt->bind(2, ts));
-      ATX_TRY_VOID(step_done(*stmt, "complete"));
+      ATX_TRY_VOID(step_done(*stmt, "complete:step"));
     }
     if (db_.changes() != 1) {
       return atx::core::Err(atx::core::ErrorCode::NotFound,
@@ -325,7 +329,11 @@ public:
           " WHERE pipeline_run_id=?1"));
       ATX_TRY_VOID(stmt->bind(1, pipeline_run_id_));
       ATX_TRY_VOID(stmt->bind(2, ts));
-      ATX_TRY_VOID(step_done(*stmt, "mark_failed"));
+      ATX_TRY_VOID(step_done(*stmt, "mark_failed:step"));
+    }
+    if (db_.changes() != 1) {
+      return atx::core::Err(atx::core::ErrorCode::NotFound,
+                            "PipelineRecorder::mark_failed: pipeline_run_id not found");
     }
     ATX_TRY_VOID(insert_event(db_, pipeline_run_id_, "failed", -1, message, ts));
     return log("error", -1, message, ts);

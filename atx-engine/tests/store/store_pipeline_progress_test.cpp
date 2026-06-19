@@ -55,4 +55,36 @@ TEST(PipelineRecorder, BlobHelpersRoundTrip) {
   EXPECT_EQ(population_hash(j), population_hash(join_population(back)));
 }
 
+// Finding 1 guard: save_checkpoint on a run whose row has been deleted must
+// return Err(NotFound) rather than silently writing orphaned checkpoint rows.
+// (mark_failed uses the same guard; testing via delete-then-call is the
+// cleanest approach since PipelineRecorder can only be obtained via begin/resume.)
+TEST(PipelineRecorder, SaveCheckpointDeletedRunRejected) {
+  auto db = StoreDb::open_memory(); ASSERT_TRUE(db.has_value());
+  auto rec = PipelineRecorder::begin(db->db(), MakeRow(999));
+  ASSERT_TRUE(rec.has_value());
+  // Delete the pipeline_run row out from under the recorder
+  auto* del = *db->db().prepare_cached(
+      "DELETE FROM pipeline_run WHERE pipeline_run_id='run-999'");
+  ASSERT_EQ(*del->step(), atx::core::db::Statement::Step::Done);
+  // save_checkpoint should now return Err(NotFound)
+  auto result = rec->save_checkpoint(0, "a\nb", 2, 1.0, 0.5, 2, 2, 100, 2000);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::NotFound);
+}
+
+TEST(PipelineRecorder, MarkFailedDeletedRunRejected) {
+  auto db = StoreDb::open_memory(); ASSERT_TRUE(db.has_value());
+  auto rec = PipelineRecorder::begin(db->db(), MakeRow(888));
+  ASSERT_TRUE(rec.has_value());
+  // Delete the pipeline_run row out from under the recorder
+  auto* del = *db->db().prepare_cached(
+      "DELETE FROM pipeline_run WHERE pipeline_run_id='run-888'");
+  ASSERT_EQ(*del->step(), atx::core::db::Statement::Step::Done);
+  // mark_failed should now return Err(NotFound)
+  auto result = rec->mark_failed(2000, "something broke");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::NotFound);
+}
+
 }  // namespace atx::engine::store
