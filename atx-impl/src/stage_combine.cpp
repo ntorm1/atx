@@ -25,6 +25,7 @@
 #include "artifacts.hpp"
 #include "config.hpp"
 #include "research_sim.hpp"
+#include "sector_groups.hpp"
 #include "serialize_panel.hpp"
 
 namespace atx::impl {
@@ -123,11 +124,22 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     alpha::Engine engine{panel};
     ATX_TRY(auto signals, engine.evaluate(program));
 
-    // 6. Extract per-alpha PnL + position streams.
+    // 5b. Sector (industry) neutralization: per-alpha books are sector-demeaned so
+    //     the mega-alpha expresses idiosyncratic views, not sector bets (WQ
+    //     indneutralize). group_map empty (no "sector" field) -> neutralization off.
+    std::vector<atx::u32> group_map;
+    if (cfg.sector_neutral) {
+        group_map = sector_group_map(panel);
+    }
+
+    // 6. Extract per-alpha PnL + position streams (sector-neutral when group_map set).
     WeightPolicy policy{};
+    policy.industry_neutral = !group_map.empty();
     auto sim = frictionless_sim();
     ATX_TRY(auto streams,
-            atx::engine::alpha::extract_streams(signals, policy, panel, sim));
+            atx::engine::alpha::extract_streams(
+                signals, policy, panel, sim,
+                std::span<const atx::u32>{group_map}));
 
     // 7. Build the AlphaStore pool from real constituent streams.
     combine::AlphaStore pool;

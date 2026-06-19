@@ -453,4 +453,44 @@ TEST(AtxImplCombine, MissingArgsFails) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Test 6: SectorNeutralCombinedBookIsPerSectorNeutral
+// With --sector-neutral and a 2-sector panel {"close","sector"} (sectors {0,1}
+// split 3+3), the combined mega-alpha must be dollar-neutral WITHIN each sector
+// (per-sector sum == 0) for every date past the warm-up window.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, SectorNeutralCombinedBookIsPerSectorNeutral) {
+  namespace fs = std::filesystem;
+  const usize D = 96, N = 6;
+  const std::vector<f64> close = noisy_close(D, N, 0xDEADBEEFULL);
+  std::vector<f64> sect(D * N);
+  for (usize t = 0; t < D; ++t) for (usize i = 0; i < N; ++i) sect[t*N+i] = (i < 3 ? 0.0 : 1.0);
+  auto panel_opt = make_panel(D, N, {"close","sector"}, {close, sect});
+  ASSERT_TRUE(panel_opt.has_value());
+  const Panel& panel = *panel_opt;
+  const std::string panel_path = write_panel_tmp(panel, "sector_neutral");
+  const std::string alphas_dir = write_alpha_dir("sector_neutral", safe_dsls());
+  const std::string combo_out = (fs::temp_directory_path() / "atx_impl_combine_sector_neutral.bin").string();
+
+  atx::impl::RunConfig cfg;
+  cfg.subcommand = "combine"; cfg.panel = panel_path; cfg.alphas = alphas_dir;
+  cfg.combo_out = combo_out; cfg.method = "equal"; cfg.sector_neutral = true;
+  auto r = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().message();
+
+  auto cpanel = atx::impl::read_panel(combo_out).value();
+  auto fid = cpanel.field_id("alpha").value();
+  for (usize d = 12; d < D; ++d) {
+    auto cs = cpanel.field_cross_section(fid, d);
+    f64 g0 = 0.0, g1 = 0.0; bool any = false;
+    for (usize i = 0; i < N; ++i) {
+      if (std::isnan(cs[i])) continue;
+      (i < 3 ? g0 : g1) += cs[i]; any = true;
+    }
+    if (any) { EXPECT_NEAR(g0, 0.0, 1e-9); EXPECT_NEAR(g1, 0.0, 1e-9); }
+  }
+  std::error_code ec; fs::remove(panel_path, ec); fs::remove_all(alphas_dir, ec);
+  fs::remove(combo_out, ec); fs::remove(combo_out + ".weights.txt", ec);
+}
+
 } // namespace atxtest_combine
