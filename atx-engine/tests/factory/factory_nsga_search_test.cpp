@@ -144,7 +144,8 @@ struct Lcg {
   c.seed_from_grammar = false;                   // Task 3: legacy cycle-fill on the boundary pin
   c.n_immigrants = 0;          // Task 4: no immigrants on the boundary pin
   c.stagnation_patience = 0;   // Task 4: full budget on the boundary pin
-  // (Task 5 appends: c.adaptive_operators = false; c.jitter_anneal = false;)
+  c.adaptive_operators = false;  // Task 5: fixed-uniform operator draw on the pin
+  c.jitter_anneal = false;       // Task 5: constant sigma on the pin
   return c;
 }
 

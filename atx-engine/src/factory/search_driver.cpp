@@ -144,6 +144,35 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
 
   std::vector<Scored> scored; // current generation's scored population
 
+  // ----- Task 5: adaptive operator selection (run-local credit state) ---------
+  // `op_weights` (op_swap, field_swap, jitter) bias each generation's mutation-
+  // operator draw. They are updated SERIALLY here (before reproduce) from the
+  // realized fitness gain of the PREVIOUS generation's children, so every child of
+  // a generation draws against the SAME fixed weights -> worker-count-invariant
+  // (F1). Inert (stays uniform, never read) when cfg.adaptive_operators is false.
+  //
+  // DATA FLOW per generation g (g > the generation that produced the current pop):
+  //   1. reproduce(g-1) filled `prev_child_ops`[p] with the operator id (0/1/2, or
+  //      0xFF for crossover/immigrant/elite-clone) that made child slot p, written
+  //      by the single shard that owns slot p (no race).
+  //   2. Those children ARE this generation's population slots [prev_n_elites..),
+  //      and evaluate_generation assembles `scored` in population order, so
+  //      scored[prev_n_elites + p] is exactly the child from slot p.
+  //   3. mean_gain[o] = mean over mutation-children of operator o of
+  //      (child_raw - prev_parent_best), where prev_parent_best is the best raw of
+  //      the generation that PRODUCED them. op_weights[o] = max(0.05,
+  //      op_weights[o] + mean_gain[o]) so no operator starves.
+  // All RNG-free and computed from `scored` in population order -> deterministic.
+  // NOTE (resume): on a resume the credit history is not persisted, so a resumed
+  // adaptive run is NOT guaranteed byte-identical to an uninterrupted one; the
+  // resume-identity determinism tests pin adaptive_operators=false for that reason.
+  constexpr atx::f64 kOpWeightFloor = 0.05;
+  std::array<atx::f64, 3> op_weights{1.0, 1.0, 1.0};
+  std::vector<atx::u8> prev_child_ops;  // operator id per child slot of the last reproduce
+  atx::usize prev_n_elites = 0;         // population offset of those children
+  atx::f64 prev_parent_best = 0.0;      // best raw of the generation that produced them
+  bool have_prev_children = false;
+
   for (atx::usize gen = gen_start; gen < cfg.generations; ++gen) {
     // Capture the ACCUMULATED state ENTERING this generation (BEFORE
     // evaluate_generation / update_archive mutate canon / fitness_cache /
@@ -258,10 +287,44 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       if (!(recent > baseline)) { break; }
     }
 
+    // Task 5: credit the PREVIOUS generation's operators from the realized fitness
+    // gain of the children they produced (now scored, in population order), then
+    // bias this generation's operator weights toward what worked. SERIAL (before the
+    // parallel reproduce) so every child draws against FIXED weights. Pure fn of
+    // `scored` + the recorded operator ids -> RNG-free, worker-count-invariant. All
+    // gated behind adaptive_operators so the legacy path leaves op_weights uniform.
+    if (cfg.adaptive_operators && have_prev_children) {
+      std::array<atx::f64, 3> gain_sum{0.0, 0.0, 0.0};
+      std::array<atx::usize, 3> gain_cnt{0, 0, 0};
+      for (atx::usize p = 0; p < prev_child_ops.size(); ++p) {
+        const atx::u8 o = prev_child_ops[p];
+        if (o > 2) {
+          continue; // 0xFF: crossover / immigrant / elite-clone -> uncredited
+        }
+        const atx::usize idx = prev_n_elites + p; // population slot of this child
+        if (idx >= scored.size()) {
+          continue; // defensive (population shrank) — never expected
+        }
+        gain_sum[o] += scored[idx].fitness - prev_parent_best;
+        ++gain_cnt[o];
+      }
+      for (atx::usize o = 0; o < 3; ++o) {
+        if (gain_cnt[o] > 0) {
+          const atx::f64 mean_gain = gain_sum[o] / static_cast<atx::f64>(gain_cnt[o]);
+          op_weights[o] = std::max(kOpWeightFloor, op_weights[o] + mean_gain);
+        }
+      }
+    }
+
     // (e)-(g) reproduce into the next population (skip on the final generation —
     // the last scored set is the result).
     if (gen + 1 < cfg.generations) {
-      pop = reproduce(scored, cfg, gen, det_pool, res);
+      const atx::usize n_elites_this = std::min(cfg.elites, scored.size());
+      pop = reproduce(scored, cfg, gen, det_pool, res, op_weights, prev_child_ops);
+      // Stash the bookkeeping the NEXT generation needs to credit these children.
+      prev_n_elites = n_elites_this;
+      prev_parent_best = best_raw(scored);
+      have_prev_children = cfg.adaptive_operators;
     }
   }
 
@@ -684,7 +747,10 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
 [[nodiscard]] std::vector<Genome> SearchDriver::reproduce(const std::vector<Scored> &scored,
                                                           const SearchConfig &cfg, atx::usize gen,
                                                           parallel::DetPool &det_pool,
-                                                          SearchResult &res) {
+                                                          SearchResult &res,
+                                                          const std::array<atx::f64, 3> &op_weights,
+                                                          std::vector<atx::u8> &child_ops) {
+  child_ops.clear();
   if (scored.empty()) {
     return {};
   }
@@ -715,19 +781,27 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
   // tournament parent is drawn inside make_child), and determinism rests on the
   // single-writer slots + per-index seed, NOT on dispatch order.
   std::vector<std::optional<Genome>> child_slot(n_children);
+  // Task 5 (adaptive operators): per-child operator id, written by the single shard
+  // that produced slot p (disjoint single-writer -> no race, worker-count-invariant).
+  // 0xFF == "not a mutation child" (crossover / elite-clone fallback) -> excluded
+  // from credit. Sized to n_children; left all-0xFF when adaptation is off.
+  child_ops.assign(n_children, atx::u8{0xFF});
   det_pool.parallel_for(n_children, [&](atx::usize p, atx::usize /*wid*/) {
     const atx::usize i = n_elites + p;
     Xoshiro256pp rng{detail::seed_for(cfg.master_seed, gen, i)};
-    auto child = make_child(scored, canon_order, cfg, rng);
+    atx::u8 op_used = 0xFF;
+    auto child = make_child(scored, canon_order, cfg, rng, op_weights, gen, op_used);
     if (child.has_value()) {
       child->canon_hash = canonical_hash(*child);
       child_slot[p] = std::move(*child);
+      child_ops[p] = op_used; // 0xFF for a crossover child; 0/1/2 for a mutation child
     } else {
       // F5 reject -> hold population size with an elite clone (deterministic, pure in i).
       const atx::usize fallback = elite_order[i % std::max<atx::usize>(n_elites, 1)];
       Genome clone = scored[fallback].genome.clone();
       clone.canon_hash = scored[fallback].genome.canon_hash;
       child_slot[p] = std::move(clone);
+      // child_ops[p] stays 0xFF (elite clone is not credited to any operator).
     }
   });
 
@@ -760,6 +834,7 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
     if (imm.has_value()) {
       imm->canon_hash = canonical_hash(*imm);
       child_slot[p] = std::move(*imm);
+      child_ops[p] = atx::u8{0xFF}; // immigrant overwrites the mutation child -> uncredited
     }
   }
 
@@ -785,13 +860,15 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
 [[nodiscard]] atx::core::Result<Genome>
 SearchDriver::make_child(const std::vector<Scored> &scored,
                          const std::vector<atx::usize> &canon_order, const SearchConfig &cfg,
-                         Xoshiro256pp &rng) {
+                         Xoshiro256pp &rng, const std::array<atx::f64, 3> &op_w, atx::usize gen,
+                         atx::u8 &op_used) {
+  op_used = 0xFF; // default: a crossover child credits no mutation operator
   const Genome &p1 = tournament_pick(scored, canon_order, cfg, rng);
   if (rng.bernoulli(cfg.p_cross)) {
     const Genome &p2 = tournament_pick(scored, canon_order, cfg, rng);
     return subtree_crossover(p1, p2, rng, CrossoverCfg{cfg.max_lookback});
   }
-  return mutate_one(p1, cfg, rng);
+  return mutate_one(p1, cfg, rng, op_w, gen, op_used);
 }
 
 // Pick one type-safe mutation by a seeded draw, fallback-cascading so a
@@ -805,22 +882,50 @@ SearchDriver::make_child(const std::vector<Scored> &scored,
 // does not shift when the gate flips; a drawn-but-disabled op_swap simply falls
 // through to jitter_const.
 [[nodiscard]] atx::core::Result<Genome>
-SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp &rng) {
-  const atx::u64 which = rng.next_u64() % 3;
+SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp &rng,
+                         const std::array<atx::f64, 3> &op_w, atx::usize gen, atx::u8 &op_used) {
+  // ----- operator draw (flag-branched for RNG-stream parity) -----------------
+  // Both branches consume EXACTLY ONE rng word, so the stream length is identical.
+  // OFF: the literal legacy `% 3` draw — bit-identical to the pre-Task-5 path, so
+  // the ScalarRaw boundary golden is untouched. ON: a weighted draw over op_w
+  // (uniform01 from the top 53 bits x total weight; pick by cumulative weight),
+  // which is intentionally NOT bit-identical to `% 3` even under uniform weights —
+  // which is exactly why the two draws are branched, never unified.
+  atx::u64 which;
+  if (!cfg.adaptive_operators) {
+    which = rng.next_u64() % 3; // LEGACY stream — bit-identical
+  } else {
+    const atx::f64 total = op_w[0] + op_w[1] + op_w[2];
+    const atx::f64 u = (static_cast<atx::f64>(rng.next_u64() >> 11U) /
+                        static_cast<atx::f64>(1ULL << 53U)) *
+                       total;
+    which = (u < op_w[0]) ? 0U : (u < op_w[0] + op_w[1]) ? 1U : 2U;
+  }
+  // ----- jitter sigma (flag-branched anneal) ---------------------------------
+  // base_sigma is the current JitterCfg default (0.5); OFF keeps it constant, ON
+  // scales it by jitter_anneal_decay^gen (coarse early, fine late). Pure fn of gen
+  // -> no wall-clock / RNG; OFF leaves the jitter draw byte-identical.
   JitterCfg jc;
   jc.max_lookback = cfg.max_lookback;
+  if (cfg.jitter_anneal) {
+    const atx::f64 base_sigma = JitterCfg{}.sigma;
+    jc.sigma = base_sigma * std::pow(cfg.jitter_anneal_decay, static_cast<atx::f64>(gen));
+  }
   if (which == 0 && cfg.enable_op_swap) {
     auto r = op_swap(g, catalog_, rng);
     if (r.has_value()) {
+      op_used = 0; // op_swap made the child
       return r;
     }
   } else if (which == 1) {
     auto r = field_swap(g, std::span<const std::string_view>{panel_field_views_}, rng);
     if (r.has_value()) {
+      op_used = 1; // field_swap made the child
       return r;
     }
   }
   // Default / fallback: jitter a literal (the most broadly-applicable mutation).
+  op_used = 2; // jitter_const made the child (drawn, or fallback from op_swap/field_swap)
   return jitter_const(g, rng, jc);
 }
 

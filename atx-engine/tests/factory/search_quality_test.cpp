@@ -148,4 +148,21 @@ TEST(StagnationStop, StopsEarly) {
   const auto r = d.run(cfg, pool);
   EXPECT_LT(r.best_fitness_per_gen.size(), cfg.generations);
 }
+
+// Adaptive operators are deterministic (replay) AND change the trajectory vs the
+// fixed-uniform draw on the same seed.
+TEST(AdaptiveOperator, DeterministicAndDistinct) {
+  Fixture fx; auto d = fx.driver();
+  AlphaStore pa{}, pb{}, pf{};
+  SearchConfig adapt = base_cfg(2024);
+  adapt.objective_mode = ObjectiveMode::MultiObjective;
+  adapt.generations = 6; adapt.n_immigrants = 0; adapt.stagnation_patience = 0;
+  adapt.adaptive_operators = true; adapt.jitter_anneal = true;
+  SearchConfig fixed = adapt; fixed.adaptive_operators = false; fixed.jitter_anneal = false;
+  const auto a1 = d.run(adapt, pa);
+  const auto a2 = d.run(adapt, pb);
+  const auto f  = d.run(fixed, pf);
+  EXPECT_EQ(a1.digest, a2.digest);   // F1 replay holds with adaptation on
+  EXPECT_NE(a1.digest, f.digest);    // adaptation actually changes the search
+}
 } // namespace atx::engine::factory

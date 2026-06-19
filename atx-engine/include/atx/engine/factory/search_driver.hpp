@@ -171,6 +171,14 @@ struct SearchConfig {
   // Stagnation early-stop: stop after this many generations with no strict
   // best-raw improvement. 0 disables (run the full budget; legacy behavior).
   atx::usize stagnation_patience{4};
+  // Adaptive operator selection: bias each generation's mutation-operator
+  // distribution toward operators that produced fitness gains last generation.
+  // OFF reproduces the fixed-uniform (% 3) draw bit-for-bit (boundary pin).
+  bool adaptive_operators{true};
+  // Jitter annealing: scale jitter_const's sigma by jitter_anneal_decay^gen
+  // (coarse early, fine late). OFF keeps the constant JitterCfg.sigma.
+  bool jitter_anneal{true};
+  atx::f64 jitter_anneal_decay{0.9};
 };
 
 // =========================================================================
@@ -356,9 +364,19 @@ private:
   // SAME raw value next gen — makes best_fitness_per_gen non-decreasing BY
   // CONSTRUCTION. (Tournament parent selection below still uses .selection, the
   // explore/anti-collapse pressure — only the elite carry switches to raw.)
+  // Task 5: `op_weights` are the FIXED per-generation operator weights (computed
+  // serially by the caller before this call, so every child draws its operator
+  // against the same weights — F1-safe). `child_ops` is filled (sized n_children)
+  // with each child slot's chosen mutation-operator id (0=op_swap, 1=field_swap,
+  // 2=jitter; 0xFF for a non-mutation child — crossover, immigrant, or elite-clone
+  // fallback) so the caller can credit operators by realized fitness gain next gen.
+  // Each slot is written by the single shard that produced it (no race). Both are
+  // inert (uniform weights, ignored ids) when cfg.adaptive_operators is false.
   [[nodiscard]] std::vector<Genome> reproduce(const std::vector<Scored> &scored,
                                               const SearchConfig &cfg, atx::usize gen,
-                                              parallel::DetPool &det_pool, SearchResult &res);
+                                              parallel::DetPool &det_pool, SearchResult &res,
+                                              const std::array<atx::f64, 3> &op_weights,
+                                              std::vector<atx::u8> &child_ops);
 
   // Produce one child from the canonical-id-ordered parent pool with a single
   // id-seeded rng: bernoulli(p_cross) ? crossover(two tournament picks) :
@@ -366,7 +384,9 @@ private:
   // Ok child is F5-valid; an Err propagates (the caller substitutes an elite).
   [[nodiscard]] atx::core::Result<Genome> make_child(const std::vector<Scored> &scored,
                                                      const std::vector<atx::usize> &canon_order,
-                                                     const SearchConfig &cfg, Xoshiro256pp &rng);
+                                                     const SearchConfig &cfg, Xoshiro256pp &rng,
+                                                     const std::array<atx::f64, 3> &op_w,
+                                                     atx::usize gen, atx::u8 &op_used);
 
   // Pick one type-safe mutation by a seeded draw, fallback-cascading so a
   // degenerate genome (e.g. no literal to jitter) still yields a child when ANY
@@ -376,8 +396,17 @@ private:
   // root cause). The seeded draw uses a FIXED modulus (3) regardless of the gate
   // so the RNG stream — and therefore the replay (F1) — does not shift when the
   // gate flips; a drawn-but-disabled op_swap simply falls through to jitter_const.
+  //
+  // Task 5: under cfg.adaptive_operators the operator is drawn weighted by `op_w`
+  // (still ONE rng word, flag-branched so OFF keeps the literal % 3 stream); under
+  // cfg.jitter_anneal the jitter sigma is scaled by jitter_anneal_decay^gen. The
+  // selected operator's id (0=op_swap,1=field_swap,2=jitter) is reported via
+  // `op_used` for the per-generation credit accumulator (caller ignores it when
+  // adaptation is off).
   [[nodiscard]] atx::core::Result<Genome> mutate_one(const Genome &g, const SearchConfig &cfg,
-                                                     Xoshiro256pp &rng);
+                                                     Xoshiro256pp &rng,
+                                                     const std::array<atx::f64, 3> &op_w,
+                                                     atx::usize gen, atx::u8 &op_used);
 
   // ----- selection helpers ---------------------------------------------------
 
