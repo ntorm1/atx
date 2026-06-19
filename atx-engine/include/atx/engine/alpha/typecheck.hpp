@@ -119,9 +119,11 @@ namespace detail {
 // ----- field classification ---------------------------------------------
 
 // A field is a Group classifier iff its name carries the `IndClass.` prefix
-// (IndClass.sector / .industry / .subindustry). All other fields are F64.
+// (IndClass.sector / .industry / .subindustry), OR if it is the bare canonical
+// gics-derived "sector" field (kHistFieldSector). All other fields are F64.
 [[nodiscard]] inline bool is_group_field(std::string_view name) noexcept {
   constexpr std::string_view kPrefix = "IndClass.";
+  if (name == "sector") return true;              // gics-derived classifier column
   return name.size() > kPrefix.size() && name.substr(0, kPrefix.size()) == kPrefix;
 }
 

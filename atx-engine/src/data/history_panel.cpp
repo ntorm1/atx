@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -232,13 +233,17 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   names.emplace_back(kHistFieldMarketCap);
   data.push_back(uni.market_cap);
 
-  // sector — widen i32 sector_code to f64 (every cell is set; sector_code already
-  // carries kNoSectorCode = -1 for absent sectors, so there is no missing-cell case).
+  // sector — widen i32 sector_code to f64; map the kNoSectorCode (-1) "missing
+  // sector" sentinel to NaN so DSL group ops (group_rank/group_neutralize/...)
+  // treat unclassified names as out-of-set (dropped), not as a spurious "-1" group.
   {
     std::vector<atx::f64> sector_f64;
     sector_f64.reserve(cells);
     for (atx::usize k = 0; k < cells; ++k) {
-      sector_f64.push_back(static_cast<atx::f64>(uni.sector_code[k]));
+      const atx::i32 sc = uni.sector_code[k];
+      sector_f64.push_back(sc == kNoSectorCode
+                               ? std::numeric_limits<atx::f64>::quiet_NaN()
+                               : static_cast<atx::f64>(sc));
     }
     names.emplace_back(kHistFieldSector);
     data.push_back(std::move(sector_f64));
