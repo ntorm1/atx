@@ -480,15 +480,21 @@ TEST(AtxImplCombine, SectorNeutralCombinedBookIsPerSectorNeutral) {
 
   auto cpanel = atx::impl::read_panel(combo_out).value();
   auto fid = cpanel.field_id("alpha").value();
+  usize dates_checked = 0;
   for (usize d = 12; d < D; ++d) {
     auto cs = cpanel.field_cross_section(fid, d);
-    f64 g0 = 0.0, g1 = 0.0; bool any = false;
+    f64 g0 = 0.0, g1 = 0.0; usize n0 = 0, n1 = 0;
     for (usize i = 0; i < N; ++i) {
       if (std::isnan(cs[i])) continue;
-      (i < 3 ? g0 : g1) += cs[i]; any = true;
+      if (i < 3) { g0 += cs[i]; ++n0; } else { g1 += cs[i]; ++n1; }
     }
-    if (any) { EXPECT_NEAR(g0, 0.0, 1e-9); EXPECT_NEAR(g1, 0.0, 1e-9); }
+    if (n0 > 0) EXPECT_NEAR(g0, 0.0, 1e-9);  // sector 0 neutral when populated
+    if (n1 > 0) EXPECT_NEAR(g1, 0.0, 1e-9);  // sector 1 neutral when populated
+    if (n0 > 0 && n1 > 0) ++dates_checked;
   }
+  // Guard against a vacuous pass: at least one date must have BOTH sectors
+  // populated so the per-sector neutrality was actually exercised on real data.
+  EXPECT_GT(dates_checked, 0u) << "no date had both sectors populated";
   std::error_code ec; fs::remove(panel_path, ec); fs::remove_all(alphas_dir, ec);
   fs::remove(combo_out, ec); fs::remove(combo_out + ".weights.txt", ec);
 }

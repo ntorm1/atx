@@ -55,13 +55,6 @@ struct RunConfig {
     // dsr >= min_dsr. This yields a robust, low-turnover, low-correlation,
     // high-fitness alpha database. Absent --gated, behavior is unchanged.
     bool        gated         = false; // --gated
-
-    // -- combine sector neutralization (opt-in) --
-    // When --sector-neutral is set and the panel has a "sector" field,
-    // each alpha's per-alpha book is sector-demeaned before blending so
-    // the mega-alpha expresses idiosyncratic views, not sector bets.
-    // Default false: no-flag behavior is byte-identical to today.
-    bool        sector_neutral = false; // --sector-neutral (opt-in; sector-demean per-alpha books before combine)
     double      min_sharpe    = 1.0;   // --min-sharpe    (AlphaGate standalone-Sharpe floor)
     double      min_fitness   = 1.0;   // --min-fitness   (AlphaGate WorldQuant-fitness floor)
     double      max_turnover  = 0.70;  // --max-turnover  (AlphaGate per-alpha turnover cap)
@@ -74,6 +67,10 @@ struct RunConfig {
     std::string alphas;                // --alphas
     std::string combo_out;             // --combo-out
     std::string method;                // --method
+    // --sector-neutral (opt-in): when set AND the panel has a "sector" field, each
+    // alpha's book is sector-demeaned before blending so the mega-alpha expresses
+    // idiosyncratic views, not sector bets. Default false: no-flag path byte-identical.
+    bool        sector_neutral = false; // --sector-neutral
     long        fit_begin    = 0;     // --fit-begin
     long        fit_end      = 0;     // --fit-end
 

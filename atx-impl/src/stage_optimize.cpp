@@ -49,11 +49,8 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
                               "optimize: combo and research date counts differ");
     }
 
-    // 3. Build diagonal FactorModel from per-instrument TRI-return variance.
     const atx::usize M = research.instruments();
     const atx::usize D = research.dates();
-
-    ATX_TRY(auto model, diagonal_risk_model(research));
 
     // 4. Validate --rebalance, then derive step.
     if (!cfg.rebalance.empty() &&
@@ -163,6 +160,9 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     }
 
     // 5b. MVO path (default: position_mode=false).
+    // Build the diagonal FactorModel from per-instrument TRI-return variance — needed
+    // ONLY by the mean-variance path; position-mode returned above without it.
+    ATX_TRY(auto model, diagonal_risk_model(research));
     risk::MultiPeriodConfig mc;
     mc.single.risk_aversion   = cfg.set_flags.count("risk-aversion")
                                     ? cfg.risk_aversion : 1.0;

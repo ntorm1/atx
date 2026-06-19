@@ -62,7 +62,7 @@ inline void shape_book(std::vector<atx::f64>& w,
     }
 
     // 4. Name-cap clip with budget redistribution to the unclipped (free) names.
-    //    Fixed 8 passes (deterministic; mirrors WeightPolicy::finalize_truncation).
+    //    Fixed 8 passes (deterministic; same spirit as WeightPolicy::truncate_renorm).
     if (name_cap > 0.0) {
         for (int pass = 0; pass < 8; ++pass) {
             bool any_clip = false;
