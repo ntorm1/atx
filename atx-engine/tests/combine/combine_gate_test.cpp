@@ -186,7 +186,7 @@ TEST(AlphaGate, BelowFitnessRejectsFitness) {
 TEST(AlphaGate, AboveTurnoverRejectsTurnover) {
   const AlphaGate gate{GateConfig{}};
   AlphaMetrics m = passing_metrics();
-  m.turnover = 0.95; // above max_turnover (0.70), sharpe + fitness passing
+  m.turnover = 0.95; // above max_turnover (0.70), fitness + sharpe passing
   const AlphaStore pool;
   const std::vector<f64> cand{0.0, 0.01, 0.02};
   EXPECT_EQ(gate.admit(m, cand, pool), GateVerdict::RejectTurnover);
@@ -196,7 +196,7 @@ TEST(AlphaGate, AboveTurnoverRejectsTurnover) {
 //  Fixed-order determinism
 // ===========================================================================
 
-TEST(AlphaGate, FailsSharpeAndTurnoverReturnsSharpeFirst) {
+TEST(AlphaGate, FailsSharpeAndTurnoverReturnsSharpeBeforeTurnover) {
   // A candidate that fails BOTH the Sharpe and turnover floors must report
   // RejectSharpe — in the fixed order (fitness→Sharpe→turnover), fitness
   // passes (2.0), then Sharpe=0.1 < min_sharpe=0.25 fires before turnover.

@@ -74,11 +74,12 @@ struct GateConfig {
 // ===========================================================================
 //  GateVerdict — admission outcome. The underlying type MUST match the
 //  forward declaration in combine/fwd.hpp (`enum class GateVerdict : atx::u8;`).
-//  Enumerator order mirrors the §5.2 fixed check order so the verdict is
-//  self-documenting (RejectSharpe is the first floor, RejectCorrelated the last
-//  gate). Callers that map a verdict to an action must switch EXHAUSTIVELY (no
-//  `default`) so a future enumerator forces a compile error rather than silent
-//  fall-through.
+//  Enumerator order is FROZEN: it is used as a stable array index for the reject
+//  histogram, so values must not be renumbered. It does NOT reflect the runtime
+//  check order — admission now tests fitness BEFORE the raw-Sharpe sanity floor
+//  (RejectFitness can fire before RejectSharpe). Callers that map a verdict to an
+//  action must switch EXHAUSTIVELY (no `default`) so a future enumerator forces a
+//  compile error rather than silent fall-through.
 // ===========================================================================
 enum class GateVerdict : atx::u8 {
   Accept,

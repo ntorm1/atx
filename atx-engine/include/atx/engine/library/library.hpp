@@ -106,7 +106,9 @@ struct AlphaCandidate {
 //  AdmitKind / AdmitVerdict — the facade's admission outcome.
 //
 //  Mirrors GateVerdict's branches + a Duplicate branch (the L3 dedup gate, which
-//  AlphaGate has no analog for). `id` is meaningful ONLY on Accept.
+//  AlphaGate has no analog for). `id` is meaningful ONLY on Accept. Enumerator
+//  order is FROZEN (stable reject-histogram index) and does NOT reflect the
+//  runtime check order — see GateVerdict in combine/gate.hpp.
 // ===========================================================================
 enum class AdmitKind : atx::u8 {
   Accept,
