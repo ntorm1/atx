@@ -392,5 +392,40 @@ TEST(AlphaTypecheck, OuMeanRollingLookback) {
   EXPECT_EQ(an.value().info(ast.value().roots()[0].root).lookback, 9U); // (d-1)+0
 }
 
+// ---- Task 3.2: input-dtype guard — categorical field as numeric primary ------
+// These must all be HARD analyze errors after the guard is in place.
+
+// zscore(sector): sector is DType::Group; zscore requires a numeric primary.
+TEST(AlphaTypecheck_DTypeGuard, ZscoreOfSector_IsError) {
+  expect_analyze_error("zscore(sector)");
+}
+
+// ts_mean(sector, 5): time-series op with a Group primary must be rejected.
+TEST(AlphaTypecheck_DTypeGuard, TsMeanOfSector_IsError) {
+  expect_analyze_error("ts_mean(sector, 5)");
+}
+
+// scale(sector, 2.0): Cs-scalar op with a Group primary must be rejected.
+TEST(AlphaTypecheck_DTypeGuard, ScaleOfSector_IsError) {
+  expect_analyze_error("scale(sector, 2.0)");
+}
+
+// zscore(IndClass.sector): same guard applies to IndClass.* prefixed classifiers.
+TEST(AlphaTypecheck_DTypeGuard, ZscoreOfIndClassSector_IsError) {
+  expect_analyze_error("zscore(IndClass.sector)");
+}
+
+// Positive cases: group classifiers in their CORRECT role (2nd arg) must still pass.
+// indneutralize(close, sector): primary `close` is F64; classifier `sector` is Group 2nd arg.
+TEST(AlphaTypecheck_DTypeGuard, IndNeutralizeCloseWithSector_Ok) {
+  const TypeInfo t = analyze_root("indneutralize(close, sector)");
+  EXPECT_EQ(t.dtype, DType::F64);
+}
+
+// zscore(close): numeric primary must still pass unaffected.
+TEST(AlphaTypecheck_DTypeGuard, ZscoreOfClose_Ok) {
+  const TypeInfo t = analyze_root("zscore(close)");
+  EXPECT_EQ(t.dtype, DType::F64);
+}
 
 }  // namespace atxtest_alpha_typecheck_test

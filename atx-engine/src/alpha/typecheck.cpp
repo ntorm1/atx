@@ -344,6 +344,15 @@ atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInf
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "expected a panel/cross-section operand, got a scalar");
   }
+  // Task 3.2: belt-and-suspenders input-dtype guard. Every Cs*/Ts*/filter op
+  // consumes e.a as a NUMERIC (F64) signal; a Group classifier in e.a is always
+  // a bug (the classifier role is e.b). Reject hard so zscore(sector),
+  // ts_mean(sector,5), etc. are Err regardless of how the genome was produced.
+  if (needs_panel_primary && out[e.a].dtype != DType::F64) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "operator requires a numeric (f64) primary operand; "
+                          "got a Group classifier");
+  }
   // KalmanReg requires BOTH y (arg0) and x (arg1) to be non-scalar Panel operands.
   if (op == OpCode::KalmanReg && e.b != kNoExpr && out[e.b].shape == Shape::Scalar) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,

@@ -121,7 +121,14 @@ namespace detail {
        "decay_linear", "ema"}};
   static constexpr std::array<std::string_view, 2> kTsBinary = {{"correlation", "covariance"}};
 
-  switch (rng.next_u64() % 8) {
+  // Task 3.1 empty-partition guard: case 4 (group-aware op) calls gen_group which
+  // does pick_field(cfg.group_fields, rng) — UB if group_fields is empty (panel
+  // with no classifier column). When empty, re-roll into case 2 (a simple
+  // cross-sectional op) so the RNG stream diverges ONLY for empty-partition panels;
+  // the common non-empty path is byte-identical to the pre-3.1 stream.
+  const atx::u64 raw_case = rng.next_u64() % 8;
+  const atx::u64 which = (raw_case == 4 && cfg.group_fields.empty()) ? 2 : raw_case;
+  switch (which) {
   case 0: // unary element-wise function
     return std::string{pick_sv(kUnary, rng)} + "(" + gen_f64(cfg, rng, depth - 1) + ")";
   case 1: // binary arithmetic (infix)
@@ -133,6 +140,7 @@ namespace detail {
     return std::string{pick_sv(kCsScalar, rng)} + "(" + gen_f64(cfg, rng, depth - 1) + ", " +
            emit_scalar(rng) + ")";
   case 4: // group-aware cross-sectional (2nd operand is a Group classifier)
+    // group_fields is non-empty here (guarded above).
     return std::string{pick_sv(kCsGroup, rng)} + "(" + gen_f64(cfg, rng, depth - 1) + ", " +
            gen_group(cfg, rng) + ")";
   case 5: // time-series, arity 2 (window literal)

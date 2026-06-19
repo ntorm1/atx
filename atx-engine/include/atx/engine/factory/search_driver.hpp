@@ -519,6 +519,11 @@ private:
   // alias panel_fields_'s owned strings, valid for the driver's lifetime.
   std::vector<std::string> panel_fields_;
   std::vector<std::string_view> panel_field_views_;
+  // Task 3.1: dtype-partitioned views into panel_fields_. Built in the ctor.
+  // numeric_field_views_: fields where !is_group_field (F64 leaves).
+  // group_field_views_: fields where is_group_field (Group classifiers).
+  std::vector<std::string_view> numeric_field_views_;
+  std::vector<std::string_view> group_field_views_;
 };
 
 } // namespace atx::engine::factory

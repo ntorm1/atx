@@ -33,6 +33,12 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   panel_field_views_.reserve(panel_fields_.size());
   for (const std::string &f : panel_fields_) {
     panel_field_views_.push_back(f);
+    // Task 3.1: partition into numeric vs. group (classifier) views.
+    if (alpha::detail::is_group_field(f)) {
+      group_field_views_.push_back(panel_field_views_.back());
+    } else {
+      numeric_field_views_.push_back(panel_field_views_.back());
+    }
   }
 }
 
@@ -415,8 +421,10 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // panel_fields_ vector (driver lifetime), valid for the fill duration. Other gen_cfg
   // knobs (max_lookback, max_depth, etc.) come from cfg.
   GenConfig base_gc = cfg.gen_cfg;
-  base_gc.numeric_fields = panel_field_views_;
-  base_gc.group_fields = panel_field_views_; // non-empty but F64: Group-typed ops will Err
+  // Task 3.1: use dtype-partitioned field views so numeric ops only draw from
+  // F64 fields and group ops only draw from classifier fields.
+  base_gc.numeric_fields = numeric_field_views_;
+  base_gc.group_fields = group_field_views_;
   for (atx::usize i = n_seed_slots; i < cfg.population; ++i) {
     Genome chosen = seeds[i % seeds.size()].clone(); // deterministic fallback
     chosen.canon_hash = seeds[i % seeds.size()].canon_hash;
@@ -845,8 +853,9 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
     // references fields the Panel can evaluate — without this the sampler emits
     // fields absent from narrow panels and the immigrant crashes at eval.
     GenConfig imm_gc = cfg.gen_cfg;
-    imm_gc.numeric_fields = panel_field_views_;
-    imm_gc.group_fields = panel_field_views_;
+    // Task 3.1: partition immigrant sampler to dtype-correct field catalogs.
+    imm_gc.numeric_fields = numeric_field_views_;
+    imm_gc.group_fields = group_field_views_;
     Xoshiro256pp rng{detail::seed_for(cfg.master_seed,
                                       kImmigrantAxis ^ static_cast<atx::u64>(gen),
                                       n_elites + p)};
@@ -938,7 +947,9 @@ SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp 
       return r;
     }
   } else if (which == 1) {
-    auto r = field_swap(g, std::span<const std::string_view>{panel_field_views_}, rng);
+    // Task 3.1: restrict field_swap to the numeric partition; group classifier
+    // leaves are left alone (the 3.2 analyze backstop catches any bad swap).
+    auto r = field_swap(g, std::span<const std::string_view>{numeric_field_views_}, rng);
     if (r.has_value()) {
       op_used = 1; // field_swap made the child
       return r;
@@ -1192,8 +1203,19 @@ void SearchDriver::finalize(const std::vector<Scored> &scored, const CanonSet &c
   // result's admitted list is byte-identical.
   std::vector<atx::usize> order = pareto_ordered_indices(scored);
   for (const atx::usize i : order) {
-    res.admitted_candidates.push_back(scored[i].genome.clone());
-    res.admitted_candidates.back().canon_hash = scored[i].genome.canon_hash;
+    const Genome &g = scored[i].genome;
+    // Task 3.3: a tradeable alpha root must be F64. Reject bare Group (e.g.
+    // a naked `sector` root) or Mask roots — they are not numeric signals.
+    // Grammar partition (3.1) + dtype guard (3.2) prevent these from arising
+    // in normal operation; this is a belt-and-suspenders final gate.
+    if (!g.ast.roots().empty()) {
+      const alpha::ExprId root_id = g.ast.roots().front().root;
+      if (g.analysis.info(root_id).dtype != alpha::DType::F64) {
+        continue; // skip non-F64 root — degenerate genome, not admittable
+      }
+    }
+    res.admitted_candidates.push_back(g.clone());
+    res.admitted_candidates.back().canon_hash = g.canon_hash;
   }
 }
 
