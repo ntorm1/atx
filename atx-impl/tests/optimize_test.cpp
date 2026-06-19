@@ -46,6 +46,61 @@ make_research_panel(const fs::path& out, atx::usize M, atx::usize D)
     return atx::core::Ok(out.string());
 }
 
+// Build a research panel with EXPLICITLY HETEROGENEOUS per-instrument return
+// variances, for use in the MVO-discrimination sub-test only.
+//
+// Design (see optimizer.hpp §λ>0 regime):
+// The MVO smooth-target t ∝ P V^{-1} P α.  For a diagonal V, V^{-1} scales
+// name i by 1/dvar[i].  When all dvar[i] are equal the scale factors out of
+// the re-centering and t ∝ demean(α) — identical to the position-mode
+// direction.  We break this degeneracy by giving every instrument a UNIQUE
+// dvar that is STRICTLY ABOVE the 1e-4 risk-model floor and spans a 4:1
+// range: dvar[i] = kDvarBase * (1 + i * kDvarStep).
+//
+// Alternating price construction: price[t][i] = 100*(1 + vol_i*(-1)^t) gives
+// daily return ≈ ±2*vol_i → population variance ≈ 4*vol_i^2 = dvar[i].
+// vol_i = sqrt(dvar[i]/4).  Each instrument has a different vol so different
+// dvar — V^{-1} then preferentially weights the LOW-variance instruments (the
+// ones with larger 1/dvar), producing a directionally different book from
+// shape_book (which ignores variance).
+//
+// We use kNameCap = 1.0 (effectively uncapped) in the discrimination run so
+// the optimizer's project() never calls cap_clip_renorm.  Without clip-renorm
+// the projected/proximal loop's demean_live + gross_normalize guarantee
+// |Σw| < 1e-12, keeping the MVO book constraint-valid.
+//
+// The construction is entirely deterministic (no RNG).
+static atx::core::Result<std::string>
+make_research_panel_hetvar(const fs::path& out, atx::usize M, atx::usize D)
+{
+    // dvar[i] = kDvarBase * (1 + i * kDvarStep), ranging from kDvarBase to
+    // kDvarBase*(1 + (M-1)*kDvarStep).  With kDvarBase=5e-4, kDvarStep=0.2:
+    //   i=0:  dvar=5e-4   (5× floor)
+    //   i=19: dvar=5e-4*(1+3.8)=2.4e-3  (~24× floor)
+    // The 5:1 ratio across names is large enough to shift MVO weights by >>
+    // 1e-6 after V^{-1} + re-centre + gross-normalise.
+    static constexpr atx::f64 kDvarBase = 5e-4;
+    static constexpr atx::f64 kDvarStep = 0.2;
+    std::vector<atx::f64> close_data;
+    close_data.reserve(D * M);
+    for (atx::usize t = 0; t < D; ++t) {
+        for (atx::usize i = 0; i < M; ++i) {
+            const atx::f64 dvar_i = kDvarBase * (1.0 + static_cast<atx::f64>(i) * kDvarStep);
+            const atx::f64 vol_i  = std::sqrt(dvar_i / 4.0);  // 4*vol^2 = dvar
+            // Alternating sign each day: price is always positive (vol_i < 0.5).
+            const atx::f64 sign = (t % 2 == 0) ? 1.0 : -1.0;
+            close_data.push_back(100.0 * (1.0 + vol_i * sign));
+        }
+    }
+    std::vector<std::uint8_t> uni(D * M, 1u);
+    ATX_TRY(auto panel,
+            alpha::Panel::create(D, M, {"close"}, {close_data}, uni));
+    ATX_TRY(auto digest,
+            atx::impl::write_panel(panel, out.string()));
+    (void)digest;
+    return atx::core::Ok(out.string());
+}
+
 // Build a combo panel (M instruments, D dates, field "alpha").
 // alpha[d, i] = (i - M/2.0) + 0.01*(d % 5) so the optimizer has a real
 // long/short opinion each period.
@@ -387,4 +442,112 @@ TEST_F(AtxImplOptimize, PositionModeBookEqualsShapedComboCrossSection) {
     // Sidecar must exist.
     EXPECT_TRUE(fs::exists(books_path.string() + ".meta.txt"))
         << "missing sidecar .meta.txt for position_mode books";
+
+    // -----------------------------------------------------------------------
+    // Discrimination assertion: MVO at risk_aversion=1.0 on a
+    // heterogeneous-variance research panel MUST differ from the
+    // position-mode book on the SAME combo by > 1e-6 on at least one
+    // (period, name) pair.
+    //
+    // Why a separate research panel:
+    //   The shared fixture (gentle exponential trend) produces all-floor
+    //   dvar[i] = 1e-4.  With a uniform diagonal V, V^{-1}α ∝ α and the MVO
+    //   smooth target reduces to demean(α) — identical to position-mode.  We
+    //   must use a research panel where instruments have CLEARLY DIFFERENT
+    //   dvar so V^{-1} tilts the book direction away from the pure-alpha
+    //   direction (optimizer.hpp §λ>0 regime).
+    //
+    // Why name_cap = gross (uncapped):
+    //   Without cap_clip_renorm the optimizer's project() reduces to
+    //   demean_live + gross_normalize, which guarantees |Σw| < 1e-12.
+    //   A cap < gross with heterogeneous V can break dollar-neutral (the
+    //   cap clips asymmetrically and project() does not re-center after
+    //   clip), which would invalidate ProducesValidBooks on the shared panel.
+    //   The discrimination assertion does not need the cap — the V^{-1} tilt
+    //   is observable from direction change alone.
+    //
+    // Why this proves position_mode bypasses the optimizer:
+    //   If position_mode bypasses the MVO path, it runs shape_book which is
+    //   V-agnostic.  The MVO path at λ=1 uses V^{-1} — with heterogeneous
+    //   dvar the directions differ by >> 1e-6.  If position_mode did NOT
+    //   bypass MVO, both runs would use the same code path and produce the
+    //   same book, making the assertion vacuous.
+    // -----------------------------------------------------------------------
+    const fs::path hetvar_research = tmp_dir_ / "research_hetvar.bin";
+    {
+        auto hr = make_research_panel_hetvar(hetvar_research, kM, kD);
+        ASSERT_TRUE(hr.has_value()) << hr.error().message();
+    }
+    const fs::path pm_disc_path  = tmp_dir_ / "books_pm_disc.bin";
+    const fs::path mvo_disc_path = tmp_dir_ / "books_mvo_disc.bin";
+
+    // Position-mode run (signal-as-position; uncapped so all 20 names carry
+    // fractional weight proportional to demean(alpha)).
+    {
+        atx::impl::RunConfig pm_cfg;
+        pm_cfg.panel         = hetvar_research.string();
+        pm_cfg.combo         = combo_path_;
+        pm_cfg.books_out     = pm_disc_path.string();
+        pm_cfg.position_mode = true;
+        pm_cfg.rebalance     = "weekly";
+        pm_cfg.gross         = 1.0;
+        pm_cfg.name_cap      = 1.0;  // uncapped: max |w| = 9.5/100 = 0.095 < 1.0
+        auto pm_r = atx::impl::run_optimize(pm_cfg);
+        ASSERT_TRUE(pm_r.has_value()) << pm_r.error().message();
+    }
+    // MVO run (risk_aversion=1.0; V^{-1} tilts away from high-variance names).
+    {
+        atx::impl::RunConfig mvo_cfg;
+        mvo_cfg.panel         = hetvar_research.string();
+        mvo_cfg.combo         = combo_path_;
+        mvo_cfg.books_out     = mvo_disc_path.string();
+        mvo_cfg.position_mode = false;
+        mvo_cfg.risk_aversion = 1.0;
+        mvo_cfg.set_flags.emplace("risk-aversion");
+        mvo_cfg.rebalance     = "weekly";
+        mvo_cfg.gross         = 1.0;
+        mvo_cfg.name_cap      = 1.0;  // uncapped: guarantees exact dollar-neutral
+        auto mvo_r = atx::impl::run_optimize(mvo_cfg);
+        ASSERT_TRUE(mvo_r.has_value()) << mvo_r.error().message();
+    }
+
+    auto pm_disc_r = atx::impl::read_panel(pm_disc_path.string());
+    ASSERT_TRUE(pm_disc_r.has_value()) << pm_disc_r.error().message();
+    const auto& pm_disc_books = *pm_disc_r;
+
+    auto mvo_disc_r = atx::impl::read_panel(mvo_disc_path.string());
+    ASSERT_TRUE(mvo_disc_r.has_value()) << mvo_disc_r.error().message();
+    const auto& mvo_disc_books = *mvo_disc_r;
+
+    auto pm_wfid_r = pm_disc_books.field_id("weight");
+    ASSERT_TRUE(pm_wfid_r.has_value()) << pm_wfid_r.error().message();
+    const auto pm_wfid = *pm_wfid_r;
+
+    auto mvo_wfid_r = mvo_disc_books.field_id("weight");
+    ASSERT_TRUE(mvo_wfid_r.has_value()) << mvo_wfid_r.error().message();
+    const auto mvo_wfid = *mvo_wfid_r;
+
+    ASSERT_EQ(pm_disc_books.dates(),       mvo_disc_books.dates())
+        << "PM-disc and MVO-disc period counts differ";
+    ASSERT_EQ(pm_disc_books.instruments(), mvo_disc_books.instruments())
+        << "PM-disc and MVO-disc instrument counts differ";
+
+    // At least one (period, name) pair must differ by > 1e-6.
+    bool found_divergence = false;
+    for (atx::usize s = 0; s < pm_disc_books.dates() && !found_divergence; ++s) {
+        const auto pm_ws  = pm_disc_books.field_cross_section(pm_wfid, s);
+        const auto mvo_ws = mvo_disc_books.field_cross_section(mvo_wfid, s);
+        ASSERT_EQ(pm_ws.size(), kM);
+        ASSERT_EQ(mvo_ws.size(), kM);
+        for (atx::usize i = 0; i < kM; ++i) {
+            if (std::fabs(mvo_ws[i] - pm_ws[i]) > 1e-6) {
+                found_divergence = true;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(found_divergence)
+        << "MVO(risk_aversion=1.0) book equals position-mode book within 1e-6 "
+           "on the heterogeneous-variance panel — V^{-1} risk tilt not observable; "
+           "position-mode branch may not be bypassing the optimizer.";
 }
