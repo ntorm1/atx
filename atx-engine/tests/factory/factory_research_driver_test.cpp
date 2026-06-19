@@ -277,8 +277,12 @@ TEST(ResearchDriver, StopsOnPatienceWhenNoveltyExhausted) {
 
   constexpr usize kPatience = 2;
   constexpr usize kMaxRuns = 10;
-  const ResearchReport rep =
-      engine.run(noise_research_cfg(/*seed*/ 7, kMaxRuns, kPatience));
+  ResearchConfig rcfg = noise_research_cfg(/*seed*/ 7, kMaxRuns, kPatience);
+  // legacy-init pin (consistent with the golden boundary pin): the grammar-init
+  // default changes the mined candidate set; this test verifies patience/early-stop
+  // LOGIC, not init diversity.
+  rcfg.per_run.search.seed_from_grammar = false;
+  const ResearchReport rep = engine.run(rcfg);
 
   EXPECT_EQ(rep.total_admitted, 0u);       // noise admits nothing
   EXPECT_LT(rep.runs, kMaxRuns);           // EARLY STOP fired (non-vacuous)

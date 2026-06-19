@@ -305,6 +305,10 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
 
   FactoryConfig cfg = real_signal_cfg(/*seed*/ 11);
   cfg.oos_fraction = 0.20; // hold out the terminal 20% — the noise-only regime
+  // legacy-init pin (consistent with the golden boundary pin): the grammar-init
+  // default changes the mined candidate set; this test verifies OOS-gate LOGIC, not
+  // init diversity.
+  cfg.search.seed_from_grammar = false;
 
   const FactoryReport rep = f.mine_into(cfg, library, gate);
 
@@ -320,6 +324,10 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
   lib::Library lib_is = lib::Library::open(tmpdir("is"), default_gate_cfg(), {0xC0FFEEu});
   Factory f_is = fx_is.factory();
   FactoryConfig cfg_is = real_signal_cfg(/*seed*/ 11); // oos_fraction stays 0 (OFF)
+  // legacy-init pin (consistent with the golden boundary pin): the grammar-init
+  // default changes the mined candidate set; this test verifies OOS-gate LOGIC, not
+  // init diversity.
+  cfg_is.search.seed_from_grammar = false;
   const FactoryReport rep_is = f_is.mine_into(cfg_is, lib_is, gate);
   EXPECT_GT(rep_is.admitted, 0u)
       << "the legacy in-sample path admits the overfit the OOS holdout rejects";
