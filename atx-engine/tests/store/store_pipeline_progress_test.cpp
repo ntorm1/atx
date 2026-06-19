@@ -87,6 +87,66 @@ TEST(PipelineRecorder, MarkFailedDeletedRunRejected) {
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::NotFound);
 }
 
+// Resumable-discover (Task F1): the FULL accumulated state round-trips through the
+// checkpoint losslessly, and latest_checkpoint reads back the latest generation's
+// payload byte-for-byte (population + every accumulated-state blob + digest + counter).
+TEST(PipelineRecorder, AccumulatedStateRoundTrip) {
+  auto db = StoreDb::open_memory(); ASSERT_TRUE(db.has_value());
+  auto rec = PipelineRecorder::begin(db->db(), MakeRow(555));
+  ASSERT_TRUE(rec.has_value());
+
+  CheckpointState st;
+  st.canon_blob           = "000000000000000a 00000000000000ff";
+  st.cache_blob           = "0000000000000001 3ff0000000000000 0000000000000003 "
+                            "0000000000000000 0000000000000000 0000000000000000 "
+                            "0000000000000000 0000000000000000 0000000000000000";
+  st.archive_blob         = "0000000000000002 3ff0000000000000 bff0000000000000";
+  st.best_per_gen_blob    = "4045000000000000 4045000000000000";
+  st.digest               = 0xDEADBEEFCAFEull;
+  st.candidates_generated = 42;
+
+  ASSERT_TRUE(rec->save_checkpoint(2, "rank(close)\ndelta(close,5)", 2,
+                                   1.0, 0.5, 8, 6, 100, 1001, st).has_value());
+  // Also save an EARLIER generation to prove latest_checkpoint picks the highest gen.
+  ASSERT_TRUE(rec->save_checkpoint(1, "old\npop", 2, 0.0, 0.0, 4, 2, 50, 1000).has_value());
+
+  auto cp = rec->latest_checkpoint();
+  ASSERT_TRUE(cp.has_value());
+  EXPECT_EQ(cp->population_blob, "rank(close)\ndelta(close,5)"); // latest = gen 2
+  EXPECT_EQ(cp->state.canon_blob, st.canon_blob);
+  EXPECT_EQ(cp->state.cache_blob, st.cache_blob);
+  EXPECT_EQ(cp->state.archive_blob, st.archive_blob);
+  EXPECT_EQ(cp->state.best_per_gen_blob, st.best_per_gen_blob);
+  EXPECT_EQ(cp->state.digest, st.digest);
+  EXPECT_EQ(cp->state.candidates_generated, st.candidates_generated);
+
+  // latest_population_blob is the legacy convenience accessor over the same row.
+  auto blob = rec->latest_population_blob();
+  ASSERT_TRUE(blob.has_value());
+  EXPECT_EQ(*blob, "rank(close)\ndelta(close,5)");
+}
+
+// Tampering ANY accumulated-state blob (leaving the stored state_hash intact) must be
+// detected by latest_checkpoint — the state_hash now covers the WHOLE payload, not
+// just the population blob.
+TEST(PipelineRecorder, LatestCheckpointRejectsTamperedAccumulatedState) {
+  auto db = StoreDb::open_memory(); ASSERT_TRUE(db.has_value());
+  auto rec = PipelineRecorder::begin(db->db(), MakeRow(444));
+  ASSERT_TRUE(rec.has_value());
+  CheckpointState st;
+  st.canon_blob = "000000000000000a";
+  st.digest = 7;
+  ASSERT_TRUE(rec->save_checkpoint(0, "pop", 1, 1.0, 0.5, 1, 1, 1, 1, st).has_value());
+  // Tamper canon_blob, leave state_hash untouched.
+  auto* tamper = *db->db().prepare_cached(
+      "UPDATE pipeline_checkpoint SET canon_blob='TAMPERED'"
+      " WHERE pipeline_run_id='run-444' AND generation=0");
+  ASSERT_EQ(*tamper->step(), atx::core::db::Statement::Step::Done);
+  auto result = rec->latest_checkpoint();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::Internal);
+}
+
 // IMPORTANT-1 regression: latest_population_blob must verify state_hash.
 // Tamper the blob in-place (leaving the original state_hash intact); the
 // recomputed hash will differ and latest_population_blob must return Err(Internal).

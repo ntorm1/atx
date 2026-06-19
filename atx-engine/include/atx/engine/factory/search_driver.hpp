@@ -93,6 +93,7 @@
 #include "atx/engine/factory/mutation.hpp"   // factory::op_swap/field_swap/jitter_const
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
+#include "atx/engine/factory/search_state.hpp"    // factory::CachedScore (fitness-cache value)
 #include "atx/engine/factory/search_progress.hpp" // factory::SearchProgressSink, SearchResumeState (resumable-discover)
 
 namespace atx::engine::factory {
@@ -244,24 +245,9 @@ struct Scored {
   std::vector<atx::f64> descriptor{};
 };
 
-// =========================================================================
-//  CachedScore — the per-canon_hash fitness cache value (F6 throughput, S4.1).
-//
-//  Pre-S4 this cache held only the scalar `raw`. S4.1 also caches the multi-
-//  objective vector so a dedup-hit reuses the SAME objectives (not just raw)
-//  without a re-eval — the MultiObjective ranking is then identical for an
-//  equivalent structure however many times it recurs. Trivial aggregate.
-// =========================================================================
-struct CachedScore {
-  atx::f64 raw{0.0};
-  std::array<atx::f64, kMaxObjectives> objectives{};
-  atx::u8 n_objectives{0};
-  // S4.2: the candidate's behavioral descriptor (OOS PnL profile). Pure function of
-  // (genome, panel) -> canon-cacheable: a dedup-hit reuses this WITHOUT a re-eval.
-  // The behavioral NOVELTY computed from it is population-relative and is recomputed
-  // fresh each generation (NOT cached). Empty if the candidate's fitness errored.
-  std::vector<atx::f64> descriptor{};
-};
+// CachedScore — the per-canon_hash fitness cache value (F6 throughput, S4.1) — is
+// defined in search_state.hpp (extracted so search_progress.hpp can serialize the
+// fitness_cache without a circular include). Re-included here below.
 
 // =========================================================================
 //  SearchDriver — the seeded population loop (§4.7).

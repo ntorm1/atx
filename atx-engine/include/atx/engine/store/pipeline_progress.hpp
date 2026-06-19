@@ -49,6 +49,26 @@ struct ResumableRun {
   atx::i64    last_generation{-1};
 };
 
+// The full cross-generation accumulated search state ENTERING a generation
+// (resumable-discover, Task F1). The blobs are produced by the engine's bit-exact,
+// deterministically-ordered serializers (search_progress.hpp); the store treats them
+// as opaque TEXT and round-trips them losslessly. DEFAULT-constructed (all empty / 0)
+// is a legacy population-only checkpoint that restores nothing.
+struct CheckpointState {
+  std::string canon_blob;
+  std::string cache_blob;
+  std::string archive_blob;
+  std::string best_per_gen_blob;
+  atx::u64    digest{0};
+  atx::i64    candidates_generated{0};
+};
+
+// A full checkpoint read back from the store (population + accumulated state).
+struct CheckpointRow {
+  std::string population_blob;
+  CheckpointState state;
+};
+
 // ---------------------------------------------------------------------------
 // Free blob helpers (same namespace)
 // ---------------------------------------------------------------------------
@@ -87,6 +107,34 @@ struct ResumableRun {
 /// FNV-1a 64-bit hash of the blob bytes.
 [[nodiscard]] inline atx::u64 population_hash(std::string_view blob) {
   return fingerprint::fold_bytes(fingerprint::kFnvOffset, blob);
+}
+
+/// state_hash over the FULL checkpoint payload (resumable-discover, Task F1): the
+/// population blob AND every accumulated-state blob + the digest + the
+/// candidates_generated counter. Folding ALL of it means latest_checkpoint can verify
+/// the whole resume payload (not just the population) against tampering/corruption,
+/// extending the prior population-only guard. The fold order is fixed (deterministic).
+/// A '\x1f' (unit separator) is folded between fields so distinct field boundaries
+/// cannot alias (e.g. ("ab","") vs ("a","b")).
+[[nodiscard]] inline atx::u64
+checkpoint_state_hash(std::string_view population_blob, std::string_view canon_blob,
+                      std::string_view cache_blob, std::string_view archive_blob,
+                      std::string_view best_per_gen_blob, atx::u64 digest,
+                      atx::i64 candidates_generated) {
+  atx::u64 h = fingerprint::kFnvOffset;
+  const std::string_view sep{"\x1f", 1};
+  h = fingerprint::fold_bytes(h, population_blob);
+  h = fingerprint::fold_bytes(h, sep);
+  h = fingerprint::fold_bytes(h, canon_blob);
+  h = fingerprint::fold_bytes(h, sep);
+  h = fingerprint::fold_bytes(h, cache_blob);
+  h = fingerprint::fold_bytes(h, sep);
+  h = fingerprint::fold_bytes(h, archive_blob);
+  h = fingerprint::fold_bytes(h, sep);
+  h = fingerprint::fold_bytes(h, best_per_gen_blob);
+  h = fingerprint::fold_u64(h, digest);
+  h = fingerprint::fold_u64(h, static_cast<atx::u64>(candidates_generated));
+  return h;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,24 +237,40 @@ public:
   // -------------------------------------------------------------------------
 
   /// ONE atomic Transaction: checkpoint + iteration + run UPDATE + 2 events.
+  /// `state` carries the FULL cross-generation accumulated search state ENTERING
+  /// `generation` (resumable-discover, Task F1). Defaulted so a legacy caller that
+  /// only persists the population gets an empty accumulated state (restores nothing).
+  /// The state_hash covers the WHOLE payload (population + state) so latest_checkpoint
+  /// verifies all of it on resume.
   [[nodiscard]] atx::core::Status
   save_checkpoint(atx::i64 generation, std::string_view population_blob,
                   atx::i64 population_count, atx::f64 best_fitness, atx::f64 mean_fitness,
-                  atx::i64 n_evaluated, atx::i64 n_unique, atx::i64 wall_ms, atx::i64 ts) {
+                  atx::i64 n_evaluated, atx::i64 n_unique, atx::i64 wall_ms, atx::i64 ts,
+                  const CheckpointState& state = {}) {
     ATX_TRY(auto txn, atx::core::db::Transaction::begin(db_));
-    const auto state_hash = static_cast<atx::i64>(population_hash(population_blob));
+    const auto state_hash = static_cast<atx::i64>(checkpoint_state_hash(
+        population_blob, state.canon_blob, state.cache_blob, state.archive_blob,
+        state.best_per_gen_blob, state.digest, state.candidates_generated));
     // 1. Checkpoint
     {
       ATX_TRY(auto* stmt, db_.prepare_cached(
           "INSERT OR REPLACE INTO pipeline_checkpoint("
-          " pipeline_run_id, generation, population_blob, population_count, state_hash, created_at)"
-          " VALUES (?1,?2,?3,?4,?5,?6)"));
+          " pipeline_run_id, generation, population_blob, population_count, state_hash,"
+          " canon_blob, cache_blob, archive_blob, best_per_gen_blob, digest,"
+          " candidates_generated, created_at)"
+          " VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"));
       ATX_TRY_VOID(stmt->bind(1, pipeline_run_id_));
       ATX_TRY_VOID(stmt->bind(2, generation));
       ATX_TRY_VOID(stmt->bind(3, population_blob));
       ATX_TRY_VOID(stmt->bind(4, population_count));
       ATX_TRY_VOID(stmt->bind(5, state_hash));
-      ATX_TRY_VOID(stmt->bind(6, ts));
+      ATX_TRY_VOID(stmt->bind(6, state.canon_blob));
+      ATX_TRY_VOID(stmt->bind(7, state.cache_blob));
+      ATX_TRY_VOID(stmt->bind(8, state.archive_blob));
+      ATX_TRY_VOID(stmt->bind(9, state.best_per_gen_blob));
+      ATX_TRY_VOID(stmt->bind(10, static_cast<atx::i64>(state.digest)));
+      ATX_TRY_VOID(stmt->bind(11, state.candidates_generated));
+      ATX_TRY_VOID(stmt->bind(12, ts));
       ATX_TRY(const auto step, stmt->step());
       if (step != atx::core::db::Statement::Step::Done) {
         return atx::core::Err(atx::core::ErrorCode::Internal,
@@ -259,27 +323,49 @@ public:
     return atx::core::Ok();
   }
 
-  /// SELECT the latest population blob, Err(NotFound) if none.
-  /// Verifies the stored state_hash against population_hash(blob); returns
-  /// Err(Internal) if they do not match (corrupt checkpoint blob).
-  [[nodiscard]] atx::core::Result<std::string> latest_population_blob() const {
+  /// SELECT the latest FULL checkpoint (population + accumulated state), Err(NotFound)
+  /// if none. Verifies the stored state_hash against checkpoint_state_hash over the
+  /// WHOLE payload (population + every accumulated-state blob + digest + counter);
+  /// returns Err(Internal) on a mismatch (corrupt/tampered checkpoint). This is the
+  /// resume read-back path (Task F1).
+  [[nodiscard]] atx::core::Result<CheckpointRow> latest_checkpoint() const {
     ATX_TRY(auto* stmt, db_.prepare_cached(
-        "SELECT population_blob, state_hash FROM pipeline_checkpoint"
+        "SELECT population_blob, state_hash, canon_blob, cache_blob, archive_blob,"
+        " best_per_gen_blob, digest, candidates_generated FROM pipeline_checkpoint"
         " WHERE pipeline_run_id=?1 ORDER BY generation DESC LIMIT 1"));
     ATX_TRY_VOID(stmt->bind(1, pipeline_run_id_));
     ATX_TRY(const auto step, stmt->step());
     if (step != atx::core::db::Statement::Step::Row) {
       return atx::core::Err(atx::core::ErrorCode::NotFound,
-                            "PipelineRecorder::latest_population_blob: no checkpoint");
+                            "PipelineRecorder::latest_checkpoint: no checkpoint");
     }
-    std::string blob{stmt->column_text(0)};
+    CheckpointRow row;
+    row.population_blob = std::string{stmt->column_text(0)};
     const auto stored_hash = static_cast<atx::u64>(stmt->column_int(1));
-    if (population_hash(blob) != stored_hash) {
+    row.state.canon_blob = std::string{stmt->column_text(2)};
+    row.state.cache_blob = std::string{stmt->column_text(3)};
+    row.state.archive_blob = std::string{stmt->column_text(4)};
+    row.state.best_per_gen_blob = std::string{stmt->column_text(5)};
+    row.state.digest = static_cast<atx::u64>(stmt->column_int(6));
+    row.state.candidates_generated = stmt->column_int(7);
+    const auto recomputed = checkpoint_state_hash(
+        row.population_blob, row.state.canon_blob, row.state.cache_blob,
+        row.state.archive_blob, row.state.best_per_gen_blob, row.state.digest,
+        row.state.candidates_generated);
+    if (recomputed != stored_hash) {
       return atx::core::Err(atx::core::ErrorCode::Internal,
-                            "PipelineRecorder::latest_population_blob: state_hash mismatch"
-                            " (corrupt checkpoint blob)");
+                            "PipelineRecorder::latest_checkpoint: state_hash mismatch"
+                            " (corrupt checkpoint payload)");
     }
-    return atx::core::Ok(std::move(blob));
+    return atx::core::Ok(std::move(row));
+  }
+
+  /// SELECT the latest population blob, Err(NotFound) if none. Verifies the FULL
+  /// payload state_hash (delegates to latest_checkpoint) and returns just the
+  /// population blob — the legacy convenience accessor.
+  [[nodiscard]] atx::core::Result<std::string> latest_population_blob() const {
+    ATX_TRY(auto row, latest_checkpoint());
+    return atx::core::Ok(std::move(row.population_blob));
   }
 
   /// UPDATE last_heartbeat_at + updated_at.

@@ -26,11 +26,20 @@ std::string fp_hex(atx::u64 v) {
 atx::core::Status StoreProgressSink::on_generation(
     const atx::engine::factory::GenerationSnapshot& s) {
   const std::string blob = atx::engine::store::join_population(s.population);
+  // Resumable-discover (Task F1): persist the FULL accumulated state ENTERING this
+  // generation alongside the population so a resume restores it byte-identically.
+  atx::engine::store::CheckpointState state;
+  state.canon_blob           = s.canon_blob;
+  state.cache_blob           = s.cache_blob;
+  state.archive_blob         = s.archive_blob;
+  state.best_per_gen_blob    = s.best_per_gen_blob;
+  state.digest               = s.digest;
+  state.candidates_generated = static_cast<atx::i64>(s.candidates_generated);
   return rec_.save_checkpoint(
       static_cast<atx::i64>(s.generation), blob,
       static_cast<atx::i64>(s.population.size()), s.best_fitness, s.mean_fitness,
       static_cast<atx::i64>(s.n_evaluated), static_cast<atx::i64>(s.n_unique),
-      /*wall_ms*/ 0, now_unix());
+      /*wall_ms*/ 0, now_unix(), state);
 }
 
 atx::u64 compute_discover_fingerprint(const RunConfig& cfg) {

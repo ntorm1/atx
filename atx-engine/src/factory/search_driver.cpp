@@ -85,6 +85,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // blob hash before calling, so a valid resume always succeeds (deserialize Ok).
   std::vector<Genome> pop;
   atx::usize gen_start = 0;
+  bool resumed_state = false;
   if (resume != nullptr && resume->start_generation > 0 &&
       resume->start_generation < cfg.generations && !resume->population.empty()) {
     auto restored = deserialize_population(resume->population);
@@ -95,14 +96,90 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     }
     pop = std::move(*restored);
     gen_start = resume->start_generation;
+    resumed_state = true;
   } else {
     pop = init_population(cfg);
   }
   res.candidates_generated += pop.size();
 
+  // RESUME: restore the FULL cross-generation accumulated state ENTERING gen_start so
+  // gens [gen_start..generations) replay BYTE-IDENTICALLY to an uninterrupted run
+  // (F1). Without this, canon / fitness_cache / behavior_archive start EMPTY and
+  // res.digest / counters start at 0, so the resumed trajectory (ranking -> selection
+  // -> reproduction -> admission) and the folded digest diverge. The blobs are bit-
+  // exact, deterministically ordered, and lossless (search_progress.hpp codecs). A
+  // malformed blob is a corrupt checkpoint -> fail loud (well-formed empty result),
+  // never a silent partial restore. Off-path (resume == nullptr) this whole block is
+  // skipped and the loop is the byte-identical legacy path.
+  if (resumed_state) {
+    auto canon_keys = deserialize_canon(resume->canon_blob);
+    auto archive_entries = deserialize_archive(resume->archive_blob);
+    auto best_pg = deserialize_f64_list(resume->best_per_gen_blob);
+    std::vector<atx::u64> cache_keys;
+    std::vector<CachedScore> cache_vals;
+    auto cache_st = deserialize_cache(resume->cache_blob, cache_keys, cache_vals);
+    if (!canon_keys || !archive_entries || !best_pg || !cache_st) {
+      SearchResult err_res; // corrupt accumulated-state blob -> fail loud
+      err_res.seed = cfg.master_seed;
+      return err_res;
+    }
+    for (atx::u64 h : *canon_keys) {
+      canon.insert(h);
+    }
+    for (atx::usize i = 0; i < cache_keys.size(); ++i) {
+      fitness_cache.emplace(cache_keys[i], std::move(cache_vals[i]));
+    }
+    // Replay archive inserts in ring order (oldest first) so the FIFO contents — and
+    // therefore every future novelty() neighbourhood — match the uninterrupted run.
+    for (const std::vector<atx::f64> &e : *archive_entries) {
+      behavior_archive.insert(std::span<const atx::f64>{e});
+    }
+    res.best_fitness_per_gen = std::move(*best_pg);
+    res.digest = resume->digest;
+    // Overwrite (NOT accumulate) candidates_generated with the value ENTERING
+    // gen_start: the `+= pop.size()` above counted the restored population, but the
+    // persisted counter already includes the full [0..gen_start) accrual.
+    res.candidates_generated = resume->candidates_generated;
+  }
+
   std::vector<Scored> scored; // current generation's scored population
 
   for (atx::usize gen = gen_start; gen < cfg.generations; ++gen) {
+    // Capture the ACCUMULATED state ENTERING this generation (BEFORE
+    // evaluate_generation / update_archive mutate canon / fitness_cache /
+    // behavior_archive / res.digest). This is the exact state a resume must restore
+    // to be byte-identical, and it is consistent with the `pop` population snapshot
+    // (also the generation INPUT). Captured only when a sink is attached — off-path
+    // (sink == nullptr) this is skipped entirely (no work, byte-identical legacy
+    // loop). Serialized lazily into the snapshot below so a no-resume sink still pays
+    // only the serialize cost it already incurs for the population blob.
+    std::string entering_canon_blob;
+    std::string entering_cache_blob;
+    std::string entering_archive_blob;
+    std::string entering_best_pg_blob;
+    const atx::u64 entering_digest = res.digest;
+    const atx::usize entering_candidates = res.candidates_generated;
+    if (sink != nullptr) {
+      entering_canon_blob = serialize_canon(canon);
+      // fitness_cache serialized in sorted-by-canon-hash key order (deterministic).
+      {
+        std::vector<atx::u64> ck;
+        ck.reserve(fitness_cache.size());
+        for (const auto &kv : fitness_cache) {
+          ck.push_back(kv.first);
+        }
+        std::sort(ck.begin(), ck.end());
+        std::vector<CachedScore> cv;
+        cv.reserve(ck.size());
+        for (atx::u64 k : ck) {
+          cv.push_back(fitness_cache.at(k));
+        }
+        entering_cache_blob = serialize_cache(ck, cv);
+      }
+      entering_archive_blob = serialize_archive(behavior_archive.entries());
+      entering_best_pg_blob = serialize_f64_list(res.best_fitness_per_gen);
+    }
+
     // (a)-(c): evaluate the fresh (not-yet-seen) candidates of `pop`, fold the
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
     scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res);
@@ -155,6 +232,14 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       snap.mean_fitness = mean_raw(scored);
       snap.n_evaluated = canon.size();
       snap.n_unique = pop.size();
+      // Accumulated state ENTERING gen `gen` (captured above, consistent with the
+      // population snapshot) — the full payload a resume restores for byte-identity.
+      snap.canon_blob = std::move(entering_canon_blob);
+      snap.cache_blob = std::move(entering_cache_blob);
+      snap.archive_blob = std::move(entering_archive_blob);
+      snap.best_per_gen_blob = std::move(entering_best_pg_blob);
+      snap.digest = entering_digest;
+      snap.candidates_generated = entering_candidates;
       auto st = sink->on_generation(snap);
       if (!st) { // sink-requested abort -> clean stop with a well-formed partial result
         finalize(scored, canon, res);

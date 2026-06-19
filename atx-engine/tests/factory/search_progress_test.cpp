@@ -8,7 +8,9 @@
 // Because both helpers are private, we reach them through a friend accessor
 // struct declared here and friended in SearchDriver.
 
-#include <algorithm> // std::sort, std::includes
+#include <algorithm> // std::sort, std::includes, std::swap
+#include <bit>       // std::bit_cast (bit-exact f64 comparison in the round-trip test)
+#include <limits>    // std::numeric_limits (hard f64 codec values)
 #include <string>
 #include <vector>
 
@@ -322,6 +324,214 @@ TEST(SearchProgress, ResumeProducesIdenticalSearch) {
   }
   // Intentionally NOT asserting resumed.digest == full.digest, nor full all_scored
   // equality (see the resume invariant + the cumulative-history rationale above).
+}
+
+// =============================================================================
+//  ResumeIdenticalUnderMultiObjectiveDefaults — the headline F1 invariant under
+//  the REAL gated path's config (MultiObjective + novelty_w=0.1 + active behavioral
+//  archive). With the FULL accumulated state (canon / fitness_cache / behavior
+//  archive / res.digest / counters / best_fitness_per_gen) persisted in the
+//  checkpoint and restored on resume, an uninterrupted run and a (crash-after-gen-K
+//  + resume) run must be BYTE-IDENTICAL: same admitted hashes, same folded digest,
+//  same trial_count, same best_fitness_per_gen.
+//
+//  This is the test the prior ScalarRaw+novelty=0 test could NOT catch (it pinned
+//  off exactly the cross-generation state this exercises).
+// =============================================================================
+TEST(SearchProgress, ResumeIdenticalUnderMultiObjectiveDefaults) {
+  Fixture fx;
+  SearchDriver d = fx.driver();
+  SearchConfig cfg; // DEFAULTS: MultiObjective, novelty_w=0.1, behavior archive active.
+  cfg.master_seed = 7;
+  cfg.population = 12;  // >= 12 so the behavioral novelty pass is exercised
+  cfg.generations = 5;  // >= 5
+  // Do NOT set ScalarRaw, do NOT zero novelty_w — keep the defaults.
+  AlphaStore pool;
+
+  // 1. Full uninterrupted run -> reference.
+  SearchResult full = d.run(cfg, pool);
+
+  // 2. "Crash" after generation K=3: capture the gen-3 snapshot (population + the
+  //    full accumulated state ENTERING gen 3).
+  RecordingSink crash;
+  crash.fail_after_gen = 3;
+  SearchResult crashed = d.run(cfg, pool, &crash, nullptr);
+  (void)crashed;
+  ASSERT_FALSE(crash.seen.empty());
+  const auto &cp = crash.seen.back();
+  ASSERT_EQ(cp.generation, 3u);
+
+  // 3. Resume AT generation 3 from that checkpoint — population AND accumulated state.
+  SearchResumeState rs;
+  rs.start_generation     = cp.generation;
+  rs.population           = cp.population;
+  rs.canon_blob           = cp.canon_blob;
+  rs.cache_blob           = cp.cache_blob;
+  rs.archive_blob         = cp.archive_blob;
+  rs.best_per_gen_blob    = cp.best_per_gen_blob;
+  rs.digest               = cp.digest;
+  rs.candidates_generated = cp.candidates_generated;
+  SearchResult resumed = d.run(cfg, pool, nullptr, &rs);
+
+  // FULL parity (every assertion HARD — the implementation must satisfy them).
+  EXPECT_EQ(hashes_of(resumed.admitted_candidates), hashes_of(full.admitted_candidates))
+      << "admitted set must be byte-identical (canon_hash multiset)";
+  EXPECT_EQ(resumed.digest, full.digest)
+      << "folded run digest must be byte-identical (the factory_digest symptom)";
+  EXPECT_EQ(resumed.trial_count, full.trial_count)
+      << "trial_count (admission DSR N) must be byte-identical";
+  EXPECT_EQ(resumed.best_fitness_per_gen, full.best_fitness_per_gen)
+      << "best_fitness_per_gen must be byte-identical";
+}
+
+// =============================================================================
+//  MultiObjectiveNoSinkDeterminism — the off-path invariant under the DEFAULT
+//  config: with no sink and no resume, two runs are byte-identical (digest +
+//  trial_count + admitted). Pins that this task adds NO observable work off-path.
+// =============================================================================
+TEST(SearchProgress, MultiObjectiveNoSinkDeterminism) {
+  Fixture fx;
+  SearchDriver d = fx.driver();
+  SearchConfig cfg; // defaults (MultiObjective + novelty active)
+  cfg.master_seed = 7;
+  cfg.population = 12;
+  cfg.generations = 5;
+  AlphaStore pool;
+
+  SearchResult a = d.run(cfg, pool);                  // 2-arg legacy call
+  SearchResult b = d.run(cfg, pool, nullptr, nullptr); // explicit null sink/resume
+  EXPECT_EQ(a.digest, b.digest);
+  EXPECT_EQ(a.trial_count, b.trial_count);
+  EXPECT_EQ(a.candidates_generated, b.candidates_generated);
+  EXPECT_EQ(hashes_of(a.admitted_candidates), hashes_of(b.admitted_candidates));
+  EXPECT_EQ(a.best_fitness_per_gen, b.best_fitness_per_gen);
+}
+
+// =============================================================================
+//  AccumulatedStateRoundTrip — each accumulated-state codec is a LOSSLESS bijection:
+//  deserialize(serialize(x)) reproduces x exactly (bit-for-bit for f64). This is the
+//  determinism foundation: a checkpoint blob must restore the live structures
+//  byte-identically or the resumed trajectory diverges.
+// =============================================================================
+TEST(SearchProgress, AccumulatedStateRoundTrip) {
+  using atx::engine::factory::CachedScore;
+  using atx::engine::factory::CanonSet;
+  using atx::engine::factory::deserialize_archive;
+  using atx::engine::factory::deserialize_cache;
+  using atx::engine::factory::deserialize_canon;
+  using atx::engine::factory::deserialize_f64_list;
+  using atx::engine::factory::f64_to_hex;
+  using atx::engine::factory::hex_to_f64;
+  using atx::engine::factory::serialize_archive;
+  using atx::engine::factory::serialize_cache;
+  using atx::engine::factory::serialize_canon;
+  using atx::engine::factory::serialize_f64_list;
+
+  // --- f64 bit-exact codec across hard values (incl. negatives, denormals, inf, the
+  //     IEEE bit pattern of NaN, ±0). ---
+  const std::vector<f64> hard = {0.0,
+                                 -0.0,
+                                 1.0,
+                                 -1.0,
+                                 3.141592653589793,
+                                 1e-300,
+                                 1e300,
+                                 std::numeric_limits<f64>::infinity(),
+                                 -std::numeric_limits<f64>::infinity(),
+                                 std::numeric_limits<f64>::denorm_min()};
+  for (f64 x : hard) {
+    f64 back = 1.0;
+    ASSERT_TRUE(hex_to_f64(f64_to_hex(x), back));
+    // Compare bit patterns so -0.0 vs +0.0 (and NaN payloads) are distinguished.
+    EXPECT_EQ(std::bit_cast<u64>(x), std::bit_cast<u64>(back)) << "f64 codec must be bit-exact";
+  }
+
+  // --- canon: an unordered set round-trips to a sorted multiset of the same keys. ---
+  CanonSet canon;
+  for (u64 h : {u64{0x10}, u64{0x2}, u64{0xFFFFFFFFFFFFFFFFull}, u64{0x0}, u64{0xABCD}}) {
+    canon.insert(h);
+  }
+  auto canon_rt = deserialize_canon(serialize_canon(canon));
+  ASSERT_TRUE(canon_rt.has_value());
+  std::vector<u64> expect_keys(canon.seen.begin(), canon.seen.end());
+  std::sort(expect_keys.begin(), expect_keys.end());
+  EXPECT_EQ(canon_rt.value(), expect_keys);
+
+  // --- fitness_cache: keys (sorted) + values incl. objectives + variable descriptor. ---
+  std::vector<u64> keys = {u64{0x3}, u64{0x1}, u64{0x2}};
+  std::vector<CachedScore> vals(3);
+  vals[0].raw = -2.5;
+  vals[0].n_objectives = 4;
+  vals[0].objectives = {1.0, 2.0, 3.0, 4.0, 0.0};
+  vals[0].descriptor = {0.1, -0.2, 0.3};
+  vals[1].raw = 0.0;
+  vals[1].n_objectives = 0;
+  vals[1].descriptor = {}; // empty descriptor (errored-fitness candidate)
+  vals[2].raw = 1234.5678;
+  vals[2].n_objectives = 5;
+  vals[2].objectives = {-1.5, 2.25, -3.125, 4.0625, -5.03125};
+  vals[2].descriptor = {9.9};
+  // Serialize in sorted-key order (the driver does the same).
+  std::vector<u64> sk = keys;
+  std::vector<CachedScore> sv = vals;
+  // Sort (key, val) pairs by key.
+  for (atx::usize i = 0; i < sk.size(); ++i) {
+    for (atx::usize j = i + 1; j < sk.size(); ++j) {
+      if (sk[j] < sk[i]) {
+        std::swap(sk[i], sk[j]);
+        std::swap(sv[i], sv[j]);
+      }
+    }
+  }
+  std::vector<u64> rk;
+  std::vector<CachedScore> rv;
+  ASSERT_TRUE(deserialize_cache(serialize_cache(sk, sv), rk, rv).has_value());
+  ASSERT_EQ(rk, sk);
+  ASSERT_EQ(rv.size(), sv.size());
+  for (atx::usize r = 0; r < rv.size(); ++r) {
+    EXPECT_EQ(std::bit_cast<u64>(rv[r].raw), std::bit_cast<u64>(sv[r].raw));
+    EXPECT_EQ(rv[r].n_objectives, sv[r].n_objectives);
+    for (atx::usize o = 0; o < atx::engine::factory::kMaxObjectives; ++o) {
+      EXPECT_EQ(std::bit_cast<u64>(rv[r].objectives[o]), std::bit_cast<u64>(sv[r].objectives[o]));
+    }
+    ASSERT_EQ(rv[r].descriptor.size(), sv[r].descriptor.size());
+    for (atx::usize k = 0; k < rv[r].descriptor.size(); ++k) {
+      EXPECT_EQ(std::bit_cast<u64>(rv[r].descriptor[k]), std::bit_cast<u64>(sv[r].descriptor[k]));
+    }
+  }
+
+  // --- behavior archive: ring order preserved, variable-length entries (incl. empty). ---
+  std::vector<std::vector<f64>> archive = {{0.1, 0.2, 0.3}, {}, {-1.0}, {2.0, -2.0}};
+  auto arch_rt = deserialize_archive(serialize_archive(archive));
+  ASSERT_TRUE(arch_rt.has_value());
+  ASSERT_EQ(arch_rt.value().size(), archive.size());
+  for (atx::usize e = 0; e < archive.size(); ++e) {
+    ASSERT_EQ(arch_rt.value()[e].size(), archive[e].size());
+    for (atx::usize i = 0; i < archive[e].size(); ++i) {
+      EXPECT_EQ(std::bit_cast<u64>(arch_rt.value()[e][i]), std::bit_cast<u64>(archive[e][i]));
+    }
+  }
+
+  // --- best_fitness_per_gen list. ---
+  std::vector<f64> bpg = {0.0, 1.5, 1.5, 2.75, -0.0};
+  auto bpg_rt = deserialize_f64_list(serialize_f64_list(bpg));
+  ASSERT_TRUE(bpg_rt.has_value());
+  ASSERT_EQ(bpg_rt.value().size(), bpg.size());
+  for (atx::usize i = 0; i < bpg.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<u64>(bpg_rt.value()[i]), std::bit_cast<u64>(bpg[i]));
+  }
+
+  // --- empty-collection edges round-trip to empty. ---
+  EXPECT_TRUE(deserialize_canon("").value().empty());
+  {
+    std::vector<u64> ek;
+    std::vector<CachedScore> ev;
+    ASSERT_TRUE(deserialize_cache("", ek, ev).has_value());
+    EXPECT_TRUE(ek.empty());
+    EXPECT_TRUE(ev.empty());
+  }
+  EXPECT_TRUE(deserialize_archive("").value().empty());
+  EXPECT_TRUE(deserialize_f64_list("").value().empty());
 }
 
 } // namespace atxtest_search_progress_test

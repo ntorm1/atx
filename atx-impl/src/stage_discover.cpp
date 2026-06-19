@@ -156,10 +156,21 @@ atx::core::Result<StageResult> run_discover_gated(
                 ATX_TRY(auto r, store::PipelineRecorder::resume(
                                     sdb->db(), found->pipeline_run_id, now_unix()));
                 rec.emplace(std::move(r));
-                ATX_TRY(auto blob, rec->latest_population_blob());
+                // Task F1: load the FULL checkpoint (population + accumulated state),
+                // not just the population blob, so the resumed search restores canon /
+                // fitness_cache / behavior_archive / digest / counters byte-identically.
+                // latest_checkpoint verifies the whole-payload state_hash (corrupt =>
+                // Err, which ATX_TRY propagates — never a silent partial restore).
+                ATX_TRY(auto cp, rec->latest_checkpoint());
                 rs.emplace();
-                rs->start_generation = static_cast<atx::usize>(found->last_generation);
-                rs->population       = store::split_population(blob);
+                rs->start_generation     = static_cast<atx::usize>(found->last_generation);
+                rs->population           = store::split_population(cp.population_blob);
+                rs->canon_blob           = std::move(cp.state.canon_blob);
+                rs->cache_blob           = std::move(cp.state.cache_blob);
+                rs->archive_blob         = std::move(cp.state.archive_blob);
+                rs->best_per_gen_blob    = std::move(cp.state.best_per_gen_blob);
+                rs->digest               = cp.state.digest;
+                rs->candidates_generated = static_cast<atx::usize>(cp.state.candidates_generated);
                 resume_ptr = &*rs;
                 resumed = true;
             }

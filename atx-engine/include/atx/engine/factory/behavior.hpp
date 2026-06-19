@@ -242,6 +242,14 @@ public:
 
   [[nodiscard]] atx::usize capacity() const noexcept { return capacity_; }
 
+  // Read-only view of the owned descriptors in ring/insertion order (oldest first).
+  // Used by the resumable-discover checkpoint to serialize the archive contents
+  // EXACTLY so a resumed run's novelty() neighbourhoods match byte-for-byte. The
+  // returned reference aliases internal storage — valid for the archive's lifetime.
+  [[nodiscard]] const std::vector<std::vector<atx::f64>> &entries() const noexcept {
+    return entries_;
+  }
+
   // Mean distance from `desc` to its k nearest neighbours in population ∪ archive.
   // `population` is a span of descriptor spans (the live generation, excluding
   // `desc`'s own entry if the caller chooses — the caller controls membership).

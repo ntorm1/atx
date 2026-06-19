@@ -95,6 +95,18 @@ inline constexpr int kSchemaVersion = 2;
     " population_blob  TEXT NOT NULL,"
     " population_count INTEGER NOT NULL,"
     " state_hash       INTEGER NOT NULL,"
+    // Resumable-discover (Task F1): the FULL cross-generation accumulated search
+    // state ENTERING `generation`, so a resume restores it byte-identically (canon
+    // dedup set, fitness_cache, behavioral-novelty archive, the folded run digest,
+    // and the candidates_generated counter). NEW columns on this branch (no external
+    // data to migrate). DEFAULT '' / 0 so a legacy population-only checkpoint reads
+    // back as an empty accumulated state (restores nothing — the pre-F1 behavior).
+    " canon_blob           TEXT    NOT NULL DEFAULT '',"
+    " cache_blob           TEXT    NOT NULL DEFAULT '',"
+    " archive_blob         TEXT    NOT NULL DEFAULT '',"
+    " best_per_gen_blob    TEXT    NOT NULL DEFAULT '',"
+    " digest               INTEGER NOT NULL DEFAULT 0,"
+    " candidates_generated INTEGER NOT NULL DEFAULT 0,"
     " created_at       INTEGER NOT NULL,"
     " PRIMARY KEY (pipeline_run_id, generation));"
     "CREATE TABLE IF NOT EXISTS pipeline_iteration ("
