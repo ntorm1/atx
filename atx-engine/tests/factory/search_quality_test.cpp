@@ -149,6 +149,43 @@ TEST(StagnationStop, StopsEarly) {
   EXPECT_LT(r.best_fitness_per_gen.size(), cfg.generations);
 }
 
+// Stagnation stop with patience=0 (disabled) must run the full budget.
+// This validates the "0 disables" contract and that the dual-metric check
+// doesn't fire when patience=0 is the guard.
+TEST(StagnationStop, DisabledRunsFullBudget) {
+  Fixture fx; auto d = fx.driver();
+  AlphaStore pool{};
+  SearchConfig cfg = base_cfg(42);
+  cfg.objective_mode = ObjectiveMode::MultiObjective;
+  cfg.seed_from_grammar = true;
+  cfg.n_immigrants = 4;
+  cfg.generations = 8;
+  cfg.stagnation_patience = 0;  // disabled
+  const auto r = d.run(cfg, pool);
+  EXPECT_EQ(r.best_fitness_per_gen.size(), cfg.generations);
+}
+
+// Stagnation stop: when population is single-seed (collapses immediately),
+// patience=2 must fire before the full budget. A collapsed population has
+// BOTH best_raw AND mean_raw flat, satisfying the new dual-metric criterion.
+TEST(StagnationStop, CollapsedPopulationStopsEarlyWithDualMetric) {
+  Library lib; Panel panel = fixture_panel(96,6); WeightPolicy policy;
+  ExecutionSimulator sim = frictionless_sim();
+  // Single seed expression + no grammar fill + no immigrants -> immediate
+  // population collapse (all genomes identical -> mean_raw == best_raw == flat).
+  SearchDriver d{lib, panel, policy, sim, {"rank(close)"}, {"close","rev"}};
+  AlphaStore pool{};
+  SearchConfig cfg = base_cfg(7);
+  cfg.objective_mode = ObjectiveMode::MultiObjective;
+  cfg.seed_from_grammar = false;
+  cfg.n_immigrants = 0;
+  cfg.generations = 20;
+  cfg.stagnation_patience = 2;
+  const auto r = d.run(cfg, pool);
+  // Both metrics flat -> stagnation fires -> fewer gens than the budget.
+  EXPECT_LT(r.best_fitness_per_gen.size(), cfg.generations);
+}
+
 // Adaptive operators are deterministic (replay) AND change the trajectory vs the
 // fixed-uniform draw on the same seed.
 TEST(AdaptiveOperator, DeterministicAndDistinct) {

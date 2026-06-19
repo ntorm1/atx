@@ -1,5 +1,6 @@
 #include "stages.hpp"
 
+#include <algorithm> // std::max (immigrant scaling)
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -365,7 +366,7 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     factory::SearchConfig sc;
     sc.master_seed  = cfg.seed;
     sc.population   = cfg.population  > 0
-                        ? static_cast<atx::usize>(cfg.population)  : 16;
+                        ? static_cast<atx::usize>(cfg.population)  : 200;
     sc.generations  = cfg.generations > 0
                         ? static_cast<atx::usize>(cfg.generations) : 5;
     sc.elites       = 2;
@@ -382,6 +383,11 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
         const atx::usize autow = hw > 1 ? static_cast<atx::usize>(hw - 1) : 1;
         sc.n_workers = cfg.workers > 0 ? static_cast<atx::usize>(cfg.workers) : autow;
     }
+
+    // Scale random immigrants to population size: 10% of population, floored at 4.
+    // This provides meaningful fresh-blood injection on any population size (the
+    // struct default of 2 was ~3% on pop-60, too weak to counter convergence).
+    sc.n_immigrants = std::max<atx::usize>(sc.population / 10, 4);
 
     // 6'. Gated discovery (opt-in via --gated): route every distinct candidate
     //     through the factory's deflated-Sharpe ranking + AlphaGate floors so the

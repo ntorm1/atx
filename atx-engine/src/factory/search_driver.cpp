@@ -143,6 +143,13 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   }
 
   std::vector<Scored> scored; // current generation's scored population
+  // Run-local mean-fitness history — parallel to res.best_fitness_per_gen —
+  // used by the stagnation early-stop to guard against false positives on
+  // non-collapsed populations (best_raw is non-decreasing BY CONSTRUCTION due
+  // to elitism, so a best-raw plateau does NOT signal convergence; mean_raw
+  // collapsing is the genuine signal of population homogeneity).
+  std::vector<atx::f64> mean_fitness_per_gen;
+  mean_fitness_per_gen.reserve(cfg.generations);
 
   // ----- Task 5: adaptive operator selection (run-local credit state) ---------
   // `op_weights` (op_swap, field_swap, jitter) bias each generation's mutation-
@@ -239,6 +246,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // this sequence is non-decreasing by construction (the ElitismKeepsBest
     // guarantee).
     res.best_fitness_per_gen.push_back(best_raw(scored));
+    mean_fitness_per_gen.push_back(mean_raw(scored));
 
     // Progress sink (resumable-discover). Off-path (sink == nullptr) this is a
     // single null-pointer check — no work, byte-identical legacy loop. When set,
@@ -273,18 +281,30 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       }
     }
 
-    // Stagnation early-stop (pure fn of best_fitness_per_gen; F1-safe). Stop when
-    // best raw fitness has not strictly improved over the last `patience` gens. 0
-    // disables. Placed AFTER the sink checkpoint (so a stopped run still
-    // checkpoints its final generation) and BEFORE reproduce (so it skips the
-    // wasted reproduce). The break falls through to the post-loop finalize, so the
-    // run returns a well-formed result on the current scored set.
+    // Stagnation early-stop (pure fn of best_fitness_per_gen + mean_fitness_per_gen;
+    // F1-safe). 0 disables. Placed AFTER the sink checkpoint and BEFORE reproduce.
+    //
+    // WHY BOTH: best_raw is NON-DECREASING BY CONSTRUCTION (elitism carries the
+    // best genome verbatim and the canon cache re-scores it identically), so a
+    // best-raw plateau is a NORMAL elitist-GA state, NOT genuine convergence. Mean
+    // fitness collapsing is the genuine signal of population homogeneity (all
+    // genomes converged to the same score). Requiring BOTH guards against early
+    // termination on healthy, diverse populations.
+    //
+    // Small epsilon (1e-9) instead of strict `>` to avoid float-equality flakiness
+    // from NaN propagation or benign rounding. The break falls through to the
+    // post-loop finalize, returning a well-formed result on the current scored set.
     if (cfg.stagnation_patience > 0 &&
         res.best_fitness_per_gen.size() > cfg.stagnation_patience) {
       const atx::usize n = res.best_fitness_per_gen.size();
-      const atx::f64 recent = res.best_fitness_per_gen[n - 1];
-      const atx::f64 baseline = res.best_fitness_per_gen[n - 1 - cfg.stagnation_patience];
-      if (!(recent > baseline)) { break; }
+      const atx::f64 best_recent   = res.best_fitness_per_gen[n - 1];
+      const atx::f64 best_baseline = res.best_fitness_per_gen[n - 1 - cfg.stagnation_patience];
+      const atx::f64 mean_recent   = mean_fitness_per_gen[n - 1];
+      const atx::f64 mean_baseline = mean_fitness_per_gen[n - 1 - cfg.stagnation_patience];
+      constexpr atx::f64 kEps = 1e-9;
+      const bool best_flat = !(best_recent > best_baseline + kEps);
+      const bool mean_flat = !(mean_recent > mean_baseline + kEps);
+      if (best_flat && mean_flat) { break; }
     }
 
     // Task 5: credit the PREVIOUS generation's operators from the realized fitness

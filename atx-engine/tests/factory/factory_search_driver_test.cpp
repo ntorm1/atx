@@ -64,6 +64,7 @@ using atx::engine::exec::LatencyCfg;
 using atx::engine::exec::SlippageCfg;
 using atx::engine::exec::SlippageMode;
 using atx::engine::exec::VolumeCapCfg;
+using atx::engine::factory::ObjectiveMode;
 using atx::engine::factory::SearchConfig;
 using atx::engine::factory::SearchDriver;
 using atx::engine::factory::SearchResult;
@@ -194,13 +195,29 @@ TEST(FactorySearchDriver, DedupSkipsEquivalentExpressions) {
 
 // =============================================================================
 //  ElitismKeepsBest — best-per-gen monotone non-decreasing under elitism.
+//
+//  Pin ScalarRaw + stagnation_patience=0: the elitism-by-raw-fitness guarantee
+//  is cleanest in ScalarRaw mode (pareto_ordered_indices == raw_ordered_indices).
+//  In MultiObjective mode the elite carry is by NSGA-II rank+crowding, which can
+//  let the best-raw genome fall out of the elite slots when the Pareto front
+//  changes. ScalarRaw is the correct mode to test the raw-fitness monotonicity
+//  invariant. stagnation_patience=0 disables early-stop so all 6 generations run.
 // =============================================================================
 TEST(FactorySearchDriver, ElitismKeepsBest) {
   Fixture fx;
   auto cfg = small_search_cfg(/*seed*/ 42, /*pop*/ 16, /*gens*/ 6);
   cfg.elites = 2;
+  cfg.objective_mode = ObjectiveMode::ScalarRaw;   // elitism by raw: cleanest invariant
+  cfg.enable_behavioral_novelty = false;           // ScalarRaw pin requires novelty off
+  cfg.seed_from_grammar = false;                   // legacy cycle-fill (boundary pin path)
+  cfg.n_immigrants = 0;                            // no immigrants on the pin
+  cfg.stagnation_patience = 0;                     // run all 6 gens (test the full property)
+  cfg.adaptive_operators = false;                  // fixed draw for reproducibility
+  cfg.jitter_anneal = false;                       // constant sigma for the pin
   const SearchResult r = fx.driver().run(cfg, empty_pool());
   ASSERT_FALSE(r.best_fitness_per_gen.empty());
+  // In ScalarRaw + elitism=2: the best-raw genome is carried verbatim each gen
+  // and re-scores identically from the canon cache -> non-decreasing BY CONSTRUCTION.
   EXPECT_GE(r.best_fitness_per_gen.back(), r.best_fitness_per_gen.front());
 }
 

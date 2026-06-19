@@ -163,22 +163,30 @@ struct SearchConfig {
   // Parsimony pressure: when ON (MultiObjective only), objectives[kObjParsimony] =
   // -node_count makes a smaller, equally-fit tree Pareto-dominate a larger one.
   // ScalarRaw ignores objectives, so this never perturbs the boundary pin.
-  bool enable_parsimony{true};
+  // Default OFF: with ~5 objectives most genomes land in Pareto front 0 and the
+  // smallest-tree genome gets +inf crowding distance, becoming a tournament magnet
+  // that floods the population with degenerate trivial alphas. Keep configurable.
+  bool enable_parsimony{false};
   // Diversity insurance: replace the worst min(n_immigrants, n_children) non-elite
   // child slots each generation with fresh grammar genomes (seed_for-seeded -> F1).
   // 0 disables (legacy).
   atx::usize n_immigrants{2};
-  // Stagnation early-stop: stop after this many generations with no strict
-  // best-raw improvement. 0 disables (run the full budget; legacy behavior).
-  atx::usize stagnation_patience{4};
+  // Stagnation early-stop: stop when BOTH best_raw AND mean_raw fitness have
+  // not improved by more than epsilon over the last `patience` generations.
+  // Requiring BOTH prevents premature termination on healthy elitist populations
+  // where best_raw is non-decreasing by construction (elitism carries the best
+  // genome verbatim). 0 disables (run the full budget; legacy behavior).
+  atx::usize stagnation_patience{8};
   // Adaptive operator selection: bias each generation's mutation-operator
   // distribution toward operators that produced fitness gains last generation.
   // OFF reproduces the fixed-uniform (% 3) draw bit-for-bit (boundary pin).
   bool adaptive_operators{true};
   // Jitter annealing: scale jitter_const's sigma by jitter_anneal_decay^gen
   // (coarse early, fine late). OFF keeps the constant JitterCfg.sigma.
+  // 0.97 halves sigma only by ~gen 23 (vs 0.9 which halved by gen 7), keeping
+  // local exploration alive when escape from a plateau is most needed.
   bool jitter_anneal{true};
-  atx::f64 jitter_anneal_decay{0.9};
+  atx::f64 jitter_anneal_decay{0.97};
 };
 
 // =========================================================================
