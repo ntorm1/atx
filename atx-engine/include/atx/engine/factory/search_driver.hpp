@@ -164,6 +164,13 @@ struct SearchConfig {
   // -node_count makes a smaller, equally-fit tree Pareto-dominate a larger one.
   // ScalarRaw ignores objectives, so this never perturbs the boundary pin.
   bool enable_parsimony{true};
+  // Diversity insurance: replace the worst min(n_immigrants, n_children) non-elite
+  // child slots each generation with fresh grammar genomes (seed_for-seeded -> F1).
+  // 0 disables (legacy).
+  atx::usize n_immigrants{2};
+  // Stagnation early-stop: stop after this many generations with no strict
+  // best-raw improvement. 0 disables (run the full budget; legacy behavior).
+  atx::usize stagnation_patience{4};
 };
 
 // =========================================================================

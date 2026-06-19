@@ -244,6 +244,20 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       }
     }
 
+    // Stagnation early-stop (pure fn of best_fitness_per_gen; F1-safe). Stop when
+    // best raw fitness has not strictly improved over the last `patience` gens. 0
+    // disables. Placed AFTER the sink checkpoint (so a stopped run still
+    // checkpoints its final generation) and BEFORE reproduce (so it skips the
+    // wasted reproduce). The break falls through to the post-loop finalize, so the
+    // run returns a well-formed result on the current scored set.
+    if (cfg.stagnation_patience > 0 &&
+        res.best_fitness_per_gen.size() > cfg.stagnation_patience) {
+      const atx::usize n = res.best_fitness_per_gen.size();
+      const atx::f64 recent = res.best_fitness_per_gen[n - 1];
+      const atx::f64 baseline = res.best_fitness_per_gen[n - 1 - cfg.stagnation_patience];
+      if (!(recent > baseline)) { break; }
+    }
+
     // (e)-(g) reproduce into the next population (skip on the final generation —
     // the last scored set is the result).
     if (gen + 1 < cfg.generations) {
@@ -721,6 +735,33 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
   // produced regardless of which shard ran which slot. Folded as a closed-form add
   // OUTSIDE the parallel region (the old per-child `++` was a shared-counter write).
   res.candidates_generated += n_children;
+
+  // Diversity injection: overwrite the LAST n_imm non-elite slots with fresh
+  // grammar genomes (deterministic seed per (gen, slot)). Skips when disabled or
+  // when grammar sampling fails (keeps the crossover/mutation child). F1-safe:
+  // seed is a pure fn of (master_seed, gen, slot). SERIAL (after the parallel_for)
+  // so the overwrite is race-free and byte-deterministic. Elites are never
+  // displaced — immigrants only touch child slots.
+  constexpr atx::u64 kImmigrantAxis = 0xA5A5A5A5A5A5A5A5ULL;
+  const atx::usize n_imm = std::min(cfg.n_immigrants, n_children);
+  for (atx::usize t = 0; t < n_imm; ++t) {
+    const atx::usize p = n_children - 1U - t; // last slots
+    // Restrict the sampler to the driver's panel fields EXACTLY as init_population
+    // does (numeric_fields/group_fields = panel_field_views_) so the immigrant only
+    // references fields the Panel can evaluate — without this the sampler emits
+    // fields absent from narrow panels and the immigrant crashes at eval.
+    GenConfig imm_gc = cfg.gen_cfg;
+    imm_gc.numeric_fields = panel_field_views_;
+    imm_gc.group_fields = panel_field_views_;
+    Xoshiro256pp rng{detail::seed_for(cfg.master_seed,
+                                      kImmigrantAxis ^ static_cast<atx::u64>(gen),
+                                      n_elites + p)};
+    auto imm = generate_genome(imm_gc, lib_, rng);
+    if (imm.has_value()) {
+      imm->canon_hash = canonical_hash(*imm);
+      child_slot[p] = std::move(*imm);
+    }
+  }
 
   // Serial assembly in POPULATION order (elites first, then children in slot order)
   // — byte-identical to the prior sequential push_back sequence. Elite clones are

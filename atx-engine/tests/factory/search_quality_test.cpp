@@ -119,4 +119,33 @@ TEST(Parsimony, ShrinksOrTiesSurvivors) {
     return static_cast<double>(tot)/static_cast<double>(gs.size()); };
   EXPECT_LE(mean_nodes(r_on.admitted_candidates), mean_nodes(r_off.admitted_candidates) + 1e-9);
 }
+
+// Immigrants change the trajectory vs none (same seed) -> different digest.
+TEST(Immigrant, ChangesTrajectory) {
+  Fixture fx; auto d = fx.driver();
+  AlphaStore p0{}, p1{};
+  SearchConfig none = base_cfg(909); none.objective_mode = ObjectiveMode::MultiObjective;
+  none.generations = 5; none.n_immigrants = 0; none.stagnation_patience = 0;
+  SearchConfig some = none; some.n_immigrants = 3;
+  const auto r0 = d.run(none, p0);
+  const auto r1 = d.run(some, p1);
+  EXPECT_NE(r0.digest, r1.digest);
+}
+
+// Stagnation stop: with patience small, a run on a trivially-converging config
+// records FEWER generations than the budget. Use 1 seed so the population
+// collapses fast, patience=2, generations=20.
+TEST(StagnationStop, StopsEarly) {
+  Library lib; Panel panel = fixture_panel(96,6); WeightPolicy policy;
+  ExecutionSimulator sim = frictionless_sim();
+  SearchDriver d{lib, panel, policy, sim, {"rank(close)"}, {"close","rev"}};
+  AlphaStore pool{};
+  SearchConfig cfg = base_cfg(5);
+  cfg.objective_mode = ObjectiveMode::MultiObjective;
+  cfg.seed_from_grammar = false;   // single seed -> immediate convergence
+  cfg.n_immigrants = 0;
+  cfg.generations = 20; cfg.stagnation_patience = 2;
+  const auto r = d.run(cfg, pool);
+  EXPECT_LT(r.best_fitness_per_gen.size(), cfg.generations);
+}
 } // namespace atx::engine::factory
