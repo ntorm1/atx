@@ -1,5 +1,7 @@
 # Sprint S11 — Unsupervised Return-Structure Clustering
 
+**Status:** ✅ COMPLETE (S11-0..S11-6 + adversarial-review fixes landed; S11-7 deferred). All 80 S11 test cases green at `d33839b`.
+
 **Worktree:** `.claude/worktrees/s11-return-clustering`
 **Branch:** `worktree-s11-return-clustering`
 **Base:** `feat/megaalpha-enrich-validate` @ `44d79882ef4a005c2999e2f773faab87d26f4aaa`
@@ -137,8 +139,9 @@ re-litigating the shapes. The determinism contract is recorded in each header as
 landed the RMT cleaner (MP-fit clip + guarded RIE) against the frozen seam. S11-2 landed the
 clusterer: hierarchical (Ward/Average on the `sqrt(2(1-rho))` distance, ascending-index tie-break)
 and SPONGEsym signed-graph spectral clustering (regularized signed-Laplacian generalized
-eigenproblem + deterministic k-means on the inverse-eigenvalue-weighted bottom-k eigenvectors), both
-emitting canonical ascending-smallest-member labels. S11-3 landed the engine rolling cluster panel
+eigenproblem + deterministic k-means on the raw bottom-k generalized eigenvectors with
+Ng–Jordan–Weiss unit-row normalization — see "Review fixes" §2; the original inverse-eigenvalue
+weighting was removed), both emitting canonical ascending-smallest-member labels. S11-3 landed the engine rolling cluster panel
 (`build_cluster_panel`): per rebalance date it selects the point-in-time valid instrument set from the
 strict window `[t-window+1, t]` (never reads beyond t), optionally CAPM-residualizes against an
 equal-weight market factor, builds the order-fixed windowed correlation, cleans it (`rmt_clean`), and
@@ -230,3 +233,30 @@ and (3) call `eval::run_head_to_head(augmented_panel, "<candidate alpha>", {})` 
 
 Optional follow-up: wire a `render_head_to_head` line into the atx-impl report (skipped here to avoid
 expanding scope / risking the build; the harness already returns report-ready lines).
+
+## Sprint close
+
+**Status: COMPLETE.** Units S11-0..S11-6 implemented (subagent-driven, one marker commit + ledger
+follow-up per unit), then four adversarial-review defects fixed (`d33839b`). Final gate: **80/80 S11
+test cases pass** in one ctest run at fix HEAD (`RmtClean`+`Hierarchical`+`Sponge`+`ClusterPanel`+
+`ClusterWiring`+`ClusterPanelStore`+`StoreSchema`+`ClusterEval`+`ClusterScaffold`); every touched
+group binary green under `/W4 /permissive- /WX` clang-cl (atx-core 860, alpha 501, store 30, eval 66).
+
+**S11-7 (IV/volume characteristic clustering) — DEFERRED, not built.** Per the source plan it is a
+stretch unit and the deep-research pass found NO surviving primary claim that IV/volume *magnitude*
+features are production clustering inputs (only return-correlation is verified). Building a second,
+under-evidenced clustering would add unproven capability against the CIO guardrail ("stop adding
+capability until the benchmark runs"). It is intentionally left for after the p3-S2 head-to-head
+verdict, which S11-6 is built to feed.
+
+**Known pre-existing issue (NOT introduced by S11):** a full-tree `cmake --build` ICEs clang-cl
+18.1.8 (frontend crash / signal) while compiling `atx-engine/tests/data/data_e2e_byo_capstone_test.cpp`
+(DATA group). S11 changed only core/alpha/store/eval and that TU includes `data/dataset_schema.hpp`
+with no include path to any S11 header, so S11 cannot be the cause (an ICE is a compiler bug, not a
+result of adding a struct + CREATE TABLE). Flagged for the data/build owner; out of scope for S11.
+
+**Next:** the module is the input-quality lever the ROADMAP frames it as — a deterministic,
+point-in-time, RMT-denoised rolling cluster id consumed by the existing `group_*` operators with zero
+new DSL surface. It hands p3-S2 a better group-id to neutralize/rank against AND the honest
+`run_head_to_head` harness to decide — on the real ORATS panel, with the research's refutations carried
+inline — whether data-driven clusters actually beat GICS grouping. It does not assume they do.
