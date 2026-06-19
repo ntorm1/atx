@@ -492,7 +492,7 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
   // trusted-input precondition; slot_view_bytes also guards the n*stride product).
   const atx::usize t = panel.dates();
   const atx::usize ninst = panel.instruments();
-  constexpr atx::usize kMax = static_cast<atx::usize>(-1);
+  [[maybe_unused]] constexpr atx::usize kMax = static_cast<atx::usize>(-1);
   ATX_ASSERT(ninst == 0U || t <= kMax / ninst); // t * ninst (pos cells)
   const atx::usize pos_cells = t * ninst;
   ATX_ASSERT(t <= kMax / sizeof(atx::f64));         // pnl bytes

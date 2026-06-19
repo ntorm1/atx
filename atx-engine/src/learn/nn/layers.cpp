@@ -16,7 +16,7 @@ namespace atx::engine::learn::nn {
 // Casts kept local so every size_t<->Eigen::Index boundary is explicit (/Wconversion).
 namespace {
 [[nodiscard]] Eigen::Index idx(atx::usize n) noexcept { return static_cast<Eigen::Index>(n); }
-[[nodiscard]] atx::usize sz(Eigen::Index n) noexcept { return static_cast<atx::usize>(n); }
+[[maybe_unused]] [[nodiscard]] atx::usize sz(Eigen::Index n) noexcept { return static_cast<atx::usize>(n); }
 } // namespace
 
 // =====================================================================

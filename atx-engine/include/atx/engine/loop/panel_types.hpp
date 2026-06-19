@@ -161,7 +161,7 @@ public:
 private:
   /// Map a newest-first row index to its physical ring row, with bounds checks.
   [[nodiscard]] atx::usize physical_row(atx::usize row_from_newest,
-                                        atx::usize inst) const noexcept {
+                                        [[maybe_unused]] atx::usize inst) const noexcept {
     ATX_ASSERT(row_from_newest < valid_rows_);
     ATX_ASSERT(inst < universe_.size());
     // SAFETY: head_ is the newest physical row; stepping back `row_from_newest`

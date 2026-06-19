@@ -98,7 +98,7 @@ namespace detail {
   const atx::usize kk = (k > n - k) ? (n - k) : k; // smaller arm, by symmetry
   atx::usize result = 1U;
   for (atx::usize i = 0U; i < kk; ++i) {
-    const atx::usize prev = result;
+    [[maybe_unused]] const atx::usize prev = result;
     // result *= (n - kk + 1 + i); result /= (i + 1) — exact at each step because
     // the running product is always a binomial coefficient (an integer).
     result = result * (n - kk + 1U + i) / (i + 1U);

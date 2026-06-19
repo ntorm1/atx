@@ -43,7 +43,7 @@ SegmentBuilder::SegmentBuilder(std::vector<std::string> field_names,
 }
 
 void SegmentBuilder::set(atx::u32 field, atx::u64 t, atx::u32 inst, atx::f64 value) noexcept {
-  const atx::u64 f = field_names_.size();
+  [[maybe_unused]] const atx::u64 f = field_names_.size();
   const atx::u64 n = symbols_.size();
   const atx::u64 nt = time_axis_.size();
   ATX_ASSERT(static_cast<atx::u64>(field) < f);

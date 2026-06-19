@@ -295,7 +295,7 @@ class Disruptor {
     ATX_FORCE_INLINE i64 wait_for(i64 seq) noexcept { return wait_for(seq, 0); }
 
     /// Indexed form: wait on behalf of consumer `c`.
-    i64 wait_for(i64 seq, usize c) noexcept {
+    i64 wait_for(i64 seq, [[maybe_unused]] usize c) noexcept {
         ATX_ASSERT(c < ConsumerCount);
         u64 spin = 0;
         for (;;) {
