@@ -111,7 +111,12 @@ public:
     ATX_TRY_VOID(stmt->bind(1, run_id_));
     ATX_TRY_VOID(stmt->bind(2, finished_at));
     ATX_TRY_VOID(stmt->bind(3, static_cast<atx::i64>(result_digest)));
-    return step_done(*stmt, "commit");
+    ATX_TRY_VOID(step_done(*stmt, "commit"));
+    if (db_.changes() != 1) {
+      return atx::core::Err(atx::core::ErrorCode::NotFound,
+                            "RunRecorder::commit: run_id not found (no row updated)");
+    }
+    return atx::core::Ok();
   }
 
 private:

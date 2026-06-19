@@ -24,6 +24,8 @@ TEST(AlphaCatalog, LineageParentsRoundTrip) {
   ASSERT_TRUE(cat::add_lineage(db, 5, 3, 7, 42).has_value());
   auto ps = cat::parents(db, 5); ASSERT_TRUE(ps.has_value());
   ASSERT_EQ(ps->size(), 2u);
+  EXPECT_EQ((*ps)[0], 2u);
+  EXPECT_EQ((*ps)[1], 3u);
 }
 
 }  // namespace atxtest_store_alpha_catalog_test
