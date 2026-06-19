@@ -1,10 +1,10 @@
 #include "stages.hpp"
 
 #include <algorithm>   // std::sort
-#include <cmath>       // std::isnan
 #include <filesystem>
 #include <fstream>
 #include <limits>      // std::numeric_limits
+#include <span>        // std::span (per-alpha position rows)
 #include <string>
 #include <string_view>
 #include <vector>
@@ -159,21 +159,41 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
 
     ATX_TRY(auto combo, combiner.fit(pool, fit_begin, fit_end));
 
-    // 9. Build the combined mega-alpha matrix [dates * insts], NaN-aware.
+    // 9. Build the combined mega-alpha matrix [dates * insts] from the per-alpha
+    //    TARGET-WEIGHT (position) streams — the representation each alpha's
+    //    metrics were validated on, and the engine's documented combiner input
+    //    (streams.hpp: "the Phase-4 combiner ... consumes, per alpha, the
+    //    position (target-weight) stream"). Each position row is winsorized,
+    //    rank/zscore-transformed, dollar-neutralized and gross-normalized, so
+    //    the alphas live on a COMPARABLE scale and enter in their validated
+    //    profitable orientation. Averaging the RAW signals here (the prior bug)
+    //    mixed incomparable scales (e.g. market_cap/close ~1e7 vs rank ~0..1) and
+    //    applied the combiner weights — fit against the position/PnL streams — to
+    //    a different, un-normalized book, inverting the realized portfolio sign
+    //    relative to the per-alpha Sharpes. Combining positions makes the combo's
+    //    PnL exactly Σ_a w_a·pnl_a, the stream the combiner optimized.
+    //
+    //    Dead cells: WeightPolicy emits 0.0 (not NaN) for out-of-universe / warmup
+    //    names, so an alpha simply does not participate there. A cell is left NaN
+    //    (no name) only when it is out of the panel universe for that date.
     const atx::usize D = panel.dates();
     const atx::usize N = panel.instruments();
     std::vector<atx::f64> combined(D * N, std::numeric_limits<atx::f64>::quiet_NaN());
-    for (atx::usize c = 0; c < D * N; ++c) {
-        atx::f64 acc = 0.0;
-        bool any = false;
+    std::vector<std::span<const atx::f64>> rows(combo.weights.size());
+    for (atx::usize t = 0; t < D; ++t) {
         for (atx::usize a = 0; a < combo.weights.size(); ++a) {
-            const atx::f64 s = signals.alphas[a].values[c];
-            if (!std::isnan(s)) {
-                acc += combo.weights[a] * s;
-                any = true;
-            }
+            rows[a] = streams.positions(a, t);
         }
-        combined[c] = any ? acc : std::numeric_limits<atx::f64>::quiet_NaN();
+        for (atx::usize i = 0; i < N; ++i) {
+            if (!panel.in_universe(t, i)) {
+                continue; // leave NaN — not a tradable name on this date
+            }
+            atx::f64 acc = 0.0;
+            for (atx::usize a = 0; a < combo.weights.size(); ++a) {
+                acc += combo.weights[a] * rows[a][i];
+            }
+            combined[t * N + i] = acc;
+        }
     }
 
     // 10. Serialize as a 1-field panel with the research panel's universe mask.

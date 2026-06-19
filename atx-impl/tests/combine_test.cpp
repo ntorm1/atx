@@ -2,8 +2,8 @@
 //
 // TDD order: CombinedEqualsWeightedSum first (pins the core semantics —
 // that the combined mega-alpha is the exact NaN-aware weighted sum of
-// the per-alpha signals). Remaining tests verify structure, determinism,
-// and field coverage.
+// the per-alpha TARGET-WEIGHT (position) streams, NOT the raw signals).
+// Remaining tests verify structure, determinism, and field coverage.
 //
 // Panel fixture: 96 dates x 6 instruments, "close" field (required by
 // extract_streams) built via a deterministic LCG random walk with drift.
@@ -25,9 +25,12 @@
 #include "atx/engine/alpha/bytecode.hpp"  // alpha::compile_batch
 #include "atx/engine/alpha/panel.hpp"     // alpha::Panel, alpha::SignalSet
 #include "atx/engine/alpha/parser.hpp"    // alpha::Library
+#include "atx/engine/alpha/streams.hpp"   // alpha::extract_streams (position streams)
 #include "atx/engine/alpha/vm.hpp"        // alpha::Engine
+#include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
 
 #include "config.hpp"
+#include "research_sim.hpp"               // frictionless_sim
 #include "serialize_panel.hpp"
 #include "stages.hpp"
 
@@ -128,9 +131,12 @@ static std::vector<std::string> safe_dsls() {
 
 // ---------------------------------------------------------------------------
 // Test 2 (TDD FIRST): CombinedEqualsWeightedSum
-// With method="equal" (w=1/3 each), recompute the per-alpha signals
-// independently and verify combined[d,i] == (s0+s1+s2)/3 at any probe cell
-// where all three signals are non-NaN.
+// With method="equal" (w=1/3 each), the combined mega-alpha is the weighted sum
+// of the per-alpha TARGET-WEIGHT (position) streams — NOT the raw signals.
+// Positions are the winsorized/ranked/dollar-neutral/gross-normalized books each
+// alpha's metrics were validated on (streams.hpp contract). Recompute the
+// position streams independently via the same extract_streams path run_combine
+// uses, and verify combined[d,i] == (p0+p1+p2)/3 at in-universe probe cells.
 // ---------------------------------------------------------------------------
 TEST(AtxImplCombine, CombinedEqualsWeightedSum) {
     namespace fs = std::filesystem;
@@ -162,7 +168,10 @@ TEST(AtxImplCombine, CombinedEqualsWeightedSum) {
     ASSERT_TRUE(cpanel_r.has_value()) << cpanel_r.error().message();
     const Panel& cpanel = *cpanel_r;
 
-    // Recompute per-alpha signals independently using the same engine path.
+    // Recompute the per-alpha POSITION streams independently via the SAME engine
+    // + extract_streams path run_combine uses (default WeightPolicy, frictionless
+    // sim). The combined mega-alpha must equal the equal-weighted sum of these
+    // target-weight streams.
     Library lib{};
     std::vector<std::string_view> views(dsls.begin(), dsls.end());
     auto prog_r = atx::engine::alpha::compile_batch(
@@ -173,8 +182,13 @@ TEST(AtxImplCombine, CombinedEqualsWeightedSum) {
     auto ss_r = engine.evaluate(*prog_r);
     ASSERT_TRUE(ss_r.has_value()) << ss_r.error().message();
     const SignalSet& ss = *ss_r;
-
     ASSERT_EQ(ss.alphas.size(), 3u);
+
+    atx::engine::WeightPolicy policy{};
+    auto sim = atx::impl::frictionless_sim();
+    auto streams_r = atx::engine::alpha::extract_streams(ss, policy, panel, sim);
+    ASSERT_TRUE(streams_r.has_value()) << streams_r.error().message();
+    const auto& streams = *streams_r;
 
     const usize D  = panel.dates();
     const usize N  = panel.instruments();
@@ -185,28 +199,32 @@ TEST(AtxImplCombine, CombinedEqualsWeightedSum) {
     const auto combined_span = cpanel.field_all(*fid_r);
 
     usize probes_checked = 0;
-    for (usize d = 10; d < D; ++d) {     // skip first 10 (warm-up NaN region)
+    usize nonzero_seen   = 0;
+    for (usize d = 10; d < D; ++d) {     // skip first 10 (warm-up region)
+        const auto p0 = streams.positions(0, d);
+        const auto p1 = streams.positions(1, d);
+        const auto p2 = streams.positions(2, d);
         for (usize i = 0; i < N; ++i) {
             const usize c = d * N + i;
-            const f64 s0 = ss.alphas[0].values[c];
-            const f64 s1 = ss.alphas[1].values[c];
-            const f64 s2 = ss.alphas[2].values[c];
-            if (std::isnan(s0) || std::isnan(s1) || std::isnan(s2)) {
-                continue; // skip NaN cells
+            if (!panel.in_universe(d, i)) {
+                continue; // not a tradable name on this date -> left NaN
             }
-            const f64 expected = (s0 + s1 + s2) / 3.0;
+            const f64 expected = (p0[i] + p1[i] + p2[i]) / 3.0;
             const f64 actual   = combined_span[c];
             EXPECT_FALSE(std::isnan(actual))
                 << "combined cell [" << d << "," << i << "] should not be NaN";
             EXPECT_NEAR(actual, expected, 1e-9)
                 << "combined[" << d << "," << i << "] = " << actual
                 << " expected " << expected;
+            if (std::abs(actual) > 1e-12) { ++nonzero_seen; }
             ++probes_checked;
             if (probes_checked >= 20) { goto done; } // enough probe cells
         }
     }
 done:
-    EXPECT_GT(probes_checked, 0u) << "no non-NaN probe cells found";
+    EXPECT_GT(probes_checked, 0u) << "no in-universe probe cells found";
+    EXPECT_GT(nonzero_seen, 0u)
+        << "combined positions must be non-trivially non-zero";
 
     // Cleanup.
     std::error_code ec;
