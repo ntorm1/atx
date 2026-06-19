@@ -15,6 +15,7 @@
 
 #include "atx/engine/alpha/bytecode.hpp"  // alpha::compile, alpha::Program
 #include "atx/engine/alpha/typecheck.hpp" // alpha::analyze
+#include "atx/engine/alpha/unparse.hpp"   // alpha::unparse (population serialization)
 #include "atx/engine/alpha/vm.hpp"        // alpha::Engine (digest eval, fresh per program)
 
 #include "atx/engine/parallel/digest.hpp"    // parallel::signal_set_digest
@@ -874,6 +875,37 @@ void SearchDriver::finalize(const std::vector<Scored> &scored, const CanonSet &c
     res.admitted_candidates.push_back(scored[i].genome.clone());
     res.admitted_candidates.back().canon_hash = scored[i].genome.canon_hash;
   }
+}
+
+// ----- population checkpoint helpers (resumable-discover, Task 1) ------------
+
+std::vector<std::string>
+SearchDriver::serialize_population(const std::vector<Genome> &pop) const {
+  std::vector<atx::usize> order(pop.size());
+  for (atx::usize i = 0; i < pop.size(); ++i) {
+    order[i] = i;
+  }
+  std::sort(order.begin(), order.end(),
+            [&](atx::usize a, atx::usize b) { return detail::canon_less(pop[a], pop[b]); });
+  std::vector<std::string> out;
+  out.reserve(pop.size());
+  for (atx::usize i : order) {
+    out.push_back(alpha::unparse(pop[i].ast));
+  }
+  return out;
+}
+
+atx::core::Result<std::vector<Genome>>
+SearchDriver::deserialize_population(const std::vector<std::string> &exprs) const {
+  std::vector<Genome> out;
+  out.reserve(exprs.size());
+  for (const auto &src : exprs) {
+    ATX_TRY(auto ast, alpha::parse_expr(src, lib_));
+    ATX_TRY(auto g, analyze_into(std::move(ast)));
+    g.canon_hash = canonical_hash(g);
+    out.push_back(std::move(g));
+  }
+  return atx::core::Ok(std::move(out));
 }
 
 } // namespace atx::engine::factory

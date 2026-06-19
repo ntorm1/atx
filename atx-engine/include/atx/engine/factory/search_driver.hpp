@@ -94,6 +94,13 @@
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
 
+// Forward declaration for the test-access friend (search_progress_test.cpp).
+// Placed outside the engine namespace so the friend decl can use the fully-
+// qualified name; the struct itself lives only in the test translation unit.
+namespace atxtest_search_progress_test {
+struct SearchProgressTestAccess;
+} // namespace atxtest_search_progress_test
+
 namespace atx::engine::factory {
 
 using atx::core::Xoshiro256pp;
@@ -457,6 +464,22 @@ private:
   // reported best matches what was preserved across generations). trial_count ==
   // the distinct structures scored (CanonSet).
   void finalize(const std::vector<Scored> &scored, const CanonSet &canon, SearchResult &res) const;
+
+  // ----- population checkpoint helpers (resumable-discover, Task 1) ----------
+
+  // Render each genome to its canonical DSL string, emitted in canonical-id
+  // order (sorted by detail::canon_less) so the blob is deterministic and
+  // insertion-order-independent (F1/F2 contracts).
+  [[nodiscard]] std::vector<std::string>
+  serialize_population(const std::vector<Genome> &pop) const;
+
+  // Parse + analyze each DSL string back into an F5-valid Genome with its
+  // canon_hash set. Propagates the first parse/analyze error (ATX_TRY).
+  [[nodiscard]] atx::core::Result<std::vector<Genome>>
+  deserialize_population(const std::vector<std::string> &exprs) const;
+
+  // Test-access friend for the population checkpoint round-trip test.
+  friend struct ::atxtest_search_progress_test::SearchProgressTestAccess;
 
   // SAFETY: each member borrows a const OpSig* from `lib_`; `lib_`/`panel_` etc.
   // are borrowed for the driver's lifetime and must outlive every produced genome.
