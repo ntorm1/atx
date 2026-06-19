@@ -46,6 +46,8 @@
 #include "atx/engine/data/dataset_schema.hpp"
 #include "atx/engine/data/panel_digest.hpp"
 #include "atx/engine/data/universe.hpp"
+#include "atx/engine/regime/store.hpp"
+#include "atx/engine/regime/with_regime_fields.hpp"
 
 namespace atx::engine::data {
 
@@ -327,6 +329,28 @@ void put_field(std::vector<std::string> &names, std::vector<std::vector<atx::f64
 } // namespace
 
 // ---------------------------------------------------------------------------
+//  finalize_panel_with_regime — testable seam: Panel::create + optional regime overlay.
+// ---------------------------------------------------------------------------
+atx::core::Result<alpha::Panel> finalize_panel_with_regime(
+    atx::usize dates, atx::usize instruments,
+    std::span<const atx::i64> panel_dates_nanos,
+    std::vector<std::string> field_names,
+    std::vector<std::vector<atx::f64>> field_data,
+    std::vector<std::uint8_t> universe,
+    const std::string &regime_seg_path,
+    const std::vector<std::string> &requested_series) {
+  if (regime_seg_path.empty() || requested_series.empty()) {
+    // No-regression path: identical to the pre-regime assembly.
+    return alpha::Panel::create(dates, instruments, std::move(field_names),
+                                std::move(field_data), std::move(universe));
+  }
+  ATX_TRY(auto store, atx::engine::regime::RegimeStore::open(regime_seg_path));
+  return atx::engine::regime::with_regime_fields(
+      dates, instruments, panel_dates_nanos, std::move(field_names),
+      std::move(field_data), std::move(universe), store, requested_series);
+}
+
+// ---------------------------------------------------------------------------
 //  build_real_panel — the one documented entry point.
 // ---------------------------------------------------------------------------
 Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
@@ -381,10 +405,19 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
   put_field(names, data, kFieldMarketCap, uni.market_cap);
   put_field(names, data, kFieldSector, std::move(sector_f64));
 
+  // Panel date axis in unix-nanos (price dates are epoch-days on the canonical axis).
+  std::vector<atx::i64> panel_dates_nanos(nd);
+  {
+    const std::span<const DateKey> pdates = price.dates();
+    for (atx::usize d = 0; d < nd; ++d) {
+      panel_dates_nanos[d] = static_cast<atx::i64>(pdates[d]) * kNsPerDay;
+    }
+  }
   ATX_TRY(auto panel,
-          alpha::Panel::create(nd, ni, std::move(names), std::move(data),
-                               std::vector<std::uint8_t>(uni.in_universe.begin(),
-                                                         uni.in_universe.end())));
+          finalize_panel_with_regime(
+              nd, ni, panel_dates_nanos, std::move(names), std::move(data),
+              std::vector<std::uint8_t>(uni.in_universe.begin(), uni.in_universe.end()),
+              cfg.regime_seg_path, cfg.regime_fields));
 
   // Catalog: register the three composing datasets + the derivation lineage.
   DatasetCatalog catalog;
