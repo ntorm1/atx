@@ -85,6 +85,7 @@ struct RunConfig {
     double      gross            = 0.0; // --gross
     double      name_cap         = 0.0; // --name-cap
     std::string rebalance;             // --rebalance  "daily"|"weekly"
+    bool        position_mode    = false; // --position-mode (signal-as-position deploy; skip mean-variance optimize)
 
     // -- report --
     std::string books;                 // --books

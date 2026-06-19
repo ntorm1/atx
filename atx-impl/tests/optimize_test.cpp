@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include "book_shape.hpp"
 #include "config.hpp"
 #include "serialize_panel.hpp"
 #include "stages.hpp"
@@ -320,4 +321,70 @@ TEST_F(AtxImplOptimize, RejectsUnknownRebalance) {
     if (!r.has_value()) {
         EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: PositionModeBookEqualsShapedComboCrossSection — with --position-mode,
+// each book row equals shape_book applied to the combo "alpha" cross-section
+// at the rebalance date, with live mask from research.in_universe.
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplOptimize, PositionModeBookEqualsShapedComboCrossSection) {
+    const fs::path books_path = tmp_dir_ / "books_posmode.bin";
+
+    atx::impl::RunConfig cfg;
+    cfg.panel         = research_path_;
+    cfg.combo         = combo_path_;
+    cfg.books_out     = books_path.string();
+    cfg.position_mode = true;
+    cfg.rebalance     = "weekly";
+    cfg.gross         = 1.0;
+    cfg.name_cap      = 0.5;
+
+    auto r = atx::impl::run_optimize(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+
+    auto books_r = atx::impl::read_panel(books_path.string());
+    ASSERT_TRUE(books_r.has_value()) << books_r.error().message();
+    const auto& books = *books_r;
+
+    auto combo_r = atx::impl::read_panel(combo_path_);
+    ASSERT_TRUE(combo_r.has_value()) << combo_r.error().message();
+    const auto& combo = *combo_r;
+
+    auto research_r = atx::impl::read_panel(research_path_);
+    ASSERT_TRUE(research_r.has_value()) << research_r.error().message();
+    const auto& research = *research_r;
+
+    auto wfid_r = books.field_id("weight");
+    ASSERT_TRUE(wfid_r.has_value()) << wfid_r.error().message();
+    const auto wfid = *wfid_r;
+
+    auto afid_r = combo.field_id("alpha");
+    ASSERT_TRUE(afid_r.has_value()) << afid_r.error().message();
+    const auto afid = *afid_r;
+
+    const atx::usize N = research.instruments();
+
+    for (atx::usize s = 0; s < books.dates(); ++s) {
+        const atx::usize d = 5 * s;  // weekly step=5
+        const auto cs = combo.field_cross_section(afid, d);
+        std::vector<atx::f64> expect(cs.begin(), cs.end());
+        std::vector<std::uint8_t> live(N);
+        for (atx::usize i = 0; i < N; ++i) {
+            live[i] = research.in_universe(d, i) ? 1 : 0;
+        }
+        atx::impl::shape_book(expect, std::span<const std::uint8_t>{live}, 1.0, 0.5);
+
+        const auto got = books.field_cross_section(wfid, s);
+        ASSERT_EQ(got.size(), N) << "books row size mismatch at s=" << s;
+        for (atx::usize i = 0; i < N; ++i) {
+            EXPECT_NEAR(got[i], expect[i], 1e-9)
+                << "s=" << s << " i=" << i
+                << " got=" << got[i] << " expect=" << expect[i];
+        }
+    }
+
+    // Sidecar must exist.
+    EXPECT_TRUE(fs::exists(books_path.string() + ".meta.txt"))
+        << "missing sidecar .meta.txt for position_mode books";
 }

@@ -1,5 +1,6 @@
 #include "stages.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -13,6 +14,7 @@
 #include "atx/engine/risk/optimizer.hpp"
 
 #include "artifacts.hpp"
+#include "book_shape.hpp"
 #include "config.hpp"
 #include "diag_risk.hpp"
 #include "serialize_panel.hpp"
@@ -68,12 +70,104 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     }
     const atx::usize S = sched.periods.size();
 
-    // 5. MultiPeriodConfig.
+    // Resolved gross / name_cap scalars shared by both branches.
+    const atx::f64 gross_val    = cfg.gross    > 0.0 ? cfg.gross    : 1.0;
+    const atx::f64 name_cap_val = cfg.name_cap > 0.0 ? cfg.name_cap : 1.0;
+
+    // Local helper: serialize a flat books array (S*M) + write sidecar + build
+    // StageResult. Used by both the position-mode branch and the MVO branch so
+    // the output format and kvs keys are byte-identical between the two paths.
+    // turnover[s] = Sigma_i |w[s] - w[s-1]|  (w[-1] = 0).
+    // cost_bps[s] = 0 for the position-mode branch; the caller supplies the vec.
+    auto write_books = [&](const std::vector<atx::f64>& books_flat,
+                           const std::vector<double>& turnover,
+                           const std::vector<double>& cost_bps)
+        -> atx::core::Result<StageResult>
+    {
+        // Build panel (all cells live).
+        std::vector<std::uint8_t> uni(S * M, 1u);
+        ATX_TRY(auto cpanel,
+                alpha::Panel::create(S, M, {"weight"}, {books_flat}, uni));
+        ATX_TRY(auto digest, write_panel(cpanel, cfg.books_out));
+
+        // Write sidecar .meta.txt
+        {
+            const std::string sidecar = cfg.books_out + ".meta.txt";
+            std::ofstream mf{sidecar};
+            if (!mf.is_open()) {
+                return atx::core::Err(atx::core::ErrorCode::IoError,
+                                      "optimize: cannot write sidecar: " + sidecar);
+            }
+            const std::string rebalance_str =
+                cfg.rebalance.empty() ? "weekly" : cfg.rebalance;
+            mf << "periods="     << S             << '\n';
+            mf << "instruments=" << M             << '\n';
+            mf << "gross="       << gross_val     << '\n';
+            mf << "name_cap="    << name_cap_val  << '\n';
+            mf << "rebalance="   << rebalance_str << '\n';
+            for (atx::usize s = 0; s < S; ++s) {
+                mf << "s=" << s
+                   << " period="   << sched.periods[s]
+                   << " turnover=" << turnover[s]
+                   << " cost_bps=" << cost_bps[s]
+                   << '\n';
+            }
+        }
+
+        // Build StageResult with the same kvs keys for both branches.
+        StageResult sr;
+        sr.digest = digest;
+        sr.kvs = {
+            {"periods",     std::to_string(S)},
+            {"instruments", std::to_string(M)},
+            {"gross",       std::to_string(gross_val)},
+            {"name_cap",    std::to_string(name_cap_val)},
+            {"rebalance",   step == 1U ? "daily" : "weekly"},
+            {"books",       to_hex16(digest)},
+        };
+        return atx::core::Ok(std::move(sr));
+    };
+
+    // 5a. Position-mode branch: signal-as-position deploy — skip MVO entirely.
+    if (cfg.position_mode) {
+        ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
+        std::vector<atx::f64> books_flat(S * M, 0.0);
+        std::vector<double>   turnover(S, 0.0);
+        std::vector<double>   cost_bps(S, 0.0);
+
+        std::vector<atx::f64> prev(M, 0.0);  // w[-1] = 0 (flat)
+
+        for (atx::usize s = 0; s < S; ++s) {
+            const atx::usize d = sched.periods[s];
+            const auto cs = combo.field_cross_section(alpha_fid, d);
+            std::vector<atx::f64> w(cs.begin(), cs.end());
+            std::vector<std::uint8_t> live(M);
+            for (atx::usize i = 0; i < M; ++i) {
+                live[i] = research.in_universe(d, i) ? 1u : 0u;
+            }
+            shape_book(w, std::span<const std::uint8_t>{live}, gross_val, name_cap_val);
+
+            // Compute per-period turnover: Sigma_i |w[s] - w[s-1]|.
+            double tv = 0.0;
+            for (atx::usize i = 0; i < M; ++i) tv += std::fabs(w[i] - prev[i]);
+            turnover[s] = tv;
+
+            // Store weights and update previous book.
+            for (atx::usize i = 0; i < M; ++i) {
+                books_flat[s * M + i] = w[i];
+                prev[i] = w[i];
+            }
+        }
+
+        return write_books(books_flat, turnover, cost_bps);
+    }
+
+    // 5b. MVO path (default: position_mode=false).
     risk::MultiPeriodConfig mc;
     mc.single.risk_aversion   = cfg.set_flags.count("risk-aversion")
                                     ? cfg.risk_aversion : 1.0;
-    mc.single.gross_leverage  = cfg.gross    > 0.0 ? cfg.gross    : 1.0;
-    mc.single.name_cap        = cfg.name_cap > 0.0 ? cfg.name_cap : 1.0;
+    mc.single.gross_leverage  = gross_val;
+    mc.single.name_cap        = name_cap_val;
     mc.single.dollar_neutral  = true;
     mc.single.turnover_penalty = cfg.turnover_penalty;
     risk::MultiPeriodOptimizer mpo;
@@ -97,7 +191,7 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
 
     ATX_TRY(auto result, mpo.run(sched, alpha_at, model_at, cost));
 
-    // 7. Serialize books as a weight panel (S periods x M instruments, field "weight").
+    // 7. Pack books_flat from MVO result.
     std::vector<atx::f64> flat;
     flat.reserve(S * M);
     for (atx::usize s = 0; s < S; ++s) {
@@ -105,48 +199,9 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
             flat.push_back(result.books[s][i]);
         }
     }
-    std::vector<std::uint8_t> uni(S * M, 1u);
 
-    ATX_TRY(auto cpanel,
-            alpha::Panel::create(S, M, {"weight"}, {flat}, uni));
-    ATX_TRY(auto digest, write_panel(cpanel, cfg.books_out));
-
-    // Write sidecar .meta.txt
-    {
-        const std::string sidecar = cfg.books_out + ".meta.txt";
-        std::ofstream mf{sidecar};
-        if (!mf.is_open()) {
-            return atx::core::Err(atx::core::ErrorCode::IoError,
-                                  "optimize: cannot write sidecar: " + sidecar);
-        }
-        const std::string rebalance_str =
-            cfg.rebalance.empty() ? "weekly" : cfg.rebalance;
-        mf << "periods="    << S                         << '\n';
-        mf << "instruments=" << M                        << '\n';
-        mf << "gross="      << mc.single.gross_leverage  << '\n';
-        mf << "name_cap="   << mc.single.name_cap        << '\n';
-        mf << "rebalance="  << rebalance_str             << '\n';
-        for (atx::usize s = 0; s < S; ++s) {
-            mf << "s=" << s
-               << " period="   << sched.periods[s]
-               << " turnover=" << result.turnover[s]
-               << " cost_bps=" << result.cost_bps[s]
-               << '\n';
-        }
-    }
-
-    // 8. Return StageResult.
-    StageResult sr;
-    sr.digest = digest;
-    sr.kvs = {
-        {"periods",     std::to_string(S)},
-        {"instruments", std::to_string(M)},
-        {"gross",       std::to_string(mc.single.gross_leverage)},
-        {"name_cap",    std::to_string(mc.single.name_cap)},
-        {"rebalance",   step == 1U ? "daily" : "weekly"},
-        {"books",       to_hex16(digest)},
-    };
-    return atx::core::Ok(std::move(sr));
+    // 8. Serialize + return StageResult.
+    return write_books(flat, result.turnover, result.cost_bps);
 }
 
 } // namespace atx::impl
