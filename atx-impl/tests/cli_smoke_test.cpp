@@ -278,6 +278,40 @@ TEST(Config, ConfigParsesOosFlags) {
     fs::remove(tmp_path, ec);
 }
 
+// ---------------------------------------------------------------------------
+// Test: --run-db and --resume parse correctly (Task 6 — resumable discover).
+// ---------------------------------------------------------------------------
+TEST(Config, ParsesRunDbAndResume) {
+    const char* argv[] = {
+        "atx", "discover",
+        "--panel", "p.bin",
+        "--alpha-out", "o",
+        "--gated",
+        "--run-db", "prog.db",
+        "--resume",
+    };
+    auto cfg = atx::impl::parse_args(10, const_cast<char**>(argv));
+    ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().message());
+    EXPECT_EQ(cfg.value().run_db, "prog.db");
+    EXPECT_TRUE(cfg.value().resume);
+}
+
+// ---------------------------------------------------------------------------
+// Test: --resume without --run-db is rejected.
+// ---------------------------------------------------------------------------
+TEST(Config, ResumeWithoutRunDbRejected) {
+    const char* argv[] = {
+        "atx", "discover",
+        "--panel", "p.bin",
+        "--alpha-out", "o",
+        "--gated",
+        "--resume",
+    };
+    auto cfg = atx::impl::parse_args(8, const_cast<char**>(argv));
+    ASSERT_FALSE(cfg.has_value()) << "expected Err but got Ok";
+    EXPECT_EQ(cfg.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
 TEST(AtxImplCli, RegimeStageBuildsSegment) {
   namespace fs = std::filesystem;
   const fs::path dir = fs::temp_directory_path() / "atx_impl_regime_smoke";
