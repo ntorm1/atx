@@ -90,6 +90,7 @@ struct RunConfig {
     // -- report --
     std::string books;                 // --books
     std::string report_out;            // --report-out
+    double      report_aum = 1e9;     // --report-aum (deployment AUM for capacity-footprint metrics in summary.txt)
 
     // -- regime (macro/regime data) --
     std::string staging_dir;   // --staging-dir  (regime subcommand: dir of staged CSVs)

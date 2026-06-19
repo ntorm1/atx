@@ -1,5 +1,6 @@
 #include "stages.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <fstream>
@@ -136,6 +137,32 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         ATX_TRY(const auto close_id, research.field_id("close"));
         const auto close = research.field_all(close_id);  // date-major D*M
 
+        // Resolve raw_close (as-traded price for true notional); fall back to
+        // "close" if "raw_close" is absent (e.g. in synthetic test panels where
+        // TRI-adjusted close is all that exists).
+        alpha::FieldId raw_close_id = close_id;
+        {
+            auto r_rc = research.field_id("raw_close");
+            if (r_rc.has_value()) { raw_close_id = *r_rc; }
+            // else: use close as fallback — comment documents the choice
+        }
+        const auto raw_close = research.field_all(raw_close_id);  // date-major D*M
+
+        // Resolve volume field (must be present for capacity computation).
+        // If absent, capacity metrics will all be 0 (guarded in the loop below).
+        bool has_volume = false;
+        alpha::FieldId volume_id{};
+        {
+            auto r_vol = research.field_id("volume");
+            if (r_vol.has_value()) {
+                volume_id  = *r_vol;
+                has_volume = true;
+            }
+        }
+        const auto volume_span = has_volume
+            ? research.field_all(volume_id)
+            : std::span<const atx::f64>{};  // empty span; never dereferenced when !has_volume
+
         std::vector<atx::f64> ret(D * M, std::numeric_limits<atx::f64>::quiet_NaN());
         for (atx::usize d = 0; d + 1 < D; ++d) {
             for (atx::usize i = 0; i < M; ++i) {
@@ -215,7 +242,88 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                   / static_cast<atx::f64>(S)
             : 0.0;
 
-        // 7b. Write convenience files (not R8-pinned).
+        // 7b. Compute capacity-footprint metrics (%ADV participation at report_aum).
+        //
+        // For each rebalance period s and each in-universe held name i (|w|>0):
+        //   dvol    = raw_close[d,i] * volume[d,i]   (d = sched.periods[s])
+        //   notional= |w| * report_aum
+        //   part    = notional / dvol  (skip if dvol <= 0 or NaN)
+        // Aggregates over all finite (s,i) participations:
+        //   avg_names_held   — mean over periods of count(|w|>0)
+        //   max_participation_pct, p95_participation_pct, median_participation_pct
+        //   pct_gross_over_5pct_adv — mean over periods of Σ_{part_i>0.05}|w_i|
+        atx::f64 avg_names_held  = 0.0;
+        atx::f64 max_part_pct    = 0.0;
+        atx::f64 p95_part_pct    = 0.0;
+        atx::f64 med_part_pct    = 0.0;
+        atx::f64 pct_gross_over5 = 0.0;
+
+        if (has_volume && S > 0) {
+            std::vector<atx::f64> parts;       // all finite participations
+            parts.reserve(S * M);
+            atx::f64 sum_names_held   = 0.0;
+            atx::f64 sum_gross_over5  = 0.0;
+            const atx::f64 report_aum = cfg.report_aum;
+
+            for (atx::usize s = 0; s < S; ++s) {
+                const atx::usize d = sched.periods[s]; // research panel date index
+                const auto& book_row = mpr.books[s];   // weights for period s
+
+                atx::usize names_held    = 0;
+                atx::f64   gross_over5_s = 0.0;
+
+                for (atx::usize i = 0; i < M; ++i) {
+                    const atx::f64 w = book_row[i];
+                    const atx::f64 abs_w = w < 0.0 ? -w : w;
+                    if (abs_w == 0.0) continue;
+                    if (!research.in_universe(d, i)) continue;
+
+                    ++names_held;
+
+                    const atx::f64 rc   = raw_close[d * M + i];
+                    const atx::f64 vol  = volume_span[d * M + i];
+                    const atx::f64 dvol = rc * vol;
+                    if (!std::isfinite(dvol) || dvol <= 0.0) continue;
+
+                    const atx::f64 notional = abs_w * report_aum;
+                    const atx::f64 part     = notional / dvol;
+                    if (!std::isfinite(part)) continue;
+
+                    parts.push_back(part);
+                    if (part > 0.05) {
+                        gross_over5_s += abs_w;
+                    }
+                }
+
+                sum_names_held  += static_cast<atx::f64>(names_held);
+                sum_gross_over5 += gross_over5_s;
+            }
+
+            avg_names_held  = sum_names_held  / static_cast<atx::f64>(S);
+            pct_gross_over5 = sum_gross_over5 / static_cast<atx::f64>(S);
+
+            if (!parts.empty()) {
+                std::vector<atx::f64> sorted_parts = parts;
+                std::sort(sorted_parts.begin(), sorted_parts.end());
+                const atx::usize n = sorted_parts.size();
+
+                max_part_pct = sorted_parts.back() * 100.0;
+
+                // p95: index = floor(0.95 * (n-1))
+                const atx::usize p95_idx =
+                    static_cast<atx::usize>(0.95 * static_cast<atx::f64>(n - 1));
+                p95_part_pct = sorted_parts[p95_idx] * 100.0;
+
+                // median: middle element for odd n; average of two middles for even n
+                if (n % 2 == 1) {
+                    med_part_pct = sorted_parts[n / 2] * 100.0;
+                } else {
+                    med_part_pct = (sorted_parts[n / 2 - 1] + sorted_parts[n / 2]) * 0.5 * 100.0;
+                }
+            }
+        }
+
+        // 7c. Write convenience files (not R8-pinned).
         {
             const fs::path rdir{cfg.report_out};
             // equity_curve.csv
@@ -231,19 +339,28 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                             << std::to_string(rep.equity_curve[s]) << "\n";
                 }
             }
-            // summary.txt
+            // summary.txt — first 6 lines are the existing prefix (byte-identical
+            // to previous behaviour); capacity metrics are appended after.
             {
                 std::ofstream sm_file{rdir / "summary.txt"};
                 if (!sm_file.is_open()) {
                     return atx::core::Err(atx::core::ErrorCode::IoError,
                                           "report: cannot write summary.txt");
                 }
+                // Existing 6 lines (MUST remain byte-identical — do NOT reorder).
                 sm_file << "final_equity=" << std::to_string(final_equity) << "\n";
                 sm_file << "total_pnl_gross=" << std::to_string(total_pnl_gross) << "\n";
                 sm_file << "total_pnl_net=" << std::to_string(total_pnl_net) << "\n";
                 sm_file << "total_pnl_cost=" << std::to_string(total_pnl_cost) << "\n";
                 sm_file << "avg_gross_leverage=" << std::to_string(avg_gross_leverage) << "\n";
                 sm_file << "avg_turnover=" << std::to_string(avg_turnover) << "\n";
+                // Capacity-footprint metrics (additive; after existing prefix).
+                sm_file << "report_aum=" << std::to_string(cfg.report_aum) << "\n";
+                sm_file << "avg_names_held=" << std::to_string(avg_names_held) << "\n";
+                sm_file << "max_participation_pct=" << std::to_string(max_part_pct) << "\n";
+                sm_file << "p95_participation_pct=" << std::to_string(p95_part_pct) << "\n";
+                sm_file << "median_participation_pct=" << std::to_string(med_part_pct) << "\n";
+                sm_file << "pct_gross_over_5pct_adv=" << std::to_string(pct_gross_over5) << "\n";
             }
         }
 
@@ -265,10 +382,11 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         StageResult sr;
         sr.digest = digest;
         sr.kvs = {
-            {"periods",       std::to_string(S)},
-            {"final_equity",  std::to_string(final_equity)},
-            {"pnl_net",       std::to_string(total_pnl_net)},
-            {"avg_gross",     std::to_string(avg_gross_leverage)},
+            {"periods",               std::to_string(S)},
+            {"final_equity",          std::to_string(final_equity)},
+            {"pnl_net",               std::to_string(total_pnl_net)},
+            {"avg_gross",             std::to_string(avg_gross_leverage)},
+            {"max_participation_pct", std::to_string(max_part_pct)},
         };
         return atx::core::Ok(std::move(sr));
     }
