@@ -15,6 +15,8 @@ TEST(UniverseRegistry, DefineAddMembersRoundTrip) {
   ASSERT_TRUE(ur::add_member(db, "uni_sp500", 20).has_value());
   auto m = ur::members(db, "uni_sp500"); ASSERT_TRUE(m.has_value());
   ASSERT_EQ(m->size(), 2u);
+  ASSERT_EQ((*m)[0], 10u);
+  ASSERT_EQ((*m)[1], 20u);
 }
 
 TEST(UniverseRegistry, RecordSnapshotOk) {
