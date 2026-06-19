@@ -23,6 +23,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "help")         { cfg.help        = true; return atx::core::Ok(); }
     if (flag == "quiet")        { cfg.quiet       = true; return atx::core::Ok(); }
     if (flag == "digest-only")  { cfg.digest_only = true; return atx::core::Ok(); }
+    if (flag == "gated")        { cfg.gated       = true; return atx::core::Ok(); }
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -94,6 +95,12 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "population")        return parse_long(cfg.population);
     if (flag == "generations")       return parse_long(cfg.generations);
     if (flag == "min-dsr")           return parse_double(cfg.min_dsr);
+    if (flag == "min-sharpe")        return parse_double(cfg.min_sharpe);
+    if (flag == "min-fitness")       return parse_double(cfg.min_fitness);
+    if (flag == "max-turnover")      return parse_double(cfg.max_turnover);
+    if (flag == "max-pool-corr")     return parse_double(cfg.max_pool_corr);
+    if (flag == "target-aum")        return parse_double(cfg.target_aum);
+    if (flag == "workers")           return parse_long(cfg.workers);
     if (flag == "fit-begin")         return parse_long(cfg.fit_begin);
     if (flag == "fit-end")           return parse_long(cfg.fit_end);
     if (flag == "risk-aversion")     return parse_double(cfg.risk_aversion);
@@ -160,7 +167,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only") {
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated") {
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;

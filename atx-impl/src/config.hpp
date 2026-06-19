@@ -48,6 +48,21 @@ struct RunConfig {
     std::vector<std::string> seed_exprs; // --seed-expr (repeatable)
     double      min_dsr      = 0.0;   // --min-dsr
 
+    // -- discover quality gate (opt-in; default path is the ungated top-N search) --
+    // When --gated is set, discover routes through factory::Factory::mine_into:
+    // every distinct candidate is ranked by deflated Sharpe and admitted into a
+    // persistent library only if it clears the AlphaGate floors below AND
+    // dsr >= min_dsr. This yields a robust, low-turnover, low-correlation,
+    // high-fitness alpha database. Absent --gated, behavior is unchanged.
+    bool        gated         = false; // --gated
+    double      min_sharpe    = 1.0;   // --min-sharpe    (AlphaGate standalone-Sharpe floor)
+    double      min_fitness   = 1.0;   // --min-fitness   (AlphaGate WorldQuant-fitness floor)
+    double      max_turnover  = 0.70;  // --max-turnover  (AlphaGate per-alpha turnover cap)
+    double      max_pool_corr = 0.70;  // --max-pool-corr (AlphaGate max |corr| to any admitted alpha)
+    double      target_aum    = 0.0;   // --target-aum    (capacity cost objective; 0 = off)
+    long        workers       = 0;     // --workers       (search DetPool fan-out; 0 = auto = cores-1).
+                                       // Digest-invariant (F1): affects speed/memory, never bits.
+
     // -- combine --
     std::string alphas;                // --alphas
     std::string combo_out;             // --combo-out

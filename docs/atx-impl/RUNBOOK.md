@@ -175,16 +175,56 @@ atx-impl discover \
 - `--generations` — number of generations to evolve.
 - `--seed-expr` — repeatable flag; each occurrence adds one seed expression to
   the initial population. Provide at least one.
-- `--min-dsr` — **reserved no-op.** Parsed and recorded for forward-compatibility
-  but not yet enforced. The `SearchDriver` path used by `discover` exposes no
-  per-genome deflated-Sharpe; DSR gating is a planned future enhancement via the
-  `mine`/`AlphaGate` path. Setting this flag currently has no effect on which
-  alphas are admitted.
+- `--min-dsr` — deflated-Sharpe admission bar. **No effect on the default
+  (ungated) path** — that path emits the search's top-N survivors by raw fitness
+  and exposes no per-genome deflated Sharpe. Under `--gated` (below) it becomes
+  the live S1 anti-snooping floor: a candidate is admitted only if its deflated
+  Sharpe `>= --min-dsr`.
 
 Expected output line:
 
 ```
 [atx-impl] stage=discover digest=<hex16> admitted=<n>
+```
+
+#### Gated discovery (`--gated`) — robust, low-turnover, low-correlation DB
+
+By default `discover` writes the search's top-N genomes by raw fitness with no
+quality screen. Passing `--gated` instead routes every distinct candidate through
+`factory::Factory::mine_into`: candidates are ranked by **deflated Sharpe** (the
+multiple-testing-corrected statistic) and admitted into a persistent on-disk
+`library::Library` (a queryable alpha database at `<alpha-out>/_library/`, a
+SQLite catalog + lifecycle/dedup DBs + an `.alib` segment carrying each alpha's
+PnL/positions) only if the candidate clears the `AlphaGate` floors **and**
+`dsr >= --min-dsr`. Admitted alphas are also written as `<alpha-out>/alpha_NNN.dsl`
+(best-deflated-first) so `combine` consumes them unchanged, and a metric-annotated
+`<alpha-out>/_manifest.txt` is produced.
+
+The gate encodes the desired alpha qualities:
+
+- `--min-sharpe` (default 1.0) — standalone-Sharpe floor.
+- `--min-fitness` (default 1.0) — WorldQuant fitness floor (**high fitness**).
+- `--max-turnover` (default 0.70) — per-alpha turnover cap (**low turnover**).
+- `--max-pool-corr` (default 0.70) — reject if `|corr|` to any already-admitted
+  alpha exceeds this (**low correlation** / mutual diversity).
+- `--min-dsr` (default 0.0) — deflated-Sharpe floor (**robustness** under
+  multiple testing; combined with the CPCV out-of-sample folds the search uses).
+- `--target-aum` (default 0.0; e.g. `100000000`) — when `> 0`, activates the
+  ADV-aware capacity cost objective in the search fitness (**high capacity**).
+- `--workers` (default 0 = auto = cores−1) — search parallelism. Digest-invariant
+  (affects speed/memory, never bits). Each worker holds a full per-genome buffer;
+  on a wide panel with limited RAM, cap it (e.g. `--workers 5`) to bound peak
+  memory.
+
+The default gate floors (`min-sharpe`/`min-fitness` = 1.0) are WorldQuant
+production bars; on a frictionless research sim they may admit zero, so calibrate
+to the data (e.g. `--min-sharpe 0.4 --min-fitness 0.15`) and tighten as warranted.
+
+Gated output line (additional keys):
+
+```
+[atx-impl] stage=discover digest=<hex16> gated=1 admitted=<n> evaluated=<n> \
+    duplicates=<n> reject_hist=<a,b,c,d,e,f> factory_digest=<hex16> ...
 ```
 
 ### Stage 4 — combine
