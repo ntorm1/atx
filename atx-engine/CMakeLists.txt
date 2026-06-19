@@ -14,6 +14,8 @@ add_library(atx-engine STATIC
     src/eval/cpcv.cpp
     src/eval/pbo.cpp
     src/eval/perf_metrics.cpp
+    # breadth / effective-N instrumentation (S10-5)
+    src/eval/breadth.cpp
     src/alpha/bytecode.cpp
     src/alpha/dag.cpp
     src/alpha/lexer.cpp
@@ -81,12 +83,20 @@ add_library(atx-engine STATIC
     src/parallel/workload_mine.cpp
     src/parallel/workload_streams.cpp
     src/validation/bias_audit.cpp
+    # conviction (S10-1) — continuous [0,1] confidence from DSR/PBO/stability/explainability
+    src/combine/conviction.cpp
+    # regime-conditioned combination (S10-3)
+    src/combine/regime_combiner.cpp
+    # crowding / capacity de-correlation (S10-4)
+    src/combine/crowding.cpp
     # risk (p2 S8.8a — header/source split: heavy method bodies moved out of the
     # header-only risk module into the library to collapse the include fan-out).
     # NOT auto-globbed — list each src/risk/*.cpp explicitly.
     src/risk/factor_model.cpp
     src/risk/garleanu_pedersen.cpp
     src/risk/multi_horizon.cpp
+    # fractional-Kelly sizing (S10-2)
+    src/risk/kelly_sizing.cpp
     # fund (p2 S2 — multi-strategy meta-book)
     src/fund/meta_allocator.cpp
     src/fund/cross_sleeve_risk.cpp

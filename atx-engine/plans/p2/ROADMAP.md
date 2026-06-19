@@ -1,6 +1,6 @@
 # Module p2 — atx-engine v3: The Robust Alpha Engine — Multi-Horizon Backtesting & Provable Alpha Discovery at Scale (`p2`)
 
-**Last reviewed:** 2026-06-14
+**Last reviewed:** 2026-06-18
 **Started:** planned; no sprint open yet (assumes `p1` S1–S8 closed — S7/S8 treated as DONE per the user's kickoff directive).
 **Source:** distills [`../../research/alpha-expression-dsl-deep-dive.md`](../../research/alpha-expression-dsl-deep-dive.md)
 + [`../../research/worldquant-systems-deep-dive.md`](../../research/worldquant-systems-deep-dive.md)
@@ -18,6 +18,26 @@ admitted library holds real, survivable alpha** (synthetic-recovery · regime/wa
 capacity/cost), constructed into a multi-horizon backtested book — **without weakening a single one of `p0`/`p1`'s
 correctness invariants.** **Live execution is out of scope: it is delegated to broker execution algorithms.** `p2`
 proves we can *find* robust alpha; *trading* it is the broker's job.
+
+---
+
+## Off-arc delivered sprints (RenTech-gap closures)
+
+### Sprint S10 — Conviction Sizing & Regime-Adaptive Integration  ✅ DELIVERED (2026-06-18, branch `worktree-s10-conviction-regime` — **unmerged, merge is the user's gate**) ([impl-plan](../../research/rentech-improvement-sprint-plan.md) · [progress](sprint-10-progress.md))
+
+A deep-research pass on Renaissance Technologies (verified, [`../../research/rentech-structure-signals-domain-mapping.md`](../../research/rentech-structure-signals-domain-mapping.md)) mapped against the as-built engine. Headline: atx already implements most of RenTech's documented philosophy; this sprint closed the precise residual gaps **without rebuilding** the mature discovery/validation/optimization spines. Six units, 42 new tests, all green per-TU under `/W4 /permissive- /WX`:
+
+- **S10-1** `combine/conviction.hpp` — continuous [0,1] conviction from DSR / (1−PBO) / OOS-IS stability × explainability (HeadScratcher 0.5 discount). *Conviction 9/0/0.*
+- **S10-2** `risk/kelly_sizing.hpp` — explicit fractional-Kelly `V⁻¹μ` (Woodbury `apply_inverse`), conviction-scaled, gross-clamped; the optimizer's TARGET, not a QP replacement. *KellySizing 8/0/0.*
+- **S10-3** `combine/regime_combiner.hpp` — per-regime combos (masked sub-pools reusing `AlphaCombiner`) blended by the PIT HMM posterior; byte-identical single-regime fallback. *RegimeCombine 9/0/0.*
+- **S10-4** `combine/crowding.hpp` — `Σ|corr|` crowding + capacity-floor de-correlation (n correlated copies → ≈ one signal's weight); exact passthrough at `corr_penalty=0`. *Crowding 8/0/0.*
+- **S10-5** `eval/breadth.hpp` — effective-N `(Σλ)²/Σλ²` via `symmetric_eig`, `IR = IC·√breadth`. *Breadth 7/0/0.*
+
+**Future-work backlog (deferred from S10, lifted here at close — the open RenTech gaps G6/G7):**
+- **S10-6 — Walk-forward adaptation harness** (`loop/walk_forward`): deterministic periodic re-fit/re-admit + signal-decay metric (RenTech G6 "Medallion adapts quickly"; atx is batch). Deferred by the user; spec frozen in the impl-plan.
+- **S10-7 — Cross-source data-validation gate** (ORATS ingest): per-date anomaly / cross-vendor reconciliation (RenTech G7 / Straus data hygiene). Deferred by the user; spec frozen in the impl-plan.
+- **S10-5 report wiring** — emitting the breadth/IC/IR line in `atx-impl` `run_report` is deferred: the report stage has no per-alpha/per-instrument return-covariance source in hand (only scalar aggregate series); wiring it needs new pipeline plumbing to retain per-name PnL contributions. The `eval/breadth` library is complete and unit-tested; only the CLI emission is pending.
+- **Known issue (pre-existing, not from S10):** the `eval` test group fails the unity build (`ATX_UNITY_BUILD=ON`) — `eval_lockbox_test.cpp` and `eval_regime_slice_test.cpp` both define `struct Lcg` in an anonymous namespace, which collide when batched into one Unity TU. Per-TU build (`ATX_UNITY_BUILD=OFF`) is clean. Fix: rename one `Lcg` or move it to a shared test header.
 
 ---
 
