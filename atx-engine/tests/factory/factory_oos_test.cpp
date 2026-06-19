@@ -388,4 +388,88 @@ TEST(FactoryOos, OosDeterminism) {
   EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
 }
 
+// ============================================================================
+//  CountingSink — minimal local recording sink for forwarding tests.
+// ============================================================================
+struct CountingSink : atx::engine::factory::SearchProgressSink {
+  int calls = 0;
+  atx::core::Status on_generation(const atx::engine::factory::GenerationSnapshot &) override {
+    ++calls;
+    return atx::core::Ok();
+  }
+};
+
+// =============================================================================
+//  MineIntoForwardsSinkPerGeneration — with oos OFF, mine_into forwards the sink
+//  to SearchDriver::run; on_generation is called once per completed generation.
+// =============================================================================
+TEST(FactoryOos, MineIntoForwardsSinkPerGeneration) {
+  Fixture fx{real_signal_panel()};
+  lib::Library library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  AlphaGate gate{default_gate_cfg()};
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = base_cfg(/*seed*/ 42, /*pop*/ 6, /*gens*/ 3);
+  cfg.search.objective_mode = atx::engine::factory::ObjectiveMode::ScalarRaw;
+  cfg.search.novelty_w = 0.0;
+  ASSERT_EQ(cfg.oos_fraction, 0.0) << "must be off-path (non-OOS) for this test";
+
+  CountingSink sink;
+  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr);
+  (void)rep;
+
+  EXPECT_EQ(sink.calls, static_cast<int>(cfg.search.generations))
+      << "on_generation must fire once per completed generation";
+}
+
+// =============================================================================
+//  MineIntoOffPathDigestUnchanged — the legacy 3-arg call and the explicit
+//  nullptr/nullptr call produce byte-identical digest + admitted count.
+// =============================================================================
+TEST(FactoryOos, MineIntoOffPathDigestUnchanged) {
+  AlphaGate gate{default_gate_cfg()};
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 99);
+  ASSERT_EQ(cfg.oos_fraction, 0.0) << "must be off-path";
+
+  // Run A: legacy 3-arg call.
+  Fixture fxA{real_signal_panel()};
+  lib::Library libA = lib::Library::open(tmpdir("A"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  const FactoryReport repA = fA.mine_into(cfg, libA, gate);
+
+  // Run B: explicit nullptr/nullptr — must be byte-identical to A.
+  Fixture fxB{real_signal_panel()};
+  lib::Library libB = lib::Library::open(tmpdir("B"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fB = fxB.factory();
+  const FactoryReport repB = fB.mine_into(cfg, libB, gate, nullptr, nullptr);
+
+  EXPECT_EQ(repA.digest, repB.digest)
+      << "off-path nullptr params must produce byte-identical digest";
+  EXPECT_EQ(repA.admitted, repB.admitted)
+      << "off-path nullptr params must produce identical admitted count";
+}
+
+// =============================================================================
+//  MineIntoOosForwardsSink — with oos ON, mine_into_oos (via the top-guard)
+//  forwards the sink; on_generation fires >= 1 time (the train search runs).
+// =============================================================================
+TEST(FactoryOos, MineIntoOosForwardsSink) {
+  Fixture fx{real_signal_panel()}; // stationary panel: good on train AND holdout
+  lib::Library library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xC0FFEEu});
+  AlphaGate gate{default_gate_cfg()};
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 77);
+  cfg.oos_fraction = 0.20;
+
+  CountingSink sink;
+  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr);
+  (void)rep;
+
+  EXPECT_GE(sink.calls, 1)
+      << "on_generation must fire at least once (train search generates >= 1 generation)";
+  EXPECT_EQ(sink.calls, static_cast<int>(cfg.search.generations))
+      << "on_generation must fire once per completed generation on the train search";
+}
+
 } // namespace atxtest_factory_oos_test

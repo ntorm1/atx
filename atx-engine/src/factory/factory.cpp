@@ -141,14 +141,16 @@ namespace atx::engine::factory {
 }
 
 [[nodiscard]] FactoryReport Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
-                                               const combine::AlphaGate &gate) {
+                                               const combine::AlphaGate &gate,
+                                               SearchProgressSink *sink,
+                                               const SearchResumeState *resume) {
   // P2a — out-of-sample (holdout) validation is an ADDITIVE branch at the TOP:
   // when oos_fraction > 0 the search SELECTS on a train window and admission is
   // CONFIRMED on a held-out window. When oos_fraction == 0 (the default) this is
   // never taken and the EXISTING body below runs byte-identically to the legacy
   // path (same digest / admitted count / version id / reject histogram).
   if (cfg.oos_fraction > 0.0) {
-    return mine_into_oos(cfg, lib_lib, gate);
+    return mine_into_oos(cfg, lib_lib, gate, sink, resume);
   }
 
   FactoryReport rep;
@@ -163,7 +165,7 @@ namespace atx::engine::factory {
   // (both have worst_corr == 0), so the search is byte-identical to mine()'s search.
   combine::AlphaStore search_pool; // empty selection pool (the search's pre-pool)
   SearchDriver driver{lib_, panel_, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
-  const SearchResult res = driver.run(cfg.search, search_pool);
+  const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
 
   // The persistent library is the ADMISSION pool: the deflated-fitness ranking and
   // the per-candidate re-score below score marginal corr against it (O(neighbors)).
@@ -621,7 +623,9 @@ namespace {
 
 [[nodiscard]] FactoryReport Factory::mine_into_oos(const FactoryConfig &cfg,
                                                    library::Library &lib_lib,
-                                                   const combine::AlphaGate &gate) {
+                                                   const combine::AlphaGate &gate,
+                                                   SearchProgressSink *sink,
+                                                   const SearchResumeState *resume) {
   FactoryReport rep;
   rep.library_n_alphas_before = lib_lib.n_alphas();
 
@@ -655,7 +659,7 @@ namespace {
   // persistent library below.
   combine::AlphaStore search_pool;
   SearchDriver driver{lib_, train, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
-  const SearchResult res = driver.run(cfg.search, search_pool);
+  const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
 
   LibraryPool view{lib_lib};
 
