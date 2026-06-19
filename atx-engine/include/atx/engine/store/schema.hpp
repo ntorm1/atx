@@ -3,8 +3,6 @@
 // layer. All tables are CREATE TABLE IF NOT EXISTS so create_all is idempotent across
 // reopen. Append-only tables (alpha_event, lifecycle_journal) use AUTOINCREMENT PK.
 
-#include <string>
-
 #include "atx/core/db/sqlite.hpp" // db::Database
 #include "atx/core/error.hpp"     // Status, Ok, ATX_TRY_VOID
 
@@ -76,10 +74,19 @@ inline constexpr int kSchemaVersion = 1;
   // Stamp the version once (only if empty).
   ATX_TRY(auto* stmt, db.prepare_cached("SELECT COUNT(*) FROM schema_meta"));
   ATX_TRY(const auto step, stmt->step());
-  (void)step;
+  if (step != atx::core::db::Statement::Step::Row) {
+    return atx::core::Err(atx::core::ErrorCode::Internal,
+                          "schema::create_all: COUNT(*) returned no row");
+  }
   if (stmt->column_int(0) == 0) {
-    ATX_TRY_VOID(db.exec("INSERT INTO schema_meta(schema_version, engine_version, applied_at)"
-                         " VALUES (" + std::to_string(kSchemaVersion) + ", 'v2', 0)"));
+    ATX_TRY(auto* ins, db.prepare_cached(
+        "INSERT INTO schema_meta(schema_version, engine_version, applied_at) VALUES (?1, 'v2', 0)"));
+    ATX_TRY_VOID(ins->bind(1, static_cast<atx::i64>(kSchemaVersion)));
+    ATX_TRY(const auto ins_step, ins->step());
+    if (ins_step != atx::core::db::Statement::Step::Done) {
+      return atx::core::Err(atx::core::ErrorCode::Internal,
+                            "schema::create_all: schema_meta stamp insert incomplete");
+    }
   }
   return atx::core::Ok();
 }
