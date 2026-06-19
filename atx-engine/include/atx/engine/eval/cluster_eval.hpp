@@ -436,15 +436,34 @@ struct Contingency {
 
 // Per-date agreement of the cluster vs sector cross-sections of an augmented
 // Panel. `cluster_field` / `sector_field` are the (group-typed) field names;
-// each date's two label rows are scored with ARI + NMI and accumulated into a
-// mean. Dates where EITHER cross-section is entirely unlabeled contribute the
-// degenerate 1.0 (no information to disagree on) — but the per-date vector is
-// returned too so a caller can inspect the warm-up dates directly.
+// each date's two label rows are scored with ARI + NMI. The mean is taken ONLY
+// over SCORED dates — those where BOTH cross-sections carry at least one labeled
+// (non-NaN) instrument. A warm-up / fully-unlabeled date yields the degenerate
+// 1.0 ("trivially identical"), which is information-free; counting it would pull
+// the mean toward 1.0 and manufacture a false "cluster ≈ GICS" agreement that this
+// honest-evidence unit must not manufacture. `per_date` keeps EVERY date (including
+// the degenerate ones) for inspection; `scored_dates` reports how many dates
+// actually contributed to the mean so a caller sees the effective sample size.
 struct AgreementOverTime {
-  std::vector<AgreementResult> per_date; // one per panel date
-  atx::f64 mean_ari = 0.0;
-  atx::f64 mean_nmi = 0.0;
+  std::vector<AgreementResult> per_date; // one per panel date (degenerate dates kept)
+  atx::f64 mean_ari = 0.0;               // mean ARI over scored dates only
+  atx::f64 mean_nmi = 0.0;               // mean NMI over scored dates only
+  atx::usize scored_dates = 0U;          // dates with >=1 labeled instrument in BOTH rows
 };
+
+namespace detail {
+
+// A cross-section has at least one labeled (non-NaN, non-negative) instrument.
+[[nodiscard]] inline bool has_labeled(std::span<const atx::f64> xs) noexcept {
+  for (const atx::f64 v : xs) {
+    if (!std::isnan(v) && v >= 0.0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace detail
 
 [[nodiscard]] inline atx::core::Result<AgreementOverTime>
 agreement_vs_gics(const alpha::Panel &panel, const std::string &cluster_field = "IndClass.cluster",
@@ -463,13 +482,18 @@ agreement_vs_gics(const alpha::Panel &panel, const std::string &cluster_field = 
     AgreementResult r;
     r.ari = adjusted_rand_index(cx, sx);
     r.nmi = normalized_mutual_info(cx, sx);
-    ari_sum += r.ari;
-    nmi_sum += r.nmi;
     out.per_date.push_back(r);
+    // Only a date with labeled instruments on BOTH sides carries real agreement
+    // information; a warm-up / unlabeled date is excluded from the mean.
+    if (detail::has_labeled(cx) && detail::has_labeled(sx)) {
+      ari_sum += r.ari;
+      nmi_sum += r.nmi;
+      ++out.scored_dates;
+    }
   }
-  if (dates > 0U) {
-    out.mean_ari = ari_sum / static_cast<atx::f64>(dates);
-    out.mean_nmi = nmi_sum / static_cast<atx::f64>(dates);
+  if (out.scored_dates > 0U) {
+    out.mean_ari = ari_sum / static_cast<atx::f64>(out.scored_dates);
+    out.mean_nmi = nmi_sum / static_cast<atx::f64>(out.scored_dates);
   }
   return atx::core::Ok(std::move(out));
 }

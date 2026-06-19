@@ -70,10 +70,13 @@ inline constexpr int kSchemaVersion = 1;
     // cluster_panel: registry over the external binary cluster-panel artifacts
     // (S11-4). The DB row is metadata only; binary_path points at the on-disk
     // labeling artifact, params_hash is the replay key, content_hash pins bytes.
+    // asof_date and created_at are stored as ISO strings ("2026-06-19",
+    // "2026-06-19T00:00:00Z") by ClusterPanelRecord/ParamsKey and bound/read as
+    // TEXT, so the column types are TEXT — not INTEGER — to match the stored values.
     "CREATE TABLE IF NOT EXISTS cluster_panel ("
     " panel_id TEXT PRIMARY KEY, universe_id TEXT, window_start INTEGER, window_end INTEGER,"
-    " recluster_every INTEGER, params_hash INTEGER, asof_date INTEGER, binary_path TEXT,"
-    " content_hash INTEGER, algo TEXT, k INTEGER, created_at INTEGER, created_by_run_id TEXT);"
+    " recluster_every INTEGER, params_hash INTEGER, asof_date TEXT, binary_path TEXT,"
+    " content_hash INTEGER, algo TEXT, k INTEGER, created_at TEXT, created_by_run_id TEXT);"
     "CREATE INDEX IF NOT EXISTS ix_cluster_panel_lookup"
     " ON cluster_panel(universe_id, asof_date, params_hash);"
     "CREATE INDEX IF NOT EXISTS ix_alpha_event_hash ON alpha_event(canon_hash, ts, event_id);"

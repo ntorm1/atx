@@ -643,8 +643,12 @@ TEST(ClusterPanel, BuildClusterPanel_PinnedDigest_MatchesGolden) {
   auto cp = build_cluster_panel(panel, cfg);
   ASSERT_TRUE(cp.has_value()) << (cp ? "" : cp.error().message());
   // Golden pinned from the as-built deterministic result; any drift in the
-  // windowing / correlation / clean / cluster pipeline trips this.
-  constexpr std::uint64_t kGolden = 4293541372186093814ULL;
+  // windowing / correlation / clean / cluster pipeline trips this. Re-pinned in the
+  // S11 review fixes after Ward linkage moved to the canonical squared-distance
+  // (Ward.D2) recurrence: the block-recovery, no-look-ahead, and two-runs-equal
+  // assertions in this suite all stay green, so this freezes the verified-correct
+  // post-fix output (the prior value was Ward-on-raw-distance).
+  constexpr std::uint64_t kGolden = 1151214793510920852ULL;
   EXPECT_EQ(panel_digest(*cp), kGolden) << "actual digest = " << panel_digest(*cp);
 }
 

@@ -386,6 +386,67 @@ TEST(ClusterEval, AgreementVsGics_PerDateAriNmi) {
   EXPECT_LT(agree->mean_ari, 1.0) << "cluster departs from GICS (not identical)";
   EXPECT_GE(agree->mean_nmi, 0.0);
   EXPECT_LE(agree->mean_nmi, 1.0);
+  // Every date is fully labeled here, so all of them are scored.
+  EXPECT_EQ(agree->scored_dates, dates);
+}
+
+// =============================================================================
+//  8b. Agreement-over-time — a warm-up region (cluster NaN for the first K dates)
+//      must NOT inflate the mean toward 1.0. The mean is over scored dates only.
+// =============================================================================
+TEST(ClusterEval, AgreementVsGics_WarmUpDatesExcludedFromMean) {
+  const atx::usize dates = 10;
+  const atx::usize instruments = 6;
+  const atx::usize warmup = 4; // first 4 dates have no cluster labeling (NaN)
+
+  // sector == {0,0,0,1,1,1}; cluster departs as {0,0,1,1,2,2}. The cluster panel's
+  // FIRST (and only) snapshot starts at date `warmup`, so broadcast_cluster_field
+  // leaves dates [0, warmup) NaN — a warm-up region where adjusted_rand_index /
+  // normalized_mutual_info return the degenerate 1.0 ("trivially identical").
+  const Panel src = make_source_with_sector(dates, instruments, {0, 0, 0, 1, 1, 1});
+  ClusterPanel cp;
+  cp.instruments = instruments;
+  cp.snapshots.push_back(snap(warmup, {0, 0, 1, 1, 2, 2}));
+  auto aug = append_cluster_field(src, cp);
+  ASSERT_TRUE(aug.has_value()) << (aug ? "" : aug.error().message());
+
+  auto agree = agreement_vs_gics(aug.value());
+  ASSERT_TRUE(agree.has_value()) << (agree ? "" : agree.error().message());
+  ASSERT_EQ(agree->per_date.size(), dates);
+
+  // Only the post-warm-up dates contribute to the mean.
+  EXPECT_EQ(agree->scored_dates, dates - warmup);
+
+  // The warm-up dates ARE the degenerate 1.0 (kept in per_date for inspection),
+  // and the scored dates are strictly below 1.0 (cluster departs from GICS). So if
+  // the warm-up dates had been counted, the mean would be pulled up toward 1.0.
+  for (atx::usize d = 0; d < warmup; ++d) {
+    EXPECT_DOUBLE_EQ(agree->per_date[d].ari, 1.0) << "warm-up date " << d << " is degenerate 1.0";
+  }
+  atx::f64 scored_ari_sum = 0.0;
+  atx::f64 scored_nmi_sum = 0.0;
+  for (atx::usize d = warmup; d < dates; ++d) {
+    EXPECT_LT(agree->per_date[d].ari, 1.0) << "scored date " << d << " departs from GICS";
+    scored_ari_sum += agree->per_date[d].ari;
+    scored_nmi_sum += agree->per_date[d].nmi;
+  }
+  const atx::f64 scored_ari_mean = scored_ari_sum / static_cast<atx::f64>(dates - warmup);
+  const atx::f64 scored_nmi_mean = scored_nmi_sum / static_cast<atx::f64>(dates - warmup);
+
+  // The reported mean equals the mean over the SCORED dates only (not all dates).
+  EXPECT_DOUBLE_EQ(agree->mean_ari, scored_ari_mean);
+  EXPECT_DOUBLE_EQ(agree->mean_nmi, scored_nmi_mean);
+  EXPECT_LT(agree->mean_ari, 1.0) << "warm-up dates must not pull the mean toward 1.0";
+
+  // Sanity: the naive all-dates mean WOULD be higher (the warm-up 1.0s inflate it),
+  // so the honest scored mean is strictly smaller than the contaminated average.
+  atx::f64 all_ari_sum = 0.0;
+  for (const auto &r : agree->per_date) {
+    all_ari_sum += r.ari;
+  }
+  const atx::f64 naive_mean = all_ari_sum / static_cast<atx::f64>(dates);
+  EXPECT_LT(agree->mean_ari, naive_mean)
+      << "scored mean must be below the warm-up-inflated naive mean";
 }
 
 } // namespace atxtest_cluster_eval

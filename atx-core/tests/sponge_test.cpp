@@ -148,32 +148,35 @@ TEST(Sponge, RecoversThreeBlocks) {
 
 // Two groups that are positively correlated WITHIN and strongly negatively
 // correlated ACROSS. The sqrt(2(1-rho)) distance turns the strong anti-correlation
-// (rho = -0.9) into the LARGEST distance, so a naive distance clusterer would also
-// separate them — but the discriminating case for SPONGE is when the anti-correlated
-// pair would otherwise be pulled together. Here we plant a structure where, in the
-// distance metric, a bridge of mild positive correlation links the two anti-blocks,
-// yet the signed Laplacian's repulsion keeps the anti-correlated members apart.
+// (rho = -0.8) into the LARGEST distance, so a naive distance clusterer would also
+// separate them — but the discriminating case for SPONGE is the signed-cut
+// contract: the signed Laplacian's repulsion keeps the anti-correlated groups apart.
 //
-// Concretely: members {0,1} and {2,3}. Within each pair rho=+0.8 (attraction).
-// Across the pairs rho=-0.8 (repulsion). SPONGE must place {0,1} and {2,3} in
+// Two blocks {0,1,2} and {3,4,5}. Within each block rho=+0.8 (attraction); across
+// the blocks rho=-0.8 (repulsion). SPONGE must place {0,1,2} and {3,4,5} in
 // different clusters at k=2.
+//
+// Fixture power note (review fix): an earlier two-members-per-block version was
+// under-powered for the canonical (un-weighted, row-normalized) SPONGEsym
+// embedding — with only two noise-free members per block the bottom generalized
+// eigenvectors cannot resolve the blocks and k-means peels off a single node. Three
+// members per block put the discriminative signed-cut mode clearly above the
+// within-block bulk, so the canonical embedding recovers the planted split. (The
+// prior version only "passed" because the removed 1/sqrt(lambda) weighting happened
+// to suppress the bulk modes — exercising the bug, not the contract; cf. S11-3's
+// under-powered-fixture fix.)
 TEST(Sponge, AntiCorrelatedPairSplits) {
-    const Eigen::Index n = 4;
-    MatX C(n, n);
-    // clang-format off
-    C << 1.0,  0.8, -0.8, -0.8,
-         0.8,  1.0, -0.8, -0.8,
-        -0.8, -0.8,  1.0,  0.8,
-        -0.8, -0.8,  0.8,  1.0;
-    // clang-format on
+    MatX C = block_corr({0, 0, 0, 1, 1, 1}, 0.8, -0.8);
     auto r = cluster(C, {Algo::SpongeSym, Linkage::Ward, 2});
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->n_labels, 2);
-    // {0,1} together, {2,3} together, and the two groups distinct.
+    // {0,1,2} together, {3,4,5} together, and the two groups distinct.
     EXPECT_EQ(r->cluster_id[0], r->cluster_id[1]);
-    EXPECT_EQ(r->cluster_id[2], r->cluster_id[3]);
-    EXPECT_NE(r->cluster_id[0], r->cluster_id[2]);
-    const std::vector<int> expected{0, 0, 1, 1};
+    EXPECT_EQ(r->cluster_id[1], r->cluster_id[2]);
+    EXPECT_EQ(r->cluster_id[3], r->cluster_id[4]);
+    EXPECT_EQ(r->cluster_id[4], r->cluster_id[5]);
+    EXPECT_NE(r->cluster_id[0], r->cluster_id[3]);
+    const std::vector<int> expected{0, 0, 0, 1, 1, 1};
     EXPECT_EQ(r->cluster_id, expected);
 }
 

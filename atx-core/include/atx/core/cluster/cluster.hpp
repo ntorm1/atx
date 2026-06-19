@@ -205,22 +205,32 @@ inline void canonicalize_signs(MatX &vectors) noexcept {
 [[nodiscard]] inline Clustering hierarchical_partition(const MatX &sim, int k, Linkage linkage,
                                                        f64 eps) {
   const auto n = static_cast<int>(sim.rows());
+  const bool ward = (linkage == Linkage::Ward);
 
-  // Correlation -> distance d_ij = √(2(1−ρ)), ρ clamped to [−1,1]. d is 0 for a
-  // perfect positive correlation and 2 for a perfect anti-correlation.
-  MatX dist(n, n);
+  // Working dissimilarity matrix `cd` whose units depend on the linkage:
+  //   * Ward (Ward.D2, matching scipy `ward`) operates on SQUARED distances
+  //     d_ij² = 2(1−ρ_ij). The Lance-Williams recurrence and the closest-pair
+  //     selection are both defined on d² for Ward; keeping the matrix in squared
+  //     units is what makes this canonical Ward rather than Ward applied to raw d.
+  //   * Average (UPGMA) operates on the raw distance d_ij = √(2(1−ρ_ij)); its
+  //     recurrence is the size-weighted mean of the un-squared distances.
+  // ρ is clamped to [−1,1] so d² ∈ [0,4]; the clamp to ≥0 guards round-off only.
+  // The merge selector compares cd entries by magnitude, which is order-preserving
+  // for both units, so no display distance (no √) is ever needed on this path.
+  MatX cd(n, n);
   for (int i = 0; i < n; ++i) {
     for (int j = 0; j < n; ++j) {
       const f64 rho = std::clamp(sim(i, j), -1.0, 1.0);
       const f64 d2 = 2.0 * (1.0 - rho);
-      dist(i, j) = std::sqrt(d2 > 0.0 ? d2 : 0.0);
+      const f64 d2c = d2 > 0.0 ? d2 : 0.0;
+      cd(i, j) = ward ? d2c : std::sqrt(d2c);
     }
   }
   (void)eps; // distance is well-defined without a floor; kept for signature parity
 
   // Active clusters: id -> {members, size, representative=min member}. We keep a
-  // dense list of live cluster ids and a working pairwise-distance matrix `cd`
-  // indexed by cluster id (Lance-Williams updates rewrite rows/cols in place).
+  // dense list of live cluster ids and the working matrix `cd` indexed by cluster
+  // id (Lance-Williams updates rewrite rows/cols in place).
   std::vector<std::vector<int>> members(static_cast<std::size_t>(n));
   std::vector<int> rep(static_cast<std::size_t>(n));
   std::vector<int> live;
@@ -230,7 +240,6 @@ inline void canonicalize_signs(MatX &vectors) noexcept {
     rep[static_cast<std::size_t>(i)] = i;
     live.push_back(i);
   }
-  MatX cd = dist; // cluster-distance matrix; cd(a,b) is the linkage distance
 
   const int target_merges = n - k; // cut after exactly N−k merges -> k clusters
   for (int step = 0; step < target_merges; ++step) {
@@ -273,9 +282,16 @@ inline void canonicalize_signs(MatX &vectors) noexcept {
     const f64 size_keep = static_cast<f64>(members[static_cast<std::size_t>(keep)].size());
     const f64 size_drop = static_cast<f64>(members[static_cast<std::size_t>(drop)].size());
 
-    // Lance-Williams distance update of the merged cluster `keep` to every other
-    // live cluster c. Average (UPGMA) is the size-weighted mean of the two old
-    // distances; Ward minimizes within-cluster variance increase.
+    // Lance-Williams update of the merged cluster `keep` to every other live
+    // cluster c, applied in the working matrix's own units.
+    //   * Average (UPGMA): the size-weighted mean of the two old (un-squared)
+    //     distances.
+    //   * Ward (Ward.D2): the recurrence on SQUARED distances,
+    //       d'² = α_k·d_kc² + α_d·d_dc² + β·d_kd²,
+    //     with α_k=(n_k+n_c)/T, α_d=(n_d+n_c)/T, β=−n_c/T, T=n_k+n_d+n_c. Because
+    //     `cd` already holds d² for Ward, the recurrence runs directly on the
+    //     stored values — no squaring of an already-updated distance and no √.
+    const f64 d_kd = cd(keep, drop); // d² (Ward) or d (Average), in cd's units
     for (int c : live) {
       if (c == keep || c == drop) {
         continue;
@@ -283,21 +299,18 @@ inline void canonicalize_signs(MatX &vectors) noexcept {
       const f64 d_keep_c = cd(keep, c);
       const f64 d_drop_c = cd(drop, c);
       f64 nd;
-      if (linkage == Linkage::Average) {
-        nd = (size_keep * d_keep_c + size_drop * d_drop_c) / (size_keep + size_drop);
-      } else {
-        // Ward, Lance-Williams form on distances:
-        //   d' = √( (α_k·d_kc² + α_d·d_dc² − β·d_kd²) ) with
-        //   α_k=(n_k+n_c)/T, α_d=(n_d+n_c)/T, β=n_c/T, T=n_k+n_d+n_c.
+      if (ward) {
         const f64 size_c = static_cast<f64>(members[static_cast<std::size_t>(c)].size());
         const f64 total = size_keep + size_drop + size_c;
         const f64 ak = (size_keep + size_c) / total;
         const f64 ad = (size_drop + size_c) / total;
         const f64 beta = -size_c / total;
-        const f64 d_kd = cd(keep, drop);
-        const f64 sq = ak * d_keep_c * d_keep_c + ad * d_drop_c * d_drop_c +
-                       beta * d_kd * d_kd;
-        nd = std::sqrt(sq > 0.0 ? sq : 0.0);
+        nd = ak * d_keep_c + ad * d_drop_c + beta * d_kd;
+        if (nd < 0.0) {
+          nd = 0.0; // squared distance stays non-negative under round-off
+        }
+      } else {
+        nd = (size_keep * d_keep_c + size_drop * d_drop_c) / (size_keep + size_drop);
       }
       cd(keep, c) = nd;
       cd(c, keep) = nd;
@@ -538,23 +551,38 @@ inline void canonicalize_signs(MatX &vectors) noexcept {
   }
   // Eigenvalues ascending; the bottom-k eigenvectors are the discriminative
   // embedding (smallest generalized eigenvalues ~ best signed-cut directions).
-  const VecX vals = ges.eigenvalues();
   MatX vecs = ges.eigenvectors();
   canonicalize_signs(vecs);
 
-  // Build the bottom-k embedding, weighting each eigenvector by 1/√(λ+eps) (the
-  // diffusion-map / Laplacian-eigenmap scaling). The smallest generalized
-  // eigenvalue is the dominant signed-cut direction; higher modes are often
-  // degenerate within-cluster axes whose larger spatial spread would otherwise
-  // dominate Euclidean k-means and mis-split the partition. Inverse-eigenvalue
-  // weighting amplifies the discriminative low modes so k-means recovers the
-  // signed-balance structure (anti-correlated members land in different
-  // clusters), which is the whole point of SPONGE.
+  // Build the bottom-k embedding from the RAW generalized eigenvectors (the
+  // canonical SPONGEsym embedding) and then unit-normalize each row before
+  // k-means — the standard Ng–Jordan–Weiss spectral-clustering step.
+  //
+  // We deliberately do NOT apply the 1/√(λ+eps) diffusion-map weighting an earlier
+  // draft used: that put the LARGEST weight on the SMALLEST eigenvalue's axis and,
+  // at λ≈0, scaled one coordinate by ~1/√eps, letting a single near-degenerate mode
+  // dominate Euclidean k-means (and risking a blow-up). The fix removes it.
+  //
+  // Row normalization is the load-bearing step for a signed cut. The discriminative
+  // information for a k-way signed partition concentrates in the few lowest modes,
+  // but the higher modes inside a (near-)degenerate eigenvalue bulk are arbitrary
+  // within-cluster axes whose raw spatial spread otherwise dominates the k-means
+  // geometry and splits a cluster instead of separating the signed groups. Scaling
+  // every row to the unit sphere removes that magnitude artifact and makes k-means
+  // key on the ANGLE between embedding rows — co-grouped instruments point the same
+  // way, anti-correlated groups point apart — which is exactly the SPONGE contract.
+  // A zero row (an isolated node with no embedding energy) is left at the origin
+  // rather than divided by ~0, so there is no blow-up.
   const Eigen::Index kk = std::min<Eigen::Index>(k, n);
   MatX embed(n, kk);
   for (Eigen::Index c = 0; c < kk; ++c) {
-    const f64 w = 1.0 / std::sqrt(std::max(vals[c], eps));
-    embed.col(c) = vecs.col(c) * w; // ascending order -> bottom-k already leftmost
+    embed.col(c) = vecs.col(c); // ascending order -> bottom-k already leftmost
+  }
+  for (Eigen::Index r = 0; r < n; ++r) {
+    const f64 norm = embed.row(r).norm();
+    if (norm > eps) {
+      embed.row(r) /= norm;
+    }
   }
 
   const std::vector<int> raw = kmeans_deterministic(embed, k, eps);
