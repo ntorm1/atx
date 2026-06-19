@@ -302,21 +302,44 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     pop.push_back(seeds[i].clone());
     pop.back().canon_hash = seeds[i].canon_hash;
   }
-  // Fill the remainder from the grammar. The per-slot seed is a pure function of
-  // (master_seed, kGenSeedAxis, slot) — a fixed, gen-independent axis disjoint
-  // from the per-generation reproduction streams (seed_for uses gen in [0,
-  // generations)), so generation entropy never collides with reproduction (F1).
+  // Track gen-0 structures so the grammar fill maximizes DISTINCT members.
+  std::unordered_set<atx::u64> seen0;
+  for (const Genome &g : pop) { seen0.insert(g.canon_hash); }
   constexpr atx::u64 kGenSeedAxis = 0xFFFFFFFFFFFFFFFFULL;
+  constexpr atx::usize kMaxResample = 8U; // bounded retries; deterministic
+  const atx::usize dmax = std::max<atx::usize>(cfg.gen_cfg.max_depth, cfg.init_min_depth);
+  // Base gen config for grammar fill: always use the driver's panel fields as the
+  // numeric field source so grammar-generated expressions only reference fields the
+  // Panel can actually evaluate. group_fields are also set to panel fields — Group-
+  // typed ops that pick a panel field as their group arg will fail type-check inside
+  // generate_genome (F64 where Group is required), so they return Err and the
+  // attempt-loop continues; pick_field(group_fields, rng) requires a non-empty list
+  // so we must supply one. The panel_field_views_ are string_views into the owned
+  // panel_fields_ vector (driver lifetime), valid for the fill duration. Other gen_cfg
+  // knobs (max_lookback, max_depth, etc.) come from cfg.
+  GenConfig base_gc = cfg.gen_cfg;
+  base_gc.numeric_fields = panel_field_views_;
+  base_gc.group_fields = panel_field_views_; // non-empty but F64: Group-typed ops will Err
   for (atx::usize i = n_seed_slots; i < cfg.population; ++i) {
-    Xoshiro256pp rng{detail::seed_for(cfg.master_seed, kGenSeedAxis, i)};
-    auto gen = generate_genome(cfg.gen_cfg, lib_, rng);
-    if (gen.has_value()) {
+    Genome chosen = seeds[i % seeds.size()].clone(); // deterministic fallback
+    chosen.canon_hash = seeds[i % seeds.size()].canon_hash;
+    for (atx::usize attempt = 0; attempt < kMaxResample; ++attempt) {
+      // Ramped depth: slot i and the attempt index both perturb the seed AND the
+      // sampler depth, so distinct slots explore distinct shapes. Pure fn of
+      // (master_seed, axis, i, attempt) -> F1 deterministic.
+      GenConfig gc = base_gc;
+      const atx::usize span = (dmax >= cfg.init_min_depth) ? (dmax - cfg.init_min_depth + 1U) : 1U;
+      gc.max_depth = cfg.init_min_depth + ((i + attempt) % span);
+      Xoshiro256pp rng{detail::seed_for(cfg.master_seed,
+                                        kGenSeedAxis ^ static_cast<atx::u64>(attempt), i)};
+      auto gen = generate_genome(gc, lib_, rng);
+      if (!gen.has_value()) { continue; }
       gen->canon_hash = canonical_hash(*gen);
-      pop.push_back(std::move(*gen));
-    } else {
-      pop.push_back(seeds[i % seeds.size()].clone());
-      pop.back().canon_hash = seeds[i % seeds.size()].canon_hash;
+      if (seen0.insert(gen->canon_hash).second) { chosen = std::move(*gen); break; }
+      // collision: keep the last valid sample as a fallback even if not distinct
+      chosen = std::move(*gen);
     }
+    pop.push_back(std::move(chosen));
   }
   return pop;
 }
@@ -583,11 +606,19 @@ void SearchDriver::behavioral_novelty_pass(std::vector<Scored> &scored,
   const atx::usize n = scored.size();
   nbr.reserve(n); // size the scratch once; cleared + refilled per genome (no realloc)
   for (atx::usize i = 0; i < n; ++i) {
+    // Skip genomes whose fitness errored (empty descriptor): they have no behavioral
+    // information and cannot be compared. Leave objectives[3] at its default (0).
+    if (scored[i].descriptor.empty()) {
+      continue;
+    }
     // Population neighbourhood = every OTHER genome's descriptor (exclude self so a
     // genome's own 0-distance never collapses its novelty). Reuse `nbr`'s capacity.
+    // Also skip neighbours with empty descriptors (fitness errors) — they lack a
+    // meaningful behavioral profile and pairwise_complete_corr requires equal-length
+    // spans (correlation.hpp:78).
     nbr.clear();
     for (atx::usize j = 0; j < n; ++j) {
-      if (j == i) {
+      if (j == i || scored[j].descriptor.empty()) {
         continue;
       }
       nbr.push_back(std::span<const atx::f64>{scored[j].descriptor});

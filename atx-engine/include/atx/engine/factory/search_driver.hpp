@@ -139,12 +139,17 @@ struct SearchConfig {
   // S4.1 selection mode. Defaults to MultiObjective (the new behavior); the
   // boundary-pin / replay tests set ScalarRaw to reproduce the frozen pre-S4 path.
   ObjectiveMode objective_mode{ObjectiveMode::MultiObjective};
-  // S3.5 generation wire (plan §0.5/§0.6). When ON, init_population fills any
-  // population slot the seed expressions do NOT cover via generate_genome (the
-  // type-correct grammar sampler), and the immigration path reuses it. GATED OFF
-  // for the pinned ScalarRaw path so gen-0 reproduces the pre-S4 seed-cycle fill
-  // EXACTLY (the digest stays byte-identical). `gen_cfg` is the sampler config.
-  bool seed_from_grammar{false};
+  // S3.5 generation wire (plan §0.5/§0.6). When ON (the new default), init_population
+  // fills any population slot the seed expressions do NOT cover via ramped grammar
+  // sampling (varied depth across [init_min_depth, gen_cfg.max_depth]) with
+  // canon-hash dedup, so gen-0 starts diverse. The boundary pin / ScalarRaw golden
+  // test sets this to false to reproduce the pre-Task-3 cycle-fill EXACTLY (the
+  // digest stays byte-identical). `gen_cfg` is the sampler config.
+  bool seed_from_grammar{true};
+  // Ramped init: the grammar fill samples tree depth across [init_min_depth,
+  // gen_cfg.max_depth] per slot (a ramped-half-and-half analogue) and resamples on
+  // a canon-hash collision (bounded retries) so gen-0 is maximally distinct.
+  atx::usize init_min_depth{2};
   GenConfig gen_cfg{};  // grammar-sampler knobs (max_lookback/depth, fields)
   FitnessCfg fitness{}; // CPCV geometry + trial-count base for deflation
   // op_swap is ENABLED (S3.4 fixed the root cause). The original defect — a swap

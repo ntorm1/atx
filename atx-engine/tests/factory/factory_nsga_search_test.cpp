@@ -141,7 +141,8 @@ struct Lcg {
   c.objective_mode = ObjectiveMode::ScalarRaw;   // legacy ranking
   c.enable_behavioral_novelty = false;           // Task 1: novelty off
   c.enable_parsimony = false;                    // Task 2: parsimony off on the boundary pin
-  // (Task 3 appends: c.seed_from_grammar = false;)
+  c.seed_from_grammar = false;                   // Task 3: legacy cycle-fill on the boundary pin
+  // (Task 4 appends: c.n_immigrants = 0; c.stagnation_patience = 0;)
   // (Task 4 appends: c.n_immigrants = 0; c.stagnation_patience = 0;)
   // (Task 5 appends: c.adaptive_operators = false; c.jitter_anneal = false;)
   return c;

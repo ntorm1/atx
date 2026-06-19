@@ -1,4 +1,5 @@
 // atx-engine/tests/factory/search_quality_test.cpp
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <vector>
 #include <string>
@@ -6,6 +7,7 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/search_driver.hpp"
+#include "atx/engine/factory/search_progress.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
 namespace atx::engine::factory {
@@ -52,6 +54,38 @@ SearchConfig base_cfg(atx::u64 seed) {
   SearchConfig c; c.master_seed=seed; c.population=16; c.generations=4;
   c.elites=2; c.k_tournament=3; c.p_cross=0.5; return c; }
 } // namespace
+
+// --- CountingSink — captures gen-0 distinct population size via progress sink --
+namespace {
+struct CountingSink : SearchProgressSink {
+  std::vector<atx::usize> distinct_per_gen;
+  [[nodiscard]] atx::core::Status on_generation(const GenerationSnapshot &s) override {
+    std::vector<std::string> pop = s.population;
+    std::sort(pop.begin(), pop.end());
+    pop.erase(std::unique(pop.begin(), pop.end()), pop.end());
+    distinct_per_gen.push_back(pop.size());
+    return atx::core::Ok();
+  }
+};
+} // namespace
+
+// Step 1 (RED): with today's cycle-fill, gen-0 has only ~6 distinct structures
+// (seed count). After ramped init (Task 3), grammar fill diversifies slots above
+// the seed floor and distinct >= population/2 == 12.
+TEST(RampedInit, GenZeroIsMostlyDistinct) {
+  Fixture fx; auto d = fx.driver();
+  AlphaStore pool{};
+  SearchConfig cfg = base_cfg(31337);
+  cfg.objective_mode = ObjectiveMode::MultiObjective;
+  cfg.population = 24; cfg.generations = 1;
+  cfg.seed_from_grammar = true;                 // ramped grammar fill (the new default)
+  CountingSink sink;
+  (void)d.run(cfg, pool, &sink);
+  ASSERT_FALSE(sink.distinct_per_gen.empty());
+  // Gen-0 should be far more diverse than the seed count (6 seeds): expect the
+  // grammar fill to push distinct structures well above the seed floor.
+  EXPECT_GE(sink.distinct_per_gen.front(), cfg.population / 2);
+}
 
 // Behavioral novelty now toggles via enable_behavioral_novelty (NOT novelty_w).
 TEST(SearchNoveltyKnob, BehavioralNoveltyTogglesDigest) {
