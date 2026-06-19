@@ -107,6 +107,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "max-pool-corr")     return parse_double(cfg.max_pool_corr);
     if (flag == "target-aum")        return parse_double(cfg.target_aum);
     if (flag == "workers")           return parse_long(cfg.workers);
+    if (flag == "oos-fraction")      return parse_double(cfg.oos_fraction);
+    if (flag == "oos-embargo")       return parse_double(cfg.oos_embargo);
     if (flag == "fit-begin")         return parse_long(cfg.fit_begin);
     if (flag == "fit-end")           return parse_long(cfg.fit_end);
     if (flag == "risk-aversion")     return parse_double(cfg.risk_aversion);

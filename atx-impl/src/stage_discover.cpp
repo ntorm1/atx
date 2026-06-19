@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -17,6 +18,8 @@
 #include "atx/engine/alpha/unparse.hpp"          // alpha::unparse
 #include "atx/engine/combine/gate.hpp"           // combine::AlphaGate, GateConfig
 #include "atx/engine/combine/store.hpp"          // combine::AlphaStore
+#include "atx/engine/eval/lockbox.hpp"           // eval::reserve_lockbox, eval::detail::embargo_len_from_cpcv (P2b guard)
+#include "atx/engine/eval/cpcv.hpp"             // eval::CpcvConfig (default embargo)
 #include "atx/engine/exec/execution_sim.hpp"     // exec::ExecutionSimulator + configs
 #include "atx/engine/factory/factory.hpp"        // factory::Factory, FactoryConfig, FactoryReport
 #include "atx/engine/factory/genome.hpp"         // factory::Genome
@@ -88,6 +91,31 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.seed_exprs                = cfg.seed_exprs;
     fcfg.panel_fields              = fields;
     fcfg.min_dsr                   = cfg.min_dsr;
+    fcfg.oos_fraction              = cfg.oos_fraction;
+    fcfg.oos_embargo               = cfg.oos_embargo;
+
+    // P2b: pre-validation guard — when OOS is on, check the panel geometry NOW
+    // (before mine_into) so a too-short panel or too-large fraction fails LOUDLY
+    // rather than silently admitting zero alphas.  Reuses the ENGINE's own geometry
+    // helper (eval::detail::embargo_len_from_cpcv + eval::reserve_lockbox) so the
+    // guard accepts exactly what the engine accepts and rejects exactly what it
+    // would silently no-op on.
+    if (cfg.oos_fraction > 0.0) {
+        namespace eval = atx::engine::eval;
+        const atx::usize T = panel.dates();
+        const atx::usize embargo_len =
+            (cfg.oos_embargo > 0.0)
+                ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
+                : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
+        auto sealed_r = eval::reserve_lockbox(panel, cfg.oos_fraction, embargo_len);
+        if (!sealed_r.has_value()) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                "discover: --oos-fraction " + std::to_string(cfg.oos_fraction) +
+                " leaves too little train/holdout for a panel of " +
+                std::to_string(panel.dates()) + " dates (" +
+                sealed_r.error().message() + ")");
+        }
+    }
 
     // Mine -> deflate -> gate -> admit into the persistent library.
     factory::Factory fac{lib, panel, sim, policy};
@@ -138,6 +166,13 @@ atx::core::Result<StageResult> run_discover_gated(
 
     // _manifest.txt — admitted alphas + per-alpha metrics + gate parameters.
     {
+        // P2b: build a lookup map from canon_hash -> OosReportEntry for IS/OOS column
+        // emission.  Built once; empty when oos_fraction == 0 (legacy path).
+        std::unordered_map<atx::u64, factory::OosReportEntry> oos_map;
+        for (const auto& entry : rep.oos_metrics) {
+            oos_map[entry.canon_hash] = entry;
+        }
+
         const std::string manifest_path = (fs::path{cfg.alpha_out} / "_manifest.txt").string();
         std::ofstream mf{manifest_path};
         if (!mf.is_open()) {
@@ -157,6 +192,11 @@ atx::core::Result<StageResult> run_discover_gated(
         mf << "max_turnover="    << gc.max_turnover      << '\n';
         mf << "max_pool_corr="   << gc.max_pool_corr     << '\n';
         mf << "target_aum="      << cfg.target_aum       << '\n';
+        // P2b: OOS header lines (only when OOS is active; off-path manifest byte-identical)
+        if (cfg.oos_fraction > 0.0) {
+            mf << "oos_fraction="    << cfg.oos_fraction    << '\n';
+            mf << "oos_embargo="     << cfg.oos_embargo     << '\n';
+        }
         mf << "panel="           << cfg.panel            << '\n';
         for (atx::u64 a = 0; a < n; ++a) {
             const auto rec = liblib.get(library::AlphaId{static_cast<atx::u32>(a)});
@@ -165,8 +205,21 @@ atx::core::Result<StageResult> run_discover_gated(
                << " fitness="  << rec.metrics.fitness
                << " turnover=" << rec.metrics.turnover
                << " returns="  << rec.metrics.returns
-               << " drawdown=" << rec.metrics.drawdown
-               << " : " << rec.provenance.expr_source << '\n';
+               << " drawdown=" << rec.metrics.drawdown;
+            // P2b: IS/OOS columns (only when OOS is active; off-path byte-identical)
+            if (cfg.oos_fraction > 0.0) {
+                const auto it = oos_map.find(rec.canon_hash);
+                if (it != oos_map.end()) {
+                    const auto& e = it->second;
+                    mf << " is_sharpe="   << e.is_metrics.sharpe
+                       << " is_fitness="  << e.is_metrics.fitness
+                       << " is_turnover=" << e.is_metrics.turnover
+                       << " oos_sharpe="  << e.oos_metrics.sharpe
+                       << " oos_fitness=" << e.oos_metrics.fitness
+                       << " oos_turnover="<< e.oos_metrics.turnover;
+                }
+            }
+            mf << " : " << rec.provenance.expr_source << '\n';
         }
     }
 

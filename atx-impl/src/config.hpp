@@ -62,6 +62,8 @@ struct RunConfig {
     double      target_aum    = 0.0;   // --target-aum    (capacity cost objective; 0 = off)
     long        workers       = 0;     // --workers       (search DetPool fan-out; 0 = auto = cores-1).
                                        // Digest-invariant (F1): affects speed/memory, never bits.
+    double      oos_fraction  = 0.0;   // --oos-fraction  (0 = off; fraction of the time axis held out for OOS admission)
+    double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
 
     // -- combine --
     std::string alphas;                // --alphas
