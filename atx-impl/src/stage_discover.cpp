@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -27,11 +28,15 @@
 #include "atx/engine/library/library.hpp"        // library::Library, AlphaId, AlphaRecordView
 #include "atx/engine/loop/weight_policy.hpp"     // engine::WeightPolicy
 
+#include "atx/engine/store/db.hpp"               // store::StoreDb (resumable-discover, Task 7)
+#include "atx/engine/store/pipeline_progress.hpp" // store::PipelineRecorder, PipelineRunRow, ResumableRun, split_population
+
 #include "artifacts.hpp"
 #include "config.hpp"
 #include "research_sim.hpp"
 #include "serialize_genome.hpp"
 #include "serialize_panel.hpp"
+#include "store_progress_sink.hpp"               // StoreProgressSink, compute_discover_fingerprint, fp_hex, now_unix
 
 namespace atx::impl {
 
@@ -120,7 +125,68 @@ atx::core::Result<StageResult> run_discover_gated(
     // Mine -> deflate -> gate -> admit into the persistent library.
     factory::Factory fac{lib, panel, sim, policy};
     library::Library liblib = library::Library::open(lib_dir, gc, {cfg.seed});
-    const factory::FactoryReport rep = fac.mine_into(fcfg, liblib, gate);
+
+    // ---- Resumable-discover wiring (Task 7) -------------------------------
+    // When --run-db is set, open the progress DB, resume-or-begin a pipeline_run,
+    // and drive a store-backed sink through mine_into so each completed generation
+    // is checkpointed. When --run-db is EMPTY, NONE of this runs: no DB is opened,
+    // no sink is built, and mine_into is called with (nullptr, nullptr) — the SAME
+    // overload as the legacy 3-arg call (defaulted params), proven byte-identical at
+    // the factory level. The downstream manifest/.dsl writing below is SHARED and
+    // unchanged across both paths.
+    namespace store = atx::engine::store;
+    atx::engine::factory::SearchProgressSink*       sink_ptr   = nullptr;
+    const atx::engine::factory::SearchResumeState*  resume_ptr = nullptr;
+    std::optional<store::StoreDb>                      sdb;
+    std::optional<store::PipelineRecorder>             rec;
+    std::optional<StoreProgressSink>                   sink;
+    std::optional<atx::engine::factory::SearchResumeState> rs;
+
+    if (!cfg.run_db.empty()) {
+        ATX_TRY(auto opened, store::StoreDb::open(cfg.run_db));
+        sdb.emplace(std::move(opened));
+        const atx::u64 fp = compute_discover_fingerprint(cfg);
+        bool resumed = false;
+        if (cfg.resume) {
+            // find_resumable returns Err(NotFound) when no open run exists — that
+            // is the "begin fresh" case, NOT a hard failure, so it is inspected
+            // (not ATX_TRY'd).
+            auto found = store::PipelineRecorder::find_resumable(sdb->db(), fp);
+            if (found.has_value() && found->last_generation >= 0) {
+                ATX_TRY(auto r, store::PipelineRecorder::resume(
+                                    sdb->db(), found->pipeline_run_id, now_unix()));
+                rec.emplace(std::move(r));
+                ATX_TRY(auto blob, rec->latest_population_blob());
+                rs.emplace();
+                rs->start_generation = static_cast<atx::usize>(found->last_generation);
+                rs->population       = store::split_population(blob);
+                resume_ptr = &*rs;
+                resumed = true;
+            }
+        }
+        if (!resumed) {
+            store::PipelineRunRow row;
+            row.pipeline_run_id   = fp_hex(fp);
+            row.fingerprint       = fp;
+            row.stage             = "discover";
+            row.master_seed       = static_cast<atx::u64>(cfg.seed);
+            row.population        = static_cast<atx::i64>(cfg.population);
+            row.total_generations = static_cast<atx::i64>(cfg.generations);
+            row.panel_path        = cfg.panel;
+            row.config_json       = "";
+            row.engine_git_sha    = "";
+            row.created_at        = now_unix();
+            ATX_TRY(auto r, store::PipelineRecorder::begin(sdb->db(), row));
+            rec.emplace(std::move(r));
+        }
+        sink.emplace(*rec);
+        sink_ptr = &*sink;
+    }
+
+    // mine_into returns FactoryReport BY VALUE (no Result) — no error branch to
+    // mark_failed on; just complete() the run after it returns.
+    const factory::FactoryReport rep = fac.mine_into(fcfg, liblib, gate, sink_ptr, resume_ptr);
+    if (rec) { (void)rec->complete(now_unix()); }
 
     {
         auto fr = liblib.flush_all();
