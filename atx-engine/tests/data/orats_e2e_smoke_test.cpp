@@ -209,7 +209,7 @@ constexpr u64 kLibSeed = 0xC0FFEEu;
   cfg.search.elites = 2;
   cfg.search.k_tournament = 3;
   cfg.search.p_cross = 0.5;
-  cfg.search.novelty_w = 0.0;         // OFF for the smoke
+  cfg.search.enable_behavioral_novelty = false; // OFF for the smoke
   cfg.search.fitness.trial_count = 2; // minimal
   cfg.seed_exprs = orats_seed_exprs();
   cfg.panel_fields = orats_panel_fields();
@@ -225,7 +225,7 @@ constexpr u64 kLibSeed = 0xC0FFEEu;
   cfg.research.per_run = smoke_per_run_cfg();
   cfg.research.per_run.search.objective_mode =
       atx::engine::factory::ObjectiveMode::ScalarRaw;
-  cfg.research.per_run.search.novelty_w = 0.0;
+  cfg.research.per_run.search.enable_behavioral_novelty = false;
   cfg.research.per_run.search.fitness.target_aum = 0.0;
   cfg.research.per_run.search.n_workers = 1;
   cfg.research.max_runs = 2;

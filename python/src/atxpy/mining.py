@@ -9,7 +9,7 @@ from . import _core
 
 def mine_alphas(panel, *, seed_exprs, panel_fields=None, master_seed=0,
                 population=16, generations=5, elites=2, k_tournament=3,
-                p_cross=0.5, novelty_w=0.1, max_lookback=250, trial_count=4,
+                p_cross=0.5, enable_behavioral_novelty=True, max_lookback=250, trial_count=4,
                 min_dsr=0.5, book_size=1.0, min_sharpe=1.0, min_fitness=1.0,
                 max_turnover=0.70, max_pool_corr=0.7):
     """Run an evolutionary alpha-mining search over a research panel.
@@ -46,7 +46,7 @@ def mine_alphas(panel, *, seed_exprs, panel_fields=None, master_seed=0,
     p.elites = int(elites)
     p.k_tournament = int(k_tournament)
     p.p_cross = float(p_cross)
-    p.novelty_w = float(novelty_w)
+    p.enable_behavioral_novelty = bool(enable_behavioral_novelty)
     p.max_lookback = int(max_lookback)
     p.trial_count = int(trial_count)
     p.min_dsr = float(min_dsr)

@@ -371,7 +371,7 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     sc.elites       = 2;
     sc.k_tournament = 3;
     sc.p_cross      = 0.5;
-    sc.novelty_w    = 0.1;
+    sc.enable_behavioral_novelty = true;
 
     // Parallelize the search (digest-invariant: SearchConfig::n_workers affects
     // speed/memory, never bits — F1). --workers overrides; 0 = auto (cores-1).

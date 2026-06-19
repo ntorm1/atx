@@ -4,7 +4,6 @@
 #include <string>
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
-#include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/search_driver.hpp"
 #include "atx/engine/loop/weight_policy.hpp"

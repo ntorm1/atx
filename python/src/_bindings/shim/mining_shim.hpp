@@ -24,7 +24,7 @@ struct MineParams {
   atx::usize elites = 2;
   atx::usize k_tournament = 3;
   atx::f64 p_cross = 0.5;
-  atx::f64 novelty_w = 0.1;
+  bool enable_behavioral_novelty = true;
   atx::u16 max_lookback = 250;
   atx::usize trial_count = 4;
   atx::f64 min_dsr = 0.5;

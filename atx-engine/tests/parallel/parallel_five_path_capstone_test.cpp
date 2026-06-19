@@ -346,7 +346,7 @@ struct Lcg {
   cfg.search.elites = 2;
   cfg.search.k_tournament = 3;
   cfg.search.p_cross = 0.5;
-  cfg.search.novelty_w = 0.1;
+  cfg.search.enable_behavioral_novelty = true;
   cfg.search.fitness.trial_count = 4;
   cfg.seed_exprs = {"rank(close)",  "rank(rev)",
                     "ts_mean(close, 5)", "ts_mean(rev, 3)",

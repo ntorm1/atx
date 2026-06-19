@@ -79,7 +79,7 @@ void bind_factory(py::module_ &m) {
       .def_readwrite("elites", &atxpy::MineParams::elites)
       .def_readwrite("k_tournament", &atxpy::MineParams::k_tournament)
       .def_readwrite("p_cross", &atxpy::MineParams::p_cross)
-      .def_readwrite("novelty_w", &atxpy::MineParams::novelty_w)
+      .def_readwrite("enable_behavioral_novelty", &atxpy::MineParams::enable_behavioral_novelty)
       .def_readwrite("max_lookback", &atxpy::MineParams::max_lookback)
       .def_readwrite("trial_count", &atxpy::MineParams::trial_count)
       .def_readwrite("min_dsr", &atxpy::MineParams::min_dsr)
