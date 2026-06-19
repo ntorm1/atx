@@ -1,6 +1,7 @@
 #include "atx/engine/factory/search_driver.hpp"
 
 #include <algorithm>     // std::clamp, std::sort, std::max, std::min
+#include <cmath>         // std::isfinite (mean_raw telemetry, NaN/inf-safe)
 #include <cstddef>       // std::size_t (hash_combine seed type)
 #include <cstdint>       // std::uint8_t (compiled[] flag vector)
 #include <memory>        // std::unique_ptr, std::make_unique
@@ -36,7 +37,9 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
 }
 
 [[nodiscard]] SearchResult SearchDriver::run(const SearchConfig &cfg,
-                                             const combine::AlphaStore &pool) {
+                                             const combine::AlphaStore &pool,
+                                             SearchProgressSink *sink,
+                                             const SearchResumeState *resume) {
   SearchResult res;
   res.seed = cfg.master_seed;
   res.best_fitness_per_gen.reserve(cfg.generations);
@@ -72,12 +75,34 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   BehavioralArchive behavior_archive{cfg.behavior_archive_cap};
   std::vector<std::span<const atx::f64>> nbr;
 
-  std::vector<Genome> pop = init_population(cfg);
+  // Initial population + start generation. Off-path (resume == nullptr) this is
+  // EXACTLY the legacy `pop = init_population(cfg)` path. On a well-formed resume
+  // the loop starts at resume->start_generation from the checkpoint population
+  // (the canonical DSL strings captured in a prior GenerationSnapshot). The
+  // resume->start_generation must be a real interior generation [1, generations);
+  // a corrupt/incompatible blob (deserialize Err) returns an empty well-formed
+  // result rather than silently restarting from gen 0. The impl-side validates the
+  // blob hash before calling, so a valid resume always succeeds (deserialize Ok).
+  std::vector<Genome> pop;
+  atx::usize gen_start = 0;
+  if (resume != nullptr && resume->start_generation > 0 &&
+      resume->start_generation < cfg.generations && !resume->population.empty()) {
+    auto restored = deserialize_population(resume->population);
+    if (!restored) { // corrupt/incompatible checkpoint -> fail loud, do NOT silently restart
+      SearchResult err_res;
+      err_res.seed = cfg.master_seed;
+      return err_res; // empty, well-formed result
+    }
+    pop = std::move(*restored);
+    gen_start = resume->start_generation;
+  } else {
+    pop = init_population(cfg);
+  }
   res.candidates_generated += pop.size();
 
   std::vector<Scored> scored; // current generation's scored population
 
-  for (atx::usize gen = 0; gen < cfg.generations; ++gen) {
+  for (atx::usize gen = gen_start; gen < cfg.generations; ++gen) {
     // (a)-(c): evaluate the fresh (not-yet-seen) candidates of `pop`, fold the
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
     scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res);
@@ -111,6 +136,31 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // this sequence is non-decreasing by construction (the ElitismKeepsBest
     // guarantee).
     res.best_fitness_per_gen.push_back(best_raw(scored));
+
+    // Progress sink (resumable-discover). Off-path (sink == nullptr) this is a
+    // single null-pointer check — no work, byte-identical legacy loop. When set,
+    // hand the sink a snapshot of the population that ENTERED this generation
+    // (`pop` is NOT mutated by evaluate_generation — it scores into
+    // scored/canon/fitness_cache only — so serializing it here is correct without
+    // a loop-top copy). An Err return (real I/O failure or an injected test crash)
+    // aborts cleanly: finalize the current scored set into a well-formed partial
+    // result and return. canon.size() is the distinct-scored count (the CanonSet
+    // local). This call runs BEFORE reproduce, so the snapshot population is the
+    // exact blob a resume feeds back via SearchResumeState.
+    if (sink != nullptr) {
+      GenerationSnapshot snap;
+      snap.generation = gen;
+      snap.population = serialize_population(pop); // population that ENTERED gen `gen`
+      snap.best_fitness = best_raw(scored);
+      snap.mean_fitness = mean_raw(scored);
+      snap.n_evaluated = canon.size();
+      snap.n_unique = pop.size();
+      auto st = sink->on_generation(snap);
+      if (!st) { // sink-requested abort -> clean stop with a well-formed partial result
+        finalize(scored, canon, res);
+        return res;
+      }
+    }
 
     // (e)-(g) reproduce into the next population (skip on the final generation —
     // the last scored set is the result).
@@ -853,6 +903,20 @@ SearchDriver::tournament_pick(const std::vector<Scored> &scored,
     }
   }
   return best;
+}
+
+// Mean RAW fitness over the scored set (telemetry for the progress sink; NOT part
+// of the digest or admission). NaN/inf-safe: skips non-finite members; empty -> 0.
+[[nodiscard]] atx::f64 SearchDriver::mean_raw(const std::vector<Scored> &scored) {
+  atx::f64 sum = 0.0;
+  atx::usize n = 0;
+  for (const auto &s : scored) {
+    if (std::isfinite(s.fitness)) {
+      sum += s.fitness;
+      ++n;
+    }
+  }
+  return n ? sum / static_cast<atx::f64>(n) : 0.0;
 }
 
 // dedup_pct + admitted candidates (top survivors of the final generation by

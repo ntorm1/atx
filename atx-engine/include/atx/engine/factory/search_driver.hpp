@@ -93,6 +93,7 @@
 #include "atx/engine/factory/mutation.hpp"   // factory::op_swap/field_swap/jitter_const
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
+#include "atx/engine/factory/search_progress.hpp" // factory::SearchProgressSink, SearchResumeState (resumable-discover)
 
 namespace atx::engine::factory {
 
@@ -283,7 +284,17 @@ public:
 
   // Run the deterministic search. Same cfg + same pool => byte-identical result
   // (F1). `pool` is borrowed read-only for the marginal-correlation fitness term.
-  [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool);
+  //
+  // `sink` (optional): invoked once per completed generation with a
+  // GenerationSnapshot so a caller may checkpoint progress; an Err return aborts
+  // the run cleanly (well-formed partial result). `resume` (optional): when
+  // well-formed, starts the loop at resume->start_generation from
+  // resume->population instead of init_population. With BOTH nullptr (the default)
+  // run() is the byte-identical legacy path — the only added work is two
+  // null-pointer checks (F1/F2 off-path invariant, tested by OffPathByteIdentical).
+  [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool,
+                                 SearchProgressSink *sink = nullptr,
+                                 const SearchResumeState *resume = nullptr);
 
 private:
   // ----- (1) init_population -------------------------------------------------
@@ -451,6 +462,10 @@ private:
   // novelty-penalized .selection). This is what best_fitness_per_gen tracks; the
   // structural elite carry guarantees it is non-decreasing across generations.
   [[nodiscard]] static atx::f64 best_raw(const std::vector<Scored> &scored);
+
+  // Mean RAW fitness over the scored set (telemetry for the progress sink; NOT part
+  // of the digest/admission). NaN/inf-safe: skips non-finite; empty -> 0.
+  [[nodiscard]] static atx::f64 mean_raw(const std::vector<Scored> &scored);
 
   // dedup_pct + admitted candidates (top survivors of the final generation by
   // RAW fitness — same ordering as the structural elite carry, so the run's
