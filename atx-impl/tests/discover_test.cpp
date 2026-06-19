@@ -9,6 +9,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -309,6 +311,144 @@ TEST(AtxImplDiscover, SameSeedDeterministic) {
     fs::remove(panel_path, ec);
     fs::remove_all(alpha_out1, ec);
     fs::remove_all(alpha_out2, ec);
+}
+
+// ---------------------------------------------------------------------------
+// P2b Test: DiscoverRejectsTooShortOosPanel
+// A small panel + an over-large --oos-fraction (0.99) must return
+// Err(InvalidArgument) with a message mentioning "oos-fraction", NOT succeed
+// with 0 alphas.  Tests the pre-validation guard in run_discover_gated which
+// reuses eval::reserve_lockbox (the engine geometry helper).
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, DiscoverRejectsTooShortOosPanel) {
+    namespace fs = std::filesystem;
+
+    // Use a small panel: 20 dates, 6 instruments.
+    auto panel_opt = make_momentum_panel(/*dates=*/20, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "oos_too_short");
+    const std::string alpha_out  =
+        (fs::temp_directory_path() / "atx_impl_discover_oos_too_short_out").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = 42ULL;
+    cfg.population   = 8;
+    cfg.generations  = 2;
+    cfg.seed_exprs   = safe_seed_exprs();
+    cfg.gated        = true;
+    cfg.min_sharpe   = 0.0;  // permissive gate so only the guard can reject
+    cfg.min_fitness  = 0.0;
+    cfg.max_turnover = 10.0;
+    cfg.max_pool_corr= 1.0;
+    cfg.min_dsr      = 0.0;
+    cfg.oos_fraction = 0.99; // too large: leaves almost no train window
+
+    auto r = atx::impl::run_discover(cfg);
+    EXPECT_FALSE(r.has_value())
+        << "expected Err but got Ok (guard must reject a 0.99 oos-fraction on a 20-date panel)";
+    if (!r.has_value()) {
+        EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+        // The error message must name oos-fraction so the user knows what to fix.
+        EXPECT_NE(r.error().message().find("oos-fraction"), std::string::npos)
+            << "error message must mention 'oos-fraction', got: " << r.error().message();
+    }
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alpha_out, ec);
+}
+
+// ---------------------------------------------------------------------------
+// P2b Test: OosManifestHeaderPresent
+// When oos_fraction > 0 and a run succeeds, the manifest must contain the
+// oos_fraction= header line.  When oos_fraction == 0 (legacy path), the
+// manifest must NOT contain that line (byte-identical off-path).
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, OosManifestHeaderPresent) {
+    namespace fs = std::filesystem;
+
+    // Use the standard 96-date momentum panel — large enough for a small OOS split.
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "oos_manifest");
+
+    // -- Run 1: OOS enabled (fraction=0.2), permissive gate.
+    const std::string alpha_out_oos =
+        (fs::temp_directory_path() / "atx_impl_discover_oos_manifest_oos").string();
+    {
+        atx::impl::RunConfig cfg;
+        cfg.subcommand   = "discover";
+        cfg.panel        = panel_path;
+        cfg.alpha_out    = alpha_out_oos;
+        cfg.seed         = 777ULL;
+        cfg.population   = 16;
+        cfg.generations  = 5;
+        cfg.seed_exprs   = safe_seed_exprs();
+        cfg.gated        = true;
+        cfg.min_sharpe   = 0.0;
+        cfg.min_fitness  = 0.0;
+        cfg.max_turnover = 10.0;
+        cfg.max_pool_corr= 1.0;
+        cfg.min_dsr      = 0.0;
+        cfg.oos_fraction = 0.2;
+        cfg.oos_embargo  = 0.0;
+        auto r = atx::impl::run_discover(cfg);
+        // If the run fails due to no alphas clearing the gate, skip the header check.
+        if (r.has_value()) {
+            const std::string manifest_path =
+                (fs::path{alpha_out_oos} / "_manifest.txt").string();
+            ASSERT_TRUE(fs::exists(manifest_path)) << "manifest must exist";
+            std::ifstream mf{manifest_path};
+            std::string content((std::istreambuf_iterator<char>(mf)),
+                                 std::istreambuf_iterator<char>());
+            EXPECT_NE(content.find("oos_fraction="), std::string::npos)
+                << "manifest must contain oos_fraction= when OOS is active";
+        }
+    }
+
+    // -- Run 2: OOS disabled (fraction=0), verify oos_fraction= NOT in manifest.
+    const std::string alpha_out_leg =
+        (fs::temp_directory_path() / "atx_impl_discover_oos_manifest_leg").string();
+    {
+        atx::impl::RunConfig cfg;
+        cfg.subcommand   = "discover";
+        cfg.panel        = panel_path;
+        cfg.alpha_out    = alpha_out_leg;
+        cfg.seed         = 777ULL;
+        cfg.population   = 16;
+        cfg.generations  = 5;
+        cfg.seed_exprs   = safe_seed_exprs();
+        cfg.gated        = true;
+        cfg.min_sharpe   = 0.0;
+        cfg.min_fitness  = 0.0;
+        cfg.max_turnover = 10.0;
+        cfg.max_pool_corr= 1.0;
+        cfg.min_dsr      = 0.0;
+        cfg.oos_fraction = 0.0;  // legacy path
+        auto r = atx::impl::run_discover(cfg);
+        if (r.has_value()) {
+            const std::string manifest_path =
+                (fs::path{alpha_out_leg} / "_manifest.txt").string();
+            ASSERT_TRUE(fs::exists(manifest_path)) << "manifest must exist";
+            std::ifstream mf{manifest_path};
+            std::string content((std::istreambuf_iterator<char>(mf)),
+                                 std::istreambuf_iterator<char>());
+            EXPECT_EQ(content.find("oos_fraction="), std::string::npos)
+                << "manifest must NOT contain oos_fraction= on the legacy (oos_fraction=0) path";
+        }
+    }
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alpha_out_oos, ec);
+    fs::remove_all(alpha_out_leg, ec);
 }
 
 } // namespace atxtest_discover

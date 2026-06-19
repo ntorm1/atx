@@ -62,6 +62,8 @@ struct RunConfig {
     double      target_aum    = 0.0;   // --target-aum    (capacity cost objective; 0 = off)
     long        workers       = 0;     // --workers       (search DetPool fan-out; 0 = auto = cores-1).
                                        // Digest-invariant (F1): affects speed/memory, never bits.
+    double      oos_fraction  = 0.0;   // --oos-fraction  (0 = off; fraction of the time axis held out for OOS admission)
+    double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
 
     // -- combine --
     std::string alphas;                // --alphas
@@ -83,10 +85,12 @@ struct RunConfig {
     double      name_cap         = 0.0; // --name-cap
     std::string rebalance;             // --rebalance  "daily"|"weekly"
     bool        position_mode    = false; // --position-mode (signal-as-position deploy; skip mean-variance optimize)
+    double      trade_rate       = 1.0;  // --trade-rate (position-mode partial-step toward prior book; 1.0 = full step = legacy)
 
     // -- report --
     std::string books;                 // --books
     std::string report_out;            // --report-out
+    double      report_aum = 1e9;     // --report-aum (deployment AUM for capacity-footprint metrics in summary.txt)
 
     // -- regime (macro/regime data) --
     std::string staging_dir;   // --staging-dir  (regime subcommand: dir of staged CSVs)

@@ -25,9 +25,11 @@ std::vector<atx::f64> RegimeCombiner::blend(std::span<const atx::f64> posterior)
   const atx::usize n_alpha = per_regime.front().weights.size();
   for (const Combination &c : per_regime) {
     ATX_ASSERT(c.weights.size() == n_alpha); // equal weight length across regimes
+    (void)c;
   }
   for (const atx::f64 p : posterior) {
     ATX_ASSERT(std::isfinite(p)); // a NaN/inf posterior would poison every weight
+    (void)p;
   }
 
   // out[i] = Σ_r posterior[r] * per_regime[r].weights[i]. Order-fixed: ascending

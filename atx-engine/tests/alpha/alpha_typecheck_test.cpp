@@ -112,6 +112,20 @@ TEST(AlphaTypecheck_DType, IndClassField_IsGroup) {
   EXPECT_EQ(analyze_root("IndClass.sector").dtype, DType::Group);
 }
 
+// Bare canonical "sector" field (gics-derived) must also type as Group so that
+// group_rank(close, sector) / group_neutralize(close, sector) etc. pass the
+// needs_group_arg check without wrapping the name in IndClass.*.
+TEST(AlphaTypecheck_DType, BareSectorField_IsGroup) {
+  EXPECT_EQ(analyze_root("sector").dtype, DType::Group);
+}
+
+TEST(AlphaTypecheck_DType, GroupRankWithBareSector_Ok) {
+  // group_rank(close, sector) must type-check — sector is now Group-typed.
+  const TypeInfo t = analyze_root("group_rank(close, sector)");
+  EXPECT_EQ(t.shape, Shape::CrossSection);
+  EXPECT_EQ(t.dtype, DType::F64);
+}
+
 TEST(AlphaTypecheck_DType, NotOfMask_IsMask) {
   EXPECT_EQ(analyze_root("!(close > open)").dtype, DType::Mask);
 }

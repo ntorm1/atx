@@ -107,12 +107,30 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "max-pool-corr")     return parse_double(cfg.max_pool_corr);
     if (flag == "target-aum")        return parse_double(cfg.target_aum);
     if (flag == "workers")           return parse_long(cfg.workers);
+    if (flag == "oos-fraction")      return parse_double(cfg.oos_fraction);
+    if (flag == "oos-embargo")       return parse_double(cfg.oos_embargo);
     if (flag == "fit-begin")         return parse_long(cfg.fit_begin);
     if (flag == "fit-end")           return parse_long(cfg.fit_end);
     if (flag == "risk-aversion")     return parse_double(cfg.risk_aversion);
     if (flag == "turnover-penalty")  return parse_double(cfg.turnover_penalty);
     if (flag == "gross")             return parse_double(cfg.gross);
     if (flag == "name-cap")          return parse_double(cfg.name_cap);
+    if (flag == "trade-rate") {
+        ATX_TRY_VOID(parse_double(cfg.trade_rate));
+        if (cfg.trade_rate <= 0.0 || cfg.trade_rate > 1.0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--trade-rate must be in (0, 1]: got " + std::string(value));
+        }
+        return atx::core::Ok();
+    }
+    if (flag == "report-aum") {
+        ATX_TRY_VOID(parse_double(cfg.report_aum));
+        if (cfg.report_aum <= 0.0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--report-aum must be > 0: got " + std::string(value));
+        }
+        return atx::core::Ok();
+    }
 
     return atx::core::Err(EC::InvalidArgument,
         std::string("unknown flag: --") + std::string(flag));

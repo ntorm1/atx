@@ -243,6 +243,41 @@ TEST(Config, AcceptsRegimeSubcommand) {
   EXPECT_EQ(cfg.value().regime_out, "o.seg");
 }
 
+// ---------------------------------------------------------------------------
+// Test 9: P2b — --oos-fraction and --oos-embargo are parsed from CLI and from
+// a config file (round-trip).
+// ---------------------------------------------------------------------------
+TEST(Config, ConfigParsesOosFlags) {
+    // CLI parse.
+    const char* argv[] = {
+        "atx", "discover",
+        "--oos-fraction", "0.2",
+        "--oos-embargo",  "0.01",
+    };
+    auto cfg = atx::impl::parse_args(6, const_cast<char**>(argv));
+    ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().message());
+    EXPECT_DOUBLE_EQ(cfg.value().oos_fraction, 0.2);
+    EXPECT_DOUBLE_EQ(cfg.value().oos_embargo,  0.01);
+
+    // Config-file round-trip: write the same flags to a file and parse.
+    namespace fs = std::filesystem;
+    const fs::path tmp_path =
+        fs::temp_directory_path() / "atx_impl_ConfigParsesOosFlags.cfg";
+    {
+        std::ofstream f(tmp_path);
+        ASSERT_TRUE(f.is_open()) << "failed to open temp config: " << tmp_path;
+        f << "oos-fraction=0.2\n";
+        f << "oos-embargo=0.01\n";
+    }
+    auto fcfg = atx::impl::parse_config_file(tmp_path.string(), "discover");
+    ASSERT_TRUE(fcfg.has_value()) << (fcfg ? "" : fcfg.error().message());
+    EXPECT_DOUBLE_EQ(fcfg.value().oos_fraction, 0.2);
+    EXPECT_DOUBLE_EQ(fcfg.value().oos_embargo,  0.01);
+
+    std::error_code ec;
+    fs::remove(tmp_path, ec);
+}
+
 TEST(AtxImplCli, RegimeStageBuildsSegment) {
   namespace fs = std::filesystem;
   const fs::path dir = fs::temp_directory_path() / "atx_impl_regime_smoke";

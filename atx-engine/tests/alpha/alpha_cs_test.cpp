@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <string>
 #include <string_view>
@@ -431,6 +432,55 @@ TEST(AlphaCs_Group, NaNGroupLabel_CellStaysNaN) {
   EXPECT_DOUBLE_EQ(v[0], 0.0);
   EXPECT_DOUBLE_EQ(v[1], 1.0);
   expect_vm_matches_oracle("group_rank(close, IndClass.sector)", panel);
+}
+
+// A panel named "sector" (the gics-derived field, not IndClass.sector) accepts
+// group ops after the type-side fix and correctly NaN-drops instruments whose
+// sector cell is NaN (the materialized kNoSectorCode missing-sentinel after the
+// numeric-side fix in history_panel.cpp).
+//
+// Layout: 1 date, 4 instruments.  sector = {0.0, NaN, 1.0, 1.0}.
+//   group_rank(close, sector):
+//     i0: group {0.0} singleton -> 0.5
+//     i1: sector NaN  -> NaN (out-of-set)
+//     i2: group {1.0} with close 20, vs i3 close 40 -> rank 0.0
+//     i3: group {1.0} with close 40, vs i2 close 20 -> rank 1.0
+//   group_neutralize(close, sector):
+//     i0: close 10 - mean(10) = 0.0
+//     i1: NaN
+//     i2: close 20 - mean(30) = -10.0
+//     i3: close 40 - mean(30) = +10.0
+TEST(AlphaCs_SectorField, NaNSentinel_DroppedAndGroupsCorrect) {
+  // Build a panel with a bare "sector" column (not "IndClass.sector").
+  const atx::usize dates = 1;
+  const atx::usize instruments = 4;
+
+  // close, open, high, low, volume, sector
+  std::vector<std::vector<atx::f64>> cols(6, std::vector<atx::f64>(instruments));
+  cols[0] = {10.0, 99.0, 20.0, 40.0}; // close
+  cols[1] = cols[0]; cols[2] = cols[0]; cols[3] = cols[0]; cols[4] = cols[0];
+  cols[5] = {0.0, std::numeric_limits<double>::quiet_NaN(), 1.0, 1.0}; // sector
+
+  std::vector<std::string> names = {"close", "open", "high", "low", "volume", "sector"};
+  auto p = Panel::create(dates, instruments, std::move(names), std::move(cols), {});
+  ASSERT_TRUE(p.has_value()) << (p ? "" : p.error().message());
+  const Panel &panel = *p;
+
+  // --- group_rank ---
+  const std::vector<atx::f64> gr = vm_values("group_rank(close, sector)", panel);
+  ASSERT_EQ(gr.size(), instruments);
+  EXPECT_DOUBLE_EQ(gr[0], 0.5);    // singleton group {0} -> 0.5
+  EXPECT_TRUE(std::isnan(gr[1]));  // NaN sector -> out-of-set -> NaN
+  EXPECT_DOUBLE_EQ(gr[2], 0.0);   // smaller in group {1}
+  EXPECT_DOUBLE_EQ(gr[3], 1.0);   // larger  in group {1}
+
+  // --- group_neutralize ---
+  const std::vector<atx::f64> gn = vm_values("group_neutralize(close, sector)", panel);
+  ASSERT_EQ(gn.size(), instruments);
+  EXPECT_DOUBLE_EQ(gn[0], 0.0);    // 10 - mean(10) = 0
+  EXPECT_TRUE(std::isnan(gn[1]));  // NaN sector -> NaN
+  EXPECT_DOUBLE_EQ(gn[2], -10.0); // 20 - mean(20,40)=30 = -10
+  EXPECT_DOUBLE_EQ(gn[3], +10.0); // 40 - 30 = +10
 }
 
 // ===========================================================================

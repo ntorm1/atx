@@ -151,6 +151,47 @@ namespace detail {
                               std::move(universe));
 }
 
+// ---------------------------------------------------------------------------
+//  slice_panel — rebuild a real alpha::Panel over the CONTIGUOUS date range
+//  [d0, d1) (the HOLDOUT terminal slice for OOS validation). Mirrors
+//  build_visible_panel but over an ARBITRARY date window rather than the prefix:
+//  the panel is date-major (panel.hpp), so a date range [d0, d1) is the
+//  contiguous cell range [d0*N, d1*N) of every field column. Copies each field
+//  column's cells in that range, slices the universe mask, and re-enumerates the
+//  field names via field_name(i). Returns a self-contained Panel with dates() ==
+//  d1 - d0. PRECONDITION (caller-validated): d0 < d1 <= panel.dates().
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline atx::core::Result<alpha::Panel>
+slice_panel(const alpha::Panel &panel, atx::usize d0, atx::usize d1) {
+  const atx::usize insts = panel.instruments();
+  const atx::usize n_fields = panel.num_fields();
+  const atx::usize span_dates = d1 - d0;
+  const atx::usize c0 = d0 * insts; // first cell of date d0 (date-major)
+  const atx::usize c1 = d1 * insts; // one-past-last cell of date d1-1
+
+  std::vector<std::string> names;
+  names.reserve(n_fields);
+  std::vector<std::vector<atx::f64>> cols;
+  cols.reserve(n_fields);
+  for (atx::usize f = 0; f < n_fields; ++f) {
+    names.emplace_back(panel.field_name(f));
+    const std::span<const atx::f64> full = panel.field_all(static_cast<alpha::FieldId>(f));
+    cols.emplace_back(full.begin() + static_cast<std::ptrdiff_t>(c0),
+                      full.begin() + static_cast<std::ptrdiff_t>(c1));
+  }
+
+  // Reconstruct the universe-mask slice for dates [d0, d1) (Panel exposes no raw
+  // mask). All-in-universe panels reproduce an all-1 slice.
+  std::vector<std::uint8_t> universe(span_dates * insts, std::uint8_t{0});
+  for (atx::usize t = 0; t < span_dates; ++t) {
+    for (atx::usize j = 0; j < insts; ++j) {
+      universe[t * insts + j] = panel.in_universe(d0 + t, j) ? std::uint8_t{1} : std::uint8_t{0};
+    }
+  }
+  return alpha::Panel::create(span_dates, insts, std::move(names), std::move(cols),
+                              std::move(universe));
+}
+
 } // namespace detail
 
 // ===========================================================================
