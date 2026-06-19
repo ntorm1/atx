@@ -246,6 +246,7 @@ TEST(Config, AcceptsRegimeSubcommand) {
 TEST(AtxImplCli, RegimeStageBuildsSegment) {
   namespace fs = std::filesystem;
   const fs::path dir = fs::temp_directory_path() / "atx_impl_regime_smoke";
+  fs::remove_all(dir);
   fs::create_directories(dir);
   std::ofstream(dir / "dgs2.csv",  std::ios::binary) << "DATE,VALUE\n2020-01-02,1.0\n2020-01-06,1.5\n";
   std::ofstream(dir / "dgs10.csv", std::ios::binary) << "DATE,VALUE\n2020-01-02,2.0\n2020-01-06,2.5\n";
