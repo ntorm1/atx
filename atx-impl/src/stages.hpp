@@ -23,5 +23,6 @@ struct StageResult {
 [[nodiscard]] atx::core::Result<StageResult> run_optimize(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_report(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_all(const RunConfig&);
+[[nodiscard]] atx::core::Result<StageResult> run_regime(const RunConfig&);
 
 } // namespace atx::impl

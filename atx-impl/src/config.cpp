@@ -43,6 +43,10 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "books")        { cfg.books         = value; return atx::core::Ok(); }
     if (flag == "report-out")   { cfg.report_out    = value; return atx::core::Ok(); }
     if (flag == "config")       { cfg.config_file   = value; return atx::core::Ok(); }
+    if (flag == "staging-dir")   { cfg.staging_dir   = value; return atx::core::Ok(); }
+    if (flag == "regime-out")    { cfg.regime_out    = value; return atx::core::Ok(); }
+    if (flag == "regime-segs")   { cfg.regime_segs   = value; return atx::core::Ok(); }
+    if (flag == "regime-fields") { cfg.regime_fields = value; return atx::core::Ok(); }
 
     // Repeatable string flag
     if (flag == "seed-expr")    { cfg.seed_exprs.emplace_back(value); return atx::core::Ok(); }

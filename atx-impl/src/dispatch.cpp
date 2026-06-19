@@ -56,6 +56,7 @@ static void print_usage(std::ostream& out) {
            "  optimize   Optimize portfolio book weights\n"
            "  report     Generate performance report\n"
            "  run        Run the full pipeline from a config file\n"
+           "  regime     Build a regime/macro .seg from staged CSVs\n"
            "\n"
            "Global flags: --help, --quiet, --digest-only\n";
 }
@@ -100,6 +101,7 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
         if (sub == "optimize") return run_optimize(cfg);
         if (sub == "report")   return run_report(cfg);
         if (sub == "run")      return run_all(cfg);
+        if (sub == "regime")   return run_regime(cfg);
         // Unreachable: parse_args already validated the subcommand.
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
             "unknown subcommand: '" + sub + "'");
