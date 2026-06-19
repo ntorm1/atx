@@ -159,7 +159,8 @@ namespace detail {
 // Forward declaration: the per-alpha inner build (defined after extract_streams).
 inline void fill_alpha_stream(AlphaStreams &out, atx::usize i, const SignalSet &signals,
                               const WeightPolicy &policy, const Universe &universe,
-                              std::span<const atx::f64> close, atx::f64 cost_rate);
+                              std::span<const atx::f64> close, atx::f64 cost_rate,
+                              std::span<const atx::u32> group_map = {});
 
 // ===========================================================================
 //  extract_streams — SignalSet -> per-alpha PnL + position streams.
@@ -173,7 +174,8 @@ inline void fill_alpha_stream(AlphaStreams &out, atx::usize i, const SignalSet &
 // ===========================================================================
 [[nodiscard]] inline atx::core::Result<AlphaStreams>
 extract_streams(const SignalSet &signals, const WeightPolicy &policy, const Panel &panel,
-                const exec::ExecutionSimulator &sim) {
+                const exec::ExecutionSimulator &sim,
+                std::span<const atx::u32> group_map = {}) {
   const atx::usize dates = panel.dates();
   const atx::usize insts = panel.instruments();
   if (signals.dates != dates || signals.instruments != insts) {
@@ -206,7 +208,7 @@ extract_streams(const SignalSet &signals, const WeightPolicy &policy, const Pane
   const std::span<const atx::f64> close = panel.field_all(close_id);
 
   for (atx::usize i = 0; i < n_alphas; ++i) {
-    fill_alpha_stream(out, i, signals, policy, universe, close, cost_rate);
+    fill_alpha_stream(out, i, signals, policy, universe, close, cost_rate, group_map);
   }
   return atx::core::Ok(std::move(out));
 }
@@ -219,14 +221,15 @@ extract_streams(const SignalSet &signals, const WeightPolicy &policy, const Pane
 // ===========================================================================
 inline void fill_alpha_stream(AlphaStreams &out, atx::usize i, const SignalSet &signals,
                               const WeightPolicy &policy, const Universe &universe,
-                              std::span<const atx::f64> close, atx::f64 cost_rate) {
+                              std::span<const atx::f64> close, atx::f64 cost_rate,
+                              std::span<const atx::u32> group_map) {
   const atx::usize dates = out.n_periods_;
   const atx::usize insts = out.n_instruments_;
 
   // 1. positions[t] = to_target_weights(signal_row(t)) for every date.
   for (atx::usize t = 0; t < dates; ++t) {
     const SignalView row{signals.alpha_cross_section(i, t)};
-    const std::vector<atx::f64> w = policy.to_target_weights(row, universe);
+    const std::vector<atx::f64> w = policy.to_target_weights(row, universe, group_map);
     const atx::usize off = (i * dates + t) * insts;
     // SAFETY: off + insts <= pos_flat.size() — off = (i*dates+t)*insts with
     //         i<n_alphas, t<dates, and pos_flat sized n_alphas*dates*insts.

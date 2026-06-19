@@ -18,10 +18,12 @@
 //   * shape mismatch -> Err (never throws).
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -32,8 +34,10 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/streams.hpp"
+#include "atx/engine/alpha/vm.hpp"
 #include "atx/engine/bus/event_bus.hpp"
 #include "atx/engine/clock/sim_clock.hpp"
 #include "atx/engine/data/data_handler.hpp"
@@ -480,5 +484,54 @@ TEST(AlphaStreams, NoCloseField_ReturnsErr) {
   EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
 }
 
+// =============================================================================
+//  INDUSTRY-NEUTRAL GROUP MAP — per-group weight sums to 0.
+// =============================================================================
+//
+// Panel: 8 dates x 4 instruments, one "close" field, deterministic walk.
+// group_map: {0,0,1,1} -> two sectors of two names each.
+// With industry_neutral, each date's target weights must sum ~0 WITHIN each group.
+TEST(AlphaStreams, IndustryNeutralGroupMapZeroesPerGroup) {
+  using namespace atx::engine;
+  const atx::usize D = 8, N = 4;
+  std::vector<atx::f64> close(D * N);
+  std::uint64_t s = 0xABCDEF01ULL;
+  std::vector<atx::f64> px(N, 100.0);
+  for (atx::usize t = 0; t < D; ++t)
+    for (atx::usize j = 0; j < N; ++j) {
+      s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+      const atx::f64 u = static_cast<atx::f64>(s >> 11) / static_cast<atx::f64>(1ULL << 53);
+      px[j] *= (1.0 + 0.004 * static_cast<atx::f64>(j) + 0.01 * (2.0 * u - 1.0));
+      close[t * N + j] = px[j];
+    }
+  auto panel = alpha::Panel::create(D, N, {"close"}, {close}, {}).value();
+
+  // Single alpha = rank(close); evaluate via Engine.
+  alpha::Library lib{};
+  std::vector<std::string_view> v{"rank(close)"};
+  auto prog = alpha::compile_batch(std::span<const std::string_view>{v}, lib).value();
+  alpha::Engine engine{panel};
+  auto ss = engine.evaluate(prog).value();
+
+  WeightPolicy policy{};
+  policy.industry_neutral = true;
+  const std::vector<atx::u32> group_map{0u, 0u, 1u, 1u};
+  auto sim = ExecutionSimulator{
+      FillCfg{},
+      SlippageCfg{SlippageMode::VolumeShare, 0, 0, 0, 0},
+      ImpactCfg{0, 0.5, 0},
+      CommissionCfg{CommissionMode::PerShare, 0, 0, 1, 0},
+      LatencyCfg{}, VolumeCapCfg{1.0}};
+
+  auto streams = alpha::extract_streams(ss, policy, panel, sim, std::span<const atx::u32>{group_map}).value();
+
+  for (atx::usize t = 1; t < D; ++t) {
+    const auto w = streams.positions(0, t);
+    atx::f64 g0 = 0.0, g1 = 0.0;
+    for (atx::usize j = 0; j < N; ++j) (group_map[j] == 0u ? g0 : g1) += w[j];
+    EXPECT_NEAR(g0, 0.0, 1e-9) << "sector 0 not neutral at t=" << t;
+    EXPECT_NEAR(g1, 0.0, 1e-9) << "sector 1 not neutral at t=" << t;
+  }
+}
 
 }  // namespace atxtest_alpha_streams_test
