@@ -680,15 +680,63 @@ namespace {
   // scored over the TRAIN panel (the search's selection domain). Mirrors
   // rank_by_deflated_fitness(PoolView) but over `train` rather than panel_, with the
   // SAME total order (DESCENDING dsr, then raw, then canon_hash, then idx; F1).
+  //
+  // PERF (Task 4): evaluate each candidate's train SignalSet EXACTLY ONCE. A single
+  // panel-bound Engine is reused across candidates (byte-identical: Engine::evaluate
+  // output depends only on (program, panel), never on prior engine state — see vm.hpp
+  // comment). The precomputed SignalSet is threaded into pool_aware_fitness via the
+  // `signals=` arg (fitness_core → eval_streams fast-path: skips compile+evaluate,
+  // calls extract_streams directly — bit-identical per eval_streams precondition).
+  // The SAME extract_streams result also produces train_metrics (flat compute_metrics
+  // over all train periods — the same path metrics_on_panel used). Both the ranking
+  // dsr/raw AND the report-only train_metrics therefore come from one train eval.
+  // The small per-candidate result is cached (not the full streams) so the sort
+  // (step 2) and the admission loop (step 3a) share the single eval.
+  struct TrainResult {
+    bool ok{false};
+    combine::AlphaMetrics train_metrics{};
+  };
+  const atx::usize n_cands = res.all_scored.size();
+  std::vector<TrainResult> train_cache(n_cands); // indexed by all_scored index
+
   std::vector<Ranked> ranked;
-  ranked.reserve(res.all_scored.size());
-  for (atx::usize i = 0U; i < res.all_scored.size(); ++i) {
+  ranked.reserve(n_cands);
+  alpha::Engine train_engine{train}; // single Engine reused across all candidates (F4)
+  for (atx::usize i = 0U; i < n_cands; ++i) {
+    const Genome &cand = res.all_scored[i];
     atx::f64 dsr = 0.0;
     atx::f64 raw = 0.0;
-    auto fit = pool_aware_fitness(res.all_scored[i], view, train, policy_, sim_, admit_fit);
-    if (fit.has_value()) {
-      dsr = fit->dsr;
-      raw = fit->raw;
+
+    // Compile + evaluate ONCE on train; extract streams for both ranking and metrics.
+    auto prog_r = alpha::compile(cand.ast, cand.analysis);
+    if (prog_r.has_value()) {
+      auto ss_r = train_engine.evaluate(*prog_r);
+      if (ss_r.has_value()) {
+        // (2a) ranking fitness — pass the precomputed SignalSet so pool_aware_fitness
+        // skips compile+evaluate (eval_streams fast-path, bit-identical).
+        auto fit = pool_aware_fitness(cand, view, train, policy_, sim_, admit_fit,
+                                      /*weak_panel=*/nullptr, /*engine=*/nullptr,
+                                      /*signals=*/&(*ss_r));
+        if (fit.has_value()) {
+          dsr = fit->dsr;
+          raw = fit->raw;
+        }
+
+        // (2b) train_metrics for the manifest's is_metrics — same SignalSet,
+        // extract streams and compute flat metrics (identical to metrics_on_panel).
+        auto strm_r = alpha::extract_streams(*ss_r, policy_, train, sim_);
+        if (strm_r.has_value() && strm_r->n_alphas() > 0U) {
+          const alpha::AlphaStreams &strm = *strm_r;
+          const atx::usize n_inst = strm.n_instruments();
+          std::vector<atx::f64> train_pnl(strm.pnl(0).begin(), strm.pnl(0).end());
+          const std::vector<atx::f64> train_pos = flatten_positions(strm);
+          train_cache[i] = TrainResult{
+              /*ok=*/true,
+              combine::compute_metrics(std::span<const atx::f64>{train_pnl},
+                                       std::span<const atx::f64>{train_pos}, n_inst,
+                                       cfg.book_size)};
+        }
+      }
     }
     ranked.push_back(Ranked{i, dsr, raw});
   }
@@ -709,15 +757,14 @@ namespace {
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
 
-    // (3a) TRAIN metrics (for the manifest's is_metrics — reporting only). A genome
-    // that fails to evaluate on train is silently dropped (F5), exactly as the legacy
-    // path drops an un-evaluable candidate.
-    std::vector<atx::f64> train_pnl;
-    auto train_metrics_r = metrics_on_panel(g, train, cfg.book_size, train_pnl);
-    if (!train_metrics_r.has_value()) {
+    // (3a) TRAIN metrics (for the manifest's is_metrics — reporting only). Read from
+    // the cache populated in step (2); no second train eval. A genome that failed to
+    // evaluate on train (cache.ok == false) is dropped (F5), exactly as before.
+    const TrainResult &tcache = train_cache[r.idx];
+    if (!tcache.ok) {
       continue;
     }
-    const combine::AlphaMetrics train_metrics = *train_metrics_r;
+    const combine::AlphaMetrics train_metrics = tcache.train_metrics;
 
     // (3b) HOLDOUT metrics + positions + DSR — the ADMISSION oracle. Evaluate the
     // genome ONCE on the holdout panel and realize BOTH the metrics (and pnl) and the
