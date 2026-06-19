@@ -36,6 +36,7 @@ KellyWeights kelly_size(const atx::core::linalg::VecX &expected_alpha, const Fac
     const atx::f64 c = conviction[static_cast<Eigen::Index>(i)];
     ATX_ASSERT(std::isfinite(c));
     ATX_ASSERT(c >= 0.0 && c <= 1.0);
+    (void)c;
   }
 
   // (1) full-Kelly target f* = V^{-1} mu via the cached Woodbury inverse. Spans view

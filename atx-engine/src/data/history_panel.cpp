@@ -94,8 +94,12 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   ATX_TRY(auto high_fid,   raw.field_id("high"));
   ATX_TRY(auto low_fid,    raw.field_id("low"));
   ATX_TRY(auto open_fid,   raw.field_id("open"));
-  ATX_TRY(auto shares_fid, raw.field_id("shares"));
-  ATX_TRY(auto gics_fid,   raw.field_id("gics"));
+  ATX_TRY(auto shares_fid,   raw.field_id("shares"));
+  ATX_TRY(auto gics_fid,     raw.field_id("gics"));
+  ATX_TRY(auto earnflag_fid, raw.field_id("earnFlag"));
+  ATX_TRY(auto atmiv21_fid,  raw.field_id("atmCenI_21d"));
+  ATX_TRY(auto atmiv126_fid, raw.field_id("atmCenI_126d"));
+  ATX_TRY(auto earncnt5_fid, raw.field_id("nEarnCnt_5d"));
 
   const std::span<const atx::f64> rc = raw.field_all(close_fid);
   const std::span<const atx::f64> cr = raw.field_all(cumret_fid);
@@ -185,8 +189,8 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // -------------------------------------------------------------------------
   std::vector<std::string> names;
   std::vector<std::vector<atx::f64>> data;
-  names.reserve(8);
-  data.reserve(8);
+  names.reserve(12);
+  data.reserve(12);
 
   // close = TRI
   names.emplace_back(kHistFieldClose);
@@ -239,6 +243,25 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
     names.emplace_back(kHistFieldSector);
     data.push_back(std::move(sector_f64));
   }
+
+  // earnFlag — earnings-day flag (raw passthrough)
+  {
+    const std::span<const atx::f64> s = raw.field_all(earnflag_fid);
+    names.emplace_back(kHistFieldEarnFlag);
+    data.push_back(std::vector<atx::f64>(s.begin(), s.end()));
+  }
+  // atmCenI_21d — ATM implied move 21d (raw passthrough)
+  { const std::span<const atx::f64> s = raw.field_all(atmiv21_fid);
+    names.emplace_back(kHistFieldAtmIv21);
+    data.push_back(std::vector<atx::f64>(s.begin(), s.end())); }
+  // atmCenI_126d — ATM implied move 126d (raw passthrough)
+  { const std::span<const atx::f64> s = raw.field_all(atmiv126_fid);
+    names.emplace_back(kHistFieldAtmIv126);
+    data.push_back(std::vector<atx::f64>(s.begin(), s.end())); }
+  // nEarnCnt_5d — earnings count 5d (raw passthrough)
+  { const std::span<const atx::f64> s = raw.field_all(earncnt5_fid);
+    names.emplace_back(kHistFieldEarnCnt5);
+    data.push_back(std::vector<atx::f64>(s.begin(), s.end())); }
 
   ATX_TRY(auto final_panel,
           alpha::Panel::create(D, N, std::move(names), std::move(data),

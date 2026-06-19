@@ -37,6 +37,10 @@ inline constexpr std::string_view kHistFieldLow       = "low";
 inline constexpr std::string_view kHistFieldOpen      = "open";
 inline constexpr std::string_view kHistFieldMarketCap = "market_cap";
 inline constexpr std::string_view kHistFieldSector    = "sector";
+inline constexpr std::string_view kHistFieldEarnFlag  = "earnFlag";      // earnings-day flag
+inline constexpr std::string_view kHistFieldAtmIv21   = "atmCenI_21d";   // ATM implied move, 21d
+inline constexpr std::string_view kHistFieldAtmIv126  = "atmCenI_126d";  // ATM implied move, 126d
+inline constexpr std::string_view kHistFieldEarnCnt5  = "nEarnCnt_5d";   // earnings count, 5d window
 
 // =========================================================================
 //  Configuration
@@ -77,7 +81,10 @@ orats_total_return_close(std::span<const atx::f64> close,
 // Assemble a deterministic, digest-pinned real-data Panel from the on-disk ORATS
 // partition: multi-segment attach -> TRI close (close*cumulReturnFactor, raw kept)
 // -> S1 universe screen (market_cap = shares*raw_close, causal ADV, GICS sector,
-// in_universe mask) -> Catalog lineage -> final Panel in kHistField* order -> digest.
+// in_universe mask) -> Catalog lineage -> final 12-field Panel in kHistField* order
+// -> digest. Fields 0..7: close, raw_close, volume, high, low, open, market_cap,
+// sector. Fields 8..11: earnFlag, atmCenI_21d, atmCenI_126d, nEarnCnt_5d (raw
+// passthrough — options/earnings axis, orthogonal to price/volume).
 // Two calls with identical inputs return an identical digest. Err on: missing
 // partition, an empty window, or a shape mismatch (propagated).
 [[nodiscard]] atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg);
