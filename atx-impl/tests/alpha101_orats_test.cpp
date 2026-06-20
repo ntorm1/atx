@@ -32,6 +32,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -49,8 +51,12 @@
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
+#include "atx/engine/risk/factor_model.hpp" // FactorModel (covariance-aware sizing)
+#include "atx/engine/risk/optimizer.hpp"    // PortfolioOptimizer, OptimizerConfig
+
 #include "serialize_panel.hpp" // atx::impl::read_panel
 
+#include "alpha101_riskmodel.hpp" // build_stat_risk_model, StatModelCfg, RiskModelResult
 #include "alpha101_support.hpp"
 
 #ifndef ATX_IMPL_TESTS_DIR
@@ -840,6 +846,448 @@ TEST(Alpha101Orats, RankBySharpeWeightings) {
   method_stats([](const Row &r) { return r.rank;      }, "rank      ");
   method_stats([](const Row &r) { return r.wins_z;    }, "wins+z    ");
   std::cout << "============================================\n\n";
+}
+
+// ===========================================================================
+//  Phase 2b/2c — covariance-aware sizing via PortfolioOptimizer (Task 3).
+//
+//  A SEPARATE test from RankBySharpeWeightings (not an edit of it): it builds a
+//  per-date statistical factor-model cache ONCE (Task 2's APCA builder) and runs
+//  the optimizer only on a 25-alpha subset, so keeping it separate avoids bloating
+//  the Phase-1 conditioning test with the heavy per-date factor fit + optimizer.
+//
+//  For each selected alpha and each rebalance date d with a cached model:
+//    1. Gather the alpha's raw signal for the model's active names.
+//    2. Condition with wins+z (Phase-1's best variant) over the active names.
+//    3. Size with PortfolioOptimizer::solve(mu, model, {}) for lambda in {0,1,5}:
+//         w ∝ Σ⁻¹μ (the max-Sharpe transform), gross-1 dollar-neutral.
+//    4. Realize forward PnL at d+1 over the active names.
+//    5. Toy reference: demean(mu) then gross-normalize to Σ|w|=1 over the SAME
+//       active names — the eq-dollar/Phase-1 sizing on the active universe.
+//
+//  PINS (acceptance gates, exercised on every date that builds a model):
+//    * Wiring pin: sharpe(pnl_{λ=0}) == sharpe(pnl_ref) within 1e-9, PLUS a
+//      first-date per-element |w_{λ=0} − ref| <= 1e-9. (optimizer.hpp pin #1:
+//      λ=0 == demean+gross-normalize on the same active universe.)
+//    * Binary-λ collapse pin: sharpe(pnl_{λ=1}) == sharpe(pnl_{λ=5}) within 1e-9.
+//      (optimizer.hpp documents the λ effect as BINARY, not graduated: the smooth
+//      target t=(1/2λ)·P V⁻¹ P α is gross-normalized to Σ|w|=L, so the (1/2λ)
+//      magnitude washes out — every λ>0 yields the SAME normalized book. Confirms
+//      the risk model is wired in, not that λ is graduated.)
+//
+//  PIT: sizing at date d uses only the Task-2 model (causal) and returns at d (μ)
+//  / d+1 (pnl). No read of returns at index > d for weights.
+//
+//  RUNTIME: the per-date APCA fit + optimizer is heavy; this is a 20-40 min run on
+//  the real ORATS panel. The DEFAULT synthetic panel (24 instruments) can NEVER
+//  build an APCA model at kWindow=120 (APCA requires N_active > T == window, and
+//  24 <= 120), so on synthetic this test GTEST_SKIPs after confirming 0 dates
+//  built. The meaningful numbers come from the real panel (controller runs it).
+// ===========================================================================
+
+// Inline wins+z conditioning over the gathered active-name signal: mirrors Task
+// 1's WinsorZscore (population mean μ, population σ; clamp to μ±4σ; z=(clamped−μ)/σ;
+// σ==0 -> all 0). NaN raw cells stay NaN (no opinion). Operates in place on `mu`.
+inline void winsor_zscore_active(std::vector<atx::f64> &mu) {
+  atx::f64 sum = 0.0;
+  atx::usize cnt = 0;
+  for (const atx::f64 x : mu) {
+    if (std::isfinite(x)) {
+      sum += x;
+      ++cnt;
+    }
+  }
+  if (cnt == 0) {
+    return;
+  }
+  const atx::f64 m = sum / static_cast<atx::f64>(cnt);
+  atx::f64 ss2 = 0.0;
+  for (const atx::f64 x : mu) {
+    if (std::isfinite(x)) {
+      const atx::f64 dx = x - m;
+      ss2 += dx * dx;
+    }
+  }
+  const atx::f64 sigma = std::sqrt(ss2 / static_cast<atx::f64>(cnt));
+  if (sigma == 0.0) {
+    for (atx::f64 &x : mu) {
+      x = std::isfinite(x) ? 0.0 : x; // keep NaN cells NaN; finite -> 0
+    }
+    return;
+  }
+  const atx::f64 lo = m - 4.0 * sigma;
+  const atx::f64 hi = m + 4.0 * sigma;
+  for (atx::f64 &x : mu) {
+    if (std::isfinite(x)) {
+      const atx::f64 clamped = (x < lo) ? lo : (x > hi ? hi : x);
+      x = (clamped - m) / sigma;
+    }
+  }
+}
+
+// Toy reference book over the active names: demean the finite cells, then
+// gross-normalize to Σ|w|=1. NaN cells -> 0 weight. This is the SAME demean+L1
+// the eq-dollar / Phase-1 path applies (weighting_score steps 3-4), restricted to
+// the active universe — the λ=0 optimizer recovery target (optimizer.hpp pin #1).
+inline std::vector<atx::f64> toy_reference_book(const std::vector<atx::f64> &mu) {
+  const atx::usize n = mu.size();
+  std::vector<atx::f64> w(n, 0.0);
+  atx::f64 sum = 0.0;
+  atx::usize cnt = 0;
+  for (const atx::f64 x : mu) {
+    if (std::isfinite(x)) {
+      sum += x;
+      ++cnt;
+    }
+  }
+  if (cnt == 0) {
+    return w;
+  }
+  const atx::f64 mean = sum / static_cast<atx::f64>(cnt);
+  atx::f64 l1 = 0.0;
+  for (atx::usize i = 0; i < n; ++i) {
+    if (std::isfinite(mu[i])) {
+      w[i] = mu[i] - mean;
+      l1 += std::fabs(w[i]);
+    }
+  }
+  if (l1 == 0.0) {
+    std::fill(w.begin(), w.end(), 0.0);
+    return w;
+  }
+  for (atx::usize i = 0; i < n; ++i) {
+    w[i] /= l1;
+  }
+  return w;
+}
+
+TEST(Alpha101Orats, RankByOptimizerSharpe) {
+  using atx::engine::risk::FactorModel;
+  using atx::engine::risk::OptimizerConfig;
+  using atx::engine::risk::PortfolioOptimizer;
+  using atx_impl_test::build_stat_risk_model;
+  using atx_impl_test::RiskModelResult;
+  using atx_impl_test::StatModelCfg;
+
+  // --- Constants (per the Task-3 brief). ---
+  const atx::usize kWindow = 120;
+  const StatModelCfg kCfg{/*K=*/15, /*gls_reweight=*/true};
+  const atx::f64 kLam[] = {0.0, 1.0, 5.0};
+  const atx::usize kMinModelDates = 30; // below this on a panel -> GTEST_SKIP
+
+  const std::vector<atx_impl_test::FixtureAlpha> alphas =
+      atx_impl_test::read_alpha_fixture(fixture_path());
+  ASSERT_EQ(alphas.size(), 101U);
+  const std::vector<atx::u16> adv = atx_impl_test::collect_adv_windows(alphas);
+  bool is_real = false;
+  const Panel panel = build_eval_panel(adv, is_real);
+
+  const atx::usize D = panel.dates();
+  const atx::usize I = panel.instruments();
+
+  auto rid = panel.field_id("returns");
+  ASSERT_TRUE(rid.has_value()) << "panel missing 'returns' field";
+  const std::span<const atx::f64> ret = panel.field_all(*rid);
+
+  const atx::engine::eval::ReturnMetricsCfg metrics_cfg{};
+  auto sharpe_of = [&](const std::vector<atx::f64> &pnl) -> atx::f64 {
+    return atx::engine::eval::compute_return_metrics(pnl, metrics_cfg).sharpe;
+  };
+
+  std::cout << "\n=== Alpha101 optimizer sizing (Task 3: covariance-aware mv) ("
+            << (is_real ? "REAL ORATS" : "synthetic") << ") ===\n"
+            << "panel dates=" << D << " instruments=" << I << "  window=" << kWindow
+            << "  K=" << kCfg.K << " gls=" << (kCfg.gls_reweight ? "Y" : "N") << "\n";
+
+  // -------------------------------------------------------------------------
+  //  Step A — subset selection (deterministic): full-universe eq-dollar Sharpe
+  //  (Identity conditioning) for all 101; take top-20 + bottom-5 = 25 ids.
+  // -------------------------------------------------------------------------
+  struct AlphaEval {
+    int id{};
+    SignalSet ss;
+    atx::f64 winsz_full{}; // Phase-1 full-universe wins+z Sharpe (context only)
+    atx::f64 eqd_full{};   // full-universe eq-dollar Sharpe (selection key)
+  };
+  std::vector<AlphaEval> evals;
+  evals.reserve(alphas.size());
+  for (const atx_impl_test::FixtureAlpha &fa : alphas) {
+    auto ast = parse_expr(fa.dsl, shared_lib());
+    ASSERT_TRUE(ast.has_value()) << "#" << fa.id << ": " << ast.error().message();
+    auto ana = analyze(*ast);
+    ASSERT_TRUE(ana.has_value()) << "#" << fa.id << ": " << ana.error().message();
+    auto prog = compile(*ast, *ana);
+    ASSERT_TRUE(prog.has_value()) << "#" << fa.id << ": " << prog.error().message();
+    Engine engine{panel};
+    auto ss = engine.evaluate(*prog);
+    ASSERT_TRUE(ss.has_value()) << "#" << fa.id << ": " << ss.error().message();
+
+    AlphaEval e;
+    e.id = fa.id;
+    e.eqd_full = weighting_score(*ss, panel, Cond::Identity, false, nullptr);
+    e.winsz_full = weighting_score(*ss, panel, Cond::WinsorZscore, false, nullptr);
+    e.ss = std::move(*ss);
+    evals.push_back(std::move(e));
+  }
+
+  // Rank by full-universe eq-dollar Sharpe (finite before NaN, descending).
+  std::vector<atx::usize> order(evals.size());
+  for (atx::usize k = 0; k < order.size(); ++k) {
+    order[k] = k;
+  }
+  std::stable_sort(order.begin(), order.end(), [&](atx::usize a, atx::usize b) {
+    const atx::f64 sa = evals[a].eqd_full;
+    const atx::f64 sb = evals[b].eqd_full;
+    const bool an = std::isnan(sa);
+    const bool bn = std::isnan(sb);
+    if (an != bn) {
+      return !an;
+    }
+    return sa > sb;
+  });
+
+  std::vector<atx::usize> selected; // indices into evals
+  const atx::usize kTop = 20;
+  const atx::usize kBot = 5;
+  for (atx::usize k = 0; k < kTop && k < order.size(); ++k) {
+    selected.push_back(order[k]);
+  }
+  for (atx::usize k = 0; k < kBot && order.size() >= kBot; ++k) {
+    const atx::usize idx = order[order.size() - 1 - k];
+    // Guard against overlap when there are fewer than kTop+kBot alphas.
+    if (std::find(selected.begin(), selected.end(), idx) == selected.end()) {
+      selected.push_back(idx);
+    }
+  }
+
+  std::cout << "selected " << selected.size() << " alpha ids (top-" << kTop
+            << " + bottom-" << kBot << " by full-universe eq-dollar Sharpe): ";
+  for (const atx::usize si : selected) {
+    std::cout << evals[si].id << " ";
+  }
+  std::cout << "\n";
+
+  // -------------------------------------------------------------------------
+  //  Step B — per-date factor-model cache (built ONCE, reused across alphas+λ).
+  //  Alpha-independent, so this is the big runtime win (~D fits, not D×25).
+  // -------------------------------------------------------------------------
+  std::vector<std::optional<RiskModelResult>> models(D);
+  atx::usize built = 0;
+  atx::usize skipped = 0;
+  // Rebalance dates need history (d >= kWindow-1) AND a forward return (d+1 < D).
+  const atx::usize d_lo = (kWindow == 0) ? 0 : (kWindow - 1);
+  for (atx::usize d = d_lo; d + 1 < D; ++d) {
+    auto rm = build_stat_risk_model(panel, d, kWindow, kCfg);
+    if (rm.has_value()) {
+      models[d] = std::move(*rm);
+      ++built;
+    } else {
+      ++skipped;
+    }
+  }
+  std::cout << "factor models: built=" << built << " skipped=" << skipped
+            << " (dates in [" << d_lo << ", " << (D >= 2 ? D - 2 : 0) << "])\n";
+
+  // Graceful degradation: too few model-building dates (e.g. the synthetic panel,
+  // which has too few names for APCA at this window) -> SKIP rather than assert on
+  // a degenerate run. The pins are exercised only on a panel that DOES build models.
+  if (built < kMinModelDates) {
+    GTEST_SKIP() << "only " << built << " dates built a factor model (< " << kMinModelDates
+                 << "); covariance sizing not exercisable on this panel (synthetic has "
+                 << I << " instruments, APCA needs N_active > window=" << kWindow
+                 << "). Pins are real-panel-only here.";
+  }
+
+  // -------------------------------------------------------------------------
+  //  Step C — per selected alpha: optimizer book(s) + toy reference book.
+  // -------------------------------------------------------------------------
+  struct ResultRow {
+    int id{};
+    atx::f64 winsz_full{};
+    atx::f64 mv_lam0{}; // == toy(active) by the wiring pin
+    atx::f64 mv_lam1{};
+    atx::f64 mv_lam5{};
+    atx::f64 toy{};
+  };
+  std::vector<ResultRow> results;
+  results.reserve(selected.size());
+
+  for (const atx::usize si : selected) {
+    const AlphaEval &e = evals[si];
+    if (e.ss.alphas.empty()) {
+      continue;
+    }
+    const std::vector<atx::f64> &sig = e.ss.alphas[0].values;
+
+    constexpr atx::usize kNLam = sizeof(kLam) / sizeof(kLam[0]);
+    std::vector<atx::f64> pnl_lam[kNLam];
+    for (atx::usize li = 0; li < kNLam; ++li) {
+      pnl_lam[li].assign(D, 0.0);
+    }
+    std::vector<atx::f64> pnl_ref(D, 0.0);
+
+    bool did_first_weight_check = false;
+
+    for (atx::usize d = d_lo; d + 1 < D; ++d) {
+      if (!models[d].has_value()) {
+        continue;
+      }
+      const RiskModelResult &rm = *models[d];
+      const std::vector<atx::usize> &active = rm.active_inst;
+      const atx::usize N = active.size();
+      ASSERT_EQ(rm.model.n_instruments(), N)
+          << "model rows != active_inst size at d=" << d;
+
+      // 1+2. Gather raw signal for active names (causal: signal at d), wins+z.
+      std::vector<atx::f64> mu(N, std::numeric_limits<atx::f64>::quiet_NaN());
+      for (atx::usize r = 0; r < N; ++r) {
+        const atx::usize idx = d * I + active[r];
+        const atx::f64 raw = (idx < sig.size()) ? sig[idx]
+                                                : std::numeric_limits<atx::f64>::quiet_NaN();
+        mu[r] = std::isfinite(raw) ? raw : std::numeric_limits<atx::f64>::quiet_NaN();
+      }
+      winsor_zscore_active(mu);
+
+      // 5(prep). Toy reference book over the same active universe.
+      const std::vector<atx::f64> ref = toy_reference_book(mu);
+
+      // 3. Optimizer book per λ.
+      for (atx::usize li = 0; li < kNLam; ++li) {
+        const OptimizerConfig cfg{
+            /*risk_aversion=*/kLam[li], /*turnover_penalty=*/0.0,
+            /*gross_leverage=*/1.0, /*name_cap=*/1.0, /*dollar_neutral=*/true,
+            /*max_iters=*/64};
+        auto w = PortfolioOptimizer{cfg}.solve(std::span<const atx::f64>(mu), rm.model,
+                                               std::span<const atx::f64>{});
+        ASSERT_TRUE(w.has_value())
+            << "optimizer solve failed (alpha #" << e.id << ", d=" << d
+            << ", λ=" << kLam[li] << "): " << w.error().message();
+        const std::vector<atx::f64> &wv = *w;
+        ASSERT_EQ(wv.size(), N);
+
+        // First-date per-element wiring check (λ=0 only): w_{λ=0} == ref.
+        if (li == 0 && !did_first_weight_check) {
+          atx::f64 max_abs = 0.0;
+          for (atx::usize r = 0; r < N; ++r) {
+            max_abs = std::max(max_abs, std::fabs(wv[r] - ref[r]));
+          }
+          EXPECT_LE(max_abs, 1e-9)
+              << "wiring pin (first-date weights): max|w_{λ=0} − ref| = " << max_abs
+              << " for alpha #" << e.id << " at d=" << d;
+          did_first_weight_check = true;
+        }
+
+        // 4. Forward PnL at d+1 over active names in-universe with finite ret.
+        atx::f64 p = 0.0;
+        for (atx::usize r = 0; r < N; ++r) {
+          if (wv[r] == 0.0) {
+            continue;
+          }
+          const atx::usize inst = active[r];
+          const atx::usize idx1 = (d + 1) * I + inst;
+          const atx::f64 r1 = (idx1 < ret.size())
+                                  ? ret[idx1]
+                                  : std::numeric_limits<atx::f64>::quiet_NaN();
+          if (panel.in_universe(d + 1, inst) && std::isfinite(r1)) {
+            p += wv[r] * r1;
+          }
+        }
+        pnl_lam[li][d + 1] = p;
+      }
+
+      // 5. Toy reference forward PnL at d+1 (same accumulation).
+      atx::f64 pr = 0.0;
+      for (atx::usize r = 0; r < N; ++r) {
+        if (ref[r] == 0.0) {
+          continue;
+        }
+        const atx::usize inst = active[r];
+        const atx::usize idx1 = (d + 1) * I + inst;
+        const atx::f64 r1 = (idx1 < ret.size())
+                                ? ret[idx1]
+                                : std::numeric_limits<atx::f64>::quiet_NaN();
+        if (panel.in_universe(d + 1, inst) && std::isfinite(r1)) {
+          pr += ref[r] * r1;
+        }
+      }
+      pnl_ref[d + 1] = pr;
+    }
+
+    ResultRow row;
+    row.id = e.id;
+    row.winsz_full = e.winsz_full;
+    row.mv_lam0 = sharpe_of(pnl_lam[0]);
+    row.mv_lam1 = sharpe_of(pnl_lam[1]);
+    row.mv_lam5 = sharpe_of(pnl_lam[2]);
+    row.toy = sharpe_of(pnl_ref);
+
+    // --- PINS (hard) ---
+    // Wiring pin: λ=0 book Sharpe == toy book Sharpe (same active universe).
+    EXPECT_NEAR(row.mv_lam0, row.toy, 1e-9)
+        << "wiring pin (Sharpe): sharpe(pnl_{λ=0}) != sharpe(pnl_ref) for alpha #" << e.id;
+    // Binary-λ collapse: every λ>0 gives the SAME normalized book.
+    EXPECT_NEAR(row.mv_lam1, row.mv_lam5, 1e-9)
+        << "binary-λ collapse pin: sharpe(pnl_{λ=1}) != sharpe(pnl_{λ=5}) for alpha #" << e.id;
+    // Finite Sharpe for λ=0 and λ=1.
+    EXPECT_TRUE(std::isfinite(row.mv_lam0))
+        << "alpha #" << e.id << " has non-finite mv(λ=0) Sharpe";
+    EXPECT_TRUE(std::isfinite(row.mv_lam1))
+        << "alpha #" << e.id << " has non-finite mv(λ=1) Sharpe";
+
+    results.push_back(row);
+  }
+
+  // -------------------------------------------------------------------------
+  //  Report table (sorted by mv(λ=1) desc) + summary.
+  // -------------------------------------------------------------------------
+  std::stable_sort(results.begin(), results.end(), [](const ResultRow &a, const ResultRow &b) {
+    const bool an = std::isnan(a.mv_lam1);
+    const bool bn = std::isnan(b.mv_lam1);
+    if (an != bn) {
+      return !an;
+    }
+    return a.mv_lam1 > b.mv_lam1;
+  });
+
+  std::cout << "\nNOTE: winsz(full) is the Phase-1 FULL-universe wins+z Sharpe (context only —\n"
+            << "      a DIFFERENT universe than the active complete-case names the optimizer sizes).\n"
+            << "  # | winsz(full) | mv(λ0)=toy(active) | mv(λ1) | Δ(mv1 - toy) | better?\n"
+            << "----+-------------+--------------------+--------+--------------+--------\n";
+  int better = 0;
+  atx::f64 sum_mv1 = 0.0;
+  atx::f64 sum_mv0 = 0.0;
+  atx::f64 peak_mv1 = -std::numeric_limits<atx::f64>::infinity();
+  atx::f64 peak_mv0 = -std::numeric_limits<atx::f64>::infinity();
+  int fin = 0;
+  for (const ResultRow &r : results) {
+    const atx::f64 delta = r.mv_lam1 - r.toy;
+    const bool is_better = std::isfinite(r.mv_lam1) && std::isfinite(r.mv_lam0) &&
+                           r.mv_lam1 > r.mv_lam0;
+    better += is_better ? 1 : 0;
+    if (std::isfinite(r.mv_lam1) && std::isfinite(r.mv_lam0)) {
+      ++fin;
+      sum_mv1 += r.mv_lam1;
+      sum_mv0 += r.mv_lam0;
+      peak_mv1 = std::max(peak_mv1, r.mv_lam1);
+      peak_mv0 = std::max(peak_mv0, r.mv_lam0);
+    }
+    std::cout << (r.id < 10 ? "  " : (r.id < 100 ? " " : "")) << r.id << " | " << r.winsz_full
+              << " | " << r.mv_lam0 << " | " << r.mv_lam1 << " | " << delta << " | "
+              << (is_better ? "Y" : "N") << "\n";
+  }
+  const atx::f64 mean_mv1 = (fin > 0) ? sum_mv1 / static_cast<atx::f64>(fin)
+                                      : std::numeric_limits<atx::f64>::quiet_NaN();
+  const atx::f64 mean_mv0 = (fin > 0) ? sum_mv0 / static_cast<atx::f64>(fin)
+                                      : std::numeric_limits<atx::f64>::quiet_NaN();
+  std::cout << "\nSummary: " << better << " / " << results.size()
+            << " selected alphas have mv(λ=1) > mv(λ=0).\n"
+            << "  mean mv(λ=1)=" << mean_mv1 << "  mean mv(λ=0)=" << mean_mv0 << "\n"
+            << "  peak mv(λ=1)=" << peak_mv1 << "  peak mv(λ=0)=" << peak_mv0 << "\n"
+            << "  factor models built=" << built << " (skipped=" << skipped << ")\n"
+            << "  covariance sizing "
+            << ((fin > 0 && mean_mv1 > mean_mv0) ? "HELPED" : "did NOT help")
+            << " on average across the selected subset.\n"
+            << "============================================\n\n";
 }
 
 } // namespace atxtest_alpha101_orats_test
