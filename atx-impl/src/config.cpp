@@ -116,6 +116,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "workers")           return parse_long(cfg.workers);
     if (flag == "oos-fraction")      return parse_double(cfg.oos_fraction);
     if (flag == "oos-embargo")       return parse_double(cfg.oos_embargo);
+    if (flag == "oos-windows")       return parse_long(cfg.oos_windows);
+    if (flag == "oos-window")        return parse_long(cfg.oos_window);
     if (flag == "fit-begin")         return parse_long(cfg.fit_begin);
     if (flag == "fit-end")           return parse_long(cfg.fit_end);
     if (flag == "corr-penalty")      return parse_double(cfg.corr_penalty);

@@ -135,6 +135,15 @@ struct FactoryConfig {
   // Embargo gap fraction inserted BEFORE the holdout (eval::reserve_lockbox). 0 ⇒
   //  the eval::CpcvConfig default embargo when oos is on. Ignored when oos is off.
   atx::f64 oos_embargo = 0.0;
+  // --- R2 walk-forward holdout (additive; 0 == legacy terminal reserve_lockbox path, byte-identical).
+  //  When oos_n_windows >= 1, the holdout is the `oos_window`-th of oos_n_windows DISJOINT fixed-length
+  //  blocks tiling the terminal region [T - oos_n_windows*w, T), where w = floor(oos_fraction * T):
+  //    holdout_begin(k) = T - (oos_n_windows - oos_window) * w ;  holdout = [holdout_begin, holdout_begin + w).
+  //  Window (oos_n_windows-1) is the terminal window [T - w, T) — IDENTICAL to today's reserve_lockbox.
+  //  PIT-causal: train is always [0, holdout_begin - embargo) (precedes the holdout). 0 keeps the
+  //  legacy single-window terminal path byte-for-byte.
+  atx::usize oos_n_windows = 0;  // 0 == legacy terminal holdout (reserve_lockbox); >=1 enables walk-forward
+  atx::usize oos_window   = 0;   // which window [0, oos_n_windows); the sweep advances this per run
 };
 
 // =========================================================================

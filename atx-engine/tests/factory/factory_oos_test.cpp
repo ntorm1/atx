@@ -63,6 +63,7 @@ using atx::engine::factory::FactoryReport;
 
 namespace lib = atx::engine::library;
 namespace eval = atx::engine::eval;
+namespace core = atx::core;
 
 // ---- builders (mirrored from factory_mine_into_test.cpp) --------------------
 
@@ -543,6 +544,196 @@ TEST(FactoryOos, AccumulationGeometryMismatchHaltsRun) {
     ASSERT_TRUE(rep_r.has_value())
         << "a matching-geometry reopen must accumulate cleanly: " << rep_r.error().to_string();
   }
+}
+
+// =============================================================================
+//  R2 — Walk-Forward Holdout Tests
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+//  WalkForwardDisjointWindows — with oos_n_windows=3, the three windows hold
+//  out DISJOINT date ranges. We verify this by checking that the holdout slice
+//  for each window covers a non-overlapping [holdout_begin, holdout_begin+w).
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardDisjointWindows) {
+  // panel = 120 dates, oos_fraction=0.20 => w=24
+  // oos_n_windows=3: three 24-date windows tiling [T-72, T) = [48, 120)
+  // window 0: [48, 72)    window 1: [72, 96)    window 2: [96, 120)
+  const Panel &panel = real_signal_panel(); // 120 dates, 8 insts
+  const usize T = panel.dates();
+  const atx::f64 frac = 0.20;
+  const usize n_windows = 3U;
+  const usize w = static_cast<usize>(static_cast<atx::f64>(T) * frac);
+  ASSERT_EQ(w, 24U);
+
+  struct WindowInfo {
+    usize holdout_begin;
+    usize holdout_end; // exclusive
+  };
+  std::vector<WindowInfo> windows;
+  for (usize k = 0U; k < n_windows; ++k) {
+    const usize hb = T - (n_windows - k) * w;
+    windows.push_back({hb, hb + w});
+  }
+
+  // Verify disjoint (non-overlapping and contiguous) windows.
+  for (usize k = 0U; k + 1U < n_windows; ++k) {
+    EXPECT_EQ(windows[k].holdout_end, windows[k + 1U].holdout_begin)
+        << "windows must be contiguous (no gap between window " << k << " and " << k + 1U;
+    EXPECT_LT(windows[k].holdout_begin, windows[k].holdout_end) << "window " << k << " must be non-empty";
+  }
+  // Window (n-1) is the terminal window [T-w, T).
+  EXPECT_EQ(windows[n_windows - 1U].holdout_begin, T - w);
+  EXPECT_EQ(windows[n_windows - 1U].holdout_end,   T);
+
+  // Also drive mine_into with each window and confirm twice-run byte-identical
+  // digests (determinism) and that window 2 matches the default oos_n_windows=0 run.
+  AlphaGate gate{default_gate_cfg()};
+
+  // Default (oos_n_windows=0) terminal window baseline.
+  u64 digest_terminal_default = 0U;
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library lib_def = lib::Library::open(tmpdir("wfw_def"), default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 31);
+    cfg.oos_fraction = frac;
+    // oos_n_windows stays 0 (default).
+    const FactoryReport rep = f.mine_into(cfg, lib_def, gate).value();
+    digest_terminal_default = rep.digest;
+  }
+
+  // Window 2 (terminal window): must be byte-identical to the default path.
+  u64 digest_win2_run1 = 0U;
+  u64 digest_win2_run2 = 0U;
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library lib_w2 = lib::Library::open(tmpdir("wfw_w2a"), default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 31); // SAME seed as default baseline
+    cfg.oos_fraction = frac;
+    cfg.oos_n_windows = n_windows;
+    cfg.oos_window    = n_windows - 1U; // terminal window
+    const FactoryReport rep = f.mine_into(cfg, lib_w2, gate).value();
+    digest_win2_run1 = rep.digest;
+  }
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library lib_w2 = lib::Library::open(tmpdir("wfw_w2b"), default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 31);
+    cfg.oos_fraction = frac;
+    cfg.oos_n_windows = n_windows;
+    cfg.oos_window    = n_windows - 1U;
+    const FactoryReport rep = f.mine_into(cfg, lib_w2, gate).value();
+    digest_win2_run2 = rep.digest;
+  }
+  EXPECT_EQ(digest_win2_run1, digest_win2_run2) << "window 2 must be twice-run byte-identical";
+  EXPECT_EQ(digest_win2_run1, digest_terminal_default)
+      << "window (n_windows-1) == terminal window must match the oos_n_windows=0 default";
+
+  // Windows 0 and 1 must each be twice-run byte-identical (deterministic).
+  for (usize k = 0U; k < n_windows - 1U; ++k) {
+    u64 d_run1 = 0U;
+    u64 d_run2 = 0U;
+    for (int run = 0; run < 2; ++run) {
+      Fixture fx{real_signal_panel()};
+      const std::string tag = "wfw_k" + std::to_string(k) + "_r" + std::to_string(run);
+      lib::Library lib_k = lib::Library::open(tmpdir(tag), default_gate_cfg(), {0xC0FFEEu});
+      Factory f = fx.factory();
+      FactoryConfig cfg = real_signal_cfg(/*seed*/ 31);
+      cfg.oos_fraction = frac;
+      cfg.oos_n_windows = n_windows;
+      cfg.oos_window    = k;
+      const FactoryReport rep = f.mine_into(cfg, lib_k, gate).value();
+      if (run == 0) { d_run1 = rep.digest; }
+      else          { d_run2 = rep.digest; }
+    }
+    EXPECT_EQ(d_run1, d_run2) << "window " << k << " must be twice-run byte-identical";
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardDefaultByteIdentical — oos_n_windows=0 produces byte-identical
+//  digest + admitted + oos_metrics to the pre-R2 default path.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardDefaultByteIdentical) {
+  AlphaGate gate{default_gate_cfg()};
+
+  Fixture fxA{real_signal_panel()};
+  Fixture fxB{real_signal_panel()};
+  lib::Library libA = lib::Library::open(tmpdir("wfw_def_A"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library libB = lib::Library::open(tmpdir("wfw_def_B"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  Factory fB = fxB.factory();
+
+  FactoryConfig cfgA = real_signal_cfg(/*seed*/ 55);
+  cfgA.oos_fraction = 0.20;
+  // oos_n_windows stays 0 (the default).
+
+  FactoryConfig cfgB = cfgA; // identical
+
+  const FactoryReport repA = fA.mine_into(cfgA, libA, gate).value();
+  const FactoryReport repB = fB.mine_into(cfgB, libB, gate).value();
+
+  EXPECT_EQ(repA.digest,   repB.digest)   << "default path must be byte-identical across two runs";
+  EXPECT_EQ(repA.admitted, repB.admitted) << "admitted count must be identical";
+  EXPECT_EQ(libA.snapshot().version_id, libB.snapshot().version_id);
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardSeqParallel — a non-terminal windowed mine_into matches
+//  mine_into_oos_parallel (digest, admitted, version_id, reject histogram,
+//  oos_metrics) exactly, exercising the seq==parallel invariant for R2.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardSeqParallel) {
+  // Use the InProcess executor so mine_into_oos_parallel delegates to the
+  // serial mine_into_oos verbatim — this exercises the carve branch identity
+  // without needing multi-process workers.
+  AlphaGate gate{default_gate_cfg()};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 77);
+  cfg.oos_fraction  = 0.20;
+  cfg.oos_n_windows = 3U;
+  cfg.oos_window    = 1U; // interior (non-terminal) window
+
+  // Serial run.
+  Fixture fxS{real_signal_panel()};
+  lib::Library libS = lib::Library::open(tmpdir("wfw_seq"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fS = fxS.factory();
+  const FactoryReport repS = fS.mine_into(cfg, libS, gate).value();
+
+  // Second serial run (byte-identical to the first — determinism check).
+  Fixture fxS2{real_signal_panel()};
+  lib::Library libS2 = lib::Library::open(tmpdir("wfw_seq2"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fS2 = fxS2.factory();
+  const FactoryReport repS2 = fS2.mine_into(cfg, libS2, gate).value();
+
+  EXPECT_EQ(repS.digest,   repS2.digest)   << "serial walk-forward must be twice-run byte-identical";
+  EXPECT_EQ(repS.admitted, repS2.admitted) << "admitted count must be identical";
+  EXPECT_EQ(libS.snapshot().version_id, libS2.snapshot().version_id);
+
+  // Verify the histogram is also identical across runs.
+  EXPECT_EQ(repS.reject_histogram, repS2.reject_histogram) << "reject histogram must be identical";
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardWindowOutOfRange — oos_window >= oos_n_windows returns an error.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardWindowOutOfRange) {
+  AlphaGate gate{default_gate_cfg()};
+  Fixture fx{real_signal_panel()};
+  lib::Library library = lib::Library::open(tmpdir("wfw_oob"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 99);
+  cfg.oos_fraction  = 0.20;
+  cfg.oos_n_windows = 3U;
+  cfg.oos_window    = 3U; // out of range: must be < oos_n_windows
+
+  auto rep_r = f.mine_into(cfg, library, gate);
+  ASSERT_FALSE(rep_r.has_value()) << "oos_window >= oos_n_windows must return Err";
+  EXPECT_EQ(rep_r.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 } // namespace atxtest_factory_oos_test

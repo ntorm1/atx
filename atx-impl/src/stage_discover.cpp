@@ -110,6 +110,8 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.min_dsr                   = cfg.min_dsr;
     fcfg.oos_fraction              = cfg.oos_fraction;
     fcfg.oos_embargo               = cfg.oos_embargo;
+    fcfg.oos_n_windows = static_cast<atx::usize>(std::max<long>(cfg.oos_windows, 0));
+    fcfg.oos_window    = static_cast<atx::usize>(std::max<long>(cfg.oos_window,  0));
 
     // P2b: pre-validation guard — when OOS is on, check the panel geometry NOW
     // (before mine_into) so a too-short panel or too-large fraction fails LOUDLY

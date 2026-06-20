@@ -662,29 +662,71 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   FactoryReport rep;
   rep.library_n_alphas_before = lib_lib.n_alphas();
 
-  // (0) carve the TRAIN / HOLDOUT split. The terminal cfg.oos_fraction of dates is
-  // the holdout; an embargo gap (cfg.oos_embargo, else the CpcvConfig default)
-  // precedes it. reserve_lockbox errors on a too-short panel / empty visible region.
+  // (0) carve the TRAIN / HOLDOUT split.
+  //  Default (oos_n_windows == 0): the terminal cfg.oos_fraction of dates is the holdout;
+  //  an embargo gap precedes it. reserve_lockbox errors on a too-short panel / empty visible
+  //  region. Byte-identical to the pre-R2 path.
+  //  Walk-forward (oos_n_windows >= 1): the holdout is the oos_window-th of oos_n_windows
+  //  disjoint fixed-length windows of width w = floor(oos_fraction * T) tiling the terminal
+  //  region [T - oos_n_windows*w, T). holdout_begin = T - (oos_n_windows - oos_window) * w.
+  //  Window (oos_n_windows-1) is the terminal window [T - w, T) — byte-identical to the
+  //  default path for that run.
   const atx::usize T = panel_.dates();
   const atx::usize embargo_len =
       (cfg.oos_embargo > 0.0)
           ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
           : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
-  auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
-  if (!sealed_r.has_value()) {
-    // A too-short panel: surface a clear message (the controller may widen the panel
-    // or shrink the fraction). No library mutation has occurred.
-    return atx::core::Ok(std::move(rep)); // admitted == 0, oos_metrics empty; caller reads n_alphas unchanged
-  }
-  const eval::SealedPanel &sealed = *sealed_r;
-  const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
-  const alpha::Panel &train = sealed.visible(); // [0, lockbox_begin - embargo_len)
 
-  auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
-  if (!holdout_r.has_value()) {
-    return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted
+  // sealed_opt owns the visible (train) panel; holdout_opt is a separate slice.
+  // Both are std::optional because alpha::Panel has no public default constructor.
+  std::optional<eval::SealedPanel> sealed_opt;
+  std::optional<alpha::Panel> holdout_opt;
+
+  if (cfg.oos_n_windows == 0U) {
+    // --- Legacy terminal path (byte-identical default) ---
+    auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
+    if (!sealed_r.has_value()) {
+      // A too-short panel: surface a clear message (the controller may widen the panel
+      // or shrink the fraction). No library mutation has occurred.
+      return atx::core::Ok(std::move(rep)); // admitted == 0, oos_metrics empty; caller reads n_alphas unchanged
+    }
+    const atx::usize lockbox_begin_leg = sealed_r->reservation().lockbox_begin;
+    auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin_leg, T);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted
+    }
+    holdout_opt.emplace(std::move(*holdout_r));
+    sealed_opt.emplace(std::move(*sealed_r));
+  } else {
+    // --- Walk-forward windowed path (R2) ---
+    const atx::usize w = static_cast<atx::usize>(static_cast<atx::f64>(T) * cfg.oos_fraction);
+    if (w == 0U) {
+      return atx::core::Ok(std::move(rep)); // oos_fraction too small to carve a window — admitted 0
+    }
+    if (cfg.oos_window >= cfg.oos_n_windows) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "mine_into_oos: oos_window must be < oos_n_windows");
+    }
+    // Validate that T is large enough for the EARLIEST window to have a non-empty train region.
+    // earliest holdout_begin = T - oos_n_windows * w; need at least embargo_len + 1 train dates.
+    if (T < cfg.oos_n_windows * w + embargo_len + 1U) {
+      return atx::core::Ok(std::move(rep)); // panel too short for the earliest window — admitted 0
+    }
+    const atx::usize holdout_begin = T - (cfg.oos_n_windows - cfg.oos_window) * w;
+    auto sealed_r = eval::reserve_window(panel_, holdout_begin, w, embargo_len);
+    if (!sealed_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // reserve_window error — mirror reserve_lockbox Err handling
+    }
+    auto holdout_r = eval::detail::slice_panel(panel_, holdout_begin, holdout_begin + w);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // holdout slice empty / unbuildable — nothing admitted
+    }
+    holdout_opt.emplace(std::move(*holdout_r));
+    sealed_opt.emplace(std::move(*sealed_r));
   }
-  const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
+
+  const alpha::Panel &train = sealed_opt->visible(); // [0, holdout_begin - embargo_len)
+  const alpha::Panel &holdout = *holdout_opt;
 
   // (1) run the S3-5 search over the TRAIN panel (NOT panel_). A fresh seeded driver
   // re-derives clean per-run state, preserving F1 replay. Selection scores against an
@@ -919,24 +961,60 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // (0) carve the TRAIN / HOLDOUT split — IDENTICAL to serial mine_into_oos (the reserve
   // geometry, the embargo, the too-short-panel empty-report returns). The serial path is
   // the reference; this must produce the same train + holdout sub-panels bit-for-bit.
+  // R2: the same windowed-carve branch as serial mine_into_oos — same holdout_begin formula,
+  // same reserve_window / reserve_lockbox call, same empty-report returns. seq==parallel is
+  // preserved by construction: both sides run this exact code.
   const atx::usize T = panel_.dates();
   const atx::usize embargo_len =
       (cfg.oos_embargo > 0.0)
           ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
           : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
-  auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
-  if (!sealed_r.has_value()) {
-    return atx::core::Ok(std::move(rep)); // too-short panel — same empty report the serial path returns
-  }
-  const eval::SealedPanel &sealed = *sealed_r;
-  const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
-  const alpha::Panel &train = sealed.visible(); // [0, lockbox_begin - embargo_len)
 
-  auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
-  if (!holdout_r.has_value()) {
-    return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted (same as serial)
+  // std::optional used because alpha::Panel has no public default constructor.
+  std::optional<eval::SealedPanel> sealed_opt_par;
+  std::optional<alpha::Panel> holdout_opt_par;
+
+  if (cfg.oos_n_windows == 0U) {
+    // --- Legacy terminal path (byte-identical default) --- same as serial mine_into_oos
+    auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
+    if (!sealed_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // too-short panel — same empty report the serial path returns
+    }
+    const atx::usize lockbox_begin_leg = sealed_r->reservation().lockbox_begin;
+    auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin_leg, T);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted (same as serial)
+    }
+    holdout_opt_par.emplace(std::move(*holdout_r));
+    sealed_opt_par.emplace(std::move(*sealed_r));
+  } else {
+    // --- Walk-forward windowed path (R2) — IDENTICAL to serial mine_into_oos ---
+    const atx::usize w = static_cast<atx::usize>(static_cast<atx::f64>(T) * cfg.oos_fraction);
+    if (w == 0U) {
+      return atx::core::Ok(std::move(rep));
+    }
+    if (cfg.oos_window >= cfg.oos_n_windows) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "mine_into_oos_parallel: oos_window must be < oos_n_windows");
+    }
+    if (T < cfg.oos_n_windows * w + embargo_len + 1U) {
+      return atx::core::Ok(std::move(rep));
+    }
+    const atx::usize holdout_begin = T - (cfg.oos_n_windows - cfg.oos_window) * w;
+    auto sealed_r = eval::reserve_window(panel_, holdout_begin, w, embargo_len);
+    if (!sealed_r.has_value()) {
+      return atx::core::Ok(std::move(rep));
+    }
+    auto holdout_r = eval::detail::slice_panel(panel_, holdout_begin, holdout_begin + w);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep));
+    }
+    holdout_opt_par.emplace(std::move(*holdout_r));
+    sealed_opt_par.emplace(std::move(*sealed_r));
   }
-  const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
+
+  const alpha::Panel &train = sealed_opt_par->visible(); // [0, holdout_begin - embargo_len)
+  const alpha::Panel &holdout = *holdout_opt_par;
 
   // (1) run the S3-5 search over the TRAIN panel in the PARENT — IDENTICAL to serial
   // mine_into_oos (a fresh seeded driver over `train`, F1 replay). The search's own

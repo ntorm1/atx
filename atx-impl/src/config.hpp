@@ -68,6 +68,8 @@ struct RunConfig {
                                        // Digest-invariant (F1): affects speed/memory, never bits.
     double      oos_fraction  = 0.0;   // --oos-fraction  (0 = off; fraction of the time axis held out for OOS admission)
     double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
+    long        oos_windows   = 0;     // --oos-windows   (0 = legacy terminal holdout; >=1 = walk-forward windows)
+    long        oos_window    = 0;     // --oos-window    (which window [0,oos_windows); sweep sets this per run)
     std::string run_db;                // --run-db  (SQLite progress DB path; "" = off, no store I/O)
     bool        resume        = false; // --resume  (requires --run-db; continue an incomplete matching run)
     // --library-dir (8.A): a STABLE on-disk library::Library directory that
