@@ -688,8 +688,10 @@ TEST(Alpha101Orats, RankBySharpeRiskParity) {
 //  Regression pin (hard): eq-dollar column == alpha_sharpe(*ss, panel) exactly.
 //  Since Identity+eq-dollar delegates to the same code, this is exact equality.
 //
-//  TODO(Phase 2): add an mv(lambda*) column to this table (mean-variance
-//  optimal weights via quadratic program over the cross-section).
+//  Phase 2 (covariance-aware mean-variance sizing) is measured separately in
+//  TEST(Alpha101Orats, RankByOptimizerSharpe) below — it builds a per-date
+//  statistical factor model and sizes via PortfolioOptimizer over the active
+//  complete-case universe, so it is kept out of this full-universe table.
 // ===========================================================================
 TEST(Alpha101Orats, RankBySharpeWeightings) {
   const std::vector<atx_impl_test::FixtureAlpha> alphas =
@@ -1052,7 +1054,7 @@ TEST(Alpha101Orats, RankByOptimizerSharpe) {
   for (atx::usize k = 0; k < kTop && k < order.size(); ++k) {
     selected.push_back(order[k]);
   }
-  for (atx::usize k = 0; k < kBot && order.size() >= kBot; ++k) {
+  for (atx::usize k = 0; k < kBot && k < order.size(); ++k) {
     const atx::usize idx = order[order.size() - 1 - k];
     // Guard against overlap when there are fewer than kTop+kBot alphas.
     if (std::find(selected.begin(), selected.end(), idx) == selected.end()) {
