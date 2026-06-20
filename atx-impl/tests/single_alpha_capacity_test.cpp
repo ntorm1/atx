@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -157,7 +158,8 @@ capacity_universe(const Panel &panel, const std::string &adv_field, atx::f64 min
 // Conditioning lives in the DSL; here we only demean + L1-normalize the raw
 // signal (Cond::Identity), exactly like the Alpha101 weighting_score path.
 [[nodiscard]] BookStats run_book(const SignalSet &ss, const Panel &panel,
-                                 const std::vector<std::uint8_t> &univ) {
+                                 const std::vector<std::uint8_t> &univ,
+                                 std::vector<atx::f64> *pnl_out = nullptr) {
   BookStats st;
   if (ss.alphas.empty()) {
     st.err = "no alpha root";
@@ -305,6 +307,9 @@ capacity_universe(const Panel &panel, const std::string &adv_field, atx::f64 min
     st.avg_names = static_cast<double>(names_sum) / static_cast<double>(st.active_days);
     st.finite_frac = finite_frac_sum / static_cast<double>(st.active_days);
   }
+  if (pnl_out != nullptr) {
+    *pnl_out = pnl; // full daily series (pnl[0] == 0 sentinel; book starts at d=1)
+  }
   st.evaluated = true;
   return st;
 }
@@ -385,6 +390,7 @@ TEST(SingleAlphaCapacity, SweepAndVerify) {
   // on the concentration frontier (see findings doc). Captured for a hard assert.
   const std::string kPrimary = "lv_z_p2.0";
   BookStats primary;
+  std::vector<atx::f64> primary_pnl;
 
   for (const Candidate &c : candidates()) {
     auto ast = parse_expr(c.dsl, shared_lib());
@@ -412,9 +418,12 @@ TEST(SingleAlphaCapacity, SweepAndVerify) {
                 << "\n";
       continue;
     }
-    const BookStats st = run_book(*ss, panel, cap_univ);
+    std::vector<atx::f64> this_pnl;
+    const BookStats st =
+        run_book(*ss, panel, cap_univ, (c.name == kPrimary) ? &this_pnl : nullptr);
     if (c.name == kPrimary) {
       primary = st;
+      primary_pnl = std::move(this_pnl);
     }
 
     const bool pass = is_real && std::isfinite(st.sharpe) && st.sharpe > 1.0 &&
@@ -471,6 +480,19 @@ TEST(SingleAlphaCapacity, SweepAndVerify) {
             << "  ann_ret=" << primary.ann_ret << "  ann_vol=" << primary.ann_vol
             << "  max_dd=" << primary.max_dd << "  names/day=" << std::setprecision(0)
             << primary.avg_names << "\n";
+
+  // Dump the deliverable's daily PnL + compounded equity to CSV for plotting.
+  // pnl[0] is the 0 sentinel (book starts at d=1); equity compounds (1+r).
+  if (const char *csv = std::getenv("ATX_PNL_CSV")) {
+    std::ofstream out(csv);
+    out << "day,daily_pnl,equity\n";
+    atx::f64 eq = 1.0;
+    for (atx::usize d = 1; d < primary_pnl.size(); ++d) {
+      eq *= (1.0 + primary_pnl[d]);
+      out << d << "," << std::setprecision(10) << primary_pnl[d] << "," << eq << "\n";
+    }
+    std::cout << "wrote PnL CSV: " << csv << " (" << (primary_pnl.size() - 1) << " days)\n";
+  }
 }
 
 } // namespace atxtest_single_alpha_capacity
