@@ -27,8 +27,11 @@
 // env knobs (panel/fixture paths), so silence the MSVC CRT deprecation.
 #define _CRT_SECURE_NO_WARNINGS 1
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -39,6 +42,7 @@
 
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/oracle.hpp"
+#include "atx/engine/eval/perf_metrics.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
@@ -272,6 +276,133 @@ TEST(Alpha101Orats, FastEqualsOracle_Synthetic) {
     ++checked;
   }
   EXPECT_EQ(checked, 101);
+}
+
+// ===========================================================================
+//  Sharpe ranking — backtest each alpha as a daily-rebalanced, dollar-neutral,
+//  L1-normalized cross-sectional signal and report its annualized Sharpe.
+//
+//  Per date d: weights w_i = (s_i - mean) / sum|s_j - mean| over in-universe,
+//  finite signal cells (dollar-neutral, gross-1). PnL realized at d+1 is
+//  sum_i w_i * returns_i(d+1) (close-to-close forward return; the augmented
+//  `returns` field). Sharpe is the engine's single convention via
+//  eval::compute_return_metrics (sqrt(252)*mean/std_pop over pnl[1..T)).
+//
+//  Most meaningful on the real ORATS panel; on the synthetic random-walk panel
+//  Sharpes are ~0 by construction. Informational (prints a ranking); the only
+//  hard assertion is that every alpha yields a finite Sharpe.
+// ===========================================================================
+
+[[nodiscard]] atx::f64 alpha_sharpe(const SignalSet &ss, const Panel &panel) {
+  if (ss.alphas.empty()) {
+    return std::numeric_limits<atx::f64>::quiet_NaN();
+  }
+  auto rid = panel.field_id("returns");
+  if (!rid) {
+    return std::numeric_limits<atx::f64>::quiet_NaN();
+  }
+  const std::span<const atx::f64> ret = panel.field_all(*rid);
+  const std::vector<atx::f64> &v = ss.alphas[0].values;
+  const atx::usize D = panel.dates();
+  const atx::usize I = panel.instruments();
+
+  std::vector<atx::f64> pnl(D, 0.0);
+  std::vector<atx::f64> w(I, 0.0);
+  for (atx::usize d = 0; d + 1 < D; ++d) {
+    atx::f64 sum = 0.0;
+    atx::usize cnt = 0;
+    for (atx::usize i = 0; i < I; ++i) {
+      const atx::usize idx = d * I + i;
+      if (panel.in_universe(d, i) && idx < v.size() && std::isfinite(v[idx])) {
+        sum += v[idx];
+        ++cnt;
+      }
+    }
+    if (cnt == 0) {
+      continue;
+    }
+    const atx::f64 mean = sum / static_cast<atx::f64>(cnt);
+    atx::f64 l1 = 0.0;
+    for (atx::usize i = 0; i < I; ++i) {
+      const atx::usize idx = d * I + i;
+      atx::f64 wi = 0.0;
+      if (panel.in_universe(d, i) && idx < v.size() && std::isfinite(v[idx])) {
+        wi = v[idx] - mean;
+      }
+      w[i] = wi;
+      l1 += std::fabs(wi);
+    }
+    if (l1 == 0.0) {
+      continue;
+    }
+    atx::f64 p = 0.0;
+    for (atx::usize i = 0; i < I; ++i) {
+      if (w[i] == 0.0) {
+        continue;
+      }
+      const atx::usize idx1 = (d + 1) * I + i;
+      const atx::f64 r = (idx1 < ret.size()) ? ret[idx1] : std::numeric_limits<atx::f64>::quiet_NaN();
+      if (panel.in_universe(d + 1, i) && std::isfinite(r)) {
+        p += (w[i] / l1) * r;
+      }
+    }
+    pnl[d + 1] = p;
+  }
+
+  const atx::engine::eval::ReturnMetricsCfg cfg{};
+  return atx::engine::eval::compute_return_metrics(pnl, cfg).sharpe;
+}
+
+TEST(Alpha101Orats, RankBySharpe) {
+  const std::vector<atx_impl_test::FixtureAlpha> alphas =
+      atx_impl_test::read_alpha_fixture(fixture_path());
+  ASSERT_EQ(alphas.size(), 101U);
+  const std::vector<atx::u16> adv = atx_impl_test::collect_adv_windows(alphas);
+  bool is_real = false;
+  const Panel panel = build_eval_panel(adv, is_real);
+
+  struct Row {
+    int id{};
+    atx::f64 sharpe{};
+  };
+  std::vector<Row> rows;
+  rows.reserve(alphas.size());
+  int finite = 0;
+  for (const atx_impl_test::FixtureAlpha &fa : alphas) {
+    auto ast = parse_expr(fa.dsl, shared_lib());
+    ASSERT_TRUE(ast.has_value()) << "#" << fa.id << ": " << ast.error().message();
+    auto ana = analyze(*ast);
+    ASSERT_TRUE(ana.has_value()) << "#" << fa.id << ": " << ana.error().message();
+    auto prog = compile(*ast, *ana);
+    ASSERT_TRUE(prog.has_value()) << "#" << fa.id << ": " << prog.error().message();
+    Engine engine{panel};
+    auto ss = engine.evaluate(*prog);
+    ASSERT_TRUE(ss.has_value()) << "#" << fa.id << ": " << ss.error().message();
+    const atx::f64 sr = alpha_sharpe(*ss, panel);
+    finite += std::isfinite(sr) ? 1 : 0;
+    rows.push_back({fa.id, sr});
+  }
+
+  std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
+    const bool an = std::isnan(a.sharpe);
+    const bool bn = std::isnan(b.sharpe);
+    if (an != bn) {
+      return !an; // finite before NaN
+    }
+    return a.sharpe > b.sharpe;
+  });
+
+  std::cout << "\n=== Alpha101 Sharpe ranking ("
+            << (is_real ? "REAL ORATS" : "synthetic") << ", daily LS dollar-neutral) ===\n"
+            << "rank |  # | annualized Sharpe\n"
+            << "-----+----+------------------\n";
+  for (atx::usize k = 0; k < rows.size(); ++k) {
+    std::cout << " " << (k + 1 < 10 ? "  " : (k + 1 < 100 ? " " : "")) << (k + 1) << " | "
+              << (rows[k].id < 10 ? " " : "") << rows[k].id << " | " << rows[k].sharpe << "\n";
+  }
+  std::cout << "============================================\n\n";
+
+  EXPECT_EQ(finite, 101) << "every alpha must yield a finite Sharpe";
 }
 
 } // namespace atxtest_alpha101_orats_test

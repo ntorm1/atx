@@ -268,10 +268,58 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
     names.emplace_back(kHistFieldEarnCnt5);
     data.push_back(std::vector<atx::f64>(s.begin(), s.end())); }
 
+  // -------------------------------------------------------------------------
+  // Step 5b (optional): compact out instrument columns NEVER in-universe over the
+  // whole window. Lossless — those columns are all-NaN-masked at eval — and it
+  // shrinks the panel from "every symbol that ever traded" to "symbols that pass
+  // the screen on >=1 date", cutting memory + per-cell eval cost. The kept order
+  // preserves the canonical column order (ascending original index).
+  // -------------------------------------------------------------------------
+  atx::usize N_out = N;
+  std::vector<std::uint8_t> mask_out(uni.in_universe.begin(), uni.in_universe.end());
+  if (cfg.compact_to_universe) {
+    std::vector<atx::usize> keep;
+    keep.reserve(N);
+    for (atx::usize i = 0; i < N; ++i) {
+      bool ever = false;
+      for (atx::usize t = 0; t < D; ++t) {
+        if (uni.in_universe[t * N + i] != 0) {
+          ever = true;
+          break;
+        }
+      }
+      if (ever) {
+        keep.push_back(i);
+      }
+    }
+    N_out = keep.size();
+    if (N_out == 0) {
+      return Err(ErrorCode::InvalidArgument,
+                 "build_history_panel: no instrument is ever in-universe under the screen "
+                 "(min_adv_usd / min_price / require_sector too strict for this window)");
+    }
+    if (N_out != N) {
+      for (std::vector<atx::f64> &col : data) {
+        std::vector<atx::f64> nc(D * N_out);
+        for (atx::usize t = 0; t < D; ++t) {
+          for (atx::usize k = 0; k < N_out; ++k) {
+            nc[t * N_out + k] = col[t * N + keep[k]];
+          }
+        }
+        col = std::move(nc);
+      }
+      std::vector<std::uint8_t> nm(D * N_out);
+      for (atx::usize t = 0; t < D; ++t) {
+        for (atx::usize k = 0; k < N_out; ++k) {
+          nm[t * N_out + k] = uni.in_universe[t * N + keep[k]];
+        }
+      }
+      mask_out = std::move(nm);
+    }
+  }
+
   ATX_TRY(auto final_panel,
-          alpha::Panel::create(D, N, std::move(names), std::move(data),
-                               std::vector<std::uint8_t>(uni.in_universe.begin(),
-                                                         uni.in_universe.end())));
+          alpha::Panel::create(D, N_out, std::move(names), std::move(data), std::move(mask_out)));
 
   // -------------------------------------------------------------------------
   // Step 6: Catalog lineage + digest.

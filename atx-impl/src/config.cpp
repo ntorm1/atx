@@ -27,6 +27,9 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "sector-neutral") { cfg.sector_neutral = true; return atx::core::Ok(); }
     if (flag == "position-mode")  { cfg.position_mode  = true; return atx::core::Ok(); }
     if (flag == "resume")         { cfg.resume         = true; return atx::core::Ok(); }
+    if (flag == "exclude-no-sector") { cfg.exclude_no_sector = true; return atx::core::Ok(); }
+    if (flag == "require-sector")    { cfg.require_sector    = true; return atx::core::Ok(); }
+    if (flag == "compact-universe")  { cfg.compact_universe  = true; return atx::core::Ok(); }
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -99,6 +102,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
 
     if (flag == "min-adv-usd")       return parse_double(cfg.min_adv_usd);
     if (flag == "top-n-by-adv")      return parse_long(cfg.top_n_by_adv);
+    if (flag == "min-price")         return parse_double(cfg.min_price);
     if (flag == "seed")              return parse_ull(cfg.seed);
     if (flag == "population")        return parse_long(cfg.population);
     if (flag == "generations")       return parse_long(cfg.generations);

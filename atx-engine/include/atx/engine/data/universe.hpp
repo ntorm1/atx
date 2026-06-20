@@ -94,6 +94,11 @@ struct UniverseConfig {
   atx::f64 min_adv_usd = 1.0e6;      // liquidity floor (dollars/day); 0 ⇒ no floor
   atx::f64 min_mktcap_usd = 0.0;     // market-cap floor (dollars); 0 ⇒ no floor
   atx::usize top_n_by_adv = 0;       // keep top-N by ADV each date; 0 ⇒ no count cap
+  atx::f64 min_price = 0.0;          // raw-close price floor (membership iff raw_close > min_price);
+                                     // 0 ⇒ no price screen (preserves legacy behavior)
+  bool require_sector = false;       // exclude names with no GICS/SIC sector (a single-stock /
+                                     // ETF-fund proxy: ETFs carry no GICS classifier). false ⇒
+                                     // no sector requirement (legacy).
 };
 
 // =========================================================================
