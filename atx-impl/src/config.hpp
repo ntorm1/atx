@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <array>
 #include <set>
@@ -12,11 +12,11 @@ namespace atx::impl {
 
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
-inline constexpr std::array<std::string_view, 8> kSubcommands = {
-    "load", "panel", "discover", "combine", "optimize", "report", "run", "regime"};
+inline constexpr std::array<std::string_view, 9> kSubcommands = {
+    "load", "panel", "discover", "combine", "optimize", "report", "run", "regime", "sweep"};
 
 // ----------------------------------------------------------------------------
-// RunConfig — all CLI flags / config-file keys for every subcommand.
+// RunConfig â€” all CLI flags / config-file keys for every subcommand.
 //
 // Field consolidation note: 'out' is a shared "primary output path" field used
 // by load, panel (via panel_out), and other stages. Each stage has its own
@@ -79,6 +79,10 @@ struct RunConfig {
     // <alpha_out>/_library wiped each run, so single-run determinism/resume goldens
     // stay byte-identical. Only an explicit --library-dir opts into accumulation.
     std::string library_dir;           // --library-dir  ("" = per-run <alpha_out>/_library, no accumulation)
+
+    // -- sweep --
+    long        sweep_runs   = 0;    // --sweep-runs (number of ResearchDriver runs; >=1 required for sweep)
+    long        patience     = 0;    // --patience (early-stop after this many consecutive zero-admit runs; 0 = full budget)
 
     // -- combine --
     std::string alphas;                // --alphas

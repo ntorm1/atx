@@ -1,4 +1,4 @@
-#include "config.hpp"
+﻿#include "config.hpp"
 
 #include <charconv>
 #include <fstream>
@@ -12,7 +12,7 @@ namespace atx::impl {
 // ---------------------------------------------------------------------------
 // Worker: apply one recognized (flag, value) pair to a RunConfig.
 // 'flag' must NOT have a leading "--". Returns Err(InvalidArgument) for unknown
-// flags. Does NOT touch cfg.set_flags — that bookkeeping lives in apply_flag.
+// flags. Does NOT touch cfg.set_flags â€” that bookkeeping lives in apply_flag.
 // ---------------------------------------------------------------------------
 static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                                                 std::string_view flag,
@@ -118,6 +118,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "oos-embargo")       return parse_double(cfg.oos_embargo);
     if (flag == "oos-windows")       return parse_long(cfg.oos_windows);
     if (flag == "oos-window")        return parse_long(cfg.oos_window);
+    if (flag == "sweep-runs")      return parse_long(cfg.sweep_runs);
+    if (flag == "patience")        return parse_long(cfg.patience);
     if (flag == "fit-begin")         return parse_long(cfg.fit_begin);
     if (flag == "fit-end")           return parse_long(cfg.fit_end);
     if (flag == "corr-penalty")      return parse_double(cfg.corr_penalty);

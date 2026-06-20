@@ -1,4 +1,4 @@
-#include "atx/engine/factory/research_driver.hpp"
+﻿#include "atx/engine/factory/research_driver.hpp"
 
 #include <bit>     // std::bit_cast (f64 verdict sharpe -> u64 for the digest fold)
 #include <cstddef> // std::size_t (hash_combine seed type)
@@ -21,7 +21,7 @@ namespace atx::engine::factory {
   // so S4.5 (and a caller) can see the gate state; this is report-only and is NOT
   // folded into digest_acc below, so toggling the seam never shifts the engine
   // fingerprint. When false (the default), the per-run branch below is skipped
-  // entirely — no compute, no RNG, no ordering change — so run() is byte-identical
+  // entirely â€” no compute, no RNG, no ordering change â€” so run() is byte-identical
   // to the pre-S4.4b path. S4.5 flips robustness_gate on and fills the live gating.
   rep.robustness_gate_active = cfg.robustness_gate;
 
@@ -31,11 +31,11 @@ namespace atx::engine::factory {
   atx::u64 digest_acc =
       static_cast<atx::u64>(atx::core::hash_combine(std::size_t{0}, cfg.master_seed));
 
-  // One Factory over the FIXED panel — reused across every run (it carries no
+  // One Factory over the FIXED panel â€” reused across every run (it carries no
   // per-run state; a fresh seeded SearchDriver is built inside each mine_into).
   Factory factory{dsl_, panel_, sim_, policy_};
 
-  // S4.5 robustness gate: the vol-tercile partition of the (visible) panel — a pure
+  // S4.5 robustness gate: the vol-tercile partition of the (visible) panel â€” a pure
   // function of panel_ + vol_window, so it is computed ONCE for the whole engine run
   // and reused per-survivor. Empty (all-sentinel) when the gate is OFF (never read).
   const std::vector<atx::u8> regime_labels =
@@ -47,8 +47,14 @@ namespace atx::engine::factory {
   for (atx::usize run = 0; run < cfg.max_runs && (cfg.patience == 0U || dry < cfg.patience);
        ++run) {
     // Overwrite the per-run search seed with the (master_seed, run) derivation.
+    // R2: when oos_n_windows > 0, also advance the walk-forward holdout window per
+    // run: window k = run % oos_n_windows (pure function of run index => determinism
+    // preserved). When oos_n_windows == 0 the field is untouched — exact legacy path.
     FactoryConfig run_cfg = cfg.per_run;
     run_cfg.search.master_seed = detail::seed_for_run(cfg.master_seed, run);
+    if (cfg.per_run.oos_n_windows > 0U) {
+      run_cfg.oos_window = run % cfg.per_run.oos_n_windows;
+    }
 
     // mine_into now returns a Result (the cross-run --library-dir geometry guard).
     // ResearchDriver reuses ONE fixed library (lib_) with an invariant panel/holdout
@@ -62,6 +68,8 @@ namespace atx::engine::factory {
     rep.total_mined += fr.evaluated;
     rep.total_admitted += fr.admitted;
     rep.total_duplicates += fr.duplicates;
+    // M1/sweep: capture the last run's OOS metrics for the manifest writer.
+    rep.last_run_oos_metrics = fr.oos_metrics;
 
     // Fold this run's deterministic mine+admit fingerprint into the engine digest
     // (in run order, so a reordered or differing run sequence shifts the digest).
@@ -73,8 +81,8 @@ namespace atx::engine::factory {
     // (eval/regime_slice.hpp robustness_verdict, over the SealedPanel.visible()
     // OOS PnL) against cfg.robustness_cfg, and either report-only-records or
     // rejects the non-robust ones. S4.4b ships ONLY the guarded seam: when
-    // cfg.robustness_gate is false (the default), this branch is NOT entered — no
-    // compute, no RNG, no ordering change, no digest fold — so run() stays byte-
+    // cfg.robustness_gate is false (the default), this branch is NOT entered â€” no
+    // compute, no RNG, no ordering change, no digest fold â€” so run() stays byte-
     // identical to the pre-S4.4b path. The branch body is UNREACHED by every
     // current test (none sets robustness_gate); S4.5 fills the per-survivor verdict
     // loop and exercises it. The lone reference to cfg.robustness_cfg lives inside
@@ -105,7 +113,7 @@ namespace atx::engine::factory {
   }
 
   // dedup_pct: the share of gate-passing "would-be-admits" the library recognized as
-  // already-known (Duplicate). Denominator is (admitted + duplicates) — gate/deflation
+  // already-known (Duplicate). Denominator is (admitted + duplicates) â€” gate/deflation
   // rejects are excluded (they are not dedup events). max(1, .) guards an all-zero run.
   const atx::usize denom = rep.total_admitted + rep.total_duplicates;
   rep.dedup_pct = (denom == 0U)
@@ -123,7 +131,7 @@ ResearchDriver::screen_run_robustness(const FactoryReport &fr, const std::vector
   // The survivors THIS run admitted are the half-open AlphaId range
   // [n_before, n_after) (mine_into admits in id order, so the range is exactly the
   // new admits). Screen each, in ascending id order, with a RobustnessVerdict over
-  // its stored OOS PnL — which was realized over panel_ (the visible region the
+  // its stored OOS PnL â€” which was realized over panel_ (the visible region the
   // engine mines on), so `labels` (the vol-tercile partition of that same panel)
   // lines up index-for-index with the PnL stream.
   const atx::u64 first = fr.library_n_alphas_before;
@@ -134,7 +142,7 @@ ResearchDriver::screen_run_robustness(const FactoryReport &fr, const std::vector
     // on the next stage()/flush(); we only READ it within this iteration (no store
     // growth here), and the span length == panel_.dates() == labels.size() because
     // the PnL was extracted over panel_. A label/PnL length disagreement would make
-    // robustness_verdict's debug precondition fire — guard it so a degenerate
+    // robustness_verdict's debug precondition fire â€” guard it so a degenerate
     // (e.g. label-less) panel screens as not-robust instead of tripping the assert.
     const std::span<const atx::f64> pnl = lib_.pnl(id);
     ++rep.robust_screened;
