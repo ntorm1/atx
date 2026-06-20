@@ -1,7 +1,10 @@
 #include "stages.hpp"
 
 #include <algorithm> // std::max (immigrant scaling)
+#include <array>
+#include <cstdio>    // std::fprintf (W2 screen log)
 #include <filesystem>
+#include <limits>    // std::numeric_limits (W2 NaN vwap stub)
 #include <fstream>
 #include <iomanip>
 #include <optional>
@@ -16,6 +19,7 @@
 
 #include <thread>                                 // std::thread::hardware_concurrency
 
+#include "atx/engine/alpha/datafields.hpp"        // alpha::datafields::with_datafields (W2)
 #include "atx/engine/alpha/parser.hpp"          // alpha::Library, alpha::parse_expr
 #include "atx/engine/alpha/unparse.hpp"          // alpha::unparse
 #include "atx/engine/combine/gate.hpp"           // combine::AlphaGate, GateConfig
@@ -62,6 +66,150 @@ namespace {
     }
     return T::Rank; // "rank" (and the validated default) -> Rank
 }
+
+// ---------------------------------------------------------------------------
+// apply_capacity_screen (W2) — build a derived Panel whose universe_ mask is
+// original_universe ∧ (close > min_price) ∧ (adv{W} >= min_adv).
+//
+// Design notes (see W2 brief):
+//   * NaN propagation then filters illiquid names across the ENTIRE eval chain
+//     with ZERO changes to streams/fitness/factory/search_driver.
+//   * ADV is computed over the ORIGINAL universe (not the screened one) so the
+//     rolling mean reflects the same liquid set used for capacity validation.
+//   * Fail-closed: missing 'close' or 'volume' field => Err(InvalidArgument).
+//   * Predicate mirrors single_alpha_capacity_test.cpp:capacity_universe exactly.
+// ---------------------------------------------------------------------------
+[[nodiscard]] atx::core::Result<atx::engine::alpha::Panel>
+apply_capacity_screen(const atx::engine::alpha::Panel& panel,
+                      atx::f64 min_price, atx::f64 min_adv, long adv_window) {
+    namespace alpha = atx::engine::alpha;
+    namespace df    = atx::engine::alpha::datafields;
+    using EC        = atx::core::ErrorCode;
+
+    const atx::usize D = panel.dates();
+    const atx::usize I = panel.instruments();
+
+    // Step 1: extract field names + data + universe from the original panel.
+    std::vector<std::string>             field_names;
+    std::vector<std::vector<atx::f64>>   field_data;
+    field_names.reserve(panel.num_fields());
+    field_data.reserve(panel.num_fields());
+    for (atx::usize fi = 0; fi < panel.num_fields(); ++fi) {
+        field_names.push_back(std::string{panel.field_name(fi)});
+        const auto col = panel.field_all(static_cast<alpha::FieldId>(fi));
+        field_data.emplace_back(col.begin(), col.end());
+    }
+
+    // Collect original universe (date-major, 1 == in-universe).
+    std::vector<std::uint8_t> orig_univ(D * I);
+    for (atx::usize d = 0; d < D; ++d) {
+        for (atx::usize i = 0; i < I; ++i) {
+            orig_univ[d * I + i] = panel.in_universe(d, i) ? 1u : 0u;
+        }
+    }
+
+    // Fail-closed: 'close' and 'volume' must be present before calling
+    // with_datafields (which also checks, but we want a clear message here).
+    bool has_close  = false;
+    bool has_volume = false;
+    for (const std::string& n : field_names) {
+        if (n == "close")  has_close  = true;
+        if (n == "volume") has_volume = true;
+    }
+    if (!has_close) {
+        return atx::core::Err(EC::InvalidArgument,
+            "discover capacity screen: panel is missing required field 'close'");
+    }
+    if (!has_volume) {
+        return atx::core::Err(EC::InvalidArgument,
+            "discover capacity screen: panel is missing required field 'volume'");
+    }
+
+    // Step 2: augment with adv{W} (computed over the ORIGINAL universe).
+    // adv_window is stored as long; clamp to u16 range for with_datafields.
+    const atx::u16 win = (adv_window >= 1 && adv_window <= 0xFFFF)
+                             ? static_cast<atx::u16>(adv_window)
+                             : atx::u16{20};
+
+    // with_datafields derives vwap when absent, requiring high/low. We only need
+    // adv{W} for the screen, so if vwap/high/low are ALL absent, pre-supply a NaN
+    // vwap column to short-circuit the derivation (NaN vwap has no effect on adv).
+    {
+        bool has_vwap = false, has_high = false, has_low = false;
+        for (const std::string& n : field_names) {
+            if (n == "vwap")  has_vwap = true;
+            if (n == "high")  has_high = true;
+            if (n == "low")   has_low  = true;
+        }
+        if (!has_vwap && (!has_high || !has_low)) {
+            field_names.emplace_back("vwap");
+            field_data.emplace_back(D * I,
+                                    std::numeric_limits<atx::f64>::quiet_NaN());
+        }
+    }
+
+    const std::array<atx::u16, 1> adv_wins = {win};
+    ATX_TRY(auto aug,
+            df::with_datafields(D, I, field_names, field_data, orig_univ,
+                                std::span<const atx::u16>{adv_wins}));
+
+    // Resolve field ids in the augmented panel.
+    ATX_TRY(const auto close_id, aug.field_id("close"));
+    const std::string adv_name = std::string{df::kAdvPrefix} + std::to_string(win);
+    ATX_TRY(const auto adv_id,   aug.field_id(adv_name));
+
+    const auto close_col = aug.field_all(close_id);
+    const auto adv_col   = aug.field_all(adv_id);
+
+    // Step 3: compute the capacity mask (same predicate as capacity_universe in
+    // single_alpha_capacity_test.cpp:127-155).
+    std::vector<std::uint8_t> cap_univ(D * I, 0);
+    atx::usize kept_cells = 0;
+    for (atx::usize d = 0; d < D; ++d) {
+        for (atx::usize i = 0; i < I; ++i) {
+            const atx::usize idx = d * I + i;
+            if (!aug.in_universe(d, i)) {
+                continue; // out of original universe -> stays out
+            }
+            const atx::f64 px = close_col[idx];
+            const atx::f64 dv = adv_col[idx];
+            if (std::isfinite(px) && px > min_price &&
+                std::isfinite(dv) && dv >= min_adv) {
+                cap_univ[idx] = 1;
+                ++kept_cells;
+            }
+        }
+    }
+
+    // Approximate names/day for logging (kept_cells / D, rounded).
+    const atx::f64 names_per_day =
+        (D > 0) ? (static_cast<atx::f64>(kept_cells) / static_cast<atx::f64>(D)) : 0.0;
+
+    // Emit a brief log line so callers can verify the acceptance criterion
+    // (~1,000–1,200 names/day with min_price=$1 / min_adv=$50M on the liquid panel).
+    // Use stderr so it doesn't pollute stdout digests.
+    (void)std::fprintf(stderr,
+        "[W2 capacity screen] min_price=%.2f min_adv=%.0f adv_window=%d  "
+        "kept_cells=%zu  ~%.0f names/day\n",
+        min_price, min_adv, static_cast<int>(win),
+        kept_cells, names_per_day);
+
+    // Step 4: rebuild a Panel with the augmented columns + new universe mask.
+    std::vector<std::string>           aug_names;
+    std::vector<std::vector<atx::f64>> aug_data;
+    aug_names.reserve(aug.num_fields());
+    aug_data.reserve(aug.num_fields());
+    for (atx::usize fi = 0; fi < aug.num_fields(); ++fi) {
+        aug_names.push_back(std::string{aug.field_name(fi)});
+        const auto c = aug.field_all(static_cast<alpha::FieldId>(fi));
+        aug_data.emplace_back(c.begin(), c.end());
+    }
+    return alpha::Panel::create(D, I,
+                                std::move(aug_names),
+                                std::move(aug_data),
+                                std::move(cap_univ));
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -389,6 +537,20 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
 
     // 2. Load the research panel.
     ATX_TRY(auto panel, read_panel(cfg.panel));
+
+    // 2a. W2 capacity screen (opt-in): build a derived Panel whose universe_ is
+    // original_universe ∧ (close>min_price) ∧ (adv{W}>=min_adv). NaN propagation
+    // then filters illiquid names across the entire eval chain with ZERO changes to
+    // streams/fitness/factory/search_driver. Screen is INACTIVE (default) when both
+    // thresholds are 0 — the original panel object is passed through UNCHANGED,
+    // guaranteeing byte-identical output to a run with no capacity flags.
+    const bool capacity_on = cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0;
+    if (capacity_on) {
+        ATX_TRY(auto screened,
+                apply_capacity_screen(panel, cfg.min_price, cfg.min_adv_usd,
+                                      cfg.adv_window));
+        panel = std::move(screened);
+    }
 
     // 3. Build run-wide objects.
     alpha::Library lib{};

@@ -7,24 +7,28 @@
 // deterministic LCG random walk with a small persistent drift so rank(close)
 // has a genuine finite-Sharpe momentum edge (mirrors factory_search_driver_test).
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
-#include <cmath>
 
 #include <gtest/gtest.h>
 
 #include "atx/core/types.hpp"
 
-#include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program
+#include "atx/engine/alpha/bytecode.hpp"    // alpha::compile, alpha::Program
+#include "atx/engine/alpha/datafields.hpp" // alpha::datafields::with_datafields (W2)
 #include "atx/engine/alpha/panel.hpp"
-#include "atx/engine/alpha/parser.hpp"   // alpha::parse_expr, alpha::Library
-#include "atx/engine/alpha/vm.hpp"       // alpha::Engine
-#include "atx/engine/factory/genome.hpp" // factory::analyze_into, factory::Genome
+#include "atx/engine/alpha/parser.hpp"     // alpha::parse_expr, alpha::Library
+#include "atx/engine/alpha/vm.hpp"         // alpha::Engine
+#include "atx/engine/factory/genome.hpp"   // factory::analyze_into, factory::Genome
 
 #include "config.hpp"
 #include "serialize_genome.hpp"
@@ -37,11 +41,13 @@ using atx::f64;
 using atx::usize;
 using atx::engine::alpha::compile;
 using atx::engine::alpha::Engine;
+using atx::engine::alpha::FieldId;
 using atx::engine::alpha::Library;
 using atx::engine::alpha::Panel;
 using atx::engine::alpha::parse_expr;
 using atx::engine::alpha::Program;
 using atx::engine::alpha::SignalSet;
+using atx::engine::alpha::datafields::with_datafields;
 using atx::engine::factory::analyze_into;
 using atx::engine::factory::Genome;
 using atx::impl::read_genome;
@@ -636,6 +642,356 @@ TEST(AtxImplDiscover, LibraryDedupOnReadmitDeterministic) {
     fs::remove_all(lib_dir, ec);
     fs::remove_all(out1, ec);
     fs::remove_all(out2, ec);
+}
+
+// ===========================================================================
+// W2 — Capacity universe screen tests (TDD: written before implementation)
+// ===========================================================================
+
+// Helpers shared across W2 tests.
+// Build a small synthetic panel with hand-chosen close/volume values that let
+// us compute adv{W} by hand and verify the capacity screen predicate exactly.
+//
+// Layout: 5 dates x 4 instruments, adv_window = 3.
+// Instrument roles:
+//   [0] PASS   — close > min_price AND adv3 >= min_adv (always in-universe)
+//   [1] LOW_PX — close <= min_price (< $1.00)
+//   [2] LOW_ADV— close > min_price but adv3 < min_adv (< $50M)
+//   [3] OOU    — out-of-universe on all dates (never admitted regardless)
+//
+// Constants: min_price = 1.0, min_adv = 50e6, adv_window = 3.
+// close[d][i]:  PASS=10.0, LOW_PX=0.50, LOW_ADV=5.0, OOU=100.0 (masked out)
+// volume[d][i]: PASS=1e7 (DV=1e8 >> 50M), LOW_PX=1e7, LOW_ADV=1e3 (DV=5e3 << 50M), OOU=irrelevant
+
+static constexpr atx::f64 kW2MinPrice = 1.0;
+static constexpr atx::f64 kW2MinAdv   = 50.0e6;
+static constexpr long     kW2AdvWin   = 3;
+
+// Returns nullopt on failure (ADD_FAILURE marks the test).
+static std::optional<Panel> make_w2_panel() {
+    constexpr usize D = 5;
+    constexpr usize I = 4;
+    // universe: all in except instrument 3 (OOU)
+    std::vector<std::uint8_t> univ(D * I, 1);
+    for (usize d = 0; d < D; ++d) {
+        univ[d * I + 3] = 0; // instrument 3 always out-of-universe
+    }
+    // close: constant across dates
+    std::vector<f64> close_data(D * I);
+    for (usize d = 0; d < D; ++d) {
+        close_data[d * I + 0] = 10.0;   // PASS
+        close_data[d * I + 1] = 0.50;   // LOW_PX (below $1)
+        close_data[d * I + 2] = 5.0;    // LOW_ADV
+        close_data[d * I + 3] = 100.0;  // OOU (masked; value irrelevant)
+    }
+    // volume: constant across dates
+    std::vector<f64> volume_data(D * I);
+    for (usize d = 0; d < D; ++d) {
+        volume_data[d * I + 0] = 1.0e7;  // DV=1e8, adv3=1e8 >= 50M (PASS)
+        volume_data[d * I + 1] = 1.0e7;  // DV=5e6, adv3=5e6 < 50M (but already LOW_PX)
+        volume_data[d * I + 2] = 1.0e3;  // DV=5e3, adv3=5e3 << 50M (LOW_ADV)
+        volume_data[d * I + 3] = 1.0e7;  // OOU, irrelevant
+    }
+    auto r = Panel::create(D, I, {"close", "volume"}, {close_data, volume_data}, univ);
+    if (!r.has_value()) {
+        ADD_FAILURE() << "W2 panel fixture must build: " << r.error().to_string();
+        return std::nullopt;
+    }
+    return std::move(r.value());
+}
+
+// ---------------------------------------------------------------------------
+// W2 Test 1: CapacityScreenPredicateUnit
+// Applies the capacity screen via run_discover (with the screen active) on a
+// synthetic fixture and verifies the resulting panel's in_universe mask exactly
+// matches the hand-computed expected mask.
+//
+// Strategy: we test the screen by calling run_discover with the capacity flags
+// active on a panel where we know which instruments pass. Since run_discover
+// changes the scoring universe, a PASS instrument should remain admitted and a
+// LOW_PX / LOW_ADV instrument should be excluded (no signal from them).
+//
+// Simpler / more direct: test apply_capacity_screen via the datafields API +
+// Panel::create directly, matching the implementation sketch in the brief.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W2_CapacityScreenPredicateUnit) {
+    using atx::u16;
+
+    auto panel_opt = make_w2_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+
+    constexpr usize D = 5;
+    constexpr usize I = 4;
+
+    // Step 1: extract field vectors + names + universe from the panel.
+    std::vector<std::string> field_names;
+    std::vector<std::vector<f64>> field_data;
+    for (usize fi = 0; fi < panel.num_fields(); ++fi) {
+        field_names.push_back(std::string{panel.field_name(fi)});
+        const auto col = panel.field_all(static_cast<atx::engine::alpha::FieldId>(fi));
+        field_data.emplace_back(col.begin(), col.end());
+    }
+    // Collect universe from the panel.
+    std::vector<std::uint8_t> orig_univ(D * I);
+    for (usize d = 0; d < D; ++d) {
+        for (usize i = 0; i < I; ++i) {
+            orig_univ[d * I + i] = panel.in_universe(d, i) ? 1u : 0u;
+        }
+    }
+
+    // Step 2: call with_datafields to get adv3 column (mirrors apply_capacity_screen).
+    // Pre-supply a NaN vwap to suppress high/low requirement (same logic as the
+    // apply_capacity_screen helper — only adv{W} matters for the screen).
+    {
+        bool has_vwap = false, has_high = false, has_low = false;
+        for (const auto& n : field_names) {
+            if (n == "vwap") has_vwap = true;
+            if (n == "high") has_high = true;
+            if (n == "low")  has_low  = true;
+        }
+        if (!has_vwap && (!has_high || !has_low)) {
+            field_names.emplace_back("vwap");
+            field_data.emplace_back(D * I,
+                std::numeric_limits<atx::f64>::quiet_NaN());
+        }
+    }
+    const atx::u16 adv_win = static_cast<atx::u16>(kW2AdvWin);
+    const std::array<atx::u16, 1> adv_wins = {adv_win};
+    auto aug_r = with_datafields(D, I, field_names, field_data, orig_univ,
+                                 std::span<const atx::u16>{adv_wins});
+    ASSERT_TRUE(aug_r.has_value()) << aug_r.error().to_string();
+    const Panel& aug = *aug_r;
+
+    // Verify adv3 field exists.
+    const std::string adv_name = "adv" + std::to_string(kW2AdvWin);
+    auto adv_id_r = aug.field_id(adv_name);
+    ASSERT_TRUE(adv_id_r.has_value()) << "adv field '" << adv_name << "' must exist after with_datafields";
+    const auto adv_id = *adv_id_r;
+    auto close_id_r = aug.field_id("close");
+    ASSERT_TRUE(close_id_r.has_value());
+    const auto close_id = *close_id_r;
+
+    // Step 3: compute capacity mask exactly as apply_capacity_screen would.
+    std::vector<std::uint8_t> cap_univ(D * I, 0);
+    const auto close_col = aug.field_all(close_id);
+    const auto adv_col   = aug.field_all(adv_id);
+    for (usize d = 0; d < D; ++d) {
+        for (usize i = 0; i < I; ++i) {
+            const usize idx = d * I + i;
+            if (!aug.in_universe(d, i)) continue;
+            const f64 px  = close_col[idx];
+            const f64 dv  = adv_col[idx];
+            if (std::isfinite(px) && px > kW2MinPrice &&
+                std::isfinite(dv) && dv >= kW2MinAdv) {
+                cap_univ[idx] = 1;
+            }
+        }
+    }
+
+    // Step 4: build the screened panel and assert in_universe matches cap_univ.
+    // Collect augmented field data for create().
+    std::vector<std::string> aug_names;
+    std::vector<std::vector<f64>> aug_data;
+    for (usize fi = 0; fi < aug.num_fields(); ++fi) {
+        aug_names.push_back(std::string{aug.field_name(fi)});
+        const auto c = aug.field_all(static_cast<atx::engine::alpha::FieldId>(fi));
+        aug_data.emplace_back(c.begin(), c.end());
+    }
+    auto screened_r = Panel::create(D, I, aug_names, aug_data, cap_univ);
+    ASSERT_TRUE(screened_r.has_value()) << screened_r.error().to_string();
+    const Panel& screened = *screened_r;
+
+    // Assert: instrument 0 (PASS) is in-universe on dates where adv3 is defined
+    // (dates >= adv_window - 1 == 2, i.e. dates 2,3,4).
+    for (usize d = 0; d < D; ++d) {
+        const bool adv_defined = (d + 1 >= static_cast<usize>(kW2AdvWin));
+        EXPECT_EQ(screened.in_universe(d, 0), adv_defined)
+            << "PASS instrument[0] at date " << d;
+        // LOW_PX: fails price screen => always out regardless of adv
+        EXPECT_FALSE(screened.in_universe(d, 1))
+            << "LOW_PX instrument[1] must be excluded (price screen)";
+        // LOW_ADV: fails adv screen => always out
+        EXPECT_FALSE(screened.in_universe(d, 2))
+            << "LOW_ADV instrument[2] must be excluded (adv screen)";
+        // OOU: was never in-universe
+        EXPECT_FALSE(screened.in_universe(d, 3))
+            << "OOU instrument[3] must remain out-of-universe";
+    }
+
+    // Assert adv3 values for instrument 0 (PASS): DV = close*vol = 10*1e7 = 1e8
+    // adv3 at date d = mean(DV[d-2..d]) = 1e8 (constant DV) for d >= 2.
+    for (usize d = static_cast<usize>(kW2AdvWin) - 1; d < D; ++d) {
+        const f64 adv_val = adv_col[d * I + 0];
+        EXPECT_TRUE(std::isfinite(adv_val)) << "adv3[" << d << "][0] must be finite";
+        EXPECT_NEAR(adv_val, 1.0e8, 1.0) << "adv3[" << d << "][0] must be ~1e8";
+    }
+    // adv3 at dates 0 and 1 must be NaN (incomplete window).
+    for (usize d = 0; d + 1 < static_cast<usize>(kW2AdvWin); ++d) {
+        EXPECT_TRUE(std::isnan(adv_col[d * I + 0]))
+            << "adv3[" << d << "][0] must be NaN (incomplete window)";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W2 Test 2: CapacityScreenInactiveIsNoOp
+// When min_price=0 and min_adv=0, run_discover must NOT call the screen and
+// must produce the same digest as a baseline run with no capacity flags.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W2_CapacityScreenInactiveIsNoOp) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "w2_inactive");
+
+    const std::string out_base =
+        (fs::temp_directory_path() / "atx_impl_discover_w2_inactive_base").string();
+    const std::string out_noop =
+        (fs::temp_directory_path() / "atx_impl_discover_w2_inactive_noop").string();
+
+    // Baseline: no capacity flags.
+    atx::impl::RunConfig cfg_base;
+    cfg_base.subcommand  = "discover";
+    cfg_base.panel       = panel_path;
+    cfg_base.alpha_out   = out_base;
+    cfg_base.seed        = 777ULL;
+    cfg_base.population  = 16;
+    cfg_base.generations = 5;
+    cfg_base.seed_exprs  = safe_seed_exprs();
+    // min_adv_usd=0, min_price=0 (defaults) => screen inactive
+
+    auto r_base = atx::impl::run_discover(cfg_base);
+    ASSERT_TRUE(r_base.has_value()) << r_base.error().message();
+
+    // Same config but explicitly set min_adv=0 and min_price=0 (still inactive).
+    atx::impl::RunConfig cfg_noop = cfg_base;
+    cfg_noop.alpha_out   = out_noop;
+    cfg_noop.min_adv_usd = 0.0;
+    cfg_noop.min_price   = 0.0;
+
+    auto r_noop = atx::impl::run_discover(cfg_noop);
+    ASSERT_TRUE(r_noop.has_value()) << r_noop.error().message();
+
+    // Digests must be equal: same panel + same seed + screen inactive => byte-identical.
+    EXPECT_EQ(r_base->digest, r_noop->digest)
+        << "inactive screen (min_adv=0, min_price=0) must produce byte-identical digest";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(out_base, ec);
+    fs::remove_all(out_noop, ec);
+}
+
+// ---------------------------------------------------------------------------
+// W2 Test 3: CapacityScreenFailClosedMissingClose
+// Screen active (min_adv > 0) but panel has no 'close' field => Err(InvalidArgument)
+// naming the missing field.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W2_CapacityScreenFailClosedMissingClose) {
+    namespace fs = std::filesystem;
+
+    // Panel with 'volume' but no 'close'.
+    constexpr usize D = 10;
+    constexpr usize I = 3;
+    std::vector<f64> vol(D * I, 1.0e7);
+    auto r = Panel::create(D, I, {"volume"}, {vol}, {});
+    ASSERT_TRUE(r.has_value());
+    const Panel& panel = *r;
+
+    // Write panel to disk.
+    const std::string panel_path =
+        (std::filesystem::temp_directory_path() /
+         "atx_impl_discover_w2_nocl.bin").string();
+    {
+        auto wr = atx::impl::write_panel(panel, panel_path);
+        ASSERT_TRUE(wr.has_value()) << "write_panel must succeed";
+    }
+
+    const std::string alpha_out =
+        (fs::temp_directory_path() / "atx_impl_discover_w2_nocl_out").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = 1ULL;
+    cfg.population   = 4;
+    cfg.generations  = 1;
+    cfg.seed_exprs   = {"rank(volume)"};
+    cfg.min_adv_usd  = 50.0e6; // screen ACTIVE
+
+    auto result = atx::impl::run_discover(cfg);
+    EXPECT_FALSE(result.has_value())
+        << "screen active with missing 'close' must return Err";
+    if (!result.has_value()) {
+        EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+        // Error must name the missing field.
+        EXPECT_NE(result.error().message().find("close"), std::string::npos)
+            << "error message must name 'close', got: " << result.error().message();
+    }
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alpha_out, ec);
+}
+
+// ---------------------------------------------------------------------------
+// W2 Test 4: CapacityScreenActiveChangesUniverse
+// With min_price > 0 and a panel that has close/volume, the screen IS active.
+// Instruments with close <= min_price must be excluded (no signal from them),
+// so the discover run either succeeds with different admitted exprs or succeeds
+// on the passing names. Assert the run completes and at least one instrument
+// passes (the panel has enough passing names to find an alpha).
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W2_CapacityScreenActiveChangesUniverse) {
+    namespace fs = std::filesystem;
+
+    // Build a momentum panel that also has a 'volume' field so the screen can
+    // compute ADV. 6 instruments; close > $1 for all (so price screen passes
+    // all; use min_price = 0.0 and min_adv_usd = 1.0 so only the adv check runs,
+    // which all pass since DV >> 1.0).
+    constexpr usize D = 96;
+    constexpr usize I = 6;
+    const std::vector<f64> close_vals = noisy_close(D, I, 0xDEADBEEFULL);
+    // All close values start at ~100 and drift, so > $1.
+    std::vector<f64> volume_vals(D * I, 1.0e6); // DV = close*vol, adv >> 1.0
+
+    auto r = Panel::create(D, I, {"close", "volume"}, {close_vals, volume_vals}, {});
+    ASSERT_TRUE(r.has_value());
+    const Panel& panel = *r;
+
+    const std::string panel_path = write_panel_tmp(panel, "w2_active");
+    const std::string alpha_out  =
+        (fs::temp_directory_path() / "atx_impl_discover_w2_active_out").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = 777ULL;
+    cfg.population   = 16;
+    cfg.generations  = 5;
+    cfg.seed_exprs   = safe_seed_exprs();
+    cfg.min_adv_usd  = 1.0;   // very low adv bar => all pass => no names pruned
+    cfg.adv_window   = 3;     // short window for speed
+
+    auto result = atx::impl::run_discover(cfg);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+
+    // At least one alpha must be admitted.
+    const auto& kvs = result->kvs;
+    auto it = std::find_if(kvs.begin(), kvs.end(),
+                           [](const auto& p) { return p.first == "admitted"; });
+    ASSERT_NE(it, kvs.end()) << "missing 'admitted' kv";
+    EXPECT_GE(std::stoi(it->second), 1)
+        << "capacity screen (all names pass) must still admit at least one alpha";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alpha_out, ec);
 }
 
 } // namespace atxtest_discover

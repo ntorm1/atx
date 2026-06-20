@@ -123,6 +123,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     };
 
     if (flag == "min-adv-usd")       return parse_double(cfg.min_adv_usd);
+    if (flag == "min-adv")           return parse_double(cfg.min_adv_usd); // W2 alias
+    if (flag == "adv-window")        return parse_long(cfg.adv_window);    // W2
     if (flag == "top-n-by-adv")      return parse_long(cfg.top_n_by_adv);
     if (flag == "min-price")         return parse_double(cfg.min_price);
     if (flag == "seed")              return parse_ull(cfg.seed);

@@ -87,6 +87,14 @@ struct RunConfig {
     // factory's mutate_one path is byte-identical to today (kGoldenDigest pin).
     bool        enable_wrap_in_op = false; // --enable-wrap-in-op
 
+    // W2 — capacity universe screen for discovery (opt-in via --min-adv / --min-price).
+    // Screen is ACTIVE iff min_adv_usd > 0 || min_price > 0 (reusing the panel-stage
+    // fields); when INACTIVE the original panel object is passed through UNCHANGED.
+    // adv_window: trailing window for ADV computation (ts_mean(dollar_volume, W)).
+    // Default 20 (matching the manual capacity-universe validation). --min-adv is an
+    // alias parse arm for cfg.min_adv_usd so "--min-adv 50e6" works as documented.
+    long        adv_window = 20;           // --adv-window (used only when screen active)
+
     // --library-dir (8.A): a STABLE on-disk library::Library directory that
     // ACCUMULATES admitted alphas across discover runs/seeds (the library is
     // re-opened, not wiped, so re-admitting an identical alpha is deduped). UNSET
