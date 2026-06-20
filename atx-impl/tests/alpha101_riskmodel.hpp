@@ -31,7 +31,6 @@
 //     return FactorModel::create(B, F, s, fit_begin, fit_end);
 
 #include <cmath>
-#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -175,8 +174,9 @@ build_stat_risk_model_from_returns(const atx::engine::alpha::Panel &panel, atx::
 
   const atx::usize I = panel.instruments();
 
-  // Validate history depth.
-  if (d < window - 1) {
+  // Validate history depth. The explicit window==0 guard avoids unsigned underflow
+  // in `window - 1` (which would wrap to SIZE_MAX).
+  if (window == 0 || d < window - 1) {
     return Err(ErrorCode::InvalidArgument,
                "build_stat_risk_model: d < window-1 (insufficient history); d=" +
                    std::to_string(d) + " window=" + std::to_string(window));

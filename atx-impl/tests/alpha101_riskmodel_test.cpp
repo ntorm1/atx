@@ -12,7 +12,6 @@
 //   Error cases      — N <= T returns Err, d < window-1 returns Err, T <= K returns Err.
 
 #include <cmath>
-#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
