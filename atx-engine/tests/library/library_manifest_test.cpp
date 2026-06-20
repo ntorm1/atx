@@ -215,5 +215,89 @@ TEST(LibraryManifest, RebuildEqualsHolds) { // rebuild_equals byte-check
   EXPECT_TRUE(lib::rebuild_equals(m, dirA, default_gate_cfg(), {kMasterSeed}));
 }
 
+// ---- R1 tests ---------------------------------------------------------------
+
+// R1-1: CumulativeTrialsCounterRoundTrip
+//
+// Open a fresh library, simulate two mine runs by calling add_trials() for
+// each run's trial count, call snapshot() (which now writes the sidecar), then
+// reopen the SAME dir and assert cumulative_trials() is restored.
+TEST(LibraryManifest, CumulativeTrialsCounterRoundTrip) {
+  const std::string dir = tmpdir("r1_roundtrip");
+  constexpr u64 kRun1N = 150u;
+  constexpr u64 kRun2N = 200u;
+  constexpr u64 kExpected = kRun1N + kRun2N;
+
+  lib::LibraryManifest snap;
+  {
+    lib::Library lib = lib::Library::open(dir, default_gate_cfg(), {kMasterSeed});
+    // Simulate two mine runs accumulating trials (no actual mine needed — we test
+    // the counter persistence path only).
+    lib.add_trials(kRun1N);
+    lib.add_trials(kRun2N);
+    EXPECT_EQ(lib.cumulative_trials(), kExpected);
+    // snapshot() writes the sidecar with the current cumulative_trials value.
+    snap = lib.snapshot();
+    EXPECT_EQ(snap.cumulative_trials, kExpected);
+  } // library closed
+
+  // Reopen: Library::open reads the sidecar and restores the counter.
+  lib::Library re = lib::Library::open(dir, default_gate_cfg(), {kMasterSeed});
+  EXPECT_EQ(re.cumulative_trials(), kExpected)
+      << "cumulative_trials not restored from sidecar on reopen";
+  // The reopened snapshot must also be byte-identical to the original.
+  const lib::LibraryManifest snap2 = re.snapshot();
+  EXPECT_EQ(snap2.version_id, snap.version_id)
+      << "version_id diverges after round-trip (counter not folded consistently)";
+}
+
+// R1-2: VersionIdShiftsWithCumulativeTrials
+//
+// Same library content + seeds but different cumulative_trials values yield
+// different version_ids.  Validates that cumulative_trials is actually part of
+// the content address (not a no-op field).
+TEST(LibraryManifest, VersionIdShiftsWithCumulativeTrials) {
+  const auto inputs = fixed_inputs(4);
+
+  const std::string dirA = tmpdir("r1_shift_a");
+  const std::string dirB = tmpdir("r1_shift_b");
+
+  // Build two identical libraries ...
+  lib::LibraryManifest snapA, snapB;
+  {
+    lib::Library libA = lib::Library::open(dirA, default_gate_cfg(), {kMasterSeed});
+    const AlphaGate gate{default_gate_cfg()};
+    for (const auto &c : inputs) { (void)libA.admit(to_candidate(c), gate); }
+    libA.add_trials(100u);
+    snapA = libA.snapshot();
+  }
+  {
+    lib::Library libB = lib::Library::open(dirB, default_gate_cfg(), {kMasterSeed});
+    const AlphaGate gate{default_gate_cfg()};
+    for (const auto &c : inputs) { (void)libB.admit(to_candidate(c), gate); }
+    libB.add_trials(999u); // different trial count
+    snapB = libB.snapshot();
+  }
+
+  EXPECT_EQ(snapA.entries.size(), snapB.entries.size()); // same alpha content
+  EXPECT_NE(snapA.cumulative_trials, snapB.cumulative_trials);
+  EXPECT_NE(snapA.version_id, snapB.version_id)
+      << "version_id must change when cumulative_trials differs";
+}
+
+// R1-3: FreshLibraryHasZeroTrials
+//
+// A fresh library (no sidecar) has cumulative_trials() == 0 and its snapshot's
+// version_id equals a rebuild from the same dir (byte-identical baseline path).
+TEST(LibraryManifest, FreshLibraryHasZeroTrials) {
+  const std::string dir = tmpdir("r1_fresh");
+  const auto inputs = fixed_inputs(3);
+  const lib::LibraryManifest snap = build_library(dir, inputs);
+
+  // Fresh library never had add_trials() called, so counter must be 0.
+  EXPECT_EQ(snap.cumulative_trials, 0u);
+  // rebuild_equals must still hold (the counter 0 round-trips via the sidecar).
+  EXPECT_TRUE(lib::rebuild_equals(snap, dir, default_gate_cfg(), {kMasterSeed}));
+}
 
 }  // namespace atxtest_library_manifest_test

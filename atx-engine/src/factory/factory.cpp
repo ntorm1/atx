@@ -178,11 +178,14 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — the admission deflation N is the search's RUNNING distinct-candidate count
-  // (res.trial_count), NOT the static config N (identical to mine()).
+  // F4 / R1 — the admission deflation N is prior cumulative N + this run's N, so a
+  // multi-run accumulation sweep is visible to the multiple-testing defense. When
+  // prior == 0 (fresh library / single run) this equals res.trial_count — byte-
+  // identical to the pre-R1 path.
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1 = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1) + res.trial_count;
   }
 
   // (2) rank the distinct scored candidates by deflated fitness against the LIBRARY
@@ -270,6 +273,12 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment the cumulative trial counter ONCE per mine run (by this run's N),
+  // AFTER the admission loop so THIS run's survivors were deflated against
+  // (prior + this_run_N) and the NEXT run sees the updated cumulative.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
   return atx::core::Ok(std::move(rep));
 }
 
@@ -410,10 +419,12 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — identical to the sequential path: the admission deflation N is res.trial_count.
+  // F4 / R1 — identical to the sequential path: prior + this run's N (see serial
+  // mine_into above for the full reasoning). When prior == 0 this is res.trial_count.
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1_par = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par) + res.trial_count;
   }
 
   // (2) GATHER per-genome {ok, dsr, raw, streams} over the PROCESS boundary. The pure
@@ -510,6 +521,10 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment once per mine run, AFTER the loop — same as serial mine_into.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
   return atx::core::Ok(std::move(rep));
 }
 
@@ -705,10 +720,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — the admission deflation N is the search's running distinct-candidate count.
+  // F4 / R1 — prior cumulative N + this run's N (same reasoning as serial mine_into).
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_oos) + res.trial_count;
   }
 
   // (2) rank the distinct scored candidates by deflated fitness against an EMPTY pool
@@ -877,6 +893,10 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment once per mine run, AFTER the loop.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
   return atx::core::Ok(std::move(rep));
 }
 
@@ -935,11 +955,11 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — the admission deflation N is the search's running distinct-candidate count
-  // (IDENTICAL to serial mine_into_oos).
+  // F4 / R1 — prior + this run's N, IDENTICAL to serial mine_into_oos.
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1_par_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par_oos) + res.trial_count;
   }
 
   // (Submit #1) TRAIN RANKING eval over the executor — reproduces serial step 2
@@ -1130,6 +1150,10 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment once per mine run, AFTER the loop — IDENTICAL to serial mine_into_oos.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
   return atx::core::Ok(std::move(rep));
 }
 

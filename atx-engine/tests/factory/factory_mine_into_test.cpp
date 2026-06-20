@@ -322,5 +322,60 @@ TEST(FactoryMineInto, SeededRunFoldsAdmissionsIntoDigest) {
   EXPECT_EQ(a.admitted, b.admitted); // identical mine+admit -> identical outcome
 }
 
+// =============================================================================
+//  R1: CumulativeTrialsAccumulates — two sequential mine_into calls into the SAME
+//  library accumulate the trial counter. After run 1 the counter equals run1_N;
+//  after run 2 it equals run1_N + run2_N. Single-run (fresh library) yields
+//  cumulative_trials() == run1_N, i.e. byte-identical to pre-R1 behavior.
+// =============================================================================
+TEST(FactoryMineInto, CumulativeTrialsAccumulates) {
+  Fixture fx{real_signal_panel()};
+  AlphaGate gate{default_gate_cfg()};
+  lib::Library library = lib::Library::open(tmpdir(), default_gate_cfg(), {0xDEADBEEFu});
+  Factory f = fx.factory();
+
+  // Run 1 — fresh library (prior == 0).
+  const FactoryReport rep1 = f.mine_into(real_signal_cfg(/*seed*/ 11), library, gate).value();
+  const u64 after_run1 = library.cumulative_trials();
+  EXPECT_GT(after_run1, 0u) << "trial counter must be positive after a non-empty run";
+  EXPECT_EQ(after_run1, static_cast<u64>(rep1.trials))
+      << "single-run: cumulative_trials must equal this run's trial_count (prior==0)";
+
+  // Run 2 — library now has prior == run1_N.
+  const FactoryReport rep2 = f.mine_into(real_signal_cfg(/*seed*/ 12), library, gate).value();
+  const u64 after_run2 = library.cumulative_trials();
+  const u64 expected =
+      static_cast<u64>(rep1.trials) + static_cast<u64>(rep2.trials);
+  EXPECT_EQ(after_run2, expected)
+      << "two-run: cumulative_trials must be run1_N + run2_N";
+}
+
+// =============================================================================
+//  R1: ByteIdenticalSingleRun — a mine_into over a fresh library (prior == 0)
+//  produces the SAME digest as an independent identical run into a separate fresh
+//  library (the pre-R1 single-run path is byte-identical).
+// =============================================================================
+TEST(FactoryMineInto, ByteIdenticalSingleRun) {
+  // Two independent fixtures + fresh libraries with the same seed.
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  AlphaGate gate{default_gate_cfg()};
+  lib::Library lib1 = lib::Library::open(tmpdir("a"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library lib2 = lib::Library::open(tmpdir("b"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  Factory f2 = fx2.factory();
+
+  // Both libraries are fresh (cumulative_trials == 0), so prior == 0 and the
+  // trial_count passed to DSR is identical to the pre-R1 behavior in both.
+  const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 7), lib1, gate).value();
+  const FactoryReport b = f2.mine_into(real_signal_cfg(/*seed*/ 7), lib2, gate).value();
+
+  EXPECT_EQ(lib1.cumulative_trials(), 0u + static_cast<u64>(a.trials));
+  EXPECT_EQ(lib2.cumulative_trials(), 0u + static_cast<u64>(b.trials));
+  // Byte-identical: same seed, same prior (0), same outcome.
+  EXPECT_EQ(a.digest, b.digest);
+  EXPECT_EQ(a.admitted, b.admitted);
+}
+
 
 }  // namespace atxtest_factory_mine_into_test

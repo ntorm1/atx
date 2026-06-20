@@ -226,6 +226,11 @@ atx::core::Result<StageResult> run_discover_gated(
         }
     }
 
+    // R1: the cumulative trial counter sidecar (_manifest.bin) is written
+    // automatically by Library::flush_all() above, so no explicit write is
+    // needed here. On the next cross-process --library-dir run, Library::open
+    // loads the sidecar and restores cumulative_trials_.
+
     const atx::u64 n = liblib.n_alphas();
     if (n == 0) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
