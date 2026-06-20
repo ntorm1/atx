@@ -499,4 +499,117 @@ TEST(AtxImplCombine, SectorNeutralCombinedBookIsPerSectorNeutral) {
   fs::remove(combo_out, ec); fs::remove(combo_out + ".weights.txt", ec);
 }
 
+// ---------------------------------------------------------------------------
+// 8.B Test: CombineFromLibraryMatchesDslPath
+// Discover (gated) accumulates N alphas into a --library-dir AND writes the same
+// N as alpha_NNN.dsl into alpha_out. Combine is then run TWICE on the same panel
+// + method: once over the loose .dsl dir (--alphas) and once over the persistent
+// library (--library-dir). Both enumerate the SAME N alphas in the SAME (AlphaId)
+// order with the SAME stored expression source, so the combine math is identical
+// and the two combo panels are BYTE-IDENTICAL (equal digests). The library path
+// is also run twice to confirm it is itself deterministic.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, CombineFromLibraryMatchesDslPath) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "lib_combine");
+
+    const std::string lib_dir =
+        (fs::temp_directory_path() / "atx_impl_combine_libdir").string();
+    const std::string alpha_out =
+        (fs::temp_directory_path() / "atx_impl_combine_lib_alpha_out").string();
+    std::error_code ec0;
+    fs::remove_all(lib_dir, ec0);
+    fs::remove_all(alpha_out, ec0);
+
+    // --- Discover (gated) into the library dir; writes .dsl into alpha_out too. ---
+    {
+        atx::impl::RunConfig cfg;
+        cfg.subcommand   = "discover";
+        cfg.panel        = panel_path;
+        cfg.alpha_out    = alpha_out;
+        cfg.library_dir  = lib_dir;
+        cfg.seed         = 909ULL;
+        cfg.population   = 16;
+        cfg.generations  = 5;
+        cfg.seed_exprs   = safe_dsls(); // valid {"close"} expressions
+        cfg.gated        = true;
+        cfg.min_sharpe   = 0.0;
+        cfg.min_fitness  = 0.0;
+        cfg.max_turnover = 10.0;
+        cfg.max_pool_corr= 1.0;
+        cfg.min_dsr      = 0.0;
+        auto rd = atx::impl::run_discover(cfg);
+        ASSERT_TRUE(rd.has_value()) << rd.error().message();
+    }
+    // Sanity: the library wrote >= 1 .dsl into alpha_out.
+    int n_dsl = 0;
+    for (const auto& e : fs::directory_iterator(alpha_out)) {
+        if (e.path().extension() == ".dsl") ++n_dsl;
+    }
+    ASSERT_GE(n_dsl, 1) << "discover must have admitted >= 1 alpha";
+
+    auto run_combine_into = [&](const std::string& tag, bool from_lib)
+        -> atx::core::Result<atx::impl::StageResult> {
+        atx::impl::RunConfig cfg;
+        cfg.subcommand = "combine";
+        cfg.panel      = panel_path;
+        cfg.combo_out  =
+            (fs::temp_directory_path() / ("atx_impl_combine_lib_" + tag + ".bin")).string();
+        cfg.method     = "equal";
+        if (from_lib) {
+            cfg.library_dir = lib_dir;     // 8.B library-backed input
+        } else {
+            cfg.alphas      = alpha_out;   // loose .dsl input
+        }
+        return atx::impl::run_combine(cfg);
+    };
+
+    // --- Combine from the loose .dsl dir (backward-compat path). ---
+    auto r_dsl = run_combine_into("dsl", /*from_lib=*/false);
+    ASSERT_TRUE(r_dsl.has_value()) << r_dsl.error().message();
+
+    // --- Combine from the persistent library (8.B). ---
+    auto r_lib = run_combine_into("lib", /*from_lib=*/true);
+    ASSERT_TRUE(r_lib.has_value()) << r_lib.error().message();
+
+    // --- Combine from the library AGAIN (twice-run determinism). ---
+    auto r_lib2 = run_combine_into("lib2", /*from_lib=*/true);
+    ASSERT_TRUE(r_lib2.has_value()) << r_lib2.error().message();
+
+    // PARITY: the library path and the .dsl path produce a byte-identical combo
+    // (same N alphas, same order, same expressions => same combine math).
+    EXPECT_EQ(r_lib->digest, r_dsl->digest)
+        << "library-backed combine must byte-match the .dsl path on the same alpha set";
+    // DETERMINISM: the library path is stable across re-runs.
+    EXPECT_EQ(r_lib->digest, r_lib2->digest)
+        << "library-backed combine must be deterministic (twice-run identical)";
+    EXPECT_NE(r_lib->digest, atx::u64{0});
+
+    // The "alphas" kv must report the same count on both paths.
+    auto alphas_kv = [](const atx::impl::StageResult& sr) -> int {
+        for (const auto& p : sr.kvs) {
+            if (p.first == "alphas") return std::stoi(p.second);
+        }
+        return -1;
+    };
+    EXPECT_EQ(alphas_kv(*r_lib), alphas_kv(*r_dsl)) << "same N alphas on both paths";
+    EXPECT_EQ(alphas_kv(*r_lib), n_dsl);
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(lib_dir, ec);
+    fs::remove_all(alpha_out, ec);
+    for (const char* tag : {"dsl", "lib", "lib2"}) {
+        const std::string co =
+            (fs::temp_directory_path() / ("atx_impl_combine_lib_" + std::string(tag) + ".bin")).string();
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+    }
+}
+
 } // namespace atxtest_combine

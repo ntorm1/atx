@@ -18,8 +18,10 @@
 #include "atx/engine/alpha/streams.hpp"        // alpha::extract_streams, alpha::AlphaStreams
 #include "atx/engine/alpha/vm.hpp"             // alpha::Engine
 #include "atx/engine/combine/combiner.hpp"     // combine::AlphaCombiner, CombinerConfig, CombineMethod, Combination
+#include "atx/engine/combine/gate.hpp"         // combine::GateConfig (library open, 8.B)
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics
 #include "atx/engine/combine/store.hpp"        // combine::AlphaStore
+#include "atx/engine/library/library.hpp"      // library::Library, AlphaId, AlphaRecordView (8.B)
 #include "atx/engine/loop/weight_policy.hpp"   // engine::WeightPolicy
 
 #include "artifacts.hpp"
@@ -63,55 +65,98 @@ method_from_string(const std::string& s) {
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
 {
-    // 1. Validate required flags.
-    if (cfg.panel.empty() || cfg.alphas.empty() || cfg.combo_out.empty()) {
+    // 1. Validate required flags. The alpha SOURCE is either the loose .dsl directory
+    //    (--alphas) or, when --library-dir is set (8.B), the accumulated persistent
+    //    library::Library. Exactly one source feeds the combine inputs; everything
+    //    downstream (compile_batch + evaluate + the combine math) is identical.
+    const bool from_library = !cfg.library_dir.empty();
+    if (cfg.panel.empty() || cfg.combo_out.empty() ||
+        (!from_library && cfg.alphas.empty())) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                              "combine: --panel, --alphas, and --combo-out required");
+                              "combine: --panel, --combo-out, and one of "
+                              "--alphas / --library-dir required");
     }
 
     // 2. Load the research panel.
     ATX_TRY(auto panel, read_panel(cfg.panel));
 
-    // 3. Enumerate and sort alpha .dsl files (sort for determinism).
-    std::vector<std::filesystem::path> dsl_paths;
-    {
-        std::filesystem::path alphas_dir{cfg.alphas};
-        if (!std::filesystem::exists(alphas_dir) ||
-            !std::filesystem::is_directory(alphas_dir)) {
+    // 3. Collect the alpha DSL sources + a per-alpha label (sidecar provenance).
+    //    Two interchangeable sources; both yield `dsl` (expression strings, in a
+    //    deterministic order) and `labels` (the weights-sidecar provenance string).
+    std::vector<std::string> dsl;
+    std::vector<std::string> labels;
+    if (from_library) {
+        // 3a (8.B). Library-backed input: enumerate ALL admitted records in AlphaId
+        //     order (the same deterministic order discover writes alpha_NNN.dsl in)
+        //     and use each record's stored expression source — the unparse'd DSL the
+        //     library persisted on admit. Re-opening is read-only here (no admit), so
+        //     the gate floors are irrelevant; a default GateConfig suffices. No seeds
+        //     are needed for a pure enumeration (the corr index is not consulted).
+        namespace library = atx::engine::library;
+        std::filesystem::path lib_path{cfg.library_dir};
+        if (!std::filesystem::exists(lib_path) ||
+            !std::filesystem::is_directory(lib_path)) {
             return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                                  "combine: --alphas directory not found: " + cfg.alphas);
+                                  "combine: --library-dir not found: " + cfg.library_dir);
         }
-        for (const auto& entry : std::filesystem::directory_iterator(alphas_dir)) {
-            if (entry.path().extension() == ".dsl") {
-                dsl_paths.push_back(entry.path());
+        library::Library liblib =
+            library::Library::open(cfg.library_dir, combine::GateConfig{}, {});
+        const atx::u64 n = liblib.n_alphas();
+        if (n == 0) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "combine: --library-dir has no admitted alphas: " +
+                                  cfg.library_dir);
+        }
+        dsl.reserve(static_cast<atx::usize>(n));
+        labels.reserve(static_cast<atx::usize>(n));
+        for (atx::u64 a = 0; a < n; ++a) {
+            const auto rec = liblib.get(library::AlphaId{static_cast<atx::u32>(a)});
+            dsl.push_back(rec.provenance.expr_source);
+            labels.push_back("lib:" + cfg.library_dir + "#alpha_" + std::to_string(a));
+        }
+    } else {
+        // 3b. Loose-.dsl input (backward compat): enumerate + sort .dsl files (sort for
+        //     determinism), then read each, trimming trailing whitespace/newlines.
+        std::vector<std::filesystem::path> dsl_paths;
+        {
+            std::filesystem::path alphas_dir{cfg.alphas};
+            if (!std::filesystem::exists(alphas_dir) ||
+                !std::filesystem::is_directory(alphas_dir)) {
+                return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                      "combine: --alphas directory not found: " + cfg.alphas);
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(alphas_dir)) {
+                if (entry.path().extension() == ".dsl") {
+                    dsl_paths.push_back(entry.path());
+                }
             }
         }
-    }
-    std::sort(dsl_paths.begin(), dsl_paths.end());
+        std::sort(dsl_paths.begin(), dsl_paths.end());
 
-    if (dsl_paths.empty()) {
-        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                              "combine: no .dsl alphas found in --alphas dir");
-    }
+        if (dsl_paths.empty()) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "combine: no .dsl alphas found in --alphas dir");
+        }
 
-    // Read DSL file contents, trim trailing whitespace/newlines.
-    std::vector<std::string> dsl;
-    dsl.reserve(dsl_paths.size());
-    for (const auto& p : dsl_paths) {
-        std::ifstream f{p};
-        if (!f.is_open()) {
-            return atx::core::Err(atx::core::ErrorCode::IoError,
-                                  "combine: cannot open DSL file: " + p.string());
+        dsl.reserve(dsl_paths.size());
+        labels.reserve(dsl_paths.size());
+        for (const auto& p : dsl_paths) {
+            std::ifstream f{p};
+            if (!f.is_open()) {
+                return atx::core::Err(atx::core::ErrorCode::IoError,
+                                      "combine: cannot open DSL file: " + p.string());
+            }
+            std::string contents{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+            // Trim trailing whitespace/newlines.
+            while (!contents.empty() &&
+                   (contents.back() == '\n' || contents.back() == '\r' ||
+                    contents.back() == ' '  || contents.back() == '\t')) {
+                contents.pop_back();
+            }
+            dsl.push_back(std::move(contents));
+            labels.push_back(p.string());
         }
-        std::string contents{std::istreambuf_iterator<char>(f),
-                             std::istreambuf_iterator<char>()};
-        // Trim trailing whitespace/newlines.
-        while (!contents.empty() &&
-               (contents.back() == '\n' || contents.back() == '\r' ||
-                contents.back() == ' '  || contents.back() == '\t')) {
-            contents.pop_back();
-        }
-        dsl.push_back(std::move(contents));
     }
 
     // 4. Compile all DSL sources as a multi-root batch Program.
@@ -233,7 +278,7 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         wf << "fit_end="    << fit_end            << '\n';
         for (atx::usize a = 0; a < combo.weights.size(); ++a) {
             wf << "w[" << a << "]=" << combo.weights[a]
-               << ' ' << dsl_paths[a].string() << '\n';
+               << ' ' << labels[a] << '\n';
         }
     }
 
