@@ -62,3 +62,6 @@ _deps/
 
 # Scratch / experiment dirs (notebooks, throwaway scripts) — not versioned
 scratch/
+
+# Subagent-driven-dev scratch (ledger, briefs, reports) — not versioned
+.superpowers/

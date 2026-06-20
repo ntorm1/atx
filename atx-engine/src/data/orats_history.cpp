@@ -162,6 +162,7 @@ void split_tabs(std::string_view line, std::vector<std::string_view> &out) {
 // (symbology). Views into the source line — copy before the buffer is reused.
 struct KeyFields {
   std::string_view date, secid, ticker, today;
+  std::string_view gics; // captured only when the producer scans as far as the GICS column
 };
 
 // Single-pass partial split: walk tabs only as far as `max_needed` (the highest
@@ -183,6 +184,7 @@ KeyFields extract_key_fields(std::string_view line, const detail::ColumnIndex &i
     if (col == idx.securityID) k.secid = f;
     if (col == idx.ticker_tk) k.ticker = f;
     if (col == idx.todayTicker) k.today = f;
+    if (col == idx.field[11]) k.gics = f; // GICS (kOratsFields[11]); captured iff max_needed reaches it
     if (tab == std::string_view::npos || col >= max_needed) break;
     start = end + 1;
     ++col;
@@ -267,6 +269,21 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
   if (k.secid.empty()) {
     ++st.stats.rows_malformed;
     return atx::core::Ok();
+  }
+
+  // 4b) Single-stock prune (opt-in): a row with no parseable GICS sector is not a
+  //     single stock (ETF/fund), so drop it before it reaches the partition. This
+  //     keeps such symbols out of every .seg, tightening the panel. Counts as a
+  //     filtered row so rows_read == filtered + malformed + kept still holds.
+  //     `k.gics` is populated only when max_needed_col reaches the GICS column,
+  //     which the loader extends iff exclude_no_sector is set (so the guard and the
+  //     scan are enabled together). NaN-without-<cmath>: g != g.
+  if (st.cfg.exclude_no_sector) {
+    const atx::f64 g = parse_f64(k.gics);
+    if (g != g) { // NaN -> empty or unparseable GICS -> not a single stock
+      ++st.stats.rows_filtered;
+      return atx::core::Ok();
+    }
   }
 
   // 5) Date boundary: seal the previous date into a writer-pool job (the loader's
@@ -553,6 +570,10 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
         // the real header), then hands the rest off as raw bytes.
         st.max_needed_col =
             std::max({idx.tradingDate, idx.securityID, idx.ticker_tk, idx.todayTicker});
+        // The single-stock prune reads GICS in the producer; extend the scan to it.
+        if (cfg.exclude_no_sector) {
+          st.max_needed_col = std::max(st.max_needed_col, idx.field[11]);
+        }
         header_parsed = true;
         continue;
       }

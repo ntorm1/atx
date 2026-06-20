@@ -43,10 +43,13 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
     atx::engine::data::UniverseConfig u{};
     u.min_adv_usd = cfg.min_adv_usd;
     u.top_n_by_adv = static_cast<atx::usize>(cfg.top_n_by_adv < 0 ? 0 : cfg.top_n_by_adv);
+    u.min_price = cfg.min_price;            // raw-close floor (0 = off)
+    u.require_sector = cfg.require_sector;  // single-stock (GICS) screen
     // adv_window=21 and min_mktcap_usd=0 remain at their defaults.
 
     // 4. Build history panel.
     atx::engine::data::HistoryDataConfig hc{cfg.segs, w, u};
+    hc.compact_to_universe = cfg.compact_universe; // drop never-in-universe columns
     ATX_TRY(auto hp, atx::engine::data::build_history_panel(hc));
 
     // 5. Serialize.

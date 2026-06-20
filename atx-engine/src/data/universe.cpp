@@ -187,6 +187,8 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
 [[nodiscard]] std::vector<atx::u8> membership_mask(const alpha::Panel &p,
                                                    std::span<const atx::f64> market_cap,
                                                    std::span<const atx::f64> adv_usd,
+                                                   std::span<const atx::f64> raw_close,
+                                                   std::span<const atx::i32> sector_code,
                                                    const UniverseConfig &cfg, atx::usize dates,
                                                    atx::usize instruments) {
   std::vector<atx::u8> mask(dates * instruments, atx::u8{0});
@@ -196,7 +198,14 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
       const bool present = p.in_universe(t, i);
       const bool cap_ok = market_cap[flat] >= cfg.min_mktcap_usd; // NaN -> false
       const bool adv_ok = adv_usd[flat] >= cfg.min_adv_usd;       // NaN -> false
-      mask[flat] = (present && cap_ok && adv_ok) ? atx::u8{1} : atx::u8{0};
+      // Price floor: STRICT raw_close > min_price (NaN -> false). Disabled (no
+      // change) when min_price <= 0 so legacy panels are byte-identical.
+      const bool price_ok = (cfg.min_price <= 0.0) || (raw_close[flat] > cfg.min_price);
+      // Single-stock requirement: a classified (non-sentinel) sector. ETFs/funds
+      // carry no GICS, so sector_code == kNoSectorCode excludes them. Off by default.
+      const bool sector_ok = !cfg.require_sector || (sector_code[flat] != kNoSectorCode);
+      mask[flat] =
+          (present && cap_ok && adv_ok && price_ok && sector_ok) ? atx::u8{1} : atx::u8{0};
     }
     if (cfg.top_n_by_adv > 0) {
       apply_top_n(std::span<atx::u8>{mask}.subspan(t * instruments, instruments),
@@ -247,8 +256,8 @@ atx::core::Result<UniverseFields> build_universe(const alpha::Panel &price_panel
   out.market_cap = market_cap_field(raw_close, shares, cells);
   out.adv_usd = adv_field(price_panel, raw_close, volume, dates, instruments, cfg.adv_window);
   out.sector_code = sector_field(gics, sic, cells);
-  out.in_universe =
-      membership_mask(price_panel, out.market_cap, out.adv_usd, cfg, dates, instruments);
+  out.in_universe = membership_mask(price_panel, out.market_cap, out.adv_usd, raw_close,
+                                    out.sector_code, cfg, dates, instruments);
   return Ok(std::move(out));
 }
 

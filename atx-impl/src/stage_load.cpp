@@ -33,6 +33,7 @@ atx::core::Result<StageResult> run_load(const RunConfig& cfg) {
     lc.zip_path         = cfg.zip;
     lc.out_dir          = cfg.out;
     lc.min_date_nanos   = *md;
+    lc.exclude_no_sector = cfg.exclude_no_sector; // ETF/fund prune at load (no-GICS rows dropped)
     lc.created_at_nanos = 0;  // FIXED for determinism: stamped into seg headers;
                                // a clock value would break byte-identical re-runs.
 

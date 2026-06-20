@@ -49,6 +49,12 @@ struct HistoryDataConfig {
   std::string seg_dir;          // data/orats_history_1d
   alpha::TimeWindow window{};   // [start,end) trading dates (unix-nanos)
   UniverseConfig universe{};    // market-cap / ADV / sector / top-N screen
+  // When true, drop instrument columns that are NEVER in-universe over the whole
+  // window (after the universe screen) — a lossless tightening: those columns are
+  // all-NaN-masked at eval anyway, so dropping them shrinks the panel (memory +
+  // eval cost) without changing any in-universe signal. false ⇒ keep every column
+  // (legacy; preserves the digest).
+  bool compact_to_universe = false;
 };
 
 // =========================================================================

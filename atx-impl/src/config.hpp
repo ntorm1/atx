@@ -30,6 +30,7 @@ struct RunConfig {
     std::string zip;                   // --zip
     std::string out;                   // --out  (shared output field)
     std::string min_date;              // --min-date
+    bool        exclude_no_sector = false; // --exclude-no-sector (drop rows w/ no GICS at load: ETF/fund prune)
 
     // -- panel --
     std::string segs;                  // --segs
@@ -38,6 +39,9 @@ struct RunConfig {
     std::string end;                   // --end
     double      min_adv_usd   = 0.0;  // --min-adv-usd
     long        top_n_by_adv  = 0;    // --top-n-by-adv
+    double      min_price     = 0.0;  // --min-price       (raw-close floor; membership iff raw_close > min_price; 0 = off)
+    bool        require_sector   = false; // --require-sector   (single-stock screen: require a GICS/SIC sector)
+    bool        compact_universe = false; // --compact-universe (drop instrument cols never in-universe -> tighter panel)
 
     // -- discover --
     std::string panel;                 // --panel

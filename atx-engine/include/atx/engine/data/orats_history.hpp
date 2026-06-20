@@ -42,6 +42,11 @@ struct OratsLoadConfig {
   std::string out_dir;        // data/orats_history_1d (created if absent)
   atx::i64 min_date_nanos;    // inclusive floor; rows with tradingDate < this are dropped
   atx::i64 created_at_nanos;  // stamped into every segment header (provenance)
+  // When true, drop rows whose GICS column is empty/unparseable at LOAD time — a
+  // single-stock filter (ETFs/funds carry no GICS classifier) that keeps those
+  // symbols out of the .seg partition entirely, so they are never loaded and the
+  // panel is tighter. Counts toward rows_filtered. false ⇒ keep every row (legacy).
+  bool exclude_no_sector = false;
 };
 
 struct OratsLoadStats {
