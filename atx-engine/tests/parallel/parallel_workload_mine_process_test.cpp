@@ -68,6 +68,7 @@ namespace {
 using atx::f64;
 using atx::u64;
 using atx::usize;
+using atx::engine::Transform;
 using atx::engine::WeightPolicy;
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::Library;
@@ -466,6 +467,50 @@ TEST(ParallelWorkloadMineProcess, GenomeRoundTripsThroughSerializeParse) {
         EXPECT_EQ(a[t], b[t]) << "genome " << k << " pnl[" << t << "] diverged";
       }
     }
+  }
+}
+
+// ===========================================================================
+//  2b. WEIGHTPOLICY TRANSFORM ROUND-TRIP — the W1a gated-path fix. The full
+//      Transform taxonomy (Rank=0, ZScore=1, Raw=2) MUST survive the
+//      serialize_mine_input -> MineInputView::weight_policy() round-trip. The
+//      GATED discover path scores every genome through this seam; before the fix
+//      the deserialize ternary mapped anything-not-ZScore back to Rank, silently
+//      downgrading Raw=2 -> Rank. This pins the field directly (the lightest seam:
+//      a panel-only buffer with one trivial genome) for EVERY closed enumerator.
+// ===========================================================================
+TEST(ParallelWorkloadMineProcess, WeightPolicyTransformRoundTrips) {
+  // A minimal panel + single in-grammar genome — we only exercise the header
+  // scalars, so the cheapest valid fixture suffices.
+  const Panel panel = two_field_panel(20, 4, momentum_close(20, 4, 0x5EEDu));
+  Library dsl;
+  auto ast = parse_expr("rank(close)", dsl);
+  ASSERT_TRUE(ast.has_value());
+  auto ana = analyze(*ast);
+  ASSERT_TRUE(ana.has_value());
+  std::vector<Genome> genomes;
+  genomes.push_back(Genome{std::move(*ast), std::move(*ana), 0});
+
+  MineWorkItem pool;
+  pool.pool_n_alphas = 0;
+  pool.n_periods = 0;
+  pool.pool_seed = 1;
+  FitnessCfg fit;
+  fit.trial_count = 2;
+  const ExecutionSimulator sim = frictionless_sim();
+
+  // Every closed Transform enumerator must round-trip to itself. Raw (=2) is the
+  // regression guard; Rank (=0) and ZScore (=1) confirm the unchanged paths.
+  for (const Transform want : {Transform::Rank, Transform::ZScore, Transform::Raw}) {
+    WeightPolicy policy;
+    policy.transform = want;
+    const std::vector<std::byte> buf = serialize_mine_input(
+        std::span<const Genome>{genomes}, pool, panel, fit, policy, sim);
+    const auto parsed = MineInputView::parse(InputView{std::span<const std::byte>{buf}});
+    ASSERT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().message());
+    const WeightPolicy got = parsed->weight_policy();
+    EXPECT_EQ(static_cast<int>(got.transform), static_cast<int>(want))
+        << "transform " << static_cast<int>(want) << " must survive the mine serialize round-trip";
   }
 }
 

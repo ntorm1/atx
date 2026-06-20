@@ -502,9 +502,25 @@ factory::FitnessCfg MineInputView::fitness_cfg() const noexcept {
 
 atx::engine::WeightPolicy MineInputView::weight_policy() const noexcept {
   atx::engine::WeightPolicy p;
-  p.transform = (wp_transform_ == static_cast<atx::u32>(atx::engine::Transform::ZScore))
-                    ? atx::engine::Transform::ZScore
-                    : atx::engine::Transform::Rank;
+  // Reconstruct the FULL Transform taxonomy from the serialized numeric value (the
+  // serializer writes static_cast<u32>(policy.transform)). The mapping is the closed
+  // enum's frozen wire contract — Rank=0, ZScore=1, Raw=2 (weight_policy.hpp). An
+  // exhaustive switch with NO `default` matches the engine's closed-taxonomy discipline:
+  // a future enumerator becomes a /W4 /WX compile error HERE (forcing the wire mapping to
+  // be extended) rather than silently collapsing to Rank. A serialized value outside the
+  // closed taxonomy is an impossible input on the trusted serialize/deserialize seam; the
+  // initial Rank default below covers it without widening the switch.
+  switch (static_cast<atx::engine::Transform>(wp_transform_)) {
+  case atx::engine::Transform::Rank:
+    p.transform = atx::engine::Transform::Rank;
+    break;
+  case atx::engine::Transform::ZScore:
+    p.transform = atx::engine::Transform::ZScore;
+    break;
+  case atx::engine::Transform::Raw:
+    p.transform = atx::engine::Transform::Raw;
+    break;
+  }
   p.industry_neutral = (wp_flags_ & 1U) != 0U;
   p.dollar_neutral = (wp_flags_ & 2U) != 0U;
   p.gross_leverage = wp_gross_leverage_;

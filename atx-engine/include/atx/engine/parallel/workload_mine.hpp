@@ -59,7 +59,7 @@
 //    [16 .. 20)  u32   trial_count        (FitnessCfg.trial_count, the deflation N)
 //    [20 .. 24)  u32   cpcv_n_groups      (FitnessCfg.cpcv geometry)
 //    [24 .. 28)  u32   cpcv_n_test_groups
-//    [28 .. 32)  u32   wp_transform       (0=Rank 1=ZScore)
+//    [28 .. 32)  u32   wp_transform       (0=Rank 1=ZScore 2=Raw)
 //    [32 .. 36)  u32   wp_flags           (bit0 industry_neutral, bit1 dollar_neutral)
 //    [36 .. 40)  u32   commission_mode    (0=PerShare 1=PerDollar)
 //    [40 .. 44)  u32   pad0
