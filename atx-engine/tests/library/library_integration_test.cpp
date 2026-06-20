@@ -329,6 +329,78 @@ TEST(LibraryIntegration, DedupRejectsEquivalentAdmitsNew) {
   EXPECT_EQ(facade.admit(view_of(c), gate).kind, AdmitKind::Accept);
 }
 
+// ====== Task 8 cross-run accumulation guard (geometry-mismatch footgun) ======
+// A length-parametric passing candidate: a small constant drift plus a single
+// orthogonal AC tone over T points, the tone FREQUENCY chosen from `h` so distinct
+// h give DECORRELATED candidates (different DFT bins are orthogonal). Deterministic
+// in (h, len); clears the default gate floors (drift-dominated mean => high Sharpe).
+// Distinct from make_passing() only in that the PnL length is a free parameter, so
+// we can reopen ONE library dir with a DIFFERENT holdout geometry (the misuse).
+[[nodiscard]] CandidateData make_passing_len(u64 h, usize len) {
+  CandidateData c;
+  c.canon_hash = h;
+  c.pnl.assign(len, 0.0);
+  c.pos_flat.assign(len * kN, 0.0);
+  // Pick a low integer frequency f in [1, len/4] from h (distinct bins are
+  // orthogonal => distinct h => |corr| ~ 0, well under max_pool_corr).
+  const usize fmax = (len / 4u) == 0u ? 1u : (len / 4u);
+  const usize freq = 1u + static_cast<usize>(h % static_cast<u64>(fmax));
+  for (usize t = 0; t < len; ++t) {
+    const f64 ang = 2.0 * std::numbers::pi * static_cast<f64>(freq) * static_cast<f64>(t) /
+                    static_cast<f64>(len);
+    c.pnl[t] = kPnlDrift + kPnlAmp * std::cos(ang); // drift + one orthogonal tone
+    c.pos_flat[t * kN] = 0.10 + 0.001 * static_cast<f64>(t % 3u);
+  }
+  c.pos_flat[0] = 0.10;
+  c.metrics = compute_metrics(c.pnl, c.pos_flat, kN, /*book*/ 1.0);
+  c.prov = lib::Provenance{"synthetic-len", std::vector<u64>{}, /*op*/ 0, /*seed*/ h};
+  c.as_of = 1;
+  return c;
+}
+
+// Reopening ONE --library-dir whose period count was fixed by a PRIOR run, then
+// presenting a candidate with a DIFFERENT holdout pnl length, must return a CLEAN
+// error (NOT an ATX_ASSERT abort in debug / an out-of-bounds projection read in
+// release). The matching-length accumulation path must still Accept. This is the
+// footgun guard for Task 8's cross-run accumulation (same dir, different geometry).
+TEST(LibraryIntegration, AccumulationRejectsGeometryMismatch) {
+  const std::string dir = tmpdir("geom");
+  const AlphaGate gate{default_gate_cfg()};
+  constexpr usize kL1 = 64; // first run's holdout length (fixes the library's t_)
+  constexpr usize kL2 = 48; // a LATER run's DIFFERENT holdout length (the misuse)
+
+  // First run: admit + flush + close, fixing the library's period count at kL1.
+  {
+    lib::Library lib0 = lib::Library::open(dir, default_gate_cfg(), {kMasterSeed});
+    const CandidateData first = make_passing_len(0x1111111111111111ull, kL1);
+    const auto v0 = lib0.try_admit(view_of(first), gate);
+    ASSERT_TRUE(v0.has_value()) << v0.error().message();
+    EXPECT_EQ(v0->kind, AdmitKind::Accept);
+    ASSERT_TRUE(lib0.flush_all().has_value());
+  } // close the writer; the reopen below learns t_ = kL1 from store_.n_periods()
+
+  // Reopen the SAME dir (constructor fixes corr_->t() = kL1) and present a
+  // candidate whose holdout pnl length is kL2 != kL1: a clean InvalidArgument,
+  // never an abort/OOB.
+  {
+    lib::Library re = lib::Library::open(dir, default_gate_cfg(), {kMasterSeed});
+    const CandidateData mismatched = make_passing_len(0x2222222222222222ull, kL2);
+    const auto bad = re.try_admit(view_of(mismatched), gate);
+    ASSERT_FALSE(bad.has_value()) << "geometry mismatch must NOT admit/abort";
+    EXPECT_EQ(bad.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+
+  // Reopen once more and confirm the MATCHING-length accumulation path still
+  // succeeds (a distinct alpha at kL1 Accepts) — the guard only fences the misuse.
+  {
+    lib::Library re = lib::Library::open(dir, default_gate_cfg(), {kMasterSeed});
+    const CandidateData matched = make_passing_len(0x3333333333333333ull, kL1);
+    const auto good = re.try_admit(view_of(matched), gate);
+    ASSERT_TRUE(good.has_value()) << good.error().message();
+    EXPECT_EQ(good->kind, AdmitKind::Accept);
+  }
+}
+
 // ====== exit #3 ======
 // The brute-force reference: build an in-memory AlphaStore mirroring the facade's
 // admitted pool, then run AlphaGate::admit over the WHOLE pool (O(N) scan).

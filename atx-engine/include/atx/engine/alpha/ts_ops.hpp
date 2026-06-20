@@ -293,19 +293,22 @@ struct TsvFit {
 //  reduce to an order-independent extreme.
 //
 //  WHICH OPS ARE ONLINE (ts_is_online_op):
-//    * Rolling-sum family (TOLERANCE): TsSum, TsMean, TsVar, TsStd, TsZscore,
-//      TsAvDiff. Carry running Sx (Σx) and Sxx (Σx²) plus a non-NaN count.
-//      variance = (Sxx - Sx*Sx/n)/(n-1) (sample, ddof=1). The Sxx-form is the
-//      classic catastrophic-cancellation risk; the observed worst-case error vs
-//      the batch oracle on the conformance panels is well within the 1e-9 band
-//      (see report), so it is shippable.
+//    * Rolling-sum family (TOLERANCE, atol=rtol=1e-9): TsSum, TsMean. Carry a
+//      running Sx (Σx) plus a non-NaN count; mean = Sx/n. NO Σx² is carried —
+//      the sum's OUTPUT magnitude tracks the input (sum ~ n*mean), so the drift
+//      stays a bounded RELATIVE error well within the 1e-9 band (see report).
 //    * Rolling extreme (EXACT): TsMin, TsMax, TsScale. A monotonic deque keeps
 //      the window min (and max) in O(1) amortized; the value is the exact same
 //      extreme the batch scan finds (order-independent), so it stays bit-exact.
-//  EVERYTHING ELSE stays batch (ts_value_at): product (rolling division is
-//  unsafe near 0), corr/cov/decay_linear/wma/ema (cancellation / re-anchoring
-//  weights — left batch for safety), skew/kurt/med/mad/slope/rsquare/resid/rank/
-//  argmin/argmax/quantile/moment/entropy/backfill/count_nans, delay/delta, OU.
+//  EVERYTHING ELSE stays BATCH bit-exact (ts_value_at). The variance family —
+//  TsVar / TsStd / TsZscore / TsAvDiff — was REVERTED from online to batch
+//  (Task 7): a rolling Σx² variance (`Sxx - Sx*Sx/n`) is catastrophic-
+//  cancellation-prone on a high-mean/low-variance or high-magnitude window, so
+//  Σx² is REMOVED and these recompute per window for cancellation safety. Also
+//  batch: product (rolling division is unsafe near 0), corr/cov/decay_linear/wma/
+//  ema (cancellation / re-anchoring weights — left batch for safety), skew/kurt/
+//  med/mad/slope/rsquare/resid/rank/argmin/argmax/quantile/moment/entropy/
+//  backfill/count_nans, delay/delta, OU.
 //
 //  NaN / min_periods / warmup REPRODUCTION (the highest-risk area):
 //    The batch policy is FULL-WINDOW, any-NaN -> NaN (tsv_window_valid): output

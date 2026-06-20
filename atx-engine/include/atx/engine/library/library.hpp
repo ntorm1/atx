@@ -143,8 +143,34 @@ public:
     return Library{dir, cfg, std::move(master_seeds)};
   }
 
+  /// Geometry-checked admit (Task 8 cross-run accumulation guard). Returns a CLEAN
+  /// error — never an abort/OOB — when `c`'s holdout pnl length does not match the
+  /// period count this library already fixed on a PRIOR run (the `--library-dir`
+  /// reopen footgun: same dir, different panel/OOS geometry). On a matching length
+  /// (the intended same-panel-many-seeds use) it delegates to admit() VERBATIM, so
+  /// the happy path is byte-for-byte identical (same staging, same digest). Callers
+  /// that accumulate across runs should prefer this over admit() so a geometry
+  /// mismatch surfaces as a propagated InvalidArgument instead of an ATX_ASSERT
+  /// abort (debug) / out-of-bounds projection read (release).
+  [[nodiscard]] atx::core::Result<AdmitVerdict> try_admit(const AlphaCandidate &c,
+                                                          const AlphaGate &gate) {
+    if (const atx::usize fixed = fixed_period_count(); fixed != 0U && c.pnl.size() != fixed) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "library holdout geometry mismatch: candidate pnl length " +
+                                std::to_string(c.pnl.size()) +
+                                " != library period count t_ " + std::to_string(fixed));
+    }
+    return atx::core::Ok(admit(c, gate));
+  }
+
   /// admit `c` through the full pipeline (see the header order). On Accept the
   /// returned id is the new global AlphaId; on any reject/duplicate the id is unset.
+  ///
+  /// PRECONDITION (period geometry): `c.pnl.size()` MUST equal the library's fixed
+  /// period count once any alpha exists (the §4 shared-T contract — see ensure_corr /
+  /// CorrNeighborIndex::signature). Cross-run accumulation against a DIFFERENT panel/
+  /// OOS geometry violates this; callers that accumulate should gate through
+  /// try_admit() (which returns a clean error) rather than relying on the asserts.
   [[nodiscard]] AdmitVerdict admit(const AlphaCandidate &c, const AlphaGate &gate) {
     // 1. library-wide dedup (cheapest gate first).
     if (dedup_.contains(c.canon_hash)) {
@@ -296,6 +322,20 @@ private:
   // The corr-index master seed: the first master seed (0 if none supplied).
   [[nodiscard]] static atx::u64 seed0(const std::vector<atx::u64> &seeds) noexcept {
     return seeds.empty() ? 0ULL : seeds.front();
+  }
+
+  // The library's LOAD-BEARING fixed period count, or 0 if not yet fixed. This is
+  // the T that admit() will assert the candidate against: once the corr index is
+  // constructed it is corr_->t(); on a reopened-but-not-yet-admitted-into store it
+  // is store_.n_periods() (which the constructor uses to size the index). 0 means a
+  // fresh, empty library whose T is still free to be learned from the first admit.
+  // try_admit() consults this to convert the geometry-mismatch abort/OOB into a
+  // clean error WITHOUT perturbing the same-T happy path.
+  [[nodiscard]] atx::usize fixed_period_count() const noexcept {
+    if (corr_.has_value()) {
+      return corr_->t();
+    }
+    return store_.n_periods();
   }
 
   // Lazily construct the corr index sized to `t` PnL periods. Idempotent: once
