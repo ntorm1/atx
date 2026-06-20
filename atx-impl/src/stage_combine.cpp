@@ -235,6 +235,17 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     //    (no name) only when it is out of the panel universe for that date.
     const atx::usize D = panel.dates();
     const atx::usize N = panel.instruments();
+    // 9.1 INVARIANT (positional AlphaId keying): the fitted weight vector is keyed
+    // by AlphaId — combo.weights[a] is the weight of the alpha whose AlphaId is `a`.
+    // By construction AlphaId `a` == streams row `a` == the step-3 dsl/labels index
+    // `a`: step-7 inserts the pool in ascending `a` over streams.n_alphas(), and the
+    // combiner returns one weight per pool alpha in that same AlphaId order. So the
+    // blend below MUST apply combo.weights[a] to the stream whose AlphaId is `a`
+    // (NOT to a directory-sort position or any other ordering). Assert the one fact
+    // that makes the positional index sound: one weight per stream alpha. This is a
+    // debug-only programmer-error guard; it changes NO numeric behavior on the
+    // static path (the loop bounds and arithmetic are unchanged).
+    ATX_ASSERT(combo.weights.size() == streams.n_alphas());
     std::vector<atx::f64> combined(D * N, std::numeric_limits<atx::f64>::quiet_NaN());
     std::vector<std::span<const atx::f64>> rows(combo.weights.size());
     for (atx::usize t = 0; t < D; ++t) {
