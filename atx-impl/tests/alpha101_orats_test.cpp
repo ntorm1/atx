@@ -293,7 +293,15 @@ TEST(Alpha101Orats, FastEqualsOracle_Synthetic) {
 //  hard assertion is that every alpha yields a finite Sharpe.
 // ===========================================================================
 
-[[nodiscard]] atx::f64 alpha_sharpe(const SignalSet &ss, const Panel &panel) {
+// inverse_vol=true: risk-parity sizing — each demeaned cross-sectional weight is
+// divided by the name's ATM 126d implied move (atmCenI_126d) before L1-normalizing,
+// so two names with the same signal tilt but different vol carry equal *risk*
+// rather than equal dollars. Names with missing/non-positive IV are dropped
+// (cannot be risk-sized), which shrinks the effective universe to IV-covered
+// names. Dollar-neutrality drifts slightly after the per-name vol scale (the
+// demeaning is applied to the raw signal, not re-applied post-scale).
+[[nodiscard]] atx::f64 alpha_sharpe_impl(const SignalSet &ss, const Panel &panel,
+                                         bool inverse_vol) {
   if (ss.alphas.empty()) {
     return std::numeric_limits<atx::f64>::quiet_NaN();
   }
@@ -302,6 +310,16 @@ TEST(Alpha101Orats, FastEqualsOracle_Synthetic) {
     return std::numeric_limits<atx::f64>::quiet_NaN();
   }
   const std::span<const atx::f64> ret = panel.field_all(*rid);
+
+  std::span<const atx::f64> iv;
+  if (inverse_vol) {
+    auto vid = panel.field_id("atmCenI_126d");
+    if (!vid) {
+      return std::numeric_limits<atx::f64>::quiet_NaN();
+    }
+    iv = panel.field_all(*vid);
+  }
+
   const std::vector<atx::f64> &v = ss.alphas[0].values;
   const atx::usize D = panel.dates();
   const atx::usize I = panel.instruments();
@@ -309,6 +327,7 @@ TEST(Alpha101Orats, FastEqualsOracle_Synthetic) {
   std::vector<atx::f64> pnl(D, 0.0);
   std::vector<atx::f64> w(I, 0.0);
   for (atx::usize d = 0; d + 1 < D; ++d) {
+    // Cross-sectional mean of the raw signal over in-universe, finite cells.
     atx::f64 sum = 0.0;
     atx::usize cnt = 0;
     for (atx::usize i = 0; i < I; ++i) {
@@ -328,6 +347,13 @@ TEST(Alpha101Orats, FastEqualsOracle_Synthetic) {
       atx::f64 wi = 0.0;
       if (panel.in_universe(d, i) && idx < v.size() && std::isfinite(v[idx])) {
         wi = v[idx] - mean;
+        if (inverse_vol) {
+          const atx::f64 s = (idx < iv.size())
+                                 ? iv[idx]
+                                 : std::numeric_limits<atx::f64>::quiet_NaN();
+          // No risk estimate -> cannot size; drop the name.
+          wi = (std::isfinite(s) && s > 0.0) ? (wi / s) : 0.0;
+        }
       }
       w[i] = wi;
       l1 += std::fabs(wi);
@@ -351,6 +377,10 @@ TEST(Alpha101Orats, FastEqualsOracle_Synthetic) {
 
   const atx::engine::eval::ReturnMetricsCfg cfg{};
   return atx::engine::eval::compute_return_metrics(pnl, cfg).sharpe;
+}
+
+[[nodiscard]] atx::f64 alpha_sharpe(const SignalSet &ss, const Panel &panel) {
+  return alpha_sharpe_impl(ss, panel, /*inverse_vol=*/false);
 }
 
 TEST(Alpha101Orats, RankBySharpe) {
@@ -403,6 +433,101 @@ TEST(Alpha101Orats, RankBySharpe) {
   std::cout << "============================================\n\n";
 
   EXPECT_EQ(finite, 101) << "every alpha must yield a finite Sharpe";
+}
+
+// Risk-parity comparison: equal-dollar (L1) vs inverse-IV (equal-risk) sizing.
+// Per alpha, evaluate once and score both weightings; rank by the inverse-vol
+// Sharpe and print the equal-dollar Sharpe alongside with the delta. Reports
+// IV126 coverage so the universe-shrink effect of dropping IV-less names is
+// visible. Informational; hard assertion only that both are finite.
+TEST(Alpha101Orats, RankBySharpeRiskParity) {
+  const std::vector<atx_impl_test::FixtureAlpha> alphas =
+      atx_impl_test::read_alpha_fixture(fixture_path());
+  ASSERT_EQ(alphas.size(), 101U);
+  const std::vector<atx::u16> adv = atx_impl_test::collect_adv_windows(alphas);
+  bool is_real = false;
+  const Panel panel = build_eval_panel(adv, is_real);
+
+  // IV126 coverage among in-universe cells (context for the universe shrink).
+  {
+    auto vid = panel.field_id("atmCenI_126d");
+    ASSERT_TRUE(vid.has_value()) << "panel missing atmCenI_126d field";
+    const std::span<const atx::f64> iv = panel.field_all(*vid);
+    const atx::usize D = panel.dates();
+    const atx::usize I = panel.instruments();
+    atx::usize inu = 0, cov = 0;
+    for (atx::usize d = 0; d < D; ++d) {
+      for (atx::usize i = 0; i < I; ++i) {
+        if (!panel.in_universe(d, i)) {
+          continue;
+        }
+        ++inu;
+        const atx::usize idx = d * I + i;
+        if (idx < iv.size() && std::isfinite(iv[idx]) && iv[idx] > 0.0) {
+          ++cov;
+        }
+      }
+    }
+    const double pct = (inu == 0) ? 0.0 : 100.0 * static_cast<double>(cov) /
+                                              static_cast<double>(inu);
+    std::cout << "\nIV126 coverage: " << cov << " / " << inu << " in-universe cells ("
+              << pct << "%) carry a usable atmCenI_126d\n";
+  }
+
+  struct Row {
+    int id{};
+    atx::f64 eqdollar{};
+    atx::f64 eqrisk{};
+  };
+  std::vector<Row> rows;
+  rows.reserve(alphas.size());
+  int finite = 0;
+  for (const atx_impl_test::FixtureAlpha &fa : alphas) {
+    auto ast = parse_expr(fa.dsl, shared_lib());
+    ASSERT_TRUE(ast.has_value()) << "#" << fa.id << ": " << ast.error().message();
+    auto ana = analyze(*ast);
+    ASSERT_TRUE(ana.has_value()) << "#" << fa.id << ": " << ana.error().message();
+    auto prog = compile(*ast, *ana);
+    ASSERT_TRUE(prog.has_value()) << "#" << fa.id << ": " << prog.error().message();
+    Engine engine{panel};
+    auto ss = engine.evaluate(*prog);
+    ASSERT_TRUE(ss.has_value()) << "#" << fa.id << ": " << ss.error().message();
+    const atx::f64 d0 = alpha_sharpe_impl(*ss, panel, /*inverse_vol=*/false);
+    const atx::f64 d1 = alpha_sharpe_impl(*ss, panel, /*inverse_vol=*/true);
+    finite += (std::isfinite(d0) && std::isfinite(d1)) ? 1 : 0;
+    rows.push_back({fa.id, d0, d1});
+  }
+
+  std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
+    const bool an = std::isnan(a.eqrisk);
+    const bool bn = std::isnan(b.eqrisk);
+    if (an != bn) {
+      return !an;
+    }
+    return a.eqrisk > b.eqrisk;
+  });
+
+  int improved = 0;
+  for (const Row &r : rows) {
+    if (std::isfinite(r.eqrisk) && std::isfinite(r.eqdollar) && r.eqrisk > r.eqdollar) {
+      ++improved;
+    }
+  }
+
+  std::cout << "\n=== Alpha101 Sharpe: equal-dollar (L1) vs inverse-IV risk-parity ("
+            << (is_real ? "REAL ORATS" : "synthetic") << ") ===\n"
+            << "rank |  # | eq-dollar | eq-risk(1/IV) |  delta\n"
+            << "-----+----+-----------+---------------+--------\n";
+  for (atx::usize k = 0; k < rows.size(); ++k) {
+    std::cout << " " << (k + 1 < 10 ? "  " : (k + 1 < 100 ? " " : "")) << (k + 1) << " | "
+              << (rows[k].id < 10 ? " " : "") << rows[k].id << " | " << rows[k].eqdollar
+              << " | " << rows[k].eqrisk << " | "
+              << (rows[k].eqrisk - rows[k].eqdollar) << "\n";
+  }
+  std::cout << "improved by risk-parity: " << improved << " / " << rows.size() << "\n";
+  std::cout << "============================================\n\n";
+
+  EXPECT_EQ(finite, 101) << "every alpha must yield finite Sharpe in both weightings";
 }
 
 } // namespace atxtest_alpha101_orats_test
