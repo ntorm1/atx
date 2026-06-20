@@ -929,6 +929,19 @@ namespace {
   // on (program, panel) — vm.hpp). A worker's gathered ok==1 <=> the serial tcache.ok
   // (both require a successful single-alpha train eval); its dsr/raw == the serial step-2
   // ranking dsr/raw (the GenomeRoundTripsThroughSerializeParse equivalence proof).
+  //
+  // KNOWN PRE-EXISTING ISSUE (deferred to Task 8 — NOT a Task-5 parallelization concern):
+  // this submit ranks TRAIN-length candidate pnl against the run-start library corr index.
+  // After Task 8 enables library accumulation, the library stores HOLDOUT-length admitted
+  // streams, so the corr index's t_ = holdout length while the train candidate pnl is
+  // train length. CorrNeighborIndex::signature ATX_ASSERTs pnl.size() == t_, so this will
+  // assert in debug / read stale scratch in release once the library is non-empty. This is
+  // the EXACT behavior of serial mine_into_oos step-2 ranking (it calls the identical
+  // pool_aware_fitness(cand, LibraryPool, train)), so the parallel path is byte-identical /
+  // symmetric to the serial path here — the mismatch is currently UNREACHABLE (the discover
+  // stage remove_all's the library each run, so it is empty at mine_into_oos and the index
+  // is never built -> worst_corr returns 0). Resolving the train-vs-holdout corr-length
+  // mismatch affects serial and parallel IDENTICALLY and is out of Task 5's scope (Task 8).
   const std::vector<GatheredScore> train_gathered =
       gather_mine_scores(res.all_scored, pool_item, admit_fit, train, policy_, sim_, exec);
 
@@ -991,11 +1004,30 @@ namespace {
   // (mine_into_oos:778-799) bit-for-bit: each worker compiles+evaluates+extract_streams
   // over the SAME `holdout` sub-panel the serial Engine{holdout} runs over (same lookback
   // warmup — NOT a full-panel-then-slice eval, which would change the warmup). We use ONLY
-  // the holdout STREAMS per genome (the gathered dsr/raw are pool-ranked against the
-  // run-start snapshot and are IGNORED here, exactly as the serial holdout path ignores
-  // pool ranking and computes hold_dsr in-parent from the realized stream).
+  // the holdout STREAMS + the `ok` bit per genome; the gathered dsr/raw are DISCARDED here
+  // (the serial holdout path is not pool-ranked — it computes hold_dsr in-parent from the
+  // realized stream).
+  //
+  // EMPTY POOL on purpose: this submit passes an EMPTY pool snapshot (pool_n_alphas = 0),
+  // NOT the run-start library `pool_item`. The holdout streams + the `ok` flag are
+  // POOL-INDEPENDENT — they come from compile + evaluate + extract_streams, never from the
+  // pool — and the only thing the pool snapshot feeds is the candidate's worst-corr ranking
+  // (dsr/raw), which we discard here. So an empty pool leaves the gathered streams + ok
+  // BYTE-IDENTICAL while (a) avoiding a needless worst-corr computation per candidate and
+  // (b) removing a latent length edge: the library corr index is built at t_ = the library's
+  // stored (holdout-length) period count, and pool-ranking a holdout-length candidate pnl
+  // against it is fine, but pool-ranking on the holdout submit was never needed. n_periods
+  // is set to the holdout length so the empty snapshot is self-consistent; pool_seed is
+  // irrelevant when pool_n_alphas == 0 (no index is built). This does NOT move report.digest
+  // / admitted / version_id (only the discarded dsr/raw change) — pinned by the OOS
+  // invariance test.
+  parallel::MineWorkItem hold_pool_item;
+  hold_pool_item.pool_pnl_flat = std::span<const atx::f64>{}; // empty: no admitted streams
+  hold_pool_item.pool_n_alphas = 0U;
+  hold_pool_item.n_periods = holdout.dates();
+  hold_pool_item.pool_seed = 0ULL; // unused (no corr index built for an empty pool)
   const std::vector<GatheredScore> hold_gathered =
-      gather_mine_scores(res.all_scored, pool_item, admit_fit, holdout, policy_, sim_, exec);
+      gather_mine_scores(res.all_scored, hold_pool_item, admit_fit, holdout, policy_, sim_, exec);
 
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first. SEQUENTIAL
   // in the parent — byte-identical to serial mine_into_oos:757-835 (same F5 drops, same
