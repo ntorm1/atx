@@ -872,16 +872,21 @@ TEST(FactoryOos, R3b_PboDeterministic) {
 }
 
 // ---------------------------------------------------------------------------
-//  R3b_DigestUnchangedByPbo — adding the PBO computation must NOT change
-//  rep.digest, the admitted count, or the library version_id compared to what
-//  they would be without PBO. We verify this by confirming two runs with
-//  identical cfg produce byte-identical digest + admitted (the PBO itself may
-//  be the same, but is not part of the digest).
+//  R3b_DigestUnchangedByPbo — the PBO computation is REPORT-ONLY: it must not
+//  affect rep.digest, the admitted count, or the library version_id. We enforce
+//  this with a HARDCODED PIN over a run where PBO is FINITE (>= 2 admitted).
+//
+//  The three constants below were captured from a deterministic run (seed=17,
+//  oos=0.20, permissive gate, min_dsr=0) and verified across two identical runs.
+//  If anyone folds oos_pbo into the digest/admission, these pinned values shift
+//  and this test fails — that is the report-only guard.
 // ---------------------------------------------------------------------------
 TEST(FactoryOos, R3b_DigestUnchangedByPbo) {
-  // Same as R3b_PboDeterministic: if PBO changes digest, the two runs will diverge.
-  // This test is semantically identical to R3b_PboDeterministic but exists to pin
-  // the explicit invariant: "digest UNCHANGED vs without-PBO" (brief requirement).
+  // Pinned constants (captured 2026-06-20, verified twice-run deterministic):
+  static constexpr atx::u64  kPinnedDigest    = 14354626274288095608ULL;
+  static constexpr atx::usize kPinnedAdmitted  = 29U;
+  static constexpr atx::u64  kPinnedVersionId  = 2670205213ULL;
+
   GateConfig gc;
   gc.min_sharpe    = 0.0;
   gc.min_fitness   = 0.0;
@@ -893,21 +898,25 @@ TEST(FactoryOos, R3b_DigestUnchangedByPbo) {
   cfg.oos_fraction = 0.20;
   cfg.min_dsr = 0.0;
 
-  Fixture fx1{real_signal_panel()};
+  Fixture fx{real_signal_panel()};
   lib::Library lib1 = lib::Library::open(tmpdir("pbo_digest_a"), gc, {0xC0FFEEu});
-  Factory f1 = fx1.factory();
-  const FactoryReport rep1 = f1.mine_into(cfg, lib1, gate).value();
-  const u64 v1 = lib1.snapshot().version_id;
+  Factory f = fx.factory();
+  const FactoryReport rep = f.mine_into(cfg, lib1, gate).value();
+  const atx::u64 vid = lib1.snapshot().version_id;
 
-  Fixture fx2{real_signal_panel()};
-  lib::Library lib2 = lib::Library::open(tmpdir("pbo_digest_b"), gc, {0xC0FFEEu});
-  Factory f2 = fx2.factory();
-  const FactoryReport rep2 = f2.mine_into(cfg, lib2, gate).value();
-  const u64 v2 = lib2.snapshot().version_id;
+  // PBO must be finite (we chose a run that admits >= 2) so the pin is over a run
+  // where PBO was actually computed, not a NaN-trivial run.
+  ASSERT_TRUE(std::isfinite(rep.oos_pbo))
+      << "fixture must admit >= 2 alphas so PBO is finite; got admitted=" << rep.admitted;
 
-  EXPECT_EQ(rep1.digest,   rep2.digest)   << "digest must be byte-identical (PBO is report-only)";
-  EXPECT_EQ(rep1.admitted, rep2.admitted) << "admitted count must be identical";
-  EXPECT_EQ(v1, v2) << "library version_id must be identical (PBO is report-only)";
+  // If anyone folds oos_pbo into the digest/admission, these pinned values shift
+  // and this test fails — that is the report-only guard.
+  EXPECT_EQ(rep.digest,   kPinnedDigest)
+      << "digest must match pin (PBO is report-only; a shift means PBO touched admission)";
+  EXPECT_EQ(rep.admitted, kPinnedAdmitted)
+      << "admitted count must match pin (PBO must not gate any alpha)";
+  EXPECT_EQ(vid,          kPinnedVersionId)
+      << "library version_id must match pin (PBO must not affect library state)";
 }
 
 // ---------------------------------------------------------------------------
@@ -915,21 +924,24 @@ TEST(FactoryOos, R3b_DigestUnchangedByPbo) {
 //  oos_pbo must be NaN (CSCV requires >= 2 candidates).
 // ---------------------------------------------------------------------------
 TEST(FactoryOos, R3b_PboNanWithOneAdmit) {
-  // Use a tight pool-corr gate: max_pool_corr = 0.0 so only 1 alpha can be admitted
-  // (the first admitted alpha is 100% self-correlated, so the second is rejected).
-  // This guarantees admitted <= 1 => oos_pbo must be NaN.
+  // Force admitted <= 1 by using pop=1, gens=1 so the search evaluates exactly one
+  // candidate genome. Whether that single candidate passes or fails the OOS gate,
+  // admitted is 0 or 1 — never >= 2 — so oos_pbo MUST be NaN (CSCV requires >= 2).
+  // The else-FAIL branch documents the fixture contract: if admitted somehow reaches
+  // >= 2, the fixture design is broken and the test must be investigated.
   GateConfig gc_one;
   gc_one.min_sharpe    = 0.0;
   gc_one.min_fitness   = 0.0;
   gc_one.max_turnover  = 10.0;
-  gc_one.max_pool_corr = 0.0; // no second alpha can be admitted (first is 100% self-corr)
+  gc_one.max_pool_corr = 1.0; // allow any corr — admission count is controlled by pop=1
   AlphaGate gate_one{gc_one};
 
   Fixture fx{real_signal_panel()};
   lib::Library library = lib::Library::open(tmpdir("pbo_nan_one"), gc_one, {0xC0FFEEu});
   Factory f = fx.factory();
 
-  FactoryConfig cfg = real_signal_cfg(/*seed*/ 99);
+  // pop=1, gens=1 => exactly ONE candidate is generated and evaluated.
+  FactoryConfig cfg = base_cfg(/*seed*/ 99, /*pop*/ 1, /*gens*/ 1);
   cfg.oos_fraction = 0.20;
   cfg.min_dsr = 0.0;
 
@@ -938,9 +950,10 @@ TEST(FactoryOos, R3b_PboNanWithOneAdmit) {
   if (rep.admitted <= 1U) {
     EXPECT_TRUE(std::isnan(rep.oos_pbo))
         << "oos_pbo must be NaN when < 2 alphas admitted (got admitted=" << rep.admitted << ")";
+  } else {
+    FAIL() << "fixture design error: expected admitted<=1 but got " << rep.admitted
+           << "; pop=1/gens=1 can only evaluate one candidate, so admitted cannot exceed 1";
   }
-  // If somehow >= 2 are admitted despite max_pool_corr=0, the test is inconclusive
-  // (the fixture chose poorly) — skip rather than falsely fail.
 }
 
 } // namespace atxtest_factory_oos_test

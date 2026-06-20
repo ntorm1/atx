@@ -962,7 +962,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // n_splits = largest even number <= min(T_h, 16); if < 2, skip (NaN).
   {
     const atx::usize M = admitted_hold_pnls.size();
-    if (M >= 2U && !admitted_hold_pnls.empty()) {
+    if (M >= 2U) {
       const atx::usize T_h = admitted_hold_pnls[0].size();
       if (T_h >= 2U) {
         // largest even number <= min(T_h, 16)
@@ -970,12 +970,14 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
         const atx::usize n_splits = cap - (cap % 2U); // floor to even
         if (n_splits >= 2U) {
           // Assemble candidate-major perf matrix perf[c*T_h + t].
+          // All admitted hold_pnl vectors are evaluated on the SAME holdout sub-panel
+          // so their lengths MUST equal T_h. ATX_ASSERT documents the contract explicitly;
+          // it is a no-op under NDEBUG so release behavior is unchanged on the valid path.
           std::vector<atx::f64> perf(M * T_h);
           for (atx::usize c = 0U; c < M; ++c) {
             const std::vector<atx::f64> &pnl = admitted_hold_pnls[c];
-            // All vectors must be T_h long (same holdout panel); guard defensively.
-            const atx::usize len = (pnl.size() < T_h) ? pnl.size() : T_h;
-            for (atx::usize t = 0U; t < len; ++t) {
+            ATX_ASSERT(pnl.size() == T_h); // all admitted streams must span the same holdout panel
+            for (atx::usize t = 0U; t < T_h; ++t) {
               perf[c * T_h + t] = pnl[t];
             }
           }
@@ -1295,17 +1297,20 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // applied to the SAME admit-order holdout PnL vectors, guaranteeing seq==parallel match.
   {
     const atx::usize M = admitted_hold_pnls_par.size();
-    if (M >= 2U && !admitted_hold_pnls_par.empty()) {
+    if (M >= 2U) {
       const atx::usize T_h = admitted_hold_pnls_par[0].size();
       if (T_h >= 2U) {
         const atx::usize cap = (T_h < 16U) ? T_h : 16U;
         const atx::usize n_splits = cap - (cap % 2U); // floor to even
         if (n_splits >= 2U) {
+          // All admitted hold_pnl vectors are evaluated on the SAME holdout sub-panel
+          // so their lengths MUST equal T_h. ATX_ASSERT documents the contract explicitly;
+          // it is a no-op under NDEBUG so release behavior is unchanged on the valid path.
           std::vector<atx::f64> perf(M * T_h);
           for (atx::usize c = 0U; c < M; ++c) {
             const std::vector<atx::f64> &pnl = admitted_hold_pnls_par[c];
-            const atx::usize len = (pnl.size() < T_h) ? pnl.size() : T_h;
-            for (atx::usize t = 0U; t < len; ++t) {
+            ATX_ASSERT(pnl.size() == T_h); // all admitted streams must span the same holdout panel
+            for (atx::usize t = 0U; t < T_h; ++t) {
               perf[c * T_h + t] = pnl[t];
             }
           }
