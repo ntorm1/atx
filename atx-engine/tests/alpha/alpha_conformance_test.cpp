@@ -119,7 +119,28 @@ using atx::engine::alpha::SignalSet;
   return out.value_or(SignalSet{});
 }
 
-// Assert the VM and oracle agree cell-by-cell, bit-identical, over a program.
+// Task 7: the VM routes the rolling-sum Ts family (ts_sum/ts_mean/ts_std/ts_var/
+// ts_zscore/ts_av_diff/stddev) through ONLINE kernels whose FP accumulation order
+// differs from the batch oracle, so VM-vs-oracle conformance is a TIGHT TOLERANCE
+// (atol+rtol=1e-9; observed worst case ~1e-13). The NaN pattern stays exact. The
+// bit-exact ops (everything else, incl. ts_min/ts_max/ts_scale) pass this band
+// trivially since they agree to the last bit; their exactness is separately
+// pinned in alpha_ts_test.cpp::AlphaTsOnline_Exact.
+inline constexpr atx::f64 kOnlineAtol = 1e-9;
+inline constexpr atx::f64 kOnlineRtol = 1e-9;
+
+[[nodiscard]] bool cells_conform(atx::f64 vm, atx::f64 oracle) noexcept {
+  if (std::isnan(vm) && std::isnan(oracle)) {
+    return true;
+  }
+  if (std::isnan(vm) != std::isnan(oracle)) {
+    return false;
+  }
+  return std::fabs(vm - oracle) <= kOnlineAtol + kOnlineRtol * std::fabs(oracle);
+}
+
+// Assert the VM and oracle agree cell-by-cell over a program (bit-exact for most
+// ops; within the online-FP tolerance band for the rolling-sum family).
 void expect_fast_equals_oracle(const Program &prog, const Panel &panel) {
   const SignalSet fast = eval_fast(prog, panel);
   const SignalSet oracle = eval_oracle(prog, panel);
@@ -129,8 +150,8 @@ void expect_fast_equals_oracle(const Program &prog, const Panel &panel) {
     for (atx::usize i = 0; i < fast.alphas[a].values.size(); ++i) {
       const atx::f64 fc = fast.alphas[a].values[i];
       const atx::f64 oc = oracle.alphas[a].values[i];
-      EXPECT_TRUE(same_cell(fc, oc)) << "alpha '" << fast.alphas[a].name << "' (idx " << a
-                                     << ") cell " << i << ": FAST=" << fc << " ORACLE=" << oc;
+      EXPECT_TRUE(cells_conform(fc, oc)) << "alpha '" << fast.alphas[a].name << "' (idx " << a
+                                         << ") cell " << i << ": FAST=" << fc << " ORACLE=" << oc;
     }
   }
 }

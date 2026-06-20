@@ -54,6 +54,23 @@ using atx::engine::factory::generate_genome;
   return (std::isnan(a) && std::isnan(b)) || a == b;
 }
 
+// Task 7: grammar-generated genomes may contain ONLINE FP Ts ops (ts_mean /
+// ts_std / ...) whose VM output is within a TIGHT TOLERANCE of — not bit-
+// identical to — the batch oracle. cells_conform() keeps the NaN pattern exact
+// and applies atol+rtol=1e-9 (bit-exact ops pass trivially).
+inline constexpr atx::f64 kOnlineAtol = 1e-9;
+inline constexpr atx::f64 kOnlineRtol = 1e-9;
+
+[[nodiscard]] bool cells_conform(atx::f64 vm, atx::f64 oracle) noexcept {
+  if (std::isnan(vm) && std::isnan(oracle)) {
+    return true;
+  }
+  if (std::isnan(vm) != std::isnan(oracle)) {
+    return false;
+  }
+  return std::fabs(vm - oracle) <= kOnlineAtol + kOnlineRtol * std::fabs(oracle);
+}
+
 // True iff `src` parses AND analyzes (i.e. the type-checker accepts it).
 [[nodiscard]] bool accepts(const std::string &src) {
   auto ast = parse_expr(src, shared_lib());
@@ -153,8 +170,9 @@ TEST(GrammarGen, GeneratedGenomes_RunOracleEqualsVm) {
     for (atx::usize a = 0; a < v.alphas.size(); ++a) {
       ASSERT_EQ(v.alphas[a].values.size(), r.alphas[a].values.size());
       for (atx::usize c = 0; c < v.alphas[a].values.size(); ++c) {
-        EXPECT_TRUE(same_cell(v.alphas[a].values[c], r.alphas[a].values[c])) << "genome " << i
-                                                                             << " cell " << c;
+        EXPECT_TRUE(cells_conform(v.alphas[a].values[c], r.alphas[a].values[c]))
+            << "genome " << i << " cell " << c << ": VM=" << v.alphas[a].values[c]
+            << " oracle=" << r.alphas[a].values[c];
       }
     }
     ++evaluated;

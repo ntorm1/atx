@@ -706,11 +706,16 @@ private:
 
   // ---- time-series (per instrument column, causal trailing window) ---------
   // Resolve the window `d` from the op's LAST operand, then fill every output
-  // cell from ts_ops.hpp's per-cell kernels. The window is STRIDED by
-  // `instruments` down each instrument column; the kernels recompute over the
-  // trailing window [t-d+1, t] in the oracle's chronological order (NO online
-  // rolling — bit-exact with oracle.hpp). Iterate instrument-outer / date-inner
-  // to match the oracle's loop nest. Mirrors oracle.hpp's eval_time_series.
+  // cell down each instrument column (STRIDED by `instruments`, trailing window
+  // [t-d+1, t], iterate instrument-outer / date-inner to mirror the oracle's
+  // loop nest). Two execution shapes (Task 7):
+  //   * ONLINE sweep (ts_is_online_op): TsSum/Mean/Var/Std/Zscore/AvDiff carry a
+  //     rolling Σx/Σx²/non-NaN-count down the column (O(T)); Min/Max/Scale carry
+  //     a monotonic deque. The FP-sum ops are within a TIGHT TOLERANCE of the
+  //     batch oracle (conformance proves it); min/max/scale stay bit-exact.
+  //   * BATCH per-cell (every other Ts/OU/corr/cov op): ts_value_at / ts_pair_at
+  //     / ou_value_at recompute over the full window, still bit-exact with the
+  //     oracle. Mirrors oracle.hpp's eval_time_series structure.
   [[nodiscard]] atx::core::Status eval_time_series(const Instr &in, atx::usize dates,
                                                    atx::usize instruments) {
     const std::span<const atx::f64> x = src_col(in, 0);
@@ -734,10 +739,28 @@ private:
                              in.op == OpCode::OuMean || in.op == OpCode::OuZscore);
 
     // Reusable scratch sized to the window: NO per-cell allocation (grown only
-    // when `d` exceeds any prior call). Only the sort/pair ops touch it.
+    // when `d` exceeds any prior call). Only the batch sort/pair ops touch it.
     if (d > ts_scratch_a_.size()) {
       ts_scratch_a_.resize(d);
       ts_scratch_b_.resize(d);
+    }
+    // Online path (Task 7): rolling sweep down each instrument column. The deque
+    // scratch is sized to `dates` (grown once); the sweep allocates nothing.
+    if (detail::ts_is_online_op(in.op)) {
+      const bool extreme =
+          (in.op == OpCode::TsMin || in.op == OpCode::TsMax || in.op == OpCode::TsScale);
+      if (extreme && dates > ts_dq_lo_.size()) {
+        ts_dq_lo_.resize(dates);
+        ts_dq_hi_.resize(dates);
+      }
+      for (atx::usize j = 0; j < instruments; ++j) {
+        if (extreme) {
+          detail::ts_online_extreme(in.op, x, out, dates, j, d, instruments, ts_dq_lo_, ts_dq_hi_);
+        } else {
+          detail::ts_online_sum_family(in.op, x, out, dates, j, d, instruments);
+        }
+      }
+      return atx::core::Ok();
     }
     for (atx::usize j = 0; j < instruments; ++j) {
       for (atx::usize t = 0; t < dates; ++t) {
@@ -904,6 +927,8 @@ private:
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
+  std::vector<atx::usize> ts_dq_lo_;   // Ts online min/scale monotonic deque (date indices)
+  std::vector<atx::usize> ts_dq_hi_;   // Ts online max/scale monotonic deque (date indices)
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
   std::vector<atx::usize> cs_valid_;   // Cs* per-date valid-index scratch; grown once, cleared per date
   detail::CsScratch cs_scratch_;       // Cs* grouped/sort scratch; grown once, reset per date

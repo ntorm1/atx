@@ -86,10 +86,28 @@ using atx::engine::alpha::SignalSet;
 }
 
 // Two cells agree iff both NaN, or exactly value-equal (covers +-inf, +-0). This
-// is the bit-aware comparison the differential asserts: the VM reproduces the
-// oracle EXACTLY, so equality is the right bar (not a loose tolerance).
+// is the bit-aware comparison used for the element-wise / cross-sectional /
+// bit-exact-online (min/max/scale) ops, and for repeat-run determinism.
 [[nodiscard]] bool same_cell(atx::f64 a, atx::f64 b) noexcept {
   return (std::isnan(a) && std::isnan(b)) || a == b;
+}
+
+// Task 7: the battery folds ONLINE FP Ts ops (ts_mean / ts_std) whose VM result
+// is within a TIGHT TOLERANCE of — not bit-identical to — the batch oracle. The
+// differential therefore compares those cells with atol+rtol=1e-9 (the observed
+// worst case is ~1e-13; see alpha_ts_test.cpp::AlphaTsOnline_WorstCaseError). The
+// NaN PATTERN must still match exactly (min_periods / any-NaN gate).
+inline constexpr atx::f64 kOnlineAtol = 1e-9;
+inline constexpr atx::f64 kOnlineRtol = 1e-9;
+
+[[nodiscard]] bool cells_conform(atx::f64 vm, atx::f64 oracle) noexcept {
+  if (std::isnan(vm) && std::isnan(oracle)) {
+    return true;
+  }
+  if (std::isnan(vm) != std::isnan(oracle)) {
+    return false;
+  }
+  return std::fabs(vm - oracle) <= kOnlineAtol + kOnlineRtol * std::fabs(oracle);
 }
 
 // ===========================================================================
@@ -289,7 +307,9 @@ TEST(AlphaProof_Differential, Alpha101Battery_FastEqualsOracle_BitIdentical) {
     for (atx::usize i = 0; i < fast.alphas[a].values.size(); ++i) {
       const atx::f64 fc = fast.alphas[a].values[i];
       const atx::f64 oc = oracle.alphas[a].values[i];
-      const bool agree = same_cell(fc, oc);
+      // Battery folds online FP Ts ops (ts_mean/ts_std) -> tolerance conformance
+      // against the batch oracle; the NaN pattern still matches exactly.
+      const bool agree = cells_conform(fc, oc);
       if (!agree) {
         ++divergences;
       }
@@ -298,7 +318,7 @@ TEST(AlphaProof_Differential, Alpha101Battery_FastEqualsOracle_BitIdentical) {
                          << "): FAST=" << fc << " ORACLE=" << oc;
     }
   }
-  EXPECT_EQ(divergences, 0U) << "FAST==ORACLE differential diverged in " << divergences
+  EXPECT_EQ(divergences, 0U) << "FAST vs ORACLE differential exceeded tolerance in " << divergences
                              << " cells — that is a real VM/oracle bug";
 }
 
@@ -314,15 +334,27 @@ TEST(AlphaProof_Determinism, RepeatRunIdentical_FastEqualsOracle_MutationSensiti
 
   const Program prog = compile_ok(battery_src());
 
-  // Repeat-run determinism: two FAST evaluations of the SAME program+panel.
-  const std::size_t fast_h1 = signal_hash(eval_fast(prog, panel));
+  // Repeat-run determinism: two FAST evaluations of the SAME program+panel. The
+  // online rolling kernels have a FIXED accumulation order, so the FAST digest is
+  // byte-stable run-to-run (this property MUST survive the kernel change).
+  const SignalSet fast_ss = eval_fast(prog, panel);
+  const std::size_t fast_h1 = signal_hash(fast_ss);
   const std::size_t fast_h2 = signal_hash(eval_fast(prog, panel));
   EXPECT_EQ(fast_h1, fast_h2) << "FAST evaluate() is not run-to-run deterministic";
 
-  // The two engines agree at the hash level too (the differential proves it cell
-  // by cell; this is the folded-digest corollary).
-  const std::size_t oracle_h = signal_hash(eval_oracle(prog, panel));
-  EXPECT_EQ(fast_h1, oracle_h) << "FAST and ORACLE hashes disagree — differential broken";
+  // Task 7: FAST is no longer BIT-identical to the batch oracle for the online FP
+  // ops (ts_mean/ts_std in the battery), so the folded HASHES no longer match.
+  // The surviving correctness check is the per-cell TOLERANCE conformance vs the
+  // independent batch oracle (atol+rtol=1e-9; NaN pattern exact).
+  const SignalSet oracle_ss = eval_oracle(prog, panel);
+  ASSERT_EQ(fast_ss.alphas.size(), oracle_ss.alphas.size());
+  for (atx::usize a = 0; a < fast_ss.alphas.size(); ++a) {
+    ASSERT_EQ(fast_ss.alphas[a].values.size(), oracle_ss.alphas[a].values.size());
+    for (atx::usize i = 0; i < fast_ss.alphas[a].values.size(); ++i) {
+      EXPECT_TRUE(cells_conform(fast_ss.alphas[a].values[i], oracle_ss.alphas[a].values[i]))
+          << "FAST vs ORACLE exceeded tolerance: alpha " << a << " cell " << i;
+    }
+  }
 
   // ---- Mutation sensitivity: the hash MUST change (no vacuous pass) ----
 

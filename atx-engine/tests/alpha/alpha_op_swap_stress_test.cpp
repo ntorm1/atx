@@ -60,6 +60,23 @@ using atx::engine::factory::OpCatalog;
   return (std::isnan(a) && std::isnan(b)) || a == b;
 }
 
+// Task 7: op-swapped genomes may contain ONLINE FP Ts ops (ts_mean/ts_std/...)
+// whose VM result is within a TIGHT TOLERANCE of — not bit-identical to — the
+// batch oracle. cells_conform() is NaN-pattern-exact and applies atol+rtol=1e-9
+// (the bit-exact ops pass it trivially). See alpha_ts_test.cpp for the bound.
+inline constexpr atx::f64 kOnlineAtol = 1e-9;
+inline constexpr atx::f64 kOnlineRtol = 1e-9;
+
+[[nodiscard]] bool cells_conform(atx::f64 vm, atx::f64 oracle) noexcept {
+  if (std::isnan(vm) && std::isnan(oracle)) {
+    return true;
+  }
+  if (std::isnan(vm) != std::isnan(oracle)) {
+    return false;
+  }
+  return std::fabs(vm - oracle) <= kOnlineAtol + kOnlineRtol * std::fabs(oracle);
+}
+
 [[nodiscard]] Genome make_genome(std::string_view src, const Library &lib) {
   auto parsed = parse_expr(src, lib);
   EXPECT_TRUE(parsed.has_value()) << src << ": " << (parsed ? "" : parsed.error().message());
@@ -112,8 +129,9 @@ void expect_safe_and_consistent(const Genome &g, const Panel &panel) {
   for (atx::usize a = 0; a < v.alphas.size(); ++a) {
     ASSERT_EQ(v.alphas[a].values.size(), r.alphas[a].values.size());
     for (atx::usize i = 0; i < v.alphas[a].values.size(); ++i) {
-      EXPECT_TRUE(same_cell(v.alphas[a].values[i], r.alphas[a].values[i])) << "alpha " << a
-                                                                           << " cell " << i;
+      EXPECT_TRUE(cells_conform(v.alphas[a].values[i], r.alphas[a].values[i]))
+          << "alpha " << a << " cell " << i << ": VM=" << v.alphas[a].values[i]
+          << " oracle=" << r.alphas[a].values[i];
     }
   }
 }

@@ -280,6 +280,206 @@ struct TsvFit {
 }
 
 // ===========================================================================
+//  ONLINE ROLLING KERNELS (Task 7) — O(T) per instrument column.
+//
+//  The per-cell ts_value_at recomputes each op over its FULL trailing window
+//  (O(T*W)). For a chosen, numerically-safe subset of ops we instead carry a
+//  sliding accumulator DOWN each instrument column once (O(T)). These kernels
+//  live in the VM path ONLY; oracle.hpp stays a batch per-window recompute and
+//  remains the independent CORRECTNESS reference. Online FP accumulation is NOT
+//  bit-identical to the batch recompute (FP non-associativity), so the VM-vs-
+//  oracle conformance for the converted FP ops is a TIGHT TOLERANCE rather than
+//  bit-exact (see the conformance tests); min/max/scale stay EXACT because they
+//  reduce to an order-independent extreme.
+//
+//  WHICH OPS ARE ONLINE (ts_is_online_op):
+//    * Rolling-sum family (TOLERANCE): TsSum, TsMean, TsVar, TsStd, TsZscore,
+//      TsAvDiff. Carry running Sx (Σx) and Sxx (Σx²) plus a non-NaN count.
+//      variance = (Sxx - Sx*Sx/n)/(n-1) (sample, ddof=1). The Sxx-form is the
+//      classic catastrophic-cancellation risk; the observed worst-case error vs
+//      the batch oracle on the conformance panels is well within the 1e-9 band
+//      (see report), so it is shippable.
+//    * Rolling extreme (EXACT): TsMin, TsMax, TsScale. A monotonic deque keeps
+//      the window min (and max) in O(1) amortized; the value is the exact same
+//      extreme the batch scan finds (order-independent), so it stays bit-exact.
+//  EVERYTHING ELSE stays batch (ts_value_at): product (rolling division is
+//  unsafe near 0), corr/cov/decay_linear/wma/ema (cancellation / re-anchoring
+//  weights — left batch for safety), skew/kurt/med/mad/slope/rsquare/resid/rank/
+//  argmin/argmax/quantile/moment/entropy/backfill/count_nans, delay/delta, OU.
+//
+//  NaN / min_periods / warmup REPRODUCTION (the highest-risk area):
+//    The batch policy is FULL-WINDOW, any-NaN -> NaN (tsv_window_valid): output
+//    is non-NaN ONLY when t+1 >= d AND the window has zero NaN. The sweep carries
+//    `nan_cnt` (NaNs currently in the window): a NaN entering increments it and
+//    is NOT folded into Sx/Sxx; a NaN leaving decrements it. Output is emitted
+//    ONLY when (t+1 >= d && nan_cnt == 0) — IDENTICAL gate and fill (NaN) to the
+//    batch path. Because Sx/Sxx only ever accumulate the FINITE cells, when
+//    nan_cnt==0 they are exact rolling sums over the full window.
+//
+//  DETERMINISM: the accumulation order is fixed (strictly increasing t, add-then-
+//  subtract), so the same input yields the same output every run and the sweep is
+//  resumable (each column is independent; no cross-call state). Causality: the
+//  window is trailing [t-d+1, t]; the accumulator advances strictly with t.
+// ===========================================================================
+
+[[nodiscard]] inline bool ts_is_online_op(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::TsSum:
+  case OpCode::TsMean:
+  case OpCode::TsVar:
+  case OpCode::TsStd:
+  case OpCode::TsZscore:
+  case OpCode::TsAvDiff:
+  case OpCode::TsMin:
+  case OpCode::TsMax:
+  case OpCode::TsScale:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Online sweep for the rolling-SUM family (TsSum/TsMean/TsVar/TsStd/TsZscore/
+// TsAvDiff). One forward pass per instrument column carrying Sx=Σx, Sxx=Σx² and
+// nan_cnt over the trailing window [t-d+1, t]. Writes the full output column.
+//
+// SAFETY (strided-window walk): the entering index is t*I+j (t<dates) and the
+// leaving index is (t-d)*I+j, evaluated only when t>=d (so t-d>=0); both stay in
+// [0, dates*instruments). The leaving subtraction reverses the SAME value that
+// entered d steps earlier (FP add/sub of an identical operand), so Sx/Sxx track
+// the window without a fresh re-sum.
+inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
+                                 atx::usize dates, atx::usize j, atx::usize d,
+                                 atx::usize instruments) noexcept {
+  atx::f64 sx = 0.0;
+  atx::f64 sxx = 0.0;
+  atx::usize nan_cnt = 0;
+  const atx::f64 nf = static_cast<atx::f64>(d);
+  for (atx::usize t = 0; t < dates; ++t) {
+    const atx::f64 enter = x[t * instruments + j];
+    if (ts_is_nan(enter)) {
+      ++nan_cnt;
+    } else {
+      sx += enter;
+      sxx += enter * enter;
+    }
+    if (t >= d) {
+      const atx::f64 leave = x[(t - d) * instruments + j];
+      if (ts_is_nan(leave)) {
+        --nan_cnt;
+      } else {
+        sx -= leave;
+        sxx -= leave * leave;
+      }
+    }
+    const atx::usize oi = t * instruments + j;
+    if (t + 1 < d || nan_cnt != 0) {
+      out[oi] = kTsNaN; // short window or any-NaN -> NaN (pinned policy)
+      continue;
+    }
+    switch (op) {
+    case OpCode::TsSum:
+      out[oi] = sx;
+      break;
+    case OpCode::TsMean:
+      out[oi] = sx / nf;
+      break;
+    case OpCode::TsAvDiff:
+      out[oi] = x[oi] - sx / nf;
+      break;
+    default: { // TsVar / TsStd / TsZscore — sample (ddof=1) variance
+      if (d < 2) {
+        out[oi] = kTsNaN; // var/std/zscore need 2+ obs
+        break;
+      }
+      atx::f64 var = (sxx - sx * sx / nf) / (nf - 1.0);
+      if (var < 0.0) {
+        var = 0.0; // guard a tiny negative from cancellation (a flat window)
+      }
+      if (op == OpCode::TsVar) {
+        out[oi] = var;
+      } else if (op == OpCode::TsStd) {
+        out[oi] = std::sqrt(var);
+      } else { // TsZscore
+        const atx::f64 sd = std::sqrt(var);
+        out[oi] = (x[oi] - sx / nf) / sd; // sd==0 -> +/-inf or NaN, as batch /0
+      }
+      break;
+    }
+    }
+  }
+}
+
+// Online sweep for the rolling-EXTREME family (TsMin/TsMax/TsScale) via monotonic
+// deques. `dq_lo`/`dq_hi` are caller-owned scratch holding DATE INDICES of the
+// current window's candidate minima/maxima (front = the extreme). They are sized
+// to >= dates by the caller and used as ring-free double-ended queues via head/
+// tail cursors. TsMin needs only dq_lo, TsMax only dq_hi, TsScale needs both.
+//
+// EXACTNESS: the deque front is the literal min/max of the window's cells — the
+// SAME value the batch scan returns (an extreme is order-independent), so these
+// stay bit-exact vs the oracle and their conformance is NOT downgraded. The
+// any-NaN -> NaN gate is reproduced via nan_cnt exactly as the sum family.
+inline void ts_online_extreme(OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
+                              atx::usize dates, atx::usize j, atx::usize d, atx::usize instruments,
+                              std::vector<atx::usize> &dq_lo,
+                              std::vector<atx::usize> &dq_hi) noexcept {
+  const bool need_lo = (op == OpCode::TsMin || op == OpCode::TsScale);
+  const bool need_hi = (op == OpCode::TsMax || op == OpCode::TsScale);
+  atx::usize lo_h = 0, lo_t = 0; // dq_lo[lo_h .. lo_t) ascending values
+  atx::usize hi_h = 0, hi_t = 0; // dq_hi[hi_h .. hi_t) descending values
+  atx::usize nan_cnt = 0;
+  for (atx::usize t = 0; t < dates; ++t) {
+    const atx::f64 enter = x[t * instruments + j];
+    if (ts_is_nan(enter)) {
+      ++nan_cnt;
+    }
+    if (t >= d && ts_is_nan(x[(t - d) * instruments + j])) {
+      --nan_cnt; // a NaN left the trailing window
+    }
+    // Drop deque entries that fell out of the trailing window [t-d+1, t].
+    const atx::usize lo_bound = (t + 1 >= d) ? (t + 1 - d) : 0;
+    if (need_lo) {
+      while (lo_h < lo_t && dq_lo[lo_h] < lo_bound) {
+        ++lo_h;
+      }
+      if (!ts_is_nan(enter)) {
+        while (lo_h < lo_t && x[dq_lo[lo_t - 1] * instruments + j] >= enter) {
+          --lo_t;
+        }
+        dq_lo[lo_t++] = t;
+      }
+    }
+    if (need_hi) {
+      while (hi_h < hi_t && dq_hi[hi_h] < lo_bound) {
+        ++hi_h;
+      }
+      if (!ts_is_nan(enter)) {
+        while (hi_h < hi_t && x[dq_hi[hi_t - 1] * instruments + j] <= enter) {
+          --hi_t;
+        }
+        dq_hi[hi_t++] = t;
+      }
+    }
+    const atx::usize oi = t * instruments + j;
+    if (t + 1 < d || nan_cnt != 0) {
+      out[oi] = kTsNaN;
+      continue;
+    }
+    const atx::f64 lo = need_lo ? x[dq_lo[lo_h] * instruments + j] : kTsNaN;
+    const atx::f64 hi = need_hi ? x[dq_hi[hi_h] * instruments + j] : kTsNaN;
+    if (op == OpCode::TsMin) {
+      out[oi] = lo;
+    } else if (op == OpCode::TsMax) {
+      out[oi] = hi;
+    } else { // TsScale: (x[t] - min) / (max - min); flat window -> 0
+      const atx::f64 range = hi - lo;
+      out[oi] = range == 0.0 ? 0.0 : (x[oi] - lo) / range;
+    }
+  }
+}
+
+// ===========================================================================
 //  ts_value_at — single-cell value of a UNARY-series Ts op at (t, j) over the
 //  trailing window `d`. delay/delta short-circuit (they need only the shifted
 //  observation, not a full window); ts_backfill/ts_count_nans short-circuit too
@@ -288,6 +488,10 @@ struct TsvFit {
 //  `sort_buf` is caller-owned scratch (>= d) reused by the median branch only. A
 //  partial `switch` over the unary Ts opcodes with `default: ATX_UNREACHABLE()`
 //  (mirrors vm.hpp's eval_binary style).
+//  NOTE: the ops handled by the online sweep (ts_is_online_op) are ALSO handled
+//  here for the batch path's continued use by the oracle-parity unit tests, but
+//  the VM routes them through the sweep — the two agree to the documented
+//  tolerance (FP ops) or bit-exactly (min/max/scale).
 // ===========================================================================
 [[nodiscard]] inline atx::f64 ts_value_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
                                           atx::usize j, atx::usize d, atx::usize instruments,

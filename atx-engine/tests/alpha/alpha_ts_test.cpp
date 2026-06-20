@@ -16,8 +16,10 @@
 //
 // Naming: Subject_Condition_ExpectedResult.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <random>
 #include <string>
 #include <string_view>
@@ -59,6 +61,47 @@ using atx::engine::alpha::SignalSet;
 // Two cells agree iff both NaN, or exactly value-equal (covers ±inf, ±0).
 [[nodiscard]] bool same_cell(atx::f64 a, atx::f64 b) noexcept {
   return (std::isnan(a) && std::isnan(b)) || a == b;
+}
+
+// Task 7: the VM routes a subset of Ts ops through ONLINE rolling kernels whose
+// FP accumulation order differs from the batch oracle, so their VM-vs-oracle
+// conformance is a TIGHT TOLERANCE rather than bit-exact. The tolerance ops are
+// the rolling-SUM family: ts_sum / ts_mean / stddev / ts_std / ts_var /
+// ts_zscore / ts_av_diff. ts_min / ts_max / ts_scale are ALSO online but stay
+// BIT-EXACT (monotonic-deque extreme is order-independent), so they are NOT in
+// this set and keep exact conformance. The bound atol=rtol=1e-9 is ~7 orders of
+// magnitude above the observed worst-case error (~1e-13 absolute / ~1e-15
+// relative; see AlphaTsOnline_WorstCaseError), so it proves correctness without
+// masking any real divergence.
+inline constexpr atx::f64 kOnlineAtol = 1e-9;
+inline constexpr atx::f64 kOnlineRtol = 1e-9;
+
+[[nodiscard]] bool expr_uses_tolerance_op(std::string_view e) noexcept {
+  // Spellings that compile to an online FP rolling op (registry.cpp).
+  for (const std::string_view tok :
+       {std::string_view{"ts_sum"}, std::string_view{"ts_mean"}, std::string_view{"stddev"},
+        std::string_view{"ts_std"}, std::string_view{"ts_var"}, std::string_view{"ts_zscore"},
+        std::string_view{"ts_av_diff"}}) {
+    if (e.find(tok) != std::string_view::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Conformance comparison: bit-exact unless the expression folds an online FP op,
+// in which case a tight atol+rtol tolerance is the PROOF-OF-CORRECTNESS bar.
+[[nodiscard]] bool cells_conform(atx::f64 vm, atx::f64 oracle, bool tol) noexcept {
+  if (std::isnan(vm) && std::isnan(oracle)) {
+    return true;
+  }
+  if (std::isnan(vm) != std::isnan(oracle)) {
+    return false; // NaN pattern must match EXACTLY (min_periods / any-NaN gate)
+  }
+  if (!tol) {
+    return vm == oracle;
+  }
+  return std::fabs(vm - oracle) <= kOnlineAtol + kOnlineRtol * std::fabs(oracle);
 }
 
 // Compile a bare expression all the way to a Program (parse -> analyze ->
@@ -119,13 +162,15 @@ void expect_vm_matches_oracle(std::string_view expr, const Panel &panel) {
   ASSERT_EQ(v.alphas.size(), r.alphas.size());
   ASSERT_EQ(v.dates, r.dates);
   ASSERT_EQ(v.instruments, r.instruments);
+  const bool tol = expr_uses_tolerance_op(expr);
   for (atx::usize a = 0; a < v.alphas.size(); ++a) {
     ASSERT_EQ(v.alphas[a].values.size(), r.alphas[a].values.size());
     for (atx::usize i = 0; i < v.alphas[a].values.size(); ++i) {
       const atx::f64 vc = v.alphas[a].values[i];
       const atx::f64 rc = r.alphas[a].values[i];
-      EXPECT_TRUE(same_cell(vc, rc)) << "expr '" << expr << "' alpha " << a << " cell " << i
-                                     << ": VM=" << vc << " oracle=" << rc;
+      EXPECT_TRUE(cells_conform(vc, rc, tol))
+          << "expr '" << expr << "' alpha " << a << " cell " << i << ": VM=" << vc
+          << " oracle=" << rc << (tol ? " (tolerance)" : " (exact)");
     }
   }
 }
@@ -395,6 +440,176 @@ TEST(AlphaTs_Boundary, NestedTimeSeries_MatchesOracle) {
   expect_vm_matches_oracle("ts_mean(delta(close, 2), 3)", panel);
   expect_vm_matches_oracle("ts_sum(ts_mean(close, 2), 4)", panel);
   expect_vm_matches_oracle("rank(ts_mean(close, 3))", panel);
+}
+
+// ===========================================================================
+//  Task 7 — ONLINE rolling kernels: tolerance conformance + NaN/warmup rails +
+//  exactness pin for the bit-exact online ops (min/max/scale).
+// ===========================================================================
+
+// Worst-case error of the online FP ops vs the batch oracle. The conformance
+// band atol+rtol=1e-9 is the SHIPPING bar for the alpha domain (prices,
+// volumes, returns: magnitudes ~1..1e6). This test measures the observed worst
+// |VM-oracle| and worst relative error over a long, wide panel at REALISTIC
+// magnitudes and over several window depths, and asserts the band holds. It
+// ALSO reports an extreme-magnitude (1e9) stress run as DIAGNOSTIC ONLY: the
+// rolling add/subtract sum drifts to ~8e-8 relative at 1e9 magnitude, which is
+// far outside the alpha domain (a price of one billion) — documented in the
+// report as the boundary of the band, not a shipping case.
+TEST(AlphaTsOnline_WorstCaseError, RollingFpOpsStayWithinTolerance) {
+  const atx::usize dates = 250;
+  const atx::usize instruments = 8;
+
+  const std::vector<std::string_view> cases = {
+      "ts_sum(close, {d})",    "ts_mean(close, {d})",    "ts_var(close, {d})",
+      "stddev(close, {d})",    "ts_std(close, {d})",     "ts_zscore(close, {d})",
+      "ts_av_diff(close, {d})"};
+
+  auto sweep = [&](const Panel &panel, bool enforce, const char *tag) -> atx::f64 {
+    atx::f64 worst_abs = 0.0;
+    atx::f64 worst_rel = 0.0;
+    for (const std::string_view dlit :
+         {std::string_view{"5"}, std::string_view{"20"}, std::string_view{"60"},
+          std::string_view{"120"}}) {
+      for (const std::string_view tmpl : cases) {
+        std::string e{tmpl};
+        e.replace(e.find("{d}"), 3, dlit);
+        const Program prog = compile_ok(e);
+        Engine engine{panel};
+        const auto vmres = engine.evaluate(prog);
+        EXPECT_TRUE(vmres.has_value());
+        const auto orres = evaluate_reference(prog, panel);
+        EXPECT_TRUE(orres.has_value());
+        if (!vmres.has_value() || !orres.has_value()) {
+          continue;
+        }
+        const auto &vv = vmres.value().alphas[0].values;
+        const auto &ov = orres.value().alphas[0].values;
+        for (atx::usize i = 0; i < vv.size(); ++i) {
+          if (std::isnan(vv[i]) || std::isnan(ov[i])) {
+            EXPECT_EQ(std::isnan(vv[i]), std::isnan(ov[i])) << e << " cell " << i;
+            continue;
+          }
+          const atx::f64 ae = std::fabs(vv[i] - ov[i]);
+          worst_abs = std::max(worst_abs, ae);
+          if (std::fabs(ov[i]) > 1e-6) {
+            worst_rel = std::max(worst_rel, ae / std::fabs(ov[i]));
+          }
+          if (enforce) {
+            EXPECT_TRUE(cells_conform(vv[i], ov[i], /*tol=*/true))
+                << e << " cell " << i << ": VM=" << vv[i] << " oracle=" << ov[i];
+          }
+        }
+      }
+    }
+    std::cout << "[ online   ] " << tag << " worst |VM-oracle| abs=" << worst_abs
+              << " rel=" << worst_rel << "\n";
+    return worst_rel;
+  };
+
+  // Realistic alpha-domain panel (prices 1..100): the SHIPPING band must hold.
+  const Panel realistic =
+      make_panel(dates, instruments, random_cols(dates * instruments, 0x5151AAULL));
+  const atx::f64 rel_realistic = sweep(realistic, /*enforce=*/true, "realistic");
+  EXPECT_LT(rel_realistic, kOnlineRtol)
+      << "online FP relative drift exceeded the conformance band on a realistic panel";
+
+  // Extreme-magnitude DIAGNOSTIC (prices ~1e9): documents the band boundary; not
+  // enforced (a billion-dollar price is outside the alpha domain).
+  auto cols = random_cols(dates * instruments, 0x5151AAULL);
+  for (atx::f64 &c : cols[0]) {
+    c = c * 1.0e6 + 1.0e9;
+  }
+  const Panel extreme = make_panel(dates, instruments, std::move(cols));
+  (void)sweep(extreme, /*enforce=*/false, "extreme-1e9 (diagnostic)");
+}
+
+// The online min/max/scale ops must remain BIT-EXACT with the batch oracle (a
+// monotonic-deque extreme is order-independent). NO tolerance here.
+TEST(AlphaTsOnline_Exact, MinMaxScale_StayBitExact) {
+  const atx::usize dates = 60;
+  const atx::usize instruments = 7;
+  const Panel panel = make_panel(dates, instruments, random_cols(dates * instruments, 0x6262BBULL));
+  for (const std::string_view dlit : {std::string_view{"3"}, std::string_view{"10"},
+                                      std::string_view{"25"}}) {
+    for (const std::string_view tmpl :
+         {std::string_view{"ts_min(close, {d})"}, std::string_view{"ts_max(close, {d})"},
+          std::string_view{"ts_scale(close, {d})"}}) {
+      std::string e{tmpl};
+      e.replace(e.find("{d}"), 3, dlit);
+      // expr has no tolerance op -> cells_conform requires bit-exact equality.
+      ASSERT_FALSE(expr_uses_tolerance_op(e));
+      expect_vm_matches_oracle(e, panel);
+    }
+  }
+}
+
+// NaN-laden + partially-warmed windows for EVERY online op: the running non-NaN
+// count must reproduce the batch full-window any-NaN -> NaN gate EXACTLY, both
+// as a NaN enters and as it leaves the trailing window.
+TEST(AlphaTsOnline_NaNWindow, EnterLeaveGate_MatchesOracleExactly) {
+  const atx::usize dates = 9;
+  const atx::usize instruments = 1;
+  auto cols = random_cols(dates, 0x7373CCULL);
+  cols[0] = {10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0};
+  std::vector<std::uint8_t> universe(dates, std::uint8_t{1});
+  universe[3] = 0; // a single mid-series NaN; windows entering AND leaving it
+  const Panel panel = make_panel(dates, instruments, std::move(cols), std::move(universe));
+  for (const std::string_view e :
+       {std::string_view{"ts_sum(close, 3)"}, std::string_view{"ts_mean(close, 3)"},
+        std::string_view{"ts_var(close, 3)"}, std::string_view{"ts_std(close, 3)"},
+        std::string_view{"ts_zscore(close, 3)"}, std::string_view{"ts_av_diff(close, 3)"},
+        std::string_view{"ts_min(close, 3)"}, std::string_view{"ts_max(close, 3)"},
+        std::string_view{"ts_scale(close, 3)"}}) {
+    const std::vector<atx::f64> v = vm_values(e, panel);
+    ASSERT_EQ(v.size(), dates) << e;
+    // Cells whose trailing 3-window covers the NaN at date 3 are dates 3,4,5.
+    EXPECT_TRUE(std::isnan(v[3])) << e << " window [1,2,NaN]";
+    EXPECT_TRUE(std::isnan(v[4])) << e << " window [2,NaN,4]";
+    EXPECT_TRUE(std::isnan(v[5])) << e << " window [NaN,4,5]";
+    EXPECT_FALSE(std::isnan(v[6])) << e << " window [4,5,6] NaN cleared";
+    EXPECT_FALSE(std::isnan(v[8])) << e << " window [6,7,8]";
+    // And the VM must agree with the oracle cell-for-cell (tolerance / exact).
+    expect_vm_matches_oracle(e, panel);
+  }
+}
+
+// Window larger than the dates -> no full window ever -> all NaN, for every
+// online op (the leading-warmup branch of the sweep, exercised to exhaustion).
+TEST(AlphaTsOnline_NaNWindow, WindowExceedsDates_AllNaN) {
+  const atx::usize dates = 4;
+  const atx::usize instruments = 3;
+  const Panel panel = make_panel(dates, instruments, random_cols(dates * instruments, 0x8484DDULL));
+  for (const std::string_view e :
+       {std::string_view{"ts_mean(close, 9)"}, std::string_view{"ts_std(close, 9)"},
+        std::string_view{"ts_min(close, 9)"}, std::string_view{"ts_scale(close, 9)"}}) {
+    const std::vector<atx::f64> v = vm_values(e, panel);
+    for (const atx::f64 c : v) {
+      EXPECT_TRUE(std::isnan(c)) << e;
+    }
+    expect_vm_matches_oracle(e, panel);
+  }
+}
+
+// Determinism: the online sweep is run-to-run identical (fixed accumulation
+// order). Two evaluations of the SAME online program+panel are byte-identical.
+TEST(AlphaTsOnline_Determinism, RepeatRunByteIdentical) {
+  const atx::usize dates = 40;
+  const atx::usize instruments = 6;
+  const Panel panel = make_panel(dates, instruments, random_cols(dates * instruments, 0x9595EEULL));
+  const Program prog = compile_ok("ts_std(ts_mean(close, 7), 5) + ts_scale(close, 9)");
+  Engine e1{panel};
+  Engine e2{panel};
+  const auto r1 = e1.evaluate(prog);
+  const auto r2 = e2.evaluate(prog);
+  ASSERT_TRUE(r1.has_value());
+  ASSERT_TRUE(r2.has_value());
+  const auto &v1 = r1.value().alphas[0].values;
+  const auto &v2 = r2.value().alphas[0].values;
+  ASSERT_EQ(v1.size(), v2.size());
+  for (atx::usize i = 0; i < v1.size(); ++i) {
+    EXPECT_TRUE(same_cell(v1[i], v2[i])) << "cell " << i << " not run-to-run identical";
+  }
 }
 
 

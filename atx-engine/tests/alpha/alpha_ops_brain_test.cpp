@@ -63,10 +63,27 @@ constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
   return lib;
 }
 
-// Two cells agree iff both NaN or exactly value-equal (covers +-inf, +-0). The
-// VM reproduces the oracle EXACTLY, so equality is the right bar.
+// Two cells agree iff both NaN or exactly value-equal (covers +-inf, +-0). Used
+// for the bit-exact ops and VM-vs-VM checks.
 [[nodiscard]] bool same_cell(atx::f64 a, atx::f64 b) noexcept {
   return (std::isnan(a) && std::isnan(b)) || a == b;
+}
+
+// Task 7: ts_zscore / ts_av_diff (and the rest of the rolling-sum family) route
+// through ONLINE FP kernels in the VM -> tolerance (not bit-exact) vs the batch
+// oracle. cells_conform() keeps the NaN pattern exact and applies atol+rtol=1e-9;
+// the bit-exact ops in this suite pass it trivially.
+inline constexpr atx::f64 kOnlineAtol = 1e-9;
+inline constexpr atx::f64 kOnlineRtol = 1e-9;
+
+[[nodiscard]] bool cells_conform(atx::f64 vm, atx::f64 oracle) noexcept {
+  if (std::isnan(vm) && std::isnan(oracle)) {
+    return true;
+  }
+  if (std::isnan(vm) != std::isnan(oracle)) {
+    return false;
+  }
+  return std::fabs(vm - oracle) <= kOnlineAtol + kOnlineRtol * std::fabs(oracle);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,14 +195,14 @@ SignalSet assert_differential(std::string_view src, const DiffPanel &pd) {
     for (atx::usize i = 0; i < fast.alphas[a].values.size(); ++i) {
       const atx::f64 fc = fast.alphas[a].values[i];
       const atx::f64 oc = oracle.alphas[a].values[i];
-      if (!same_cell(fc, oc)) {
+      if (!cells_conform(fc, oc)) {
         ++divergences;
-        EXPECT_TRUE(same_cell(fc, oc)) << "alpha '" << fast.alphas[a].name << "' cell " << i
-                                       << ": FAST=" << fc << " ORACLE=" << oc;
+        EXPECT_TRUE(cells_conform(fc, oc)) << "alpha '" << fast.alphas[a].name << "' cell " << i
+                                           << ": FAST=" << fc << " ORACLE=" << oc;
       }
     }
   }
-  EXPECT_EQ(divergences, 0U) << "FAST==ORACLE differential diverged for src: " << src;
+  EXPECT_EQ(divergences, 0U) << "FAST vs ORACLE differential exceeded tolerance for src: " << src;
   return fast;
 }
 
