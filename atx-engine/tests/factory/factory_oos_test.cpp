@@ -14,6 +14,7 @@
 // panels + the seed grammar) so the OOS admit semantics are validated against the
 // same planted-edge discrimination the S3 / S4b suite proves for the legacy path.
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -38,6 +39,9 @@
 
 #include "atx/engine/library/library.hpp"
 
+#include "atx/engine/parallel/executor.hpp"
+#include "atx/engine/parallel/process_executor.hpp"
+
 namespace atxtest_factory_oos_test {
 
 using atx::f64;
@@ -60,6 +64,8 @@ using atx::engine::exec::VolumeCapCfg;
 using atx::engine::factory::Factory;
 using atx::engine::factory::FactoryConfig;
 using atx::engine::factory::FactoryReport;
+using atx::engine::parallel::ExecutorConfig;
+using atx::engine::parallel::ProcessExecutor;
 
 namespace lib = atx::engine::library;
 namespace eval = atx::engine::eval;
@@ -682,14 +688,15 @@ TEST(FactoryOos, WalkForwardDefaultByteIdentical) {
 }
 
 // ---------------------------------------------------------------------------
-//  WalkForwardSeqParallel — a non-terminal windowed mine_into matches
-//  mine_into_oos_parallel (digest, admitted, version_id, reject histogram,
-//  oos_metrics) exactly, exercising the seq==parallel invariant for R2.
+//  WalkForwardSeqParallel — a non-terminal windowed mine_into (serial) matches
+//  mine_into_oos_parallel via a REAL ProcessExecutor (digest, admitted,
+//  version_id, reject histogram, oos_metrics). Mirrors the Task-5 OOS invariant
+//  test (ParallelWorkloadMineProcess::OosMineReportDigestProcessEqualsSequential)
+//  but for the windowed (R2) carve path. Uses ProcessExecutor@1 and @4 to
+//  exercise the actual mine_into_oos_parallel walk-forward branch (NOT the
+//  InProcess delegate fallback).
 // ---------------------------------------------------------------------------
 TEST(FactoryOos, WalkForwardSeqParallel) {
-  // Use the InProcess executor so mine_into_oos_parallel delegates to the
-  // serial mine_into_oos verbatim — this exercises the carve branch identity
-  // without needing multi-process workers.
   AlphaGate gate{default_gate_cfg()};
 
   FactoryConfig cfg = real_signal_cfg(/*seed*/ 77);
@@ -697,24 +704,42 @@ TEST(FactoryOos, WalkForwardSeqParallel) {
   cfg.oos_n_windows = 3U;
   cfg.oos_window    = 1U; // interior (non-terminal) window
 
-  // Serial run.
-  Fixture fxS{real_signal_panel()};
-  lib::Library libS = lib::Library::open(tmpdir("wfw_seq"), default_gate_cfg(), {0xC0FFEEu});
-  Factory fS = fxS.factory();
-  const FactoryReport repS = fS.mine_into(cfg, libS, gate).value();
+  // Serial oracle — mine_into -> mine_into_oos (no executor).
+  u64 want_digest  = 0;
+  u64 want_version = 0;
+  usize want_admitted = 0;
+  std::array<usize, 6> want_histogram{};
+  {
+    Fixture fxS{real_signal_panel()};
+    lib::Library libS = lib::Library::open(tmpdir("wfw_seq"), default_gate_cfg(), {0xC0FFEEu});
+    Factory fS = fxS.factory();
+    const FactoryReport repS = fS.mine_into(cfg, libS, gate).value();
+    want_digest      = repS.digest;
+    want_version     = libS.snapshot().version_id;
+    want_admitted    = repS.admitted;
+    want_histogram   = repS.reject_histogram;
+  }
 
-  // Second serial run (byte-identical to the first — determinism check).
-  Fixture fxS2{real_signal_panel()};
-  lib::Library libS2 = lib::Library::open(tmpdir("wfw_seq2"), default_gate_cfg(), {0xC0FFEEu});
-  Factory fS2 = fxS2.factory();
-  const FactoryReport repS2 = fS2.mine_into(cfg, libS2, gate).value();
-
-  EXPECT_EQ(repS.digest,   repS2.digest)   << "serial walk-forward must be twice-run byte-identical";
-  EXPECT_EQ(repS.admitted, repS2.admitted) << "admitted count must be identical";
-  EXPECT_EQ(libS.snapshot().version_id, libS2.snapshot().version_id);
-
-  // Verify the histogram is also identical across runs.
-  EXPECT_EQ(repS.reject_histogram, repS2.reject_histogram) << "reject histogram must be identical";
+  // ProcessExecutor @ 1 and @ 4 — the REAL parallel walk-forward path.
+  // mine_into(cfg, lib, gate, exec) dispatches to mine_into_oos_parallel when
+  // oos_fraction > 0 AND the executor is MultiProcess (ProcessExecutor).
+  // Each must reproduce the serial OOS digest / admitted / version_id byte-for-byte.
+  for (const usize w : {usize{1}, usize{4}}) {
+    Fixture fxP{real_signal_panel()};
+    lib::Library libP =
+        lib::Library::open(tmpdir("wfw_par" + std::to_string(w)), default_gate_cfg(), {0xC0FFEEu});
+    Factory fP = fxP.factory();
+    ProcessExecutor pe{ExecutorConfig{w, false}};
+    const FactoryReport repP = fP.mine_into(cfg, libP, gate, pe).value();
+    EXPECT_EQ(repP.digest, want_digest)
+        << "windowed walk-forward ProcessExecutor@" << w << " digest diverged from serial";
+    EXPECT_EQ(repP.admitted, want_admitted)
+        << "windowed walk-forward ProcessExecutor@" << w << " admitted diverged";
+    EXPECT_EQ(libP.snapshot().version_id, want_version)
+        << "windowed walk-forward ProcessExecutor@" << w << " version_id diverged";
+    EXPECT_EQ(repP.reject_histogram, want_histogram)
+        << "windowed walk-forward ProcessExecutor@" << w << " reject_histogram diverged";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -734,6 +759,38 @@ TEST(FactoryOos, WalkForwardWindowOutOfRange) {
   auto rep_r = f.mine_into(cfg, library, gate);
   ASSERT_FALSE(rep_r.has_value()) << "oos_window >= oos_n_windows must return Err";
   EXPECT_EQ(rep_r.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardGeometryGuardOverflow — pathological oos_n_windows that would
+//  wrap usize when multiplied by w must NOT produce UB or a bogus holdout;
+//  the geometry guard must catch it cleanly and return an empty "admitted 0"
+//  Ok report (same as the too-short-panel case), with no crash or wrap-through.
+//  (Finding A: the old `T < oos_n_windows * w + embargo_len + 1U` product form
+//  can wrap; the fix uses division form to avoid any product.)
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardGeometryGuardOverflow) {
+  AlphaGate gate{default_gate_cfg()};
+  Fixture fx{real_signal_panel()};
+  lib::Library library = lib::Library::open(tmpdir("wfw_overflow"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 7);
+  cfg.oos_fraction  = 0.20;
+  // A huge oos_n_windows that would overflow usize when multiplied by w.
+  // real_signal_panel() = 120 dates, w = floor(0.20*120) = 24.
+  // 24 * (SIZE_MAX / 24 + 1) would overflow; use SIZE_MAX / 2 + 1 which is > T.
+  cfg.oos_n_windows = (static_cast<atx::usize>(-1) / 24U) + 1U; // product 24 * this wraps
+  cfg.oos_window    = 0U; // valid index
+
+  // Must return Ok with admitted == 0 (panel too short), no UB, no crash.
+  auto rep_r = f.mine_into(cfg, library, gate);
+  ASSERT_TRUE(rep_r.has_value())
+      << "pathological oos_n_windows must return Ok(empty report), not Err: "
+      << (rep_r.has_value() ? "" : rep_r.error().to_string());
+  EXPECT_EQ(rep_r->admitted, 0u)
+      << "geometry guard must reject the window and return admitted == 0";
+  EXPECT_EQ(library.n_alphas(), 0u) << "no alpha should be persisted when guard fires";
 }
 
 } // namespace atxtest_factory_oos_test

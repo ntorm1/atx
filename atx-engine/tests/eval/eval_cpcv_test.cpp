@@ -45,7 +45,7 @@ TEST(EvalCpcv, Deterministic_TwoRunsEqual) {
 TEST(EvalCpcvDeathTest, ApplyInsideFitWindowAborts) {
   // The fit/apply firewall idiom (generalized from phase4_integration_test.cpp): applying a fitted
   // object at a date < its fit_end must abort. CPCV makes this structurally impossible per fold.
-  auto guard = [](atx::usize apply_date, atx::usize fit_end){ ATX_ASSERT(apply_date >= fit_end); };
+  auto guard = [](atx::usize apply_date, atx::usize fit_end){ (void)apply_date; (void)fit_end; ATX_ASSERT(apply_date >= fit_end); };
   EXPECT_DEATH(guard(/*apply_date=*/0U, /*fit_end=*/8U), ".*");
 }
 TEST(EvalCpcvDeathTest, NegativeEmbargoAborts) {

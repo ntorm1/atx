@@ -708,8 +708,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
                             "mine_into_oos: oos_window must be < oos_n_windows");
     }
     // Validate that T is large enough for the EARLIEST window to have a non-empty train region.
-    // earliest holdout_begin = T - oos_n_windows * w; need at least embargo_len + 1 train dates.
-    if (T < cfg.oos_n_windows * w + embargo_len + 1U) {
+    // Condition: T >= oos_n_windows * w + embargo_len + 1.
+    // Guard against unsigned overflow by using division form: check T > embargo_len + 1 first
+    // (so T - embargo_len - 1U cannot underflow), then oos_n_windows > (T-embargo_len-1)/w.
+    // This avoids forming the product oos_n_windows * w which can wrap for pathological inputs.
+    if (embargo_len + 1U >= T || cfg.oos_n_windows > (T - embargo_len - 1U) / w) {
       return atx::core::Ok(std::move(rep)); // panel too short for the earliest window — admitted 0
     }
     const atx::usize holdout_begin = T - (cfg.oos_n_windows - cfg.oos_window) * w;
@@ -997,7 +1000,8 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "mine_into_oos_parallel: oos_window must be < oos_n_windows");
     }
-    if (T < cfg.oos_n_windows * w + embargo_len + 1U) {
+    // Guard against unsigned overflow: use division form, same as serial mine_into_oos.
+    if (embargo_len + 1U >= T || cfg.oos_n_windows > (T - embargo_len - 1U) / w) {
       return atx::core::Ok(std::move(rep));
     }
     const atx::usize holdout_begin = T - (cfg.oos_n_windows - cfg.oos_window) * w;

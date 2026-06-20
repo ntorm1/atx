@@ -22,7 +22,6 @@
 #include <cmath>
 #include <cstdint>
 #include <span>
-#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
