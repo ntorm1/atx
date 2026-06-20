@@ -92,11 +92,13 @@ using atx::engine::alpha::SignalSet;
   return (std::isnan(a) && std::isnan(b)) || a == b;
 }
 
-// Task 7: the battery folds ONLINE FP Ts ops (ts_mean / ts_std) whose VM result
-// is within a TIGHT TOLERANCE of — not bit-identical to — the batch oracle. The
-// differential therefore compares those cells with atol+rtol=1e-9 (the observed
-// worst case is ~1e-13; see alpha_ts_test.cpp::AlphaTsOnline_WorstCaseError). The
-// NaN PATTERN must still match exactly (min_periods / any-NaN gate).
+// Task 7: the battery folds the ONLINE SUM op ts_mean (a3 = scale(close -
+// ts_mean(close,10),1)), whose VM result is within a TIGHT TOLERANCE of — not
+// bit-identical to — the batch oracle (FP non-associativity of the rolling sum).
+// The differential therefore compares cells with atol+rtol=1e-9 (observed worst
+// ~1e-11; see alpha_ts_test.cpp). ts_std in a5 is now batch + BIT-EXACT, so it
+// passes this band trivially. The NaN PATTERN must still match exactly
+// (min_periods / any-NaN gate).
 inline constexpr atx::f64 kOnlineAtol = 1e-9;
 inline constexpr atx::f64 kOnlineRtol = 1e-9;
 

@@ -36,7 +36,6 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
-#include "atx/engine/alpha/ts_ops.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
@@ -63,25 +62,24 @@ using atx::engine::alpha::SignalSet;
   return (std::isnan(a) && std::isnan(b)) || a == b;
 }
 
-// Task 7: the VM routes a subset of Ts ops through ONLINE rolling kernels whose
-// FP accumulation order differs from the batch oracle, so their VM-vs-oracle
-// conformance is a TIGHT TOLERANCE rather than bit-exact. The tolerance ops are
-// the rolling-SUM family: ts_sum / ts_mean / stddev / ts_std / ts_var /
-// ts_zscore / ts_av_diff. ts_min / ts_max / ts_scale are ALSO online but stay
-// BIT-EXACT (monotonic-deque extreme is order-independent), so they are NOT in
-// this set and keep exact conformance. The bound atol=rtol=1e-9 is ~7 orders of
-// magnitude above the observed worst-case error (~1e-13 absolute / ~1e-15
-// relative; see AlphaTsOnline_WorstCaseError), so it proves correctness without
-// masking any real divergence.
+// Task 7: the VM routes ts_sum / ts_mean through ONLINE rolling kernels whose FP
+// accumulation order differs from the batch oracle, so their VM-vs-oracle
+// conformance is a TIGHT TOLERANCE rather than bit-exact. Their OUTPUT magnitude
+// tracks the input (sum ~ n*mean), so the rolling-sum drift stays a bounded
+// RELATIVE error (~1e-11 even at volume 1e7..1e8 scale). EVERYTHING ELSE is
+// either batch + bit-exact (the variance family ts_var/ts_std/stddev/ts_zscore,
+// and ts_av_diff — all cancellation-sensitive: AlphaTsOnline_Adversarial) or
+// online + bit-exact (ts_min/ts_max/ts_scale, order-independent extreme). The
+// bound atol=rtol=1e-9 is ~2 orders above the observed worst-case relative error,
+// so it proves correctness without masking real divergence.
 inline constexpr atx::f64 kOnlineAtol = 1e-9;
 inline constexpr atx::f64 kOnlineRtol = 1e-9;
 
 [[nodiscard]] bool expr_uses_tolerance_op(std::string_view e) noexcept {
-  // Spellings that compile to an online FP rolling op (registry.cpp).
-  for (const std::string_view tok :
-       {std::string_view{"ts_sum"}, std::string_view{"ts_mean"}, std::string_view{"stddev"},
-        std::string_view{"ts_std"}, std::string_view{"ts_var"}, std::string_view{"ts_zscore"},
-        std::string_view{"ts_av_diff"}}) {
+  // Spellings that compile to a SUM online op (registry.cpp). The variance family
+  // and ts_av_diff are intentionally EXCLUDED — they are batch + bit-exact now,
+  // so they must conform exactly.
+  for (const std::string_view tok : {std::string_view{"ts_sum"}, std::string_view{"ts_mean"}}) {
     if (e.find(tok) != std::string_view::npos) {
       return true;
     }
@@ -522,6 +520,84 @@ TEST(AlphaTsOnline_WorstCaseError, RollingFpOpsStayWithinTolerance) {
   }
   const Panel extreme = make_panel(dates, instruments, std::move(cols));
   (void)sweep(extreme, /*enforce=*/false, "extreme-1e9 (diagnostic)");
+}
+
+// ADVERSARIAL — the catastrophic-cancellation regime that a benign price panel
+// hides:
+//   (a) HIGH MEAN + LOW VARIANCE: values ~1e6 + a few cents of spread, where
+//       sxx and sx*sx/n are nearly equal and their difference loses precision,
+//       AND x[t]-mean is itself a near-cancellation (the av_diff killer).
+//   (b) VOLUME / adv20 SCALE: ~1e7..1e8 magnitudes, which alpha101 actually
+//       feeds into ts_std/ts_var.
+// The ENFORCED-online ops here are ts_sum / ts_mean (whose output magnitude
+// tracks the input, so the rolling-sum drift stays a bounded RELATIVE error);
+// the variance family + ts_av_diff are batch + bit-exact (0 error). EVERY case
+// MUST meet the 1e-9 relative band against the batch oracle, or it is not
+// shippable online (and must revert to batch).
+TEST(AlphaTsOnline_Adversarial, HighMeanLowVar_VolumeScale_WithinTolerance) {
+  const atx::usize dates = 200;
+  const atx::usize instruments = 4;
+  const atx::usize cells = dates * instruments;
+  // close: ~1e6 base + cents of spread (the cancellation killer).
+  // volume: ~1e7..1e8 (the alpha101 ts_std target scale).
+  std::mt19937_64 rng{0xADBEEF11ULL};
+  std::uniform_real_distribution<atx::f64> cents{-0.05, 0.05};
+  std::uniform_real_distribution<atx::f64> volj{1.0e7, 1.0e8};
+  auto cols = random_cols(cells, 0xADBEEF11ULL);
+  for (atx::usize i = 0; i < cells; ++i) {
+    cols[0][i] = 1.0e6 + cents(rng); // close: high mean, ~cents variance
+    cols[4][i] = volj(rng);          // volume: 1e7..1e8 scale
+  }
+  const Panel panel = make_panel(dates, instruments, std::move(cols));
+
+  const std::vector<std::string_view> cases = {
+      // ENFORCED online (sum family): must stay within the band at this scale.
+      "ts_sum(close, {d})",    "ts_mean(close, {d})", "ts_sum(volume, {d})",
+      "ts_mean(volume, {d})",
+      // batch + bit-exact (0 error) — the cancellation-sensitive ops.
+      "ts_var(close, {d})",    "ts_std(close, {d})",  "ts_zscore(close, {d})",
+      "ts_av_diff(close, {d})", "ts_var(volume, {d})", "ts_std(volume, {d})",
+      "stddev(volume, {d})",    "ts_zscore(volume, {d})", "ts_av_diff(volume, {d})"};
+  atx::f64 worst_abs = 0.0;
+  atx::f64 worst_rel = 0.0;
+  std::string worst_where;
+  for (const std::string_view dlit :
+       {std::string_view{"5"}, std::string_view{"20"}, std::string_view{"60"},
+        std::string_view{"120"}}) {
+    for (const std::string_view tmpl : cases) {
+      std::string e{tmpl};
+      e.replace(e.find("{d}"), 3, dlit);
+      const Program prog = compile_ok(e);
+      Engine engine{panel};
+      const auto vmres = engine.evaluate(prog);
+      ASSERT_TRUE(vmres.has_value());
+      const auto orres = evaluate_reference(prog, panel);
+      ASSERT_TRUE(orres.has_value());
+      const auto &vv = vmres.value().alphas[0].values;
+      const auto &ov = orres.value().alphas[0].values;
+      for (atx::usize i = 0; i < vv.size(); ++i) {
+        if (std::isnan(vv[i]) || std::isnan(ov[i])) {
+          EXPECT_EQ(std::isnan(vv[i]), std::isnan(ov[i])) << e << " cell " << i;
+          continue;
+        }
+        const atx::f64 ae = std::fabs(vv[i] - ov[i]);
+        worst_abs = std::max(worst_abs, ae);
+        if (std::fabs(ov[i]) > 1e-6) {
+          const atx::f64 re = ae / std::fabs(ov[i]);
+          if (re > worst_rel) {
+            worst_rel = re;
+            worst_where = e;
+          }
+        }
+        EXPECT_TRUE(cells_conform(vv[i], ov[i], /*tol=*/true))
+            << e << " cell " << i << ": VM=" << vv[i] << " oracle=" << ov[i];
+      }
+    }
+  }
+  std::cout << "[ online   ] ADVERSARIAL worst |VM-oracle| abs=" << worst_abs
+            << " rel=" << worst_rel << " at '" << worst_where << "'\n";
+  EXPECT_LT(worst_rel, kOnlineRtol)
+      << "online drift exceeded the 1e-9 band on the adversarial high-mean/volume regime";
 }
 
 // The online min/max/scale ops must remain BIT-EXACT with the batch oracle (a

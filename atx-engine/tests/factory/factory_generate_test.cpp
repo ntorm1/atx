@@ -9,7 +9,6 @@
 //
 // Naming: Subject_Condition_ExpectedResult.
 
-#include <cstdint>
 #include <string>
 #include <vector>
 

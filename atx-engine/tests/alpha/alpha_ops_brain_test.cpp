@@ -69,10 +69,11 @@ constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
   return (std::isnan(a) && std::isnan(b)) || a == b;
 }
 
-// Task 7: ts_zscore / ts_av_diff (and the rest of the rolling-sum family) route
-// through ONLINE FP kernels in the VM -> tolerance (not bit-exact) vs the batch
-// oracle. cells_conform() keeps the NaN pattern exact and applies atol+rtol=1e-9;
-// the bit-exact ops in this suite pass it trivially.
+// Task 7: ts_sum / ts_mean route through ONLINE FP kernels in the VM ->
+// tolerance (not bit-exact) vs the batch oracle. cells_conform() keeps the NaN
+// pattern exact and applies atol+rtol=1e-9; every other op in this suite —
+// including ts_zscore / ts_av_diff, which are batch + BIT-EXACT — passes the band
+// trivially (it is a superset of exact equality).
 inline constexpr atx::f64 kOnlineAtol = 1e-9;
 inline constexpr atx::f64 kOnlineRtol = 1e-9;
 

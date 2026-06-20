@@ -57,17 +57,16 @@ namespace df = atx::engine::alpha::datafields;
   return (std::isnan(a) && std::isnan(b)) || a == b;
 }
 
-// Task 7: ts_mean / ts_std / ts_sum / ts_var / ts_zscore / ts_av_diff / stddev
-// route through ONLINE FP rolling kernels in the VM -> tolerance (not bit-exact)
-// conformance vs the batch oracle. ts_min/ts_max/ts_scale stay bit-exact.
+// Task 7: ts_sum / ts_mean route through SUM ONLINE kernels in the VM ->
+// tolerance (not bit-exact) conformance vs the batch oracle. The variance family
+// (ts_std/stddev/ts_var/ts_zscore) AND ts_av_diff stay BATCH + bit-exact
+// (cancellation-sensitive), and ts_min/ts_max/ts_scale are online but bit-exact —
+// none is in the tolerance set.
 inline constexpr atx::f64 kOnlineAtol = 1e-9;
 inline constexpr atx::f64 kOnlineRtol = 1e-9;
 
 [[nodiscard]] bool expr_uses_tolerance_op(std::string_view e) noexcept {
-  for (const std::string_view tok :
-       {std::string_view{"ts_sum"}, std::string_view{"ts_mean"}, std::string_view{"stddev"},
-        std::string_view{"ts_std"}, std::string_view{"ts_var"}, std::string_view{"ts_zscore"},
-        std::string_view{"ts_av_diff"}}) {
+  for (const std::string_view tok : {std::string_view{"ts_sum"}, std::string_view{"ts_mean"}}) {
     if (e.find(tok) != std::string_view::npos) {
       return true;
     }

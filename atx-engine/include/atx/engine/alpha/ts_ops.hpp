@@ -324,35 +324,52 @@ struct TsvFit {
 
 [[nodiscard]] inline bool ts_is_online_op(OpCode op) noexcept {
   switch (op) {
+  // SUM online ops (rolling Σx). Their OUTPUT magnitude tracks the input
+  // magnitude (sum ~ n*mean, mean ~ values), so the rolling-sum drift stays a
+  // bounded RELATIVE error (~1e-11 even at volume 1e7..1e8 scale). NO squaring
+  // -> no catastrophic cancellation. Tolerance-conformant vs the batch oracle.
   case OpCode::TsSum:
   case OpCode::TsMean:
-  case OpCode::TsVar:
-  case OpCode::TsStd:
-  case OpCode::TsZscore:
-  case OpCode::TsAvDiff:
+  // EXTREME online ops (monotonic deque — bit-exact vs the batch oracle).
   case OpCode::TsMin:
   case OpCode::TsMax:
   case OpCode::TsScale:
     return true;
+  // DELIBERATELY BATCH (per-cell ts_value_at, BIT-EXACT vs the oracle):
+  //  * ts_var / ts_std / ts_zscore — a rolling Σx² variance (`sxx - sx*sx/n`)
+  //    suffers catastrophic cancellation on a high-mean/low-variance or
+  //    high-magnitude window (e.g. ts_std(volume,d) at 1e7..1e8, which alpha101
+  //    uses): it loses ~8 significant digits and can even go negative ->
+  //    a SPURIOUS inf/NaN zscore where the batch oracle is finite.
+  //  * ts_av_diff (x[t] - rolling mean) — its OUTPUT is itself a near-
+  //    cancellation (x[t] ≈ mean on a high-mean/low-variance window), so a tiny
+  //    rolling-mean drift blows up to a large RELATIVE error in the small
+  //    output (measured ~1.5e-4 rel at 1e6 magnitude). The batch per-window mean
+  //    keeps x-mean accurate. So av_diff stays batch + bit-exact.
+  // No O(1)-slide form of any of these is provably within 1e-9 on arbitrary-
+  // magnitude columns. See AlphaTsOnline_Adversarial.
   default:
     return false;
   }
 }
 
-// Online sweep for the rolling-SUM family (TsSum/TsMean/TsVar/TsStd/TsZscore/
-// TsAvDiff). One forward pass per instrument column carrying Sx=Σx, Sxx=Σx² and
-// nan_cnt over the trailing window [t-d+1, t]. Writes the full output column.
+// Online sweep for the rolling-SUM ops (TsSum / TsMean). One forward pass per
+// instrument column carrying Sx=Σx and nan_cnt over the trailing window
+// [t-d+1, t]. Writes the full output column. NO Σx² / squaring here — the
+// variance family AND ts_av_diff are deliberately batch (see ts_is_online_op),
+// so this kernel carries NO cancellation risk: a rolling sum's relative error is
+// bounded (~1e-11 even at volume magnitudes), and sum/mean OUTPUT magnitude
+// tracks the input so that bound is RELATIVE-stable.
 //
 // SAFETY (strided-window walk): the entering index is t*I+j (t<dates) and the
 // leaving index is (t-d)*I+j, evaluated only when t>=d (so t-d>=0); both stay in
 // [0, dates*instruments). The leaving subtraction reverses the SAME value that
-// entered d steps earlier (FP add/sub of an identical operand), so Sx/Sxx track
-// the window without a fresh re-sum.
+// entered d steps earlier (FP add/sub of an identical operand), so Sx tracks the
+// window without a fresh re-sum.
 inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
                                  atx::usize dates, atx::usize j, atx::usize d,
                                  atx::usize instruments) noexcept {
   atx::f64 sx = 0.0;
-  atx::f64 sxx = 0.0;
   atx::usize nan_cnt = 0;
   const atx::f64 nf = static_cast<atx::f64>(d);
   for (atx::usize t = 0; t < dates; ++t) {
@@ -361,7 +378,6 @@ inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::sp
       ++nan_cnt;
     } else {
       sx += enter;
-      sxx += enter * enter;
     }
     if (t >= d) {
       const atx::f64 leave = x[(t - d) * instruments + j];
@@ -369,7 +385,6 @@ inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::sp
         --nan_cnt;
       } else {
         sx -= leave;
-        sxx -= leave * leave;
       }
     }
     const atx::usize oi = t * instruments + j;
@@ -384,28 +399,8 @@ inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::sp
     case OpCode::TsMean:
       out[oi] = sx / nf;
       break;
-    case OpCode::TsAvDiff:
-      out[oi] = x[oi] - sx / nf;
-      break;
-    default: { // TsVar / TsStd / TsZscore — sample (ddof=1) variance
-      if (d < 2) {
-        out[oi] = kTsNaN; // var/std/zscore need 2+ obs
-        break;
-      }
-      atx::f64 var = (sxx - sx * sx / nf) / (nf - 1.0);
-      if (var < 0.0) {
-        var = 0.0; // guard a tiny negative from cancellation (a flat window)
-      }
-      if (op == OpCode::TsVar) {
-        out[oi] = var;
-      } else if (op == OpCode::TsStd) {
-        out[oi] = std::sqrt(var);
-      } else { // TsZscore
-        const atx::f64 sd = std::sqrt(var);
-        out[oi] = (x[oi] - sx / nf) / sd; // sd==0 -> +/-inf or NaN, as batch /0
-      }
-      break;
-    }
+    default:
+      ATX_UNREACHABLE(); // only Sum/Mean route here (ts_is_online_op)
     }
   }
 }
