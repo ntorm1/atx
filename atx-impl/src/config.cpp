@@ -1,9 +1,11 @@
 #include "config.hpp"
 
+#include <cctype>
 #include <charconv>
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "atx/core/error.hpp"
 
@@ -30,6 +32,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "exclude-no-sector") { cfg.exclude_no_sector = true; return atx::core::Ok(); }
     if (flag == "require-sector")    { cfg.require_sector    = true; return atx::core::Ok(); }
     if (flag == "compact-universe")  { cfg.compact_universe  = true; return atx::core::Ok(); }
+    if (flag == "industry-neutral")  { cfg.industry_neutral  = true; return atx::core::Ok(); }
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -59,6 +62,23 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
 
     // Repeatable string flag
     if (flag == "seed-expr")    { cfg.seed_exprs.emplace_back(value); return atx::core::Ok(); }
+
+    // --weight-transform (W1a): the book's cross-sectional transform. Lowercased,
+    // then validated against the closed {rank,zscore,raw} taxonomy (reject anything
+    // else with a clear error). Default "rank" reproduces engine::WeightPolicy{}.
+    if (flag == "weight-transform") {
+        std::string lowered{value};
+        for (char& c : lowered) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (lowered != "rank" && lowered != "zscore" && lowered != "raw") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--weight-transform must be one of rank|zscore|raw: got '"
+                + std::string(value) + "'");
+        }
+        cfg.weight_transform = std::move(lowered);
+        return atx::core::Ok();
+    }
 
     // Numeric flags
     auto parse_double = [&](double& dest) -> atx::core::Result<void> {
@@ -108,6 +128,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "population")        return parse_long(cfg.population);
     if (flag == "generations")       return parse_long(cfg.generations);
     if (flag == "min-dsr")           return parse_double(cfg.min_dsr);
+    if (flag == "winsorize-limit")   return parse_double(cfg.winsorize_limit);
+    if (flag == "gross-leverage")    return parse_double(cfg.gross_leverage);
     if (flag == "min-sharpe")        return parse_double(cfg.min_sharpe);
     if (flag == "min-fitness")       return parse_double(cfg.min_fitness);
     if (flag == "max-turnover")      return parse_double(cfg.max_turnover);
@@ -200,7 +222,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "position-mode" || flag == "resume") {
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral") {
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;

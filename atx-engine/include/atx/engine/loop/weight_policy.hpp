@@ -154,8 +154,25 @@ namespace atx::engine {
 //  Closed taxonomy (u8 underlying, ring-discipline style): switches over it are
 //  exhaustive with NO `default`, so adding an enumerator surfaces as a /W4
 //  warning at every switch rather than a silent fall-through.
+//
+//    Rank   = normalized ordinal rank in [0,1] (WorldQuant default; magnitude-
+//             discarding, tie-averaged — see apply_transform).
+//    ZScore = population z-score (preserves relative magnitudes; needs the
+//             winsorize guard since one outlier inflates the std).
+//    Raw    = IDENTITY PASSTHROUGH — no cross-sectional transform at all. The
+//             expression's OWN conditioning (zscore/signedpower/decay baked into
+//             the DSL) survives untouched to the demean+gross-normalize tail,
+//             instead of being overwritten by a Rank/ZScore re-standardization.
+//             With winsorize_limit=0 (band == full range == no-op) and the
+//             default dollar_neutral=true / gross_leverage=1.0, Raw reduces
+//             to EXACTLY demean-then-L1-normalize over the live cells — the
+//             manual alpha101 book.
+//
+//  APPEND-ONLY: the underlying u8 values are part of the serialized/index
+//  contract — Rank=0, ZScore=1 are FROZEN. New enumerators MUST be appended last
+//  (Raw=2) so existing serialized values keep their meaning.
 // ===========================================================================
-enum class Transform : atx::u8 { Rank, ZScore }; // closed; no `default` in switches
+enum class Transform : atx::u8 { Rank, ZScore, Raw }; // closed; no `default` in switches
 
 // ===========================================================================
 //  WeightPolicy — signal -> target weights + trade list. Pure configuration.
@@ -302,9 +319,15 @@ struct WeightPolicy {
 private:
   /// Apply the configured cross-section transform IN PLACE to the dense live
   /// buffer. Exhaustive over Transform (no `default`): a new enumerator is a /W4
-  /// warning here. Both primitives are out-of-place in atx-core, so we transform
-  /// through a same-size scratch and copy back.
+  /// warning here. Rank/ZScore are out-of-place primitives in atx-core, so we
+  /// transform through a same-size scratch and swap it in. Raw is the IDENTITY
+  /// passthrough: it must leave `dense` EXACTLY as winsorize produced it, so it
+  /// returns BEFORE the scratch is allocated/swapped — swapping in the empty
+  /// `out` would clobber the raw scores with zeros.
   void apply_transform(std::vector<atx::f64> &dense) const {
+    if (transform == Transform::Raw) {
+      return; // identity: keep the winsorized raw scores untouched
+    }
     std::vector<atx::f64> out(dense.size());
     switch (transform) {
     case Transform::Rank:
@@ -313,6 +336,8 @@ private:
     case Transform::ZScore:
       atx::core::stats::zscore(std::span<const atx::f64>{dense}, std::span<atx::f64>{out});
       break;
+    case Transform::Raw:
+      return; // unreachable (handled above); the case keeps the switch exhaustive
     }
     dense.swap(out);
   }

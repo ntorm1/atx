@@ -70,6 +70,18 @@ struct RunConfig {
     double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
     std::string run_db;                // --run-db  (SQLite progress DB path; "" = off, no store I/O)
     bool        resume        = false; // --resume  (requires --run-db; continue an incomplete matching run)
+    // -- discover weight policy (W1a): the book's signal->weight knobs, exposed
+    // so a discover run can use a Raw (passthrough) transform / a custom
+    // winsorize band instead of the fixed Rank@2.5% book. DEFAULTS EXACTLY
+    // REPRODUCE engine::WeightPolicy{} (transform=Rank, winsorize_limit=0.025,
+    // industry_neutral=false, gross_leverage=1.0), so a discover run with NONE of
+    // these flags is byte-identical to today. See stage_discover.cpp for the
+    // string->Transform mapping and the industry_neutral discovery-wiring caveat.
+    std::string weight_transform = "rank"; // --weight-transform: rank|zscore|raw
+    double      winsorize_limit  = 0.025;  // --winsorize-limit  (0 disables; band == full range)
+    bool        industry_neutral = false;  // --industry-neutral (needs a group_map; see caveat)
+    double      gross_leverage   = 1.0;    // --gross-leverage   (target Sigma|w|, Alpha101 `scale`)
+
     // --library-dir (8.A): a STABLE on-disk library::Library directory that
     // ACCUMULATES admitted alphas across discover runs/seeds (the library is
     // re-opened, not wiped, so re-admitting an identical alpha is deduped). UNSET

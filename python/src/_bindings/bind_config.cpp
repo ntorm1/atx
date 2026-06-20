@@ -12,7 +12,8 @@ namespace ex = atx::engine::exec;
 void bind_config(py::module_ &m) {
   py::enum_<e::Transform>(m, "Transform")
       .value("Rank", e::Transform::Rank)
-      .value("ZScore", e::Transform::ZScore);
+      .value("ZScore", e::Transform::ZScore)
+      .value("Raw", e::Transform::Raw);
   py::enum_<ex::SlippageMode>(m, "SlippageMode")
       .value("VolumeShare", ex::SlippageMode::VolumeShare)
       .value("FixedBps", ex::SlippageMode::FixedBps);

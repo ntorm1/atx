@@ -238,6 +238,74 @@ TEST(WeightPolicy, ZScoreWinsorize_ClampsOutlierBeforeStandardizing) {
   EXPECT_LT(std::fabs(wc[0]), 0.49);
 }
 
+TEST(WeightPolicy, RawTransform_IsExactlyDemeanThenL1OverLiveCells) {
+  // Pin transform=Raw to the manual alpha101 book: with winsorize_limit=0 (band ==
+  // full range == no-op) and the default dollar_neutral=true / gross_leverage=1.0,
+  // Raw is an identity passthrough, so to_target_weights reduces to EXACTLY
+  // demean-then-L1-normalize over the live (non-NaN) cells, with NaN cells forced
+  // to exactly 0.0. These are deterministic f64 ops on a fixed input, so assert
+  // BIT-exact equality (DoubleEq), not a tolerance.
+  const std::array<InstrumentId, 5> u{inst(1), inst(2), inst(3), inst(4), inst(5)};
+  const std::array<f64, 5> sig{2.0, kNaN, -1.0, 4.0, 0.5}; // index 1 is the dead cell
+
+  WeightPolicy policy{};
+  policy.transform = Transform::Raw;
+  policy.winsorize_limit = 0.0; // band == full range -> winsorize is a no-op
+  // dollar_neutral=true and gross_leverage=1.0 are the struct defaults.
+  const auto w = policy.to_target_weights(SignalView{sig}, Universe{u});
+
+  // Independent expected book: demean-then-L1 over the live cells [2.0,-1.0,4.0,0.5].
+  // Replicate the engine's reduction order exactly (sum then divide) so the f64
+  // rounding matches bit-for-bit.
+  const std::array<f64, 4> live{2.0, -1.0, 4.0, 0.5};
+  f64 mean_sum = 0.0;
+  for (const f64 x : live) {
+    mean_sum += x;
+  }
+  const f64 mean = mean_sum / static_cast<f64>(live.size());
+  std::array<f64, 4> demeaned{};
+  f64 l1 = 0.0;
+  for (usize k = 0; k < live.size(); ++k) {
+    demeaned[k] = live[k] - mean;
+    l1 += std::fabs(demeaned[k]);
+  }
+  const f64 scale = 1.0 / l1; // gross_leverage / Σ|w|, gross_leverage == 1.0
+  const std::array<f64, 4> expected{demeaned[0] * scale, demeaned[1] * scale,
+                                     demeaned[2] * scale, demeaned[3] * scale};
+
+  // Scatter the expected live weights back to universe positions; the NaN cell
+  // (index 1) must be exactly 0.0.
+  EXPECT_DOUBLE_EQ(w[0], expected[0]);
+  EXPECT_EQ(w[1], 0.0); // dead (NaN) cell -> exactly zero
+  EXPECT_DOUBLE_EQ(w[2], expected[1]);
+  EXPECT_DOUBLE_EQ(w[3], expected[2]);
+  EXPECT_DOUBLE_EQ(w[4], expected[3]);
+
+  // And the book is dollar-neutral + gross-normalized over the live cells.
+  EXPECT_NEAR(sum(w), 0.0, kTol);
+  EXPECT_NEAR(gross(w), 1.0, kTol);
+}
+
+TEST(WeightPolicy, RawTransform_PreservesSignalMagnitudeOrdering) {
+  // Raw passes the expression's own conditioning through unchanged: unlike Rank
+  // (which discards magnitude) the demeaned weights stay PROPORTIONAL to the
+  // centered raw scores. Two names equidistant from the mean get equal-magnitude
+  // opposite weights, and a name 2x further from the mean gets ~2x the weight.
+  const std::array<InstrumentId, 3> u{inst(1), inst(2), inst(3)};
+  const std::array<f64, 3> sig{0.0, 2.0, 4.0}; // mean 2 -> centered {-2, 0, +2}
+  WeightPolicy policy{};
+  policy.transform = Transform::Raw;
+  policy.winsorize_limit = 0.0;
+  const auto w = policy.to_target_weights(SignalView{sig}, Universe{u});
+
+  EXPECT_NEAR(sum(w), 0.0, kTol);
+  EXPECT_NEAR(gross(w), 1.0, kTol);
+  EXPECT_DOUBLE_EQ(w[1], 0.0);          // exactly at the mean -> exactly zero weight
+  EXPECT_DOUBLE_EQ(w[0], -w[2]);        // symmetric magnitudes, opposite signs
+  EXPECT_LT(w[0], 0.0);
+  EXPECT_GT(w[2], 0.0);
+}
+
 TEST(WeightPolicy, AllEqualSignal_AllZeroWeights) {
   const std::array<InstrumentId, 4> u{inst(1), inst(2), inst(3), inst(4)};
   const std::array<f64, 4> sig{7.0, 7.0, 7.0, 7.0};

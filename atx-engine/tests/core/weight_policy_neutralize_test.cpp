@@ -87,16 +87,22 @@ constexpr f64 kTol = 1e-9;
     return weights;
   }
   atx::core::stats::winsorize(std::span<f64>{dense}, winsorize_limit, 1.0 - winsorize_limit);
-  std::vector<f64> out(dense.size());
-  switch (transform) {
-  case Transform::Rank:
-    atx::core::stats::rank(std::span<const f64>{dense}, std::span<f64>{out});
-    break;
-  case Transform::ZScore:
-    atx::core::stats::zscore(std::span<const f64>{dense}, std::span<f64>{out});
-    break;
+  // Raw is the identity passthrough: leave the winsorized scores untouched (mirrors
+  // WeightPolicy::apply_transform, which returns before allocating the scratch).
+  if (transform != Transform::Raw) {
+    std::vector<f64> out(dense.size());
+    switch (transform) {
+    case Transform::Rank:
+      atx::core::stats::rank(std::span<const f64>{dense}, std::span<f64>{out});
+      break;
+    case Transform::ZScore:
+      atx::core::stats::zscore(std::span<const f64>{dense}, std::span<f64>{out});
+      break;
+    case Transform::Raw:
+      break; // unreachable (handled above); keeps the switch exhaustive under /W4
+    }
+    dense.swap(out);
   }
-  dense.swap(out);
   if (dollar_neutral) {
     atx::core::stats::demean(std::span<f64>{dense});
   }

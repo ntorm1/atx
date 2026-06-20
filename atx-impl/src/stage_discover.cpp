@@ -44,6 +44,27 @@ namespace atx::impl {
 namespace exec = atx::engine::exec;
 
 // ---------------------------------------------------------------------------
+// parse_weight_transform (W1a) — map the --weight-transform string to the
+// engine's closed Transform taxonomy. The CLI parser already lowercased and
+// validated the value against {rank,zscore,raw}, so the final `else` (raw) is
+// the only remaining case; an unexpected value here is a programming error and
+// is mapped to the Rank default rather than aborting. "rank" -> Rank reproduces
+// engine::WeightPolicy{} exactly (the byte-identical default path).
+// ---------------------------------------------------------------------------
+namespace {
+[[nodiscard]] atx::engine::Transform parse_weight_transform(const std::string& s) {
+    using T = atx::engine::Transform;
+    if (s == "zscore") {
+        return T::ZScore;
+    }
+    if (s == "raw") {
+        return T::Raw;
+    }
+    return T::Rank; // "rank" (and the validated default) -> Rank
+}
+} // namespace
+
+// ---------------------------------------------------------------------------
 // run_discover_gated — opt-in quality-gated discovery (--gated).
 //
 // Routes the evolutionary search through factory::Factory::mine_into: every
@@ -371,7 +392,40 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
 
     // 3. Build run-wide objects.
     alpha::Library lib{};
-    WeightPolicy   policy{};
+
+    // Build the book's WeightPolicy from cfg (W1a). The defaults of these cfg
+    // fields EXACTLY reproduce engine::WeightPolicy{} (transform=Rank,
+    // winsorize_limit=0.025, industry_neutral=false, gross_leverage=1.0), so a
+    // discover run with NONE of the new flags constructs a byte-identical policy
+    // to the previous `WeightPolicy{}` — the default path is unchanged. `policy`
+    // flows to BOTH the gated path (run_discover_gated -> factory::Factory) and
+    // the ungated path (factory::SearchDriver) below, so building it once here
+    // covers both.
+    WeightPolicy policy{};
+    policy.transform        = parse_weight_transform(cfg.weight_transform);
+    policy.winsorize_limit  = cfg.winsorize_limit;
+    policy.industry_neutral = cfg.industry_neutral;
+    policy.gross_leverage   = cfg.gross_leverage;
+
+    // CAVEAT (W1a scope): industry_neutral needs a universe-aligned group_map, but
+    // the discovery eval path (alpha::extract_streams -> WeightPolicy::
+    // to_target_weights) supplies NONE — it calls the 4-arg extract_streams whose
+    // group_map defaults to {}. With industry_neutral=true and an empty group_map,
+    // to_target_weights ATX_ASSERTs `group_map.size() == n` and aborts (debug) /
+    // is UB (release). Rather than emit a silently-degenerate book, reject the
+    // flag in discovery: full industry_neutral discovery wiring (sourcing a
+    // per-instrument sector group_map from the panel and threading it through
+    // SearchDriver/Factory/extract_streams) is OUT OF W1a SCOPE. The Raw transform
+    // + winsorize/gross-leverage knobs are the W1a deliverables; the
+    // industry_neutral knob is EXPOSED on RunConfig/WeightPolicy but not yet wired
+    // into discovery.
+    if (cfg.industry_neutral) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "discover: --industry-neutral is not yet wired into discovery (no "
+            "group_map is supplied to the search eval path); it is exposed but "
+            "out of W1a scope. Omit it.");
+    }
+
     exec::ExecutionSimulator sim = frictionless_sim();
     combine::AlphaStore pool{};   // empty pool: first-generation discovery
 
