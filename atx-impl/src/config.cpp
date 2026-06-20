@@ -33,6 +33,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "require-sector")    { cfg.require_sector    = true; return atx::core::Ok(); }
     if (flag == "compact-universe")  { cfg.compact_universe  = true; return atx::core::Ok(); }
     if (flag == "industry-neutral")  { cfg.industry_neutral  = true; return atx::core::Ok(); }
+    if (flag == "enable-wrap-in-op")  { cfg.enable_wrap_in_op = true; return atx::core::Ok(); }
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -222,7 +223,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral") {
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op") {
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;

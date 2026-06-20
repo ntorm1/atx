@@ -25,6 +25,8 @@
 // Header-only; COLD path (one rebuild per candidate). SAFETY: the OpCatalog and
 // every genome borrow ops from the ONE run-wide Library (see genome.hpp).
 
+#include <span>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -96,5 +98,45 @@ field_swap(const Genome &g, std::span<const std::string_view> panel_fields, Xosh
 
 [[nodiscard]] atx::core::Result<Genome> jitter_const(const Genome &g, Xoshiro256pp &rng,
                                                      JitterCfg cfg);
+
+// =========================================================================
+//  wrap_in_op — wrap a subtree in a conditioning op (Phase W1b).
+// =========================================================================
+
+// Tuning for wrap_in_op. `max_depth` is the inclusive tree-height cap (edges on
+// the longest root→leaf path); a wrap that would push the tree past this cap is
+// rejected (the analyze oracle does NOT enforce depth, so the operator does).
+// `signedpower_exp` is the default conditioning exponent synthesized as a Scale
+// literal (so jitter_const can later tune it across the concentration frontier).
+// The `wrap_*` toggles let a caller narrow the wrapper set; all default true
+// (group wrappers are additionally gated on a non-empty group_fields span).
+struct WrapCfg {
+  int max_depth{4};
+  atx::f64 signedpower_exp{2.0};
+  atx::f64 winsorize_std{4.0}; // winsorize's std multiplier default (registry sig)
+  bool wrap_zscore{true};
+  bool wrap_signedpower{true};
+  bool wrap_rank{true};
+  bool wrap_winsorize{true};
+  bool wrap_group_neutralize{true};
+  bool wrap_indneutralize{true};
+};
+
+// Wrap a randomly chosen F64-valued subtree in a shape/dtype-compatible cross-
+// sectional / element-wise WRAPPER op, making the subtree the wrapper's PRIMARY
+// (first) operand and synthesizing any additional operands the wrapper requires
+// (a Scale exponent literal for signedpower; a Group field leaf for the group
+// wrappers). Mirrors op_swap: enumerate candidate subtrees in CANONICAL ascending
+// -ExprId order BEFORE any RNG draw, draw ONE target + ONE wrapper, REBUILD a
+// fresh Ast (the subtree becomes the wrapper's child a), then funnel through
+// `analyze_into` (F5 backstop). A node already at the depth cap is NOT a
+// candidate. `Err(NotFound)` when no wrappable target / no applicable wrapper.
+//
+// `group_fields` are the panel's Group-classifier field spellings (the discovery
+// sector field); when EMPTY, the group wrappers are excluded (a missing field is
+// never synthesized). Determinism (F1): every draw from the caller-seeded rng.
+[[nodiscard]] atx::core::Result<Genome>
+wrap_in_op(const Genome &g, const OpCatalog &cat,
+           std::span<const std::string_view> group_fields, Xoshiro256pp &rng, WrapCfg cfg);
 
 } // namespace atx::engine::factory

@@ -446,6 +446,8 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     sc.k_tournament = 3;
     sc.p_cross      = 0.5;
     sc.enable_behavioral_novelty = true;
+    // W1b: opt-in wrap_in_op mutation (default false -> byte-identical legacy path).
+    sc.enable_wrap_in_op = cfg.enable_wrap_in_op;
 
     // Parallelize the search (digest-invariant: SearchConfig::n_workers affects
     // speed/memory, never bits — F1). --workers overrides; 0 = auto (cores-1).

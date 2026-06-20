@@ -940,6 +940,25 @@ SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp 
     const atx::f64 base_sigma = JitterCfg{}.sigma;
     jc.sigma = base_sigma * std::pow(cfg.jitter_anneal_decay, static_cast<atx::f64>(gen));
   }
+  // ----- W1b wrap_in_op (opt-in; ZERO new RNG draws when disabled) -----------
+  // The wrap attempt is a post-draw bernoulli sampled ONLY inside this flag guard,
+  // so the disabled path's RNG stream — and therefore the kGoldenDigest boundary
+  // pin — is byte-identical to the pre-W1b path. The operator draw `which`, the
+  // modulus 3, and op_weights are untouched here. A drawn-and-fired wrap that
+  // returns Err falls through to the originally-drawn operator below (so the
+  // population never stalls and op_used reflects the operator that actually built
+  // the child). op_used = 3 marks a wrap child (0=op_swap,1=field_swap,2=jitter).
+  if (cfg.enable_wrap_in_op && rng.bernoulli(cfg.wrap_in_op_prob)) {
+    WrapCfg wcfg;
+    wcfg.max_depth = cfg.gen_cfg.max_depth;
+    auto r = wrap_in_op(g, catalog_, std::span<const std::string_view>{group_field_views_}, rng,
+                        wcfg);
+    if (r.has_value()) {
+      op_used = 3; // wrap_in_op made the child
+      return r;
+    }
+    // Err: fall through to the originally-drawn operator (no stall).
+  }
   if (which == 0 && cfg.enable_op_swap) {
     auto r = op_swap(g, catalog_, rng);
     if (r.has_value()) {

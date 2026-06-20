@@ -156,6 +156,7 @@ struct Lcg {
   c.stagnation_patience = 0;   // Task 4: full budget on the boundary pin
   c.adaptive_operators = false;  // Task 5: fixed-uniform operator draw on the pin
   c.jitter_anneal = false;       // Task 5: constant sigma on the pin
+  c.enable_wrap_in_op = false;   // W1b: wrap_in_op OFF on the boundary pin (legacy)
   return c;
 }
 

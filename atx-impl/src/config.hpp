@@ -81,6 +81,11 @@ struct RunConfig {
     double      winsorize_limit  = 0.025;  // --winsorize-limit  (0 disables; band == full range)
     bool        industry_neutral = false;  // --industry-neutral (needs a group_map; see caveat)
     double      gross_leverage   = 1.0;    // --gross-leverage   (target Sigma|w|, Alpha101 `scale`)
+    // --enable-wrap-in-op (W1b): turn ON the wrap_in_op genetic mutation so the
+    // search can CREATE in-expression conditioning (signedpower(zscore(raw), p)).
+    // DEFAULT FALSE: absent this flag the SearchConfig knob defaults false and the
+    // factory's mutate_one path is byte-identical to today (kGoldenDigest pin).
+    bool        enable_wrap_in_op = false; // --enable-wrap-in-op
 
     // --library-dir (8.A): a STABLE on-disk library::Library directory that
     // ACCUMULATES admitted alphas across discover runs/seeds (the library is

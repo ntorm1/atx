@@ -187,6 +187,19 @@ struct SearchConfig {
   // local exploration alive when escape from a plateau is most needed.
   bool jitter_anneal{true};
   atx::f64 jitter_anneal_decay{0.97};
+  // W1b: the wrap_in_op mutation — wrap a subtree in a conditioning op (zscore/
+  // signedpower/rank/winsorize/group_neutralize) so the GA can CREATE in-expression
+  // conditioning structure (the manual-alpha lift signedpower(zscore(raw), p)).
+  // DEFAULT FALSE: when off, mutate_one's operator draw, modulus, op_weights, and
+  // the entire RNG stream are BYTE-IDENTICAL to the pre-W1b path — zero new RNG
+  // draws (the wrap selection is a post-draw bernoulli guarded entirely behind this
+  // flag). The kGoldenDigest boundary pin proves the disabled path is unchanged.
+  bool enable_wrap_in_op{false};
+  // Probability that a drawn mutation is REPLACED by a wrap_in_op attempt, sampled
+  // AFTER the legacy operator draw and ONLY when enable_wrap_in_op is true (so the
+  // disabled path draws nothing extra). A failed wrap (Err) falls through to the
+  // originally-drawn operator, so the population never stalls.
+  atx::f64 wrap_in_op_prob{0.25};
 };
 
 // =========================================================================
