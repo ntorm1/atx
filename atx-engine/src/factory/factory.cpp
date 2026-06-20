@@ -357,14 +357,23 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
 [[nodiscard]] FactoryReport Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                                                const combine::AlphaGate &gate,
                                                parallel::IExecutor &exec) {
-  // P2a — OOS validation requires a train/holdout panel split. The MultiProcess
-  // wire format serializes ONE panel and decodes streams sized to panel.dates(), so
-  // a split would need a wire-format change (OUT OF SCOPE for v1). When OOS is on we
-  // FALL BACK to the sequential OOS path (mine_into below dispatches to
-  // mine_into_oos): the rank+admit loop already runs in this parent process, so the
-  // digest/version_id are identical to the InProcess OOS run by construction.
+  // P2a — OOS validation requires a train/holdout panel split. The MultiProcess wire
+  // format serializes ONE panel and decodes streams sized to that panel's dims, so the
+  // OOS path runs TWO submits (one per sub-panel) reusing the SAME wire format unchanged
+  // (Task 5). InProcess delegates to the serial mine_into_oos (the reference); the
+  // MultiProcess substrate takes the parallel two-submit OOS path below. Either way the
+  // stateful rank+admit fold runs in THIS parent process, so the digest / admitted /
+  // version_id are byte-identical to the serial mine_into_oos by construction.
   if (cfg.oos_fraction > 0.0) {
-    return mine_into(cfg, lib_lib, gate);
+    switch (exec.substrate()) {
+    case parallel::Substrate::InProcess:
+      return mine_into(cfg, lib_lib, gate); // dispatches to the serial mine_into_oos
+    case parallel::Substrate::MultiProcess:
+      return mine_into_oos_parallel(cfg, lib_lib, gate, exec);
+    }
+    // Defensive: an executor returning neither substrate aborts rather than silently
+    // producing a wrong OOS digest (the same fail-safe as the non-OOS path below).
+    ATX_CHECK(false && "Factory::mine_into: unknown executor substrate (OOS)");
   }
 
   // InProcess: the existing in-process map IS the sound single-process path. Delegate
@@ -810,6 +819,228 @@ namespace {
     // (3d) ADMISSION on the HOLDOUT: clear the factory deflation bar on the holdout
     // DSR, then library::admit on the HOLDOUT metrics + holdout pnl (so the durable
     // `metrics` are what was actually gated out-of-sample).
+    library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
+    if (hold_dsr >= cfg.min_dsr) {
+      const library::AlphaCandidate cand{canon_hash,
+                                         std::span<const atx::f64>{hold_pnl},
+                                         std::span<const atx::f64>{hold_pos_flat},
+                                         hold_metrics,
+                                         std::move(prov),
+                                         /*as_of=*/kAdmitAsOf,
+                                         /*source=*/nullptr};
+      const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+      kind = v.kind;
+      if (kind == library::AdmitKind::Accept) {
+        ++rep.admitted;
+        rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+      } else if (kind == library::AdmitKind::Duplicate) {
+        ++rep.duplicates;
+      }
+    }
+    ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+
+    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+        static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+  }
+
+  rep.library_n_alphas_after = lib_lib.n_alphas();
+  return rep;
+}
+
+[[nodiscard]] FactoryReport Factory::mine_into_oos_parallel(const FactoryConfig &cfg,
+                                                           library::Library &lib_lib,
+                                                           const combine::AlphaGate &gate,
+                                                           parallel::IExecutor &exec) {
+  // Task 5 — the PARALLEL out-of-sample admit path. This REPRODUCES the serial
+  // mine_into_oos bit-for-bit (same digest / admitted / version_id / reject histogram /
+  // oos_metrics), but the two expensive per-candidate VM evals — the TRAIN ranking eval
+  // (serial step 2) and the HOLDOUT admission eval (serial step 3b) — cross the executor
+  // seam via TWO gather_mine_scores submits, one per sub-panel, reusing the existing Mine
+  // wire format UNCHANGED. Every step here is the EXACT serial mine_into_oos step it
+  // mirrors (line refs below point at the serial reference); only the per-candidate eval
+  // map moves to the workers. The stateful rank + library::admit fold stays SEQUENTIAL in
+  // THIS parent process (workload_mine.hpp: admit CANNOT be partitioned byte-identically),
+  // so the digest is byte-identical across substrates + worker counts by construction.
+  FactoryReport rep;
+  rep.library_n_alphas_before = lib_lib.n_alphas();
+
+  // (0) carve the TRAIN / HOLDOUT split — IDENTICAL to serial mine_into_oos (the reserve
+  // geometry, the embargo, the too-short-panel empty-report returns). The serial path is
+  // the reference; this must produce the same train + holdout sub-panels bit-for-bit.
+  const atx::usize T = panel_.dates();
+  const atx::usize embargo_len =
+      (cfg.oos_embargo > 0.0)
+          ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
+          : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
+  auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
+  if (!sealed_r.has_value()) {
+    return rep; // too-short panel — same empty report the serial path returns
+  }
+  const eval::SealedPanel &sealed = *sealed_r;
+  const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
+  const alpha::Panel &train = sealed.visible(); // [0, lockbox_begin - embargo_len)
+
+  auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
+  if (!holdout_r.has_value()) {
+    return rep; // holdout empty / unbuildable — nothing admitted (same as serial)
+  }
+  const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
+
+  // (1) run the S3-5 search over the TRAIN panel in the PARENT — IDENTICAL to serial
+  // mine_into_oos (a fresh seeded driver over `train`, F1 replay). The search's own
+  // internal parallelism is separate and unchanged; this task parallelizes ADMISSION
+  // evals, not the search. (sink/resume are not threaded into the substrate-aware
+  // mine_into entry point — same as the non-OOS parallel path, which also runs the
+  // search with the no-progress-sink driver.run(cfg, store) overload.)
+  combine::AlphaStore search_pool;
+  SearchDriver driver{lib_, train, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  const SearchResult res = driver.run(cfg.search, search_pool);
+
+  rep.evaluated = res.trial_count;
+  rep.trials = res.trial_count;
+  rep.dedup_pct = res.dedup_pct;
+  rep.seed = res.seed;
+  rep.cse_pct = mean_cse_pct(res);
+  rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
+
+  // F4 — the admission deflation N is the search's running distinct-candidate count
+  // (IDENTICAL to serial mine_into_oos).
+  FitnessCfg admit_fit = cfg.search.fitness;
+  if (res.trial_count > 0U) {
+    admit_fit.trial_count = res.trial_count;
+  }
+
+  // Build the run-start library pool snapshot exactly as the non-OOS parallel path does
+  // (the const-at-run-start admitted-pnl streams over lib.n_periods()). Both submits score
+  // their candidates' pool-aware fitness against THIS snapshot — byte-identical to the
+  // serial path's LibraryPool::worst_corr at run start (same SimHash seed/T/K + pnl).
+  const std::vector<atx::f64> pool_pnl = snapshot_pool_pnl(lib_lib);
+  parallel::MineWorkItem pool_item;
+  pool_item.pool_pnl_flat = std::span<const atx::f64>{pool_pnl};
+  pool_item.pool_n_alphas = static_cast<atx::usize>(lib_lib.n_alphas());
+  pool_item.n_periods = lib_lib.n_periods();
+  pool_item.pool_seed = lib_lib.master_seeds().empty() ? 0ULL : lib_lib.master_seeds().front();
+
+  // (Submit #1) TRAIN RANKING eval over the executor — reproduces serial step 2
+  // (mine_into_oos:705-742) bit-for-bit: the per-genome pool_aware_fitness(cand, library,
+  // train) dsr/raw AND the train SignalSet -> train streams. gather_mine_scores serializes
+  // `train` as the panel, so each worker's compile+eval+extract_streams runs over the SAME
+  // train sub-panel the serial single Engine{train} runs over (Engine output depends only
+  // on (program, panel) — vm.hpp). A worker's gathered ok==1 <=> the serial tcache.ok
+  // (both require a successful single-alpha train eval); its dsr/raw == the serial step-2
+  // ranking dsr/raw (the GenomeRoundTripsThroughSerializeParse equivalence proof).
+  const std::vector<GatheredScore> train_gathered =
+      gather_mine_scores(res.all_scored, pool_item, admit_fit, train, policy_, sim_, exec);
+
+  // Derive each candidate's TRAIN metrics (serial step 2b — the manifest is_metrics) from
+  // the gathered train streams via compute_metrics, IDENTICAL to the serial
+  // compute_metrics(train_pnl, train_pos, n_inst, book_size). Keep only the SMALL metrics
+  // (and the ok bit); the full train streams are then DISCARDED. MEMORY ARGUMENT: the
+  // train streams are needed ONLY to derive train_metrics (reporting) and the dsr/raw
+  // (already gathered) — they are NEVER admitted (only the HOLDOUT streams are). Holding
+  // both panels' full streams for every candidate would ~double peak memory for no use;
+  // the holdout streams alone are what the admit loop consumes.
+  struct TrainResult {
+    bool ok{false};
+    combine::AlphaMetrics train_metrics{};
+  };
+  const atx::usize n_cands = res.all_scored.size();
+  std::vector<TrainResult> train_cache(n_cands);
+  for (atx::usize i = 0U; i < n_cands; ++i) {
+    const GatheredScore &ts = train_gathered[i];
+    if (ts.ok != 1U) {
+      continue; // a genome that failed the train eval — serial tcache.ok == false (F5).
+    }
+    const alpha::AlphaStreams &strm = ts.streams;
+    if (strm.n_alphas() == 0U) {
+      continue; // defensive (gathered ok==1 already implies n_alphas>0); mirrors serial.
+    }
+    const atx::usize n_inst = strm.n_instruments();
+    std::vector<atx::f64> train_pnl(strm.pnl(0).begin(), strm.pnl(0).end());
+    const std::vector<atx::f64> train_pos = flatten_positions(strm);
+    train_cache[i] = TrainResult{
+        /*ok=*/true,
+        combine::compute_metrics(std::span<const atx::f64>{train_pnl},
+                                 std::span<const atx::f64>{train_pos}, n_inst, cfg.book_size)};
+    // train streams discarded here (train_pnl/train_pos die at scope end).
+  }
+
+  // (2) RANK by deflated fitness over the gathered TRAIN dsr/raw — the SAME total order as
+  // serial mine_into_oos (mine_into_oos:743-754): DESC dsr, DESC raw, ASC canon_hash, ASC
+  // idx. canon_hash is 0 on the S3 search path, so the idx tiebreak pins a true total
+  // order (std::sort is not stable), reproducing the serial rank deterministically (F1).
+  std::vector<Ranked> ranked;
+  ranked.reserve(n_cands);
+  for (atx::usize i = 0U; i < n_cands; ++i) {
+    ranked.push_back(Ranked{i, train_gathered[i].dsr, train_gathered[i].raw});
+  }
+  std::sort(ranked.begin(), ranked.end(), [&res](const Ranked &a, const Ranked &b) {
+    if (a.dsr != b.dsr) {
+      return a.dsr > b.dsr;
+    }
+    if (a.raw != b.raw) {
+      return a.raw > b.raw;
+    }
+    if (res.all_scored[a.idx].canon_hash != res.all_scored[b.idx].canon_hash) {
+      return res.all_scored[a.idx].canon_hash < res.all_scored[b.idx].canon_hash;
+    }
+    return a.idx < b.idx;
+  });
+
+  // (Submit #2) HOLDOUT eval over the executor — reproduces serial step 3b
+  // (mine_into_oos:778-799) bit-for-bit: each worker compiles+evaluates+extract_streams
+  // over the SAME `holdout` sub-panel the serial Engine{holdout} runs over (same lookback
+  // warmup — NOT a full-panel-then-slice eval, which would change the warmup). We use ONLY
+  // the holdout STREAMS per genome (the gathered dsr/raw are pool-ranked against the
+  // run-start snapshot and are IGNORED here, exactly as the serial holdout path ignores
+  // pool ranking and computes hold_dsr in-parent from the realized stream).
+  const std::vector<GatheredScore> hold_gathered =
+      gather_mine_scores(res.all_scored, pool_item, admit_fit, holdout, policy_, sim_, exec);
+
+  // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first. SEQUENTIAL
+  // in the parent — byte-identical to serial mine_into_oos:757-835 (same F5 drops, same
+  // hold_dsr, same gate, same admit, same digest fold, same oos_metrics push).
+  for (const Ranked &r : ranked) {
+    const Genome &g = res.all_scored[r.idx];
+
+    // (3a) TRAIN metrics from the cache (serial step 3a). A genome that failed the train
+    // eval (cache.ok == false) is dropped (F5) — IDENTICAL to serial mine_into_oos:763-766.
+    const TrainResult &tcache = train_cache[r.idx];
+    if (!tcache.ok) {
+      continue;
+    }
+    const combine::AlphaMetrics train_metrics = tcache.train_metrics;
+
+    // (3b) HOLDOUT metrics + positions + DSR — the ADMISSION oracle, from the gathered
+    // holdout streams (serial mine_into_oos:769-799). A genome that could not evaluate (or
+    // yielded 0 alphas) on the holdout is dropped (F5), exactly as the serial path drops it
+    // (the gathered ok != 1 <=> the serial compile/eval/extract/0-alpha continue chain).
+    const GatheredScore &hs = hold_gathered[r.idx];
+    if (hs.ok != 1U) {
+      continue;
+    }
+    const alpha::AlphaStreams &hstrm = hs.streams;
+    if (hstrm.n_alphas() == 0U) {
+      continue;
+    }
+    const atx::usize n_inst = hstrm.n_instruments();
+    // OWNED holdout copies kept alive across admit() — the AlphaCandidate spans alias them.
+    std::vector<atx::f64> hold_pnl(hstrm.pnl(0).begin(), hstrm.pnl(0).end());
+    std::vector<atx::f64> hold_pos_flat = flatten_positions(hstrm);
+    const combine::AlphaMetrics hold_metrics =
+        combine::compute_metrics(std::span<const atx::f64>{hold_pnl},
+                                 std::span<const atx::f64>{hold_pos_flat}, n_inst, cfg.book_size);
+
+    const atx::f64 hold_dsr = holdout_dsr(hold_metrics, std::span<const atx::f64>{hold_pnl},
+                                          admit_fit.trial_count);
+
+    // (3c) F6 dedup key (canon_hash is 0 on the S3 search path; compute the real key).
+    const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+
+    library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
+                             /*mutation_op=*/0, /*seed=*/res.seed};
+
+    // (3d) ADMISSION on the HOLDOUT — IDENTICAL to serial mine_into_oos:813-830.
     library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
     if (hold_dsr >= cfg.min_dsr) {
       const library::AlphaCandidate cand{canon_hash,

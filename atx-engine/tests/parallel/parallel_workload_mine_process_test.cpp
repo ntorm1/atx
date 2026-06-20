@@ -300,6 +300,85 @@ TEST(ParallelWorkloadMineProcess, MineProcessWorkerCountInvariant) {
 }
 
 // ===========================================================================
+//  5. OOS MINE — the Task-5 binding invariant. With oos_fraction > 0 the parallel
+//     OOS path (Factory::mine_into_oos_parallel, two gather_mine_scores submits: one
+//     panel=train for ranking, one panel=holdout for admission) MUST reproduce the
+//     serial mine_into_oos BYTE-IDENTICALLY: report.digest, report.admitted, AND the
+//     library version_id, across {sequential, ProcessExecutor@1, ProcessExecutor@4}.
+//     If a digest/admit-count shifts, the parallel path is not reproducing the serial
+//     eval — that is a BUG, not a golden to re-baseline.
+// ===========================================================================
+namespace {
+
+// A real-signal config with the holdout branch ON (terminal 25% of dates held out).
+// The default embargo + a 120-date panel leave a non-empty train AND holdout, so the
+// search + admission have a real domain and the run admits at least one alpha.
+[[nodiscard]] FactoryConfig oos_signal_cfg(u64 seed) {
+  FactoryConfig cfg = real_signal_cfg(seed);
+  cfg.oos_fraction = 0.25; // terminal holdout window (eval::reserve_lockbox geometry)
+  return cfg;
+}
+
+} // namespace
+
+TEST(ParallelWorkloadMineProcess, OosMineReportDigestProcessEqualsSequential) {
+  // The sequential single-process OOS oracle (Factory::mine_into_oos via the no-executor
+  // mine_into overload when oos_fraction > 0).
+  u64 want_digest = 0;
+  u64 want_version = 0;
+  usize want_admitted = 0;
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library library = lib::Library::open(tmpdir("oos_seq"), default_gate_cfg(), {0xC0FFEEu});
+    AlphaGate gate{default_gate_cfg()};
+    Factory f = fx.factory();
+    const FactoryReport rep = f.mine_into(oos_signal_cfg(/*seed*/ 7), library, gate);
+    want_digest = rep.digest;
+    want_admitted = rep.admitted;
+    want_version = version_id_of(library);
+  }
+  ASSERT_GT(want_admitted, 0u) << "the OOS real-signal fixture must admit at least one alpha";
+
+  // ProcessExecutor @ 1 and @ 4 — the parallel two-submit OOS path. Each MUST reproduce
+  // the serial OOS digest / admitted / version_id byte-for-byte (the binding invariant).
+  for (const usize w : {usize{1}, usize{4}}) {
+    Fixture fx{real_signal_panel()};
+    lib::Library library =
+        lib::Library::open(tmpdir("oos_proc" + std::to_string(w)), default_gate_cfg(), {0xC0FFEEu});
+    AlphaGate gate{default_gate_cfg()};
+    Factory f = fx.factory();
+    ProcessExecutor pe{ExecutorConfig{w, false}};
+    const FactoryReport rep = f.mine_into(oos_signal_cfg(/*seed*/ 7), library, gate, pe);
+    EXPECT_EQ(rep.digest, want_digest) << "OOS ProcessExecutor@" << w << " digest diverged";
+    EXPECT_EQ(rep.admitted, want_admitted) << "OOS ProcessExecutor@" << w << " admitted diverged";
+    EXPECT_EQ(version_id_of(library), want_version)
+        << "OOS ProcessExecutor@" << w << " library version_id diverged";
+  }
+}
+
+// Worker-count invariance for the OOS path (Process@1 == Process@4), independent seed.
+TEST(ParallelWorkloadMineProcess, OosMineProcessWorkerCountInvariant) {
+  Fixture fx1{real_signal_panel()};
+  Fixture fx4{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("oos_w1"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library lib4 = lib::Library::open(tmpdir("oos_w4"), default_gate_cfg(), {0xC0FFEEu});
+  AlphaGate gate{default_gate_cfg()};
+  Factory f1 = fx1.factory();
+  Factory f4 = fx4.factory();
+
+  ProcessExecutor pe1{ExecutorConfig{1, false}};
+  ProcessExecutor pe4{ExecutorConfig{4, false}};
+  const FactoryReport a = f1.mine_into(oos_signal_cfg(/*seed*/ 11), lib1, gate, pe1);
+  const FactoryReport b = f4.mine_into(oos_signal_cfg(/*seed*/ 11), lib4, gate, pe4);
+
+  EXPECT_EQ(a.digest, b.digest)
+      << "OOS ProcessExecutor mine digest must be invariant 1 vs N workers";
+  EXPECT_EQ(a.admitted, b.admitted);
+  EXPECT_EQ(version_id_of(lib1), version_id_of(lib4))
+      << "OOS ProcessExecutor mine version_id must be invariant 1 vs N workers";
+}
+
+// ===========================================================================
 //  2. GENOME ROUND-TRIP — serialize -> parse a genome yields the SAME compile+eval
 //     streams AND the same pool-aware (dsr, raw) as the original (op-index remap +
 //     re-analyze fidelity proof). Exercised through score_one_genome with an EMPTY

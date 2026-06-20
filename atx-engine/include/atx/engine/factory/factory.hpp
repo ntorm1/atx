@@ -305,6 +305,23 @@ private:
                                             SearchProgressSink *sink = nullptr,
                                             const SearchResumeState *resume = nullptr);
 
+  // Task 5: the PARALLEL out-of-sample admit path. Dispatched from the
+  // substrate-aware mine_into(cfg, lib, gate, exec) when oos_fraction > 0 AND the
+  // executor is MultiProcess. Reproduces mine_into_oos BYTE-IDENTICALLY (same digest,
+  // admitted count, library version_id, reject histogram, oos_metrics) but moves the
+  // two expensive per-candidate VM evals — the TRAIN ranking eval and the HOLDOUT
+  // admission eval — over the IExecutor seam via TWO gather_mine_scores submits (one
+  // per sub-panel, reusing the existing Mine wire format UNCHANGED). The stateful
+  // library::admit fold stays SEQUENTIAL in the parent (it CANNOT be partitioned
+  // byte-identically; workload_mine.hpp). The serial mine_into_oos stays the reference
+  // (the InProcess path delegates to it); this path must reproduce its result bit-for-bit
+  // for every worker count (the binding parallelization invariant). exec MUST be
+  // MultiProcess (the caller guarantees it).
+  [[nodiscard]] FactoryReport mine_into_oos_parallel(const FactoryConfig &cfg,
+                                                     library::Library &lib_lib,
+                                                     const combine::AlphaGate &gate,
+                                                     parallel::IExecutor &exec);
+
   // Flatten alpha 0's per-period position cross-sections into the period-major,
   // instrument-minor layout AlphaStore::insert / compute_metrics expect
   // (length == n_periods * n_instruments).
