@@ -351,6 +351,63 @@ TEST(FactoryMineInto, CumulativeTrialsAccumulates) {
 }
 
 // =============================================================================
+//  R1: CumulativeTrialsDurableRoundTrip — proves the CROSS-PROCESS guarantee:
+//  mine into a persistent library dir, snapshot() to write the sidecar, REOPEN
+//  the library at the same dir, and assert cumulative_trials() loaded back equals
+//  the written value (> 0). A second mine_into on the reopened library sees
+//  prior == loaded value, so its admission N == prior + this-run N; the counter
+//  after run 2 == loaded + run2_trial_count. This is the real R1 guarantee.
+// =============================================================================
+TEST(FactoryMineInto, CumulativeTrialsDurableRoundTrip) {
+  const std::string dir = tmpdir("r1_durable");
+  AlphaGate gate{default_gate_cfg()};
+
+  // ---- run 1: mine into a persistent dir, snapshot, then abandon the object ----
+  u64 run1_trials = 0;
+  u64 after_run1_counter = 0;
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library library = lib::Library::open(dir, default_gate_cfg(), {0xDEADBEEFu});
+    Factory f = fx.factory();
+
+    const FactoryReport rep1 = f.mine_into(real_signal_cfg(/*seed*/ 21), library, gate).value();
+    run1_trials = static_cast<u64>(rep1.trials);
+    ASSERT_GT(run1_trials, 0u) << "run 1 must have non-zero trial count";
+
+    after_run1_counter = library.cumulative_trials();
+    EXPECT_EQ(after_run1_counter, run1_trials)
+        << "in-memory counter after run 1 must equal run1_trials";
+
+    // Write the sidecar — this is what cross-process durability depends on.
+    (void)library.snapshot();
+  } // library object destroyed — simulates process exit
+
+  // ---- reopen at the SAME dir — simulates a subsequent `discover --library-dir` ----
+  u64 run2_trials = 0;
+  {
+    Fixture fx2{real_signal_panel()};
+    lib::Library library2 = lib::Library::open(dir, default_gate_cfg(), {0xDEADBEEFu});
+
+    // The counter must have been restored from the sidecar.
+    const u64 loaded = library2.cumulative_trials();
+    EXPECT_EQ(loaded, after_run1_counter)
+        << "cumulative_trials() must be restored from sidecar after reopen (got "
+        << loaded << ", want " << after_run1_counter << ")";
+    ASSERT_GT(loaded, 0u) << "loaded counter must be > 0 (proves durability, not just zero)";
+
+    // ---- run 2: the factory must see prior == loaded, so admission N == prior + run2_N ----
+    Factory f2 = fx2.factory();
+    const FactoryReport rep2 = f2.mine_into(real_signal_cfg(/*seed*/ 22), library2, gate).value();
+    run2_trials = static_cast<u64>(rep2.trials);
+
+    const u64 after_run2 = library2.cumulative_trials();
+    EXPECT_EQ(after_run2, loaded + run2_trials)
+        << "counter after run 2 must be loaded (" << loaded
+        << ") + run2_trials (" << run2_trials << "); got " << after_run2;
+  }
+}
+
+// =============================================================================
 //  R1: ByteIdenticalSingleRun — a mine_into over a fresh library (prior == 0)
 //  produces the SAME digest as an independent identical run into a separate fresh
 //  library (the pre-R1 single-run path is byte-identical).
@@ -370,8 +427,8 @@ TEST(FactoryMineInto, ByteIdenticalSingleRun) {
   const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 7), lib1, gate).value();
   const FactoryReport b = f2.mine_into(real_signal_cfg(/*seed*/ 7), lib2, gate).value();
 
-  EXPECT_EQ(lib1.cumulative_trials(), 0u + static_cast<u64>(a.trials));
-  EXPECT_EQ(lib2.cumulative_trials(), 0u + static_cast<u64>(b.trials));
+  EXPECT_EQ(lib1.cumulative_trials(), static_cast<u64>(a.trials));
+  EXPECT_EQ(lib2.cumulative_trials(), static_cast<u64>(b.trials));
   // Byte-identical: same seed, same prior (0), same outcome.
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted);

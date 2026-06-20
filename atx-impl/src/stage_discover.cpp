@@ -226,10 +226,14 @@ atx::core::Result<StageResult> run_discover_gated(
         }
     }
 
-    // R1: the cumulative trial counter sidecar (_manifest.bin) is written
-    // automatically by Library::flush_all() above, so no explicit write is
-    // needed here. On the next cross-process --library-dir run, Library::open
-    // loads the sidecar and restores cumulative_trials_.
+    // R1: write the durable cumulative-trials sidecar (_manifest.bin) so that
+    // a subsequent cross-process `discover --library-dir` run restores the
+    // cumulative_trials_ counter from disk. flush_all() above seals the store
+    // but does NOT write the sidecar; snapshot() does both (flush + sidecar
+    // write). Sidecar write failures are best-effort and silently ignored by
+    // snapshot() — worst case: the next run starts at 0, which is the pre-R1
+    // single-run baseline (acceptable per the R1 brief).
+    (void)liblib.snapshot();
 
     const atx::u64 n = liblib.n_alphas();
     if (n == 0) {

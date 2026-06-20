@@ -28,7 +28,6 @@
 
 #include "atx/engine/combine/gate.hpp"     // AlphaGate, GateConfig
 #include "atx/engine/combine/metrics.hpp"  // combine::AlphaMetrics, compute_metrics
-#include "atx/engine/combine/store.hpp"    // combine::AlphaId
 #include "atx/engine/library/library.hpp"  // Library facade (snapshot)
 #include "atx/engine/library/manifest.hpp" // the unit under test
 #include "atx/engine/library/record.hpp"   // Provenance, SegmentReaderLite
