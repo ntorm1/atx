@@ -315,11 +315,18 @@ enum class Cond {
 // w_i(d) are the post-L1 weights at date d. The first valid rebalance day has
 // no predecessor so it is skipped (contributes neither to the numerator nor the
 // denominator of the mean). When turnover_out != nullptr, the turnover proxy is
-// written there; otherwise turnover is not computed (no extra allocations).
+// written there and the w_prev buffer is materialized lazily on first use;
+// otherwise turnover is not computed and w_prev stays empty.
 //
 // Returns annualized Sharpe. If inverse_vol=true, each demeaned weight is
 // divided by the name's ATM 126d implied vol before L1-normalizing (risk-parity
 // sizing); names with missing/non-positive IV are dropped.
+//
+// Identity bitwise note: for Cond::Identity the conditioned values equal the raw
+// signal, so this reproduces the original eq-dollar / inverse-IV math exactly.
+// Step 4 stores w[i] /= l1 and Step 6 forms w[i] * r, which is bitwise-identical
+// to the original inline (w[i]/l1) * r under the build's default /fp:precise (no
+// FMA contraction). The RankBySharpeWeightings regression pin asserts this == .
 [[nodiscard]] atx::f64 weighting_score(const SignalSet &ss, const Panel &panel,
                                        Cond cond, bool inverse_vol,
                                        atx::f64 *turnover_out) {
@@ -347,8 +354,10 @@ enum class Cond {
 
   // Working buffers.
   std::vector<atx::f64> pnl(D, 0.0);
-  std::vector<atx::f64> w(I, 0.0);      // current day post-L1 weights
-  std::vector<atx::f64> w_prev(I, 0.0); // previous rebalance day post-L1 weights
+  std::vector<atx::f64> w(I, 0.0); // current day post-L1 weights
+  // previous rebalance day post-L1 weights; sized lazily on first use and only
+  // when turnover is requested (turnover_out != nullptr).
+  std::vector<atx::f64> w_prev;
   // buf holds conditioned values for in-universe finite cells.
   // We also record indices for the Rank sort.
   std::vector<atx::f64> buf;
@@ -378,9 +387,9 @@ enum class Cond {
 
     // --- Step 2: condition (in-place on buf). ---
     if (cond == Cond::Rank) {
-      // Ordinal percentile in [0,1]. Stable ascending sort of indices by value,
-      // tie-break by ascending instrument index (stable_sort preserves the
-      // ascending-index order we gathered in). Matches cs_rank_row semantics.
+      // Ordinal percentile in [0,1] (NOT average-rank for ties). Stable ascending
+      // sort of indices by value; ties broken by ascending instrument index
+      // (stable_sort preserves the ascending-index order we gathered in).
       std::vector<atx::usize> order(cnt);
       for (atx::usize k = 0; k < cnt; ++k) {
         order[k] = k; // indices into buf/valid_idx
