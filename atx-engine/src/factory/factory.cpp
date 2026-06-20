@@ -670,7 +670,24 @@ namespace {
   SearchDriver driver{lib_, train, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
   const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
 
-  LibraryPool view{lib_lib};
+  // (8.C) OOS train-ranking corr length safety: rank the OOS candidates against an
+  // EMPTY pool for the corr/diversify term. The candidate's ranking pnl here is
+  // TRAIN-length, but the library's admitted streams (and thus the CorrNeighborIndex
+  // t_) are HOLDOUT-length — so scoring a train-length candidate against a non-empty
+  // library corr index is ill-defined (debug ATX_ASSERT / release garbage) AND
+  // semantically meaningless (a train-window series vs a holdout-window pool). The
+  // real decorrelation guarantee is enforced LATER by lib_lib.admit() → verdict_for →
+  // worst_corr_to_pool(hold_pnl), which correlates HOLDOUT-vs-HOLDOUT-library
+  // (consistent). The ranking only decides admission ORDER; the gate still rejects
+  // over-correlated alphas. Mirrors the parallel submit#2's empty-pool snapshot.
+  //
+  // DIGEST-IDENTICAL today: lib_lib is always empty at mine_into_oos (discover wipes
+  // the library each run), so LibraryPool{lib_lib}.worst_corr already returned 0 →
+  // diversify == 1.0 → raw/dsr unchanged. An empty AlphaStorePool also returns 0
+  // (corr_to_pool short-circuits to 0.0 for an empty store), so the ranking dsr/raw —
+  // and hence the rank order, admitted set, and rep.digest — are byte-identical.
+  const combine::AlphaStore empty_rank_pool;
+  const AlphaStorePool rank_view{empty_rank_pool};
 
   rep.evaluated = res.trial_count;
   rep.trials = res.trial_count;
@@ -685,10 +702,11 @@ namespace {
     admit_fit.trial_count = res.trial_count;
   }
 
-  // (2) rank the distinct scored candidates by deflated fitness against the LIBRARY,
-  // scored over the TRAIN panel (the search's selection domain). Mirrors
-  // rank_by_deflated_fitness(PoolView) but over `train` rather than panel_, with the
-  // SAME total order (DESCENDING dsr, then raw, then canon_hash, then idx; F1).
+  // (2) rank the distinct scored candidates by deflated fitness against an EMPTY pool
+  // (8.C — see rank_view above), scored over the TRAIN panel (the search's selection
+  // domain). Mirrors rank_by_deflated_fitness(PoolView) but over `train` rather than
+  // panel_, with the SAME total order (DESCENDING dsr, then raw, then canon_hash, then
+  // idx; F1).
   //
   // PERF (Task 4): evaluate each candidate's train SignalSet EXACTLY ONCE. A single
   // panel-bound Engine is reused across candidates (byte-identical: Engine::evaluate
@@ -722,8 +740,9 @@ namespace {
       auto ss_r = train_engine.evaluate(*prog_r);
       if (ss_r.has_value()) {
         // (2a) ranking fitness — pass the precomputed SignalSet so pool_aware_fitness
-        // skips compile+evaluate (eval_streams fast-path, bit-identical).
-        auto fit = pool_aware_fitness(cand, view, train, policy_, sim_, admit_fit,
+        // skips compile+evaluate (eval_streams fast-path, bit-identical). Scored
+        // against the EMPTY rank_view (8.C corr-length safety).
+        auto fit = pool_aware_fitness(cand, rank_view, train, policy_, sim_, admit_fit,
                                       /*weak_panel=*/nullptr, /*engine=*/nullptr,
                                       /*signals=*/&(*ss_r));
         if (fit.has_value()) {
@@ -910,19 +929,8 @@ namespace {
     admit_fit.trial_count = res.trial_count;
   }
 
-  // Build the run-start library pool snapshot exactly as the non-OOS parallel path does
-  // (the const-at-run-start admitted-pnl streams over lib.n_periods()). Both submits score
-  // their candidates' pool-aware fitness against THIS snapshot — byte-identical to the
-  // serial path's LibraryPool::worst_corr at run start (same SimHash seed/T/K + pnl).
-  const std::vector<atx::f64> pool_pnl = snapshot_pool_pnl(lib_lib);
-  parallel::MineWorkItem pool_item;
-  pool_item.pool_pnl_flat = std::span<const atx::f64>{pool_pnl};
-  pool_item.pool_n_alphas = static_cast<atx::usize>(lib_lib.n_alphas());
-  pool_item.n_periods = lib_lib.n_periods();
-  pool_item.pool_seed = lib_lib.master_seeds().empty() ? 0ULL : lib_lib.master_seeds().front();
-
   // (Submit #1) TRAIN RANKING eval over the executor — reproduces serial step 2
-  // (mine_into_oos:705-742) bit-for-bit: the per-genome pool_aware_fitness(cand, library,
+  // (mine_into_oos) bit-for-bit: the per-genome pool_aware_fitness(cand, EMPTY pool,
   // train) dsr/raw AND the train SignalSet -> train streams. gather_mine_scores serializes
   // `train` as the panel, so each worker's compile+eval+extract_streams runs over the SAME
   // train sub-panel the serial single Engine{train} runs over (Engine output depends only
@@ -930,20 +938,29 @@ namespace {
   // (both require a successful single-alpha train eval); its dsr/raw == the serial step-2
   // ranking dsr/raw (the GenomeRoundTripsThroughSerializeParse equivalence proof).
   //
-  // KNOWN PRE-EXISTING ISSUE (deferred to Task 8 — NOT a Task-5 parallelization concern):
-  // this submit ranks TRAIN-length candidate pnl against the run-start library corr index.
-  // After Task 8 enables library accumulation, the library stores HOLDOUT-length admitted
-  // streams, so the corr index's t_ = holdout length while the train candidate pnl is
-  // train length. CorrNeighborIndex::signature ATX_ASSERTs pnl.size() == t_, so this will
-  // assert in debug / read stale scratch in release once the library is non-empty. This is
-  // the EXACT behavior of serial mine_into_oos step-2 ranking (it calls the identical
-  // pool_aware_fitness(cand, LibraryPool, train)), so the parallel path is byte-identical /
-  // symmetric to the serial path here — the mismatch is currently UNREACHABLE (the discover
-  // stage remove_all's the library each run, so it is empty at mine_into_oos and the index
-  // is never built -> worst_corr returns 0). Resolving the train-vs-holdout corr-length
-  // mismatch affects serial and parallel IDENTICALLY and is out of Task 5's scope (Task 8).
+  // (8.C) EMPTY POOL on purpose — the corr-length safety fix, MIRRORING submit#2 below.
+  // This submit ranks TRAIN-length candidate pnl; the library's admitted streams (and the
+  // CorrNeighborIndex t_) are HOLDOUT-length. Ranking a train-length pnl against a
+  // holdout-length library corr index is ill-defined (CorrNeighborIndex::signature
+  // ATX_ASSERTs pnl.size() == t_ → debug assert / release garbage once the library is
+  // non-empty) AND semantically meaningless. So submit#1 passes an EMPTY pool snapshot
+  // (pool_n_alphas = 0): the train STREAMS + the `ok` flag are POOL-INDEPENDENT (compile +
+  // evaluate + extract_streams, never the pool), and the only pool-fed term is the
+  // candidate's worst-corr ranking (dsr/raw) — for which an empty pool yields worst_corr 0.
+  // DIGEST-IDENTICAL today: the discover stage wipes the library each run, so it is empty
+  // at mine_into_oos and worst_corr already returned 0; the serial step-2 fix uses the
+  // SAME empty-pool ranking, so serial and parallel stay byte-identical and symmetric. The
+  // real decorrelation gate (lib.admit() → worst_corr_to_pool(hold_pnl), HOLDOUT-vs-HOLDOUT)
+  // is unaffected — ranking only decides admission ORDER. n_periods is the train length so
+  // the empty snapshot is self-consistent; pool_seed is irrelevant when pool_n_alphas == 0
+  // (no index is built). Pinned byte-identical by the OOS invariance test.
+  parallel::MineWorkItem train_pool_item;
+  train_pool_item.pool_pnl_flat = std::span<const atx::f64>{}; // empty: no admitted streams
+  train_pool_item.pool_n_alphas = 0U;
+  train_pool_item.n_periods = train.dates();
+  train_pool_item.pool_seed = 0ULL; // unused (no corr index built for an empty pool)
   const std::vector<GatheredScore> train_gathered =
-      gather_mine_scores(res.all_scored, pool_item, admit_fit, train, policy_, sim_, exec);
+      gather_mine_scores(res.all_scored, train_pool_item, admit_fit, train, policy_, sim_, exec);
 
   // Derive each candidate's TRAIN metrics (serial step 2b — the manifest is_metrics) from
   // the gathered train streams via compute_metrics, IDENTICAL to the serial
@@ -1009,7 +1026,7 @@ namespace {
   // realized stream).
   //
   // EMPTY POOL on purpose: this submit passes an EMPTY pool snapshot (pool_n_alphas = 0),
-  // NOT the run-start library `pool_item`. The holdout streams + the `ok` flag are
+  // exactly like the train submit#1 above (8.C). The holdout streams + the `ok` flag are
   // POOL-INDEPENDENT — they come from compile + evaluate + extract_streams, never from the
   // pool — and the only thing the pool snapshot feeds is the candidate's worst-corr ranking
   // (dsr/raw), which we discard here. So an empty pool leaves the gathered streams + ok
