@@ -18,6 +18,7 @@
 
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe (P2a holdout DSR)
 #include "atx/engine/eval/lockbox.hpp"         // eval::reserve_lockbox, detail::slice_panel (P2a)
+#include "atx/engine/eval/pbo.hpp"             // eval::pbo_cscv_checked (R3b run-level PBO)
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis (P2a DSR)
 
 #include "atx/engine/library/record.hpp" // library::Provenance (admitted-alpha lineage)
@@ -852,6 +853,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   });
 
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first.
+  // R3b: collect admitted holdout PnL streams in admit order for the post-loop PBO
+  // computation. This collection is PURE (no admission changes; see R3b proof comment
+  // below the loop).
+  std::vector<std::vector<atx::f64>> admitted_hold_pnls; // in admit order (R3b)
+
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
 
@@ -927,6 +933,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+        admitted_hold_pnls.push_back(hold_pnl); // R3b: collect in admit order
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -942,6 +949,47 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
+
+  // R3b: compute the run-level CSCV PBO over the admitted alphas' holdout PnL streams.
+  // This is PURE / post-admission: it runs AFTER all admission decisions and the R1
+  // counter increment. It does NOT change rep.digest, the admitted set, or the library
+  // version_id (those are all finalized above). oos_pbo defaults to NaN (< 2 admitted
+  // or too short for any split).
+  //
+  // Matrix assembly: candidate-major layout perf[c*T_h + t] for M = admitted_hold_pnls.size()
+  // candidates over T_h = admitted_hold_pnls[0].size() periods. All holdout PnL vectors
+  // have the same length (they were all evaluated on the SAME holdout sub-panel).
+  // n_splits = largest even number <= min(T_h, 16); if < 2, skip (NaN).
+  {
+    const atx::usize M = admitted_hold_pnls.size();
+    if (M >= 2U && !admitted_hold_pnls.empty()) {
+      const atx::usize T_h = admitted_hold_pnls[0].size();
+      if (T_h >= 2U) {
+        // largest even number <= min(T_h, 16)
+        const atx::usize cap = (T_h < 16U) ? T_h : 16U;
+        const atx::usize n_splits = cap - (cap % 2U); // floor to even
+        if (n_splits >= 2U) {
+          // Assemble candidate-major perf matrix perf[c*T_h + t].
+          std::vector<atx::f64> perf(M * T_h);
+          for (atx::usize c = 0U; c < M; ++c) {
+            const std::vector<atx::f64> &pnl = admitted_hold_pnls[c];
+            // All vectors must be T_h long (same holdout panel); guard defensively.
+            const atx::usize len = (pnl.size() < T_h) ? pnl.size() : T_h;
+            for (atx::usize t = 0U; t < len; ++t) {
+              perf[c * T_h + t] = pnl[t];
+            }
+          }
+          auto pbo_r = eval::pbo_cscv_checked(
+              std::span<const atx::f64>{perf}, M, n_splits);
+          if (pbo_r.has_value()) {
+            rep.oos_pbo = pbo_r->pbo;
+          }
+          // On Err (precondition miss despite our guards): leave oos_pbo NaN (clean).
+        }
+      }
+    }
+  }
+
   return atx::core::Ok(std::move(rep));
 }
 
@@ -1164,6 +1212,11 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first. SEQUENTIAL
   // in the parent — byte-identical to serial mine_into_oos:757-835 (same F5 drops, same
   // hold_dsr, same gate, same admit, same digest fold, same oos_metrics push).
+  // R3b: collect admitted holdout PnL streams in admit order for the post-loop PBO
+  // computation (IDENTICAL collection as serial mine_into_oos — same admit order, same
+  // hold_pnl values — guaranteeing seq==parallel PBO match by construction).
+  std::vector<std::vector<atx::f64>> admitted_hold_pnls_par; // in admit order (R3b)
+
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
 
@@ -1221,6 +1274,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+        admitted_hold_pnls_par.push_back(hold_pnl); // R3b: collect in admit order
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -1236,6 +1290,35 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
+
+  // R3b: compute the run-level CSCV PBO — IDENTICAL logic to serial mine_into_oos,
+  // applied to the SAME admit-order holdout PnL vectors, guaranteeing seq==parallel match.
+  {
+    const atx::usize M = admitted_hold_pnls_par.size();
+    if (M >= 2U && !admitted_hold_pnls_par.empty()) {
+      const atx::usize T_h = admitted_hold_pnls_par[0].size();
+      if (T_h >= 2U) {
+        const atx::usize cap = (T_h < 16U) ? T_h : 16U;
+        const atx::usize n_splits = cap - (cap % 2U); // floor to even
+        if (n_splits >= 2U) {
+          std::vector<atx::f64> perf(M * T_h);
+          for (atx::usize c = 0U; c < M; ++c) {
+            const std::vector<atx::f64> &pnl = admitted_hold_pnls_par[c];
+            const atx::usize len = (pnl.size() < T_h) ? pnl.size() : T_h;
+            for (atx::usize t = 0U; t < len; ++t) {
+              perf[c * T_h + t] = pnl[t];
+            }
+          }
+          auto pbo_r = eval::pbo_cscv_checked(
+              std::span<const atx::f64>{perf}, M, n_splits);
+          if (pbo_r.has_value()) {
+            rep.oos_pbo = pbo_r->pbo;
+          }
+        }
+      }
+    }
+  }
+
   return atx::core::Ok(std::move(rep));
 }
 

@@ -80,9 +80,10 @@
 //  so std::vector / per-candidate allocation is acceptable (the VM hot loop is
 //  untouched — F8).
 
-#include <array>  // std::array (reject_histogram, indexed by library::AdmitKind)
-#include <string> // std::string (seed-expression / field source)
-#include <vector> // std::vector
+#include <array>   // std::array (reject_histogram, indexed by library::AdmitKind)
+#include <limits>  // std::numeric_limits (oos_pbo NaN default; R3b)
+#include <string>  // std::string (seed-expression / field source)
+#include <vector>  // std::vector
 
 #include "atx/core/error.hpp" // Result, Ok, Err
 #include "atx/core/types.hpp" // atx::u64, atx::usize, atx::f64
@@ -194,6 +195,15 @@ struct FactoryReport {
   //  identical). One entry per admitted alpha when oos_fraction > 0: its IS (train)
   //  and OOS (holdout) metrics. P2b (impl) reads this for the discover manifest.
   std::vector<OosReportEntry> oos_metrics;
+
+  // --- R3b: run-level CSCV PBO (probability of backtest overfitting) over the
+  //  admitted alphas' holdout PnL streams for this run. SET-LEVEL statistic: one
+  //  value per run (NOT per candidate). Computed AFTER all admission decisions
+  //  (pure/post-admission — does NOT change which alphas are admitted, rep.digest,
+  //  or the library version_id). NaN when < 2 alphas were admitted on the OOS path,
+  //  or when the holdout is too short for any split, or when OOS is off (oos_fraction
+  //  == 0). Never emitted on the non-accumulation path (byte-identical to pre-R3).
+  atx::f64 oos_pbo{std::numeric_limits<atx::f64>::quiet_NaN()};
 };
 
 // =========================================================================
