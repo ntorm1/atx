@@ -39,6 +39,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "panel")        { cfg.panel         = value; return atx::core::Ok(); }
     if (flag == "alpha-out")    { cfg.alpha_out     = value; return atx::core::Ok(); }
     if (flag == "run-db")       { cfg.run_db        = value; return atx::core::Ok(); }
+    if (flag == "library-dir")  { cfg.library_dir   = value; return atx::core::Ok(); }
     if (flag == "alphas")       { cfg.alphas        = value; return atx::core::Ok(); }
     if (flag == "combo-out")    { cfg.combo_out     = value; return atx::core::Ok(); }
     if (flag == "method")       { cfg.method        = value; return atx::core::Ok(); }

@@ -73,11 +73,22 @@ atx::core::Result<StageResult> run_discover_gated(
     namespace factory = atx::engine::factory;
     namespace library = atx::engine::library;
 
-    // Fresh library dir each run: deterministic (same seed => same DB) and avoids
-    // accumulating stale alphas across re-runs.
-    const std::string lib_dir = (fs::path{cfg.alpha_out} / "_library").string();
+    // Library directory selection (8.A):
+    //  * --library-dir SET  -> a STABLE library that ACCUMULATES across runs/seeds.
+    //    The dir is re-opened (NOT wiped), so admitted alphas persist; library::admit
+    //    dedups by canonical hash + journals, so re-admitting an identical alpha is a
+    //    Duplicate (not double-counted). This is the mega-alpha unlock.
+    //  * --library-dir UNSET -> TODAY's behavior EXACTLY: a fresh per-run library under
+    //    <alpha_out>/_library, WIPED each run (deterministic same-seed => same DB, no
+    //    stale carry-over). This keeps single-run determinism/resume goldens byte-
+    //    identical — accumulation is strictly opt-in.
+    const bool accumulate = !cfg.library_dir.empty();
+    const std::string lib_dir =
+        accumulate ? cfg.library_dir : (fs::path{cfg.alpha_out} / "_library").string();
     std::error_code ec;
-    fs::remove_all(lib_dir, ec);
+    if (!accumulate) {
+        fs::remove_all(lib_dir, ec); // per-run wipe ONLY for the default (non-accumulating) dir
+    }
     fs::create_directories(lib_dir);
 
     // AlphaGate floors from the CLI (defaults: BRAIN gold-standard sharpe/fitness

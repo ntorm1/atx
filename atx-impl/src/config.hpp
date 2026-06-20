@@ -66,6 +66,13 @@ struct RunConfig {
     double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
     std::string run_db;                // --run-db  (SQLite progress DB path; "" = off, no store I/O)
     bool        resume        = false; // --resume  (requires --run-db; continue an incomplete matching run)
+    // --library-dir (8.A): a STABLE on-disk library::Library directory that
+    // ACCUMULATES admitted alphas across discover runs/seeds (the library is
+    // re-opened, not wiped, so re-admitting an identical alpha is deduped). UNSET
+    // ("") preserves today's behavior exactly: a fresh per-run library under
+    // <alpha_out>/_library wiped each run, so single-run determinism/resume goldens
+    // stay byte-identical. Only an explicit --library-dir opts into accumulation.
+    std::string library_dir;           // --library-dir  ("" = per-run <alpha_out>/_library, no accumulation)
 
     // -- combine --
     std::string alphas;                // --alphas

@@ -451,4 +451,191 @@ TEST(AtxImplDiscover, OosManifestHeaderPresent) {
     fs::remove_all(alpha_out_leg, ec);
 }
 
+// ---------------------------------------------------------------------------
+// 8.A helpers — read the gated "admitted" kv (== total library size after the
+// run; the gated path emits n_alphas() there) and the manifest count= line.
+// ---------------------------------------------------------------------------
+static int admitted_kv(const atx::impl::StageResult& sr) {
+    for (const auto& p : sr.kvs) {
+        if (p.first == "admitted") {
+            return std::stoi(p.second);
+        }
+    }
+    ADD_FAILURE() << "missing 'admitted' kv";
+    return -1;
+}
+
+// Count alpha_NNN.dsl files written into an alpha_out dir (== this-run library
+// size; the gated path writes one .dsl per AlphaId).
+static int count_dsl(const std::string& dir) {
+    namespace fs = std::filesystem;
+    int n = 0;
+    if (!fs::exists(dir)) return 0;
+    for (const auto& e : fs::directory_iterator(dir)) {
+        if (e.path().extension() == ".dsl") ++n;
+    }
+    return n;
+}
+
+// Build a gated, permissive-gate RunConfig for the accumulation tests. min_dsr
+// 0 + wide-open floors so admission is driven by the search, not the gate.
+static atx::impl::RunConfig gated_cfg(const std::string& panel_path,
+                                      const std::string& alpha_out,
+                                      unsigned long long seed) {
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = seed;
+    cfg.population   = 16;
+    cfg.generations  = 5;
+    cfg.seed_exprs   = safe_seed_exprs();
+    cfg.gated        = true;
+    cfg.min_sharpe   = 0.0;
+    cfg.min_fitness  = 0.0;
+    cfg.max_turnover = 10.0;
+    cfg.max_pool_corr= 1.0;   // permit any corr so accumulation is not corr-gated
+    cfg.min_dsr      = 0.0;
+    return cfg;
+}
+
+// ---------------------------------------------------------------------------
+// 8.A Test: LibraryAccumulatesAcrossRuns
+// With --library-dir set, the library is RE-OPENED (not wiped) each run, so two
+// runs with DIFFERENT seeds into the SAME library dir leave the second run's
+// library >= the first run's (new uncorrelated alphas accumulate; identical
+// alphas are deduped). Without --library-dir (the default), each run wipes its
+// per-run <alpha_out>/_library, so the second run does NOT see the first's alphas.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, LibraryAccumulatesAcrossRuns) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "lib_accum");
+
+    // Hermetic, fresh library dir + alpha_out dirs (removed up-front so a stale
+    // dir from a prior failed run cannot pollute the accumulation count).
+    const std::string lib_dir =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_accum_libdir").string();
+    const std::string out1 =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_accum_out1").string();
+    const std::string out2 =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_accum_out2").string();
+    std::error_code ec0;
+    fs::remove_all(lib_dir, ec0);
+    fs::remove_all(out1, ec0);
+    fs::remove_all(out2, ec0);
+
+    // Run 1 into the stable library dir (seed A).
+    auto cfg1 = gated_cfg(panel_path, out1, /*seed=*/111ULL);
+    cfg1.library_dir = lib_dir;
+    auto r1 = atx::impl::run_discover(cfg1);
+    ASSERT_TRUE(r1.has_value()) << r1.error().message();
+    const int n1 = admitted_kv(*r1);
+    ASSERT_GE(n1, 1);
+    EXPECT_EQ(count_dsl(out1), n1) << "run 1 .dsl count == library size";
+
+    // Run 2 into the SAME library dir, DIFFERENT seed B. The library is re-opened
+    // (not wiped): the size is monotonic non-decreasing, and >= run 1's (run 1's
+    // alphas are still present; any new run-2 alphas are added, identical ones
+    // deduped).
+    auto cfg2 = gated_cfg(panel_path, out2, /*seed=*/222ULL);
+    cfg2.library_dir = lib_dir;
+    auto r2 = atx::impl::run_discover(cfg2);
+    ASSERT_TRUE(r2.has_value()) << r2.error().message();
+    const int n2 = admitted_kv(*r2);
+    EXPECT_GE(n2, n1) << "accumulation: library cannot shrink across runs";
+    EXPECT_EQ(count_dsl(out2), n2) << "run 2 emits the FULL accumulated library as .dsl";
+
+    // CONTRAST: the DEFAULT path (no --library-dir) wipes its per-run library, so a
+    // second default run does NOT accumulate — n stays a single-run size.
+    const std::string out_def1 =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_accum_def1").string();
+    const std::string out_def2 =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_accum_def2").string();
+    fs::remove_all(out_def1, ec0);
+    fs::remove_all(out_def2, ec0);
+    auto cdef1 = gated_cfg(panel_path, out_def1, /*seed=*/111ULL); // library_dir unset
+    auto rdef1 = atx::impl::run_discover(cdef1);
+    ASSERT_TRUE(rdef1.has_value()) << rdef1.error().message();
+    auto cdef2 = gated_cfg(panel_path, out_def2, /*seed=*/222ULL); // library_dir unset
+    auto rdef2 = atx::impl::run_discover(cdef2);
+    ASSERT_TRUE(rdef2.has_value()) << rdef2.error().message();
+    // Each default run's library is fresh; the seed-B default run cannot include
+    // the seed-A alphas, so its size is independent of (and not the accumulation of)
+    // the seed-A run. Specifically it must be < the accumulated n2 whenever the two
+    // seeds discovered any distinct alpha (n2 == n1 + new). If the two seeds found
+    // an identical set, n2 == n1 and both default runs == n1 too; assert the weaker
+    // invariant that the accumulated library is at least as large as a single run.
+    EXPECT_GE(n2, admitted_kv(*rdef2))
+        << "accumulated library must be >= a single default (wiped) run";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(lib_dir, ec);
+    fs::remove_all(out1, ec);
+    fs::remove_all(out2, ec);
+    fs::remove_all(out_def1, ec);
+    fs::remove_all(out_def2, ec);
+}
+
+// ---------------------------------------------------------------------------
+// 8.A Test: LibraryDedupOnReadmitDeterministic
+// Re-running discover with the SAME seed into the SAME --library-dir re-admits
+// the SAME alphas. library::admit dedups by canonical hash, so the library size
+// does NOT grow (every re-admit is a Duplicate), and the run is deterministic
+// (twice-run: identical digest, identical library size).
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, LibraryDedupOnReadmitDeterministic) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "lib_dedup");
+
+    const std::string lib_dir =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_dedup_libdir").string();
+    const std::string out1 =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_dedup_out1").string();
+    const std::string out2 =
+        (fs::temp_directory_path() / "atx_impl_discover_lib_dedup_out2").string();
+    std::error_code ec0;
+    fs::remove_all(lib_dir, ec0);
+    fs::remove_all(out1, ec0);
+    fs::remove_all(out2, ec0);
+
+    // Run 1 (seed A) into the stable library dir.
+    auto cfg1 = gated_cfg(panel_path, out1, /*seed=*/333ULL);
+    cfg1.library_dir = lib_dir;
+    auto r1 = atx::impl::run_discover(cfg1);
+    ASSERT_TRUE(r1.has_value()) << r1.error().message();
+    const int n1 = admitted_kv(*r1);
+    ASSERT_GE(n1, 1);
+
+    // Run 2: identical seed + same library dir. Every candidate re-admit is a
+    // Duplicate, so the library size is UNCHANGED, and the run is byte-deterministic
+    // (same admitted-from-search set => same emitted .dsl => same fnv1a64 digest).
+    auto cfg2 = gated_cfg(panel_path, out2, /*seed=*/333ULL);
+    cfg2.library_dir = lib_dir;
+    auto r2 = atx::impl::run_discover(cfg2);
+    ASSERT_TRUE(r2.has_value()) << r2.error().message();
+    const int n2 = admitted_kv(*r2);
+
+    EXPECT_EQ(n2, n1) << "re-admitting identical alphas must NOT grow the library (dedup)";
+    EXPECT_EQ(r1->digest, r2->digest)
+        << "twice-run determinism: identical seed + library dir => identical stage digest";
+    EXPECT_NE(r1->digest, atx::u64{0});
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(lib_dir, ec);
+    fs::remove_all(out1, ec);
+    fs::remove_all(out2, ec);
+}
+
 } // namespace atxtest_discover
