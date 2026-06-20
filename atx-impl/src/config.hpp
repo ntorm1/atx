@@ -84,6 +84,14 @@ struct RunConfig {
     bool        sector_neutral = false; // --sector-neutral
     long        fit_begin    = 0;     // --fit-begin
     long        fit_end      = 0;     // --fit-end
+    // --corr-penalty / --capacity-floor (9.2, opt-in crowding de-correlation): a
+    // post-fit transform of the combiner weights via crowding::decorrelate_weights.
+    // BOTH default 0.0, which is the engine's EXACT-passthrough rail (corr_penalty==0
+    // AND capacity_floor<=0 => weights returned bit-for-bit), so the no-flag combine
+    // output stays byte-identical to today. Only an explicit --corr-penalty > 0 (or a
+    // positive --capacity-floor) opts into de-correlation / capacity scaling.
+    double      corr_penalty   = 0.0; // --corr-penalty   (0 = disabled = passthrough)
+    double      capacity_floor = 0.0; // --capacity-floor (<=0 = capacity scaling off)
 
     // -- optimize --
     std::string combo;                 // --combo

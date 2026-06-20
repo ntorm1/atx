@@ -612,4 +612,143 @@ TEST(AtxImplCombine, CombineFromLibraryMatchesDslPath) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 9.2 Test: CorrPenaltyZeroIsByteIdenticalToDefault
+// The opt-in crowding de-correlation (--corr-penalty / --capacity-floor) defaults
+// to 0.0, which is the engine's EXACT-passthrough rail. A combine run with
+// corr_penalty == 0 (explicit) and capacity_floor == 0 must be BYTE-IDENTICAL to a
+// combine run with no de-correlation knobs at all: same combo.bin digest AND same
+// file bytes. This pins "the no-flag path is unchanged".
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, CorrPenaltyZeroIsByteIdenticalToDefault) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "corr0");
+
+    const std::string alphas_dir = write_alpha_dir("corr0", safe_dsls());
+    const std::string combo_default =
+        (fs::temp_directory_path() / "atx_impl_combine_corr_default.bin").string();
+    const std::string combo_zero =
+        (fs::temp_directory_path() / "atx_impl_combine_corr_zero.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv"; // exercise the real fitted weights (not equal)
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (a) Default: no de-correlation knobs set (both stay 0.0 by struct default).
+    cfg.combo_out = combo_default;
+    auto r_default = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_default.has_value()) << r_default.error().message();
+
+    // (b) Explicit corr_penalty == 0, capacity_floor == 0 -> exact passthrough.
+    cfg.corr_penalty   = 0.0;
+    cfg.capacity_floor = 0.0;
+    cfg.combo_out      = combo_zero;
+    auto r_zero = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_zero.has_value()) << r_zero.error().message();
+
+    EXPECT_EQ(r_default->digest, r_zero->digest)
+        << "corr_penalty 0 must be byte-identical to the default (no-knob) path";
+    EXPECT_NE(r_default->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    const auto b_default = read_bytes(combo_default);
+    const auto b_zero    = read_bytes(combo_zero);
+    EXPECT_FALSE(b_default.empty());
+    EXPECT_EQ(b_default, b_zero) << "default and corr_penalty-0 combo.bin must match";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_default, combo_zero}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 9.2 Test: CorrPenaltyPositiveChangesWeightsAndIsDeterministic
+// With --corr-penalty > 0 on a pool of correlated alphas (rank/ts_mean/delta of
+// the same close panel share non-trivial PnL correlation), the de-correlation
+// SHRINKS the crowded weights, so the combined panel must DIFFER from the
+// passthrough (corr_penalty 0) combo. And the de-correlated path must itself be
+// twice-run BYTE-IDENTICAL (decorrelate_weights is pure / no RNG).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, CorrPenaltyPositiveChangesWeightsAndIsDeterministic) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "corrpos");
+
+    const std::string alphas_dir = write_alpha_dir("corrpos", safe_dsls());
+    const std::string combo_off =
+        (fs::temp_directory_path() / "atx_impl_combine_corr_off.bin").string();
+    const std::string combo_on1 =
+        (fs::temp_directory_path() / "atx_impl_combine_corr_on1.bin").string();
+    const std::string combo_on2 =
+        (fs::temp_directory_path() / "atx_impl_combine_corr_on2.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (a) De-correlation OFF (passthrough).
+    cfg.corr_penalty = 0.0;
+    cfg.combo_out    = combo_off;
+    auto r_off = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_off.has_value()) << r_off.error().message();
+
+    // (b) De-correlation ON, run #1.
+    cfg.corr_penalty = 1.0;
+    cfg.combo_out    = combo_on1;
+    auto r_on1 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_on1.has_value()) << r_on1.error().message();
+
+    // (c) De-correlation ON, run #2 (same inputs) -> must be byte-identical to #1.
+    cfg.combo_out = combo_on2;
+    auto r_on2 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_on2.has_value()) << r_on2.error().message();
+
+    // De-correlation must actually change the combined book (the alphas are
+    // mutually correlated, so the crowded weights shrink).
+    EXPECT_NE(r_on1->digest, r_off->digest)
+        << "corr_penalty > 0 must change the combined panel vs passthrough";
+    // Determinism: the de-correlated path is twice-run byte-identical.
+    EXPECT_EQ(r_on1->digest, r_on2->digest)
+        << "de-correlated combine must be deterministic (twice-run identical)";
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_bytes(combo_on1), read_bytes(combo_on2))
+        << "de-correlated combo.bin must be byte-identical across runs";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_off, combo_on1, combo_on2}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+    }
+}
+
 } // namespace atxtest_combine

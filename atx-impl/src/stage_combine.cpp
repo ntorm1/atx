@@ -18,6 +18,7 @@
 #include "atx/engine/alpha/streams.hpp"        // alpha::extract_streams, alpha::AlphaStreams
 #include "atx/engine/alpha/vm.hpp"             // alpha::Engine
 #include "atx/engine/combine/combiner.hpp"     // combine::AlphaCombiner, CombinerConfig, CombineMethod, Combination
+#include "atx/engine/combine/crowding.hpp"     // combine::decorrelate_weights, CrowdingConfig (9.2)
 #include "atx/engine/combine/gate.hpp"         // combine::GateConfig (library open, 8.B)
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics
 #include "atx/engine/combine/store.hpp"        // combine::AlphaStore
@@ -215,6 +216,32 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
             ? static_cast<atx::usize>(cfg.fit_end) : np;
 
     ATX_TRY(auto combo, combiner.fit(pool, fit_begin, fit_end));
+
+    // 8b. (9.2) Opt-in crowding de-correlation: a post-fit transform that shrinks
+    //     each fitted weight by how mutually correlated its alpha is with the rest
+    //     of the pool (corr_penalty) and, optionally, by how capacity-limited the
+    //     name is (capacity_floor). Both knobs default 0.0 -> the engine's EXACT
+    //     passthrough rail (corr_penalty==0 AND capacity_floor<=0 => weights returned
+    //     bit-for-bit), so the no-flag combine output is byte-identical to today. We
+    //     only call into decorrelate_weights when at least one knob is active; the
+    //     default path never touches combo.weights. The transform reuses the SAME
+    //     [fit_begin, fit_end) window the weights were fit on (the engine takes
+    //     correlations over that PnL sub-span).
+    if (cfg.corr_penalty > 0.0 || cfg.capacity_floor > 0.0) {
+        // Capacity is caller-supplied per name; capacity scaling is OFF by default
+        // (capacity_floor <= 0), in which case these values are UNUSED — fill with a
+        // stable constant 1.0 so the vector is well-formed and deterministic. A
+        // positive --capacity-floor would fade names in over [0, floor]; this stage
+        // does not yet compute remaining capacity from a cost model, so a positive
+        // floor with the constant 1.0 simply means every name is at/above the floor.
+        std::vector<atx::f64> capacity(pool.size(), 1.0);
+        combine::CrowdingConfig ccfg{};
+        ccfg.corr_penalty   = cfg.corr_penalty;
+        ccfg.capacity_floor = cfg.capacity_floor;
+        combo.weights = combine::decorrelate_weights(
+            combo.weights, pool, fit_begin, fit_end,
+            std::span<const atx::f64>{capacity}, ccfg);
+    }
 
     // 9. Build the combined mega-alpha matrix [dates * insts] from the per-alpha
     //    TARGET-WEIGHT (position) streams — the representation each alpha's
