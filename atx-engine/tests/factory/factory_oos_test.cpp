@@ -277,8 +277,8 @@ TEST(FactoryOos, MineIntoOosOff_ByteIdenticalToLegacy) {
 
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
-  const FactoryReport a = f1.mine_into(cfg, lib1, gate);
-  const FactoryReport b = f2.mine_into(cfg, lib2, gate);
+  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted);
@@ -310,7 +310,7 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
   // init diversity.
   cfg.search.seed_from_grammar = false;
 
-  const FactoryReport rep = f.mine_into(cfg, library, gate);
+  const FactoryReport rep = f.mine_into(cfg, library, gate).value();
 
   EXPECT_EQ(rep.admitted, 0u)
       << "an alpha good on TRAIN but with no edge on the noise HOLDOUT must be rejected";
@@ -328,7 +328,7 @@ TEST(FactoryOos, GoodIsBadOos_Rejected) {
   // default changes the mined candidate set; this test verifies OOS-gate LOGIC, not
   // init diversity.
   cfg_is.search.seed_from_grammar = false;
-  const FactoryReport rep_is = f_is.mine_into(cfg_is, lib_is, gate);
+  const FactoryReport rep_is = f_is.mine_into(cfg_is, lib_is, gate).value();
   EXPECT_GT(rep_is.admitted, 0u)
       << "the legacy in-sample path admits the overfit the OOS holdout rejects";
 }
@@ -347,7 +347,7 @@ TEST(FactoryOos, GoodIsGoodOos_Admitted) {
   FactoryConfig cfg = real_signal_cfg(/*seed*/ 13);
   cfg.oos_fraction = 0.20;
 
-  const FactoryReport rep = f.mine_into(cfg, library, gate);
+  const FactoryReport rep = f.mine_into(cfg, library, gate).value();
 
   ASSERT_GT(rep.admitted, 0u) << "a stationary edge survives the holdout confirmation";
   EXPECT_EQ(library.n_alphas(), static_cast<u64>(rep.admitted));
@@ -388,8 +388,8 @@ TEST(FactoryOos, OosDeterminism) {
 
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
-  const FactoryReport a = f1.mine_into(cfg, lib1, gate);
-  const FactoryReport b = f2.mine_into(cfg, lib2, gate);
+  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
 
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted);
@@ -423,7 +423,7 @@ TEST(FactoryOos, MineIntoForwardsSinkPerGeneration) {
   ASSERT_EQ(cfg.oos_fraction, 0.0) << "must be off-path (non-OOS) for this test";
 
   CountingSink sink;
-  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr);
+  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr).value();
   (void)rep;
 
   EXPECT_EQ(sink.calls, static_cast<int>(cfg.search.generations))
@@ -443,13 +443,13 @@ TEST(FactoryOos, MineIntoOffPathDigestUnchanged) {
   Fixture fxA{real_signal_panel()};
   lib::Library libA = lib::Library::open(tmpdir("A"), default_gate_cfg(), {0xC0FFEEu});
   Factory fA = fxA.factory();
-  const FactoryReport repA = fA.mine_into(cfg, libA, gate);
+  const FactoryReport repA = fA.mine_into(cfg, libA, gate).value();
 
   // Run B: explicit nullptr/nullptr — must be byte-identical to A.
   Fixture fxB{real_signal_panel()};
   lib::Library libB = lib::Library::open(tmpdir("B"), default_gate_cfg(), {0xC0FFEEu});
   Factory fB = fxB.factory();
-  const FactoryReport repB = fB.mine_into(cfg, libB, gate, nullptr, nullptr);
+  const FactoryReport repB = fB.mine_into(cfg, libB, gate, nullptr, nullptr).value();
 
   EXPECT_EQ(repA.digest, repB.digest)
       << "off-path nullptr params must produce byte-identical digest";
@@ -471,13 +471,78 @@ TEST(FactoryOos, MineIntoOosForwardsSink) {
   cfg.oos_fraction = 0.20;
 
   CountingSink sink;
-  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr);
+  const FactoryReport rep = f.mine_into(cfg, library, gate, &sink, nullptr).value();
   (void)rep;
 
   EXPECT_GE(sink.calls, 1)
       << "on_generation must fire at least once (train search generates >= 1 generation)";
   EXPECT_EQ(sink.calls, static_cast<int>(cfg.search.generations))
       << "on_generation must fire once per completed generation on the train search";
+}
+
+// =============================================================================
+//  AccumulationGeometryMismatchHaltsRun (Task 8 footgun, REAL path) — drives the
+//  ACTUAL cross-run accumulation fold (mine_into -> mine_into_oos, the OOS-holdout
+//  admit at the named site) against a REOPENED --library-dir-style library whose
+//  fixed period count t_ differs from the current run's holdout length. The
+//  reachable discover path must HALT with a CLEAN propagated Result error (the
+//  guarded try_admit seam), NOT abort (debug ATX_ASSERT) / read out-of-bounds
+//  (release). The prior LibraryIntegration.AccumulationRejectsGeometryMismatch test
+//  only exercised try_admit DIRECTLY; this one exercises the factory fold that the
+//  CLI's run_discover_gated actually reaches.
+// =============================================================================
+TEST(FactoryOos, AccumulationGeometryMismatchHaltsRun) {
+  AlphaGate gate{default_gate_cfg()};
+  const std::string lib_dir = tmpdir("accum"); // the persistent --library-dir
+
+  // RUN 1 — accumulate a first batch into a FRESH library on a panel whose terminal
+  // 20% holdout fixes t_ (the OOS-holdout admit stages HOLDOUT-length pnl). A
+  // stationary momentum edge survives the holdout confirmation, so at least one
+  // alpha is admitted and t_ is durably fixed.
+  {
+    Fixture fx{real_signal_panel()}; // 120 dates -> holdout ~24 periods
+    lib::Library library = lib::Library::open(lib_dir, default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 101);
+    cfg.oos_fraction = 0.20;
+    const FactoryReport rep = f.mine_into(cfg, library, gate).value();
+    ASSERT_GT(rep.admitted, 0u) << "run 1 must admit so t_ is fixed on the persistent library";
+    ASSERT_TRUE(library.flush_all().has_value()); // make the staged alphas durable for reopen
+  }
+
+  // RUN 2 (MISMATCH) — REOPEN the SAME library dir, but mine over a panel with a
+  // DIFFERENT date count so the terminal-20% holdout length differs from run 1's
+  // fixed t_. The reachable accumulation fold must surface a CLEAN error, not
+  // crash/corrupt.
+  {
+    Fixture fx{two_field_panel(160, 8, momentum_close(160, 8, 0xA11Cu))}; // 160 dates -> holdout ~32
+    lib::Library library = lib::Library::open(lib_dir, default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 202);
+    cfg.oos_fraction = 0.20; // same fraction, longer panel => longer holdout => != run 1's t_
+
+    auto rep_r = f.mine_into(cfg, library, gate);
+    ASSERT_FALSE(rep_r.has_value())
+        << "a geometry-mismatched reopened --library-dir must HALT with a clean error, "
+           "not abort / read OOB";
+    EXPECT_EQ(rep_r.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+
+  // RUN 3 (MATCH) — REOPEN the SAME library dir and mine over a panel whose holdout
+  // length MATCHES run 1 (same 120-date geometry). The accumulation fold must still
+  // SUCCEED (Ok), proving the guard only halts on a true mismatch, never the
+  // intended same-panel-many-seeds accumulation.
+  {
+    Fixture fx{real_signal_panel()}; // 120 dates -> holdout matches run 1
+    lib::Library library = lib::Library::open(lib_dir, default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 303); // a DIFFERENT seed (new candidates)
+    cfg.oos_fraction = 0.20;
+
+    auto rep_r = f.mine_into(cfg, library, gate);
+    ASSERT_TRUE(rep_r.has_value())
+        << "a matching-geometry reopen must accumulate cleanly: " << rep_r.error().to_string();
+  }
 }
 
 } // namespace atxtest_factory_oos_test

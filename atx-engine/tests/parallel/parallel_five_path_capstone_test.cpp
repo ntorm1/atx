@@ -470,7 +470,7 @@ TEST(ParallelFivePathCapstone, MineReportDigestAndVersionIdIdenticalAcrossFivePa
     lib::Library library = lib::Library::open(tmpdir("seq"), default_gate_cfg(), {0xC0FFEEu});
     AlphaGate gate{default_gate_cfg()};
     Factory f = fx.factory();
-    const FactoryReport rep = f.mine_into(mine_cfg(/*seed*/ 7), library, gate);
+    const FactoryReport rep = f.mine_into(mine_cfg(/*seed*/ 7), library, gate).value();
     want_digest = rep.digest;
     want_admitted = rep.admitted;
     want_version = version_id_of(library);
@@ -489,7 +489,7 @@ TEST(ParallelFivePathCapstone, MineReportDigestAndVersionIdIdenticalAcrossFivePa
     Factory f = fx.factory();
     std::unique_ptr<IExecutor> exec = make_executor(p);
     ASSERT_NE(exec, nullptr) << p.label;
-    const FactoryReport rep = f.mine_into(mine_cfg(/*seed*/ 7), library, gate, *exec);
+    const FactoryReport rep = f.mine_into(mine_cfg(/*seed*/ 7), library, gate, *exec).value();
     EXPECT_EQ(rep.digest, want_digest)
         << "FIVE-PATH BREAK [mine.digest]: " << p.label << " diverged from the sequential oracle";
     EXPECT_EQ(rep.admitted, want_admitted)

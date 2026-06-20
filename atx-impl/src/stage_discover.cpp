@@ -206,9 +206,17 @@ atx::core::Result<StageResult> run_discover_gated(
         sink_ptr = &*sink;
     }
 
-    // mine_into returns FactoryReport BY VALUE (no Result) — no error branch to
-    // mark_failed on; just complete() the run after it returns.
-    const factory::FactoryReport rep = fac.mine_into(fcfg, liblib, gate, sink_ptr, resume_ptr);
+    // mine_into now returns a Result: a cross-run --library-dir geometry MISMATCH
+    // (a reopened library whose fixed period count differs from this run's holdout
+    // length) surfaces here as a CLEAN propagated error instead of an ATX_ASSERT abort
+    // (debug) / out-of-bounds projection read (release). Mark the run failed and
+    // propagate so the CLI prints a clear message rather than crashing/corrupting.
+    auto rep_r = fac.mine_into(fcfg, liblib, gate, sink_ptr, resume_ptr);
+    if (!rep_r.has_value()) {
+        if (rec) { (void)rec->mark_failed(now_unix(), rep_r.error().to_string()); }
+        return atx::core::Err(rep_r.error());
+    }
+    const factory::FactoryReport rep = std::move(*rep_r);
     if (rec) { (void)rec->complete(now_unix()); }
 
     {

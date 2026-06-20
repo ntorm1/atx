@@ -140,10 +140,10 @@ namespace atx::engine::factory {
   return rep;
 }
 
-[[nodiscard]] FactoryReport Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
-                                               const combine::AlphaGate &gate,
-                                               SearchProgressSink *sink,
-                                               const SearchResumeState *resume) {
+[[nodiscard]] atx::core::Result<FactoryReport>
+Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                   const combine::AlphaGate &gate, SearchProgressSink *sink,
+                   const SearchResumeState *resume) {
   // P2a — out-of-sample (holdout) validation is an ADDITIVE branch at the TOP:
   // when oos_fraction > 0 the search SELECTS on a train window and admission is
   // CONFIRMED on a held-out window. When oos_fraction == 0 (the default) this is
@@ -246,7 +246,13 @@ namespace atx::engine::factory {
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
                                          /*source=*/nullptr};
-      const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+      // Cross-run accumulation guard (Task 8 footgun): route the persistent-library
+      // admit through the geometry-checked seam. On a matching/fresh geometry this
+      // delegates to admit() VERBATIM (same verdict, same state mutation, digest-
+      // identical); on a reopened --library-dir whose fixed t_ differs from this run's
+      // pnl length it returns a CLEAN error that we propagate up so the run HALTS
+      // instead of aborting (debug) / reading OOB (release).
+      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
       kind = v.kind;
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
@@ -264,7 +270,7 @@ namespace atx::engine::factory {
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
-  return rep;
+  return atx::core::Ok(std::move(rep));
 }
 
 namespace {
@@ -354,9 +360,9 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
 
 } // namespace
 
-[[nodiscard]] FactoryReport Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
-                                               const combine::AlphaGate &gate,
-                                               parallel::IExecutor &exec) {
+[[nodiscard]] atx::core::Result<FactoryReport>
+Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
+                   const combine::AlphaGate &gate, parallel::IExecutor &exec) {
   // P2a — OOS validation requires a train/holdout panel split. The MultiProcess wire
   // format serializes ONE panel and decodes streams sized to that panel's dims, so the
   // OOS path runs TWO submits (one per sub-panel) reusing the SAME wire format unchanged
@@ -485,7 +491,11 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
                                          /*source=*/nullptr};
-      const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+      // Cross-run accumulation guard (Task 8): route the persistent-library admit
+      // through the geometry-checked seam (try_admit delegates to admit() VERBATIM on
+      // a matching/fresh geometry — digest-identical — and returns a CLEAN propagated
+      // error on a reopened --library-dir whose fixed t_ differs from this run).
+      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
       kind = v.kind;
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
@@ -500,7 +510,7 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
-  return rep;
+  return atx::core::Ok(std::move(rep));
 }
 
 namespace {
@@ -630,11 +640,10 @@ namespace {
 
 } // namespace
 
-[[nodiscard]] FactoryReport Factory::mine_into_oos(const FactoryConfig &cfg,
-                                                   library::Library &lib_lib,
-                                                   const combine::AlphaGate &gate,
-                                                   SearchProgressSink *sink,
-                                                   const SearchResumeState *resume) {
+[[nodiscard]] atx::core::Result<FactoryReport>
+Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
+                       const combine::AlphaGate &gate, SearchProgressSink *sink,
+                       const SearchResumeState *resume) {
   FactoryReport rep;
   rep.library_n_alphas_before = lib_lib.n_alphas();
 
@@ -650,7 +659,7 @@ namespace {
   if (!sealed_r.has_value()) {
     // A too-short panel: surface a clear message (the controller may widen the panel
     // or shrink the fraction). No library mutation has occurred.
-    return rep; // admitted == 0, oos_metrics empty; the caller reads n_alphas unchanged
+    return atx::core::Ok(std::move(rep)); // admitted == 0, oos_metrics empty; caller reads n_alphas unchanged
   }
   const eval::SealedPanel &sealed = *sealed_r;
   const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
@@ -658,7 +667,7 @@ namespace {
 
   auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
   if (!holdout_r.has_value()) {
-    return rep; // holdout empty / unbuildable — nothing admitted
+    return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted
   }
   const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
 
@@ -847,7 +856,12 @@ namespace {
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
                                          /*source=*/nullptr};
-      const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+      // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
+      // reopened-library footgun names. try_admit delegates to admit() VERBATIM on a
+      // matching/fresh geometry (digest-identical) and propagates a CLEAN error when
+      // hold_pnl.size() != the library's fixed t_ — HALTING the run instead of the
+      // ATX_ASSERT abort (debug) / out-of-bounds projection read (release).
+      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
       kind = v.kind;
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
@@ -863,13 +877,12 @@ namespace {
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
-  return rep;
+  return atx::core::Ok(std::move(rep));
 }
 
-[[nodiscard]] FactoryReport Factory::mine_into_oos_parallel(const FactoryConfig &cfg,
-                                                           library::Library &lib_lib,
-                                                           const combine::AlphaGate &gate,
-                                                           parallel::IExecutor &exec) {
+[[nodiscard]] atx::core::Result<FactoryReport>
+Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_lib,
+                                const combine::AlphaGate &gate, parallel::IExecutor &exec) {
   // Task 5 — the PARALLEL out-of-sample admit path. This REPRODUCES the serial
   // mine_into_oos bit-for-bit (same digest / admitted / version_id / reject histogram /
   // oos_metrics), but the two expensive per-candidate VM evals — the TRAIN ranking eval
@@ -893,7 +906,7 @@ namespace {
           : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
   auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
   if (!sealed_r.has_value()) {
-    return rep; // too-short panel — same empty report the serial path returns
+    return atx::core::Ok(std::move(rep)); // too-short panel — same empty report the serial path returns
   }
   const eval::SealedPanel &sealed = *sealed_r;
   const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
@@ -901,7 +914,7 @@ namespace {
 
   auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
   if (!holdout_r.has_value()) {
-    return rep; // holdout empty / unbuildable — nothing admitted (same as serial)
+    return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted (same as serial)
   }
   const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
 
@@ -1099,7 +1112,9 @@ namespace {
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
                                          /*source=*/nullptr};
-      const library::AdmitVerdict v = lib_lib.admit(cand, gate);
+      // Cross-run accumulation guard (Task 8) — same geometry-checked seam as serial
+      // mine_into_oos: digest-identical on a match, CLEAN propagated error on mismatch.
+      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
       kind = v.kind;
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
@@ -1115,7 +1130,7 @@ namespace {
   }
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
-  return rep;
+  return atx::core::Ok(std::move(rep));
 }
 
 [[nodiscard]] std::vector<Factory::Ranked>

@@ -50,7 +50,13 @@ namespace atx::engine::factory {
     FactoryConfig run_cfg = cfg.per_run;
     run_cfg.search.master_seed = detail::seed_for_run(cfg.master_seed, run);
 
-    const FactoryReport fr = factory.mine_into(run_cfg, lib_, gate_);
+    // mine_into now returns a Result (the cross-run --library-dir geometry guard).
+    // ResearchDriver reuses ONE fixed library (lib_) with an invariant panel/holdout
+    // geometry across every run, so the mismatch branch is unreachable here; .value()
+    // is the contract assertion that this driver never reopens a mismatched library.
+    auto fr_r = factory.mine_into(run_cfg, lib_, gate_);
+    ATX_CHECK(fr_r.has_value() && "ResearchDriver: fixed-geometry library cannot mismatch");
+    const FactoryReport fr = std::move(*fr_r);
 
     rep.runs = run + 1U;
     rep.total_mined += fr.evaluated;

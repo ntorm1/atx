@@ -235,10 +235,16 @@ public:
   //  which MUST outlive the admit() call. They are kept alive in the loop body
   //  across the admit, so the spans never dangle.
   // =======================================================================
-  [[nodiscard]] FactoryReport mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
-                                        const combine::AlphaGate &gate,
-                                        SearchProgressSink *sink = nullptr,
-                                        const SearchResumeState *resume = nullptr);
+  //  Returns a Result: on the normal path an Ok(FactoryReport); on a cross-run
+  //  --library-dir geometry MISMATCH (a reopened library whose fixed period count
+  //  t_ differs from this run's holdout length) an Err(InvalidArgument) propagated
+  //  from the guarded library::try_admit seam — so the run HALTS cleanly instead of
+  //  aborting (debug ATX_ASSERT) / reading out-of-bounds (release). The same-geometry
+  //  / fresh-library path is byte-identical to the pre-guard admit() (try_admit
+  //  delegates to admit() VERBATIM when lengths match), so report.digest is unchanged.
+  [[nodiscard]] atx::core::Result<FactoryReport>
+  mine_into(const FactoryConfig &cfg, library::Library &lib_lib, const combine::AlphaGate &gate,
+            SearchProgressSink *sink = nullptr, const SearchResumeState *resume = nullptr);
 
   // =======================================================================
   //  mine_into (SUBSTRATE-AWARE, S7.5d) — the SAME mine_into admit path with the
@@ -258,8 +264,9 @@ public:
   //  library version_id are byte-identical across every substrate and worker count
   //  BY CONSTRUCTION (the §0.9 sound design). An unknown substrate aborts (ATX_CHECK).
   // =======================================================================
-  [[nodiscard]] FactoryReport mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
-                                        const combine::AlphaGate &gate, parallel::IExecutor &exec);
+  [[nodiscard]] atx::core::Result<FactoryReport>
+  mine_into(const FactoryConfig &cfg, library::Library &lib_lib, const combine::AlphaGate &gate,
+            parallel::IExecutor &exec);
 
 private:
   // The as-of period for an admitted alpha's Candidate->Admitted lifecycle transition.
@@ -300,10 +307,9 @@ private:
   // optimized on, and persists the HOLDOUT (admission) metrics. Returns both IS and
   // OOS metrics per admitted alpha in FactoryReport::oos_metrics. The legacy
   // mine_into body is left untouched (this is a TOP-of-function additive branch).
-  [[nodiscard]] FactoryReport mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
-                                            const combine::AlphaGate &gate,
-                                            SearchProgressSink *sink = nullptr,
-                                            const SearchResumeState *resume = nullptr);
+  [[nodiscard]] atx::core::Result<FactoryReport>
+  mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib, const combine::AlphaGate &gate,
+                SearchProgressSink *sink = nullptr, const SearchResumeState *resume = nullptr);
 
   // Task 5: the PARALLEL out-of-sample admit path. Dispatched from the
   // substrate-aware mine_into(cfg, lib, gate, exec) when oos_fraction > 0 AND the
@@ -317,10 +323,9 @@ private:
   // (the InProcess path delegates to it); this path must reproduce its result bit-for-bit
   // for every worker count (the binding parallelization invariant). exec MUST be
   // MultiProcess (the caller guarantees it).
-  [[nodiscard]] FactoryReport mine_into_oos_parallel(const FactoryConfig &cfg,
-                                                     library::Library &lib_lib,
-                                                     const combine::AlphaGate &gate,
-                                                     parallel::IExecutor &exec);
+  [[nodiscard]] atx::core::Result<FactoryReport>
+  mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_lib,
+                         const combine::AlphaGate &gate, parallel::IExecutor &exec);
 
   // Flatten alpha 0's per-period position cross-sections into the period-major,
   // instrument-minor layout AlphaStore::insert / compute_metrics expect

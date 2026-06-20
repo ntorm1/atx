@@ -238,7 +238,7 @@ TEST(ParallelWorkloadMineProcess, MineReportDigestProcessEqualsThreadEqualsSeque
     lib::Library library = lib::Library::open(tmpdir("seq"), default_gate_cfg(), {0xC0FFEEu});
     AlphaGate gate{default_gate_cfg()};
     Factory f = fx.factory();
-    const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 7), library, gate);
+    const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 7), library, gate).value();
     want_digest = rep.digest;
     want_admitted = rep.admitted;
     want_version = version_id_of(library);
@@ -253,7 +253,7 @@ TEST(ParallelWorkloadMineProcess, MineReportDigestProcessEqualsThreadEqualsSeque
     AlphaGate gate{default_gate_cfg()};
     Factory f = fx.factory();
     ThreadExecutor te{ExecutorConfig{w}};
-    const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 7), library, gate, te);
+    const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 7), library, gate, te).value();
     EXPECT_EQ(rep.digest, want_digest) << "ThreadExecutor@" << w << " digest diverged";
     EXPECT_EQ(rep.admitted, want_admitted) << "ThreadExecutor@" << w << " admitted diverged";
     EXPECT_EQ(version_id_of(library), want_version)
@@ -268,7 +268,7 @@ TEST(ParallelWorkloadMineProcess, MineReportDigestProcessEqualsThreadEqualsSeque
     AlphaGate gate{default_gate_cfg()};
     Factory f = fx.factory();
     ProcessExecutor pe{ExecutorConfig{w, false}};
-    const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 7), library, gate, pe);
+    const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 7), library, gate, pe).value();
     EXPECT_EQ(rep.digest, want_digest) << "ProcessExecutor@" << w << " digest diverged";
     EXPECT_EQ(rep.admitted, want_admitted) << "ProcessExecutor@" << w << " admitted diverged";
     EXPECT_EQ(version_id_of(library), want_version)
@@ -290,8 +290,8 @@ TEST(ParallelWorkloadMineProcess, MineProcessWorkerCountInvariant) {
 
   ProcessExecutor pe1{ExecutorConfig{1, false}};
   ProcessExecutor pe4{ExecutorConfig{4, false}};
-  const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 11), lib1, gate, pe1);
-  const FactoryReport b = f4.mine_into(real_signal_cfg(/*seed*/ 11), lib4, gate, pe4);
+  const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 11), lib1, gate, pe1).value();
+  const FactoryReport b = f4.mine_into(real_signal_cfg(/*seed*/ 11), lib4, gate, pe4).value();
 
   EXPECT_EQ(a.digest, b.digest) << "ProcessExecutor mine digest must be invariant 1 vs N workers";
   EXPECT_EQ(a.admitted, b.admitted);
@@ -332,7 +332,7 @@ TEST(ParallelWorkloadMineProcess, OosMineReportDigestProcessEqualsSequential) {
     lib::Library library = lib::Library::open(tmpdir("oos_seq"), default_gate_cfg(), {0xC0FFEEu});
     AlphaGate gate{default_gate_cfg()};
     Factory f = fx.factory();
-    const FactoryReport rep = f.mine_into(oos_signal_cfg(/*seed*/ 7), library, gate);
+    const FactoryReport rep = f.mine_into(oos_signal_cfg(/*seed*/ 7), library, gate).value();
     want_digest = rep.digest;
     want_admitted = rep.admitted;
     want_version = version_id_of(library);
@@ -348,7 +348,7 @@ TEST(ParallelWorkloadMineProcess, OosMineReportDigestProcessEqualsSequential) {
     AlphaGate gate{default_gate_cfg()};
     Factory f = fx.factory();
     ProcessExecutor pe{ExecutorConfig{w, false}};
-    const FactoryReport rep = f.mine_into(oos_signal_cfg(/*seed*/ 7), library, gate, pe);
+    const FactoryReport rep = f.mine_into(oos_signal_cfg(/*seed*/ 7), library, gate, pe).value();
     EXPECT_EQ(rep.digest, want_digest) << "OOS ProcessExecutor@" << w << " digest diverged";
     EXPECT_EQ(rep.admitted, want_admitted) << "OOS ProcessExecutor@" << w << " admitted diverged";
     EXPECT_EQ(version_id_of(library), want_version)
@@ -368,8 +368,8 @@ TEST(ParallelWorkloadMineProcess, OosMineProcessWorkerCountInvariant) {
 
   ProcessExecutor pe1{ExecutorConfig{1, false}};
   ProcessExecutor pe4{ExecutorConfig{4, false}};
-  const FactoryReport a = f1.mine_into(oos_signal_cfg(/*seed*/ 11), lib1, gate, pe1);
-  const FactoryReport b = f4.mine_into(oos_signal_cfg(/*seed*/ 11), lib4, gate, pe4);
+  const FactoryReport a = f1.mine_into(oos_signal_cfg(/*seed*/ 11), lib1, gate, pe1).value();
+  const FactoryReport b = f4.mine_into(oos_signal_cfg(/*seed*/ 11), lib4, gate, pe4).value();
 
   EXPECT_EQ(a.digest, b.digest)
       << "OOS ProcessExecutor mine digest must be invariant 1 vs N workers";

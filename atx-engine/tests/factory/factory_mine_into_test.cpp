@@ -248,7 +248,7 @@ TEST(FactoryMineInto, MinesAndAdmitsIntoPersistentLibrary) {
   AlphaGate gate{default_gate_cfg()};
   Factory f = fx.factory();
 
-  const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 1), library, gate);
+  const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 1), library, gate).value();
 
   EXPECT_GT(rep.admitted, 0u);                            // admits survivors on a real-signal panel
   EXPECT_EQ(library.n_alphas(), rep.library_n_alphas_after);
@@ -268,7 +268,7 @@ TEST(FactoryMineInto, EveryAdmittedAlphaHasRoundTrippableFormula) {
   AlphaGate gate{default_gate_cfg()};
   Factory f = fx.factory();
 
-  const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 3), library, gate);
+  const FactoryReport rep = f.mine_into(real_signal_cfg(/*seed*/ 3), library, gate).value();
   ASSERT_GT(rep.admitted, 0u) << "need at least one admitted alpha to round-trip";
 
   const u64 n = library.n_alphas();
@@ -294,7 +294,7 @@ TEST(FactoryMineInto, DeflationBarStaysFactorySide) {
   AlphaGate gate{default_gate_cfg()};
   Factory f = fx.factory();
 
-  const FactoryReport rep = f.mine_into(large_budget_cfg(/*seed*/ 2), library, gate);
+  const FactoryReport rep = f.mine_into(large_budget_cfg(/*seed*/ 2), library, gate).value();
 
   EXPECT_EQ(rep.admitted, 0u);      // deflation + gates kill the entire noise population
   EXPECT_EQ(library.n_alphas(), 0u); // nothing inserted into the persistent library
@@ -315,8 +315,8 @@ TEST(FactoryMineInto, SeededRunFoldsAdmissionsIntoDigest) {
   Factory f1 = fx1.factory();
   Factory f2 = fx2.factory();
 
-  const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 5), lib1, gate);
-  const FactoryReport b = f2.mine_into(real_signal_cfg(/*seed*/ 5), lib2, gate);
+  const FactoryReport a = f1.mine_into(real_signal_cfg(/*seed*/ 5), lib1, gate).value();
+  const FactoryReport b = f2.mine_into(real_signal_cfg(/*seed*/ 5), lib2, gate).value();
 
   EXPECT_EQ(a.digest, b.digest);
   EXPECT_EQ(a.admitted, b.admitted); // identical mine+admit -> identical outcome
