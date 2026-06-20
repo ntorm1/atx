@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -241,10 +240,12 @@ TEST(AtxImplSweep, SweepAccumulatesAndByteIdentical) {
 // ---------------------------------------------------------------------------
 // Test 2: CrossSweepCumulativeN (R1 integration)
 //
-// After a 3-run sweep, the persisted cumulative_trials from the sidecar
-// must be > 0 AND > any single run's trial count (i.e. strictly more than
-// what one mine_into would produce).  Also verify it is > library_size
-// (the admitted alpha count is always < total trials evaluated).
+// Proves that cumulative_trials from a 3-run sweep is STRICTLY GREATER than
+// the cumulative_trials from a 1-run sweep into a separate fresh library
+// (same seed/panel/config).  This directly demonstrates that the R1 counter
+// accumulates ACROSS runs rather than resetting to 0 on each run.
+// The hardcoded ">= 30" floor is removed in favour of the 3-run > 1-run
+// comparison, which is robust to any per-run trial count.
 // ---------------------------------------------------------------------------
 TEST(AtxImplSweep, CrossSweepCumulativeN) {
     namespace fs = std::filesystem;
@@ -253,64 +254,79 @@ TEST(AtxImplSweep, CrossSweepCumulativeN) {
     ASSERT_TRUE(panel_opt.has_value());
     const std::string panel_path = write_panel_tmp(*panel_opt, "r1_cumN");
 
-    const std::string lib_dir = (fs::temp_directory_path() / "atx_sweep_r1_libdir").string();
-    const std::string alpha_out = (fs::temp_directory_path() / "atx_sweep_r1_out").string();
+    // --- 1-run sweep into its own fresh library dir ---
+    const std::string lib_1run  = (fs::temp_directory_path() / "atx_sweep_r1_lib1").string();
+    const std::string out_1run  = (fs::temp_directory_path() / "atx_sweep_r1_out1").string();
     std::error_code ec0;
-    fs::remove_all(lib_dir, ec0);
-    fs::remove_all(alpha_out, ec0);
+    fs::remove_all(lib_1run, ec0);
+    fs::remove_all(out_1run, ec0);
 
-    // 3-run sweep.
-    auto cfg = sweep_cfg(panel_path, alpha_out, lib_dir, /*seed=*/55ULL, /*sweep_runs=*/3);
-    auto r = atx::impl::run_sweep(cfg);
-    ASSERT_TRUE(r.has_value()) << "3-run sweep must succeed: " << r.error().message();
+    auto cfg1 = sweep_cfg(panel_path, out_1run, lib_1run, /*seed=*/55ULL, /*sweep_runs=*/1);
+    auto r1 = atx::impl::run_sweep(cfg1);
+    ASSERT_TRUE(r1.has_value()) << "1-run sweep must succeed: " << r1.error().message();
 
-    // Read the R1 sidecar to get cumulative_trials.
-    const std::string sidecar_path = (fs::path{lib_dir} / "_manifest.bin").string();
-    ASSERT_TRUE(fs::exists(sidecar_path)) << "_manifest.bin must exist after sweep";
+    const std::string sidecar_1run = (fs::path{lib_1run} / "_manifest.bin").string();
+    ASSERT_TRUE(fs::exists(sidecar_1run)) << "_manifest.bin must exist after 1-run sweep";
+    auto mf1 = atx::engine::library::read_manifest(sidecar_1run);
+    ASSERT_TRUE(mf1.has_value()) << "1-run sidecar must parse: " << mf1.error().message();
+    const atx::u64 cum_1run = mf1->cumulative_trials;
+    EXPECT_GT(cum_1run, u64{0}) << "1-run sweep must record > 0 trials";
 
-    auto manifest_r = atx::engine::library::read_manifest(sidecar_path);
-    ASSERT_TRUE(manifest_r.has_value())
-        << "sidecar must be valid ATXMANI2: " << manifest_r.error().message();
-    const atx::u64 cum_trials = manifest_r->cumulative_trials;
+    // --- 3-run sweep into a SEPARATE fresh library dir (same seed) ---
+    const std::string lib_3run  = (fs::temp_directory_path() / "atx_sweep_r1_lib3").string();
+    const std::string out_3run  = (fs::temp_directory_path() / "atx_sweep_r1_out3").string();
+    fs::remove_all(lib_3run, ec0);
+    fs::remove_all(out_3run, ec0);
 
-    // cumulative_trials must be > 0 (some work was done).
-    EXPECT_GT(cum_trials, u64{0}) << "cumulative_trials must be > 0 after 3 runs";
+    auto cfg3 = sweep_cfg(panel_path, out_3run, lib_3run, /*seed=*/55ULL, /*sweep_runs=*/3);
+    auto r3 = atx::impl::run_sweep(cfg3);
+    ASSERT_TRUE(r3.has_value()) << "3-run sweep must succeed: " << r3.error().message();
 
-    // cumulative_trials must exceed the library_size (trials > admits always).
-    const auto& kvs = r->kvs;
-    auto get_kv = [&](const std::string& key) -> u64 {
-        for (const auto& p : kvs) {
+    const std::string sidecar_3run = (fs::path{lib_3run} / "_manifest.bin").string();
+    ASSERT_TRUE(fs::exists(sidecar_3run)) << "_manifest.bin must exist after 3-run sweep";
+    auto mf3 = atx::engine::library::read_manifest(sidecar_3run);
+    ASSERT_TRUE(mf3.has_value()) << "3-run sidecar must parse: " << mf3.error().message();
+    const atx::u64 cum_3run = mf3->cumulative_trials;
+
+    // Core assertion: 3-run sweep must have STRICTLY MORE cumulative trials than
+    // 1-run sweep — this proves R1 accumulates across runs rather than resetting.
+    EXPECT_GT(cum_3run, cum_1run)
+        << "3-run sweep cumulative_trials (" << cum_3run
+        << ") must exceed 1-run sweep (" << cum_1run
+        << "); R1 must accumulate across runs not reset";
+
+    // Sanity: cumulative trials must also exceed the admitted alpha count (always).
+    auto get_kv = [](const atx::impl::StageResult& sr, const std::string& key) -> u64 {
+        for (const auto& p : sr.kvs) {
             if (p.first == key) return static_cast<u64>(std::stoul(p.second));
         }
         return 0ULL;
     };
-    const u64 lib_size = get_kv("library_size");
-    EXPECT_GT(cum_trials, lib_size)
+    EXPECT_GT(cum_3run, get_kv(*r3, "library_size"))
         << "cumulative trials must exceed admitted alpha count";
-
-    // For a 3-run sweep with pop=16, gens=5 and OOS enabled each run evaluates at
-    // least a handful of candidates. With patience=0 and 3 runs, cumulative_trials
-    // must be > library_size (already checked) and > any feasible single-run floor
-    // (>= 10 trials per run * 3 runs = 30).  This confirms R1 accumulates across
-    // runs rather than resetting to 0 each run.
-    EXPECT_GE(cum_trials, u64{30})
-        << "3 runs must accumulate >= 30 trials total (R1 cross-run counter must not reset)";
 
     // Cleanup.
     std::error_code ec;
     fs::remove(panel_path, ec);
-    fs::remove_all(lib_dir, ec);
-    fs::remove_all(alpha_out, ec);
+    fs::remove_all(lib_1run, ec);
+    fs::remove_all(out_1run, ec);
+    fs::remove_all(lib_3run, ec);
+    fs::remove_all(out_3run, ec);
 }
 
 // ---------------------------------------------------------------------------
 // Test 3: WalkForwardRotation (R2 integration)
 //
-// With --oos-windows 3, the 3 runs must still be twice-run byte-identical
-// (the rotation is pure: window = run % oos_n_windows). Also verify that
-// the manifest contains oos_fraction= (OOS is active) and that the sweep
-// runs without error. The per-run window rotation cannot be directly observed
-// from the manifest without per-run telemetry, so we pin the determinism proof.
+// Proves that per-run window rotation has a real observable effect:
+//   a) A 3-run sweep with --oos-windows 3 is twice-run byte-identical
+//      (rotation is deterministic: window = run % oos_n_windows).
+//   b) The research_digest from a 3-run --oos-windows 3 sweep DIFFERS from
+//      a 3-run --oos-windows 0 sweep (same seed/panel/config) — rotation has
+//      an observable effect on the mine outcomes, proving the window actually
+//      changes per run.  NOTE: It is possible (though unlikely with a real-signal
+//      panel) that both digests accidentally collide; if this assert is flaky
+//      it should be converted to an engine-level test instead.
+//   c) The manifest contains oos_fraction= (OOS is active).
 // ---------------------------------------------------------------------------
 TEST(AtxImplSweep, WalkForwardRotation) {
     namespace fs = std::filesystem;
@@ -319,36 +335,51 @@ TEST(AtxImplSweep, WalkForwardRotation) {
     ASSERT_TRUE(panel_opt.has_value());
     const std::string panel_path = write_panel_tmp(*panel_opt, "r2_wf");
 
-    const std::string lib_A = (fs::temp_directory_path() / "atx_sweep_wf_libA").string();
-    const std::string out_A = (fs::temp_directory_path() / "atx_sweep_wf_outA").string();
-    const std::string lib_B = (fs::temp_directory_path() / "atx_sweep_wf_libB").string();
-    const std::string out_B = (fs::temp_directory_path() / "atx_sweep_wf_outB").string();
+    const std::string lib_A  = (fs::temp_directory_path() / "atx_sweep_wf_libA").string();
+    const std::string out_A  = (fs::temp_directory_path() / "atx_sweep_wf_outA").string();
+    const std::string lib_B  = (fs::temp_directory_path() / "atx_sweep_wf_libB").string();
+    const std::string out_B  = (fs::temp_directory_path() / "atx_sweep_wf_outB").string();
+    // For digest-differs assertion: a separate 3-run oos_windows=0 sweep.
+    const std::string lib_C  = (fs::temp_directory_path() / "atx_sweep_wf_libC").string();
+    const std::string out_C  = (fs::temp_directory_path() / "atx_sweep_wf_outC").string();
     std::error_code ec0;
-    for (const auto& d : {lib_A, out_A, lib_B, out_B}) fs::remove_all(d, ec0);
+    for (const auto& d : {lib_A, out_A, lib_B, out_B, lib_C, out_C}) fs::remove_all(d, ec0);
 
-    auto make_cfg = [&](const std::string& alpha_out, const std::string& lib_dir) {
+    // Run A and B: oos_windows=3, twice (for determinism proof).
+    auto make_cfg_wf = [&](const std::string& alpha_out, const std::string& lib_dir) {
         auto cfg = sweep_cfg(panel_path, alpha_out, lib_dir, /*seed=*/77ULL, /*sweep_runs=*/3);
-        cfg.oos_windows = 3;   // R2: 3 walk-forward windows => run 0 -> window 0, run 1 -> window 1, run 2 -> window 2
+        cfg.oos_windows = 3;  // R2: run 0->window 0, run 1->window 1, run 2->window 2
         return cfg;
     };
-
-    auto rA = atx::impl::run_sweep(make_cfg(out_A, lib_A));
+    auto rA = atx::impl::run_sweep(make_cfg_wf(out_A, lib_A));
     ASSERT_TRUE(rA.has_value()) << "walk-forward sweep A: " << rA.error().message();
-    auto rB = atx::impl::run_sweep(make_cfg(out_B, lib_B));
+    auto rB = atx::impl::run_sweep(make_cfg_wf(out_B, lib_B));
     ASSERT_TRUE(rB.has_value()) << "walk-forward sweep B: " << rB.error().message();
 
-    // Twice-run byte-identical with oos_windows=3.
-    EXPECT_EQ(rA->digest, rB->digest) << "walk-forward sweep must be twice-run byte-identical";
-    EXPECT_NE(rA->digest, u64{0});
+    // Run C: same seed + sweep_runs=3 but oos_windows=0 (no rotation).
+    auto cfg_c = sweep_cfg(panel_path, out_C, lib_C, /*seed=*/77ULL, /*sweep_runs=*/3);
+    // cfg_c.oos_windows defaults to 0 (no rotation).
+    auto rC = atx::impl::run_sweep(cfg_c);
+    ASSERT_TRUE(rC.has_value()) << "no-rotation sweep C: " << rC.error().message();
 
-    // research_digest must also match.
     auto get_kv = [](const atx::impl::StageResult& sr, const std::string& k) {
         for (const auto& p : sr.kvs) { if (p.first == k) return p.second; }
         return std::string{};
     };
+
+    // (a) Twice-run byte-identical with oos_windows=3.
+    EXPECT_EQ(rA->digest, rB->digest) << "walk-forward sweep must be twice-run byte-identical";
+    EXPECT_NE(rA->digest, u64{0});
     EXPECT_EQ(get_kv(*rA, "research_digest"), get_kv(*rB, "research_digest"));
 
-    // Manifest must contain oos_fraction (OOS is active via auto-default 0.25).
+    // (b) Rotation has an observable effect: oos_windows=3 digest must differ from
+    //     oos_windows=0 digest.  The per-run holdout window changes which dates are
+    //     withheld, so the admitted set (and thus the engine fingerprint) differs.
+    EXPECT_NE(get_kv(*rA, "research_digest"), get_kv(*rC, "research_digest"))
+        << "oos_windows=3 research_digest must differ from oos_windows=0 — "
+           "window rotation must have a real effect on the admitted alpha set";
+
+    // (c) Manifest must contain oos_fraction (OOS is active via auto-default 0.25).
     const std::string mfA = read_file((fs::path{out_A} / "_manifest.txt").string());
     EXPECT_NE(mfA.find("oos_fraction="), std::string::npos)
         << "walk-forward manifest must contain oos_fraction=";
@@ -356,7 +387,7 @@ TEST(AtxImplSweep, WalkForwardRotation) {
     // Cleanup.
     std::error_code ec;
     fs::remove(panel_path, ec);
-    for (const auto& d : {lib_A, out_A, lib_B, out_B}) fs::remove_all(d, ec);
+    for (const auto& d : {lib_A, out_A, lib_B, out_B, lib_C, out_C}) fs::remove_all(d, ec);
 }
 
 // ---------------------------------------------------------------------------

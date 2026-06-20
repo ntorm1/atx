@@ -1,4 +1,4 @@
-﻿#include "dispatch.hpp"
+#include "dispatch.hpp"
 
 #include <ostream>
 #include <string>

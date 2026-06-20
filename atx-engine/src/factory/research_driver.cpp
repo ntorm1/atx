@@ -1,4 +1,4 @@
-﻿#include "atx/engine/factory/research_driver.hpp"
+#include "atx/engine/factory/research_driver.hpp"
 
 #include <bit>     // std::bit_cast (f64 verdict sharpe -> u64 for the digest fold)
 #include <cstddef> // std::size_t (hash_combine seed type)
@@ -55,6 +55,9 @@ namespace atx::engine::factory {
     if (cfg.per_run.oos_n_windows > 0U) {
       run_cfg.oos_window = run % cfg.per_run.oos_n_windows;
     }
+    // R2 telemetry: record the window used for this run (AFTER the assignment above).
+    // Report-only — NOT folded into digest_acc; see ResearchReport::per_run_oos_window.
+    rep.per_run_oos_window.push_back(run_cfg.oos_window);
 
     // mine_into now returns a Result (the cross-run --library-dir geometry guard).
     // ResearchDriver reuses ONE fixed library (lib_) with an invariant panel/holdout

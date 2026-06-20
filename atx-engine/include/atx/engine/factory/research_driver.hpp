@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // atx::engine::factory â€” ResearchDriver: the continuous automated alpha engine
 // (S4b-4). This is the ACROSS-RUN orchestration layer â€” it sits above Factory
@@ -155,6 +155,14 @@ struct ResearchReport {
   // whenever the last run produced oos_metrics; empty when OOS is off. Used by
   // stage_sweep to write IS/OOS columns to _manifest.txt in discover format.
   std::vector<factory::OosReportEntry> last_run_oos_metrics;
+  // M1/sweep R2 telemetry: the oos_window value used for EACH run, in run order.
+  // Populated by ResearchDriver::run — entry[i] is the run_cfg.oos_window used for
+  // run i (after the `run % oos_n_windows` assignment when oos_n_windows > 0; the
+  // unchanged cfg.per_run.oos_window when oos_n_windows == 0).
+  // REPORT-ONLY: NOT folded into `digest` (mirrors last_run_oos_metrics). Adding this
+  // field leaves the digest, admitted set, and library state completely unchanged —
+  // the oos_n_windows==0 path stays byte-identical to the pre-M1 engine.
+  std::vector<atx::usize> per_run_oos_window;
 };
 
 namespace detail {

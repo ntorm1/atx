@@ -204,7 +204,13 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     }
 
     // ---- Write _manifest.txt -----------------------------------------------
-    // Format IDENTICAL to run_discover_gated so combine/run consume unchanged.
+    // NOTE: _manifest.txt is human-readable telemetry ONLY — downstream combine/run
+    // consume the .dsl files (byte-identical to discover's), NOT this manifest.
+    // The sweep-specific header fields (runs/total_admitted/research_digest/
+    // manifest_version_id) are intentional additions for observability and do NOT
+    // need to match discover's header exactly.  Do NOT change this format to match
+    // discover's — the .dsl files are the canonical artifact; the manifest is just
+    // a human-readable sidecar for debugging and auditing.
     {
         // Build OOS metrics lookup (canon_hash -> OosReportEntry) from the
         // last run's rep.oos_metrics.  For a multi-run sweep, oos_metrics
