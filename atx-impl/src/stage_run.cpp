@@ -93,6 +93,9 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     RunConfig c_rep = cfg;
     c_rep.panel      = (work / "panel.bin").string();
     c_rep.books      = (work / "books.bin").string();
+    // A2b — point report at combo.bin so it finds combo.bin.meta and can split
+    // its per-period series into in-sample / out-of-sample for portfolio Sharpe.
+    c_rep.combo      = (work / "combo.bin").string();
     c_rep.report_out = cfg.report_out.empty()
                            ? (work / "report").string()
                            : cfg.report_out;

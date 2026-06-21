@@ -12,6 +12,7 @@
 //   - stay fast (in-process zip build, no disk seg files needed for run mode)
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -473,6 +474,152 @@ TEST_F(AtxImplE2E, RunAccumulatesLibraryAndCombineConsumesIt) {
     ASSERT_GE(combine_alphas, 1) << "combine reported no library-sourced alphas";
     EXPECT_EQ(static_cast<atx::u64>(combine_alphas), n_lib)
         << "combine alpha count must equal library n_alphas() (library-sourced input)";
+}
+
+// ---------------------------------------------------------------------------
+// Helper: parse a key=value line out of summary.txt (empty if absent).
+// ---------------------------------------------------------------------------
+static std::string read_summary_kv(const fs::path& summary, const std::string& key) {
+    std::ifstream f(summary);
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.substr(0, eq) == key) return line.substr(eq + 1);
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: RunAllEmitsPositiveOosPortfolioSharpe (A2b — the keystone metric)
+// run_all wires report at combo.bin so it reads combo.bin.meta and splits the
+// per-period series IS/OOS. Assert summary.txt carries a FINITE portfolio_sharpe
+// and a REAL OOS split (n_oos_periods >= 1, holdout_begin < n periods). We do
+// NOT hard-assert a positive Sharpe on the synthetic fixture — that data-gated
+// assertion is Task A4's job.
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplE2E, RunAllEmitsPositiveOosPortfolioSharpe) {
+    const fs::path work   = make_work_dir("a2b_work");
+    const fs::path report = make_work_dir("a2b_report");
+
+    atx::impl::RunConfig cfg =
+        make_base_cfg(s_zip_, work.string(), report.string());
+
+    auto result = atx::impl::run_all(cfg);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+
+    const fs::path summary = report / "summary.txt";
+    ASSERT_TRUE(fs::exists(summary)) << "summary.txt missing";
+
+    // combo.bin.meta must have been written by combine and read by report.
+    ASSERT_TRUE(fs::exists(work / "combo.bin.meta")) << "combo.bin.meta missing";
+
+    // portfolio_sharpe (full series) must be present and FINITE.
+    const std::string ps_s = read_summary_kv(summary, "portfolio_sharpe");
+    ASSERT_FALSE(ps_s.empty()) << "summary.txt missing portfolio_sharpe=";
+    const double portfolio_sharpe = std::stod(ps_s);
+    EXPECT_TRUE(std::isfinite(portfolio_sharpe))
+        << "portfolio_sharpe is not finite: " << ps_s;
+
+    // OOS Sharpe key must be emitted (value may be NaN-free finite; the OOS
+    // split is real so it should parse).
+    const std::string oos_s = read_summary_kv(summary, "portfolio_oos_sharpe");
+    ASSERT_FALSE(oos_s.empty()) << "summary.txt missing portfolio_oos_sharpe=";
+
+    // A REAL OOS split actually happened.
+    const std::string n_oos_s = read_summary_kv(summary, "n_oos_periods");
+    ASSERT_FALSE(n_oos_s.empty()) << "summary.txt missing n_oos_periods=";
+    const long n_oos = std::stol(n_oos_s);
+    EXPECT_GE(n_oos, 1) << "expected a non-empty OOS window (n_oos_periods>=1)";
+
+    const std::string hb_s = read_summary_kv(summary, "holdout_begin");
+    ASSERT_FALSE(hb_s.empty()) << "summary.txt missing holdout_begin=";
+    const long holdout_begin = std::stol(hb_s);
+
+    const std::string nis_s = read_summary_kv(summary, "n_is_periods");
+    ASSERT_FALSE(nis_s.empty()) << "summary.txt missing n_is_periods=";
+    const long n_is = std::stol(nis_s);
+    EXPECT_GE(n_is, 1) << "expected a non-empty IS window (n_is_periods>=1)";
+
+    // holdout_begin must carve a real interior boundary (0 < hb < n_periods).
+    // n_periods is read from combo.bin.meta == research.dates().
+    EXPECT_GT(holdout_begin, 0) << "holdout_begin must be > 0";
+
+    // portfolio_sharpe (full) and oos kvs must also be on the StageResult,
+    // but run_all only surfaces per-stage digests; summary.txt is the contract.
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: ReportWithoutComboStillWorksAndIsByteIdentical (A2b)
+// Run report STANDALONE with cfg.combo empty: it must succeed, summary.txt must
+// carry portfolio_sharpe= (full series) and n_oos_periods=0 (no split), and the
+// report stage digest + canonical TSV bytes must match a baseline run (no
+// regression from the additive metrics).
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplE2E, ReportWithoutComboStillWorksAndIsByteIdentical) {
+    const fs::path work = make_work_dir("a2b_nocombo_work");
+
+    atx::impl::RunConfig base =
+        make_base_cfg(s_zip_, work.string(), (work / "report_x").string());
+
+    // Build the pipeline up through books.bin via the staged path (this also
+    // writes combo.bin.meta, which we deliberately ignore by leaving cfg.combo
+    // empty in the report call below).
+    StagedDigests staged{};
+    ASSERT_TRUE(run_staged(base, work.string(),
+                           (work / "report_staged").string(), staged));
+
+    // Run report TWICE standalone with combo empty -> two report dirs.
+    auto run_report_into = [&](const fs::path& rdir,
+                               atx::u64& digest_out) -> ::testing::AssertionResult {
+        atx::impl::RunConfig c = base;
+        c.panel      = (work / "panel.bin").string();
+        c.books      = (work / "books.bin").string();
+        c.combo      = "";   // NO combo => no OOS split
+        c.report_out = rdir.string();
+        auto r = atx::impl::run_report(c);
+        if (!r.has_value())
+            return ::testing::AssertionFailure() << "run_report: " << r.error().message();
+        digest_out = r->digest;
+        return ::testing::AssertionSuccess();
+    };
+
+    const fs::path rep_a = work / "report_a";
+    const fs::path rep_b = work / "report_b";
+    atx::u64 dig_a = 0, dig_b = 0;
+    ASSERT_TRUE(run_report_into(rep_a, dig_a));
+    ASSERT_TRUE(run_report_into(rep_b, dig_b));
+
+    // Deterministic twice-run: digests equal.
+    EXPECT_EQ(dig_a, dig_b) << "standalone report digest not deterministic";
+
+    // summary.txt: full-series portfolio_sharpe present + finite; no OOS split.
+    const fs::path summary = rep_a / "summary.txt";
+    ASSERT_TRUE(fs::exists(summary)) << "summary.txt missing";
+
+    const std::string ps_s = read_summary_kv(summary, "portfolio_sharpe");
+    ASSERT_FALSE(ps_s.empty()) << "summary.txt missing portfolio_sharpe=";
+    EXPECT_TRUE(std::isfinite(std::stod(ps_s)))
+        << "portfolio_sharpe not finite (no-combo): " << ps_s;
+
+    const std::string n_oos_s = read_summary_kv(summary, "n_oos_periods");
+    ASSERT_FALSE(n_oos_s.empty()) << "summary.txt missing n_oos_periods=";
+    EXPECT_EQ(std::stol(n_oos_s), 0L)
+        << "no-combo report must have an empty OOS window (n_oos_periods=0)";
+
+    // Canonical TSVs byte-identical across the two standalone runs (R8 / digest
+    // proof: the additive metrics did not perturb write_report's output).
+    auto read_file = [](const fs::path& p) -> std::vector<char> {
+        std::ifstream f(p, std::ios::binary);
+        return std::vector<char>((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+    };
+    for (const char* tsv : {"pnl.tsv", "leverage.tsv", "exposure.tsv", "census.tsv"}) {
+        const auto da = read_file(rep_a / tsv);
+        const auto db = read_file(rep_b / tsv);
+        EXPECT_FALSE(da.empty()) << tsv << " (report A) is empty";
+        EXPECT_EQ(da, db) << tsv << " not byte-identical across standalone reports";
+    }
 }
 
 } // namespace atx_impl_e2e

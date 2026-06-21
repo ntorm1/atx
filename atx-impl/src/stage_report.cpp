@@ -216,6 +216,113 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 book::accumulate_report(mpr, retpanel, ret_fid, sched, V,
                                         capacity_gross, libr, 0));
 
+        // 6b. (A2b) Locate + parse combo.meta to recover the IS/OOS boundary.
+        //
+        // combo.meta (written by A2a) is key=value lines: n_periods, fit_begin,
+        // fit_end, holdout_begin, holdout_frac. holdout_begin is on the SAME
+        // panel-date axis as sched.periods[] / research.dates() (all read the
+        // same panel.bin). Rebalance period s is OUT-OF-SAMPLE iff
+        // sched.periods[s] >= holdout_begin.
+        //
+        // Default: holdout_begin = research.dates() => NO OOS window (whole
+        // series is in-sample). A standalone `report` without --combo must work
+        // exactly as before (plus the additive full-series portfolio_sharpe).
+        // holdout_begin == research.dates() is the canonical "no split" sentinel:
+        // every sched.periods[s] < research.dates(), so oos_idx stays empty.
+        atx::usize holdout_begin = research.dates();
+        if (!cfg.combo.empty()) {
+            const std::string meta_path = cfg.combo + ".meta";
+            std::ifstream meta_file{meta_path};
+            if (meta_file.is_open()) {
+                atx::usize meta_holdout   = 0;
+                atx::usize meta_nperiods  = 0;
+                bool got_holdout  = false;
+                bool got_nperiods = false;
+                std::string mline;
+                while (std::getline(meta_file, mline)) {
+                    if (mline.rfind("holdout_begin=", 0) == 0) {
+                        meta_holdout =
+                            static_cast<atx::usize>(std::stoull(mline.substr(14)));
+                        got_holdout = true;
+                    } else if (mline.rfind("n_periods=", 0) == 0) {
+                        meta_nperiods =
+                            static_cast<atx::usize>(std::stoull(mline.substr(10)));
+                        got_nperiods = true;
+                    }
+                }
+                // Only honor the split when the meta is internally consistent
+                // with THIS report's panel (same date axis) and carves a real
+                // non-empty IS/OOS partition.
+                if (got_holdout && got_nperiods &&
+                    meta_nperiods == research.dates() &&
+                    meta_holdout > 0 && meta_holdout < research.dates()) {
+                    holdout_begin = meta_holdout;
+                }
+            }
+            // Missing/unparsable/inconsistent meta => leave have_split=false; do
+            // NOT error (standalone report must still succeed).
+        }
+
+        // 6c. (A2b) Split rebalance periods s in [0,S) into IS / OOS index sets
+        //     using the panel-date mapping sched.periods[s] >= holdout_begin.
+        std::vector<atx::usize> is_idx, oos_idx;
+        is_idx.reserve(S);
+        oos_idx.reserve(S);
+        for (atx::usize s = 0; s < S; ++s) {
+            (sched.periods[s] < holdout_begin ? is_idx : oos_idx).push_back(s);
+        }
+
+        // 6d. (A2b) Annualized, scale-invariant Sharpe over a chosen subset of
+        //     rep.pnl_net. Periods-per-year is derived from the actual schedule
+        //     spacing (panel-date indices ARE trading days). Sharpe = mean/std,
+        //     so the capacity_gross dollar scale of pnl_net cancels.
+        double ann = std::sqrt(252.0);
+        if (S > 1 && sched.periods.back() > sched.periods.front()) {
+            const double span =
+                static_cast<double>(sched.periods.back() - sched.periods.front());
+            ann = std::sqrt(252.0 * static_cast<double>(S - 1) / span);
+        }
+        auto sharpe_of = [&](const std::vector<atx::usize>& idx) -> double {
+            if (idx.size() < 2) return std::numeric_limits<double>::quiet_NaN();
+            double mean = 0.0;
+            for (auto s : idx) mean += rep.pnl_net[s];
+            mean /= static_cast<double>(idx.size());
+            double var = 0.0;
+            for (auto s : idx) { const double d = rep.pnl_net[s] - mean; var += d * d; }
+            var /= static_cast<double>(idx.size() - 1);
+            const double sd = std::sqrt(var);
+            return sd > 0.0 ? mean / sd * ann : 0.0;
+        };
+
+        std::vector<atx::usize> all_idx(S);
+        std::iota(all_idx.begin(), all_idx.end(), atx::usize{0});
+        const double portfolio_sharpe     = sharpe_of(all_idx);
+        const double portfolio_is_sharpe  = sharpe_of(is_idx);
+        const double portfolio_oos_sharpe = sharpe_of(oos_idx);
+
+        // 6e. (A2b) OOS turnover (mean of rep.turnover over oos_idx; NaN if
+        //     empty) and OOS max drawdown (peak-to-trough decline of the OOS
+        //     cumulative pnl_net sub-curve, in ABSOLUTE pnl_net units).
+        double oos_turnover = std::numeric_limits<double>::quiet_NaN();
+        if (!oos_idx.empty()) {
+            double t = 0.0;
+            for (auto s : oos_idx) t += rep.turnover[s];
+            oos_turnover = t / static_cast<double>(oos_idx.size());
+        }
+        double oos_max_drawdown = 0.0;  // absolute pnl_net units; 0 if no OOS
+        double oos_pnl_net      = 0.0;  // sum of rep.pnl_net over oos_idx
+        {
+            double E    = 0.0;
+            double peak = 0.0;
+            for (auto s : oos_idx) {
+                E += rep.pnl_net[s];
+                oos_pnl_net = E;
+                if (E > peak) peak = E;
+                const double dd = peak - E;
+                if (dd > oos_max_drawdown) oos_max_drawdown = dd;
+            }
+        }
+
         // 7. Write canonical TSVs via write_report.
         ATX_TRY_VOID(book::write_report(rep, cfg.report_out));
 
@@ -333,10 +440,16 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                     return atx::core::Err(atx::core::ErrorCode::IoError,
                                           "report: cannot write equity_curve.csv");
                 }
-                ec_file << "period,equity\n";
+                // (A2b) Additive `segment` column marks each period IS/OOS.
+                // This file is convenience-only (not R8-pinned; no test pins its
+                // header), so widening it is safe.
+                ec_file << "period,equity,segment\n";
                 for (atx::usize s = 0; s < S; ++s) {
+                    const char* seg =
+                        (sched.periods[s] >= holdout_begin) ? "oos" : "is";
                     ec_file << std::to_string(s) << ","
-                            << std::to_string(rep.equity_curve[s]) << "\n";
+                            << std::to_string(rep.equity_curve[s]) << ","
+                            << seg << "\n";
                 }
             }
             // summary.txt — first 6 lines are the existing prefix (byte-identical
@@ -361,6 +474,22 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 sm_file << "p95_participation_pct=" << std::to_string(p95_part_pct) << "\n";
                 sm_file << "median_participation_pct=" << std::to_string(med_part_pct) << "\n";
                 sm_file << "pct_gross_over_5pct_adv=" << std::to_string(pct_gross_over5) << "\n";
+                // (A2b) Portfolio Sharpe + IS/OOS split (additive; after the
+                // capacity prefix; existing lines stay byte-identical). With no
+                // split (holdout_begin == research.dates()), oos_idx is empty =>
+                // OOS fields are NaN/0 and n_oos_periods=0, but portfolio_sharpe
+                // (full series) is still meaningful. oos_max_drawdown /
+                // oos_pnl_net are absolute pnl_net units (capacity_gross-scaled
+                // dollars).
+                sm_file << "holdout_begin=" << std::to_string(holdout_begin) << "\n";
+                sm_file << "n_is_periods=" << std::to_string(is_idx.size()) << "\n";
+                sm_file << "n_oos_periods=" << std::to_string(oos_idx.size()) << "\n";
+                sm_file << "portfolio_sharpe=" << std::to_string(portfolio_sharpe) << "\n";
+                sm_file << "portfolio_is_sharpe=" << std::to_string(portfolio_is_sharpe) << "\n";
+                sm_file << "portfolio_oos_sharpe=" << std::to_string(portfolio_oos_sharpe) << "\n";
+                sm_file << "oos_turnover=" << std::to_string(oos_turnover) << "\n";
+                sm_file << "oos_max_drawdown=" << std::to_string(oos_max_drawdown) << "\n";
+                sm_file << "oos_pnl_net=" << std::to_string(oos_pnl_net) << "\n";
             }
         }
 
@@ -387,6 +516,11 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
             {"pnl_net",               std::to_string(total_pnl_net)},
             {"avg_gross",             std::to_string(avg_gross_leverage)},
             {"max_participation_pct", std::to_string(max_part_pct)},
+            // (A2b) Surface portfolio Sharpe to programmatic callers (e.g. the A4
+            // acceptance test) without re-parsing summary.txt. Digest is over the
+            // rep.* numeric series only, so these kvs do NOT affect it.
+            {"portfolio_sharpe",      std::to_string(portfolio_sharpe)},
+            {"portfolio_oos_sharpe",  std::to_string(portfolio_oos_sharpe)},
         };
         return atx::core::Ok(std::move(sr));
     }
