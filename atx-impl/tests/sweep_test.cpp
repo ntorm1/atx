@@ -350,7 +350,7 @@ TEST(AtxImplSweep, WalkForwardRotation) {
     auto make_cfg_wf = [&](const std::string& alpha_out, const std::string& lib_dir) {
         auto cfg = sweep_cfg(panel_path, alpha_out, lib_dir, /*seed=*/77ULL, /*sweep_runs=*/3);
         cfg.oos_windows = 3;  // R2: run 0->window 0, run 1->window 1, run 2->window 2
-        // A4 — honor the explicit 3 against run_sweep's new set_flags-keyed default-4
+        // A4 — honor the explicit 3 against run_sweep's new set_flags-keyed default-3
         // (faithful to real CLI behavior, where --oos-windows N inserts the flag).
         cfg.set_flags.insert("oos-windows");
         return cfg;
@@ -363,7 +363,7 @@ TEST(AtxImplSweep, WalkForwardRotation) {
     // Run C: same seed + sweep_runs=3 but oos_windows=0 (no rotation).
     auto cfg_c = sweep_cfg(panel_path, out_C, lib_C, /*seed=*/77ULL, /*sweep_runs=*/3);
     // A4 — explicitly pin oos_windows=0 (no-rotation baseline) AND mark the flag
-    // explicit so run_sweep's new default-4 does NOT override it back to walk-forward.
+    // explicit so run_sweep's new default-3 does NOT override it back to walk-forward.
     cfg_c.oos_windows = 0;
     cfg_c.set_flags.insert("oos-windows");
     auto rC = atx::impl::run_sweep(cfg_c);
@@ -533,8 +533,9 @@ static std::string read_summary_kv(const std::string& summary, const std::string
 TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
     namespace fs = std::filesystem;
 
-    // 1. Planted-drift panel: 120 dates so 4 walk-forward windows fit (4*0.25*T
-    //    tiles the whole panel) and the OOS span has >= 2 rebalance periods.
+    // 1. Planted-drift panel: 120 dates so the default 3 walk-forward windows fit
+    //    feasibly (3*0.25*T holdout + 0.25*T leading train tiles the panel) and the
+    //    OOS span has >= 2 rebalance periods.
     auto panel_opt = make_panel(/*dates=*/120, /*insts=*/6);
     ASSERT_TRUE(panel_opt.has_value());
     const std::string panel_path = write_panel_tmp(*panel_opt, "e2e_megaalpha");
@@ -550,7 +551,7 @@ TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
     fs::remove_all(report_dir, ec0);
     fs::create_directories(work, ec0);
 
-    // 2. run_sweep: exercise the NEW default 4 walk-forward windows (do NOT set
+    // 2. run_sweep: exercise the NEW default 3 walk-forward windows (do NOT set
     //    oos_windows / set_flags). Permissive gate (helper sets the floors to 0).
     auto cfg = sweep_cfg(panel_path, alpha_o, lib_dir, /*seed=*/2024ULL, /*sweep_runs=*/4);
     auto rs = atx::impl::run_sweep(cfg);
@@ -563,9 +564,9 @@ TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
     const int lib_size = std::stoi(get_kv(*rs, "library_size"));
     ASSERT_GE(lib_size, 2) << "need >= 2 admitted alphas for a non-degenerate combine; got "
                            << lib_size;
-    // Confirm the new default put 4 walk-forward windows on the telemetry.
-    EXPECT_EQ(get_kv(*rs, "oos_windows"), "4")
-        << "sweep must default to 4 walk-forward OOS windows";
+    // Confirm the new default put 3 walk-forward windows on the telemetry.
+    EXPECT_EQ(get_kv(*rs, "oos_windows"), "3")
+        << "sweep must default to 3 walk-forward OOS windows";
 
     // 3. run_combine: holdout-frac 0.25 makes [fit_end, np) genuinely OOS (A2a).
     const std::string combo_path = (work / "combo.bin").string();

@@ -1,6 +1,7 @@
 #include "stages.hpp"
 
 #include <algorithm>  // std::max
+#include <cmath>      // std::floor
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -110,34 +111,24 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     const combine::AlphaGate gate{gc};
 
     // ---- A4: default a research sweep to R2 walk-forward validation ---------
-    // Default 4 rotating holdout windows so the accumulated library is mined
-    // against multiple OOS slices, not one terminal holdout. Respects an explicit
-    // --oos-windows (incl. an explicit 0 = legacy terminal holdout). Keyed on
-    // set_flags exactly like the R3a oos-fraction default below.
-    const bool oos_windows_defaulted = (cfg.set_flags.count("oos-windows") == 0);
-    const long eff_oos_windows = oos_windows_defaulted ? 4 : cfg.oos_windows;
+    // Default 3 rotating holdout windows so the accumulated library is mined
+    // against multiple OOS slices, not one terminal holdout. 3 windows is chosen
+    // so that at the system-standard 0.25 holdout fraction the panel tiles
+    // feasibly: 3*0.25 (holdout) + 0.25 (one leading train block) = 1.0*T. This
+    // keeps the standard 0.25 OOS fraction (consistent with combine holdout-frac
+    // and discover R3a) instead of coupling a second lowered default — the
+    // infeasibility cliff sits at an implausibly-high EXPLICIT fraction
+    // (>=~0.34) rather than at the common 0.25 value. The roadmap specified "~4"
+    // windows, so 3 is within spec. An explicit --oos-windows (incl. an explicit
+    // 0 = legacy terminal holdout) still wins, as does an explicit --oos-fraction.
+    const long eff_oos_windows =
+        (cfg.set_flags.count("oos-windows") == 0) ? 3 : cfg.oos_windows;
 
     // ---- R3a: OOS-on-by-default for sweep (sweep ALWAYS accumulates) --------
     // Sweep always accumulates, so oos_fraction defaults ON unless the user
     // explicitly set --oos-fraction (same rule as discover's accumulation path).
-    //
-    // A4 geometry coupling: walk-forward tiles N disjoint blocks of width
-    // w = floor(oos_fraction*T) over the terminal region. The engine REQUIRES one
-    // extra block of training to precede the earliest window (factory.cpp:888:
-    // oos_n_windows*w must be < T-embargo), so the legacy 0.25 fraction is only
-    // feasible up to 3 windows (3*0.25 + 0.25 train = 1.0). For the default N=4
-    // windows we therefore default oos_fraction to 1/(N+1) (=0.2) so N holdout
-    // blocks PLUS one training block tile the panel feasibly. A single-terminal
-    // sweep (explicit --oos-windows 0) keeps the legacy 0.25. An explicit
-    // --oos-fraction always wins.
-    const atx::f64 default_oos_fraction =
-        (oos_windows_defaulted && eff_oos_windows > 0)
-            ? 1.0 / static_cast<atx::f64>(eff_oos_windows + 1)
-            : 0.25;
     const atx::f64 eff_oos_fraction =
-        (cfg.set_flags.count("oos-fraction") == 0)
-            ? default_oos_fraction
-            : cfg.oos_fraction;
+        (cfg.set_flags.count("oos-fraction") == 0) ? 0.25 : cfg.oos_fraction;
 
     // ---- P2b geometry guard (same as run_discover_gated) -------------------
     if (eff_oos_fraction > 0.0) {
@@ -154,6 +145,35 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
                 std::to_string(panel.dates()) + " dates (" +
                 sealed_r.error().message() + ")");
         }
+
+        // ---- A4 up-front walk-forward geometry guard -----------------------
+        // For the windowed path the engine tiles eff_oos_windows DISJOINT holdout
+        // blocks of width w = floor(oos_fraction * T) over the terminal region and
+        // REQUIRES at least one leading training block to precede the earliest
+        // window (factory.cpp:888 admits ZERO when
+        //   embargo_len + 1 >= T  ||  oos_n_windows > (T - embargo_len - 1)/w,
+        // i.e. when  oos_n_windows * w >= T - embargo_len). Mirror that exact
+        // inequality here (same overflow-safe division form) so an infeasible
+        // windows x fraction surfaces an actionable geometry diagnostic instead of
+        // the misleading "no alphas cleared the gate" path.
+        if (eff_oos_windows > 0) {
+            const atx::usize n_win = static_cast<atx::usize>(eff_oos_windows);
+            const atx::usize w =
+                static_cast<atx::usize>(std::floor(eff_oos_fraction * static_cast<double>(T)));
+            const bool infeasible =
+                (w == 0U) ||
+                (embargo_len + 1U >= T) ||
+                (n_win > (T - embargo_len - 1U) / w);
+            if (infeasible) {
+                return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                    "sweep: --oos-windows N (=" + std::to_string(eff_oos_windows) +
+                    ") x floor(--oos-fraction " + std::to_string(eff_oos_fraction) +
+                    " * T=" + std::to_string(T) + ") = " + std::to_string(n_win * w) +
+                    " tiles >= the T-date panel minus embargo (" +
+                    std::to_string(T - embargo_len) +
+                    "), leaving no training block; lower --oos-windows or --oos-fraction");
+            }
+        }
     }
 
     // ---- FactoryConfig (per-run template handed to ResearchDriver) ----------
@@ -165,7 +185,7 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     per_run.min_dsr                   = cfg.min_dsr;
     per_run.oos_fraction              = eff_oos_fraction;
     per_run.oos_embargo               = cfg.oos_embargo;
-    // A4 — eff_oos_windows computed above (with its coupled oos_fraction default).
+    // A4 — eff_oos_windows computed above (default 3 at the plain 0.25 fraction).
     per_run.oos_n_windows = static_cast<atx::usize>(std::max<long>(eff_oos_windows, 0));
     per_run.oos_window    = static_cast<atx::usize>(std::max<long>(cfg.oos_window,  0));
     // NOTE: per_run.oos_window is the base value; ResearchDriver::run overrides it
