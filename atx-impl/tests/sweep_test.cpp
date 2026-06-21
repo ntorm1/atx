@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream> // std::cerr (C2.2 observed-numbers print)
 #include <iterator>
 #include <string>
 #include <vector>
@@ -203,6 +204,37 @@ TEST(AtxImplSweep, SweepAccumulatesAndByteIdentical) {
     // research_digest kv.
     EXPECT_EQ(get_kv(*rA, "research_digest"), get_kv(*rB, "research_digest"))
         << "research_digest (ResearchReport.digest) must be byte-identical";
+
+    // --- C2.2 cross-run redundant-eval telemetry (REPORT-ONLY; additive kvs). ---
+    // Present + parse, invariants hold, and twice-run identical (proving the new
+    // telemetry is deterministic and additive — research_digest above is unchanged).
+    const std::string ct_A = get_kv(*rA, "cross_run_total_evals");
+    const std::string cd_A = get_kv(*rA, "cross_run_distinct_evals");
+    const std::string cr_A = get_kv(*rA, "cross_run_redundant_evals");
+    const std::string cp_A = get_kv(*rA, "cross_run_redundant_pct");
+    ASSERT_FALSE(ct_A.empty()) << "cross_run_total_evals kv must be present";
+    ASSERT_FALSE(cd_A.empty()) << "cross_run_distinct_evals kv must be present";
+    ASSERT_FALSE(cr_A.empty()) << "cross_run_redundant_evals kv must be present";
+    ASSERT_FALSE(cp_A.empty()) << "cross_run_redundant_pct kv must be present";
+
+    const long long ct = std::stoll(ct_A);
+    const long long cd = std::stoll(cd_A);
+    const long long cr = std::stoll(cr_A);
+    const double cp = std::stod(cp_A);
+    EXPECT_GT(ct, 0) << "a multi-run sweep must score > 0 distinct structures total";
+    EXPECT_LE(cd, ct) << "distinct (union) must not exceed total";
+    EXPECT_EQ(cr, ct - cd) << "redundant must equal total - distinct";
+    EXPECT_GE(cp, 0.0);
+    EXPECT_LE(cp, 1.0) << "cross_run_redundant_pct must be in [0,1]";
+
+    // Twice-run identical (additive + deterministic).
+    EXPECT_EQ(ct_A, get_kv(*rB, "cross_run_total_evals"));
+    EXPECT_EQ(cd_A, get_kv(*rB, "cross_run_distinct_evals"));
+    EXPECT_EQ(cr_A, get_kv(*rB, "cross_run_redundant_evals"));
+    EXPECT_EQ(cp_A, get_kv(*rB, "cross_run_redundant_pct"));
+
+    std::cerr << "[C2.2 impl] cross_run total=" << ct << " distinct=" << cd
+              << " redundant=" << cr << " pct=" << cp << "\n";
 
     // manifest_version_id kv.
     EXPECT_EQ(get_kv(*rA, "manifest_version_id"), get_kv(*rB, "manifest_version_id"))

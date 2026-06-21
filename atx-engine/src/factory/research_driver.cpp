@@ -1,10 +1,11 @@
 #include "atx/engine/factory/research_driver.hpp"
 
-#include <bit>     // std::bit_cast (f64 verdict sharpe -> u64 for the digest fold)
-#include <cstddef> // std::size_t (hash_combine seed type)
-#include <cstdint> // std::uint64_t (the folded verdict-sharpe bit pattern)
-#include <span>    // std::span (the per-survivor OOS PnL slice)
-#include <vector>  // std::vector (the cached regime labels)
+#include <bit>           // std::bit_cast (f64 verdict sharpe -> u64 for the digest fold)
+#include <cstddef>       // std::size_t (hash_combine seed type)
+#include <cstdint>       // std::uint64_t (the folded verdict-sharpe bit pattern)
+#include <span>          // std::span (the per-survivor OOS PnL slice)
+#include <unordered_set> // std::unordered_set (C2.2 cross-run distinct scored hashes)
+#include <vector>        // std::vector (the cached regime labels)
 
 #include "atx/core/hash.hpp" // atx::core::hash_combine (engine digest fold)
 
@@ -45,6 +46,13 @@ namespace atx::engine::factory {
           ? eval::regime_labels(panel_, cfg.robustness_cfg.vol_window, eval::kNumRegimes)
           : std::vector<atx::u8>{};
 
+  // C2.2 (measurement-only; REPORT-ONLY) — the UNION of every run's distinct-scored
+  // canon_hashes. `seen_scored.size()` after the loop is the cross-run DISTINCT count;
+  // `cross_run_total_evals` (the per-run distinct counts summed) minus it is the
+  // redundant EVALUATION count (the VM work a cross-run scored-cache would save). This
+  // set + the fields below are NEVER folded into digest_acc — pure telemetry.
+  std::unordered_set<atx::u64> seen_scored;
+
   atx::usize dry = 0; // consecutive zero-admit runs (the patience counter)
   for (atx::usize run = 0; run < cfg.max_runs && (cfg.patience == 0U || dry < cfg.patience);
        ++run) {
@@ -80,6 +88,15 @@ namespace atx::engine::factory {
     rep.total_duplicates += fr.duplicates;
     // M1/sweep: capture the last run's OOS metrics for the manifest writer.
     rep.last_run_oos_metrics = fr.oos_metrics;
+
+    // C2.2 (measurement-only; REPORT-ONLY) — accumulate this run's distinct-scored
+    // count into the cross-run total and fold its canon_hashes into the union. This is
+    // pure telemetry over already-computed hashes; it does NOT touch digest_acc, any
+    // admission decision, or the library, so the engine fingerprint is byte-identical.
+    rep.cross_run_total_evals += fr.scored_canon_hashes.size();
+    for (atx::u64 h : fr.scored_canon_hashes) {
+      seen_scored.insert(h);
+    }
 
     // Fold this run's deterministic mine+admit fingerprint into the engine digest
     // (in run order, so a reordered or differing run sequence shifts the digest).
@@ -129,6 +146,18 @@ namespace atx::engine::factory {
   rep.dedup_pct = (denom == 0U)
                       ? 0.0
                       : static_cast<atx::f64>(rep.total_duplicates) / static_cast<atx::f64>(denom);
+
+  // C2.2 (measurement-only; REPORT-ONLY) — finalize the cross-run redundant-EVALUATION
+  // measurement: distinct = |union of every run's scored hashes|; redundant = total -
+  // distinct (distinct <= total always, so the subtraction never underflows); pct =
+  // redundant / total (0 when total == 0). NONE of these is folded into digest_acc.
+  rep.cross_run_distinct_evals = seen_scored.size();
+  rep.cross_run_redundant_evals = rep.cross_run_total_evals - rep.cross_run_distinct_evals;
+  rep.cross_run_redundant_pct =
+      rep.cross_run_total_evals == 0
+          ? 0.0
+          : static_cast<atx::f64>(rep.cross_run_redundant_evals) /
+                static_cast<atx::f64>(rep.cross_run_total_evals);
 
   rep.digest = digest_acc;
   return rep;

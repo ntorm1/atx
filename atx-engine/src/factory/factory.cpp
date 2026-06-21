@@ -58,6 +58,19 @@ namespace {
   return sh.stable && sh.sharpe_h1 >= min_split_sharpe && sh.sharpe_h2 >= min_split_sharpe;
 }
 
+// C2.2 (measurement-only) — fill report.scored_canon_hashes from the run's DISTINCT
+// scored set (res.all_scored; one entry per scored canon_hash, size == res.trial_count).
+// REPORT-ONLY telemetry: a parent-side copy of already-computed canon_hashes — it is
+// NOT folded into rep.digest and changes no admission decision, so the digest, admitted
+// set, and library version_id stay byte-identical. Called at each rep.evaluated site.
+inline void fill_scored_hashes(FactoryReport &rep, const SearchResult &res) {
+  rep.scored_canon_hashes.clear();
+  rep.scored_canon_hashes.reserve(res.all_scored.size());
+  for (const Genome &g : res.all_scored) {
+    rep.scored_canon_hashes.push_back(g.canon_hash);
+  }
+}
+
 } // namespace
 
 namespace detail {
@@ -154,6 +167,7 @@ void finalize_run_pbo(FactoryReport &rep,
   const SearchResult res = driver.run(cfg.search, pool);
 
   rep.evaluated = res.trial_count;
+  fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
@@ -311,6 +325,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   LibraryPool view{lib_lib};
 
   rep.evaluated = res.trial_count;
+  fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
@@ -570,6 +585,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   const SearchResult res = driver.run(cfg.search, search_pool);
 
   rep.evaluated = res.trial_count;
+  fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
@@ -937,6 +953,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   const AlphaStorePool rank_view{empty_rank_pool};
 
   rep.evaluated = res.trial_count;
+  fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
@@ -1238,6 +1255,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   const SearchResult res = driver.run(cfg.search, search_pool);
 
   rep.evaluated = res.trial_count;
+  fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;

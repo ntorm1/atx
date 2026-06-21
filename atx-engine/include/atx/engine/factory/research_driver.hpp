@@ -178,6 +178,16 @@ struct ResearchReport {
   // field leaves the digest, admitted set, and library state completely unchanged —
   // the oos_n_windows==0 path stays byte-identical to the pre-M1 engine.
   std::vector<atx::usize> per_run_oos_window;
+
+  // C2.2 measurement-only (REPORT-ONLY; NOT folded into `digest`). Cross-run redundant
+  // EVALUATION: across the runs, how many distinct-per-run scored structures were ALREADY
+  // scored in an earlier run (the VM work a cross-run scored-cache would save). total =
+  // sum of per-run distinct-scored counts; distinct = |union of all runs' scored hashes|;
+  // redundant = total - distinct; pct = redundant / max(1,total).
+  atx::usize cross_run_total_evals{0};
+  atx::usize cross_run_distinct_evals{0};
+  atx::usize cross_run_redundant_evals{0};
+  atx::f64   cross_run_redundant_pct{0.0};
 };
 
 namespace detail {

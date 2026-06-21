@@ -13,8 +13,10 @@
 // library setup) so the engine's growth / patience / replay semantics are validated
 // against the SAME planted-edge / pure-noise discrimination the S3/S4b suites prove.
 
+#include <cmath>        // std::isfinite (C2.2 cross-run pct invariant)
 #include <cstdint>
 #include <filesystem>   // per-test temp directory (the library is rooted at a dir)
+#include <iostream>     // std::cerr (C2.2 observed-numbers print)
 #include <string>
 #include <system_error> // std::error_code (tmpdir's remove_all/create_directories)
 #include <utility>
@@ -406,6 +408,73 @@ TEST(ResearchDriver, WalkForwardWindowRotation) {
   EXPECT_NE(rep_wf.digest, rep_ref.digest)
       << "oos_n_windows=3 digest must differ from oos_n_windows=0 — "
          "window rotation must affect the mine outcome (not just telemetry)";
+}
+
+// =============================================================================
+//  CrossRunRedundantEvalTelemetry — C2.2 (measurement-only): a multi-run
+//  ResearchDriver folds each run's distinct-scored canon_hashes into a cross-run
+//  union and reports total / distinct / redundant / pct (the VM work a cross-run
+//  scored-cache would save). Asserts the INVARIANTS (deterministic, non-vacuous)
+//  AND that the new fields are REPORT-ONLY: a twice-run replay reproduces BOTH the
+//  engine digest AND the cross-run telemetry, proving the digest is unperturbed.
+// =============================================================================
+TEST(ResearchDriver, CrossRunRedundantEvalTelemetry) {
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  AlphaGate gate{default_gate_cfg()};
+  lib::Library lib1 = lib::Library::open(tmpdir("a"), default_gate_cfg(), {kLibSeed});
+  lib::Library lib2 = lib::Library::open(tmpdir("b"), default_gate_cfg(), {kLibSeed});
+  ResearchDriver e1{lib1, fx1.dsl, fx1.panel, fx1.sim, fx1.policy, gate};
+  ResearchDriver e2{lib2, fx2.dsl, fx2.panel, fx2.sim, fx2.policy, gate};
+
+  // >= 2 runs so the cross-run union is meaningful (a single run can have no
+  // cross-run redundancy by construction).
+  const ResearchReport rep =
+      e1.run(real_signal_research_cfg(/*seed*/ 41, /*max_runs*/ 3, /*patience*/ 0));
+  const ResearchReport rep2 =
+      e2.run(real_signal_research_cfg(/*seed*/ 41, /*max_runs*/ 3, /*patience*/ 0));
+
+  ASSERT_GE(rep.runs, 2u) << "need >= 2 runs to measure cross-run redundancy";
+
+  // INVARIANT 1: distinct <= total (the union can never exceed the per-run sum).
+  EXPECT_LE(rep.cross_run_distinct_evals, rep.cross_run_total_evals)
+      << "distinct (union) must never exceed total (per-run sum)";
+  // INVARIANT 2: redundant == total - distinct (exact, no underflow by invariant 1).
+  EXPECT_EQ(rep.cross_run_redundant_evals,
+            rep.cross_run_total_evals - rep.cross_run_distinct_evals)
+      << "redundant must equal total - distinct";
+  // INVARIANT 3: pct is finite and in [0, 1].
+  EXPECT_TRUE(std::isfinite(rep.cross_run_redundant_pct)) << "pct must be finite";
+  EXPECT_GE(rep.cross_run_redundant_pct, 0.0);
+  EXPECT_LE(rep.cross_run_redundant_pct, 1.0);
+  // INVARIANT 3b: pct matches the integer ratio it summarizes.
+  if (rep.cross_run_total_evals == 0u) {
+    EXPECT_EQ(rep.cross_run_redundant_pct, 0.0);
+  } else {
+    EXPECT_DOUBLE_EQ(rep.cross_run_redundant_pct,
+                     static_cast<f64>(rep.cross_run_redundant_evals) /
+                         static_cast<f64>(rep.cross_run_total_evals));
+  }
+  // INVARIANT 4: any run that scored anything contributes >= 1 distinct hash.
+  if (rep.cross_run_total_evals > 0u) {
+    EXPECT_GE(rep.cross_run_distinct_evals, 1u)
+        << "a non-empty cross-run sweep must have >= 1 distinct scored structure";
+  }
+
+  // DETERMINISM: a twice-run replay reproduces the digest AND the telemetry — the
+  // new fields are deterministic and the digest is unperturbed by adding them.
+  EXPECT_EQ(rep.digest, rep2.digest) << "engine digest must be twice-run identical";
+  EXPECT_EQ(rep.cross_run_total_evals, rep2.cross_run_total_evals);
+  EXPECT_EQ(rep.cross_run_distinct_evals, rep2.cross_run_distinct_evals);
+  EXPECT_EQ(rep.cross_run_redundant_evals, rep2.cross_run_redundant_evals);
+  EXPECT_DOUBLE_EQ(rep.cross_run_redundant_pct, rep2.cross_run_redundant_pct);
+
+  // OBSERVED NUMBERS (printed for the C2.2 report; not an assertion). If the runs
+  // share any structure across runs, redundant > 0 (the cross-run cache lever).
+  std::cerr << "[C2.2] cross_run total=" << rep.cross_run_total_evals
+            << " distinct=" << rep.cross_run_distinct_evals
+            << " redundant=" << rep.cross_run_redundant_evals
+            << " pct=" << rep.cross_run_redundant_pct << "\n";
 }
 
 

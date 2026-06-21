@@ -293,6 +293,12 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
         mf << "runs="              << rep.runs               << '\n';
         mf << "total_admitted="    << rep.total_admitted      << '\n';
         mf << "total_duplicates="  << rep.total_duplicates    << '\n';
+        // C2.2 (measurement-only; REPORT-ONLY) — cross-run redundant-eval telemetry.
+        // Additive human-readable manifest lines; not part of any digest.
+        mf << "cross_run_total_evals="     << rep.cross_run_total_evals     << '\n';
+        mf << "cross_run_distinct_evals="  << rep.cross_run_distinct_evals  << '\n';
+        mf << "cross_run_redundant_evals=" << rep.cross_run_redundant_evals << '\n';
+        mf << "cross_run_redundant_pct="   << rep.cross_run_redundant_pct   << '\n';
         mf << "research_digest="   << to_hex16(rep.digest)   << '\n';
         mf << "manifest_version_id=" << to_hex16(static_cast<atx::u64>(rep.manifest_version_id)) << '\n';
         mf << "min_dsr="           << cfg.min_dsr            << '\n';
@@ -352,6 +358,11 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
         {"total_admitted",    std::to_string(rep.total_admitted)},
         {"total_duplicates",  std::to_string(rep.total_duplicates)},
         {"dedup_pct",         std::to_string(dedup_pct)},
+        // C2.2 (measurement-only; REPORT-ONLY) — cross-run redundant-eval telemetry.
+        {"cross_run_total_evals",     std::to_string(rep.cross_run_total_evals)},
+        {"cross_run_distinct_evals",  std::to_string(rep.cross_run_distinct_evals)},
+        {"cross_run_redundant_evals", std::to_string(rep.cross_run_redundant_evals)},
+        {"cross_run_redundant_pct",   std::to_string(rep.cross_run_redundant_pct)},
         {"research_digest",   to_hex16(rep.digest)},
         {"manifest_version_id", to_hex16(static_cast<atx::u64>(rep.manifest_version_id))},
         {"seed",              std::to_string(cfg.seed)},

@@ -229,6 +229,13 @@ struct FactoryReport {
   //  and OOS (holdout) metrics. P2b (impl) reads this for the discover manifest.
   std::vector<OosReportEntry> oos_metrics;
 
+  // C2.2 (measurement-only) — REPORT-ONLY: the distinct canonical structures this run
+  // SCORED (the all_scored / CanonSet contents; size == evaluated). NOT folded into
+  // `digest` (a telemetry vector, exactly like oos_metrics) — adding it leaves the
+  // digest, admitted set, and library version_id byte-identical. ResearchDriver folds
+  // these across runs to measure cross-run redundant EVALUATION.
+  std::vector<atx::u64> scored_canon_hashes;
+
   // --- W4b run-level CSCV-PBO verdict (additive; default-SENTINEL so the legacy path
   //  is byte-identical — mirrors the oos_metrics precedent). Populated ONLY when the
   //  gate is ACTIVE (FactoryConfig::max_pbo < 1.0) AND the admitted set is feasible
