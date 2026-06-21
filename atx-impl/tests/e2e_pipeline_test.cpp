@@ -491,14 +491,14 @@ static std::string read_summary_kv(const fs::path& summary, const std::string& k
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: RunAllEmitsPositiveOosPortfolioSharpe (A2b — the keystone metric)
+// Test 5: RunAllEmitsFiniteOosPortfolioSharpe (A2b — the keystone metric)
 // run_all wires report at combo.bin so it reads combo.bin.meta and splits the
 // per-period series IS/OOS. Assert summary.txt carries a FINITE portfolio_sharpe
 // and a REAL OOS split (n_oos_periods >= 1, holdout_begin < n periods). We do
 // NOT hard-assert a positive Sharpe on the synthetic fixture — that data-gated
 // assertion is Task A4's job.
 // ---------------------------------------------------------------------------
-TEST_F(AtxImplE2E, RunAllEmitsPositiveOosPortfolioSharpe) {
+TEST_F(AtxImplE2E, RunAllEmitsFiniteOosPortfolioSharpe) {
     const fs::path work   = make_work_dir("a2b_work");
     const fs::path report = make_work_dir("a2b_report");
 

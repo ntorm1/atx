@@ -259,8 +259,9 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                     holdout_begin = meta_holdout;
                 }
             }
-            // Missing/unparsable/inconsistent meta => leave have_split=false; do
-            // NOT error (standalone report must still succeed).
+            // Missing/unparsable/inconsistent meta => holdout_begin stays at
+            // research.dates() (no OOS split); do NOT error (standalone report
+            // must still succeed).
         }
 
         // 6c. (A2b) Split rebalance periods s in [0,S) into IS / OOS index sets
