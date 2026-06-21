@@ -68,6 +68,12 @@ struct RunConfig {
     long        workers       = 0;     // --workers       (search DetPool fan-out; 0 = auto = cores-1).
                                        // Digest-invariant (F1): affects speed/memory, never bits.
     double      oos_fraction  = 0.0;   // --oos-fraction  (0 = off; fraction of the time axis held out for OOS admission)
+    // CAVEAT (combining --oos-fraction with --robust-holdout-frac): the robust ratio
+    // geometry is MISALIGNED. The OOS search runs on the TRAIN sub-window, but the weak
+    // panel is masked over the FULL-date panel, so the robust factor compares a full-
+    // date weak universe against a train-window WQ. Treat the robust signal as
+    // approximate when both knobs are set (re-deriving the weak mask over the train
+    // panel is deferred / out of scope).
     double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
     // --min-split-sharpe (W4a): OPTIONAL split-sample stability admission floor. A
     // candidate is admitted only if BOTH halves of its OOS PnL stream have a per-
@@ -84,6 +90,11 @@ struct RunConfig {
     // the search so the robust factor (robust = clamp(wq_on(weak)/wq, 0, 1)) ACTIVATES.
     // 0.0 (default) -> no weak panel built, robust stays the constant 1.0 and the
     // discover digest is byte-identical to today. Clamped to (0, 1); out-of-range -> off.
+    // CAVEAT (combining with --oos-fraction > 0): the robust ratio geometry is
+    // MISALIGNED — the weak panel is masked over the FULL-date panel while the OOS
+    // search runs on the TRAIN sub-window, so robust compares a full-date weak universe
+    // against a train-window WQ. The robust signal is approximate when both knobs are
+    // set (re-deriving the weak mask over the train panel is deferred / out of scope).
     double      robust_holdout_frac = 0.0; // --robust-holdout-frac
 
     std::string run_db;                // --run-db  (SQLite progress DB path; "" = off, no store I/O)

@@ -304,9 +304,11 @@ atx::impl::detail::build_robust_holdout_panel(const atx::engine::alpha::Panel& p
             "cells (frac too small for this universe). Increase --robust-holdout-frac.");
     }
 
-    (void)std::fprintf(stderr,
-        "[W4a robust holdout] frac=%.3f seed=%llu  kept_cells=%zu\n",
-        frac, static_cast<unsigned long long>(master_seed), kept_cells);
+    // (Fix 2) No unconditional stderr diagnostic here: build_robust_holdout_panel has
+    // no verbosity/log seam threaded in (it takes only panel/frac/master_seed), so an
+    // always-on "[W4a robust holdout] ..." line was unguarded noise. Removed rather
+    // than widen the signature for a single trace line; kept_cells is still validated
+    // (fail-closed above) and surfaced via the error path when it would be zero.
 
     return alpha::Panel::create(D, I, std::move(field_names), std::move(field_data),
                                 std::move(weak_univ));

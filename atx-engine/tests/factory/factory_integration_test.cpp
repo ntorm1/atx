@@ -266,12 +266,18 @@ TEST(FactoryIntegration, SeededRunReplaysByteIdentical) {
 // =============================================================================
 //  W4a SplitSharpeFloorGatesAdmission — the OPTIONAL split-sample stability floor.
 //
+//  UNIFIED CONTRACT (review Fix 1): mine() now gates split-stability via the SAME
+//  split_floor_ok(min_split_sharpe, cand_pnl, metrics) helper the three library admit
+//  paths use — the floor is measured on the REALIZED full-OOS PnL stream, NOT the
+//  CPCV-aggregated fit-> fields. One statistical contract across all four mine paths.
+//
 //  The default (-inf) floor admits the real-signal survivors EXACTLY as the pre-W4a
-//  screen did (the new FactoryConfig field is a no-op at its disabling default —
-//  same admitted count + byte-identical digest as a baseline run that never touches
-//  it). An IMPOSSIBLY-HIGH finite floor activates the gate and rejects every
-//  candidate (no per-period half-Sharpe clears 1e9), shifting the digest — proof the
-//  floor actually bites when set. Mirrors the min_dsr deflation-bar test idiom.
+//  screen did (split_floor_ok returns true immediately on !isfinite -> the accept
+//  expression collapses to (verdict==Accept) && (dsr>=min_dsr): same admitted count +
+//  byte-identical digest as a baseline run that never touches it). An IMPOSSIBLY-HIGH
+//  finite floor activates the gate and rejects every candidate (no realized-stream
+//  per-period half-Sharpe clears 1e9), shifting the digest — proof the floor actually
+//  bites when set. Mirrors the min_dsr deflation-bar test idiom.
 // =============================================================================
 TEST(FactoryIntegration, SplitSharpeFloorGatesAdmission) {
   // (1) Default (-inf) floor: admits survivors, byte-identical to the untouched cfg.

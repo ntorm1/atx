@@ -140,19 +140,18 @@ namespace {
     const combine::GateVerdict verdict =
         gate.admit(metrics, std::span<const atx::f64>{cand_pnl}, pool);
 
-    // W4a split-sample stability floor (OPTIONAL; default DISABLED). Active ONLY
-    // when cfg.min_split_sharpe is FINITE (the -inf disabling default leaves this
-    // term true and the accept expression byte-identical to the pre-W4a screen).
-    // When active, a candidate is rejected unless its OOS PnL is split-stable (both
-    // halves share the full-sample Sharpe sign) AND both half-Sharpes clear the
-    // floor. The split metrics come from the SAME admission-loop `fit` (computed
-    // alongside `dsr`); if that re-score errored, no metrics exist -> the candidate
-    // fails the active floor (it could not be confirmed stable on the current pool).
-    const bool split_floor_active = std::isfinite(cfg.min_split_sharpe);
+    // W4a split-sample stability floor (OPTIONAL; default DISABLED). UNIFIED with the
+    // three library admit paths (mine_into + mine_into_oos serial/parallel): gate via
+    // the SAME split_floor_ok helper over the REALIZED full-OOS PnL stream + metrics
+    // (cand_pnl, metrics — the locals computed at 3a/3b above), NOT the CPCV-aggregated
+    // PoolView `fit->{split_stable,sharpe_h1,sharpe_h2}` fields. ONE statistical
+    // contract behind the knob across all four mine paths: split-stability measured on
+    // the realized stream. (fitness_core still COMPUTES the fit-> split fields for
+    // observability/recording; the gate decision no longer reads them.) Inactive
+    // (-inf default) -> split_floor_ok returns true immediately, so the accept
+    // expression collapses to the exact pre-W4a (verdict==Accept) && (dsr>=min_dsr).
     const bool split_ok =
-        !split_floor_active ||
-        (fit.has_value() && fit->split_stable && fit->sharpe_h1 >= cfg.min_split_sharpe &&
-         fit->sharpe_h2 >= cfg.min_split_sharpe);
+        split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{cand_pnl}, metrics);
     const bool accept =
         (verdict == combine::GateVerdict::Accept) && (dsr >= cfg.min_dsr) && split_ok;
     // Fold the decision into the digest (every screened candidate, in order):
