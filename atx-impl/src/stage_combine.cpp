@@ -508,6 +508,16 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     //     The shipped combo.bin is UNCHANGED: wf_combo vectors are scratch, used only
     //     for scoring, then discarded. All code lives inside this if-block so the
     //     default (k==0) path is byte-identical and incurs zero extra compute.
+    //
+    //     SCOPE CAVEAT (read before interpreting walk_forward_oos_sharpe*): each fold
+    //     scores the BASE combiner fit (wf.fit only), NOT the post-conviction / post-
+    //     crowding book that actually ships. So with --conviction (or --corr-penalty)
+    //     ALSO set, walk_forward_oos_sharpe measures the combiner METHOD's OOS stability,
+    //     which is a DIFFERENT book than breadth_realized_ir (computed on the final
+    //     post-conviction weights at step 14). Do not read walk_forward_oos_sharpe as
+    //     "the shipped mega-alpha's OOS Sharpe" when conviction/crowding is on, and do
+    //     not directly compare it to breadth_realized_ir. (A conviction-aware WF that
+    //     re-applies the per-fold conviction transform is a follow-up task.)
     std::string wf_folds_str;
     std::string wf_mean_str;
     std::string wf_sharpes_str;
