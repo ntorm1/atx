@@ -69,10 +69,13 @@ namespace detail {
 // sentinels intact -> byte-identical legacy path. See the header contract.
 void finalize_run_pbo(FactoryReport &rep,
                       const std::vector<std::vector<atx::f64>> &admitted_pnls,
-                      atx::f64 max_pbo) {
+                      atx::f64 max_pbo,
+                      bool always_compute) {
   // (1) Off (the disabling 1.0 default): NO compute, all PBO fields stay at sentinels
-  // (rep.pbo == NaN, gate passes) -> byte-identical to the pre-W4b path.
-  if (max_pbo >= 1.0) {
+  // (rep.pbo == NaN, gate passes) -> byte-identical to the pre-W4b path. A3: when
+  // always_compute is true (the OOS always-on holdout diagnostic, oos_pbo), proceed to
+  // compute even at the OFF default; the gate verdict still fail-opens (step 7).
+  if (max_pbo >= 1.0 && !always_compute) {
     return;
   }
 
@@ -126,14 +129,16 @@ void finalize_run_pbo(FactoryReport &rep,
 
   // (7) RECORD the verdict. The gate is ADVISORY-but-RECORDED: a breach sets
   // pbo_gate_passed = false (surfaced + warned downstream) but never un-persists an
-  // alpha or alters admission. PBO ∈ [0,1] and max_pbo < 1.0 here, so strict
-  // pbo > max_pbo is a real test.
+  // alpha or alters admission. A3: when the gate is OFF (max_pbo >= 1.0, reachable
+  // here only via always_compute), the PBO is recorded but the verdict FAIL-OPENS —
+  // a run is never failed merely for the gate being off. When the gate is active
+  // (max_pbo < 1.0), strict pbo > max_pbo is a real test (PBO ∈ [0,1]).
   const eval::PboResult &res = *pbo_r;
   rep.pbo = res.pbo;
   rep.pbo_mean_logit = res.mean_logit;
   rep.pbo_n_candidates = n_candidates;
   rep.pbo_n_splits = n_splits;
-  rep.pbo_gate_passed = !(rep.pbo > max_pbo);
+  rep.pbo_gate_passed = (max_pbo >= 1.0) ? true : !(rep.pbo > max_pbo);
 }
 
 } // namespace detail
@@ -1030,11 +1035,10 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   std::vector<std::vector<atx::f64>> admitted_pnls;
 
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first.
-  // R3b: collect admitted holdout PnL streams in admit order for the post-loop PBO
-  // computation. This collection is PURE (no admission changes; see R3b proof comment
-  // below the loop).
-  std::vector<std::vector<atx::f64>> admitted_hold_pnls; // in admit order (R3b)
-
+  // A3: the admitted holdout PnL streams are collected ONCE into `admitted_pnls`
+  // (above) and feed the SINGLE post-loop finalize_run_pbo computation (oos_pbo now
+  // aliases rep.pbo). The separate R3b admitted_hold_pnls vector was removed — it
+  // carried identical bytes and fed a duplicate CSCV pass.
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
 
@@ -1114,8 +1118,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl);      // W4b: realized HOLDOUT PnL of an admitted alpha
-        admitted_hold_pnls.push_back(hold_pnl); // R3b: collect in admit order
+        admitted_pnls.push_back(hold_pnl);      // realized HOLDOUT PnL of an admitted alpha
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -1126,56 +1129,19 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
         static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
   }
 
-  // W4b — POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set (no-op at the 1.0
-  // default; never alters rep.digest).
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set. PURE /
+  // post-admission: runs AFTER all admission decisions; never alters rep.digest, the
+  // admitted set, or the library version_id. always_compute=true so the always-on
+  // holdout diagnostic (oos_pbo) is recorded even at the 1.0 default; the gate verdict
+  // still fail-opens when the gate is off. oos_pbo ALIASES this single computation
+  // (NaN when < 2 admitted or the holdout is too short for any split).
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true);
+  rep.oos_pbo = rep.pbo; // A3: oos_pbo aliases the single holdout PBO
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   // R1: increment once per mine run, AFTER the loop.
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
-  }
-
-  // R3b: compute the run-level CSCV PBO over the admitted alphas' holdout PnL streams.
-  // This is PURE / post-admission: it runs AFTER all admission decisions and the R1
-  // counter increment. It does NOT change rep.digest, the admitted set, or the library
-  // version_id (those are all finalized above). oos_pbo defaults to NaN (< 2 admitted
-  // or too short for any split).
-  //
-  // Matrix assembly: candidate-major layout perf[c*T_h + t] for M = admitted_hold_pnls.size()
-  // candidates over T_h = admitted_hold_pnls[0].size() periods. All holdout PnL vectors
-  // have the same length (they were all evaluated on the SAME holdout sub-panel).
-  // n_splits = largest even number <= min(T_h, 16); if < 2, skip (NaN).
-  {
-    const atx::usize M = admitted_hold_pnls.size();
-    if (M >= 2U) {
-      const atx::usize T_h = admitted_hold_pnls[0].size();
-      if (T_h >= 2U) {
-        // largest even number <= min(T_h, 16)
-        const atx::usize cap = (T_h < 16U) ? T_h : 16U;
-        const atx::usize n_splits = cap - (cap % 2U); // floor to even
-        if (n_splits >= 2U) {
-          // Assemble candidate-major perf matrix perf[c*T_h + t].
-          // All admitted hold_pnl vectors are evaluated on the SAME holdout sub-panel
-          // so their lengths MUST equal T_h. ATX_ASSERT documents the contract explicitly;
-          // it is a no-op under NDEBUG so release behavior is unchanged on the valid path.
-          std::vector<atx::f64> perf(M * T_h);
-          for (atx::usize c = 0U; c < M; ++c) {
-            const std::vector<atx::f64> &pnl = admitted_hold_pnls[c];
-            ATX_ASSERT(pnl.size() == T_h); // all admitted streams must span the same holdout panel
-            for (atx::usize t = 0U; t < T_h; ++t) {
-              perf[c * T_h + t] = pnl[t];
-            }
-          }
-          auto pbo_r = eval::pbo_cscv_checked(
-              std::span<const atx::f64>{perf}, M, n_splits);
-          if (pbo_r.has_value()) {
-            rep.oos_pbo = pbo_r->pbo;
-          }
-          // On Err (precondition miss despite our guards): leave oos_pbo NaN (clean).
-        }
-      }
-    }
   }
 
   return atx::core::Ok(std::move(rep));
@@ -1411,11 +1377,10 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first. SEQUENTIAL
   // in the parent — byte-identical to serial mine_into_oos:757-835 (same F5 drops, same
   // hold_dsr, same gate, same admit, same digest fold, same oos_metrics push).
-  // R3b: collect admitted holdout PnL streams in admit order for the post-loop PBO
-  // computation (IDENTICAL collection as serial mine_into_oos — same admit order, same
-  // hold_pnl values — guaranteeing seq==parallel PBO match by construction).
-  std::vector<std::vector<atx::f64>> admitted_hold_pnls_par; // in admit order (R3b)
-
+  // A3: the admitted holdout PnL streams are collected ONCE into `admitted_pnls` (above)
+  // in the SAME deterministic admit order as serial mine_into_oos, feeding the SINGLE
+  // post-loop finalize_run_pbo computation — this PRESERVES the seq==parallel oos_pbo
+  // match the old R3b block guaranteed (same admit-order vectors, same n_splits rule).
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
 
@@ -1478,8 +1443,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl);          // W4b: realized HOLDOUT PnL of an admitted alpha
-        admitted_hold_pnls_par.push_back(hold_pnl); // R3b: collect in admit order
+        admitted_pnls.push_back(hold_pnl);          // realized HOLDOUT PnL of an admitted alpha
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -1490,46 +1454,18 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
         static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
   }
 
-  // W4b — POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set (no-op at the 1.0
-  // default; accumulated at the SEQUENTIAL parent admit-Ok point, deterministic on every
-  // substrate + worker count). Never alters rep.digest.
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set, accumulated
+  // at the SEQUENTIAL parent admit-Ok point in the SAME deterministic admit order as serial
+  // mine_into_oos, so oos_pbo is bit-identical across substrate + worker count AND equal to
+  // the serial path. always_compute=true records the always-on holdout diagnostic even at
+  // the 1.0 default; the gate verdict fail-opens when off. Never alters rep.digest.
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true);
+  rep.oos_pbo = rep.pbo; // A3: oos_pbo aliases the single holdout PBO
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   // R1: increment once per mine run, AFTER the loop — IDENTICAL to serial mine_into_oos.
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
-  }
-
-  // R3b: compute the run-level CSCV PBO — IDENTICAL logic to serial mine_into_oos,
-  // applied to the SAME admit-order holdout PnL vectors, guaranteeing seq==parallel match.
-  {
-    const atx::usize M = admitted_hold_pnls_par.size();
-    if (M >= 2U) {
-      const atx::usize T_h = admitted_hold_pnls_par[0].size();
-      if (T_h >= 2U) {
-        const atx::usize cap = (T_h < 16U) ? T_h : 16U;
-        const atx::usize n_splits = cap - (cap % 2U); // floor to even
-        if (n_splits >= 2U) {
-          // All admitted hold_pnl vectors are evaluated on the SAME holdout sub-panel
-          // so their lengths MUST equal T_h. ATX_ASSERT documents the contract explicitly;
-          // it is a no-op under NDEBUG so release behavior is unchanged on the valid path.
-          std::vector<atx::f64> perf(M * T_h);
-          for (atx::usize c = 0U; c < M; ++c) {
-            const std::vector<atx::f64> &pnl = admitted_hold_pnls_par[c];
-            ATX_ASSERT(pnl.size() == T_h); // all admitted streams must span the same holdout panel
-            for (atx::usize t = 0U; t < T_h; ++t) {
-              perf[c * T_h + t] = pnl[t];
-            }
-          }
-          auto pbo_r = eval::pbo_cscv_checked(
-              std::span<const atx::f64>{perf}, M, n_splits);
-          if (pbo_r.has_value()) {
-            rep.oos_pbo = pbo_r->pbo;
-          }
-        }
-      }
-    }
   }
 
   return atx::core::Ok(std::move(rep));

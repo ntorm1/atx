@@ -248,16 +248,18 @@ struct FactoryReport {
   atx::usize pbo_n_candidates = 0;
   atx::usize pbo_n_splits = 0;
   bool pbo_gate_passed = true;
-  // --- R3b: run-level CSCV PBO (probability of backtest overfitting) over the
+  // --- R3b/A3: run-level CSCV PBO (probability of backtest overfitting) over the
   //  admitted alphas' holdout PnL streams for this run. SET-LEVEL statistic: one
   //  value per run (NOT per candidate). Computed AFTER all admission decisions
   //  (pure/post-admission — does NOT change which alphas are admitted, rep.digest,
   //  or the library version_id). NaN when < 2 alphas were admitted on the OOS path,
   //  or when the holdout is too short for any split, or when OOS is off (oos_fraction
   //  == 0). Never emitted on the non-accumulation path (byte-identical to pre-R3).
-  //  NOTE (merge): this DUPLICATES the W4b `pbo` statistic above with a different
-  //  n_splits rule (largest even <= min(T_h,16) vs finalize_run_pbo's clamp) and no
-  //  gate. Both are recorded; reconciling the two PBO computations is a follow-up.
+  //  A3: this is now an ALIAS of `pbo` above — on the two OOS admit paths it is set
+  //  from the SINGLE `finalize_run_pbo` computation (called with always_compute=true
+  //  so the always-on holdout diagnostic is recorded even when the gate is OFF at the
+  //  1.0 default). Its VALUE equals `rep.pbo`. Kept as a distinct field because the
+  //  manifest + kvs + factory_oos_test consume `oos_pbo` by name.
   atx::f64 oos_pbo{std::numeric_limits<atx::f64>::quiet_NaN()};
 };
 
@@ -270,8 +272,12 @@ namespace detail {
 // ADDS to the report's PBO fields. `admitted_pnls[i]` is admitted-alpha i's realized
 // OOS PnL stream (the SAME stream that was gated + persisted), in deterministic admit
 // order. Rules:
-//   * max_pbo >= 1.0 (off, the default) -> return immediately, fields stay at sentinels
-//     (NaN pbo, 0 logit/counts, gate passes) -> byte-identical legacy path.
+//   * max_pbo >= 1.0 (off, the default) AND !always_compute -> return immediately,
+//     fields stay at sentinels (NaN pbo, 0 logit/counts, gate passes) -> byte-identical
+//     legacy path. When always_compute is true the statistic is computed + recorded even
+//     at the OFF default (the always-on holdout diagnostic, oos_pbo); the gate VERDICT
+//     still FAIL-OPENS (pbo_gate_passed = true) when the gate is off — always_compute
+//     changes ONLY whether the PBO is recorded, never admission or the digest.
 //   * drop index 0 of each row (the §0-F structural zero — the same .subspan(1) /
 //     split_floor_ok convention) before forming the candidate-major matrix M[c*T + t].
 //   * require >= 2 rows of EQUAL post-drop length T (true by construction — same eval
@@ -280,12 +286,15 @@ namespace detail {
 //     auto-clamp for short panels); if < 2 -> infeasible (skip).
 //   * call eval::pbo_cscv_checked(M, n_candidates, n_splits); on Err -> infeasible
 //     (skip); on Ok -> set rep.pbo / pbo_mean_logit / pbo_n_candidates / pbo_n_splits
-//     and rep.pbo_gate_passed = !(rep.pbo > max_pbo).
+//     and rep.pbo_gate_passed = (max_pbo >= 1.0) ? true : !(rep.pbo > max_pbo)
+//     (fail-open when the gate is off-but-always_compute: the PBO is recorded but the
+//     gate passes — a run is never failed merely for the gate being off).
 // Declared so a unit test can verify the verdict on hand-built admitted_pnls (the same
 // single-source-of-truth testability the W4a detail::split_half_sharpe helper has).
 void finalize_run_pbo(FactoryReport &rep,
                       const std::vector<std::vector<atx::f64>> &admitted_pnls,
-                      atx::f64 max_pbo);
+                      atx::f64 max_pbo,
+                      bool always_compute = false);
 
 } // namespace detail
 

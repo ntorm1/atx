@@ -656,11 +656,14 @@ atx::core::Result<StageResult> run_discover_gated(
                 mf << "oos_pbo="  << rep.oos_pbo  << '\n';
             }
         }
-        // W4b: run-level CSCV-PBO verdict line — emitted ONLY when PBO was actually
-        // computed (the gate was active AND the admitted set was feasible), gated on
-        // std::isfinite(rep.pbo) so the OFF-path manifest is byte-identical (mirrors the
-        // OOS-only header discipline above). rep.pbo == NaN (off / infeasible) -> no line.
-        if (std::isfinite(rep.pbo)) {
+        // W4b/A3: run-level CSCV-PBO gate-context line — emitted ONLY when the gate is
+        // ACTIVELY enabled (cfg.max_pbo < 1.0) AND the PBO was computed/feasible. A3:
+        // the OOS paths now compute rep.pbo even at the 1.0 default (always_compute, for
+        // the oos_pbo alias), so std::isfinite(rep.pbo) alone would emit this line — and
+        // duplicate the oos_pbo= value — on every default OOS run. The cfg.max_pbo < 1.0
+        // guard keeps the default manifest minimal: the always-on diagnostic is the
+        // oos_pbo= line above; this line is the gate-context line only when the gate is on.
+        if (std::isfinite(rep.pbo) && cfg.max_pbo < 1.0) {
             mf << "run_pbo="          << rep.pbo
                << " pbo_gate="        << (rep.pbo_gate_passed ? "pass" : "FAIL")
                << " pbo_n_candidates="<< rep.pbo_n_candidates
@@ -700,7 +703,7 @@ atx::core::Result<StageResult> run_discover_gated(
     // impossible — PBO is a post-hoc property of the already-grown admitted set); the
     // recorded verdict (manifest run_pbo / pbo_gate) + this warning ARE the gate. stderr
     // (not stdout) so it never pollutes the stage/factory digests.
-    if (std::isfinite(rep.pbo) && !rep.pbo_gate_passed) {
+    if (std::isfinite(rep.pbo) && cfg.max_pbo < 1.0 && !rep.pbo_gate_passed) {
         (void)std::fprintf(stderr,
             "[W4b PBO gate] WARNING: run-level CSCV-PBO=%.4f EXCEEDS --max-pbo=%.4f over "
             "%zu admitted alpha(s) (n_splits=%zu). The admitted SET shows backtest-overfit "

@@ -956,4 +956,84 @@ TEST(FactoryOos, R3b_PboNanWithOneAdmit) {
   }
 }
 
+// ---------------------------------------------------------------------------
+//  R3b_OosPboEqualsRunPboAndGateCapable (A3) — proves the reconciliation: the
+//  always-on holdout diagnostic `oos_pbo` is now an ALIAS of the single
+//  gate-capable `pbo` computation, computed via always_compute even when the gate
+//  is OFF at the 1.0 default.
+//
+//  (a) DEFAULT max_pbo (1.0): oos_pbo == pbo, both finite in [0,1], and the gate
+//      verdict FAIL-OPENS (pbo_gate_passed == true) — recorded but never failing.
+//  (b) SAME seed/panel with max_pbo set JUST BELOW run (a)'s observed pbo: the
+//      gate verdict flips to FALSE (a real breach) AND rep.digest is UNCHANGED
+//      vs run (a) — the gate records + warns but never alters admission.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, R3b_OosPboEqualsRunPboAndGateCapable) {
+  GateConfig gc;
+  gc.min_sharpe    = 0.0;
+  gc.min_fitness   = 0.0;
+  gc.max_turnover  = 10.0;
+  gc.max_pool_corr = 1.0; // allow fully correlated — maximize admitted count
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 7);
+  cfg.oos_fraction = 0.20;
+  cfg.min_dsr = 0.0; // permissive deflation bar so >= 2 admit
+
+  // (a) DEFAULT (gate OFF) run.
+  Fixture fx_a{real_signal_panel()};
+  lib::Library lib_a = lib::Library::open(tmpdir("a3_pbo_default"), gc, {0xC0FFEEu});
+  Factory f_a = fx_a.factory();
+  const FactoryReport rep_a = f_a.mine_into(cfg, lib_a, gate).value();
+
+  ASSERT_GE(rep_a.admitted, 2U)
+      << "fixture must admit >= 2 so the PBO cross-section is feasible; got "
+      << rep_a.admitted;
+
+  // oos_pbo is the ALIAS of pbo (bit-identical), both finite in [0, 1].
+  ASSERT_TRUE(std::isfinite(rep_a.pbo)) << "pbo must be computed at the default via always_compute";
+  EXPECT_EQ(rep_a.oos_pbo, rep_a.pbo) << "A3: oos_pbo must equal rep.pbo exactly (alias)";
+  EXPECT_GE(rep_a.pbo, 0.0);
+  EXPECT_LE(rep_a.pbo, 1.0);
+  // Gate is OFF (1.0 default) -> verdict FAIL-OPENS even though pbo is recorded.
+  EXPECT_TRUE(rep_a.pbo_gate_passed)
+      << "with the gate OFF (max_pbo=1.0) the verdict must fail-open (recorded but passing)";
+
+  // (b) SAME seed/panel, gate set JUST BELOW run (a)'s pbo so the gate must FAIL.
+  // Pick a threshold strictly less than the observed pbo. If pbo == 0 (no overfit
+  // detected), no finite threshold below 0 is valid for the '>' gate, so fall back
+  // to asserting verdict consistency at max_pbo = 0.5 (the brief's accepted alt).
+  FactoryConfig cfg_b = cfg;
+  if (rep_a.pbo > 0.0) {
+    cfg_b.max_pbo = std::nextafter(rep_a.pbo, 0.0); // largest double strictly below pbo
+  } else {
+    cfg_b.max_pbo = 0.5; // pbo==0 path: gate can't be breached; assert consistency instead
+  }
+
+  Fixture fx_b{real_signal_panel()};
+  lib::Library lib_b = lib::Library::open(tmpdir("a3_pbo_gated"), gc, {0xC0FFEEu});
+  Factory f_b = fx_b.factory();
+  const FactoryReport rep_b = f_b.mine_into(cfg_b, lib_b, gate).value();
+
+  // The digest is UNCHANGED across the gate setting — PBO never touches admission.
+  EXPECT_EQ(rep_b.digest, rep_a.digest)
+      << "rep.digest must be invariant across the gate setting (PBO is report-only)";
+  EXPECT_EQ(rep_b.admitted, rep_a.admitted)
+      << "admitted count must be invariant across the gate setting";
+  // oos_pbo still aliases pbo on the gated run (same data -> same value).
+  EXPECT_EQ(rep_b.oos_pbo, rep_b.pbo) << "A3: oos_pbo aliases pbo on the gated run too";
+  EXPECT_EQ(rep_b.pbo, rep_a.pbo)
+      << "same seed/panel -> identical pbo regardless of the (report-only) gate threshold";
+
+  // Gate verdict: the breach is real when max_pbo < pbo; otherwise verdict is
+  // consistent with pbo <= max_pbo (fail-open).
+  if (rep_a.pbo > 0.0) {
+    EXPECT_FALSE(rep_b.pbo_gate_passed)
+        << "max_pbo just below the observed pbo must FAIL the (advisory) gate";
+  } else {
+    EXPECT_EQ(rep_b.pbo_gate_passed, !(rep_b.pbo > cfg_b.max_pbo))
+        << "gate verdict must be consistent with pbo <= max_pbo";
+  }
+}
+
 } // namespace atxtest_factory_oos_test
