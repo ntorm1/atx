@@ -25,6 +25,9 @@
 #include "config.hpp"
 #include "stages.hpp"
 
+#include "atx/engine/combine/gate.hpp"       // combine::GateConfig (A1 library readback)
+#include "atx/engine/library/library.hpp"    // library::Library, n_alphas (A1 library readback)
+
 #include "orats_fixture.hpp"
 
 namespace atx_impl_e2e {
@@ -187,6 +190,9 @@ static ::testing::AssertionResult run_staged(const atx::impl::RunConfig& base_cf
     atx::impl::RunConfig c_disc = cfg;
     c_disc.panel     = (fs::path{work} / "panel.bin").string();
     c_disc.alpha_out = (fs::path{work} / "alphas").string();
+    // A1 — mirror run_all's library accumulation wiring so staged == run.
+    c_disc.gated       = true;
+    c_disc.library_dir = (fs::path{work} / "_library").string();
     auto r_disc = atx::impl::run_discover(c_disc);
     if (!r_disc.has_value())
         return ::testing::AssertionFailure() << "run_discover: " << r_disc.error().message();
@@ -197,6 +203,8 @@ static ::testing::AssertionResult run_staged(const atx::impl::RunConfig& base_cf
     c_comb.panel     = (fs::path{work} / "panel.bin").string();
     c_comb.alphas    = (fs::path{work} / "alphas").string();
     c_comb.combo_out = (fs::path{work} / "combo.bin").string();
+    // A1 — feed combine from the same accumulated library (mirrors run_all).
+    c_comb.library_dir = c_disc.library_dir;
     auto r_comb = atx::impl::run_combine(c_comb);
     if (!r_comb.has_value())
         return ::testing::AssertionFailure() << "run_combine: " << r_comb.error().message();
@@ -410,6 +418,61 @@ TEST_F(AtxImplE2E, ReportBytesDeterministic) {
         EXPECT_FALSE(da.empty()) << tsv << " (run A) is empty";
         EXPECT_EQ(da, db) << tsv << " is not byte-identical across two runs (R8 violation)";
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: RunAccumulatesLibraryAndCombineConsumesIt (A1)
+// Proves the run_all wiring:
+//   (a) <work>/_library exists and the persisted library has >= 1 admitted
+//       record (accumulation actually happened — non-vacuous),
+//   (b) combine consumed the library: the combine stage's reported alpha count
+//       equals the library's n_alphas() (library-sourced input, not the loose
+//       .dsl fallback).
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplE2E, RunAccumulatesLibraryAndCombineConsumesIt) {
+    namespace library = atx::engine::library;
+    namespace combine = atx::engine::combine;
+
+    const fs::path work   = make_work_dir("a1_lib_work");
+    const fs::path report = make_work_dir("a1_lib_report");
+
+    atx::impl::RunConfig cfg =
+        make_base_cfg(s_zip_, work.string(), report.string());
+
+    auto result = atx::impl::run_all(cfg);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+
+    // (a) The accumulation library dir exists.
+    const fs::path lib_dir = work / "_library";
+    ASSERT_TRUE(fs::exists(lib_dir)) << "missing accumulation library dir <work>/_library";
+
+    // Open the persisted library read-only and read its admitted-record count.
+    library::Library lib =
+        library::Library::open(lib_dir.string(), combine::GateConfig{}, {});
+    const atx::u64 n_lib = lib.n_alphas();
+    ASSERT_GE(n_lib, atx::u64{1})
+        << "library accumulation did not admit any alpha (accumulation never happened)";
+
+    // (b) Combine consumed the library: the combine stage's reported alpha count
+    //     equals the library record count. Re-run combine standalone against the
+    //     SAME library to read its "alphas" kv (run_all does not surface per-stage
+    //     kvs, only digests).
+    atx::impl::RunConfig c_comb = cfg;
+    c_comb.subcommand  = "combine";
+    c_comb.panel       = (work / "panel.bin").string();
+    c_comb.alphas      = (work / "alphas").string(); // harmless fallback (ignored on the library path)
+    c_comb.library_dir = lib_dir.string();
+    c_comb.combo_out   = (work / "combo_a1_check.bin").string();
+    auto r_comb = atx::impl::run_combine(c_comb);
+    ASSERT_TRUE(r_comb.has_value()) << r_comb.error().message();
+
+    int combine_alphas = -1;
+    for (const auto& p : r_comb->kvs) {
+        if (p.first == "alphas") { combine_alphas = std::stoi(p.second); break; }
+    }
+    ASSERT_GE(combine_alphas, 1) << "combine reported no library-sourced alphas";
+    EXPECT_EQ(static_cast<atx::u64>(combine_alphas), n_lib)
+        << "combine alpha count must equal library n_alphas() (library-sourced input)";
 }
 
 } // namespace atx_impl_e2e

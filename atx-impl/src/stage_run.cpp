@@ -50,6 +50,21 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     RunConfig c_disc = cfg;
     c_disc.panel     = (work / "panel.bin").string();
     c_disc.alpha_out = (work / "alphas").string();
+    // A1 — route the default pipeline through library accumulation. The
+    // accumulation/library machinery lives entirely in run_discover_gated, which
+    // run_discover only enters when cfg.gated is true (stage_discover.cpp:880);
+    // the ungated top-N path never touches library_dir. So we must turn ON the
+    // quality gate AND point it at a stable library dir:
+    //   * gated => route through factory::Factory::mine_into + AlphaGate floors
+    //     + the persistent library::Library (the mega-alpha database).
+    //   * library_dir non-empty => accumulate (accumulate ==
+    //     !cfg.library_dir.empty(), stage_discover.cpp:385) instead of a per-run
+    //     wipe, AND auto-enable OOS-default admission of 0.25 (eff_oos_fraction,
+    //     stage_discover.cpp:397-400) because run_all does not set --oos-fraction.
+    // accumulate keys off library_dir (NOT set_flags), so no set_flags insert is
+    // needed; an explicit user --oos-fraction still overrides the 0.25 default.
+    c_disc.gated       = true;
+    c_disc.library_dir = (work / "_library").string();
     ATX_TRY(auto d_disc, run_discover(c_disc));
 
     // 4. combine
@@ -57,6 +72,11 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     c_comb.panel     = (work / "panel.bin").string();
     c_comb.alphas    = (work / "alphas").string();
     c_comb.combo_out = (work / "combo.bin").string();
+    // A1 — feed combine from the SAME accumulated library. With library_dir set,
+    // run_combine takes the from_library branch (stage_combine.cpp:73),
+    // enumerating admitted records by AlphaId; the loose c_comb.alphas above
+    // becomes an ignored harmless fallback (left as-is intentionally).
+    c_comb.library_dir = c_disc.library_dir;
     ATX_TRY(auto d_comb, run_combine(c_comb));
 
     // 5. optimize
