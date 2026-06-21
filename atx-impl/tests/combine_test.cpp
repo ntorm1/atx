@@ -1060,4 +1060,216 @@ TEST(AtxImplCombine, HoldoutFracOutOfRangeRejected) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// D1.2 Test 1: ConvictionAbsentIsDefaultPath
+// Asserts cfg.conviction defaults to false and that a run without --conviction
+// produces the same combo.bin digest as the default path. The pre-existing
+// DeterministicAcrossRuns test is the primary byte-identical proof; this test
+// pins the field default and confirms the no-conviction path is unperturbed.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, ConvictionAbsentIsDefaultPath) {
+    namespace fs = std::filesystem;
+
+    // (a) cfg.conviction must default to false (field default).
+    atx::impl::RunConfig default_cfg;
+    EXPECT_FALSE(default_cfg.conviction)
+        << "cfg.conviction must default to false";
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "cvt_absent");
+    const std::string alphas_dir = write_alpha_dir("cvt_absent", safe_dsls());
+    const std::string combo_default =
+        (fs::temp_directory_path() / "atx_impl_combine_cvt_absent_default.bin").string();
+    const std::string combo_false =
+        (fs::temp_directory_path() / "atx_impl_combine_cvt_absent_false.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (b) Default (conviction not set) run.
+    cfg.combo_out = combo_default;
+    auto r_default = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_default.has_value()) << r_default.error().message();
+
+    // (c) Explicit conviction == false run — must be byte-identical to (b).
+    cfg.conviction = false;
+    cfg.combo_out  = combo_false;
+    auto r_false = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_false.has_value()) << r_false.error().message();
+
+    EXPECT_EQ(r_default->digest, r_false->digest)
+        << "explicit conviction=false must be byte-identical to the default (no-flag) path";
+    EXPECT_NE(r_default->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_bytes(combo_default), read_bytes(combo_false))
+        << "combo.bin files must be byte-identical when conviction is absent vs false";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_default, combo_false}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D1.2 Test 2: ConvictionScalesWeightsWhenEnabled
+// Run combine TWICE on the same 3-alpha fixture: once with conviction=false,
+// once with conviction=true. Assert:
+//   (a) Both succeed.
+//   (b) Σ|w| == 1 (within 1e-9) for the conviction run (renorm held).
+//   (c) The conviction weight vector DIFFERS from the default vector
+//       (the transform is non-vacuous on a fixture with 3 alphas of
+//       clearly different PnL quality from the noisy-close panel).
+// The fixture uses shrinkage-mv so the base weights are non-uniform.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, ConvictionScalesWeightsWhenEnabled) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "cvt_scales");
+    const std::string alphas_dir = write_alpha_dir("cvt_scales", safe_dsls());
+    const std::string combo_off =
+        (fs::temp_directory_path() / "atx_impl_combine_cvt_off.bin").string();
+    const std::string combo_on =
+        (fs::temp_directory_path() / "atx_impl_combine_cvt_on.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (a) conviction OFF.
+    cfg.conviction = false;
+    cfg.combo_out  = combo_off;
+    auto r_off = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_off.has_value()) << r_off.error().message();
+
+    // (b) conviction ON.
+    cfg.conviction = true;
+    cfg.combo_out  = combo_on;
+    auto r_on = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_on.has_value()) << r_on.error().message();
+
+    // Verify Σ|w| == 1 for the conviction run by reading the weights sidecar.
+    // The sidecar format is "w[a]=<value> <label>\n".
+    {
+        const std::string wpath = combo_on + ".weights.txt";
+        std::ifstream wf{wpath};
+        ASSERT_TRUE(wf.is_open()) << "weights sidecar must exist for conviction run";
+        f64 gross = 0.0;
+        int n_weights = 0;
+        std::string line;
+        while (std::getline(wf, line)) {
+            const std::string prefix = "w[";
+            if (line.rfind(prefix, 0) == 0) {
+                const auto eq = line.find('=');
+                const auto sp = line.find(' ', eq);
+                const std::string val_str = line.substr(eq + 1, sp - eq - 1);
+                const f64 w = std::stod(val_str);
+                gross += std::abs(w);
+                ++n_weights;
+            }
+        }
+        EXPECT_EQ(n_weights, 3) << "fixture has 3 alphas";
+        // The sidecar uses default stream precision (~6 sig figs), so round-tripping
+        // through text introduces ~1e-6 error. A tolerance of 1e-4 is tight enough
+        // to confirm renorm ran (a non-renormed vector could easily be off by 0.3+)
+        // while allowing for the text-serialization rounding.
+        EXPECT_NEAR(gross, 1.0, 1e-4) << "Σ|w| must == 1 after conviction renorm";
+    }
+
+    // The conviction run must produce a DIFFERENT combined panel from the default.
+    EXPECT_NE(r_on->digest, r_off->digest)
+        << "conviction=true must change the combined panel vs the default (non-vacuous transform)";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_off, combo_on}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D1.2 Test 3: ConvictionRunIsDeterministic
+// Run combine --conviction TWICE on the same fixture -> byte-identical combo
+// output (proves the conviction math is deterministic: no map iteration order,
+// no UB, no NaN-ordering, no RNG).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, ConvictionRunIsDeterministic) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "cvt_det");
+    const std::string alphas_dir = write_alpha_dir("cvt_det", safe_dsls());
+    const std::string combo1 =
+        (fs::temp_directory_path() / "atx_impl_combine_cvt_det1.bin").string();
+    const std::string combo2 =
+        (fs::temp_directory_path() / "atx_impl_combine_cvt_det2.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+    cfg.conviction = true;
+
+    cfg.combo_out = combo1;
+    auto r1 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r1.has_value()) << r1.error().message();
+
+    cfg.combo_out = combo2;
+    auto r2 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+    EXPECT_EQ(r1->digest, r2->digest)
+        << "conviction combine must be deterministic (twice-run identical digest)";
+    EXPECT_NE(r1->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    const auto bytes1 = read_bytes(combo1);
+    const auto bytes2 = read_bytes(combo2);
+    EXPECT_FALSE(bytes1.empty()) << "conviction combo1 must not be empty";
+    EXPECT_EQ(bytes1, bytes2) << "conviction combo.bin files must be byte-identical";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo1, combo2}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
 } // namespace atxtest_combine

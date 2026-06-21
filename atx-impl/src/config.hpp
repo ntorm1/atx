@@ -180,6 +180,11 @@ struct RunConfig {
     // positive --capacity-floor) opts into de-correlation / capacity scaling.
     double      corr_penalty   = 0.0; // --corr-penalty   (0 = disabled = passthrough)
     double      capacity_floor = 0.0; // --capacity-floor (<=0 = capacity scaling off)
+    // --conviction (D1.2, opt-in): after the combiner fits, scale each alpha's weight by a
+    // per-alpha conviction score computed AT COMBINE TIME from that alpha's own PnL stream
+    // (deflated-Sharpe probability + first/second-half Sharpe stability), then renormalize
+    // Σ|w|=1. Default false => the gated block is skipped and combo.bin is byte-identical.
+    bool        conviction = false;  // --conviction
 
     // -- optimize --
     std::string combo;                 // --combo

@@ -27,6 +27,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "digest-only")    { cfg.digest_only   = true; return atx::core::Ok(); }
     if (flag == "gated")          { cfg.gated         = true; return atx::core::Ok(); }
     if (flag == "sector-neutral") { cfg.sector_neutral = true; return atx::core::Ok(); }
+    if (flag == "conviction")     { cfg.conviction     = true; return atx::core::Ok(); }
     if (flag == "position-mode")  { cfg.position_mode  = true; return atx::core::Ok(); }
     if (flag == "resume")         { cfg.resume         = true; return atx::core::Ok(); }
     if (flag == "exclude-no-sector") { cfg.exclude_no_sector = true; return atx::core::Ok(); }
@@ -267,7 +268,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op") {
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op") {
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;

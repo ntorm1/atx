@@ -19,10 +19,15 @@
 #include "atx/engine/alpha/streams.hpp"        // alpha::extract_streams, alpha::AlphaStreams
 #include "atx/engine/alpha/vm.hpp"             // alpha::Engine
 #include "atx/engine/combine/combiner.hpp"     // combine::AlphaCombiner, CombinerConfig, CombineMethod, Combination
+#include "atx/engine/combine/conviction.hpp"   // combine::conviction, ConvictionScore, ConvictionConfig, ExplainFlag
 #include "atx/engine/combine/crowding.hpp"     // combine::decorrelate_weights, CrowdingConfig (9.2)
 #include "atx/engine/combine/gate.hpp"         // combine::GateConfig (library open, 8.B)
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics
 #include "atx/engine/combine/store.hpp"        // combine::AlphaStore
+#include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
+#include "atx/engine/eval/pbo.hpp"             // eval::PboResult (full def needed to construct zero value)
+#include "atx/engine/eval/perf_metrics.hpp"    // eval::compute_return_metrics, ReturnMetricsCfg, ReturnMetrics
+#include "atx/engine/eval/stats_ext.hpp"       // eval::mean_std_pop (MeanStd), skewness, excess_kurtosis
 #include "atx/engine/library/library.hpp"      // library::Library, AlphaId, AlphaRecordView (8.B)
 #include "atx/engine/loop/weight_policy.hpp"   // engine::WeightPolicy
 
@@ -239,7 +244,67 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
 
     ATX_TRY(auto combo, combiner.fit(pool, fit_begin, fit_end));
 
-    // 8b. (9.2) Opt-in crowding de-correlation: a post-fit transform that shrinks
+    // 8b. (D1.2) Opt-in conviction weighting: a post-fit transform that scales each
+    //     alpha's fitted weight by a per-alpha conviction score computed AT COMBINE TIME
+    //     from that alpha's own PnL stream (deflated-Sharpe probability + first/second-half
+    //     Sharpe stability), then renormalizes Σ|w|=1. Default (cfg.conviction == false)
+    //     skips this block entirely — combo.weights are untouched and the output is
+    //     byte-identical to today. The conviction math runs ONLY inside this if-block.
+    if (cfg.conviction) {
+        namespace ce = atx::engine::combine;
+        namespace ev = atx::engine::eval;
+        const atx::usize na = pool.n_alphas();
+
+        // Drop the PBO term (PBO is a per-RUN set statistic, NOT a per-alpha input we
+        // have here) and renormalize the remaining weights to sum to 1:
+        // conviction = w_dsr*DSR + w_stability*ratio.
+        ce::ConvictionConfig ccfg{};
+        const atx::f64 wsum = ccfg.w_dsr + ccfg.w_stability;
+        ccfg.w_dsr       = ccfg.w_dsr / wsum;
+        ccfg.w_stability = ccfg.w_stability / wsum;
+        ccfg.w_pbo       = 0.0;
+
+        ev::ReturnMetricsCfg rmc{};  // default convention (periods_per_year = 252)
+        for (atx::usize a = 0; a < na; ++a) {
+            const std::span<const atx::f64> pnl = pool.pnl(ce::AlphaId{static_cast<atx::u32>(a)});
+            const atx::usize T = pnl.size();
+
+            // (1) DSR from the alpha's own PnL — mirror score_arm (cluster_eval.hpp:562-577):
+            //     per-period sr_pp = mean/std_pop over r = pnl[1..T), REAL skew/excess-kurtosis,
+            //     N = na (selection inflation across the na-alpha book we are combining).
+            ev::DsrResult dsr{};
+            if (T > 1U) {
+                const std::span<const atx::f64> r{pnl.data() + 1, T - 1U};
+                const atx::f64 skew = ev::skewness(r);
+                const atx::f64 exk  = ev::excess_kurtosis(r);
+                const ev::MeanStd ms = ev::mean_std_pop(r);
+                const atx::f64 sr_pp = (ms.std > 0.0) ? ms.mean / ms.std : 0.0;
+                dsr = ev::deflated_sharpe(sr_pp, r.size(), skew, exk,
+                                          /*N=*/std::max<atx::usize>(na, 1), std::nullopt);
+            }
+
+            // (2) First/second-half Sharpe stability ratio (annualized sharpe via compute_return_metrics).
+            atx::f64 ratio = 0.0;
+            if (T >= 4U) {
+                const atx::usize mid = T / 2;
+                const atx::f64 sh1 = ev::compute_return_metrics(pnl.subspan(0, mid), rmc).sharpe;
+                const atx::f64 sh2 = ev::compute_return_metrics(pnl.subspan(mid), rmc).sharpe;
+                if (std::isfinite(sh1) && std::isfinite(sh2) && std::fabs(sh1) > 1e-9) {
+                    ratio = sh2 / sh1;
+                }
+            }
+
+            // w_pbo == 0.0 so the pbo field is unused; construct a valid zero PboResult.
+            const ev::PboResult pbo{/*pbo=*/0.0, /*split_logits=*/{}, /*mean_logit=*/0.0};
+            const ce::ConvictionScore cs =
+                ce::conviction(dsr, pbo, ratio, ce::ExplainFlag::PartlyExplained, ccfg);
+            combo.weights[a] *= cs.score;
+        }
+        // Renormalize so Σ|w| = 1 (gross-exposure target maintained).
+        ce::detail::renorm_abs_sum(combo.weights);
+    }
+
+    // 8c. (9.2) Opt-in crowding de-correlation: a post-fit transform that shrinks
     //     each fitted weight by how mutually correlated its alpha is with the rest
     //     of the pool (corr_penalty) and, optionally, by how capacity-limited the
     //     name is (capacity_floor). Both knobs default 0.0 -> the engine's EXACT
