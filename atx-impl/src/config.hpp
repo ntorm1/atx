@@ -160,6 +160,14 @@ struct RunConfig {
     std::set<std::string> set_flags;
 };
 
+// Read a seed-file in `<id>: <dsl>` format (same as alpha101.txt).
+// Lines whose first non-whitespace char is '#' are comments; blank lines and
+// lines with no ':' or an empty DSL remainder are skipped. Returns the
+// collected DSL strings in file order. Returns Err(IoError) if the file
+// cannot be opened, Err(InvalidArgument) if the file yields zero templates.
+[[nodiscard]] atx::core::Result<std::vector<std::string>>
+read_seed_file(const std::string& path);
+
 // Parse CLI arguments.
 // argv[1] is the subcommand (or --help/-h).
 // Returns Err(InvalidArgument) on unknown flag/subcommand.

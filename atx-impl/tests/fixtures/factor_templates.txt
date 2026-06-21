@@ -1,0 +1,43 @@
+# Economic factor templates for alpha-discovery GA warm-start (W3).
+# Format: `<id>: <dsl-expression>`. Lines beginning with '#' are comments.
+# All expressions are valid atx DSL (parse + analyze clean against the
+# discovery Library). Fields used: returns, close, high, low, sector.
+# Ops used: ts_std, ts_mean, ts_max, signedpower, zscore, rank,
+#            group_neutralize, vec_avg (all in registry.cpp).
+
+# ---- Low-volatility anomaly --------------------------------------------------
+# Low-vol: short high-volatility stocks (negative sign -> low-vol is long)
+lv1: -1 * ts_std(returns, 20)
+
+# Low-vol conditioned: sector-neutral + signed-power shaping
+lv2: group_neutralize(signedpower(zscore(-1 * ts_std(returns, 20)), 2), sector)
+
+# ---- 12-1 momentum (skip most-recent month) ----------------------------------
+# 12-1 momentum: 252-day trailing mean minus most-recent 21-day mean
+mom1: ts_mean(returns, 252) - ts_mean(returns, 21)
+
+# 12-1 momentum, sector-neutral
+mom2: group_neutralize(ts_mean(returns, 252) - ts_mean(returns, 21), sector)
+
+# ---- 52-week-high proximity --------------------------------------------------
+# 52-week-high: close relative to trailing 252-day max (George & Hwang 2004)
+h521: close / ts_max(close, 252)
+
+# 52-week-high, cross-sectionally z-scored
+h522: zscore(close / ts_max(close, 252))
+
+# ---- Long-term reversal ------------------------------------------------------
+# Long-term reversal: contrarian bet on prior 3-year return
+ltr1: -1 * ts_mean(returns, 756)
+
+# Long-term reversal, rank-transformed
+ltr2: rank(-1 * ts_mean(returns, 756))
+
+# ---- BAB (Betting Against Beta) via vec_avg ----------------------------------
+# BAB: long low-beta instruments (below cross-sectional avg vol), short high-beta
+# vec_avg broadcasts the cross-sectional mean of ts_std over all instruments;
+# subtracting it yields a zero-mean long-short signal (negative sign: long low-vol)
+bab1: -1 * (ts_std(returns, 252) - vec_avg(ts_std(returns, 252)))
+
+# BAB sector-neutral variant
+bab2: group_neutralize(-1 * (ts_std(returns, 252) - vec_avg(ts_std(returns, 252))), sector)

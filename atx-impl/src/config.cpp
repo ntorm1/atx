@@ -64,6 +64,23 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     // Repeatable string flag
     if (flag == "seed-expr")    { cfg.seed_exprs.emplace_back(value); return atx::core::Ok(); }
 
+    // --seed-file <path>: read a `<id>: <dsl>` template library and append all
+    // valid DSL strings (in file order, after any existing --seed-expr entries).
+    // Fail-closed: unreadable path -> Err; zero valid templates -> Err.
+    if (flag == "seed-file") {
+        auto dsls_r = read_seed_file(std::string(value));
+        if (!dsls_r) return atx::core::Err(std::move(dsls_r).error());
+        if (dsls_r->empty()) {
+            return atx::core::Err(EC::InvalidArgument,
+                std::string("--seed-file '") + std::string(value)
+                + "': file contains no valid template lines");
+        }
+        for (auto& dsl : *dsls_r) {
+            cfg.seed_exprs.emplace_back(std::move(dsl));
+        }
+        return atx::core::Ok();
+    }
+
     // --weight-transform (W1a): the book's cross-sectional transform. Lowercased,
     // then validated against the closed {rank,zscore,raw} taxonomy (reject anything
     // else with a clear error). Default "rank" reproduces engine::WeightPolicy{}.
@@ -327,6 +344,70 @@ atx::core::Status merge_config_file(RunConfig& base, const std::string& path) {
     // applying file flags mutates base.set_flags as we go.
     const std::set<std::string> skip = base.set_flags;
     return read_config_file_into(base, path, skip);
+}
+
+// ---------------------------------------------------------------------------
+// read_seed_file
+// ---------------------------------------------------------------------------
+// Format mirrors read_alpha_fixture (atx-impl/tests/alpha101_support.hpp:66-96):
+//   - Lines whose first non-whitespace char is '#' are comments (skip).
+//   - Blank lines are skipped.
+//   - Each remaining line is split on the FIRST ':'; the DSL is the trimmed
+//     remainder.  Lines with no ':' or an empty DSL after trim are skipped.
+//   - The <id> prefix is informational only; it is discarded.
+// Returns Err(IoError) if the file cannot be opened.
+// Returns Err(InvalidArgument) if the file yields zero valid template lines.
+atx::core::Result<std::vector<std::string>>
+read_seed_file(const std::string& path) {
+    using EC = atx::core::ErrorCode;
+
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        return atx::core::Err(EC::IoError,
+            "read_seed_file: cannot open '" + path + "'");
+    }
+
+    std::vector<std::string> out;
+    std::string line;
+    while (std::getline(in, line)) {
+        // Strip trailing CR (Windows CRLF).
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+
+        // Find first non-whitespace character.
+        std::size_t b = 0;
+        while (b < line.size() &&
+               (line[b] == ' ' || line[b] == '\t')) {
+            ++b;
+        }
+
+        // Skip blank lines and comment lines.
+        if (b == line.size() || line[b] == '#') continue;
+
+        // Split on the first ':'.
+        const std::size_t colon = line.find(':', b);
+        if (colon == std::string::npos) continue;   // no colon — skip
+
+        // Trim leading whitespace from DSL.
+        std::size_t s = colon + 1;
+        while (s < line.size() && (line[s] == ' ' || line[s] == '\t')) ++s;
+
+        // Trim trailing whitespace from DSL.
+        std::size_t e = line.size();
+        while (e > s && (line[e-1] == ' ' || line[e-1] == '\t' ||
+                         line[e-1] == '\r' || line[e-1] == '\n')) {
+            --e;
+        }
+
+        if (s >= e) continue;  // empty DSL — skip
+
+        out.emplace_back(line.substr(s, e - s));
+    }
+
+    if (out.empty()) {
+        return atx::core::Err(EC::InvalidArgument,
+            "read_seed_file: '" + path + "' contains no valid template lines");
+    }
+    return atx::core::Ok(std::move(out));
 }
 
 } // namespace atx::impl
