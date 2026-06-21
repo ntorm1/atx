@@ -186,6 +186,11 @@ struct RunConfig {
     // Σ|w|=1. Default false => the gated block is skipped and combo.bin is byte-identical.
     bool        conviction = false;  // --conviction
 
+    // --walk-forward <k> (D3b, opt-in): when k>=1, run an expanding-window k-fold walk-forward re-fit of
+    // the combiner over [fit_begin, np) and RECORD each fold's OOS Sharpe + their mean as telemetry. The
+    // shipped combo.bin is unchanged (WF re-fits are scratch). Default 0 = off => byte-identical, no extra work.
+    long        walk_forward = 0;    // --walk-forward
+
     // -- optimize --
     std::string combo;                 // --combo
     std::string books_out;             // --books-out

@@ -178,6 +178,11 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "patience")        return parse_long(cfg.patience);
     if (flag == "fit-begin")         return parse_long(cfg.fit_begin);
     if (flag == "fit-end")           return parse_long(cfg.fit_end);
+    if (flag == "walk-forward") {
+        ATX_TRY_VOID(parse_long(cfg.walk_forward));
+        if (cfg.walk_forward < 0) cfg.walk_forward = 0;  // negative -> clamp to off
+        return atx::core::Ok();
+    }
     if (flag == "holdout-frac") {
         ATX_TRY_VOID(parse_double(cfg.combine_holdout_frac));
         if (cfg.combine_holdout_frac < 0.0 || cfg.combine_holdout_frac >= 1.0) {

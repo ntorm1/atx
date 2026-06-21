@@ -16,6 +16,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1420,6 +1421,258 @@ TEST(AtxImplCombine, BreadthDeterministicAndDigestUnchanged) {
     const auto bytes2 = read_bytes(combo2);
     EXPECT_FALSE(bytes1.empty()) << "combo1 must not be empty";
     EXPECT_EQ(bytes1, bytes2)    << "combo.bin files must be byte-identical across runs";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo1, combo2}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D3b Test 1: WalkForwardOffIsByteIdentical
+// combine WITHOUT --walk-forward (cfg.walk_forward default 0): assert combo.bin
+// bytes are identical to the baseline run AND no walk_forward_* keys are present.
+// Also assert cfg.walk_forward defaults to 0.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, WalkForwardOffIsByteIdentical) {
+    namespace fs = std::filesystem;
+
+    // (a) cfg.walk_forward must default to 0 (field default).
+    atx::impl::RunConfig default_cfg;
+    EXPECT_EQ(default_cfg.walk_forward, 0L) << "cfg.walk_forward must default to 0";
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path  = write_panel_tmp(panel, "wf_off");
+    const std::string alphas_dir  = write_alpha_dir("wf_off", safe_dsls());
+    const std::string combo_base  =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_off_base.bin").string();
+    const std::string combo_zero  =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_off_zero.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (b) Baseline: walk_forward not set (stays 0 by default).
+    cfg.combo_out = combo_base;
+    auto r_base = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_base.has_value()) << r_base.error().message();
+
+    // (c) Explicit walk_forward == 0 — must be byte-identical to baseline.
+    cfg.walk_forward = 0;
+    cfg.combo_out    = combo_zero;
+    auto r_zero = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_zero.has_value()) << r_zero.error().message();
+
+    // Digest equality + byte-identity.
+    EXPECT_EQ(r_base->digest, r_zero->digest)
+        << "walk_forward=0 must be byte-identical to the default (no-flag) path";
+    EXPECT_NE(r_base->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_bytes(combo_base), read_bytes(combo_zero))
+        << "combo.bin files must be byte-identical when walk_forward is absent vs 0";
+
+    // No walk_forward_* keys in default path kvs.
+    auto has_kv = [](const atx::impl::StageResult& sr, const std::string& k) {
+        for (const auto& p : sr.kvs) if (p.first == k) return true;
+        return false;
+    };
+    EXPECT_FALSE(has_kv(*r_base, "walk_forward_folds"))
+        << "walk_forward_folds must NOT appear in default (k==0) path";
+    EXPECT_FALSE(has_kv(*r_base, "walk_forward_oos_sharpe_mean"))
+        << "walk_forward_oos_sharpe_mean must NOT appear in default (k==0) path";
+    EXPECT_FALSE(has_kv(*r_base, "walk_forward_oos_sharpe"))
+        << "walk_forward_oos_sharpe must NOT appear in default (k==0) path";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_base, combo_zero}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D3b Test 2: WalkForwardRecordsOosFolds
+// combine with cfg.walk_forward = 2 on a 96-period fixture (span=96, seg=32,
+// so 2 folds with >= 2 test periods each). Assert:
+//   (a) kvs has walk_forward_folds == "2".
+//   (b) walk_forward_oos_sharpe_mean is finite.
+//   (c) walk_forward_oos_sharpe parses to 2 finite values.
+//   (d) combo.bin is BYTE-IDENTICAL to the same run with WF off (harness must
+//       not change the shipped weights).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, WalkForwardRecordsOosFolds) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(); // 96x6
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "wf_folds");
+    const std::string alphas_dir = write_alpha_dir("wf_folds", safe_dsls());
+    const std::string combo_wf_off =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_folds_off.bin").string();
+    const std::string combo_wf_on =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_folds_on.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // Run without WF (baseline combo.bin).
+    cfg.walk_forward = 0;
+    cfg.combo_out    = combo_wf_off;
+    auto r_off = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_off.has_value()) << r_off.error().message();
+
+    // Run with k=2 (fixture np=96, fit_begin=0, span=96, K+1=3, seg=32 >= 2).
+    cfg.walk_forward = 2;
+    cfg.combo_out    = combo_wf_on;
+    auto r_on = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_on.has_value()) << r_on.error().message();
+
+    auto find_kv = [](const atx::impl::StageResult& sr, const std::string& k) -> std::optional<std::string> {
+        for (const auto& p : sr.kvs) if (p.first == k) return p.second;
+        return std::nullopt;
+    };
+
+    // (a) walk_forward_folds == "2".
+    const auto folds_str = find_kv(*r_on, "walk_forward_folds");
+    ASSERT_TRUE(folds_str.has_value()) << "walk_forward_folds missing from kvs";
+    EXPECT_EQ(*folds_str, "2");
+
+    // (b) walk_forward_oos_sharpe_mean is finite.
+    const auto mean_str = find_kv(*r_on, "walk_forward_oos_sharpe_mean");
+    ASSERT_TRUE(mean_str.has_value()) << "walk_forward_oos_sharpe_mean missing from kvs";
+    const f64 mean_val = std::stod(*mean_str);
+    EXPECT_TRUE(std::isfinite(mean_val)) << "walk_forward_oos_sharpe_mean must be finite";
+
+    // (c) walk_forward_oos_sharpe parses to 2 finite values.
+    const auto sharpes_str = find_kv(*r_on, "walk_forward_oos_sharpe");
+    ASSERT_TRUE(sharpes_str.has_value()) << "walk_forward_oos_sharpe missing from kvs";
+    // Parse comma-separated.
+    {
+        std::vector<f64> parsed;
+        std::string tok;
+        std::istringstream ss(*sharpes_str);
+        while (std::getline(ss, tok, ',')) {
+            parsed.push_back(std::stod(tok));
+        }
+        EXPECT_EQ(parsed.size(), 2u) << "walk_forward_oos_sharpe must have 2 values for k=2";
+        for (usize i = 0; i < parsed.size(); ++i) {
+            EXPECT_TRUE(std::isfinite(parsed[i]))
+                << "fold " << i << " OOS Sharpe must be finite, got " << parsed[i];
+        }
+        // Print observed values for report.
+        std::cout << "[D3b] walk_forward k=2 fold_sharpes=" << *sharpes_str
+                  << " mean=" << *mean_str << "\n";
+    }
+
+    // (d) combo.bin BYTE-IDENTICAL to WF-off run (shipped weights unchanged).
+    EXPECT_EQ(r_on->digest, r_off->digest)
+        << "combo.bin digest must be IDENTICAL with WF on vs off (shipped weights unchanged)";
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_bytes(combo_wf_on), read_bytes(combo_wf_off))
+        << "combo.bin must be byte-identical WF-on vs WF-off";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_wf_off, combo_wf_on}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D3b Test 3: WalkForwardDeterministic
+// Run cfg.walk_forward = 2 TWICE -> identical WF telemetry strings AND identical
+// combo.bin (proves WF scoring is pure / no RNG, and the shipped combo is stable).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, WalkForwardDeterministic) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(); // 96x6
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "wf_det");
+    const std::string alphas_dir = write_alpha_dir("wf_det", safe_dsls());
+    const std::string combo1 =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_det1.bin").string();
+    const std::string combo2 =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_det2.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "combine";
+    cfg.panel        = panel_path;
+    cfg.alphas       = alphas_dir;
+    cfg.method       = "shrinkage-mv";
+    cfg.fit_begin    = 0;
+    cfg.fit_end      = 0;
+    cfg.walk_forward = 2;
+
+    cfg.combo_out = combo1;
+    auto r1 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r1.has_value()) << r1.error().message();
+
+    cfg.combo_out = combo2;
+    auto r2 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+    auto find_kv = [](const atx::impl::StageResult& sr, const std::string& k) -> std::string {
+        for (const auto& p : sr.kvs) if (p.first == k) return p.second;
+        return "";
+    };
+
+    // WF telemetry must be byte-identical across runs (same string representation).
+    EXPECT_EQ(find_kv(*r1, "walk_forward_folds"),           find_kv(*r2, "walk_forward_folds"))
+        << "walk_forward_folds must be deterministic across runs";
+    EXPECT_EQ(find_kv(*r1, "walk_forward_oos_sharpe_mean"), find_kv(*r2, "walk_forward_oos_sharpe_mean"))
+        << "walk_forward_oos_sharpe_mean must be deterministic across runs";
+    EXPECT_EQ(find_kv(*r1, "walk_forward_oos_sharpe"),      find_kv(*r2, "walk_forward_oos_sharpe"))
+        << "walk_forward_oos_sharpe must be deterministic across runs";
+
+    // combo.bin must be identical (the WF loop doesn't touch shipped weights).
+    EXPECT_EQ(r1->digest, r2->digest)
+        << "combo.bin digest must be deterministic across WF runs";
+    EXPECT_NE(r1->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    const auto bytes1 = read_bytes(combo1);
+    const auto bytes2 = read_bytes(combo2);
+    EXPECT_FALSE(bytes1.empty()) << "combo1 must not be empty";
+    EXPECT_EQ(bytes1, bytes2)    << "combo.bin must be byte-identical across WF runs";
 
     std::error_code ec;
     fs::remove(panel_path, ec);

@@ -69,6 +69,29 @@ method_from_string(const std::string& s) {
 }
 
 // ---------------------------------------------------------------------------
+// blend_window_sharpe — annualized Sharpe of the weighted-blend PnL Σ_a w[a]*pool.pnl(a)[i]
+// over [begin, end). Prepends a structural zero so compute_return_metrics' pnl[1..T) convention
+// scores every real return. Shared by D3a's realized_ir and D3b's per-fold OOS Sharpe.
+// ---------------------------------------------------------------------------
+static atx::f64 blend_window_sharpe(const combine::AlphaStore& pool,
+                                    const std::vector<atx::f64>& w,
+                                    atx::usize begin, atx::usize end) {
+    if (end <= begin) return 0.0;
+    const atx::usize len = end - begin;
+    std::vector<atx::f64> blend(len + 1U, 0.0);   // index 0 = structural zero
+    const atx::usize na = w.size();
+    for (atx::usize a = 0; a < na; ++a) {
+        const auto pnl = pool.pnl(combine::AlphaId{static_cast<atx::u32>(a)});
+        for (atx::usize i = 0; i < len; ++i) blend[i + 1U] += w[a] * pnl[begin + i];
+    }
+    namespace ev = atx::engine::eval;
+    ev::ReturnMetricsCfg rmc{};
+    const atx::f64 s = ev::compute_return_metrics(
+        std::span<const atx::f64>{blend}, rmc).sharpe;
+    return std::isfinite(s) ? s : 0.0;
+}
+
+// ---------------------------------------------------------------------------
 // run_combine
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
@@ -460,23 +483,9 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
             // Step 2 — realized IR: annualized Sharpe of the weighted-blend PnL stream
             // over the fit window [fit_begin, fit_end) (fixed order a = 0..na).
             // This is the IN-SAMPLE realized IR, paired with the in-sample covariance.
-            std::vector<atx::f64> combined_pnl(t, 0.0);
-            for (atx::usize a = 0; a < na; ++a) {
-                const std::span<const atx::f64> apnl =
-                    combine::detail::window_span(pool, a, fit_begin, t);
-                for (atx::usize i = 0; i < t; ++i) {
-                    combined_pnl[i] += combo.weights[a] * apnl[i];
-                }
-            }
-            // Prepend a structural zero (pnl[0] == 0) so compute_return_metrics sees
-            // the same pnl[1..T) window convention it expects (r = pnl[1..T)).
-            std::vector<atx::f64> pnl_with_zero;
-            pnl_with_zero.reserve(t + 1);
-            pnl_with_zero.push_back(0.0);
-            pnl_with_zero.insert(pnl_with_zero.end(), combined_pnl.begin(), combined_pnl.end());
-            ev::ReturnMetricsCfg rmc{};  // default: periods_per_year = 252
-            realized_ir = ev::compute_return_metrics(
-                std::span<const atx::f64>{pnl_with_zero}, rmc).sharpe;
+            // Delegates to the shared blend_window_sharpe helper (D3b DRY extraction);
+            // result is byte-identical to the prior inline implementation.
+            realized_ir = blend_window_sharpe(pool, combo.weights, fit_begin, fit_end);
 
             // Step 3 — implied IC = IR / sqrt(N_eff)  (Fundamental Law: IR = IC * sqrt(breadth)).
             if (std::isfinite(realized_ir) && effective_n > 0.0) {
@@ -485,7 +494,50 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         }
     }
 
-    // 13. Return StageResult.
+    // 13. D3b — opt-in walk-forward re-fit OOS harness.
+    //     When cfg.walk_forward >= 1, runs K expanding-window folds over [fit_begin, np)
+    //     and records each fold's OOS Sharpe + their mean as additive telemetry.
+    //     The shipped combo.bin is UNCHANGED: wf_combo vectors are scratch, used only
+    //     for scoring, then discarded. All code lives inside this if-block so the
+    //     default (k==0) path is byte-identical and incurs zero extra compute.
+    std::string wf_folds_str;
+    std::string wf_mean_str;
+    std::string wf_sharpes_str;
+    if (cfg.walk_forward >= 1) {
+        const atx::usize K = static_cast<atx::usize>(cfg.walk_forward);
+        const atx::usize span = (np > fit_begin) ? (np - fit_begin) : 0U;
+        const atx::usize seg = span / (K + 1U);          // K+1 equal segments; folds test segments 1..K
+        if (seg < 2U) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                "combine: --walk-forward " + std::to_string(K) + " leaves <2 periods per fold (np=" +
+                std::to_string(np) + ")");
+        }
+        std::vector<atx::f64> fold_sharpe;
+        fold_sharpe.reserve(K);
+        ATX_TRY(auto cm_wf, method_from_string(cfg.method));
+        for (atx::usize k = 1; k <= K; ++k) {
+            const atx::usize train_end = fit_begin + k * seg;       // expanding train [fit_begin, train_end)
+            const atx::usize test_end  = (k == K) ? np : (train_end + seg); // last fold absorbs the remainder
+            combine::AlphaCombiner wf;
+            wf.cfg.method = cm_wf;                                  // SAME method as the shipped fit
+            ATX_TRY(auto wf_combo, wf.fit(pool, fit_begin, train_end));
+            fold_sharpe.push_back(blend_window_sharpe(pool, wf_combo.weights, train_end, test_end));
+        }
+        atx::f64 mean = 0.0;
+        for (const atx::f64 s : fold_sharpe) mean += s;
+        mean = fold_sharpe.empty() ? 0.0 : mean / static_cast<atx::f64>(fold_sharpe.size());
+        // Build the comma-joined per-fold Sharpe string "s1,s2,...,sK".
+        std::string joined;
+        for (atx::usize k = 0; k < fold_sharpe.size(); ++k) {
+            if (k > 0) joined += ',';
+            joined += std::to_string(fold_sharpe[k]);
+        }
+        wf_folds_str   = std::to_string(K);
+        wf_mean_str    = std::to_string(mean);
+        wf_sharpes_str = std::move(joined);
+    }
+
+    // 14. Return StageResult.
     const std::string method_label = cfg.method.empty() ? "shrinkage-mv" : cfg.method;
     StageResult sr;
     sr.digest = digest;
@@ -500,6 +552,13 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         {"breadth_realized_ir", std::to_string(realized_ir)},
         {"breadth_implied_ic",  std::to_string(implied_ic)},
     };
+    // D3b: additive WF telemetry — only present when --walk-forward >= 1.
+    // Absent from the default (k==0) path so default kvs is byte-identical.
+    if (cfg.walk_forward >= 1) {
+        sr.kvs.emplace_back("walk_forward_folds",           wf_folds_str);
+        sr.kvs.emplace_back("walk_forward_oos_sharpe_mean", wf_mean_str);
+        sr.kvs.emplace_back("walk_forward_oos_sharpe",      wf_sharpes_str);
+    }
     return atx::core::Ok(std::move(sr));
 }
 
