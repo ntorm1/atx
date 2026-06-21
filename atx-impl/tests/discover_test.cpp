@@ -7,9 +7,12 @@
 // deterministic LCG random walk with a small persistent drift so rank(close)
 // has a genuine finite-Sharpe momentum edge (mirrors factory_search_driver_test).
 
+#define _CRT_SECURE_NO_WARNINGS 1 // std::getenv (W6 real-panel data gate); matches single_alpha_capacity_test.cpp
+
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>   // std::getenv (W6 real-panel data gate)
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -40,6 +43,7 @@
 #include "research_sim.hpp"        // atx::impl::frictionless_sim (W3)
 #include "serialize_genome.hpp"
 #include "serialize_panel.hpp"
+#include "alpha101_support.hpp"       // make_synth_orats_panel, augment_for_alpha101 (W6)
 #include "stage_discover_detail.hpp"  // atx::impl::detail::apply_capacity_screen (Fix 1)
 #include "stages.hpp"
 
@@ -1593,6 +1597,166 @@ TEST(AtxImplDiscover, W5_ParseArgsMaxTurnoverThreads) {
         EXPECT_FALSE(cfg_r.has_value())
             << "(c) --max-turnover with a non-numeric value must return Err";
     }
+}
+
+// ---------------------------------------------------------------------------
+//  W6_RediscoverLowVolCapacityAlpha — the Phase-W ACCEPTANCE test: with W1–W5
+//  enabled (Raw weighting, capacity universe, factor-template seeding, wrap_in_op,
+//  split-sample + turnover bars), run the gated discovery pipeline NON-SEEDED for
+//  the low-vol family (seed only momentum + reversal) and require the search to
+//  REACH a low-vol-conditioned capacity alpha clearing Sharpe>1 ∧ turnover<0.30 ∧
+//  both-halves-positive on the REAL liquid panel.
+//
+//  Data-gated EXACTLY like single_alpha_capacity_test.cpp: the real verdict needs
+//  ATX_ALPHA101_PANEL (the serialized liquid panel). On the synthetic panel the
+//  Sharpes are ~0 by construction, so this only proves the full W1–W5 gated path
+//  RUNS end-to-end and admits an alpha, then GTEST_SKIPs the rediscovery verdict.
+//
+//  The panel is augmented (augment_for_alpha101) BEFORE the run: run_discover
+//  derives the grammar fields from the panel's own field names and does NOT
+//  auto-derive `returns`, so without augmentation the low-vol family
+//  (ts_std(returns,20)) would be unreachable and a returns-seed silently dropped.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W6_RediscoverLowVolCapacityAlpha) {
+    namespace fs = std::filesystem;
+
+    const char* env_panel = std::getenv("ATX_ALPHA101_PANEL");
+    const bool is_real = (env_panel != nullptr);
+
+    // 1. Base panel (real liquid if ATX_ALPHA101_PANEL set, else synthetic ORATS),
+    //    augmented so the grammar can reach returns / sector / adv.
+    Panel base = [&]() -> Panel {
+        if (is_real) {
+            auto r = atx::impl::read_panel(env_panel);
+            EXPECT_TRUE(r.has_value())
+                << "ATX_ALPHA101_PANEL set but unreadable: "
+                << (r.has_value() ? "" : r.error().message());
+            return r.has_value() ? std::move(*r)
+                                 : atx_impl_test::make_synth_orats_panel(300, 24);
+        }
+        return atx_impl_test::make_synth_orats_panel(300, 24);
+    }();
+
+    const std::array<atx::u16, 1> adv_windows{20};
+    auto aug_r = atx_impl_test::augment_for_alpha101(
+        base, std::span<const atx::u16>{adv_windows});
+    ASSERT_TRUE(aug_r.has_value())
+        << "augment_for_alpha101 must succeed: "
+        << (aug_r.has_value() ? "" : aug_r.error().message());
+    const std::string panel_path = write_panel_tmp(*aug_r, "w6_rediscover");
+    const std::string alpha_out =
+        (fs::temp_directory_path() / "atx_impl_discover_w6_out").string();
+
+    // 2. W1–W5 enabled, NON-SEEDED for low-vol: seed momentum + short-term reversal
+    //    ONLY (neither carries ts_std/zscore/signedpower conditioning) — the search
+    //    must REACH the low-vol-conditioned family via wrap_in_op + window jitter.
+    atx::impl::RunConfig cfg;
+    cfg.subcommand        = "discover";
+    cfg.panel             = panel_path;
+    cfg.alpha_out         = alpha_out;
+    cfg.seed              = 20260621ULL;
+    cfg.gated             = true;        // W2/W4/W5 live on the gated mine_into path
+    cfg.weight_transform  = "raw";       // W1a: preserve in-DSL conditioning (no re-rank)
+    cfg.enable_wrap_in_op = true;        // W1b: CREATE signedpower(zscore(raw), p)
+    cfg.adv_window        = 20;
+    cfg.max_turnover      = 0.30;        // W5: tradeable turnover bar
+    cfg.seed_exprs        = {
+        "rank(ts_mean(returns,60))",     // ~12-1 momentum (NOT low-vol)
+        "rank(-1*ts_mean(returns,5))",   // short-term reversal (NOT low-vol)
+    };
+
+    if (is_real) {
+        cfg.min_price        = 1.0;      // W2: stocks > $1
+        cfg.min_adv_usd      = 50.0e6;   // W2: 20-day dollar ADV >= $50M
+        cfg.min_split_sharpe = 0.0;      // W4a: both-halves-positive admission bar
+        cfg.min_sharpe       = 0.25;
+        cfg.min_fitness      = 1.0;
+        cfg.min_dsr          = 0.5;
+        cfg.population       = 200;
+        cfg.generations      = 40;
+    } else {
+        // Synthetic: EXERCISE the W1–W5 wiring (capacity price-screen active; closes
+        // >> $1) but loosen the quality BARS so the ~0-Sharpe noise path still
+        // completes + admits >=1 (the bars themselves are tested elsewhere; here we
+        // prove the PIPELINE runs end-to-end). A fast smoke budget.
+        cfg.min_price        = 1.0;      // price screen ACTIVE (capacity_on)
+        cfg.min_adv_usd       = 0.0;
+        cfg.min_sharpe       = -1.0e9;
+        cfg.min_fitness      = -1.0e9;
+        cfg.min_dsr          = -1.0e9;
+        cfg.max_pool_corr    = 1.0;
+        cfg.max_turnover     = 1.0e9;
+        cfg.population       = 24;
+        cfg.generations      = 4;
+    }
+
+    // 3. Run the full W1–W5 gated discovery pipeline. It MUST run end-to-end.
+    auto r = atx::impl::run_discover(cfg);
+    ASSERT_TRUE(r.has_value())
+        << "the W1–W5 gated discovery path must run: "
+        << (r.has_value() ? "" : r.error().message());
+
+    // admitted >= 1 (the pipeline produced at least one alpha).
+    const auto& kvs = r->kvs;
+    auto it = std::find_if(kvs.begin(), kvs.end(),
+                           [](const auto& p) { return p.first == "admitted"; });
+    ASSERT_NE(it, kvs.end()) << "missing 'admitted' kv";
+    EXPECT_GE(std::stoi(it->second), 1) << "the gated pipeline must admit >= 1 alpha";
+
+    if (!is_real) {
+        std::error_code ec;
+        fs::remove(panel_path, ec);
+        fs::remove_all(alpha_out, ec);
+        GTEST_SKIP() << "synthetic panel: Sharpes ~0 by construction; the Sharpe>1 / "
+                        "turnover<0.30 rediscovery verdict requires ATX_ALPHA101_PANEL";
+    }
+
+    // 4. REAL verdict: parse <alpha_out>/_manifest.txt and require at least one
+    //    admitted alpha with Sharpe > 1 AND turnover < 0.30. Both-halves-positive is
+    //    guaranteed by the active min_split_sharpe=0.0 gate (only split-stable,
+    //    both-halves-clearing alphas were admitted). Compare to the manual lv_z_p2.0
+    //    baseline (Sharpe 1.56, turnover 0.15) in single-alpha-capacity-findings.md.
+    const std::string manifest_path = (fs::path{alpha_out} / "_manifest.txt").string();
+    std::ifstream mf{manifest_path};
+    ASSERT_TRUE(mf.is_open()) << "manifest must exist: " << manifest_path;
+
+    auto field_after = [](const std::string& line, const std::string& key) -> double {
+        const std::string tok = " " + key + "=";
+        const auto pos = line.find(tok);
+        if (pos == std::string::npos) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        return std::strtod(line.c_str() + pos + tok.size(), nullptr);
+    };
+
+    bool found_tradeable = false;
+    double best_sharpe = -std::numeric_limits<double>::infinity();
+    double best_turnover = std::numeric_limits<double>::quiet_NaN();
+    std::string line;
+    while (std::getline(mf, line)) {
+        if (line.rfind("alpha[", 0) != 0) {
+            continue;
+        }
+        const double sharpe = field_after(line, "sharpe");
+        const double turnover = field_after(line, "turnover");
+        if (std::isfinite(sharpe) && sharpe > best_sharpe) {
+            best_sharpe = sharpe;
+            best_turnover = turnover;
+        }
+        if (std::isfinite(sharpe) && std::isfinite(turnover) &&
+            sharpe > 1.0 && turnover < 0.30) {
+            found_tradeable = true;
+        }
+    }
+
+    EXPECT_TRUE(found_tradeable)
+        << "W1–W5 must auto-rediscover >= 1 NON-SEEDED alpha with Sharpe>1 ∧ "
+           "turnover<0.30 (both-halves-positive via the split gate). Best seen: sharpe="
+        << best_sharpe << " turnover=" << best_turnover;
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alpha_out, ec);
 }
 
 } // namespace atxtest_discover
