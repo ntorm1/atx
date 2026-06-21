@@ -18,6 +18,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -658,6 +659,145 @@ TEST(AtxImplDiscover, LibraryDedupOnReadmitDeterministic) {
     fs::remove_all(lib_dir, ec);
     fs::remove_all(out1, ec);
     fs::remove_all(out2, ec);
+}
+
+// ---------------------------------------------------------------------------
+// R3 helpers
+// ---------------------------------------------------------------------------
+
+// Read the full text of _manifest.txt in alpha_out (fails the test if missing).
+static std::string read_manifest(const std::string& alpha_out) {
+    namespace fs = std::filesystem;
+    const std::string path = (fs::path{alpha_out} / "_manifest.txt").string();
+    if (!fs::exists(path)) {
+        ADD_FAILURE() << "_manifest.txt not found in " << alpha_out;
+        return {};
+    }
+    std::ifstream f{path};
+    return std::string{std::istreambuf_iterator<char>(f),
+                       std::istreambuf_iterator<char>()};
+}
+
+// Read all kv keys from a StageResult.
+static std::set<std::string> kv_keys(const atx::impl::StageResult& sr) {
+    std::set<std::string> ks;
+    for (const auto& p : sr.kvs) {
+        ks.insert(p.first);
+    }
+    return ks;
+}
+
+// ---------------------------------------------------------------------------
+// R3a Test: AccumulationAutoOos
+// With --library-dir set AND no explicit --oos-fraction, the manifest must
+// contain oos_fraction=0.25 (the auto-default) and the IS/OOS column headers.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, R3a_AccumulationAutoOos) {
+    namespace fs = std::filesystem;
+
+    // Use a 96-date panel — large enough for 25% holdout (24 dates).
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "r3a_auto");
+
+    const std::string lib_dir =
+        (fs::temp_directory_path() / "atx_r3a_auto_libdir").string();
+    const std::string alpha_out =
+        (fs::temp_directory_path() / "atx_r3a_auto_out").string();
+    std::error_code ec0;
+    fs::remove_all(lib_dir, ec0);
+    fs::remove_all(alpha_out, ec0);
+
+    // Build a gated cfg WITH --library-dir but WITHOUT explicit --oos-fraction.
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = 7ULL;
+    cfg.population   = 16;
+    cfg.generations  = 5;
+    cfg.seed_exprs   = safe_seed_exprs();
+    cfg.gated        = true;
+    cfg.min_sharpe   = 0.0;
+    cfg.min_fitness  = 0.0;
+    cfg.max_turnover = 10.0;
+    cfg.max_pool_corr= 1.0;
+    cfg.min_dsr      = 0.0;
+    cfg.library_dir  = lib_dir;
+    // cfg.oos_fraction intentionally NOT set (should auto-default to 0.25).
+    // cfg.set_flags intentionally empty (no "oos-fraction" in set_flags).
+
+    auto r = atx::impl::run_discover(cfg);
+    ASSERT_TRUE(r.has_value()) << "accumulation auto-OOS run must succeed: " << r.error().message();
+
+    // The manifest must contain oos_fraction=0.25 (auto-default).
+    const std::string manifest = read_manifest(alpha_out);
+    EXPECT_NE(manifest.find("oos_fraction=0.25"), std::string::npos)
+        << "auto-OOS must write oos_fraction=0.25 to manifest; got:\n" << manifest;
+
+    // The StageResult kvs must contain oos_pbo (the OOS path is active).
+    const auto keys = kv_keys(*r);
+    EXPECT_NE(keys.find("oos_pbo"), keys.end())
+        << "accumulation auto-OOS run must include oos_pbo in StageResult kvs";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(lib_dir, ec);
+    fs::remove_all(alpha_out, ec);
+}
+
+// ---------------------------------------------------------------------------
+// R3a Test: NonAccumulationByteIdentical
+// Without --library-dir, the manifest must NOT contain oos_fraction= or
+// oos_pbo= lines, and the StageResult kvs must NOT have oos_pbo.
+// This pins the byte-identical non-accumulation invariant.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, R3a_NonAccumulationByteIdentical) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "r3a_noaccum");
+    const std::string alpha_out =
+        (fs::temp_directory_path() / "atx_r3a_noaccum_out").string();
+    std::error_code ec0;
+    fs::remove_all(alpha_out, ec0);
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = 7ULL;
+    cfg.population   = 16;
+    cfg.generations  = 5;
+    cfg.seed_exprs   = safe_seed_exprs();
+    cfg.gated        = true;
+    cfg.min_sharpe   = 0.0;
+    cfg.min_fitness  = 0.0;
+    cfg.max_turnover = 10.0;
+    cfg.max_pool_corr= 1.0;
+    cfg.min_dsr      = 0.0;
+    // library_dir intentionally UNSET (no accumulation).
+    // oos_fraction intentionally 0.0 (default).
+
+    auto r = atx::impl::run_discover(cfg);
+    ASSERT_TRUE(r.has_value()) << "non-accumulation run must succeed: " << r.error().message();
+
+    const std::string manifest = read_manifest(alpha_out);
+    EXPECT_EQ(manifest.find("oos_fraction="), std::string::npos)
+        << "non-accumulation run must NOT emit oos_fraction= in manifest";
+    EXPECT_EQ(manifest.find("oos_pbo="), std::string::npos)
+        << "non-accumulation run must NOT emit oos_pbo= in manifest";
+
+    const auto keys = kv_keys(*r);
+    EXPECT_EQ(keys.find("oos_pbo"), keys.end())
+        << "non-accumulation run StageResult must NOT have oos_pbo key";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alpha_out, ec);
 }
 
 // ===========================================================================
@@ -1602,7 +1742,7 @@ TEST(AtxImplDiscover, W5_ParseArgsMaxTurnoverThreads) {
 // ---------------------------------------------------------------------------
 //  W6_RediscoverLowVolCapacityAlpha — the Phase-W ACCEPTANCE test: with W1–W5
 //  enabled (Raw weighting, capacity universe, factor-template seeding, wrap_in_op,
-//  split-sample + turnover bars), run the gated discovery pipeline NON-SEEDED for
+//  split-sharpe + turnover bars), run the gated discovery pipeline NON-SEEDED for
 //  the low-vol family (seed only momentum + reversal) and require the search to
 //  REACH a low-vol-conditioned capacity alpha clearing Sharpe>1 ∧ turnover<0.30 ∧
 //  both-halves-positive on the REAL liquid panel.
@@ -1761,6 +1901,115 @@ TEST(AtxImplDiscover, W6_RediscoverLowVolCapacityAlpha) {
 
     std::error_code ec;
     fs::remove(panel_path, ec);
+    fs::remove_all(alpha_out, ec);
+}
+
+// ---------------------------------------------------------------------------
+// R3a Test: ExplicitOosFractionOverride
+// With --library-dir set AND explicit --oos-fraction 0.1 in set_flags, the
+// effective fraction must be 0.1 (not the auto-default 0.25).
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, R3a_ExplicitOosFractionOverride) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "r3a_override");
+    const std::string lib_dir =
+        (fs::temp_directory_path() / "atx_r3a_override_libdir").string();
+    const std::string alpha_out =
+        (fs::temp_directory_path() / "atx_r3a_override_out").string();
+    std::error_code ec0;
+    fs::remove_all(lib_dir, ec0);
+    fs::remove_all(alpha_out, ec0);
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = 7ULL;
+    cfg.population   = 16;
+    cfg.generations  = 5;
+    cfg.seed_exprs   = safe_seed_exprs();
+    cfg.gated        = true;
+    cfg.min_sharpe   = 0.0;
+    cfg.min_fitness  = 0.0;
+    cfg.max_turnover = 10.0;
+    cfg.max_pool_corr= 1.0;
+    cfg.min_dsr      = 0.0;
+    cfg.library_dir  = lib_dir;
+    cfg.oos_fraction = 0.1;
+    cfg.set_flags.insert("oos-fraction"); // simulate explicit CLI --oos-fraction 0.1
+
+    auto r = atx::impl::run_discover(cfg);
+    ASSERT_TRUE(r.has_value()) << "explicit override run must succeed: " << r.error().message();
+
+    const std::string manifest = read_manifest(alpha_out);
+    // Must contain oos_fraction=0.1, not 0.25.
+    EXPECT_NE(manifest.find("oos_fraction=0.1"), std::string::npos)
+        << "explicit --oos-fraction 0.1 must override auto-default 0.25; got:\n" << manifest;
+    EXPECT_EQ(manifest.find("oos_fraction=0.25"), std::string::npos)
+        << "must NOT see auto-default 0.25 when explicit 0.1 is set";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(lib_dir, ec);
+    fs::remove_all(alpha_out, ec);
+}
+
+// ---------------------------------------------------------------------------
+// R3b Test: AccumulationManifestHasPboLine
+// A gated accumulation run with >= 2 admitted alphas must have oos_pbo= in
+// the manifest. A run with < 2 admitted must have oos_pbo=nan.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, R3b_AccumulationManifestHasPboLine) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(/*dates=*/96, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "r3b_pbo_manifest");
+    const std::string lib_dir =
+        (fs::temp_directory_path() / "atx_r3b_pbo_libdir").string();
+    const std::string alpha_out =
+        (fs::temp_directory_path() / "atx_r3b_pbo_out").string();
+    std::error_code ec0;
+    fs::remove_all(lib_dir, ec0);
+    fs::remove_all(alpha_out, ec0);
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand   = "discover";
+    cfg.panel        = panel_path;
+    cfg.alpha_out    = alpha_out;
+    cfg.seed         = 7ULL;
+    cfg.population   = 16;
+    cfg.generations  = 5;
+    cfg.seed_exprs   = safe_seed_exprs();
+    cfg.gated        = true;
+    cfg.min_sharpe   = 0.0;
+    cfg.min_fitness  = 0.0;
+    cfg.max_turnover = 10.0;
+    cfg.max_pool_corr= 1.0;
+    cfg.min_dsr      = 0.0;
+    cfg.library_dir  = lib_dir; // accumulation on -> auto-OOS 0.25
+
+    auto r = atx::impl::run_discover(cfg);
+    ASSERT_TRUE(r.has_value()) << "run must succeed: " << r.error().message();
+
+    const std::string manifest = read_manifest(alpha_out);
+    // The manifest must have an oos_pbo= line (OOS is active).
+    EXPECT_NE(manifest.find("oos_pbo="), std::string::npos)
+        << "accumulation run manifest must contain oos_pbo= line; got:\n" << manifest;
+
+    // The oos_pbo kv must be present in StageResult.
+    const auto keys = kv_keys(*r);
+    EXPECT_NE(keys.find("oos_pbo"), keys.end())
+        << "accumulation run StageResult must have oos_pbo key";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(lib_dir, ec);
     fs::remove_all(alpha_out, ec);
 }
 

@@ -250,6 +250,17 @@ public:
     return online_corr_to_pool(pnl, store_, idx);
   }
 
+  // --- R1: cumulative cross-run trial counter --------------------------------
+  /// Returns the cumulative number of trials across all mine runs that have
+  /// admitted into this library (loaded from the sidecar on open; 0 for a fresh
+  /// library). Used by factory::mine_into to deflate DSR against the FULL
+  /// multi-run N rather than just the current run's N.
+  [[nodiscard]] atx::u64 cumulative_trials() const noexcept { return cumulative_trials_; }
+
+  /// Add `n` trials to the cumulative counter (called once per mine run, after
+  /// the admission loop, by factory::mine_into). NOT per-alpha admitted.
+  void add_trials(atx::u64 n) noexcept { cumulative_trials_ += n; }
+
   // --- read passthroughs ----------------------------------------------------
   [[nodiscard]] atx::u64 n_alphas() const noexcept { return store_.n_alphas(); }
   [[nodiscard]] atx::usize n_segments() const noexcept { return store_.n_segments(); }
@@ -280,7 +291,14 @@ public:
   /// EVERY alpha is sealed in a segment (each entry's segment_crc is its segment's
   /// integrity_crc). Entries are emitted in ascending alpha_id order (L7); the
   /// lifecycle_at_snapshot is the current_state of each alpha; version_id is the
-  /// crc32 content-address over (entries ++ master_seeds).
+  /// crc32 content-address over (entries ++ master_seeds ++ cumulative_trials).
+  ///
+  /// R1: also writes the cumulative-trial counter sidecar (_manifest.bin) so
+  /// that any subsequent Library::open from the same dir restores the counter.
+  /// Sidecar write failures are silently ignored — snapshot() is [[nodiscard]]
+  /// pure-compute in its callers' mental model, and a failed sidecar write does
+  /// not corrupt the in-memory state; the counter is preserved across calls
+  /// (worst case: a cross-process reopen starts at 0, which is the pre-R1 baseline).
   [[nodiscard]] LibraryManifest snapshot() {
     const auto st = store_.flush();
     ATX_ASSERT(st.has_value());
@@ -299,7 +317,11 @@ public:
       m.entries.push_back(ManifestEntry{a, rec.canon_hash, life,
                                         per_alpha_crc[static_cast<atx::usize>(a)]});
     }
+    // R1: fold the cumulative trial counter into the manifest before hashing.
+    m.cumulative_trials = cumulative_trials_;
     finalize_version_id(m);
+    // R1: persist the counter to the sidecar so a reopened library restores it.
+    (void)write_manifest(m, dir_ + "/_manifest.bin"); // best-effort; errors ignored
     return m;
   }
 
@@ -307,8 +329,23 @@ private:
   static constexpr atx::u32 kCorrK = 64; // SimHash hyperplanes (matches S4-3 fixtures)
 
   Library(const std::string &dir, GateConfig cfg, std::vector<atx::u64> master_seeds)
-      : cfg_{cfg}, master_seeds_{std::move(master_seeds)}, store_{dir}, dedup_{dir},
+      : dir_{dir}, cfg_{cfg}, master_seeds_{std::move(master_seeds)}, store_{dir}, dedup_{dir},
         journal_{dir} {
+    // R1: load the cumulative trial counter from the sidecar manifest if one
+    // exists in `dir`. A fresh/never-snapshotted library has no sidecar -> 0,
+    // which is byte-identical to the pre-R1 single-run behavior (prior == 0 =>
+    // admit_fit.trial_count = res.trial_count, unchanged). NotFound and IoError
+    // are normal ("no sidecar yet") and silently ignored; bad-magic (ATXMANI1
+    // old sidecar) is also ignored so a library migrated in-place starts at 0
+    // rather than refusing to open.
+    {
+      const auto maybe = read_manifest(dir + "/_manifest.bin");
+      if (maybe.has_value()) {
+        cumulative_trials_ = maybe->cumulative_trials;
+      }
+      // else: no sidecar or unreadable/corrupt — leave cumulative_trials_ at 0.
+    }
+
     // The corr index's vector length T is fixed at construction. A reopened store
     // already knows T (n_periods()), so size + rebuild now; a fresh store defers
     // construction to the first admit (ensure_corr), which learns T from the
@@ -424,6 +461,7 @@ private:
     return out;
   }
 
+  std::string dir_;             // R1: library directory (for sidecar writes)
   GateConfig cfg_;
   std::vector<atx::u64> master_seeds_;
   LibraryStore store_;          // S4-1 (segmented append-only store)
@@ -431,6 +469,7 @@ private:
   LifecycleJournal journal_;    // S4-4 (PIT lifecycle journal)
   std::optional<CorrNeighborIndex> corr_; // S4-3 (sized to T on the first admit)
   atx::usize memtable_pending_{0};        // staged-since-last-flush count (flush batching)
+  atx::u64 cumulative_trials_{0};         // R1: cross-run cumulative trial counter
 };
 
 // ===========================================================================

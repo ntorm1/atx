@@ -63,8 +63,11 @@ namespace atx::engine::library {
 
 // ===========================================================================
 //  Magic / version for the manifest SIDECAR file framing.
+//  ATXMANI2: bumped from ATXMANI1 to add the cumulative_trials u64 field (R1).
+//  An old ATXMANI1 sidecar is cleanly rejected ("bad magic") rather than
+//  silently mis-parsed as a truncated or corrupt ATXMANI2 file.
 // ===========================================================================
-inline constexpr atx::u64 kManifestMagic = atx::tsdb::tag8("ATXMANI1");
+inline constexpr atx::u64 kManifestMagic = atx::tsdb::tag8("ATXMANI2");
 
 // ===========================================================================
 //  ManifestEntry — one alpha's content-address row (POD value).
@@ -93,9 +96,10 @@ inline constexpr atx::usize kManifestEntryWireBytes =
 //  LibraryManifest — the versioned, content-addressed snapshot.
 // ===========================================================================
 struct LibraryManifest {
-  atx::u64 version_id{0};               // crc32 over a fixed-layout (entries ++ seeds)
+  atx::u64 version_id{0};               // crc32 over a fixed-layout (entries ++ seeds ++ cumulative_trials)
   std::vector<atx::u64> master_seeds;   // the SRP / search seeds (index rebuilds identically)
   std::vector<ManifestEntry> entries;   // ordered by alpha_id (L7)
+  atx::u64 cumulative_trials{0};        // R1: cross-run cumulative trial count for DSR deflation
 };
 
 namespace detail {
@@ -112,11 +116,14 @@ inline void put_entry(std::vector<std::byte> &out, const ManifestEntry &e) {
 }
 
 // The canonical content buffer the version_id is the crc32 of: n_entries, then
-// every entry in alpha_id order, then n_seeds, then every seed. Counts are folded
-// so a {1 entry, 0 seeds} library can never alias a {0 entries, 1 seed} library.
+// every entry in alpha_id order, then n_seeds, then every seed, then
+// cumulative_trials (u64, appended last — append-only extension, R1). Counts are
+// folded so a {1 entry, 0 seeds} library can never alias a {0 entries, 1 seed}
+// library.
 [[nodiscard]] inline std::vector<std::byte>
 serialize_for_address(std::span<const ManifestEntry> entries,
-                      std::span<const atx::u64> seeds) {
+                      std::span<const atx::u64> seeds,
+                      atx::u64 cumulative_trials) {
   std::vector<std::byte> buf;
   put_le<atx::u64>(buf, static_cast<atx::u64>(entries.size()));
   for (const ManifestEntry &e : entries) {
@@ -126,6 +133,8 @@ serialize_for_address(std::span<const ManifestEntry> entries,
   for (const atx::u64 s : seeds) {
     put_le<atx::u64>(buf, s);
   }
+  // R1: fold cumulative_trials into the content address (append-only, last field).
+  put_le<atx::u64>(buf, cumulative_trials);
   return buf;
 }
 
@@ -135,19 +144,25 @@ serialize_for_address(std::span<const ManifestEntry> entries,
 //  compute_version_id — the deterministic content-address.
 //
 //  crc32 (zero-extended to u64) over the fixed-layout (n_entries, entries...,
-//  n_seeds, seeds...) buffer. PRECONDITION (caller's): `entries` are in ascending
-//  alpha_id order (the snapshot builder guarantees this).
+//  n_seeds, seeds..., cumulative_trials) buffer. PRECONDITION (caller's): `entries`
+//  are in ascending alpha_id order (the snapshot builder guarantees this).
+//  R1: cumulative_trials is folded in as the last field so the address changes when
+//  the cross-run trial counter changes (a fresh/single-run library has it == 0,
+//  which is byte-identical to the old layout with the 8-byte zero appended).
 // ===========================================================================
 [[nodiscard]] inline atx::u64 compute_version_id(std::span<const ManifestEntry> entries,
-                                                 std::span<const atx::u64> seeds) {
-  const std::vector<std::byte> buf = detail::serialize_for_address(entries, seeds);
+                                                 std::span<const atx::u64> seeds,
+                                                 atx::u64 cumulative_trials) {
+  const std::vector<std::byte> buf =
+      detail::serialize_for_address(entries, seeds, cumulative_trials);
   return static_cast<atx::u64>(atx::tsdb::crc32(buf.data(), buf.size()));
 }
 
-// Recompute + assign `m.version_id` from its current entries + seeds. Returns the
-// computed id. (The snapshot builder calls this once entries are populated.)
+// Recompute + assign `m.version_id` from its current entries, seeds, and
+// cumulative_trials. Returns the computed id. (The snapshot builder calls this
+// once entries are populated — R1: also after cumulative_trials is set.)
 inline atx::u64 finalize_version_id(LibraryManifest &m) {
-  m.version_id = compute_version_id(m.entries, m.master_seeds);
+  m.version_id = compute_version_id(m.entries, m.master_seeds, m.cumulative_trials);
   return m.version_id;
 }
 
@@ -155,9 +170,11 @@ inline atx::u64 finalize_version_id(LibraryManifest &m) {
 //  Sidecar (de)serialization — write_manifest / read_manifest.
 // ===========================================================================
 
-/// Serialize `m` to a binary sidecar at `path` (truncate-create). Layout:
+/// Serialize `m` to a binary sidecar at `path` (truncate-create). Layout (ATXMANI2):
 ///   u64 magic | u64 version_id | u64 n_seeds | n_seeds*u64 |
-///   u64 n_entries | n_entries * {u64 alpha_id, u64 canon_hash, u8 life, u32 crc}.
+///   u64 n_entries | n_entries * {u64 alpha_id, u64 canon_hash, u8 life, u32 crc} |
+///   u64 cumulative_trials.
+/// R1: cumulative_trials appended last (append-only extension).
 /// Err(IoError) on a write fault.
 [[nodiscard]] inline atx::core::Status write_manifest(const LibraryManifest &m,
                                                       const std::string &path) {
@@ -172,6 +189,8 @@ inline atx::u64 finalize_version_id(LibraryManifest &m) {
   for (const ManifestEntry &e : m.entries) {
     detail::put_entry(buf, e);
   }
+  // R1: cumulative_trials is the last field (append-only).
+  detail::put_le<atx::u64>(buf, m.cumulative_trials);
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
     return atx::core::Err(atx::core::ErrorCode::IoError,
@@ -249,9 +268,16 @@ inline atx::u64 finalize_version_id(LibraryManifest &m) {
     }
     m.entries.push_back(e);
   }
+  // R1: decode cumulative_trials (last field, ATXMANI2).
+  atx::u64 cumulative_trials = 0;
+  if (!detail::get_le(src, off, cumulative_trials)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "LibraryManifest: truncated cumulative_trials");
+  }
+  m.cumulative_trials = cumulative_trials;
   m.version_id = stored_version;
   // Integrity: the re-derived address MUST match the stored one.
-  if (compute_version_id(m.entries, m.master_seeds) != stored_version) {
+  if (compute_version_id(m.entries, m.master_seeds, m.cumulative_trials) != stored_version) {
     return atx::core::Err(atx::core::ErrorCode::Internal,
                           "LibraryManifest: version_id mismatch (corrupt sidecar)");
   }

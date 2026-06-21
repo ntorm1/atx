@@ -19,7 +19,7 @@
 
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe (P2a holdout DSR)
 #include "atx/engine/eval/lockbox.hpp"         // eval::reserve_lockbox, detail::slice_panel (P2a)
-#include "atx/engine/eval/pbo.hpp"             // eval::pbo_cscv_checked, PboResult (W4b run-level PBO)
+#include "atx/engine/eval/pbo.hpp"             // eval::pbo_cscv_checked, PboResult (W4b + R3b run-level PBO)
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis (P2a DSR)
 
 #include "atx/engine/library/record.hpp" // library::Provenance (admitted-alpha lineage)
@@ -312,11 +312,14 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — the admission deflation N is the search's RUNNING distinct-candidate count
-  // (res.trial_count), NOT the static config N (identical to mine()).
+  // F4 / R1 — the admission deflation N is prior cumulative N + this run's N, so a
+  // multi-run accumulation sweep is visible to the multiple-testing defense. When
+  // prior == 0 (fresh library / single run) this equals res.trial_count — byte-
+  // identical to the pre-R1 path.
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1 = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1) + res.trial_count;
   }
 
   // (2) rank the distinct scored candidates by deflated fitness against the LIBRARY
@@ -421,6 +424,12 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment the cumulative trial counter ONCE per mine run (by this run's N),
+  // AFTER the admission loop so THIS run's survivors were deflated against
+  // (prior + this_run_N) and the NEXT run sees the updated cumulative.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
   return atx::core::Ok(std::move(rep));
 }
 
@@ -562,10 +571,12 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — identical to the sequential path: the admission deflation N is res.trial_count.
+  // F4 / R1 — identical to the sequential path: prior + this run's N (see serial
+  // mine_into above for the full reasoning). When prior == 0 this is res.trial_count.
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1_par = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par) + res.trial_count;
   }
 
   // (2) GATHER per-genome {ok, dsr, raw, streams} over the PROCESS boundary. The pure
@@ -678,6 +689,10 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment once per mine run, AFTER the loop — same as serial mine_into.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
   return atx::core::Ok(std::move(rep));
 }
 
@@ -815,29 +830,74 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   FactoryReport rep;
   rep.library_n_alphas_before = lib_lib.n_alphas();
 
-  // (0) carve the TRAIN / HOLDOUT split. The terminal cfg.oos_fraction of dates is
-  // the holdout; an embargo gap (cfg.oos_embargo, else the CpcvConfig default)
-  // precedes it. reserve_lockbox errors on a too-short panel / empty visible region.
+  // (0) carve the TRAIN / HOLDOUT split.
+  //  Default (oos_n_windows == 0): the terminal cfg.oos_fraction of dates is the holdout;
+  //  an embargo gap precedes it. reserve_lockbox errors on a too-short panel / empty visible
+  //  region. Byte-identical to the pre-R2 path.
+  //  Walk-forward (oos_n_windows >= 1): the holdout is the oos_window-th of oos_n_windows
+  //  disjoint fixed-length windows of width w = floor(oos_fraction * T) tiling the terminal
+  //  region [T - oos_n_windows*w, T). holdout_begin = T - (oos_n_windows - oos_window) * w.
+  //  Window (oos_n_windows-1) is the terminal window [T - w, T) — byte-identical to the
+  //  default path for that run.
   const atx::usize T = panel_.dates();
   const atx::usize embargo_len =
       (cfg.oos_embargo > 0.0)
           ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
           : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
-  auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
-  if (!sealed_r.has_value()) {
-    // A too-short panel: surface a clear message (the controller may widen the panel
-    // or shrink the fraction). No library mutation has occurred.
-    return atx::core::Ok(std::move(rep)); // admitted == 0, oos_metrics empty; caller reads n_alphas unchanged
-  }
-  const eval::SealedPanel &sealed = *sealed_r;
-  const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
-  const alpha::Panel &train = sealed.visible(); // [0, lockbox_begin - embargo_len)
 
-  auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
-  if (!holdout_r.has_value()) {
-    return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted
+  // sealed_opt owns the visible (train) panel; holdout_opt is a separate slice.
+  // Both are std::optional because alpha::Panel has no public default constructor.
+  std::optional<eval::SealedPanel> sealed_opt;
+  std::optional<alpha::Panel> holdout_opt;
+
+  if (cfg.oos_n_windows == 0U) {
+    // --- Legacy terminal path (byte-identical default) ---
+    auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
+    if (!sealed_r.has_value()) {
+      // A too-short panel: surface a clear message (the controller may widen the panel
+      // or shrink the fraction). No library mutation has occurred.
+      return atx::core::Ok(std::move(rep)); // admitted == 0, oos_metrics empty; caller reads n_alphas unchanged
+    }
+    const atx::usize lockbox_begin_leg = sealed_r->reservation().lockbox_begin;
+    auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin_leg, T);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted
+    }
+    holdout_opt.emplace(std::move(*holdout_r));
+    sealed_opt.emplace(std::move(*sealed_r));
+  } else {
+    // --- Walk-forward windowed path (R2) ---
+    const atx::usize w = static_cast<atx::usize>(static_cast<atx::f64>(T) * cfg.oos_fraction);
+    if (w == 0U) {
+      return atx::core::Ok(std::move(rep)); // oos_fraction too small to carve a window — admitted 0
+    }
+    if (cfg.oos_window >= cfg.oos_n_windows) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "mine_into_oos: oos_window must be < oos_n_windows");
+    }
+    // Validate that T is large enough for the EARLIEST window to have a non-empty train region.
+    // Condition: T >= oos_n_windows * w + embargo_len + 1.
+    // Guard against unsigned overflow by using division form: check T > embargo_len + 1 first
+    // (so T - embargo_len - 1U cannot underflow), then oos_n_windows > (T-embargo_len-1)/w.
+    // This avoids forming the product oos_n_windows * w which can wrap for pathological inputs.
+    if (embargo_len + 1U >= T || cfg.oos_n_windows > (T - embargo_len - 1U) / w) {
+      return atx::core::Ok(std::move(rep)); // panel too short for the earliest window — admitted 0
+    }
+    const atx::usize holdout_begin = T - (cfg.oos_n_windows - cfg.oos_window) * w;
+    auto sealed_r = eval::reserve_window(panel_, holdout_begin, w, embargo_len);
+    if (!sealed_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // reserve_window error — mirror reserve_lockbox Err handling
+    }
+    auto holdout_r = eval::detail::slice_panel(panel_, holdout_begin, holdout_begin + w);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // holdout slice empty / unbuildable — nothing admitted
+    }
+    holdout_opt.emplace(std::move(*holdout_r));
+    sealed_opt.emplace(std::move(*sealed_r));
   }
-  const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
+
+  const alpha::Panel &train = sealed_opt->visible(); // [0, holdout_begin - embargo_len)
+  const alpha::Panel &holdout = *holdout_opt;
 
   // (1) run the S3-5 search over the TRAIN panel (NOT panel_). A fresh seeded driver
   // re-derives clean per-run state, preserving F1 replay. Selection scores against an
@@ -878,10 +938,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — the admission deflation N is the search's running distinct-candidate count.
+  // F4 / R1 — prior cumulative N + this run's N (same reasoning as serial mine_into).
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_oos) + res.trial_count;
   }
 
   // (2) rank the distinct scored candidates by deflated fitness against an EMPTY pool
@@ -969,6 +1030,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   std::vector<std::vector<atx::f64>> admitted_pnls;
 
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first.
+  // R3b: collect admitted holdout PnL streams in admit order for the post-loop PBO
+  // computation. This collection is PURE (no admission changes; see R3b proof comment
+  // below the loop).
+  std::vector<std::vector<atx::f64>> admitted_hold_pnls; // in admit order (R3b)
+
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
 
@@ -1048,7 +1114,8 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl); // W4b: realized HOLDOUT PnL of an admitted alpha
+        admitted_pnls.push_back(hold_pnl);      // W4b: realized HOLDOUT PnL of an admitted alpha
+        admitted_hold_pnls.push_back(hold_pnl); // R3b: collect in admit order
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -1064,6 +1131,53 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment once per mine run, AFTER the loop.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
+
+  // R3b: compute the run-level CSCV PBO over the admitted alphas' holdout PnL streams.
+  // This is PURE / post-admission: it runs AFTER all admission decisions and the R1
+  // counter increment. It does NOT change rep.digest, the admitted set, or the library
+  // version_id (those are all finalized above). oos_pbo defaults to NaN (< 2 admitted
+  // or too short for any split).
+  //
+  // Matrix assembly: candidate-major layout perf[c*T_h + t] for M = admitted_hold_pnls.size()
+  // candidates over T_h = admitted_hold_pnls[0].size() periods. All holdout PnL vectors
+  // have the same length (they were all evaluated on the SAME holdout sub-panel).
+  // n_splits = largest even number <= min(T_h, 16); if < 2, skip (NaN).
+  {
+    const atx::usize M = admitted_hold_pnls.size();
+    if (M >= 2U) {
+      const atx::usize T_h = admitted_hold_pnls[0].size();
+      if (T_h >= 2U) {
+        // largest even number <= min(T_h, 16)
+        const atx::usize cap = (T_h < 16U) ? T_h : 16U;
+        const atx::usize n_splits = cap - (cap % 2U); // floor to even
+        if (n_splits >= 2U) {
+          // Assemble candidate-major perf matrix perf[c*T_h + t].
+          // All admitted hold_pnl vectors are evaluated on the SAME holdout sub-panel
+          // so their lengths MUST equal T_h. ATX_ASSERT documents the contract explicitly;
+          // it is a no-op under NDEBUG so release behavior is unchanged on the valid path.
+          std::vector<atx::f64> perf(M * T_h);
+          for (atx::usize c = 0U; c < M; ++c) {
+            const std::vector<atx::f64> &pnl = admitted_hold_pnls[c];
+            ATX_ASSERT(pnl.size() == T_h); // all admitted streams must span the same holdout panel
+            for (atx::usize t = 0U; t < T_h; ++t) {
+              perf[c * T_h + t] = pnl[t];
+            }
+          }
+          auto pbo_r = eval::pbo_cscv_checked(
+              std::span<const atx::f64>{perf}, M, n_splits);
+          if (pbo_r.has_value()) {
+            rep.oos_pbo = pbo_r->pbo;
+          }
+          // On Err (precondition miss despite our guards): leave oos_pbo NaN (clean).
+        }
+      }
+    }
+  }
+
   return atx::core::Ok(std::move(rep));
 }
 
@@ -1086,24 +1200,61 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // (0) carve the TRAIN / HOLDOUT split — IDENTICAL to serial mine_into_oos (the reserve
   // geometry, the embargo, the too-short-panel empty-report returns). The serial path is
   // the reference; this must produce the same train + holdout sub-panels bit-for-bit.
+  // R2: the same windowed-carve branch as serial mine_into_oos — same holdout_begin formula,
+  // same reserve_window / reserve_lockbox call, same empty-report returns. seq==parallel is
+  // preserved by construction: both sides run this exact code.
   const atx::usize T = panel_.dates();
   const atx::usize embargo_len =
       (cfg.oos_embargo > 0.0)
           ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
           : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
-  auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
-  if (!sealed_r.has_value()) {
-    return atx::core::Ok(std::move(rep)); // too-short panel — same empty report the serial path returns
-  }
-  const eval::SealedPanel &sealed = *sealed_r;
-  const atx::usize lockbox_begin = sealed.reservation().lockbox_begin;
-  const alpha::Panel &train = sealed.visible(); // [0, lockbox_begin - embargo_len)
 
-  auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin, T);
-  if (!holdout_r.has_value()) {
-    return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted (same as serial)
+  // std::optional used because alpha::Panel has no public default constructor.
+  std::optional<eval::SealedPanel> sealed_opt_par;
+  std::optional<alpha::Panel> holdout_opt_par;
+
+  if (cfg.oos_n_windows == 0U) {
+    // --- Legacy terminal path (byte-identical default) --- same as serial mine_into_oos
+    auto sealed_r = eval::reserve_lockbox(panel_, cfg.oos_fraction, embargo_len);
+    if (!sealed_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // too-short panel — same empty report the serial path returns
+    }
+    const atx::usize lockbox_begin_leg = sealed_r->reservation().lockbox_begin;
+    auto holdout_r = eval::detail::slice_panel(panel_, lockbox_begin_leg, T);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep)); // holdout empty / unbuildable — nothing admitted (same as serial)
+    }
+    holdout_opt_par.emplace(std::move(*holdout_r));
+    sealed_opt_par.emplace(std::move(*sealed_r));
+  } else {
+    // --- Walk-forward windowed path (R2) — IDENTICAL to serial mine_into_oos ---
+    const atx::usize w = static_cast<atx::usize>(static_cast<atx::f64>(T) * cfg.oos_fraction);
+    if (w == 0U) {
+      return atx::core::Ok(std::move(rep));
+    }
+    if (cfg.oos_window >= cfg.oos_n_windows) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "mine_into_oos_parallel: oos_window must be < oos_n_windows");
+    }
+    // Guard against unsigned overflow: use division form, same as serial mine_into_oos.
+    if (embargo_len + 1U >= T || cfg.oos_n_windows > (T - embargo_len - 1U) / w) {
+      return atx::core::Ok(std::move(rep));
+    }
+    const atx::usize holdout_begin = T - (cfg.oos_n_windows - cfg.oos_window) * w;
+    auto sealed_r = eval::reserve_window(panel_, holdout_begin, w, embargo_len);
+    if (!sealed_r.has_value()) {
+      return atx::core::Ok(std::move(rep));
+    }
+    auto holdout_r = eval::detail::slice_panel(panel_, holdout_begin, holdout_begin + w);
+    if (!holdout_r.has_value()) {
+      return atx::core::Ok(std::move(rep));
+    }
+    holdout_opt_par.emplace(std::move(*holdout_r));
+    sealed_opt_par.emplace(std::move(*sealed_r));
   }
-  const alpha::Panel holdout = std::move(*holdout_r); // [lockbox_begin, T)
+
+  const alpha::Panel &train = sealed_opt_par->visible(); // [0, holdout_begin - embargo_len)
+  const alpha::Panel &holdout = *holdout_opt_par;
 
   // (1) run the S3-5 search over the TRAIN panel in the PARENT — IDENTICAL to serial
   // mine_into_oos (a fresh seeded driver over `train`, F1 replay). The search's own
@@ -1127,11 +1278,11 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   rep.cse_pct = mean_cse_pct(res);
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
-  // F4 — the admission deflation N is the search's running distinct-candidate count
-  // (IDENTICAL to serial mine_into_oos).
+  // F4 / R1 — prior + this run's N, IDENTICAL to serial mine_into_oos.
   FitnessCfg admit_fit = cfg.search.fitness;
+  const atx::u64 prior_r1_par_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par_oos) + res.trial_count;
   }
 
   // (Submit #1) TRAIN RANKING eval over the executor — reproduces serial step 2
@@ -1260,6 +1411,11 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first. SEQUENTIAL
   // in the parent — byte-identical to serial mine_into_oos:757-835 (same F5 drops, same
   // hold_dsr, same gate, same admit, same digest fold, same oos_metrics push).
+  // R3b: collect admitted holdout PnL streams in admit order for the post-loop PBO
+  // computation (IDENTICAL collection as serial mine_into_oos — same admit order, same
+  // hold_pnl values — guaranteeing seq==parallel PBO match by construction).
+  std::vector<std::vector<atx::f64>> admitted_hold_pnls_par; // in admit order (R3b)
+
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
 
@@ -1322,7 +1478,8 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl); // W4b: realized HOLDOUT PnL of an admitted alpha
+        admitted_pnls.push_back(hold_pnl);          // W4b: realized HOLDOUT PnL of an admitted alpha
+        admitted_hold_pnls_par.push_back(hold_pnl); // R3b: collect in admit order
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -1339,6 +1496,42 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
+  // R1: increment once per mine run, AFTER the loop — IDENTICAL to serial mine_into_oos.
+  if (res.trial_count > 0U) {
+    lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
+  }
+
+  // R3b: compute the run-level CSCV PBO — IDENTICAL logic to serial mine_into_oos,
+  // applied to the SAME admit-order holdout PnL vectors, guaranteeing seq==parallel match.
+  {
+    const atx::usize M = admitted_hold_pnls_par.size();
+    if (M >= 2U) {
+      const atx::usize T_h = admitted_hold_pnls_par[0].size();
+      if (T_h >= 2U) {
+        const atx::usize cap = (T_h < 16U) ? T_h : 16U;
+        const atx::usize n_splits = cap - (cap % 2U); // floor to even
+        if (n_splits >= 2U) {
+          // All admitted hold_pnl vectors are evaluated on the SAME holdout sub-panel
+          // so their lengths MUST equal T_h. ATX_ASSERT documents the contract explicitly;
+          // it is a no-op under NDEBUG so release behavior is unchanged on the valid path.
+          std::vector<atx::f64> perf(M * T_h);
+          for (atx::usize c = 0U; c < M; ++c) {
+            const std::vector<atx::f64> &pnl = admitted_hold_pnls_par[c];
+            ATX_ASSERT(pnl.size() == T_h); // all admitted streams must span the same holdout panel
+            for (atx::usize t = 0U; t < T_h; ++t) {
+              perf[c * T_h + t] = pnl[t];
+            }
+          }
+          auto pbo_r = eval::pbo_cscv_checked(
+              std::span<const atx::f64>{perf}, M, n_splits);
+          if (pbo_r.has_value()) {
+            rep.oos_pbo = pbo_r->pbo;
+          }
+        }
+      }
+    }
+  }
+
   return atx::core::Ok(std::move(rep));
 }
 

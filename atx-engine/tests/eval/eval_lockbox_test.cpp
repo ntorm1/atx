@@ -22,7 +22,6 @@
 #include <cmath>
 #include <cstdint>
 #include <span>
-#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -260,6 +259,119 @@ TEST(EvalLockbox, InvalidFracIsError) {
   EXPECT_FALSE(reserve_lockbox(panel, /*frac*/ 0.0, /*embargo_len*/ 0).has_value());
   // A valid frac that carves >= 1 lockbox date and leaves a visible region is Ok.
   EXPECT_TRUE(reserve_lockbox(panel, /*frac*/ 0.20, /*embargo_len*/ 0).has_value());
+}
+
+// =============================================================================
+//  R2 — reserve_window tests
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+//  ReserveWindowTerminalEquivalence — reserve_window with terminal args EQUALS
+//  reserve_lockbox field-for-field: same visible cells, same reservation
+//  scalars, same content_address.
+// ---------------------------------------------------------------------------
+TEST(EvalLockbox, ReserveWindowTerminalEquivalence) {
+  const Panel panel = make_panel(/*dates*/ 100, /*insts*/ 4, 0xABCDu);
+  const atx::f64 frac = 0.20;
+  const usize embargo_len = 2U;
+
+  // reserve_lockbox: lockbox_begin = T - floor(frac*T) = 100 - 20 = 80
+  auto lb_r = reserve_lockbox(panel, frac, embargo_len);
+  ASSERT_TRUE(lb_r.has_value()) << lb_r.error().to_string();
+  const SealedPanel &lb = *lb_r;
+
+  // reserve_window with identical terminal args
+  const usize T = panel.dates();
+  const usize lockbox_dates = static_cast<usize>(static_cast<atx::f64>(T) * frac);
+  const usize holdout_begin = T - lockbox_dates;
+  auto rw_r = atx::engine::eval::reserve_window(panel, holdout_begin, lockbox_dates, embargo_len);
+  ASSERT_TRUE(rw_r.has_value()) << rw_r.error().to_string();
+  const SealedPanel &rw = *rw_r;
+
+  // Reservation fields must be byte-identical.
+  EXPECT_EQ(rw.reservation().dates,           lb.reservation().dates);
+  EXPECT_EQ(rw.reservation().instruments,     lb.reservation().instruments);
+  EXPECT_EQ(rw.reservation().lockbox_begin,   lb.reservation().lockbox_begin);
+  EXPECT_EQ(rw.reservation().embargo_len,     lb.reservation().embargo_len);
+  EXPECT_EQ(rw.reservation().visible_len,     lb.reservation().visible_len);
+  EXPECT_EQ(rw.reservation().content_address, lb.reservation().content_address);
+
+  // Visible Panel geometry must match.
+  ASSERT_EQ(rw.visible().dates(),       lb.visible().dates());
+  ASSERT_EQ(rw.visible().instruments(), lb.visible().instruments());
+  ASSERT_EQ(rw.visible().num_fields(),  lb.visible().num_fields());
+
+  // Visible Panel content (every field's cells) must be identical.
+  for (usize f = 0; f < lb.visible().num_fields(); ++f) {
+    const auto lb_col = lb.visible().field_all(static_cast<FieldId>(f));
+    const auto rw_col = rw.visible().field_all(static_cast<FieldId>(f));
+    ASSERT_EQ(lb_col.size(), rw_col.size());
+    for (usize c = 0; c < lb_col.size(); ++c) {
+      EXPECT_EQ(lb_col[c], rw_col[c]) << "cell " << c << " differs between reserve_lockbox and reserve_window";
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  ReserveWindowInterior — a window in the middle yields the correct visible
+//  region, correct visible cell count, and correct error cases.
+// ---------------------------------------------------------------------------
+TEST(EvalLockbox, ReserveWindowInterior) {
+  const Panel panel = make_panel(/*dates*/ 100, /*insts*/ 3, 0x5A5Au);
+  //  holdout_begin=60, holdout_len=10, embargo_len=5
+  //  => visible = [0, 55), holdout = [60, 70)
+  const usize holdout_begin = 60U;
+  const usize holdout_len   = 10U;
+  const usize embargo_len   =  5U;
+
+  auto r = atx::engine::eval::reserve_window(panel, holdout_begin, holdout_len, embargo_len);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  const SealedPanel &sp = r.value();
+  const SealedReservation &res = sp.reservation();
+
+  EXPECT_EQ(res.dates,         100U);
+  EXPECT_EQ(res.instruments,     3U);
+  EXPECT_EQ(res.lockbox_begin,  60U);  // holdout_begin
+  EXPECT_EQ(res.embargo_len,     5U);
+  EXPECT_EQ(res.visible_len,    55U);  // holdout_begin - embargo_len
+  EXPECT_EQ(sp.visible().dates(), 55U);
+
+  // Visible cells match the panel prefix [0, 55).
+  for (usize f = 0; f < panel.num_fields(); ++f) {
+    const auto full = panel.field_all(static_cast<FieldId>(f));
+    const auto vis  = sp.visible().field_all(static_cast<FieldId>(f));
+    ASSERT_EQ(vis.size(), 55U * 3U);
+    for (usize c = 0; c < vis.size(); ++c) {
+      EXPECT_EQ(vis[c], full[c]) << "visible cell " << c << " mismatch";
+    }
+  }
+
+  // Slice the holdout and verify dates count.
+  auto hold_r = atx::engine::eval::detail::slice_panel(panel, holdout_begin, holdout_begin + holdout_len);
+  ASSERT_TRUE(hold_r.has_value());
+  EXPECT_EQ(hold_r->dates(), holdout_len);
+}
+
+// ---------------------------------------------------------------------------
+//  ReserveWindowErrorCases — the three validation conditions.
+// ---------------------------------------------------------------------------
+TEST(EvalLockbox, ReserveWindowErrorCases) {
+  const Panel panel = make_panel(/*dates*/ 50, /*insts*/ 2, 0x9u);
+
+  // holdout_len == 0 is invalid.
+  EXPECT_EQ(atx::engine::eval::reserve_window(panel, 30U, 0U, 0U).error().code(),
+            ErrorCode::InvalidArgument);
+
+  // holdout_begin + holdout_len > T (window past end).
+  EXPECT_EQ(atx::engine::eval::reserve_window(panel, 40U, 15U, 0U).error().code(),
+            ErrorCode::InvalidArgument);
+
+  // embargo_len >= holdout_begin (no visible region).
+  EXPECT_EQ(atx::engine::eval::reserve_window(panel, 5U, 10U, 5U).error().code(),
+            ErrorCode::InvalidArgument);
+
+  // A valid interior window succeeds.
+  EXPECT_TRUE(atx::engine::eval::reserve_window(panel, 30U, 10U, 5U).has_value());
 }
 
 } // namespace

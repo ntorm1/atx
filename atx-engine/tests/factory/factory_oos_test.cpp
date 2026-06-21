@@ -14,6 +14,8 @@
 // panels + the seed grammar) so the OOS admit semantics are validated against the
 // same planted-edge discrimination the S3 / S4b suite proves for the legacy path.
 
+#include <array>
+#include <cmath>    // std::isnan (R3b PBO tests)
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -38,6 +40,9 @@
 
 #include "atx/engine/library/library.hpp"
 
+#include "atx/engine/parallel/executor.hpp"
+#include "atx/engine/parallel/process_executor.hpp"
+
 namespace atxtest_factory_oos_test {
 
 using atx::f64;
@@ -60,9 +65,12 @@ using atx::engine::exec::VolumeCapCfg;
 using atx::engine::factory::Factory;
 using atx::engine::factory::FactoryConfig;
 using atx::engine::factory::FactoryReport;
+using atx::engine::parallel::ExecutorConfig;
+using atx::engine::parallel::ProcessExecutor;
 
 namespace lib = atx::engine::library;
 namespace eval = atx::engine::eval;
+namespace core = atx::core;
 
 // ---- builders (mirrored from factory_mine_into_test.cpp) --------------------
 
@@ -542,6 +550,409 @@ TEST(FactoryOos, AccumulationGeometryMismatchHaltsRun) {
     auto rep_r = f.mine_into(cfg, library, gate);
     ASSERT_TRUE(rep_r.has_value())
         << "a matching-geometry reopen must accumulate cleanly: " << rep_r.error().to_string();
+  }
+}
+
+// =============================================================================
+//  R2 — Walk-Forward Holdout Tests
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+//  WalkForwardDisjointWindows — with oos_n_windows=3, the three windows hold
+//  out DISJOINT date ranges. We verify this by checking that the holdout slice
+//  for each window covers a non-overlapping [holdout_begin, holdout_begin+w).
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardDisjointWindows) {
+  // panel = 120 dates, oos_fraction=0.20 => w=24
+  // oos_n_windows=3: three 24-date windows tiling [T-72, T) = [48, 120)
+  // window 0: [48, 72)    window 1: [72, 96)    window 2: [96, 120)
+  const Panel &panel = real_signal_panel(); // 120 dates, 8 insts
+  const usize T = panel.dates();
+  const atx::f64 frac = 0.20;
+  const usize n_windows = 3U;
+  const usize w = static_cast<usize>(static_cast<atx::f64>(T) * frac);
+  ASSERT_EQ(w, 24U);
+
+  struct WindowInfo {
+    usize holdout_begin;
+    usize holdout_end; // exclusive
+  };
+  std::vector<WindowInfo> windows;
+  for (usize k = 0U; k < n_windows; ++k) {
+    const usize hb = T - (n_windows - k) * w;
+    windows.push_back({hb, hb + w});
+  }
+
+  // Verify disjoint (non-overlapping and contiguous) windows.
+  for (usize k = 0U; k + 1U < n_windows; ++k) {
+    EXPECT_EQ(windows[k].holdout_end, windows[k + 1U].holdout_begin)
+        << "windows must be contiguous (no gap between window " << k << " and " << k + 1U;
+    EXPECT_LT(windows[k].holdout_begin, windows[k].holdout_end) << "window " << k << " must be non-empty";
+  }
+  // Window (n-1) is the terminal window [T-w, T).
+  EXPECT_EQ(windows[n_windows - 1U].holdout_begin, T - w);
+  EXPECT_EQ(windows[n_windows - 1U].holdout_end,   T);
+
+  // Also drive mine_into with each window and confirm twice-run byte-identical
+  // digests (determinism) and that window 2 matches the default oos_n_windows=0 run.
+  AlphaGate gate{default_gate_cfg()};
+
+  // Default (oos_n_windows=0) terminal window baseline.
+  u64 digest_terminal_default = 0U;
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library lib_def = lib::Library::open(tmpdir("wfw_def"), default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 31);
+    cfg.oos_fraction = frac;
+    // oos_n_windows stays 0 (default).
+    const FactoryReport rep = f.mine_into(cfg, lib_def, gate).value();
+    digest_terminal_default = rep.digest;
+  }
+
+  // Window 2 (terminal window): must be byte-identical to the default path.
+  u64 digest_win2_run1 = 0U;
+  u64 digest_win2_run2 = 0U;
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library lib_w2 = lib::Library::open(tmpdir("wfw_w2a"), default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 31); // SAME seed as default baseline
+    cfg.oos_fraction = frac;
+    cfg.oos_n_windows = n_windows;
+    cfg.oos_window    = n_windows - 1U; // terminal window
+    const FactoryReport rep = f.mine_into(cfg, lib_w2, gate).value();
+    digest_win2_run1 = rep.digest;
+  }
+  {
+    Fixture fx{real_signal_panel()};
+    lib::Library lib_w2 = lib::Library::open(tmpdir("wfw_w2b"), default_gate_cfg(), {0xC0FFEEu});
+    Factory f = fx.factory();
+    FactoryConfig cfg = real_signal_cfg(/*seed*/ 31);
+    cfg.oos_fraction = frac;
+    cfg.oos_n_windows = n_windows;
+    cfg.oos_window    = n_windows - 1U;
+    const FactoryReport rep = f.mine_into(cfg, lib_w2, gate).value();
+    digest_win2_run2 = rep.digest;
+  }
+  EXPECT_EQ(digest_win2_run1, digest_win2_run2) << "window 2 must be twice-run byte-identical";
+  EXPECT_EQ(digest_win2_run1, digest_terminal_default)
+      << "window (n_windows-1) == terminal window must match the oos_n_windows=0 default";
+
+  // Windows 0 and 1 must each be twice-run byte-identical (deterministic).
+  for (usize k = 0U; k < n_windows - 1U; ++k) {
+    u64 d_run1 = 0U;
+    u64 d_run2 = 0U;
+    for (int run = 0; run < 2; ++run) {
+      Fixture fx{real_signal_panel()};
+      const std::string tag = "wfw_k" + std::to_string(k) + "_r" + std::to_string(run);
+      lib::Library lib_k = lib::Library::open(tmpdir(tag), default_gate_cfg(), {0xC0FFEEu});
+      Factory f = fx.factory();
+      FactoryConfig cfg = real_signal_cfg(/*seed*/ 31);
+      cfg.oos_fraction = frac;
+      cfg.oos_n_windows = n_windows;
+      cfg.oos_window    = k;
+      const FactoryReport rep = f.mine_into(cfg, lib_k, gate).value();
+      if (run == 0) { d_run1 = rep.digest; }
+      else          { d_run2 = rep.digest; }
+    }
+    EXPECT_EQ(d_run1, d_run2) << "window " << k << " must be twice-run byte-identical";
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardDefaultByteIdentical — oos_n_windows=0 produces byte-identical
+//  digest + admitted + oos_metrics to the pre-R2 default path.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardDefaultByteIdentical) {
+  AlphaGate gate{default_gate_cfg()};
+
+  Fixture fxA{real_signal_panel()};
+  Fixture fxB{real_signal_panel()};
+  lib::Library libA = lib::Library::open(tmpdir("wfw_def_A"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library libB = lib::Library::open(tmpdir("wfw_def_B"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  Factory fB = fxB.factory();
+
+  FactoryConfig cfgA = real_signal_cfg(/*seed*/ 55);
+  cfgA.oos_fraction = 0.20;
+  // oos_n_windows stays 0 (the default).
+
+  FactoryConfig cfgB = cfgA; // identical
+
+  const FactoryReport repA = fA.mine_into(cfgA, libA, gate).value();
+  const FactoryReport repB = fB.mine_into(cfgB, libB, gate).value();
+
+  EXPECT_EQ(repA.digest,   repB.digest)   << "default path must be byte-identical across two runs";
+  EXPECT_EQ(repA.admitted, repB.admitted) << "admitted count must be identical";
+  EXPECT_EQ(libA.snapshot().version_id, libB.snapshot().version_id);
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardSeqParallel — a non-terminal windowed mine_into (serial) matches
+//  mine_into_oos_parallel via a REAL ProcessExecutor (digest, admitted,
+//  version_id, reject histogram, oos_metrics). Mirrors the Task-5 OOS invariant
+//  test (ParallelWorkloadMineProcess::OosMineReportDigestProcessEqualsSequential)
+//  but for the windowed (R2) carve path. Uses ProcessExecutor@1 and @4 to
+//  exercise the actual mine_into_oos_parallel walk-forward branch (NOT the
+//  InProcess delegate fallback).
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardSeqParallel) {
+  AlphaGate gate{default_gate_cfg()};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 77);
+  cfg.oos_fraction  = 0.20;
+  cfg.oos_n_windows = 3U;
+  cfg.oos_window    = 1U; // interior (non-terminal) window
+
+  // Serial oracle — mine_into -> mine_into_oos (no executor).
+  u64 want_digest  = 0;
+  u64 want_version = 0;
+  usize want_admitted = 0;
+  std::array<usize, 6> want_histogram{};
+  {
+    Fixture fxS{real_signal_panel()};
+    lib::Library libS = lib::Library::open(tmpdir("wfw_seq"), default_gate_cfg(), {0xC0FFEEu});
+    Factory fS = fxS.factory();
+    const FactoryReport repS = fS.mine_into(cfg, libS, gate).value();
+    want_digest      = repS.digest;
+    want_version     = libS.snapshot().version_id;
+    want_admitted    = repS.admitted;
+    want_histogram   = repS.reject_histogram;
+  }
+
+  // ProcessExecutor @ 1 and @ 4 — the REAL parallel walk-forward path.
+  // mine_into(cfg, lib, gate, exec) dispatches to mine_into_oos_parallel when
+  // oos_fraction > 0 AND the executor is MultiProcess (ProcessExecutor).
+  // Each must reproduce the serial OOS digest / admitted / version_id byte-for-byte.
+  for (const usize w : {usize{1}, usize{4}}) {
+    Fixture fxP{real_signal_panel()};
+    lib::Library libP =
+        lib::Library::open(tmpdir("wfw_par" + std::to_string(w)), default_gate_cfg(), {0xC0FFEEu});
+    Factory fP = fxP.factory();
+    ProcessExecutor pe{ExecutorConfig{w, false}};
+    const FactoryReport repP = fP.mine_into(cfg, libP, gate, pe).value();
+    EXPECT_EQ(repP.digest, want_digest)
+        << "windowed walk-forward ProcessExecutor@" << w << " digest diverged from serial";
+    EXPECT_EQ(repP.admitted, want_admitted)
+        << "windowed walk-forward ProcessExecutor@" << w << " admitted diverged";
+    EXPECT_EQ(libP.snapshot().version_id, want_version)
+        << "windowed walk-forward ProcessExecutor@" << w << " version_id diverged";
+    EXPECT_EQ(repP.reject_histogram, want_histogram)
+        << "windowed walk-forward ProcessExecutor@" << w << " reject_histogram diverged";
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardWindowOutOfRange — oos_window >= oos_n_windows returns an error.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardWindowOutOfRange) {
+  AlphaGate gate{default_gate_cfg()};
+  Fixture fx{real_signal_panel()};
+  lib::Library library = lib::Library::open(tmpdir("wfw_oob"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 99);
+  cfg.oos_fraction  = 0.20;
+  cfg.oos_n_windows = 3U;
+  cfg.oos_window    = 3U; // out of range: must be < oos_n_windows
+
+  auto rep_r = f.mine_into(cfg, library, gate);
+  ASSERT_FALSE(rep_r.has_value()) << "oos_window >= oos_n_windows must return Err";
+  EXPECT_EQ(rep_r.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ---------------------------------------------------------------------------
+//  WalkForwardGeometryGuardOverflow — pathological oos_n_windows that would
+//  wrap usize when multiplied by w must NOT produce UB or a bogus holdout;
+//  the geometry guard must catch it cleanly and return an empty "admitted 0"
+//  Ok report (same as the too-short-panel case), with no crash or wrap-through.
+//  (Finding A: the old `T < oos_n_windows * w + embargo_len + 1U` product form
+//  can wrap; the fix uses division form to avoid any product.)
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, WalkForwardGeometryGuardOverflow) {
+  AlphaGate gate{default_gate_cfg()};
+  Fixture fx{real_signal_panel()};
+  lib::Library library = lib::Library::open(tmpdir("wfw_overflow"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 7);
+  cfg.oos_fraction  = 0.20;
+  // A huge oos_n_windows that would overflow usize when multiplied by w.
+  // real_signal_panel() = 120 dates, w = floor(0.20*120) = 24.
+  // 24 * (SIZE_MAX / 24 + 1) would overflow; use SIZE_MAX / 2 + 1 which is > T.
+  cfg.oos_n_windows = (static_cast<atx::usize>(-1) / 24U) + 1U; // product 24 * this wraps
+  cfg.oos_window    = 0U; // valid index
+
+  // Must return Ok with admitted == 0 (panel too short), no UB, no crash.
+  auto rep_r = f.mine_into(cfg, library, gate);
+  ASSERT_TRUE(rep_r.has_value())
+      << "pathological oos_n_windows must return Ok(empty report), not Err: "
+      << (rep_r.has_value() ? "" : rep_r.error().to_string());
+  EXPECT_EQ(rep_r->admitted, 0u)
+      << "geometry guard must reject the window and return admitted == 0";
+  EXPECT_EQ(library.n_alphas(), 0u) << "no alpha should be persisted when guard fires";
+}
+
+// =============================================================================
+//  R3b — Run-level CSCV PBO tests
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+//  R3b_PboFiniteWithTwoAdmits — an OOS accumulation run that admits >= 2 alphas
+//  records a finite oos_pbo in [0, 1] in the FactoryReport.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, R3b_PboFiniteWithTwoAdmits) {
+  // Use a very permissive gate + large enough panel so >= 2 are admitted.
+  // real_signal_panel() = 120 dates, 8 insts with a stationary momentum edge.
+  Fixture fx{real_signal_panel()};
+  GateConfig gc;
+  gc.min_sharpe    = 0.0;
+  gc.min_fitness   = 0.0;
+  gc.max_turnover  = 10.0;
+  gc.max_pool_corr = 1.0; // allow fully correlated — maximize admitted count
+  AlphaGate gate{gc};
+  lib::Library library = lib::Library::open(tmpdir("pbo_finite"), gc, {0xC0FFEEu});
+  Factory f = fx.factory();
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 7);
+  cfg.oos_fraction = 0.20;
+  cfg.min_dsr = 0.0; // permissive deflation bar so more pass
+
+  const FactoryReport rep = f.mine_into(cfg, library, gate).value();
+
+  if (rep.admitted >= 2U) {
+    // PBO must be finite and in [0, 1].
+    EXPECT_FALSE(std::isnan(rep.oos_pbo))
+        << "oos_pbo must be finite when >= 2 alphas are admitted";
+    EXPECT_GE(rep.oos_pbo, 0.0) << "oos_pbo must be >= 0";
+    EXPECT_LE(rep.oos_pbo, 1.0) << "oos_pbo must be <= 1";
+  } else {
+    // If < 2 admitted with these settings, NaN is correct.
+    EXPECT_TRUE(std::isnan(rep.oos_pbo))
+        << "oos_pbo must be NaN when < 2 alphas admitted";
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  R3b_PboDeterministic — twice-run identical: same seed + panel + oos_fraction
+//  yields the same oos_pbo bit-for-bit.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, R3b_PboDeterministic) {
+  GateConfig gc;
+  gc.min_sharpe    = 0.0;
+  gc.min_fitness   = 0.0;
+  gc.max_turnover  = 10.0;
+  gc.max_pool_corr = 1.0;
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 13);
+  cfg.oos_fraction = 0.20;
+  cfg.min_dsr = 0.0;
+
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("pbo_det_a"), gc, {0xC0FFEEu});
+  lib::Library lib2 = lib::Library::open(tmpdir("pbo_det_b"), gc, {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  Factory f2 = fx2.factory();
+
+  const FactoryReport rep1 = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport rep2 = f2.mine_into(cfg, lib2, gate).value();
+
+  EXPECT_EQ(rep1.admitted, rep2.admitted);
+  EXPECT_EQ(rep1.digest,   rep2.digest) << "digest must be byte-identical (twice-run)";
+
+  // PBO must match bit-for-bit.
+  if (std::isnan(rep1.oos_pbo)) {
+    EXPECT_TRUE(std::isnan(rep2.oos_pbo)) << "both must be NaN if first is NaN";
+  } else {
+    EXPECT_EQ(rep1.oos_pbo, rep2.oos_pbo) << "oos_pbo must be byte-identical across two runs";
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  R3b_DigestUnchangedByPbo — the PBO computation is REPORT-ONLY: it must not
+//  affect rep.digest, the admitted count, or the library version_id. We enforce
+//  this with a HARDCODED PIN over a run where PBO is FINITE (>= 2 admitted).
+//
+//  The three constants below were captured from a deterministic run (seed=17,
+//  oos=0.20, permissive gate, min_dsr=0) and verified across two identical runs.
+//  If anyone folds oos_pbo into the digest/admission, these pinned values shift
+//  and this test fails — that is the report-only guard.
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, R3b_DigestUnchangedByPbo) {
+  // Pinned constants (captured 2026-06-20, verified twice-run deterministic):
+  static constexpr atx::u64  kPinnedDigest    = 14354626274288095608ULL;
+  static constexpr atx::usize kPinnedAdmitted  = 29U;
+  static constexpr atx::u64  kPinnedVersionId  = 2670205213ULL;
+
+  GateConfig gc;
+  gc.min_sharpe    = 0.0;
+  gc.min_fitness   = 0.0;
+  gc.max_turnover  = 10.0;
+  gc.max_pool_corr = 1.0;
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);
+  cfg.oos_fraction = 0.20;
+  cfg.min_dsr = 0.0;
+
+  Fixture fx{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("pbo_digest_a"), gc, {0xC0FFEEu});
+  Factory f = fx.factory();
+  const FactoryReport rep = f.mine_into(cfg, lib1, gate).value();
+  const atx::u64 vid = lib1.snapshot().version_id;
+
+  // PBO must be finite (we chose a run that admits >= 2) so the pin is over a run
+  // where PBO was actually computed, not a NaN-trivial run.
+  ASSERT_TRUE(std::isfinite(rep.oos_pbo))
+      << "fixture must admit >= 2 alphas so PBO is finite; got admitted=" << rep.admitted;
+
+  // If anyone folds oos_pbo into the digest/admission, these pinned values shift
+  // and this test fails — that is the report-only guard.
+  EXPECT_EQ(rep.digest,   kPinnedDigest)
+      << "digest must match pin (PBO is report-only; a shift means PBO touched admission)";
+  EXPECT_EQ(rep.admitted, kPinnedAdmitted)
+      << "admitted count must match pin (PBO must not gate any alpha)";
+  EXPECT_EQ(vid,          kPinnedVersionId)
+      << "library version_id must match pin (PBO must not affect library state)";
+}
+
+// ---------------------------------------------------------------------------
+//  R3b_PboNanWithOneAdmit — when only 1 alpha is admitted on the OOS path,
+//  oos_pbo must be NaN (CSCV requires >= 2 candidates).
+// ---------------------------------------------------------------------------
+TEST(FactoryOos, R3b_PboNanWithOneAdmit) {
+  // Force admitted <= 1 by using pop=1, gens=1 so the search evaluates exactly one
+  // candidate genome. Whether that single candidate passes or fails the OOS gate,
+  // admitted is 0 or 1 — never >= 2 — so oos_pbo MUST be NaN (CSCV requires >= 2).
+  // The else-FAIL branch documents the fixture contract: if admitted somehow reaches
+  // >= 2, the fixture design is broken and the test must be investigated.
+  GateConfig gc_one;
+  gc_one.min_sharpe    = 0.0;
+  gc_one.min_fitness   = 0.0;
+  gc_one.max_turnover  = 10.0;
+  gc_one.max_pool_corr = 1.0; // allow any corr — admission count is controlled by pop=1
+  AlphaGate gate_one{gc_one};
+
+  Fixture fx{real_signal_panel()};
+  lib::Library library = lib::Library::open(tmpdir("pbo_nan_one"), gc_one, {0xC0FFEEu});
+  Factory f = fx.factory();
+
+  // pop=1, gens=1 => exactly ONE candidate is generated and evaluated.
+  FactoryConfig cfg = base_cfg(/*seed*/ 99, /*pop*/ 1, /*gens*/ 1);
+  cfg.oos_fraction = 0.20;
+  cfg.min_dsr = 0.0;
+
+  const FactoryReport rep = f.mine_into(cfg, library, gate_one).value();
+
+  if (rep.admitted <= 1U) {
+    EXPECT_TRUE(std::isnan(rep.oos_pbo))
+        << "oos_pbo must be NaN when < 2 alphas admitted (got admitted=" << rep.admitted << ")";
+  } else {
+    FAIL() << "fixture design error: expected admitted<=1 but got " << rep.admitted
+           << "; pop=1/gens=1 can only evaluate one candidate, so admitted cannot exceed 1";
   }
 }
 

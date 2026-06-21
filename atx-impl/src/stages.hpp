@@ -19,6 +19,7 @@ struct StageResult {
 [[nodiscard]] atx::core::Result<StageResult> run_load(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_panel(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_discover(const RunConfig&);
+[[nodiscard]] atx::core::Result<StageResult> run_sweep(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_combine(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_optimize(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_report(const RunConfig&);

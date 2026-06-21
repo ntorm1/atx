@@ -12,7 +12,7 @@
 namespace atx::impl {
 
 // ---------------------------------------------------------------------------
-// emit_digest_line (initializer_list overload — used by tests)
+// emit_digest_line (initializer_list overload â€” used by tests)
 // Exactly: "[atx-impl] stage=<stage> digest=<hex16> k=v k=v\n"
 // ---------------------------------------------------------------------------
 void emit_digest_line(std::ostream& out,
@@ -28,7 +28,7 @@ void emit_digest_line(std::ostream& out,
 }
 
 // ---------------------------------------------------------------------------
-// emit_digest_line (vector overload — used by dispatch with StageResult::kvs)
+// emit_digest_line (vector overload â€” used by dispatch with StageResult::kvs)
 // ---------------------------------------------------------------------------
 void emit_digest_line(std::ostream& out,
                       std::string_view stage,
@@ -57,6 +57,7 @@ static void print_usage(std::ostream& out) {
            "  report     Generate performance report\n"
            "  run        Run the full pipeline from a config file\n"
            "  regime     Build a regime/macro .seg from staged CSVs\n"
+           "  sweep      Sweep K seeds into one --library-dir accumulating library\n"
            "\n"
            "Global flags: --help, --quiet, --digest-only\n";
 }
@@ -102,6 +103,7 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
         if (sub == "report")   return run_report(cfg);
         if (sub == "run")      return run_all(cfg);
         if (sub == "regime")   return run_regime(cfg);
+        if (sub == "sweep")    return run_sweep(cfg);
         // Unreachable: parse_args already validated the subcommand.
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
             "unknown subcommand: '" + sub + "'");

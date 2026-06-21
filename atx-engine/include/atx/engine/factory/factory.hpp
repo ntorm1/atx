@@ -81,7 +81,7 @@
 //  untouched — F8).
 
 #include <array>  // std::array (reject_histogram, indexed by library::AdmitKind)
-#include <limits> // std::numeric_limits (W4a split-sharpe disabling sentinel)
+#include <limits> // std::numeric_limits (W4a split-sharpe disabling sentinel; R3b oos_pbo NaN default)
 #include <string> // std::string (seed-expression / field source)
 #include <vector> // std::vector
 
@@ -169,6 +169,15 @@ struct FactoryConfig {
   //  universe. BORROWED: the pointee MUST outlive every mine()/mine_into() call (the
   //  caller — e.g. stage_discover — owns the derived weak Panel for the run).
   const alpha::Panel *weak_panel = nullptr;
+  // --- R2 walk-forward holdout (additive; 0 == legacy terminal reserve_lockbox path, byte-identical).
+  //  When oos_n_windows >= 1, the holdout is the `oos_window`-th of oos_n_windows DISJOINT fixed-length
+  //  blocks tiling the terminal region [T - oos_n_windows*w, T), where w = floor(oos_fraction * T):
+  //    holdout_begin(k) = T - (oos_n_windows - oos_window) * w ;  holdout = [holdout_begin, holdout_begin + w).
+  //  Window (oos_n_windows-1) is the terminal window [T - w, T) — IDENTICAL to today's reserve_lockbox.
+  //  PIT-causal: train is always [0, holdout_begin - embargo) (precedes the holdout). 0 keeps the
+  //  legacy single-window terminal path byte-for-byte.
+  atx::usize oos_n_windows = 0;  // 0 == legacy terminal holdout (reserve_lockbox); >=1 enables walk-forward
+  atx::usize oos_window   = 0;   // which window [0, oos_n_windows); the sweep advances this per run
 };
 
 // =========================================================================
@@ -239,6 +248,17 @@ struct FactoryReport {
   atx::usize pbo_n_candidates = 0;
   atx::usize pbo_n_splits = 0;
   bool pbo_gate_passed = true;
+  // --- R3b: run-level CSCV PBO (probability of backtest overfitting) over the
+  //  admitted alphas' holdout PnL streams for this run. SET-LEVEL statistic: one
+  //  value per run (NOT per candidate). Computed AFTER all admission decisions
+  //  (pure/post-admission — does NOT change which alphas are admitted, rep.digest,
+  //  or the library version_id). NaN when < 2 alphas were admitted on the OOS path,
+  //  or when the holdout is too short for any split, or when OOS is off (oos_fraction
+  //  == 0). Never emitted on the non-accumulation path (byte-identical to pre-R3).
+  //  NOTE (merge): this DUPLICATES the W4b `pbo` statistic above with a different
+  //  n_splits rule (largest even <= min(T_h,16) vs finalize_run_pbo's clamp) and no
+  //  gate. Both are recorded; reconciling the two PBO computations is a follow-up.
+  atx::f64 oos_pbo{std::numeric_limits<atx::f64>::quiet_NaN()};
 };
 
 namespace detail {

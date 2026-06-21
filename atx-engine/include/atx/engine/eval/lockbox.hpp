@@ -320,4 +320,58 @@ reserve_lockbox(const alpha::Panel &panel, atx::f64 frac, const CpcvConfig &cfg)
   return reserve_lockbox(panel, 0.20, CpcvConfig{});
 }
 
+// ===========================================================================
+//  reserve_window — reserve an ARBITRARY contiguous holdout window
+//  [holdout_begin, holdout_begin + holdout_len) with an embargo gap of
+//  `embargo_len` dates immediately before it; the visible (train) region is
+//  [0, holdout_begin - embargo_len). Generalizes reserve_lockbox (which is the
+//  terminal special case holdout_begin == T - holdout_len). PURE, deterministic,
+//  NO RNG.
+//
+//  Validation:
+//    * holdout_len > 0 (the holdout must hold at least one date).
+//    * holdout_begin + holdout_len <= T (window fits inside the panel).
+//    * embargo_len < holdout_begin (visible region is non-empty; equivalently
+//      holdout_begin - embargo_len >= 1).
+//  Returns Err(InvalidArgument) when any condition is violated.
+//
+//  Byte-identity invariant: for the terminal args
+//    reserve_window(panel, T - floor(frac*T), floor(frac*T), embargo_len)
+//  produces a SealedPanel field-for-field equal to
+//    reserve_lockbox(panel, frac, embargo_len)
+//  because both compute lockbox_begin = T - floor(frac*T) and call the same
+//  detail::build_visible_panel and detail::content_address helpers.
+// ===========================================================================
+[[nodiscard]] inline atx::core::Result<SealedPanel>
+reserve_window(const alpha::Panel &panel, atx::usize holdout_begin, atx::usize holdout_len,
+               atx::usize embargo_len) {
+  const atx::usize T = panel.dates();
+  if (holdout_len == 0U) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "reserve_window: holdout_len must be > 0");
+  }
+  if (holdout_begin + holdout_len > T) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "reserve_window: holdout window [holdout_begin, holdout_begin+holdout_len) "
+                          "extends past the panel end");
+  }
+  // embargo_len < holdout_begin ensures visible_len = holdout_begin - embargo_len >= 1.
+  if (embargo_len >= holdout_begin) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "reserve_window: embargo_len >= holdout_begin leaves no visible region");
+  }
+  const atx::usize visible_len = holdout_begin - embargo_len;
+
+  ATX_TRY(alpha::Panel visible, detail::build_visible_panel(panel, visible_len));
+
+  SealedReservation res;
+  res.dates = T;
+  res.instruments = panel.instruments();
+  res.lockbox_begin = holdout_begin;
+  res.embargo_len = embargo_len;
+  res.visible_len = visible_len;
+  res.content_address = detail::content_address(panel, holdout_begin, embargo_len);
+  return atx::core::Ok(SealedPanel{std::move(visible), res});
+}
+
 } // namespace atx::engine::eval

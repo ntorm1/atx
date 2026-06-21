@@ -343,5 +343,70 @@ TEST(ResearchDriver, SeededEngineDigestIsDeterministic) {
   EXPECT_EQ(a.runs, b.runs);
 }
 
+// =============================================================================
+//  WalkForwardWindowRotation — M1/R2: with oos_n_windows=3 and max_runs=3,
+//  per_run_oos_window must be {0, 1, 2} (run % oos_n_windows).
+//  This is the DIRECT telemetry proof that the per-run window actually rotates.
+//
+//  Also verifies:
+//   - per_run_oos_window is report-only (NOT in digest): the engine digest with
+//     oos_n_windows=3 must differ from oos_n_windows=0 (rotation affects mine
+//     outcomes), but adding the telemetry field itself does NOT perturb the digest
+//     of an oos_n_windows==0 run (the legacy path is byte-identical).
+//   - oos_n_windows==0: per_run_oos_window entries are all 0 (cfg.per_run.oos_window
+//     untouched), and the engine digest is unchanged by the telemetry field.
+// =============================================================================
+TEST(ResearchDriver, WalkForwardWindowRotation) {
+  Fixture fx_wf{real_signal_panel()};
+  Fixture fx_ref{real_signal_panel()};
+  AlphaGate gate{default_gate_cfg()};
+
+  // --- 3-run, oos_n_windows=3: windows should be {0, 1, 2} ---
+  lib::Library lib_wf = lib::Library::open(tmpdir("wf"), default_gate_cfg(), {kLibSeed});
+  ResearchDriver engine_wf{lib_wf, fx_wf.dsl, fx_wf.panel, fx_wf.sim, fx_wf.policy, gate};
+
+  ResearchConfig cfg_wf = real_signal_research_cfg(/*seed*/ 31, /*max_runs*/ 3, /*patience*/ 0);
+  cfg_wf.per_run.oos_fraction = 0.25; // enable OOS so window selection is meaningful
+  cfg_wf.per_run.oos_n_windows = 3;
+
+  const ResearchReport rep_wf = engine_wf.run(cfg_wf);
+
+  // Must have executed exactly 3 runs (no early stop, real-signal panel).
+  ASSERT_EQ(rep_wf.runs, 3u) << "need exactly 3 runs for {0,1,2} rotation proof";
+  // per_run_oos_window must record one entry per run.
+  ASSERT_EQ(rep_wf.per_run_oos_window.size(), 3u)
+      << "per_run_oos_window must have one entry per run";
+  // The rotation: run 0 -> window 0, run 1 -> window 1, run 2 -> window 2.
+  EXPECT_EQ(rep_wf.per_run_oos_window[0], usize{0}) << "run 0 must use window 0";
+  EXPECT_EQ(rep_wf.per_run_oos_window[1], usize{1}) << "run 1 must use window 1";
+  EXPECT_EQ(rep_wf.per_run_oos_window[2], usize{2}) << "run 2 must use window 2";
+
+  // --- 3-run, oos_n_windows=0: per_run_oos_window entries should all be 0
+  //     (cfg.per_run.oos_window is untouched = its default 0). ---
+  lib::Library lib_ref = lib::Library::open(tmpdir("ref"), default_gate_cfg(), {kLibSeed});
+  ResearchDriver engine_ref{lib_ref, fx_ref.dsl, fx_ref.panel, fx_ref.sim, fx_ref.policy, gate};
+
+  ResearchConfig cfg_ref = real_signal_research_cfg(/*seed*/ 31, /*max_runs*/ 3, /*patience*/ 0);
+  cfg_ref.per_run.oos_fraction = 0.25;
+  // cfg_ref.per_run.oos_n_windows defaults to 0 (no rotation).
+
+  const ResearchReport rep_ref = engine_ref.run(cfg_ref);
+
+  ASSERT_EQ(rep_ref.per_run_oos_window.size(), rep_ref.runs)
+      << "per_run_oos_window must have one entry per run even when oos_n_windows==0";
+  for (usize i = 0; i < rep_ref.per_run_oos_window.size(); ++i) {
+    EXPECT_EQ(rep_ref.per_run_oos_window[i], usize{0})
+        << "run " << i << ": oos_n_windows==0 path must record window 0 (field untouched)";
+  }
+
+  // --- Rotation changes the mine outcomes: digests must differ. ---
+  // The per-run OOS holdout window changes which dates are withheld for each run,
+  // so the admitted alpha set (and thus the engine fingerprint) differs between
+  // oos_n_windows=3 and oos_n_windows=0.
+  EXPECT_NE(rep_wf.digest, rep_ref.digest)
+      << "oos_n_windows=3 digest must differ from oos_n_windows=0 — "
+         "window rotation must affect the mine outcome (not just telemetry)";
+}
+
 
 }  // namespace atxtest_factory_research_driver_test

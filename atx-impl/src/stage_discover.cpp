@@ -2,7 +2,7 @@
 
 #include <algorithm> // std::max (immigrant scaling)
 #include <array>
-#include <cmath>     // std::isfinite (W2 capacity screen; W4b PBO manifest gating)
+#include <cmath>     // std::isfinite (W2 capacity screen; W4b PBO manifest gating); std::isnan (R3b oos_pbo)
 #include <cstdio>    // std::fprintf (W2 screen log; W4b PBO gate warning)
 #include <filesystem>
 #include <limits>    // std::numeric_limits (W2 NaN vwap stub)
@@ -383,6 +383,22 @@ atx::core::Result<StageResult> run_discover_gated(
     //    stale carry-over). This keeps single-run determinism/resume goldens byte-
     //    identical — accumulation is strictly opt-in.
     const bool accumulate = !cfg.library_dir.empty();
+
+    // R3a — OOS-on-by-default for accumulation runs. When --library-dir is set
+    // (accumulate == true) AND the user did NOT explicitly supply --oos-fraction
+    // (set_flags.count("oos-fraction") == 0), default oos_fraction to 0.25 so
+    // every accumulation run validates on a real holdout by default. An explicit
+    // --oos-fraction (any value, including 0) overrides this default verbatim.
+    // The non-accumulation path is UNTOUCHED: without --library-dir, accumulate ==
+    // false and we never enter this branch, so oos_fraction stays 0.0 and the
+    // legacy path is byte-identical.
+    // NOTE: cfg is const& from the caller, so we thread the effective fraction as
+    // a local variable (eff_oos_fraction) into fcfg.oos_fraction below.
+    const atx::f64 eff_oos_fraction =
+        (accumulate && cfg.set_flags.count("oos-fraction") == 0)
+            ? 0.25
+            : cfg.oos_fraction;
+
     const std::string lib_dir =
         accumulate ? cfg.library_dir : (fs::path{cfg.alpha_out} / "_library").string();
     std::error_code ec;
@@ -410,8 +426,10 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.min_dsr                   = cfg.min_dsr;
     fcfg.min_split_sharpe          = cfg.min_split_sharpe; // W4a split-sample stability floor (off by default)
     fcfg.max_pbo                   = cfg.max_pbo;           // W4b run-level CSCV-PBO batch gate (off by default = 1.0)
-    fcfg.oos_fraction              = cfg.oos_fraction;
+    fcfg.oos_fraction              = eff_oos_fraction; // R3a: use the effective fraction (auto-default 0.25 for accumulation)
     fcfg.oos_embargo               = cfg.oos_embargo;
+    fcfg.oos_n_windows = static_cast<atx::usize>(std::max<long>(cfg.oos_windows, 0));
+    fcfg.oos_window    = static_cast<atx::usize>(std::max<long>(cfg.oos_window,  0));
 
     // W4a robust factor (Deliverable 2): thread the caller-owned weak/holdout sub-
     // universe Panel (built once in run_discover from sc.master_seed) into the Factory
@@ -425,17 +443,19 @@ atx::core::Result<StageResult> run_discover_gated(
     // helper (eval::detail::embargo_len_from_cpcv + eval::reserve_lockbox) so the
     // guard accepts exactly what the engine accepts and rejects exactly what it
     // would silently no-op on.
-    if (cfg.oos_fraction > 0.0) {
+    // Uses eff_oos_fraction (the R3a effective value) so the guard validates the
+    // auto-default 0.25 fraction on accumulation runs.
+    if (eff_oos_fraction > 0.0) {
         namespace eval = atx::engine::eval;
         const atx::usize T = panel.dates();
         const atx::usize embargo_len =
             (cfg.oos_embargo > 0.0)
                 ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
                 : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
-        auto sealed_r = eval::reserve_lockbox(panel, cfg.oos_fraction, embargo_len);
+        auto sealed_r = eval::reserve_lockbox(panel, eff_oos_fraction, embargo_len);
         if (!sealed_r.has_value()) {
             return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                "discover: --oos-fraction " + std::to_string(cfg.oos_fraction) +
+                "discover: --oos-fraction " + std::to_string(eff_oos_fraction) +
                 " leaves too little train/holdout for a panel of " +
                 std::to_string(panel.dates()) + " dates (" +
                 sealed_r.error().message() + ")");
@@ -534,6 +554,15 @@ atx::core::Result<StageResult> run_discover_gated(
         }
     }
 
+    // R1: write the durable cumulative-trials sidecar (_manifest.bin) so that
+    // a subsequent cross-process `discover --library-dir` run restores the
+    // cumulative_trials_ counter from disk. flush_all() above seals the store
+    // but does NOT write the sidecar; snapshot() does both (flush + sidecar
+    // write). Sidecar write failures are best-effort and silently ignored by
+    // snapshot() — worst case: the next run starts at 0, which is the pre-R1
+    // single-run baseline (acceptable per the R1 brief).
+    (void)liblib.snapshot();
+
     const atx::u64 n = liblib.n_alphas();
     if (n == 0) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -613,10 +642,19 @@ atx::core::Result<StageResult> run_discover_gated(
                    << '\n';
             }
         }
-        // P2b: OOS header lines (only when OOS is active; off-path manifest byte-identical)
-        if (cfg.oos_fraction > 0.0) {
-            mf << "oos_fraction="    << cfg.oos_fraction    << '\n';
+        // P2b/R3a: OOS header lines (only when OOS is active; off-path manifest byte-identical).
+        // Uses eff_oos_fraction (R3a: the auto-default 0.25 for accumulation runs if not
+        // explicitly set; cfg.oos_fraction for explicit overrides; 0.0 for non-accumulation).
+        if (eff_oos_fraction > 0.0) {
+            mf << "oos_fraction="    << eff_oos_fraction    << '\n';
             mf << "oos_embargo="     << cfg.oos_embargo     << '\n';
+            // R3b: run-level CSCV PBO (NaN when < 2 admitted or too short; toolchain-
+            // stable: print "nan" explicitly to avoid "nan"/-nan/-NaN variance).
+            if (std::isnan(rep.oos_pbo)) {
+                mf << "oos_pbo=nan\n";
+            } else {
+                mf << "oos_pbo="  << rep.oos_pbo  << '\n';
+            }
         }
         // W4b: run-level CSCV-PBO verdict line — emitted ONLY when PBO was actually
         // computed (the gate was active AND the admitted set was feasible), gated on
@@ -640,7 +678,7 @@ atx::core::Result<StageResult> run_discover_gated(
                << " returns="  << rec.metrics.returns
                << " drawdown=" << rec.metrics.drawdown;
             // P2b: IS/OOS columns (only when OOS is active; off-path byte-identical)
-            if (cfg.oos_fraction > 0.0) {
+            if (eff_oos_fraction > 0.0) {
                 const auto it = oos_map.find(rec.canon_hash);
                 if (it != oos_map.end()) {
                     const auto& e = it->second;
@@ -693,6 +731,14 @@ atx::core::Result<StageResult> run_discover_gated(
         {"population",      std::to_string(sc.population)},
         {"generations",     std::to_string(sc.generations)},
     };
+    // R3b: add oos_pbo kv ONLY when OOS is active (eff_oos_fraction > 0) so the
+    // non-accumulation path's kvs are byte-identical to the pre-R3 baseline.
+    if (eff_oos_fraction > 0.0) {
+        const std::string pbo_str = std::isnan(rep.oos_pbo)
+            ? "nan"
+            : std::to_string(rep.oos_pbo);
+        sr.kvs.emplace_back("oos_pbo", pbo_str);
+    }
     return atx::core::Ok(std::move(sr));
 }
 
