@@ -1,6 +1,7 @@
 #include "stages.hpp"
 
 #include <algorithm>   // std::sort
+#include <cmath>       // std::floor (A2a holdout-fit window)
 #include <filesystem>
 #include <fstream>
 #include <limits>      // std::numeric_limits
@@ -211,9 +212,30 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
 
     const atx::usize fit_begin =
         cfg.fit_begin > 0 ? static_cast<atx::usize>(cfg.fit_begin) : 0;
-    const atx::usize fit_end =
-        (cfg.fit_end > 0 && static_cast<atx::usize>(cfg.fit_end) <= np)
-            ? static_cast<atx::usize>(cfg.fit_end) : np;
+    // A2a — fit_end resolution. Three cases, in priority order:
+    //   1. The user EXPLICITLY set --fit-end (in set_flags): that value wins,
+    //      clamped to np (today's behavior, unchanged).
+    //   2. Else --holdout-frac > 0: hold the last `oos_n = floor(frac*np)` periods
+    //      OUT of the fit so report can score [fit_end, np) out-of-sample. The
+    //      weights fit on [fit_begin, fit_end) and never see the OOS window.
+    //   3. Else: fit_end = np (today's full-history default). With the flag at its
+    //      0.0 default and no --fit-end, this is byte-identical to before A2a.
+    atx::usize fit_end = np;
+    if (cfg.set_flags.count("fit-end") != 0 && cfg.fit_end > 0 &&
+        static_cast<atx::usize>(cfg.fit_end) <= np) {
+        fit_end = static_cast<atx::usize>(cfg.fit_end);
+    } else if (cfg.set_flags.count("fit-end") == 0 && cfg.combine_holdout_frac > 0.0) {
+        const atx::usize oos_n =
+            static_cast<atx::usize>(std::floor(cfg.combine_holdout_frac * static_cast<double>(np)));
+        if (oos_n < 1 || (np - oos_n) < 2) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                "combine: --holdout-frac leaves too few in-sample/out-of-sample periods (np=" +
+                std::to_string(np) + ")");
+        }
+        fit_end = np - oos_n;     // weights fit on [fit_begin, fit_end); OOS = [fit_end, np)
+    }
+    // Existing guard: fit_end never exceeds np (all branches above already respect it).
+    if (fit_end > np) fit_end = np;
 
     ATX_TRY(auto combo, combiner.fit(pool, fit_begin, fit_end));
 
@@ -320,16 +342,36 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         }
     }
 
+    // 11b. (A2a) Write the combo.meta boundary sidecar. This is a SEPARATE file
+    //      from combo.bin and is NOT part of the panel digest, so it never changes
+    //      the deterministic combine output. Task A2b's report reads it to split the
+    //      equity curve into in-sample [fit_begin, fit_end) and out-of-sample
+    //      [holdout_begin, n_periods). holdout_begin == fit_end by definition.
+    {
+        const std::string meta_path = cfg.combo_out + ".meta";
+        std::ofstream mf{meta_path};
+        if (!mf.is_open()) {
+            return atx::core::Err(atx::core::ErrorCode::IoError,
+                                  "combine: cannot write combo.meta sidecar: " + meta_path);
+        }
+        mf << "n_periods="     << np                          << '\n';
+        mf << "fit_begin="     << fit_begin                   << '\n';
+        mf << "fit_end="       << fit_end                     << '\n';
+        mf << "holdout_begin=" << fit_end                     << '\n';
+        mf << "holdout_frac="  << cfg.combine_holdout_frac    << '\n';
+    }
+
     // 12. Return StageResult.
     const std::string method_label = cfg.method.empty() ? "shrinkage-mv" : cfg.method;
     StageResult sr;
     sr.digest = digest;
     sr.kvs = {
-        {"alphas",    std::to_string(dsl.size())},
-        {"method",    method_label},
-        {"fit_begin", std::to_string(fit_begin)},
-        {"fit_end",   std::to_string(fit_end)},
-        {"combo",     to_hex16(digest)},
+        {"alphas",        std::to_string(dsl.size())},
+        {"method",        method_label},
+        {"fit_begin",     std::to_string(fit_begin)},
+        {"fit_end",       std::to_string(fit_end)},
+        {"holdout_begin", std::to_string(fit_end)},
+        {"combo",         to_hex16(digest)},
     };
     return atx::core::Ok(std::move(sr));
 }

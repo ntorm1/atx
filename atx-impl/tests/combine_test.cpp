@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -749,6 +750,221 @@ TEST(AtxImplCombine, CorrPenaltyPositiveChangesWeightsAndIsDeterministic) {
         fs::remove(co, ec);
         fs::remove(co + ".weights.txt", ec);
     }
+}
+
+// ---------------------------------------------------------------------------
+// A2a helper: read a `key=value\n` sidecar (combo.meta) into a small map.
+// ---------------------------------------------------------------------------
+static std::map<std::string, std::string> read_kv_file(const std::string& path) {
+    std::map<std::string, std::string> kv;
+    std::ifstream f{path};
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        kv[line.substr(0, eq)] = line.substr(eq + 1);
+    }
+    return kv;
+}
+
+// ---------------------------------------------------------------------------
+// A2a Test: HoldoutFracZeroIsByteIdenticalToDefault
+// The new --holdout-frac defaults to 0.0 (off). A combine run with the flag
+// ABSENT must produce a BYTE-IDENTICAL combo.bin / digest to a run with an
+// explicit --holdout-frac 0 (both resolve fit_end == np). The combo.meta sidecar
+// is a SEPARATE file, NOT part of the panel digest. With holdout off, combo.meta
+// records fit_end == np and holdout_begin == np (no OOS window).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, HoldoutFracZeroIsByteIdenticalToDefault) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "holdout0");
+    const usize np = panel.dates(); // n_periods == panel dates for this fixture
+
+    const std::string alphas_dir = write_alpha_dir("holdout0", safe_dsls());
+    const std::string combo_default =
+        (fs::temp_directory_path() / "atx_impl_combine_holdout_default.bin").string();
+    const std::string combo_zero =
+        (fs::temp_directory_path() / "atx_impl_combine_holdout_zero.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv"; // exercise the real fitted weights (not equal)
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (a) Default: no holdout flag set (combine_holdout_frac stays 0.0).
+    cfg.combo_out = combo_default;
+    auto r_default = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_default.has_value()) << r_default.error().message();
+
+    // (b) Explicit --holdout-frac 0 -> identical fit window (fit_end == np).
+    cfg.combine_holdout_frac = 0.0;
+    cfg.combo_out            = combo_zero;
+    auto r_zero = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_zero.has_value()) << r_zero.error().message();
+
+    // Digest equality and byte equality vs the no-flag baseline.
+    EXPECT_EQ(r_default->digest, r_zero->digest)
+        << "holdout_frac 0 must be byte-identical to the default (no-flag) path";
+    EXPECT_NE(r_default->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    const auto b_default = read_bytes(combo_default);
+    const auto b_zero    = read_bytes(combo_zero);
+    EXPECT_FALSE(b_default.empty());
+    EXPECT_EQ(b_default, b_zero) << "default and holdout-0 combo.bin must match byte-for-byte";
+
+    // combo.meta records the no-OOS boundary: fit_end == np, holdout_begin == np.
+    const auto meta = read_kv_file(combo_default + ".meta");
+    EXPECT_EQ(meta.at("n_periods"),     std::to_string(np));
+    EXPECT_EQ(meta.at("fit_end"),       std::to_string(np));
+    EXPECT_EQ(meta.at("holdout_begin"), std::to_string(np));
+    // StageResult exposes holdout_begin too.
+    auto find_kv = [&](const atx::impl::StageResult& sr, const std::string& k) {
+        for (const auto& p : sr.kvs) if (p.first == k) return p.second;
+        return std::string{};
+    };
+    EXPECT_EQ(find_kv(*r_default, "holdout_begin"), std::to_string(np));
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_default, combo_zero}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A2a Test: HoldoutFracPositiveShrinksFitWindowAndWritesMeta
+// With --holdout-frac 0.25 on a fixture with np periods, the fit window shrinks to
+// [fit_begin, np - floor(0.25*np)) and combo.meta records that boundary:
+// fit_end == np - floor(0.25*np), holdout_begin == fit_end, fit_end < np. combo.bin
+// is still written, and the run is twice-run byte-identical (incl. combo.meta).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, HoldoutFracPositiveShrinksFitWindowAndWritesMeta) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "holdoutpos");
+    const usize np = panel.dates();
+    const usize expected_oos_n  = static_cast<usize>(std::floor(0.25 * static_cast<f64>(np)));
+    const usize expected_fitend = np - expected_oos_n;
+    ASSERT_LT(expected_fitend, np) << "fixture must actually shrink the fit window";
+
+    const std::string alphas_dir = write_alpha_dir("holdoutpos", safe_dsls());
+    const std::string combo1 =
+        (fs::temp_directory_path() / "atx_impl_combine_holdout_pos1.bin").string();
+    const std::string combo2 =
+        (fs::temp_directory_path() / "atx_impl_combine_holdout_pos2.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand           = "combine";
+    cfg.panel                = panel_path;
+    cfg.alphas               = alphas_dir;
+    cfg.method               = "shrinkage-mv";
+    cfg.fit_begin            = 0;
+    cfg.fit_end              = 0;     // NOT explicitly set -> holdout governs
+    cfg.combine_holdout_frac = 0.25;
+
+    cfg.combo_out = combo1;
+    auto r1 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r1.has_value()) << r1.error().message();
+    cfg.combo_out = combo2;
+    auto r2 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+    // combo.bin written and twice-run byte-identical.
+    EXPECT_TRUE(fs::exists(combo1));
+    EXPECT_EQ(r1->digest, r2->digest) << "holdout combine must be deterministic";
+    EXPECT_NE(r1->digest, atx::u64{0});
+
+    // combo.meta records the shrunk boundary (non-vacuous: exact value).
+    const auto meta = read_kv_file(combo1 + ".meta");
+    EXPECT_EQ(meta.at("n_periods"),     std::to_string(np));
+    EXPECT_EQ(meta.at("fit_end"),       std::to_string(expected_fitend));
+    EXPECT_EQ(meta.at("holdout_begin"), std::to_string(expected_fitend));
+    EXPECT_LT(std::stoul(meta.at("fit_end")), np)
+        << "holdout must shrink fit_end below n_periods";
+
+    // combo.meta itself is twice-run identical.
+    auto read_text = [](const std::string& p) {
+        std::ifstream f{p};
+        return std::string{std::istreambuf_iterator<char>(f),
+                           std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_text(combo1 + ".meta"), read_text(combo2 + ".meta"))
+        << "combo.meta must be deterministic across runs";
+
+    // StageResult reports holdout_begin == fit_end.
+    auto find_kv = [&](const atx::impl::StageResult& sr, const std::string& k) {
+        for (const auto& p : sr.kvs) if (p.first == k) return p.second;
+        return std::string{};
+    };
+    EXPECT_EQ(find_kv(*r1, "holdout_begin"), std::to_string(expected_fitend));
+    EXPECT_EQ(find_kv(*r1, "fit_end"),       std::to_string(expected_fitend));
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo1, combo2}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A2a Test: HoldoutFracTooLargeErrors
+// A holdout fraction that leaves < 2 in-sample periods (or < 1 OOS period) must
+// return Err(InvalidArgument). With np=96, holdout_frac 0.99 -> oos_n = 95 ->
+// in-sample = 1 (< 2) -> error. (frac >= 1.0 -> oos_n == np -> 0 in-sample.)
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, HoldoutFracTooLargeErrors) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "holdoutbig");
+
+    const std::string alphas_dir = write_alpha_dir("holdoutbig", safe_dsls());
+    const std::string combo_out =
+        (fs::temp_directory_path() / "atx_impl_combine_holdout_big.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand           = "combine";
+    cfg.panel                = panel_path;
+    cfg.alphas               = alphas_dir;
+    cfg.combo_out            = combo_out;
+    cfg.method               = "equal";
+    cfg.combine_holdout_frac = 0.99; // leaves only 1 in-sample period of 96 -> error
+
+    auto r = atx::impl::run_combine(cfg);
+    EXPECT_FALSE(r.has_value()) << "holdout that starves the in-sample window must fail";
+    if (!r.has_value()) {
+        EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+    }
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    fs::remove(combo_out, ec);
+    fs::remove(combo_out + ".weights.txt", ec);
+    fs::remove(combo_out + ".meta", ec);
 }
 
 } // namespace atxtest_combine

@@ -158,6 +158,14 @@ struct RunConfig {
     bool        sector_neutral = false; // --sector-neutral
     long        fit_begin    = 0;     // --fit-begin
     long        fit_end      = 0;     // --fit-end
+    // --holdout-frac (A2a): fraction of the combine time axis held OUT of the
+    // combiner fit so Task A2b's report can score the mega-alpha out-of-sample.
+    // 0.0 (default) = off -> fit_end resolves exactly as today (np or explicit
+    // --fit-end), so the no-flag combo.bin / digest is byte-identical. When > 0
+    // (and --fit-end not explicitly set), the weights fit on [fit_begin, np-oos_n)
+    // and [np-oos_n, np) is the OOS window. run_all defaults this to 0.25.
+    double      combine_holdout_frac = 0.0; // --holdout-frac  (0 = off; fraction of the time axis held OUT of the
+                                            //                  combiner fit so report can score it out-of-sample)
     // --corr-penalty / --capacity-floor (9.2, opt-in crowding de-correlation): a
     // post-fit transform of the combiner weights via crowding::decorrelate_weights.
     // BOTH default 0.0, which is the engine's EXACT-passthrough rail (corr_penalty==0

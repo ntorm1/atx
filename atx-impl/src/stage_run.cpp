@@ -77,6 +77,9 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     // enumerating admitted records by AlphaId; the loose c_comb.alphas above
     // becomes an ignored harmless fallback (left as-is intentionally).
     c_comb.library_dir = c_disc.library_dir;
+    // A2a — default the combine holdout ON so the pipeline emits an out-of-sample
+    // portfolio Sharpe. Respects an explicit user --holdout-frac (incl. an explicit 0).
+    if (cfg.set_flags.count("holdout-frac") == 0) c_comb.combine_holdout_frac = 0.25;
     ATX_TRY(auto d_comb, run_combine(c_comb));
 
     // 5. optimize

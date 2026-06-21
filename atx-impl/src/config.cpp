@@ -164,6 +164,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "patience")        return parse_long(cfg.patience);
     if (flag == "fit-begin")         return parse_long(cfg.fit_begin);
     if (flag == "fit-end")           return parse_long(cfg.fit_end);
+    if (flag == "holdout-frac")      return parse_double(cfg.combine_holdout_frac); // A2a combine holdout-fit
     if (flag == "corr-penalty")      return parse_double(cfg.corr_penalty);
     if (flag == "capacity-floor")    return parse_double(cfg.capacity_floor);
     if (flag == "risk-aversion")     return parse_double(cfg.risk_aversion);
