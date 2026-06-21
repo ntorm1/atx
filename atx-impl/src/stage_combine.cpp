@@ -27,6 +27,7 @@
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
 #include "atx/engine/eval/pbo.hpp"             // eval::PboResult (full def needed to construct zero value)
 #include "atx/engine/eval/perf_metrics.hpp"    // eval::compute_return_metrics, ReturnMetricsCfg, ReturnMetrics
+#include "atx/engine/eval/breadth.hpp"          // eval::effective_breadth
 #include "atx/engine/eval/stats_ext.hpp"       // eval::mean_std_pop (MeanStd), skewness, excess_kurtosis
 #include "atx/engine/library/library.hpp"      // library::Library, AlphaId, AlphaRecordView (8.B)
 #include "atx/engine/loop/weight_policy.hpp"   // engine::WeightPolicy
@@ -426,17 +427,78 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         mf << "holdout_frac="  << cfg.combine_holdout_frac    << '\n';
     }
 
-    // 12. Return StageResult.
+    // 12. Breadth instrumentation (D3a — recorded-only / W5/C2.2 telemetry).
+    //     Compute the Fundamental-Law-of-Active-Management decomposition of the
+    //     fitted mega-alpha AFTER weights are final (post-conviction, post-crowding),
+    //     so the breadth reflects the actual shipped book. Always-computed; no flag.
+    //     DETERMINISM: reuses the combiner's order-fixed detail helpers
+    //     (complete_case_centered + mle_covariance) so the covariance convention
+    //     is identical to the LW path — no new RNG, fixed reduction order.
+    //     BYTE-IDENTICAL proof: these three scalars go into sr.kvs ONLY — they are
+    //     NEVER folded into combo.bin, the panel digest, or any hashed artifact.
+    atx::f64 effective_n  = 0.0;
+    atx::f64 realized_ir  = 0.0;
+    atx::f64 implied_ic   = 0.0;
+    {
+        const atx::usize na = pool.n_alphas();
+        const atx::usize t  = fit_end - fit_begin;  // fit-window length (>= 2, guarded above)
+        if (na > 0 && t >= 2) {
+            namespace ev = atx::engine::eval;
+            using atx::core::linalg::VecX;
+            using atx::core::linalg::MatX;
+
+            // Step 1 — N_eff via the alpha-return covariance over [fit_begin, fit_end).
+            // Reuse the combiner's deterministic helpers (same convention as the LW path):
+            //   window_means  -> per-alpha window means mu (VecX, length na)
+            //   complete_case_centered -> T_cc x na demeaned matrix (listwise NaN drop)
+            //   mle_covariance -> N x N MLE covariance S (divisor T_cc)
+            const VecX mu = combine::detail::window_means(pool, na, fit_begin, t);
+            const MatX centered = combine::detail::complete_case_centered(pool, na, fit_begin, t, mu);
+            const MatX cov = combine::detail::mle_covariance(centered, na);
+            effective_n = ev::effective_breadth(cov);
+
+            // Step 2 — realized IR: annualized Sharpe of the weighted-blend PnL stream
+            // over the fit window [fit_begin, fit_end) (fixed order a = 0..na).
+            // This is the IN-SAMPLE realized IR, paired with the in-sample covariance.
+            std::vector<atx::f64> combined_pnl(t, 0.0);
+            for (atx::usize a = 0; a < na; ++a) {
+                const std::span<const atx::f64> apnl =
+                    combine::detail::window_span(pool, a, fit_begin, t);
+                for (atx::usize i = 0; i < t; ++i) {
+                    combined_pnl[i] += combo.weights[a] * apnl[i];
+                }
+            }
+            // Prepend a structural zero (pnl[0] == 0) so compute_return_metrics sees
+            // the same pnl[1..T) window convention it expects (r = pnl[1..T)).
+            std::vector<atx::f64> pnl_with_zero;
+            pnl_with_zero.reserve(t + 1);
+            pnl_with_zero.push_back(0.0);
+            pnl_with_zero.insert(pnl_with_zero.end(), combined_pnl.begin(), combined_pnl.end());
+            ev::ReturnMetricsCfg rmc{};  // default: periods_per_year = 252
+            realized_ir = ev::compute_return_metrics(
+                std::span<const atx::f64>{pnl_with_zero}, rmc).sharpe;
+
+            // Step 3 — implied IC = IR / sqrt(N_eff)  (Fundamental Law: IR = IC * sqrt(breadth)).
+            if (std::isfinite(realized_ir) && effective_n > 0.0) {
+                implied_ic = realized_ir / std::sqrt(effective_n);
+            }
+        }
+    }
+
+    // 13. Return StageResult.
     const std::string method_label = cfg.method.empty() ? "shrinkage-mv" : cfg.method;
     StageResult sr;
     sr.digest = digest;
     sr.kvs = {
-        {"alphas",        std::to_string(dsl.size())},
-        {"method",        method_label},
-        {"fit_begin",     std::to_string(fit_begin)},
-        {"fit_end",       std::to_string(fit_end)},
-        {"holdout_begin", std::to_string(fit_end)},
-        {"combo",         to_hex16(digest)},
+        {"alphas",              std::to_string(dsl.size())},
+        {"method",              method_label},
+        {"fit_begin",           std::to_string(fit_begin)},
+        {"fit_end",             std::to_string(fit_end)},
+        {"holdout_begin",       std::to_string(fit_end)},
+        {"combo",               to_hex16(digest)},
+        {"breadth_effective_n", std::to_string(effective_n)},
+        {"breadth_realized_ir", std::to_string(realized_ir)},
+        {"breadth_implied_ic",  std::to_string(implied_ic)},
     };
     return atx::core::Ok(std::move(sr));
 }

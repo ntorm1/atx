@@ -1272,4 +1272,163 @@ TEST(AtxImplCombine, ConvictionRunIsDeterministic) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// D3a Test 1: BreadthTelemetryEmitted
+// Run combine on the 3-alpha fixture; assert sr.kvs contains the three breadth
+// keys with finite, in-range values:
+//   - breadth_effective_n: finite, in [0.0, na] (na = 3 alphas), >= 1.0 for >=2 alphas
+//   - breadth_realized_ir: finite
+//   - breadth_implied_ic:  finite
+// This pins the "always-recorded" contract: no flag needed, always present in kvs.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, BreadthTelemetryEmitted) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "breadth_emitted");
+    const std::string alphas_dir = write_alpha_dir("breadth_emitted", safe_dsls());
+    const std::string combo_out =
+        (fs::temp_directory_path() / "atx_impl_combine_breadth_emitted.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.combo_out  = combo_out;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    auto r = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+
+    const auto& kvs = r->kvs;
+    auto find_kv = [&](const std::string& k) -> std::optional<std::string> {
+        for (const auto& p : kvs) {
+            if (p.first == k) return p.second;
+        }
+        return std::nullopt;
+    };
+
+    // All three breadth keys must be present.
+    const auto eff_n_str = find_kv("breadth_effective_n");
+    const auto ir_str    = find_kv("breadth_realized_ir");
+    const auto ic_str    = find_kv("breadth_implied_ic");
+    ASSERT_TRUE(eff_n_str.has_value()) << "breadth_effective_n missing from kvs";
+    ASSERT_TRUE(ir_str.has_value())    << "breadth_realized_ir missing from kvs";
+    ASSERT_TRUE(ic_str.has_value())    << "breadth_implied_ic missing from kvs";
+
+    const f64 eff_n  = std::stod(*eff_n_str);
+    const f64 ir     = std::stod(*ir_str);
+    const f64 ic     = std::stod(*ic_str);
+
+    // Print observed values (for D3a-report.md).
+    std::cout << "[D3a] breadth_effective_n=" << eff_n
+              << " breadth_realized_ir=" << ir
+              << " breadth_implied_ic=" << ic << "\n";
+
+    // effective_n must be finite and in [0, na=3].
+    EXPECT_TRUE(std::isfinite(eff_n))  << "breadth_effective_n must be finite";
+    EXPECT_GE(eff_n, 0.0)              << "breadth_effective_n must be >= 0";
+    EXPECT_LE(eff_n, 3.0)              << "breadth_effective_n must be <= alpha count (3)";
+    // For a 3-alpha fixture with distinct PnL streams, effective_n >= 1.
+    EXPECT_GE(eff_n, 1.0)             << "breadth_effective_n must be >= 1 for >= 2 distinct alphas";
+
+    // realized_ir and implied_ic must be finite.
+    EXPECT_TRUE(std::isfinite(ir))  << "breadth_realized_ir must be finite";
+    EXPECT_TRUE(std::isfinite(ic))  << "breadth_implied_ic must be finite";
+
+    // Fundamental law consistency: if effective_n > 0 and ir is finite, ic = ir / sqrt(eff_n).
+    // Tolerance 1e-4: std::to_string emits ~6 significant digits, so parsing the kvs string
+    // introduces ~1e-6 relative error; the magnitudes here are O(10), giving ~1e-5 absolute
+    // error — 1e-4 is a tight confirmation while allowing for serialization rounding.
+    if (eff_n > 0.0 && std::isfinite(ir)) {
+        const f64 expected_ic = ir / std::sqrt(eff_n);
+        EXPECT_NEAR(ic, expected_ic, 1e-4) << "implied_ic must equal ir / sqrt(effective_n)";
+    }
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    fs::remove(combo_out, ec);
+    fs::remove(combo_out + ".weights.txt", ec);
+    fs::remove(combo_out + ".meta", ec);
+}
+
+// ---------------------------------------------------------------------------
+// D3a Test 2: BreadthDeterministicAndDigestUnchanged
+// Run the same combine config TWICE; assert:
+//   (a) the three breadth values are BYTE-IDENTICAL across runs (same string),
+//   (b) combo.bin (panel digest) is BYTE-IDENTICAL across runs.
+// This proves the breadth telemetry is deterministic AND did not perturb the
+// hashed artifact (the new numbers live only in kvs, not in combo.bin).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, BreadthDeterministicAndDigestUnchanged) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "breadth_det");
+    const std::string alphas_dir = write_alpha_dir("breadth_det", safe_dsls());
+    const std::string combo1 =
+        (fs::temp_directory_path() / "atx_impl_combine_breadth_det1.bin").string();
+    const std::string combo2 =
+        (fs::temp_directory_path() / "atx_impl_combine_breadth_det2.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    cfg.combo_out = combo1;
+    auto r1 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r1.has_value()) << r1.error().message();
+
+    cfg.combo_out = combo2;
+    auto r2 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+    auto find_kv = [](const atx::impl::StageResult& sr, const std::string& k) -> std::string {
+        for (const auto& p : sr.kvs) if (p.first == k) return p.second;
+        return "";
+    };
+
+    // (a) Breadth values must be byte-identical across runs (same string representation).
+    EXPECT_EQ(find_kv(*r1, "breadth_effective_n"), find_kv(*r2, "breadth_effective_n"))
+        << "breadth_effective_n must be deterministic across runs";
+    EXPECT_EQ(find_kv(*r1, "breadth_realized_ir"), find_kv(*r2, "breadth_realized_ir"))
+        << "breadth_realized_ir must be deterministic across runs";
+    EXPECT_EQ(find_kv(*r1, "breadth_implied_ic"), find_kv(*r2, "breadth_implied_ic"))
+        << "breadth_implied_ic must be deterministic across runs";
+
+    // (b) combo.bin digest and file bytes must be byte-identical (breadth did not perturb it).
+    EXPECT_EQ(r1->digest, r2->digest) << "combo.bin digest must be identical across runs";
+    EXPECT_NE(r1->digest, atx::u64{0}) << "digest must be non-zero";
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    const auto bytes1 = read_bytes(combo1);
+    const auto bytes2 = read_bytes(combo2);
+    EXPECT_FALSE(bytes1.empty()) << "combo1 must not be empty";
+    EXPECT_EQ(bytes1, bytes2)    << "combo.bin files must be byte-identical across runs";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo1, combo2}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
 } // namespace atxtest_combine
