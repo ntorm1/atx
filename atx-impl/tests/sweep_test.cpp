@@ -9,6 +9,7 @@
 //   4. MissingLibraryDirFails            — clean Err(InvalidArgument) if --library-dir unset.
 //   5. SweepRunsOneFails                 — --sweep-runs 0 returns Err; 1 => one mine iteration.
 
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -349,6 +350,9 @@ TEST(AtxImplSweep, WalkForwardRotation) {
     auto make_cfg_wf = [&](const std::string& alpha_out, const std::string& lib_dir) {
         auto cfg = sweep_cfg(panel_path, alpha_out, lib_dir, /*seed=*/77ULL, /*sweep_runs=*/3);
         cfg.oos_windows = 3;  // R2: run 0->window 0, run 1->window 1, run 2->window 2
+        // A4 — honor the explicit 3 against run_sweep's new set_flags-keyed default-4
+        // (faithful to real CLI behavior, where --oos-windows N inserts the flag).
+        cfg.set_flags.insert("oos-windows");
         return cfg;
     };
     auto rA = atx::impl::run_sweep(make_cfg_wf(out_A, lib_A));
@@ -358,7 +362,10 @@ TEST(AtxImplSweep, WalkForwardRotation) {
 
     // Run C: same seed + sweep_runs=3 but oos_windows=0 (no rotation).
     auto cfg_c = sweep_cfg(panel_path, out_C, lib_C, /*seed=*/77ULL, /*sweep_runs=*/3);
-    // cfg_c.oos_windows defaults to 0 (no rotation).
+    // A4 — explicitly pin oos_windows=0 (no-rotation baseline) AND mark the flag
+    // explicit so run_sweep's new default-4 does NOT override it back to walk-forward.
+    cfg_c.oos_windows = 0;
+    cfg_c.set_flags.insert("oos-windows");
     auto rC = atx::impl::run_sweep(cfg_c);
     ASSERT_TRUE(rC.has_value()) << "no-rotation sweep C: " << rC.error().message();
 
@@ -491,6 +498,163 @@ TEST(AtxImplSweep, SweepRunsOneEquivalentToSingleMine) {
     fs::remove(panel_path, ec);
     fs::remove_all(lib_dir, ec);
     fs::remove_all(alpha_out, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: parse a key=value line out of summary.txt (empty if absent).
+// ---------------------------------------------------------------------------
+static std::string read_summary_kv(const std::string& summary, const std::string& key) {
+    std::ifstream f{summary};
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.substr(0, eq) == key) return line.substr(eq + 1);
+    }
+    return {};
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: EndToEndMegaAlphaHasPositiveOosSharpe (A4 — the deliverable's proof)
+//
+// Runs the REAL pipeline sweep -> combine -> optimize -> report on the
+// planted-drift panel and asserts the reported mega-alpha portfolio
+// OUT-OF-SAMPLE Sharpe is FINITE AND POSITIVE.  This is the executable proof
+// of the whole mega-alpha roadmap: A2b made report emit portfolio_oos_sharpe;
+// A4 proves it is finite + positive on data with a real, persistent edge.
+//
+// Honesty: make_panel plants a persistent per-instrument cross-sectional drift
+// (drift[j] = 0.006 - 0.0024*j, ~very high signal/noise vs 1%/day noise). A
+// cross-sectional seed like rank(close) captures this stationary edge so its
+// Sharpe is strongly positive BOTH in-sample and out-of-sample. The combiner
+// fits weights on the IS window (A2a holdout) and report scores the held-out
+// [fit_end, np) span (A2b) -> a persistent edge survives -> positive OOS Sharpe.
+// ---------------------------------------------------------------------------
+TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
+    namespace fs = std::filesystem;
+
+    // 1. Planted-drift panel: 120 dates so 4 walk-forward windows fit (4*0.25*T
+    //    tiles the whole panel) and the OOS span has >= 2 rebalance periods.
+    auto panel_opt = make_panel(/*dates=*/120, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "e2e_megaalpha");
+
+    const fs::path work       = fs::temp_directory_path() / "atx_sweep_e2e_work";
+    const std::string lib_dir = (fs::temp_directory_path() / "atx_sweep_e2e_lib").string();
+    const std::string alpha_o = (fs::temp_directory_path() / "atx_sweep_e2e_alphas").string();
+    const std::string report_dir = (fs::temp_directory_path() / "atx_sweep_e2e_report").string();
+    std::error_code ec0;
+    fs::remove_all(work, ec0);
+    fs::remove_all(lib_dir, ec0);
+    fs::remove_all(alpha_o, ec0);
+    fs::remove_all(report_dir, ec0);
+    fs::create_directories(work, ec0);
+
+    // 2. run_sweep: exercise the NEW default 4 walk-forward windows (do NOT set
+    //    oos_windows / set_flags). Permissive gate (helper sets the floors to 0).
+    auto cfg = sweep_cfg(panel_path, alpha_o, lib_dir, /*seed=*/2024ULL, /*sweep_runs=*/4);
+    auto rs = atx::impl::run_sweep(cfg);
+    ASSERT_TRUE(rs.has_value()) << "sweep failed: " << rs.error().message();
+
+    auto get_kv = [](const atx::impl::StageResult& sr, const std::string& k) {
+        for (const auto& p : sr.kvs) { if (p.first == k) return p.second; }
+        return std::string{};
+    };
+    const int lib_size = std::stoi(get_kv(*rs, "library_size"));
+    ASSERT_GE(lib_size, 2) << "need >= 2 admitted alphas for a non-degenerate combine; got "
+                           << lib_size;
+    // Confirm the new default put 4 walk-forward windows on the telemetry.
+    EXPECT_EQ(get_kv(*rs, "oos_windows"), "4")
+        << "sweep must default to 4 walk-forward OOS windows";
+
+    // 3. run_combine: holdout-frac 0.25 makes [fit_end, np) genuinely OOS (A2a).
+    const std::string combo_path = (work / "combo.bin").string();
+    {
+        atx::impl::RunConfig c;
+        c.subcommand           = "combine";
+        c.panel                = panel_path;
+        c.library_dir          = lib_dir;
+        c.combo_out            = combo_path;
+        c.combine_holdout_frac = 0.25;
+        c.seed                 = 2024ULL;
+        auto rc = atx::impl::run_combine(c);
+        ASSERT_TRUE(rc.has_value()) << "combine failed: " << rc.error().message();
+        ASSERT_TRUE(fs::exists(combo_path + ".meta"))
+            << "combo.bin.meta must exist (combine must record the OOS split boundary)";
+    }
+
+    // 4. run_optimize.
+    const std::string books_path = (work / "books.bin").string();
+    {
+        atx::impl::RunConfig c;
+        c.subcommand = "optimize";
+        c.panel      = panel_path;
+        c.combo      = combo_path;
+        c.books_out  = books_path;
+        c.seed       = 2024ULL;
+        auto ro = atx::impl::run_optimize(c);
+        ASSERT_TRUE(ro.has_value()) << "optimize failed: " << ro.error().message();
+    }
+
+    // 5. run_report: point at combo.bin so it reads combo.bin.meta and splits IS/OOS (A2b).
+    {
+        atx::impl::RunConfig c;
+        c.subcommand = "report";
+        c.panel      = panel_path;
+        c.books      = books_path;
+        c.combo      = combo_path;
+        c.report_out = report_dir;
+        c.seed       = 2024ULL;
+        auto rr = atx::impl::run_report(c);
+        ASSERT_TRUE(rr.has_value()) << "report failed: " << rr.error().message();
+    }
+
+    // 6. Parse summary.txt and assert the headline: finite AND positive OOS Sharpe.
+    const std::string summary = (fs::path{report_dir} / "summary.txt").string();
+    ASSERT_TRUE(fs::exists(summary)) << "summary.txt missing at " << summary;
+    const std::string all = read_file(summary);
+
+    const std::string oos_s = read_summary_kv(summary, "portfolio_oos_sharpe");
+    ASSERT_FALSE(oos_s.empty()) << "summary.txt missing portfolio_oos_sharpe=\n" << all;
+    const double portfolio_oos_sharpe = std::stod(oos_s);
+    EXPECT_TRUE(std::isfinite(portfolio_oos_sharpe))
+        << "portfolio_oos_sharpe must be finite: " << oos_s << "\n" << all;
+    EXPECT_GT(portfolio_oos_sharpe, 0.0)
+        << "planted persistent edge MUST clear OOS (portfolio_oos_sharpe > 0): "
+        << oos_s << "\n" << all;
+
+    const std::string n_oos_s = read_summary_kv(summary, "n_oos_periods");
+    ASSERT_FALSE(n_oos_s.empty()) << "summary.txt missing n_oos_periods=\n" << all;
+    const long n_oos = std::stol(n_oos_s);
+    EXPECT_GE(n_oos, 1) << "a real OOS split must have happened (n_oos_periods>=1)\n" << all;
+
+    const std::string ps_s = read_summary_kv(summary, "portfolio_sharpe");
+    ASSERT_FALSE(ps_s.empty()) << "summary.txt missing portfolio_sharpe=\n" << all;
+    const double portfolio_sharpe = std::stod(ps_s);
+    EXPECT_TRUE(std::isfinite(portfolio_sharpe))
+        << "portfolio_sharpe (full series) must be finite: " << ps_s << "\n" << all;
+    EXPECT_GT(portfolio_sharpe, 0.0)
+        << "planted persistent edge MUST give a positive full-series Sharpe: "
+        << ps_s << "\n" << all;
+
+    const std::string hb_s = read_summary_kv(summary, "holdout_begin");
+    ASSERT_FALSE(hb_s.empty()) << "summary.txt missing holdout_begin=\n" << all;
+    EXPECT_GT(std::stol(hb_s), 0) << "holdout_begin must carve a real interior boundary\n" << all;
+
+    // Surface the observed numbers in the test log for the report.
+    std::cerr << "[A4] portfolio_oos_sharpe=" << portfolio_oos_sharpe
+              << " portfolio_sharpe=" << portfolio_sharpe
+              << " n_oos_periods=" << n_oos
+              << " holdout_begin=" << hb_s
+              << " library_size=" << lib_size << "\n";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(work, ec);
+    fs::remove_all(lib_dir, ec);
+    fs::remove_all(alpha_o, ec);
+    fs::remove_all(report_dir, ec);
 }
 
 } // namespace atxtest_sweep
