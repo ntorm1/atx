@@ -1,8 +1,9 @@
 #include "atx/engine/factory/factory.hpp"
 
-#include <algorithm> // std::sort, std::max
+#include <algorithm> // std::sort, std::max, std::min
 #include <cmath>     // std::sqrt (P2a holdout DSR de-annualization)
 #include <cstddef>   // std::size_t (hash_combine seed type)
+#include <limits>    // std::numeric_limits (W4b run-level PBO sentinel)
 #include <optional>  // std::nullopt (P2a deflated_sharpe variance arg)
 #include <span>      // std::span
 #include <utility>   // std::move (admitted provenance / streams)
@@ -18,6 +19,7 @@
 
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe (P2a holdout DSR)
 #include "atx/engine/eval/lockbox.hpp"         // eval::reserve_lockbox, detail::slice_panel (P2a)
+#include "atx/engine/eval/pbo.hpp"             // eval::pbo_cscv_checked, PboResult (W4b run-level PBO)
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis (P2a DSR)
 
 #include "atx/engine/library/record.hpp" // library::Provenance (admitted-alpha lineage)
@@ -58,6 +60,84 @@ namespace {
 
 } // namespace
 
+namespace detail {
+
+// W4b — the run-level CSCV-PBO verdict over the admitted alphas' realized OOS PnL.
+// POST-HOC + PURE (eval::pbo_cscv is order-fixed, no RNG): computing it ADDS to the
+// report's PBO fields and touches NOTHING the admission digest folds, so the digest is
+// byte-identical by construction. INACTIVE (the 1.0 default) -> skip everything,
+// sentinels intact -> byte-identical legacy path. See the header contract.
+void finalize_run_pbo(FactoryReport &rep,
+                      const std::vector<std::vector<atx::f64>> &admitted_pnls,
+                      atx::f64 max_pbo) {
+  // (1) Off (the disabling 1.0 default): NO compute, all PBO fields stay at sentinels
+  // (rep.pbo == NaN, gate passes) -> byte-identical to the pre-W4b path.
+  if (max_pbo >= 1.0) {
+    return;
+  }
+
+  // (2) Need >= 2 admitted rows to form a cross-section (pbo_cscv needs n_candidates
+  // >= 2). Fewer -> infeasible: leave sentinels, gate passes (fail-OPEN).
+  const atx::usize n_candidates = admitted_pnls.size();
+  if (n_candidates < 2U) {
+    return;
+  }
+
+  // (3) Drop index 0 of each row (the §0-F combine structural zero — the same
+  // .subspan(1) / split_floor_ok convention). T is the post-drop length of row 0; the
+  // rows ARE equal-length by construction (same eval window). A mismatch (or a row too
+  // short to drop) is treated as infeasible: sentinels, gate passes.
+  const atx::usize raw_t = admitted_pnls.front().size();
+  if (raw_t < 2U) {
+    return; // a single-element (or empty) row leaves no post-drop period.
+  }
+  const atx::usize periods = raw_t - 1U; // T after dropping the index-0 structural zero
+  for (const std::vector<atx::f64> &row : admitted_pnls) {
+    if (row.size() != raw_t) {
+      return; // ragged input — never happens by construction; fail-OPEN if it ever does.
+    }
+  }
+
+  // (4) n_splits = the largest EVEN value <= min(8, T). 8 is Bailey's standard CSCV S
+  // (C(8,4)=70 splits); auto-clamp DOWN for short panels (CSCV needs S non-empty
+  // sub-periods, S even). If the clamp drops below 2 the panel is too short -> skip.
+  atx::usize n_splits = (periods < 8U) ? periods : 8U;
+  if ((n_splits % 2U) != 0U) {
+    --n_splits; // round DOWN to the nearest even split count
+  }
+  if (n_splits < 2U) {
+    return; // too few periods to split -> infeasible (sentinels, gate passes).
+  }
+
+  // (5) Build the candidate-major flat matrix M[c*T + t] (each admitted alpha's
+  // post-drop return row concatenated, deterministic admit order).
+  std::vector<atx::f64> matrix;
+  matrix.reserve(n_candidates * periods);
+  for (const std::vector<atx::f64> &row : admitted_pnls) {
+    matrix.insert(matrix.end(), row.begin() + 1, row.end()); // drop index 0
+  }
+
+  // (6) Run the CHECKED CSCV-PBO (handles an infeasible matrix via Err, never aborts).
+  auto pbo_r =
+      eval::pbo_cscv_checked(std::span<const atx::f64>{matrix}, n_candidates, n_splits);
+  if (!pbo_r.has_value()) {
+    return; // infeasible matrix -> leave sentinels, gate passes (fail-OPEN).
+  }
+
+  // (7) RECORD the verdict. The gate is ADVISORY-but-RECORDED: a breach sets
+  // pbo_gate_passed = false (surfaced + warned downstream) but never un-persists an
+  // alpha or alters admission. PBO ∈ [0,1] and max_pbo < 1.0 here, so strict
+  // pbo > max_pbo is a real test.
+  const eval::PboResult &res = *pbo_r;
+  rep.pbo = res.pbo;
+  rep.pbo_mean_logit = res.mean_logit;
+  rep.pbo_n_candidates = n_candidates;
+  rep.pbo_n_splits = n_splits;
+  rep.pbo_gate_passed = !(rep.pbo > max_pbo);
+}
+
+} // namespace detail
+
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
                                           const combine::AlphaGate &gate) {
   FactoryReport rep;
@@ -97,6 +177,11 @@ namespace {
   // the per-candidate re-score INSIDE the admission loop below then reflects the
   // GROWING pool. all_scored is the set of distinct structures (F5/F6).
   std::vector<Ranked> ranked = rank_by_deflated_fitness(res.all_scored, admit_fit, pool);
+
+  // W4b — accumulate each admitted alpha's realized OOS PnL (deterministic admit order)
+  // for the POST-HOC run-level CSCV-PBO verdict; finalized once after the loop. Empty +
+  // unused at the max_pbo == 1.0 default (finalize_run_pbo returns immediately).
+  std::vector<std::vector<atx::f64>> admitted_pnls;
 
   // (3) the mine -> gate -> admit loop (§4.8), best-deflated first.
   for (const Ranked &r : ranked) {
@@ -173,12 +258,17 @@ namespace {
                                  std::span<const atx::f64>{cand_pos}, metrics);
     if (ins.has_value()) {
       ++rep.admitted;
+      admitted_pnls.push_back(cand_pnl); // W4b: realized OOS PnL of an admitted alpha
     }
     // An insert Err (a period/shape mismatch against an established pool shape) is
     // a candidate that cannot coherently join this pool — it is screened out and
     // NOT counted as admitted, but the digest already recorded the accept decision
     // (the verdict was Accept; the structural reject is a downstream pool fact).
   }
+
+  // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default;
+  // never alters rep.digest or any admission decision).
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   return rep;
 }
@@ -232,6 +322,11 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // (2) rank the distinct scored candidates by deflated fitness against the LIBRARY
   // (the PoolView overload routes the corr-to-pool through the O(neighbors) index).
   std::vector<Ranked> ranked = rank_by_deflated_fitness(res.all_scored, admit_fit, view);
+
+  // W4b — accumulate each admitted alpha's realized OOS PnL (deterministic admit order)
+  // for the POST-HOC run-level CSCV-PBO verdict; finalized once after the loop. Empty +
+  // unused at the max_pbo == 1.0 default.
+  std::vector<std::vector<atx::f64>> admitted_pnls;
 
   // (3) the mine -> deflate -> library::admit loop, best-deflated first.
   for (const Ranked &r : ranked) {
@@ -308,6 +403,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
       kind = v.kind;
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
+        admitted_pnls.push_back(cand_pnl); // W4b: realized OOS PnL of an admitted alpha
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -320,6 +416,9 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
         static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
   }
+
+  // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default).
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   return atx::core::Ok(std::move(rep));
@@ -506,6 +605,11 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     return a.idx < b.idx;
   });
 
+  // W4b — accumulate each admitted alpha's realized OOS PnL (deterministic admit order,
+  // at the SEQUENTIAL parent admit-Ok point — NOT in workers) for the POST-HOC run-level
+  // CSCV-PBO verdict; finalized once after the loop. Empty + unused at the 1.0 default.
+  std::vector<std::vector<atx::f64>> admitted_pnls;
+
   // (4) the EXISTING sequential admit loop, fed the gathered streams — byte-identical to
   // the sequential mine_into loop (same metrics/dsr/canon/admit/digest fold). dsr is the
   // gathered run-start value, which equals the sequential 3c re-score (pool-INDEPENDENT).
@@ -557,6 +661,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
       kind = v.kind;
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
+        admitted_pnls.push_back(cand_pnl); // W4b: realized OOS PnL of an admitted alpha
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -566,6 +671,11 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
         static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
   }
+
+  // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default;
+  // accumulated at the SEQUENTIAL parent admit-Ok point, so it is deterministic on every
+  // substrate + worker count). Never alters rep.digest.
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   return atx::core::Ok(std::move(rep));
@@ -853,6 +963,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     return a.idx < b.idx;
   });
 
+  // W4b — accumulate each admitted alpha's realized HOLDOUT PnL (the SAME stream gated +
+  // persisted, deterministic admit order) for the POST-HOC run-level CSCV-PBO verdict;
+  // finalized once after the loop. Empty + unused at the max_pbo == 1.0 default.
+  std::vector<std::vector<atx::f64>> admitted_pnls;
+
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first.
   for (const Ranked &r : ranked) {
     const Genome &g = res.all_scored[r.idx];
@@ -933,6 +1048,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+        admitted_pnls.push_back(hold_pnl); // W4b: realized HOLDOUT PnL of an admitted alpha
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -942,6 +1058,10 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
         static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
   }
+
+  // W4b — POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set (no-op at the 1.0
+  // default; never alters rep.digest).
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   return atx::core::Ok(std::move(rep));
@@ -1131,6 +1251,12 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   const std::vector<GatheredScore> hold_gathered =
       gather_mine_scores(res.all_scored, hold_pool_item, admit_fit, holdout, policy_, sim_, exec);
 
+  // W4b — accumulate each admitted alpha's realized HOLDOUT PnL at the SEQUENTIAL parent
+  // admit-Ok point (NOT in workers) for the POST-HOC run-level CSCV-PBO verdict; finalized
+  // once after the loop. Empty + unused at the 1.0 default. Deterministic across substrate
+  // + worker count (the admit fold runs sequentially in THIS parent).
+  std::vector<std::vector<atx::f64>> admitted_pnls;
+
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first. SEQUENTIAL
   // in the parent — byte-identical to serial mine_into_oos:757-835 (same F5 drops, same
   // hold_dsr, same gate, same admit, same digest fold, same oos_metrics push).
@@ -1196,6 +1322,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
       if (kind == library::AdmitKind::Accept) {
         ++rep.admitted;
         rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+        admitted_pnls.push_back(hold_pnl); // W4b: realized HOLDOUT PnL of an admitted alpha
       } else if (kind == library::AdmitKind::Duplicate) {
         ++rep.duplicates;
       }
@@ -1205,6 +1332,11 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
         static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
   }
+
+  // W4b — POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set (no-op at the 1.0
+  // default; accumulated at the SEQUENTIAL parent admit-Ok point, deterministic on every
+  // substrate + worker count). Never alters rep.digest.
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   return atx::core::Ok(std::move(rep));

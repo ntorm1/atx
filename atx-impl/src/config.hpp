@@ -83,6 +83,17 @@ struct RunConfig {
     // FINITE, so the no-flag path is byte-identical to today (the factory determinism
     // golden + the discover slice are unchanged). Threaded into FactoryConfig::min_split_sharpe.
     double      min_split_sharpe = -std::numeric_limits<double>::infinity(); // --min-split-sharpe
+    // --max-pbo (W4b): OPTIONAL run-level CSCV-PBO batch gate. The PROBABILITY OF
+    // BACKTEST OVERFITTING (Bailey-López de Prado CSCV) computed POST-HOC over the SET
+    // of alphas a run admitted; PBO ∈ [0, 1] (→0 a persistent edge, →0.5 the in-sample
+    // winner is OOS noise). DISABLING DEFAULT = 1.0: at 1.0 the factory SKIPS the whole
+    // computation, so the no-flag path is byte-identical to today (the factory
+    // determinism golden + the discover slice are unchanged). ACTIVE when < 1.0: the
+    // admitted SET passes iff its run-level PBO <= max_pbo. The verdict is ADVISORY-but-
+    // RECORDED — it is surfaced in the gated manifest and a breach emits a loud warning,
+    // but it never un-persists an alpha or changes the exit code. Threaded into
+    // FactoryConfig::max_pbo.
+    double      max_pbo = 1.0; // --max-pbo (run-level CSCV-PBO batch gate; 1.0 = off, active when < 1.0)
     // --robust-holdout-frac (W4a): OPTIONAL. When > 0, discover builds a weak/holdout
     // sub-universe Panel = the main panel with its universe restricted to a
     // DETERMINISTIC seeded instrument sub-sample (~this fraction of in-universe

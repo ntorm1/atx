@@ -2,7 +2,8 @@
 
 #include <algorithm> // std::max (immigrant scaling)
 #include <array>
-#include <cstdio>    // std::fprintf (W2 screen log)
+#include <cmath>     // std::isfinite (W2 capacity screen; W4b PBO manifest gating)
+#include <cstdio>    // std::fprintf (W2 screen log; W4b PBO gate warning)
 #include <filesystem>
 #include <limits>    // std::numeric_limits (W2 NaN vwap stub)
 #include <fstream>
@@ -381,6 +382,7 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.panel_fields              = fields;
     fcfg.min_dsr                   = cfg.min_dsr;
     fcfg.min_split_sharpe          = cfg.min_split_sharpe; // W4a split-sample stability floor (off by default)
+    fcfg.max_pbo                   = cfg.max_pbo;           // W4b run-level CSCV-PBO batch gate (off by default = 1.0)
     fcfg.oos_fraction              = cfg.oos_fraction;
     fcfg.oos_embargo               = cfg.oos_embargo;
 
@@ -573,6 +575,18 @@ atx::core::Result<StageResult> run_discover_gated(
             mf << "oos_fraction="    << cfg.oos_fraction    << '\n';
             mf << "oos_embargo="     << cfg.oos_embargo     << '\n';
         }
+        // W4b: run-level CSCV-PBO verdict line — emitted ONLY when PBO was actually
+        // computed (the gate was active AND the admitted set was feasible), gated on
+        // std::isfinite(rep.pbo) so the OFF-path manifest is byte-identical (mirrors the
+        // OOS-only header discipline above). rep.pbo == NaN (off / infeasible) -> no line.
+        if (std::isfinite(rep.pbo)) {
+            mf << "run_pbo="          << rep.pbo
+               << " pbo_gate="        << (rep.pbo_gate_passed ? "pass" : "FAIL")
+               << " pbo_n_candidates="<< rep.pbo_n_candidates
+               << " pbo_n_splits="    << rep.pbo_n_splits
+               << " max_pbo="         << cfg.max_pbo
+               << '\n';
+        }
         mf << "panel="           << cfg.panel            << '\n';
         for (atx::u64 a = 0; a < n; ++a) {
             const auto rec = liblib.get(library::AlphaId{static_cast<atx::u32>(a)});
@@ -597,6 +611,22 @@ atx::core::Result<StageResult> run_discover_gated(
             }
             mf << " : " << rec.provenance.expr_source << '\n';
         }
+    }
+
+    // W4b: ADVISORY-but-RECORDED gate. When the run-level PBO was computed and BREACHED
+    // the threshold, emit a LOUD stderr warning naming the PBO + the bar. The gate does
+    // NOT change the process exit code and does NOT un-persist alphas (architecturally
+    // impossible — PBO is a post-hoc property of the already-grown admitted set); the
+    // recorded verdict (manifest run_pbo / pbo_gate) + this warning ARE the gate. stderr
+    // (not stdout) so it never pollutes the stage/factory digests.
+    if (std::isfinite(rep.pbo) && !rep.pbo_gate_passed) {
+        (void)std::fprintf(stderr,
+            "[W4b PBO gate] WARNING: run-level CSCV-PBO=%.4f EXCEEDS --max-pbo=%.4f over "
+            "%zu admitted alpha(s) (n_splits=%zu). The admitted SET shows backtest-overfit "
+            "risk; the alphas remain persisted (advisory gate) — review before trading.\n",
+            rep.pbo, cfg.max_pbo,
+            static_cast<std::size_t>(rep.pbo_n_candidates),
+            static_cast<std::size_t>(rep.pbo_n_splits));
     }
 
     // Stage digest: fnv1a64 over '\n'-joined DSL (process-stable; same scheme as

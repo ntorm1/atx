@@ -1467,4 +1467,48 @@ TEST(AtxImplDiscover, W3_ParseArgsSeedFileIntegration) {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  W4b_ParseArgsMaxPboThreads — the --max-pbo flag lands in cfg.max_pbo through
+//  the REAL parse_args -> apply_flag_value path (the run-level CSCV-PBO batch gate),
+//  and the no-flag default is the disabling 1.0 (byte-identical-at-config-layer).
+//  Mirrors the W4a --min-split-sharpe flag-threading discipline.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W4b_ParseArgsMaxPboThreads) {
+    // (a) --max-pbo 0.5 lands in cfg.max_pbo (the value the gated stage threads into
+    //     FactoryConfig::max_pbo).
+    {
+        const char* argv[] = {
+            "atx", "discover",
+            "--max-pbo", "0.5",
+        };
+        auto cfg_r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg_r.has_value())
+            << "(a) parse_args with --max-pbo must succeed: " << cfg_r.error().message();
+        EXPECT_DOUBLE_EQ(cfg_r->max_pbo, 0.5)
+            << "(a) --max-pbo 0.5 must land in cfg.max_pbo";
+    }
+
+    // (b) No --max-pbo: cfg.max_pbo is the disabling 1.0 default (the off path the
+    //     discover digest goldens are pinned against).
+    {
+        const char* argv[] = {"atx", "discover"};
+        auto cfg_r = atx::impl::parse_args(2, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg_r.has_value())
+            << "(b) parse_args without --max-pbo must succeed: " << cfg_r.error().message();
+        EXPECT_DOUBLE_EQ(cfg_r->max_pbo, 1.0)
+            << "(b) the no-flag default must be the disabling 1.0 (off)";
+    }
+
+    // (c) A malformed --max-pbo value fails closed through the real CLI path.
+    {
+        const char* argv[] = {
+            "atx", "discover",
+            "--max-pbo", "not-a-number",
+        };
+        auto cfg_r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(cfg_r.has_value())
+            << "(c) --max-pbo with a non-numeric value must return Err";
+    }
+}
+
 } // namespace atxtest_discover

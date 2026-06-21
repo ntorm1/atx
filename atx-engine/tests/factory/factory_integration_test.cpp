@@ -14,6 +14,7 @@
 // fields); only the planted edge differs. See the fixture notes for the observed
 // admitted counts (real > 0, noise == 0).
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -299,6 +300,177 @@ TEST(FactoryIntegration, SplitSharpeFloorGatesAdmission) {
   EXPECT_EQ(rep_hi.admitted, 0u) << "an active, impossibly-high split-Sharpe floor rejects all";
   EXPECT_EQ(pool_hi.n_alphas(), 0u);
   EXPECT_NE(rep_hi.digest, rep_def.digest) << "the active floor changes admission -> shifts the digest";
+}
+
+// =============================================================================
+//  W4b RunLevelPboHelper — the POST-HOC run-level CSCV-PBO verdict over a run's
+//  admitted alphas. Unit-tests detail::finalize_run_pbo (the single source of truth
+//  the five Factory admit paths share) directly on hand-built admitted_pnls — the
+//  same testability the W4a detail::split_half_sharpe helper has.
+//
+//    (1) OVERFIT pattern — disjoint single-window spikes, flat-negative elsewhere
+//        (the bias_audit.cpp synthetic, as per-candidate PnL rows) -> HIGH PBO. With
+//        max_pbo = 0.5 the gate FAILS, but rep.pbo is still a finite [0,1] verdict.
+//    (2) PERSISTENT pattern — every row shares a stable positive drift -> LOW PBO ->
+//        the gate PASSES.
+//    (3) OFF (max_pbo = 1.0) -> NO compute: rep.pbo stays the NaN sentinel, all the
+//        PBO fields stay at their sentinels, the gate passes.
+//    (4) < 2 admitted rows -> infeasible -> sentinels, gate passes.
+// =============================================================================
+TEST(FactoryIntegration, W4b_RunLevelPboHelper) {
+  using atx::engine::factory::detail::finalize_run_pbo;
+
+  // A structural index-0 zero is prepended to every row (finalize_run_pbo drops it,
+  // mirroring the §0-F combine convention) so the post-drop length is kT.
+  constexpr usize kN = 16u; // admitted alphas (candidate rows)
+  constexpr usize kT = 64u; // post-drop periods
+  constexpr usize kW = kT / 8u; // sub-window width (8 = the CSCV split count)
+
+  // (1) OVERFIT: each candidate spikes ONLY on its own disjoint sub-window, dead
+  // (flat-negative) elsewhere — the canonical high-PBO construction.
+  {
+    std::vector<std::vector<f64>> overfit;
+    for (usize c = 0; c < kN; ++c) {
+      std::vector<f64> row;
+      row.reserve(kT + 1u);
+      row.push_back(0.0); // index-0 structural zero (dropped by finalize_run_pbo)
+      for (usize t = 0; t < kT; ++t) {
+        row.push_back((t / kW == c % 8u) ? 1.0 : -0.02);
+      }
+      overfit.push_back(std::move(row));
+    }
+    FactoryReport rep;
+    finalize_run_pbo(rep, overfit, /*max_pbo=*/0.5);
+    EXPECT_TRUE(std::isfinite(rep.pbo)) << "an active gate over a feasible set computes a PBO";
+    EXPECT_GE(rep.pbo, 0.0);
+    EXPECT_LE(rep.pbo, 1.0);
+    EXPECT_EQ(rep.pbo_n_candidates, kN);
+    EXPECT_EQ(rep.pbo_n_splits, 8u) << "n_splits auto-clamps to min(8, T) rounded even";
+    EXPECT_FALSE(rep.pbo_gate_passed) << "the overfit set's high PBO exceeds max_pbo=0.5 -> FAIL";
+  }
+
+  // (2) PERSISTENT: every candidate shares the SAME stable positive drift (a real,
+  // OOS-persistent edge) -> the IS winner keeps winning OOS -> low PBO -> gate passes.
+  {
+    std::vector<std::vector<f64>> persistent;
+    for (usize c = 0; c < kN; ++c) {
+      std::vector<f64> row;
+      row.reserve(kT + 1u);
+      row.push_back(0.0);
+      for (usize t = 0; t < kT; ++t) {
+        // A deterministic, candidate-ordered positive drift with a tiny per-candidate
+        // tilt so the rows are not bit-identical (CSCV needs a strict cross-section).
+        row.push_back(0.10 + 0.001 * static_cast<f64>(c) + 0.0001 * static_cast<f64>(t));
+      }
+      persistent.push_back(std::move(row));
+    }
+    FactoryReport rep;
+    finalize_run_pbo(rep, persistent, /*max_pbo=*/0.5);
+    EXPECT_TRUE(std::isfinite(rep.pbo));
+    EXPECT_LE(rep.pbo, 0.5) << "a persistent shared edge has low PBO";
+    EXPECT_TRUE(rep.pbo_gate_passed) << "low PBO <= max_pbo=0.5 -> gate passes";
+  }
+
+  // (3) OFF (the 1.0 disabling default): NO compute, every PBO field at its sentinel.
+  {
+    std::vector<std::vector<f64>> overfit; // a high-PBO set — but the gate is OFF
+    for (usize c = 0; c < kN; ++c) {
+      std::vector<f64> row(kT + 1u, -0.02);
+      row[0] = 0.0;
+      for (usize t = 0; t < kW; ++t) {
+        row[1u + (c % 8u) * kW + t] = 1.0;
+      }
+      overfit.push_back(std::move(row));
+    }
+    FactoryReport rep;
+    finalize_run_pbo(rep, overfit, /*max_pbo=*/1.0);
+    EXPECT_TRUE(std::isnan(rep.pbo)) << "off (max_pbo=1.0) leaves pbo at the NaN sentinel";
+    EXPECT_EQ(rep.pbo_mean_logit, 0.0);
+    EXPECT_EQ(rep.pbo_n_candidates, 0u);
+    EXPECT_EQ(rep.pbo_n_splits, 0u);
+    EXPECT_TRUE(rep.pbo_gate_passed) << "off -> the gate passes (fail-open)";
+  }
+
+  // (4) < 2 admitted rows: infeasible (pbo_cscv needs n_candidates >= 2) -> sentinels.
+  {
+    std::vector<std::vector<f64>> one_row;
+    std::vector<f64> row(kT + 1u, 0.1);
+    row[0] = 0.0;
+    one_row.push_back(std::move(row));
+    FactoryReport rep;
+    finalize_run_pbo(rep, one_row, /*max_pbo=*/0.5); // active gate, but only 1 row
+    EXPECT_TRUE(std::isnan(rep.pbo)) << "< 2 admitted rows is infeasible -> sentinel";
+    EXPECT_EQ(rep.pbo_n_candidates, 0u);
+    EXPECT_TRUE(rep.pbo_gate_passed) << "infeasible -> gate passes (fail-open)";
+  }
+}
+
+// =============================================================================
+//  W4b RunLevelPboMineByteIdentity — the POST-HOC PBO records over the REAL admitted
+//  set WITHOUT perturbing the admission digest.
+//
+//    * max_pbo = 1.0 (default): rep.pbo is the NaN sentinel AND the digest equals a
+//      baseline run that never touches the field.
+//    * max_pbo = 0.5 (active) on the SAME seed/panel: rep.pbo is FINITE,
+//      rep.pbo_n_candidates == rep.admitted, the verdict is set, and the DIGEST is
+//      UNCHANGED vs the default run — proof PBO does NOT perturb any admission decision.
+// =============================================================================
+TEST(FactoryIntegration, W4b_RunLevelPboMineByteIdentity) {
+  AlphaGate gate{default_gate_cfg()};
+
+  // (1) Default (off) run.
+  Fixture fx_def{real_signal_panel()};
+  AlphaStore pool_def;
+  Factory f_def = fx_def.factory();
+  const FactoryConfig cfg_default = real_signal_cfg(/*seed*/ 1); // max_pbo == 1.0
+  const FactoryReport rep_def = f_def.mine(cfg_default, pool_def, gate);
+  ASSERT_GE(rep_def.admitted, 2u) << "this fixture/seed must admit >= 2 for a PBO cross-section";
+  EXPECT_TRUE(std::isnan(rep_def.pbo)) << "the off path leaves pbo at the NaN sentinel";
+
+  // (2) Active gate on the SAME seed/panel.
+  Fixture fx_act{real_signal_panel()};
+  AlphaStore pool_act;
+  Factory f_act = fx_act.factory();
+  FactoryConfig cfg_act = real_signal_cfg(/*seed*/ 1);
+  cfg_act.max_pbo = 0.5; // active: compute + record, but never alter admission
+  const FactoryReport rep_act = f_act.mine(cfg_act, pool_act, gate);
+
+  EXPECT_EQ(rep_act.admitted, rep_def.admitted) << "PBO does not change the admitted count";
+  EXPECT_EQ(rep_act.digest, rep_def.digest)
+      << "the POST-HOC PBO never perturbs the admission digest (byte-identity invariant)";
+  EXPECT_TRUE(std::isfinite(rep_act.pbo)) << "the active gate computed a finite PBO";
+  EXPECT_GE(rep_act.pbo, 0.0);
+  EXPECT_LE(rep_act.pbo, 1.0);
+  EXPECT_EQ(rep_act.pbo_n_candidates, rep_act.admitted)
+      << "every admitted alpha feeds the run-level CSCV cross-section";
+  EXPECT_GT(rep_act.pbo_n_splits, 0u);
+}
+
+// =============================================================================
+//  W4b RunLevelPboDeterministic — same seed + same active max_pbo -> identical pbo
+//  (the F1 determinism guarantee: pbo_cscv is pure + the matrix is assembled in the
+//  deterministic sequential admit order).
+// =============================================================================
+TEST(FactoryIntegration, W4b_RunLevelPboDeterministic) {
+  AlphaGate gate{default_gate_cfg()};
+
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  AlphaStore p1;
+  AlphaStore p2;
+  Factory f1 = fx1.factory();
+  Factory f2 = fx2.factory();
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 7);
+  cfg.max_pbo = 0.5;
+  const FactoryReport a = f1.mine(cfg, p1, gate);
+  const FactoryReport b = f2.mine(cfg, p2, gate);
+  ASSERT_GE(a.admitted, 2u);
+  EXPECT_EQ(a.digest, b.digest);
+  EXPECT_TRUE(std::isfinite(a.pbo));
+  EXPECT_EQ(a.pbo, b.pbo) << "same seed + same max_pbo -> byte-identical run-level PBO";
+  EXPECT_EQ(a.pbo_n_candidates, b.pbo_n_candidates);
+  EXPECT_EQ(a.pbo_n_splits, b.pbo_n_splits);
+  EXPECT_EQ(a.pbo_gate_passed, b.pbo_gate_passed);
 }
 
 // =============================================================================

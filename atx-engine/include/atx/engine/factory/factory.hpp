@@ -136,6 +136,20 @@ struct FactoryConfig {
   //  ONLY when std::isfinite(min_split_sharpe); at the -inf default the accept
   //  expression is byte-identical to the pre-W4a screen (kGoldenDigest unchanged).
   atx::f64 min_split_sharpe = -std::numeric_limits<atx::f64>::infinity();
+  // --- W4b run-level CSCV-PBO batch verdict (OPTIONAL; default DISABLED = 1.0).
+  //  The PROBABILITY OF BACKTEST OVERFITTING (Bailey-López de Prado CSCV) computed
+  //  POST-HOC over the SET of alphas this run admitted — a property of the SELECTION
+  //  PROCEDURE, not a per-alpha score, so it CANNOT filter individual candidates and is
+  //  computed AFTER the admit loop (never alters the admission digest by construction).
+  //  PBO ∈ [0, 1] (→0 a persistent edge, →0.5 the IS winner is OOS noise). ACTIVE iff
+  //  max_pbo < 1.0: a candidate SET passes iff its run-level PBO <= max_pbo. The
+  //  DISABLING default is 1.0 (NOT a finite bar): at 1.0 the whole computation is
+  //  SKIPPED, the report's PBO fields stay at their sentinels, and the run is
+  //  byte-identical to the pre-W4b path (a 1.0 threshold could never trip strict
+  //  pbo > max_pbo anyway, but skipping makes the no-op explicit + free). The verdict
+  //  is ADVISORY-but-RECORDED: it is surfaced (rep.pbo_gate_passed) but never un-
+  //  persists an alpha or changes admission — recording + a loud warning ARE the gate.
+  atx::f64 max_pbo = 1.0;
   // --- P2a out-of-sample (holdout) validation (additive; 0.0 == OFF, default).
   //  When oos_fraction > 0, mine_into SELECTS on a TRAIN window [0, lockbox_begin -
   //  embargo) but CONFIRMS the AlphaGate floors + the DSR bar on the HELD-OUT
@@ -205,7 +219,55 @@ struct FactoryReport {
   //  identical). One entry per admitted alpha when oos_fraction > 0: its IS (train)
   //  and OOS (holdout) metrics. P2b (impl) reads this for the discover manifest.
   std::vector<OosReportEntry> oos_metrics;
+
+  // --- W4b run-level CSCV-PBO verdict (additive; default-SENTINEL so the legacy path
+  //  is byte-identical — mirrors the oos_metrics precedent). Populated ONLY when the
+  //  gate is ACTIVE (FactoryConfig::max_pbo < 1.0) AND the admitted set is feasible
+  //  (>= 2 admitted alphas of equal post-drop length, matrix accepted by
+  //  pbo_cscv_checked); otherwise every field stays at its sentinel and the report is
+  //  indistinguishable from a pre-W4b run.
+  //    pbo            : the run-level PBO ∈ [0, 1]. NaN == "not computed" (off /
+  //                     infeasible / < 2 admitted) — the legacy-byte-identity sentinel.
+  //    pbo_mean_logit : mean per-split logit λ (diagnostic; 0.0 sentinel).
+  //    pbo_n_candidates : the admitted-alpha count fed to CSCV (0 sentinel).
+  //    pbo_n_splits   : the auto-clamped even split count S actually used (0 sentinel).
+  //    pbo_gate_passed: the RECORDED verdict — false iff the gate was active AND
+  //                     pbo > max_pbo. FAIL-OPEN: true when off / infeasible / not
+  //                     computed (the advisory gate never blocks an otherwise-good run).
+  atx::f64 pbo = std::numeric_limits<atx::f64>::quiet_NaN();
+  atx::f64 pbo_mean_logit = 0.0;
+  atx::usize pbo_n_candidates = 0;
+  atx::usize pbo_n_splits = 0;
+  bool pbo_gate_passed = true;
 };
+
+namespace detail {
+
+// finalize_run_pbo — the SINGLE SOURCE OF TRUTH for the W4b run-level CSCV-PBO verdict
+// over a discovery run's admitted alphas. POST-HOC: called ONCE after the admit loop,
+// BEFORE `return rep`, on every Factory mine path. PURE (no RNG; eval::pbo_cscv is
+// order-fixed) and it NEVER touches rep.digest or any admission decision — it only
+// ADDS to the report's PBO fields. `admitted_pnls[i]` is admitted-alpha i's realized
+// OOS PnL stream (the SAME stream that was gated + persisted), in deterministic admit
+// order. Rules:
+//   * max_pbo >= 1.0 (off, the default) -> return immediately, fields stay at sentinels
+//     (NaN pbo, 0 logit/counts, gate passes) -> byte-identical legacy path.
+//   * drop index 0 of each row (the §0-F structural zero — the same .subspan(1) /
+//     split_floor_ok convention) before forming the candidate-major matrix M[c*T + t].
+//   * require >= 2 rows of EQUAL post-drop length T (true by construction — same eval
+//     window); a mismatch is treated as infeasible (sentinels, gate passes).
+//   * n_splits = the largest EVEN value <= min(8, T) (8 = Bailey's standard CSCV S;
+//     auto-clamp for short panels); if < 2 -> infeasible (skip).
+//   * call eval::pbo_cscv_checked(M, n_candidates, n_splits); on Err -> infeasible
+//     (skip); on Ok -> set rep.pbo / pbo_mean_logit / pbo_n_candidates / pbo_n_splits
+//     and rep.pbo_gate_passed = !(rep.pbo > max_pbo).
+// Declared so a unit test can verify the verdict on hand-built admitted_pnls (the same
+// single-source-of-truth testability the W4a detail::split_half_sharpe helper has).
+void finalize_run_pbo(FactoryReport &rep,
+                      const std::vector<std::vector<atx::f64>> &admitted_pnls,
+                      atx::f64 max_pbo);
+
+} // namespace detail
 
 // =========================================================================
 //  Factory — the mine -> gate -> admit capstone (§4.8).
