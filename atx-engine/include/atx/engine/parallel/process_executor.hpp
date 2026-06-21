@@ -72,18 +72,24 @@ struct ControlBlock {
   char output_name[256]; // NUL-terminated OS name of the output segment
   // The cross-process work dispenser, addressed via std::atomic_ref by every
   // worker. ALIGNMENT (the load-bearing invariant): ShmSegment prepends an
-  // 8-byte length header, so the ControlBlock is mapped at page+8 — NOT a 64B
-  // boundary. The atomic_ref is nonetheless well-defined because
-  // std::atomic_ref<usize>::required_alignment is 8 (asserted below), `usize` is
-  // 8-aligned, offsetof(claim_cursor) is a multiple of 8, and page+8 is 8-aligned
-  // — so &claim_cursor is 8-aligned, which satisfies required_alignment. The
-  // `alignas(64)` is kept only as a best-effort cache-line hint; the +8 header
-  // offset defeats true physical line isolation, so it is a PERF nuance, not a
-  // correctness guarantee (the cursor shares no segment with result data anyway,
-  // so it cannot false-share with a result bit — R6 is unaffected). `usize` (not
-  // a fixed width) is sound because parent and worker are the SAME binary on the
-  // SAME machine, so the atomic operand width is identical in both (§0.3).
-  alignas(64) atx::usize claim_cursor;
+  // 8-byte length header, so the ControlBlock is mapped at page+8 — NOT a 16/64B
+  // boundary. The cursor is therefore INTENTIONALLY only 8-aligned: that matches
+  // the page+8 segment placement and keeps alignof(ControlBlock) == 8, which is
+  // exactly what makes `reinterpret_cast<ControlBlock*>(cbuf.data())` onto page+8
+  // WELL-DEFINED (an object may not be placed below its declared alignment).
+  // Declaring `alignas(>8)` on any member would silently make that cast UB — at
+  // Release /O2 /Ob2 the optimizer would assume the higher alignment and vectorize
+  // the field stores into a 16B `movaps` to a page+8 (8-mod-16) address → #GP →
+  // segfault in every multi-process mine from a vectorizing TU. The static_assert
+  // below is the tripwire that forbids re-introducing such an alignas. The
+  // atomic_ref is well-defined because std::atomic_ref<usize>::required_alignment
+  // is 8 (asserted below), `usize` is 8-aligned, offsetof(claim_cursor) is a
+  // multiple of 8, and page+8 is 8-aligned — so &claim_cursor is 8-aligned. (No
+  // cache-line isolation is attempted; the cursor shares no segment with result
+  // data, so it cannot false-share with a result bit — R6 is unaffected.) `usize`
+  // (not a fixed width) is sound because parent and worker are the SAME binary on
+  // the SAME machine, so the atomic operand width is identical in both (§0.3).
+  atx::usize claim_cursor;
 };
 
 // Wire-format invariants: the structs cross a process boundary as raw bytes, so
@@ -93,6 +99,15 @@ struct ControlBlock {
 static_assert(std::is_trivially_copyable_v<ErrorSlot>, "ErrorSlot must be a POD wire type");
 static_assert(std::is_trivially_copyable_v<ControlBlock>, "ControlBlock must be a POD wire type");
 static_assert(std::is_standard_layout_v<ControlBlock>, "ControlBlock must be standard-layout");
+
+// The ControlBlock is mapped at page + ShmSegment's 8-byte length header (page+8),
+// so a reinterpret_cast<ControlBlock*> onto it is only well-defined if
+// alignof(ControlBlock) <= 8. Declaring any member alignas(>8) silently makes that
+// cast UB (Release vectorizes the field stores into a movaps -> #GP). This tripwire
+// forbids re-introducing it (it would have FAILED to compile the original, which
+// had alignof 64 > 8).
+static_assert(alignof(ControlBlock) <= 8,
+              "ControlBlock is mapped at page+8; its alignment must be <= 8 — do not alignas a member higher");
 
 // The claim cursor is only 8-aligned within the mapped segment (ControlBlock at
 // page+8, see the field comment). atomic_ref over it is UB unless its required
@@ -116,7 +131,8 @@ inline constexpr atx::u32 kControlMagic = 0x41545837U;
 // SAFETY: the parent sized the control segment as control_segment_bytes(n_workers)
 // and zero-initialised it, so the [sizeof(ControlBlock), +n_workers*sizeof(ErrorSlot))
 // range is in-bounds, suitably aligned (ErrorSlot's alignment is 8; sizeof(ControlBlock)
-// is a multiple of 8 by its 64B-aligned tail), and holds N trivially-copyable ErrorSlot
+// is a multiple of 8 because its largest/last member is the 8-aligned usize cursor),
+// and holds N trivially-copyable ErrorSlot
 // objects. The reinterpret_cast from a byte cursor to ErrorSlot* is the standard
 // shared-memory typed-view idiom and is required to address the array.
 [[nodiscard]] inline ErrorSlot *error_slots(std::span<std::byte> ctl) noexcept {

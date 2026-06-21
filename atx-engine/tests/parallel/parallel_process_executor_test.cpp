@@ -102,6 +102,20 @@ protected:
 
 } // namespace
 
+// --- Under-alignment tripwire (companion to the static_assert in the header) ---
+//
+// The shm ControlBlock is mapped at page + ShmSegment's 8-byte length header
+// (page+8), so reinterpret_cast<ControlBlock*> onto it is only well-defined when
+// alignof(ControlBlock) <= 8. A member alignas(>8) would make alignof 16/64,
+// silently turning that cast into UB (Release vectorizes the field stores into a
+// movaps -> #GP, segfaulting every multi-process mine from a vectorizing TU). The
+// header's static_assert is the build-time guard; this is its human-readable
+// runtime companion.
+TEST(ParallelProcessExecutorLayout, ControlBlockIsAtMostEightAligned) {
+  EXPECT_LE(alignof(atx::engine::parallel::ControlBlock), std::size_t{8})
+      << "ControlBlock is mapped at page+8; alignof must be <= 8 — do not alignas a member higher";
+}
+
 // --- The boundary pin: digest invariance across all six paths (R1/R7/§0.5) ---
 
 TEST_F(ParallelProcessExecutor, DigestIsInvariantAcrossSubstrateAndWorkerCount) {
