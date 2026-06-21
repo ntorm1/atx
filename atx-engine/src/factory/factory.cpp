@@ -29,13 +29,43 @@
 
 namespace atx::engine::factory {
 
+namespace {
+
+// W4a — the OPTIONAL split-sample stability floor over a REALIZED PnL stream (the
+// library admit paths: mine_into + mine_into_oos, serial AND substrate-aware
+// parallel). INACTIVE (the -inf disabling default) -> always true, so the admit
+// expression is byte-identical to the pre-W4a screen. ACTIVE -> the candidate passes
+// iff its OOS PnL (index-0 zero dropped, floor-midpoint split via
+// detail::split_half_sharpe — the SAME rule as fitness_core) is split-stable (both
+// halves share the full-sample Sharpe sign) AND both half-Sharpes clear the floor.
+// The full-sample sign comes from metrics.sharpe (annualized; sign-preserving).
+// Computed from cand_pnl + metrics (NOT a PoolView fit), so the serial and parallel
+// mine_into paths — which both hold those locals but the parallel Mine wire format
+// does NOT carry the split fields — reach the IDENTICAL decision (the byte-identity
+// invariant). PURE; no RNG.
+[[nodiscard]] bool split_floor_ok(atx::f64 min_split_sharpe,
+                                  std::span<const atx::f64> realized_pnl,
+                                  const combine::AlphaMetrics &metrics) noexcept {
+  if (!std::isfinite(min_split_sharpe)) {
+    return true; // floor disabled (default) -> byte-identical to the pre-W4a screen
+  }
+  const std::span<const atx::f64> moments =
+      (realized_pnl.size() > 1U) ? realized_pnl.subspan(1) : realized_pnl;
+  const atx::f64 full_sign = (metrics.sharpe > 0.0) ? 1.0 : (metrics.sharpe < 0.0 ? -1.0 : 0.0);
+  const detail::SplitHalf sh = detail::split_half_sharpe(moments, full_sign);
+  return sh.stable && sh.sharpe_h1 >= min_split_sharpe && sh.sharpe_h2 >= min_split_sharpe;
+}
+
+} // namespace
+
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
                                           const combine::AlphaGate &gate) {
   FactoryReport rep;
 
   // (1) run the S3-5 search. The driver re-derives a clean per-run state from the
   // seed, so a fresh driver per mine() preserves F1 replay (no carried state).
-  SearchDriver driver{lib_, panel_, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  SearchDriver driver{lib_,           panel_,           policy_,         sim_,
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel}; // W4a robust factor
   const SearchResult res = driver.run(cfg.search, pool);
 
   rep.evaluated = res.trial_count;
@@ -110,7 +140,21 @@ namespace atx::engine::factory {
     const combine::GateVerdict verdict =
         gate.admit(metrics, std::span<const atx::f64>{cand_pnl}, pool);
 
-    const bool accept = (verdict == combine::GateVerdict::Accept) && (dsr >= cfg.min_dsr);
+    // W4a split-sample stability floor (OPTIONAL; default DISABLED). Active ONLY
+    // when cfg.min_split_sharpe is FINITE (the -inf disabling default leaves this
+    // term true and the accept expression byte-identical to the pre-W4a screen).
+    // When active, a candidate is rejected unless its OOS PnL is split-stable (both
+    // halves share the full-sample Sharpe sign) AND both half-Sharpes clear the
+    // floor. The split metrics come from the SAME admission-loop `fit` (computed
+    // alongside `dsr`); if that re-score errored, no metrics exist -> the candidate
+    // fails the active floor (it could not be confirmed stable on the current pool).
+    const bool split_floor_active = std::isfinite(cfg.min_split_sharpe);
+    const bool split_ok =
+        !split_floor_active ||
+        (fit.has_value() && fit->split_stable && fit->sharpe_h1 >= cfg.min_split_sharpe &&
+         fit->sharpe_h2 >= cfg.min_split_sharpe);
+    const bool accept =
+        (verdict == combine::GateVerdict::Accept) && (dsr >= cfg.min_dsr) && split_ok;
     // Fold the decision into the digest (every screened candidate, in order):
     // (canon_hash, accept-bit) — so a different admission outcome shifts the
     // digest, and an identical mine+admit replays byte-identical (F1/F2).
@@ -164,7 +208,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // via the LibraryPool seam (S4b-2). The empty store and an empty library agree
   // (both have worst_corr == 0), so the search is byte-identical to mine()'s search.
   combine::AlphaStore search_pool; // empty selection pool (the search's pre-pool)
-  SearchDriver driver{lib_, panel_, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  SearchDriver driver{lib_,           panel_,           policy_,         sim_,
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel}; // W4a robust factor
   const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
 
   // The persistent library is the ADMISSION pool: the deflated-fitness ranking and
@@ -235,10 +280,18 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
                              /*mutation_op=*/0, /*seed=*/res.seed};
 
+    // W4a split-sample stability floor (OPTIONAL; default DISABLED). Computed from
+    // the REALIZED full-panel PnL stream + metrics (NOT the PoolView `fit`), so the
+    // sequential and substrate-aware parallel mine_into paths — which both hold
+    // cand_pnl + metrics but the parallel Mine wire format does NOT carry the split
+    // fields — reach the IDENTICAL decision (the serial/parallel byte-identity
+    // invariant). Inactive (-inf default) -> always true (byte-identical pre-W4a bar).
+    const bool split_ok =
+        split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{cand_pnl}, metrics);
     // The deflation bar is FACTORY-side: clear it BEFORE library::admit is consulted.
     library::AdmitKind kind =
         library::AdmitKind::RejectFitness; // non-accept sentinel for the histogram
-    if (dsr >= cfg.min_dsr) {
+    if (dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{cand_pnl},
                                          std::span<const atx::f64>{cand_pos},
@@ -400,7 +453,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
 
   // (1) run the S3-5 search — IDENTICAL to the sequential mine_into.
   combine::AlphaStore search_pool;
-  SearchDriver driver{lib_, panel_, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  SearchDriver driver{lib_,           panel_,           policy_,         sim_,
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel}; // W4a robust factor
   const SearchResult res = driver.run(cfg.search, search_pool);
 
   rep.evaluated = res.trial_count;
@@ -482,8 +536,13 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
                              /*mutation_op=*/0, /*seed=*/res.seed};
 
+    // W4a split-sample stability floor — IDENTICAL rule + inputs (cand_pnl + metrics)
+    // to the sequential mine_into path, so the serial/parallel byte-identity holds.
+    // Default DISABLED (-inf) -> always true (byte-identical to the pre-W4a bar).
+    const bool split_ok =
+        split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{cand_pnl}, metrics);
     library::AdmitKind kind = library::AdmitKind::RejectFitness;
-    if (dsr >= cfg.min_dsr) {
+    if (dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{cand_pnl},
                                          std::span<const atx::f64>{cand_pos},
@@ -676,7 +735,12 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // EMPTY scratch store (as the legacy path does); admission scores against the
   // persistent library below.
   combine::AlphaStore search_pool;
-  SearchDriver driver{lib_, train, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  // W4a: thread the weak panel into the OOS-path search too. NOTE: when both the OOS
+  // holdout (search runs on `train`) and the robust holdout are active, the weak
+  // panel's universe mask should be derived over the SAME panel the search optimizes
+  // (the caller's responsibility); nullptr (default) is the byte-identical no-op.
+  SearchDriver driver{lib_,           train,            policy_,         sim_,
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel};
   const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
 
   // (8.C) OOS train-ranking corr length safety: rank the OOS candidates against an
@@ -844,11 +908,15 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
                              /*mutation_op=*/0, /*seed=*/res.seed};
 
+    // W4a split-sample stability floor on the HOLDOUT stream (OPTIONAL; default
+    // DISABLED -> byte-identical to the pre-W4a OOS screen).
+    const bool split_ok =
+        split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{hold_pnl}, hold_metrics);
     // (3d) ADMISSION on the HOLDOUT: clear the factory deflation bar on the holdout
     // DSR, then library::admit on the HOLDOUT metrics + holdout pnl (so the durable
     // `metrics` are what was actually gated out-of-sample).
     library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (hold_dsr >= cfg.min_dsr) {
+    if (hold_dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{hold_pnl},
                                          std::span<const atx::f64>{hold_pos_flat},
@@ -925,7 +993,12 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // mine_into entry point — same as the non-OOS parallel path, which also runs the
   // search with the no-progress-sink driver.run(cfg, store) overload.)
   combine::AlphaStore search_pool;
-  SearchDriver driver{lib_, train, policy_, sim_, cfg.seed_exprs, cfg.panel_fields};
+  // W4a: thread the weak panel into the OOS-path search too. NOTE: when both the OOS
+  // holdout (search runs on `train`) and the robust holdout are active, the weak
+  // panel's universe mask should be derived over the SAME panel the search optimizes
+  // (the caller's responsibility); nullptr (default) is the byte-identical no-op.
+  SearchDriver driver{lib_,           train,            policy_,         sim_,
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel};
   const SearchResult res = driver.run(cfg.search, search_pool);
 
   rep.evaluated = res.trial_count;
@@ -1102,9 +1175,14 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     library::Provenance prov{alpha::unparse(g.ast), /*parent_hashes=*/{},
                              /*mutation_op=*/0, /*seed=*/res.seed};
 
+    // W4a split-sample stability floor on the HOLDOUT stream — IDENTICAL rule to the
+    // serial mine_into_oos path (same hold_pnl + hold_metrics -> same decision), so
+    // the serial/parallel byte-identity invariant holds. Default DISABLED (-inf).
+    const bool split_ok =
+        split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{hold_pnl}, hold_metrics);
     // (3d) ADMISSION on the HOLDOUT — IDENTICAL to serial mine_into_oos:813-830.
     library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (hold_dsr >= cfg.min_dsr) {
+    if (hold_dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{hold_pnl},
                                          std::span<const atx::f64>{hold_pos_flat},

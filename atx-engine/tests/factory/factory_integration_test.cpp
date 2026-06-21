@@ -264,6 +264,38 @@ TEST(FactoryIntegration, SeededRunReplaysByteIdentical) {
 }
 
 // =============================================================================
+//  W4a SplitSharpeFloorGatesAdmission — the OPTIONAL split-sample stability floor.
+//
+//  The default (-inf) floor admits the real-signal survivors EXACTLY as the pre-W4a
+//  screen did (the new FactoryConfig field is a no-op at its disabling default —
+//  same admitted count + byte-identical digest as a baseline run that never touches
+//  it). An IMPOSSIBLY-HIGH finite floor activates the gate and rejects every
+//  candidate (no per-period half-Sharpe clears 1e9), shifting the digest — proof the
+//  floor actually bites when set. Mirrors the min_dsr deflation-bar test idiom.
+// =============================================================================
+TEST(FactoryIntegration, SplitSharpeFloorGatesAdmission) {
+  // (1) Default (-inf) floor: admits survivors, byte-identical to the untouched cfg.
+  Fixture fx_def{real_signal_panel()};
+  AlphaStore pool_def;
+  AlphaGate gate{default_gate_cfg()};
+  Factory f_def = fx_def.factory();
+  const FactoryConfig cfg_default = real_signal_cfg(/*seed*/ 1); // min_split_sharpe == -inf
+  const FactoryReport rep_def = f_def.mine(cfg_default, pool_def, gate);
+  EXPECT_GT(rep_def.admitted, 0u) << "default (disabled) floor admits the real-signal survivors";
+
+  // (2) Active, impossibly-high floor on the SAME seed/panel: rejects everything.
+  Fixture fx_hi{real_signal_panel()};
+  AlphaStore pool_hi;
+  Factory f_hi = fx_hi.factory();
+  FactoryConfig cfg_hi = real_signal_cfg(/*seed*/ 1);
+  cfg_hi.min_split_sharpe = 1.0e9; // no half-Sharpe can clear this -> active gate rejects all
+  const FactoryReport rep_hi = f_hi.mine(cfg_hi, pool_hi, gate);
+  EXPECT_EQ(rep_hi.admitted, 0u) << "an active, impossibly-high split-Sharpe floor rejects all";
+  EXPECT_EQ(pool_hi.n_alphas(), 0u);
+  EXPECT_NE(rep_hi.digest, rep_def.digest) << "the active floor changes admission -> shifts the digest";
+}
+
+// =============================================================================
 //  ReuseS1BiasAuditVerbatim — the shared validity spine still fires.
 // =============================================================================
 TEST(FactoryIntegration, ReuseS1BiasAuditVerbatim) {

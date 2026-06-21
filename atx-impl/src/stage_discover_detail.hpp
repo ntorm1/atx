@@ -26,4 +26,20 @@ namespace atx::impl::detail {
 apply_capacity_screen(const atx::engine::alpha::Panel& panel,
                       atx::f64 min_price, atx::f64 min_adv, long adv_window);
 
+// Build the W4a robust-factor weak/holdout sub-universe Panel (Deliverable 2).
+//
+// Returns a derived Panel = `panel` with the SAME field columns but its universe
+// restricted to a DETERMINISTIC seeded instrument sub-sample: instrument i stays
+// in-universe iff it was in the original universe AND it is SELECTED by a SplitMix64
+// mix of (master_seed, i) falling under `frac`. Seeded by `master_seed` only (never
+// thread/time) -> same seed + frac + panel => same weak universe (seed-stable, F1).
+// The candidate's WQ is re-scored on this held-out universe to form the robust factor.
+//
+// `frac` MUST be in (0, 1). Fail-closed: frac out of range, or a sub-sample that
+// retains zero in-universe cells, => Err(InvalidArgument) with a diagnostic. Exposed
+// so discover_test.cpp can verify the determinism + masking directly.
+[[nodiscard]] atx::core::Result<atx::engine::alpha::Panel>
+build_robust_holdout_panel(const atx::engine::alpha::Panel& panel, atx::f64 frac,
+                           atx::u64 master_seed);
+
 } // namespace atx::impl::detail

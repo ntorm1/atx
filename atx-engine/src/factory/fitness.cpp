@@ -42,6 +42,31 @@ namespace atx::engine::factory {
 
 namespace detail {
 
+// W4a split-sample stability (single source of truth; unit-tested via the header
+// declaration). `oos_moments` is the OOS PnL stream with the structural index-0
+// zero ALREADY dropped (the deflation-moment span). Slice at the FLOOR midpoint:
+// H1 = the first floor(T/2) periods, H2 = the remaining ceil(T/2). Each half's
+// per-period Sharpe is ms.mean/ms.std (std==0 ⇒ 0 — the PBO/subset_sharpe
+// convention). `stable` iff BOTH half-Sharpes share `full_sign` (the full-sample
+// per-period Sharpe sign: +1 / -1 / 0). PURE (no RNG, no eval).
+[[nodiscard]] SplitHalf split_half_sharpe(std::span<const atx::f64> oos_moments,
+                                          atx::f64 full_sign) noexcept {
+  auto half_sharpe = [](std::span<const atx::f64> r) noexcept -> atx::f64 {
+    const eval::MeanStd ms = eval::mean_std_pop(r);
+    return (ms.std == 0.0) ? 0.0 : ms.mean / ms.std;
+  };
+  const atx::usize T = oos_moments.size();
+  const atx::usize mid = T / 2U; // floor midpoint
+  SplitHalf out;
+  out.sharpe_h1 = (mid > 0U) ? half_sharpe(oos_moments.subspan(0U, mid)) : 0.0;
+  out.sharpe_h2 = (T > mid) ? half_sharpe(oos_moments.subspan(mid)) : 0.0;
+  auto sign_match = [](atx::f64 s, atx::f64 sign) noexcept -> bool {
+    return (sign > 0.0) ? (s > 0.0) : (sign < 0.0 ? (s < 0.0) : (s == 0.0));
+  };
+  out.stable = sign_match(out.sharpe_h1, full_sign) && sign_match(out.sharpe_h2, full_sign);
+  return out;
+}
+
 // ===========================================================================
 //  S4.3 cost-window helpers — the per-name participation / ADV / σ sizing over
 //  the DATE-MAJOR alpha::Panel (date 0 = earliest; date dates-1 = the newest /
@@ -303,6 +328,15 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
       eval::deflated_sharpe(per_period_sharpe, T, eval::skewness(moments),
                             eval::excess_kurtosis(moments), cfg.trial_count, std::nullopt);
 
+  // (5b) W4a split-sample stability over the SAME index-0-dropped OOS PnL stream
+  // (`moments`). Full-sample per-period Sharpe sign reference (de-annualized
+  // agg.sharpe; the /sqrt(252) factor is sign-preserving). split_half_sharpe slices
+  // at the floor midpoint and forms each half's per-period Sharpe (single source of
+  // truth, unit-tested). PURE over `moments` — no value/RNG/digest perturbation.
+  const atx::f64 full_sign =
+      (per_period_sharpe > 0.0) ? 1.0 : (per_period_sharpe < 0.0 ? -1.0 : 0.0);
+  const SplitHalf split = split_half_sharpe(moments, full_sign);
+
   // (6) S4.3 book round-trip cost (bps) at the recorded target_aum — the cost
   // objective. GUARDED on target_aum > 0: when off (the default) NO cost compute
   // runs at all, cost_bps stays 0, and the eval path is byte-identical to pre-S4.3
@@ -313,8 +347,9 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.target_aum);
   }
 
-  return atx::core::Ok(
-      FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr, dsr.haircut_sharpe, cost_bps});
+  return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
+                                   dsr.haircut_sharpe, cost_bps, split.sharpe_h1,
+                                   split.sharpe_h2, split.stable});
 }
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
@@ -354,6 +389,12 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   // and compute population-relative behavioral novelty without a re-eval. Copy (not
   // move) — `core` is borrowed const and may be read again by the caller.
   rep.descriptor = core.oos_pnl;
+  // W4a: carry the split-sample stability metrics straight through (reporting + the
+  // optional, default-disabled split-Sharpe admission floor). They do NOT enter
+  // `raw`, the objective vector, or the digest — pure projection, byte-identical.
+  rep.sharpe_h1 = core.sharpe_h1;
+  rep.sharpe_h2 = core.sharpe_h2;
+  rep.split_stable = core.split_stable;
   return rep;
 }
 

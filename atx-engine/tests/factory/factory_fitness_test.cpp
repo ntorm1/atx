@@ -9,6 +9,7 @@
 // The fixtures build streams + a pool + panels DIRECTLY (public members), the S2
 // precedent — the test controls the data so the WQ thesis holds by construction.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -59,6 +60,8 @@ using atx::engine::factory::FitnessReport;
 using atx::engine::factory::Genome;
 using atx::engine::factory::pool_aware_fitness;
 using atx::engine::factory::Reduce;
+using atx::engine::factory::detail::split_half_sharpe;
+using atx::engine::factory::detail::SplitHalf;
 using atx::engine::WeightPolicy;
 
 // ---- builders ---------------------------------------------------------------
@@ -329,5 +332,111 @@ TEST(FactoryFitness, DeflationShrinksWithTrialCount) {
   EXPECT_GT(d1->dsr, d1k->dsr) << "same alpha, more trials -> lower deflated fitness (F4)";
 }
 
+
+// =============================================================================
+//  W4a RobustFactorActivatedByWeakPanel — the §0.8 robustness re-eval (Deliverable 2).
+// =============================================================================
+//
+// With NO weak panel (the default), robust == 1.0 and raw == wq*diversify EXACTLY as
+// today. With a weak SUB-UNIVERSE panel (the full close path, a restricted universe
+// mask), the robustness re-eval activates: robust = clamp(wq_on(weak)/wq, 0, 1) is in
+// [0, 1] and raw == wq*diversify*robust holds. Same inputs -> identical robust (a
+// pure, deterministic re-eval). The weak universe MASKS OUT a subset of instruments
+// so the candidate's WQ genuinely differs across universes (robust strictly < 1 when
+// the masked universe is weaker for the candidate).
+TEST(FactoryFitness, RobustFactorActivatedByWeakPanel) {
+  constexpr usize kDates = 96;
+  constexpr usize kInsts = 8;
+  Library lib;
+  const WeightPolicy policy{};
+  const ExecutionSimulator sim = frictionless_sim();
+  const AlphaStore empty;
+
+  // A momentum close path with a per-instrument drift gradient -> rank(close) has a
+  // genuine, finite-Sharpe edge over the FULL universe.
+  std::vector<f64> drift(kInsts);
+  for (usize j = 0; j < kInsts; ++j) {
+    drift[j] = 0.010 - 0.0026 * static_cast<f64>(j);
+  }
+  const std::vector<f64> close = noisy_close(kDates, kInsts, drift, /*seed*/ 0x1234u, 0.008);
+  const Panel full = make_panel(kDates, kInsts, {"close"}, {close});
+
+  // Weak sub-universe: the SAME close columns, but only EVEN-indexed instruments are
+  // in-universe (a deterministic ~50% instrument sub-sample) — a held-out universe
+  // the candidate is re-scored on. NaN is not needed: the universe mask alone
+  // restricts the cross-section the streams/WQ see.
+  std::vector<std::uint8_t> weak_univ(kDates * kInsts, 0u);
+  for (usize d = 0; d < kDates; ++d) {
+    for (usize i = 0; i < kInsts; ++i) {
+      weak_univ[d * kInsts + i] = (i % 2u == 0u) ? 1u : 0u; // even instruments only
+    }
+  }
+  const Panel weak = make_panel(kDates, kInsts, {"close"}, {close}, weak_univ);
+
+  Genome cand = make_genome("rank(close)", lib);
+
+  // (1) Default (nullptr weak panel): robust == 1.0, raw == wq*diversify exactly.
+  const auto f_off = pool_aware_fitness(cand, empty, full, policy, sim, FitnessCfg{});
+  ASSERT_TRUE(f_off.has_value()) << (f_off ? "" : f_off.error().message());
+  EXPECT_EQ(f_off->robust, 1.0) << "no weak panel -> robust is the inert constant 1.0";
+  EXPECT_NEAR(f_off->raw, f_off->wq * f_off->diversify, kEps) << "raw == wq*diversify when robust==1";
+
+  // (2) Weak panel supplied: robust is the §0.8 ratio in [0, 1]; raw folds it in.
+  const auto f_on =
+      pool_aware_fitness(cand, empty, full, policy, sim, FitnessCfg{}, /*weak_panel=*/&weak);
+  ASSERT_TRUE(f_on.has_value()) << (f_on ? "" : f_on.error().message());
+  EXPECT_GE(f_on->robust, 0.0);
+  EXPECT_LE(f_on->robust, 1.0);
+  EXPECT_NE(f_on->robust, 1.0) << "the candidate's WQ differs across universes -> robust != 1";
+  EXPECT_NEAR(f_on->raw, f_on->wq * f_on->diversify * f_on->robust, kEps)
+      << "raw == wq*diversify*robust with the weak factor active";
+
+  // (3) Determinism: same seed + same weak config -> identical robust (pure re-eval).
+  const auto f_on2 =
+      pool_aware_fitness(cand, empty, full, policy, sim, FitnessCfg{}, /*weak_panel=*/&weak);
+  ASSERT_TRUE(f_on2.has_value());
+  EXPECT_EQ(f_on->robust, f_on2->robust) << "same inputs -> byte-identical robust (F1)";
+  EXPECT_EQ(f_on->raw, f_on2->raw);
+}
+
+// =============================================================================
+//  W4a SplitHalfSharpeStrongH1NegativeH2 — the split-sample stability rule (unit).
+// =============================================================================
+//
+// A HAND-BUILT moment stream (the OOS PnL with the structural index-0 zero already
+// dropped — split_half_sharpe receives the deflation-moment span directly) with a
+// STRONG positive H1 and a mirror-image NEGATIVE H2. Each half has the same |mean|
+// and the same population std, so the per-period Sharpes are exact negatives of one
+// another. With a positive full-sample sign, H1 matches (+) but H2 does NOT (−) ⇒
+// split_stable == false (the single-regime artifact the gate is designed to catch).
+TEST(FactoryFitness, SplitHalfSharpeStrongH1NegativeH2) {
+  // H1 = {0.08, 0.12, 0.10, 0.10}: mean 0.10, popstd sqrt(2e-4) = 0.0141421356...
+  //   per-period Sharpe = 0.10 / 0.0141421356 = 7.0710678...
+  // H2 = the exact negation -> Sharpe = -7.0710678...
+  const std::vector<f64> moments{0.08, 0.12, 0.10, 0.10, -0.08, -0.12, -0.10, -0.10};
+  const f64 expect_h1 = 0.10 / std::sqrt(2.0e-4);
+
+  // full_sign = +1 (a positive full-sample Sharpe): H1 (+) matches, H2 (−) does not.
+  const SplitHalf s = split_half_sharpe(std::span<const f64>{moments}, /*full_sign=*/1.0);
+  EXPECT_NEAR(s.sharpe_h1, expect_h1, 1e-9) << "H1 per-period Sharpe must match hand calc";
+  EXPECT_NEAR(s.sharpe_h2, -expect_h1, 1e-9) << "H2 per-period Sharpe must match hand calc";
+  EXPECT_FALSE(s.stable) << "strong-H1 / negative-H2 is a single-regime artifact (not stable)";
+
+  // Odd length -> FLOOR midpoint: T=7, mid=3 -> H1 has 3 periods, H2 has 4.
+  // EXACTLY-representable constants (mean is exact -> every deviation is exactly 0
+  // -> popstd is exactly 0 -> Sharpe 0 by the subset_sharpe std==0 convention).
+  const std::vector<f64> odd{1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0}; // H1 const, H2 const
+  const SplitHalf so = split_half_sharpe(std::span<const f64>{odd}, /*full_sign=*/1.0);
+  EXPECT_EQ(so.sharpe_h1, 0.0) << "constant H1 -> std 0 -> Sharpe 0 (subset_sharpe convention)";
+  EXPECT_EQ(so.sharpe_h2, 0.0) << "constant H2 -> std 0 -> Sharpe 0";
+  EXPECT_FALSE(so.stable) << "both halves 0 cannot match a positive full-sample sign";
+
+  // Stable case: both halves positive with variance, positive full sign -> stable.
+  const std::vector<f64> stable{0.08, 0.12, 0.09, 0.11};
+  const SplitHalf ss = split_half_sharpe(std::span<const f64>{stable}, /*full_sign=*/1.0);
+  EXPECT_GT(ss.sharpe_h1, 0.0);
+  EXPECT_GT(ss.sharpe_h2, 0.0);
+  EXPECT_TRUE(ss.stable) << "both halves share the positive full-sample sign -> stable";
+}
 
 }  // namespace atxtest_factory_fitness_test

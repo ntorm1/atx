@@ -203,6 +203,16 @@ struct FitnessReport {
   std::array<atx::f64, kMaxObjectives> objectives{}; // {wq, diversify, robust, novelty, -cost_bps, -node_count}
   atx::u8 n_objectives{0};                           // live leading entries
   std::vector<atx::f64> descriptor{};                // S4.2 OOS PnL profile (phenotype)
+  // W4a split-sample stability (always COMPUTED; reporting + the optional, default-
+  // disabled split-Sharpe admission floor). sharpe_h1 / sharpe_h2 are the per-period
+  // Sharpe of the first / second half of the OOS PnL stream (index-0 zero dropped,
+  // floor midpoint); split_stable == both halves share the full-sample Sharpe sign.
+  // These do NOT enter `raw`, the objective vector, or the determinism digest — so
+  // adding them is byte-identical on every existing path. A pure function of the OOS
+  // PnL (no RNG). default-init (0/0/false) for an eval-failure / empty stream.
+  atx::f64 sharpe_h1{0.0};
+  atx::f64 sharpe_h2{0.0};
+  bool split_stable{false};
 };
 
 // =========================================================================
@@ -233,6 +243,34 @@ struct FitnessCfg {
 namespace detail {
 
 // =========================================================================
+//  SplitHalf — the W4a split-sample stability result over an OOS PnL stream.
+//
+//  sharpe_h1 / sharpe_h2 : the PER-PERIOD Sharpe (mean_std_pop's ms.mean/ms.std,
+//                          std==0 ⇒ 0 — the PBO/subset_sharpe convention) of the
+//                          first / second half of the stream, split at the FLOOR
+//                          midpoint (H1 = first floor(T/2) periods, H2 = the rest).
+//  stable                : both half-Sharpes share the SIGN of the full-sample
+//                          per-period Sharpe — a single-regime artifact (strong H1,
+//                          dead/negative H2) is NOT stable. The full-sample sign is
+//                          supplied by the caller (it already has the de-annualized
+//                          per-period Sharpe); 0 (flat) requires both halves == 0.
+// =========================================================================
+struct SplitHalf {
+  atx::f64 sharpe_h1{0.0};
+  atx::f64 sharpe_h2{0.0};
+  bool stable{false};
+};
+
+// split_half_sharpe — slice `oos_moments` (the OOS PnL stream with the structural
+// index-0 zero ALREADY dropped, the deflation-moment span) at the floor midpoint and
+// form each half's per-period Sharpe; `stable` iff both share `full_sign`'s sign.
+// A PURE function (no RNG, no eval) — computing it perturbs no fitness value/digest.
+// Declared so a unit test can verify the rule on a hand-built stream (single source
+// of truth: fitness_core calls this).
+[[nodiscard]] SplitHalf split_half_sharpe(std::span<const atx::f64> oos_moments,
+                                          atx::f64 full_sign) noexcept;
+
+// =========================================================================
 //  FitnessCore — every POOL-INDEPENDENT term of a candidate's fitness.
 //
 //  Holds the candidate's full realized OOS PnL stream plus wq / robust / dsr /
@@ -255,6 +293,17 @@ struct FitnessCore {
   // fitness_core from the candidate's own streams (positions) + panel while they
   // are still live, so finish_report can project it into objectives[4] = -cost_bps.
   atx::f64 cost_bps{0.0};
+  // W4a split-sample stability: each half's PER-PERIOD Sharpe (ms.mean/ms.std,
+  // std==0 ⇒ 0) over the OOS PnL stream with the structural index-0 zero dropped,
+  // split at the FLOOR midpoint (H1 = first floor(T/2) periods, H2 = the rest).
+  // A PURE function of oos_pnl (no RNG, no eval) — computing them perturbs no
+  // existing value or RNG draw. split_stable == both halves SAME SIGN as the full-
+  // sample Sharpe (a single-regime artifact — strong H1, dead/negative H2 — is
+  // NOT stable). Carried through finish_report into the FitnessReport (reporting +
+  // the optional, default-disabled split-Sharpe admission floor).
+  atx::f64 sharpe_h1{0.0};
+  atx::f64 sharpe_h2{0.0};
+  bool split_stable{false};
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:

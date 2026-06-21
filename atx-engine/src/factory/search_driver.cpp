@@ -27,9 +27,9 @@ namespace atx::engine::factory {
 SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                            const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                            std::vector<std::string> seed_exprs,
-                           std::vector<std::string> panel_fields)
-    : lib_{lib}, panel_{panel}, policy_{policy}, sim_{sim}, catalog_{lib},
-      seed_exprs_{std::move(seed_exprs)}, panel_fields_{std::move(panel_fields)} {
+                           std::vector<std::string> panel_fields, const alpha::Panel *weak_panel)
+    : lib_{lib}, panel_{panel}, weak_panel_{weak_panel}, policy_{policy}, sim_{sim},
+      catalog_{lib}, seed_exprs_{std::move(seed_exprs)}, panel_fields_{std::move(panel_fields)} {
   panel_field_views_.reserve(panel_fields_.size());
   for (const std::string &f : panel_fields_) {
     panel_field_views_.push_back(f);
@@ -609,7 +609,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     if (it != score_j_of_ptr.end() && ss.has_value()) {
       const atx::usize j = it->second;
       auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, cfg.fitness,
-                                   /*weak_panel=*/nullptr, /*engine=*/engines[wid].get(),
+                                   /*weak_panel=*/weak_panel_, /*engine=*/engines[wid].get(),
                                    /*signals=*/&*ss);
       if (rep.has_value()) {
         score_slot[j].raw = rep->raw;

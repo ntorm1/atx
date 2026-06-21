@@ -145,6 +145,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "population")        return parse_long(cfg.population);
     if (flag == "generations")       return parse_long(cfg.generations);
     if (flag == "min-dsr")           return parse_double(cfg.min_dsr);
+    if (flag == "min-split-sharpe")  return parse_double(cfg.min_split_sharpe);   // W4a split-sample stability floor
+    if (flag == "robust-holdout-frac") return parse_double(cfg.robust_holdout_frac); // W4a robust-factor weak sub-universe
     if (flag == "winsorize-limit")   return parse_double(cfg.winsorize_limit);
     if (flag == "gross-leverage")    return parse_double(cfg.gross_leverage);
     if (flag == "min-sharpe")        return parse_double(cfg.min_sharpe);

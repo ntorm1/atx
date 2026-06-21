@@ -235,6 +235,84 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
 }
 
 // ---------------------------------------------------------------------------
+// build_robust_holdout_panel (W4a) — the §0.8 weak/holdout sub-universe Panel.
+//
+// A derived Panel with the SAME field columns but its universe restricted to a
+// DETERMINISTIC seeded instrument sub-sample: instrument i stays in-universe iff it
+// was in the original universe AND a SplitMix64 mix of (master_seed, i) maps into the
+// leading `frac` of [0, 1). Seeded by master_seed ONLY (never thread/time/address),
+// so the same seed + frac + panel always yields the same weak universe (F1, seed-
+// stable). Fail-closed on an out-of-range frac or a zero-retained sub-sample.
+// ---------------------------------------------------------------------------
+atx::core::Result<atx::engine::alpha::Panel>
+atx::impl::detail::build_robust_holdout_panel(const atx::engine::alpha::Panel& panel,
+                                              atx::f64 frac, atx::u64 master_seed) {
+    namespace alpha = atx::engine::alpha;
+    using EC        = atx::core::ErrorCode;
+
+    if (!(frac > 0.0) || !(frac < 1.0)) {
+        return atx::core::Err(EC::InvalidArgument,
+            "discover robust holdout: --robust-holdout-frac=" + std::to_string(frac) +
+            " must be in the open interval (0, 1)");
+    }
+
+    const atx::usize D = panel.dates();
+    const atx::usize I = panel.instruments();
+
+    // Deterministic per-instrument selection: SplitMix64 mix of (master_seed, i) ->
+    // a u64; SELECTED iff (u64 / 2^64) < frac. Pure / portable / seed-stable.
+    auto mix = [](atx::u64 x) noexcept -> atx::u64 {
+        x += 0x9E3779B97F4A7C15ULL;
+        x = (x ^ (x >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27U)) * 0x94D049BB133111EBULL;
+        return x ^ (x >> 31U);
+    };
+    const atx::f64 kU64Scale = 1.0 / 18446744073709551616.0; // 1 / 2^64
+    std::vector<std::uint8_t> selected(I, 0u);
+    for (atx::usize i = 0; i < I; ++i) {
+        const atx::u64 h = mix(master_seed ^ mix(static_cast<atx::u64>(i) + 0x632BE59BD9B4E019ULL));
+        const atx::f64 u = static_cast<atx::f64>(h) * kU64Scale; // [0, 1)
+        selected[i] = (u < frac) ? 1u : 0u;
+    }
+
+    // Extract field names + columns (verbatim) from the source panel.
+    std::vector<std::string>           field_names;
+    std::vector<std::vector<atx::f64>> field_data;
+    field_names.reserve(panel.num_fields());
+    field_data.reserve(panel.num_fields());
+    for (atx::usize fi = 0; fi < panel.num_fields(); ++fi) {
+        field_names.push_back(std::string{panel.field_name(fi)});
+        const auto col = panel.field_all(static_cast<alpha::FieldId>(fi));
+        field_data.emplace_back(col.begin(), col.end());
+    }
+
+    // New universe mask: original membership AND the instrument is selected.
+    std::vector<std::uint8_t> weak_univ(D * I, 0u);
+    atx::usize kept_cells = 0;
+    for (atx::usize d = 0; d < D; ++d) {
+        for (atx::usize i = 0; i < I; ++i) {
+            if (selected[i] != 0u && panel.in_universe(d, i)) {
+                weak_univ[d * I + i] = 1u;
+                ++kept_cells;
+            }
+        }
+    }
+
+    if (kept_cells == 0) {
+        return atx::core::Err(EC::InvalidArgument,
+            "discover robust holdout: the seeded sub-sample retained zero in-universe "
+            "cells (frac too small for this universe). Increase --robust-holdout-frac.");
+    }
+
+    (void)std::fprintf(stderr,
+        "[W4a robust holdout] frac=%.3f seed=%llu  kept_cells=%zu\n",
+        frac, static_cast<unsigned long long>(master_seed), kept_cells);
+
+    return alpha::Panel::create(D, I, std::move(field_names), std::move(field_data),
+                                std::move(weak_univ));
+}
+
+// ---------------------------------------------------------------------------
 // run_discover_gated — opt-in quality-gated discovery (--gated).
 //
 // Routes the evolutionary search through factory::Factory::mine_into: every
@@ -257,7 +335,8 @@ atx::core::Result<StageResult> run_discover_gated(
     const atx::engine::WeightPolicy& policy,
     const atx::engine::exec::ExecutionSimulator& sim,
     const atx::engine::factory::SearchConfig& sc,
-    const std::vector<std::string>& fields)
+    const std::vector<std::string>& fields,
+    const atx::engine::alpha::Panel* weak_panel) // W4a: §0.8 weak sub-universe (nullptr = off)
 {
     namespace fs      = std::filesystem;
     namespace combine = atx::engine::combine;
@@ -299,8 +378,15 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.seed_exprs                = cfg.seed_exprs;
     fcfg.panel_fields              = fields;
     fcfg.min_dsr                   = cfg.min_dsr;
+    fcfg.min_split_sharpe          = cfg.min_split_sharpe; // W4a split-sample stability floor (off by default)
     fcfg.oos_fraction              = cfg.oos_fraction;
     fcfg.oos_embargo               = cfg.oos_embargo;
+
+    // W4a robust factor (Deliverable 2): thread the caller-owned weak/holdout sub-
+    // universe Panel (built once in run_discover from sc.master_seed) into the Factory
+    // so robust = clamp(wq_on(weak)/wq, 0, 1) ACTIVATES. nullptr (default) -> robust
+    // stays the constant 1.0 and the discover digest is byte-identical to today.
+    fcfg.weak_panel = weak_panel; // borrowed; the pointee outlives every mine_into below
 
     // P2b: pre-validation guard — when OOS is on, check the panel geometry NOW
     // (before mine_into) so a too-short panel or too-large fraction fails LOUDLY
@@ -648,17 +734,36 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     // struct default of 2 was ~3% on pop-60, too weak to counter convergence).
     sc.n_immigrants = std::max<atx::usize>(sc.population / 10, 4);
 
+    // 5a. W4a robust factor (Deliverable 2): when --robust-holdout-frac > 0, build a
+    // DETERMINISTIC seeded weak/holdout sub-universe Panel over the SAME (post-
+    // capacity-screen) `panel` the search optimizes, seeded by sc.master_seed
+    // (NEVER thread/time). It is OWNED here and threaded into BOTH discover paths
+    // (ungated SearchDriver below + gated Factory) so the §0.8 robust factor
+    // ACTIVATES (robust = clamp(wq_on(weak)/wq, 0, 1)). frac == 0 (the default) -> no
+    // panel built, weak_panel stays nullptr, robust stays 1.0, and BOTH paths are
+    // byte-identical to today (the AtxImplDiscover determinism slice is unchanged).
+    std::optional<alpha::Panel> weak_panel_owned;
+    const alpha::Panel* weak_panel = nullptr;
+    if (cfg.robust_holdout_frac > 0.0) {
+        ATX_TRY(auto wp, detail::build_robust_holdout_panel(panel, cfg.robust_holdout_frac,
+                                                            sc.master_seed));
+        weak_panel_owned.emplace(std::move(wp));
+        weak_panel = &*weak_panel_owned; // borrowed; weak_panel_owned outlives both paths
+    }
+
     // 6'. Gated discovery (opt-in via --gated): route every distinct candidate
     //     through the factory's deflated-Sharpe ranking + AlphaGate floors so the
     //     emitted alphas are robust (DSR bar), low-turnover, low-correlation, and
     //     high-fitness. Admitted alphas persist in an on-disk library::Library
     //     (a durable alpha database) and are also written as .dsl for `combine`.
     if (cfg.gated) {
-        return run_discover_gated(cfg, panel, lib, policy, sim, sc, fields);
+        return run_discover_gated(cfg, panel, lib, policy, sim, sc, fields, weak_panel);
     }
 
     // 6. Run the evolutionary search (default ungated path: top-N by raw fitness).
-    factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields};
+    // W4a: weak_panel (nullptr unless --robust-holdout-frac > 0) activates the robust
+    // factor in the search fitness; the default nullptr keeps this byte-identical.
+    factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields, weak_panel};
     factory::SearchResult res = driver.run(sc, pool);
 
     // 7. Check admission.

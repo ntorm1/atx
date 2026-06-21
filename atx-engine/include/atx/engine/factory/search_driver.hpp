@@ -297,9 +297,17 @@ public:
   // `seed_exprs` are the in-grammar starting templates; `panel_fields` are the
   // field-swap candidate names (the Panel exposes no field-name iterator, so the
   // caller supplies them — they MUST be the panel's actual field spellings).
+  //
+  // W4a: `weak_panel` (OPTIONAL borrow; default nullptr) is the §0.8 alternate-
+  // universe Panel for the robustness re-eval — when non-null, each candidate's
+  // fitness multiplies in robust = clamp(wq_on(weak_panel)/wq, 0, 1); when nullptr
+  // (the default) robust stays the constant 1.0 and raw == wq*diversify EXACTLY as
+  // before (byte-identical — the kGoldenDigest boundary pin proves it). The pointee
+  // (if any) MUST outlive the driver and every run() call (owned by the caller).
   SearchDriver(const alpha::Library &lib, const alpha::Panel &panel, const WeightPolicy &policy,
                const exec::ExecutionSimulator &sim, std::vector<std::string> seed_exprs,
-               std::vector<std::string> panel_fields);
+               std::vector<std::string> panel_fields,
+               const alpha::Panel *weak_panel = nullptr);
 
   // Run the deterministic search. Same cfg + same pool => byte-identical result
   // (F1). `pool` is borrowed read-only for the marginal-correlation fitness term.
@@ -524,6 +532,10 @@ private:
   // are borrowed for the driver's lifetime and must outlive every produced genome.
   const alpha::Library &lib_;
   const alpha::Panel &panel_;
+  // W4a: the OPTIONAL §0.8 weak/holdout sub-universe Panel for the robustness re-eval
+  // (nullptr -> robust factor inert at 1.0, byte-identical). Borrowed; the pointee
+  // (if any) is owned by the caller and must outlive the driver.
+  const alpha::Panel *weak_panel_;
   const WeightPolicy &policy_;
   const exec::ExecutionSimulator &sim_;
   OpCatalog catalog_;

@@ -81,6 +81,7 @@
 //  untouched — F8).
 
 #include <array>  // std::array (reject_histogram, indexed by library::AdmitKind)
+#include <limits> // std::numeric_limits (W4a split-sharpe disabling sentinel)
 #include <string> // std::string (seed-expression / field source)
 #include <vector> // std::vector
 
@@ -125,6 +126,16 @@ struct FactoryConfig {
   std::vector<std::string> panel_fields; // field-swap candidate names (SearchDriver ctor)
   atx::f64 min_dsr = 0.5;                // S1 deflation bar (F4): admit iff dsr >= this
   atx::f64 book_size = 1.0;              // notional divisor for compute_metrics turnover
+  // --- W4a split-sample stability floor (OPTIONAL; default DISABLED).
+  //  When ACTIVE (a FINITE value), a candidate is admitted only if BOTH halves of
+  //  its OOS PnL stream have a per-period Sharpe >= this floor AND both share the
+  //  full-sample Sharpe sign (FitnessReport.split_stable) — rejecting a single-
+  //  regime artifact (strong H1, dead/negative H2). The DISABLING default is
+  //  -infinity (NOT 0.0): a 0.0 floor would reject an exactly-0 H2 Sharpe even on
+  //  the default path and break the digest byte-identity. The gate is evaluated
+  //  ONLY when std::isfinite(min_split_sharpe); at the -inf default the accept
+  //  expression is byte-identical to the pre-W4a screen (kGoldenDigest unchanged).
+  atx::f64 min_split_sharpe = -std::numeric_limits<atx::f64>::infinity();
   // --- P2a out-of-sample (holdout) validation (additive; 0.0 == OFF, default).
   //  When oos_fraction > 0, mine_into SELECTS on a TRAIN window [0, lockbox_begin -
   //  embargo) but CONFIRMS the AlphaGate floors + the DSR bar on the HELD-OUT
@@ -135,6 +146,15 @@ struct FactoryConfig {
   // Embargo gap fraction inserted BEFORE the holdout (eval::reserve_lockbox). 0 ⇒
   //  the eval::CpcvConfig default embargo when oos is on. Ignored when oos is off.
   atx::f64 oos_embargo = 0.0;
+  // --- W4a robust factor (§0.8): the OPTIONAL weak/holdout sub-universe Panel that
+  //  ACTIVATES the robustness re-eval in the search's fitness. Passed to the
+  //  SearchDriver ctor; nullptr (the default) keeps robust == 1.0 and raw ==
+  //  wq*diversify byte-identical to today (the kGoldenDigest boundary pin). When
+  //  non-null each candidate's fitness multiplies in robust =
+  //  clamp(wq_on(weak_panel)/wq, 0, 1) — how well the WQ holds on the held-out sub-
+  //  universe. BORROWED: the pointee MUST outlive every mine()/mine_into() call (the
+  //  caller — e.g. stage_discover — owns the derived weak Panel for the run).
+  const alpha::Panel *weak_panel = nullptr;
 };
 
 // =========================================================================

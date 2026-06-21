@@ -790,6 +790,69 @@ TEST(AtxImplDiscover, W2_CapacityScreenPredicateUnit) {
 }
 
 // ---------------------------------------------------------------------------
+// W4a Test: RobustHoldoutPanelDeterministicAndMasks
+// Calls the REAL build_robust_holdout_panel helper and asserts: (1) the derived
+// universe is a SUBSET of the original (no cell is added), (2) the same seed + frac
+// yields a BYTE-IDENTICAL mask (seed-stable determinism, F1), (3) a different seed
+// yields a (generally) different mask, and (4) fail-closed on an out-of-range frac.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W4a_RobustHoldoutPanelDeterministicAndMasks) {
+    // A 6-date x 16-instrument all-in-universe panel (close field only — the helper
+    // copies columns verbatim; only the universe mask changes).
+    constexpr usize D = 6;
+    constexpr usize I = 16;
+    std::vector<f64> close(D * I);
+    for (usize d = 0; d < D; ++d) {
+        for (usize i = 0; i < I; ++i) {
+            close[d * I + i] = 10.0 + static_cast<f64>(i);
+        }
+    }
+    auto base_r = Panel::create(D, I, {"close"}, {close}, {}); // empty universe == all-in
+    ASSERT_TRUE(base_r.has_value()) << base_r.error().to_string();
+    const Panel& base = *base_r;
+
+    // (1) + (2): same seed + frac -> identical mask; mask is a subset of the original.
+    auto a_r = atx::impl::detail::build_robust_holdout_panel(base, /*frac=*/0.5, /*seed=*/12345u);
+    auto b_r = atx::impl::detail::build_robust_holdout_panel(base, /*frac=*/0.5, /*seed=*/12345u);
+    ASSERT_TRUE(a_r.has_value()) << a_r.error().to_string();
+    ASSERT_TRUE(b_r.has_value()) << b_r.error().to_string();
+    usize kept_a = 0;
+    for (usize d = 0; d < D; ++d) {
+        for (usize i = 0; i < I; ++i) {
+            EXPECT_EQ(a_r->in_universe(d, i), b_r->in_universe(d, i))
+                << "same seed+frac must yield a byte-identical weak universe (F1)";
+            if (a_r->in_universe(d, i)) {
+                ++kept_a;
+                EXPECT_TRUE(base.in_universe(d, i)) << "weak universe must be a SUBSET of the original";
+            }
+        }
+    }
+    EXPECT_GT(kept_a, 0u) << "frac=0.5 over 16 instruments must retain some cells";
+    EXPECT_LT(kept_a, D * I) << "frac=0.5 must mask SOME instruments out (a proper sub-universe)";
+    // Per-instrument selection is uniform across dates (the mask keys on instrument i).
+    for (usize i = 0; i < I; ++i) {
+        const bool sel0 = a_r->in_universe(0, i);
+        for (usize d = 1; d < D; ++d) {
+            EXPECT_EQ(a_r->in_universe(d, i), sel0) << "selection is per-instrument (date-uniform)";
+        }
+    }
+
+    // (3): a different seed generally yields a different selection (not byte-identical).
+    auto c_r = atx::impl::detail::build_robust_holdout_panel(base, /*frac=*/0.5, /*seed=*/98765u);
+    ASSERT_TRUE(c_r.has_value()) << c_r.error().to_string();
+    bool any_diff = false;
+    for (usize i = 0; i < I && !any_diff; ++i) {
+        if (a_r->in_universe(0, i) != c_r->in_universe(0, i)) any_diff = true;
+    }
+    EXPECT_TRUE(any_diff) << "a different master_seed should generally pick a different sub-universe";
+
+    // (4): fail-closed on an out-of-range frac (must be in the open interval (0,1)).
+    EXPECT_FALSE(atx::impl::detail::build_robust_holdout_panel(base, /*frac=*/0.0, 1u).has_value());
+    EXPECT_FALSE(atx::impl::detail::build_robust_holdout_panel(base, /*frac=*/1.0, 1u).has_value());
+    EXPECT_FALSE(atx::impl::detail::build_robust_holdout_panel(base, /*frac=*/-0.1, 1u).has_value());
+}
+
+// ---------------------------------------------------------------------------
 // W2 Test 2: CapacityScreenInactiveIsNoOp
 // When min_price=0 and min_adv=0, run_discover must NOT call the screen and
 // must produce the same digest as a baseline run with no capacity flags.

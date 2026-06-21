@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <limits>
 #include <set>
 #include <string>
 #include <string_view>
@@ -68,6 +69,23 @@ struct RunConfig {
                                        // Digest-invariant (F1): affects speed/memory, never bits.
     double      oos_fraction  = 0.0;   // --oos-fraction  (0 = off; fraction of the time axis held out for OOS admission)
     double      oos_embargo   = 0.0;   // --oos-embargo   (embargo fraction at the train|holdout cut; 0 = engine default)
+    // --min-split-sharpe (W4a): OPTIONAL split-sample stability admission floor. A
+    // candidate is admitted only if BOTH halves of its OOS PnL stream have a per-
+    // period Sharpe >= this floor AND both share the full-sample Sharpe sign (a
+    // single-regime artifact — strong H1, dead/negative H2 — is rejected). DISABLING
+    // DEFAULT = -infinity (NOT 0.0): the gate is evaluated only when the value is
+    // FINITE, so the no-flag path is byte-identical to today (the factory determinism
+    // golden + the discover slice are unchanged). Threaded into FactoryConfig::min_split_sharpe.
+    double      min_split_sharpe = -std::numeric_limits<double>::infinity(); // --min-split-sharpe
+    // --robust-holdout-frac (W4a): OPTIONAL. When > 0, discover builds a weak/holdout
+    // sub-universe Panel = the main panel with its universe restricted to a
+    // DETERMINISTIC seeded instrument sub-sample (~this fraction of in-universe
+    // instruments, drawn with sc.master_seed — NEVER thread/time), and threads it into
+    // the search so the robust factor (robust = clamp(wq_on(weak)/wq, 0, 1)) ACTIVATES.
+    // 0.0 (default) -> no weak panel built, robust stays the constant 1.0 and the
+    // discover digest is byte-identical to today. Clamped to (0, 1); out-of-range -> off.
+    double      robust_holdout_frac = 0.0; // --robust-holdout-frac
+
     std::string run_db;                // --run-db  (SQLite progress DB path; "" = off, no store I/O)
     bool        resume        = false; // --resume  (requires --run-db; continue an incomplete matching run)
     // -- discover weight policy (W1a): the book's signal->weight knobs, exposed
