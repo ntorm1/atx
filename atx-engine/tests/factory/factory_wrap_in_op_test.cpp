@@ -158,6 +158,12 @@ TEST(FactoryWrapInOp, WrapReachesZscoreAndSignedpower) {
   EXPECT_GT(ok, 0);
   EXPECT_GT(reached_roots.count("zscore"), 0U) << "zscore wrapper unreachable";
   EXPECT_GT(reached_roots.count("signedpower"), 0U) << "signedpower wrapper unreachable";
+  // winsorize is a {1,2}-arity op (default std {4.0}); a wrap_visit-built node MUST
+  // synthesize operand 2 (WrapOperand::ScaleStd) or analyze rejects it as call_arity
+  // 1 < 2. Assert it actually reaches an ACCEPTED root — guards against the wrapper
+  // silently never firing (the pre-fix bug where winsorize was classified arity-1).
+  EXPECT_GT(reached_roots.count("winsorize"), 0U)
+      << "winsorize wrapper unreachable (ScaleStd operand-2 synthesis must analyze)";
 }
 
 // Reachability of the manual-alpha conditioning family: repeated wrap_in_op (+

@@ -157,8 +157,9 @@ namespace {
 // A wrapper to apply: the resolved built-in OpSig* plus how its extra operand(s)
 // are synthesized. `kind` selects the synthesis path at rebuild time.
 enum class WrapOperand : atx::u8 {
-  None,       // arity-1 wrapper (zscore, rank, winsorize-as-1): only child a.
+  None,       // arity-1 wrapper (zscore, rank): only child a.
   ScaleExp,   // signedpower(x, p): synthesize a Scale literal exponent as child b.
+  ScaleStd,   // winsorize(x, k): synthesize a Scale literal std-multiplier as child b.
   GroupField, // group_neutralize/indneutralize(x, g): synthesize a Group field b.
 };
 
@@ -199,7 +200,7 @@ build_wrappers(const WrapCfg &cfg, bool have_group_field) {
   add(cfg.wrap_zscore, "zscore", WrapOperand::None);
   add(cfg.wrap_signedpower, "signedpower", WrapOperand::ScaleExp);
   add(cfg.wrap_rank, "rank", WrapOperand::None);
-  add(cfg.wrap_winsorize, "winsorize", WrapOperand::None);
+  add(cfg.wrap_winsorize, "winsorize", WrapOperand::ScaleStd);
   if (have_group_field) {
     add(cfg.wrap_group_neutralize, "group_neutralize", WrapOperand::GroupField);
     add(cfg.wrap_indneutralize, "indneutralize", WrapOperand::GroupField);
@@ -254,6 +255,18 @@ ExprId wrap_visit(const Ast &src, ExprId s, ExprId target, const WrapCandidate &
     Expr lit;
     lit.kind = Expr::Kind::Literal;
     lit.value = cfg.signedpower_exp; // a Scale literal (jitterable later)
+    wrapper.b = dst.add(lit);
+    break;
+  }
+  case WrapOperand::ScaleStd: {
+    // winsorize is registered {min_arity=1, max_arity=2, defaults={4.0}}, so its
+    // MATERIALIZED operand_min_arity is 2 — a wrap_visit-built node (which bypasses
+    // the parser's default-fill) MUST synthesize operand b explicitly or analyze_into
+    // rejects it (call_arity 1 < 2). Emit the std-multiplier as a Scale literal so the
+    // wrapper is valid AND winsorize_std is jitterable later (mirrors ScaleExp).
+    Expr lit;
+    lit.kind = Expr::Kind::Literal;
+    lit.value = cfg.winsorize_std;
     wrapper.b = dst.add(lit);
     break;
   }
