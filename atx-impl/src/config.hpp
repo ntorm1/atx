@@ -147,6 +147,12 @@ struct RunConfig {
     // -- sweep --
     long        sweep_runs   = 0;    // --sweep-runs (number of ResearchDriver runs; >=1 required for sweep)
     long        patience     = 0;    // --patience (early-stop after this many consecutive zero-admit runs; 0 = full budget)
+    // --executor (C2.1): OPTIONAL parallel substrate selector for the sweep's per-run
+    // mine. "" (default) and "inprocess" keep the SERIAL path (byte-identical to
+    // today); "process" runs each per-run mine on the proven bit-identical
+    // ProcessExecutor (mine_into_oos_parallel). The digest is invariant across the
+    // substrate + worker count (F1), so --executor never shifts a result bit.
+    std::string executor;            // --executor <inprocess|process>; "" = serial
 
     // -- combine --
     std::string alphas;                // --alphas

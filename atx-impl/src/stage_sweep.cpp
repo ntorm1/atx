@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <optional>      // std::optional (C2.1: scope-lifetime ProcessExecutor)
 #include <sstream>
 #include <string>
 #include <thread>        // std::thread::hardware_concurrency
@@ -23,6 +24,8 @@
 #include "atx/engine/factory/research_driver.hpp" // factory::ResearchDriver, ResearchConfig
 #include "atx/engine/library/library.hpp"     // library::Library
 #include "atx/engine/loop/weight_policy.hpp"  // engine::WeightPolicy
+#include "atx/engine/parallel/executor.hpp"        // parallel::ExecutorConfig (C2.1 substrate)
+#include "atx/engine/parallel/process_executor.hpp" // parallel::ProcessExecutor (C2.1 substrate)
 
 #include "artifacts.hpp"
 #include "config.hpp"
@@ -204,6 +207,19 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     rc.master_seed = cfg.seed;
     rc.robustness_gate = false; // out of scope this sprint
 
+    // C2.1 — opt-in parallel substrate. "process" runs each per-run mine on the proven
+    // bit-identical ProcessExecutor (mine_into_oos_parallel); "" / "inprocess" keep the
+    // serial path (rc.exec stays nullptr — byte-identical to today). The ProcessExecutor
+    // (declared in this scope) MUST outlive rd.run(rc). cfg.workers picks the worker count
+    // (0 ⇒ substrate default); sc.n_workers (the in-process DetPool) does NOT drive the
+    // cross-process eval map on the MultiProcess substrate.
+    std::optional<atx::engine::parallel::ProcessExecutor> pexec;
+    if (cfg.executor == "process") {
+        const atx::usize w = cfg.workers > 0 ? static_cast<atx::usize>(cfg.workers) : 0;
+        pexec.emplace(atx::engine::parallel::ExecutorConfig{w, false});
+        rc.exec = &*pexec;
+    }
+
     const factory::ResearchReport rep = rd.run(rc);
 
     // ---- Flush + write durable sidecar (R1 counter) -----------------------
@@ -343,6 +359,8 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
         {"generations",       std::to_string(sc.generations)},
         {"sweep_runs",        std::to_string(cfg.sweep_runs)},
         {"oos_windows",       std::to_string(eff_oos_windows)},
+        // C2.1 — the EFFECTIVE substrate ("" defaults to the serial inprocess path).
+        {"executor",          cfg.executor.empty() ? std::string{"inprocess"} : cfg.executor},
     };
     return atx::core::Ok(std::move(sr));
 }

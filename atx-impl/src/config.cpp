@@ -78,6 +78,19 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         return atx::core::Ok();
     }
 
+    // --executor (C2.1): the sweep's OPTIONAL parallel substrate selector. Validated
+    // against the closed {"", inprocess, process} taxonomy. "" / "inprocess" keep the
+    // serial path; "process" runs each per-run mine on the ProcessExecutor. The digest
+    // is invariant across the substrate, so this never shifts a result bit (F1).
+    if (flag == "executor") {
+        if (value != "" && value != "inprocess" && value != "process") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--executor must be 'inprocess' or 'process'");
+        }
+        cfg.executor = value;
+        return atx::core::Ok();
+    }
+
     // --weight-transform (W1a): the book's cross-sectional transform. Lowercased,
     // then validated against the closed {rank,zscore,raw} taxonomy (reject anything
     // else with a clear error). Default "rank" reproduces engine::WeightPolicy{}.

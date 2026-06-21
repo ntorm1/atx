@@ -66,6 +66,14 @@
 
 #include "atx/engine/factory/factory.hpp" // factory::Factory, FactoryConfig, FactoryReport
 
+// C2.1 — fwd decl for the OPTIONAL parallel substrate ResearchConfig threads
+// through (a pointer field ⇒ a forward decl suffices; no heavy include). factory.hpp
+// already fwd-declares this type, but we restate it here so research_driver.hpp is
+// self-documenting about the seam it carries.
+namespace atx::engine::parallel {
+class IExecutor;
+} // namespace atx::engine::parallel
+
 namespace atx::engine::factory {
 
 // =========================================================================
@@ -100,6 +108,13 @@ struct ResearchConfig {
   atx::u64 master_seed{0};     // engine seed; per-run seed = seed_for_run(master_seed, run)
   bool robustness_gate{false}; // S4.5 seam; OFF == today's exact path (S4.4b)
   eval::RobustnessConfig robustness_cfg{}; // knobs the S4.5 gate would screen on (unused while OFF)
+  // C2.1 — OPTIONAL parallel substrate. nullptr (default) ⇒ each run uses the serial
+  // factory.mine_into(run_cfg, lib_, gate_) path, BYTE-IDENTICAL to today (this field is
+  // NOT folded into the digest). When non-null, each run dispatches the substrate-aware
+  // factory.mine_into(run_cfg, lib_, gate_, *exec); the engine guarantees that path is
+  // bit-identical to serial (mine_into_oos_parallel == mine_into_oos), so rep.digest /
+  // manifest_version_id are unchanged across substrate + worker count.
+  parallel::IExecutor* exec{nullptr};
 };
 
 // =========================================================================

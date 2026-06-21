@@ -658,4 +658,89 @@ TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
     fs::remove_all(report_dir, ec);
 }
 
+// ---------------------------------------------------------------------------
+// Test 7: SweepParallelEqualsSequentialDigest (C2.1 — the headline determinism guard)
+//
+// Proves the sweep's research_digest is INVARIANT across the execution substrate:
+// a serial sweep (cfg.executor="") and a process sweep (cfg.executor="process",
+// running each per-run mine on the proven bit-identical ProcessExecutor) over the
+// SAME panel/seed/flags produce the SAME research_digest AND the same library_size.
+// Each run uses SEPARATE fresh library_dir + alpha_out — the library accumulates,
+// so a shared dir would dedup B against A and diverge counts.
+//
+// The ProcessExecutor spawns a standalone atx-shm-worker[.exe] found beside the
+// running test exe (build-rel/bin co-locates atx-impl-tests.exe + atx-shm-worker.exe).
+// Kept small (sweep_runs=2, population 16) — spawning processes is heavy.
+// ---------------------------------------------------------------------------
+TEST(AtxImplSweep, SweepParallelEqualsSequentialDigest) {
+    namespace fs = std::filesystem;
+
+    // ONE planted-drift panel for both runs.
+    auto panel_opt = make_panel(/*dates=*/120, /*insts=*/6);
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "c21_seqpar");
+
+    // SEPARATE fresh library_dir + alpha_out per run (the library accumulates).
+    const std::string lib_A   = (fs::temp_directory_path() / "atx_sweep_c21_libA").string();
+    const std::string alpha_A = (fs::temp_directory_path() / "atx_sweep_c21_outA").string();
+    const std::string lib_B   = (fs::temp_directory_path() / "atx_sweep_c21_libB").string();
+    const std::string alpha_B = (fs::temp_directory_path() / "atx_sweep_c21_outB").string();
+    std::error_code ec0;
+    for (const auto& d : {lib_A, alpha_A, lib_B, alpha_B}) fs::remove_all(d, ec0);
+
+    constexpr unsigned long long kSeed = 4242ULL;
+
+    // Run A: serial substrate (cfg.executor == "").
+    auto cfgA = sweep_cfg(panel_path, alpha_A, lib_A, kSeed, /*sweep_runs=*/2);
+    cfgA.executor = "";
+    auto resA = atx::impl::run_sweep(cfgA);
+    ASSERT_TRUE(resA.has_value()) << "serial sweep A failed: " << resA.error().message();
+
+    // Run B: IDENTICAL cfg EXCEPT cfg.executor="process" + set_flags (mirror the real
+    // CLI, where --executor process inserts the flag) + separate fresh dirs.
+    auto cfgB = sweep_cfg(panel_path, alpha_B, lib_B, kSeed, /*sweep_runs=*/2);
+    cfgB.executor = "process";
+    cfgB.set_flags.insert("executor");
+    auto resB = atx::impl::run_sweep(cfgB);
+    ASSERT_TRUE(resB.has_value())
+        << "process sweep B failed: " << resB.error().message()
+        << " (ProcessExecutor must spawn atx-shm-worker[.exe] co-located with the test exe; "
+           "set ATX_SHM_WORKER to its absolute path if discovery fails)";
+
+    auto get_kv = [](const atx::impl::StageResult& sr, const std::string& key) -> std::string {
+        for (const auto& p : sr.kvs) { if (p.first == key) return p.second; }
+        return {};
+    };
+
+    const std::string digest_serial  = get_kv(*resA, "research_digest");
+    const std::string digest_process = get_kv(*resB, "research_digest");
+    ASSERT_FALSE(digest_serial.empty())  << "serial run must surface research_digest";
+    ASSERT_FALSE(digest_process.empty()) << "process run must surface research_digest";
+
+    // The headline determinism guard: substrate-invariant research_digest.
+    EXPECT_EQ(digest_serial, digest_process)
+        << "sweep research_digest MUST be byte-identical across the serial and process "
+           "substrates (F1 — the digest is invariant to substrate + worker count)\n"
+        << "  serial  research_digest=" << digest_serial  << "\n"
+        << "  process research_digest=" << digest_process;
+
+    // And the admitted library count must match (separate fresh dirs ⇒ no cross-dedup).
+    EXPECT_EQ(get_kv(*resA, "library_size"), get_kv(*resB, "library_size"))
+        << "library_size must match across substrates: serial="
+        << get_kv(*resA, "library_size") << " process=" << get_kv(*resB, "library_size");
+
+    // Surface the observed digests in the test log for the report.
+    std::cerr << "[C2.1] research_digest serial=" << digest_serial
+              << " process=" << digest_process
+              << " library_size serial=" << get_kv(*resA, "library_size")
+              << " process=" << get_kv(*resB, "library_size")
+              << " effective_executor serial=" << get_kv(*resA, "executor")
+              << " process=" << get_kv(*resB, "executor") << "\n";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    for (const auto& d : {lib_A, alpha_A, lib_B, alpha_B}) fs::remove_all(d, ec);
+}
+
 } // namespace atxtest_sweep

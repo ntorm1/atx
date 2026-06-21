@@ -12,6 +12,8 @@
 
 #include "atx/engine/library/manifest.hpp" // library::ManifestEntry
 
+#include "atx/engine/parallel/executor.hpp" // parallel::IExecutor (C2.1: full type at the substrate-aware mine call)
+
 namespace atx::engine::factory {
 
 [[nodiscard]] ResearchReport ResearchDriver::run(const ResearchConfig &cfg) {
@@ -63,7 +65,12 @@ namespace atx::engine::factory {
     // ResearchDriver reuses ONE fixed library (lib_) with an invariant panel/holdout
     // geometry across every run, so the mismatch branch is unreachable here; .value()
     // is the contract assertion that this driver never reopens a mismatched library.
-    auto fr_r = factory.mine_into(run_cfg, lib_, gate_);
+    // C2.1 — when an optional parallel substrate is supplied, dispatch the
+    // substrate-aware overload (bit-identical to serial by construction); else the
+    // serial path, byte-identical to today (cfg.exec defaults nullptr).
+    auto fr_r = (cfg.exec != nullptr)
+                    ? factory.mine_into(run_cfg, lib_, gate_, *cfg.exec)
+                    : factory.mine_into(run_cfg, lib_, gate_);
     ATX_CHECK(fr_r.has_value() && "ResearchDriver: fixed-geometry library cannot mismatch");
     const FactoryReport fr = std::move(*fr_r);
 
