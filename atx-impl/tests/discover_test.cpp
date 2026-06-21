@@ -1624,18 +1624,20 @@ TEST(AtxImplDiscover, W6_RediscoverLowVolCapacityAlpha) {
     const bool is_real = (env_panel != nullptr);
 
     // 1. Base panel (real liquid if ATX_ALPHA101_PANEL set, else synthetic ORATS),
-    //    augmented so the grammar can reach returns / sector / adv.
-    Panel base = [&]() -> Panel {
-        if (is_real) {
-            auto r = atx::impl::read_panel(env_panel);
-            EXPECT_TRUE(r.has_value())
-                << "ATX_ALPHA101_PANEL set but unreadable: "
-                << (r.has_value() ? "" : r.error().message());
-            return r.has_value() ? std::move(*r)
-                                 : atx_impl_test::make_synth_orats_panel(300, 24);
-        }
-        return atx_impl_test::make_synth_orats_panel(300, 24);
-    }();
+    //    augmented so the grammar can reach returns / sector / adv. A real panel that
+    //    is set-but-unreadable HARD-FAILS here (ASSERT) rather than silently falling
+    //    through to synthetic data under the real (tight-bar) config — which would
+    //    otherwise surface as a misleading "failed to rediscover" verdict downstream.
+    std::optional<Panel> base_opt;
+    if (is_real) {
+        auto r = atx::impl::read_panel(env_panel);
+        ASSERT_TRUE(r.has_value())
+            << "ATX_ALPHA101_PANEL set but unreadable: " << r.error().message();
+        base_opt = std::move(*r);
+    } else {
+        base_opt = atx_impl_test::make_synth_orats_panel(300, 24);
+    }
+    const Panel& base = *base_opt;
 
     const std::array<atx::u16, 1> adv_windows{20};
     auto aug_r = atx_impl_test::augment_for_alpha101(
@@ -1659,7 +1661,6 @@ TEST(AtxImplDiscover, W6_RediscoverLowVolCapacityAlpha) {
     cfg.weight_transform  = "raw";       // W1a: preserve in-DSL conditioning (no re-rank)
     cfg.enable_wrap_in_op = true;        // W1b: CREATE signedpower(zscore(raw), p)
     cfg.adv_window        = 20;
-    cfg.max_turnover      = 0.30;        // W5: tradeable turnover bar
     cfg.seed_exprs        = {
         "rank(ts_mean(returns,60))",     // ~12-1 momentum (NOT low-vol)
         "rank(-1*ts_mean(returns,5))",   // short-term reversal (NOT low-vol)
@@ -1669,6 +1670,7 @@ TEST(AtxImplDiscover, W6_RediscoverLowVolCapacityAlpha) {
         cfg.min_price        = 1.0;      // W2: stocks > $1
         cfg.min_adv_usd      = 50.0e6;   // W2: 20-day dollar ADV >= $50M
         cfg.min_split_sharpe = 0.0;      // W4a: both-halves-positive admission bar
+        cfg.max_turnover     = 0.30;     // W5: tradeable turnover bar
         cfg.min_sharpe       = 0.25;
         cfg.min_fitness      = 1.0;
         cfg.min_dsr          = 0.5;
@@ -1701,7 +1703,10 @@ TEST(AtxImplDiscover, W6_RediscoverLowVolCapacityAlpha) {
     auto it = std::find_if(kvs.begin(), kvs.end(),
                            [](const auto& p) { return p.first == "admitted"; });
     ASSERT_NE(it, kvs.end()) << "missing 'admitted' kv";
-    EXPECT_GE(std::stoi(it->second), 1) << "the gated pipeline must admit >= 1 alpha";
+    // strtol (not stoi) so a malformed/unexpected kv string yields 0 rather than
+    // throwing out of the test body.
+    const long admitted = std::strtol(it->second.c_str(), nullptr, 10);
+    EXPECT_GE(admitted, 1L) << "the gated pipeline must admit >= 1 alpha";
 
     if (!is_real) {
         std::error_code ec;
