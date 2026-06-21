@@ -277,6 +277,9 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         //     rep.pnl_net. Periods-per-year is derived from the actual schedule
         //     spacing (panel-date indices ARE trading days). Sharpe = mean/std,
         //     so the capacity_gross dollar scale of pnl_net cancels.
+        //     `ann` is a schedule-uniform property (rebalance spacing), computed
+        //     once and intentionally reused for the full / IS / OOS subsets — a
+        //     contiguous terminal OOS sub-span shares the same periods-per-year.
         double ann = std::sqrt(252.0);
         if (S > 1 && sched.periods.back() > sched.periods.front()) {
             const double span =
