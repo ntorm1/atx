@@ -41,6 +41,7 @@
 #include "research_sim.hpp"
 #include "serialize_genome.hpp"
 #include "serialize_panel.hpp"
+#include "stage_discover_detail.hpp"             // atx::impl::detail::apply_capacity_screen (Fix 1: testable)
 #include "store_progress_sink.hpp"               // StoreProgressSink, compute_discover_fingerprint, fp_hex, now_unix
 
 namespace atx::impl {
@@ -67,6 +68,8 @@ namespace {
     return T::Rank; // "rank" (and the validated default) -> Rank
 }
 
+} // namespace
+
 // ---------------------------------------------------------------------------
 // apply_capacity_screen (W2) — build a derived Panel whose universe_ mask is
 // original_universe ∧ (close > min_price) ∧ (adv{W} >= min_adv).
@@ -77,11 +80,17 @@ namespace {
 //   * ADV is computed over the ORIGINAL universe (not the screened one) so the
 //     rolling mean reflects the same liquid set used for capacity validation.
 //   * Fail-closed: missing 'close' or 'volume' field => Err(InvalidArgument).
+//   * Fix 3: out-of-range adv_window (< 1 or > 65535) => Err(InvalidArgument).
+//   * Fix 2: post-screen kept-cell count == 0 => Err(InvalidArgument).
 //   * Predicate mirrors single_alpha_capacity_test.cpp:capacity_universe exactly.
+//
+// Declared in stage_discover_detail.hpp so discover_test.cpp can call the real
+// implementation directly (Fix 1: testable helper in named namespace).
 // ---------------------------------------------------------------------------
-[[nodiscard]] atx::core::Result<atx::engine::alpha::Panel>
-apply_capacity_screen(const atx::engine::alpha::Panel& panel,
-                      atx::f64 min_price, atx::f64 min_adv, long adv_window) {
+atx::core::Result<atx::engine::alpha::Panel>
+atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
+                                         atx::f64 min_price, atx::f64 min_adv,
+                                         long adv_window) {
     namespace alpha = atx::engine::alpha;
     namespace df    = atx::engine::alpha::datafields;
     using EC        = atx::core::ErrorCode;
@@ -125,11 +134,15 @@ apply_capacity_screen(const atx::engine::alpha::Panel& panel,
             "discover capacity screen: panel is missing required field 'volume'");
     }
 
-    // Step 2: augment with adv{W} (computed over the ORIGINAL universe).
-    // adv_window is stored as long; clamp to u16 range for with_datafields.
-    const atx::u16 win = (adv_window >= 1 && adv_window <= 0xFFFF)
-                             ? static_cast<atx::u16>(adv_window)
-                             : atx::u16{20};
+    // Fix 3: out-of-range adv_window => Err when screen is active (called only
+    // when capacity_on). Silent clamp-to-20 is replaced by a hard failure so
+    // a misconfigured window does not produce silently wrong ADV averages.
+    if (adv_window < 1 || adv_window > 0xFFFF) {
+        return atx::core::Err(EC::InvalidArgument,
+            "discover capacity screen: adv_window=" + std::to_string(adv_window) +
+            " is out of valid range [1, 65535]");
+    }
+    const atx::u16 win = static_cast<atx::u16>(adv_window);
 
     // with_datafields derives vwap when absent, requiring high/low. We only need
     // adv{W} for the screen, so if vwap/high/low are ALL absent, pre-supply a NaN
@@ -181,6 +194,17 @@ apply_capacity_screen(const atx::engine::alpha::Panel& panel,
         }
     }
 
+    // Fix 2: fail-closed zero-universe guard — when the screen is active and
+    // every cell is excluded, the run would produce zero signal (e.g. adv_window
+    // >= dates means all ADV cells are NaN, or thresholds are too strict). Return
+    // an actionable error rather than silently producing an all-NaN signal set.
+    if (kept_cells == 0) {
+        return atx::core::Err(EC::InvalidArgument,
+            "discover capacity screen: retained zero in-universe cells "
+            "(adv_window too large for panel, or thresholds too strict). "
+            "Reduce --adv-window, lower --min-adv / --min-price, or use a longer panel.");
+    }
+
     // Approximate names/day for logging (kept_cells / D, rounded).
     const atx::f64 names_per_day =
         (D > 0) ? (static_cast<atx::f64>(kept_cells) / static_cast<atx::f64>(D)) : 0.0;
@@ -209,8 +233,6 @@ apply_capacity_screen(const atx::engine::alpha::Panel& panel,
                                 std::move(aug_data),
                                 std::move(cap_univ));
 }
-
-} // namespace
 
 // ---------------------------------------------------------------------------
 // run_discover_gated — opt-in quality-gated discovery (--gated).
@@ -547,8 +569,8 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     const bool capacity_on = cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0;
     if (capacity_on) {
         ATX_TRY(auto screened,
-                apply_capacity_screen(panel, cfg.min_price, cfg.min_adv_usd,
-                                      cfg.adv_window));
+                detail::apply_capacity_screen(panel, cfg.min_price, cfg.min_adv_usd,
+                                              cfg.adv_window));
         panel = std::move(screened);
     }
 

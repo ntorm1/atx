@@ -24,7 +24,6 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/bytecode.hpp"    // alpha::compile, alpha::Program
-#include "atx/engine/alpha/datafields.hpp" // alpha::datafields::with_datafields (W2)
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"     // alpha::parse_expr, alpha::Library
 #include "atx/engine/alpha/vm.hpp"         // alpha::Engine
@@ -33,6 +32,7 @@
 #include "config.hpp"
 #include "serialize_genome.hpp"
 #include "serialize_panel.hpp"
+#include "stage_discover_detail.hpp"  // atx::impl::detail::apply_capacity_screen (Fix 1)
 #include "stages.hpp"
 
 namespace atxtest_discover {
@@ -47,7 +47,6 @@ using atx::engine::alpha::Panel;
 using atx::engine::alpha::parse_expr;
 using atx::engine::alpha::Program;
 using atx::engine::alpha::SignalSet;
-using atx::engine::alpha::datafields::with_datafields;
 using atx::engine::factory::analyze_into;
 using atx::engine::factory::Genome;
 using atx::impl::read_genome;
@@ -702,21 +701,24 @@ static std::optional<Panel> make_w2_panel() {
 
 // ---------------------------------------------------------------------------
 // W2 Test 1: CapacityScreenPredicateUnit
-// Applies the capacity screen via run_discover (with the screen active) on a
-// synthetic fixture and verifies the resulting panel's in_universe mask exactly
-// matches the hand-computed expected mask.
+// Calls the REAL apply_capacity_screen (via atx::impl::detail — Fix 1) on the
+// synthetic fixture and asserts the returned panel's in_universe(d,i) matches
+// the hand-computed mask EXACTLY.
 //
-// Strategy: we test the screen by calling run_discover with the capacity flags
-// active on a panel where we know which instruments pass. Since run_discover
-// changes the scoring universe, a PASS instrument should remain admitted and a
-// LOW_PX / LOW_ADV instrument should be excluded (no signal from them).
+// Brief requirement: "Apply the screen; assert the resulting panel's
+// in_universe(d,i) matches the hand-computed mask EXACTLY." — a bug in the
+// real helper is now detectable (the old test reimplemented the logic in-test
+// and would have passed even with a broken apply_capacity_screen).
 //
-// Simpler / more direct: test apply_capacity_screen via the datafields API +
-// Panel::create directly, matching the implementation sketch in the brief.
+// Fixture coverage (from make_w2_panel):
+//   [0] PASS    — close=10 > $1, DV=1e8 >= $50M (passes after warm-up)
+//   [1] LOW_PX  — close=0.50 <= $1 (fails price screen, all dates)
+//   [2] LOW_ADV — close=5 > $1 but DV=5e3 << $50M (fails adv screen, all dates)
+//   [3] OOU     — out-of-universe on all dates (unchanged by screen)
+//   NaN cells   — adv is NaN on warm-up dates (dates 0..adv_window-2), so
+//                 instrument[0] is also out during those dates (NaN guard).
 // ---------------------------------------------------------------------------
 TEST(AtxImplDiscover, W2_CapacityScreenPredicateUnit) {
-    using atx::u16;
-
     auto panel_opt = make_w2_panel();
     ASSERT_TRUE(panel_opt.has_value());
     const Panel& panel = *panel_opt;
@@ -724,112 +726,53 @@ TEST(AtxImplDiscover, W2_CapacityScreenPredicateUnit) {
     constexpr usize D = 5;
     constexpr usize I = 4;
 
-    // Step 1: extract field vectors + names + universe from the panel.
-    std::vector<std::string> field_names;
-    std::vector<std::vector<f64>> field_data;
-    for (usize fi = 0; fi < panel.num_fields(); ++fi) {
-        field_names.push_back(std::string{panel.field_name(fi)});
-        const auto col = panel.field_all(static_cast<atx::engine::alpha::FieldId>(fi));
-        field_data.emplace_back(col.begin(), col.end());
-    }
-    // Collect universe from the panel.
-    std::vector<std::uint8_t> orig_univ(D * I);
-    for (usize d = 0; d < D; ++d) {
-        for (usize i = 0; i < I; ++i) {
-            orig_univ[d * I + i] = panel.in_universe(d, i) ? 1u : 0u;
-        }
-    }
-
-    // Step 2: call with_datafields to get adv3 column (mirrors apply_capacity_screen).
-    // Pre-supply a NaN vwap to suppress high/low requirement (same logic as the
-    // apply_capacity_screen helper — only adv{W} matters for the screen).
-    {
-        bool has_vwap = false, has_high = false, has_low = false;
-        for (const auto& n : field_names) {
-            if (n == "vwap") has_vwap = true;
-            if (n == "high") has_high = true;
-            if (n == "low")  has_low  = true;
-        }
-        if (!has_vwap && (!has_high || !has_low)) {
-            field_names.emplace_back("vwap");
-            field_data.emplace_back(D * I,
-                std::numeric_limits<atx::f64>::quiet_NaN());
-        }
-    }
-    const atx::u16 adv_win = static_cast<atx::u16>(kW2AdvWin);
-    const std::array<atx::u16, 1> adv_wins = {adv_win};
-    auto aug_r = with_datafields(D, I, field_names, field_data, orig_univ,
-                                 std::span<const atx::u16>{adv_wins});
-    ASSERT_TRUE(aug_r.has_value()) << aug_r.error().to_string();
-    const Panel& aug = *aug_r;
-
-    // Verify adv3 field exists.
-    const std::string adv_name = "adv" + std::to_string(kW2AdvWin);
-    auto adv_id_r = aug.field_id(adv_name);
-    ASSERT_TRUE(adv_id_r.has_value()) << "adv field '" << adv_name << "' must exist after with_datafields";
-    const auto adv_id = *adv_id_r;
-    auto close_id_r = aug.field_id("close");
-    ASSERT_TRUE(close_id_r.has_value());
-    const auto close_id = *close_id_r;
-
-    // Step 3: compute capacity mask exactly as apply_capacity_screen would.
-    std::vector<std::uint8_t> cap_univ(D * I, 0);
-    const auto close_col = aug.field_all(close_id);
-    const auto adv_col   = aug.field_all(adv_id);
-    for (usize d = 0; d < D; ++d) {
-        for (usize i = 0; i < I; ++i) {
-            const usize idx = d * I + i;
-            if (!aug.in_universe(d, i)) continue;
-            const f64 px  = close_col[idx];
-            const f64 dv  = adv_col[idx];
-            if (std::isfinite(px) && px > kW2MinPrice &&
-                std::isfinite(dv) && dv >= kW2MinAdv) {
-                cap_univ[idx] = 1;
-            }
-        }
-    }
-
-    // Step 4: build the screened panel and assert in_universe matches cap_univ.
-    // Collect augmented field data for create().
-    std::vector<std::string> aug_names;
-    std::vector<std::vector<f64>> aug_data;
-    for (usize fi = 0; fi < aug.num_fields(); ++fi) {
-        aug_names.push_back(std::string{aug.field_name(fi)});
-        const auto c = aug.field_all(static_cast<atx::engine::alpha::FieldId>(fi));
-        aug_data.emplace_back(c.begin(), c.end());
-    }
-    auto screened_r = Panel::create(D, I, aug_names, aug_data, cap_univ);
+    // Call the REAL production helper. This is the key change from the original
+    // test: any bug in apply_capacity_screen will now cause an assertion failure
+    // here, instead of passing because the test reimplemented the same logic.
+    auto screened_r = atx::impl::detail::apply_capacity_screen(
+        panel, kW2MinPrice, kW2MinAdv, kW2AdvWin);
     ASSERT_TRUE(screened_r.has_value()) << screened_r.error().to_string();
     const Panel& screened = *screened_r;
 
-    // Assert: instrument 0 (PASS) is in-universe on dates where adv3 is defined
-    // (dates >= adv_window - 1 == 2, i.e. dates 2,3,4).
+    // Hand-computed expected mask:
+    //   instrument[0] (PASS):    in-universe only when adv window is complete,
+    //                            i.e. d >= kW2AdvWin - 1 (dates 2, 3, 4).
+    //   instrument[1] (LOW_PX):  never in-universe (close=0.50 <= $1.00).
+    //   instrument[2] (LOW_ADV): never in-universe (adv << $50M).
+    //   instrument[3] (OOU):     never in-universe (was out in the original panel).
     for (usize d = 0; d < D; ++d) {
         const bool adv_defined = (d + 1 >= static_cast<usize>(kW2AdvWin));
         EXPECT_EQ(screened.in_universe(d, 0), adv_defined)
-            << "PASS instrument[0] at date " << d;
-        // LOW_PX: fails price screen => always out regardless of adv
+            << "PASS instrument[0] at date " << d
+            << ": expected in_universe=" << adv_defined
+            << " (adv window complete=" << adv_defined << ")";
         EXPECT_FALSE(screened.in_universe(d, 1))
-            << "LOW_PX instrument[1] must be excluded (price screen)";
-        // LOW_ADV: fails adv screen => always out
+            << "LOW_PX instrument[1] must be excluded at date " << d
+            << " (close=0.50 <= min_price=1.0)";
         EXPECT_FALSE(screened.in_universe(d, 2))
-            << "LOW_ADV instrument[2] must be excluded (adv screen)";
-        // OOU: was never in-universe
+            << "LOW_ADV instrument[2] must be excluded at date " << d
+            << " (DV=5e3 << min_adv=50M)";
         EXPECT_FALSE(screened.in_universe(d, 3))
-            << "OOU instrument[3] must remain out-of-universe";
+            << "OOU instrument[3] must remain out-of-universe at date " << d;
     }
 
-    // Assert adv3 values for instrument 0 (PASS): DV = close*vol = 10*1e7 = 1e8
-    // adv3 at date d = mean(DV[d-2..d]) = 1e8 (constant DV) for d >= 2.
+    // Also verify adv field values are present and correct in the returned panel,
+    // confirming the augmentation step ran correctly end-to-end.
+    const std::string adv_name = "adv" + std::to_string(kW2AdvWin);
+    auto adv_id_r = screened.field_id(adv_name);
+    ASSERT_TRUE(adv_id_r.has_value()) << "screened panel must carry the adv" << kW2AdvWin << " field";
+    const auto adv_col = screened.field_all(*adv_id_r);
+    // adv3 for instrument 0 (PASS): DV = close*vol = 10*1e7 = 1e8 (constant).
+    // Mean over any complete window of 3 constant values = 1e8.
     for (usize d = static_cast<usize>(kW2AdvWin) - 1; d < D; ++d) {
         const f64 adv_val = adv_col[d * I + 0];
         EXPECT_TRUE(std::isfinite(adv_val)) << "adv3[" << d << "][0] must be finite";
-        EXPECT_NEAR(adv_val, 1.0e8, 1.0) << "adv3[" << d << "][0] must be ~1e8";
+        EXPECT_NEAR(adv_val, 1.0e8, 1.0)   << "adv3[" << d << "][0] must be ~1e8";
     }
     // adv3 at dates 0 and 1 must be NaN (incomplete window).
     for (usize d = 0; d + 1 < static_cast<usize>(kW2AdvWin); ++d) {
         EXPECT_TRUE(std::isnan(adv_col[d * I + 0]))
-            << "adv3[" << d << "][0] must be NaN (incomplete window)";
+            << "adv3[" << d << "][0] must be NaN (incomplete window, d<" << kW2AdvWin - 1 << ")";
     }
 }
 
@@ -875,6 +818,17 @@ TEST(AtxImplDiscover, W2_CapacityScreenInactiveIsNoOp) {
     ASSERT_TRUE(r_noop.has_value()) << r_noop.error().message();
 
     // Digests must be equal: same panel + same seed + screen inactive => byte-identical.
+    //
+    // WHY two zero-threshold W2 runs are sufficient (Fix 4):
+    //   The inactive path is a verified-by-construction no-op: run_discover's
+    //   `if (capacity_on)` guard means apply_capacity_screen is NEVER called when
+    //   both thresholds are 0, so zero new code runs and the original `panel`
+    //   object flows unchanged to all downstream paths. Digest-equality is the
+    //   determinism check — it proves the full pipeline (panel → search → DSL →
+    //   fnv1a64) is bit-for-bit identical between the two runs, matching the
+    //   convention used by SameSeedDeterministic earlier in this file.
+    //   No pinned golden digest is needed: the two-run comparison is self-checking
+    //   (any regression that makes one run non-deterministic breaks this test too).
     EXPECT_EQ(r_base->digest, r_noop->digest)
         << "inactive screen (min_adv=0, min_price=0) must produce byte-identical digest";
 
@@ -992,6 +946,74 @@ TEST(AtxImplDiscover, W2_CapacityScreenActiveChangesUniverse) {
     std::error_code ec;
     fs::remove(panel_path, ec);
     fs::remove_all(alpha_out, ec);
+}
+
+// ---------------------------------------------------------------------------
+// W2 Test 5: CapacityScreenZeroUniverseReturnsErr (Fix 2)
+// When the screen is ACTIVE and all cells are excluded (thresholds too strict),
+// apply_capacity_screen must return Err(InvalidArgument) naming the zero-retain
+// condition. This prevents silently producing an all-NaN signal set.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W2_CapacityScreenZeroUniverseReturnsErr) {
+    // Use the W2 fixture (5x4) but set min_adv absurdly high so no cell passes.
+    auto panel_opt = make_w2_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+
+    // min_adv = 1e30 >> any possible DV => no cell can pass => kept_cells == 0.
+    auto result = atx::impl::detail::apply_capacity_screen(
+        panel, /*min_price=*/0.0, /*min_adv=*/1.0e30, /*adv_window=*/kW2AdvWin);
+
+    EXPECT_FALSE(result.has_value())
+        << "zero-retain screen must return Err, not a panel";
+    if (!result.has_value()) {
+        EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+        // Error message must mention the zero-retain condition.
+        const std::string& msg = result.error().message();
+        EXPECT_NE(msg.find("zero"), std::string::npos)
+            << "error message must mention 'zero', got: " << msg;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W2 Test 6: CapacityScreenBadAdvWindowReturnsErr (Fix 3)
+// When the screen is ACTIVE, adv_window out of [1, 65535] must return
+// Err(InvalidArgument) naming the bad value — NOT silently clamp to 20.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W2_CapacityScreenBadAdvWindowReturnsErr) {
+    auto panel_opt = make_w2_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+
+    // adv_window = 0 is below the valid range [1, 65535].
+    {
+        auto result = atx::impl::detail::apply_capacity_screen(
+            panel, /*min_price=*/1.0, /*min_adv=*/50.0e6, /*adv_window=*/0L);
+        EXPECT_FALSE(result.has_value())
+            << "adv_window=0 must return Err (out of range)";
+        if (!result.has_value()) {
+            EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+            const std::string& msg = result.error().message();
+            EXPECT_NE(msg.find("adv_window"), std::string::npos)
+                << "error must name 'adv_window', got: " << msg;
+            EXPECT_NE(msg.find("0"), std::string::npos)
+                << "error must include the bad value (0), got: " << msg;
+        }
+    }
+
+    // adv_window = 70000 is above the valid range.
+    {
+        auto result = atx::impl::detail::apply_capacity_screen(
+            panel, /*min_price=*/1.0, /*min_adv=*/50.0e6, /*adv_window=*/70000L);
+        EXPECT_FALSE(result.has_value())
+            << "adv_window=70000 must return Err (out of range)";
+        if (!result.has_value()) {
+            EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+            const std::string& msg = result.error().message();
+            EXPECT_NE(msg.find("adv_window"), std::string::npos)
+                << "error must name 'adv_window', got: " << msg;
+        }
+    }
 }
 
 } // namespace atxtest_discover
