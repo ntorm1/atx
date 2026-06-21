@@ -967,4 +967,97 @@ TEST(AtxImplCombine, HoldoutFracTooLargeErrors) {
     fs::remove(combo_out + ".meta", ec);
 }
 
+// ---------------------------------------------------------------------------
+// A2a Fix-round-1 Test: HoldoutFracOutOfRangeRejected
+// A --holdout-frac >= 1.0 value must be rejected at config-parse time with
+// Err(InvalidArgument) — it must NOT silently degrade to a full-history fit.
+// Two sub-cases: frac == 1.0 (exact boundary) and frac == 1.5 (well out of range).
+// Both are tested via apply_flag (config-parse level) to verify the validation
+// fires before run_combine is ever reached. The stage-level guard (oos_n >= np)
+// is confirmed separately via run_combine with a programmatic cfg (bypassing parse)
+// set to combine_holdout_frac = 1.5.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, HoldoutFracOutOfRangeRejected) {
+    namespace fs = std::filesystem;
+
+    // --- Config-parse level rejection (apply_flag path) ---
+    // frac == 1.0: exact lower boundary of the out-of-range region -> Err.
+    {
+        atx::impl::RunConfig cfg{};
+        const char* argv[] = {"atx", "combine",
+                              "--holdout-frac", "1.0",
+                              "--panel", "p.bin",
+                              "--alphas", "/a",
+                              "--combo-out", "/o.bin"};
+        const int argc = static_cast<int>(sizeof(argv) / sizeof(argv[0]));
+        auto r = atx::impl::parse_args(argc, const_cast<char**>(argv));
+        EXPECT_FALSE(r.has_value())
+            << "--holdout-frac 1.0 must be rejected at parse time";
+        if (!r.has_value()) {
+            EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument)
+                << "parse rejection must be InvalidArgument, got: "
+                << r.error().message();
+        }
+    }
+
+    // frac == 1.5: well above 1.0 -> also Err.
+    {
+        const char* argv[] = {"atx", "combine",
+                              "--holdout-frac", "1.5",
+                              "--panel", "p.bin",
+                              "--alphas", "/a",
+                              "--combo-out", "/o.bin"};
+        const int argc = static_cast<int>(sizeof(argv) / sizeof(argv[0]));
+        auto r = atx::impl::parse_args(argc, const_cast<char**>(argv));
+        EXPECT_FALSE(r.has_value())
+            << "--holdout-frac 1.5 must be rejected at parse time";
+        if (!r.has_value()) {
+            EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument)
+                << "parse rejection must be InvalidArgument, got: "
+                << r.error().message();
+        }
+    }
+
+    // --- Stage-level guard: programmatic cfg bypasses config parse ---
+    // combine_holdout_frac = 1.5 injected directly -> the oos_n >= np guard must fire.
+    {
+        auto panel_opt = make_momentum_panel();
+        ASSERT_TRUE(panel_opt.has_value());
+        const Panel& panel = *panel_opt;
+        const std::string panel_path = write_panel_tmp(panel, "oor_panel");
+        const std::string alphas_dir = write_alpha_dir("oor_alphas", safe_dsls());
+        const std::string combo_out =
+            (fs::temp_directory_path() / "atx_impl_combine_holdout_oor.bin").string();
+
+        atx::impl::RunConfig cfg;
+        cfg.subcommand            = "combine";
+        cfg.panel                 = panel_path;
+        cfg.alphas                = alphas_dir;
+        cfg.combo_out             = combo_out;
+        cfg.method                = "equal";
+        cfg.combine_holdout_frac  = 1.5; // bypass config parse — stage guard must catch it
+
+        // Ensure no leftover from a prior run so the existence check is meaningful.
+        { std::error_code ec0; fs::remove(combo_out, ec0); }
+
+        auto r = atx::impl::run_combine(cfg);
+        EXPECT_FALSE(r.has_value())
+            << "run_combine with combine_holdout_frac=1.5 must return Err, not silently produce a full-history fit";
+        if (!r.has_value()) {
+            EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument)
+                << "stage guard must be InvalidArgument, got: " << r.error().message();
+        }
+        // combo.bin must NOT have been created (no misleading output).
+        EXPECT_FALSE(fs::exists(combo_out))
+            << "combo.bin must not be created when holdout_frac is out of range";
+
+        std::error_code ec;
+        fs::remove(panel_path, ec);
+        fs::remove_all(alphas_dir, ec);
+        fs::remove(combo_out, ec);
+        fs::remove(combo_out + ".weights.txt", ec);
+        fs::remove(combo_out + ".meta", ec);
+    }
+}
+
 } // namespace atxtest_combine

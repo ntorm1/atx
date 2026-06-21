@@ -227,7 +227,7 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     } else if (cfg.set_flags.count("fit-end") == 0 && cfg.combine_holdout_frac > 0.0) {
         const atx::usize oos_n =
             static_cast<atx::usize>(std::floor(cfg.combine_holdout_frac * static_cast<double>(np)));
-        if (oos_n < 1 || (np - oos_n) < 2) {
+        if (oos_n < 1 || oos_n >= np || (np - oos_n) < 2) {
             return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                 "combine: --holdout-frac leaves too few in-sample/out-of-sample periods (np=" +
                 std::to_string(np) + ")");
