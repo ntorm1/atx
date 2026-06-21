@@ -42,4 +42,12 @@ apply_capacity_screen(const atx::engine::alpha::Panel& panel,
 build_robust_holdout_panel(const atx::engine::alpha::Panel& panel, atx::f64 frac,
                            atx::u64 master_seed);
 
+// Mean in-universe instrument count per date over `panel` (sum of in_universe cells
+// over all (date, inst) divided by dates()). 0.0 when the panel has no dates. PURE;
+// reads ONLY the universe mask. Used to RECORD the capacity-screen universe size as a
+// discovery admission metric (W5). When `panel` is the post-capacity-screen panel this
+// equals apply_capacity_screen's stderr `names_per_day` by construction (same mask).
+// Exposed so discover_test.cpp can verify the count directly on a hand-built mask.
+[[nodiscard]] double mean_names_per_day(const atx::engine::alpha::Panel& panel);
+
 } // namespace atx::impl::detail

@@ -1511,4 +1511,88 @@ TEST(AtxImplDiscover, W4b_ParseArgsMaxPboThreads) {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  W5_MeanNamesPerDayUnit — detail::mean_names_per_day (the W5 capacity-universe
+//  name-count recorded as an admission metric) over hand-built universe masks.
+//  Pure (mask-only), so a tiny Panel pins the exact value.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W5_MeanNamesPerDayUnit) {
+    constexpr atx::usize D = 3u, I = 4u; // 3 dates x 4 instruments
+    const std::vector<atx::f64> close(D * I, 1.0); // field values irrelevant to the mask
+
+    // (a) all-in (empty universe == all cells in-universe) -> mean == instruments().
+    {
+        auto r = Panel::create(D, I, {"close"}, {close}, {});
+        ASSERT_TRUE(r.has_value()) << "(a) Panel::create: " << r.error().message();
+        EXPECT_DOUBLE_EQ(atx::impl::detail::mean_names_per_day(*r), 4.0)
+            << "(a) all-in 3x4 -> 4 names/day";
+    }
+
+    // (b) a KNOWN partial mask: 3 + 1 + 1 = 5 in-universe cells over 3 dates -> 5/3.
+    {
+        std::vector<std::uint8_t> univ(D * I, 0u);
+        univ[0 * I + 0] = 1u; univ[0 * I + 1] = 1u; univ[0 * I + 2] = 1u; // date 0: 3
+        univ[1 * I + 0] = 1u;                                             // date 1: 1
+        univ[2 * I + 3] = 1u;                                             // date 2: 1
+        auto r = Panel::create(D, I, {"close"}, {close}, univ);
+        ASSERT_TRUE(r.has_value()) << "(b) Panel::create: " << r.error().message();
+        EXPECT_DOUBLE_EQ(atx::impl::detail::mean_names_per_day(*r), 5.0 / 3.0)
+            << "(b) 5 in-universe cells over 3 dates -> 5/3 names/day";
+    }
+
+    // (c) all-out (every cell masked) -> 0.0 (the in_univ == 0 edge).
+    {
+        const std::vector<std::uint8_t> univ(D * I, 0u);
+        auto r = Panel::create(D, I, {"close"}, {close}, univ);
+        ASSERT_TRUE(r.has_value()) << "(c) Panel::create: " << r.error().message();
+        EXPECT_DOUBLE_EQ(atx::impl::detail::mean_names_per_day(*r), 0.0)
+            << "(c) fully-masked universe -> 0 names/day";
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  W5_ParseArgsMaxTurnoverThreads — the --max-turnover flag lands in
+//  cfg.max_turnover through the REAL parse_args -> apply_flag_value path (it is
+//  threaded into GateConfig::max_turnover at stage_discover.cpp), and the no-flag
+//  default is the generous 0.70 (so non-capacity runs are unchanged). Mirrors the
+//  W4a/W4b flag-threading discipline. The engine RejectTurnover BEHAVIOR is already
+//  covered by combine_gate_test.cpp:189; this asserts the impl wiring.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, W5_ParseArgsMaxTurnoverThreads) {
+    // (a) --max-turnover 0.30 lands in cfg.max_turnover (the tradeable capacity bar).
+    {
+        const char* argv[] = {
+            "atx", "discover",
+            "--max-turnover", "0.30",
+        };
+        auto cfg_r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg_r.has_value())
+            << "(a) parse_args with --max-turnover must succeed: " << cfg_r.error().message();
+        EXPECT_DOUBLE_EQ(cfg_r->max_turnover, 0.30)
+            << "(a) --max-turnover 0.30 must land in cfg.max_turnover";
+    }
+
+    // (b) No --max-turnover: cfg.max_turnover is the generous 0.70 default (the
+    //     non-capacity path the plan pins as unchanged).
+    {
+        const char* argv[] = {"atx", "discover"};
+        auto cfg_r = atx::impl::parse_args(2, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg_r.has_value())
+            << "(b) parse_args without --max-turnover must succeed: " << cfg_r.error().message();
+        EXPECT_DOUBLE_EQ(cfg_r->max_turnover, 0.70)
+            << "(b) the no-flag default must be the generous 0.70";
+    }
+
+    // (c) A malformed --max-turnover value fails closed through the real CLI path.
+    {
+        const char* argv[] = {
+            "atx", "discover",
+            "--max-turnover", "not-a-number",
+        };
+        auto cfg_r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(cfg_r.has_value())
+            << "(c) --max-turnover with a non-numeric value must return Err";
+    }
+}
+
 } // namespace atxtest_discover

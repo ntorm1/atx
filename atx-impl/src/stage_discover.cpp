@@ -236,6 +236,33 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
 }
 
 // ---------------------------------------------------------------------------
+// mean_names_per_day (W5) — mean in-universe instrument count per date over `panel`.
+//
+// = (sum over all (date, inst) of in_universe) / dates(); 0.0 when dates() == 0. PURE:
+// reads only the universe mask. When `panel` is the post-capacity-screen panel this is
+// the SAME quantity apply_capacity_screen logs as `names_per_day` (kept_cells / D) by
+// construction (identical mask) — recorded here as a durable admission metric (W5) since
+// the screen only emits it to stderr. Declared in stage_discover_detail.hpp so the test
+// can call it directly on a hand-built mask.
+// ---------------------------------------------------------------------------
+double atx::impl::detail::mean_names_per_day(const atx::engine::alpha::Panel& panel) {
+    const atx::usize D = panel.dates();
+    const atx::usize I = panel.instruments();
+    if (D == 0) {
+        return 0.0;
+    }
+    atx::usize in_univ = 0;
+    for (atx::usize d = 0; d < D; ++d) {
+        for (atx::usize i = 0; i < I; ++i) {
+            if (panel.in_universe(d, i)) {
+                ++in_univ;
+            }
+        }
+    }
+    return static_cast<double>(in_univ) / static_cast<double>(D);
+}
+
+// ---------------------------------------------------------------------------
 // build_robust_holdout_panel (W4a) — the §0.8 weak/holdout sub-universe Panel.
 //
 // A derived Panel with the SAME field columns but its universe restricted to a
@@ -570,6 +597,22 @@ atx::core::Result<StageResult> run_discover_gated(
         mf << "max_turnover="    << gc.max_turnover      << '\n';
         mf << "max_pool_corr="   << gc.max_pool_corr     << '\n';
         mf << "target_aum="      << cfg.target_aum       << '\n';
+        // W5: capacity-universe size as a RECORDED admission metric — emitted ONLY when
+        // the W2 capacity screen was active (capacity_on), gated so the OFF-path manifest
+        // is byte-identical (mirrors the OOS / W4b-PBO emit-only-when-active discipline).
+        // `panel` here is the post-screen panel, so mean_names_per_day equals the screen's
+        // stderr names/day by construction. The turnover bar itself (--max-turnover, gate
+        // max_turnover= above) is the other half of the W5 capacity gate.
+        {
+            const bool capacity_on = cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0;
+            if (capacity_on) {
+                mf << "capacity_min_price="   << cfg.min_price
+                   << " capacity_min_adv="    << cfg.min_adv_usd
+                   << " capacity_adv_window=" << cfg.adv_window
+                   << " capacity_names_per_day=" << detail::mean_names_per_day(panel)
+                   << '\n';
+            }
+        }
         // P2b: OOS header lines (only when OOS is active; off-path manifest byte-identical)
         if (cfg.oos_fraction > 0.0) {
             mf << "oos_fraction="    << cfg.oos_fraction    << '\n';
