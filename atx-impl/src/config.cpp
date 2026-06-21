@@ -70,11 +70,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "seed-file") {
         auto dsls_r = read_seed_file(std::string(value));
         if (!dsls_r) return atx::core::Err(std::move(dsls_r).error());
-        if (dsls_r->empty()) {
-            return atx::core::Err(EC::InvalidArgument,
-                std::string("--seed-file '") + std::string(value)
-                + "': file contains no valid template lines");
-        }
+        // read_seed_file already returns Err(InvalidArgument) when it collects
+        // zero templates, so a successful result is guaranteed non-empty.
         for (auto& dsl : *dsls_r) {
             cfg.seed_exprs.emplace_back(std::move(dsl));
         }

@@ -1292,43 +1292,116 @@ TEST(AtxImplDiscover, W3_TemplatesAppearInGenZero) {
 }
 
 // ---------------------------------------------------------------------------
-// W3 Test 4: SeedFileByteIdenticalDefault
-// With NO --seed-file, the discover determinism tests (AtxImplDiscover.
-// SameSeedDeterministic) remain unchanged. Verify that adding --seed-file
-// to a run CHANGES the seed_exprs, while omitting it leaves them unchanged.
-// This validates the byte-identical-default contract at the config layer
-// (not by re-running discover end-to-end — that's the existing
-// SameSeedDeterministic test which continues to pass).
+// W3 Test 4: ParseArgsSeedFileIntegration
+// Integration tests that exercise the REAL parse_args -> apply_flag_value
+// "seed-file" arm — the path a typo in the flag string or a broken append
+// would leave silently broken while direct read_seed_file tests pass.
+//
+// (a) --seed-file alone populates seed_exprs with all 10 fixture templates
+//     in file order.
+// (b) --seed-expr X BEFORE --seed-file yields [X, file templates...] — CLI
+//     entry first, file entries following in file order.
+// (c) parse_args WITHOUT --seed-file leaves seed_exprs empty (the real
+//     byte-identity-at-config-layer check through the actual parse path;
+//     replaces the tautology of the original W3_SeedFileByteIdenticalDefault).
+// (d) --seed-file with a nonexistent path returns Err (fail-closed through
+//     the real CLI path).
 // ---------------------------------------------------------------------------
-TEST(AtxImplDiscover, W3_SeedFileByteIdenticalDefault) {
-    // A RunConfig with NO --seed-file must have seed_exprs unchanged.
-    atx::impl::RunConfig cfg_no_file;
-    cfg_no_file.seed_exprs = {"rank(close)"};
-    // Verify seed_exprs is exactly {"rank(close)"}: no file -> no change.
-    EXPECT_EQ(cfg_no_file.seed_exprs.size(), 1u);
-    EXPECT_EQ(cfg_no_file.seed_exprs[0], "rank(close)");
-
-    // A config parsed from argv WITH --seed-file appends templates.
+TEST(AtxImplDiscover, W3_ParseArgsSeedFileIntegration) {
     const std::string fixture_path =
         std::string(ATX_IMPL_TESTS_DIR) + "/fixtures/factor_templates.txt";
-    auto dsls_r = atx::impl::read_seed_file(fixture_path);
-    ASSERT_TRUE(dsls_r.has_value());
 
-    atx::impl::RunConfig cfg_with_file;
-    cfg_with_file.seed_exprs = {"rank(close)"};   // CLI --seed-expr first
-    for (const auto& dsl : *dsls_r) {
-        cfg_with_file.seed_exprs.push_back(dsl);  // file templates appended after
+    // Pre-load the expected DSL list so we can compare order exactly.
+    auto expected_r = atx::impl::read_seed_file(fixture_path);
+    ASSERT_TRUE(expected_r.has_value())
+        << "pre-load fixture: " << expected_r.error().message();
+    const std::vector<std::string>& expected_dsls = *expected_r;
+    // Fixture must have exactly 10 templates.
+    ASSERT_EQ(expected_dsls.size(), 10u)
+        << "factor_templates.txt must have 10 templates";
+
+    // -----------------------------------------------------------------------
+    // (a) --seed-file <fixture> only: seed_exprs == file templates in order.
+    // -----------------------------------------------------------------------
+    {
+        const char* argv[] = {
+            "atx", "discover",
+            "--seed-file", fixture_path.c_str(),
+        };
+        auto cfg_r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg_r.has_value())
+            << "(a) parse_args with --seed-file must succeed: "
+            << cfg_r.error().message();
+        const auto& cfg = *cfg_r;
+        ASSERT_EQ(cfg.seed_exprs.size(), 10u)
+            << "(a) seed_exprs must contain all 10 fixture templates";
+        for (std::size_t i = 0; i < expected_dsls.size(); ++i) {
+            EXPECT_EQ(cfg.seed_exprs[i], expected_dsls[i])
+                << "(a) seed_exprs[" << i << "] must match file order";
+        }
     }
 
-    // With seed-file: CLI entry stays first, file entries follow.
-    EXPECT_EQ(cfg_with_file.seed_exprs[0], "rank(close)")
-        << "CLI --seed-expr entry must stay first";
-    EXPECT_GT(cfg_with_file.seed_exprs.size(), 1u)
-        << "file templates must be appended";
+    // -----------------------------------------------------------------------
+    // (b) --seed-expr X BEFORE --seed-file: seed_exprs == [X, file templates...]
+    // -----------------------------------------------------------------------
+    {
+        const char* argv[] = {
+            "atx", "discover",
+            "--seed-expr", "rank(close)",
+            "--seed-file", fixture_path.c_str(),
+        };
+        auto cfg_r = atx::impl::parse_args(6, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg_r.has_value())
+            << "(b) parse_args with --seed-expr then --seed-file must succeed: "
+            << cfg_r.error().message();
+        const auto& cfg = *cfg_r;
+        ASSERT_EQ(cfg.seed_exprs.size(), 11u)
+            << "(b) seed_exprs must be [CLI entry] + [10 file templates]";
+        EXPECT_EQ(cfg.seed_exprs[0], "rank(close)")
+            << "(b) CLI --seed-expr entry must appear first";
+        for (std::size_t i = 0; i < expected_dsls.size(); ++i) {
+            EXPECT_EQ(cfg.seed_exprs[i + 1], expected_dsls[i])
+                << "(b) file template [" << i << "] must follow CLI entry";
+        }
+    }
 
-    // Without seed-file: seed_exprs size == CLI-only count.
-    EXPECT_LT(cfg_no_file.seed_exprs.size(), cfg_with_file.seed_exprs.size())
-        << "no-seed-file config must have fewer seed_exprs than with-seed-file config";
+    // -----------------------------------------------------------------------
+    // (c) No --seed-file: seed_exprs is empty (byte-identical default through
+    //     the real parse path, not a tautological manual RunConfig build).
+    // -----------------------------------------------------------------------
+    {
+        const char* argv[] = {"atx", "discover"};
+        auto cfg_r = atx::impl::parse_args(2, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg_r.has_value())
+            << "(c) parse_args without --seed-file must succeed: "
+            << cfg_r.error().message();
+        EXPECT_TRUE(cfg_r->seed_exprs.empty())
+            << "(c) seed_exprs must be empty when --seed-file is not supplied";
+    }
+
+    // -----------------------------------------------------------------------
+    // (d) --seed-file with a nonexistent path must return Err (fail-closed).
+    // -----------------------------------------------------------------------
+    {
+        const char* argv[] = {
+            "atx", "discover",
+            "--seed-file", "/no/such/path/nonexistent_seed_file_xyz.txt",
+        };
+        auto cfg_r = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(cfg_r.has_value())
+            << "(d) --seed-file with nonexistent path must return Err";
+        if (!cfg_r.has_value()) {
+            // The error propagates from read_seed_file as IoError, then wrapped
+            // by parse_args as InvalidArgument (the flag machinery uses
+            // apply_flag_value which returns the Err directly).
+            const auto code = cfg_r.error().code();
+            EXPECT_TRUE(
+                code == atx::core::ErrorCode::IoError ||
+                code == atx::core::ErrorCode::InvalidArgument)
+                << "(d) error code must be IoError or InvalidArgument, got: "
+                << static_cast<int>(code);
+        }
+    }
 }
 
 } // namespace atxtest_discover
