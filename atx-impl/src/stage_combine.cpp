@@ -341,10 +341,18 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     if (cfg.corr_penalty > 0.0 || cfg.capacity_floor > 0.0) {
         // Capacity is caller-supplied per name; capacity scaling is OFF by default
         // (capacity_floor <= 0), in which case these values are UNUSED — fill with a
-        // stable constant 1.0 so the vector is well-formed and deterministic. A
-        // positive --capacity-floor would fade names in over [0, floor]; this stage
-        // does not yet compute remaining capacity from a cost model, so a positive
-        // floor with the constant 1.0 simply means every name is at/above the floor.
+        // stable constant 1.0 so the vector is well-formed and deterministic.
+        //
+        // D3c NOTE (carried minor — --capacity-floor is a NO-OP PLACEHOLDER today):
+        // this stage does not yet compute per-name remaining capacity from a cost
+        // model, so it passes the CONSTANT-1.0 stub above. Under a constant capacity
+        // vector, decorrelate_weights' cap_scale_i = clamp(1.0/floor, 0, 1) is the
+        // SAME for every name — a uniform scale with no per-name differentiation, which
+        // the downstream gross-normalization of the combined book washes out. So a
+        // positive --capacity-floor has NO effect on the final book today; only
+        // --corr-penalty performs meaningful de-correlation. Wiring real capacity
+        // (cost/capacity.hpp ADV / participation curves per name) is Phase B1 work and
+        // is intentionally out of scope here. The flag is retained as the forward seam.
         std::vector<atx::f64> capacity(pool.size(), 1.0);
         combine::CrowdingConfig ccfg{};
         ccfg.corr_penalty   = cfg.corr_penalty;
