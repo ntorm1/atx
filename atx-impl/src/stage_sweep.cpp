@@ -31,6 +31,7 @@
 #include "config.hpp"
 #include "research_sim.hpp"
 #include "serialize_panel.hpp"
+#include "stage_discover_detail.hpp"  // T3a: detail::build_robust_holdout_panel
 
 namespace atx::impl {
 
@@ -179,6 +180,25 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
         }
     }
 
+    // ---- T3a W4a robust factor: build weak/holdout sub-universe when active ----
+    // When --robust-holdout-frac > 0, build a DETERMINISTIC seeded weak panel
+    // over the same (post-capacity-screen) `panel`, seeded by sc.master_seed
+    // (the stable per-sweep seed — the weak sub-universe is the SAME fixed
+    // sub-universe for every run of the sweep; ResearchDriver derives per-run
+    // search seeds separately). The OWNED optional MUST outlive rd.run(rc)
+    // (the pointer is copied into rc.per_run.weak_panel and dereferenced during
+    // every mine_into of the sweep) — same lifetime discipline as pexec below.
+    // frac == 0 (the default) -> no panel built, weak_panel stays nullptr,
+    // robust stays 1.0, and the sweep is byte-identical to the pre-T3a baseline.
+    std::optional<alpha::Panel> weak_panel_owned;
+    const alpha::Panel* weak_panel = nullptr;
+    if (cfg.robust_holdout_frac > 0.0) {
+        ATX_TRY(auto wp, detail::build_robust_holdout_panel(panel, cfg.robust_holdout_frac,
+                                                            sc.master_seed));
+        weak_panel_owned.emplace(std::move(wp));
+        weak_panel = &*weak_panel_owned; // borrowed; weak_panel_owned outlives rd.run(rc)
+    }
+
     // ---- FactoryConfig (per-run template handed to ResearchDriver) ----------
     factory::FactoryConfig per_run;
     per_run.search                    = sc;
@@ -193,6 +213,7 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     per_run.oos_window    = static_cast<atx::usize>(std::max<long>(cfg.oos_window,  0));
     // NOTE: per_run.oos_window is the base value; ResearchDriver::run overrides it
     // per run (run % oos_n_windows) when oos_n_windows > 0 (R2 wiring in research_driver.cpp).
+    per_run.weak_panel = weak_panel; // T3a: nullptr (default) keeps robust=1.0
 
     // ---- Open accumulating library (do NOT wipe) ---------------------------
     fs::create_directories(cfg.library_dir);

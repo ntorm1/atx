@@ -8,6 +8,12 @@
 //      (admitted sets can differ from single-window sweep); twice-run identical.
 //   4. MissingLibraryDirFails            — clean Err(InvalidArgument) if --library-dir unset.
 //   5. SweepRunsOneFails                 — --sweep-runs 0 returns Err; 1 => one mine iteration.
+//   T3a-6. RobustHoldoutOffPathByteIdentical — robust_holdout_frac=0 sweep is byte-identical
+//      to the pre-wiring baseline (default path MUST stay unchanged).
+//   T3a-7. RobustHoldoutOnPathActivates     — robust_holdout_frac>0 sweep succeeds and its
+//      research_digest DIFFERS from the frac=0 run (weak panel actually reached the fitness).
+//   T3a-8. RobustHoldoutOnPathReproducible  — frac>0 sweep is twice-run byte-identical
+//      (the weak panel is seeded deterministically by master_seed).
 
 #include <cmath>
 #include <cstdint>
@@ -773,6 +779,176 @@ TEST(AtxImplSweep, SweepParallelEqualsSequentialDigest) {
     std::error_code ec;
     fs::remove(panel_path, ec);
     for (const auto& d : {lib_A, alpha_A, lib_B, alpha_B}) fs::remove_all(d, ec);
+}
+
+// ---------------------------------------------------------------------------
+// T3a Test 6: RobustHoldoutOffPathByteIdentical
+//
+// A sweep with robust_holdout_frac=0 (the default) must produce the SAME
+// research_digest and manifest_version_id as a second fresh run with the
+// same seed/panel/config.  This proves the T3a wiring does NOT perturb the
+// default path: weak_panel stays nullptr, robust stays 1.0, digest is
+// byte-identical.  Mirrors the SweepAccumulatesAndByteIdentical discipline.
+// ---------------------------------------------------------------------------
+TEST(AtxImplSweep, T3a_RobustHoldoutOffPathByteIdentical) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "t3a_offpath");
+
+    const std::string lib_A = (fs::temp_directory_path() / "atx_t3a_offpath_libA").string();
+    const std::string out_A = (fs::temp_directory_path() / "atx_t3a_offpath_outA").string();
+    const std::string lib_B = (fs::temp_directory_path() / "atx_t3a_offpath_libB").string();
+    const std::string out_B = (fs::temp_directory_path() / "atx_t3a_offpath_outB").string();
+    std::error_code ec0;
+    for (const auto& d : {lib_A, out_A, lib_B, out_B}) fs::remove_all(d, ec0);
+
+    // Run A: frac=0 (default — NOT set in config).
+    auto cfgA = sweep_cfg(panel_path, out_A, lib_A, /*seed=*/42ULL, /*sweep_runs=*/2);
+    // robust_holdout_frac is default 0.0 — do NOT set it.
+    auto rA = atx::impl::run_sweep(cfgA);
+    ASSERT_TRUE(rA.has_value()) << "T3a off-path sweep A failed: " << rA.error().message();
+
+    // Run B: identical config (also frac=0), fresh dirs.
+    auto cfgB = sweep_cfg(panel_path, out_B, lib_B, /*seed=*/42ULL, /*sweep_runs=*/2);
+    auto rB = atx::impl::run_sweep(cfgB);
+    ASSERT_TRUE(rB.has_value()) << "T3a off-path sweep B failed: " << rB.error().message();
+
+    auto get_kv = [](const atx::impl::StageResult& sr, const std::string& key) -> std::string {
+        for (const auto& p : sr.kvs) { if (p.first == key) return p.second; }
+        return {};
+    };
+
+    // Off-path must be byte-identical.
+    EXPECT_EQ(rA->digest, rB->digest)
+        << "T3a: frac=0 sweep must be byte-identical (default path unchanged)";
+    EXPECT_NE(rA->digest, u64{0});
+    EXPECT_EQ(get_kv(*rA, "research_digest"), get_kv(*rB, "research_digest"))
+        << "T3a: research_digest must be byte-identical on the frac=0 (default) path";
+    EXPECT_EQ(get_kv(*rA, "manifest_version_id"), get_kv(*rB, "manifest_version_id"))
+        << "T3a: manifest_version_id must be byte-identical on the frac=0 (default) path";
+
+    std::cerr << "[T3a off-path] research_digest=" << get_kv(*rA, "research_digest") << "\n";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    for (const auto& d : {lib_A, out_A, lib_B, out_B}) fs::remove_all(d, ec);
+}
+
+// ---------------------------------------------------------------------------
+// T3a Test 7: RobustHoldoutOnPathActivates
+//
+// A sweep with robust_holdout_frac=0.5 (opt-in) must:
+//   a) Succeed (no crash / Err).
+//   b) Produce a research_digest that DIFFERS from a frac=0 run on the same
+//      panel/seed (proving the weak panel actually reached the fitness function
+//      and changed the admitted set).
+// ---------------------------------------------------------------------------
+TEST(AtxImplSweep, T3a_RobustHoldoutOnPathActivates) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "t3a_onpath");
+
+    const std::string lib_0 = (fs::temp_directory_path() / "atx_t3a_onpath_lib0").string();
+    const std::string out_0 = (fs::temp_directory_path() / "atx_t3a_onpath_out0").string();
+    const std::string lib_h = (fs::temp_directory_path() / "atx_t3a_onpath_libH").string();
+    const std::string out_h = (fs::temp_directory_path() / "atx_t3a_onpath_outH").string();
+    std::error_code ec0;
+    for (const auto& d : {lib_0, out_0, lib_h, out_h}) fs::remove_all(d, ec0);
+
+    // Run frac=0 (default baseline).
+    auto cfg0 = sweep_cfg(panel_path, out_0, lib_0, /*seed=*/77ULL, /*sweep_runs=*/2);
+    auto r0 = atx::impl::run_sweep(cfg0);
+    ASSERT_TRUE(r0.has_value()) << "T3a frac=0 baseline failed: " << r0.error().message();
+
+    // Run frac=0.5 (opt-in).
+    auto cfgH = sweep_cfg(panel_path, out_h, lib_h, /*seed=*/77ULL, /*sweep_runs=*/2);
+    cfgH.robust_holdout_frac = 0.5;
+    auto rH = atx::impl::run_sweep(cfgH);
+    ASSERT_TRUE(rH.has_value()) << "T3a frac=0.5 sweep failed: " << rH.error().message();
+
+    auto get_kv = [](const atx::impl::StageResult& sr, const std::string& key) -> std::string {
+        for (const auto& p : sr.kvs) { if (p.first == key) return p.second; }
+        return {};
+    };
+
+    const std::string d0 = get_kv(*r0, "research_digest");
+    const std::string dH = get_kv(*rH, "research_digest");
+    ASSERT_FALSE(d0.empty()) << "T3a: frac=0 must produce a research_digest";
+    ASSERT_FALSE(dH.empty()) << "T3a: frac=0.5 must produce a research_digest";
+
+    // Weak panel must change admission => digest must differ.
+    EXPECT_NE(d0, dH)
+        << "T3a: frac=0.5 research_digest must DIFFER from frac=0 "
+           "(weak panel must reach the fitness function and change the admitted set); "
+           "d0=" << d0 << " dH=" << dH;
+
+    std::cerr << "[T3a on-path] frac=0 digest=" << d0 << " frac=0.5 digest=" << dH << "\n";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    for (const auto& d : {lib_0, out_0, lib_h, out_h}) fs::remove_all(d, ec);
+}
+
+// ---------------------------------------------------------------------------
+// T3a Test 8: RobustHoldoutOnPathReproducible
+//
+// A sweep with robust_holdout_frac=0.5 is twice-run byte-identical: the weak
+// panel is built deterministically from master_seed (never thread/time), so
+// the same seed + frac + panel always produces the same sub-universe, the same
+// fitness scores, and the same admitted set.
+// ---------------------------------------------------------------------------
+TEST(AtxImplSweep, T3a_RobustHoldoutOnPathReproducible) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "t3a_repro");
+
+    const std::string lib_A = (fs::temp_directory_path() / "atx_t3a_repro_libA").string();
+    const std::string out_A = (fs::temp_directory_path() / "atx_t3a_repro_outA").string();
+    const std::string lib_B = (fs::temp_directory_path() / "atx_t3a_repro_libB").string();
+    const std::string out_B = (fs::temp_directory_path() / "atx_t3a_repro_outB").string();
+    std::error_code ec0;
+    for (const auto& d : {lib_A, out_A, lib_B, out_B}) fs::remove_all(d, ec0);
+
+    auto make_cfg_repro = [&](const std::string& alpha_out, const std::string& lib_dir) {
+        auto cfg = sweep_cfg(panel_path, alpha_out, lib_dir, /*seed=*/99ULL, /*sweep_runs=*/2);
+        cfg.robust_holdout_frac = 0.5;
+        return cfg;
+    };
+
+    auto rA = atx::impl::run_sweep(make_cfg_repro(out_A, lib_A));
+    ASSERT_TRUE(rA.has_value()) << "T3a repro sweep A failed: " << rA.error().message();
+
+    auto rB = atx::impl::run_sweep(make_cfg_repro(out_B, lib_B));
+    ASSERT_TRUE(rB.has_value()) << "T3a repro sweep B failed: " << rB.error().message();
+
+    auto get_kv = [](const atx::impl::StageResult& sr, const std::string& key) -> std::string {
+        for (const auto& p : sr.kvs) { if (p.first == key) return p.second; }
+        return {};
+    };
+
+    EXPECT_EQ(rA->digest, rB->digest)
+        << "T3a: frac=0.5 sweep must be twice-run byte-identical (deterministic weak panel)";
+    EXPECT_NE(rA->digest, u64{0});
+    EXPECT_EQ(get_kv(*rA, "research_digest"), get_kv(*rB, "research_digest"))
+        << "T3a: research_digest must be byte-identical on the frac=0.5 (on-path) path";
+    EXPECT_EQ(get_kv(*rA, "manifest_version_id"), get_kv(*rB, "manifest_version_id"))
+        << "T3a: manifest_version_id must be byte-identical across two frac=0.5 runs";
+
+    std::cerr << "[T3a repro] research_digest A=" << get_kv(*rA, "research_digest")
+              << " B=" << get_kv(*rB, "research_digest") << "\n";
+
+    // Cleanup.
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    for (const auto& d : {lib_A, out_A, lib_B, out_B}) fs::remove_all(d, ec);
 }
 
 } // namespace atxtest_sweep

@@ -3,7 +3,7 @@
 //
 // Exposed in atx::impl::detail so unit tests can call the real implementation
 // (Fix 1, W2 review). Do NOT include this header from production callers other
-// than stage_discover.cpp and discover_test.cpp.
+// than stage_discover.cpp, stage_sweep.cpp, and discover_test.cpp.
 
 #include "atx/core/error.hpp"
 #include "atx/engine/alpha/panel.hpp"
