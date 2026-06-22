@@ -201,6 +201,7 @@ struct RunConfig {
     std::string rebalance;             // --rebalance  "daily"|"weekly"
     bool        position_mode    = false; // --position-mode (signal-as-position deploy; skip mean-variance optimize)
     double      trade_rate       = 1.0;  // --trade-rate (position-mode partial-step toward prior book; 1.0 = full step = legacy)
+    double      cost_bps         = 0.0;  // --cost-bps   (flat round-trip transaction cost in basis points; 0 = off = byte-identical)
 
     // -- report --
     std::string books;                 // --books

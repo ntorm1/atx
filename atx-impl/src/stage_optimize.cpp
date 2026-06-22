@@ -130,7 +130,9 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
         ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
         std::vector<atx::f64> books_flat(S * M, 0.0);
         std::vector<double>   turnover(S, 0.0);
-        std::vector<double>   cost_bps(S, 0.0);
+        // Guard: byte-identical when --cost-bps is absent (mirrors --trade-rate pattern).
+        const double cost_bps_val = cfg.set_flags.count("cost-bps") ? cfg.cost_bps : 0.0;
+        std::vector<double>   cost_bps(S, cost_bps_val);
 
         // Read trade-rate once; guard keeps byte-identical output when unset.
         const double trade_rate_val = cfg.set_flags.count("trade-rate")
@@ -167,6 +169,10 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
             double tv = 0.0;
             for (atx::usize i = 0; i < M; ++i) tv += std::fabs(w[i] - prev[i]);
             turnover[s] = tv;
+            // Per-period cost in bps (mirrors the MVO path: turnover * rate).
+            // pnl_cost[s] = cost_bps[s] * 1e-4 in the report stage, so this
+            // must be the total charge in bps, not the flat rate alone.
+            cost_bps[s] = tv * cost_bps_val;
 
             // Store weights and update previous book.
             for (atx::usize i = 0; i < M; ++i) {
@@ -200,7 +206,7 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
 
     atx::engine::book::CostInputs cost;
     cost.kappa = cfg.turnover_penalty;
-    cost.round_trip_cost_bps = 0.0;
+    cost.round_trip_cost_bps = cfg.set_flags.count("cost-bps") ? cfg.cost_bps : 0.0;
 
     // 6. Callbacks + run.
     ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));

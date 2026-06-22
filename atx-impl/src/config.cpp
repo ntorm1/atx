@@ -205,6 +205,14 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         }
         return atx::core::Ok();
     }
+    if (flag == "cost-bps") {
+        ATX_TRY_VOID(parse_double(cfg.cost_bps));
+        if (cfg.cost_bps < 0.0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--cost-bps must be >= 0: got " + std::string(value));
+        }
+        return atx::core::Ok();
+    }
     if (flag == "report-aum") {
         ATX_TRY_VOID(parse_double(cfg.report_aum));
         if (cfg.report_aum <= 0.0) {
