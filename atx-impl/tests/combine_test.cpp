@@ -10,10 +10,12 @@
 // Uses method="equal" (w=1/N, closed-form) for correctness tests so there
 // is no numerical solver that could fail on a tiny fixture.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -1673,6 +1675,326 @@ TEST(AtxImplCombine, WalkForwardDeterministic) {
     const auto bytes2 = read_bytes(combo2);
     EXPECT_FALSE(bytes1.empty()) << "combo1 must not be empty";
     EXPECT_EQ(bytes1, bytes2)    << "combo.bin must be byte-identical across WF runs";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo1, combo2}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ===========================================================================
+// T6 — real per-alpha capacity wired into the combine de-correlation step.
+//
+// Today --capacity-floor was a documented NO-OP (a constant-1.0 capacity vector
+// went into decorrelate_weights, so cap_scale was uniform and washed out by the
+// combined book's gross-normalization). T6 computes a REAL per-alpha capacity
+// AUM (the $-AUM at which that alpha's last-period book's √-impact erodes its
+// gross edge to zero, under the engine DEFAULT impact model — NOT frictionless)
+// and passes it in, so a positive --capacity-floor (in $-AUM) fades the alphas
+// whose capacity AUM falls below the floor.
+//
+// These tests prove (a) the default + corr-only paths stay byte-identical (the
+// existing CorrPenalty* tests already pin the close-only fixture; these add the
+// {close,volume} fixture), and (b) the capacity path is NON-DEGENERATE: the
+// per-alpha capacity AUM is FINITE and VARIES across alphas (so the impact sim
+// is real, not frictionless), the combo.bin DIFFERS from capacity-off, the
+// illiquid-heavy alpha is faded to a smaller weight, and the path is
+// twice-run deterministic.
+// ===========================================================================
+
+// Build a {close, volume} panel where instruments span a WIDE liquidity range:
+// instrument 0 is highly liquid (huge volume), instrument I-1 is thin (tiny
+// volume). This is what makes per-alpha capacity vary: an alpha that concentrates
+// weight on the thin names has a far lower capacity AUM than one on the liquid
+// names. Returns close (momentum walk) + a per-instrument constant-ish volume.
+static std::optional<Panel> make_liquidity_panel(usize dates = 96, usize insts = 6) {
+    const std::vector<f64> close = noisy_close(dates, insts, 0xDEADBEEFULL);
+    // Volume decays geometrically by instrument index: name 0 trades ~1e9
+    // shares/day, the last name ~1e9 / 4^(I-1) — a multi-decade liquidity spread
+    // so the per-alpha capacity AUM is clearly different across names.
+    std::vector<f64> volume(dates * insts);
+    for (usize t = 0; t < dates; ++t) {
+        for (usize j = 0; j < insts; ++j) {
+            const f64 base = 1.0e9 / std::pow(4.0, static_cast<f64>(j));
+            // A mild deterministic per-day wobble keeps ADV well-defined and finite
+            // without changing the per-name ordering.
+            volume[t * insts + j] = base * (1.0 + 0.01 * static_cast<f64>((t + j) % 5));
+        }
+    }
+    return make_panel(dates, insts, {"close", "volume"}, {close, volume});
+}
+
+// Parse the comma-joined per-alpha capacity telemetry kv into a vector of doubles.
+// "+inf"/"inf" parse to +infinity (so the test can assert finiteness explicitly).
+static std::vector<f64> parse_capacity_csv(const std::string& csv) {
+    std::vector<f64> out;
+    std::stringstream ss{csv};
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+        if (tok.empty()) continue;
+        if (tok == "inf" || tok == "+inf") {
+            out.push_back(std::numeric_limits<f64>::infinity());
+        } else {
+            out.push_back(std::stod(tok));
+        }
+    }
+    return out;
+}
+
+static std::string find_kv_combine(const atx::impl::StageResult& sr, const std::string& k) {
+    for (const auto& p : sr.kvs) if (p.first == k) return p.second;
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// T6 Test 1: CapacityFloorZeroOnVolumePanelIsByteIdenticalToDefault
+// On the {close,volume} fixture, --corr-penalty 1.0 --capacity-floor 0 (capacity
+// OFF) must be byte-identical to the same run with --capacity-floor unset. The
+// gate requires capacity_floor>0 for real capacity, so floor==0 keeps the
+// constant-1.0 stub and the corr-only path is unchanged. This pins "wiring real
+// capacity does not perturb the corr-only path".
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, CapacityFloorZeroOnVolumePanelIsByteIdenticalToDefault) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_liquidity_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "cap_corr0");
+    const std::string alphas_dir = write_alpha_dir("cap_corr0", safe_dsls());
+    const std::string combo_default =
+        (fs::temp_directory_path() / "atx_impl_combine_cap_corr_default.bin").string();
+    const std::string combo_floor0 =
+        (fs::temp_directory_path() / "atx_impl_combine_cap_corr_floor0.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (a) corr-only, capacity_floor unset (stays 0.0 by default).
+    cfg.corr_penalty = 1.0;
+    cfg.combo_out    = combo_default;
+    auto r_default = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_default.has_value()) << r_default.error().message();
+
+    // (b) corr-only, capacity_floor EXPLICITLY 0, target_aum set but unused.
+    cfg.capacity_floor = 0.0;
+    cfg.target_aum     = 1.0e9; // present but inert: the gate requires floor>0 too
+    cfg.combo_out      = combo_floor0;
+    auto r_floor0 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_floor0.has_value()) << r_floor0.error().message();
+
+    EXPECT_EQ(r_default->digest, r_floor0->digest)
+        << "capacity_floor 0 must be byte-identical to the corr-only path (capacity unused)";
+    EXPECT_NE(r_default->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_bytes(combo_default), read_bytes(combo_floor0))
+        << "capacity_floor-0 combo.bin must match the corr-only path byte-for-byte";
+
+    // No capacity telemetry on the capacity-off path (additive-only contract).
+    EXPECT_EQ(find_kv_combine(*r_default, "capacity_min_alpha_aum"), "");
+    EXPECT_EQ(find_kv_combine(*r_floor0, "capacity_min_alpha_aum"), "");
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_default, combo_floor0}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T6 Test 2 (LOAD-BEARING): CapacityActivatesAndIsNonDegenerate
+// With --capacity-floor>0 --target-aum>0 on the wide-liquidity {close,volume}
+// fixture, the computed per-alpha capacity AUM must be (a) FINITE for every alpha
+// (proves the impact sim is REAL — a frictionless Y=0 sim would yield +inf for
+// all) and (b) VARY across alphas (min != max — proves the per-name liquidity
+// arithmetic actually bites). The capacity-on combo.bin must DIFFER from the
+// capacity-off run, AND the alpha with the SMALLEST capacity (most illiquid-heavy)
+// must receive a SMALLER |weight| than it does with capacity off (the fade). This
+// is the test that proves the D3c no-op trap is avoided.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, CapacityActivatesAndIsNonDegenerate) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_liquidity_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "cap_active");
+    const std::string alphas_dir = write_alpha_dir("cap_active", safe_dsls());
+    const std::string combo_off =
+        (fs::temp_directory_path() / "atx_impl_combine_cap_off.bin").string();
+    const std::string combo_on =
+        (fs::temp_directory_path() / "atx_impl_combine_cap_on.bin").string();
+
+    // Helper to read the per-alpha |weights| from the sidecar (in AlphaId order).
+    auto read_abs_weights = [](const std::string& combo) -> std::vector<f64> {
+        std::vector<f64> w;
+        std::ifstream wf{combo + ".weights.txt"};
+        std::string line;
+        while (std::getline(wf, line)) {
+            if (line.rfind("w[", 0) == 0) {
+                const auto eq = line.find('=');
+                const auto sp = line.find(' ', eq);
+                w.push_back(std::abs(std::stod(line.substr(eq + 1, sp - eq - 1))));
+            }
+        }
+        return w;
+    };
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (a) capacity OFF (no knobs) — the baseline book.
+    cfg.combo_out = combo_off;
+    auto r_off = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_off.has_value()) << r_off.error().message();
+    const std::vector<f64> w_off = read_abs_weights(combo_off);
+
+    // (b) PROBE run: capacity ON with a tiny floor so the telemetry is emitted but
+    // (since every alpha's capacity AUM >> the tiny floor) NO alpha is faded — we
+    // only read the per-alpha capacities here to CALIBRATE the real floor below.
+    // This makes the test robust to the fixture's exact dollar magnitudes: we do
+    // not hand-pick a floor, we derive it from the observed capacity distribution.
+    const std::string combo_probe =
+        (fs::temp_directory_path() / "atx_impl_combine_cap_probe.bin").string();
+    cfg.target_aum     = 1.0e8;
+    cfg.capacity_floor = 1.0; // $1 floor: telemetry emitted; no meaningful fade
+    cfg.combo_out      = combo_probe;
+    auto r_probe = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_probe.has_value()) << r_probe.error().message();
+
+    // ---- (1) Per-alpha capacity is FINITE and VARIES (the non-degeneracy proof). ----
+    const std::string cap_csv = find_kv_combine(*r_probe, "capacity_alpha_aum");
+    ASSERT_FALSE(cap_csv.empty())
+        << "capacity-on run must emit per-alpha capacity telemetry (capacity_alpha_aum)";
+    const std::vector<f64> caps = parse_capacity_csv(cap_csv);
+    ASSERT_EQ(caps.size(), 3u) << "fixture has 3 alphas";
+    for (usize a = 0; a < caps.size(); ++a) {
+        EXPECT_TRUE(std::isfinite(caps[a]))
+            << "alpha " << a << " capacity must be FINITE (proves a real impact sim, "
+            << "not frictionless Y=0 which yields +inf): got " << caps[a];
+        EXPECT_GT(caps[a], 0.0) << "alpha " << a << " capacity must be positive";
+    }
+    const f64 cmin = *std::min_element(caps.begin(), caps.end());
+    const f64 cmax = *std::max_element(caps.begin(), caps.end());
+    EXPECT_GT(cmax - cmin, 0.0)
+        << "per-alpha capacity must VARY across alphas (min=" << cmin << " max=" << cmax
+        << ") — a uniform capacity is the washed-out no-op T6 exists to avoid";
+
+    // (c) REAL capacity run: set the floor to the MIDPOINT of [cmin, cmax] so the
+    // min-capacity alpha is strictly BELOW the floor (faded) while the max-capacity
+    // alpha is strictly AT/ABOVE it (held) — a guaranteed non-degenerate fade
+    // regardless of the absolute dollar scale.
+    const f64 calibrated_floor = 0.5 * (cmin + cmax);
+    cfg.capacity_floor = calibrated_floor;
+    cfg.combo_out      = combo_on;
+    auto r_on = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_on.has_value()) << r_on.error().message();
+    const std::vector<f64> w_on = read_abs_weights(combo_on);
+
+    // ---- (2) The combined book must CHANGE vs capacity off. ----
+    EXPECT_NE(r_on->digest, r_off->digest)
+        << "capacity-floor>0 with real per-alpha capacity must change the combined book";
+
+    // ---- (3) The lowest-capacity alpha is faded (smaller |weight| than off). ----
+    // Identify the alpha with the smallest capacity AUM; under a floor above it,
+    // its cap_scale < 1 so its |weight| must shrink relative to the off run. (A
+    // >=-floor alpha holds full size, so the fade is the discriminating signal.)
+    const usize a_min =
+        static_cast<usize>(std::min_element(caps.begin(), caps.end()) - caps.begin());
+    ASSERT_LT(caps[a_min], calibrated_floor)
+        << "the midpoint floor must put the min-capacity alpha BELOW it so it is faded";
+    EXPECT_LT(w_on[a_min], w_off[a_min] - 1e-12)
+        << "the lowest-capacity alpha (idx " << a_min << ", cap=" << caps[a_min]
+        << ") must be faded to a smaller |weight| under the capacity floor ("
+        << w_on[a_min] << " < " << w_off[a_min] << ")";
+
+    // ---- (4) Book-level capacity telemetry present and sane. ----
+    const std::string min_aum = find_kv_combine(*r_on, "capacity_min_alpha_aum");
+    EXPECT_FALSE(min_aum.empty()) << "capacity_min_alpha_aum kv must be emitted";
+    EXPECT_NEAR(std::stod(min_aum), cmin, std::abs(cmin) * 1e-6 + 1e-6)
+        << "capacity_min_alpha_aum must equal the min over the per-alpha capacities";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_off, combo_probe, combo_on}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T6 Test 3: CapacityRunIsDeterministic
+// The capacity-on combine (--capacity-floor>0 --target-aum>0) must be twice-run
+// byte-identical (the capacity arithmetic is pure / no RNG / order-fixed).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, CapacityRunIsDeterministic) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_liquidity_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "cap_det");
+    const std::string alphas_dir = write_alpha_dir("cap_det", safe_dsls());
+    const std::string combo1 =
+        (fs::temp_directory_path() / "atx_impl_combine_cap_det1.bin").string();
+    const std::string combo2 =
+        (fs::temp_directory_path() / "atx_impl_combine_cap_det2.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand     = "combine";
+    cfg.panel          = panel_path;
+    cfg.alphas         = alphas_dir;
+    cfg.method         = "shrinkage-mv";
+    cfg.fit_begin      = 0;
+    cfg.fit_end        = 0;
+    cfg.target_aum     = 1.0e8;
+    cfg.capacity_floor = 5.0e8;
+
+    cfg.combo_out = combo1;
+    auto r1 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r1.has_value()) << r1.error().message();
+    cfg.combo_out = combo2;
+    auto r2 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+    EXPECT_EQ(r1->digest, r2->digest)
+        << "capacity-on combine must be deterministic (twice-run identical digest)";
+    EXPECT_NE(r1->digest, atx::u64{0});
+    EXPECT_EQ(find_kv_combine(*r1, "capacity_alpha_aum"),
+              find_kv_combine(*r2, "capacity_alpha_aum"))
+        << "per-alpha capacity telemetry must be deterministic across runs";
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_bytes(combo1), read_bytes(combo2))
+        << "capacity-on combo.bin must be byte-identical across runs";
 
     std::error_code ec;
     fs::remove(panel_path, ec);

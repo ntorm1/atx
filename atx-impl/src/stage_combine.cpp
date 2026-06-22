@@ -92,6 +92,180 @@ static atx::f64 blend_window_sharpe(const combine::AlphaStore& pool,
 }
 
 // ---------------------------------------------------------------------------
+// alpha_capacity_aum — the per-alpha CAPACITY AUM in dollars (T6): the AUM at
+// which alpha `a`'s LAST-period target book's temporary √-impact erodes its gross
+// frictionless edge to zero. This is the SAME capacity notion risk::capacity_curve
+// reports (the net-edge zero-crossing AUM), but computed directly over the
+// date-major alpha::Panel the combine stage already holds — there is no
+// alpha::Panel -> loop::PanelView adapter, so we mirror risk/capacity.hpp's
+// participation arithmetic locally (the SAME kAdvWindow=20 / kVolWindow=60 windows
+// and the SAME √-impact form), reading the impact-bearing sim's OWN ImpactCfg
+// coefficients (one cost surface — exactly book_cost_bps's strategy in
+// factory/fitness.cpp, the documented "SAME participation/ADV/σ sizing arithmetic
+// risk::capacity_curve uses").
+//
+// CRITICAL: the `impact` here MUST be an impact-BEARING ImpactCfg (engine default
+// ImpactCfg{}, Y=1.0). The combine stage's `frictionless_sim()` zeroes Y, which
+// makes every √-impact term 0 -> cost 0 -> the net edge never crosses zero ->
+// capacity = +inf for EVERY alpha -> a uniform cap_scale that washes out (the D3c
+// no-op). We pass the DEFAULT impact model so capacity is finite and per-name.
+//
+// Closed form (no aum_grid needed): cost_bps(aum) = C·aum^delta exactly, because
+// every name's participation part_i ∝ aum, so
+//   cost_bps(aum) = aum^delta · [ 1e4·Σ_i |w_i|·Y·σ_i·(|w_i|/(price_i·ADV_i))^delta ]
+//                 = C · aum^delta   (C is the AUM-independent bracket).
+// The net edge gross − C·aum^delta crosses zero at aum_cap = (gross / C)^(1/delta).
+// Returns:
+//   +inf  — C <= 0 (no priced/liquid name contributes impact: the book is
+//           effectively frictionless, unbounded capacity) — matches
+//           cost::capacity_point's "net edge never reaches zero" sentinel.
+//   0.0   — gross <= 0 (the alpha has no positive frictionless edge to erode; a
+//           name with zero remaining capacity is dropped by decorrelate_weights'
+//           cap_scale==0 rail). This is the conservative "no edge -> no capacity".
+//   (gross/C)^(1/delta) otherwise — the finite capacity AUM.
+// PURE, NO RNG, order-fixed (ascending date, ascending instrument). Mirrors the
+// guards of book_cost_bps EXACTLY: dead/NaN weight, non-positive price, zero ADV,
+// zero participation, or zero σ makes a name contribute nothing.
+// ---------------------------------------------------------------------------
+static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usize a,
+                                   std::span<const atx::f64> close,
+                                   std::span<const atx::f64> volume, atx::usize dates,
+                                   atx::usize insts,
+                                   const atx::engine::exec::ImpactCfg& impact) {
+    constexpr atx::usize kAdvWindow = 20U; // dollar-ADV lookback (P4-6 adv20)
+    constexpr atx::usize kVolWindow = 60U; // return-volatility lookback (P4-6 vol)
+    if (dates < 2U || insts == 0U) {
+        return std::numeric_limits<atx::f64>::infinity();
+    }
+    // Per-step return ret_i(t) = close(t,i)/close(t-1,i) − 1 over the date-major
+    // close column. A NaN/non-positive prior close yields 0 (no return term).
+    const auto step_return = [&](atx::usize t, atx::usize i) -> atx::f64 {
+        const atx::f64 prev = close[(t - 1U) * insts + i];
+        const atx::f64 cur  = close[t * insts + i];
+        if (std::isnan(prev) || std::isnan(cur) || prev <= 0.0) return 0.0;
+        return cur / prev - 1.0;
+    };
+    // Dollar ADV of i: mean close*volume over the newest kAdvWindow rows. Skips NaN.
+    const auto dollar_adv = [&](atx::usize i) -> atx::f64 {
+        const atx::usize start = (dates > kAdvWindow) ? (dates - kAdvWindow) : 0U;
+        atx::f64 sum = 0.0; atx::usize n = 0U;
+        for (atx::usize t = start; t < dates; ++t) {
+            const atx::f64 c = close[t * insts + i];
+            const atx::f64 v = volume[t * insts + i];
+            if (!std::isnan(c) && !std::isnan(v)) { sum += c * v; ++n; }
+        }
+        return (n == 0U) ? 0.0 : sum / static_cast<atx::f64>(n);
+    };
+    // Population stddev of the newest kVolWindow per-step returns of i. Skips NaN;
+    // 0 when < 2 valid returns. Window covers return rows [dates-w, dates), >= 1.
+    const auto return_vol = [&](atx::usize i) -> atx::f64 {
+        const atx::usize start = (dates > kVolWindow) ? (dates - kVolWindow) : 1U;
+        const atx::usize lo = (start < 1U) ? 1U : start;
+        atx::f64 sum = 0.0; atx::usize n = 0U;
+        for (atx::usize t = lo; t < dates; ++t) {
+            const atx::f64 r = step_return(t, i);
+            if (!std::isnan(r)) { sum += r; ++n; }
+        }
+        if (n < 2U) return 0.0;
+        const atx::f64 mean = sum / static_cast<atx::f64>(n);
+        atx::f64 ss = 0.0;
+        for (atx::usize t = lo; t < dates; ++t) {
+            const atx::f64 r = step_return(t, i);
+            if (!std::isnan(r)) { const atx::f64 d = r - mean; ss += d * d; }
+        }
+        return std::sqrt(ss / static_cast<atx::f64>(n));
+    };
+
+    // The alpha's LAST-period target weights (the capacity_for_alpha convention:
+    // the most recent rebalance is what is sized to target_aum).
+    const std::span<const atx::f64> w = streams.positions(a, streams.n_periods() - 1U);
+    const atx::usize n = (insts < w.size()) ? insts : w.size();
+
+    // Gross frictionless edge (bps): 1e4 · mean over usable return rows of the
+    // cross-sectional book return Σ_i w_i·ret_i(t). A NaN weight/return drops the
+    // term; rows with no contributing term are skipped (do not bias the mean).
+    atx::f64 sum_rows = 0.0; atx::usize n_rows = 0U;
+    for (atx::usize t = 1U; t < dates; ++t) {
+        atx::f64 row_ret = 0.0; bool any = false;
+        for (atx::usize i = 0U; i < n; ++i) {
+            const atx::f64 wi = w[i];
+            if (std::isnan(wi) || wi == 0.0) continue;
+            const atx::f64 r = step_return(t, i);
+            if (!std::isnan(r)) { row_ret += wi * r; any = true; }
+        }
+        if (any) { sum_rows += row_ret; ++n_rows; }
+    }
+    const atx::f64 gross_edge_bps =
+        (n_rows == 0U) ? 0.0 : 1.0e4 * (sum_rows / static_cast<atx::f64>(n_rows));
+    if (gross_edge_bps <= 0.0) {
+        return 0.0; // no positive edge to erode -> conservative zero capacity
+    }
+
+    // The AUM-independent cost bracket C: cost_bps(aum) = C·aum^delta, with
+    //   C = 1e4 · Σ_i |w_i| · Y · σ_i · (|w_i|/(price_i·ADV_i))^delta.
+    atx::f64 C = 0.0;
+    for (atx::usize i = 0U; i < n; ++i) {
+        const atx::f64 wi = w[i];
+        if (std::isnan(wi) || wi == 0.0) continue;
+        const atx::f64 abs_w = (wi < 0.0) ? -wi : wi;
+        const atx::f64 price = close[(dates - 1U) * insts + i]; // newest mark
+        if (std::isnan(price) || price <= 0.0) continue;
+        const atx::f64 adv = dollar_adv(i);
+        if (adv <= 0.0) continue;
+        const atx::f64 sigma = return_vol(i);
+        if (sigma <= 0.0) continue;
+        const atx::f64 part_per_aum = abs_w / (price * adv); // part_i = part_per_aum·aum
+        if (part_per_aum <= 0.0) continue;
+        C += abs_w * impact.Y * sigma * std::pow(part_per_aum, impact.delta);
+    }
+    C *= 1.0e4;
+    if (C <= 0.0) {
+        return std::numeric_limits<atx::f64>::infinity(); // frictionless book
+    }
+    // Zero-crossing: gross = C·aum_cap^delta  =>  aum_cap = (gross/C)^(1/delta).
+    return std::pow(gross_edge_bps / C, 1.0 / impact.delta);
+}
+
+// ---------------------------------------------------------------------------
+// alpha_max_participation — the max per-name participation part_i = (target_aum·
+// |w_i|/price_i)/ADV_i over alpha `a`'s LAST-period book at `target_aum`. A pure
+// liquidity-footprint telemetry figure (the single most liquidity-stressed name in
+// the book): 0 when no name has finite price+ADV. Mirrors book_cost_bps's guards.
+// ---------------------------------------------------------------------------
+static atx::f64 alpha_max_participation(const alpha::AlphaStreams& streams, atx::usize a,
+                                        std::span<const atx::f64> close,
+                                        std::span<const atx::f64> volume, atx::usize dates,
+                                        atx::usize insts, atx::f64 target_aum) {
+    constexpr atx::usize kAdvWindow = 20U;
+    if (dates < 1U || insts == 0U || target_aum <= 0.0) return 0.0;
+    const auto dollar_adv = [&](atx::usize i) -> atx::f64 {
+        const atx::usize start = (dates > kAdvWindow) ? (dates - kAdvWindow) : 0U;
+        atx::f64 sum = 0.0; atx::usize n = 0U;
+        for (atx::usize t = start; t < dates; ++t) {
+            const atx::f64 c = close[t * insts + i];
+            const atx::f64 v = volume[t * insts + i];
+            if (!std::isnan(c) && !std::isnan(v)) { sum += c * v; ++n; }
+        }
+        return (n == 0U) ? 0.0 : sum / static_cast<atx::f64>(n);
+    };
+    const std::span<const atx::f64> w = streams.positions(a, streams.n_periods() - 1U);
+    const atx::usize n = (insts < w.size()) ? insts : w.size();
+    atx::f64 max_part = 0.0;
+    for (atx::usize i = 0U; i < n; ++i) {
+        const atx::f64 wi = w[i];
+        if (std::isnan(wi) || wi == 0.0) continue;
+        const atx::f64 abs_w = (wi < 0.0) ? -wi : wi;
+        const atx::f64 price = close[(dates - 1U) * insts + i];
+        if (std::isnan(price) || price <= 0.0) continue;
+        const atx::f64 adv = dollar_adv(i);
+        if (adv <= 0.0) continue;
+        const atx::f64 part = (target_aum * abs_w / price) / adv;
+        if (part > max_part) max_part = part;
+    }
+    return max_part;
+}
+
+// ---------------------------------------------------------------------------
 // run_combine
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
@@ -328,6 +502,13 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         ce::detail::renorm_abs_sum(combo.weights);
     }
 
+    // T6 capacity telemetry (additive; populated only on the opt-in capacity path).
+    // capacity_alpha_aum holds the per-alpha capacity AUM (dollars) in AlphaId order;
+    // these feed step-14 kvs ONLY — never combo.bin, the digest, or any hashed artifact.
+    std::vector<atx::f64> capacity_alpha_aum;
+    atx::f64 capacity_max_participation = 0.0;
+    bool capacity_telemetry_on = false;
+
     // 8c. (9.2) Opt-in crowding de-correlation: a post-fit transform that shrinks
     //     each fitted weight by how mutually correlated its alpha is with the rest
     //     of the pool (corr_penalty) and, optionally, by how capacity-limited the
@@ -339,21 +520,67 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     //     [fit_begin, fit_end) window the weights were fit on (the engine takes
     //     correlations over that PnL sub-span).
     if (cfg.corr_penalty > 0.0 || cfg.capacity_floor > 0.0) {
-        // Capacity is caller-supplied per name; capacity scaling is OFF by default
-        // (capacity_floor <= 0), in which case these values are UNUSED — fill with a
-        // stable constant 1.0 so the vector is well-formed and deterministic.
+        // The per-name capacity vector decorrelate_weights consumes. Two regimes:
         //
-        // D3c NOTE (carried minor — --capacity-floor is a NO-OP PLACEHOLDER today):
-        // this stage does not yet compute per-name remaining capacity from a cost
-        // model, so it passes the CONSTANT-1.0 stub above. Under a constant capacity
-        // vector, decorrelate_weights' cap_scale_i = clamp(1.0/floor, 0, 1) is the
-        // SAME for every name — a uniform scale with no per-name differentiation, which
-        // the downstream gross-normalization of the combined book washes out. So a
-        // positive --capacity-floor has NO effect on the final book today; only
-        // --corr-penalty performs meaningful de-correlation. Wiring real capacity
-        // (cost/capacity.hpp ADV / participation curves per name) is Phase B1 work and
-        // is intentionally out of scope here. The flag is retained as the forward seam.
+        //  * CAPACITY OFF (cfg.capacity_floor <= 0, OR no --target-aum): the engine
+        //    DISABLES capacity scaling (cap_scale_i == 1 for every name regardless of
+        //    these values), so the vector is UNUSED. Fill the constant-1.0 stub so it
+        //    is well-formed and deterministic. This keeps the corr-only path and the
+        //    default path BYTE-IDENTICAL to before T6 (the gate below is never entered).
+        //
+        //  * CAPACITY ON — T6 (cfg.capacity_floor > 0 AND cfg.target_aum > 0): replace
+        //    the stub with a REAL per-alpha capacity AUM in dollars. capacity[a] is the
+        //    AUM at which alpha a's last-period book's temporary √-impact erodes its
+        //    gross frictionless edge to zero (the risk::capacity_curve net-edge
+        //    zero-crossing, computed locally over the date-major alpha::Panel — see
+        //    alpha_capacity_aum). UNITS: capacity[a] and the user's --capacity-floor are
+        //    both DOLLAR AUM, so decorrelate_weights' cap_scale_a = clamp(capacity[a] /
+        //    capacity_floor, 0, 1) is meaningful: an alpha whose capacity AUM is BELOW
+        //    the floor (it cannot absorb `floor` dollars without eroding its edge) is
+        //    faded linearly, and an alpha at/above the floor holds full size. This is
+        //    the real per-name differentiation the D3c placeholder lacked.
+        //
+        //  IMPACT MODEL: capacity uses the engine DEFAULT (Appendix-A) ImpactCfg{}
+        //  (Y = 1.0, delta = 0.5, gamma = 0.314) — an impact-BEARING model — NOT the
+        //  combine stage's frictionless_sim (which zeroes Y and would yield +inf
+        //  capacity for every alpha, re-creating the D3c no-op). The frictionless sim
+        //  remains the stream-extraction sim above (that output stays byte-identical);
+        //  the impact model here is used ONLY to size capacity.
         std::vector<atx::f64> capacity(pool.size(), 1.0);
+        if (cfg.capacity_floor > 0.0 && cfg.target_aum > 0.0) {
+            namespace exec = atx::engine::exec;
+            const exec::ImpactCfg impact{}; // engine DEFAULT (Appendix-A), impact-bearing
+            const auto close_id  = panel.field_id("close");
+            const auto volume_id = panel.field_id("volume");
+            // "close" is mandatory (extract_streams already required it). "volume"
+            // gives the dollar ADV; a panel WITHOUT volume -> 0 ADV everywhere ->
+            // C == 0 -> capacity +inf for every alpha (a documented degenerate: no
+            // liquidity data means no capacity bound — the floor cannot bite, which
+            // mirrors book_cost_bps's no-volume -> 0-cost degenerate).
+            const std::span<const atx::f64> close =
+                close_id.has_value() ? panel.field_all(*close_id) : std::span<const atx::f64>{};
+            const std::span<const atx::f64> volume =
+                volume_id.has_value() ? panel.field_all(*volume_id) : std::span<const atx::f64>{};
+            const atx::usize dts = panel.dates();
+            const atx::usize its = panel.instruments();
+            if (close_id.has_value() && volume_id.has_value()) {
+                for (atx::usize a = 0; a < streams.n_alphas(); ++a) {
+                    capacity[a] = alpha_capacity_aum(streams, a, close, volume, dts, its, impact);
+                    const atx::f64 part = alpha_max_participation(
+                        streams, a, close, volume, dts, its, cfg.target_aum);
+                    if (part > capacity_max_participation) capacity_max_participation = part;
+                }
+            } else {
+                // No volume field -> unbounded capacity for every alpha (no fade).
+                for (atx::usize a = 0; a < streams.n_alphas(); ++a) {
+                    capacity[a] = std::numeric_limits<atx::f64>::infinity();
+                }
+            }
+            // Telemetry (additive — see step 14). Record the per-alpha capacity AUM
+            // and the book aggregates BEFORE decorrelate_weights consumes the vector.
+            capacity_alpha_aum = capacity;          // copy out for the kvs line
+            capacity_telemetry_on = true;
+        }
         combine::CrowdingConfig ccfg{};
         ccfg.corr_penalty   = cfg.corr_penalty;
         ccfg.capacity_floor = cfg.capacity_floor;
@@ -576,6 +803,33 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         sr.kvs.emplace_back("walk_forward_folds",           wf_folds_str);
         sr.kvs.emplace_back("walk_forward_oos_sharpe_mean", wf_mean_str);
         sr.kvs.emplace_back("walk_forward_oos_sharpe",      wf_sharpes_str);
+    }
+    // T6: additive capacity telemetry — present ONLY on the opt-in capacity path
+    // (--capacity-floor>0 && --target-aum>0). Absent otherwise, so the default and
+    // corr-only kvs stay byte-identical. These scalars feed kvs ONLY — they never
+    // enter combo.bin or the panel digest (sr.digest is set above from write_panel).
+    //   capacity_alpha_aum        — comma-joined per-alpha capacity AUM (AlphaId
+    //                               order); "inf" denotes an unbounded (frictionless)
+    //                               alpha so the consumer can distinguish it.
+    //   capacity_min_alpha_aum    — the binding (smallest) per-alpha capacity AUM:
+    //                               the AUM ceiling the most capacity-limited alpha
+    //                               imposes on the book.
+    //   capacity_max_participation — the largest per-name ADV participation across
+    //                               the books at --target-aum (the liquidity stress).
+    if (capacity_telemetry_on) {
+        std::string caps_csv;
+        atx::f64 cap_min = std::numeric_limits<atx::f64>::infinity();
+        for (atx::usize a = 0; a < capacity_alpha_aum.size(); ++a) {
+            if (a > 0) caps_csv += ',';
+            const atx::f64 c = capacity_alpha_aum[a];
+            caps_csv += std::isinf(c) ? std::string("inf") : std::to_string(c);
+            if (c < cap_min) cap_min = c;
+        }
+        sr.kvs.emplace_back("capacity_alpha_aum", caps_csv);
+        sr.kvs.emplace_back("capacity_min_alpha_aum",
+                            std::isinf(cap_min) ? std::string("inf") : std::to_string(cap_min));
+        sr.kvs.emplace_back("capacity_max_participation",
+                            std::to_string(capacity_max_participation));
     }
     return atx::core::Ok(std::move(sr));
 }
