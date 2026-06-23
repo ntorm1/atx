@@ -128,6 +128,13 @@ struct RunConfig {
     // factory's mutate_one path is byte-identical to today (kGoldenDigest pin).
     bool        enable_wrap_in_op = false; // --enable-wrap-in-op
 
+    // --reject-price-scale (R2): opt-in admission gate. Rejects a candidate whose
+    // holdout book is a trivial 1/price (price-scale) tilt. The threshold is the
+    // MAX allowed |time-averaged cross-sectional Pearson(w, 1/raw_close)|. Default
+    // 1.0 = OFF (any correlation passes). Active when < 1.0. Range: (0, 1].
+    // When absent (the default), the OOS digest and version_id are BYTE-IDENTICAL.
+    double      max_price_scale_corr = 1.0; // --reject-price-scale (R2); 1.0 == OFF
+
     // --typed-fields (R1): opt-in field-type discipline. When set, before running
     // the search a one-pass cardinality scan classifies each numeric panel field;
     // binary / low-cardinality / categorical fields are excluded from the grammar's

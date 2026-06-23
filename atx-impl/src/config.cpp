@@ -163,6 +163,14 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "min-split-sharpe")  return parse_double(cfg.min_split_sharpe);   // W4a split-sample stability floor
     if (flag == "max-pbo")           return parse_double(cfg.max_pbo);            // W4b run-level CSCV-PBO batch gate
     if (flag == "robust-holdout-frac") return parse_double(cfg.robust_holdout_frac); // W4a robust-factor weak sub-universe
+    if (flag == "reject-price-scale") {                                               // R2 price-scale admission gate
+        ATX_TRY_VOID(parse_double(cfg.max_price_scale_corr));
+        if (cfg.max_price_scale_corr <= 0.0 || cfg.max_price_scale_corr > 1.0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--reject-price-scale must be in (0, 1]: got " + std::string(value));
+        }
+        return atx::core::Ok();
+    }
     if (flag == "field-cardinality-max") {                                           // R1 typed-fields cardinality threshold
         long tmp = 0;
         ATX_TRY_VOID(parse_long(tmp));

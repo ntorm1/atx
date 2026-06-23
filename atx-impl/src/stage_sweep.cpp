@@ -228,6 +228,7 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     // R1: empty lists (default) keep SearchDriver partition identical -> byte-identical.
     per_run.numeric_excluded_fields = numeric_excluded_fields;
     per_run.extra_group_fields      = extra_group_fields;
+    per_run.max_price_scale_corr    = cfg.max_price_scale_corr; // R2 price-scale gate (off by default = 1.0)
 
     // ---- Open accumulating library (do NOT wipe) ---------------------------
     fs::create_directories(cfg.library_dir);

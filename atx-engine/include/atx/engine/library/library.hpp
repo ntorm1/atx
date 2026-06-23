@@ -117,6 +117,7 @@ enum class AdmitKind : atx::u8 {
   RejectFitness,
   RejectTurnover,
   RejectCorrelated,
+  RejectPriceScale, // R2: holdout book is a trivial 1/price (price-scale) tilt
 };
 
 struct AdmitVerdict {

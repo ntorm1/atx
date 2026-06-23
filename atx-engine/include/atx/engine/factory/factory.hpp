@@ -191,6 +191,14 @@ struct FactoryConfig {
   //  only sanctioned re-baseline.
   std::vector<std::string> numeric_excluded_fields{};  // fields excluded from numeric leaf pool
   std::vector<std::string> extra_group_fields{};       // extra fields routed to group pool
+  // --- R2 price-scale admission gate (OPTIONAL; default OFF = 1.0 -> zero overhead).
+  //  Rejects a holdout candidate whose book is a trivial 1/price (price-scale) tilt.
+  //  The threshold is the MAX allowed |time-averaged cross-sectional Pearson(w, 1/raw_close)|.
+  //  INACTIVE (>= 1.0): never enters the gate code, no computation, byte-identical to pre-R2.
+  //  INERT (raw_close absent from holdout or no usable dates -> NaN loading): no rejection.
+  //  Active when < 1.0. Valid range: (0, 1].
+  //  Default 1.0 = OFF (any correlation passes).
+  atx::f64 max_price_scale_corr = 1.0; // --reject-price-scale (R2); 1.0 == OFF
 };
 
 // =========================================================================
@@ -235,7 +243,7 @@ struct FactoryReport {
   atx::usize duplicates{0};                     // library-wide F6 dedup hits (AdmitKind::Duplicate)
   atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
   atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
-  std::array<atx::usize, 6> reject_histogram{}; // count per library::AdmitKind (0..5)
+  std::array<atx::usize, 7> reject_histogram{}; // count per library::AdmitKind (0..6)
 
   // --- P2a OOS telemetry (additive; default-EMPTY so the legacy path is byte-
   //  identical). One entry per admitted alpha when oos_fraction > 0: its IS (train)

@@ -821,6 +821,86 @@ Factory::metrics_on_panel(const Genome &g, const alpha::Panel &sub_panel, atx::f
 
 namespace {
 
+// R2 — Pearson correlation of two equal-length non-empty vectors. Returns NaN when
+// either series has zero variance (degenerate date — caller skips it). Distinct from
+// the latent.hpp pearson() which returns 0.0 on a degenerate input; here NaN lets the
+// caller distinguish "no relationship computable" from "correlation is 0" so degenerate
+// dates are excluded from the loading average rather than being counted as zero.
+[[nodiscard]] atx::f64 pearson_for_price_scale(std::span<const atx::f64> a,
+                                               std::span<const atx::f64> b) noexcept {
+  const atx::usize n = a.size();
+  if (n < 2U) {
+    return std::numeric_limits<atx::f64>::quiet_NaN();
+  }
+  atx::f64 ma = 0.0;
+  atx::f64 mb = 0.0;
+  for (atx::usize i = 0; i < n; ++i) {
+    ma += a[i];
+    mb += b[i];
+  }
+  ma /= static_cast<atx::f64>(n);
+  mb /= static_cast<atx::f64>(n);
+  atx::f64 cov = 0.0;
+  atx::f64 va  = 0.0;
+  atx::f64 vb  = 0.0;
+  for (atx::usize i = 0; i < n; ++i) {
+    const atx::f64 da = a[i] - ma;
+    const atx::f64 db = b[i] - mb;
+    cov += da * db;
+    va  += da * da;
+    vb  += db * db;
+  }
+  if (va == 0.0 || vb == 0.0) {
+    return std::numeric_limits<atx::f64>::quiet_NaN(); // degenerate: skip this date
+  }
+  return cov / std::sqrt(va * vb);
+}
+
+// R2 — price-scale loading: |time-averaged cross-sectional Pearson(w, 1/raw_close)|
+// over the holdout window. Returns NaN when raw_close is absent from the panel (caller
+// must check for field existence before calling) or when no holdout date is usable.
+// hold_pos_flat is period-major (t*N+i layout, i.e. flatten_positions output).
+// INACTIVE guard (cfg.max_price_scale_corr >= 1.0) -> never called -> zero overhead.
+[[nodiscard]] atx::f64 price_scale_loading(const atx::f64 *hold_pos_flat, atx::usize T,
+                                           atx::usize N, const alpha::Panel &holdout,
+                                           alpha::FieldId raw_close_fid) noexcept {
+  std::vector<atx::f64> w_buf;
+  std::vector<atx::f64> f_buf;
+  atx::f64  sum_corr = 0.0;
+  atx::usize n_dates = 0U;
+  for (atx::usize t = 0U; t < T; ++t) {
+    const std::span<const atx::f64> rc = holdout.field_cross_section(raw_close_fid, t);
+    w_buf.clear();
+    f_buf.clear();
+    for (atx::usize i = 0U; i < N; ++i) {
+      const atx::f64 w = hold_pos_flat[t * N + i]; // period-major: t*N+i
+      const atx::f64 p = rc[i];
+      if (!std::isfinite(w) || w == 0.0) {
+        continue; // not in book: skip
+      }
+      if (!std::isfinite(p) || p <= 0.0) {
+        continue; // invalid price: skip
+      }
+      w_buf.push_back(w);
+      f_buf.push_back(1.0 / p);
+    }
+    if (w_buf.size() < 2U) {
+      continue; // fewer than 2 valid names: skip date
+    }
+    const atx::f64 c = pearson_for_price_scale(std::span<const atx::f64>{w_buf},
+                                               std::span<const atx::f64>{f_buf});
+    if (!std::isfinite(c)) {
+      continue; // zero-variance date: skip
+    }
+    sum_corr += c;
+    ++n_dates;
+  }
+  if (n_dates == 0U) {
+    return std::numeric_limits<atx::f64>::quiet_NaN(); // no usable dates
+  }
+  return std::abs(sum_corr / static_cast<atx::f64>(n_dates));
+}
+
 // P2a — the holdout DSR, replicating the fitness.cpp deflated-Sharpe recipe over a
 // REALIZED PnL stream (NOT the CPCV-aggregated stream): drop the structural index-0
 // zero, de-annualize the metrics Sharpe by sqrt(252), compute population skew /
@@ -1117,11 +1197,32 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     // DISABLED -> byte-identical to the pre-W4a OOS screen).
     const bool split_ok =
         split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{hold_pnl}, hold_metrics);
+    // R2 price-scale admission gate (OPTIONAL; default OFF = 1.0 -> zero overhead).
+    // Rejects a candidate whose holdout book is a trivial 1/price (price-scale) tilt.
+    // INACTIVE (cfg.max_price_scale_corr >= 1.0): skips entirely, byte-identical to pre-R2.
+    // INERT (raw_close absent from holdout OR no usable dates -> NaN loading): no rejection.
+    // Applied BEFORE the dsr/split check so the histogram bucket is bumped correctly.
+    bool price_scale_ok = true;
+    if (cfg.max_price_scale_corr < 1.0) {
+      const auto rc_fid_r = holdout.field_id("raw_close");
+      if (rc_fid_r.has_value()) {
+        const atx::usize ps_n_inst = holdout.instruments();
+        const atx::usize T_hold = (ps_n_inst > 0U) ? (hold_pos_flat.size() / ps_n_inst) : 0U;
+        const atx::f64 loading = price_scale_loading(
+            hold_pos_flat.data(), T_hold, ps_n_inst, holdout, *rc_fid_r);
+        if (std::isfinite(loading) && loading >= cfg.max_price_scale_corr) {
+          price_scale_ok = false;
+        }
+      }
+      // raw_close absent -> loading = NaN -> price_scale_ok stays true (gate inert)
+    }
     // (3d) ADMISSION on the HOLDOUT: clear the factory deflation bar on the holdout
     // DSR, then library::admit on the HOLDOUT metrics + holdout pnl (so the durable
     // `metrics` are what was actually gated out-of-sample).
     library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (hold_dsr >= cfg.min_dsr && split_ok) {
+    if (!price_scale_ok) {
+      kind = library::AdmitKind::RejectPriceScale;
+    } else if (hold_dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{hold_pnl},
                                          std::span<const atx::f64>{hold_pos_flat},
@@ -1449,9 +1550,26 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     // the serial/parallel byte-identity invariant holds. Default DISABLED (-inf).
     const bool split_ok =
         split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{hold_pnl}, hold_metrics);
+    // R2 price-scale admission gate — IDENTICAL to serial mine_into_oos so the
+    // serial/parallel byte-identity invariant holds. INACTIVE (>= 1.0): skips entirely.
+    // INERT (raw_close absent or no usable dates -> NaN loading): no rejection.
+    bool price_scale_ok = true;
+    if (cfg.max_price_scale_corr < 1.0) {
+      const auto rc_fid_r = holdout.field_id("raw_close");
+      if (rc_fid_r.has_value()) {
+        const atx::usize T_hold = (n_inst > 0U) ? (hold_pos_flat.size() / n_inst) : 0U;
+        const atx::f64 loading = price_scale_loading(
+            hold_pos_flat.data(), T_hold, n_inst, holdout, *rc_fid_r);
+        if (std::isfinite(loading) && loading >= cfg.max_price_scale_corr) {
+          price_scale_ok = false;
+        }
+      }
+    }
     // (3d) ADMISSION on the HOLDOUT — IDENTICAL to serial mine_into_oos:813-830.
     library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (hold_dsr >= cfg.min_dsr && split_ok) {
+    if (!price_scale_ok) {
+      kind = library::AdmitKind::RejectPriceScale;
+    } else if (hold_dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{hold_pnl},
                                          std::span<const atx::f64>{hold_pos_flat},

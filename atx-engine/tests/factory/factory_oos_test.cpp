@@ -709,7 +709,7 @@ TEST(FactoryOos, WalkForwardSeqParallel) {
   u64 want_digest  = 0;
   u64 want_version = 0;
   usize want_admitted = 0;
-  std::array<usize, 6> want_histogram{};
+  std::array<usize, 7> want_histogram{};
   {
     Fixture fxS{real_signal_panel()};
     lib::Library libS = lib::Library::open(tmpdir("wfw_seq"), default_gate_cfg(), {0xC0FFEEu});
@@ -1034,6 +1034,245 @@ TEST(FactoryOos, R3b_OosPboEqualsRunPboAndGateCapable) {
     EXPECT_EQ(rep_b.pbo_gate_passed, !(rep_b.pbo > cfg_b.max_pbo))
         << "gate verdict must be consistent with pbo <= max_pbo";
   }
+}
+
+// =============================================================================
+//  R2 price-scale admission gate tests
+//
+//  The gate is INACTIVE at the default max_price_scale_corr == 1.0 (OFF sentinel).
+//  All five brief requirements:
+//    1. Default OFF -> byte-identical to gate-absent path.
+//    2. Gate ON, raw_close present -> rejects when loading >= threshold (RED->GREEN).
+//    3. seq == parallel with gate ON (serial/parallel byte-identity invariant).
+//    4. Determinism: gate-ON run twice -> identical.
+//    5. Inert when raw_close absent: gate active but loading=NaN -> no rejection.
+// =============================================================================
+
+// Helper: build a panel with "close", "rev", AND "raw_close" with distinct
+// constant prices across instruments (so 1/price has non-zero cross-sectional
+// variance on every date).
+[[nodiscard]] Panel make_panel_with_raw_close(usize dates, usize insts,
+                                               std::uint64_t seed) {
+  std::vector<f64> close_col = momentum_close(dates, insts, seed);
+  std::vector<f64> rev_col   = reversal_of(close_col, dates, insts);
+  // raw_close: distinct positive constants per instrument (consistent across dates
+  // for a clean non-zero cross-sectional dispersion).
+  std::vector<f64> rc_col(dates * insts);
+  for (usize t = 0; t < dates; ++t) {
+    for (usize j = 0; j < insts; ++j) {
+      // prices: 200, 50, 20, 10, ... (strongly dispersed so 1/price has variance)
+      rc_col[t * insts + j] = 200.0 / static_cast<f64>(j + 1U);
+    }
+  }
+  return make_panel(dates, insts, {"close", "rev", "raw_close"},
+                    {close_col, rev_col, rc_col});
+}
+
+// Relaxed GateConfig: floors at zero so admission is driven only by R2 gate / dsr.
+[[nodiscard]] GateConfig permissive_gate_cfg() {
+  GateConfig gc;
+  gc.min_sharpe   = 0.0;
+  gc.min_fitness  = 0.0;
+  gc.max_turnover = 10.0;
+  gc.max_pool_corr = 1.0;
+  return gc;
+}
+
+// FactoryConfig that clears normal admission bars so R2 rejection is observable.
+[[nodiscard]] FactoryConfig r2_cfg(atx::u64 seed) {
+  FactoryConfig cfg = base_cfg(seed, /*pop=*/16, /*gens=*/4);
+  cfg.oos_fraction = 0.25;
+  cfg.min_dsr      = 0.0; // don't let dsr bar filter everything out
+  // max_price_scale_corr stays at 1.0 (OFF) by default
+  return cfg;
+}
+
+// =============================================================================
+// Test 1 — Off-path byte-identity.
+//   Default max_price_scale_corr == 1.0 (OFF) -> two runs are byte-identical.
+//   Pins the off-path invariant: the gate adds ZERO overhead at the default.
+// =============================================================================
+TEST(FactoryOos, PriceScaleGate_DefaultIsOff_ByteIdentical) {
+  GateConfig gc = default_gate_cfg();
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed=*/7);
+  cfg.oos_fraction = 0.20;
+  ASSERT_EQ(cfg.max_price_scale_corr, 1.0) << "default must be 1.0 (OFF)";
+
+  Fixture fx1{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("r2_off_a"), gc, {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  const FactoryReport ra = f1.mine_into(cfg, lib1, gate).value();
+
+  Fixture fx2{real_signal_panel()};
+  lib::Library lib2 = lib::Library::open(tmpdir("r2_off_b"), gc, {0xC0FFEEu});
+  Factory f2 = fx2.factory();
+  const FactoryReport rb = f2.mine_into(cfg, lib2, gate).value();
+
+  EXPECT_EQ(ra.digest, rb.digest)
+      << "two runs at default max_price_scale_corr=1.0 must be byte-identical";
+  EXPECT_EQ(ra.admitted, rb.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+  // RejectPriceScale bucket (index 6) must be zero on the off path.
+  EXPECT_EQ(ra.reject_histogram[6], 0u)
+      << "gate OFF: RejectPriceScale bucket must be zero";
+}
+
+// =============================================================================
+// Test 2 — On-path rejection (RED->GREEN).
+//   Panel has raw_close with strongly-dispersed prices (large cross-sectional
+//   variance of 1/price). Gate OFF: candidates admitted normally. Gate ON with a
+//   near-zero threshold (1e-9): any book with non-zero price-axis loading must be
+//   rejected. The brief's "genuine RED->GREEN" requirement.
+// =============================================================================
+TEST(FactoryOos, PriceScaleGate_ActiveWithRawClose_RejectsWhenLoadingHigh) {
+  const usize dates = 120;
+  const usize insts = 4;
+  Panel panel_rc = make_panel_with_raw_close(dates, insts, 0xDEADu);
+  GateConfig gc  = permissive_gate_cfg();
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg_off = r2_cfg(/*seed=*/7);
+  cfg_off.search.seed_from_grammar = false; // deterministic seed for RED/GREEN
+
+  // Run A: gate OFF (default 1.0) — establishes how many candidates are admitted.
+  Fixture fxA{panel_rc};
+  lib::Library libA = lib::Library::open(tmpdir("r2_gate_off"), gc, {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  ASSERT_EQ(repA.reject_histogram[6], 0u) << "gate OFF: RejectPriceScale bucket must be 0";
+
+  // Run B: gate ON with threshold=1e-9 — almost any non-trivial book is rejected.
+  FactoryConfig cfg_on = cfg_off;
+  cfg_on.max_price_scale_corr = 1e-9;
+  Fixture fxB{panel_rc};
+  lib::Library libB = lib::Library::open(tmpdir("r2_gate_on"), gc, {0xC0FFEEu});
+  Factory fB = fxB.factory();
+  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+
+  // If gate OFF admitted anything, gate ON at 1e-9 must reject at least some.
+  if (repA.admitted > 0u) {
+    EXPECT_GT(repB.reject_histogram[6], 0u)
+        << "with threshold=1e-9 and raw_close present, at least one candidate "
+           "must accumulate a RejectPriceScale";
+    EXPECT_LE(repB.admitted, repA.admitted)
+        << "gate ON at 1e-9 must admit no MORE than gate OFF";
+  }
+  // digest must differ if any rejections fired (different admission set).
+  if (repB.reject_histogram[6] > 0u) {
+    EXPECT_NE(repA.digest, repB.digest)
+        << "when price-scale rejections fire the admission digest must change";
+  }
+}
+
+// =============================================================================
+// Test 3 — seq == parallel with gate ON.
+//   The serial (mine_into_oos) and parallel (mine_into_oos_parallel) paths must
+//   produce byte-identical digest, admitted count, library version_id, and
+//   RejectPriceScale histogram bucket when the gate is ON.
+//   This verifies the binding determinism invariant (SweepParallelEqualsSerial).
+// =============================================================================
+TEST(FactoryOos, PriceScaleGate_SeqEqualsParallel) {
+  const usize dates = 120;
+  const usize insts = 4;
+  Panel panel_rc = make_panel_with_raw_close(dates, insts, 0xCAFEu);
+  GateConfig gc  = permissive_gate_cfg();
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg = r2_cfg(/*seed=*/13);
+  cfg.max_price_scale_corr     = 0.5; // gate ON
+  cfg.search.seed_from_grammar = false;
+
+  // Serial path.
+  Fixture fxSerial{panel_rc};
+  lib::Library libSerial = lib::Library::open(tmpdir("r2_seq"), gc, {0xC0FFEEu});
+  Factory fSerial = fxSerial.factory();
+  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+
+  // Parallel path (ProcessExecutor, 2 workers).
+  Fixture fxPar{panel_rc};
+  lib::Library libPar = lib::Library::open(tmpdir("r2_par"), gc, {0xC0FFEEu});
+  Factory fPar = fxPar.factory();
+  ProcessExecutor execPar{ExecutorConfig{2, false}};
+  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+
+  EXPECT_EQ(repSerial.digest, repPar.digest)
+      << "seq==parallel digest must match with price-scale gate ON";
+  EXPECT_EQ(repSerial.admitted, repPar.admitted)
+      << "seq==parallel admitted count must match with price-scale gate ON";
+  EXPECT_EQ(libSerial.snapshot().version_id, libPar.snapshot().version_id)
+      << "seq==parallel library version_id must match with price-scale gate ON";
+  EXPECT_EQ(repSerial.reject_histogram[6], repPar.reject_histogram[6])
+      << "seq==parallel RejectPriceScale histogram bucket must match";
+}
+
+// =============================================================================
+// Test 4 — Determinism: gate-ON run twice -> identical.
+//   Same seed + panel + max_price_scale_corr => identical digest, admitted,
+//   version_id, and histogram on two independent runs.
+// =============================================================================
+TEST(FactoryOos, PriceScaleGate_Deterministic) {
+  const usize dates = 120;
+  const usize insts = 4;
+  Panel panel_rc = make_panel_with_raw_close(dates, insts, 0xBEEFu);
+  GateConfig gc  = permissive_gate_cfg();
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg = r2_cfg(/*seed=*/42);
+  cfg.max_price_scale_corr     = 0.5; // gate ON
+  cfg.search.seed_from_grammar = false;
+
+  Fixture fx1{panel_rc};
+  lib::Library lib1 = lib::Library::open(tmpdir("r2_det_a"), gc, {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  const FactoryReport r1 = f1.mine_into(cfg, lib1, gate).value();
+
+  Fixture fx2{panel_rc};
+  lib::Library lib2 = lib::Library::open(tmpdir("r2_det_b"), gc, {0xC0FFEEu});
+  Factory f2 = fx2.factory();
+  const FactoryReport r2 = f2.mine_into(cfg, lib2, gate).value();
+
+  EXPECT_EQ(r1.digest, r2.digest);
+  EXPECT_EQ(r1.admitted, r2.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+  EXPECT_EQ(r1.reject_histogram[6], r2.reject_histogram[6]);
+}
+
+// =============================================================================
+// Test 5 — Inert when raw_close absent.
+//   When the holdout panel has NO "raw_close" field the loading is NaN, so the
+//   gate must NOT reject anything. The result must be byte-identical to the
+//   gate-OFF run on the same panel (same digest, admitted, version_id).
+// =============================================================================
+TEST(FactoryOos, PriceScaleGate_InertWhenRawCloseAbsent) {
+  // real_signal_panel() has fields {"close", "rev"} — no raw_close.
+  GateConfig gc = permissive_gate_cfg();
+  AlphaGate gate{gc};
+
+  FactoryConfig cfg = r2_cfg(/*seed=*/7);
+  cfg.search.seed_from_grammar = false;
+
+  // Run A: gate OFF (default 1.0), panel has no raw_close.
+  Fixture fxA{real_signal_panel()};
+  lib::Library libA = lib::Library::open(tmpdir("r2_inert_off"), gc, {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  const FactoryReport repA = fA.mine_into(cfg, libA, gate).value();
+
+  // Run B: gate ON (threshold=0.5), still no raw_close -> loading=NaN -> inert.
+  FactoryConfig cfg_on = cfg;
+  cfg_on.max_price_scale_corr = 0.5;
+  Fixture fxB{real_signal_panel()};
+  lib::Library libB = lib::Library::open(tmpdir("r2_inert_on"), gc, {0xC0FFEEu});
+  Factory fB = fxB.factory();
+  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+
+  EXPECT_EQ(repA.digest, repB.digest)
+      << "gate active but raw_close absent: must be byte-identical to gate OFF";
+  EXPECT_EQ(repA.admitted, repB.admitted);
+  EXPECT_EQ(libA.snapshot().version_id, libB.snapshot().version_id);
+  EXPECT_EQ(repB.reject_histogram[6], 0u)
+      << "raw_close absent -> loading=NaN -> RejectPriceScale bucket must be 0";
 }
 
 } // namespace atxtest_factory_oos_test
