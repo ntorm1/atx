@@ -92,6 +92,86 @@ static atx::f64 blend_window_sharpe(const combine::AlphaStore& pool,
 }
 
 // ---------------------------------------------------------------------------
+// apply_conviction (D1.2 / T7 NEW-1) — the per-alpha conviction post-fit
+// transform, WINDOWED. For each alpha it computes a combine-time conviction
+// score (deflated-Sharpe probability + first/second-half Sharpe stability) from
+// that alpha's OWN PnL RESTRICTED to [conv_begin, conv_end), scales weights[a]
+// by the score, then renormalizes Σ|w| = 1.
+//
+// The window is the ONLY generalization over the original inline D1.2 block:
+//   * MAIN path passes the FULL stream [0, np) (na = pool.n_alphas()), which is
+//     byte-identical to the old inline code — pnl.subspan(0, np) IS the whole
+//     pnl stream, so DSR (over r=pnl[1..T)), stability (split at T/2), N=na, and
+//     the PBO-dropped renormalized ConvictionConfig all match exactly.
+//   * WF folds pass the fold's TRAIN window [fit_begin, train_end) (causal —
+//     never the test window), so walk_forward_oos_sharpe reflects the shipped
+//     conviction-weighted book per fold.
+//
+// Determinism: order-fixed alpha loop, no RNG/alloc beyond the window sub-span;
+// identical inputs -> identical weights.
+// ---------------------------------------------------------------------------
+static void apply_conviction(const combine::AlphaStore& pool,
+                             std::vector<atx::f64>& weights,
+                             atx::usize conv_begin, atx::usize conv_end,
+                             atx::usize na) {
+    namespace ce = atx::engine::combine;
+    namespace ev = atx::engine::eval;
+
+    // Drop the PBO term (PBO is a per-RUN set statistic, NOT a per-alpha input we
+    // have here) and renormalize the remaining weights to sum to 1:
+    // conviction = w_dsr*DSR + w_stability*ratio.
+    ce::ConvictionConfig ccfg{};
+    const atx::f64 wsum = ccfg.w_dsr + ccfg.w_stability;
+    ccfg.w_dsr       = ccfg.w_dsr / wsum;
+    ccfg.w_stability = ccfg.w_stability / wsum;
+    ccfg.w_pbo       = 0.0;
+
+    ev::ReturnMetricsCfg rmc{};  // default convention (periods_per_year = 252)
+    for (atx::usize a = 0; a < na; ++a) {
+        // The alpha's PnL RESTRICTED to the conviction window [conv_begin, conv_end).
+        // Full window (conv_begin=0, conv_end=np) == the whole pnl stream the
+        // original inline D1.2 code used -> byte-identical main-path weights.
+        const std::span<const atx::f64> full = pool.pnl(ce::AlphaId{static_cast<atx::u32>(a)});
+        const atx::usize wlen = (conv_end > conv_begin) ? (conv_end - conv_begin) : 0U;
+        const std::span<const atx::f64> pnl = full.subspan(conv_begin, wlen);
+        const atx::usize T = pnl.size();
+
+        // (1) DSR from the alpha's own PnL — mirror score_arm (cluster_eval.hpp:562-577):
+        //     per-period sr_pp = mean/std_pop over r = pnl[1..T), REAL skew/excess-kurtosis,
+        //     N = na (selection inflation across the na-alpha book we are combining).
+        ev::DsrResult dsr{};
+        if (T > 1U) {
+            const std::span<const atx::f64> r{pnl.data() + 1, T - 1U};
+            const atx::f64 skew = ev::skewness(r);
+            const atx::f64 exk  = ev::excess_kurtosis(r);
+            const ev::MeanStd ms = ev::mean_std_pop(r);
+            const atx::f64 sr_pp = (ms.std > 0.0) ? ms.mean / ms.std : 0.0;
+            dsr = ev::deflated_sharpe(sr_pp, r.size(), skew, exk,
+                                      /*N=*/std::max<atx::usize>(na, 1), std::nullopt);
+        }
+
+        // (2) First/second-half Sharpe stability ratio (annualized sharpe via compute_return_metrics).
+        atx::f64 ratio = 0.0;
+        if (T >= 4U) {
+            const atx::usize mid = T / 2;
+            const atx::f64 sh1 = ev::compute_return_metrics(pnl.subspan(0, mid), rmc).sharpe;
+            const atx::f64 sh2 = ev::compute_return_metrics(pnl.subspan(mid), rmc).sharpe;
+            if (std::isfinite(sh1) && std::isfinite(sh2) && std::fabs(sh1) > 1e-9) {
+                ratio = sh2 / sh1;
+            }
+        }
+
+        // w_pbo == 0.0 so the pbo field is unused; construct a valid zero PboResult.
+        const ev::PboResult pbo{/*pbo=*/0.0, /*split_logits=*/{}, /*mean_logit=*/0.0};
+        const ce::ConvictionScore cs =
+            ce::conviction(dsr, pbo, ratio, ce::ExplainFlag::PartlyExplained, ccfg);
+        weights[a] *= cs.score;
+    }
+    // Renormalize so Σ|w| = 1 (gross-exposure target maintained).
+    ce::detail::renorm_abs_sum(weights);
+}
+
+// ---------------------------------------------------------------------------
 // alpha_capacity_aum — the per-alpha CAPACITY AUM in dollars (T6): the AUM at
 // which alpha `a`'s LAST-period target book's temporary √-impact erodes its gross
 // frictionless edge to zero. This is the SAME capacity notion risk::capacity_curve
@@ -449,57 +529,13 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     //     skips this block entirely — combo.weights are untouched and the output is
     //     byte-identical to today. The conviction math runs ONLY inside this if-block.
     if (cfg.conviction) {
-        namespace ce = atx::engine::combine;
-        namespace ev = atx::engine::eval;
-        const atx::usize na = pool.n_alphas();
-
-        // Drop the PBO term (PBO is a per-RUN set statistic, NOT a per-alpha input we
-        // have here) and renormalize the remaining weights to sum to 1:
-        // conviction = w_dsr*DSR + w_stability*ratio.
-        ce::ConvictionConfig ccfg{};
-        const atx::f64 wsum = ccfg.w_dsr + ccfg.w_stability;
-        ccfg.w_dsr       = ccfg.w_dsr / wsum;
-        ccfg.w_stability = ccfg.w_stability / wsum;
-        ccfg.w_pbo       = 0.0;
-
-        ev::ReturnMetricsCfg rmc{};  // default convention (periods_per_year = 252)
-        for (atx::usize a = 0; a < na; ++a) {
-            const std::span<const atx::f64> pnl = pool.pnl(ce::AlphaId{static_cast<atx::u32>(a)});
-            const atx::usize T = pnl.size();
-
-            // (1) DSR from the alpha's own PnL — mirror score_arm (cluster_eval.hpp:562-577):
-            //     per-period sr_pp = mean/std_pop over r = pnl[1..T), REAL skew/excess-kurtosis,
-            //     N = na (selection inflation across the na-alpha book we are combining).
-            ev::DsrResult dsr{};
-            if (T > 1U) {
-                const std::span<const atx::f64> r{pnl.data() + 1, T - 1U};
-                const atx::f64 skew = ev::skewness(r);
-                const atx::f64 exk  = ev::excess_kurtosis(r);
-                const ev::MeanStd ms = ev::mean_std_pop(r);
-                const atx::f64 sr_pp = (ms.std > 0.0) ? ms.mean / ms.std : 0.0;
-                dsr = ev::deflated_sharpe(sr_pp, r.size(), skew, exk,
-                                          /*N=*/std::max<atx::usize>(na, 1), std::nullopt);
-            }
-
-            // (2) First/second-half Sharpe stability ratio (annualized sharpe via compute_return_metrics).
-            atx::f64 ratio = 0.0;
-            if (T >= 4U) {
-                const atx::usize mid = T / 2;
-                const atx::f64 sh1 = ev::compute_return_metrics(pnl.subspan(0, mid), rmc).sharpe;
-                const atx::f64 sh2 = ev::compute_return_metrics(pnl.subspan(mid), rmc).sharpe;
-                if (std::isfinite(sh1) && std::isfinite(sh2) && std::fabs(sh1) > 1e-9) {
-                    ratio = sh2 / sh1;
-                }
-            }
-
-            // w_pbo == 0.0 so the pbo field is unused; construct a valid zero PboResult.
-            const ev::PboResult pbo{/*pbo=*/0.0, /*split_logits=*/{}, /*mean_logit=*/0.0};
-            const ce::ConvictionScore cs =
-                ce::conviction(dsr, pbo, ratio, ce::ExplainFlag::PartlyExplained, ccfg);
-            combo.weights[a] *= cs.score;
-        }
-        // Renormalize so Σ|w| = 1 (gross-exposure target maintained).
-        ce::detail::renorm_abs_sum(combo.weights);
+        // Apply the conviction transform over the FULL stream [0, np). This is
+        // byte-identical to the original inline D1.2 block (the helper over the
+        // full window reproduces today's weights EXACTLY — the conviction-digest
+        // test is pinned). The same helper re-applies per-fold conviction in the
+        // walk-forward loop below (T7 NEW-1).
+        apply_conviction(pool, combo.weights, /*conv_begin=*/0U, /*conv_end=*/np,
+                         pool.n_alphas());
     }
 
     // T6 capacity telemetry (additive; populated only on the opt-in capacity path).
@@ -736,15 +772,17 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     //     for scoring, then discarded. All code lives inside this if-block so the
     //     default (k==0) path is byte-identical and incurs zero extra compute.
     //
-    //     SCOPE CAVEAT (read before interpreting walk_forward_oos_sharpe*): each fold
-    //     scores the BASE combiner fit (wf.fit only), NOT the post-conviction / post-
-    //     crowding book that actually ships. So with --conviction (or --corr-penalty)
-    //     ALSO set, walk_forward_oos_sharpe measures the combiner METHOD's OOS stability,
-    //     which is a DIFFERENT book than breadth_realized_ir (computed on the final
-    //     post-conviction weights at step 14). Do not read walk_forward_oos_sharpe as
-    //     "the shipped mega-alpha's OOS Sharpe" when conviction/crowding is on, and do
-    //     not directly compare it to breadth_realized_ir. (A conviction-aware WF that
-    //     re-applies the per-fold conviction transform is a follow-up task.)
+    //     SCOPE CAVEAT (read before interpreting walk_forward_oos_sharpe*): T7 NEW-1
+    //     made each fold CONVICTION-aware — when --conviction is on, the fold re-applies
+    //     the per-fold conviction transform (apply_conviction over the fold's TRAIN
+    //     window [fit_begin, train_end), causal — never the test window) BEFORE scoring,
+    //     so walk_forward_oos_sharpe now reflects the post-conviction book that actually
+    //     ships. It still does NOT reflect post-CROWDING (--corr-penalty / decorrelate)
+    //     weights — making WF crowding-aware is out of T7 scope. So with --corr-penalty
+    //     also set, walk_forward_oos_sharpe still measures a DIFFERENT book than the final
+    //     post-crowding weights; do not directly compare it to breadth_realized_ir then.
+    //     When --conviction is OFF, the fold scores the BASE combiner fit exactly as
+    //     before (byte-identical telemetry).
     std::string wf_folds_str;
     std::string wf_mean_str;
     std::string wf_sharpes_str;
@@ -766,6 +804,16 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
             combine::AlphaCombiner wf;
             wf.cfg.method = cm_wf;                                  // SAME method as the shipped fit
             ATX_TRY(auto wf_combo, wf.fit(pool, fit_begin, train_end));
+            // (T7 NEW-1) When --conviction is on, re-apply the per-fold conviction
+            // transform over the fold's TRAIN window [fit_begin, train_end) (causal —
+            // never the test window) so this fold scores the SHIPPED conviction-weighted
+            // book, mirroring how the live book fits + applies conviction in-sample then
+            // deploys forward. wf_combo is scratch; combo.weights (the shipped book) is
+            // never touched, so combo.bin stays byte-identical regardless of WF. When
+            // --conviction is off, this is skipped and the fold scores the base fit.
+            if (cfg.conviction) {
+                apply_conviction(pool, wf_combo.weights, fit_begin, train_end, pool.n_alphas());
+            }
             fold_sharpe.push_back(blend_window_sharpe(pool, wf_combo.weights, train_end, test_end));
         }
         atx::f64 mean = 0.0;

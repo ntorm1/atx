@@ -1686,6 +1686,108 @@ TEST(AtxImplCombine, WalkForwardDeterministic) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// T7 NEW-1 Test 1: WalkForwardConvictionReflectsShippedBook
+// With BOTH --walk-forward and --conviction set, each WF fold must re-apply the
+// per-fold conviction transform (over the fold's TRAIN window) before scoring
+// the OOS Sharpe — so walk_forward_oos_sharpe becomes an HONEST OOS estimator of
+// the shipped (conviction-weighted) book, NOT the base combiner fit. Assert:
+//   (a) walk_forward_oos_sharpe DIFFERS from the base-fit WF telemetry (same
+//       panel/flags MINUS --conviction) — proving the per-fold conviction
+//       transform is actually applied in the WF loop.
+//   (b) combo.bin (shipped weights) is BYTE-IDENTICAL to the conviction-on /
+//       WF-off run — the WF harness never touches the shipped book regardless of
+//       conviction. This pins NEW-1's determinism guarantee: WF only changes the
+//       walk_forward_oos_sharpe* TELEMETRY, never the shipped combo.bin.
+// Fixture: make_momentum_panel (96x6), k=2 (span=96, seg=32, 2 folds).
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, WalkForwardConvictionReflectsShippedBook) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_momentum_panel(); // 96x6
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "wf_cvt");
+    const std::string alphas_dir = write_alpha_dir("wf_cvt", safe_dsls());
+    // combo.bin sinks: WF+conviction, conviction-only (WF off), base WF (no conviction).
+    const std::string combo_wf_cvt =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_cvt_on.bin").string();
+    const std::string combo_cvt_only =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_cvt_cvtonly.bin").string();
+    const std::string combo_wf_base =
+        (fs::temp_directory_path() / "atx_impl_combine_wf_cvt_base.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "shrinkage-mv";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (1) Base WF: --walk-forward 2, conviction OFF (today's base-fit folds).
+    cfg.walk_forward = 2;
+    cfg.conviction   = false;
+    cfg.combo_out    = combo_wf_base;
+    auto r_wf_base = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_wf_base.has_value()) << r_wf_base.error().message();
+
+    // (2) WF + conviction: --walk-forward 2 AND --conviction (per-fold conviction).
+    cfg.walk_forward = 2;
+    cfg.conviction   = true;
+    cfg.combo_out    = combo_wf_cvt;
+    auto r_wf_cvt = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_wf_cvt.has_value()) << r_wf_cvt.error().message();
+
+    // (3) Conviction only (WF off): the shipped conviction book without the WF harness.
+    cfg.walk_forward = 0;
+    cfg.conviction   = true;
+    cfg.combo_out    = combo_cvt_only;
+    auto r_cvt_only = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_cvt_only.has_value()) << r_cvt_only.error().message();
+
+    auto find_kv = [](const atx::impl::StageResult& sr, const std::string& k) -> std::optional<std::string> {
+        for (const auto& p : sr.kvs) if (p.first == k) return p.second;
+        return std::nullopt;
+    };
+
+    // (a) walk_forward_oos_sharpe DIFFERS between conviction-on and base-fit WF.
+    const auto sharpes_base = find_kv(*r_wf_base, "walk_forward_oos_sharpe");
+    const auto sharpes_cvt  = find_kv(*r_wf_cvt,  "walk_forward_oos_sharpe");
+    ASSERT_TRUE(sharpes_base.has_value()) << "base WF walk_forward_oos_sharpe missing";
+    ASSERT_TRUE(sharpes_cvt.has_value())  << "conviction WF walk_forward_oos_sharpe missing";
+    EXPECT_NE(*sharpes_base, *sharpes_cvt)
+        << "walk_forward_oos_sharpe must DIFFER when --conviction is on (per-fold conviction "
+           "applied), proving WF reflects the shipped book. base=" << *sharpes_base
+        << " conviction=" << *sharpes_cvt;
+    std::cout << "[T7 NEW-1] base_wf_sharpes=" << *sharpes_base
+              << " conviction_wf_sharpes=" << *sharpes_cvt << "\n";
+
+    // (b) combo.bin BYTE-IDENTICAL: WF+conviction shipped book == conviction-only book.
+    //     The WF harness must NOT touch the shipped combo.bin even with conviction on.
+    EXPECT_EQ(r_wf_cvt->digest, r_cvt_only->digest)
+        << "combo.bin digest must be IDENTICAL for WF+conviction vs conviction-only "
+           "(WF never ships its scratch folds)";
+    EXPECT_NE(r_wf_cvt->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    EXPECT_EQ(read_bytes(combo_wf_cvt), read_bytes(combo_cvt_only))
+        << "combo.bin must be byte-identical for WF+conviction vs conviction-only";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_wf_cvt, combo_cvt_only, combo_wf_base}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
 // ===========================================================================
 // T6 — real per-alpha capacity wired into the combine de-correlation step.
 //
