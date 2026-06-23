@@ -128,6 +128,18 @@ struct RunConfig {
     // factory's mutate_one path is byte-identical to today (kGoldenDigest pin).
     bool        enable_wrap_in_op = false; // --enable-wrap-in-op
 
+    // --typed-fields (R1): opt-in field-type discipline. When set, before running
+    // the search a one-pass cardinality scan classifies each numeric panel field;
+    // binary / low-cardinality / categorical fields are excluded from the grammar's
+    // NUMERIC leaf pool and the GICS classifier (raw "gics" column if present) is
+    // routed to the GROUP pool instead. DEFAULT FALSE: absent this flag both
+    // exclusion lists stay EMPTY and the search is BYTE-IDENTICAL to today.
+    bool        typed_fields = false;       // --typed-fields (valueless bool)
+    // --field-cardinality-max <K> (R1): the distinct-value threshold for the R1
+    // cardinality scan. A numeric field with <= K distinct finite values is excluded
+    // from the numeric leaf pool. DEFAULT 12. Ignored when --typed-fields is absent.
+    int         field_cardinality_max = 12; // --field-cardinality-max <K>
+
     // W2 — capacity universe screen for discovery (opt-in via --min-adv / --min-price).
     // Screen is ACTIVE iff min_adv_usd > 0 || min_price > 0 (reusing the panel-stage
     // fields); when INACTIVE the original panel object is passed through UNCHANGED.

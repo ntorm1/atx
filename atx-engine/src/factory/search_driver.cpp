@@ -27,18 +27,44 @@ namespace atx::engine::factory {
 SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                            const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                            std::vector<std::string> seed_exprs,
-                           std::vector<std::string> panel_fields, const alpha::Panel *weak_panel)
+                           std::vector<std::string> panel_fields, const alpha::Panel *weak_panel,
+                           std::vector<std::string> numeric_excluded_fields,
+                           std::vector<std::string> extra_group_fields)
     : lib_{lib}, panel_{panel}, weak_panel_{weak_panel}, policy_{policy}, sim_{sim},
       catalog_{lib}, seed_exprs_{std::move(seed_exprs)}, panel_fields_{std::move(panel_fields)} {
+  // R1: build O(k) lookup sets for the exclusion/extra-group lists (k == list sizes,
+  // typically tiny). Deterministic: no RNG, stable iteration over panel_fields_.
+  // When both lists are empty these branches are dead and the partition is IDENTICAL
+  // to the pre-R1 code -> byte-identical digest (kGoldenDigest pin unchanged).
+  const std::vector<std::string> num_excl = std::move(numeric_excluded_fields);
+  const std::vector<std::string> grp_extra = std::move(extra_group_fields);
+  auto in_excl = [&](std::string_view name) noexcept {
+    for (const auto &s : num_excl) { if (s == name) return true; }
+    return false;
+  };
+  auto in_extra_grp = [&](std::string_view name) noexcept {
+    for (const auto &s : grp_extra) { if (s == name) return true; }
+    return false;
+  };
+
   panel_field_views_.reserve(panel_fields_.size());
   for (const std::string &f : panel_fields_) {
     panel_field_views_.push_back(f);
-    // Task 3.1: partition into numeric vs. group (classifier) views.
-    if (alpha::detail::is_group_field(f)) {
-      group_field_views_.push_back(panel_field_views_.back());
-    } else {
-      numeric_field_views_.push_back(panel_field_views_.back());
+    const std::string_view sv = panel_field_views_.back();
+    // R1: a field in the exclusion list is removed from the numeric pool regardless
+    // of is_group_field; an extra-group field is added to the group pool even if
+    // is_group_field is false. When both lists are empty, behaviour is IDENTICAL to
+    // the original Task 3.1 partition (byte-identical by construction).
+    const bool is_group = alpha::detail::is_group_field(f) || in_extra_grp(sv);
+    const bool is_numeric_excluded = in_excl(sv);
+    if (is_group) {
+      group_field_views_.push_back(sv);
+    } else if (!is_numeric_excluded) {
+      numeric_field_views_.push_back(sv);
     }
+    // A field that is neither group nor numeric (i.e. excluded from numeric, not
+    // routed to group) remains accessible via panel_field_views_ for eval validity
+    // but cannot appear as a numeric or group leaf in the grammar.
   }
 }
 

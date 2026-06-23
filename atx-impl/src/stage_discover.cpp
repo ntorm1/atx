@@ -366,7 +366,9 @@ atx::core::Result<StageResult> run_discover_gated(
     const atx::engine::exec::ExecutionSimulator& sim,
     const atx::engine::factory::SearchConfig& sc,
     const std::vector<std::string>& fields,
-    const atx::engine::alpha::Panel* weak_panel) // W4a: §0.8 weak sub-universe (nullptr = off)
+    const atx::engine::alpha::Panel* weak_panel, // W4a: §0.8 weak sub-universe (nullptr = off)
+    const std::vector<std::string>& numeric_excluded_fields, // R1: typed-fields exclusion list
+    const std::vector<std::string>& extra_group_fields)      // R1: typed-fields extra group list
 {
     namespace fs      = std::filesystem;
     namespace combine = atx::engine::combine;
@@ -436,6 +438,10 @@ atx::core::Result<StageResult> run_discover_gated(
     // so robust = clamp(wq_on(weak)/wq, 0, 1) ACTIVATES. nullptr (default) -> robust
     // stays the constant 1.0 and the discover digest is byte-identical to today.
     fcfg.weak_panel = weak_panel; // borrowed; the pointee outlives every mine_into below
+    // R1 typed-fields: empty lists (the default) keep SearchDriver's partition identical
+    // to pre-R1 -> byte-identical digest. Non-empty lists tighten the numeric leaf pool.
+    fcfg.numeric_excluded_fields = numeric_excluded_fields;
+    fcfg.extra_group_fields      = extra_group_fields;
 
     // P2b: pre-validation guard — when OOS is on, check the panel geometry NOW
     // (before mine_into) so a too-short panel or too-large fraction fails LOUDLY
@@ -875,19 +881,38 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
         weak_panel = &*weak_panel_owned; // borrowed; weak_panel_owned outlives both paths
     }
 
+    // 5b. R1 typed-fields cardinality scan (opt-in via --typed-fields; default OFF =
+    // byte-identical). When ON, do ONE deterministic pass over each numeric panel field
+    // to count its distinct non-NaN cardinality; any field with cardinality <=
+    // field_cardinality_max OR whose name is in the binary/count backstop list is added
+    // to numeric_excluded_fields. The GICS classifier (named "sector" or any "IndClass.*"
+    // prefix) is already handled by is_group_field() in SearchDriver — the backstop list
+    // here catches a raw integer `gics` column if one is present. Empty when OFF (default)
+    // -> SearchDriver's partition is IDENTICAL to today -> byte-identical digest.
+    std::vector<std::string> numeric_excluded_fields;
+    std::vector<std::string> extra_group_fields;
+    if (cfg.typed_fields) {
+        detail::classify_typed_fields(panel, fields, cfg.field_cardinality_max,
+                                      numeric_excluded_fields, extra_group_fields);
+    }
+
     // 6'. Gated discovery (opt-in via --gated): route every distinct candidate
     //     through the factory's deflated-Sharpe ranking + AlphaGate floors so the
     //     emitted alphas are robust (DSR bar), low-turnover, low-correlation, and
     //     high-fitness. Admitted alphas persist in an on-disk library::Library
     //     (a durable alpha database) and are also written as .dsl for `combine`.
     if (cfg.gated) {
-        return run_discover_gated(cfg, panel, lib, policy, sim, sc, fields, weak_panel);
+        return run_discover_gated(cfg, panel, lib, policy, sim, sc, fields, weak_panel,
+                                  numeric_excluded_fields, extra_group_fields); // R1
     }
 
     // 6. Run the evolutionary search (default ungated path: top-N by raw fitness).
     // W4a: weak_panel (nullptr unless --robust-holdout-frac > 0) activates the robust
     // factor in the search fitness; the default nullptr keeps this byte-identical.
-    factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields, weak_panel};
+    // R1: numeric_excluded_fields/extra_group_fields are empty (default) unless
+    // --typed-fields is set; empty lists keep the search byte-identical to today.
+    factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields, weak_panel,
+                                 numeric_excluded_fields, extra_group_fields};
     factory::SearchResult res = driver.run(sc, pool);
 
     // 7. Check admission.

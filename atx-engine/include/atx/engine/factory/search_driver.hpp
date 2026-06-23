@@ -304,10 +304,22 @@ public:
   // (the default) robust stays the constant 1.0 and raw == wq*diversify EXACTLY as
   // before (byte-identical — the kGoldenDigest boundary pin proves it). The pointee
   // (if any) MUST outlive the driver and every run() call (owned by the caller).
+  //
+  // R1 field-type discipline: `numeric_excluded_fields` / `extra_group_fields` are
+  // OPTIONAL lists (both defaulted empty = byte-identical to the pre-R1 path).
+  // When non-empty, the ctor's partition loop tightens:
+  //   - A field in numeric_excluded_fields is excluded from numeric_field_views_
+  //     even if !is_group_field(f) (e.g. binary earnFlag, low-cardinality counts).
+  //   - A field in extra_group_fields is added to group_field_views_ iff it was not
+  //     already classified there by is_group_field(f) (e.g. a raw gics integer col).
+  //   - panel_field_views_ (the full list for eval-field validity) is UNCHANGED.
+  // DETERMINISM: empty lists -> identical partition -> byte-identical digest (F1).
   SearchDriver(const alpha::Library &lib, const alpha::Panel &panel, const WeightPolicy &policy,
                const exec::ExecutionSimulator &sim, std::vector<std::string> seed_exprs,
                std::vector<std::string> panel_fields,
-               const alpha::Panel *weak_panel = nullptr);
+               const alpha::Panel *weak_panel = nullptr,
+               std::vector<std::string> numeric_excluded_fields = {},
+               std::vector<std::string> extra_group_fields = {});
 
   // Run the deterministic search. Same cfg + same pool => byte-identical result
   // (F1). `pool` is borrowed read-only for the marginal-correlation fitness term.

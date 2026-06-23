@@ -199,6 +199,17 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
         weak_panel = &*weak_panel_owned; // borrowed; weak_panel_owned outlives rd.run(rc)
     }
 
+    // ---- R1 typed-fields cardinality scan (opt-in via --typed-fields; default OFF) ----
+    // Same logic as stage_discover.cpp: when ON, a single deterministic pass over the
+    // (post-capacity-screen) panel classifies low-cardinality fields as numeric-excluded
+    // and any raw categorical column as extra-group. Empty when OFF -> byte-identical.
+    std::vector<std::string> numeric_excluded_fields;
+    std::vector<std::string> extra_group_fields;
+    if (cfg.typed_fields) {
+        detail::classify_typed_fields(panel, fields, cfg.field_cardinality_max,
+                                      numeric_excluded_fields, extra_group_fields);
+    }
+
     // ---- FactoryConfig (per-run template handed to ResearchDriver) ----------
     factory::FactoryConfig per_run;
     per_run.search                    = sc;
@@ -214,6 +225,9 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     // NOTE: per_run.oos_window is the base value; ResearchDriver::run overrides it
     // per run (run % oos_n_windows) when oos_n_windows > 0 (R2 wiring in research_driver.cpp).
     per_run.weak_panel = weak_panel; // T3a: nullptr (default) keeps robust=1.0
+    // R1: empty lists (default) keep SearchDriver partition identical -> byte-identical.
+    per_run.numeric_excluded_fields = numeric_excluded_fields;
+    per_run.extra_group_fields      = extra_group_fields;
 
     // ---- Open accumulating library (do NOT wipe) ---------------------------
     fs::create_directories(cfg.library_dir);

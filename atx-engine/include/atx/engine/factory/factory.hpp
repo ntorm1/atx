@@ -178,6 +178,19 @@ struct FactoryConfig {
   //  legacy single-window terminal path byte-for-byte.
   atx::usize oos_n_windows = 0;  // 0 == legacy terminal holdout (reserve_lockbox); >=1 enables walk-forward
   atx::usize oos_window   = 0;   // which window [0, oos_n_windows); the sweep advances this per run
+  // --- R1 field-type discipline (opt-in via --typed-fields; both empty == byte-identical default).
+  //  When non-empty, SearchDriver's ctor partition is tightened:
+  //    numeric_excluded_fields : fields that must NOT appear as numeric leaves (e.g. binary flags,
+  //                              low-cardinality categoricals). A field in this list is excluded from
+  //                              numeric_field_views_ regardless of is_group_field(). Empty -> unchanged.
+  //    extra_group_fields      : fields that SHOULD be routed to the group pool (e.g. a raw `gics`
+  //                              integer column that is categorical but not named "sector" / "IndClass.*").
+  //                              Added to group_field_views_ iff not already there via is_group_field().
+  //  DETERMINISM: both lists empty (the default) -> the partition is IDENTICAL to today ->
+  //  BYTE-IDENTICAL research_digest / version_id. A non-empty list may change the digest; that is the
+  //  only sanctioned re-baseline.
+  std::vector<std::string> numeric_excluded_fields{};  // fields excluded from numeric leaf pool
+  std::vector<std::string> extra_group_fields{};       // extra fields routed to group pool
 };
 
 // =========================================================================

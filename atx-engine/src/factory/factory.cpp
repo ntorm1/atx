@@ -163,7 +163,8 @@ void finalize_run_pbo(FactoryReport &rep,
   // (1) run the S3-5 search. The driver re-derives a clean per-run state from the
   // seed, so a fresh driver per mine() preserves F1 replay (no carried state).
   SearchDriver driver{lib_,           panel_,           policy_,         sim_,
-                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel}; // W4a robust factor
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
+                      cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   const SearchResult res = driver.run(cfg.search, pool);
 
   rep.evaluated = res.trial_count;
@@ -317,7 +318,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // (both have worst_corr == 0), so the search is byte-identical to mine()'s search.
   combine::AlphaStore search_pool; // empty selection pool (the search's pre-pool)
   SearchDriver driver{lib_,           panel_,           policy_,         sim_,
-                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel}; // W4a robust factor
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
+                      cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
 
   // The persistent library is the ADMISSION pool: the deflated-fitness ranking and
@@ -581,7 +583,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // (1) run the S3-5 search — IDENTICAL to the sequential mine_into.
   combine::AlphaStore search_pool;
   SearchDriver driver{lib_,           panel_,           policy_,         sim_,
-                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel}; // W4a robust factor
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
+                      cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   const SearchResult res = driver.run(cfg.search, search_pool);
 
   rep.evaluated = res.trial_count;
@@ -930,7 +933,8 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // panel's universe mask should be derived over the SAME panel the search optimizes
   // (the caller's responsibility); nullptr (default) is the byte-identical no-op.
   SearchDriver driver{lib_,           train,            policy_,         sim_,
-                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel};
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
+                      cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
 
   // (8.C) OOS train-ranking corr length safety: rank the OOS candidates against an
@@ -1251,7 +1255,8 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // panel's universe mask should be derived over the SAME panel the search optimizes
   // (the caller's responsibility); nullptr (default) is the byte-identical no-op.
   SearchDriver driver{lib_,           train,            policy_,         sim_,
-                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel};
+                      cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
+                      cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   const SearchResult res = driver.run(cfg.search, search_pool);
 
   rep.evaluated = res.trial_count;
