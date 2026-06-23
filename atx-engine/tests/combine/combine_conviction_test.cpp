@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>  // std::isfinite (T7 NEW-2 finite-score check)
 #include <limits> // std::numeric_limits (NaN literal for the death test)
 
 #include "atx/engine/combine/conviction.hpp"
@@ -136,6 +137,39 @@ TEST(ConvictionDeathTest, NanDsrAborts) {
   const DsrResult bad = dsr_with(std::numeric_limits<double>::quiet_NaN());
   const PboResult ok = pbo_with(0.2);
   EXPECT_DEATH((void)conviction(bad, ok, 1.0, ExplainFlag::Explained), ".*");
+}
+
+// 10. (T7 NEW-2) Weight-sum tolerance: the convex-combination precondition
+//     (w_dsr + w_pbo + w_stability == 1) is asserted in DEBUG. The combine
+//     stage's conviction path drops the PBO term and renormalizes the remaining
+//     two weights by dividing by their sum — w_dsr = 0.40/0.65, w_stability =
+//     0.25/0.65, w_pbo = 0. That renormalized triple sums to 1.0 only within FP
+//     tolerance (the divisions do not recover EXACTLY 1.0), so the prior
+//     exact-equality ATX_ASSERT would ABORT a Debug --conviction run. The relaxed
+//     ±1e-9 tolerance must accept this real impl triple and return a finite score
+//     in [0,1] without aborting.
+//
+//     NOTE: under NDEBUG/Release (build-rel) ATX_ASSERT is a no-op, so this test
+//     only EXERCISES the value path there; the abort-avoidance it guards is a
+//     DEBUG guarantee. A Debug build of this test would abort here pre-fix.
+TEST(Conviction, RenormalizedWeightTripleWithinTolerance) {
+  ConvictionConfig cfg{};
+  // Mirror stage_combine.cpp's PBO-dropped renormalization EXACTLY:
+  const atx::f64 wsum = cfg.w_dsr + cfg.w_stability;     // 0.40 + 0.25 = 0.65
+  cfg.w_dsr       = cfg.w_dsr / wsum;                     // 0.40 / 0.65
+  cfg.w_stability = cfg.w_stability / wsum;               // 0.25 / 0.65
+  cfg.w_pbo       = 0.0;
+
+  // The renormalized triple is within FP tolerance of 1.0 but NOT exactly 1.0:
+  const atx::f64 sum = cfg.w_dsr + cfg.w_pbo + cfg.w_stability;
+  EXPECT_NEAR(sum, 1.0, 1e-9) << "renormalized weight triple must sum to 1 within tolerance";
+
+  // Must NOT abort (Debug) and must return a finite score in [0,1].
+  const ConvictionScore s =
+      conviction(dsr_with(0.7), pbo_with(0.0), 0.6, ExplainFlag::PartlyExplained, cfg);
+  EXPECT_TRUE(std::isfinite(s.score)) << "score must be finite for the renormalized triple";
+  EXPECT_GE(s.score, 0.0);
+  EXPECT_LE(s.score, 1.0);
 }
 
 } // namespace atxtest_combine_conviction_test

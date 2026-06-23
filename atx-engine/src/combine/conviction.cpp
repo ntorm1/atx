@@ -59,7 +59,14 @@ ConvictionScore conviction(const eval::DsrResult &dsr, const eval::PboResult &pb
   ATX_ASSERT(std::isfinite(pbo.pbo));
   ATX_ASSERT(std::isfinite(oos_is_ratio));
   // The weights must form a convex combination for `base` to stay in [0,1].
-  ATX_ASSERT((cfg.w_dsr + cfg.w_pbo + cfg.w_stability) == 1.0);
+  // Tolerance (not exact equality): callers that REWEIGHT — e.g. the combine
+  // stage drops the PBO term and renormalizes the remaining two by dividing by
+  // their sum — produce a triple that sums to 1.0 only within FP rounding. An
+  // exact-equality assert would abort a Debug run on any such near-1.0 triple
+  // (including future default-weight changes). ±1e-9 still traps a GROSS
+  // violation (e.g. sum 1.5), so a death test on a grossly-invalid config is
+  // unaffected. Changes no computed value (release: still a no-op under NDEBUG).
+  ATX_ASSERT(std::fabs((cfg.w_dsr + cfg.w_pbo + cfg.w_stability) - 1.0) < 1e-9);
 
   // Three components, each clamped into [0,1] before weighting:
   //   * DSR is already a probability — clamp only guards a degenerate input.
