@@ -135,6 +135,16 @@ struct RunConfig {
     // When absent (the default), the OOS digest and version_id are BYTE-IDENTICAL.
     double      max_price_scale_corr = 1.0; // --reject-price-scale (R2); 1.0 == OFF
 
+    // --dsr-subwindows <K> (R3 Q1): opt-in intra-holdout DSR sub-windows gate. Splits the sealed
+    // holdout PnL into K contiguous sub-segments and requires min_dsr on EACH. 0 (default) == OFF.
+    // Active when >= 2; value 1 is rejected (meaningless: single window == aggregate gate).
+    int         dsr_subwindows = 0;  // --dsr-subwindows (R3); 0 == OFF
+
+    // --pbo-hard-block (R3 Q2): escalate advisory PBO breach to FAIL verdict + non-zero exit.
+    // The manifest + library are already persisted when the Err is returned; the run exits non-zero.
+    // Requires --max-pbo < 1.0 to have any effect (the advisory gate must be active to breach).
+    bool        pbo_hard_block = false; // --pbo-hard-block (R3); escalate advisory PBO breach to non-zero exit
+
     // --typed-fields (R1): opt-in field-type discipline. When set, before running
     // the search a one-pass cardinality scan classifies each numeric panel field;
     // binary / low-cardinality / categorical fields are excluded from the grammar's

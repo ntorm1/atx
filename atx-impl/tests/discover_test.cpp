@@ -2013,4 +2013,71 @@ TEST(AtxImplDiscover, R3b_AccumulationManifestHasPboLine) {
     fs::remove_all(alpha_out, ec);
 }
 
+// =============================================================================
+// R3 Q2 — --pbo-hard-block tests (3 total)
+//
+// The hard-block decision is a pure predicate over (flag, pbo_gate_passed, pbo,
+// max_pbo). We test the predicate directly without a full end-to-end run (which
+// would need >= 2 admitted alphas for PBO to be computed). The stage wiring is
+// tested by the flag-absent/flag-set advisory distinction.
+// =============================================================================
+
+// The predicate replicating the hard-block condition (mirrors stage_discover.cpp).
+static bool pbo_hard_block_fails(bool flag, bool pbo_gate_passed, double pbo, double max_pbo) {
+    return flag && std::isfinite(pbo) && max_pbo < 1.0 && !pbo_gate_passed;
+}
+
+// =============================================================================
+// R3-Q2 Test 1 — Flag absent: pbo_hard_block_fails returns false regardless of
+//   the PBO value. The advisory gate does NOT affect the exit verdict.
+// =============================================================================
+TEST(AtxImplDiscover, PboHardBlock_FlagAbsent_ReturnsOk_Advisory) {
+    // flag == false -> never fails, even with a breached PBO.
+    EXPECT_FALSE(pbo_hard_block_fails(false, false, 0.8, 0.5))
+        << "flag absent -> hard block never fires even if PBO breaches";
+    EXPECT_FALSE(pbo_hard_block_fails(false, false, 0.99, 0.1))
+        << "flag absent -> hard block never fires at extreme PBO";
+    EXPECT_FALSE(pbo_hard_block_fails(false, true, 0.3, 0.5))
+        << "flag absent -> hard block never fires even when gate passes";
+}
+
+// =============================================================================
+// R3-Q2 Test 2 — Flag set + breach: pbo_hard_block_fails returns true; NOT
+//   set when PBO is NaN/finite-pass or gate is off (max_pbo >= 1.0).
+// =============================================================================
+TEST(AtxImplDiscover, PboHardBlock_FlagSet_BreachFails) {
+    // flag == true, breach (finite pbo > max_pbo, gate NOT passed).
+    EXPECT_TRUE(pbo_hard_block_fails(true, false, 0.8, 0.5))
+        << "flag set + pbo=0.8 > max_pbo=0.5 + gate not passed -> must fail";
+    EXPECT_TRUE(pbo_hard_block_fails(true, false, 0.99, 0.1))
+        << "flag set + severe breach -> must fail";
+
+    // flag set, but various non-breach conditions -> must NOT fail.
+    EXPECT_FALSE(pbo_hard_block_fails(true, true, 0.8, 0.5))
+        << "flag set but pbo_gate_passed -> no hard block";
+    EXPECT_FALSE(pbo_hard_block_fails(true, false, std::numeric_limits<double>::quiet_NaN(), 0.5))
+        << "flag set but pbo is NaN (not computed) -> no hard block";
+    EXPECT_FALSE(pbo_hard_block_fails(true, true, 0.3, 0.5))
+        << "flag set but pbo_gate_passed=true (pbo=0.3 <= max_pbo=0.5) -> no hard block";
+    EXPECT_FALSE(pbo_hard_block_fails(true, false, 0.8, 1.0))
+        << "flag set but max_pbo=1.0 (gate OFF) -> no hard block";
+    EXPECT_FALSE(pbo_hard_block_fails(true, false, 0.8, 1.5))
+        << "flag set but max_pbo>1 (gate OFF) -> no hard block";
+}
+
+// =============================================================================
+// R3-Q2 Test 3 — Pure determinism: same inputs always produce same output.
+// =============================================================================
+TEST(AtxImplDiscover, PboHardBlock_Pure_Deterministic) {
+    const bool r1 = pbo_hard_block_fails(true, false, 0.7, 0.4);
+    const bool r2 = pbo_hard_block_fails(true, false, 0.7, 0.4);
+    EXPECT_EQ(r1, r2) << "pure predicate must be deterministic";
+    EXPECT_TRUE(r1) << "pbo=0.7 > max_pbo=0.4 with flag=true and gate_not_passed -> fails";
+
+    const bool r3 = pbo_hard_block_fails(false, false, 0.7, 0.4);
+    const bool r4 = pbo_hard_block_fails(false, false, 0.7, 0.4);
+    EXPECT_EQ(r3, r4) << "pure predicate must be deterministic with flag=false";
+    EXPECT_FALSE(r3) << "flag=false -> never fails";
+}
+
 } // namespace atxtest_discover

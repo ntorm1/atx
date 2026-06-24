@@ -429,6 +429,7 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.min_split_sharpe          = cfg.min_split_sharpe;       // W4a split-sample stability floor (off by default)
     fcfg.max_pbo                   = cfg.max_pbo;                 // W4b run-level CSCV-PBO batch gate (off by default = 1.0)
     fcfg.max_price_scale_corr      = cfg.max_price_scale_corr;   // R2 price-scale gate (off by default = 1.0)
+    fcfg.dsr_subwindows = static_cast<atx::usize>(std::max<int>(cfg.dsr_subwindows, 0)); // R3 intra-holdout DSR sub-windows (off by default = 0)
     fcfg.oos_fraction              = eff_oos_fraction; // R3a: use the effective fraction (auto-default 0.25 for accumulation)
     fcfg.oos_embargo               = cfg.oos_embargo;
     fcfg.oos_n_windows = static_cast<atx::usize>(std::max<long>(cfg.oos_windows, 0));
@@ -718,6 +719,15 @@ atx::core::Result<StageResult> run_discover_gated(
             rep.pbo, cfg.max_pbo,
             static_cast<std::size_t>(rep.pbo_n_candidates),
             static_cast<std::size_t>(rep.pbo_n_splits));
+    }
+    // R3 Q2: --pbo-hard-block: escalate advisory PBO breach to FAIL verdict + non-zero exit.
+    // Manifest + library are already persisted above; returning Err keeps all artifacts AND
+    // exits non-zero (dispatch.cpp:112-114 maps Err -> "print message, return 1").
+    if (cfg.pbo_hard_block && std::isfinite(rep.pbo) && cfg.max_pbo < 1.0 && !rep.pbo_gate_passed) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            std::string("[PBO hard block] PBO hard block: run-level CSCV-PBO=") +
+            std::to_string(rep.pbo) + " EXCEEDS --max-pbo=" + std::to_string(cfg.max_pbo) +
+            "; failing run (--pbo-hard-block)");
     }
 
     // Stage digest: fnv1a64 over '\n'-joined DSL (process-stable; same scheme as

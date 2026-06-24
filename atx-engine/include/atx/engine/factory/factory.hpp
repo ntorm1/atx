@@ -199,6 +199,13 @@ struct FactoryConfig {
   //  Active when < 1.0. Valid range: (0, 1].
   //  Default 1.0 = OFF (any correlation passes).
   atx::f64 max_price_scale_corr = 1.0; // --reject-price-scale (R2); 1.0 == OFF
+  // --- R3 intra-holdout DSR sub-windows gate (OPTIONAL; default OFF = 0 -> zero overhead).
+  //  Splits the sealed holdout PnL into K contiguous sub-segments and requires min_dsr on EACH.
+  //  This is an ADDITIONAL tightening layered on top of the existing aggregate hold_dsr >= min_dsr gate.
+  //  Semantics: 0 (and 1) == OFF. Active when >= 2.
+  //  WARNING: large K over a short holdout means short segments — a segment with < 2 real
+  //  observations always yields DSR=0.0 and will FAIL the bar. That is user tuning responsibility.
+  atx::usize dsr_subwindows = 0; // --dsr-subwindows (R3); 0/absent == OFF, byte-identical
 };
 
 // =========================================================================
@@ -243,7 +250,7 @@ struct FactoryReport {
   atx::usize duplicates{0};                     // library-wide F6 dedup hits (AdmitKind::Duplicate)
   atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
   atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
-  std::array<atx::usize, 7> reject_histogram{}; // count per library::AdmitKind (0..6)
+  std::array<atx::usize, 8> reject_histogram{}; // count per library::AdmitKind (0..7)
 
   // --- P2a OOS telemetry (additive; default-EMPTY so the legacy path is byte-
   //  identical). One entry per admitted alpha when oos_fraction > 0: its IS (train)

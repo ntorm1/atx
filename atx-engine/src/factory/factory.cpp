@@ -1216,12 +1216,61 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       }
       // raw_close absent -> loading = NaN -> price_scale_ok stays true (gate inert)
     }
+    // R3 intra-holdout DSR sub-windows gate (OPTIONAL; default OFF = 0 -> zero overhead).
+    // Splits the POST-DROP holdout PnL into K contiguous sub-segments and requires min_dsr
+    // on EACH. The structural index-0 zero is dropped EXACTLY ONCE (it belongs only to the
+    // first sub-window); sub-windows after the first use all-real returns. Identical at both
+    // serial and parallel sites so the seq==parallel digest invariant holds.
+    bool subwindows_ok = true;
+    if (cfg.dsr_subwindows >= 2U) {
+      // n_inst was declared inside the braced holdout-eval block above; derive from holdout panel.
+      const atx::usize sw_n_inst = holdout.instruments();
+      // POST-DROP region: global periods [1, T) where T = hold_pnl.size().
+      const atx::usize T = hold_pnl.size();
+      const atx::usize M = (T > 0U) ? (T - 1U) : 0U; // length of post-drop region
+      const atx::usize K = cfg.dsr_subwindows;
+      for (atx::usize k = 0U; k < K && subwindows_ok; ++k) {
+        // Partition [0, M) into K near-equal contiguous segments (global offset into post-drop).
+        const atx::usize seg_lo = (k * M) / K;
+        const atx::usize seg_hi = ((k + 1U) * M) / K;
+        // Map back to global hold_pnl indices: post-drop offset d -> global index d+1.
+        const atx::usize global_lo = seg_lo + 1U;
+        const atx::usize global_hi = seg_hi + 1U;
+        // Slice hold_pnl and hold_pos_flat to this sub-window's global period range.
+        const std::span<const atx::f64> sub_pnl =
+            std::span<const atx::f64>{hold_pnl}.subspan(global_lo, global_hi - global_lo);
+        const std::span<const atx::f64> sub_pos =
+            std::span<const atx::f64>{hold_pos_flat}.subspan(global_lo * sw_n_inst,
+                                                             (global_hi - global_lo) * sw_n_inst);
+        const combine::AlphaMetrics sub_metrics =
+            combine::compute_metrics(sub_pnl, sub_pos, sw_n_inst, cfg.book_size);
+        // DSR uses the SAME recipe as holdout_dsr but sub_pnl is already all-real (no
+        // additional subspan(1) needed — the structural zero is in the skipped global slot 0).
+        // Use holdout_dsr with the sub_pnl directly (it does subspan(1) which would drop a real
+        // observation). Instead, replicate the recipe inline: sub_pnl IS the moments span.
+        const atx::usize sub_T = sub_pnl.size();
+        if (sub_T < 2U) {
+          subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
+          break;
+        }
+        const atx::f64 per_period_sharpe = sub_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+        const eval::DsrResult dsr_result =
+            eval::deflated_sharpe(per_period_sharpe, sub_T, eval::skewness(sub_pnl),
+                                  eval::excess_kurtosis(sub_pnl), admit_fit.trial_count,
+                                  std::nullopt);
+        if (dsr_result.dsr < cfg.min_dsr) {
+          subwindows_ok = false;
+        }
+      }
+    }
     // (3d) ADMISSION on the HOLDOUT: clear the factory deflation bar on the holdout
     // DSR, then library::admit on the HOLDOUT metrics + holdout pnl (so the durable
     // `metrics` are what was actually gated out-of-sample).
     library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
     if (!price_scale_ok) {
       kind = library::AdmitKind::RejectPriceScale;
+    } else if (!subwindows_ok) {
+      kind = library::AdmitKind::RejectDsrSubwindow;
     } else if (hold_dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{hold_pnl},
@@ -1565,10 +1614,57 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
         }
       }
     }
+    // R3 intra-holdout DSR sub-windows gate (OPTIONAL; default OFF = 0 -> zero overhead).
+    // Splits the POST-DROP holdout PnL into K contiguous sub-segments and requires min_dsr
+    // on EACH. The structural index-0 zero is dropped EXACTLY ONCE (it belongs only to the
+    // first sub-window); sub-windows after the first use all-real returns. Identical at both
+    // serial and parallel sites so the seq==parallel digest invariant holds.
+    bool subwindows_ok = true;
+    if (cfg.dsr_subwindows >= 2U) {
+      // POST-DROP region: global periods [1, T) where T = hold_pnl.size().
+      const atx::usize T = hold_pnl.size();
+      const atx::usize M = (T > 0U) ? (T - 1U) : 0U; // length of post-drop region
+      const atx::usize K = cfg.dsr_subwindows;
+      for (atx::usize k = 0U; k < K && subwindows_ok; ++k) {
+        // Partition [0, M) into K near-equal contiguous segments (global offset into post-drop).
+        const atx::usize seg_lo = (k * M) / K;
+        const atx::usize seg_hi = ((k + 1U) * M) / K;
+        // Map back to global hold_pnl indices: post-drop offset d -> global index d+1.
+        const atx::usize global_lo = seg_lo + 1U;
+        const atx::usize global_hi = seg_hi + 1U;
+        // Slice hold_pnl and hold_pos_flat to this sub-window's global period range.
+        const std::span<const atx::f64> sub_pnl =
+            std::span<const atx::f64>{hold_pnl}.subspan(global_lo, global_hi - global_lo);
+        const std::span<const atx::f64> sub_pos =
+            std::span<const atx::f64>{hold_pos_flat}.subspan(global_lo * n_inst,
+                                                             (global_hi - global_lo) * n_inst);
+        const combine::AlphaMetrics sub_metrics =
+            combine::compute_metrics(sub_pnl, sub_pos, n_inst, cfg.book_size);
+        // DSR uses the SAME recipe as holdout_dsr but sub_pnl is already all-real (no
+        // additional subspan(1) needed — the structural zero is in the skipped global slot 0).
+        // Use holdout_dsr with the sub_pnl directly (it does subspan(1) which would drop a real
+        // observation). Instead, replicate the recipe inline: sub_pnl IS the moments span.
+        const atx::usize sub_T = sub_pnl.size();
+        if (sub_T < 2U) {
+          subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
+          break;
+        }
+        const atx::f64 per_period_sharpe = sub_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+        const eval::DsrResult dsr_result =
+            eval::deflated_sharpe(per_period_sharpe, sub_T, eval::skewness(sub_pnl),
+                                  eval::excess_kurtosis(sub_pnl), admit_fit.trial_count,
+                                  std::nullopt);
+        if (dsr_result.dsr < cfg.min_dsr) {
+          subwindows_ok = false;
+        }
+      }
+    }
     // (3d) ADMISSION on the HOLDOUT — IDENTICAL to serial mine_into_oos:813-830.
     library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
     if (!price_scale_ok) {
       kind = library::AdmitKind::RejectPriceScale;
+    } else if (!subwindows_ok) {
+      kind = library::AdmitKind::RejectDsrSubwindow;
     } else if (hold_dsr >= cfg.min_dsr && split_ok) {
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{hold_pnl},

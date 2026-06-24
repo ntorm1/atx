@@ -36,6 +36,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "industry-neutral")  { cfg.industry_neutral  = true; return atx::core::Ok(); }
     if (flag == "enable-wrap-in-op")  { cfg.enable_wrap_in_op = true; return atx::core::Ok(); }
     if (flag == "typed-fields")       { cfg.typed_fields       = true; return atx::core::Ok(); } // R1
+    if (flag == "pbo-hard-block")     { cfg.pbo_hard_block     = true; return atx::core::Ok(); } // R3
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -171,6 +172,20 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         }
         return atx::core::Ok();
     }
+    if (flag == "dsr-subwindows") {                                                    // R3 intra-holdout DSR sub-windows
+        long tmp = 0;
+        ATX_TRY_VOID(parse_long(tmp));
+        if (tmp == 1) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--dsr-subwindows must be 0 or >= 2: value 1 is meaningless (single window == aggregate gate)");
+        }
+        if (tmp < 0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--dsr-subwindows must be 0 or >= 2: got " + std::string(value));
+        }
+        cfg.dsr_subwindows = static_cast<int>(tmp);
+        return atx::core::Ok();
+    }
     if (flag == "field-cardinality-max") {                                           // R1 typed-fields cardinality threshold
         long tmp = 0;
         ATX_TRY_VOID(parse_long(tmp));
@@ -300,7 +315,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields") { // R1: typed-fields
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block") { // R1: typed-fields; R3: pbo-hard-block
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;
