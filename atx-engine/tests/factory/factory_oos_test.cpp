@@ -1142,6 +1142,9 @@ TEST(FactoryOos, PriceScaleGate_ActiveWithRawClose_RejectsWhenLoadingHigh) {
   Factory fA = fxA.factory();
   const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
   ASSERT_EQ(repA.reject_histogram[6], 0u) << "gate OFF: RejectPriceScale bucket must be 0";
+  ASSERT_GT(repA.admitted, 0u)
+      << "gate OFF must admit at least one candidate, else the RED->GREEN "
+         "rejection assertions below would pass vacuously";
 
   // Run B: gate ON with threshold=1e-9 — almost any non-trivial book is rejected.
   FactoryConfig cfg_on = cfg_off;
