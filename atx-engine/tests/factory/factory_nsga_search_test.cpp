@@ -70,6 +70,14 @@ using atx::engine::factory::SearchResult;
 // oracle (alpha conformance suite). Old pre-Task-7 value: 0xa83f0d3e0b41a18d.
 constexpr atx::u64 kGoldenDigest = 0xff95ac12512e0e91ULL;
 
+// Off-path MultiObjective determinism anchor (R4): the digest produced by
+// deflate_off_cfg(555) on the 96x6 fixture.  This equals the pre-R4 value
+// because the entire R4 block is skipped when deflate_selection is off
+// (byte-identical by construction).  Guards against future drift in the
+// MultiObjective path that would otherwise go undetected (self-consistency
+// alone cannot catch a constant shift across all runs).
+constexpr atx::u64 kGoldenMultiObjectiveOffPath = 0x1763d356dfa4fbceULL;
+
 // ===========================================================================
 //  Frozen fixture — lifted VERBATIM from zzz_golden_capture_test.cpp.
 // ===========================================================================
@@ -319,15 +327,7 @@ using atx::engine::factory::kMaxObjectives;
 // A cfg that exercises deflate_selection in MultiObjective mode with enough
 // generations for canon.size() to grow substantially (so N >> 1 by gen 1+,
 // driving DSR materially below 1 for weaker alphas and changing ranking).
-//
-// KEY: we also pre-set cfg.fitness.trial_count to a high value so that even at
-// gen 0 (where gen_fit.trial_count = max(1, canon.size()) = 1) the DSR
-// calculation in subsequent gens uses a large N. Actually the per-gen N comes
-// from canon.size(), so we use a large population (24) so gen-1 canon has ~24
-// entries and DSR is meaningfully deflated. Additionally we set a non-unit
-// baseline trial_count in fitness so that the off-path also has a reference DSR
-// — but since gen_fit REPLACES cfg.fitness.trial_count when deflate_selection is
-// ON, the key is that canon.size() grows large enough that dsr < 1 distinctly.
+// Large population (24) => canon grows quickly => N >> 1 by gen 1.
 [[nodiscard]] SearchConfig deflate_on_cfg(atx::u64 seed) {
   SearchConfig c;
   c.master_seed              = seed;
@@ -389,12 +389,13 @@ TEST(NsgaSearch, DeflateSelection_DefaultIsOff_ByteIdentical) {
     const SearchResult r2 = driver.run(deflate_off_cfg(555), pool2);
     EXPECT_EQ(r1.digest, r2.digest)
         << "MultiObjective off-path (deflate_selection=false) is not byte-stable.";
-    // n_objectives must never reach slot 6 when flag is off.
-    for (const auto &g : r1.all_scored) {
-      // We can only inspect via the scored set indirectly; the key invariant is
-      // that the digest is stable — no slot-6 write means no divergence.
-      (void)g;
-    }
+    // Off-path MultiObjective determinism anchor: this equals the pre-R4 value
+    // because the entire R4 block is skipped when deflate_selection is off
+    // (byte-identical by construction).  Guards against future drift.
+    EXPECT_EQ(r1.digest, kGoldenMultiObjectiveOffPath)
+        << "MultiObjective off-path digest drifted from the R4 anchor — "
+           "either a non-R4 edit changed the MultiObjective path or the "
+           "deflate_selection flag is leaking into the off-path.";
     EXPECT_GT(r1.trial_count, 0u) << "vacuity: run must have scored some candidates";
   }
 }
@@ -519,14 +520,18 @@ TEST(NsgaSearch, DeflateSelection_Deterministic) {
 }
 
 // ---------------------------------------------------------------------------
-//  5. Gen-0 uses N=1 (documents the max(1, canon.size()) floor).
-//     With deflate_selection on, gen 0 has canon.size()==0, so N = max(1,0) = 1.
-//     This is the same as the default (trial_count=1), so the divergence onset
-//     is generation 1+ (when canon has grown from prior-gen scoring).
-//     We verify this by running 1 generation and confirming the digest equals the
-//     off-path 1-gen run (selection sees the same dsr at N=1 as at default N=1).
+//  5. Single-generation run produces IDENTICAL digest with flag ON vs OFF.
+//
+//  KEY FACT: res.digest folds (gen, signal_set_digest) per generation, where
+//  signal_set_digest is a pure function of the genome's evaluated signal — it
+//  does NOT depend on raw, objectives, or trial_count.  R4's deflation changes
+//  raw and objectives[kObjDeflation] (the SELECTION signal), not the eval.
+//  Therefore a generations=1 run yields an IDENTICAL res.digest on-path and
+//  off-path: gen-0 genomes are seeded identically and their signal_set_digests
+//  are flag-independent.  Divergence requires >=2 generations so that gen-0
+//  selection propagates into different gen-1 offspring.
 // ---------------------------------------------------------------------------
-TEST(NsgaSearch, DeflateSelection_Gen0UsesN1) {
+TEST(NsgaSearch, DeflateSelection_SingleGenerationDoesNotDiverge) {
   Library lib{};
   Panel panel = fixture_panel(96, 6);
   WeightPolicy policy{};
@@ -546,22 +551,16 @@ TEST(NsgaSearch, DeflateSelection_Gen0UsesN1) {
   const SearchResult r_on  = SearchDriver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}}
                                  .run(cfg_on, pool_on);
 
-  // At gen 0 canon.size()==0 -> N=1 == default trial_count=1, so dsr is identical.
-  // BUT the raw haircut (rep->raw * rep->dsr) and objectives[kObjDeflation]=dsr DO
-  // differ from the off-path (raw*1.0 != raw when dsr<1, though at N=1 dsr~1).
-  // The key assertion is just that n_workers-invariance and determinism hold at gen 1.
-  // For N=1 at gen 0, the digest CAN equal the off-path (dsr≈1 at N=1) but it is
-  // NOT guaranteed (raw haircut * dsr still writes slot 6). We assert trial_count
-  // matches (same distinct candidates evaluated) as the structural invariant.
-  EXPECT_EQ(r_off.trial_count, r_on.trial_count)
-      << "Gen-0 trial_count differs between flag-on and flag-off — "
-         "unexpectedly different candidates evaluated.";
-  // Both runs must be internally deterministic (run them again to verify).
-  AlphaStore pool_on2{};
-  const SearchResult r_on2 = SearchDriver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}}
-                                  .run(cfg_on, pool_on2);
-  EXPECT_EQ(r_on.digest, r_on2.digest)
-      << "Gen-0 single-generation deflate_selection run is not deterministic.";
+  // Vacuity guard: must have scored actual candidates.
+  ASSERT_GT(r_off.trial_count, 0u) << "vacuity: single-gen run scored no candidates.";
+
+  // Core assertion: a single-generation run is digest-identical regardless of
+  // the flag, because signal_set_digest is eval-only (flag-independent).
+  // Divergence is only possible once selection pressure propagates into gen-1+.
+  EXPECT_EQ(r_on.digest, r_off.digest)
+      << "Single-generation deflate_selection run diverged from off-path — "
+         "impossible if signal_set_digest is truly eval-only. "
+         "Check that no eval path reads deflate_selection or objectives[kObjDeflation].";
 }
 
 } // namespace
