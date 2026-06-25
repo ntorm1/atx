@@ -619,6 +619,25 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   const atx::usize n_to_score = to_score.size();
   std::vector<CachedScore> score_slot(n_to_score);
 
+  // R4 — per-generation deflation N (Piece 1, determinism-safe).
+  //
+  // canon.size() is captured HERE (serial, before the parallel_for barrier) so
+  // every worker in this generation sees the SAME N — it is the count of distinct
+  // candidates scored in ALL PRIOR generations (the canon.insert seam at
+  // search_driver.cpp Phase 4 runs serially, after the parallel barrier, so no
+  // per-candidate atomic inside the parallel region is needed or allowed).
+  //
+  // gen 0: canon.size()==0 -> N=1 (same as default trial_count=1), so gen-0 DSR
+  // values equal the off-path; divergence is driven by the objective/raw seam
+  // below, not by N at gen 0.
+  //
+  // When deflate_selection is OFF: gen_fit == cfg.fitness exactly (trial_count
+  // stays at its cfg.fitness default) -> zero new computation -> byte-identical.
+  FitnessCfg gen_fit = cfg.fitness;
+  if (cfg.deflate_selection) {
+    gen_fit.trial_count = std::max<atx::usize>(1U, canon.size());
+  }
+
   det_pool.parallel_for(n_fresh, [&](atx::usize p, atx::usize wid) {
     const atx::usize k = order_fresh[p]; // LPT remap -> canonical slot k
     auto prog = alpha::compile(fresh[k]->ast, fresh[k]->analysis);
@@ -634,7 +653,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     const auto it = score_j_of_ptr.find(fresh[k]);
     if (it != score_j_of_ptr.end() && ss.has_value()) {
       const atx::usize j = it->second;
-      auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, cfg.fitness,
+      auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, gen_fit,
                                    /*weak_panel=*/weak_panel_, /*engine=*/engines[wid].get(),
                                    /*signals=*/&*ss);
       if (rep.has_value()) {
@@ -657,6 +676,28 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
             -static_cast<atx::f64>(to_score[j]->ast.nodes().size());
         score_slot[j].n_objectives = static_cast<atx::u8>(
             std::max<atx::usize>(score_slot[j].n_objectives, kObjParsimony + 1U));
+      }
+      // R4 — deflated-Sharpe selection pressure (Pieces 2 + 3), opt-in.
+      //
+      // Piece 2 (NSGA objective): add dsr as objectives[kObjDeflation] so
+      // MultiObjective ranking rewards candidates with higher deflated edge.
+      // n_objectives is bumped to cover slot 6 so the ObjMatrix includes it.
+      // Piece 3 (raw haircut): multiply raw by dsr so the elitism/ScalarRaw
+      // signal also reflects deflation risk. rep->dsr in [0,1] (PSR/probability)
+      // so this shrinks raw toward 0 as the deflation bar bites.
+      //
+      // OFF-PATH: when deflate_selection is false this block is skipped — raw is
+      // unchanged, n_objectives is unchanged, objectives[6] stays at its zero
+      // default, and the NSGA ObjMatrix never sees slot 6. Byte-identical.
+      //
+      // GUARD: only write when fitness succeeded (rep.has_value() checked above;
+      // this block is inside the `if (rep.has_value())` scope via the outer seam
+      // structure). The write is to score_slot[j], a disjoint single-writer slot.
+      if (cfg.deflate_selection && rep.has_value()) {
+        score_slot[j].objectives[kObjDeflation] = rep->dsr; // maximization: higher deflated edge ranks better
+        score_slot[j].n_objectives = static_cast<atx::u8>(
+            std::max<atx::usize>(score_slot[j].n_objectives, kObjDeflation + 1U));
+        score_slot[j].raw = rep->raw * rep->dsr; // deflation haircut for elitism / ScalarRaw
       }
     }
   });

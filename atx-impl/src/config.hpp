@@ -145,6 +145,15 @@ struct RunConfig {
     // Requires --max-pbo < 1.0 to have any effect (the advisory gate must be active to breach).
     bool        pbo_hard_block = false; // --pbo-hard-block (R3); escalate advisory PBO breach to non-zero exit
 
+    // --deflate-selection (R4): opt-in deflated-Sharpe search selection pressure.
+    // When set, the deflated Sharpe (DSR) enters the genetic search's SELECTION
+    // signal: objectives[kObjDeflation]=dsr (new NSGA column) and raw is multiplied
+    // by dsr (elitism/ScalarRaw haircut). The per-generation deflation N =
+    // max(1, canon.size()) is captured serially before the parallel_for, so the
+    // seq==parallel invariant holds. DEFAULT FALSE: absent this flag both the F1
+    // search digest and every existing golden are BYTE-IDENTICAL to today.
+    bool        deflate_selection = false;  // --deflate-selection (R4)
+
     // --typed-fields (R1): opt-in field-type discipline. When set, before running
     // the search a one-pass cardinality scan classifies each numeric panel field;
     // binary / low-cardinality / categorical fields are excluded from the grammar's

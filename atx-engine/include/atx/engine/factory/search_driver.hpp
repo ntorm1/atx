@@ -187,6 +187,20 @@ struct SearchConfig {
   // local exploration alive when escape from a plateau is most needed.
   bool jitter_anneal{true};
   atx::f64 jitter_anneal_decay{0.97};
+  // R4: opt-in deflated-Sharpe selection pressure. When ON, evaluate_generation
+  // captures canon.size() BEFORE the parallel_for as the per-generation deflation
+  // N (worker-order-independent), feeds it into a per-generation FitnessCfg so
+  // pool_aware_fitness computes dsr with that N, then at the score_slot seam:
+  //   (1) objectives[kObjDeflation] = rep->dsr    (new NSGA objective, maximized)
+  //   (2) score_slot[j].raw *= rep->dsr            (raw haircut for elitism/ScalarRaw)
+  // OFF (the default): gen_fit == cfg.fitness exactly — zero new computation, the
+  // F1 search digest, admission digest, ScalarRaw boundary pin, and MultiObjective
+  // default digest are ALL byte-identical to the pre-R4 path.
+  // CACHING NOTE: a genome first scored in generation g caches its haircut raw +
+  // objectives[kObjDeflation] computed with N = canon.size() at gen g; a later
+  // reuse keeps that first-evaluation deflation. Fully deterministic (cache order
+  // is serial) — the accepted semantic.
+  bool deflate_selection{false};  // R4: deflated-Sharpe enters search selection
   // W1b: the wrap_in_op mutation — wrap a subtree in a conditioning op (zscore/
   // signedpower/rank/winsorize/group_neutralize) so the GA can CREATE in-expression
   // conditioning structure (the manual-alpha lift signedpower(zscore(raw), p)).

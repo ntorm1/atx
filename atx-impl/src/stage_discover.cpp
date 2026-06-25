@@ -430,6 +430,7 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.max_pbo                   = cfg.max_pbo;                 // W4b run-level CSCV-PBO batch gate (off by default = 1.0)
     fcfg.max_price_scale_corr      = cfg.max_price_scale_corr;   // R2 price-scale gate (off by default = 1.0)
     fcfg.dsr_subwindows = static_cast<atx::usize>(std::max<int>(cfg.dsr_subwindows, 0)); // R3 intra-holdout DSR sub-windows (off by default = 0)
+    fcfg.search.deflate_selection  = cfg.deflate_selection; // R4: opt-in deflated-Sharpe search selection
     fcfg.oos_fraction              = eff_oos_fraction; // R3a: use the effective fraction (auto-default 0.25 for accumulation)
     fcfg.oos_embargo               = cfg.oos_embargo;
     fcfg.oos_n_windows = static_cast<atx::usize>(std::max<long>(cfg.oos_windows, 0));

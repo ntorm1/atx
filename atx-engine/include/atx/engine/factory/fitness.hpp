@@ -84,17 +84,24 @@ namespace atx::engine::factory {
 //
 //  S4.1 ships three objectives {wq, diversify, robust} (a re-projection of the
 //  existing FitnessReport fields — NO new fitness math). The capacity is sized to
-//  6 to leave room for S4.2 (behavioral novelty), S4.3 (a pre-negated cost
-//  objective), and S4.4 (parsimony) WITHOUT touching this constant or any struct
-//  layout again. The std::array<f64, kMaxObjectives> is a fixed-size,
-//  allocation-free inline buffer — it carries through Scored (search_driver.hpp)
-//  into the NSGA-II ObjMatrix.
+//  7 to leave room for S4.2 (behavioral novelty), S4.3 (a pre-negated cost
+//  objective), S4.4 (parsimony), and R4 (deflated-Sharpe selection column)
+//  WITHOUT touching this constant or any struct layout again. The
+//  std::array<f64, kMaxObjectives> is a fixed-size, allocation-free inline buffer
+//  — it carries through Scored (search_driver.hpp) into the NSGA-II ObjMatrix.
+//
+//  OFF-PATH SAFETY: NSGA-II builds its ObjMatrix over the first k = max(n_objectives)
+//  columns (search_driver.cpp assign_pareto_ranks), NOT kMaxObjectives. Inactive
+//  slot 6 stays at its zero default and is NEVER read unless deflate_selection is
+//  on — so growing 6->7 is byte-identical on the off-path. res.digest folds
+//  signal_set_digest (NOT the objectives array), so no golden hashes this width.
 // =========================================================================
-inline constexpr atx::usize kMaxObjectives = 6;
+inline constexpr atx::usize kMaxObjectives = 7;
 // Objective-slot indices (NSGA-II maximizes every column; inactive columns MUST be
 // uniform across genomes -> inert). 0 wq, 1 diversify, 2 robust, 3 novelty,
-// 4 -cost_bps, 5 -node_count (parsimony).
-inline constexpr atx::usize kObjParsimony = 5;
+// 4 -cost_bps, 5 -node_count (parsimony), 6 dsr (deflated-Sharpe, R4 opt-in).
+inline constexpr atx::usize kObjParsimony  = 5;
+inline constexpr atx::usize kObjDeflation  = 6; // R4: deflated-Sharpe selection objective
 
 // =========================================================================
 //  Reduce — how corr_to_pool folds the per-member |corr| over the pool.
