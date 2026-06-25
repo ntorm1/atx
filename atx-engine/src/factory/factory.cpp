@@ -1244,10 +1244,9 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
                                                              (global_hi - global_lo) * sw_n_inst);
         const combine::AlphaMetrics sub_metrics =
             combine::compute_metrics(sub_pnl, sub_pos, sw_n_inst, cfg.book_size);
-        // DSR uses the SAME recipe as holdout_dsr but sub_pnl is already all-real (no
-        // additional subspan(1) needed — the structural zero is in the skipped global slot 0).
-        // Use holdout_dsr with the sub_pnl directly (it does subspan(1) which would drop a real
-        // observation). Instead, replicate the recipe inline: sub_pnl IS the moments span.
+        // DSR uses the SAME recipe as holdout_dsr, inlined: sub_pnl is already all-real
+        // (the structural zero lives in the skipped global slot 0), so sub_pnl IS the moments
+        // span directly -- no subspan(1) drop here (that would discard a real observation).
         const atx::usize sub_T = sub_pnl.size();
         if (sub_T < 2U) {
           subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
@@ -1640,10 +1639,9 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
                                                              (global_hi - global_lo) * n_inst);
         const combine::AlphaMetrics sub_metrics =
             combine::compute_metrics(sub_pnl, sub_pos, n_inst, cfg.book_size);
-        // DSR uses the SAME recipe as holdout_dsr but sub_pnl is already all-real (no
-        // additional subspan(1) needed — the structural zero is in the skipped global slot 0).
-        // Use holdout_dsr with the sub_pnl directly (it does subspan(1) which would drop a real
-        // observation). Instead, replicate the recipe inline: sub_pnl IS the moments span.
+        // DSR uses the SAME recipe as holdout_dsr, inlined: sub_pnl is already all-real
+        // (the structural zero lives in the skipped global slot 0), so sub_pnl IS the moments
+        // span directly -- no subspan(1) drop here (that would discard a real observation).
         const atx::usize sub_T = sub_pnl.size();
         if (sub_T < 2U) {
           subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
