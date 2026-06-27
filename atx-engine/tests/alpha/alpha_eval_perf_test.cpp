@@ -817,6 +817,7 @@ TEST(WeightScratch_Equivalence_ByteIdentical, RankTransformMultiDate) {
   std::vector<atx::f64> scratch_weights;
   std::vector<atx::usize> scratch_live_idx;
   std::vector<atx::f64> scratch_dense;
+  std::vector<atx::f64> scratch_tform_tmp;
 
   for (atx::usize t = 0; t < rows.size(); ++t) {
     const SignalView sv{std::span<const atx::f64>{*rows[t]}};
@@ -825,7 +826,8 @@ TEST(WeightScratch_Equivalence_ByteIdentical, RankTransformMultiDate) {
     const std::vector<atx::f64> oracle = policy.to_target_weights(sv, universe);
 
     // Scratch overload (pre-sized buffers, reused across dates).
-    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense);
+    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense,
+                             scratch_tform_tmp);
 
     ASSERT_EQ(scratch_weights.size(), kN)
         << "scratch weights wrong size at date " << t;
@@ -856,11 +858,13 @@ TEST(WeightScratch_Equivalence_ByteIdentical, ZScoreTransformMultiDate) {
   std::vector<atx::f64> scratch_weights;
   std::vector<atx::usize> scratch_live_idx;
   std::vector<atx::f64> scratch_dense;
+  std::vector<atx::f64> scratch_tform_tmp;
 
   for (atx::usize t = 0; t < rows.size(); ++t) {
     const SignalView sv{std::span<const atx::f64>{*rows[t]}};
     const std::vector<atx::f64> oracle = policy.to_target_weights(sv, universe);
-    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense);
+    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense,
+                             scratch_tform_tmp);
 
     ASSERT_EQ(scratch_weights.size(), kN);
     for (atx::usize i = 0; i < kN; ++i) {
@@ -887,9 +891,11 @@ TEST(WeightScratch_Equivalence_ByteIdentical, RawTransformSingleValidInst) {
   std::vector<atx::f64> scratch_weights;
   std::vector<atx::usize> scratch_live_idx;
   std::vector<atx::f64> scratch_dense;
+  std::vector<atx::f64> scratch_tform_tmp;
 
   const std::vector<atx::f64> oracle = policy.to_target_weights(sv, universe);
-  policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense);
+  policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense,
+                           scratch_tform_tmp);
 
   ASSERT_EQ(scratch_weights.size(), kN);
   for (atx::usize i = 0; i < kN; ++i) {
@@ -901,15 +907,15 @@ TEST(WeightScratch_Equivalence_ByteIdentical, RawTransformSingleValidInst) {
 
 // ---- WeightScratch_StreamDigest_ByteIdentical -------------------------------
 //
-// Build a synthetic SignalSet + Panel with 3 alphas, 4 dates, 4 instruments.
-// Run fill_alpha_stream on both the allocating path (existing) and a simulated
-// scratch path (using the scratch overload with hoisted buffers the same way
-// streams.hpp will after the hoist).  The resulting pos_flat / pnl_flat must be
-// byte-identical.
+// Build a synthetic SignalSet with 2 alphas, 4 dates, 4 instruments.
+// REFERENCE side: built by calling the ALLOCATING overload (to_target_weights
+// returning a new std::vector per date) assembled into ref.pos_flat manually.
+// This ensures the reference is independent of fill_alpha_stream and the test
+// can FAIL if the scratch/hoist path diverged from the allocating path.
 //
-// NOTE: after the hoist in streams.hpp, fill_alpha_stream itself will use the
-// scratch path. Until then, we test via a local equivalent to confirm the
-// scratch overload produces the same stream output as the allocating overload.
+// TESTED side: built by calling fill_alpha_stream (which internally uses the
+// scratch/hoisted path since the streams.hpp hoist already landed).
+// The resulting pos_flat must be bit-identical to the reference.
 
 TEST(WeightScratch_StreamDigest_ByteIdentical, FillAlphaStreamScratchMatchesOrig) {
   constexpr atx::usize kDates = 4;
@@ -928,10 +934,6 @@ TEST(WeightScratch_StreamDigest_ByteIdentical, FillAlphaStreamScratchMatchesOrig
       102.0, 202.0, 148.0, 130.0, // date2
       108.0, 198.0, 160.0, 122.0, // date3
   };
-  std::vector<std::vector<atx::f64>> panel_data{close_data};
-  auto panel_res = Panel::create(kDates, kInsts, {"close"}, std::move(panel_data), {});
-  ASSERT_TRUE(panel_res.has_value()) << panel_res.error().message();
-  const Panel panel = std::move(*panel_res);
 
   // Two synthetic alphas (date-major, 4 dates × 4 instruments each).
   // alpha0: a mix of valid/NaN scores across dates.
@@ -965,21 +967,24 @@ TEST(WeightScratch_StreamDigest_ByteIdentical, FillAlphaStreamScratchMatchesOrig
   const Universe universe{universe_ids};
   const std::span<const atx::f64> close_span{close_data};
 
-  // --- Reference: existing allocating fill_alpha_stream path ---
-  AlphaStreams ref;
-  ref.n_alphas_ = kAlphas;
-  ref.n_periods_ = kDates;
-  ref.n_instruments_ = kInsts;
-  ref.pnl_flat.assign(kAlphas * kDates, 0.0);
-  ref.pos_flat.assign(kAlphas * kDates * kInsts, 0.0);
+  // --- REFERENCE: built independently via the ALLOCATING overload per date.
+  //     This is intentionally NOT fill_alpha_stream — constructing the
+  //     reference from the allocating path makes this test able to catch a
+  //     divergence between the two paths.
+  std::vector<atx::f64> ref_pos(kAlphas * kDates * kInsts, 0.0);
   for (atx::usize i = 0; i < kAlphas; ++i) {
-    fill_alpha_stream(ref, i, signals, policy, universe, close_span, 0.0);
+    for (atx::usize t = 0; t < kDates; ++t) {
+      const SignalView row{signals.alpha_cross_section(i, t)};
+      const std::vector<atx::f64> w = policy.to_target_weights(row, universe);
+      const atx::usize off = (i * kDates + t) * kInsts;
+      for (atx::usize j = 0; j < kInsts; ++j) {
+        ref_pos[off + j] = w[j];
+      }
+    }
   }
 
-  // --- After hoist: fill_alpha_stream uses scratch overload inside.
-  //     Here we call the same function; once the hoist lands in streams.hpp
-  //     it will internally use hoisted scratch buffers. We verify the outputs
-  //     match to confirm scratch equivalence holds at stream level.
+  // --- TESTED SIDE: fill_alpha_stream (uses hoisted scratch buffers internally
+  //     after the streams.hpp hoist from the production fix).
   AlphaStreams hoisted;
   hoisted.n_alphas_ = kAlphas;
   hoisted.n_periods_ = kDates;
@@ -990,18 +995,12 @@ TEST(WeightScratch_StreamDigest_ByteIdentical, FillAlphaStreamScratchMatchesOrig
     fill_alpha_stream(hoisted, i, signals, policy, universe, close_span, 0.0);
   }
 
-  // pos_flat and pnl_flat must be bit-identical.
-  ASSERT_EQ(ref.pos_flat.size(), hoisted.pos_flat.size());
-  ASSERT_EQ(ref.pnl_flat.size(), hoisted.pnl_flat.size());
-  for (atx::usize k = 0; k < ref.pos_flat.size(); ++k) {
-    EXPECT_TRUE(bit_eq_w(ref.pos_flat[k], hoisted.pos_flat[k]))
-        << "pos_flat[" << k << "]: ref=" << ref.pos_flat[k]
+  // pos_flat must be bit-identical to the allocating-overload reference.
+  ASSERT_EQ(ref_pos.size(), hoisted.pos_flat.size());
+  for (atx::usize k = 0; k < ref_pos.size(); ++k) {
+    EXPECT_TRUE(bit_eq_w(ref_pos[k], hoisted.pos_flat[k]))
+        << "pos_flat[" << k << "]: ref=" << ref_pos[k]
         << " hoisted=" << hoisted.pos_flat[k];
-  }
-  for (atx::usize k = 0; k < ref.pnl_flat.size(); ++k) {
-    EXPECT_TRUE(bit_eq_w(ref.pnl_flat[k], hoisted.pnl_flat[k]))
-        << "pnl_flat[" << k << "]: ref=" << ref.pnl_flat[k]
-        << " hoisted=" << hoisted.pnl_flat[k];
   }
 }
 
@@ -1042,11 +1041,13 @@ TEST(WeightScratch_AllocBench_O1PerAlpha, AllocVsScratchWallTime) {
   std::vector<atx::f64> scratch_weights;
   std::vector<atx::usize> scratch_live_idx;
   std::vector<atx::f64> scratch_dense;
+  std::vector<atx::f64> scratch_tform_tmp;
 
   atx::f64 sink_scratch = 0.0;
   const auto scratch_start = Clock::now();
   for (int r = 0; r < kReps; ++r) {
-    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense);
+    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense,
+                             scratch_tform_tmp);
     sink_scratch += scratch_weights[0];
   }
   const auto scratch_ns =
@@ -1071,3 +1072,143 @@ TEST(WeightScratch_AllocBench_O1PerAlpha, AllocVsScratchWallTime) {
 }
 
 } // namespace atxtest_alpha_weight_scratch
+
+// ============================================================================
+// S1-1: WeightScratch_AllocCount_O1AfterWarmup
+//
+// Proves the ping-pong fix achieves O(1) allocations per alpha — i.e. NO
+// re-allocations after the high-water-mark warmup date — regardless of the
+// number of post-warmup dates and regardless of variable NaN patterns.
+//
+// Approach: data-pointer stability.  A std::vector reallocates iff its internal
+// `data()` pointer changes between calls.  After the warmup date establishes
+// the high-water-mark capacity, every subsequent call to the scratch overload
+// must leave ALL FOUR hoisted buffers with the SAME `data()` pointer they had
+// going in — no realloc.  We snapshot the pointers after warmup and assert
+// they are unchanged across all 24 post-warmup dates.
+//
+// Note on the ping-pong: apply_transform (Rank/ZScore) does dense.swap(tmp),
+// which exchanges the two buffers' storage.  After warmup BOTH buffers have at
+// least the high-water-mark capacity; the swap leaves both buffers with the
+// SAME high-water-mark capacity (just in swapped roles), so neither can trigger
+// a grow on the next call.  The old per-call-local `out` design allocated a
+// fresh buffer of size=k on each call and after swap left `dense` with capacity
+// k < n, causing a realloc on the next date when k_next != k.
+//
+// This test FAILS against the old design (data() pointer changes every date
+// for dense/tform_tmp) and PASSES with the ping-pong fix.
+// ============================================================================
+
+namespace atxtest_alpha_weight_scratch_alloc {
+
+using atx::engine::InstrumentId;
+using atx::engine::SignalView;
+using atx::engine::Transform;
+using atx::engine::Universe;
+using atx::engine::WeightPolicy;
+
+static constexpr atx::f64 kNaN2 = std::numeric_limits<atx::f64>::quiet_NaN();
+
+[[nodiscard]] static std::vector<InstrumentId> make_universe2(atx::usize n) {
+  std::vector<InstrumentId> ids(n);
+  for (atx::usize i = 0; i < n; ++i) {
+    ids[i] = InstrumentId{static_cast<atx::u32>(i)};
+  }
+  return ids;
+}
+
+TEST(WeightScratch_AllocCount_O1AfterWarmup, NoReallocsAfterWarmupVariableLiveCounts) {
+  // 8 instruments; variable NaN patterns per date so live count k varies.
+  // date0: k=8 (full universe) — establishes the high-water mark (warmup date).
+  // date1: k=5; date2: k=3; date3: k=7; date4: k=2 (post-warmup samples).
+  // date5..date24: alternating k=4 and k=6 (20 more post-warmup dates).
+  constexpr atx::usize kN = 8;
+  const auto universe_ids = make_universe2(kN);
+  const Universe universe{universe_ids};
+
+  WeightPolicy policy;
+  policy.transform = Transform::Rank; // Rank exercises the dense↔tform_tmp swap
+  policy.winsorize_limit = 0.0;
+
+  std::vector<std::vector<atx::f64>> rows;
+  rows.push_back({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0});            // date0: k=8 HWM
+  rows.push_back({kNaN2, 2.0, kNaN2, 4.0, 5.0, kNaN2, 7.0, 8.0});       // date1: k=5
+  rows.push_back({kNaN2, kNaN2, kNaN2, kNaN2, kNaN2, 6.0, 7.0, 8.0});   // date2: k=3
+  rows.push_back({1.0, kNaN2, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0});           // date3: k=7
+  rows.push_back({kNaN2, kNaN2, kNaN2, kNaN2, kNaN2, kNaN2, 7.0, 8.0}); // date4: k=2
+  for (int x = 0; x < 20; ++x) {
+    if (x % 2 == 0) {
+      rows.push_back({1.0, kNaN2, 3.0, kNaN2, 5.0, kNaN2, 7.0, kNaN2}); // k=4
+    } else {
+      rows.push_back({1.0, 2.0, kNaN2, 4.0, 5.0, 6.0, kNaN2, 8.0});     // k=6
+    }
+  }
+
+  // Hoisted buffers — mirrors the fill_alpha_stream hoist from streams.hpp.
+  std::vector<atx::f64> scratch_weights;
+  std::vector<atx::usize> scratch_live_idx;
+  std::vector<atx::f64> scratch_dense;
+  std::vector<atx::f64> scratch_tform_tmp;
+
+  // Warmup: process date0 (full-universe, HWM) — allocates initial storage.
+  {
+    const SignalView sv{std::span<const atx::f64>{rows[0]}};
+    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense,
+                             scratch_tform_tmp);
+  }
+
+  // After warmup the ping-pong buffers may have been swapped once; snapshot
+  // their data pointers NOW. They must NOT change on any subsequent call
+  // because both dense and tform_tmp already hold the high-water-mark capacity.
+  // Note: dense and tform_tmp swap their storage each call, so we track the
+  // PAIR of pointers as a set — what matters is that no NEW allocation occurs.
+  const atx::f64 *ptr_weights_after_warmup = scratch_weights.data();
+  const atx::usize *ptr_live_idx_after_warmup = scratch_live_idx.data();
+  // dense and tform_tmp swap on every Rank call — track both and verify the
+  // set of two pointers is stable (neither pointer is brand-new after warmup).
+  const atx::f64 *ptr_dense_init = scratch_dense.data();
+  const atx::f64 *ptr_tform_init = scratch_tform_tmp.data();
+
+  int realloc_count = 0;
+  const long n_post_warmup = static_cast<long>(rows.size()) - 1L; // 24 dates
+
+  for (atx::usize t = 1; t < rows.size(); ++t) {
+    const SignalView sv{std::span<const atx::f64>{rows[t]}};
+    policy.to_target_weights(sv, universe, scratch_weights, scratch_live_idx, scratch_dense,
+                             scratch_tform_tmp);
+
+    // weights and live_idx must never move — no swap, just resize/clear+push.
+    if (scratch_weights.data() != ptr_weights_after_warmup) {
+      ++realloc_count;
+      ADD_FAILURE() << "scratch_weights reallocated at date " << t
+                    << " (capacity lost; should reuse HWM capacity)";
+    }
+    if (scratch_live_idx.data() != ptr_live_idx_after_warmup) {
+      ++realloc_count;
+      ADD_FAILURE() << "scratch_live_idx reallocated at date " << t
+                    << " (capacity lost; should reuse HWM capacity)";
+    }
+
+    // dense and tform_tmp ping-pong: their data() SWAPS each call but neither
+    // should point to a NEW allocation. After warmup the only valid pointers
+    // are ptr_dense_init and ptr_tform_init (in either role).
+    const atx::f64 *d = scratch_dense.data();
+    const atx::f64 *tf = scratch_tform_tmp.data();
+    if ((d != ptr_dense_init && d != ptr_tform_init) ||
+        (tf != ptr_dense_init && tf != ptr_tform_init)) {
+      ++realloc_count;
+      ADD_FAILURE() << "dense/tform_tmp allocated a NEW buffer at date " << t
+                    << " — ping-pong capacity not retained across variable-NaN dates";
+    }
+  }
+
+  std::cout << "[WeightScratch AllocCount] post-warmup dates=" << n_post_warmup
+            << "  buffer reallocations=" << realloc_count << " (expected 0)\n";
+
+  EXPECT_EQ(realloc_count, 0)
+      << "Expected 0 buffer reallocations after warmup across " << n_post_warmup
+      << " variable-NaN post-warmup dates; got " << realloc_count
+      << ". Ping-pong capacity-retention is not working.";
+}
+
+} // namespace atxtest_alpha_weight_scratch_alloc

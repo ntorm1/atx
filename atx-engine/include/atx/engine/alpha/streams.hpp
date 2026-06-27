@@ -229,20 +229,26 @@ inline void fill_alpha_stream(AlphaStreams &out, atx::usize i, const SignalSet &
   // 1. positions[t] = to_target_weights(signal_row(t)) for every date.
   //
   // WHY hoisted buffers: the allocating overload of to_target_weights allocated
-  // weights, live_idx, and dense on EVERY call (~3 heap allocs × dates per alpha).
-  // By hoisting them above the loop and passing them to the scratch overload, the
-  // allocator is hit only ONCE on the first date (initial sizing); subsequent calls
-  // reuse the existing capacity — O(1) allocs per alpha instead of O(dates).
+  // weights, live_idx, dense, AND a transform temp on EVERY call (~4 heap allocs
+  // × dates per alpha). By hoisting all four above the loop and passing them to
+  // the scratch overload, the allocator is hit only during warmup (until the live
+  // count reaches its run high-water mark); subsequent calls reuse the existing
+  // capacity — amortized O(1) allocs per alpha instead of O(dates). The transform
+  // temp is hoisted too because apply_transform swaps it into `dense`; without a
+  // reused temp the swap would shrink `dense`'s capacity to the live count and
+  // re-allocate on most dates (variable NaN patterns). See the to_target_weights
+  // scratch-overload contract for the ping-pong detail.
   // Output is byte-identical: the scratch overload zero-fills weights each call
   // and clears live_idx/dense before compacting, exactly matching the original
-  // fresh-allocation semantics (see WeightPolicy::to_target_weights contract).
-  std::vector<atx::f64> w;         // scratch: target weights (resized/zeroed each date)
+  // fresh-allocation semantics.
+  std::vector<atx::f64> w;          // scratch: target weights (resized/zeroed each date)
   std::vector<atx::usize> live_idx; // scratch: compact live-instrument index (cleared each date)
   std::vector<atx::f64> dense;      // scratch: compact live-score buffer (cleared each date)
+  std::vector<atx::f64> tform_tmp;  // scratch: rank/zscore out-of-place temp (ping-pongs w/ dense)
 
   for (atx::usize t = 0; t < dates; ++t) {
     const SignalView row{signals.alpha_cross_section(i, t)};
-    policy.to_target_weights(row, universe, w, live_idx, dense, group_map);
+    policy.to_target_weights(row, universe, w, live_idx, dense, tform_tmp, group_map);
     const atx::usize off = (i * dates + t) * insts;
     // SAFETY: off + insts <= pos_flat.size() — off = (i*dates+t)*insts with
     //         i<n_alphas, t<dates, and pos_flat sized n_alphas*dates*insts.
