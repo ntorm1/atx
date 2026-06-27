@@ -22,7 +22,6 @@
 //   demonstrate the cache-hit path without timing the full search.
 
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string_view>
@@ -37,7 +36,6 @@
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
-#include "atx/engine/combine/metrics.hpp"
 #include "atx/engine/combine/store.hpp"
 #include "atx/engine/eval/cpcv.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
@@ -203,8 +201,13 @@ TEST(CpcvCache, PoolAwareForwardsCacheToCore) {
 }
 
 // (5) Wall-time bench: N_REPS calls WITHOUT cache vs WITH cache.
-//     The cached run MUST be faster (asserted, not just logged).
-//     Timing is recorded via std::cout for the commit body.
+//     The perf claim is verified DETERMINISTICALLY by a behavioral cache-HIT
+//     assertion (the second get_or_build returns the SAME Entry, proving no
+//     rebuild) — NOT by a knife-edge wall-clock inequality, which would be a CI
+//     flake risk and conflicts with the cpp guide's "no real clock in asserts"
+//     rule. The before/after timings are still MEASURED and LOGGED (the perf-
+//     evidence requirement) and guarded only by a GENEROUS margin (>10% faster;
+//     the real margin is >2x), so the assertion is robust to a loaded CI host.
 TEST(CpcvCache, TimedBench_CachedVsUncached) {
   constexpr usize N_REPS = 30U; // simulates one generation worth of fitness calls
 
@@ -246,7 +249,7 @@ TEST(CpcvCache, TimedBench_CachedVsUncached) {
 
   // Log for the commit body (per implementation-quality.md requirement).
   std::cout << "\n[S3-1 bench] N_REPS=" << N_REPS
-            << " n_periods=120 n_instruments=6\n"
+            << " n_periods=120 n_instruments=6 (DEBUG build)\n"
             << "  WITHOUT cache: " << ms_uncached << " us total  ("
             << (ms_uncached / static_cast<long long>(N_REPS)) << " us/genome)\n"
             << "  WITH    cache: " << ms_cached   << " us total  ("
@@ -254,11 +257,23 @@ TEST(CpcvCache, TimedBench_CachedVsUncached) {
             << "  speedup: " << (static_cast<double>(ms_uncached) / static_cast<double>(ms_cached))
             << "x\n";
 
-  // The cache path must be measurably faster.  We use a conservative 10%
-  // threshold to avoid flakiness on lightly-loaded CI machines; in practice
-  // the speedup is >2x (one build vs. N_REPS builds of the same spans+folds).
-  EXPECT_LT(ms_cached, ms_uncached)
-      << "cached path was NOT faster than uncached — cache may not be wired";
+  // DETERMINISTIC perf check (no clock): after the N_REPS warm loop above, the
+  // cache holds exactly the (n_periods=120, default cpcv) key. A fresh
+  // get_or_build for that key must return the SAME Entry object that the warm
+  // loop populated — i.e. the hot path is a pure lookup with NO rebuild and NO
+  // allocation. Pointer identity is the byte-for-byte proof the cache is wired
+  // and the redundant span+fold recompute is eliminated.
+  const CpcvCache::Entry &warm = cache.get_or_build(panel.dates(), cfg.cpcv);
+  const CpcvCache::Entry &again = cache.get_or_build(panel.dates(), cfg.cpcv);
+  EXPECT_EQ(&warm, &again) << "cache HIT did not return the warm entry — not wired";
+  EXPECT_FALSE(warm.folds.empty()) << "warm entry has no folds — cache never populated";
+
+  // ROBUST timing guard (generous margin, not a knife edge): the real speedup is
+  // >2x, so requiring merely >10% faster removes flakiness on a loaded host while
+  // still catching a regression that silently disables the cache. Cast to double
+  // for the fractional threshold.
+  EXPECT_LT(static_cast<double>(ms_cached), static_cast<double>(ms_uncached) * 0.9)
+      << "cached path was not meaningfully faster (expected >2x; >10% required)";
 }
 
 } // namespace atxtest_cpcv_cache_test
