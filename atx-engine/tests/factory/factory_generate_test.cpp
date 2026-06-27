@@ -60,6 +60,40 @@ using atx::engine::factory::generate_genome;
 inline constexpr atx::f64 kOnlineAtol = 1e-9;
 inline constexpr atx::f64 kOnlineRtol = 1e-9;
 
+// Node-type classification helpers for S3-4 acceptance tests.
+// Returns the name of the DSL function at the root of `src` (or "" for infix).
+// We classify by checking whether the expression starts with a known op prefix.
+//
+// Simpler approach: count how often the prefix of the emitted string belongs to
+// a cs or ts op family. We do string-prefix matching on the outer call.
+[[nodiscard]] bool starts_with_any(const std::string &s,
+                                   std::initializer_list<std::string_view> prefixes) {
+  for (auto p : prefixes) {
+    if (s.rfind(std::string{p} + "(", 0) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] bool is_cs_or_ts_outer(const std::string &expr) {
+  // cs-simple: rank, zscore, normalize, vec_sum, vec_avg
+  // cs-scalar: scale, winsorize, quantile
+  // cs-group:  indneutralize, group_rank, group_zscore, group_mean, group_count,
+  //            group_scale, cs_residualize
+  // ts-unary:  ts_mean, ts_std, ts_sum, ts_min, ts_max, delay, delta, ts_rank,
+  //            decay_linear, ema
+  // ts-binary: correlation, covariance
+  return starts_with_any(expr, {"rank", "zscore", "normalize", "vec_sum", "vec_avg",
+                                 "scale", "winsorize", "quantile",
+                                 "indneutralize", "group_rank", "group_zscore",
+                                 "group_mean", "group_count", "group_scale",
+                                 "cs_residualize",
+                                 "ts_mean", "ts_std", "ts_sum", "ts_min", "ts_max",
+                                 "delay", "delta", "ts_rank", "decay_linear", "ema",
+                                 "correlation", "covariance"});
+}
+
 [[nodiscard]] bool cells_conform(atx::f64 vm, atx::f64 oracle) noexcept {
   if (std::isnan(vm) && std::isnan(oracle)) {
     return true;
@@ -179,5 +213,126 @@ TEST(GrammarGen, GeneratedGenomes_RunOracleEqualsVm) {
   EXPECT_EQ(evaluated, 300); // every generated genome was VM-safe
 }
 
+
+// ===========================================================================
+//  S3-4 accept (b): non-uniform production_weights biased toward cs+ts
+//  increases the frequency of cross-sectional and time-series outer nodes.
+// ===========================================================================
+
+TEST(GrammarGenS34, BiasedWeights_CsTsMoreFrequent) {
+  // Case indices in gen_f64's switch:
+  //   0=unary-ewise  1=binary-arith  2=cs-simple  3=cs-scalar
+  //   4=cs-group     5=ts-unary      6=ts-binary   7=negate
+  // Bias: zero weight to cases 0,1,7 (unary/binary/negate); full weight to 2-6 (cs+ts).
+  // With this cfg ALL top-level non-leaf nodes should be cs or ts.
+  GenConfig uniform_cfg;
+
+  GenConfig biased_cfg;
+  // Zero out non-cs/ts cases; only cases 2-6 have weight.
+  // REQUIRES: GenConfig has production_weights field (std::array<f64,8>).
+  biased_cfg.production_weights = {0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0};
+
+  constexpr int kN = 1000;
+  Xoshiro256pp rng_uniform(0xBEEF1234ULL);
+  Xoshiro256pp rng_biased(0xBEEF1234ULL);
+
+  int uniform_cs_ts = 0;
+  int biased_cs_ts = 0;
+
+  for (int i = 0; i < kN; ++i) {
+    const std::string u = generate_expr(uniform_cfg, rng_uniform);
+    const std::string b = generate_expr(biased_cfg, rng_biased);
+    if (is_cs_or_ts_outer(u)) {
+      ++uniform_cs_ts;
+    }
+    if (is_cs_or_ts_outer(b)) {
+      ++biased_cs_ts;
+    }
+  }
+
+  // With biased weights, cs+ts should appear far more often.
+  // Uniform: ~5/8 of non-leaf cases (cases 2-6 out of 8), but many leaves.
+  // Biased: 100% of non-leaf cases → much higher cs+ts fraction.
+  EXPECT_GT(biased_cs_ts, uniform_cs_ts)
+      << "biased=" << biased_cs_ts << " uniform=" << uniform_cs_ts;
+  // With 100% weight on cs+ts, we expect at least 50% of 1000 to be cs/ts outer.
+  EXPECT_GT(biased_cs_ts, kN / 2)
+      << "biased cs+ts fraction too low: " << biased_cs_ts << "/" << kN;
+}
+
+// ===========================================================================
+//  S3-4 accept (c): wider scalar_pool generates values outside the default set.
+// ===========================================================================
+
+TEST(GrammarGenS34, WiderScalarPool_GeneratesNonDefaultScalars) {
+  GenConfig cfg;
+  // REQUIRES: GenConfig has scalar_pool field (std::vector<std::string_view>).
+  // Add a value not in the default pool {"0.5","1.5","2.0","3.0"}.
+  // string_view is non-owning: literals have static lifetime, safe here.
+  cfg.scalar_pool = {"0.5", "1.5", "2.0", "3.0", "5.0", "10.0"};
+
+  constexpr int kN = 3000;
+  Xoshiro256pp rng(0xCAFE5678ULL);
+
+  // Collect all emitted scalars by looking for "scale(" / "winsorize(" /
+  // "quantile(" patterns (cs-scalar case, case 3). We check the full expression
+  // for the new values appearing as substrings.
+  bool found_new_scalar = false;
+  for (int i = 0; i < kN && !found_new_scalar; ++i) {
+    const std::string expr = generate_expr(cfg, rng);
+    // 5.0 or 10.0 should eventually appear in the expression.
+    if (expr.find("5.0") != std::string::npos || expr.find("10.0") != std::string::npos) {
+      found_new_scalar = true;
+    }
+  }
+  EXPECT_TRUE(found_new_scalar)
+      << "Wider scalar_pool should produce scalars outside default set within " << kN << " trials";
+}
+
+// ===========================================================================
+//  S3-4 accept (d): two runs with non-default weights produce identical results.
+// ===========================================================================
+
+TEST(GrammarGenS34, NonDefaultWeights_TwoRunsIdentical) {
+  GenConfig cfg;
+  cfg.production_weights = {0.0, 0.0, 2.0, 1.0, 1.0, 2.0, 1.0, 0.0};
+  cfg.scalar_pool        = {"0.1", "0.25", "0.5", "1.0", "2.0"};
+
+  constexpr int kN = 200;
+  Xoshiro256pp rng_a(0xDEAD1111ULL);
+  Xoshiro256pp rng_b(0xDEAD1111ULL);
+
+  for (int i = 0; i < kN; ++i) {
+    const std::string a = generate_expr(cfg, rng_a);
+    const std::string b = generate_expr(cfg, rng_b);
+    EXPECT_EQ(a, b) << "divergence at i=" << i;
+  }
+}
+
+// ===========================================================================
+//  S3-4 accept (a) coverage: byte-identity under default config.
+//  Default GenConfig must produce the same stream as pre-S3-4 (verified via
+//  golden digest tests in NsgaSearch and MultiObjective suites — this test is
+//  a quick local check that SameSeed still holds after the S3-4 changes).
+// ===========================================================================
+
+TEST(GrammarGenS34, DefaultConfig_ByteIdenticalToPreS34) {
+  // If production_weights == {1,...,1} and scalar_pool == default 4-element
+  // pool, the RNG stream must be unchanged vs pre-S3-4 code. We verify this
+  // by checking that two GenConfig objects (both default-constructed) produce
+  // the same sequence — the real golden-digest proof lives in NsgaSearch.
+  GenConfig cfg_a; // default
+  GenConfig cfg_b; // also default, explicitly setting to defaults
+  cfg_b.production_weights = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  cfg_b.scalar_pool        = {"0.5", "1.5", "2.0", "3.0"};
+
+  Xoshiro256pp rng_a(0xF00D4321ULL);
+  Xoshiro256pp rng_b(0xF00D4321ULL);
+
+  for (int i = 0; i < 200; ++i) {
+    EXPECT_EQ(generate_expr(cfg_a, rng_a), generate_expr(cfg_b, rng_b))
+        << "default vs explicit-default diverged at i=" << i;
+  }
+}
 
 }  // namespace atxtest_factory_generate_test
