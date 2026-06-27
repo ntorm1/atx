@@ -333,37 +333,30 @@ TEST(GrammarGenS34, DefaultConfig_ExplicitEqualsImplicitDefaults) {
 }
 
 // ===========================================================================
-//  S3-4 UB guard: an all-zero production_weights array (a misconfigured opt-in
-//  knob) must NOT invoke division-by-zero UB. weighted_case falls back to the
-//  uniform `raw % 8` path, so generation still succeeds and is deterministic.
-//  (In a debug build ATX_ASSERT(total >= 1) would abort first; this test
-//  documents the release fail-safe — we run it in whatever config the test
-//  binary is built with and assert no UB / valid output either way.)
+//  S3-4 all-zero weights ⇒ uniform fallback. An all-zero production_weights
+//  array means "no preference", a valid request: weighted_case falls back to
+//  the uniform `raw % 8` path (no division-by-zero UB, no abort). Generation
+//  must still succeed, stay deterministic, and produce valid expressions.
+//  (NO death test: on Windows gtest EXPECT_DEATH re-execs the whole binary,
+//  which corrupts shared library/working-dir state other suites depend on.)
 // ===========================================================================
 
-TEST(GrammarGenS34, AllZeroWeights_DoesNotUbAndStaysDeterministic) {
+TEST(GrammarGenS34, AllZeroWeights_FallsBackToUniform) {
   GenConfig cfg;
-  // All weights round to 0 → rounded sum == 0. The release fallback must kick
-  // in (raw % 8) rather than computing `raw % 0`.
+  // All weights round to 0 → rounded sum == 0 → uniform fallback (raw % 8).
   cfg.production_weights = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
-#ifdef NDEBUG
-  // Release: ATX_ASSERT is a no-op, so the fallback path executes. Verify it
-  // does not crash and is reproducible (two seeded runs agree).
+  // (a) does not crash, (b) deterministic across two seeded runs, (c) every
+  // emitted expression is non-empty and analyze-valid.
   Xoshiro256pp rng_a(0x012345ULL);
   Xoshiro256pp rng_b(0x012345ULL);
-  for (int i = 0; i < 100; ++i) {
+  for (int i = 0; i < 200; ++i) {
     const std::string a = generate_expr(cfg, rng_a);
     const std::string b = generate_expr(cfg, rng_b);
     EXPECT_EQ(a, b) << "all-zero-weight fallback diverged at i=" << i;
     EXPECT_FALSE(a.empty());
+    EXPECT_TRUE(accepts(a)) << "all-zero-weight fallback emitted invalid expr: " << a;
   }
-#else
-  // Debug: ATX_ASSERT(total >= 1) aborts. EXPECT_DEATH confirms the fail-loud
-  // contract (the matcher is loose — the abort message is implementation-defined).
-  Xoshiro256pp rng(0x012345ULL);
-  EXPECT_DEATH({ static_cast<void>(generate_expr(cfg, rng)); }, ".*");
-#endif
 }
 
 }  // namespace atxtest_factory_generate_test

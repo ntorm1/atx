@@ -140,15 +140,16 @@ namespace detail {
 // Zero-weight cases (bucket width = 0) are never selected, correctly biasing
 // the distribution without UB.
 //
-// Degenerate input (all weights round to 0 → total == 0): the `% total` below
-// would be a division by zero (UB). The S3-4 production_weights knob is opt-in;
-// an all-zero (or all-< 0.5, or all-NaN) array violates the precondition. We
-// FAIL LOUD in debug (ATX_ASSERT) and FAIL SAFE in release (fall back to the
-// uniform `raw % 8` path) so a misconfigured array can never invoke UB. The
-// default {1,...,1} sums to 8, so this fallback never fires on the default path.
+// All-zero weights (total == 0): an all-zero production_weights array means
+// "no preference" — a valid, well-defined request, NOT misuse. We treat it as a
+// SILENT fallback to the uniform path (`raw % 8`) rather than aborting: there is
+// nothing to fail on, and a `% total == % 0` would otherwise be division-by-zero
+// UB. This is validated at the boundary (the only entry point) per the cpp guide
+// error-handling rule. The default {1,...,1} sums to 8, so the fallback never
+// fires on the default path (and that path stays byte-identical to pre-S3-4).
 //
-// Precondition: at least one weight rounds to >= 1; weights are non-negative,
-// non-NaN, and their rounded sum fits in u64.
+// Contract: weights are non-negative; NaN is clamped to 0 (a NaN weight rounds
+// to 0, contributing nothing); their rounded sum fits in u64.
 [[nodiscard]] inline atx::u64 weighted_case(const std::array<atx::f64, 8> &weights,
                                              Xoshiro256pp &rng) {
   // Build the u64 prefix-sum table. Round each weight to nearest integer,
@@ -166,12 +167,11 @@ namespace detail {
   // Exactly ONE draw — same call-site position as the former `rng.next_u64() % 8`.
   const atx::u64 raw = rng.next_u64();
 
-  // Degenerate-weights guard: fail loud in debug, fail safe in release. The
-  // fallback consumes the SAME single `raw` draw, so the RNG stream position is
-  // unchanged whether or not the fallback fires.
-  ATX_ASSERT(total >= 1);
+  // All-zero weights ⇒ uniform. The fallback reuses the SAME single `raw` draw,
+  // so the RNG stream position is unchanged whether or not it fires. No abort:
+  // "no preference" is a defined request, not an error.
   if (total == 0) {
-    return raw % 8; // uniform fallback — selects the case directly
+    return raw % 8;
   }
 
   const atx::u64 v = raw % total;
