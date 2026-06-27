@@ -1797,4 +1797,54 @@ TEST(FactoryOos, CascadeGate_SeqEqualsParallel) {
       << "seq==parallel n_cascade_skipped must match (the gate fires identically)";
 }
 
+// =============================================================================
+//  AdmitLadder_SharedHelper_SeqEqualsParallel (S2-3) — the structural-equivalence
+//  proof for collapsing the copy-pasted "(3d) ADMISSION on the HOLDOUT" ladder in
+//  mine_into_oos (serial) and mine_into_oos_parallel into ONE Factory::admit_on_holdout
+//  helper. With the OPTIONAL gates (R2 price-scale, R3 sub-window, S2-1 cascade) all
+//  OFF (default cfg), this isolates the shared admit ladder ITSELF on a real-signal
+//  config that exercises BOTH an Accept (a stationary edge survives the holdout —
+//  cf. GoodIsGoodOos_Admitted) AND a reject kind (the histogram is non-empty). Because
+//  both paths now call the SAME helper, the digest, admitted count, library version_id,
+//  and reject_histogram are identical BY CONSTRUCTION.
+// =============================================================================
+TEST(FactoryOos, AdmitLadder_SharedHelper_SeqEqualsParallel) {
+  AlphaGate gate{default_gate_cfg()};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 13);
+  cfg.oos_fraction = 0.20; // OOS holdout admit path; R2/R3/cascade stay OFF
+  cfg.search.seed_from_grammar = false;
+
+  // Serial oracle — mine_into -> mine_into_oos (no executor).
+  Fixture fxSerial{real_signal_panel()};
+  lib::Library libSerial =
+      lib::Library::open(tmpdir("ladder_seq"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fSerial = fxSerial.factory();
+  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+
+  // Parallel path (ProcessExecutor, 2 workers) -> mine_into_oos_parallel.
+  Fixture fxPar{real_signal_panel()};
+  lib::Library libPar = lib::Library::open(tmpdir("ladder_par"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fPar = fxPar.factory();
+  ProcessExecutor execPar{ExecutorConfig{2, false}};
+  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+
+  // The config must actually exercise BOTH ladder outcomes for this to be a real proof.
+  ASSERT_GT(repSerial.admitted, 0u) << "config must drive at least one Accept through the ladder";
+  atx::u64 total_rejects = 0;
+  for (const atx::u64 b : repSerial.reject_histogram) {
+    total_rejects += b;
+  }
+  ASSERT_GT(total_rejects, 0u) << "config must drive at least one reject kind through the ladder";
+
+  EXPECT_EQ(repSerial.digest, repPar.digest)
+      << "shared admit_on_holdout: seq==parallel digest must match";
+  EXPECT_EQ(repSerial.admitted, repPar.admitted)
+      << "shared admit_on_holdout: seq==parallel admitted count must match";
+  EXPECT_EQ(libSerial.snapshot().version_id, libPar.snapshot().version_id)
+      << "shared admit_on_holdout: seq==parallel library version_id must match";
+  EXPECT_EQ(repSerial.reject_histogram, repPar.reject_histogram)
+      << "shared admit_on_holdout: seq==parallel reject_histogram must match";
+}
+
 } // namespace atxtest_factory_oos_test

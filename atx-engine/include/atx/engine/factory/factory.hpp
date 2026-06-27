@@ -80,6 +80,7 @@
 
 #include <array>  // std::array (reject_histogram, indexed by library::AdmitKind)
 #include <limits> // std::numeric_limits (W4a split-sharpe disabling sentinel; R3b oos_pbo NaN default)
+#include <span>   // std::span (admit_on_holdout hold_pnl / hold_pos_flat borrows)
 #include <string> // std::string (seed-expression / field source)
 #include <vector> // std::vector
 
@@ -436,6 +437,34 @@ private:
   // A constant (the S4 fixtures use period 1); the realized OOS streams are not keyed
   // to a calendar period in the research panel, so a fixed admit period is sufficient.
   static constexpr atx::usize kAdmitAsOf = 1U;
+
+  // S2-3: the "(3d) ADMISSION on the HOLDOUT" ladder, extracted VERBATIM from the two
+  // formerly copy-pasted sites in mine_into_oos (serial) and mine_into_oos_parallel so
+  // they cannot drift. Executes the price-scale / sub-window / DSR+split ladder, then
+  // folds the resulting AdmitKind into the run digest + reject histogram in the EXACT
+  // same order as the inline code. A static member (not a free function) because it
+  // references the private kAdmitAsOf as the AlphaCandidate's as-of period.
+  //
+  // Contract (byte-identical to the inline ladder):
+  //   - !price_scale_ok  -> kind = RejectPriceScale
+  //   - else !subwindows_ok -> kind = RejectDsrSubwindow
+  //   - else if (hold_dsr >= min_dsr && split_ok): try_admit on the HOLDOUT geometry
+  //       (a clean propagated Err on a cross-run geometry MISMATCH); on Accept bumps
+  //       rep.admitted, pushes OosReportEntry{canon_hash, train_metrics, hold_metrics},
+  //       and appends hold_pnl to admitted_pnls; on Duplicate bumps rep.duplicates.
+  //   - else kind stays the RejectFitness sentinel.
+  //   - ALWAYS: ++rep.reject_histogram[kind] then folds kind into rep.digest via the
+  //     identical hash_combine(rep.digest, canon_hash, kind) call.
+  // `prov` is consumed (moved into the AlphaCandidate). NOT noexcept (push_back
+  // allocates on the Accept path). Returns Err iff try_admit does.
+  [[nodiscard]] atx::core::Result<void>
+  admit_on_holdout(atx::f64 hold_dsr, bool price_scale_ok, bool subwindows_ok, bool split_ok,
+                   atx::f64 min_dsr, atx::u64 canon_hash, std::span<const atx::f64> hold_pnl,
+                   std::span<const atx::f64> hold_pos_flat,
+                   const combine::AlphaMetrics &hold_metrics,
+                   const combine::AlphaMetrics &train_metrics, library::Provenance prov,
+                   FactoryReport &rep, library::Library &lib_lib, const combine::AlphaGate &gate,
+                   std::vector<std::vector<atx::f64>> &admitted_pnls);
 
   // A scored candidate's admission ranking key: its deflated Sharpe (primary) and
   // raw fitness (tiebreak), plus its index into all_scored.

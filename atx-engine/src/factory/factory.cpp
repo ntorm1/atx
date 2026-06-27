@@ -999,6 +999,52 @@ namespace {
 
 } // namespace
 
+// S2-3 — the "(3d) ADMISSION on the HOLDOUT" ladder, the SINGLE definition shared by
+// mine_into_oos (serial) and mine_into_oos_parallel. Both call sites were textually
+// identical copies; extracting one helper makes the seq==parallel + digest invariants
+// STRUCTURAL (cannot drift) instead of comment-enforced. The body below is the former
+// inline block VERBATIM, in the SAME order, so rep.digest / rep.reject_histogram /
+// rep.admitted / the library version_id are byte-identical by construction. See the
+// header for the full effects contract.
+[[nodiscard]] atx::core::Result<void> Factory::admit_on_holdout(
+    const atx::f64 hold_dsr, const bool price_scale_ok, const bool subwindows_ok,
+    const bool split_ok, const atx::f64 min_dsr, const atx::u64 canon_hash,
+    const std::span<const atx::f64> hold_pnl, const std::span<const atx::f64> hold_pos_flat,
+    const combine::AlphaMetrics &hold_metrics, const combine::AlphaMetrics &train_metrics,
+    library::Provenance prov, FactoryReport &rep, library::Library &lib_lib,
+    const combine::AlphaGate &gate, std::vector<std::vector<atx::f64>> &admitted_pnls) {
+  library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
+  if (!price_scale_ok) {
+    kind = library::AdmitKind::RejectPriceScale;
+  } else if (!subwindows_ok) {
+    kind = library::AdmitKind::RejectDsrSubwindow;
+  } else if (hold_dsr >= min_dsr && split_ok) {
+    const library::AlphaCandidate cand{canon_hash,           hold_pnl,        hold_pos_flat,
+                                       hold_metrics,         std::move(prov),
+                                       /*as_of=*/kAdmitAsOf,
+                                       /*source=*/nullptr};
+    // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
+    // reopened-library footgun names. try_admit delegates to admit() VERBATIM on a
+    // matching/fresh geometry (digest-identical) and propagates a CLEAN error when
+    // hold_pnl.size() != the library's fixed t_ — HALTING the run instead of the
+    // ATX_ASSERT abort (debug) / out-of-bounds projection read (release).
+    ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
+    kind = v.kind;
+    if (kind == library::AdmitKind::Accept) {
+      ++rep.admitted;
+      rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+      admitted_pnls.emplace_back(hold_pnl.begin(), hold_pnl.end()); // realized HOLDOUT PnL
+    } else if (kind == library::AdmitKind::Duplicate) {
+      ++rep.duplicates;
+    }
+  }
+  ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+
+  rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+      static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+  return atx::core::Ok();
+}
+
 [[nodiscard]] atx::core::Result<FactoryReport>
 Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
                        const combine::AlphaGate &gate, SearchProgressSink *sink,
@@ -1361,39 +1407,13 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     }
     // (3d) ADMISSION on the HOLDOUT: clear the factory deflation bar on the holdout
     // DSR, then library::admit on the HOLDOUT metrics + holdout pnl (so the durable
-    // `metrics` are what was actually gated out-of-sample).
-    library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (!price_scale_ok) {
-      kind = library::AdmitKind::RejectPriceScale;
-    } else if (!subwindows_ok) {
-      kind = library::AdmitKind::RejectDsrSubwindow;
-    } else if (hold_dsr >= cfg.min_dsr && split_ok) {
-      const library::AlphaCandidate cand{canon_hash,
-                                         std::span<const atx::f64>{hold_pnl},
-                                         std::span<const atx::f64>{hold_pos_flat},
-                                         hold_metrics,
-                                         std::move(prov),
-                                         /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
-      // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
-      // reopened-library footgun names. try_admit delegates to admit() VERBATIM on a
-      // matching/fresh geometry (digest-identical) and propagates a CLEAN error when
-      // hold_pnl.size() != the library's fixed t_ — HALTING the run instead of the
-      // ATX_ASSERT abort (debug) / out-of-bounds projection read (release).
-      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
-      kind = v.kind;
-      if (kind == library::AdmitKind::Accept) {
-        ++rep.admitted;
-        rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl);      // realized HOLDOUT PnL of an admitted alpha
-      } else if (kind == library::AdmitKind::Duplicate) {
-        ++rep.duplicates;
-      }
-    }
-    ++rep.reject_histogram[static_cast<atx::usize>(kind)];
-
-    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
-        static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+    // `metrics` are what was actually gated out-of-sample). S2-3: the ladder body is
+    // the SHARED Factory::admit_on_holdout — the SAME definition the parallel path
+    // calls, so seq==parallel + the digest fold are byte-identical by construction.
+    ATX_TRY_VOID(admit_on_holdout(
+        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
+        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
+        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set. PURE /
@@ -1769,36 +1789,14 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
         }
       }
     }
-    // (3d) ADMISSION on the HOLDOUT — IDENTICAL to serial mine_into_oos:813-830.
-    library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (!price_scale_ok) {
-      kind = library::AdmitKind::RejectPriceScale;
-    } else if (!subwindows_ok) {
-      kind = library::AdmitKind::RejectDsrSubwindow;
-    } else if (hold_dsr >= cfg.min_dsr && split_ok) {
-      const library::AlphaCandidate cand{canon_hash,
-                                         std::span<const atx::f64>{hold_pnl},
-                                         std::span<const atx::f64>{hold_pos_flat},
-                                         hold_metrics,
-                                         std::move(prov),
-                                         /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
-      // Cross-run accumulation guard (Task 8) — same geometry-checked seam as serial
-      // mine_into_oos: digest-identical on a match, CLEAN propagated error on mismatch.
-      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
-      kind = v.kind;
-      if (kind == library::AdmitKind::Accept) {
-        ++rep.admitted;
-        rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl);          // realized HOLDOUT PnL of an admitted alpha
-      } else if (kind == library::AdmitKind::Duplicate) {
-        ++rep.duplicates;
-      }
-    }
-    ++rep.reject_histogram[static_cast<atx::usize>(kind)];
-
-    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
-        static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+    // (3d) ADMISSION on the HOLDOUT — the SHARED Factory::admit_on_holdout, the SAME
+    // definition the serial mine_into_oos calls. The stateful library::admit fold stays
+    // SEQUENTIAL in the parent; calling ONE helper makes seq==parallel + the digest fold
+    // byte-identical BY CONSTRUCTION (they can no longer drift).
+    ATX_TRY_VOID(admit_on_holdout(
+        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
+        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
+        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set, accumulated
