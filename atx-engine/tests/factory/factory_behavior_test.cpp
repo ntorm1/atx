@@ -18,9 +18,9 @@
 //   (e) (search-level determinism + DetPool worker-invariance live in the
 //       NsgaSearch suite extension at the bottom.)
 
+#include <algorithm>
 #include <array>
 #include <bit>
-#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -550,9 +550,19 @@ TEST(MinViableRaw, ViableNoveltyImprovesWhenJunkIsFloored) {
 
 // ---------------------------------------------------------------------------
 //  (d') Search-level integration: a run with min_viable_raw > 0.0 is
-//      deterministic (twice-run identical) and diverges from the floor-off run.
-//      This proves the floor is wired through behavioral_novelty_pass in
-//      SearchDriver.run() and not a dead-letter change.
+//      deterministic (twice-run identical) and MANDATORILY diverges from the
+//      floor-off run. This proves the floor is wired through
+//      behavioral_novelty_pass in SearchDriver.run() and not a dead-letter change.
+//
+//  Airtight floor calibration (no fixture magic number): we first run the
+//  floor-OFF path and read its BEST raw fitness across all generations
+//  (best_fitness_per_gen is the per-gen maximum). We then set min_viable_raw
+//  STRICTLY ABOVE that maximum. By construction EVERY genome in the on-path run
+//  has raw < min_viable_raw, so EVERY behavioral descriptor is zeroed before it
+//  reaches BehavioralArchive::novelty(). The on-path novelty landscape is
+//  therefore guaranteed to differ from the off-path (which submits the real,
+//  non-zero descriptors), so the digest MUST diverge. This removes any
+//  dependence on the empirical fitness distribution of the fixture.
 // ---------------------------------------------------------------------------
 TEST(MinViableRaw, SearchLevelDeterministicAndDiverges) {
   Library lib{};
@@ -561,49 +571,52 @@ TEST(MinViableRaw, SearchLevelDeterministicAndDiverges) {
   ExecutionSimulator sim = frictionless_sim();
   SearchDriver driver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}};
 
-  SearchConfig cfg_on = multi_behavioral_config();
-  cfg_on.master_seed = 0xF1007;
-  cfg_on.generations = 5;
-  // Set the floor above zero so SOME genomes in the search will be below it.
-  // A typical raw fitness for rank(close) on the 96x6 fixture is in (0, 0.5);
-  // setting the floor to 0.1 ensures at least a few junk genomes are zeroed.
-  cfg_on.min_viable_raw = 0.1;
+  SearchConfig cfg_off = multi_behavioral_config();
+  cfg_off.master_seed = 0xF1007;
+  cfg_off.generations = 5;
+  cfg_off.min_viable_raw = 0.0; // floor disabled (off-path)
 
-  SearchConfig cfg_off = cfg_on;
-  cfg_off.min_viable_raw = 0.0; // floor disabled
+  AlphaStore pool_off{};
+  const SearchResult r_off = driver.run(cfg_off, pool_off);
+
+  // Highest raw fitness achieved anywhere in the off-path run.  Setting the
+  // floor above this guarantees EVERY genome (even the best) is below the floor
+  // and therefore zeroed — the floor is mathematically certain to trigger.
+  ASSERT_FALSE(r_off.best_fitness_per_gen.empty()) << "vacuity: run produced no generations";
+  f64 best_raw = r_off.best_fitness_per_gen.front();
+  for (const f64 g : r_off.best_fitness_per_gen) {
+    best_raw = std::max(best_raw, g);
+  }
+  ASSERT_GT(best_raw, 0.0)
+      << "vacuity: off-path best raw must be positive so the calibrated floor "
+         "is a meaningful (>0) threshold";
+
+  SearchConfig cfg_on = cfg_off;
+  // Strictly above the off-path maximum -> ALL genomes are below the floor ->
+  // ALL descriptors zeroed -> novelty landscape differs from off-path -> digest
+  // is guaranteed to diverge.  The +1.0 margin is far beyond floating noise.
+  cfg_on.min_viable_raw = best_raw + 1.0;
 
   AlphaStore pool_on1{};
   AlphaStore pool_on2{};
-  AlphaStore pool_off{};
+  const SearchResult r_on1 = driver.run(cfg_on, pool_on1);
+  const SearchResult r_on2 = driver.run(cfg_on, pool_on2);
 
-  const SearchResult r_on1  = driver.run(cfg_on,  pool_on1);
-  const SearchResult r_on2  = driver.run(cfg_on,  pool_on2);
-  const SearchResult r_off  = driver.run(cfg_off, pool_off);
-
-  // Determinism: two runs with the same floor value produce identical digests.
+  // Determinism (F1): two runs with the same floor value are byte-identical.
   EXPECT_EQ(r_on1.digest, r_on2.digest)
       << "min_viable_raw run is not deterministic (F1 violated).";
 
-  // Divergence: the floor changes which descriptors enter novelty computation
-  // -> different novelty scores -> different NSGA-II front ordering ->
-  // different survivors -> different children -> digest diverges after gen 1.
-  // NOTE: if ALL genomes are viable (none below the floor) the digests may be
-  // identical; this test uses a floor of 0.1 to ensure some are floored.
-  // We assert divergence OR equal trial count + digest to be robust:
-  // if somehow nothing is floored, the run is validly identical (not a test bug).
+  // Mandatory divergence: with every descriptor zeroed, the on-path novelty
+  // scores differ from the off-path -> different NSGA-II ordering -> different
+  // survivors/children -> different digest.  This is the load-bearing proof that
+  // min_viable_raw is actually wired through behavioral_novelty_pass in
+  // SearchDriver.run() (a no-op change would leave the digest equal to off-path).
+  EXPECT_NE(r_on1.digest, r_off.digest)
+      << "min_viable_raw floor did NOT change the end-to-end run — the floor is "
+         "not wired into behavioral_novelty_pass (or novelty does not affect "
+         "selection on this fixture).";
+
   EXPECT_GT(r_on1.trial_count, 0u) << "vacuity: must have scored candidates";
-  // Accept either: floor was active (digest diverges) OR floor was never triggered
-  // (possible if all genomes cleared 0.1 on this fixture, which is allowed by spec).
-  // The property we REQUIRE is determinism (proven above). Divergence is a
-  // best-effort signal that the floor path was exercised.
-  const bool floor_triggered = (r_on1.digest != r_off.digest);
-  if (!floor_triggered) {
-    // If digests are identical, it means all genomes cleared the floor — that is
-    // valid behavior (the floor is a no-op when all genomes are viable). Log a
-    // note but do not fail (this is not a defect).
-    SUCCEED() << "Note: min_viable_raw=0.1 floor never triggered on this fixture "
-                 "(all genomes had raw >= 0.1). Floor logic is correct: no genomes floored.";
-  }
 }
 
 } // namespace

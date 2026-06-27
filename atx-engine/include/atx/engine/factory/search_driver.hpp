@@ -251,8 +251,10 @@ struct SearchConfig {
   // The floor is applied ONLY at the descriptor-submission seam (behavioral_novelty_pass);
   // it NEVER touches raw fitness, objectives, or the admission/scoring path — so
   // by construction the default path (min_viable_raw == 0.0) is byte-identical to
-  // the pre-S3-3 behavior (the zeroing condition is `raw < 0.0`, which is never
-  // true for non-negative fitness values). The 3 golden-digest tests confirm this.
+  // the pre-S3-3 behavior. The zeroing condition is `raw < cfg.min_viable_raw`:
+  // with the 0.0 default it can never fire (raw is non-negative, so `raw < 0.0` is
+  // always false), and a user-set floor simply moves the threshold up to that
+  // value. The 3 golden-digest tests confirm the default path is unchanged.
   atx::f64 min_viable_raw{0.0};
 };
 
