@@ -374,8 +374,9 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 
   // S3-0: thread the OOS mean turnover (already computed in aggregate_oos with
   // no additional eval) into FitnessCore so finish_report can apply the opt-in
-  // penalty.  The field order in FitnessCore is:
-  //   oos_pnl, wq, robust, dsr, haircut_sharpe, cost_bps, turnover, ...
+  // penalty.  The FitnessCore field order (matched by this aggregate init) is:
+  //   oos_pnl, wq, robust, dsr, haircut_sharpe, cost_bps, turnover,
+  //   sharpe_h1, sharpe_h2, split_stable
   return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
                                    dsr.haircut_sharpe, cost_bps, agg.turnover,
                                    split.sharpe_h1, split.sharpe_h2, split.stable});
@@ -465,6 +466,9 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   rep.sharpe_h1 = core.sharpe_h1;
   rep.sharpe_h2 = core.sharpe_h2;
   rep.split_stable = core.split_stable;
+  // S3-0: surface the OOS mean turnover the penalty reads (pure projection — does
+  // NOT enter `raw`, the objective vector, or the digest; byte-identical reporting).
+  rep.turnover = core.turnover;
   return rep;
 }
 

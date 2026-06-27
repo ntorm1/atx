@@ -303,6 +303,12 @@ struct FitnessReport {
   atx::f64 sharpe_h1{0.0};
   atx::f64 sharpe_h2{0.0};
   bool split_stable{false};
+  // S3-0 OOS mean turnover (combine::AlphaMetrics::turnover averaged over the CPCV
+  // TEST folds — the value the opt-in turnover penalty reads). A pure projection of
+  // core.turnover; it does NOT enter `raw`, the objective vector, or the determinism
+  // digest, so surfacing it is byte-identical on every existing path (same pattern
+  // as sharpe_h1/sharpe_h2). default-init 0.0 for an eval-failure / empty stream.
+  atx::f64 turnover{0.0};
 };
 
 // =========================================================================

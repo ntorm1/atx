@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio> // std::printf (emit raw_off/raw_on penalty magnitudes to the test log)
 #include <span>
 #include <string>
 #include <string_view>
@@ -443,77 +444,117 @@ TEST(FactoryFitness, SplitHalfSharpeStrongH1NegativeH2) {
 //  S3-0: TurnoverPenaltyRanksHighTurnoverStrictlyBelow — the opt-in turnover
 //  penalty (accept criterion b).
 //
-//  Construction: a 2-instrument panel where one genome ("rank(close)") produces a
-//  LOW-TURNOVER stream and another ("rank(rev)") produces a HIGH-TURNOVER stream.
-//  Both are otherwise scored against an EMPTY pool (no diversify discount) so the
-//  ONLY difference in `raw` between them — when slope > 0 + finite max_target — is
-//  the turnover penalty. The high-turnover genome must rank STRICTLY BELOW the
-//  low-turnover genome under slope > 0, while the two `raw` values are NOT
-//  reordered when slope == 0 (the default, no-op path).
+//  Construction: a NOISY momentum+reversal panel (the same recipe as the WQ-thesis
+//  test) where "close" carries a per-instrument momentum drift gradient and "rev"
+//  = −ret carries a reversal edge. rank(close) holds stable ranks -> LOW turnover;
+//  rank(rev) flips ranks bar-to-bar -> HIGH turnover. Both alphas are genuinely
+//  PROFITABLE (positive, FINITE wq) because the noise gives the realized PnL real
+//  variance (a noiseless monotone path would diverge the Sharpe — a degenerate
+//  fixture; we deliberately avoid it). Scored against an EMPTY pool so diversify ==
+//  robust == 1 and raw == wq is positive and finite — only then does the
+//  MULTIPLICATIVE penalty (mult in [0,1]) strictly REDUCE raw.
+//
+//  Two independent claims:
+//   (b)  ordering: under slope>0 + a target BETWEEN the two turnovers, the high-
+//        turnover genome ranks STRICTLY BELOW the low-turnover genome.
+//   (iso) penalty isolation: the SAME high-turnover genome scored with the penalty
+//        OFF vs ON drops STRICTLY (raw_on < raw_off) — proving the PENALTY (not the
+//        WQ-fitness ordering, which is identical between the two runs) is the cause.
+//   plus: the low-turnover genome (turnover <= target) is byte-identical OFF vs ON
+//        (excess==0 -> mult==1), proving the penalty is targeted at the violator.
 // =============================================================================
 TEST(FactoryFitness, TurnoverPenaltyRanksHighTurnoverStrictlyBelow) {
-  // A 4-instrument panel where "close" has a strong momentum gradient (rank(close)
-  // rebalances gently, giving LOW turnover) and "rev" = -ret (rank(rev) flips
-  // positions every bar, giving HIGH turnover).
-  constexpr usize kDates = 64;
-  constexpr usize kInsts = 4;
+  constexpr usize kDates = 96;
+  constexpr usize kInsts = 6;
   Library lib;
   const WeightPolicy policy{};
   const ExecutionSimulator sim = frictionless_sim();
-  const AlphaStore empty; // no pool -> diversify == 1 for both; only turnover matters
+  const AlphaStore empty; // no pool -> diversify == robust == 1; raw == wq (positive)
 
-  // Build a monotone close path (zero noise, pure drift) so rank(close) maintains
-  // stable weights -> low turnover.  rev[t] = -ret[t] flips sign each period since
-  // the drift alternates -> rank(rev) rebalances fully every bar -> high turnover.
+  // Momentum drift gradient (captured by rank(close): a STRONG, low-turnover alpha)
+  // plus a transient mean-reverting wiggle (captured by rank(rev): a weaker but
+  // HIGH-turnover alpha). Identical recipe to PrefersDiversifyingWeakAlphaOver-
+  // RedundantStrong, so both realized PnLs have genuine finite variance.
+  std::vector<f64> drift(kInsts);
+  for (usize j = 0; j < kInsts; ++j) {
+    drift[j] = 0.008 - 0.0032 * static_cast<f64>(j); // +0.8% .. -0.8% momentum gradient
+  }
   std::vector<f64> close(kDates * kInsts);
-  std::vector<f64> rev(kDates * kInsts, 0.0);
+  std::vector<f64> rev(kDates * kInsts, 0.0); // rev[t] = -(ret over [t-1,t]); 0 at t=0
   std::vector<f64> px(kInsts, 100.0);
-  // Instrument drifts: 3 positive, 1 negative (strong cross-sectional spread so
-  // rank(close) really has a consistent ranking and low rebalancing).
-  const std::vector<f64> drift = {+0.020, +0.010, -0.005, -0.015};
+  std::vector<f64> wiggle(kInsts, 0.0);
+  Lcg rng{0x5EEDu};
   for (usize t = 0; t < kDates; ++t) {
     for (usize j = 0; j < kInsts; ++j) {
+      const f64 shock = 0.006 * rng.next();
+      const f64 new_wiggle = shock - 0.9 * wiggle[j]; // alternating-sign reversal edge
+      const f64 ret = drift[j] + new_wiggle;
+      wiggle[j] = new_wiggle;
       const f64 prev = px[j];
-      px[j] *= (1.0 + drift[j]);
+      px[j] = prev * (1.0 + ret);
       close[t * kInsts + j] = px[j];
       if (t > 0) {
-        rev[t * kInsts + j] = -(px[j] / prev - 1.0); // large-magnitude alternating returns
+        rev[t * kInsts + j] = -(px[j] / prev - 1.0); // long the recent loser
       }
     }
   }
   const Panel panel = make_panel(kDates, kInsts, {"close", "rev"}, {close, rev});
 
-  Genome low_to  = make_genome("rank(close)", lib); // low-turnover genome
-  Genome high_to = make_genome("rank(rev)", lib);   // high-turnover genome
+  Genome low_to  = make_genome("rank(close)", lib); // low-turnover (momentum)
+  Genome high_to = make_genome("rank(rev)", lib);   // high-turnover (reversal)
 
-  // --- slope == 0 (default) — penalty branch never entered, no constraint --------
+  // --- slope == 0 (default): penalty branch never entered (the no-op baseline) ----
   FitnessCfg cfg_off;
   cfg_off.turnover_penalty_slope = 0.0;
   const auto f_low_off  = pool_aware_fitness(low_to,  empty, panel, policy, sim, cfg_off);
   const auto f_high_off = pool_aware_fitness(high_to, empty, panel, policy, sim, cfg_off);
   ASSERT_TRUE(f_low_off.has_value())  << (f_low_off  ? "" : f_low_off.error().message());
   ASSERT_TRUE(f_high_off.has_value()) << (f_high_off ? "" : f_high_off.error().message());
-  // With slope==0 there is no penalty; both raws are computed without constraint.
-  // (We only assert the VALUES are present; we do NOT constrain the ordering here
-  //  because the WQ fitness already incorporates turnover via the turnover-floor
-  //  formula — the rankings without the penalty are not our concern.)
 
-  // --- slope > 0, finite max_target — penalty must flip / enforce ordering -------
+  // Sanity: the recipe must actually separate the turnovers (low < high), the raws
+  // must be positive+finite (so the multiplicative penalty can strictly reduce
+  // them), and the target must sit strictly between the two so it bites ONLY the
+  // high-turnover genome. Read turnovers off the OFF-path reports (penalty doesn't
+  // touch turnover). Derive the target from the data so the test is self-checking.
+  ASSERT_TRUE(std::isfinite(f_low_off->turnover) && std::isfinite(f_high_off->turnover));
+  ASSERT_GT(f_high_off->turnover, f_low_off->turnover)
+      << "fixture must give rank(rev) higher turnover than rank(close)";
+  ASSERT_GT(f_high_off->raw, 0.0) << "high-turnover raw must be positive+finite (non-degenerate)";
+  const f64 target = 0.5 * (f_low_off->turnover + f_high_off->turnover); // midpoint -> bites only high
+  ASSERT_GT(target, f_low_off->turnover);
+  ASSERT_LT(target, f_high_off->turnover);
+
+  // --- slope > 0, finite target BETWEEN the two turnovers -------------------------
   FitnessCfg cfg_on;
-  cfg_on.turnover_penalty_slope = 1.0; // full penalty at max_target
-  cfg_on.max_turnover_target    = 0.05; // a tight target: low-turnover alpha satisfies
-                                        // it; the high-turnover alpha violates it hard
+  cfg_on.turnover_penalty_slope = 1.0;     // full penalty span at max_target
+  cfg_on.max_turnover_target    = target;  // bites the high-turnover genome only
   const auto f_low_on  = pool_aware_fitness(low_to,  empty, panel, policy, sim, cfg_on);
   const auto f_high_on = pool_aware_fitness(high_to, empty, panel, policy, sim, cfg_on);
   ASSERT_TRUE(f_low_on.has_value())  << (f_low_on  ? "" : f_low_on.error().message());
   ASSERT_TRUE(f_high_on.has_value()) << (f_high_on ? "" : f_high_on.error().message());
 
-  // THE KEY ASSERTION (accept criterion b): the high-turnover genome must rank
-  // STRICTLY BELOW the low-turnover genome under the penalty.
+  // (b) ORDERING: the high-turnover genome ranks STRICTLY BELOW the low-turnover one.
   EXPECT_GT(f_low_on->raw, f_high_on->raw)
       << "high-turnover genome must rank strictly below low-turnover when slope>0 + finite target";
 
-  // --- Determinism: slope > 0 -> identical scores on re-run ----------------------
+  // (iso) PENALTY ISOLATION — the load-bearing addition: the ordering above could
+  // pass from WQ-fitness ordering alone (the turnover floor is baked into wq). Score
+  // the SAME high-turnover genome with the penalty OFF and ON: every term except the
+  // multiplicative penalty is byte-identical, so a STRICT drop raw_on < raw_off
+  // isolates the penalty as the sole cause.
+  EXPECT_LT(f_high_on->raw, f_high_off->raw)
+      << "penalty must STRICTLY reduce the same high-turnover genome's raw "
+      << "(raw_on=" << f_high_on->raw << " must be < raw_off=" << f_high_off->raw << ")";
+  // Emit the magnitudes so the bite is visible in the test log.
+  std::printf("[S3-0] high-turnover genome: raw_off=%.17g raw_on=%.17g (turnover=%.6g target=%.6g)\n",
+              f_high_off->raw, f_high_on->raw, f_high_off->turnover, target);
+
+  // TARGETED: the low-turnover genome (turnover < target) is UNTOUCHED by the
+  // penalty (excess==0 -> mult==1 -> raw byte-identical OFF vs ON).
+  EXPECT_EQ(f_low_on->raw, f_low_off->raw)
+      << "low-turnover genome (turnover < target) must be unpenalised: raw identical OFF vs ON";
+
+  // --- Determinism (accept criterion c): slope > 0 -> identical scores on re-run --
   const auto f_low_on2  = pool_aware_fitness(low_to,  empty, panel, policy, sim, cfg_on);
   const auto f_high_on2 = pool_aware_fitness(high_to, empty, panel, policy, sim, cfg_on);
   ASSERT_TRUE(f_low_on2.has_value());
