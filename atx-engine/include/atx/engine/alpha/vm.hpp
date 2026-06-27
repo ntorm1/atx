@@ -645,11 +645,17 @@ private:
   static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
                           std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
                           std::vector<atx::usize> &valid, detail::CsScratch &scratch) {
+    // INVARIANT (REQUIRED — not accidental): the forward scan produces `valid`
+    // in strictly ascending instrument-index order.  cs_rank_row's stable sort
+    // relies on this to break ties by ascending index (the pre-sort order is the
+    // tie-break order after a value-stable sort).  Permuting this scan — e.g. by
+    // reordering worker dispatch or splitting the row — would silently change
+    // rank outputs for any date that contains tied values, breaking AuditExact.
     valid.clear();
     for (atx::usize i = 0; i < x.size(); ++i) {
       out[i] = detail::kVmNaN; // default every cell (out-of-set stays NaN)
       if (!detail::cs_is_nan(x[i])) {
-        valid.push_back(i);
+        valid.push_back(i); // ascending: i is monotonically increasing here
       }
     }
     switch (op) {

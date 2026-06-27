@@ -118,6 +118,9 @@ inline constexpr atx::f64 kCsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 
 // Gather the valid-set values of `x` into a dense vector (drops invalid cells),
 // in ascending instrument-index order (the `valid` list is index-ascending).
+// INVARIANT: callers MUST pass `valid` built by a forward scan over instrument
+// indices [0, instruments).  cs_rank_row's stable sort uses this order as the
+// tie-break criterion — a non-ascending `valid` would silently reorder tied ranks.
 [[nodiscard]] inline std::vector<atx::f64> cs_gather(std::span<const atx::f64> x,
                                                      const std::vector<atx::usize> &valid) {
   std::vector<atx::f64> v;
