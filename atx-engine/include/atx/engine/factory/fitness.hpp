@@ -56,6 +56,7 @@
 
 #include <array>   // std::array (the multi-objective vector, S4.1)
 #include <cstring> // std::memcpy (CpcvCache: embed embargo f64 as bit pattern for map key)
+#include <limits>  // std::numeric_limits (FitnessCfg::max_turnover_target default +inf)
 #include <map>     // std::map (CpcvCache: key-ordered, no custom hash needed)
 #include <mutex>   // std::mutex, std::lock_guard (CpcvCache thread-safety)
 #include <span>    // std::span
@@ -307,26 +308,50 @@ struct FitnessReport {
 // =========================================================================
 //  FitnessCfg — the knobs the search feeds the fitness call.
 //
-//  trial_count : N for eval::deflated_sharpe (F4). Every distinct candidate the
-//                search scores increments it; a higher N lowers dsr.
-//  cpcv        : the CPCV fold geometry (TEST folds are the OOS partitions).
-//  book_size   : the notional divisor for turnover (1.0 when weights are already
-//                gross-normalized fractions, the extract_streams convention).
-//  target_aum  : the recorded artifact AUM at which the S4.3 cost objective is
-//                priced. 0 (the default) ⇒ the cost objective is OFF: no cost
-//                compute, no 5th objective, no eval-path change — a PURE no-op
-//                that keeps the boundary pin (and every existing digest) byte-
-//                identical. > 0 ⇒ the book round-trip cost is computed at this AUM
-//                and pushed (negated) into objectives[4] (n_objectives → 5).
-//  cost        : the calibrated cost coefficients (cost::round_trip_cost_bps reads
-//                its impact Y/δ/γ + slippage). Only consulted when target_aum > 0.
+//  trial_count            : N for eval::deflated_sharpe (F4). Every distinct
+//                           candidate the search scores increments it; a higher
+//                           N lowers dsr.
+//  cpcv                   : the CPCV fold geometry (TEST folds are the OOS
+//                           partitions).
+//  book_size              : the notional divisor for turnover (1.0 when weights
+//                           are already gross-normalized fractions, the
+//                           extract_streams convention).
+//  target_aum             : the recorded artifact AUM at which the S4.3 cost
+//                           objective is priced. 0 (the default) ⇒ the cost
+//                           objective is OFF: no cost compute, no 5th objective,
+//                           no eval-path change — a PURE no-op that keeps the
+//                           boundary pin (and every existing digest) byte-
+//                           identical. > 0 ⇒ the book round-trip cost is computed
+//                           at this AUM and pushed (negated) into objectives[4]
+//                           (n_objectives → 5).
+//  cost                   : the calibrated cost coefficients
+//                           (cost::round_trip_cost_bps reads its impact Y/δ/γ +
+//                           slippage). Only consulted when target_aum > 0.
+//  turnover_penalty_slope : S3-0 opt-in net-of-cost turnover penalty slope.
+//                           Default 0.0 ⇒ the penalty branch is NEVER entered
+//                           and the result is byte-identical to the pre-S3-0
+//                           path (no NaN/inf risk, no digest drift). When > 0
+//                           AND max_turnover_target is finite, excess turnover
+//                           above the target is penalised as a multiplicative
+//                           discount on `raw` (see finish_report). The penalty
+//                           uses the OOS mean turnover already computed by
+//                           aggregate_oos — no second eval pass.
+//  max_turnover_target    : S3-0 the target turnover threshold (per-period,
+//                           same units as combine::AlphaMetrics::turnover).
+//                           Default +inf ⇒ no turnover is considered "excess"
+//                           even when slope > 0 (the formula reduces to mult=1
+//                           because excess==0 and slack==+inf). Set a finite
+//                           positive value to activate the bite.
 // =========================================================================
 struct FitnessCfg {
   atx::usize trial_count = 1;
   eval::CpcvConfig cpcv{};
   atx::f64 book_size = 1.0;
-  atx::f64 target_aum = 0.0;   // S4.3: 0 ⇒ cost objective off (boundary-pin no-op)
-  cost::CalibratedCost cost{}; // S4.3: calibrated impact/slippage for the cost objective
+  atx::f64 target_aum = 0.0;                                    // S4.3: 0 ⇒ cost objective off
+  cost::CalibratedCost cost{};                                   // S4.3: calibrated impact/slippage
+  atx::f64 turnover_penalty_slope = 0.0;                        // S3-0: 0 ⇒ no penalty (default)
+  atx::f64 max_turnover_target =                                 // S3-0: +inf ⇒ no excess ever
+      std::numeric_limits<atx::f64>::infinity();
 };
 
 namespace detail {
@@ -382,6 +407,12 @@ struct FitnessCore {
   // fitness_core from the candidate's own streams (positions) + panel while they
   // are still live, so finish_report can project it into objectives[4] = -cost_bps.
   atx::f64 cost_bps{0.0};
+  // S3-0 OOS mean turnover (combine::AlphaMetrics::turnover averaged over CPCV TEST
+  // folds — the same averaging that produces `wq`). Computed by aggregate_oos and
+  // threaded here so finish_report can apply the opt-in turnover penalty WITHOUT a
+  // second eval pass. 0.0 when no TEST fold produced a valid turnover (degenerate
+  // stream; the penalty evaluates to mult=1 by the max(0, turnover-target) formula).
+  atx::f64 turnover{0.0};
   // W4a split-sample stability: each half's PER-PERIOD Sharpe (ms.mean/ms.std,
   // std==0 ⇒ 0) over the OOS PnL stream with the structural index-0 zero dropped,
   // split at the FLOOR midpoint (H1 = first floor(T/2) periods, H2 = the rest).
@@ -424,8 +455,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 // S4.1 {wq,diversify,robust} with n_objectives 3 and cost_bps 0 (boundary-pin
 // no-op). `cost_active` (not core.cost_bps != 0) is the gate, so a genuinely-zero
 // cost at a positive target_aum still registers the (uniform, inert) 5th objective.
+//
+// S3-0: when cfg.turnover_penalty_slope > 0.0, a multiplicative discount is applied
+// to `raw` AFTER the wq*diversify*robust product, based on core.turnover vs
+// cfg.max_turnover_target.  Default slope == 0.0 -> the if-branch is never entered
+// -> byte-identical to pre-S3-0 (the boundary-pin holds).  The cfg reference is
+// borrowed for the duration of the call only (no ownership).
 [[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy,
-                                          bool cost_active);
+                                          bool cost_active, const FitnessCfg &cfg);
 
 } // namespace detail
 
