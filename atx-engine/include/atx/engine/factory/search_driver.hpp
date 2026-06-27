@@ -237,6 +237,23 @@ struct SearchConfig {
   bool protect_seed_elites{false};
   atx::usize protect_until_gen{3};
   bool mutate_seed_copies{false};
+
+  // S3-3: opt-in viable-only novelty floor.
+  //
+  // min_viable_raw (NEW, default 0.0): when > 0, any genome whose RAW fitness is
+  // strictly below this threshold has its behavioral descriptor ZEROED before it
+  // is submitted to BehavioralArchive::novelty(). A zero-variance descriptor
+  // produces distance 1.0 against every peer (same degenerate-corr edge as
+  // behavior.hpp §166-170), so a junk genome is still "maximally novel" relative
+  // to itself, but the archive NEVER learns its shape and viable genomes' novelty
+  // scores are no longer contaminated by junk as artificially close neighbors.
+  //
+  // The floor is applied ONLY at the descriptor-submission seam (behavioral_novelty_pass);
+  // it NEVER touches raw fitness, objectives, or the admission/scoring path — so
+  // by construction the default path (min_viable_raw == 0.0) is byte-identical to
+  // the pre-S3-3 behavior (the zeroing condition is `raw < 0.0`, which is never
+  // true for non-negative fitness values). The 3 golden-digest tests confirm this.
+  atx::f64 min_viable_raw{0.0};
 };
 
 // =========================================================================

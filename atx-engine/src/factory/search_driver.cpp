@@ -842,6 +842,58 @@ void SearchDriver::behavioral_novelty_pass(std::vector<Scored> &scored,
   if (!behavioral_active(cfg)) {
     return; // gate closed: objectives[3] untouched, n_objectives stays at 3
   }
+
+  // S3-3: opt-in viable-only novelty floor (min_viable_raw > 0).
+  //
+  // WHY: a junk genome (raw ≈ 0, near-zero PnL) produces a near-zero descriptor
+  // whose pairwise_complete_corr against ANY viable peer is ≈ 0 (zero-variance
+  // leg -> degenerate corr 0 -> behavioral_distance 1.0). BehavioralArchive::novelty
+  // then scores junk as "maximally novel", promoting it in NSGA-II objective space
+  // and at the same time pulling viable genomes' distances downward (junk is always
+  // a distance-1 neighbor, inflating the k-nearest mean for viable peers that happen
+  // to rank junk among their k nearest). Zeroing the descriptor makes the math
+  // transparent: junk's submitted descriptor is all-zeros (zero-variance, distance=1
+  // against all), so the archive learns nothing from it, and viable descriptors
+  // no longer compete against an inert distance-1 junk neighbor.
+  //
+  // ZEROING CONVENTION: we reproduce the SAME degenerate-descriptor that a
+  // zero-variance genome already produces (behavior.hpp §166-170): a non-empty vector
+  // of all zeros, length == scored[i].descriptor.size(). A zero-filled descriptor
+  // has zero variance -> pairwise_complete_corr returns 0 -> distance = 1.0 against
+  // all peers. This is distinct from an empty descriptor (which behavioral_novelty_pass
+  // skips entirely); we intentionally keep the genome IN the loop so it receives a
+  // novelty score of 1.0 (maximally novel against itself) without contaminating peers.
+  //
+  // DEFAULT PATH (min_viable_raw == 0.0): the condition `raw < 0.0` is never true
+  // for non-negative fitness values, so the zeroing branch is dead -> byte-identical
+  // to the pre-S3-3 behavior. The three golden-digest tests confirm this.
+  const bool apply_viable_floor = (cfg.min_viable_raw > 0.0);
+
+  // Zero-descriptor scratch for junk genomes. Sized lazily to the descriptor
+  // length of the first non-empty genome we encounter (all descriptors for one
+  // run share the same OOS-window length, so one allocation suffices). Reused
+  // across the inner loop. Empty on the default path (apply_viable_floor==false):
+  // the lambda below returns the real descriptor span and never touches this.
+  std::vector<atx::f64> zero_desc_buf;
+
+  // Returns the descriptor span to submit for genome j: the real descriptor if j
+  // is viable (or the floor is off), a zero-filled span of the same length otherwise.
+  // WHY a lambda: keeps the hottest path (floor off) as a single branch at function
+  // entry without duplicating the inner loop body.
+  auto desc_for = [&](atx::usize j) -> std::span<const atx::f64> {
+    const std::vector<atx::f64> &d = scored[j].descriptor;
+    if (apply_viable_floor && scored[j].fitness < cfg.min_viable_raw) {
+      // Junk genome: submit a zero-variance descriptor so behavioral_distance
+      // to ALL peers is 1.0 (distance == 1 - |corr(zeros, x)| == 1 - 0 == 1).
+      // Lazy-size the scratch buffer to match the descriptor length.
+      if (zero_desc_buf.size() != d.size()) {
+        zero_desc_buf.assign(d.size(), 0.0);
+      }
+      return std::span<const atx::f64>{zero_desc_buf};
+    }
+    return std::span<const atx::f64>{d};
+  };
+
   const atx::usize n = scored.size();
   nbr.reserve(n); // size the scratch once; cleared + refilled per genome (no realloc)
   for (atx::usize i = 0; i < n; ++i) {
@@ -855,14 +907,19 @@ void SearchDriver::behavioral_novelty_pass(std::vector<Scored> &scored,
     // Also skip neighbours with empty descriptors (fitness errors) — they lack a
     // meaningful behavioral profile and pairwise_complete_corr requires equal-length
     // spans (correlation.hpp:78).
+    // S3-3: use desc_for(j) to substitute the zero descriptor for junk neighbors
+    // when the viable floor is active. On the default path desc_for is a no-op alias.
     nbr.clear();
     for (atx::usize j = 0; j < n; ++j) {
       if (j == i || scored[j].descriptor.empty()) {
         continue;
       }
-      nbr.push_back(std::span<const atx::f64>{scored[j].descriptor});
+      nbr.push_back(desc_for(j));
     }
-    const atx::f64 nov = archive.novelty(std::span<const atx::f64>{scored[i].descriptor},
+    // S3-3: use desc_for(i) for genome i's own submission. When i is below the floor,
+    // a zero descriptor makes its novelty score 1.0 (max-novel vs all peers) without
+    // contaminating any peer's neighborhood with a spuriously close junk entry.
+    const atx::f64 nov = archive.novelty(desc_for(i),
                                          std::span<const std::span<const atx::f64>>{nbr},
                                          cfg.behavior_k, cfg.behavior_metric);
     scored[i].objectives[3] = nov; // the 4th NSGA-II objective (maximization)
