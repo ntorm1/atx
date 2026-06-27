@@ -22,11 +22,9 @@
 //   demonstrate the cache-hit path without timing the full search.
 
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string>
 #include <string_view>
 #include <vector>
 
@@ -38,7 +36,6 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
-#include "atx/engine/alpha/streams.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/combine/metrics.hpp"
 #include "atx/engine/combine/store.hpp"
@@ -57,7 +54,6 @@ using atx::engine::alpha::analyze;
 using atx::engine::alpha::Library;
 using atx::engine::alpha::Panel;
 using atx::engine::alpha::parse_expr;
-using atx::engine::combine::AlphaMetrics;
 using atx::engine::combine::AlphaStore;
 using atx::engine::eval::CpcvConfig;
 using atx::engine::eval::cpcv_folds;

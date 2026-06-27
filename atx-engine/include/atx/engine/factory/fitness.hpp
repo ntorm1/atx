@@ -119,17 +119,6 @@ struct CpcvCache {
     std::vector<eval::CpcvFold>   folds;
   };
 
-  // ---- lookup --------------------------------------------------------------
-  // Returns a CONST POINTER to the cached entry, or nullptr on miss.
-  // Caller must take the entry by value or hold this pointer only while the
-  // cache is not concurrently modified (use get_or_build for the combined
-  // lookup + populate path — that is the only public interface callers need).
-  [[nodiscard]] const Entry *lookup(const Key &key) const noexcept {
-    std::lock_guard<std::mutex> g{mu_};
-    const auto it = map_.find(key);
-    return (it != map_.end()) ? &it->second : nullptr;
-  }
-
   // ---- get_or_build --------------------------------------------------------
   // Returns a CONST REFERENCE to the cached spans+folds for (n_periods, cpcv).
   // On the first call for a given key the spans and folds are built and stored;
