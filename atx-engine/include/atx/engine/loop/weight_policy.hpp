@@ -211,9 +211,43 @@ struct WeightPolicy {
   /// span (the default) means group-neutralize OFF. With industry_neutral=false
   /// AND truncation=0.0 AND an empty group_map (all defaults) NONE of the P4-8
   /// branches run, so the output is BYTE-IDENTICAL to the Phase-2 pipeline.
+  ///
+  /// DELEGATES to the scratch overload with locally-owned buffers so there is
+  /// ONE implementation of the arithmetic (no duplicated logic block).
   [[nodiscard]] std::vector<atx::f64>
   to_target_weights(SignalView signal, const Universe &universe,
                     std::span<const atx::u32> group_map = {}) const {
+    std::vector<atx::f64> weights;
+    std::vector<atx::usize> live_idx;
+    std::vector<atx::f64> dense;
+    to_target_weights(signal, universe, weights, live_idx, dense, group_map);
+    return weights;
+  }
+
+  /// Caller-provided-scratch overload: same arithmetic as the allocating
+  /// overload but reuses pre-allocated buffers `weights_out`, `live_idx_out`,
+  /// `dense_out` instead of allocating them per call.
+  ///
+  /// PRECONDITIONS (caller contract):
+  ///   * `weights_out`, `live_idx_out`, `dense_out` may be any size on entry —
+  ///     they are resized/reset internally each call.
+  ///   * Intended use: declare the three buffers ONCE above a date loop and
+  ///     pass them on each call.  After initial sizing on the first call the
+  ///     vectors hold their capacity across calls (no heap allocation after the
+  ///     first date), eliminating ~3 allocs × n_dates × n_alphas from the hot path.
+  ///
+  /// ZEROING CONTRACT: the original allocating overload used `weights(n, 0.0)`,
+  /// which zero-fills every call.  This overload reproduces that exactly via
+  /// `weights_out.assign(n, 0.0)` — same zero-fill semantics, same output bytes.
+  /// `live_idx_out` and `dense_out` are cleared (then rebuilt from the compact
+  /// scan) each call, matching the "fresh compact" semantics of the original.
+  ///
+  /// `group_map` has the same meaning as the allocating overload.
+  void to_target_weights(SignalView signal, const Universe &universe,
+                         std::vector<atx::f64> &weights_out,
+                         std::vector<atx::usize> &live_idx_out,
+                         std::vector<atx::f64> &dense_out,
+                         std::span<const atx::u32> group_map = {}) const {
     ATX_ASSERT(signal.values.size() == universe.size());
 
     const atx::usize n = universe.size();
@@ -221,50 +255,53 @@ struct WeightPolicy {
     // universe-aligned group map, so a misconfigured industry_neutral without one
     // aborts in debug rather than silently no-op'ing (see header).
     ATX_ASSERT(!industry_neutral || group_map.size() == n);
-    std::vector<atx::f64> weights(n, 0.0);
+
+    // Zero-fill weights each call — matches the original `std::vector<f64>(n, 0.0)`.
+    weights_out.assign(n, 0.0);
     if (n == 0U) {
-      return weights;
+      return;
     }
 
     // --- compact the live (non-NaN) scores into a dense buffer -------------
-    // `live_idx[k]` is the universe index of the k-th live score; the dense
+    // `live_idx_out[k]` is the universe index of the k-th live score; the dense
     // buffer feeds the cross-section primitive (which has no NaN handling).
-    std::vector<atx::usize> live_idx;
-    std::vector<atx::f64> dense;
-    live_idx.reserve(n);
-    dense.reserve(n);
+    live_idx_out.clear();
+    dense_out.clear();
+    live_idx_out.reserve(n);
+    dense_out.reserve(n);
     for (atx::usize i = 0; i < n; ++i) {
       const atx::f64 v = signal.values[i];
       if (!std::isnan(v)) {
-        live_idx.push_back(i);
-        dense.push_back(v);
+        live_idx_out.push_back(i);
+        dense_out.push_back(v);
       }
     }
-    if (dense.empty()) {
-      return weights; // no opinions anywhere -> all zero
+    if (dense_out.empty()) {
+      return; // no opinions anywhere -> all zero
     }
 
     // Clamp tail outliers BEFORE transforming so a single extreme score cannot
     // dominate the standardization (material for ZScore; near-no-op for Rank).
     ATX_ASSERT(winsorize_limit >= 0.0 && winsorize_limit <= 0.5);
-    atx::core::stats::winsorize(std::span<atx::f64>{dense}, winsorize_limit, 1.0 - winsorize_limit);
+    atx::core::stats::winsorize(std::span<atx::f64>{dense_out}, winsorize_limit,
+                                1.0 - winsorize_limit);
 
-    apply_transform(dense);
+    apply_transform(dense_out);
     // P4-8 GROUP-neutralize (CsDemeanG / §0-H semantics): demean WITHIN each group
     // before the global dollar-neutralize so the book carries no per-group net
     // exposure. Inert when industry_neutral is off (the default). After this each
     // group sums to ~0, so the subsequent global demean is a ~no-op.
     if (industry_neutral) {
-      group_demean(dense, live_idx, group_map);
+      group_demean(dense_out, live_idx_out, group_map);
     }
     if (dollar_neutral) {
-      atx::core::stats::demean(std::span<atx::f64>{dense}); // Sigma dense = 0
+      atx::core::stats::demean(std::span<atx::f64>{dense_out}); // Sigma dense = 0
     }
     // gross-normalize so Sigma|dense| == gross_leverage (Alpha101 `scale`). This
     // runs UNCONDITIONALLY (preserving the bit-identical-when-off path) AND puts
     // the weights into the FINAL gross-normalized units the truncation cap is
     // specified in — so the per-name cap compares apples-to-apples.
-    gross_normalize(dense);
+    gross_normalize(dense_out);
     // P4-8 TRUNCATE: cap |w_i| at `truncation` (now in gross-normalized units) via
     // a fixed-iteration clip-renorm (inert when truncation == 0). It re-normalizes
     // back to gross_leverage each pass and ENDS ON A CLIP so the cap is hard-
@@ -272,14 +309,13 @@ struct WeightPolicy {
     // gross_leverage (the cap wins — see header). No gross_normalize follows: that
     // would rescale the pinned weights and breach the cap.
     if (truncation > 0.0) {
-      truncate_renorm(dense);
+      truncate_renorm(dense_out);
     }
 
     // --- scatter the dense weights back to universe positions --------------
-    for (atx::usize k = 0; k < live_idx.size(); ++k) {
-      weights[live_idx[k]] = dense[k];
+    for (atx::usize k = 0; k < live_idx_out.size(); ++k) {
+      weights_out[live_idx_out[k]] = dense_out[k];
     }
-    return weights;
   }
 
   /// order_target_percent reconcile: emit the trade list that moves the current
