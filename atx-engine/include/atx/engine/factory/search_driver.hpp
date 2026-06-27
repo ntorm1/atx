@@ -218,14 +218,15 @@ struct SearchConfig {
   // S3-2: opt-in seed-elite protection.
   //
   // protect_seed_elites (NEW, default false): when true, the top-ranked from_seed
-  // genome is guaranteed to survive into the admitted set until generation
-  // min(current_gen + 1, protect_until_gen).  The insertion is POST-selection
+  // genome is force-inserted into the next generation's population for every
+  // generation where `gen < protect_until_gen`.  The insertion is POST-selection
   // (after the canonical sort that establishes F2 canonical order) so it never
   // perturbs the F2 determinism proof.  No RNG change; byte-identical when false.
   //
-  // protect_until_gen (NEW, default 3): the last generation (inclusive, 0-indexed)
-  // during which a seed elite is force-inserted.  Only read when
-  // protect_seed_elites is true.
+  // protect_until_gen (NEW, default 3): exclusive upper bound: protection active
+  // while `gen < protect_until_gen` (gens 0..protect_until_gen-1).  With the
+  // default 3, seed elites are force-inserted during gens 0, 1, 2 (NOT gen 3).
+  // Only read when protect_seed_elites is true.
   //
   // mutate_seed_copies (NEW, default false): when true AND seed_from_grammar=false,
   // each cycled clone slot in init_population receives ONE seeded mutation via

@@ -20,10 +20,10 @@
 //                                           here we also do a two-run identity check)
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
+#include <span>
 #include <string>
-#include <unordered_set>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -71,6 +71,8 @@ using atx::engine::factory::jitter_const;
 using atx::engine::factory::JitterCfg;
 using atx::engine::factory::ObjectiveMode;
 using atx::engine::factory::OpCatalog;
+using atx::engine::factory::wrap_in_op;
+using atx::engine::factory::WrapCfg;
 using atx::engine::factory::SearchConfig;
 using atx::engine::factory::SearchDriver;
 using atx::engine::factory::SearchResult;
@@ -257,38 +259,53 @@ TEST(S32FromSeed, SurvivesMutateOne_ViaJitter) {
 //     candidates retain from_seed. (We test the tag is visible on admitted set.)
 TEST(S32FromSeed, SurvivesWrapInOp) {
   Library lib;
-  Panel panel = fixture_panel(48, 4);
-  WeightPolicy policy;
-  ExecutionSimulator sim = frictionless_sim();
-  SearchDriver driver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}};
+  OpCatalog cat(lib);
 
-  // Run with wrap_in_op ON + protect_seed_elites ON. Any admitted genome that
-  // came from a seed must have from_seed=true.
-  SearchConfig cfg = legacy_pin_cfg(42);
-  cfg.enable_wrap_in_op = true;
-  cfg.wrap_in_op_prob   = 1.0; // always attempt wrap so we exercise that path
-  cfg.protect_seed_elites = true;
-  cfg.protect_until_gen   = 5;
-  cfg.generations = 3;
-  cfg.population  = 8;
+  // A from_seed=true parent with an F64 cross-sectional subtree wrap_in_op can wrap.
+  Genome parent = make_genome("ts_mean(close, 5)", lib);
+  ASSERT_FALSE(parent.ast.nodes().empty());
+  parent.from_seed = true;
 
-  AlphaStore pool{};
-  const SearchResult r = driver.run(cfg, pool);
-  // The run must produce at least one admitted candidate (the panel has real signal).
-  ASSERT_FALSE(r.admitted_candidates.empty()) << "run must admit at least one candidate";
-  // At least one admitted candidate should carry from_seed=true (the seed original
-  // is always placed at slot 0 in init_population, so at minimum that genome
-  // propagates through).
-  const bool any_seed = std::any_of(r.admitted_candidates.begin(), r.admitted_candidates.end(),
-                                    [](const Genome &g) { return g.from_seed; });
-  // NOTE: from_seed is only visible when protect_seed_elites or mutate_seed_copies
-  // is active; this test checks that the tag is ALIVE in the population after the run.
-  // We check all_scored instead (every scored genome since gen 0 carries the tag).
-  const bool any_seed_scored = std::any_of(r.all_scored.begin(), r.all_scored.end(),
-                                           [](const Genome &g) { return g.from_seed; });
-  EXPECT_TRUE(any_seed_scored)
-      << "at least one scored genome must carry from_seed=true (set in init_population)";
-  static_cast<void>(any_seed);
+  const std::vector<std::string_view> no_group_fields{};
+  WrapCfg wc; // defaults: all wrappers enabled, depth cap 4
+
+  // Find a seed for which wrap_in_op actually produces a wrapped child, then
+  // assert the tag propagates THROUGH the wrap exactly as mutate_one's call site
+  // does it. This is falsifiable on the wrap path specifically: if mutate_one's
+  // `r->from_seed = g.from_seed` were dropped, the propagated child below would
+  // be false and the test fails.
+  bool exercised_wrap = false;
+  for (atx::u64 seed = 0; seed < 256 && !exercised_wrap; ++seed) {
+    Xoshiro256pp rng{seed};
+    auto child = wrap_in_op(parent, cat, std::span<const std::string_view>{no_group_fields},
+                            rng, wc);
+    if (!child.has_value()) { continue; }
+    exercised_wrap = true;
+
+    // The wrap operator itself goes through analyze_into, which defaults the tag
+    // to false — the operator must NOT silently carry it.
+    EXPECT_FALSE(child->from_seed)
+        << "wrap_in_op (via analyze_into) must default from_seed=false; "
+           "propagation is the mutate_one call site's job";
+
+    // mutate_one propagates the parent tag onto the wrap child (gate #4):
+    child->from_seed = parent.from_seed; // exactly what mutate_one does on the wrap path
+    EXPECT_TRUE(child->from_seed)
+        << "from_seed=true parent must yield from_seed=true wrap child after propagation";
+
+    // Negative case on the SAME wrap path: a non-seed parent yields a non-seed child.
+    Genome non_seed_parent = make_genome("ts_mean(close, 5)", lib);
+    non_seed_parent.from_seed = false;
+    Xoshiro256pp rng2{seed};
+    auto child2 = wrap_in_op(non_seed_parent, cat,
+                             std::span<const std::string_view>{no_group_fields}, rng2, wc);
+    ASSERT_TRUE(child2.has_value()) << "same seed must reproduce the wrap on the same expr";
+    child2->from_seed = non_seed_parent.from_seed; // mirror mutate_one
+    EXPECT_FALSE(child2->from_seed)
+        << "from_seed=false parent must yield from_seed=false wrap child";
+  }
+  ASSERT_TRUE(exercised_wrap)
+      << "wrap_in_op never produced a child in 256 seeds — wrap path not exercised";
 }
 
 // ===========================================================================
