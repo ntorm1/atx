@@ -808,6 +808,17 @@ private:
     // they take the same windowed path but a distinct per-cell kernel.
     const bool ou_rolling = (in.op == OpCode::OuTheta || in.op == OpCode::OuHalflife ||
                              in.op == OpCode::OuMean || in.op == OpCode::OuZscore);
+    // S1-3 (narrowed): pure-lookback ops read a FIXED O(1) set of elements per
+    // cell — NOT a d-length window scan — so the column-extract transpose can
+    // never help them: there is no window reuse to make contiguous, and copying
+    // the whole O(dates) column (strided) just to serve single-element lookups is
+    // pure overhead (a guaranteed ~2x regression by construction). delay reads
+    // one element x[(t-d)*I+j]; delta reads two (x[t]-x[t-d]). Both are among the
+    // most common alpha operators, so they STAY on the original direct strided
+    // path below. (Every OTHER batch op — Var/Std/Rank/Med/Mad/Skew/Kurt/Slope/
+    // Rsquare/Resid/Product/ArgMin/ArgMax/Decay*/Wma/Ema/Zscore/AvDiff/Backfill/
+    // CountNans/Quantile/Moment/Entropy/Corr/Cov/Regression/OU* — scans a window
+    // of up to d elements per cell and is wash-to-win under the transpose.)
 
     // Reusable scratch sized to the window: NO per-cell allocation (grown only
     // when `d` exceeds any prior call). Only the batch sort/pair ops touch it.
@@ -833,15 +844,67 @@ private:
       }
       return atx::core::Ok();
     }
+    // Pure-lookback direct path (TsDelay/TsDelta): ORIGINAL strided access,
+    // instrument-outer/date-inner, reading x[(t-d)*I+j] (+ x[t*I+j] for delta)
+    // directly from the panel. This is the EXACT pre-transpose code — trivially
+    // bit-exact (it is the unmodified original lookup) — and it pays NO column
+    // extraction cost, so these high-frequency ops keep their baseline speed.
+    if (in.op == OpCode::TsDelay || in.op == OpCode::TsDelta) {
+      for (atx::usize j = 0; j < instruments; ++j) {
+        for (atx::usize t = 0; t < dates; ++t) {
+          out[t * instruments + j] =
+              detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_, in.imm[0]);
+        }
+      }
+      return atx::core::Ok();
+    }
+    // S1-3: Column-extract transpose — extract instrument column j once into a
+    // contiguous scratch buffer, then call the kernel with instruments=1, j=0.
+    //
+    // SAFETY (bit-exactness): each kernel element at (t,j) reads x[k*I+j] for
+    // k in [t+1-d, t].  After extracting ts_col_[s] = x[s*I+j] for all s, the
+    // kernel with instruments=1, j=0 reads col[k*1+0] = col[k] = x[k*I+j].
+    // The chronological accumulation order k=t+1-d..t is UNCHANGED — every f64
+    // multiply/add fires on the same operands in the same sequence.  The only
+    // difference is memory layout; the arithmetic result is bit-for-bit identical.
+    // tsv_gather, tsv_var, tsv_lin_fit, tsv_rank, and ou_ar1_fit all read
+    // monotonically from buf[0..d-1] which maps to col[t+1-d..t] — same elements,
+    // same order.  Bit-exact by construction.
+    //
+    // ts_scratch_a_ / ts_scratch_b_ retain their existing role (window-d scratch
+    // for sort/gather/pair inside the kernel); ts_col_ / ts_col_b_ are the new
+    // dates-sized column buffers, grown monotonically as Engine members.
+    if (dates > ts_col_.size()) {
+      ts_col_.resize(dates);
+      ts_col_b_.resize(dates);
+    }
     for (atx::usize j = 0; j < instruments; ++j) {
-      for (atx::usize t = 0; t < dates; ++t) {
-        out[t * instruments + j] =
-            ou_rolling
-                ? detail::ou_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_)
-            : binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
-                                                 ts_scratch_b_)
-                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_,
-                                                  in.imm[0]);
+      // Extract column j of x into ts_col_.
+      for (atx::usize s = 0; s < dates; ++s) {
+        ts_col_[s] = x[s * instruments + j];
+      }
+      const std::span<const atx::f64> col{ts_col_.data(), dates};
+      if (binary_series) {
+        // Extract column j of y into ts_col_b_.
+        for (atx::usize s = 0; s < dates; ++s) {
+          ts_col_b_[s] = y[s * instruments + j];
+        }
+        const std::span<const atx::f64> col_b{ts_col_b_.data(), dates};
+        for (atx::usize t = 0; t < dates; ++t) {
+          // instruments=1, j=0: col[k*1+0] == col[k] == x[k*I+j]. Same order.
+          out[t * instruments + j] =
+              detail::ts_pair_at(in.op, col, col_b, t, 0, d, 1, ts_scratch_a_, ts_scratch_b_);
+        }
+      } else if (ou_rolling) {
+        for (atx::usize t = 0; t < dates; ++t) {
+          out[t * instruments + j] =
+              detail::ou_value_at(in.op, col, t, 0, d, 1, ts_scratch_a_);
+        }
+      } else {
+        for (atx::usize t = 0; t < dates; ++t) {
+          out[t * instruments + j] =
+              detail::ts_value_at(in.op, col, t, 0, d, 1, ts_scratch_a_, in.imm[0]);
+        }
       }
     }
     return atx::core::Ok();
@@ -998,6 +1061,11 @@ private:
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
+  // S1-3: per-instrument column-extract buffers (dates-sized).  Grown
+  // monotonically; never allocated inside the (t,j) hot loop.  ts_col_ holds the
+  // extracted x column; ts_col_b_ the y column for binary ops.
+  std::vector<atx::f64> ts_col_;       // Ts* column-extract scratch for x; size=dates
+  std::vector<atx::f64> ts_col_b_;     // Ts* column-extract scratch for y (binary ops)
   std::vector<atx::usize> ts_dq_lo_;   // Ts online min/scale monotonic deque (date indices)
   std::vector<atx::usize> ts_dq_hi_;   // Ts online max/scale monotonic deque (date indices)
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused

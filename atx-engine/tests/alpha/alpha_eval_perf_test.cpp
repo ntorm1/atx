@@ -1585,3 +1585,825 @@ TEST(EngineReset_PoolGrowth, LargerSecondProgramGrowsPoolAndMatchesFresh) {
 }
 
 } // namespace atxtest_alpha_engine_reset
+
+// ============================================================================
+// S1-3: TsTranspose — column-extract transpose of the batch-path Ts kernels.
+//
+// Overview
+// --------
+// The batch Ts path (eval_time_series, vm.hpp) previously iterated
+// instrument-outer / date-inner, reading x[t*I+j] with stride I — cache-hostile.
+// S1-3 adds a per-instrument column-extract step (ts_col_[s] = x[s*I+j] for all
+// dates s) that turns each kernel's inner strided walk into a contiguous sweep.
+//
+// Bit-exactness guarantee
+// -----------------------
+// The extraction is a copy; every kernel then operates on a single-column buffer
+// with instruments=1, j=0.  Because x[k*I+j] == col[k*1+0] == col[k], the
+// chronological accumulation order k = t+1-d..t is UNCHANGED — every f64
+// multiply/add fires on the same operands in the same sequence.  The only
+// difference is the memory layout the CPU sees; the arithmetic result is
+// bit-for-bit identical.
+//
+// Tests
+// -----
+// Per-kernel bit-for-bit equality tests: for each transposed kernel we evaluate
+// on a randomized fixed-seed panel (window edges, NaN holes, ties) BOTH via the
+// direct kernel function (oracle) AND via Engine::evaluate (transposed path), and
+// assert every cell matches to the last bit (NaN==NaN).
+//
+// Kernels covered:
+//   TsVar, TsStd   — two-pass sum then Σ(v-m)², chronological order preserved.
+//   TsRank         — counting scan, chronological order preserved.
+//   TsMed          — tsv_gather (contiguous after extract) + std::sort, preserved.
+//   TsCorr/TsCov/TsRegression — two-column gather, preserved.
+//   OuTheta/OuHalflife/OuMean/OuZscore — gather + AR(1) fit, preserved.
+//   Also: TsDelay, TsDelta, TsBackfill, TsCountNans, TsProduct, TsArgMin/TsArgMax,
+//         TsDecayLinear, TsWma, TsEma, TsSkew, TsKurt, TsSlope, TsRsquare,
+//         TsResid, TsMad, TsAvDiff, TsZscore, TsDecayExp, TsMoment, TsEntropy.
+// Plus: an end-to-end digest test and a cells/s microbench.
+//
+// Naming: Subject_Condition_ExpectedResult.
+// ============================================================================
+
+namespace atxtest_alpha_ts_transpose {
+
+using atx::engine::alpha::analyze;
+using atx::engine::alpha::compile;
+using atx::engine::alpha::Engine;
+using atx::engine::alpha::Library;
+using atx::engine::alpha::OpCode;
+using atx::engine::alpha::Panel;
+using atx::engine::alpha::parse_program;
+using atx::engine::alpha::Program;
+using atx::engine::alpha::SignalSet;
+using atx::engine::alpha::detail::ou_value_at;
+using atx::engine::alpha::detail::ts_pair_at;
+using atx::engine::alpha::detail::ts_value_at;
+
+static constexpr atx::f64 kTsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
+
+// Bit-identical equality — NaN==NaN is treated as equal.
+[[nodiscard]] static bool bit_eq_ts(atx::f64 a, atx::f64 b) noexcept {
+  if (std::isnan(a) && std::isnan(b)) {
+    return true;
+  }
+  return a == b;
+}
+
+[[nodiscard]] static const Library &ts_lib() {
+  static const Library lib;
+  return lib;
+}
+
+// Parse + analyze + compile a single-alpha source. ASSERTs each stage.
+[[nodiscard]] static Program ts_compile(std::string_view src) {
+  auto parsed = parse_program(src, ts_lib());
+  EXPECT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().message());
+  if (!parsed) {
+    return Program{};
+  }
+  auto analysis = analyze(*parsed);
+  EXPECT_TRUE(analysis.has_value()) << (analysis ? "" : analysis.error().message());
+  if (!analysis) {
+    return Program{};
+  }
+  auto prog = compile(*parsed, *analysis);
+  EXPECT_TRUE(prog.has_value()) << (prog ? "" : prog.error().message());
+  return prog ? std::move(*prog) : Program{};
+}
+
+// ---------------------------------------------------------------------------
+// Panel builder: deterministic pseudo-random panel with NaN holes, ties, and
+// window edges exercised.  Fixed seed via a simple LCG so the test is
+// reproducible without <random>.
+//
+//   kDates=25, kInsts=8, window d=5.
+//   NaN holes: cell (t,j) is NaN when (t*8+j) % 17 == 0.
+//   Ties: cells in columns 2 and 3 share the same value on some dates to
+//         exercise rank/med tie-breaking.
+//   Values: base LCG-pseudorandom in [1.0, 10.0]; ties inserted afterwards.
+//   Two field columns: "close" and "open" (for binary-series tests).
+// ---------------------------------------------------------------------------
+static constexpr atx::usize kDates = 25;
+static constexpr atx::usize kInsts = 8;
+static constexpr atx::usize kWin   = 5;
+
+[[nodiscard]] static Panel make_ts_panel() {
+  // LCG state — same sequence every run (reproducible).
+  atx::u64 lcg = 0x123456789ABCDEF0ULL;
+  auto next_f64 = [&lcg]() -> atx::f64 {
+    lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+    // Map to (0,1) using the top 32 bits.
+    const atx::f64 u = static_cast<atx::f64>(static_cast<atx::u32>(lcg >> 32))
+                       / static_cast<atx::f64>(0xFFFFFFFFu);
+    return 1.0 + 9.0 * u; // [1.0, 10.0]
+  };
+
+  const atx::usize n = kDates * kInsts;
+  std::vector<atx::f64> close_col(n);
+  std::vector<atx::f64> open_col(n);
+
+  for (atx::usize t = 0; t < kDates; ++t) {
+    for (atx::usize j = 0; j < kInsts; ++j) {
+      const atx::usize i = t * kInsts + j;
+      // Introduce NaN holes so some windows are invalid (tests the any-NaN->NaN gate).
+      const bool is_nan = ((i % 17) == 0);
+      close_col[i] = is_nan ? kTsNaN : next_f64();
+      // ties: cols 2 and 3 share the same close value on dates 10..14.
+      if (!is_nan && (j == 3) && (t >= 10 && t < 15)) {
+        close_col[i] = close_col[t * kInsts + 2]; // clone col 2's value
+      }
+      open_col[i] = is_nan ? kTsNaN : next_f64();
+    }
+  }
+
+  std::vector<std::vector<atx::f64>> data{close_col, open_col};
+  auto res = Panel::create(kDates, kInsts, {"close", "open"}, std::move(data), {});
+  EXPECT_TRUE(res.has_value()) << (res ? "" : res.error().message());
+  if (!res) {
+    std::vector<std::vector<atx::f64>> fb{{1.0}, {1.0}};
+    return std::move(*Panel::create(1, 1, {"close", "open"}, std::move(fb), {}));
+  }
+  return std::move(*res);
+}
+
+// Convenience: evaluate `src` on `panel` via Engine; assert success; return values.
+[[nodiscard]] static std::vector<atx::f64>
+eval_ts(std::string_view src, const Panel &panel) {
+  const Program prog = ts_compile(src);
+  Engine engine{panel};
+  auto sig = engine.evaluate(prog);
+  EXPECT_TRUE(sig.has_value()) << (sig ? "" : sig.error().message());
+  if (!sig || sig->alphas.empty()) {
+    return std::vector<atx::f64>(kDates * kInsts, kTsNaN);
+  }
+  return sig->alphas[0].values; // dates * instruments cells
+}
+
+// Build the oracle for a UNARY Ts op by calling ts_value_at directly on the
+// close column using the strided (original) access pattern.
+[[nodiscard]] static std::vector<atx::f64>
+oracle_unary(OpCode op, std::span<const atx::f64> x, atx::usize d, atx::f64 p0 = 0.0) {
+  std::vector<atx::f64> out(kDates * kInsts, kTsNaN);
+  std::vector<atx::f64> sort_buf(d);
+  for (atx::usize j = 0; j < kInsts; ++j) {
+    for (atx::usize t = 0; t < kDates; ++t) {
+      out[t * kInsts + j] = ts_value_at(op, x, t, j, d, kInsts, sort_buf, p0);
+    }
+  }
+  return out;
+}
+
+// Build the oracle for a BINARY Ts op (TsCorr/TsCov/TsRegression).
+[[nodiscard]] static std::vector<atx::f64>
+oracle_binary(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> y, atx::usize d) {
+  std::vector<atx::f64> out(kDates * kInsts, kTsNaN);
+  std::vector<atx::f64> bx(d);
+  std::vector<atx::f64> by(d);
+  for (atx::usize j = 0; j < kInsts; ++j) {
+    for (atx::usize t = 0; t < kDates; ++t) {
+      out[t * kInsts + j] = ts_pair_at(op, x, y, t, j, d, kInsts, bx, by);
+    }
+  }
+  return out;
+}
+
+// Build the oracle for an OU op.
+[[nodiscard]] static std::vector<atx::f64>
+oracle_ou(OpCode op, std::span<const atx::f64> x, atx::usize d) {
+  std::vector<atx::f64> out(kDates * kInsts, kTsNaN);
+  std::vector<atx::f64> buf(d);
+  for (atx::usize j = 0; j < kInsts; ++j) {
+    for (atx::usize t = 0; t < kDates; ++t) {
+      out[t * kInsts + j] = ou_value_at(op, x, t, j, d, kInsts, buf);
+    }
+  }
+  return out;
+}
+
+// Assert two same-length vectors are bit-identical (NaN==NaN).
+static void assert_bit_identical(const std::vector<atx::f64> &oracle,
+                                 const std::vector<atx::f64> &engine,
+                                 std::string_view label) {
+  ASSERT_EQ(oracle.size(), engine.size()) << label << ": size mismatch";
+  for (atx::usize i = 0; i < oracle.size(); ++i) {
+    EXPECT_TRUE(bit_eq_ts(oracle[i], engine[i]))
+        << label << " cell[" << i << "] (t=" << (i / kInsts)
+        << " j=" << (i % kInsts) << "): oracle=" << oracle[i]
+        << " engine=" << engine[i];
+  }
+}
+
+// Get the close/open columns from the panel (date-major flat buffer).
+[[nodiscard]] static std::span<const atx::f64> panel_close(const Panel &p) {
+  // Panel::field_data(0) or flat_buf access — use the signal set path.
+  // We rebuild from a known layout (same as make_ts_panel).
+  // Actually, capture via Engine evaluate of the identity "a = close".
+  (void)p;
+  // Return via oracle_unary on TsDelay(d=1) would be indirect. Instead, we
+  // directly hold the panel data as a local static built alongside the panel.
+  // This is fine because the tests call make_ts_panel() once per test.
+  // We use a thread_local cache populated the first time.
+  // HOWEVER: Panel doesn't expose raw field data directly from here.
+  // APPROACH: build the close/open vectors independently using the same LCG.
+  static std::vector<atx::f64> close_cache;
+  static std::vector<atx::f64> open_cache;
+  if (close_cache.empty()) {
+    atx::u64 lcg = 0x123456789ABCDEF0ULL;
+    auto next_f64 = [&lcg]() -> atx::f64 {
+      lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+      const atx::f64 u = static_cast<atx::f64>(static_cast<atx::u32>(lcg >> 32))
+                         / static_cast<atx::f64>(0xFFFFFFFFu);
+      return 1.0 + 9.0 * u;
+    };
+    const atx::usize nn = kDates * kInsts;
+    close_cache.resize(nn);
+    open_cache.resize(nn);
+    for (atx::usize t = 0; t < kDates; ++t) {
+      for (atx::usize j = 0; j < kInsts; ++j) {
+        const atx::usize i = t * kInsts + j;
+        const bool is_nan = ((i % 17) == 0);
+        close_cache[i] = is_nan ? kTsNaN : next_f64();
+        if (!is_nan && (j == 3) && (t >= 10 && t < 15)) {
+          close_cache[i] = close_cache[t * kInsts + 2];
+        }
+        open_cache[i] = is_nan ? kTsNaN : next_f64();
+      }
+    }
+  }
+  return std::span<const atx::f64>{close_cache};
+}
+
+[[nodiscard]] static std::span<const atx::f64> panel_open() {
+  // Trigger population of both caches via panel_close.
+  static std::vector<atx::f64> open_cache;
+  if (open_cache.empty()) {
+    atx::u64 lcg = 0x123456789ABCDEF0ULL;
+    auto next_f64 = [&lcg]() -> atx::f64 {
+      lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+      const atx::f64 u = static_cast<atx::f64>(static_cast<atx::u32>(lcg >> 32))
+                         / static_cast<atx::f64>(0xFFFFFFFFu);
+      return 1.0 + 9.0 * u;
+    };
+    const atx::usize nn = kDates * kInsts;
+    std::vector<atx::f64> tmp_close(nn);
+    open_cache.resize(nn);
+    for (atx::usize t = 0; t < kDates; ++t) {
+      for (atx::usize j = 0; j < kInsts; ++j) {
+        const atx::usize i = t * kInsts + j;
+        const bool is_nan = ((i % 17) == 0);
+        tmp_close[i] = is_nan ? kTsNaN : next_f64();
+        if (!is_nan && (j == 3) && (t >= 10 && t < 15)) {
+          tmp_close[i] = tmp_close[t * kInsts + 2];
+        }
+        open_cache[i] = is_nan ? kTsNaN : next_f64();
+      }
+    }
+  }
+  return std::span<const atx::f64>{open_cache};
+}
+
+// ===========================================================================
+// Unary per-kernel tests
+// ===========================================================================
+
+// Helper to run a single-expression oracle vs Engine comparison.
+// `src_expr`: the alpha expression (e.g. "a = ts_var(close, 5)").
+// `op`: the OpCode for the direct ts_value_at oracle call.
+// `window`: the window size.
+// `p0`: the optional imm[0] parameter (used by TsDecayExp, TsMoment, TsEntropy).
+static void run_unary_kernel_test(std::string_view src_expr, OpCode op,
+                                  atx::usize window, atx::f64 p0 = 0.0) {
+  const Panel panel = make_ts_panel();
+  const auto close = panel_close(panel);
+
+  const std::vector<atx::f64> expected = oracle_unary(op, close, window, p0);
+  const std::vector<atx::f64> actual   = eval_ts(src_expr, panel);
+  assert_bit_identical(expected, actual, src_expr);
+}
+
+// ---------------------------------------------------------------------------
+// TsVar / TsStd — two-pass chronological accumulation (sum then Σ(v-m)²).
+// SAFETY: col-extract → instruments=1 j=0; x[k*1+0] == col[k] == x[k*I+j].
+// Summation order k = t+1-d..t is identical. Result is bit-for-bit equal.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsVar_WindowEdgesNanHolesTies) {
+  run_unary_kernel_test("a = ts_var(close, 5)", OpCode::TsVar, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsStd_WindowEdgesNanHolesTies) {
+  run_unary_kernel_test("a = ts_std(close, 5)", OpCode::TsStd, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// TsRank — counting scan chronological; TsMed — gather+sort.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsRank_TiesAndWindowEdges) {
+  run_unary_kernel_test("a = ts_rank(close, 5)", OpCode::TsRank, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsMed_TiesAndWindowEdges) {
+  run_unary_kernel_test("a = med(close, 5)", OpCode::TsMed, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// Delay / Delta — no-window single-offset kernels.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsDelay_WindowEdges) {
+  run_unary_kernel_test("a = delay(close, 3)", OpCode::TsDelay, 3);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsDelta_WindowEdges) {
+  run_unary_kernel_test("a = delta(close, 3)", OpCode::TsDelta, 3);
+}
+
+// ---------------------------------------------------------------------------
+// Backfill / CountNans — special NaN-policy ops.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsBackfill_NanHoles) {
+  run_unary_kernel_test("a = ts_backfill(close, 5)", OpCode::TsBackfill, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsCountNans_NanHoles) {
+  run_unary_kernel_test("a = ts_count_nans(close, 5)", OpCode::TsCountNans, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// Product, ArgMin, ArgMax — order-independent or index-scan kernels.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsProduct_WindowEdges) {
+  run_unary_kernel_test("a = product(close, 5)", OpCode::TsProduct, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsArgMin_WindowEdges) {
+  run_unary_kernel_test("a = ts_argmin(close, 5)", OpCode::TsArgMin, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsArgMax_WindowEdges) {
+  run_unary_kernel_test("a = ts_argmax(close, 5)", OpCode::TsArgMax, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// Linear-weighted / EMA / decay ops.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsDecayLinear_WindowEdges) {
+  run_unary_kernel_test("a = decay_linear(close, 5)", OpCode::TsDecayLinear, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsWma_WindowEdges) {
+  run_unary_kernel_test("a = wma(close, 5)", OpCode::TsWma, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsEma_WindowEdges) {
+  run_unary_kernel_test("a = ema(close, 5)", OpCode::TsEma, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// Skew / Kurt (higher moments).
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsSkew_WindowEdges) {
+  run_unary_kernel_test("a = skew(close, 5)", OpCode::TsSkew, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsKurt_WindowEdges) {
+  run_unary_kernel_test("a = kurt(close, 5)", OpCode::TsKurt, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// OLS-derived: slope, rsquare, resid.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsSlope_WindowEdges) {
+  run_unary_kernel_test("a = slope(close, 5)", OpCode::TsSlope, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsRsquare_WindowEdges) {
+  run_unary_kernel_test("a = rsquare(close, 5)", OpCode::TsRsquare, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsResid_WindowEdges) {
+  run_unary_kernel_test("a = resid(close, 5)", OpCode::TsResid, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// MAD, AvDiff, Zscore, Quantile.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsMad_WindowEdges) {
+  run_unary_kernel_test("a = mad(close, 5)", OpCode::TsMad, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsAvDiff_WindowEdges) {
+  run_unary_kernel_test("a = ts_av_diff(close, 5)", OpCode::TsAvDiff, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsZscore_WindowEdges) {
+  run_unary_kernel_test("a = ts_zscore(close, 5)", OpCode::TsZscore, kWin);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsQuantile_WindowEdges) {
+  run_unary_kernel_test("a = ts_quantile(close, 5)", OpCode::TsQuantile, kWin);
+}
+
+// ---------------------------------------------------------------------------
+// DecayExp, Moment, Entropy — parameterized by p0.
+// ---------------------------------------------------------------------------
+TEST(TsTranspose_Unary_BitExact, TsDecayExp_WindowEdges) {
+  run_unary_kernel_test("a = ts_decay_exp(close, 5, 0.9)", OpCode::TsDecayExp, kWin, 0.9);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsMoment_WindowEdges) {
+  run_unary_kernel_test("a = ts_moment(close, 5, 3)", OpCode::TsMoment, kWin, 3.0);
+}
+
+TEST(TsTranspose_Unary_BitExact, TsEntropy_WindowEdges) {
+  run_unary_kernel_test("a = ts_entropy(close, 5, 8)", OpCode::TsEntropy, kWin, 8.0);
+}
+
+// ===========================================================================
+// Binary-series (TsCorr, TsCov, TsRegression)
+// ===========================================================================
+
+static void run_binary_kernel_test(std::string_view src_expr, OpCode op, atx::usize window) {
+  const Panel panel = make_ts_panel();
+  const auto close = panel_close(panel);
+  const auto open  = panel_open();
+
+  const std::vector<atx::f64> expected = oracle_binary(op, close, open, window);
+  const std::vector<atx::f64> actual   = eval_ts(src_expr, panel);
+  assert_bit_identical(expected, actual, src_expr);
+}
+
+// SAFETY: col-extract for x AND y → instruments=1 j=0; gather fills
+// bx[i]=col_x[t+1-d+i], by[i]=col_y[t+1-d+i]. Same elements, same order as
+// bx[i]=x[(t+1-d+i)*I+j], by[i]=y[(t+1-d+i)*I+j]. Two-pass sums are
+// identical. Bit-for-bit equal.
+
+TEST(TsTranspose_Binary_BitExact, TsCorr_WindowEdgesNanHoles) {
+  run_binary_kernel_test("a = ts_corr(close, open, 5)", OpCode::TsCorr, kWin);
+}
+
+TEST(TsTranspose_Binary_BitExact, TsCov_WindowEdgesNanHoles) {
+  run_binary_kernel_test("a = covariance(close, open, 5)", OpCode::TsCov, kWin);
+}
+
+TEST(TsTranspose_Binary_BitExact, TsRegression_WindowEdgesNanHoles) {
+  run_binary_kernel_test("a = ts_regression(close, open, 5)", OpCode::TsRegression, kWin);
+}
+
+// ===========================================================================
+// OU rolling-fit ops (OuTheta, OuHalflife, OuMean, OuZscore)
+// ===========================================================================
+
+static void run_ou_kernel_test(std::string_view src_expr, OpCode op, atx::usize window) {
+  const Panel panel = make_ts_panel();
+  const auto close = panel_close(panel);
+
+  const std::vector<atx::f64> expected = oracle_ou(op, close, window);
+  const std::vector<atx::f64> actual   = eval_ts(src_expr, panel);
+  assert_bit_identical(expected, actual, src_expr);
+}
+
+// SAFETY: col-extract → gather in ou_value_at (instruments=1 j=0) fills
+// buf[i]=col[t+1-d+i] == x[(t+1-d+i)*I+j]. ou_ar1_fit then processes the
+// same contiguous slice in the same chronological order. AR(1) pair-loop
+// s=1..d-1 is identical. Bit-for-bit equal.
+
+TEST(TsTranspose_OU_BitExact, OuTheta_WindowEdgesNanHoles) {
+  run_ou_kernel_test("a = ou_theta(close, 5)", OpCode::OuTheta, kWin);
+}
+
+TEST(TsTranspose_OU_BitExact, OuHalflife_WindowEdgesNanHoles) {
+  run_ou_kernel_test("a = ou_halflife(close, 5)", OpCode::OuHalflife, kWin);
+}
+
+TEST(TsTranspose_OU_BitExact, OuMean_WindowEdgesNanHoles) {
+  run_ou_kernel_test("a = ou_mean(close, 5)", OpCode::OuMean, kWin);
+}
+
+TEST(TsTranspose_OU_BitExact, OuZscore_WindowEdgesNanHoles) {
+  run_ou_kernel_test("a = ou_zscore(close, 5)", OpCode::OuZscore, kWin);
+}
+
+// ===========================================================================
+// End-to-end digest test: a Ts-heavy AST set → byte-identical SignalSet
+// before (oracle via direct kernel calls) and after the transpose.
+// We verify: the multi-kernel expression produces the same aggregate output
+// as individual oracle_unary calls composed with the same arithmetic.
+// ===========================================================================
+
+TEST(TsTranspose_DigestUnchanged, TsHeavyExpressionMatchesPerKernelOracle) {
+  const Panel panel = make_ts_panel();
+  const auto close = panel_close(panel);
+
+  // Engine evaluates a combined Ts expression: ts_std(close,5) + ts_rank(close,5).
+  // Oracle: compute each term separately and add.
+  const std::vector<atx::f64> std5  = oracle_unary(OpCode::TsStd, close, kWin);
+  const std::vector<atx::f64> rnk5  = oracle_unary(OpCode::TsRank, close, kWin);
+
+  std::vector<atx::f64> expected(kDates * kInsts, kTsNaN);
+  for (atx::usize i = 0; i < expected.size(); ++i) {
+    if (!std::isnan(std5[i]) && !std::isnan(rnk5[i])) {
+      expected[i] = std5[i] + rnk5[i];
+    }
+    // If either is NaN, the sum is NaN (arithmetic propagates).
+  }
+
+  const std::vector<atx::f64> actual = eval_ts(
+      "a = ts_std(close, 5) + ts_rank(close, 5)", panel);
+
+  assert_bit_identical(expected, actual, "TsHeavyDigest");
+}
+
+// ===========================================================================
+// A/B access-pattern microbench — ISOLATES the column-extract transpose.
+//
+// This bench compares the TWO ACCESS PATTERNS directly, same kernel, same data,
+// same TU.  It does NOT touch the Engine (no Program setup / dispatch), so the
+// only variable measured is the memory-access stride of the window reads:
+//
+//   OLD (strided): instrument-outer / date-inner; the kernel reads each window
+//     element as x[k*I+j] (stride I) — the PRE-transpose access pattern.  We
+//     replicate it by calling the SAME kernel function with the full panel
+//     buffer, instruments=I, real j.
+//
+//   NEW (column-extract): for each instrument column j, extract col[s]=x[s*I+j]
+//     once into a contiguous buffer, then run the windowed kernel stride-1
+//     (instruments=1, j=0) — the SHIPPED path (eval_time_series, vm.hpp).
+//
+// Both variants invoke the identical kernel (ts_value_at / ts_pair_at), so the
+// arithmetic and the result are bit-identical; ONLY the access stride differs.
+// At production scale each element is re-read ~d times across overlapping
+// windows — exactly the strided traffic the transpose converts into one stride-I
+// extract + d× contiguous (prefetch/SIMD-friendly) reads.
+//
+// SCALE: dates=1024, instruments=512, window d=20.  RELEASE build required for a
+// meaningful number (Debug emits no vectorization, so the extract copy is pure
+// overhead) — run the build-rel configure recipe in the task brief.  The bench
+// PRINTS old vs new cells/s and the speedup; it asserts only that the new path
+// is not catastrophically slower (no hard speedup gate — the gate is the printed
+// number the human reads, per the brief's "no unsupported speedup claim" rule).
+// ===========================================================================
+
+namespace {
+
+// Build a dense (no-NaN) production-scale panel as two flat date-major buffers.
+// No NaN holes here: the bench measures the full-window arithmetic path (the
+// any-NaN gate would short-circuit most cells and hide the access cost).
+struct BenchPanel {
+  atx::usize dates;
+  atx::usize insts;
+  std::vector<atx::f64> close; // dates*insts, date-major
+  std::vector<atx::f64> open;  // dates*insts, date-major
+};
+
+[[nodiscard]] BenchPanel make_bench_panel(atx::usize dates, atx::usize insts) {
+  BenchPanel p;
+  p.dates = dates;
+  p.insts = insts;
+  const atx::usize n = dates * insts;
+  p.close.resize(n);
+  p.open.resize(n);
+  atx::u64 lcg = 0xC0FFEE1234567890ULL;
+  auto next = [&lcg]() -> atx::f64 {
+    lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+    const atx::f64 u = static_cast<atx::f64>(static_cast<atx::u32>(lcg >> 32)) /
+                       static_cast<atx::f64>(0xFFFFFFFFu);
+    return 1.0 + 9.0 * u; // [1,10], strictly finite
+  };
+  for (atx::usize i = 0; i < n; ++i) {
+    p.close[i] = next();
+    p.open[i] = next();
+  }
+  return p;
+}
+
+} // namespace
+
+TEST(TsTranspose_AccessBench, StridedVsColumnExtractProductionScale) {
+  constexpr atx::usize kBenchDates = 1024;
+  constexpr atx::usize kBenchInsts = 512;
+  constexpr atx::usize kBenchWin = 20;
+  const BenchPanel bp = make_bench_panel(kBenchDates, kBenchInsts);
+  const std::span<const atx::f64> x{bp.close};
+  const std::span<const atx::f64> y{bp.open};
+  const atx::usize I = bp.insts;
+  const atx::usize D = bp.dates;
+  const atx::usize d = kBenchWin;
+  const double cells = static_cast<double>(D) * static_cast<double>(I);
+
+  using Clock = std::chrono::steady_clock;
+  std::vector<atx::f64> sbuf(d);
+  std::vector<atx::f64> sbuf2(d);
+  std::vector<atx::f64> col(D);
+  std::vector<atx::f64> col_b(D);
+
+  // ---- TsVar (unary, window-heavy two-pass) ----
+  // OLD: strided — call the kernel with the full panel, instruments=I, real j.
+  atx::f64 sink_old = 0.0;
+  auto t0 = Clock::now();
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize t = 0; t < D; ++t) {
+      sink_old += ts_value_at(OpCode::TsVar, x, t, j, d, I, sbuf, 0.0);
+    }
+  }
+  const auto var_old_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+
+  // NEW: column-extract — extract col j once, run kernel stride-1 (I=1, j=0).
+  atx::f64 sink_new = 0.0;
+  t0 = Clock::now();
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize s = 0; s < D; ++s) {
+      col[s] = x[s * I + j];
+    }
+    const std::span<const atx::f64> c{col.data(), D};
+    for (atx::usize t = 0; t < D; ++t) {
+      sink_new += ts_value_at(OpCode::TsVar, c, t, 0, d, 1, sbuf, 0.0);
+    }
+  }
+  const auto var_new_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+
+  // ---- TsCorr (binary, window-heavy two-column two-pass) ----
+  atx::f64 sink_old_c = 0.0;
+  t0 = Clock::now();
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize t = 0; t < D; ++t) {
+      sink_old_c += ts_pair_at(OpCode::TsCorr, x, y, t, j, d, I, sbuf, sbuf2);
+    }
+  }
+  const auto corr_old_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+
+  atx::f64 sink_new_c = 0.0;
+  t0 = Clock::now();
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize s = 0; s < D; ++s) {
+      col[s] = x[s * I + j];
+      col_b[s] = y[s * I + j];
+    }
+    const std::span<const atx::f64> c{col.data(), D};
+    const std::span<const atx::f64> cb{col_b.data(), D};
+    for (atx::usize t = 0; t < D; ++t) {
+      sink_new_c += ts_pair_at(OpCode::TsCorr, c, cb, t, 0, d, 1, sbuf, sbuf2);
+    }
+  }
+  const auto corr_new_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+
+  // ---- TsDelay (pure-lookback, O(1) per cell — reads ONE element x[(t-d)*I+j])
+  // This kernel has NO window to make contiguous, so the column-extract is pure
+  // overhead.  S1-3 (narrowed) keeps delay/delta on the DIRECT strided path; we
+  // bench DIRECT (the shipped path = baseline) vs COL-EXTRACT (the cost the
+  // exclusion AVOIDS) to document the regression that narrowing removes.
+  // DIRECT (shipped, baseline): strided x[(t-d)*I+j], no extraction.
+  atx::f64 sink_old_dl = 0.0;
+  t0 = Clock::now();
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize t = 0; t < D; ++t) {
+      sink_old_dl += ts_value_at(OpCode::TsDelay, x, t, j, d, I, sbuf, 0.0);
+    }
+  }
+  const auto delay_direct_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+
+  // COL-EXTRACT (NOT shipped for delay — measured to show its overhead): copy the
+  // whole O(dates) column per instrument, then do single-element lookups stride-1.
+  atx::f64 sink_new_dl = 0.0;
+  t0 = Clock::now();
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize s = 0; s < D; ++s) {
+      col[s] = x[s * I + j];
+    }
+    const std::span<const atx::f64> c{col.data(), D};
+    for (atx::usize t = 0; t < D; ++t) {
+      sink_new_dl += ts_value_at(OpCode::TsDelay, c, t, 0, d, 1, sbuf, 0.0);
+    }
+  }
+  const auto delay_extract_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+
+  auto cps = [cells](long long ns) -> double {
+    return ns == 0 ? 0.0 : cells / (static_cast<double>(ns) * 1e-9);
+  };
+  const double var_old_cps = cps(var_old_ns);
+  const double var_new_cps = cps(var_new_ns);
+  const double corr_old_cps = cps(corr_old_ns);
+  const double corr_new_cps = cps(corr_new_ns);
+  const double delay_direct_cps = cps(delay_direct_ns);
+  const double delay_extract_cps = cps(delay_extract_ns);
+
+  std::cout << "[TsTranspose access A/B] dates=" << D << " instruments=" << I
+            << " window=" << d << " (" << static_cast<long long>(cells) << " cells/kernel)\n"
+            << "  TsVar  strided (old): " << static_cast<long long>(var_old_cps) << " cells/s\n"
+            << "  TsVar  col-extract  : " << static_cast<long long>(var_new_cps) << " cells/s"
+            << "  speedup=" << (var_old_cps > 0.0 ? var_new_cps / var_old_cps : 0.0) << "x\n"
+            << "  TsCorr strided (old): " << static_cast<long long>(corr_old_cps) << " cells/s\n"
+            << "  TsCorr col-extract  : " << static_cast<long long>(corr_new_cps) << " cells/s"
+            << "  speedup=" << (corr_old_cps > 0.0 ? corr_new_cps / corr_old_cps : 0.0) << "x\n"
+            << "  TsDelay direct (shipped, baseline): " << static_cast<long long>(delay_direct_cps)
+            << " cells/s\n"
+            << "  TsDelay col-extract (EXCLUDED)    : " << static_cast<long long>(delay_extract_cps)
+            << " cells/s  ratio=" << (delay_direct_cps > 0.0 ? delay_extract_cps / delay_direct_cps : 0.0)
+            << "x (extract would REGRESS delay — hence kept on direct path)\n";
+
+  // Defeat dead-code elimination on the timed sinks.  Do NOT compare them to
+  // each other and do NOT require finiteness:
+  //   * The reduction `sink += kernel()` over 524288 cells is reassociated by the
+  //     optimizer DIFFERENTLY between the two loops (vectorized horizontal-add for
+  //     the contiguous NEW loop vs scalar accumulate for the strided OLD loop), so
+  //     the SUMS differ in the low bits even though every per-cell value matches.
+  //   * Partial/degenerate windows return NaN (window not full, or zero-variance
+  //     TsCorr), so the running sum is legitimately NaN — never finite.
+  // The sink exists ONLY to keep the timed loops from being optimized away; its
+  // value is meaningless.  Bit-exactness is validated PER CELL below (NaN-aware).
+  const volatile atx::f64 dce_guard =
+      sink_old + sink_new + sink_old_c + sink_new_c + sink_old_dl + sink_new_dl;
+  (void)dce_guard;
+
+  // PER-CELL bit-exactness (UNTIMED): write each kernel's output to a separate
+  // array for both access patterns, then compare element-by-element.  An
+  // individual kernel return value is NOT a reduction the compiler can
+  // reassociate, so this is the sound equality check.  It PROVES the A/B bench
+  // measures only the access pattern (identical arithmetic, different stride).
+  std::vector<atx::f64> out_old(D * I);
+  std::vector<atx::f64> out_new(D * I);
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize t = 0; t < D; ++t) {
+      out_old[t * I + j] = ts_value_at(OpCode::TsVar, x, t, j, d, I, sbuf, 0.0);
+    }
+  }
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize s = 0; s < D; ++s) {
+      col[s] = x[s * I + j];
+    }
+    const std::span<const atx::f64> c{col.data(), D};
+    for (atx::usize t = 0; t < D; ++t) {
+      out_new[t * I + j] = ts_value_at(OpCode::TsVar, c, t, 0, d, 1, sbuf, 0.0);
+    }
+  }
+  atx::usize var_mismatches = 0;
+  for (atx::usize i = 0; i < D * I; ++i) {
+    if (!bit_eq_ts(out_old[i], out_new[i])) {
+      ++var_mismatches;
+    }
+  }
+  EXPECT_EQ(var_mismatches, 0U) << "TsVar per-cell strided vs col-extract NOT bit-identical";
+
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize t = 0; t < D; ++t) {
+      out_old[t * I + j] = ts_pair_at(OpCode::TsCorr, x, y, t, j, d, I, sbuf, sbuf2);
+    }
+  }
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize s = 0; s < D; ++s) {
+      col[s] = x[s * I + j];
+      col_b[s] = y[s * I + j];
+    }
+    const std::span<const atx::f64> c{col.data(), D};
+    const std::span<const atx::f64> cb{col_b.data(), D};
+    for (atx::usize t = 0; t < D; ++t) {
+      out_new[t * I + j] = ts_pair_at(OpCode::TsCorr, c, cb, t, 0, d, 1, sbuf, sbuf2);
+    }
+  }
+  atx::usize corr_mismatches = 0;
+  for (atx::usize i = 0; i < D * I; ++i) {
+    if (!bit_eq_ts(out_old[i], out_new[i])) {
+      ++corr_mismatches;
+    }
+  }
+  EXPECT_EQ(corr_mismatches, 0U) << "TsCorr per-cell strided vs col-extract NOT bit-identical";
+
+  // TsDelay per-cell: direct vs col-extract must ALSO be bit-identical (the
+  // lookup is the same element either way). This proves the delay bench compares
+  // the SAME computation — only the access path differs — so the direct-vs-extract
+  // timing ratio is a fair measure of the extraction overhead the exclusion saves.
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize t = 0; t < D; ++t) {
+      out_old[t * I + j] = ts_value_at(OpCode::TsDelay, x, t, j, d, I, sbuf, 0.0);
+    }
+  }
+  for (atx::usize j = 0; j < I; ++j) {
+    for (atx::usize s = 0; s < D; ++s) {
+      col[s] = x[s * I + j];
+    }
+    const std::span<const atx::f64> c{col.data(), D};
+    for (atx::usize t = 0; t < D; ++t) {
+      out_new[t * I + j] = ts_value_at(OpCode::TsDelay, c, t, 0, d, 1, sbuf, 0.0);
+    }
+  }
+  atx::usize delay_mismatches = 0;
+  for (atx::usize i = 0; i < D * I; ++i) {
+    if (!bit_eq_ts(out_old[i], out_new[i])) {
+      ++delay_mismatches;
+    }
+  }
+  EXPECT_EQ(delay_mismatches, 0U) << "TsDelay per-cell direct vs col-extract NOT bit-identical";
+
+  // No hard speedup gate (the printed numbers are the deliverable). Guard only
+  // against a catastrophic >10x regression that would signal a logic error.
+  EXPECT_GE(var_new_cps, var_old_cps * 0.1) << "TsVar col-extract path >10x slower — investigate";
+  EXPECT_GE(corr_new_cps, corr_old_cps * 0.1) << "TsCorr col-extract path >10x slower — investigate";
+}
+
+} // namespace atxtest_alpha_ts_transpose
