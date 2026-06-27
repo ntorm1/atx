@@ -907,6 +907,29 @@ namespace {
   return std::abs(sum_corr / static_cast<atx::f64>(n_dates));
 }
 
+// S2-2 — sharpe-only sub-window reduction (the K× compute_metrics collapse).
+//
+//  The R3 intra-holdout sub-window gate calls combine::compute_metrics ONCE per
+//  sub-window and consumes ONLY the .sharpe field; turnover/drawdown/margin/
+//  fitness/holding_days (which re-walk the per-sub-window POSITIONS array — work
+//  the gate never reads) are discarded. This helper reproduces the EXACT Sharpe
+//  arithmetic of compute_metrics over `sub_pnl` while skipping that position work:
+//  it calls the SAME combine::detail::pnl_moments(...) reduction and applies the
+//  IDENTICAL flat/NaN-policy Sharpe formula (combine/metrics.hpp:184-194). Because
+//  the only consumed field derives solely from pnl_moments + that formula, the
+//  result is BIT-IDENTICAL to compute_metrics(...).sharpe by construction — same
+//  Welford accumulation order, same sqrt(252) annualization, same std_pop==0 -> 0
+//  rule, same NaN-mean propagation. (Pinned by SubwindowMetrics_SinglePass_BitIdentical
+//  and DsrSubwindows_SeqEqualsParallel.)
+[[nodiscard]] atx::f64 subwindow_sharpe(std::span<const atx::f64> sub_pnl) noexcept {
+  const combine::detail::PnlMoments mom = combine::detail::pnl_moments(sub_pnl);
+  // VERBATIM combine::compute_metrics Sharpe: flat stream (std_pop == 0) with a
+  // defined mean -> 0; otherwise sqrt(252)*mean/std_pop (a NaN mean propagates).
+  return (mom.std_pop == 0.0 && !std::isnan(mom.mean))
+             ? 0.0
+             : std::sqrt(combine::kAnnualizationDays) * mom.mean / mom.std_pop;
+}
+
 // P2a — the holdout DSR, replicating the fitness.cpp deflated-Sharpe recipe over a
 // REALIZED PnL stream (NOT the CPCV-aggregated stream): drop the structural index-0
 // zero, de-annualize the metrics Sharpe by sqrt(252), compute population skew /
@@ -1299,8 +1322,6 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     // serial and parallel sites so the seq==parallel digest invariant holds.
     bool subwindows_ok = true;
     if (cfg.dsr_subwindows >= 2U) {
-      // n_inst was declared inside the braced holdout-eval block above; derive from holdout panel.
-      const atx::usize sw_n_inst = holdout.instruments();
       // POST-DROP region: global periods [1, T) where T = hold_pnl.size().
       const atx::usize T = hold_pnl.size();
       const atx::usize M = (T > 0U) ? (T - 1U) : 0U; // length of post-drop region
@@ -1312,14 +1333,12 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
         // Map back to global hold_pnl indices: post-drop offset d -> global index d+1.
         const atx::usize global_lo = seg_lo + 1U;
         const atx::usize global_hi = seg_hi + 1U;
-        // Slice hold_pnl and hold_pos_flat to this sub-window's global period range.
+        // Slice hold_pnl to this sub-window's global period range. S2-2: hold_pos_flat
+        // is NOT sliced — the sub-window gate consumes only the Sharpe, and subwindow_sharpe
+        // reproduces compute_metrics' EXACT Sharpe arithmetic without touching positions
+        // (so the per-sub-window position re-walk × K is eliminated, bit-identically).
         const std::span<const atx::f64> sub_pnl =
             std::span<const atx::f64>{hold_pnl}.subspan(global_lo, global_hi - global_lo);
-        const std::span<const atx::f64> sub_pos =
-            std::span<const atx::f64>{hold_pos_flat}.subspan(global_lo * sw_n_inst,
-                                                             (global_hi - global_lo) * sw_n_inst);
-        const combine::AlphaMetrics sub_metrics =
-            combine::compute_metrics(sub_pnl, sub_pos, sw_n_inst, cfg.book_size);
         // DSR uses the SAME recipe as holdout_dsr, inlined: sub_pnl is already all-real
         // (the structural zero lives in the skipped global slot 0), so sub_pnl IS the moments
         // span directly -- no subspan(1) drop here (that would discard a real observation).
@@ -1328,7 +1347,9 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
           subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
           break;
         }
-        const atx::f64 per_period_sharpe = sub_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+        // S2-2: single-pass sharpe (bit-identical to combine::compute_metrics(...).sharpe).
+        const atx::f64 per_period_sharpe =
+            subwindow_sharpe(sub_pnl) / std::sqrt(combine::kAnnualizationDays);
         const eval::DsrResult dsr_result =
             eval::deflated_sharpe(per_period_sharpe, sub_T, eval::skewness(sub_pnl),
                                   eval::excess_kurtosis(sub_pnl), admit_fit.trial_count,
@@ -1722,14 +1743,12 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
         // Map back to global hold_pnl indices: post-drop offset d -> global index d+1.
         const atx::usize global_lo = seg_lo + 1U;
         const atx::usize global_hi = seg_hi + 1U;
-        // Slice hold_pnl and hold_pos_flat to this sub-window's global period range.
+        // Slice hold_pnl to this sub-window's global period range. S2-2: hold_pos_flat
+        // is NOT sliced — the sub-window gate consumes only the Sharpe, and subwindow_sharpe
+        // reproduces compute_metrics' EXACT Sharpe arithmetic without touching positions
+        // (so the per-sub-window position re-walk × K is eliminated, bit-identically).
         const std::span<const atx::f64> sub_pnl =
             std::span<const atx::f64>{hold_pnl}.subspan(global_lo, global_hi - global_lo);
-        const std::span<const atx::f64> sub_pos =
-            std::span<const atx::f64>{hold_pos_flat}.subspan(global_lo * n_inst,
-                                                             (global_hi - global_lo) * n_inst);
-        const combine::AlphaMetrics sub_metrics =
-            combine::compute_metrics(sub_pnl, sub_pos, n_inst, cfg.book_size);
         // DSR uses the SAME recipe as holdout_dsr, inlined: sub_pnl is already all-real
         // (the structural zero lives in the skipped global slot 0), so sub_pnl IS the moments
         // span directly -- no subspan(1) drop here (that would discard a real observation).
@@ -1738,7 +1757,9 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
           subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
           break;
         }
-        const atx::f64 per_period_sharpe = sub_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+        // S2-2: single-pass sharpe (bit-identical to combine::compute_metrics(...).sharpe).
+        const atx::f64 per_period_sharpe =
+            subwindow_sharpe(sub_pnl) / std::sqrt(combine::kAnnualizationDays);
         const eval::DsrResult dsr_result =
             eval::deflated_sharpe(per_period_sharpe, sub_T, eval::skewness(sub_pnl),
                                   eval::excess_kurtosis(sub_pnl), admit_fit.trial_count,

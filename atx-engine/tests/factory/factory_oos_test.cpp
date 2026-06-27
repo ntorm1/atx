@@ -1447,6 +1447,77 @@ TEST(FactoryOos, DsrSubwindows_StructuralZeroOnlyFirstWindow) {
 }
 
 // =============================================================================
+// S2-2 — Single-pass sub-window Sharpe is BIT-IDENTICAL to the K-call path.
+//   The S2-2 perf change replaces the per-sub-window combine::compute_metrics
+//   call (which also recomputes turnover/drawdown/margin/fitness from the
+//   positions array — fields the sub-window gate NEVER reads) with a single
+//   sharpe-only reduction (combine::detail::pnl_moments + the EXACT
+//   compute_metrics Sharpe formula). Because the consumed field (sharpe)
+//   derives solely from pnl_moments(sub_pnl) and that identical formula, the
+//   reduction is bit-identical by construction — same accumulation order, same
+//   annualization, same flat/NaN handling.
+//
+//   This test pins that invariant. The digest below was captured from the
+//   PRE-CHANGE K-call path for this exact config (dsr_subwindows = 4, seed 99,
+//   200-date momentum panel, oos_fraction 0.50, min_dsr 0.50). The post-change
+//   single-pass path MUST reproduce it to the bit. If S2-2 ever falls back to
+//   the per-slice path (ULP-blocked), this
+//   test still holds unchanged — the path is the same — so it doubles as a
+//   permanent guard. NEVER re-baseline this constant to make a test pass.
+// =============================================================================
+TEST(FactoryOos, SubwindowMetrics_SinglePass_BitIdentical) {
+  GateConfig gc = permissive_gate_cfg();
+  AlphaGate gate{gc};
+
+  // Longer holdout (200 dates, oos_fraction 0.50 -> ~100 holdout periods) so each
+  // of K=4 sub-windows holds ~25 real samples: the per-window Sharpe is genuinely
+  // computed and consumed (not the sub_T < 2 short-circuit). A positive min_dsr
+  // makes that Sharpe DRIVE the per-window accept/reject decision, so any change
+  // in the sub-window Sharpe arithmetic would flip the admission set and the
+  // digest. This is exactly the path S2-2 collapses to a single pass.
+  const usize dates = 200;
+  const usize insts = 8;
+  Panel big_panel = two_field_panel(dates, insts, momentum_close(dates, insts, 0xA11Cu));
+
+  FactoryConfig cfg = base_cfg(/*seed=*/99, /*pop=*/16, /*gens=*/4);
+  cfg.oos_fraction             = 0.50;
+  cfg.min_dsr                  = 0.50; // positive bar: per-window Sharpe gates
+  cfg.dsr_subwindows           = 4;    // gate ON: exercises the single-pass reduction
+  cfg.search.seed_from_grammar = false;
+
+  // Pinned digest from the PRE-CHANGE K-call path for this exact config. The
+  // single-pass path must reproduce it to the bit. NEVER re-baseline this.
+  constexpr u64 kPinnedSubwindowDigest = 6368737882721888739ULL;
+
+  Fixture fx1{big_panel};
+  lib::Library lib1 = lib::Library::open(tmpdir("s2_sw_bit_a"), gc, {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  const FactoryReport r1 = f1.mine_into(cfg, lib1, gate).value();
+
+  // Re-run: the single-pass reduction is deterministic.
+  Fixture fx2{big_panel};
+  lib::Library lib2 = lib::Library::open(tmpdir("s2_sw_bit_b"), gc, {0xC0FFEEu});
+  Factory f2 = fx2.factory();
+  const FactoryReport r2 = f2.mine_into(cfg, lib2, gate).value();
+
+  EXPECT_EQ(r1.digest, r2.digest)
+      << "single-pass sub-window reduction must be deterministic across runs";
+  EXPECT_EQ(r1.admitted, r2.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+
+  // Non-vacuous: the K=4 sub-window gate must actually FIRE a Sharpe-driven
+  // rejection on this config, so bit-identity of the Sharpe arithmetic is
+  // load-bearing (a changed Sharpe would flip at least one of these decisions).
+  EXPECT_GT(r1.reject_histogram[7], 0u)
+      << "config must exercise a real per-window Sharpe rejection (RejectDsrSubwindow)";
+
+  // Bit-identity to the pinned pre-change K-call digest. This is THE load-bearing
+  // assertion: any change in the sub-window Sharpe arithmetic flips the digest.
+  EXPECT_EQ(r1.digest, kPinnedSubwindowDigest)
+      << "single-pass sub-window Sharpe must be BIT-IDENTICAL to the K-call path";
+}
+
+// =============================================================================
 // Test 5 — Inert when raw_close absent.
 //   When the holdout panel has NO "raw_close" field the loading is NaN, so the
 //   gate must NOT reject anything. The result must be byte-identical to the
