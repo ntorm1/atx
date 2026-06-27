@@ -1212,3 +1212,376 @@ TEST(WeightScratch_AllocCount_O1AfterWarmup, NoReallocsAfterWarmupVariableLiveCo
 }
 
 } // namespace atxtest_alpha_weight_scratch_alloc
+
+// ============================================================================
+// S1-2: EngineReset — Engine::reset() reuse API across different Programs.
+//
+// Two test groups (both added alongside existing cases; no existing code changed):
+//
+//   EngineReset_ByteIdentity
+//     Evaluates two DIFFERENT Programs (different field sets / slot counts) on
+//     ONE Engine using reset() between them. Asserts results are byte-identical
+//     to evaluating each on a freshly-constructed Engine.  Also covers evaluating
+//     the SAME program twice (regression guard).
+//
+//   EngineReset_NoRealloc_SameShape
+//     After reset(), a second evaluate() with the same num_slots / cells MUST
+//     NOT reallocate the SlotPool backing storage.  Probed via Engine::pool_capacity()
+//     stability: ensure_pool() only reallocates when want_slots > capacity or the
+//     cell count changes, so an UNCHANGED capacity across reset()+evaluate() is the
+//     observable signal that no realloc occurred. If the program needs a LARGER
+//     pool, growth is still allowed (matches ensure_pool semantics).
+//
+//   EngineReset_StateNoLeak
+//     Reset-reuse byte-identity when a program uses a stateful recurrence op
+//     (trade_when), pinning that the per-instrument state_ buffer does not leak
+//     across reset().
+//
+//   EngineReset_PoolGrowth
+//     Reset-reuse byte-identity when the SECOND program needs a LARGER pool than
+//     the first — confirms ensure_pool() grows the pool correctly after reset()
+//     and the grown result still matches a fresh Engine bit-for-bit.
+//
+// TDD RED/GREEN EVIDENCE:
+//   Written first (RED): Engine had no reset()/pool_capacity() — compile error.
+//   GREEN: reset() clears field_remap_ (the pool's live counter is already 0 after
+//   a successful evaluate(), so no pool mutation is needed).
+// ============================================================================
+
+namespace atxtest_alpha_engine_reset {
+
+using atx::engine::alpha::analyze;
+using atx::engine::alpha::compile;
+using atx::engine::alpha::Engine;
+using atx::engine::alpha::Library;
+using atx::engine::alpha::Panel;
+using atx::engine::alpha::parse_program;
+using atx::engine::alpha::Program;
+using atx::engine::alpha::SignalSet;
+
+[[nodiscard]] static const Library &reset_lib() {
+  static const Library lib;
+  return lib;
+}
+
+// Parse + analyze + compile. ASSERTs on failure.
+[[nodiscard]] static Program reset_compile(std::string_view src) {
+  auto parsed = parse_program(src, reset_lib());
+  EXPECT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().message());
+  if (!parsed) {
+    return Program{};
+  }
+  auto analysis = analyze(*parsed);
+  EXPECT_TRUE(analysis.has_value()) << (analysis ? "" : analysis.error().message());
+  if (!analysis) {
+    return Program{};
+  }
+  auto prog = compile(*parsed, *analysis);
+  EXPECT_TRUE(prog.has_value()) << (prog ? "" : prog.error().message());
+  return prog ? std::move(*prog) : Program{};
+}
+
+// Panel with "close" and "open" over 4 dates × 3 instruments.
+[[nodiscard]] static Panel make_reset_panel() {
+  //         inst0   inst1   inst2
+  // date0: 100.0   200.0   150.0   close
+  // date1: 105.0   195.0   155.0
+  // date2: 102.0   202.0   148.0
+  // date3: 108.0   198.0   160.0
+  //         inst0   inst1   inst2
+  // date0:  99.0   198.0   149.0   open
+  // date1: 103.0   194.0   153.0
+  // date2: 101.0   201.0   147.0
+  // date3: 107.0   197.0   158.0
+  std::vector<std::vector<atx::f64>> data{
+      {100.0, 200.0, 150.0, 105.0, 195.0, 155.0, 102.0, 202.0, 148.0, 108.0, 198.0, 160.0},
+      {99.0, 198.0, 149.0, 103.0, 194.0, 153.0, 101.0, 201.0, 147.0, 107.0, 197.0, 158.0},
+  };
+  auto res = Panel::create(4, 3, {"close", "open"}, std::move(data), {});
+  EXPECT_TRUE(res.has_value()) << (res ? "" : res.error().message());
+  if (!res) {
+    std::vector<std::vector<atx::f64>> fb{{1.0}, {1.0}};
+    return std::move(*Panel::create(1, 1, {"close", "open"}, std::move(fb), {}));
+  }
+  return std::move(*res);
+}
+
+// Bit-identical equality (NaN == NaN).
+[[nodiscard]] static bool signal_sets_equal_r(const SignalSet &a, const SignalSet &b) {
+  if (a.dates != b.dates || a.instruments != b.instruments) {
+    return false;
+  }
+  if (a.alphas.size() != b.alphas.size()) {
+    return false;
+  }
+  for (atx::usize i = 0; i < a.alphas.size(); ++i) {
+    if (a.alphas[i].name != b.alphas[i].name) {
+      return false;
+    }
+    const auto &av = a.alphas[i].values;
+    const auto &bv = b.alphas[i].values;
+    if (av.size() != bv.size()) {
+      return false;
+    }
+    for (atx::usize k = 0; k < av.size(); ++k) {
+      const bool a_nan = std::isnan(av[k]);
+      const bool b_nan = std::isnan(bv[k]);
+      if (a_nan != b_nan) {
+        return false;
+      }
+      if (!a_nan && av[k] != bv[k]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// ---- EngineReset_ByteIdentity -----------------------------------------------
+
+// Evaluate the same program twice on a reused Engine (reset() between calls)
+// and assert byte-identical results vs two fresh Engines.
+TEST(EngineReset_ByteIdentity, SameProgramTwice) {
+  const Panel panel = make_reset_panel();
+  const Program prog = reset_compile("a = close - open");
+
+  // Fresh Engine for reference.
+  Engine fresh1{panel};
+  const auto ref1 = fresh1.evaluate(prog);
+  ASSERT_TRUE(ref1.has_value()) << ref1.error().message();
+
+  // Reused Engine: evaluate once, reset, evaluate again.
+  Engine reused{panel};
+  const auto r1 = reused.evaluate(prog);
+  ASSERT_TRUE(r1.has_value()) << r1.error().message();
+  EXPECT_TRUE(signal_sets_equal_r(*ref1, *r1))
+      << "First evaluate on reused Engine differs from fresh Engine";
+
+  reused.reset();
+
+  const auto r2 = reused.evaluate(prog);
+  ASSERT_TRUE(r2.has_value()) << r2.error().message();
+  EXPECT_TRUE(signal_sets_equal_r(*ref1, *r2))
+      << "Post-reset evaluate (same prog) differs from fresh Engine — stale remap leaked";
+}
+
+// Evaluate TWO DIFFERENT Programs on ONE Engine (reset() between them).
+// Both results must be byte-identical to their respective fresh-Engine evaluations.
+// Program A: close - open (uses both fields)
+// Program B: close * 2   (uses only close, different slot count)
+TEST(EngineReset_ByteIdentity, TwoDifferentPrograms) {
+  const Panel panel = make_reset_panel();
+  const Program prog_a = reset_compile("a = close - open");
+  const Program prog_b = reset_compile("b = close * 2");
+
+  // Fresh Engine references.
+  Engine fresh_a{panel};
+  const auto ref_a = fresh_a.evaluate(prog_a);
+  ASSERT_TRUE(ref_a.has_value()) << ref_a.error().message();
+
+  Engine fresh_b{panel};
+  const auto ref_b = fresh_b.evaluate(prog_b);
+  ASSERT_TRUE(ref_b.has_value()) << ref_b.error().message();
+
+  // One Engine, two Programs with reset() between.
+  Engine reused{panel};
+
+  const auto r_a = reused.evaluate(prog_a);
+  ASSERT_TRUE(r_a.has_value()) << r_a.error().message();
+  EXPECT_TRUE(signal_sets_equal_r(*ref_a, *r_a))
+      << "First evaluate (prog_a) on reused Engine differs from fresh Engine";
+
+  reused.reset(); // clears field_remap_ (pool live counter is already 0 here)
+
+  const auto r_b = reused.evaluate(prog_b);
+  ASSERT_TRUE(r_b.has_value()) << r_b.error().message();
+  EXPECT_TRUE(signal_sets_equal_r(*ref_b, *r_b))
+      << "Post-reset evaluate (prog_b) differs from fresh Engine — stale remap leaked";
+}
+
+// Test with programs that use DIFFERENT field sets: A uses {close, open},
+// B uses only {close}. After reset(), prog_b must not accidentally remap open.
+TEST(EngineReset_ByteIdentity, DifferentFieldSetsAfterReset) {
+  const Panel panel = make_reset_panel();
+  const Program prog_a = reset_compile("a = close + open");
+  const Program prog_b = reset_compile("b = close");
+
+  Engine fresh_a{panel};
+  const auto ref_a = fresh_a.evaluate(prog_a);
+  ASSERT_TRUE(ref_a.has_value()) << ref_a.error().message();
+
+  Engine fresh_b{panel};
+  const auto ref_b = fresh_b.evaluate(prog_b);
+  ASSERT_TRUE(ref_b.has_value()) << ref_b.error().message();
+
+  Engine reused{panel};
+
+  // Evaluate prog_a first: field_remap_ = [close_id, open_id] (2 entries)
+  const auto r_a = reused.evaluate(prog_a);
+  ASSERT_TRUE(r_a.has_value()) << r_a.error().message();
+  EXPECT_TRUE(signal_sets_equal_r(*ref_a, *r_a));
+
+  // After reset: field_remap_ must be empty; resolve_fields() rebuilds to
+  // prog_b's single-field {close} mapping. If reset() doesn't clear field_remap_,
+  // prog_b could index into a 2-element map using prog_b's field-id 0 -> correct
+  // close, but the stale entry at [1] must not influence the result.
+  reused.reset();
+
+  const auto r_b = reused.evaluate(prog_b);
+  ASSERT_TRUE(r_b.has_value()) << r_b.error().message();
+  EXPECT_TRUE(signal_sets_equal_r(*ref_b, *r_b))
+      << "Post-reset evaluate with fewer fields differs from fresh Engine — "
+         "stale field_remap_ not cleared by reset()";
+}
+
+// ---- EngineReset_NoRealloc_SameShape ----------------------------------------
+//
+// After reset(), a second evaluate() with the same num_slots / cells MUST NOT
+// reallocate the SlotPool backing storage. Probed via pool_capacity() stability:
+// ensure_pool() only reallocates when want_slots > capacity OR cells_per_slot
+// changes, so stable capacity ⟺ no realloc for a same-shape program.
+
+TEST(EngineReset_NoRealloc_SameShape, SlotPoolCapacityStableAcrossReset) {
+  const Panel panel = make_reset_panel();
+  // prog_a and prog_b: both load two fields and compute a binary op; both need
+  // the same peak-live-slot count. "close - open" and "close + open" are
+  // structurally identical (2 LoadField + 1 Binary; num_slots == 2 slots peak).
+  // Same num_slots + same cells -> ensure_pool() skips reallocation after reset().
+  const Program prog_a = reset_compile("a = close - open");
+  const Program prog_b = reset_compile("b = close + open");
+
+  // Verify same num_slots (the precondition for the no-realloc guarantee).
+  ASSERT_EQ(prog_a.num_slots, prog_b.num_slots)
+      << "Test precondition: prog_a and prog_b must have same num_slots for "
+         "the no-realloc probe to be meaningful";
+
+  Engine eng{panel};
+
+  // First evaluate: warms the pool to prog_a's shape.
+  const auto r_a = eng.evaluate(prog_a);
+  ASSERT_TRUE(r_a.has_value()) << r_a.error().message();
+
+  // Snapshot the pool capacity AFTER the first evaluate(). ensure_pool() only
+  // reallocates when want_slots > capacity or cells change, so stable capacity
+  // proves no reallocation occurred.
+  const atx::usize cap_before = eng.pool_capacity();
+  ASSERT_GT(cap_before, atx::usize{0}) << "pool should be sized after evaluate()";
+
+  // Reset and evaluate a same-shape program.
+  eng.reset();
+  const auto r_b = eng.evaluate(prog_b);
+  ASSERT_TRUE(r_b.has_value()) << r_b.error().message();
+
+  // The pool capacity must be unchanged — no reallocation.
+  const atx::usize cap_after = eng.pool_capacity();
+  EXPECT_EQ(cap_before, cap_after)
+      << "SlotPool capacity changed across reset() when shape was unchanged — "
+         "ensure_pool() should have skipped reallocation (same num_slots, same cells)";
+
+  std::cout << "[EngineReset] pool_capacity before=" << cap_before
+            << " after=" << cap_after
+            << (cap_before == cap_after ? " (stable — no realloc)" : " (CHANGED — realloc!)")
+            << "\n";
+}
+
+// ---- EngineReset_StateNoLeak -----------------------------------------------
+//
+// Pins that state_ does not leak across reset(): evaluating a program with a
+// RECURRENCE op (trade_when / hump) on a warm Engine after reset() must produce
+// byte-identical output to evaluating that program on a FRESH Engine.
+//
+// trade_when accumulates per-instrument position state forward from date 0; any
+// stale state_ content from a prior program on the same Engine would alter
+// outputs starting at date 1. reset() does not clear state_ (it grows once and
+// is unconditionally overwritten at t==0 of each eval_recurrence call), so the
+// guarantee is structural: the recurrence loop seeds state_[j] = out[0,j] at
+// t==0 before reading it at t>0.
+
+TEST(EngineReset_StateNoLeak, RecurrenceOutputByteIdenticalAfterReset) {
+  const Panel panel = make_reset_panel();
+
+  // prog_a: a pure arithmetic program (no state_); evaluated first to warm the
+  // Engine, then reset().
+  const Program prog_a = reset_compile("a = close - open");
+
+  // prog_b: uses trade_when (recurrence op) — exercises state_.
+  // trade_when(trigger, alpha, exit): trigger and exit MUST be masks (comparison
+  // results); alpha is the held signal. Here trigger = (close > open) enters the
+  // position, alpha = (close - open) is held while in-position, and exit =
+  // (close < open) flattens it. The forward scan carries per-instrument state_,
+  // so this is the recurrence path we need to exercise across reset().
+  const Program prog_b =
+      reset_compile("b = trade_when(close > open, close - open, close < open)");
+
+  // Reference: fresh Engine for prog_b.
+  Engine fresh_b{panel};
+  const auto ref_b = fresh_b.evaluate(prog_b);
+  ASSERT_TRUE(ref_b.has_value()) << ref_b.error().message();
+
+  // Reused Engine: evaluate prog_a first, then reset(), then prog_b.
+  Engine reused{panel};
+
+  const auto r_a = reused.evaluate(prog_a);
+  ASSERT_TRUE(r_a.has_value()) << r_a.error().message();
+
+  reused.reset(); // clears field_remap_; state_ is structurally safe (re-seeded at t==0)
+
+  const auto r_b = reused.evaluate(prog_b);
+  ASSERT_TRUE(r_b.has_value()) << r_b.error().message();
+
+  EXPECT_TRUE(signal_sets_equal_r(*ref_b, *r_b))
+      << "trade_when output after reset() differs from fresh Engine — "
+         "state_ content leaked across reset() (recurrence state must be "
+         "re-seeded at t==0 and not depend on prior-program residue)";
+}
+
+// ---- EngineReset_PoolGrowth ------------------------------------------------
+//
+// The reverse of the no-realloc case: when the SECOND program after reset()
+// needs a LARGER pool than the first, ensure_pool() MUST grow the pool (growth
+// is allowed) and the grown evaluation MUST still be byte-identical to a fresh
+// Engine. This pins that reset() leaves the pool in a state ensure_pool() can
+// correctly grow from (no stale live-count, no half-sized buffer reuse).
+
+TEST(EngineReset_PoolGrowth, LargerSecondProgramGrowsPoolAndMatchesFresh) {
+  const Panel panel = make_reset_panel();
+  // prog_small: 2 LoadField + 1 binary (small peak slot count).
+  const Program prog_small = reset_compile("a = close - open");
+  // prog_large: a deeper expression tree needing strictly more peak-live slots.
+  const Program prog_large =
+      reset_compile("b = (close - open) * (close + open) - (close / open)");
+
+  // Precondition: prog_large must genuinely need a larger pool, else this test
+  // does not exercise the growth path.
+  ASSERT_GT(prog_large.num_slots, prog_small.num_slots)
+      << "Test precondition: prog_large must need more slots than prog_small";
+
+  // Reference: fresh Engine for the large program.
+  Engine fresh_large{panel};
+  const auto ref_large = fresh_large.evaluate(prog_large);
+  ASSERT_TRUE(ref_large.has_value()) << ref_large.error().message();
+
+  // Reused Engine: warm with the SMALL program (sizes the pool small), reset,
+  // then evaluate the LARGE program (forces ensure_pool() to grow).
+  Engine reused{panel};
+  const auto r_small = reused.evaluate(prog_small);
+  ASSERT_TRUE(r_small.has_value()) << r_small.error().message();
+  const atx::usize cap_small = reused.pool_capacity();
+
+  reused.reset();
+  const auto r_large = reused.evaluate(prog_large);
+  ASSERT_TRUE(r_large.has_value()) << r_large.error().message();
+  const atx::usize cap_large = reused.pool_capacity();
+
+  // The pool must have grown (capacity increased) and the result must match fresh.
+  EXPECT_GT(cap_large, cap_small)
+      << "pool capacity should have grown for the larger program after reset()";
+  EXPECT_TRUE(signal_sets_equal_r(*ref_large, *r_large))
+      << "Grown-pool evaluate after reset() differs from fresh Engine — "
+         "ensure_pool() growth post-reset is not byte-identical";
+
+  std::cout << "[EngineReset] pool grew from cap=" << cap_small << " to cap=" << cap_large
+            << " (large prog num_slots=" << prog_large.num_slots << ")\n";
+}
+
+} // namespace atxtest_alpha_engine_reset

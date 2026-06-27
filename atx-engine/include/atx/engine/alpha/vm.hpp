@@ -210,6 +210,67 @@ public:
   // until then).
   explicit Engine(const Panel &panel) noexcept : panel_{panel} {}
 
+  // The capacity (max simultaneously-live slots) of the SlotPool's backing
+  // storage. Stable as long as no reallocation occurs (i.e. same num_slots and
+  // cells between calls). Exposed so tests can probe for reallocation without
+  // touching raw internals: stable capacity ⟺ no realloc (ensure_pool only
+  // grows when want_slots > capacity or cells_per_slot changes).
+  [[nodiscard]] atx::usize pool_capacity() const noexcept { return pool_.capacity(); }
+
+  // Prepare the Engine to evaluate a DIFFERENT Program on the SAME Panel.
+  //
+  // WHY THIS EXISTS: `evaluate()` already reuses the SlotPool and per-date Cs*
+  // scratch across successive calls on the same Program. But each `evaluate()`
+  // call re-runs `resolve_fields()`, which re-maps the new Program's field names
+  // to Panel FieldIds and rebuilds `field_remap_`. For a factory worker that
+  // evaluates many distinct Programs on one Panel, paying the field-remap cost
+  // per call is fine — `reset()` exists so S2 can hoist one warm Engine per
+  // worker and skip re-constructing it between genomes.
+  //
+  // WHAT IS CLEARED:
+  //   * `field_remap_` — cleared (zeroed) so `resolve_fields()` rebuilds it for
+  //     the next program's field set. A stale remap from a prior program that
+  //     silently shadows the new program's fields is a Critical bug; clearing it
+  //     makes any accidental reuse of stale data crash loudly on a bounds check.
+  //
+  // WHAT IS RETAINED (no reallocation):
+  //   * `pool_` — the SlotPool's backing storage and capacity are kept. Its
+  //     live-slot counter is already 0 after a normal successful evaluate()
+  //     (every acquire has a matching Free/release — see the dispatch loop).
+  //     reset() does NOT call reset_live(); if the next program needs MORE slots
+  //     or a different cell count, `ensure_pool()` will grow it.
+  //   * All other scratch buffers (`ts_scratch_a_/b_`, `ts_dq_lo_/hi_`, `state_`,
+  //     `cs_valid_`, `cs_scratch_`) — retained at their current capacity. They
+  //     grow monotonically and are cleared/rebuilt at the start of each operation
+  //     that uses them, so stale content never leaks into a computation.
+  //
+  // PRECONDITIONS:
+  //   * The Engine is bound to the SAME Panel (structurally enforced — there is
+  //     no way to rebind the panel).
+  //   * Call only after a successful evaluate() or on a fresh Engine, where
+  //     pool_.live()==0 already holds: every slot acquired during evaluate() is
+  //     released by the corresponding Free instruction in the same dispatch loop,
+  //     so a complete evaluate() always exits with live()==0. reset() therefore
+  //     only needs to clear the per-program field remap.
+  //
+  // EXCEPTION SAFETY: noexcept — only zeroes a vector's contents (capacity
+  // kept), which does not throw.
+  void reset() noexcept {
+    // PRECONDITION CHECK: a clean reset assumes the prior evaluate() balanced every
+    // acquire() with a Free/release (live()==0). This holds after a successful
+    // evaluate() by the linearizer's one-Free-per-live-node contract; the assert
+    // fails loud if a caller reset()s after a partial/errored evaluate. Uses the
+    // pre-existing SlotPool::live() accessor — no pool mutation, no panel.hpp edit.
+    ATX_ASSERT(pool_.live() == 0);
+    // Clear the field remap so the next resolve_fields() cannot accidentally read a
+    // stale FieldId from a prior program. The vector retains its storage capacity.
+    // This is reset()'s ONLY substantive action: the pool and every other scratch
+    // buffer are already in a clean-start state (see contract above). All other
+    // scratch buffers (ts_scratch_*, ts_dq_*, state_, cs_valid_, cs_scratch_) grow
+    // monotonically and are fully overwritten before any read on the next evaluate().
+    field_remap_.clear();
+  }
+
   // Evaluate a compiled Program -> one alpha per root. Element-wise / logical /
   // select are implemented; Cs*/Ts* return Err(NotImplemented) until P3-7/P3-8.
   //
