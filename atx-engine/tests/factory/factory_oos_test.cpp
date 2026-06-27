@@ -1482,4 +1482,107 @@ TEST(FactoryOos, PriceScaleGate_InertWhenRawCloseAbsent) {
       << "raw_close absent -> loading=NaN -> RejectPriceScale bucket must be 0";
 }
 
+// =============================================================================
+//  HoldoutEngineReuse_DigestUnchanged (S2-0 fix #1) — the byte-identity proof for
+//  hoisting ONE holdout alpha::Engine out of the mine_into_oos per-candidate loop
+//  and reusing it across every genome (mirroring the already-hoisted train_engine).
+//
+//  Engine::evaluate carries only per-call-overwritten scratch (SlotPool, field
+//  remap, Ts/Cs scratch, recurrence state seeded at t==0) — no admission-relevant
+//  state leaks between genomes (see vm.hpp). So reuse MUST leave the admission
+//  digest + admitted set bit-identical to the fresh-per-candidate construction.
+//
+//  Proof is two-pronged: (a) two independent runs of the SAME OOS config are
+//  bit-identical (run==run), and (b) both match a HARDCODED PIN captured from the
+//  pre-hoist build. If the Engine reuse leaked any state, the digest/admitted/
+//  version_id would shift off these pins and this test would fail.
+// =============================================================================
+TEST(FactoryOos, HoldoutEngineReuse_DigestUnchanged) {
+  // Pinned constants (captured from the pre-hoist build; seed=17, oos=0.20,
+  // default gate — the SAME config as OosDeterminism, which admits >= 1).
+  static constexpr atx::u64 kPinnedDigest = 10909738412604108776ULL;
+  static constexpr atx::usize kPinnedAdmitted = 5U;
+  static constexpr atx::u64 kPinnedVersionId = 3846488092ULL;
+
+  AlphaGate gate{default_gate_cfg()};
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);
+  cfg.oos_fraction = 0.20;
+
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("engine_reuse_a"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library lib2 = lib::Library::open(tmpdir("engine_reuse_b"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  Factory f2 = fx2.factory();
+
+  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+
+  // The OOS path must actually admit (else the holdout Engine is never exercised).
+  ASSERT_GT(a.admitted, 0u) << "fixture must admit >= 1 so the holdout Engine runs";
+
+  // (a) run==run: the reused holdout Engine is deterministic across independent runs.
+  EXPECT_EQ(a.digest, b.digest);
+  EXPECT_EQ(a.admitted, b.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+
+  // (b) match the pre-hoist pin (byte-identity vs the fresh-per-candidate Engine).
+  EXPECT_EQ(a.digest, kPinnedDigest)
+      << "digest shifted off the pre-hoist pin -> holdout Engine reuse leaked state";
+  EXPECT_EQ(a.admitted, kPinnedAdmitted)
+      << "admitted shifted off the pre-hoist pin -> holdout Engine reuse changed admission";
+  EXPECT_EQ(lib1.snapshot().version_id, kPinnedVersionId)
+      << "library version_id shifted off the pre-hoist pin";
+}
+
+// =============================================================================
+//  CsePctDenominator_CorrectOverEvaluated (S2-0 fix #2/#3) — guards the cse_pct
+//  telemetry. The report-only mean_cse_pct() RECOMPILED every scored genome purely
+//  to read Program::cache_hit_pct(), and divided by the COMPILE-SUCCESS subset
+//  (inflating the mean when some scored genomes fail to compile). cse_pct is pure
+//  telemetry: NOT folded into rep.digest, never an admission decision. We took the
+//  brief's sanctioned path (b) — DROP the report-only recompile entirely — because
+//  the only reachable cache-hit measurement IS that recompile (SearchResult does
+//  not surface per-genome compiled Programs; the Genome carries no cache-hit field),
+//  and eliminating it is the perf goal. So cse_pct now stays at its struct default.
+//
+//  REDUCED SCOPE (path b): rather than assert a corrected denominator, we assert
+//  the report no longer exposes the miscomputed cse_pct — it is the documented
+//  default (0.0) on every path — so no inflated-denominator value can be reported.
+//  This is verified across BOTH a many-genome OOS run (which previously produced a
+//  nonzero recompiled cse_pct) and a many-genome non-OOS run.
+// =============================================================================
+TEST(FactoryOos, CsePctDenominator_CorrectOverEvaluated) {
+  AlphaGate gate{default_gate_cfg()};
+
+  // A multi-generation run scores MANY distinct genomes (res.all_scored is large),
+  // so the pre-change recompile would have produced a (small, nonzero) cse_pct over
+  // the compile-success subset. After path (b) it must be the struct default.
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);
+
+  // (1) OOS path (oos_fraction > 0 -> mine_into_oos).
+  FactoryConfig oos_cfg = cfg;
+  oos_cfg.oos_fraction = 0.20;
+  Fixture fx_oos{real_signal_panel()};
+  lib::Library lib_oos = lib::Library::open(tmpdir("cse_oos"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f_oos = fx_oos.factory();
+  const FactoryReport rep_oos = f_oos.mine_into(oos_cfg, lib_oos, gate).value();
+
+  ASSERT_GT(rep_oos.evaluated, 0u)
+      << "the run must score genomes so the dropped recompile is meaningfully exercised";
+  EXPECT_EQ(rep_oos.cse_pct, 0.0)
+      << "cse_pct must be the documented struct default (path b: report-only recompile dropped) "
+         "— no inflated compile-success-denominator mean can be reported";
+
+  // (2) non-OOS path (oos_fraction == 0 -> mine_into legacy branch).
+  Fixture fx_leg{real_signal_panel()};
+  lib::Library lib_leg = lib::Library::open(tmpdir("cse_leg"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f_leg = fx_leg.factory();
+  const FactoryReport rep_leg = f_leg.mine_into(cfg, lib_leg, gate).value();
+
+  ASSERT_GT(rep_leg.evaluated, 0u) << "the legacy run must also score genomes";
+  EXPECT_EQ(rep_leg.cse_pct, 0.0)
+      << "cse_pct must be the documented struct default on the legacy path too";
+}
+
 } // namespace atxtest_factory_oos_test

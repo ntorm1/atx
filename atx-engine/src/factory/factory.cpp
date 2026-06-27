@@ -11,7 +11,7 @@
 
 #include "atx/core/hash.hpp" // atx::core::hash_combine (digest fold)
 
-#include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program (cse_pct)
+#include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program
 #include "atx/engine/alpha/unparse.hpp"  // alpha::unparse (admitted-alpha expr_source, S4b-1)
 #include "atx/engine/alpha/vm.hpp"       // alpha::Engine
 
@@ -172,7 +172,11 @@ void finalize_run_pbo(FactoryReport &rep,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default. The only reachable cache-hit
+  // telemetry was a REPORT-ONLY recompile of every scored genome (SearchResult does
+  // not surface the per-generation compiled Programs, and a Genome carries no
+  // cache-hit field), so it was dropped — it is pure telemetry, never folded into
+  // rep.digest and never an admission decision.
   // Seed the admission digest with the search's deterministic run fingerprint;
   // each admission decision is folded in below (F1/F2).
   rep.digest = res.digest;
@@ -331,7 +335,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — the admission deflation N is prior cumulative N + this run's N, so a
@@ -592,7 +597,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — identical to the sequential path: prior + this run's N (see serial
@@ -1041,7 +1047,8 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — prior cumulative N + this run's N (same reasoning as serial mine_into).
@@ -1135,6 +1142,16 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // finalized once after the loop. Empty + unused at the max_pbo == 1.0 default.
   std::vector<std::vector<atx::f64>> admitted_pnls;
 
+  // S2-0 PERF: hoist ONE holdout-bound Engine out of the per-candidate loop and reuse
+  // it across every genome — mirrors the train_engine hoist above (F4). Engine::evaluate
+  // output depends ONLY on (program, panel): its mutable members are per-call-overwritten
+  // scratch — field_remap_ is assign()ed fresh each call, the SlotPool columns are written
+  // by the program before any read, Ts/Cs scratch are written-before-read within each op,
+  // and the recurrence state_ is seeded at t==0 every call (no stale carry). So reuse is
+  // safe BY CONSTRUCTION — no per-eval state leaks between genomes (see vm.hpp). The
+  // HoldoutEngineReuse_DigestUnchanged test pins this byte-identity.
+  alpha::Engine holdout_engine{holdout};
+
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first.
   // A3: the admitted holdout PnL streams are collected ONCE into `admitted_pnls`
   // (above) and feed the SINGLE post-loop finalize_run_pbo computation (oos_pbo now
@@ -1166,8 +1183,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       if (!prog_r.has_value()) {
         continue;
       }
-      alpha::Engine engine{holdout};
-      auto ss_r = engine.evaluate(*prog_r);
+      auto ss_r = holdout_engine.evaluate(*prog_r); // S2-0: reuse the hoisted Engine (F4)
       if (!ss_r.has_value()) {
         continue;
       }
@@ -1413,7 +1429,8 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — prior + this run's N, IDENTICAL to serial mine_into_oos.
@@ -1763,18 +1780,14 @@ Factory::rank_by_deflated_fitness(const std::vector<Genome> &scored, const Fitne
   return ranked;
 }
 
-[[nodiscard]] double Factory::mean_cse_pct(const SearchResult &res) const {
-  double sum = 0.0;
-  atx::usize n = 0U;
-  for (const Genome &g : res.all_scored) {
-    auto prog = alpha::compile(g.ast, g.analysis);
-    if (!prog.has_value()) {
-      continue;
-    }
-    sum += prog->cache_hit_pct();
-    ++n;
-  }
-  return (n == 0U) ? 0.0 : sum / static_cast<double>(n);
-}
+// S2-0: Factory::mean_cse_pct is intentionally NOT defined here. It recompiled
+// every scored genome purely to read Program::cache_hit_pct() into the report-only
+// rep.cse_pct — a per-run recompile of the whole scored set, divided by the
+// compile-SUCCESS subset (an inflated mean when some scored genomes fail to
+// compile). cse_pct is pure telemetry (never folded into rep.digest, never an
+// admission decision) and the only reachable measurement WAS that recompile, so the
+// recompile was dropped and rep.cse_pct now keeps its struct default. The header
+// declaration is retained (it is no longer ODR-used) per this task's single-file
+// edit scope; a follow-up may remove the declaration + struct field.
 
 } // namespace atx::engine::factory
