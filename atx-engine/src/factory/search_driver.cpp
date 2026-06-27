@@ -638,6 +638,13 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     gen_fit.trial_count = std::max<atx::usize>(1U, canon.size());
   }
 
+  // S3-1 PERF: create a shared CpcvCache for this generation.  All workers in the
+  // parallel_for share it (its internal mutex serialises the rare cold insert).
+  // After the first genome is scored, every subsequent call for the same
+  // (n_periods, cpcv) is O(1) and allocates no spans or folds.  Lifetime: local to
+  // evaluate_generation, safely outlives the parallel_for barrier below.
+  CpcvCache cpcv_cache{};
+
   det_pool.parallel_for(n_fresh, [&](atx::usize p, atx::usize wid) {
     const atx::usize k = order_fresh[p]; // LPT remap -> canonical slot k
     auto prog = alpha::compile(fresh[k]->ast, fresh[k]->analysis);
@@ -655,7 +662,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       const atx::usize j = it->second;
       auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, gen_fit,
                                    /*weak_panel=*/weak_panel_, /*engine=*/engines[wid].get(),
-                                   /*signals=*/&*ss);
+                                   /*signals=*/&*ss, /*cpcv_cache=*/&cpcv_cache);
       if (rep.has_value()) {
         score_slot[j].raw = rep->raw;
         score_slot[j].objectives = rep->objectives; // S4.1: cache the objectives

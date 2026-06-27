@@ -54,9 +54,13 @@
 //  Header-only, every function inline; the fitness path is COLD (one call per
 //  distinct candidate, never on the VM hot loop), so std::vector is fine.
 
-#include <array>  // std::array (the multi-objective vector, S4.1)
-#include <span>   // std::span
-#include <vector> // std::vector (fold-sliced streams)
+#include <array>   // std::array (the multi-objective vector, S4.1)
+#include <cstring> // std::memcpy (CpcvCache: embed embargo f64 as bit pattern for map key)
+#include <map>     // std::map (CpcvCache: key-ordered, no custom hash needed)
+#include <mutex>   // std::mutex, std::lock_guard (CpcvCache thread-safety)
+#include <span>    // std::span
+#include <tuple>   // std::tuple (CpcvCache key)
+#include <vector>  // std::vector (fold-sliced streams)
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
@@ -78,6 +82,95 @@ class Engine;
 }
 
 namespace atx::engine::factory {
+
+// =========================================================================
+//  CpcvCache — a thread-safe cache of pre-built CPCV label spans + folds,
+//  keyed on (n_periods, n_groups, n_test_groups, embargo).
+//
+//  WHY: detail::fitness_core rebuilds point_label_spans(n_periods) and
+//  eval::cpcv_folds(spans, cfg.cpcv) for EVERY genome even though these
+//  depend ONLY on (n_periods, cfg.cpcv).  In a typical search (pop=60 ×
+//  gen=15) the same (n_periods, cpcv) pair is rebuilt 900+ times; this cache
+//  reduces that to a SINGLE build with O(1) cache-hit allocations thereafter.
+//
+//  THREAD SAFETY: the internal mutex serialises the rare cold-path insert.
+//  The hot-path lookup acquires the same lock, which is cheap (the lock is
+//  uncontested almost always once the cache is warm — typically just one entry
+//  for the main panel and at most one more for the weak panel).
+//
+//  BYTE IDENTITY: the cached spans and folds are bit-identical to recomputing
+//  them (they are pure deterministic functions of their inputs).  No value or
+//  RNG stream changes — purely a performance optimisation.
+//
+//  OWNERSHIP: pass a pointer to a CpcvCache that outlives every concurrent
+//  call that touches it.  The cache is NOT a member of SearchDriver; instead
+//  it is created per evaluate_generation call and passed into fitness_core via
+//  pool_aware_fitness so the cache's lifetime is always tighter than the
+//  objects it references.
+// =========================================================================
+struct CpcvCache {
+  // ---- key -----------------------------------------------------------------
+  // (n_periods, n_groups, n_test_groups, embargo_bits)
+  // embargo is stored as its IEEE-754 bit pattern to avoid float-equality UB.
+  using Key = std::tuple<atx::usize, atx::usize, atx::usize, atx::u64>;
+
+  struct Entry {
+    std::vector<eval::LabelSpan>  spans;
+    std::vector<eval::CpcvFold>   folds;
+  };
+
+  // ---- lookup --------------------------------------------------------------
+  // Returns a CONST POINTER to the cached entry, or nullptr on miss.
+  // Caller must take the entry by value or hold this pointer only while the
+  // cache is not concurrently modified (use get_or_build for the combined
+  // lookup + populate path — that is the only public interface callers need).
+  [[nodiscard]] const Entry *lookup(const Key &key) const noexcept {
+    std::lock_guard<std::mutex> g{mu_};
+    const auto it = map_.find(key);
+    return (it != map_.end()) ? &it->second : nullptr;
+  }
+
+  // ---- get_or_build --------------------------------------------------------
+  // Returns a CONST REFERENCE to the cached spans+folds for (n_periods, cpcv).
+  // On the first call for a given key the spans and folds are built and stored;
+  // subsequent calls return the stored result without recomputing.  Thread-safe.
+  [[nodiscard]] const Entry &get_or_build(atx::usize n_periods, const eval::CpcvConfig &cpcv) {
+    // Build the key: embed embargo as its bit pattern for a reliable map key.
+    atx::u64 embargo_bits{};
+    static_assert(sizeof(embargo_bits) == sizeof(cpcv.embargo), "f64 size mismatch");
+    std::memcpy(&embargo_bits, &cpcv.embargo, sizeof(embargo_bits));
+    const Key key{n_periods, cpcv.n_groups, cpcv.n_test_groups, embargo_bits};
+
+    {
+      std::lock_guard<std::mutex> g{mu_};
+      const auto it = map_.find(key);
+      if (it != map_.end()) {
+        return it->second; // cache hit — no recompute
+      }
+    }
+
+    // Cache miss: build outside the lock so other workers can proceed
+    // concurrently on their (different) keys.  The work is deterministic and
+    // idempotent, so a racing double-build is harmless (the second insert is
+    // a no-op via try_emplace).
+    Entry entry;
+    entry.spans.reserve(n_periods);
+    for (atx::usize t = 0U; t < n_periods; ++t) {
+      entry.spans.push_back(eval::LabelSpan{t, t + 1U});
+    }
+    entry.folds = eval::cpcv_folds(std::span<const eval::LabelSpan>{entry.spans}, cpcv);
+
+    std::lock_guard<std::mutex> g{mu_};
+    // try_emplace: if another thread raced and already inserted, keep theirs
+    // (deterministic same value; this build is discarded).
+    const auto [it, inserted] = map_.try_emplace(key, std::move(entry));
+    return it->second;
+  }
+
+private:
+  mutable std::mutex            mu_;
+  std::map<Key, Entry>          map_;
+};
 
 // =========================================================================
 //  kMaxObjectives — the fixed capacity of a candidate's objective vector (S4.1).
@@ -319,11 +412,18 @@ struct FitnessCore {
 // those steps — the legacy overload below now simply layers the Mean-based
 // redundancy on top, so its output is provably unchanged. Err propagates a
 // candidate compile/eval/extract failure (full or weak panel).
+//
+// S3-1 PERF: `cpcv_cache` (optional, default nullptr) is a thread-safe cache of
+// pre-built label spans + CPCV folds keyed on (n_periods, cpcv).  When supplied,
+// the first call for a given key builds and stores the result; every subsequent
+// call for the same key is O(1) and allocates nothing.  nullptr -> recompute on
+// every call (the legacy behaviour, byte-identical).
 [[nodiscard]] atx::core::Result<FitnessCore>
 fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
              const alpha::Panel *weak_panel, alpha::Engine *engine = nullptr,
-             const alpha::SignalSet *signals = nullptr);
+             const alpha::SignalSet *signals = nullptr,
+             CpcvCache *cpcv_cache = nullptr);
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
 // `redundancy` is the (Mean for the legacy AlphaStore path, Max for the PoolView
@@ -357,11 +457,15 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 //  `policy`, `sim`, `pool` for the duration of the call (no ownership taken).
 //  Returns Err only if the candidate fails to compile/evaluate/extract.
 // =========================================================================
+// S3-1 PERF: `cpcv_cache` (optional, default nullptr) is forwarded directly into
+// detail::fitness_core. When supplied, spans+folds are built once per unique
+// (n_periods, cpcv) and reused for every subsequent genome — O(1) per call.
 [[nodiscard]] atx::core::Result<FitnessReport>
 pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel = nullptr,
                    alpha::Engine *engine = nullptr,
-                   const alpha::SignalSet *signals = nullptr);
+                   const alpha::SignalSet *signals = nullptr,
+                   CpcvCache *cpcv_cache = nullptr);
 
 } // namespace atx::engine::factory

@@ -279,7 +279,7 @@ eval_streams(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
              const alpha::Panel *weak_panel, alpha::Engine *engine,
-             const alpha::SignalSet *signals) {
+             const alpha::SignalSet *signals, CpcvCache *cpcv_cache) {
   // SAFETY (eps): the robustness ratio divides by wq; floor the denominator so a
   //               near-zero full-universe wq cannot blow the ratio to ±inf.
   constexpr atx::f64 kEps = 1e-12;
@@ -290,10 +290,19 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   // directly from the caller's precomputed SignalSet (bit-identical, see eval_streams).
   ATX_TRY(const alpha::AlphaStreams strm, eval_streams(cand, panel, policy, sim, engine, signals));
   const atx::usize insts = strm.n_instruments();
-  const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
-  const std::vector<eval::CpcvFold> folds =
-      eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-  OosAggregate agg = aggregate_oos(strm, folds, insts, cfg.book_size);
+
+  // S3-1 PERF: use cpcv_cache when supplied; fall back to recomputing when nullptr.
+  // Both paths produce bit-identical spans and folds (pure deterministic functions).
+  OosAggregate agg{};
+  if (cpcv_cache != nullptr) {
+    const CpcvCache::Entry &entry = cpcv_cache->get_or_build(strm.n_periods(), cfg.cpcv);
+    agg = aggregate_oos(strm, entry.folds, insts, cfg.book_size);
+  } else {
+    const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
+    const std::vector<eval::CpcvFold> folds =
+        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
+    agg = aggregate_oos(strm, folds, insts, cfg.book_size);
+  }
   const atx::f64 wq = agg.wq;
 
   // (3) sub-universe robustness (§0.8): re-eval on the weak-universe Panel.
@@ -301,10 +310,20 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   if (weak_panel != nullptr) {
     ATX_TRY(const alpha::AlphaStreams weak_strm, eval_streams(cand, *weak_panel, policy, sim));
     const atx::usize weak_insts = weak_strm.n_instruments();
-    const std::vector<eval::LabelSpan> weak_spans = point_label_spans(weak_strm.n_periods());
-    const std::vector<eval::CpcvFold> weak_folds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
-    const OosAggregate weak_agg = aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
+
+    // S3-1 PERF: same cache for weak panel path (the fold geometry is the same
+    // function of n_periods; only the streams differ).
+    OosAggregate weak_agg{};
+    if (cpcv_cache != nullptr) {
+      const CpcvCache::Entry &weak_entry =
+          cpcv_cache->get_or_build(weak_strm.n_periods(), cfg.cpcv);
+      weak_agg = aggregate_oos(weak_strm, weak_entry.folds, weak_insts, cfg.book_size);
+    } else {
+      const std::vector<eval::LabelSpan> weak_spans = point_label_spans(weak_strm.n_periods());
+      const std::vector<eval::CpcvFold> weak_folds =
+          eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
+      weak_agg = aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
+    }
     const atx::f64 denom = (std::abs(wq) > kEps) ? wq : kEps;
     robust = std::clamp(weak_agg.wq / denom, 0.0, 1.0);
   }
@@ -461,11 +480,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel,
-                   alpha::Engine *engine, const alpha::SignalSet *signals) {
+                   alpha::Engine *engine, const alpha::SignalSet *signals,
+                   CpcvCache *cpcv_cache) {
   // Steps 1, 3, 5 (pool-INDEPENDENT) — written once in fitness_core (byte-identical
-  // to the original body for those steps).
+  // to the original body for those steps).  S3-1: cpcv_cache forwarded to eliminate
+  // redundant span+fold rebuilds across genomes sharing the same (n_periods, cpcv).
   ATX_TRY(const detail::FitnessCore core,
-          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine, signals));
+          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine, signals,
+                               cpcv_cache));
 
   // (2) diversification discount (F7): MEAN |corr-to-pool| of the OOS PnL — the
   // legacy AlphaStore semantics (UNCHANGED; the green S3 suite gates this).
