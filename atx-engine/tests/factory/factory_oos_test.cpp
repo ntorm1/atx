@@ -1447,6 +1447,77 @@ TEST(FactoryOos, DsrSubwindows_StructuralZeroOnlyFirstWindow) {
 }
 
 // =============================================================================
+// S2-2 — Single-pass sub-window Sharpe is BIT-IDENTICAL to the K-call path.
+//   The S2-2 perf change replaces the per-sub-window combine::compute_metrics
+//   call (which also recomputes turnover/drawdown/margin/fitness from the
+//   positions array — fields the sub-window gate NEVER reads) with a single
+//   sharpe-only reduction (combine::detail::pnl_moments + the EXACT
+//   compute_metrics Sharpe formula). Because the consumed field (sharpe)
+//   derives solely from pnl_moments(sub_pnl) and that identical formula, the
+//   reduction is bit-identical by construction — same accumulation order, same
+//   annualization, same flat/NaN handling.
+//
+//   This test pins that invariant. The digest below was captured from the
+//   PRE-CHANGE K-call path for this exact config (dsr_subwindows = 4, seed 99,
+//   200-date momentum panel, oos_fraction 0.50, min_dsr 0.50). The post-change
+//   single-pass path MUST reproduce it to the bit. If S2-2 ever falls back to
+//   the per-slice path (ULP-blocked), this
+//   test still holds unchanged — the path is the same — so it doubles as a
+//   permanent guard. NEVER re-baseline this constant to make a test pass.
+// =============================================================================
+TEST(FactoryOos, SubwindowMetrics_SinglePass_BitIdentical) {
+  GateConfig gc = permissive_gate_cfg();
+  AlphaGate gate{gc};
+
+  // Longer holdout (200 dates, oos_fraction 0.50 -> ~100 holdout periods) so each
+  // of K=4 sub-windows holds ~25 real samples: the per-window Sharpe is genuinely
+  // computed and consumed (not the sub_T < 2 short-circuit). A positive min_dsr
+  // makes that Sharpe DRIVE the per-window accept/reject decision, so any change
+  // in the sub-window Sharpe arithmetic would flip the admission set and the
+  // digest. This is exactly the path S2-2 collapses to a single pass.
+  const usize dates = 200;
+  const usize insts = 8;
+  Panel big_panel = two_field_panel(dates, insts, momentum_close(dates, insts, 0xA11Cu));
+
+  FactoryConfig cfg = base_cfg(/*seed=*/99, /*pop=*/16, /*gens=*/4);
+  cfg.oos_fraction             = 0.50;
+  cfg.min_dsr                  = 0.50; // positive bar: per-window Sharpe gates
+  cfg.dsr_subwindows           = 4;    // gate ON: exercises the single-pass reduction
+  cfg.search.seed_from_grammar = false;
+
+  // Pinned digest from the PRE-CHANGE K-call path for this exact config. The
+  // single-pass path must reproduce it to the bit. NEVER re-baseline this.
+  constexpr u64 kPinnedSubwindowDigest = 6368737882721888739ULL;
+
+  Fixture fx1{big_panel};
+  lib::Library lib1 = lib::Library::open(tmpdir("s2_sw_bit_a"), gc, {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  const FactoryReport r1 = f1.mine_into(cfg, lib1, gate).value();
+
+  // Re-run: the single-pass reduction is deterministic.
+  Fixture fx2{big_panel};
+  lib::Library lib2 = lib::Library::open(tmpdir("s2_sw_bit_b"), gc, {0xC0FFEEu});
+  Factory f2 = fx2.factory();
+  const FactoryReport r2 = f2.mine_into(cfg, lib2, gate).value();
+
+  EXPECT_EQ(r1.digest, r2.digest)
+      << "single-pass sub-window reduction must be deterministic across runs";
+  EXPECT_EQ(r1.admitted, r2.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+
+  // Non-vacuous: the K=4 sub-window gate must actually FIRE a Sharpe-driven
+  // rejection on this config, so bit-identity of the Sharpe arithmetic is
+  // load-bearing (a changed Sharpe would flip at least one of these decisions).
+  EXPECT_GT(r1.reject_histogram[7], 0u)
+      << "config must exercise a real per-window Sharpe rejection (RejectDsrSubwindow)";
+
+  // Bit-identity to the pinned pre-change K-call digest. This is THE load-bearing
+  // assertion: any change in the sub-window Sharpe arithmetic flips the digest.
+  EXPECT_EQ(r1.digest, kPinnedSubwindowDigest)
+      << "single-pass sub-window Sharpe must be BIT-IDENTICAL to the K-call path";
+}
+
+// =============================================================================
 // Test 5 — Inert when raw_close absent.
 //   When the holdout panel has NO "raw_close" field the loading is NaN, so the
 //   gate must NOT reject anything. The result must be byte-identical to the
@@ -1480,6 +1551,300 @@ TEST(FactoryOos, PriceScaleGate_InertWhenRawCloseAbsent) {
   EXPECT_EQ(libA.snapshot().version_id, libB.snapshot().version_id);
   EXPECT_EQ(repB.reject_histogram[6], 0u)
       << "raw_close absent -> loading=NaN -> RejectPriceScale bucket must be 0";
+}
+
+// =============================================================================
+//  HoldoutEngineReuse_DigestUnchanged (S2-0 fix #1) — the byte-identity proof for
+//  hoisting ONE holdout alpha::Engine out of the mine_into_oos per-candidate loop
+//  and reusing it across every genome (mirroring the already-hoisted train_engine).
+//
+//  Engine::evaluate carries only per-call-overwritten scratch (SlotPool, field
+//  remap, Ts/Cs scratch, recurrence state seeded at t==0) — no admission-relevant
+//  state leaks between genomes (see vm.hpp). So reuse MUST leave the admission
+//  digest + admitted set bit-identical to the fresh-per-candidate construction.
+//
+//  Proof is two-pronged: (a) two independent runs of the SAME OOS config are
+//  bit-identical (run==run), and (b) both match a HARDCODED PIN captured from the
+//  pre-hoist build. If the Engine reuse leaked any state, the digest/admitted/
+//  version_id would shift off these pins and this test would fail.
+// =============================================================================
+TEST(FactoryOos, HoldoutEngineReuse_DigestUnchanged) {
+  // Pinned constants (captured from the pre-hoist build; seed=17, oos=0.20,
+  // default gate — the SAME config as OosDeterminism, which admits >= 1).
+  static constexpr atx::u64 kPinnedDigest = 10909738412604108776ULL;
+  static constexpr atx::usize kPinnedAdmitted = 5U;
+  static constexpr atx::u64 kPinnedVersionId = 3846488092ULL;
+
+  AlphaGate gate{default_gate_cfg()};
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);
+  cfg.oos_fraction = 0.20;
+
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("engine_reuse_a"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library lib2 = lib::Library::open(tmpdir("engine_reuse_b"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  Factory f2 = fx2.factory();
+
+  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+
+  // The OOS path must actually admit (else the holdout Engine is never exercised).
+  ASSERT_GT(a.admitted, 0u) << "fixture must admit >= 1 so the holdout Engine runs";
+
+  // (a) run==run: the reused holdout Engine is deterministic across independent runs.
+  EXPECT_EQ(a.digest, b.digest);
+  EXPECT_EQ(a.admitted, b.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+
+  // (b) match the pre-hoist pin (byte-identity vs the fresh-per-candidate Engine).
+  EXPECT_EQ(a.digest, kPinnedDigest)
+      << "digest shifted off the pre-hoist pin -> holdout Engine reuse leaked state";
+  EXPECT_EQ(a.admitted, kPinnedAdmitted)
+      << "admitted shifted off the pre-hoist pin -> holdout Engine reuse changed admission";
+  EXPECT_EQ(lib1.snapshot().version_id, kPinnedVersionId)
+      << "library version_id shifted off the pre-hoist pin";
+}
+
+// =============================================================================
+//  CsePctDenominator_CorrectOverEvaluated (S2-0 fix #2/#3) — guards the cse_pct
+//  telemetry. The report-only mean_cse_pct() RECOMPILED every scored genome purely
+//  to read Program::cache_hit_pct(), and divided by the COMPILE-SUCCESS subset
+//  (inflating the mean when some scored genomes fail to compile). cse_pct is pure
+//  telemetry: NOT folded into rep.digest, never an admission decision. We took the
+//  brief's sanctioned path (b) — DROP the report-only recompile entirely — because
+//  the only reachable cache-hit measurement IS that recompile (SearchResult does
+//  not surface per-genome compiled Programs; the Genome carries no cache-hit field),
+//  and eliminating it is the perf goal. So cse_pct now stays at its struct default.
+//
+//  REDUCED SCOPE (path b): rather than assert a corrected denominator, we assert
+//  the report no longer exposes the miscomputed cse_pct — it is the documented
+//  default (0.0) on every path — so no inflated-denominator value can be reported.
+//  This is verified across BOTH a many-genome OOS run (which previously produced a
+//  nonzero recompiled cse_pct) and a many-genome non-OOS run.
+// =============================================================================
+TEST(FactoryOos, CsePctDenominator_CorrectOverEvaluated) {
+  AlphaGate gate{default_gate_cfg()};
+
+  // A multi-generation run scores MANY distinct genomes (res.all_scored is large),
+  // so the pre-change recompile would have produced a (small, nonzero) cse_pct over
+  // the compile-success subset. After path (b) it must be the struct default.
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);
+
+  // (1) OOS path (oos_fraction > 0 -> mine_into_oos).
+  FactoryConfig oos_cfg = cfg;
+  oos_cfg.oos_fraction = 0.20;
+  Fixture fx_oos{real_signal_panel()};
+  lib::Library lib_oos = lib::Library::open(tmpdir("cse_oos"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f_oos = fx_oos.factory();
+  const FactoryReport rep_oos = f_oos.mine_into(oos_cfg, lib_oos, gate).value();
+
+  ASSERT_GT(rep_oos.evaluated, 0u)
+      << "the run must score genomes so the dropped recompile is meaningfully exercised";
+  EXPECT_EQ(rep_oos.cse_pct, 0.0)
+      << "cse_pct must be the documented struct default (path b: report-only recompile dropped) "
+         "— no inflated compile-success-denominator mean can be reported";
+
+  // (2) non-OOS path (oos_fraction == 0 -> mine_into legacy branch).
+  Fixture fx_leg{real_signal_panel()};
+  lib::Library lib_leg = lib::Library::open(tmpdir("cse_leg"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f_leg = fx_leg.factory();
+  const FactoryReport rep_leg = f_leg.mine_into(cfg, lib_leg, gate).value();
+
+  ASSERT_GT(rep_leg.evaluated, 0u) << "the legacy run must also score genomes";
+  EXPECT_EQ(rep_leg.cse_pct, 0.0)
+      << "cse_pct must be the documented struct default on the legacy path too";
+}
+
+// =============================================================================
+//  S2-1 train->holdout cascade pre-gate tests.
+//
+//  The pre-gate (FactoryConfig::cascade_gate_factor) is a PERF-ONLY screen: it skips
+//  the expensive holdout eval for candidates whose TRAIN per-period Sharpe is provably
+//  too weak to clear min_dsr on an optimistic holdout. It is a CONSERVATIVE TRUE UPPER
+//  BOUND — it may keep a doomed candidate (a wasted eval) but it MUST NEVER skip a
+//  candidate that would have admitted, so the admitted set + digest + reject_histogram
+//  are byte-identical to the gate-off run at any active factor.
+//
+//  The tuned safety factor: skip threshold on the per-period train Sharpe is
+//  min_dsr / cascade_gate_factor. factor = 3.0 with min_dsr = 0.5 => skip only when the
+//  per-period train Sharpe < 0.1667 (annualized < ~2.65). A LARGER factor LOOSENS the
+//  gate (strictly safer). 3.0 is loose enough that every candidate that admits on the
+//  holdout (a strong, stationary train signal) clears the threshold — proven below.
+// =============================================================================
+constexpr f64 kCascadeFactor = 3.0;
+
+// =============================================================================
+//  CascadeGate_DefaultIsOff_ByteIdentical — the OFF-path invariant: at the default
+//  cascade_gate_factor == 0.0 the pre-gate is NEVER consulted, so two runs are
+//  byte-identical and n_cascade_skipped stays 0. (The whole FactoryOos suite already
+//  exercises the off-path; this pins the new field's zero-overhead default directly.)
+// =============================================================================
+TEST(FactoryOos, CascadeGate_DefaultIsOff_ByteIdentical) {
+  AlphaGate gate{default_gate_cfg()};
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);
+  cfg.oos_fraction = 0.20;
+  ASSERT_EQ(cfg.cascade_gate_factor, 0.0) << "default must be 0.0 (OFF)";
+
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("casc_off_a"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library lib2 = lib::Library::open(tmpdir("casc_off_b"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  Factory f2 = fx2.factory();
+
+  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+
+  EXPECT_EQ(a.digest, b.digest);
+  EXPECT_EQ(a.admitted, b.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+  EXPECT_EQ(a.n_cascade_skipped, 0u) << "gate OFF: pre-gate must never fire";
+  EXPECT_EQ(b.n_cascade_skipped, 0u);
+}
+
+// =============================================================================
+//  AdmittedSetUnchanged_AfterCascadeGate (THE binding proof) — a stationary planted
+//  signal admits >= 1 alpha and a multi-generation search scores MANY weak-train
+//  candidates. Run twice: gate OFF (factor 0.0) vs gate ON (tuned factor). The pre-gate
+//  is a TRUE UPPER BOUND, so the ADMITTED SET, rep.digest, and rep.reject_histogram MUST
+//  be IDENTICAL between the two runs. n_cascade_skipped > 0 on the ON run proves the
+//  gate actually fired (else the test is vacuous). The other optional gates stay at their
+//  defaults (price-scale OFF, subwindows OFF) so EVERY non-admit is RejectFitness and the
+//  pre-gate's RejectFitness fold preserves the histogram exactly.
+// =============================================================================
+TEST(FactoryOos, AdmittedSetUnchanged_AfterCascadeGate) {
+  AlphaGate gate{default_gate_cfg()};
+
+  // A multi-generation run over the stationary momentum panel: admits >= 1 (the strong
+  // train signal survives the holdout) while scoring many weak-train candidates the
+  // pre-gate can prove hopeless.
+  FactoryConfig cfg_off = real_signal_cfg(/*seed*/ 17);
+  cfg_off.oos_fraction = 0.20;
+  ASSERT_EQ(cfg_off.max_price_scale_corr, 1.0) << "price-scale gate must stay OFF";
+  ASSERT_EQ(cfg_off.dsr_subwindows, 0u) << "subwindow gate must stay OFF";
+
+  // Run A: gate OFF (factor 0.0) — the reference admitted set / digest / histogram.
+  Fixture fxA{real_signal_panel()};
+  lib::Library libA = lib::Library::open(tmpdir("casc_off"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  ASSERT_GT(repA.admitted, 0u)
+      << "the stationary edge must admit >= 1, else the unchanged-admitted-set proof is vacuous";
+  ASSERT_EQ(repA.n_cascade_skipped, 0u) << "gate OFF must never skip";
+
+  // Run B: gate ON at the tuned factor. The pre-gate skips provably-weak candidates but
+  // (as a true upper bound) NEVER one that would have admitted.
+  FactoryConfig cfg_on = cfg_off;
+  cfg_on.cascade_gate_factor = kCascadeFactor;
+  Fixture fxB{real_signal_panel()};
+  lib::Library libB = lib::Library::open(tmpdir("casc_on"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fB = fxB.factory();
+  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+
+  // The gate actually fired (non-vacuous): it skipped >= 1 holdout eval.
+  EXPECT_GT(repB.n_cascade_skipped, 0u)
+      << "the tuned factor must skip >= 1 candidate, else the pre-gate is never exercised";
+
+  // The true-upper-bound proof: nothing that would have admitted was dropped.
+  EXPECT_EQ(repB.digest, repA.digest)
+      << "cascade pre-gate changed rep.digest -> it skipped an admitting candidate (bound too tight)";
+  EXPECT_EQ(repB.admitted, repA.admitted)
+      << "cascade pre-gate changed the admitted count -> bound too tight";
+  EXPECT_EQ(libB.snapshot().version_id, libA.snapshot().version_id)
+      << "cascade pre-gate changed the library version_id -> the admitted SET differs";
+  EXPECT_EQ(repB.reject_histogram, repA.reject_histogram)
+      << "cascade pre-gate changed the reject_histogram -> a non-RejectFitness bucket shifted";
+}
+
+// =============================================================================
+//  CascadeGate_SeqEqualsParallel — the serial (mine_into_oos) and parallel
+//  (mine_into_oos_parallel, ProcessExecutor) paths must produce byte-identical digest,
+//  admitted count, library version_id, and reject_histogram WITH the cascade pre-gate ON.
+//  Because the gate decision is computed from train_metrics (identical in both loops) and
+//  folds the same RejectFitness in the same order, the symmetric wiring keeps seq==parallel.
+// =============================================================================
+TEST(FactoryOos, CascadeGate_SeqEqualsParallel) {
+  AlphaGate gate{default_gate_cfg()};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 13);
+  cfg.oos_fraction             = 0.20;
+  cfg.cascade_gate_factor      = kCascadeFactor; // gate ON
+  cfg.search.seed_from_grammar = false;
+
+  // Serial oracle.
+  Fixture fxSerial{real_signal_panel()};
+  lib::Library libSerial = lib::Library::open(tmpdir("casc_seq"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fSerial = fxSerial.factory();
+  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+
+  // Parallel path (ProcessExecutor, 2 workers).
+  Fixture fxPar{real_signal_panel()};
+  lib::Library libPar = lib::Library::open(tmpdir("casc_par"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fPar = fxPar.factory();
+  ProcessExecutor execPar{ExecutorConfig{2, false}};
+  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+
+  EXPECT_EQ(repSerial.digest, repPar.digest)
+      << "seq==parallel digest must match with cascade pre-gate ON";
+  EXPECT_EQ(repSerial.admitted, repPar.admitted)
+      << "seq==parallel admitted count must match with cascade pre-gate ON";
+  EXPECT_EQ(libSerial.snapshot().version_id, libPar.snapshot().version_id)
+      << "seq==parallel library version_id must match with cascade pre-gate ON";
+  EXPECT_EQ(repSerial.reject_histogram, repPar.reject_histogram)
+      << "seq==parallel reject_histogram must match with cascade pre-gate ON";
+  EXPECT_EQ(repSerial.n_cascade_skipped, repPar.n_cascade_skipped)
+      << "seq==parallel n_cascade_skipped must match (the gate fires identically)";
+}
+
+// =============================================================================
+//  AdmitLadder_SharedHelper_SeqEqualsParallel (S2-3) — the structural-equivalence
+//  proof for collapsing the copy-pasted "(3d) ADMISSION on the HOLDOUT" ladder in
+//  mine_into_oos (serial) and mine_into_oos_parallel into ONE Factory::admit_on_holdout
+//  helper. With the OPTIONAL gates (R2 price-scale, R3 sub-window, S2-1 cascade) all
+//  OFF (default cfg), this isolates the shared admit ladder ITSELF on a real-signal
+//  config that exercises BOTH an Accept (a stationary edge survives the holdout —
+//  cf. GoodIsGoodOos_Admitted) AND a reject kind (the histogram is non-empty). Because
+//  both paths now call the SAME helper, the digest, admitted count, library version_id,
+//  and reject_histogram are identical BY CONSTRUCTION.
+// =============================================================================
+TEST(FactoryOos, AdmitLadder_SharedHelper_SeqEqualsParallel) {
+  AlphaGate gate{default_gate_cfg()};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 13);
+  cfg.oos_fraction = 0.20; // OOS holdout admit path; R2/R3/cascade stay OFF
+  cfg.search.seed_from_grammar = false;
+
+  // Serial oracle — mine_into -> mine_into_oos (no executor).
+  Fixture fxSerial{real_signal_panel()};
+  lib::Library libSerial =
+      lib::Library::open(tmpdir("ladder_seq"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fSerial = fxSerial.factory();
+  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+
+  // Parallel path (ProcessExecutor, 2 workers) -> mine_into_oos_parallel.
+  Fixture fxPar{real_signal_panel()};
+  lib::Library libPar = lib::Library::open(tmpdir("ladder_par"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fPar = fxPar.factory();
+  ProcessExecutor execPar{ExecutorConfig{2, false}};
+  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+
+  // The config must actually exercise BOTH ladder outcomes for this to be a real proof.
+  ASSERT_GT(repSerial.admitted, 0u) << "config must drive at least one Accept through the ladder";
+  atx::u64 total_rejects = 0;
+  for (const atx::u64 b : repSerial.reject_histogram) {
+    total_rejects += b;
+  }
+  ASSERT_GT(total_rejects, 0u) << "config must drive at least one reject kind through the ladder";
+
+  EXPECT_EQ(repSerial.digest, repPar.digest)
+      << "shared admit_on_holdout: seq==parallel digest must match";
+  EXPECT_EQ(repSerial.admitted, repPar.admitted)
+      << "shared admit_on_holdout: seq==parallel admitted count must match";
+  EXPECT_EQ(libSerial.snapshot().version_id, libPar.snapshot().version_id)
+      << "shared admit_on_holdout: seq==parallel library version_id must match";
+  EXPECT_EQ(repSerial.reject_histogram, repPar.reject_histogram)
+      << "shared admit_on_holdout: seq==parallel reject_histogram must match";
 }
 
 } // namespace atxtest_factory_oos_test

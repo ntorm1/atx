@@ -63,18 +63,16 @@
 //  it must build a research-panel ISignalSource adapter; that is out of S3-6 scope.
 //
 // ===========================================================================
-//  cse_pct source (documented, NOT fabricated)
+//  cse_pct (telemetry DROPPED in S2-0)
 // ===========================================================================
-//  §4.8 asks for "mean Program.cache_hit_pct() over generations". SearchResult
-//  does NOT surface the per-generation compiled Programs (the driver compiles
-//  single-root Programs internally and folds only their eval DIGEST). The reachable
-//  CSE telemetry is Program::cache_hit_pct() on the run's distinct scored genomes
-//  (res.all_scored): we re-compile each and average its cache_hit_pct(). For the
-//  single-root seed grammar this measures intra-expression structural sharing (it
-//  is typically small — the cross-alpha CSE lever is exercised by compile_batch,
-//  not the per-genome single-root compile the driver uses), but it is a REAL
-//  measurement off the as-built Program telemetry, not a fabricated constant. An
-//  empty run (no scored genomes / all uncompilable) yields cse_pct = 0.
+//  §4.8 once asked for "mean Program.cache_hit_pct() over generations". The only
+//  reachable measurement was a REPORT-ONLY recompile of every scored genome purely
+//  to read Program::cache_hit_pct() (SearchResult does not surface the per-generation
+//  compiled Programs, and a Genome carries no cache-hit field). S2-0 eliminated that
+//  recompile: cse_pct is pure telemetry — never folded into rep.digest, never an
+//  admission decision — so the FactoryReport::cse_pct field is now WRITE-NEVER and
+//  stays at its default 0.0. The field itself is retained only because its
+//  out-of-sprint-scope consumers (bench, python binding) read it.
 //
 //  Header-only; every function inline. mine() is a COLD path (run once per search),
 //  so std::vector / per-candidate allocation is acceptable (the VM hot loop is
@@ -82,6 +80,7 @@
 
 #include <array>  // std::array (reject_histogram, indexed by library::AdmitKind)
 #include <limits> // std::numeric_limits (W4a split-sharpe disabling sentinel; R3b oos_pbo NaN default)
+#include <span>   // std::span (admit_on_holdout hold_pnl / hold_pos_flat borrows)
 #include <string> // std::string (seed-expression / field source)
 #include <vector> // std::vector
 
@@ -206,6 +205,18 @@ struct FactoryConfig {
   //  WARNING: large K over a short holdout means short segments — a segment with < 2 real
   //  observations always yields DSR=0.0 and will FAIL the bar. That is user tuning responsibility.
   atx::usize dsr_subwindows = 0; // --dsr-subwindows (R3); 0/absent == OFF, byte-identical
+  // --- S2-1 train->holdout cascade pre-gate (OPTIONAL; default OFF = 0.0 -> zero overhead).
+  //  A PERF-ONLY pre-filter: BEFORE the expensive holdout eval, skip a candidate whose
+  //  TRAIN-side per-period Sharpe is so weak that even an optimistic holdout cannot clear
+  //  cfg.min_dsr. A CONSERVATIVE TRUE UPPER BOUND on holdout admissibility (see
+  //  cascade_gate_passes): it may keep a doomed candidate (one wasted eval) but it MUST
+  //  NEVER skip a candidate that would have admitted — so the admitted set, rep.digest, and
+  //  rep.reject_histogram are byte-identical to the gate-off run at any active factor (the
+  //  AdmittedSetUnchanged_AfterCascadeGate proof). The skip threshold on the per-period train
+  //  Sharpe is min_dsr / cascade_gate_factor: a LARGER factor LOOSENS the gate (fewer skips,
+  //  strictly safer). INACTIVE (<= 0.0, the default): the pre-gate is NEVER consulted, so the
+  //  path is byte-identical to pre-S2-1. Active when > 0.0.
+  atx::f64 cascade_gate_factor = 0.0; // --cascade-gate (S2-1); 0.0 == OFF, byte-identical
 };
 
 // =========================================================================
@@ -214,8 +225,8 @@ struct FactoryConfig {
 //  admitted   : candidates that cleared BOTH the P4 gate AND the dsr bar (inserted).
 //  evaluated  : res.trial_count — distinct candidates scored (feeds S1 DSR/PBO N).
 //  dedup_pct  : 1 - trial_count/candidates_generated (the F6 dedup lever).
-//  cse_pct    : mean Program::cache_hit_pct() over the run's distinct scored genomes
-//               (see the header cse_pct note — a real, reachable measurement).
+//  cse_pct    : WRITE-NEVER since S2-0 (the report-only recompile was dropped); stays
+//               at the default 0.0 — see the header cse_pct note.
 //  trials     : == evaluated (the trial count, surfaced under its §4.8 name too).
 //  seed       : res.seed == cfg.search.master_seed (the artifact key).
 //  digest     : the F1/F2 byte-identical run fingerprint — the search digest FOLDED
@@ -239,6 +250,7 @@ struct FactoryReport {
   atx::usize admitted{0};
   atx::usize evaluated{0};
   atx::f64 dedup_pct{0.0};
+  // S2-0: write-never (telemetry dropped); retained at default for out-of-scope bench/python consumers
   atx::f64 cse_pct{0.0};
   atx::usize trials{0};
   atx::u64 seed{0};
@@ -251,6 +263,12 @@ struct FactoryReport {
   atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
   atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
   std::array<atx::usize, 8> reject_histogram{}; // count per library::AdmitKind (0..7)
+
+  // --- S2-1 cascade pre-gate telemetry (additive; REPORT-ONLY, never folded into digest).
+  //  Number of candidates the train->holdout cascade pre-gate skipped (the expensive
+  //  holdout eval was avoided). 0 on every gate-off run (cascade_gate_factor <= 0.0).
+  //  Adding a defaulted field leaves the digest + every existing consumer untouched.
+  atx::usize n_cascade_skipped{0};
 
   // --- P2a OOS telemetry (additive; default-EMPTY so the legacy path is byte-
   //  identical). One entry per admitted alpha when oos_fraction > 0: its IS (train)
@@ -420,6 +438,34 @@ private:
   // to a calendar period in the research panel, so a fixed admit period is sufficient.
   static constexpr atx::usize kAdmitAsOf = 1U;
 
+  // S2-3: the "(3d) ADMISSION on the HOLDOUT" ladder, extracted VERBATIM from the two
+  // formerly copy-pasted sites in mine_into_oos (serial) and mine_into_oos_parallel so
+  // they cannot drift. Executes the price-scale / sub-window / DSR+split ladder, then
+  // folds the resulting AdmitKind into the run digest + reject histogram in the EXACT
+  // same order as the inline code. A static member (not a free function) because it
+  // references the private kAdmitAsOf as the AlphaCandidate's as-of period.
+  //
+  // Contract (byte-identical to the inline ladder):
+  //   - !price_scale_ok  -> kind = RejectPriceScale
+  //   - else !subwindows_ok -> kind = RejectDsrSubwindow
+  //   - else if (hold_dsr >= min_dsr && split_ok): try_admit on the HOLDOUT geometry
+  //       (a clean propagated Err on a cross-run geometry MISMATCH); on Accept bumps
+  //       rep.admitted, pushes OosReportEntry{canon_hash, train_metrics, hold_metrics},
+  //       and appends hold_pnl to admitted_pnls; on Duplicate bumps rep.duplicates.
+  //   - else kind stays the RejectFitness sentinel.
+  //   - ALWAYS: ++rep.reject_histogram[kind] then folds kind into rep.digest via the
+  //     identical hash_combine(rep.digest, canon_hash, kind) call.
+  // `prov` is consumed (moved into the AlphaCandidate). NOT noexcept (push_back
+  // allocates on the Accept path). Returns Err iff try_admit does.
+  [[nodiscard]] atx::core::Result<void>
+  admit_on_holdout(atx::f64 hold_dsr, bool price_scale_ok, bool subwindows_ok, bool split_ok,
+                   atx::f64 min_dsr, atx::u64 canon_hash, std::span<const atx::f64> hold_pnl,
+                   std::span<const atx::f64> hold_pos_flat,
+                   const combine::AlphaMetrics &hold_metrics,
+                   const combine::AlphaMetrics &train_metrics, library::Provenance prov,
+                   FactoryReport &rep, library::Library &lib_lib, const combine::AlphaGate &gate,
+                   std::vector<std::vector<atx::f64>> &admitted_pnls);
+
   // A scored candidate's admission ranking key: its deflated Sharpe (primary) and
   // raw fitness (tiebreak), plus its index into all_scored.
   struct Ranked {
@@ -500,11 +546,6 @@ private:
   [[nodiscard]] std::vector<Ranked> rank_by_deflated_fitness(const std::vector<Genome> &scored,
                                                              const FitnessCfg &fit_cfg,
                                                              const PoolView &pool) const;
-
-  // Mean Program::cache_hit_pct() over the run's distinct scored genomes (the
-  // reachable CSE telemetry — see the header cse_pct note). An uncompilable genome
-  // is skipped; an empty / all-uncompilable run yields 0.
-  [[nodiscard]] double mean_cse_pct(const SearchResult &res) const;
 
   // SAFETY: each borrow is held for the Factory's lifetime; the single run-wide
   // Library owns every OpSig the genomes' Expr::op pointers alias and must outlive

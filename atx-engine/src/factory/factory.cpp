@@ -11,7 +11,7 @@
 
 #include "atx/core/hash.hpp" // atx::core::hash_combine (digest fold)
 
-#include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program (cse_pct)
+#include "atx/engine/alpha/bytecode.hpp" // alpha::compile, alpha::Program
 #include "atx/engine/alpha/unparse.hpp"  // alpha::unparse (admitted-alpha expr_source, S4b-1)
 #include "atx/engine/alpha/vm.hpp"       // alpha::Engine
 
@@ -172,7 +172,11 @@ void finalize_run_pbo(FactoryReport &rep,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default. The only reachable cache-hit
+  // telemetry was a REPORT-ONLY recompile of every scored genome (SearchResult does
+  // not surface the per-generation compiled Programs, and a Genome carries no
+  // cache-hit field), so it was dropped — it is pure telemetry, never folded into
+  // rep.digest and never an admission decision.
   // Seed the admission digest with the search's deterministic run fingerprint;
   // each admission decision is folded in below (F1/F2).
   rep.digest = res.digest;
@@ -331,7 +335,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — the admission deflation N is prior cumulative N + this run's N, so a
@@ -592,7 +597,8 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — identical to the sequential path: prior + this run's N (see serial
@@ -901,6 +907,29 @@ namespace {
   return std::abs(sum_corr / static_cast<atx::f64>(n_dates));
 }
 
+// S2-2 — sharpe-only sub-window reduction (the K× compute_metrics collapse).
+//
+//  The R3 intra-holdout sub-window gate calls combine::compute_metrics ONCE per
+//  sub-window and consumes ONLY the .sharpe field; turnover/drawdown/margin/
+//  fitness/holding_days (which re-walk the per-sub-window POSITIONS array — work
+//  the gate never reads) are discarded. This helper reproduces the EXACT Sharpe
+//  arithmetic of compute_metrics over `sub_pnl` while skipping that position work:
+//  it calls the SAME combine::detail::pnl_moments(...) reduction and applies the
+//  IDENTICAL flat/NaN-policy Sharpe formula (combine/metrics.hpp:184-194). Because
+//  the only consumed field derives solely from pnl_moments + that formula, the
+//  result is BIT-IDENTICAL to compute_metrics(...).sharpe by construction — same
+//  Welford accumulation order, same sqrt(252) annualization, same std_pop==0 -> 0
+//  rule, same NaN-mean propagation. (Pinned by SubwindowMetrics_SinglePass_BitIdentical
+//  and DsrSubwindows_SeqEqualsParallel.)
+[[nodiscard]] atx::f64 subwindow_sharpe(std::span<const atx::f64> sub_pnl) noexcept {
+  const combine::detail::PnlMoments mom = combine::detail::pnl_moments(sub_pnl);
+  // VERBATIM combine::compute_metrics Sharpe: flat stream (std_pop == 0) with a
+  // defined mean -> 0; otherwise sqrt(252)*mean/std_pop (a NaN mean propagates).
+  return (mom.std_pop == 0.0 && !std::isnan(mom.mean))
+             ? 0.0
+             : std::sqrt(combine::kAnnualizationDays) * mom.mean / mom.std_pop;
+}
+
 // P2a — the holdout DSR, replicating the fitness.cpp deflated-Sharpe recipe over a
 // REALIZED PnL stream (NOT the CPCV-aggregated stream): drop the structural index-0
 // zero, de-annualize the metrics Sharpe by sqrt(252), compute population skew /
@@ -925,7 +954,96 @@ namespace {
   return dsr.dsr;
 }
 
+// S2-1 — train->holdout cascade pre-gate predicate (a CONSERVATIVE TRUE UPPER BOUND).
+//
+//  Returns true if the candidate CAN POSSIBLY clear cfg.min_dsr on the holdout (i.e. must
+//  NOT be skipped). It may return true for a doomed candidate (one wasted eval), but it MUST
+//  NEVER return false for a candidate that would have admitted — otherwise the admitted set,
+//  rep.digest, and rep.reject_histogram diverge from the gate-off run (the binding
+//  AdmittedSetUnchanged proof). When cfg.cascade_gate_factor <= 0.0 it ALWAYS returns true
+//  (gate inert -> byte-identical off-path).
+//
+//  Bound rationale. Admission needs hold_dsr = PSR(SR*_N) = Phi(z) >= min_dsr, with
+//  z = (sr_h - sr_star)*sqrt(T-1)/sqrt(var_term), sr_star = E[max Sharpe over N trials] >= 0,
+//  sr_h the holdout per-period Sharpe. The holdout Sharpe is not bounded by the train Sharpe
+//  in general (OOS can surprise), so this is a CALIBRATED screen, not an algebraic identity:
+//  we use the train per-period Sharpe sr_tr = train_metrics.sharpe / sqrt(252) as the signal-
+//  strength proxy and skip ONLY when even a GENEROUS multiple of it stays below the bar:
+//      keep  iff  sr_tr * cascade_gate_factor >= min_dsr
+//      skip  iff  sr_tr < min_dsr / cascade_gate_factor.
+//  The safety factor (calibrated to 3.0 at the call site) makes the skip threshold
+//  min_dsr / factor small; a LARGER factor LOOSENS the gate (fewer skips, strictly safer).
+//  A NaN/non-finite or non-positive train Sharpe is treated as "cannot prove admissible only
+//  from this" -> KEEP (return true) so the gate never skips on a degenerate proxy. trial_count
+//  is accepted for a future tightening but is NOT used to make the bound tighter here (a looser
+//  bound is always the safe direction). The bound is proven by AdmittedSetUnchanged.
+[[nodiscard]] bool cascade_gate_passes(const combine::AlphaMetrics &train_metrics,
+                                       const FactoryConfig &cfg,
+                                       atx::usize trial_count) noexcept {
+  static_cast<void>(trial_count); // reserved for a future (looser-only) tightening
+  if (!(cfg.cascade_gate_factor > 0.0)) {
+    return true; // gate inert (OFF default or non-positive): never skip
+  }
+  if (!(cfg.min_dsr > 0.0)) {
+    return true; // a non-positive DSR bar is trivially clearable on the holdout
+                 // (DSR = PSR ∈ [0, 1] >= 0): NOTHING can be proven hopeless -> keep.
+  }
+  const atx::f64 sr_tr = train_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+  if (!std::isfinite(sr_tr)) {
+    return true; // degenerate proxy (NaN/inf): keep (the gate can prove nothing here)
+  }
+  // keep iff sr_tr * factor >= min_dsr ; equivalently skip only the provably-too-weak
+  // (a low-positive OR non-positive train Sharpe — the latter is even more hopeless).
+  return sr_tr * cfg.cascade_gate_factor >= cfg.min_dsr;
+}
+
 } // namespace
+
+// S2-3 — the "(3d) ADMISSION on the HOLDOUT" ladder, the SINGLE definition shared by
+// mine_into_oos (serial) and mine_into_oos_parallel. Both call sites were textually
+// identical copies; extracting one helper makes the seq==parallel + digest invariants
+// STRUCTURAL (cannot drift) instead of comment-enforced. The body below is the former
+// inline block VERBATIM, in the SAME order, so rep.digest / rep.reject_histogram /
+// rep.admitted / the library version_id are byte-identical by construction. See the
+// header for the full effects contract.
+[[nodiscard]] atx::core::Result<void> Factory::admit_on_holdout(
+    const atx::f64 hold_dsr, const bool price_scale_ok, const bool subwindows_ok,
+    const bool split_ok, const atx::f64 min_dsr, const atx::u64 canon_hash,
+    const std::span<const atx::f64> hold_pnl, const std::span<const atx::f64> hold_pos_flat,
+    const combine::AlphaMetrics &hold_metrics, const combine::AlphaMetrics &train_metrics,
+    library::Provenance prov, FactoryReport &rep, library::Library &lib_lib,
+    const combine::AlphaGate &gate, std::vector<std::vector<atx::f64>> &admitted_pnls) {
+  library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
+  if (!price_scale_ok) {
+    kind = library::AdmitKind::RejectPriceScale;
+  } else if (!subwindows_ok) {
+    kind = library::AdmitKind::RejectDsrSubwindow;
+  } else if (hold_dsr >= min_dsr && split_ok) {
+    const library::AlphaCandidate cand{canon_hash,           hold_pnl,        hold_pos_flat,
+                                       hold_metrics,         std::move(prov),
+                                       /*as_of=*/kAdmitAsOf,
+                                       /*source=*/nullptr};
+    // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
+    // reopened-library footgun names. try_admit delegates to admit() VERBATIM on a
+    // matching/fresh geometry (digest-identical) and propagates a CLEAN error when
+    // hold_pnl.size() != the library's fixed t_ — HALTING the run instead of the
+    // ATX_ASSERT abort (debug) / out-of-bounds projection read (release).
+    ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
+    kind = v.kind;
+    if (kind == library::AdmitKind::Accept) {
+      ++rep.admitted;
+      rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
+      admitted_pnls.emplace_back(hold_pnl.begin(), hold_pnl.end()); // realized HOLDOUT PnL
+    } else if (kind == library::AdmitKind::Duplicate) {
+      ++rep.duplicates;
+    }
+  }
+  ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+
+  rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+      static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+  return atx::core::Ok();
+}
 
 [[nodiscard]] atx::core::Result<FactoryReport>
 Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
@@ -1041,7 +1159,8 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — prior cumulative N + this run's N (same reasoning as serial mine_into).
@@ -1135,6 +1254,16 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // finalized once after the loop. Empty + unused at the max_pbo == 1.0 default.
   std::vector<std::vector<atx::f64>> admitted_pnls;
 
+  // S2-0 PERF: hoist ONE holdout-bound Engine out of the per-candidate loop and reuse
+  // it across every genome — mirrors the train_engine hoist above (F4). Engine::evaluate
+  // output depends ONLY on (program, panel): its mutable members are per-call-overwritten
+  // scratch — field_remap_ is assign()ed fresh each call, the SlotPool columns are written
+  // by the program before any read, Ts/Cs scratch are written-before-read within each op,
+  // and the recurrence state_ is seeded at t==0 every call (no stale carry). So reuse is
+  // safe BY CONSTRUCTION — no per-eval state leaks between genomes (see vm.hpp). The
+  // HoldoutEngineReuse_DigestUnchanged test pins this byte-identity.
+  alpha::Engine holdout_engine{holdout};
+
   // (3) the mine -> CONFIRM-ON-HOLDOUT -> admit loop, best-train-deflated first.
   // A3: the admitted holdout PnL streams are collected ONCE into `admitted_pnls`
   // (above) and feed the SINGLE post-loop finalize_run_pbo computation (oos_pbo now
@@ -1152,6 +1281,23 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     }
     const combine::AlphaMetrics train_metrics = tcache.train_metrics;
 
+    // (3a') S2-1 cascade pre-gate — skip the expensive holdout eval for a candidate whose
+    // train signal is provably too weak to clear min_dsr on an optimistic holdout. OFF by
+    // default (cascade_gate_factor == 0.0 -> always passes -> byte-identical). When it FIRES
+    // we fold the SAME AdmitKind::RejectFitness a holdout-reaching miss would get, in the SAME
+    // histogram + digest fold ORDER as the ladder below, then continue. canon_hash is computed
+    // here exactly as the ladder computes it, so the fold is bit-identical to the on-holdout
+    // path's reject fold. Identical at the serial + parallel sites -> seq==parallel preserved.
+    if (!cascade_gate_passes(train_metrics, cfg, admit_fit.trial_count)) {
+      const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+      const library::AdmitKind kind = library::AdmitKind::RejectFitness;
+      ++rep.n_cascade_skipped;
+      ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+      rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+          static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+      continue;
+    }
+
     // (3b) HOLDOUT metrics + positions + DSR — the ADMISSION oracle. Evaluate the
     // genome ONCE on the holdout panel and realize BOTH the metrics (and pnl) and the
     // positions the durable record + the gate's corr-to-pool need. The owned hold_pnl
@@ -1166,8 +1312,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       if (!prog_r.has_value()) {
         continue;
       }
-      alpha::Engine engine{holdout};
-      auto ss_r = engine.evaluate(*prog_r);
+      auto ss_r = holdout_engine.evaluate(*prog_r); // S2-0: reuse the hoisted Engine (F4)
       if (!ss_r.has_value()) {
         continue;
       }
@@ -1223,8 +1368,6 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     // serial and parallel sites so the seq==parallel digest invariant holds.
     bool subwindows_ok = true;
     if (cfg.dsr_subwindows >= 2U) {
-      // n_inst was declared inside the braced holdout-eval block above; derive from holdout panel.
-      const atx::usize sw_n_inst = holdout.instruments();
       // POST-DROP region: global periods [1, T) where T = hold_pnl.size().
       const atx::usize T = hold_pnl.size();
       const atx::usize M = (T > 0U) ? (T - 1U) : 0U; // length of post-drop region
@@ -1236,14 +1379,12 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
         // Map back to global hold_pnl indices: post-drop offset d -> global index d+1.
         const atx::usize global_lo = seg_lo + 1U;
         const atx::usize global_hi = seg_hi + 1U;
-        // Slice hold_pnl and hold_pos_flat to this sub-window's global period range.
+        // Slice hold_pnl to this sub-window's global period range. S2-2: hold_pos_flat
+        // is NOT sliced — the sub-window gate consumes only the Sharpe, and subwindow_sharpe
+        // reproduces compute_metrics' EXACT Sharpe arithmetic without touching positions
+        // (so the per-sub-window position re-walk × K is eliminated, bit-identically).
         const std::span<const atx::f64> sub_pnl =
             std::span<const atx::f64>{hold_pnl}.subspan(global_lo, global_hi - global_lo);
-        const std::span<const atx::f64> sub_pos =
-            std::span<const atx::f64>{hold_pos_flat}.subspan(global_lo * sw_n_inst,
-                                                             (global_hi - global_lo) * sw_n_inst);
-        const combine::AlphaMetrics sub_metrics =
-            combine::compute_metrics(sub_pnl, sub_pos, sw_n_inst, cfg.book_size);
         // DSR uses the SAME recipe as holdout_dsr, inlined: sub_pnl is already all-real
         // (the structural zero lives in the skipped global slot 0), so sub_pnl IS the moments
         // span directly -- no subspan(1) drop here (that would discard a real observation).
@@ -1252,7 +1393,9 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
           subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
           break;
         }
-        const atx::f64 per_period_sharpe = sub_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+        // S2-2: single-pass sharpe (bit-identical to combine::compute_metrics(...).sharpe).
+        const atx::f64 per_period_sharpe =
+            subwindow_sharpe(sub_pnl) / std::sqrt(combine::kAnnualizationDays);
         const eval::DsrResult dsr_result =
             eval::deflated_sharpe(per_period_sharpe, sub_T, eval::skewness(sub_pnl),
                                   eval::excess_kurtosis(sub_pnl), admit_fit.trial_count,
@@ -1264,39 +1407,13 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     }
     // (3d) ADMISSION on the HOLDOUT: clear the factory deflation bar on the holdout
     // DSR, then library::admit on the HOLDOUT metrics + holdout pnl (so the durable
-    // `metrics` are what was actually gated out-of-sample).
-    library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (!price_scale_ok) {
-      kind = library::AdmitKind::RejectPriceScale;
-    } else if (!subwindows_ok) {
-      kind = library::AdmitKind::RejectDsrSubwindow;
-    } else if (hold_dsr >= cfg.min_dsr && split_ok) {
-      const library::AlphaCandidate cand{canon_hash,
-                                         std::span<const atx::f64>{hold_pnl},
-                                         std::span<const atx::f64>{hold_pos_flat},
-                                         hold_metrics,
-                                         std::move(prov),
-                                         /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
-      // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
-      // reopened-library footgun names. try_admit delegates to admit() VERBATIM on a
-      // matching/fresh geometry (digest-identical) and propagates a CLEAN error when
-      // hold_pnl.size() != the library's fixed t_ — HALTING the run instead of the
-      // ATX_ASSERT abort (debug) / out-of-bounds projection read (release).
-      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
-      kind = v.kind;
-      if (kind == library::AdmitKind::Accept) {
-        ++rep.admitted;
-        rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl);      // realized HOLDOUT PnL of an admitted alpha
-      } else if (kind == library::AdmitKind::Duplicate) {
-        ++rep.duplicates;
-      }
-    }
-    ++rep.reject_histogram[static_cast<atx::usize>(kind)];
-
-    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
-        static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+    // `metrics` are what was actually gated out-of-sample). S2-3: the ladder body is
+    // the SHARED Factory::admit_on_holdout — the SAME definition the parallel path
+    // calls, so seq==parallel + the digest fold are byte-identical by construction.
+    ATX_TRY_VOID(admit_on_holdout(
+        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
+        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
+        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set. PURE /
@@ -1413,7 +1530,8 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   rep.trials = res.trial_count;
   rep.dedup_pct = res.dedup_pct;
   rep.seed = res.seed;
-  rep.cse_pct = mean_cse_pct(res);
+  // S2-0: rep.cse_pct stays at its struct default — the report-only recompile that
+  // produced it was dropped (telemetry only; see the mine() site for the rationale).
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — prior + this run's N, IDENTICAL to serial mine_into_oos.
@@ -1564,6 +1682,20 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     }
     const combine::AlphaMetrics train_metrics = tcache.train_metrics;
 
+    // (3a') S2-1 cascade pre-gate — IDENTICAL to the serial mine_into_oos step (same
+    // train_metrics, same predicate, same RejectFitness fold in the same histogram + digest
+    // ORDER), so the seq==parallel byte-identity invariant holds. OFF by default
+    // (cascade_gate_factor == 0.0 -> always passes -> byte-identical to pre-S2-1).
+    if (!cascade_gate_passes(train_metrics, cfg, admit_fit.trial_count)) {
+      const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+      const library::AdmitKind kind = library::AdmitKind::RejectFitness;
+      ++rep.n_cascade_skipped;
+      ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+      rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+          static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+      continue;
+    }
+
     // (3b) HOLDOUT metrics + positions + DSR — the ADMISSION oracle, from the gathered
     // holdout streams (serial mine_into_oos:769-799). A genome that could not evaluate (or
     // yielded 0 alphas) on the holdout is dropped (F5), exactly as the serial path drops it
@@ -1631,14 +1763,12 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
         // Map back to global hold_pnl indices: post-drop offset d -> global index d+1.
         const atx::usize global_lo = seg_lo + 1U;
         const atx::usize global_hi = seg_hi + 1U;
-        // Slice hold_pnl and hold_pos_flat to this sub-window's global period range.
+        // Slice hold_pnl to this sub-window's global period range. S2-2: hold_pos_flat
+        // is NOT sliced — the sub-window gate consumes only the Sharpe, and subwindow_sharpe
+        // reproduces compute_metrics' EXACT Sharpe arithmetic without touching positions
+        // (so the per-sub-window position re-walk × K is eliminated, bit-identically).
         const std::span<const atx::f64> sub_pnl =
             std::span<const atx::f64>{hold_pnl}.subspan(global_lo, global_hi - global_lo);
-        const std::span<const atx::f64> sub_pos =
-            std::span<const atx::f64>{hold_pos_flat}.subspan(global_lo * n_inst,
-                                                             (global_hi - global_lo) * n_inst);
-        const combine::AlphaMetrics sub_metrics =
-            combine::compute_metrics(sub_pnl, sub_pos, n_inst, cfg.book_size);
         // DSR uses the SAME recipe as holdout_dsr, inlined: sub_pnl is already all-real
         // (the structural zero lives in the skipped global slot 0), so sub_pnl IS the moments
         // span directly -- no subspan(1) drop here (that would discard a real observation).
@@ -1647,7 +1777,9 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
           subwindows_ok = false; // too short -> DSR=0 -> fails any positive min_dsr bar
           break;
         }
-        const atx::f64 per_period_sharpe = sub_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+        // S2-2: single-pass sharpe (bit-identical to combine::compute_metrics(...).sharpe).
+        const atx::f64 per_period_sharpe =
+            subwindow_sharpe(sub_pnl) / std::sqrt(combine::kAnnualizationDays);
         const eval::DsrResult dsr_result =
             eval::deflated_sharpe(per_period_sharpe, sub_T, eval::skewness(sub_pnl),
                                   eval::excess_kurtosis(sub_pnl), admit_fit.trial_count,
@@ -1657,36 +1789,14 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
         }
       }
     }
-    // (3d) ADMISSION on the HOLDOUT — IDENTICAL to serial mine_into_oos:813-830.
-    library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
-    if (!price_scale_ok) {
-      kind = library::AdmitKind::RejectPriceScale;
-    } else if (!subwindows_ok) {
-      kind = library::AdmitKind::RejectDsrSubwindow;
-    } else if (hold_dsr >= cfg.min_dsr && split_ok) {
-      const library::AlphaCandidate cand{canon_hash,
-                                         std::span<const atx::f64>{hold_pnl},
-                                         std::span<const atx::f64>{hold_pos_flat},
-                                         hold_metrics,
-                                         std::move(prov),
-                                         /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
-      // Cross-run accumulation guard (Task 8) — same geometry-checked seam as serial
-      // mine_into_oos: digest-identical on a match, CLEAN propagated error on mismatch.
-      ATX_TRY(const library::AdmitVerdict v, lib_lib.try_admit(cand, gate));
-      kind = v.kind;
-      if (kind == library::AdmitKind::Accept) {
-        ++rep.admitted;
-        rep.oos_metrics.push_back(OosReportEntry{canon_hash, train_metrics, hold_metrics});
-        admitted_pnls.push_back(hold_pnl);          // realized HOLDOUT PnL of an admitted alpha
-      } else if (kind == library::AdmitKind::Duplicate) {
-        ++rep.duplicates;
-      }
-    }
-    ++rep.reject_histogram[static_cast<atx::usize>(kind)];
-
-    rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
-        static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+    // (3d) ADMISSION on the HOLDOUT — the SHARED Factory::admit_on_holdout, the SAME
+    // definition the serial mine_into_oos calls. The stateful library::admit fold stays
+    // SEQUENTIAL in the parent; calling ONE helper makes seq==parallel + the digest fold
+    // byte-identical BY CONSTRUCTION (they can no longer drift).
+    ATX_TRY_VOID(admit_on_holdout(
+        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
+        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
+        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set, accumulated
@@ -1763,18 +1873,7 @@ Factory::rank_by_deflated_fitness(const std::vector<Genome> &scored, const Fitne
   return ranked;
 }
 
-[[nodiscard]] double Factory::mean_cse_pct(const SearchResult &res) const {
-  double sum = 0.0;
-  atx::usize n = 0U;
-  for (const Genome &g : res.all_scored) {
-    auto prog = alpha::compile(g.ast, g.analysis);
-    if (!prog.has_value()) {
-      continue;
-    }
-    sum += prog->cache_hit_pct();
-    ++n;
-  }
-  return (n == 0U) ? 0.0 : sum / static_cast<double>(n);
-}
+// S2-0: Factory::mean_cse_pct removed — its report-only recompile of every scored
+// genome was the dropped cse_pct telemetry (see factory.hpp's cse_pct note).
 
 } // namespace atx::engine::factory
