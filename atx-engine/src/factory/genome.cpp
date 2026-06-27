@@ -93,7 +93,10 @@ Genome Genome::clone() const {
     dst_an.push(t);
   }
   dst_an.set_required_lookback(analysis.required_lookback());
-  return Genome{std::move(dst), std::move(dst_an), canon_hash};
+  // S3-2: propagate from_seed so the seed-lineage tag survives a structural copy.
+  Genome out{std::move(dst), std::move(dst_an), canon_hash};
+  out.from_seed = from_seed;
+  return out;
 }
 
 } // namespace atx::engine::factory

@@ -418,10 +418,69 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // the type-correct grammar (generate_genome); a generation failure (Err — a
   // sampler bug, ~never) falls back to the cyclic seed fill for that slot, so the
   // population size is always held and every member stays analyze-valid.
+  //
+  // S3-2 kMutateSeedAxis: a distinct seed_for axis used ONLY by mutate_seed_copies
+  // so its RNG draws do NOT perturb any other axis's stream. Chosen to not collide
+  // with kGenSeedAxis (0xFFFFFFFF…) or kImmigrantAxis (0xA5A5A5A5…).
+  constexpr atx::u64 kMutateSeedAxis = 0x5E5E5E5E5E5E5E5EULL;
+
   if (!cfg.seed_from_grammar) {
     for (atx::usize i = 0; i < cfg.population; ++i) {
-      pop.push_back(seeds[i % seeds.size()].clone());
-      pop.back().canon_hash = seeds[i % seeds.size()].canon_hash;
+      const Genome &src = seeds[i % seeds.size()];
+      // S3-2: tag EVERY seed-derived genome with from_seed=true so
+      // protect_seed_elites can identify the seed lineage across generations.
+      // Default false (protect_seed_elites off) -> this tag is never read, so
+      // the default path is byte-identical (no fitness/RNG change).
+      if (i == 0 || !cfg.mutate_seed_copies) {
+        // Slot 0 always gets the unmodified seed original. When mutate_seed_copies
+        // is OFF, all slots get identical clones (the legacy pre-S3-2 behavior).
+        pop.push_back(src.clone());
+        pop.back().canon_hash = src.canon_hash;
+        pop.back().from_seed = true; // tag: derived from a seed expression
+      } else {
+        // S3-2 mutate_seed_copies=true: apply ONE seeded mutation to this clone
+        // slot (i > 0) so the cycled copies are structurally distinct.
+        // The seed is a pure fn of (master_seed, kMutateSeedAxis, i) — a new axis
+        // that never collides with gen/idx draws (F1 preserved). No crossover:
+        // only a single operator is applied, keeping each copy a seed descendant.
+        // If the mutation fails (Err), fall back to the unmutated clone so the
+        // population size is always held.
+        Xoshiro256pp mut_rng{detail::seed_for(cfg.master_seed, kMutateSeedAxis, i)};
+        atx::u8 op_used = 0xFF;
+        // mutate_one needs access to catalog_/field_views_ — but init_population
+        // is const. We inline the three mutation paths to avoid a const violation.
+        // The operator draw uses the SAME fixed-modulus-3 convention as the legacy
+        // path so kMutateSeedAxis draws stay fully isolated.
+        const atx::u64 which = mut_rng.next_u64() % 3U;
+        JitterCfg jc;
+        jc.max_lookback = cfg.max_lookback;
+        atx::core::Result<Genome> child = atx::core::Err(atx::core::ErrorCode::NotFound,
+                                                         "mutate_seed_copies: not attempted");
+        if (which == 0 && cfg.enable_op_swap) {
+          child = op_swap(src, catalog_, mut_rng);
+          if (child.has_value()) { op_used = 0; }
+        } else if (which == 1) {
+          child = field_swap(src, std::span<const std::string_view>{numeric_field_views_},
+                             mut_rng);
+          if (child.has_value()) { op_used = 1; }
+        }
+        if (op_used == 0xFF) {
+          // Default / fallback: jitter — the most broadly applicable mutation.
+          child = jitter_const(src, mut_rng, jc);
+          if (child.has_value()) { op_used = 2; }
+        }
+        static_cast<void>(op_used); // used only for the fallback logic above
+        if (child.has_value()) {
+          child->canon_hash = canonical_hash(*child);
+          child->from_seed = true; // seed descendant: inherits the tag
+          pop.push_back(std::move(*child));
+        } else {
+          // Mutation failed (degenerate genome) — fall back to unmutated clone.
+          pop.push_back(src.clone());
+          pop.back().canon_hash = src.canon_hash;
+          pop.back().from_seed = true;
+        }
+      }
     }
     return pop;
   }
@@ -430,6 +489,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   for (atx::usize i = 0; i < n_seed_slots; ++i) {
     pop.push_back(seeds[i].clone());
     pop.back().canon_hash = seeds[i].canon_hash;
+    pop.back().from_seed = true; // S3-2: tag seed-derived genomes for protect_seed_elites
   }
   // Track gen-0 structures so the grammar fill maximizes DISTINCT members.
   std::unordered_set<atx::u64> seen0;
@@ -953,6 +1013,54 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
   for (atx::usize p = 0; p < n_children; ++p) {
     next.push_back(std::move(*child_slot[p]));
   }
+
+  // S3-2: protect_seed_elites — guarantee the top-ranked from_seed genome
+  // survives into the next generation's population up to protect_until_gen.
+  //
+  // WHY AFTER THE CANONICAL SORT: the canon_ordered_indices + pareto_ordered_indices
+  // sorts above establish F2 canonical-order BEFORE any RNG draw (the load-bearing
+  // determinism proof). Inserting before those sorts would corrupt the canonical
+  // ordering invariant. Inserting here — into the already-assembled `next` vector,
+  // AFTER all sorting is complete — is the only safe point: no sort has been run
+  // on `next` yet (it is the INPUT to the next generation, not the current one).
+  //
+  // The protection is a POST-selection insertion, NOT a tournament modification:
+  // it does not change the tournament draw, the canonical sort, or the reproduction
+  // RNG stream — only the final assembled population is adjusted. Default false ->
+  // this entire block is dead -> byte-identical to the pre-S3-2 path.
+  if (cfg.protect_seed_elites && gen < cfg.protect_until_gen && !scored.empty()) {
+    // Find the top-ranked from_seed genome in NSGA-II survivor order.
+    // pareto_ordered_indices was already called above (elite_order); iterate in
+    // that order to find the best-ranked from_seed candidate.
+    atx::usize best_seed_idx = scored.size(); // sentinel: none found
+    for (const atx::usize i : elite_order) {
+      if (scored[i].genome.from_seed) {
+        best_seed_idx = i;
+        break; // elite_order is sorted best->worst; first hit is top-ranked
+      }
+    }
+    if (best_seed_idx < scored.size()) {
+      // Check whether this genome is already present in the elite slots of `next`
+      // (it will be if it naturally survived selection). Compare by canon_hash.
+      const atx::u64 seed_hash = scored[best_seed_idx].genome.canon_hash;
+      bool already_in_elites = false;
+      for (atx::usize e = 0; e < n_elites && e < next.size(); ++e) {
+        if (next[e].canon_hash == seed_hash) {
+          already_in_elites = true;
+          break;
+        }
+      }
+      if (!already_in_elites && !next.empty()) {
+        // Replace the last non-elite slot (worst child) with the seed genome.
+        // If there are no child slots, replace the last elite slot instead
+        // (still better than losing the seed genome entirely).
+        const atx::usize replace_pos = next.size() - 1U;
+        next[replace_pos] = scored[best_seed_idx].genome.clone();
+        next[replace_pos].canon_hash = scored[best_seed_idx].genome.canon_hash;
+      }
+    }
+  }
+
   return next;
 }
 
@@ -1029,6 +1137,9 @@ SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp 
                         wcfg);
     if (r.has_value()) {
       op_used = 3; // wrap_in_op made the child
+      // S3-2 gate #4: propagate the seed-lineage tag from parent to child so
+      // protect_seed_elites can track seed descendants across the wrap path.
+      r->from_seed = g.from_seed;
       return r;
     }
     // Err: fall through to the originally-drawn operator (no stall).
@@ -1037,6 +1148,8 @@ SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp 
     auto r = op_swap(g, catalog_, rng);
     if (r.has_value()) {
       op_used = 0; // op_swap made the child
+      // S3-2 gate #4: propagate seed-lineage tag.
+      r->from_seed = g.from_seed;
       return r;
     }
   } else if (which == 1) {
@@ -1045,12 +1158,19 @@ SearchDriver::mutate_one(const Genome &g, const SearchConfig &cfg, Xoshiro256pp 
     auto r = field_swap(g, std::span<const std::string_view>{numeric_field_views_}, rng);
     if (r.has_value()) {
       op_used = 1; // field_swap made the child
+      // S3-2 gate #4: propagate seed-lineage tag.
+      r->from_seed = g.from_seed;
       return r;
     }
   }
   // Default / fallback: jitter a literal (the most broadly-applicable mutation).
   op_used = 2; // jitter_const made the child (drawn, or fallback from op_swap/field_swap)
-  return jitter_const(g, rng, jc);
+  auto r = jitter_const(g, rng, jc);
+  // S3-2 gate #4: propagate seed-lineage tag through the jitter path.
+  if (r.has_value()) {
+    r->from_seed = g.from_seed;
+  }
+  return r;
 }
 
 // ----- selection helpers ---------------------------------------------------

@@ -214,6 +214,28 @@ struct SearchConfig {
   // disabled path draws nothing extra). A failed wrap (Err) falls through to the
   // originally-drawn operator, so the population never stalls.
   atx::f64 wrap_in_op_prob{0.25};
+
+  // S3-2: opt-in seed-elite protection.
+  //
+  // protect_seed_elites (NEW, default false): when true, the top-ranked from_seed
+  // genome is guaranteed to survive into the admitted set until generation
+  // min(current_gen + 1, protect_until_gen).  The insertion is POST-selection
+  // (after the canonical sort that establishes F2 canonical order) so it never
+  // perturbs the F2 determinism proof.  No RNG change; byte-identical when false.
+  //
+  // protect_until_gen (NEW, default 3): the last generation (inclusive, 0-indexed)
+  // during which a seed elite is force-inserted.  Only read when
+  // protect_seed_elites is true.
+  //
+  // mutate_seed_copies (NEW, default false): when true AND seed_from_grammar=false,
+  // each cycled clone slot in init_population receives ONE seeded mutation via
+  // detail::seed_for(master_seed, kMutateSeedAxis, i) instead of being an
+  // identical copy.  Slot 0 always gets the seed original (unmutated).  The new
+  // RNG axis (kMutateSeedAxis) is distinct from all existing axes so the default
+  // path's draw sequence is unchanged — byte-identical when false.
+  bool protect_seed_elites{false};
+  atx::usize protect_until_gen{3};
+  bool mutate_seed_copies{false};
 };
 
 // =========================================================================
