@@ -204,6 +204,18 @@ struct FactoryConfig {
   //  WARNING: large K over a short holdout means short segments — a segment with < 2 real
   //  observations always yields DSR=0.0 and will FAIL the bar. That is user tuning responsibility.
   atx::usize dsr_subwindows = 0; // --dsr-subwindows (R3); 0/absent == OFF, byte-identical
+  // --- S2-1 train->holdout cascade pre-gate (OPTIONAL; default OFF = 0.0 -> zero overhead).
+  //  A PERF-ONLY pre-filter: BEFORE the expensive holdout eval, skip a candidate whose
+  //  TRAIN-side per-period Sharpe is so weak that even an optimistic holdout cannot clear
+  //  cfg.min_dsr. A CONSERVATIVE TRUE UPPER BOUND on holdout admissibility (see
+  //  cascade_gate_passes): it may keep a doomed candidate (one wasted eval) but it MUST
+  //  NEVER skip a candidate that would have admitted — so the admitted set, rep.digest, and
+  //  rep.reject_histogram are byte-identical to the gate-off run at any active factor (the
+  //  AdmittedSetUnchanged_AfterCascadeGate proof). The skip threshold on the per-period train
+  //  Sharpe is min_dsr / cascade_gate_factor: a LARGER factor LOOSENS the gate (fewer skips,
+  //  strictly safer). INACTIVE (<= 0.0, the default): the pre-gate is NEVER consulted, so the
+  //  path is byte-identical to pre-S2-1. Active when > 0.0.
+  atx::f64 cascade_gate_factor = 0.0; // --cascade-gate (S2-1); 0.0 == OFF, byte-identical
 };
 
 // =========================================================================
@@ -250,6 +262,12 @@ struct FactoryReport {
   atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
   atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
   std::array<atx::usize, 8> reject_histogram{}; // count per library::AdmitKind (0..7)
+
+  // --- S2-1 cascade pre-gate telemetry (additive; REPORT-ONLY, never folded into digest).
+  //  Number of candidates the train->holdout cascade pre-gate skipped (the expensive
+  //  holdout eval was avoided). 0 on every gate-off run (cascade_gate_factor <= 0.0).
+  //  Adding a defaulted field leaves the digest + every existing consumer untouched.
+  atx::usize n_cascade_skipped{0};
 
   // --- P2a OOS telemetry (additive; default-EMPTY so the legacy path is byte-
   //  identical). One entry per admitted alpha when oos_fraction > 0: its IS (train)

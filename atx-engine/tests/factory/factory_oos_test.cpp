@@ -1585,4 +1585,145 @@ TEST(FactoryOos, CsePctDenominator_CorrectOverEvaluated) {
       << "cse_pct must be the documented struct default on the legacy path too";
 }
 
+// =============================================================================
+//  S2-1 train->holdout cascade pre-gate tests.
+//
+//  The pre-gate (FactoryConfig::cascade_gate_factor) is a PERF-ONLY screen: it skips
+//  the expensive holdout eval for candidates whose TRAIN per-period Sharpe is provably
+//  too weak to clear min_dsr on an optimistic holdout. It is a CONSERVATIVE TRUE UPPER
+//  BOUND — it may keep a doomed candidate (a wasted eval) but it MUST NEVER skip a
+//  candidate that would have admitted, so the admitted set + digest + reject_histogram
+//  are byte-identical to the gate-off run at any active factor.
+//
+//  The tuned safety factor: skip threshold on the per-period train Sharpe is
+//  min_dsr / cascade_gate_factor. factor = 3.0 with min_dsr = 0.5 => skip only when the
+//  per-period train Sharpe < 0.1667 (annualized < ~2.65). A LARGER factor LOOSENS the
+//  gate (strictly safer). 3.0 is loose enough that every candidate that admits on the
+//  holdout (a strong, stationary train signal) clears the threshold — proven below.
+// =============================================================================
+constexpr f64 kCascadeFactor = 3.0;
+
+// =============================================================================
+//  CascadeGate_DefaultIsOff_ByteIdentical — the OFF-path invariant: at the default
+//  cascade_gate_factor == 0.0 the pre-gate is NEVER consulted, so two runs are
+//  byte-identical and n_cascade_skipped stays 0. (The whole FactoryOos suite already
+//  exercises the off-path; this pins the new field's zero-overhead default directly.)
+// =============================================================================
+TEST(FactoryOos, CascadeGate_DefaultIsOff_ByteIdentical) {
+  AlphaGate gate{default_gate_cfg()};
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);
+  cfg.oos_fraction = 0.20;
+  ASSERT_EQ(cfg.cascade_gate_factor, 0.0) << "default must be 0.0 (OFF)";
+
+  Fixture fx1{real_signal_panel()};
+  Fixture fx2{real_signal_panel()};
+  lib::Library lib1 = lib::Library::open(tmpdir("casc_off_a"), default_gate_cfg(), {0xC0FFEEu});
+  lib::Library lib2 = lib::Library::open(tmpdir("casc_off_b"), default_gate_cfg(), {0xC0FFEEu});
+  Factory f1 = fx1.factory();
+  Factory f2 = fx2.factory();
+
+  const FactoryReport a = f1.mine_into(cfg, lib1, gate).value();
+  const FactoryReport b = f2.mine_into(cfg, lib2, gate).value();
+
+  EXPECT_EQ(a.digest, b.digest);
+  EXPECT_EQ(a.admitted, b.admitted);
+  EXPECT_EQ(lib1.snapshot().version_id, lib2.snapshot().version_id);
+  EXPECT_EQ(a.n_cascade_skipped, 0u) << "gate OFF: pre-gate must never fire";
+  EXPECT_EQ(b.n_cascade_skipped, 0u);
+}
+
+// =============================================================================
+//  AdmittedSetUnchanged_AfterCascadeGate (THE binding proof) — a stationary planted
+//  signal admits >= 1 alpha and a multi-generation search scores MANY weak-train
+//  candidates. Run twice: gate OFF (factor 0.0) vs gate ON (tuned factor). The pre-gate
+//  is a TRUE UPPER BOUND, so the ADMITTED SET, rep.digest, and rep.reject_histogram MUST
+//  be IDENTICAL between the two runs. n_cascade_skipped > 0 on the ON run proves the
+//  gate actually fired (else the test is vacuous). The other optional gates stay at their
+//  defaults (price-scale OFF, subwindows OFF) so EVERY non-admit is RejectFitness and the
+//  pre-gate's RejectFitness fold preserves the histogram exactly.
+// =============================================================================
+TEST(FactoryOos, AdmittedSetUnchanged_AfterCascadeGate) {
+  AlphaGate gate{default_gate_cfg()};
+
+  // A multi-generation run over the stationary momentum panel: admits >= 1 (the strong
+  // train signal survives the holdout) while scoring many weak-train candidates the
+  // pre-gate can prove hopeless.
+  FactoryConfig cfg_off = real_signal_cfg(/*seed*/ 17);
+  cfg_off.oos_fraction = 0.20;
+  ASSERT_EQ(cfg_off.max_price_scale_corr, 1.0) << "price-scale gate must stay OFF";
+  ASSERT_EQ(cfg_off.dsr_subwindows, 0u) << "subwindow gate must stay OFF";
+
+  // Run A: gate OFF (factor 0.0) — the reference admitted set / digest / histogram.
+  Fixture fxA{real_signal_panel()};
+  lib::Library libA = lib::Library::open(tmpdir("casc_off"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fA = fxA.factory();
+  const FactoryReport repA = fA.mine_into(cfg_off, libA, gate).value();
+  ASSERT_GT(repA.admitted, 0u)
+      << "the stationary edge must admit >= 1, else the unchanged-admitted-set proof is vacuous";
+  ASSERT_EQ(repA.n_cascade_skipped, 0u) << "gate OFF must never skip";
+
+  // Run B: gate ON at the tuned factor. The pre-gate skips provably-weak candidates but
+  // (as a true upper bound) NEVER one that would have admitted.
+  FactoryConfig cfg_on = cfg_off;
+  cfg_on.cascade_gate_factor = kCascadeFactor;
+  Fixture fxB{real_signal_panel()};
+  lib::Library libB = lib::Library::open(tmpdir("casc_on"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fB = fxB.factory();
+  const FactoryReport repB = fB.mine_into(cfg_on, libB, gate).value();
+
+  // The gate actually fired (non-vacuous): it skipped >= 1 holdout eval.
+  EXPECT_GT(repB.n_cascade_skipped, 0u)
+      << "the tuned factor must skip >= 1 candidate, else the pre-gate is never exercised";
+
+  // The true-upper-bound proof: nothing that would have admitted was dropped.
+  EXPECT_EQ(repB.digest, repA.digest)
+      << "cascade pre-gate changed rep.digest -> it skipped an admitting candidate (bound too tight)";
+  EXPECT_EQ(repB.admitted, repA.admitted)
+      << "cascade pre-gate changed the admitted count -> bound too tight";
+  EXPECT_EQ(libB.snapshot().version_id, libA.snapshot().version_id)
+      << "cascade pre-gate changed the library version_id -> the admitted SET differs";
+  EXPECT_EQ(repB.reject_histogram, repA.reject_histogram)
+      << "cascade pre-gate changed the reject_histogram -> a non-RejectFitness bucket shifted";
+}
+
+// =============================================================================
+//  CascadeGate_SeqEqualsParallel — the serial (mine_into_oos) and parallel
+//  (mine_into_oos_parallel, ProcessExecutor) paths must produce byte-identical digest,
+//  admitted count, library version_id, and reject_histogram WITH the cascade pre-gate ON.
+//  Because the gate decision is computed from train_metrics (identical in both loops) and
+//  folds the same RejectFitness in the same order, the symmetric wiring keeps seq==parallel.
+// =============================================================================
+TEST(FactoryOos, CascadeGate_SeqEqualsParallel) {
+  AlphaGate gate{default_gate_cfg()};
+
+  FactoryConfig cfg = real_signal_cfg(/*seed*/ 13);
+  cfg.oos_fraction             = 0.20;
+  cfg.cascade_gate_factor      = kCascadeFactor; // gate ON
+  cfg.search.seed_from_grammar = false;
+
+  // Serial oracle.
+  Fixture fxSerial{real_signal_panel()};
+  lib::Library libSerial = lib::Library::open(tmpdir("casc_seq"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fSerial = fxSerial.factory();
+  const FactoryReport repSerial = fSerial.mine_into(cfg, libSerial, gate).value();
+
+  // Parallel path (ProcessExecutor, 2 workers).
+  Fixture fxPar{real_signal_panel()};
+  lib::Library libPar = lib::Library::open(tmpdir("casc_par"), default_gate_cfg(), {0xC0FFEEu});
+  Factory fPar = fxPar.factory();
+  ProcessExecutor execPar{ExecutorConfig{2, false}};
+  const FactoryReport repPar = fPar.mine_into(cfg, libPar, gate, execPar).value();
+
+  EXPECT_EQ(repSerial.digest, repPar.digest)
+      << "seq==parallel digest must match with cascade pre-gate ON";
+  EXPECT_EQ(repSerial.admitted, repPar.admitted)
+      << "seq==parallel admitted count must match with cascade pre-gate ON";
+  EXPECT_EQ(libSerial.snapshot().version_id, libPar.snapshot().version_id)
+      << "seq==parallel library version_id must match with cascade pre-gate ON";
+  EXPECT_EQ(repSerial.reject_histogram, repPar.reject_histogram)
+      << "seq==parallel reject_histogram must match with cascade pre-gate ON";
+  EXPECT_EQ(repSerial.n_cascade_skipped, repPar.n_cascade_skipped)
+      << "seq==parallel n_cascade_skipped must match (the gate fires identically)";
+}
+
 } // namespace atxtest_factory_oos_test

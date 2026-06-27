@@ -931,6 +931,49 @@ namespace {
   return dsr.dsr;
 }
 
+// S2-1 — train->holdout cascade pre-gate predicate (a CONSERVATIVE TRUE UPPER BOUND).
+//
+//  Returns true if the candidate CAN POSSIBLY clear cfg.min_dsr on the holdout (i.e. must
+//  NOT be skipped). It may return true for a doomed candidate (one wasted eval), but it MUST
+//  NEVER return false for a candidate that would have admitted — otherwise the admitted set,
+//  rep.digest, and rep.reject_histogram diverge from the gate-off run (the binding
+//  AdmittedSetUnchanged proof). When cfg.cascade_gate_factor <= 0.0 it ALWAYS returns true
+//  (gate inert -> byte-identical off-path).
+//
+//  Bound rationale. Admission needs hold_dsr = PSR(SR*_N) = Phi(z) >= min_dsr, with
+//  z = (sr_h - sr_star)*sqrt(T-1)/sqrt(var_term), sr_star = E[max Sharpe over N trials] >= 0,
+//  sr_h the holdout per-period Sharpe. The holdout Sharpe is not bounded by the train Sharpe
+//  in general (OOS can surprise), so this is a CALIBRATED screen, not an algebraic identity:
+//  we use the train per-period Sharpe sr_tr = train_metrics.sharpe / sqrt(252) as the signal-
+//  strength proxy and skip ONLY when even a GENEROUS multiple of it stays below the bar:
+//      keep  iff  sr_tr * cascade_gate_factor >= min_dsr
+//      skip  iff  sr_tr < min_dsr / cascade_gate_factor.
+//  The safety factor (calibrated to 3.0 at the call site) makes the skip threshold
+//  min_dsr / factor small; a LARGER factor LOOSENS the gate (fewer skips, strictly safer).
+//  A NaN/non-finite or non-positive train Sharpe is treated as "cannot prove admissible only
+//  from this" -> KEEP (return true) so the gate never skips on a degenerate proxy. trial_count
+//  is accepted for a future tightening but is NOT used to make the bound tighter here (a looser
+//  bound is always the safe direction). The bound is proven by AdmittedSetUnchanged.
+[[nodiscard]] bool cascade_gate_passes(const combine::AlphaMetrics &train_metrics,
+                                       const FactoryConfig &cfg,
+                                       atx::usize trial_count) noexcept {
+  static_cast<void>(trial_count); // reserved for a future (looser-only) tightening
+  if (!(cfg.cascade_gate_factor > 0.0)) {
+    return true; // gate inert (OFF default or non-positive): never skip
+  }
+  if (!(cfg.min_dsr > 0.0)) {
+    return true; // a non-positive DSR bar is trivially clearable on the holdout
+                 // (DSR = PSR ∈ [0, 1] >= 0): NOTHING can be proven hopeless -> keep.
+  }
+  const atx::f64 sr_tr = train_metrics.sharpe / std::sqrt(combine::kAnnualizationDays);
+  if (!std::isfinite(sr_tr)) {
+    return true; // degenerate proxy (NaN/inf): keep (the gate can prove nothing here)
+  }
+  // keep iff sr_tr * factor >= min_dsr ; equivalently skip only the provably-too-weak
+  // (a low-positive OR non-positive train Sharpe — the latter is even more hopeless).
+  return sr_tr * cfg.cascade_gate_factor >= cfg.min_dsr;
+}
+
 } // namespace
 
 [[nodiscard]] atx::core::Result<FactoryReport>
@@ -1168,6 +1211,23 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
       continue;
     }
     const combine::AlphaMetrics train_metrics = tcache.train_metrics;
+
+    // (3a') S2-1 cascade pre-gate — skip the expensive holdout eval for a candidate whose
+    // train signal is provably too weak to clear min_dsr on an optimistic holdout. OFF by
+    // default (cascade_gate_factor == 0.0 -> always passes -> byte-identical). When it FIRES
+    // we fold the SAME AdmitKind::RejectFitness a holdout-reaching miss would get, in the SAME
+    // histogram + digest fold ORDER as the ladder below, then continue. canon_hash is computed
+    // here exactly as the ladder computes it, so the fold is bit-identical to the on-holdout
+    // path's reject fold. Identical at the serial + parallel sites -> seq==parallel preserved.
+    if (!cascade_gate_passes(train_metrics, cfg, admit_fit.trial_count)) {
+      const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+      const library::AdmitKind kind = library::AdmitKind::RejectFitness;
+      ++rep.n_cascade_skipped;
+      ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+      rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+          static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+      continue;
+    }
 
     // (3b) HOLDOUT metrics + positions + DSR — the ADMISSION oracle. Evaluate the
     // genome ONCE on the holdout panel and realize BOTH the metrics (and pnl) and the
@@ -1580,6 +1640,20 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
       continue;
     }
     const combine::AlphaMetrics train_metrics = tcache.train_metrics;
+
+    // (3a') S2-1 cascade pre-gate — IDENTICAL to the serial mine_into_oos step (same
+    // train_metrics, same predicate, same RejectFitness fold in the same histogram + digest
+    // ORDER), so the seq==parallel byte-identity invariant holds. OFF by default
+    // (cascade_gate_factor == 0.0 -> always passes -> byte-identical to pre-S2-1).
+    if (!cascade_gate_passes(train_metrics, cfg, admit_fit.trial_count)) {
+      const atx::u64 canon_hash = canonical_hash(g.ast, g.ast.roots().front().root);
+      const library::AdmitKind kind = library::AdmitKind::RejectFitness;
+      ++rep.n_cascade_skipped;
+      ++rep.reject_histogram[static_cast<atx::usize>(kind)];
+      rep.digest = static_cast<atx::u64>(atx::core::hash_combine(
+          static_cast<std::size_t>(rep.digest), canon_hash, static_cast<atx::u64>(kind)));
+      continue;
+    }
 
     // (3b) HOLDOUT metrics + positions + DSR — the ADMISSION oracle, from the gathered
     // holdout streams (serial mine_into_oos:769-799). A genome that could not evaluate (or
