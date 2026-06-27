@@ -396,29 +396,35 @@ TEST(CompileCache_Microbench, ColdVsWarmCompileTime) {
 // ============================================================================
 //
 // The cross-section valid-set (built in cs_one_date / vm.hpp) is REQUIRED to be
-// in ascending instrument-index order.  cs_rank_row uses a stable sort whose
-// tie-break order is the pre-sort (i.e. valid-set) order.  If the valid set were
-// scanned in a non-ascending order, tied rank values would change silently —
-// breaking AuditExact determinism.
+// in ascending instrument-index order.  Two distinct kernels depend on it:
+//   * cs_rank_row: a stable sort whose tie-break order IS the pre-sort (i.e.
+//     valid-set) order — a non-ascending scan silently flips tied ranks.
+//   * cs_zscore_row: its Σx / Σ(x-mean)² reductions accumulate in scan order,
+//     and f64 addition is not associative — a non-ascending scan changes the
+//     summed bits (hence every cell) for ill-conditioned rows.
 //
-// cs_zscore_row iterates the valid set for its mean/std reduction; because
-// floating-point addition is not strictly commutative for long chains,
-// the summation order matters for bit-exact reproducibility there too.
+// Three sub-test groups, each pinning a DIFFERENT property (do not conflate):
 //
-// Two sub-test groups:
-//   CsValidSet_KernelDirect_TiedValues
-//     Directly exercises cs_rank_row and cs_zscore_row from cs_ops.hpp with
-//     (a) the correct ascending valid order and (b) a deliberately shuffled
-//     order.  Asserts the ascending case yields expected tied ranks and that
-//     the shuffled case yields DIFFERENT tied ranks — proving the invariant
-//     is genuinely load-bearing (not just defensive boilerplate).
+//   CsValidSet_KernelDirect_TiedValues  [the load-bearing tie-break pin]
+//     Calls cs_rank_row directly with (a) ascending valid and (b) a shuffled
+//     valid containing a tie.  Asserts the shuffled order yields DIFFERENT tied
+//     ranks — this test FAILS if the production scan were non-ascending.
 //
-//   CsValidSet_Engine_PermutedDateEval
-//     Evaluates a rank/zscore alpha on a full 3-date × 5-instrument panel,
-//     then evaluates each date independently on a 1-date sub-panel and asserts
-//     per-date outputs are byte-identical.  Proves that the Engine's date loop
-//     carries no cross-date state through cs_valid_ or CsScratch — a property
-//     that would break if the valid-set rebuild or scratch reset were incomplete.
+//   CsValidSet_KernelDirect_IllConditioned  [the load-bearing reduction pin]
+//     Calls cs_zscore_row directly on an ill-conditioned row with ascending vs
+//     shuffled valid, and asserts the two reductions differ in at least one
+//     cell's bits — proving cs_zscore_row reduces in valid-set (ascending)
+//     order.  This test FAILS to be meaningful if the inputs were well-
+//     conditioned (it self-checks that the order is observable).
+//
+//   CsValidSet_Engine_CrossDateStateIsolation  [a DIFFERENT property]
+//     Evaluates rank/zscore on a full 3-date panel, then evaluates each date
+//     independently in a permuted visit order, and asserts per-date outputs are
+//     byte-identical.  This pins CROSS-DATE STATE ISOLATION (no residue leaks
+//     through cs_valid_ / CsScratch between dates) — it does NOT and cannot pin
+//     the ascending-instrument-index invariant, because each date rebuilds its
+//     valid set fresh, so permuting dates can never expose a reversed scan.
+//     Kept because it is the plan's literal §Accept and a useful determinism guard.
 
 namespace atxtest_alpha_cs_valid {
 
@@ -532,53 +538,71 @@ TEST(CsValidSet_KernelDirect_TiedValues, RankTiebreakByAscendingIndex) {
   }
 }
 
-TEST(CsValidSet_KernelDirect_TiedValues, ZscoreAscendingOrderIsCanonical) {
-  // cs_zscore_row accumulates Σx and Σ(x-mean)² over the valid set in scan order.
-  // For the bit-exact contract (AuditExact), the summation order must be
-  // ascending instrument index — the same order the oracle's gather+mean+std uses.
-  // This test verifies:
-  //   (a) the ascending-order result matches the hand-computed expected values, AND
-  //   (b) a non-ascending (shuffled) scan produces DIFFERENT float sums,
-  //       demonstrating the order dependency.
+TEST(CsValidSet_KernelDirect_IllConditioned, ZscoreReductionOrderIsAscendingIndex) {
+  // cs_zscore_row accumulates Σx (then Σ(x-mean)²) over the valid set in SCAN
+  // ORDER.  f64 addition is not associative, so for an ILL-CONDITIONED row
+  // (large magnitudes that cancel, plus small ones) the summed bits depend on
+  // the order — hence mean, sd, and every per-cell zscore depend on it too.
   //
-  // Row: NaN, 3.0, 1.0, 2.0, NaN — valid set = {1, 2, 3}, values {3.0, 1.0, 2.0}
-  // mean = (3+1+2)/3 = 2.0
-  // ss   = (3-2)^2 + (1-2)^2 + (2-2)^2 = 1 + 1 + 0 = 2.0
-  // sd   = sqrt(2/2) = 1.0
-  // zscore[1] = (3.0-2.0)/1.0 = 1.0
-  // zscore[2] = (1.0-2.0)/1.0 = -1.0
-  // zscore[3] = (2.0-2.0)/1.0 = 0.0
-  const std::vector<atx::f64> x{kNaN, 3.0, 1.0, 2.0, kNaN};
+  // This test pins that cs_zscore_row reduces in valid-set (== ascending
+  // instrument-index) order by showing a SHUFFLED valid set yields BIT-DIFFERENT
+  // output in at least one cell.  If the production scan were ever reversed or
+  // reordered, the zscore column would change bits — breaking AuditExact.
+  //
+  // Row (7 instruments, no NaN holes here so all 7 are valid): two large
+  // magnitudes that nearly cancel (1e16, -1e16) interleaved with small values.
+  const std::vector<atx::f64> x{1e16, 1.0, 1.0, 1.0, -1e16, 3.0, 7.0};
 
-  std::vector<atx::f64> out_asc(5, kNaN);
+  std::vector<atx::f64> out_asc(7, kNaN);
   {
-    const std::vector<atx::usize> valid_asc{1, 2, 3};
+    const std::vector<atx::usize> valid_asc{0, 1, 2, 3, 4, 5, 6};
     cs_zscore_row(x, valid_asc, out_asc);
   }
 
-  EXPECT_TRUE(std::isnan(out_asc[0])) << "inst0 (NaN) stays NaN";
-  EXPECT_EQ(out_asc[1], 1.0) << "zscore[1] = (3-2)/1 = 1.0";
-  EXPECT_EQ(out_asc[2], -1.0) << "zscore[2] = (1-2)/1 = -1.0";
-  EXPECT_EQ(out_asc[3], 0.0) << "zscore[3] = (2-2)/1 = 0.0";
-  EXPECT_TRUE(std::isnan(out_asc[4])) << "inst4 (NaN) stays NaN";
-
-  // Shuffled scan {2, 3, 1}: sums are the same (addition is commutative for
-  // these exact small integers), so zscore is numerically equal here — but this
-  // is a property of these specific values, not of floating-point in general.
-  // The ascending-order result IS the pinned canonical output.
-  std::vector<atx::f64> out_shuf(5, kNaN);
+  // A shuffled valid order: same membership, different reduction order. The
+  // large-magnitude cancellation lands at different partial sums, so the f64
+  // result differs in some cells.
+  std::vector<atx::f64> out_shuf(7, kNaN);
   {
-    const std::vector<atx::usize> valid_shuf{2, 3, 1};
+    const std::vector<atx::usize> valid_shuf{4, 5, 0, 6, 1, 3, 2};
     cs_zscore_row(x, valid_shuf, out_shuf);
   }
-  // For these exact-integer inputs both orderings agree; pin that agreement.
-  for (atx::usize i = 0; i < 5; ++i) {
-    EXPECT_TRUE(bit_eq(out_asc[i], out_shuf[i]))
-        << "zscore inst" << i << ": asc=" << out_asc[i] << " shuf=" << out_shuf[i];
+
+  // CRITICAL: the two reductions MUST differ in at least one cell's bits —
+  // otherwise the reduction order would be unobservable and this test would
+  // pin nothing.  (Verified offline: ascending vs this shuffle diverge.)
+  bool any_bit_diff = false;
+  for (atx::usize i = 0; i < 7; ++i) {
+    if (!bit_eq(out_asc[i], out_shuf[i])) {
+      any_bit_diff = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(any_bit_diff)
+      << "REDUCTION ORDER UNOBSERVABLE: ascending and shuffled valid produced "
+         "bit-identical zscore — pick more ill-conditioned inputs, the test pins nothing as-is";
+
+  // And pin the canonical (ascending) output bit-exactly: re-running the same
+  // ascending reduction must reproduce it (no hidden nondeterminism).
+  std::vector<atx::f64> out_asc2(7, kNaN);
+  {
+    const std::vector<atx::usize> valid_asc{0, 1, 2, 3, 4, 5, 6};
+    cs_zscore_row(x, valid_asc, out_asc2);
+  }
+  for (atx::usize i = 0; i < 7; ++i) {
+    EXPECT_TRUE(bit_eq(out_asc[i], out_asc2[i]))
+        << "ascending reduction not reproducible at inst" << i;
   }
 }
 
-// ---- CsValidSetEngine — permuted date evaluation ---------------------------
+// ---- CsValidSetEngine — cross-date state isolation -------------------------
+//
+// NOTE: these engine-level tests pin cross-date STATE ISOLATION (no residue
+// leaks through cs_valid_ / CsScratch), NOT the ascending-instrument-index
+// invariant — see the group header above.  Permuting the date visit order
+// cannot expose a reversed instrument scan, because each date rebuilds its
+// valid set fresh.  The ascending-index invariant is pinned by the two
+// KernelDirect tests, which exercise the scan order directly.
 
 // 3-date × 5-instrument panel: NaN holes + tied values on every date.
 //
@@ -625,7 +649,7 @@ eval_single_date(const Program &prog, const std::vector<atx::f64> &row) {
   return sig->alphas[0].values; // 1 * 5 = 5 elements
 }
 
-TEST(CsValidSet_Engine_PermutedDateEval, RankByteIdenticalPerDate) {
+TEST(CsValidSet_Engine_CrossDateStateIsolation, RankByteIdenticalPerDate) {
   // Evaluate rank(close) on the full 3-date panel.
   const Panel full = make_cs_panel();
   const Program prog = cs_compile("r = rank(close)");
@@ -635,10 +659,10 @@ TEST(CsValidSet_Engine_PermutedDateEval, RankByteIdenticalPerDate) {
   ASSERT_TRUE(full_sig.has_value()) << full_sig.error().message();
   const auto &fv = full_sig->alphas[0].values; // 3*5 = 15 elements
 
-  // Evaluate each date independently (simulating "permuted" date visit order:
-  // date2 → date0 → date1 instead of 0 → 1 → 2).  Each single-date evaluation
-  // rebuilds the valid set from scratch, so the output must be byte-identical
-  // to the corresponding slice of the full-panel evaluation.
+  // Evaluate each date independently in a permuted visit order (date2 → date0 →
+  // date1 instead of 0 → 1 → 2).  Each single-date evaluation rebuilds the valid
+  // set from scratch, so if no cross-date state leaks, the output must be byte-
+  // identical to the corresponding slice of the full-panel evaluation.
   const std::vector<atx::f64> row0{kNaN, 1.0, 1.0, 2.0, kNaN};
   const std::vector<atx::f64> row1{3.0, kNaN, 1.5, 1.5, 0.5};
   const std::vector<atx::f64> row2{2.0, 2.0, kNaN, 1.0, 3.0};
@@ -658,7 +682,7 @@ TEST(CsValidSet_Engine_PermutedDateEval, RankByteIdenticalPerDate) {
   }
 }
 
-TEST(CsValidSet_Engine_PermutedDateEval, ZscoreByteIdenticalPerDate) {
+TEST(CsValidSet_Engine_CrossDateStateIsolation, ZscoreByteIdenticalPerDate) {
   // Same as the rank test but for zscore — confirms no cross-date state leaks
   // through the CsScratch streaming accumulators.
   const Panel full = make_cs_panel();

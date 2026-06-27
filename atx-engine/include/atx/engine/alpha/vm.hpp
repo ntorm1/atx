@@ -646,16 +646,20 @@ private:
                           std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
                           std::vector<atx::usize> &valid, detail::CsScratch &scratch) {
     // INVARIANT (REQUIRED — not accidental): the forward scan produces `valid`
-    // in strictly ascending instrument-index order.  cs_rank_row's stable sort
-    // relies on this to break ties by ascending index (the pre-sort order is the
-    // tie-break order after a value-stable sort).  Permuting this scan — e.g. by
-    // reordering worker dispatch or splitting the row — would silently change
-    // rank outputs for any date that contains tied values, breaking AuditExact.
+    // in strictly ascending instrument-index order, and every downstream kernel
+    // depends on it for AuditExact-determinism:
+    //   * cs_rank_row's stable sort breaks ties by this pre-sort order, so a
+    //     non-ascending scan would silently flip tied-rank outputs;
+    //   * the reduction kernels (cs_zscore_row's Σx / Σ(x-mean)², the grouped
+    //     sums) accumulate in this scan order, and f64 addition is not
+    //     associative — a permuted scan changes the summed bits in some cells.
+    // Reordering worker dispatch or splitting the row therefore must NOT permute
+    // this scan; ascending instrument index is the one canonical order.
     valid.clear();
     for (atx::usize i = 0; i < x.size(); ++i) {
       out[i] = detail::kVmNaN; // default every cell (out-of-set stays NaN)
       if (!detail::cs_is_nan(x[i])) {
-        valid.push_back(i); // ascending: i is monotonically increasing here
+        valid.push_back(i);
       }
     }
     switch (op) {
