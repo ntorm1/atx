@@ -1780,14 +1780,7 @@ Factory::rank_by_deflated_fitness(const std::vector<Genome> &scored, const Fitne
   return ranked;
 }
 
-// S2-0: Factory::mean_cse_pct is intentionally NOT defined here. It recompiled
-// every scored genome purely to read Program::cache_hit_pct() into the report-only
-// rep.cse_pct — a per-run recompile of the whole scored set, divided by the
-// compile-SUCCESS subset (an inflated mean when some scored genomes fail to
-// compile). cse_pct is pure telemetry (never folded into rep.digest, never an
-// admission decision) and the only reachable measurement WAS that recompile, so the
-// recompile was dropped and rep.cse_pct now keeps its struct default. The header
-// declaration is retained (it is no longer ODR-used) per this task's single-file
-// edit scope; a follow-up may remove the declaration + struct field.
+// S2-0: Factory::mean_cse_pct removed — its report-only recompile of every scored
+// genome was the dropped cse_pct telemetry (see factory.hpp's cse_pct note).
 
 } // namespace atx::engine::factory

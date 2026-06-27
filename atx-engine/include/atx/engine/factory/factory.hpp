@@ -63,18 +63,16 @@
 //  it must build a research-panel ISignalSource adapter; that is out of S3-6 scope.
 //
 // ===========================================================================
-//  cse_pct source (documented, NOT fabricated)
+//  cse_pct (telemetry DROPPED in S2-0)
 // ===========================================================================
-//  §4.8 asks for "mean Program.cache_hit_pct() over generations". SearchResult
-//  does NOT surface the per-generation compiled Programs (the driver compiles
-//  single-root Programs internally and folds only their eval DIGEST). The reachable
-//  CSE telemetry is Program::cache_hit_pct() on the run's distinct scored genomes
-//  (res.all_scored): we re-compile each and average its cache_hit_pct(). For the
-//  single-root seed grammar this measures intra-expression structural sharing (it
-//  is typically small — the cross-alpha CSE lever is exercised by compile_batch,
-//  not the per-genome single-root compile the driver uses), but it is a REAL
-//  measurement off the as-built Program telemetry, not a fabricated constant. An
-//  empty run (no scored genomes / all uncompilable) yields cse_pct = 0.
+//  §4.8 once asked for "mean Program.cache_hit_pct() over generations". The only
+//  reachable measurement was a REPORT-ONLY recompile of every scored genome purely
+//  to read Program::cache_hit_pct() (SearchResult does not surface the per-generation
+//  compiled Programs, and a Genome carries no cache-hit field). S2-0 eliminated that
+//  recompile: cse_pct is pure telemetry — never folded into rep.digest, never an
+//  admission decision — so the FactoryReport::cse_pct field is now WRITE-NEVER and
+//  stays at its default 0.0. The field itself is retained only because its
+//  out-of-sprint-scope consumers (bench, python binding) read it.
 //
 //  Header-only; every function inline. mine() is a COLD path (run once per search),
 //  so std::vector / per-candidate allocation is acceptable (the VM hot loop is
@@ -214,8 +212,8 @@ struct FactoryConfig {
 //  admitted   : candidates that cleared BOTH the P4 gate AND the dsr bar (inserted).
 //  evaluated  : res.trial_count — distinct candidates scored (feeds S1 DSR/PBO N).
 //  dedup_pct  : 1 - trial_count/candidates_generated (the F6 dedup lever).
-//  cse_pct    : mean Program::cache_hit_pct() over the run's distinct scored genomes
-//               (see the header cse_pct note — a real, reachable measurement).
+//  cse_pct    : WRITE-NEVER since S2-0 (the report-only recompile was dropped); stays
+//               at the default 0.0 — see the header cse_pct note.
 //  trials     : == evaluated (the trial count, surfaced under its §4.8 name too).
 //  seed       : res.seed == cfg.search.master_seed (the artifact key).
 //  digest     : the F1/F2 byte-identical run fingerprint — the search digest FOLDED
@@ -239,6 +237,7 @@ struct FactoryReport {
   atx::usize admitted{0};
   atx::usize evaluated{0};
   atx::f64 dedup_pct{0.0};
+  // S2-0: write-never (telemetry dropped); retained at default for out-of-scope bench/python consumers
   atx::f64 cse_pct{0.0};
   atx::usize trials{0};
   atx::u64 seed{0};
@@ -500,11 +499,6 @@ private:
   [[nodiscard]] std::vector<Ranked> rank_by_deflated_fitness(const std::vector<Genome> &scored,
                                                              const FitnessCfg &fit_cfg,
                                                              const PoolView &pool) const;
-
-  // Mean Program::cache_hit_pct() over the run's distinct scored genomes (the
-  // reachable CSE telemetry — see the header cse_pct note). An uncompilable genome
-  // is skipped; an empty / all-uncompilable run yields 0.
-  [[nodiscard]] double mean_cse_pct(const SearchResult &res) const;
 
   // SAFETY: each borrow is held for the Factory's lifetime; the single run-wide
   // Library owns every OpSig the genomes' Expr::op pointers alias and must outlive
