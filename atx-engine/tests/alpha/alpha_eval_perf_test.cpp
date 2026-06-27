@@ -1,14 +1,16 @@
 // alpha_eval_perf_test.cpp — S1-0: compile memoization unit + microbench.
 //
 // Verifies:
-//   CompileCacheIdentity  — compile(ast) twice → byte-identical Program.
+//   CompileCacheIdentity  — compile(ast) twice → instruction-stream-identical
+//                           Program (telemetry fields excluded).
 //   CollisionSafety       — N distinct ASTs each round-trip to their own correct
 //                           cold-compiled Program through the cache.
 //   DigestUnchanged       — a fixed AST set evaluated on a synthetic 3×2 panel
-//                           produces byte-identical SignalSet before/after the
+//                           produces a bit-identical SignalSet before/after the
 //                           cache warms (output unaffected by caching).
-//   ColdVsWarmMicrobench  — wall-clock of M compiles of a fixed corpus, cold vs
-//                           warm. Reports ns/compile; no hard assertion on speedup.
+//   ColdVsWarmMicrobench  — wall-clock of the COMPILE STEP of a fixed corpus,
+//                           cold (build_dag+linearize) vs warm (cache hit, no
+//                           build_dag). Reports ns/compile; sanity bound only.
 //
 // Naming: Subject_Condition_ExpectedResult.
 
@@ -33,6 +35,8 @@
 namespace atxtest_alpha_eval_perf_test {
 
 using atx::engine::alpha::analyze;
+using atx::engine::alpha::Analysis;
+using atx::engine::alpha::Ast;
 using atx::engine::alpha::compile;
 using atx::engine::alpha::compile_cached;
 using atx::engine::alpha::Engine;
@@ -90,8 +94,9 @@ using atx::engine::alpha::SignalSet;
 // unique_nodes, total_ast_nodes) are "pure observability" (see Program comment)
 // and are excluded: a cached Program retains the telemetry of the compile that
 // first populated the cache, which naturally differs from a fresh cold compile.
-// The brief's "byte-identical Program bytes" contract refers to the instruction
-// stream and slot layout, not the observability fields.
+// The contract is instruction-stream identical (telemetry fields excluded):
+// the code stream, roots, fields, slot count and lookback match exactly; the
+// observability counters legitimately differ between a cold and a warm compile.
 [[nodiscard]] bool programs_equal(const Program &a, const Program &b) {
   if (a.num_slots != b.num_slots) {
     return false;
@@ -155,7 +160,7 @@ TEST(CompileCache_SameAst_ByteIdenticalProgram, ColdCompileTwice) {
   EXPECT_TRUE(programs_equal(a, b));
 }
 
-TEST(CompileCache_SameAst_ByteIdenticalProgram, CachedEqualsColda) {
+TEST(CompileCache_SameAst_ByteIdenticalProgram, CachedEqualsCold) {
   // A cached compile must produce a Program byte-identical to a cold compile.
   const Program cold = cold_compile("y = close / open");
   const Program warm = cached_compile("y = close / open");
@@ -301,8 +306,11 @@ TEST(CompileCache_Digest_OutputUnchanged, ColdVsCachedEvalOnTinyPanel) {
 
 // ---- ColdVsWarmMicrobench --------------------------------------------------
 //
-// Time M compiles of a fixed corpus, cold (bypassing cache) vs warm (cache hits).
-// Report ns/compile to stdout. No hard speedup assertion.
+// Time the COMPILE STEP ONLY of a fixed corpus, cold (compile = build_dag +
+// linearize) vs warm (compile_cached cache hit). Parse + analyze are done ONCE
+// up front and EXCLUDED from the timing loops, so this isolates exactly what
+// the cache changes: a warm hit skips build_dag entirely. Report ns/compile to
+// stdout. No hard speedup assertion (machine-dependent), only a sanity bound.
 
 TEST(CompileCache_Microbench, ColdVsWarmCompileTime) {
   constexpr int kReps = 200;
@@ -313,30 +321,46 @@ TEST(CompileCache_Microbench, ColdVsWarmCompileTime) {
       "a = ts_mean(close, 5) * ts_mean(open, 5)",
   };
 
-  // Pre-warm the cache once so the first "warm" run is truly cached.
+  // Parse + analyze each source ONCE; the timed loops below reuse these so the
+  // measurement reflects compile() vs compile_cached() only (not the lexer).
+  std::vector<Ast> asts;
+  std::vector<Analysis> analyses;
+  asts.reserve(corpus.size());
+  analyses.reserve(corpus.size());
   for (std::string_view src : corpus) {
-    (void)cached_compile(src);
+    auto parsed = parse_program(src, shared_lib());
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
+    auto analysis = analyze(*parsed);
+    ASSERT_TRUE(analysis.has_value()) << analysis.error().message();
+    asts.push_back(std::move(*parsed));
+    analyses.push_back(std::move(*analysis));
   }
 
-  // --- cold: bypass the cache each time -------------------------------------
+  // Pre-warm the cache so every "warm" call below is a true cache hit.
+  for (atx::usize i = 0; i < asts.size(); ++i) {
+    (void)compile_cached(asts[i], analyses[i]);
+  }
+
+  // --- cold: build_dag + linearize every call -------------------------------
   using Clock = std::chrono::steady_clock;
   const auto cold_start = Clock::now();
   for (int r = 0; r < kReps; ++r) {
-    for (std::string_view src : corpus) {
-      const auto p = cold_compile(src);
-      // Prevent the compiler from optimising away the work.
-      ASSERT_FALSE(p.code.empty());
+    for (atx::usize i = 0; i < asts.size(); ++i) {
+      const auto p = compile(asts[i], analyses[i]);
+      ASSERT_TRUE(p.has_value());
+      ASSERT_FALSE(p->code.empty()); // defeat dead-code elimination
     }
   }
   const auto cold_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - cold_start).count();
 
-  // --- warm: all compiles are cache hits ------------------------------------
+  // --- warm: compile_cached cache hit (no build_dag) ------------------------
   const auto warm_start = Clock::now();
   for (int r = 0; r < kReps; ++r) {
-    for (std::string_view src : corpus) {
-      const auto p = cached_compile(src);
-      ASSERT_FALSE(p.code.empty());
+    for (atx::usize i = 0; i < asts.size(); ++i) {
+      const auto p = compile_cached(asts[i], analyses[i]);
+      ASSERT_TRUE(p.has_value());
+      ASSERT_FALSE(p->code.empty());
     }
   }
   const auto warm_ns =
@@ -347,15 +371,15 @@ TEST(CompileCache_Microbench, ColdVsWarmCompileTime) {
   const double warm_ns_per = static_cast<double>(warm_ns) / static_cast<double>(total_compiles);
 
   std::cout << "[CompileCache microbench] " << total_compiles << " compiles × "
-            << corpus.size() << " sources\n"
-            << "  cold: " << cold_ns_per << " ns/compile\n"
-            << "  warm: " << warm_ns_per << " ns/compile\n"
+            << corpus.size() << " sources (parse+analyze excluded)\n"
+            << "  cold (build_dag+linearize): " << cold_ns_per << " ns/compile\n"
+            << "  warm (cache hit):           " << warm_ns_per << " ns/compile\n"
             << "  speedup: " << (cold_ns_per / warm_ns_per) << "x\n";
 
-  // Warm must not be slower than cold (allow 5x slack for noise; we just want to
-  // catch a catastrophic regression, not race the clock).
-  EXPECT_LE(warm_ns_per, cold_ns_per * 5.0)
-      << "Cache warm path is unreasonably slow vs cold — check implementation";
+  // Sanity bound only: a warm hit (no build_dag) must not be slower than a cold
+  // compile. Catch a catastrophic regression, not race the clock.
+  EXPECT_LE(warm_ns_per, cold_ns_per)
+      << "Cache warm path is slower than a cold compile — build_dag not skipped?";
 }
 
 } // namespace atxtest_alpha_eval_perf_test
