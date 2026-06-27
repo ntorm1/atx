@@ -25,12 +25,14 @@
 // genome (composes with S4's seed axis). Header-only; a COLD path.
 
 #include <array>
+#include <cmath>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/macro.hpp"
 #include "atx/core/random.hpp"
 #include "atx/core/types.hpp"
 
@@ -70,19 +72,31 @@ struct GenConfig {
   // Default uniform {1,1,1,1,1,1,1,1}: weighted draw with sum=8 reduces to
   // `u64 % 8`, preserving byte-identity with the pre-S3-4 stream (see detail::
   // weighted_case for the invariant argument).
+  // CONTRACT: each weight must be non-negative and non-NaN, and at least one
+  // must round to >= 1 (so the rounded sum is >= 1). A degenerate array
+  // (all-zero / all-NaN / all-< 0.5) asserts in debug and falls back to the
+  // uniform path in release — never UB.
   std::array<atx::f64, 8> production_weights{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
 
   // S3-4: scalar literal pool for emit_scalar. Non-owning string_views — the
   // pointed-to characters must outlive the GenConfig. Default pool points to
   // string literals (static lifetime). If you supply a custom pool, ensure your
   // backing strings outlive the GenConfig.
+  // CONTRACT: must be non-empty (pick_sv asserts on an empty pool — there is no
+  // sensible fallback for a pool with no scalars to draw).
   std::vector<std::string_view> scalar_pool{"0.5", "1.5", "2.0", "3.0"};
 };
 
 namespace detail {
 
+// PRECONDITION: `xs` is non-empty. An empty span makes `% xs.size()` a
+// division by zero (UB) and the subsequent index out-of-bounds. The S3-4
+// scalar_pool knob is opt-in; a caller that sets `scalar_pool = {}` violates
+// this contract. Fail loud in debug; there is no sensible fallback for an
+// empty pool, so this is an assert, not a recovery path.
 [[nodiscard]] inline std::string_view pick_sv(std::span<const std::string_view> xs,
                                               Xoshiro256pp &rng) {
+  ATX_ASSERT(!xs.empty());
   return xs[static_cast<atx::usize>(rng.next_u64() % xs.size())];
 }
 
@@ -124,26 +138,46 @@ namespace detail {
 //   One draw, same modulus, same result → zero divergence on the default path.
 //
 // Zero-weight cases (bucket width = 0) are never selected, correctly biasing
-// the distribution without UB (the total must be >= 1 by precondition).
+// the distribution without UB.
 //
-// Precondition: at least one weight > 0; all weights >= 0; total < 2^64.
+// Degenerate input (all weights round to 0 → total == 0): the `% total` below
+// would be a division by zero (UB). The S3-4 production_weights knob is opt-in;
+// an all-zero (or all-< 0.5, or all-NaN) array violates the precondition. We
+// FAIL LOUD in debug (ATX_ASSERT) and FAIL SAFE in release (fall back to the
+// uniform `raw % 8` path) so a misconfigured array can never invoke UB. The
+// default {1,...,1} sums to 8, so this fallback never fires on the default path.
+//
+// Precondition: at least one weight rounds to >= 1; weights are non-negative,
+// non-NaN, and their rounded sum fits in u64.
 [[nodiscard]] inline atx::u64 weighted_case(const std::array<atx::f64, 8> &weights,
                                              Xoshiro256pp &rng) {
   // Build the u64 prefix-sum table. Round each weight to nearest integer,
-  // clamping negatives to 0 (precondition: weights >= 0, but be defensive).
+  // rejecting NaN and clamping negatives to 0: `static_cast<u64>(NaN)` and
+  // `static_cast<u64>(negative)` are both UB, so the clamp must catch both.
   atx::u64 iprefix[9];
   iprefix[0] = 0;
   for (int i = 0; i < 8; ++i) {
     const atx::f64 w = weights[static_cast<atx::usize>(i)];
-    iprefix[i + 1] = iprefix[i] + static_cast<atx::u64>(w < 0.0 ? 0.0 : w + 0.5);
+    const atx::f64 clamped = (std::isnan(w) || w < 0.0) ? 0.0 : w + 0.5;
+    iprefix[i + 1] = iprefix[i] + static_cast<atx::u64>(clamped);
   }
   const atx::u64 total = iprefix[8];
 
-  // Exactly ONE draw — same call-site as the former `rng.next_u64() % 8`.
-  const atx::u64 v = rng.next_u64() % total;
+  // Exactly ONE draw — same call-site position as the former `rng.next_u64() % 8`.
+  const atx::u64 raw = rng.next_u64();
+
+  // Degenerate-weights guard: fail loud in debug, fail safe in release. The
+  // fallback consumes the SAME single `raw` draw, so the RNG stream position is
+  // unchanged whether or not the fallback fires.
+  ATX_ASSERT(total >= 1);
+  if (total == 0) {
+    return raw % 8; // uniform fallback — selects the case directly
+  }
+
+  const atx::u64 v = raw % total;
 
   // Binary-search: find the bucket k where iprefix[k] <= v < iprefix[k+1].
-  // Loop is bounded to 8 iterations (log2(8) = 3 in practice).
+  // The loop is bounded to ceil(log2(8)) = 3 iterations.
   atx::u64 lo = 0;
   atx::u64 hi = 8;
   while (lo + 1 < hi) {

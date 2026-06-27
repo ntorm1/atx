@@ -310,19 +310,16 @@ TEST(GrammarGenS34, NonDefaultWeights_TwoRunsIdentical) {
 }
 
 // ===========================================================================
-//  S3-4 accept (a) coverage: byte-identity under default config.
-//  Default GenConfig must produce the same stream as pre-S3-4 (verified via
-//  golden digest tests in NsgaSearch and MultiObjective suites — this test is
-//  a quick local check that SameSeed still holds after the S3-4 changes).
+//  S3-4 accept (a) coverage: explicit defaults equal implicit defaults.
+//  Setting production_weights/scalar_pool explicitly to their default values
+//  must produce the same RNG stream as a default-constructed GenConfig — a
+//  quick local sanity check. The real pre-S3-4 byte-identity proof lives in
+//  the NsgaSearch / MultiObjective golden digest tests.
 // ===========================================================================
 
-TEST(GrammarGenS34, DefaultConfig_ByteIdenticalToPreS34) {
-  // If production_weights == {1,...,1} and scalar_pool == default 4-element
-  // pool, the RNG stream must be unchanged vs pre-S3-4 code. We verify this
-  // by checking that two GenConfig objects (both default-constructed) produce
-  // the same sequence — the real golden-digest proof lives in NsgaSearch.
-  GenConfig cfg_a; // default
-  GenConfig cfg_b; // also default, explicitly setting to defaults
+TEST(GrammarGenS34, DefaultConfig_ExplicitEqualsImplicitDefaults) {
+  GenConfig cfg_a; // implicit defaults
+  GenConfig cfg_b; // explicitly set to the same default values
   cfg_b.production_weights = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
   cfg_b.scalar_pool        = {"0.5", "1.5", "2.0", "3.0"};
 
@@ -331,8 +328,42 @@ TEST(GrammarGenS34, DefaultConfig_ByteIdenticalToPreS34) {
 
   for (int i = 0; i < 200; ++i) {
     EXPECT_EQ(generate_expr(cfg_a, rng_a), generate_expr(cfg_b, rng_b))
-        << "default vs explicit-default diverged at i=" << i;
+        << "explicit vs implicit defaults diverged at i=" << i;
   }
+}
+
+// ===========================================================================
+//  S3-4 UB guard: an all-zero production_weights array (a misconfigured opt-in
+//  knob) must NOT invoke division-by-zero UB. weighted_case falls back to the
+//  uniform `raw % 8` path, so generation still succeeds and is deterministic.
+//  (In a debug build ATX_ASSERT(total >= 1) would abort first; this test
+//  documents the release fail-safe — we run it in whatever config the test
+//  binary is built with and assert no UB / valid output either way.)
+// ===========================================================================
+
+TEST(GrammarGenS34, AllZeroWeights_DoesNotUbAndStaysDeterministic) {
+  GenConfig cfg;
+  // All weights round to 0 → rounded sum == 0. The release fallback must kick
+  // in (raw % 8) rather than computing `raw % 0`.
+  cfg.production_weights = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+#ifdef NDEBUG
+  // Release: ATX_ASSERT is a no-op, so the fallback path executes. Verify it
+  // does not crash and is reproducible (two seeded runs agree).
+  Xoshiro256pp rng_a(0x012345ULL);
+  Xoshiro256pp rng_b(0x012345ULL);
+  for (int i = 0; i < 100; ++i) {
+    const std::string a = generate_expr(cfg, rng_a);
+    const std::string b = generate_expr(cfg, rng_b);
+    EXPECT_EQ(a, b) << "all-zero-weight fallback diverged at i=" << i;
+    EXPECT_FALSE(a.empty());
+  }
+#else
+  // Debug: ATX_ASSERT(total >= 1) aborts. EXPECT_DEATH confirms the fail-loud
+  // contract (the matcher is loose — the abort message is implementation-defined).
+  Xoshiro256pp rng(0x012345ULL);
+  EXPECT_DEATH({ static_cast<void>(generate_expr(cfg, rng)); }, ".*");
+#endif
 }
 
 }  // namespace atxtest_factory_generate_test
