@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -252,7 +253,7 @@ TEST(AtxImplPanel, BuildsPanelFromSegments) {
         }
         return "";
     };
-    EXPECT_EQ(find_kv("fields"), "8") << "expected 8 history panel fields";
+    EXPECT_EQ(find_kv("fields"), "12") << "expected 12 history panel fields";
     EXPECT_GE(std::stoul(find_kv("dates")), 1u) << "expected at least 1 date";
     EXPECT_GE(std::stoul(find_kv("instruments")), 1u) << "expected at least 1 instrument";
 
@@ -263,7 +264,7 @@ TEST(AtxImplPanel, BuildsPanelFromSegments) {
 
     EXPECT_GE(p.dates(),       1u) << "read panel: expected >=1 dates";
     EXPECT_GE(p.instruments(), 1u) << "read panel: expected >=1 instruments";
-    EXPECT_EQ(p.num_fields(),  8u) << "read panel: expected exactly 8 fields";
+    EXPECT_EQ(p.num_fields(),  12u) << "read panel: expected exactly 12 fields";
 
     // Confirm the three required field names resolve.
     auto close_id  = p.field_id(atx::engine::data::kHistFieldClose);
@@ -279,4 +280,110 @@ TEST(AtxImplPanel, BuildsPanelFromSegments) {
         fs::remove_all(seg_dir, ec);
     }
     fs::remove(fs::path(panel_out));
+}
+
+// ---------------------------------------------------------------------------
+// AtxImplPanel.SidecarMetaWrittenAlongsidePanel (S5-3)
+//
+// Verifies that run_panel emits a <panel_out>.meta.txt sidecar beside the
+// binary panel, that the sidecar is parseable as key=value lines, that the
+// required keys are present, and that the numeric shape fields match what the
+// panel itself reports.  built_utc is intentionally NOT value-asserted (non-
+// deterministic wall-clock timestamp).
+// ---------------------------------------------------------------------------
+
+TEST(AtxImplPanel, SidecarMetaWrittenAlongsidePanel) {
+    // ---- build the same synthetic partition as BuildsPanelFromSegments ----
+    const fs::path seg_dir =
+        fs::temp_directory_path() / "atx_impl_sidecar_synth_seg";
+    {
+        std::error_code ec;
+        fs::remove_all(seg_dir, ec);
+        fs::create_directories(seg_dir, ec);
+    }
+
+    constexpr int kDates = 10; // small — we only care about the sidecar, not shape
+    constexpr int kInstr = 5;
+    const atx::i64 kDayNanos = 86400LL * 1'000'000'000LL;
+    const atx::i64 kDay0     = 18263LL * kDayNanos; // 2020-01-02 midnight UTC
+
+    for (int d = 0; d < kDates; ++d) {
+        const atx::i64 dn    = kDay0 + static_cast<atx::i64>(d) * kDayNanos;
+        const std::string fn = "seg_" + std::to_string(2000 + d) + ".seg";
+        write_seg_day(seg_dir, fn, dn, kInstr, 100.0 + static_cast<atx::f64>(d));
+    }
+
+    const std::string panel_out =
+        (fs::temp_directory_path() / "atx_impl_sidecar_out.bin").string();
+    const std::string meta_path = panel_out + ".meta.txt";
+    fs::remove(fs::path(panel_out));
+    fs::remove(fs::path(meta_path));
+
+    atx::impl::RunConfig cfg;
+    cfg.segs      = seg_dir.string();
+    cfg.panel_out = panel_out;
+    cfg.min_adv_usd  = 0.0;
+    cfg.top_n_by_adv = 0;
+
+    auto r = atx::impl::run_panel(cfg);
+    ASSERT_TRUE(r.has_value()) << "run_panel failed: " << r.error().message();
+
+    // ---- the sidecar must exist ----
+    ASSERT_TRUE(fs::exists(meta_path)) << "sidecar not found: " << meta_path;
+
+    // ---- parse the sidecar into a string->string map ----
+    std::ifstream mf(meta_path);
+    ASSERT_TRUE(mf.is_open()) << "cannot open sidecar: " << meta_path;
+
+    // First line is the bare version header "atx_panel_meta_v1" (no '=').
+    std::string first_line;
+    ASSERT_TRUE(std::getline(mf, first_line));
+    EXPECT_EQ(first_line, "atx_panel_meta_v1") << "sidecar: unexpected header";
+
+    std::map<std::string, std::string> kv;
+    std::string line;
+    while (std::getline(mf, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue; // skip blank / malformed
+        kv[line.substr(0, eq)] = line.substr(eq + 1);
+    }
+
+    // ---- required keys present ----
+    const std::vector<std::string> required_keys = {
+        "built_utc", "panel_bin", "engine_digest",
+        "dates", "instruments", "fields",
+        "augmented", "adv_windows",
+        "universe_min_adv_usd", "universe_top_n_by_adv",
+        "universe_min_price", "universe_require_sector",
+    };
+    for (const auto& k : required_keys) {
+        EXPECT_TRUE(kv.count(k) != 0) << "sidecar missing key: " << k;
+    }
+
+    // ---- engine_digest is non-empty ----
+    EXPECT_FALSE(kv["engine_digest"].empty()) << "sidecar: engine_digest is empty";
+
+    // ---- default (non-augmented) build values ----
+    EXPECT_EQ(kv["adv_windows"], "none")  << "sidecar: unexpected adv_windows value";
+    EXPECT_EQ(kv["augmented"],   "false") << "sidecar: unexpected augmented value";
+
+    // ---- numeric shape fields match the StageResult kvs ----
+    auto find_kv = [&](const std::string& key) -> std::string {
+        for (const auto& [k, v] : r->kvs) {
+            if (k == key) return v;
+        }
+        return "";
+    };
+    EXPECT_EQ(kv["fields"],      find_kv("fields"))      << "sidecar fields != StageResult fields";
+    EXPECT_EQ(kv["dates"],       find_kv("dates"))       << "sidecar dates != StageResult dates";
+    EXPECT_EQ(kv["instruments"], find_kv("instruments")) << "sidecar instruments != StageResult instruments";
+
+    // ---- clean up ----
+    mf.close(); // close before removal so Windows can unlink the sidecar
+    {
+        std::error_code ec;
+        fs::remove_all(seg_dir, ec);
+    }
+    fs::remove(fs::path(panel_out));
+    fs::remove(fs::path(meta_path));
 }
