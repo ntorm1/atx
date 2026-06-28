@@ -1407,6 +1407,14 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
         """
     )
 
+    # S1: Reference classification tables (taxonomy, taxonomy_node,
+    # entity_classification, taxonomy_mapping) are created exclusively by
+    # migration 0003 (reference_classifications) in db/migrations.py.
+    # Do NOT add CREATE TABLE statements here — the initialize() short-circuit
+    # (_schema_is_current) means ensure_quant_schema is skipped on an already-
+    # bootstrapped warehouse, so any table added here without a migration would
+    # be silently missed. New tables must always go through a migration bump.
+
     _ensure_schema_evolution(store)
     _ensure_indexes_and_views(store)
     _seed_catalog(store)
@@ -1480,6 +1488,8 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_alpha_signal_values_lookup ON alpha_signal_values(alpha_id, as_of_date)",
         "CREATE INDEX IF NOT EXISTS idx_alpha_signal_values_security ON alpha_signal_values(security_id, as_of_date)",
         "CREATE INDEX IF NOT EXISTS idx_alpha_backtest_manifests_alpha ON alpha_backtest_manifests(alpha_id, feature_set, universe_id)",
+        # S1 reference-classification indexes are created by migration 0003
+        # (db/migrations.py _reference_classifications) — do NOT add them here.
         "CREATE INDEX IF NOT EXISTS idx_listing_status_intervals_symbol ON listing_status_intervals(symbol, listing_venue_code, valid_from)",
         "CREATE INDEX IF NOT EXISTS idx_listing_status_intervals_security ON listing_status_intervals(security_id, valid_from)",
         "CREATE INDEX IF NOT EXISTS idx_listing_status_intervals_asof ON listing_status_intervals(as_of_date, available_at)",
@@ -1973,8 +1983,40 @@ def _seed_field_catalog(store: DuckDBStore) -> None:
         ORDER BY table_name, column_index
         """
     ).fetchall()
-    for table_name, column_name, data_type, is_nullable in rows:
-        semantic_type = _semantic_type(column_name, data_type)
+    if not rows:
+        return
+    # Bulk-insert in a single statement. Looping a per-row INSERT OR REPLACE over
+    # the ~2500 warehouse columns cost ~13s of bootstrap (each row = its own
+    # append + PK probe). Register the computed rows as one relation and let
+    # DuckDB ingest them vectorized instead.
+    import pandas as pd
+
+    records = [
+        (
+            table_name,
+            column_name,
+            (semantic_type := _semantic_type(column_name, data_type)),
+            _field_description(table_name, column_name, semantic_type),
+            bool(is_nullable),
+            _field_unit(column_name),
+            None,
+        )
+        for table_name, column_name, data_type, is_nullable in rows
+    ]
+    seed_frame = pd.DataFrame(
+        records,
+        columns=[
+            "table_name",
+            "field_name",
+            "semantic_type",
+            "description",
+            "nullable",
+            "unit",
+            "source_field",
+        ],
+    )
+    con.register("_field_catalog_seed", seed_frame)
+    try:
         con.execute(
             """
             INSERT OR REPLACE INTO field_catalog (
@@ -1987,15 +2029,10 @@ def _seed_field_catalog(store: DuckDBStore) -> None:
                 source_field,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, now())
-            """,
-            [
-                table_name,
-                column_name,
-                semantic_type,
-                _field_description(table_name, column_name, semantic_type),
-                bool(is_nullable),
-                _field_unit(column_name),
-                None,
-            ],
+            SELECT table_name, field_name, semantic_type, description,
+                   nullable, unit, source_field, now()
+            FROM _field_catalog_seed
+            """
         )
+    finally:
+        con.unregister("_field_catalog_seed")

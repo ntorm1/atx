@@ -17,6 +17,7 @@ class DuckDBStore:
         self.path = Path(path)
         self.read_only = read_only
         self.connection: duckdb.DuckDBPyConnection | None = None
+        self._initialized = False
 
     def __enter__(self) -> "DuckDBStore":
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,8 +37,38 @@ class DuckDBStore:
             raise RuntimeError("DuckDBStore is not open; use it as a context manager")
         return self.connection
 
+    def _schema_is_current(self, con: duckdb.DuckDBPyConnection) -> bool:
+        """True if this warehouse is already built to the head schema version.
+
+        Bootstrapping the full schema (CREATE IF NOT EXISTS for ~60 tables/indexes/
+        views + catalog seed) costs ~1-2s even when everything already exists. Many
+        dataset loaders call initialize() on every run, so without this guard a single
+        pipeline pays that cost dozens of times. If schema_migrations already records
+        the highest known migration version, the schema is current and we can skip the
+        whole rebuild. Any schema change must bump a migration version (S0 discipline),
+        so a stale warehouse falls through to the full idempotent path below.
+        """
+        from .migrations import MIGRATIONS
+
+        if not MIGRATIONS:
+            return False
+        target = max(m.version for m in MIGRATIONS)
+        try:
+            row = con.execute(
+                "SELECT max(CAST(version AS INTEGER)) FROM schema_migrations "
+                "WHERE version ~ '^[0-9]+$'"
+            ).fetchone()
+        except Exception:
+            return False  # schema_migrations absent -> fresh/legacy db, full init needed
+        return row is not None and row[0] is not None and int(row[0]) >= target
+
     def initialize(self) -> None:
+        if self._initialized:
+            return
         con = self.con
+        if self._schema_is_current(con):
+            self._initialized = True
+            return
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS dataset_runs (
@@ -84,6 +115,7 @@ class DuckDBStore:
             )
             """
         )
+        self._initialized = True
 
     @contextlib.contextmanager
     def transaction(self) -> Iterator[duckdb.DuckDBPyConnection]:
