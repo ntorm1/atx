@@ -17,14 +17,15 @@
 // ===========================================================================
 //  §5.2 algorithm — FIXED-ORDER, deterministic verdict
 // ===========================================================================
-//  admit() checks four conditions in THIS fixed order; the verdict is the FIRST
+//  admit() checks conditions in THIS fixed order; the verdict is the FIRST
 //  one that fails (so a candidate failing several conditions has ONE deterministic
 //  verdict — the earliest in the order):
-//    1. metrics.fitness  >= cfg.min_fitness    else RejectFitness   (WQ-aligned primary gate)
-//    2. metrics.sharpe   >= cfg.min_sharpe     else RejectSharpe    (low sanity floor; DSR is the sig gate)
-//    3. metrics.turnover <= cfg.max_turnover   else RejectTurnover
-//    4. corr_to_pool     <= cfg.max_pool_corr  else RejectCorrelated
-//    else                                           Accept
+//    1. metrics.fitness      >= cfg.min_fitness      else RejectFitness   (WQ-aligned primary gate)
+//    2. metrics.sharpe       >= cfg.min_sharpe       else RejectSharpe    (low sanity floor; DSR is the sig gate)
+//    3. metrics.turnover     <= cfg.max_turnover     else RejectTurnover  (ceiling)
+//    3b.metrics.holding_days >= cfg.min_holding_days else RejectTurnover  (S4-2 floor; inert at min_holding_days=0)
+//    4. corr_to_pool         <= cfg.max_pool_corr    else RejectCorrelated
+//    else                                                 Accept
 //  corr_to_pool = max_j |pairwise_complete_corr(candidate, member_j)| over the
 //  pool ("max" = the strictest member; it is a MAGNITUDE gate, so a perfectly
 //  anti-correlated member with |corr| = 1 is just as disqualifying as a perfect
@@ -127,6 +128,13 @@ struct AlphaGate {
       return GateVerdict::RejectSharpe;
     }
     if (metrics.turnover > cfg.max_turnover) {
+      return GateVerdict::RejectTurnover;
+    }
+    // S4-2: holding-period floor — a turnover-side guard (reuses RejectTurnover;
+    // holding is 1/turnover, so the two checks are adjacent). The guard is inert
+    // at the default min_holding_days=0.0 (the > 0.0 condition is false) so this
+    // branch is never taken and verdicts are byte-identical to pre-S4-2.
+    if (cfg.min_holding_days > 0.0 && metrics.holding_days < cfg.min_holding_days) {
       return GateVerdict::RejectTurnover;
     }
     // §5.2 check 4 (LAZY): only now — after the floors pass — pay the

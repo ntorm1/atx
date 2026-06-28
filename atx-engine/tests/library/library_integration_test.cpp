@@ -665,4 +665,100 @@ TEST(LibraryNetCost, TwiceRunSameVerdict) {
   EXPECT_EQ(k4, k3);
 }
 
+// ===========================================================================
+//  S4-2: Holding-period floor — Library::verdict_for (via admit_verdict_only)
+//
+//  Mirrors the gate_holdfloor tests but exercises the library path so BOTH
+//  admission paths (AlphaGate::admit and Library::verdict_for) are covered.
+// ===========================================================================
+
+// (a) lib_holdfloor_offpath: min_holding_days = 0.0 (default) => guard never
+// fires => verdicts byte-identical to pre-S4-2 behavior.
+TEST(LibraryHoldFloor, OffPathZeroPreservesVerdict) {
+  GateConfig cfg_zero;
+  cfg_zero.min_holding_days = 0.0; // inert — guard condition (> 0.0) is false
+
+  lib::Library facade = lib::Library::open(tmpdir("lhf_offpath"), cfg_zero, {kMasterSeed});
+  const AlphaGate gate{cfg_zero};
+
+  // Candidate that clears all floors => Accept.
+  const CandidateData pass = make_passing(0xBEEF0010ull, 8800u, 1u);
+  EXPECT_EQ(facade.admit_verdict_only(view_of(pass), gate), AdmitKind::Accept);
+
+  // Candidate with low sharpe => still RejectSharpe (holding guard does not interfere).
+  CandidateData fail_sharpe = make_passing(0xBEEF0011ull, 8801u, 1u);
+  fail_sharpe.metrics.sharpe = 0.1;
+  EXPECT_EQ(facade.admit_verdict_only(view_of(fail_sharpe), gate), AdmitKind::RejectSharpe);
+}
+
+// (b) lib_holdfloor_onpath: turnover=1.0 => holding_days=1.0; with
+// min_holding_days=5.0 the floor fires => RejectTurnover. With
+// min_holding_days=0.0 the candidate Accepts.
+// cfg.max_turnover raised to 1.5 so turnover=1.0 clears the ceiling check.
+TEST(LibraryHoldFloor, OnPathHoldingFloorFlips) {
+  // Build a candidate with turnover=1.0 => holding_days=1.0; clears fitness/sharpe/corr.
+  CandidateData c = make_passing(0xBEEF0020ull, 8810u, 1u);
+  c.metrics.sharpe       = 2.0;
+  c.metrics.turnover     = 1.0; // => holding_days = 1.0
+  c.metrics.returns      = 0.10;
+  c.metrics.drawdown     = 0.05;
+  c.metrics.margin       = 0.10;
+  c.metrics.fitness      = 2.0;
+  c.metrics.holding_days = 1.0; // explicitly set to match 1/turnover
+
+  // With min_holding_days=5.0: holding_days=1.0 < 5.0 => RejectTurnover.
+  GateConfig cfg_reject;
+  cfg_reject.min_holding_days = 5.0;
+  cfg_reject.max_turnover     = 1.5; // raised so turnover=1.0 clears the ceiling check
+  lib::Library lib_reject =
+      lib::Library::open(tmpdir("lhf_reject"), cfg_reject, {kMasterSeed});
+  const AlphaGate gate_reject{cfg_reject};
+  EXPECT_EQ(lib_reject.admit_verdict_only(view_of(c), gate_reject), AdmitKind::RejectTurnover);
+
+  // With min_holding_days=0.0 (guard inactive): the candidate Accepts.
+  GateConfig cfg_pass;
+  cfg_pass.min_holding_days = 0.0;
+  cfg_pass.max_turnover     = 1.5;
+  lib::Library lib_pass =
+      lib::Library::open(tmpdir("lhf_pass"), cfg_pass, {kMasterSeed});
+  const AlphaGate gate_pass{cfg_pass};
+  EXPECT_EQ(lib_pass.admit_verdict_only(view_of(c), gate_pass), AdmitKind::Accept);
+}
+
+// (c) lib_holdfloor_twice: same inputs => same verdict on both calls (no staging/hidden state).
+TEST(LibraryHoldFloor, TwiceRunSameVerdict) {
+  CandidateData c = make_passing(0xBEEF0030ull, 8820u, 1u);
+  c.metrics.sharpe       = 2.0;
+  c.metrics.turnover     = 1.0;
+  c.metrics.returns      = 0.10;
+  c.metrics.drawdown     = 0.05;
+  c.metrics.margin       = 0.10;
+  c.metrics.fitness      = 2.0;
+  c.metrics.holding_days = 1.0;
+
+  // On-path (reject): both calls must be RejectTurnover.
+  GateConfig cfg_reject;
+  cfg_reject.min_holding_days = 5.0;
+  cfg_reject.max_turnover     = 1.5;
+  lib::Library lib_reject =
+      lib::Library::open(tmpdir("lhf_twice_reject"), cfg_reject, {kMasterSeed});
+  const AlphaGate gate_reject{cfg_reject};
+  const AdmitKind k1 = lib_reject.admit_verdict_only(view_of(c), gate_reject);
+  const AdmitKind k2 = lib_reject.admit_verdict_only(view_of(c), gate_reject);
+  EXPECT_EQ(k1, AdmitKind::RejectTurnover);
+  EXPECT_EQ(k2, k1); // pure (no staging): deterministic
+
+  // Off-path (accept): both calls must be Accept.
+  GateConfig cfg_pass;
+  cfg_pass.min_holding_days = 0.0;
+  cfg_pass.max_turnover     = 1.5;
+  lib::Library lib_pass =
+      lib::Library::open(tmpdir("lhf_twice_pass"), cfg_pass, {kMasterSeed});
+  const AlphaGate gate_pass{cfg_pass};
+  const AdmitKind k3 = lib_pass.admit_verdict_only(view_of(c), gate_pass);
+  const AdmitKind k4 = lib_pass.admit_verdict_only(view_of(c), gate_pass);
+  EXPECT_EQ(k3, AdmitKind::Accept);
+  EXPECT_EQ(k4, k3);
+}
+
 }  // namespace atxtest_library_integration_test
