@@ -133,14 +133,31 @@ struct CostKnobs {
 /// [kGateFloor, kGateCeiling]. A costlier universe tightens the ceiling; a longer
 /// rebalance horizon (the round trip is paid less often) relaxes it. A non-
 /// positive horizon degenerates to the floor (no horizon ⇒ no relaxation).
+/// noexcept: arithmetic + std::clamp (both noexcept); no allocation, no throw path.
 [[nodiscard]] inline atx::f64 max_turnover_for(atx::f64 rt_cost_bps,
-                                               atx::f64 horizon_days) {
+                                               atx::f64 horizon_days) noexcept {
   if (horizon_days <= 0.0) {
     return kGateFloor;
   }
   const atx::f64 denom = horizon_days + kGateCostSensitivity * rt_cost_bps;
   const atx::f64 raw = kGateCeiling * horizon_days / denom;
   return std::clamp(raw, kGateFloor, kGateCeiling);
+}
+
+// ---------------------------------------------------------------------------
+//  gate_config_for_cost — derive a GateConfig with a cost-tightened max_turnover.
+// ---------------------------------------------------------------------------
+/// Returns a GateConfig whose max_turnover is the cost-tightened ceiling from
+/// max_turnover_for(rt_cost_bps, horizon_days).  All other fields keep their
+/// defaults so the caller receives a minimal override: only turnover is cost-driven.
+/// Sprint 7 calls this during config construction; the default GateConfig::max_turnover
+/// (0.70) is UNCHANGED for callers that do not use this helper.
+/// noexcept: max_turnover_for is noexcept; GateConfig aggregate-init is trivial.
+[[nodiscard]] inline combine::GateConfig gate_config_for_cost(
+    atx::f64 rt_cost_bps, atx::f64 horizon_days) noexcept {
+  combine::GateConfig cfg{};
+  cfg.max_turnover = max_turnover_for(rt_cost_bps, horizon_days);
+  return cfg;
 }
 
 // ---------------------------------------------------------------------------

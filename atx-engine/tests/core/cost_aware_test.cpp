@@ -126,5 +126,36 @@ TEST(CostAware, LongerHorizonWidensGate) {
   EXPECT_LE(slow.gate.max_turnover, 0.70); // never above the default ceiling
 }
 
+// S4-3: gate_config_for_cost returns a GateConfig whose max_turnover is derived
+// via max_turnover_for and whose OTHER fields keep their documented defaults.
+
+// With a positive cost (10 bps) and a 20-day horizon the ceiling is strictly
+// below the unconstrained 0.70 (the denominator > the numerator horizon factor).
+TEST(CostAware, GateConfigForCostTightensMaxTurnover) {
+  const auto cfg = cost::gate_config_for_cost(/*rt_cost_bps*/ 10.0, /*horizon_days*/ 20.0);
+
+  EXPECT_LT(cfg.max_turnover, 0.70); // cost-tightened below the default ceiling
+}
+
+// With zero cost max_turnover_for returns kGateCeiling exactly (no tightening).
+TEST(CostAware, GateConfigForCostZeroCostReturnsCeiling) {
+  const auto cfg = cost::gate_config_for_cost(/*rt_cost_bps*/ 0.0, /*horizon_days*/ 20.0);
+
+  EXPECT_DOUBLE_EQ(cfg.max_turnover, 0.70); // zero cost => default ceiling exactly
+}
+
+// Only max_turnover is touched; all other GateConfig fields keep their defaults.
+// This proves the helper is a targeted override, not a factory for a new config.
+TEST(CostAware, GateConfigForCostKeepsOtherFieldsAtDefaults) {
+  const auto cfg = cost::gate_config_for_cost(/*rt_cost_bps*/ 10.0, /*horizon_days*/ 20.0);
+  const atx::engine::combine::GateConfig defaults{};
+
+  EXPECT_DOUBLE_EQ(cfg.min_sharpe,       defaults.min_sharpe);       // 0.25
+  EXPECT_DOUBLE_EQ(cfg.min_fitness,      defaults.min_fitness);       // 1.0
+  EXPECT_DOUBLE_EQ(cfg.max_pool_corr,    defaults.max_pool_corr);     // 0.7
+  EXPECT_DOUBLE_EQ(cfg.rt_cost_bps,      defaults.rt_cost_bps);       // 0.0
+  EXPECT_DOUBLE_EQ(cfg.min_holding_days, defaults.min_holding_days);  // 0.0
+}
+
 
 }  // namespace atxtest_cost_aware_test
