@@ -267,5 +267,86 @@ TEST(AlphaMetrics, EmptyStreamHasNaNMomentsAndZeroDrawdown) {
   EXPECT_EQ(m.turnover, 0.0);
 }
 
+// ---------------------------------------------------------------------------
+//  S4-4: compute_metrics_with_turnover — byte-identity + per-period u[t].
+// ---------------------------------------------------------------------------
+
+using atx::engine::combine::compute_metrics_with_turnover;
+
+TEST(AlphaMetricsWithTurnover, NullptrReturnsIdenticalMetrics) {
+  // compute_metrics_with_turnover(..., nullptr) must produce an AlphaMetrics
+  // byte-identical to compute_metrics(...) on the same inputs.
+  const std::vector<f64> pnl{0.0, 0.01, -0.02, 0.03, 0.00};
+  const std::vector<f64> pos{0.5, 0.5, 0.5, 0.5, 0.5};
+
+  const AlphaMetrics expected = compute_metrics(pnl, pos, 1U, 1.0);
+  const AlphaMetrics got = compute_metrics_with_turnover(pnl, pos, 1U, 1.0, nullptr);
+
+  EXPECT_EQ(got.sharpe,       expected.sharpe);
+  EXPECT_EQ(got.turnover,     expected.turnover);
+  EXPECT_EQ(got.returns,      expected.returns);
+  EXPECT_EQ(got.drawdown,     expected.drawdown);
+  EXPECT_EQ(got.margin,       expected.margin);
+  EXPECT_EQ(got.fitness,      expected.fitness);
+  EXPECT_EQ(got.holding_days, expected.holding_days);
+}
+
+TEST(AlphaMetricsWithTurnover, OutVectorReturnsIdenticalMetrics) {
+  // compute_metrics_with_turnover(..., &out) must also return AlphaMetrics
+  // byte-identical to compute_metrics(...).
+  const std::vector<f64> pnl{0.0, 0.01, -0.02, 0.03, 0.00};
+  const std::vector<f64> pos{0.5, 0.5, 0.5, 0.5, 0.5};
+
+  const AlphaMetrics expected = compute_metrics(pnl, pos, 1U, 1.0);
+  std::vector<f64> out;
+  const AlphaMetrics got = compute_metrics_with_turnover(pnl, pos, 1U, 1.0, &out);
+
+  EXPECT_EQ(got.sharpe,       expected.sharpe);
+  EXPECT_EQ(got.turnover,     expected.turnover);
+  EXPECT_EQ(got.returns,      expected.returns);
+  EXPECT_EQ(got.drawdown,     expected.drawdown);
+  EXPECT_EQ(got.margin,       expected.margin);
+  EXPECT_EQ(got.fitness,      expected.fitness);
+  EXPECT_EQ(got.holding_days, expected.holding_days);
+}
+
+TEST(AlphaMetricsWithTurnover, OutVectorMatchesHandComputedPerPeriodTurnover) {
+  // 2-period, 2-instrument fixture (pins the per-period u[t] values).
+  // pos[t=0] = (1.0, -1.0), pos[t=1] = (0.5, -0.5), book_size = 2.0.
+  // u[0] = (|1.0| + |-1.0|) / 2.0 = 1.0  (trade in from flat)
+  // u[1] = (|0.5-1.0| + |-0.5-(-1.0)|) / 2.0 = (0.5 + 0.5) / 2.0 = 0.5
+  const std::vector<f64> pnl{0.0, 0.01};
+  const std::vector<f64> pos{1.0, -1.0, 0.5, -0.5};
+  std::vector<f64> out;
+  // Return value discarded intentionally: this test only cares about the filled
+  // per-period turnover vector, not the AlphaMetrics (which byte-identity tests cover).
+  (void)compute_metrics_with_turnover(pnl, pos, 2U, 2.0, &out);
+
+  ASSERT_EQ(out.size(), 2U);
+  EXPECT_NEAR(out[0], 1.0, 1e-12);
+  EXPECT_NEAR(out[1], 0.5, 1e-12);
+}
+
+TEST(AlphaMetricsWithTurnover, LargerPanelByteIdentity) {
+  // Stress the byte-identity claim on the fitness/holding/margin fields with a
+  // richer fixture (the FitnessMatchesHandFormula fixture re-used here).
+  const std::vector<f64> pnl{0.0, 0.03, 0.01, 0.05, 0.01};
+  std::vector<f64> pos{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
+
+  const AlphaMetrics expected = compute_metrics(pnl, pos, 2U, 1.0);
+  std::vector<f64> out;
+  const AlphaMetrics got = compute_metrics_with_turnover(pnl, pos, 2U, 1.0, &out);
+
+  EXPECT_EQ(got.sharpe,       expected.sharpe);
+  EXPECT_EQ(got.turnover,     expected.turnover);
+  EXPECT_EQ(got.returns,      expected.returns);
+  EXPECT_EQ(got.drawdown,     expected.drawdown);
+  EXPECT_EQ(got.margin,       expected.margin);
+  EXPECT_EQ(got.fitness,      expected.fitness);
+  EXPECT_EQ(got.holding_days, expected.holding_days);
+  // out must have one entry per period
+  EXPECT_EQ(out.size(), pnl.size());
+}
+
 
 }  // namespace atxtest_combine_metrics_test

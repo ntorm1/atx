@@ -17,14 +17,15 @@
 // ===========================================================================
 //  §5.2 algorithm — FIXED-ORDER, deterministic verdict
 // ===========================================================================
-//  admit() checks four conditions in THIS fixed order; the verdict is the FIRST
+//  admit() checks conditions in THIS fixed order; the verdict is the FIRST
 //  one that fails (so a candidate failing several conditions has ONE deterministic
 //  verdict — the earliest in the order):
-//    1. metrics.fitness  >= cfg.min_fitness    else RejectFitness   (WQ-aligned primary gate)
-//    2. metrics.sharpe   >= cfg.min_sharpe     else RejectSharpe    (low sanity floor; DSR is the sig gate)
-//    3. metrics.turnover <= cfg.max_turnover   else RejectTurnover
-//    4. corr_to_pool     <= cfg.max_pool_corr  else RejectCorrelated
-//    else                                           Accept
+//    1. metrics.fitness      >= cfg.min_fitness      else RejectFitness   (WQ-aligned primary gate)
+//    2. metrics.sharpe       >= cfg.min_sharpe       else RejectSharpe    (low sanity floor; DSR is the sig gate)
+//    3. metrics.turnover     <= cfg.max_turnover     else RejectTurnover  (ceiling)
+//    3b.metrics.holding_days >= cfg.min_holding_days else RejectTurnover  (S4-2 floor; inert at min_holding_days=0)
+//    4. corr_to_pool         <= cfg.max_pool_corr    else RejectCorrelated
+//    else                                                 Accept
 //  corr_to_pool = max_j |pairwise_complete_corr(candidate, member_j)| over the
 //  pool ("max" = the strictest member; it is a MAGNITUDE gate, so a perfectly
 //  anti-correlated member with |corr| = 1 is just as disqualifying as a perfect
@@ -55,6 +56,7 @@
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
 
 #include "atx/engine/combine/correlation.hpp" // pairwise_complete_corr (shared §3.3 helper)
+#include "atx/engine/combine/cost_util.hpp"   // combine::cost_adjusted_fitness, kFitnessCostScale
 #include "atx/engine/combine/metrics.hpp"     // AlphaMetrics (the floored fields)
 #include "atx/engine/combine/store.hpp"       // AlphaStore, AlphaId (the accepted pool)
 
@@ -69,6 +71,10 @@ struct GateConfig {
   atx::f64 min_fitness = 1.0;   // BRAIN "gold standard for submission" (WQ §4.4)
   atx::f64 max_turnover = 0.70; // generous default; cost-gate (WQ §6.5)
   atx::f64 max_pool_corr = 0.7; // reject if too correlated with an accepted alpha
+
+  // Cost / holding-period fields (S4 plumbing; inert at the 0.0 default — read only when > 0.0).
+  atx::f64 rt_cost_bps      = 0.0; // round-trip cost in bps; 0 => frictionless (no cost gate)
+  atx::f64 min_holding_days = 0.0; // holding-period floor in periods; 0 => inert
 };
 
 // ===========================================================================
@@ -107,13 +113,28 @@ struct AlphaGate {
     // failing condition is the verdict (deterministic).
     // Fitness (WQ-aligned) is the dominant primary gate; sharpe is a low
     // sanity floor only (the statistical-significance gate is DSR, factory-side).
-    if (metrics.fitness < cfg.min_fitness) {
+    //
+    // S4-1: when rt_cost_bps > 0 use cost-adjusted fitness so the floor is net-of-cost.
+    // At rt_cost_bps == 0 (default) the branch is not taken and eff_fitness ==
+    // metrics.fitness exactly — byte-identical to the pre-S4-1 path.
+    const atx::f64 eff_fitness =
+        (cfg.rt_cost_bps > 0.0)
+            ? combine::cost_adjusted_fitness(metrics.fitness, metrics.turnover, cfg.rt_cost_bps)
+            : metrics.fitness;
+    if (eff_fitness < cfg.min_fitness) {
       return GateVerdict::RejectFitness;
     }
     if (metrics.sharpe < cfg.min_sharpe) {
       return GateVerdict::RejectSharpe;
     }
     if (metrics.turnover > cfg.max_turnover) {
+      return GateVerdict::RejectTurnover;
+    }
+    // S4-2: holding-period floor — a turnover-side guard (reuses RejectTurnover;
+    // holding is 1/turnover, so the two checks are adjacent). The guard is inert
+    // at the default min_holding_days=0.0 (the > 0.0 condition is false) so this
+    // branch is never taken and verdicts are byte-identical to pre-S4-2.
+    if (cfg.min_holding_days > 0.0 && metrics.holding_days < cfg.min_holding_days) {
       return GateVerdict::RejectTurnover;
     }
     // §5.2 check 4 (LAZY): only now — after the floors pass — pay the

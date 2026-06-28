@@ -41,9 +41,11 @@
 #include <cmath>     // std::sqrt, std::exp
 #include <limits>    // std::numeric_limits (quiet_NaN for degenerate inputs)
 #include <optional>  // std::optional (caller-supplied cross-trial variance)
+#include <span>      // std::span (net-cost helper inputs)
+#include <vector>    // std::vector (net-series scratch in deflated_sharpe_net_cost)
 
-#include "atx/core/types.hpp"           // atx::f64, atx::usize
-#include "atx/engine/eval/stats_ext.hpp" // norm_cdf, norm_ppf
+#include "atx/core/types.hpp"            // atx::f64, atx::usize
+#include "atx/engine/eval/stats_ext.hpp" // norm_cdf, norm_ppf, mean_std_pop, skewness, excess_kurtosis
 
 namespace atx::engine::eval {
 
@@ -145,6 +147,74 @@ struct DsrResult {
   const atx::f64 psr = probabilistic_sharpe(sr, sr_star, T, skew, exkurt);
   const atx::f64 haircut = std::max(0.0, sr - sr_star);
   return DsrResult{psr, sr_star, psr, haircut};
+}
+
+// ===========================================================================
+//  deflated_sharpe_net_cost — DSR on a net-of-cost return series (S4-4).
+//
+//  Given a per-period gross PnL series (with pnl[0] == 0 structural zero,
+//  matching metrics.hpp §0-F), a matching per-period turnover series, and a
+//  round-trip cost in basis points, computes:
+//    r_net[t] = pnl[t] - turnover[t] * rt_cost_bps / 1e4
+//  then derives net moments over r_net[1..T) (the §0-F exclusion, consistent
+//  with metrics.hpp and compute_metrics), forms:
+//    SR_net = mean_net / std_net   (per-period, non-annualized)
+//  and delegates to the EXISTING deflated_sharpe(SR_net, T, skew_net,
+//  exkurt_net, N, var). T = number of observations = pnl.size() - 1
+//  (the r_net[1..end] count), matching how the existing tests construct T.
+//
+//  Moment conventions: population (biased) std, population skewness and
+//  excess kurtosis, via stats_ext.hpp helpers — consistent with metrics.hpp
+//  and deflated_sharpe.hpp's numeric conventions (see §30 of stats_ext.hpp).
+//
+//  SCRATCH ALLOCATION: one std::vector<f64> of length pnl.size()-1 is
+//  allocated to hold r_net[1..T). This is an analysis helper (not a VM hot
+//  path), so a single vector scratch is acceptable; it is documented here.
+//
+//  PRECONDITION: pnl.size() == turnover.size(). A RELEASE build (NDEBUG) must
+//  never read turnover[t] out of bounds, so this guard is ALWAYS-ON (not a
+//  debug-only assert, which would both compile out under NDEBUG — leaving the OOB
+//  read — and abort a debug-build test that exercises the mismatch path). A size
+//  mismatch, or any degenerate input yielding < 1 observation, fails SAFE to a
+//  NaN DsrResult, matching this file's "degenerate inputs return NaN" pattern
+//  (cf. probabilistic_sharpe T<2 and deflated_sharpe). No UB ever, in any build.
+// ===========================================================================
+[[nodiscard]] inline DsrResult deflated_sharpe_net_cost(std::span<const atx::f64> pnl,
+                                                        std::span<const atx::f64> turnover,
+                                                        atx::f64 rt_cost_bps, atx::usize N,
+                                                        std::optional<atx::f64> var) noexcept {
+  // SAFETY (always-on, both debug and release): a size mismatch would read
+  // turnover[t] out of bounds; fewer than 1 return observation (pnl.size() < 2,
+  // only the structural zero) is degenerate. Fail safe to a NaN DsrResult rather
+  // than risk OOB or feed a 0-observation moment set into deflated_sharpe.
+  if (pnl.size() != turnover.size() || pnl.size() < 2U) {
+    const atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
+    return DsrResult{nan, nan, nan, nan};
+  }
+
+  // Build r_net over r_net[1..T) (the §0-F structural-zero exclusion):
+  // index 0 is a structural zero in pnl; skipping it here mirrors the moment
+  // exclusion in compute_metrics and deflated_sharpe's existing convention.
+  // SCRATCH: single vector allocation, acceptable for an analysis helper.
+  const atx::usize T_obs = pnl.size() - 1U; // >= 1 (guarded above)
+  std::vector<atx::f64> r_net;
+  r_net.reserve(T_obs);
+  const atx::f64 cost_per_unit = rt_cost_bps / 1.0e4;
+  for (atx::usize t = 1U; t < pnl.size(); ++t) {
+    r_net.push_back(pnl[t] - turnover[t] * cost_per_unit);
+  }
+
+  // Moments over r_net (population convention, matching metrics.hpp + stats_ext.hpp).
+  const MeanStd ms = mean_std_pop(r_net);
+  // SR_net = per-period (non-annualized), matching deflated_sharpe's convention.
+  // Flat (std == 0) -> SR = 0, same policy as compute_metrics (not NaN/inf).
+  const atx::f64 sr_net = (ms.std > 0.0) ? ms.mean / ms.std : 0.0;
+  // Population skewness and excess kurtosis via stats_ext.hpp helpers.
+  const atx::f64 skew_net = skewness(r_net);
+  const atx::f64 exkurt_net = excess_kurtosis(r_net);
+
+  // T passed to deflated_sharpe = number of observations = r_net.size() = T_obs.
+  return deflated_sharpe(sr_net, T_obs, skew_net, exkurt_net, N, var);
 }
 
 } // namespace atx::engine::eval

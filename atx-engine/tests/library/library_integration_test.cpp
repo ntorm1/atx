@@ -268,7 +268,8 @@ void admit_fixture(lib::Library &facade, usize n) {
 }
 
 // Map a facade AdmitKind to the combine GateVerdict (for the exit#3 differential).
-// Duplicate has no GateVerdict analog; the probe set contains no duplicates.
+// Duplicate and the holdout-only rejects (RejectPriceScale / RejectDsrSubwindow)
+// have no GateVerdict analog; the probe set contains none of them.
 [[nodiscard]] GateVerdict map_kind(AdmitKind k) {
   switch (k) {
   case AdmitKind::Accept:
@@ -282,9 +283,11 @@ void admit_fixture(lib::Library &facade, usize n) {
   case AdmitKind::RejectCorrelated:
     return GateVerdict::RejectCorrelated;
   case AdmitKind::Duplicate:
+  case AdmitKind::RejectPriceScale:
+  case AdmitKind::RejectDsrSubwindow:
     break;
   }
-  return GateVerdict::Accept; // unreachable for the probe set (no duplicates)
+  return GateVerdict::Accept; // unreachable for the probe set (no duplicates/holdout rejects)
 }
 
 // ====== exit #1 ======
@@ -563,5 +566,199 @@ TEST(LibraryIntegration, SnapshotReplaysByteIdentical) {
   EXPECT_FALSE(segment_crcs(dirA).empty());
 }
 
+// ===========================================================================
+//  S4-1: Net-of-cost fitness floor — Library::verdict_for (via admit_verdict_only)
+//
+//  These replicate the gate_netcost tests but exercise the library path so both
+//  admission paths (AlphaGate::admit and Library::verdict_for) are covered.
+// ===========================================================================
+
+// Helpers: build a minimal AlphaCandidate with the given metrics, for libraries
+// that have no previously admitted alphas (empty corr index => corr = 0).
+// We reuse the existing CandidateData/view_of infrastructure from the file.
+
+// (a) lib_netcost_offpath: rt_cost_bps = 0.0 => off-path, same verdicts as before.
+TEST(LibraryNetCost, OffPathZeroCostPreservesVerdict) {
+  GateConfig cfg_zero;
+  cfg_zero.rt_cost_bps = 0.0; // inert — off-path branch not taken
+
+  lib::Library facade = lib::Library::open(tmpdir("lnc_offpath"), cfg_zero, {kMasterSeed});
+  const AlphaGate gate{cfg_zero};
+
+  // Candidate that clears all floors => Accept.
+  const CandidateData pass = make_passing(0xDEADBEEF01ull, 9900u, 1u);
+  EXPECT_EQ(facade.admit_verdict_only(view_of(pass), gate), AdmitKind::Accept);
+
+  // Candidate whose raw fitness < min_fitness (1.0) => RejectFitness regardless of cost=0.
+  CandidateData fail_fit = make_passing(0xDEADBEEF02ull, 9901u, 1u);
+  fail_fit.metrics.fitness = 0.5;
+  EXPECT_EQ(facade.admit_verdict_only(view_of(fail_fit), gate), AdmitKind::RejectFitness);
+}
+
+// (b) lib_netcost_onpath: rt_cost_bps > 0.0 flips Accept -> RejectFitness in Library path.
+// fitness=1.1, turnover=0.8, rt_cost_bps=10.0:
+//   eff_fitness = 1.1 - 0.8*10.0*0.1 = 0.3 < 1.0 => RejectFitness.
+// rt_cost_bps=0.0: eff_fitness = 1.1 >= 1.0 => Accept.
+// cfg.max_turnover raised to 0.90 so turnover=0.8 does NOT pre-empt fitness gate.
+TEST(LibraryNetCost, OnPathCostAdjustedFitnessFlips) {
+  // Candidate: gross fitness=1.1, turnover=0.8, sharpe=2.0.
+  // We reuse make_passing() for pnl/pos_flat (corr is 0 for empty library),
+  // then override metrics to the specific values for this test.
+  CandidateData c = make_passing(0xCAFE0001ull, 9902u, 1u);
+  c.metrics.fitness      = 1.1;
+  c.metrics.turnover     = 0.8;
+  c.metrics.sharpe       = 2.0;
+  c.metrics.returns      = 0.10;
+  c.metrics.drawdown     = 0.05;
+  c.metrics.margin       = 0.125;
+  c.metrics.holding_days = 1.25;
+
+  // With cost on: eff_fitness = 0.3 < 1.0 => RejectFitness.
+  GateConfig cfg_cost;
+  cfg_cost.rt_cost_bps  = 10.0;
+  cfg_cost.max_turnover = 0.90; // raise ceiling: turnover=0.8 must NOT trip RejectTurnover
+  lib::Library lib_cost = lib::Library::open(tmpdir("lnc_cost"), cfg_cost, {kMasterSeed});
+  const AlphaGate gate_cost{cfg_cost};
+  EXPECT_EQ(lib_cost.admit_verdict_only(view_of(c), gate_cost), AdmitKind::RejectFitness);
+
+  // With cost off (0.0): eff_fitness = 1.1 >= 1.0 => Accept.
+  GateConfig cfg_free;
+  cfg_free.rt_cost_bps  = 0.0;
+  cfg_free.max_turnover = 0.90;
+  lib::Library lib_free = lib::Library::open(tmpdir("lnc_free"), cfg_free, {kMasterSeed});
+  const AlphaGate gate_free{cfg_free};
+  EXPECT_EQ(lib_free.admit_verdict_only(view_of(c), gate_free), AdmitKind::Accept);
+}
+
+// (c) lib_netcost_twice: same inputs => same verdict on second call (no hidden state).
+TEST(LibraryNetCost, TwiceRunSameVerdict) {
+  CandidateData c = make_passing(0xCAFE0002ull, 9903u, 1u);
+  c.metrics.fitness      = 1.1;
+  c.metrics.turnover     = 0.8;
+  c.metrics.sharpe       = 2.0;
+  c.metrics.returns      = 0.10;
+  c.metrics.drawdown     = 0.05;
+  c.metrics.margin       = 0.125;
+  c.metrics.holding_days = 1.25;
+
+  GateConfig cfg_cost;
+  cfg_cost.rt_cost_bps  = 10.0;
+  cfg_cost.max_turnover = 0.90;
+  lib::Library lib_cost = lib::Library::open(tmpdir("lnc_twice_cost"), cfg_cost, {kMasterSeed});
+  const AlphaGate gate_cost{cfg_cost};
+
+  // admit_verdict_only is pure (no staging): two calls must yield the same verdict.
+  const AdmitKind k1 = lib_cost.admit_verdict_only(view_of(c), gate_cost);
+  const AdmitKind k2 = lib_cost.admit_verdict_only(view_of(c), gate_cost);
+  EXPECT_EQ(k1, AdmitKind::RejectFitness);
+  EXPECT_EQ(k2, k1);
+
+  // Same idempotency for the off-path (Accept).
+  GateConfig cfg_free;
+  cfg_free.rt_cost_bps  = 0.0;
+  cfg_free.max_turnover = 0.90;
+  lib::Library lib_free = lib::Library::open(tmpdir("lnc_twice_free"), cfg_free, {kMasterSeed});
+  const AlphaGate gate_free{cfg_free};
+  const AdmitKind k3 = lib_free.admit_verdict_only(view_of(c), gate_free);
+  const AdmitKind k4 = lib_free.admit_verdict_only(view_of(c), gate_free);
+  EXPECT_EQ(k3, AdmitKind::Accept);
+  EXPECT_EQ(k4, k3);
+}
+
+// ===========================================================================
+//  S4-2: Holding-period floor — Library::verdict_for (via admit_verdict_only)
+//
+//  Mirrors the gate_holdfloor tests but exercises the library path so BOTH
+//  admission paths (AlphaGate::admit and Library::verdict_for) are covered.
+// ===========================================================================
+
+// (a) lib_holdfloor_offpath: min_holding_days = 0.0 (default) => guard never
+// fires => verdicts byte-identical to pre-S4-2 behavior.
+TEST(LibraryHoldFloor, OffPathZeroPreservesVerdict) {
+  GateConfig cfg_zero;
+  cfg_zero.min_holding_days = 0.0; // inert — guard condition (> 0.0) is false
+
+  lib::Library facade = lib::Library::open(tmpdir("lhf_offpath"), cfg_zero, {kMasterSeed});
+  const AlphaGate gate{cfg_zero};
+
+  // Candidate that clears all floors => Accept.
+  const CandidateData pass = make_passing(0xBEEF0010ull, 8800u, 1u);
+  EXPECT_EQ(facade.admit_verdict_only(view_of(pass), gate), AdmitKind::Accept);
+
+  // Candidate with low sharpe => still RejectSharpe (holding guard does not interfere).
+  CandidateData fail_sharpe = make_passing(0xBEEF0011ull, 8801u, 1u);
+  fail_sharpe.metrics.sharpe = 0.1;
+  EXPECT_EQ(facade.admit_verdict_only(view_of(fail_sharpe), gate), AdmitKind::RejectSharpe);
+}
+
+// (b) lib_holdfloor_onpath: turnover=1.0 => holding_days=1.0; with
+// min_holding_days=5.0 the floor fires => RejectTurnover. With
+// min_holding_days=0.0 the candidate Accepts.
+// cfg.max_turnover raised to 1.5 so turnover=1.0 clears the ceiling check.
+TEST(LibraryHoldFloor, OnPathHoldingFloorFlips) {
+  // Build a candidate with turnover=1.0 => holding_days=1.0; clears fitness/sharpe/corr.
+  CandidateData c = make_passing(0xBEEF0020ull, 8810u, 1u);
+  c.metrics.sharpe       = 2.0;
+  c.metrics.turnover     = 1.0; // => holding_days = 1.0
+  c.metrics.returns      = 0.10;
+  c.metrics.drawdown     = 0.05;
+  c.metrics.margin       = 0.10;
+  c.metrics.fitness      = 2.0;
+  c.metrics.holding_days = 1.0; // explicitly set to match 1/turnover
+
+  // With min_holding_days=5.0: holding_days=1.0 < 5.0 => RejectTurnover.
+  GateConfig cfg_reject;
+  cfg_reject.min_holding_days = 5.0;
+  cfg_reject.max_turnover     = 1.5; // raised so turnover=1.0 clears the ceiling check
+  lib::Library lib_reject =
+      lib::Library::open(tmpdir("lhf_reject"), cfg_reject, {kMasterSeed});
+  const AlphaGate gate_reject{cfg_reject};
+  EXPECT_EQ(lib_reject.admit_verdict_only(view_of(c), gate_reject), AdmitKind::RejectTurnover);
+
+  // With min_holding_days=0.0 (guard inactive): the candidate Accepts.
+  GateConfig cfg_pass;
+  cfg_pass.min_holding_days = 0.0;
+  cfg_pass.max_turnover     = 1.5;
+  lib::Library lib_pass =
+      lib::Library::open(tmpdir("lhf_pass"), cfg_pass, {kMasterSeed});
+  const AlphaGate gate_pass{cfg_pass};
+  EXPECT_EQ(lib_pass.admit_verdict_only(view_of(c), gate_pass), AdmitKind::Accept);
+}
+
+// (c) lib_holdfloor_twice: same inputs => same verdict on both calls (no staging/hidden state).
+TEST(LibraryHoldFloor, TwiceRunSameVerdict) {
+  CandidateData c = make_passing(0xBEEF0030ull, 8820u, 1u);
+  c.metrics.sharpe       = 2.0;
+  c.metrics.turnover     = 1.0;
+  c.metrics.returns      = 0.10;
+  c.metrics.drawdown     = 0.05;
+  c.metrics.margin       = 0.10;
+  c.metrics.fitness      = 2.0;
+  c.metrics.holding_days = 1.0;
+
+  // On-path (reject): both calls must be RejectTurnover.
+  GateConfig cfg_reject;
+  cfg_reject.min_holding_days = 5.0;
+  cfg_reject.max_turnover     = 1.5;
+  lib::Library lib_reject =
+      lib::Library::open(tmpdir("lhf_twice_reject"), cfg_reject, {kMasterSeed});
+  const AlphaGate gate_reject{cfg_reject};
+  const AdmitKind k1 = lib_reject.admit_verdict_only(view_of(c), gate_reject);
+  const AdmitKind k2 = lib_reject.admit_verdict_only(view_of(c), gate_reject);
+  EXPECT_EQ(k1, AdmitKind::RejectTurnover);
+  EXPECT_EQ(k2, k1); // pure (no staging): deterministic
+
+  // Off-path (accept): both calls must be Accept.
+  GateConfig cfg_pass;
+  cfg_pass.min_holding_days = 0.0;
+  cfg_pass.max_turnover     = 1.5;
+  lib::Library lib_pass =
+      lib::Library::open(tmpdir("lhf_twice_pass"), cfg_pass, {kMasterSeed});
+  const AlphaGate gate_pass{cfg_pass};
+  const AdmitKind k3 = lib_pass.admit_verdict_only(view_of(c), gate_pass);
+  const AdmitKind k4 = lib_pass.admit_verdict_only(view_of(c), gate_pass);
+  EXPECT_EQ(k3, AdmitKind::Accept);
+  EXPECT_EQ(k4, k3);
+}
 
 }  // namespace atxtest_library_integration_test

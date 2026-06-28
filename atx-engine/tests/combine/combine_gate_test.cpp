@@ -323,5 +323,193 @@ TEST(AlphaGate, BoundaryAtMaxPoolCorrAccepts) {
   EXPECT_EQ(gate.admit(m, cand, pool), GateVerdict::Accept);
 }
 
+// ===========================================================================
+//  S4-1: Net-of-cost fitness floor — AlphaGate::admit
+// ===========================================================================
+// (a) gate_netcost_offpath: rt_cost_bps = 0.0 => off-path, byte-identical verdicts.
+// A candidate that would be accepted stays Accept; one that fails fitness still
+// RejectFitness — the zero-cost path never alters verdicts.
+TEST(AlphaGateNetCost, OffPathZeroCostPreservesVerdict) {
+  // Candidate A: clears all floors with rt_cost_bps=0.0 => Accept.
+  GateConfig cfg_zero;
+  cfg_zero.rt_cost_bps = 0.0; // inert default — off-path branch not taken
+  const AlphaGate gate_zero{cfg_zero};
+  const AlphaMetrics m_pass = passing_metrics(); // fitness=2.0, sharpe=2.0, turnover=0.30
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+  EXPECT_EQ(gate_zero.admit(m_pass, cand, pool), GateVerdict::Accept);
+
+  // Candidate B: raw fitness=0.5 < min_fitness=1.0 => RejectFitness regardless of cost=0.
+  AlphaMetrics m_fail = passing_metrics();
+  m_fail.fitness = 0.5;
+  EXPECT_EQ(gate_zero.admit(m_fail, cand, pool), GateVerdict::RejectFitness);
+}
+
+// (b) gate_netcost_onpath: rt_cost_bps > 0.0 flips Accept -> RejectFitness.
+// fitness=1.1, turnover=0.8, rt_cost_bps=10.0:
+//   eff_fitness = 1.1 - 0.8*10.0*0.1 = 0.3 < 1.0 => RejectFitness.
+// With rt_cost_bps=0.0: eff_fitness = 1.1 >= 1.0 => Accept (no other floor fails).
+// cfg.max_turnover is raised to 0.90 so turnover=0.8 does NOT pre-empt the fitness gate.
+TEST(AlphaGateNetCost, OnPathCostAdjustedFitnessFlips) {
+  // Build a candidate: gross fitness=1.1, turnover=0.8, sharpe=2.0 (passes sanity).
+  // With rt_cost_bps=10: eff_fitness = 1.1 - 0.8*10.0*0.1 = 0.3 => RejectFitness.
+  AlphaMetrics m;
+  m.fitness       = 1.1;
+  m.turnover      = 0.8;
+  m.sharpe        = 2.0;
+  m.returns       = 0.10;
+  m.drawdown      = 0.05;
+  m.margin        = 0.125;
+  m.holding_days  = 1.25;
+
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+
+  // With cost on: eff_fitness = 0.3 < 1.0 => must be RejectFitness.
+  GateConfig cfg_cost;
+  cfg_cost.rt_cost_bps  = 10.0;
+  cfg_cost.max_turnover = 0.90; // raise ceiling so turnover=0.8 does NOT trip RejectTurnover
+  const AlphaGate gate_cost{cfg_cost};
+  EXPECT_EQ(gate_cost.admit(m, cand, pool), GateVerdict::RejectFitness);
+
+  // With cost off (0.0): eff_fitness = 1.1 >= 1.0 => Accept (turnover 0.8 <= 0.90, sharpe passes).
+  GateConfig cfg_free;
+  cfg_free.rt_cost_bps  = 0.0;
+  cfg_free.max_turnover = 0.90;
+  const AlphaGate gate_free{cfg_free};
+  EXPECT_EQ(gate_free.admit(m, cand, pool), GateVerdict::Accept);
+}
+
+// (c) gate_netcost_twice: same inputs => same verdict on second call (no hidden state).
+TEST(AlphaGateNetCost, TwiceRunSameVerdict) {
+  AlphaMetrics m;
+  m.fitness       = 1.1;
+  m.turnover      = 0.8;
+  m.sharpe        = 2.0;
+  m.returns       = 0.10;
+  m.drawdown      = 0.05;
+  m.margin        = 0.125;
+  m.holding_days  = 1.25;
+
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+
+  // On-path: both calls must be RejectFitness.
+  GateConfig cfg_cost;
+  cfg_cost.rt_cost_bps  = 10.0;
+  cfg_cost.max_turnover = 0.90;
+  const AlphaGate gate_cost{cfg_cost};
+  const GateVerdict v1 = gate_cost.admit(m, cand, pool);
+  const GateVerdict v2 = gate_cost.admit(m, cand, pool);
+  EXPECT_EQ(v1, GateVerdict::RejectFitness);
+  EXPECT_EQ(v2, v1); // deterministic: no hidden state
+
+  // Off-path: both calls must be Accept.
+  GateConfig cfg_free;
+  cfg_free.rt_cost_bps  = 0.0;
+  cfg_free.max_turnover = 0.90;
+  const AlphaGate gate_free{cfg_free};
+  const GateVerdict v3 = gate_free.admit(m, cand, pool);
+  const GateVerdict v4 = gate_free.admit(m, cand, pool);
+  EXPECT_EQ(v3, GateVerdict::Accept);
+  EXPECT_EQ(v4, v3);
+}
+
+// ===========================================================================
+//  S4-2: Holding-period floor — AlphaGate::admit
+//
+//  min_holding_days > 0 AND metrics.holding_days < min_holding_days =>
+//  RejectTurnover (reuse; holding is a turnover derivative). The check is
+//  placed AFTER the turnover-ceiling check and BEFORE the correlation gate,
+//  so the fixed order is: fitness -> sharpe -> turnover-ceiling ->
+//  holding-floor -> correlation.
+// ===========================================================================
+
+// (a) gate_holdfloor_offpath: min_holding_days = 0.0 (default) => guard never
+// fires => verdicts byte-identical to pre-S4-2 behavior.
+TEST(AlphaGateHoldFloor, OffPathZeroPreservesVerdict) {
+  // Candidate that clears all floors with default cfg (min_holding_days=0.0) => Accept.
+  GateConfig cfg_zero;
+  cfg_zero.min_holding_days = 0.0; // inert default — guard condition (> 0.0) is false
+  const AlphaGate gate_zero{cfg_zero};
+  const AlphaMetrics m = passing_metrics(); // holding_days=3.3; all floors pass
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+  EXPECT_EQ(gate_zero.admit(m, cand, pool), GateVerdict::Accept);
+
+  // A candidate that would fail sharpe still fails sharpe — the holding guard does not interfere.
+  AlphaMetrics m_fail = passing_metrics();
+  m_fail.sharpe = 0.1;
+  EXPECT_EQ(gate_zero.admit(m_fail, cand, pool), GateVerdict::RejectSharpe);
+}
+
+// (b) gate_holdfloor_onpath: turnover=1.0 => holding_days=1.0 (via 1/max(to,eps));
+// with min_holding_days=5.0 the floor fires => RejectTurnover. With
+// min_holding_days=0.0 the guard is skipped and the candidate Accepts.
+// cfg.max_turnover is raised to 1.5 so turnover=1.0 does NOT pre-empt via the
+// turnover-ceiling check (the holding check must be the deciding gate).
+TEST(AlphaGateHoldFloor, OnPathHoldingFloorFlips) {
+  // Build a candidate: turnover=1.0 => holding_days=1.0, clears fitness/sharpe/corr.
+  AlphaMetrics m;
+  m.sharpe       = 2.0;
+  m.turnover     = 1.0; // => holding_days = 1.0 (1/max(1.0,1e-9))
+  m.returns      = 0.10;
+  m.drawdown     = 0.05;
+  m.margin       = 0.10;
+  m.fitness      = 2.0;
+  m.holding_days = 1.0; // explicitly set to match 1/turnover
+
+  const AlphaStore pool; // empty => corr_to_pool = 0, corr gate passes
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+
+  // With min_holding_days=5.0: holding_days=1.0 < 5.0 => RejectTurnover.
+  GateConfig cfg_reject;
+  cfg_reject.min_holding_days = 5.0;
+  cfg_reject.max_turnover     = 1.5; // raised so turnover=1.0 clears the ceiling check
+  const AlphaGate gate_reject{cfg_reject};
+  EXPECT_EQ(gate_reject.admit(m, cand, pool), GateVerdict::RejectTurnover);
+
+  // With min_holding_days=0.0 (guard inactive): the candidate Accepts.
+  GateConfig cfg_pass;
+  cfg_pass.min_holding_days = 0.0;
+  cfg_pass.max_turnover     = 1.5;
+  const AlphaGate gate_pass{cfg_pass};
+  EXPECT_EQ(gate_pass.admit(m, cand, pool), GateVerdict::Accept);
+}
+
+// (c) gate_holdfloor_twice: same inputs => same verdict on both calls (no hidden state).
+TEST(AlphaGateHoldFloor, TwiceRunSameVerdict) {
+  AlphaMetrics m;
+  m.sharpe       = 2.0;
+  m.turnover     = 1.0;
+  m.returns      = 0.10;
+  m.drawdown     = 0.05;
+  m.margin       = 0.10;
+  m.fitness      = 2.0;
+  m.holding_days = 1.0;
+
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+
+  // On-path (reject): both calls must be RejectTurnover.
+  GateConfig cfg_reject;
+  cfg_reject.min_holding_days = 5.0;
+  cfg_reject.max_turnover     = 1.5;
+  const AlphaGate gate_reject{cfg_reject};
+  const GateVerdict v1 = gate_reject.admit(m, cand, pool);
+  const GateVerdict v2 = gate_reject.admit(m, cand, pool);
+  EXPECT_EQ(v1, GateVerdict::RejectTurnover);
+  EXPECT_EQ(v2, v1); // deterministic: no hidden state
+
+  // Off-path (accept): both calls must be Accept.
+  GateConfig cfg_pass;
+  cfg_pass.min_holding_days = 0.0;
+  cfg_pass.max_turnover     = 1.5;
+  const AlphaGate gate_pass{cfg_pass};
+  const GateVerdict v3 = gate_pass.admit(m, cand, pool);
+  const GateVerdict v4 = gate_pass.admit(m, cand, pool);
+  EXPECT_EQ(v3, GateVerdict::Accept);
+  EXPECT_EQ(v4, v3);
+}
 
 }  // namespace atxtest_combine_gate_test

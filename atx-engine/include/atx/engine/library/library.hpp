@@ -19,10 +19,11 @@
 //      candidate's SimHash neighbors (the §0.3 dangling-span discipline — the
 //      candidate pnl is the caller's own buffer, read before any store growth).
 //   3. the P4 AlphaGate floors, in the EXACT AlphaGate::admit order + operators:
-//         metrics.fitness  <  cfg.min_fitness   => RejectFitness  (WQ-aligned primary)
-//         metrics.sharpe   <  cfg.min_sharpe    => RejectSharpe   (low sanity floor)
-//         metrics.turnover >  cfg.max_turnover  => RejectTurnover
-//         worst_corr       >  cfg.max_pool_corr => RejectCorrelated
+//         metrics.fitness      <  cfg.min_fitness      => RejectFitness  (WQ-aligned primary)
+//         metrics.sharpe       <  cfg.min_sharpe       => RejectSharpe   (low sanity floor)
+//         metrics.turnover     >  cfg.max_turnover     => RejectTurnover (ceiling)
+//         metrics.holding_days <  cfg.min_holding_days => RejectTurnover (S4-2 floor; inert at 0)
+//         worst_corr           >  cfg.max_pool_corr    => RejectCorrelated
 //      (replicated verbatim so admit_verdict_only matches AlphaGate::admit over
 //      the whole pool — the o(N) corr screen replaces the gate's O(N) scan).
 //   4. admit: stage -> corr_.add -> dedup_.insert -> journal_.transition
@@ -31,11 +32,12 @@
 //
 //  The verdict semantics MATCH AlphaGate::admit(metrics, pnl, equivalent_pool)
 //  EXACTLY, feeding the INCREMENTAL worst_corr in place of the gate's internal
-//  O(N) scan. Check order matches §5.2:
-//    1. fitness  < min_fitness  => RejectFitness   (WQ-aligned primary gate)
-//    2. sharpe   < min_sharpe   => RejectSharpe    (low sanity floor)
-//    3. turnover > max_turnover => RejectTurnover
-//    4. corr     > max_pool_corr=> RejectCorrelated
+//  O(N) scan. Check order matches §5.2 (extended by S4-2):
+//    1. fitness      < min_fitness      => RejectFitness   (WQ-aligned primary gate)
+//    2. sharpe       < min_sharpe       => RejectSharpe    (low sanity floor)
+//    3. turnover     > max_turnover     => RejectTurnover  (ceiling)
+//    3b.holding_days < min_holding_days => RejectTurnover  (S4-2 floor; inert at 0)
+//    4. corr         > max_pool_corr    => RejectCorrelated
 //  The only approximation is the corr accelerator's RECALL (which ids
 //  it returns) — on the S4-3 fixtures recall is ~1.0, so the verdict matches; a
 //  candidate sitting exactly on max_pool_corr where a missed neighbor flips the
@@ -64,6 +66,7 @@
 #include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // f64, u8, u32, u64, usize
 
+#include "atx/engine/combine/cost_util.hpp" // combine::cost_adjusted_fitness (S4-1)
 #include "atx/engine/combine/gate.hpp"    // AlphaGate, GateConfig, GateVerdict
 #include "atx/engine/combine/metrics.hpp" // combine::AlphaMetrics
 #include "atx/engine/combine/store.hpp"   // combine::AlphaId
@@ -409,13 +412,26 @@ private:
     // before the corr gate is consulted). Match AlphaGate::admit's operators exactly.
     // Order mirrors §5.2: fitness (WQ-aligned primary) first, sharpe sanity floor second.
     const GateConfig &cfg = gate.cfg;
-    if (c.metrics.fitness < cfg.min_fitness) {
+    // S4-1: mirror AlphaGate::admit — use cost-adjusted fitness when rt_cost_bps > 0.
+    // At rt_cost_bps == 0 (default) the branch is not taken and eff_fitness ==
+    // c.metrics.fitness exactly — byte-identical to the pre-S4-1 path.
+    const atx::f64 eff_fitness =
+        (cfg.rt_cost_bps > 0.0)
+            ? combine::cost_adjusted_fitness(c.metrics.fitness, c.metrics.turnover, cfg.rt_cost_bps)
+            : c.metrics.fitness;
+    if (eff_fitness < cfg.min_fitness) {
       return AdmitKind::RejectFitness;
     }
     if (c.metrics.sharpe < cfg.min_sharpe) {
       return AdmitKind::RejectSharpe;
     }
     if (c.metrics.turnover > cfg.max_turnover) {
+      return AdmitKind::RejectTurnover;
+    }
+    // S4-2: holding-period floor — mirrors AlphaGate::admit exactly (same operator <,
+    // same field c.metrics.holding_days). Inert at min_holding_days=0.0 (the > 0.0
+    // condition is false) => byte-identical to pre-S4-2 on the default path.
+    if (cfg.min_holding_days > 0.0 && c.metrics.holding_days < cfg.min_holding_days) {
       return AdmitKind::RejectTurnover;
     }
     // The o(N) corr screen replaces AlphaGate's O(N) scan; worst_corr = MAX |corr|
