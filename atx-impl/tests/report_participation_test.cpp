@@ -21,19 +21,15 @@
 //     normal names: part ~0.083, thin name: capped at 1.0 (100%).
 //     With n=24 obs: p95_idx = floor(0.95*23) = 21 => sorted[21] = 0.083 => 8.3% < 100%. (GREEN).
 
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <limits>
-#include <sstream>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
-#include "artifacts.hpp"
 #include "config.hpp"
 #include "serialize_panel.hpp"
 #include "stages.hpp"

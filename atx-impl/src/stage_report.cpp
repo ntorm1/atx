@@ -358,6 +358,10 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         // BUG S6-2: original dvol = rc * vol was a single-day snapshot; one thin-volume name
         // inflates participation to millions of percent. Fix: 20-day trailing avg dollar-volume
         // mirrors stage_combine.cpp:321-330 (alpha_max_participation, kAdvWindow=20).
+        // Window is anchored at each rebalance date d (d-19..d), NOT at the panel end like
+        // stage_combine's dollar_adv.  Window length (kAdvWindow=20) and close×volume mean
+        // formula are identical; only the anchor differs — intentional, correct for per-period
+        // reporting rather than end-of-sample capacity estimation.
         //
         // For each rebalance period s and each in-universe held name i (|w|>0):
         //   dvol    = trailing-20d mean of raw_close[t,i]*volume[t,i] up to date d
