@@ -136,3 +136,35 @@ Final suite results (all green, zero regressions):
   byte-identity slice (factory *Oracle*:*Golden*:*Digest*): 18/18  green BEFORE and AFTER
 
 New tests added: 21 (combine gate_dsr_pbo_test) + 10 (factory cascade_trial_count_test) = 31.
+
+## Post-review reconciliation (controller, independent opus whole-branch review)
+
+Review verdict: Spec ✅ / Quality "changes required" — but NO Critical, ONE Important (S1-4
+direction), and 2 cosmetic Minors. Verified independently: scope == Owns fence (only gate.hpp,
+factory.cpp, 2 test files, ledger changed); AlphaMetrics/record.hpp/library.hpp/oracle.hpp absent
+from diff; no golden edited; enum appended at END; GateDeflation deviation is the correct
+byte-identity-safe call. Tests confirmed real end-to-end (not vacuous), incl. RealRunAdmittedSet-
+UnchangedAtRealN with ASSERT_GT(admitted,0) + EXPECT_GT(n_cascade_skipped,0) guards.
+
+S1-4 DIRECTION (the Important item) — RESOLVED, ship as-is (Option A):
+- The code already documents the looser/safe direction honestly (the in-code "spec reconciliation"
+  NOTE). The genuinely-STRICTER pre-gate (the plan's prose intent) CANNOT land inside p7-S1's frozen
+  byte-identity fence: tightening-with-N would skip candidates the gate-off run evaluated, changing
+  n_cascade_skipped/digest/reject_histogram — i.e. it requires a golden re-baseline, which the
+  determinism contract forbids. So the safe direction is the only contract-compatible one.
+- IMPORTANT clarification (now also in factory.cpp): cumulative-N deflation IS enforced — at the
+  DOWNSTREAM holdout DSR gate (prior_r1 + res.trial_count), which is pre-existing and confirmed. The
+  cascade pre-gate is a perf pre-filter, NOT the deflation mechanism; S1-4 removes its cosmetic void
+  and threads N in the safe direction (no deflationary teeth in the pre-gate, and none is needed).
+- Controller fix applied (commit below, doc/comment-only, behavior-invariant): reworded the variance-
+  proxy comment (Minor #3 — "V=1/T (T~kAnnualizationDays)" conflated the annualization constant with
+  sample length → now "fixed 1/252, NOT the holdout sample length T") and added the downstream-gate
+  clarification at the call site.
+
+Carry-forward (recorded in controller ledger; NOT S1 defects):
+- S7 MUST wire GateDeflation into library::verdict_for, else the new DSR/PBO/split screens remain
+  dead code on every live caller (Minor #2 — consistent with plan's "Sprint-7 owns wiring").
+- ROADMAP S1 row / north-star wording to be corrected at Wave-1 merge: cumulative-N deflation lives
+  at the holdout DSR gate (confirmed); the "stricter cascade pre-gate / anti-snooping pre-filter"
+  framing is dropped — the pre-gate does not deflate.
+- stage_discover.cpp histogram "0..5" stale comment → S7 (out of S1 Owns; left untouched).

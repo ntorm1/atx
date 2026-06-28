@@ -980,7 +980,8 @@ namespace {
 //  trial_count. We now FOLD the expected-maximum-Sharpe benchmark SR*_N into the keep
 //  side of the bound:  keep iff  sr_tr*factor + SR*_N >= min_dsr.  SR*_N =
 //  expected_max_sharpe(N, V) >= 0 is the selection benchmark for N i.i.d. trials, with
-//  the unit-stream variance proxy V = 1/T (T ~ kAnnualizationDays); it rises monotonically
+//  a fixed unit-variance proxy V = 1/252 (a small constant magnitude, NOT the holdout
+//  sample length T); it rises monotonically
 //  with N and is 0 at N<=1. Because SR*_N is ADDED to the keep side, a larger N can only
 //  ever KEEP more (never skip more): the bound is monotone-LOOSENING in N, which is the
 //  STRICTLY SAFE direction for a true upper bound — it can never start skipping a candidate
@@ -1013,8 +1014,11 @@ namespace {
   }
   // S1-4: the expected-maximum-Sharpe selection benchmark for N realized trials. At N<=1
   // expected_max_sharpe returns 0 (no selection -> byte-identical to the pre-S1-4 bound).
-  // The variance proxy is the unit-stream V = 1/T (T ~ kAnnualizationDays): a CONSERVATIVE
-  // UPPER-BOUND screen only needs a monotone-in-N raise of the keep margin, not the exact V.
+  // The variance proxy is a fixed 1/252 (a small constant magnitude, NOT the holdout sample
+  // length T): a CONSERVATIVE UPPER-BOUND screen only needs a monotone-in-N keep-margin bump,
+  // not the exact holdout V. NOTE: cumulative-N deflation is actually enforced downstream at the
+  // holdout DSR gate (prior_r1 + res.trial_count); this pre-gate's N-term only relaxes the skip
+  // filter and is NOT itself a deflation mechanism.
   const atx::f64 sr_star_n =
       (trial_count > 1U)
           ? eval::expected_max_sharpe(trial_count, 1.0 / combine::kAnnualizationDays)
