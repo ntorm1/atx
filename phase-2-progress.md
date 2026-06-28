@@ -37,4 +37,45 @@ NO CLI:
 
 ## Progress
 
-(unit rows appended below as each completes)
+S2-0: complete (commit ae73fde) — ledger opened; base main @ 2eaf3da; no source.
+S2-1: complete (commit b0f9c1f, 11 files) — landed track-b FINRA short-interest
+      CLI-FREE per D1. FinraShort.* (4), Augment.* (4), SeedParse.* (3) green.
+      Byte-identity gate (factory Oracle/Golden/Digest) 18/18 green. Full data
+      suite 118p/3 env-skip, full impl suite 169p/4 env-skip — zero regressions.
+      CLI deferral: run_augment + config/dispatch/stages NOT landed (S7). Drift
+      notes: (1) on current main augment_test.cpp is the p6-S5
+      WithAlpha101Fields/DelegationIdentity file, NOT the FINRA file the plan
+      assumed — appended the 4 Augment.* tests in a separate namespace, kept the
+      6 existing tests green. (2) seed_parse_test dropped `#include "config.hpp"`
+      (would hit S7-owned src/config.hpp) for the ATX_IMPL_TESTS_DIR compile-def +
+      #ifndef fallback. (3) dropped track-b's unused kNaN const (/WX).
+S2-2: complete (commit 16be122) — with_iv_fields (iv_term/iv_vrp/iv_lo).
+      IvFields.* (5) green. Helpers cs_zscore_row_aug + rolling_sample_std added
+      (match cs_zscore_row ddof=1 / rolling_mean full-window policy). Byte-id gate
+      18/18, full alpha suite 580/580 green.
+S2-3: complete (commit 59d2f56) — with_liquidity_fields (illiq = group_neutralize
+      (zscore(-adv20), sector)). LiquidityFields.* (5) green. Helper
+      group_demean_row added (CsNeutG semantics). adv20 absent -> Err(NotFound);
+      sector absent -> global demean. Byte-id gate 18/18, alpha suite green.
+      NOTE on unit split: S2-2 and S2-3 both live in augment.hpp; committed as two
+      clean compiling commits by removing/restoring the liquidity code+test around
+      the S2-2 commit (each commit builds + its suite is green in isolation).
+S2-4: complete (commit 6314536) — short_interest_seeds.txt (10) + liquidity_seeds
+      .txt (8) fixtures; 2 new SeedParse tests (ShortInterest/Liquidity) over a
+      multi-family panel. All 5 SeedParse.* green. alpha101.txt untouched (frozen).
+S2-5: complete (commit cc9270c) — MultiFamilySmoke.* (5): price/iv/liquidity
+      seeds evaluate finite end-to-end, exact augmented field count, off-path
+      digest unchanged (local FNV-1a NaN-safe). Drift: panel uses 25 dates (not
+      the plan's nominal 15) because adv20=ts_mean(dollar_volume,20) needs a full
+      20-date window — a 15-date panel leaves adv20/illiq all-NaN.
+
+## Final gate results
+
+- FinraShort.* 4/4, Augment.* 4/4, SeedParse.* 5/5, IvFields.* 5/5,
+  LiquidityFields.* 5/5, MultiFamilySmoke.* 5/5  (28 new + existing).
+- Byte-identity gate (factory *Oracle*:*Golden*:*Digest*): 18/18 green
+  (verified before S2-1, after S2-1/2/3, and after S2-5).
+- Full alpha suite: 585/585. Full data suite: 118p/3 env-skip. Full impl suite:
+  169p/4 env-skip. Zero regressions.
+- Branch diff (2eaf3da..HEAD): 18 files, all owned; no config/dispatch/stages/
+  oracle/alpha101.txt/ts_ops/vm touched.
