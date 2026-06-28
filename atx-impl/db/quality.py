@@ -3218,13 +3218,17 @@ def _check_specs(
         SqlQualityCheck(
             dataset_id="entity_classification",
             table_name="entity_classification",
-            check_name="entity_classification_multiple_open_primary_sic",
+            check_name="entity_classification_multiple_open_intervals",
+            # At most ONE open (valid_to IS NULL) interval per
+            # (security_id, taxonomy_id) — covers primary SIC AND derived
+            # FF12/NAICS rows, so cross-boundary reclassification that fails to
+            # close a stale derived interval is caught here, not just for SIC.
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM (
                     SELECT security_id, taxonomy_id, count(*) AS open_count
                     FROM entity_classification
-                    WHERE is_primary AND valid_to IS NULL
+                    WHERE valid_to IS NULL
                     GROUP BY security_id, taxonomy_id
                     HAVING count(*) > 1
                 )

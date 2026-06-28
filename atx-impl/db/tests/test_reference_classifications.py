@@ -455,3 +455,91 @@ class TestBitemporalReclassification:
             """
         ).fetchone()[0]
         assert open_count == 1, f"Expected exactly 1 open SIC interval, got {open_count}"
+
+    def test_reclassify_across_ff12_boundary_closes_old_derived_interval(self, tmp_store):
+        """SIC 7372 (FF12 BusEq) -> SIC 2082 (FF12 NoDur): exactly one open FF12
+        interval (NoDur) and the old BusEq interval must be closed."""
+        from db.reference_classifications import EntityClassificationDataset, EntityClassificationOptions
+        _seed_all_taxonomies(tmp_store)
+        _insert_security(tmp_store, "SEC-CIK-0000789019", "789019", "MSFT")
+
+        EntityClassificationDataset().run(
+            tmp_store, EntityClassificationOptions(fetcher=lambda cik: _fake_submission(7372))
+        )
+        EntityClassificationDataset().run(
+            tmp_store, EntityClassificationOptions(fetcher=lambda cik: _fake_submission(2082))
+        )
+
+        # Exactly one OPEN FF12 interval for this security
+        open_ff = tmp_store.con.execute(
+            """
+            SELECT count(*) FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            WHERE ec.security_id = 'SEC-CIK-0000789019'
+              AND t.code = 'FAMA_FRENCH_12'
+              AND ec.valid_to IS NULL
+            """
+        ).fetchone()[0]
+        assert open_ff == 1, f"Expected exactly 1 open FF12 interval, got {open_ff}"
+
+        # The single open FF12 row must be NoDur (the new industry)
+        open_ff_code = tmp_store.con.execute(
+            """
+            SELECT ec.node_code FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            WHERE ec.security_id = 'SEC-CIK-0000789019'
+              AND t.code = 'FAMA_FRENCH_12'
+              AND ec.valid_to IS NULL
+            """
+        ).fetchone()[0]
+        assert open_ff_code == "NoDur", f"Expected open FF12 = NoDur, got {open_ff_code}"
+
+        # The old BusEq interval must be closed (valid_to set)
+        busq_open = tmp_store.con.execute(
+            """
+            SELECT count(*) FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            WHERE ec.security_id = 'SEC-CIK-0000789019'
+              AND t.code = 'FAMA_FRENCH_12'
+              AND ec.node_code = 'BusEq'
+              AND ec.valid_to IS NULL
+            """
+        ).fetchone()[0]
+        assert busq_open == 0, "Old FF12 BusEq interval should be closed (valid_to set)"
+
+    def test_reclassify_across_naics_boundary_closes_old_derived_interval(self, tmp_store):
+        """SIC 7372 (NAICS 54) -> SIC 2082 (NAICS 31-33): exactly one open NAICS
+        interval and the old NAICS interval must be closed."""
+        from db.reference_classifications import EntityClassificationDataset, EntityClassificationOptions
+        _seed_all_taxonomies(tmp_store)
+        _insert_security(tmp_store, "SEC-CIK-0000789019", "789019", "MSFT")
+
+        EntityClassificationDataset().run(
+            tmp_store, EntityClassificationOptions(fetcher=lambda cik: _fake_submission(7372))
+        )
+        EntityClassificationDataset().run(
+            tmp_store, EntityClassificationOptions(fetcher=lambda cik: _fake_submission(2082))
+        )
+
+        open_naics = tmp_store.con.execute(
+            """
+            SELECT count(*) FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            WHERE ec.security_id = 'SEC-CIK-0000789019'
+              AND t.code = 'NAICS_2022'
+              AND ec.valid_to IS NULL
+            """
+        ).fetchone()[0]
+        assert open_naics == 1, f"Expected exactly 1 open NAICS interval, got {open_naics}"
+
+        # The single open NAICS row must be the new sector (31-33), not the old (54)
+        open_naics_code = tmp_store.con.execute(
+            """
+            SELECT ec.node_code FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            WHERE ec.security_id = 'SEC-CIK-0000789019'
+              AND t.code = 'NAICS_2022'
+              AND ec.valid_to IS NULL
+            """
+        ).fetchone()[0]
+        assert open_naics_code == "31-33", f"Expected open NAICS = 31-33, got {open_naics_code}"

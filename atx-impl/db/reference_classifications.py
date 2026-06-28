@@ -169,18 +169,21 @@ SIC_MAJOR_GROUPS: list[tuple[str, str]] = [
 # Fama-French 12 industries + SIC range table
 # ---------------------------------------------------------------------------
 
+# The canonical Ken French FF12 industries. Exactly 12 codes; #5 is "BusEq"
+# (Business Equipment). "HiTec" is an FF5/FF48 label, NOT an FF12 industry, so it
+# is deliberately absent.
 FF12_INDUSTRIES: list[tuple[str, str]] = [
     ("NoDur",  "Consumer NonDurables — Food, Tobacco, Textiles, Apparel, Leather, Toys"),
     ("Durbl",  "Consumer Durables — Cars, TVs, Furniture, Household Appliances"),
     ("Manuf",  "Manufacturing — Machinery, Trucks, Planes, Off Furn, Paper, Com Printing"),
     ("Enrgy",  "Oil, Gas, and Coal Extraction and Products"),
-    ("HiTec",  "Business Equipment — Computers, Software, and Electronic Equipment"),
+    ("BusEq",  "Business Equipment — Computers, Software, and Electronic Equipment"),
     ("Telcm",  "Telephone and Television Transmission"),
     ("Shops",  "Wholesale, Retail, and Some Services (Laundries, Repair Shops)"),
     ("Hlth",   "Healthcare, Medical Equipment, and Drugs"),
     ("Money",  "Finance"),
     ("Utils",  "Utilities"),
-    ("BusEq",  "Business Equipment — (alias; maps to same industry as HiTec in some FF tables)"),  # noqa
+    ("Chems",  "Chemicals and Allied Products"),
     ("Other",  "Other — Mines, Constr, BldMt, Trans, Hotels, Bus Serv, Entertainment"),
 ]
 
@@ -220,6 +223,13 @@ FF12_SIC_RANGES: list[tuple[str, list[tuple[int, int]]]] = [
         (1300, 1399), (2900, 2999),
         (1310, 1389), (2910, 2911), (2990, 2999),
         (5170, 5172),
+    ]),
+    # Canonical FF12 Chemicals. The lookup is "first range wins"; NoDur (above)
+    # already claims 2800-2829 and 2840-2844, so Chems owns the remaining
+    # chemical codes (paints, industrial/agricultural chemicals, etc.). These do
+    # not collide with the Hlth drug codes (2830-2836) or NoDur's 2840-2844.
+    ("Chems", [
+        (2850, 2879), (2890, 2899),
     ]),
     ("Hlth", [
         (2830, 2836), (3693, 3693), (3840, 3849), (3850, 3851),
@@ -304,19 +314,19 @@ def fama_french_12_for_sic(sic: int) -> str:
 # NAICS 2022 — 20 two-digit sectors
 # ---------------------------------------------------------------------------
 
+# The 20 canonical NAICS 2022 two-digit sectors. Three sectors span a 2-digit
+# range and are single sectors with hyphenated codes: 31-33 (Manufacturing),
+# 44-45 (Retail Trade), 48-49 (Transportation and Warehousing). Every code
+# referenced by SIC_TO_NAICS_PARTIAL below must exist here as a node.
 NAICS_2022_SECTORS: list[tuple[str, str]] = [
     ("11", "Agriculture, Forestry, Fishing and Hunting"),
     ("21", "Mining, Quarrying, and Oil and Gas Extraction"),
     ("22", "Utilities"),
     ("23", "Construction"),
-    ("31", "Manufacturing (31)"),
-    ("32", "Manufacturing (32)"),
-    ("33", "Manufacturing (33)"),
+    ("31-33", "Manufacturing"),
     ("42", "Wholesale Trade"),
-    ("44", "Retail Trade (44)"),
-    ("45", "Retail Trade (45)"),
-    ("48", "Transportation and Warehousing (48)"),
-    ("49", "Transportation and Warehousing (49)"),
+    ("44-45", "Retail Trade"),
+    ("48-49", "Transportation and Warehousing"),
     ("51", "Information"),
     ("52", "Finance and Insurance"),
     ("53", "Real Estate and Rental and Leasing"),
@@ -330,13 +340,6 @@ NAICS_2022_SECTORS: list[tuple[str, str]] = [
     ("81", "Other Services (except Public Administration)"),
     ("92", "Public Administration"),
 ]
-
-# Trim to exactly 20 unique sectors (the census defines 20 2-digit codes;
-# manufacturing is split 31/32/33 but those are 3 codes that together equal
-# one conceptual sector; retail is split 44/45; transportation is 48/49).
-# The brief says 20 sector nodes — we use 20 unique 2-digit codes.
-# Filter to exactly 20 by keeping first 20.
-NAICS_2022_SECTORS = NAICS_2022_SECTORS[:20]
 
 # Partial SIC→NAICS mapping (documented subset; marked approximate).
 # Format: (sic_2digit_prefix, naics_2digit_code)
@@ -355,44 +358,44 @@ SIC_TO_NAICS_PARTIAL: list[tuple[str, str]] = [
     ("15", "23"),  # Building Construction -> Construction
     ("16", "23"),  # Heavy Construction -> Construction
     ("17", "23"),  # Special Trade -> Construction
-    ("20", "31"),  # Food -> Manufacturing
-    ("21", "31"),  # Tobacco -> Manufacturing
-    ("22", "31"),  # Textile Mill -> Manufacturing
-    ("23", "31"),  # Apparel -> Manufacturing
-    ("24", "31"),  # Lumber -> Manufacturing
-    ("25", "33"),  # Furniture -> Manufacturing
-    ("26", "32"),  # Paper -> Manufacturing
-    ("27", "32"),  # Printing -> Manufacturing
-    ("28", "32"),  # Chemicals -> Manufacturing
-    ("29", "32"),  # Petroleum Refining -> Manufacturing
-    ("30", "32"),  # Rubber -> Manufacturing
-    ("31", "31"),  # Leather -> Manufacturing
-    ("32", "32"),  # Stone/Clay/Glass -> Manufacturing
-    ("33", "33"),  # Primary Metal -> Manufacturing
-    ("34", "33"),  # Fabricated Metal -> Manufacturing
-    ("35", "33"),  # Machinery -> Manufacturing
-    ("36", "33"),  # Electronic Equipment -> Manufacturing
-    ("37", "33"),  # Transportation Equipment -> Manufacturing
-    ("38", "33"),  # Instruments -> Manufacturing
-    ("39", "33"),  # Misc Manufacturing -> Manufacturing
-    ("40", "48"),  # Railroad -> Transportation
-    ("41", "48"),  # Transit -> Transportation
-    ("42", "48"),  # Motor Freight -> Transportation
-    ("44", "48"),  # Water Transport -> Transportation
-    ("45", "48"),  # Air Transport -> Transportation
-    ("47", "48"),  # Transport Services -> Transportation
-    ("48", "51"),  # Communications -> Information
-    ("49", "22"),  # Electric/Gas/Sanitary -> Utilities
-    ("50", "42"),  # Durable Wholesale -> Wholesale
-    ("51", "42"),  # Nondurable Wholesale -> Wholesale
-    ("52", "44"),  # Building Materials Retail -> Retail
-    ("53", "44"),  # General Merchandise -> Retail
-    ("54", "44"),  # Food Stores -> Retail
-    ("55", "44"),  # Auto Dealers -> Retail
-    ("56", "44"),  # Apparel Stores -> Retail
-    ("57", "44"),  # Home Furniture Stores -> Retail
-    ("58", "72"),  # Eating/Drinking -> Accommodation
-    ("59", "44"),  # Misc Retail -> Retail
+    ("20", "31-33"),  # Food -> Manufacturing
+    ("21", "31-33"),  # Tobacco -> Manufacturing
+    ("22", "31-33"),  # Textile Mill -> Manufacturing
+    ("23", "31-33"),  # Apparel -> Manufacturing
+    ("24", "31-33"),  # Lumber -> Manufacturing
+    ("25", "31-33"),  # Furniture -> Manufacturing
+    ("26", "31-33"),  # Paper -> Manufacturing
+    ("27", "31-33"),  # Printing -> Manufacturing
+    ("28", "31-33"),  # Chemicals -> Manufacturing
+    ("29", "31-33"),  # Petroleum Refining -> Manufacturing
+    ("30", "31-33"),  # Rubber -> Manufacturing
+    ("31", "31-33"),  # Leather -> Manufacturing
+    ("32", "31-33"),  # Stone/Clay/Glass -> Manufacturing
+    ("33", "31-33"),  # Primary Metal -> Manufacturing
+    ("34", "31-33"),  # Fabricated Metal -> Manufacturing
+    ("35", "31-33"),  # Machinery -> Manufacturing
+    ("36", "31-33"),  # Electronic Equipment -> Manufacturing
+    ("37", "31-33"),  # Transportation Equipment -> Manufacturing
+    ("38", "31-33"),  # Instruments -> Manufacturing
+    ("39", "31-33"),  # Misc Manufacturing -> Manufacturing
+    ("40", "48-49"),  # Railroad -> Transportation
+    ("41", "48-49"),  # Transit -> Transportation
+    ("42", "48-49"),  # Motor Freight -> Transportation
+    ("44", "48-49"),  # Water Transport -> Transportation
+    ("45", "48-49"),  # Air Transport -> Transportation
+    ("47", "48-49"),  # Transport Services -> Transportation
+    ("48", "51"),     # Communications -> Information
+    ("49", "22"),     # Electric/Gas/Sanitary -> Utilities
+    ("50", "42"),     # Durable Wholesale -> Wholesale
+    ("51", "42"),     # Nondurable Wholesale -> Wholesale
+    ("52", "44-45"),  # Building Materials Retail -> Retail
+    ("53", "44-45"),  # General Merchandise -> Retail
+    ("54", "44-45"),  # Food Stores -> Retail
+    ("55", "44-45"),  # Auto Dealers -> Retail
+    ("56", "44-45"),  # Apparel Stores -> Retail
+    ("57", "44-45"),  # Home Furniture Stores -> Retail
+    ("58", "72"),     # Eating/Drinking -> Accommodation
+    ("59", "44-45"),  # Misc Retail -> Retail
     ("60", "52"),  # Depository Institutions -> Finance
     ("61", "52"),  # Nondepository Credit -> Finance
     ("62", "52"),  # Securities -> Finance
@@ -984,8 +987,11 @@ class EntityClassificationDataset(Dataset):
                 """
             ).fetchall()
 
-        today = dt.date.today()
+        # Use the UTC date so valid_from/as_of_date share the same time axis as
+        # available_at/now_ts (now_utc_naive). dt.date.today() is local and would
+        # disagree with the UTC axis by a day near midnight.
         now_ts = now_utc_naive()
+        today = now_ts.date()
         rows_written = 0
 
         for security_id, cik in rows:
@@ -1123,6 +1129,20 @@ def _write_derived_rows(
         ff_code = fama_french_12_for_sic(sic4)
         ff_node_id = _node_id_for(store, ff12_taxonomy_id, ff_code)
         if ff_node_id:
+            # Bitemporal: close any OPEN derived FF12 interval whose node_code
+            # differs (e.g. the primary SIC moved across an FF12 boundary
+            # BusEq -> NoDur). Without this, a new open row would be inserted
+            # beside the stale one -> two open intervals for (security_id, taxonomy_id).
+            store.con.execute(
+                """
+                UPDATE entity_classification
+                SET valid_to = ?
+                WHERE security_id = ? AND taxonomy_id = ?
+                  AND is_primary = false AND valid_to IS NULL
+                  AND node_code <> ?
+                """,
+                [today, security_id, ff12_taxonomy_id, ff_code],
+            )
             existing_ff = store.con.execute(
                 """
                 SELECT classification_id FROM entity_classification
@@ -1172,6 +1192,18 @@ def _write_derived_rows(
             naics_code = naics_row[0]
             naics_node_id = _node_id_for(store, naics_taxonomy_id, naics_code)
             if naics_node_id:
+                # Bitemporal: close any OPEN derived NAICS interval whose
+                # node_code differs (primary SIC moved across a NAICS boundary).
+                store.con.execute(
+                    """
+                    UPDATE entity_classification
+                    SET valid_to = ?
+                    WHERE security_id = ? AND taxonomy_id = ?
+                      AND is_primary = false AND valid_to IS NULL
+                      AND node_code <> ?
+                    """,
+                    [today, security_id, naics_taxonomy_id, naics_code],
+                )
                 existing_naics = store.con.execute(
                     """
                     SELECT classification_id FROM entity_classification
