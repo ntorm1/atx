@@ -109,11 +109,19 @@ static atx::f64 blend_window_sharpe(const combine::AlphaStore& pool,
 //
 // Determinism: order-fixed alpha loop, no RNG/alloc beyond the window sub-span;
 // identical inputs -> identical weights.
+//
+// S5-1 telemetry: when `out_scores != nullptr`, the per-alpha ConvictionScore
+// (final score + clamped DSR / stability terms) is appended in AlphaId order so
+// the caller can surface WHY each alpha was sized the way it was. The collector is
+// PURE telemetry — it does not alter the weights, the renorm, or the order, so the
+// main path (collector or not) computes byte-identical weights. The walk-forward
+// folds pass nullptr (their scratch weights are not the shipped book's telemetry).
 // ---------------------------------------------------------------------------
 static void apply_conviction(const combine::AlphaStore& pool,
                              std::vector<atx::f64>& weights,
                              atx::usize conv_begin, atx::usize conv_end,
-                             atx::usize na) {
+                             atx::usize na,
+                             std::vector<combine::ConvictionScore>* out_scores = nullptr) {
     namespace ce = atx::engine::combine;
     namespace ev = atx::engine::eval;
 
@@ -166,6 +174,9 @@ static void apply_conviction(const combine::AlphaStore& pool,
         const ce::ConvictionScore cs =
             ce::conviction(dsr, pbo, ratio, ce::ExplainFlag::PartlyExplained, ccfg);
         weights[a] *= cs.score;
+        if (out_scores != nullptr) {
+            out_scores->push_back(cs); // S5-1: per-alpha breakdown for KV telemetry
+        }
     }
     // Renormalize so Σ|w| = 1 (gross-exposure target maintained).
     ce::detail::renorm_abs_sum(weights);
@@ -532,14 +543,20 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     //     Sharpe stability), then renormalizes Σ|w|=1. Default (cfg.conviction == false)
     //     skips this block entirely — combo.weights are untouched and the output is
     //     byte-identical to today. The conviction math runs ONLY inside this if-block.
+    // S5-1: per-alpha conviction breakdown collected from the MAIN-path transform
+    // (AlphaId order). Populated only when cfg.conviction is on; emitted as additive
+    // KVs at step 14. Empty (and no KVs) on the default path -> byte-identical.
+    std::vector<combine::ConvictionScore> conviction_scores;
     if (cfg.conviction) {
         // Apply the conviction transform over the FULL stream [0, np). This is
         // byte-identical to the original inline D1.2 block (the helper over the
         // full window reproduces today's weights EXACTLY — the conviction-digest
         // test is pinned). The same helper re-applies per-fold conviction in the
-        // walk-forward loop below (T7 NEW-1).
+        // walk-forward loop below (T7 NEW-1). Pass the collector so the per-alpha
+        // ConvictionScore breakdown can be surfaced as telemetry (S5-1); collecting
+        // does not change the weights or their order.
         apply_conviction(pool, combo.weights, /*conv_begin=*/0U, /*conv_end=*/np,
-                         pool.n_alphas());
+                         pool.n_alphas(), &conviction_scores);
     }
 
     // T6 capacity telemetry (additive; populated only on the opt-in capacity path).
@@ -882,6 +899,31 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
                             std::isinf(cap_min) ? std::string("inf") : std::to_string(cap_min));
         sr.kvs.emplace_back("capacity_max_participation",
                             std::to_string(capacity_max_participation));
+    }
+    // S5-1: additive conviction telemetry — present ONLY when --conviction (the
+    // collector is empty otherwise, so the default kvs set is byte-identical). The
+    // three keys are comma-joined per-alpha breakdowns in AlphaId order, so the
+    // operator can see, per admitted alpha, the final score and the (clamped, in
+    // [0,1]) DSR and stability terms that produced it. These feed kvs ONLY — never
+    // combo.bin or the panel digest (sr.digest is set from write_panel above).
+    if (!conviction_scores.empty()) {
+        std::string scores_csv;
+        std::string dsr_csv;
+        std::string stab_csv;
+        for (atx::usize a = 0; a < conviction_scores.size(); ++a) {
+            if (a > 0) {
+                scores_csv += ',';
+                dsr_csv += ',';
+                stab_csv += ',';
+            }
+            const combine::ConvictionScore& cs = conviction_scores[a];
+            scores_csv += std::to_string(cs.score);
+            dsr_csv += std::to_string(cs.dsr_term);
+            stab_csv += std::to_string(cs.stability_term);
+        }
+        sr.kvs.emplace_back("conviction_scores", std::move(scores_csv));
+        sr.kvs.emplace_back("conviction_dsr_terms", std::move(dsr_csv));
+        sr.kvs.emplace_back("conviction_stability_terms", std::move(stab_csv));
     }
     return atx::core::Ok(std::move(sr));
 }
