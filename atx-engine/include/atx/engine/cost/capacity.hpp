@@ -168,4 +168,86 @@ compute_capacity_vector(const alpha::AlphaStreams& streams, const PanelView& pan
   return out;
 }
 
+// ---------------------------------------------------------------------------
+//  CapacityScorecard — a first-class, self-contained capacity artefact (P7-S4-3).
+//
+//  Packages the AUM->net-edge sweep of a fitted book at a given operational AUM:
+//    capacity_point_aum : the AUM where net edge -> 0 (linear interpolation over
+//                         aum_grid), or +inf if the grid does not bracket the
+//                         crossing. See cost::capacity_point.
+//    gross_edge_bps     : the AUM-independent frictionless edge (gross), in bps —
+//                         the thing impact erodes (risk::detail::gross_edge_bps).
+//    net_edge_at_target : the net edge (bps) at the grid point nearest target_aum
+//                         (the operational AUM); the last point if target_aum
+//                         exceeds the grid.
+//    curve              : the full (aum, net_edge_bps) series in grid order.
+//                         Monotone NON-INCREASING (the capacity-model CONTRACT,
+//                         verified by capacity_point's C4 guard) — callers may plot
+//                         or interpolate without re-checking.
+//
+//  This is the report-facing summary the driver (S7) wires to the report KV block;
+//  S4 ships the struct + builder and proves it on tiny fixtures (no report emission
+//  is touched here). Rule of Zero (the `curve` vector self-manages).
+// ---------------------------------------------------------------------------
+struct CapacityScorecard {
+  atx::f64 capacity_point_aum{};                 // AUM at which net edge == 0 (or +inf)
+  atx::f64 gross_edge_bps{};                      // frictionless edge (AUM-independent)
+  atx::f64 net_edge_at_target{};                  // net edge at the target_aum grid point
+  std::vector<risk::CapacityPoint> curve{};       // the full sweep, grid order
+};
+
+// ---------------------------------------------------------------------------
+//  emit_capacity_scorecard — build a CapacityScorecard for a combined-book weight
+//  vector over `aum_grid` at the operational `target_aum`.
+//
+//  Delegates the sweep to capacity_for_book -> risk::capacity_curve (ONE cost
+//  model) and the zero-crossing to capacity_point; the gross edge is read directly
+//  from risk::detail::gross_edge_bps over the SAME usable edge window
+//  capacity_curve uses (computed once, AUM-independent) so the scorecard reports
+//  the gross figure without re-deriving cost. net_edge_at_target is the curve point
+//  whose AUM is closest to target_aum (ties -> the lower index), or the last point
+//  when target_aum exceeds every grid AUM.
+//
+//  aum_grid SHOULD be non-empty and ascending (capacity_point interpolates over
+//  it). An EMPTY grid degenerates cleanly: capacity_point_aum = +inf, an empty
+//  curve, and net_edge_at_target = gross_edge_bps (no AUM sampled -> no erosion to
+//  report). A short panel degenerates gracefully (windows clamp; no OOB / div-by-
+//  zero — see risk::capacity_curve). PURE: same (weights, panel, sim, aum_grid,
+//  target_aum) -> bit-identical scorecard; no RNG; thread-safe (no shared state).
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline CapacityScorecard
+emit_capacity_scorecard(std::span<const atx::f64> weights, const PanelView& panel,
+                        const exec::ExecutionSimulator& sim,
+                        std::span<const atx::f64> aum_grid, atx::f64 target_aum) {
+  CapacityScorecard sc;
+  sc.curve = capacity_for_book(weights, panel, sim, aum_grid); // ONE cost surface
+  sc.capacity_point_aum = capacity_point(std::span<const risk::CapacityPoint>{sc.curve});
+
+  // Gross edge: AUM-independent, over the SAME usable edge window the curve used
+  // (ALL usable trailing returns, clamped to the panel's history).
+  const atx::usize w_edge = risk::detail::usable_return_window(panel, panel.rows());
+  sc.gross_edge_bps = risk::detail::gross_edge_bps(weights, panel, w_edge);
+
+  // net_edge_at_target: the curve point whose AUM is nearest target_aum. Empty grid
+  // -> no erosion sampled, report the gross edge (the AUM->0 limit). Otherwise scan
+  // for the minimum |aum - target_aum| (ascending; first match wins on a tie).
+  if (sc.curve.empty()) {
+    sc.net_edge_at_target = sc.gross_edge_bps;
+    return sc;
+  }
+  atx::usize best = 0U;
+  atx::f64 best_dist = (sc.curve[0U].aum < target_aum) ? (target_aum - sc.curve[0U].aum)
+                                                       : (sc.curve[0U].aum - target_aum);
+  for (atx::usize k = 1U; k < sc.curve.size(); ++k) {
+    const atx::f64 d = (sc.curve[k].aum < target_aum) ? (target_aum - sc.curve[k].aum)
+                                                      : (sc.curve[k].aum - target_aum);
+    if (d < best_dist) {
+      best_dist = d;
+      best = k;
+    }
+  }
+  sc.net_edge_at_target = sc.curve[best].net_edge_bps;
+  return sc;
+}
+
 } // namespace atx::engine::cost
