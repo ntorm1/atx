@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <cmath>
+#include <limits>
 #include <optional>
+#include <vector>
 #include "atx/engine/eval/deflated_sharpe.hpp"
 
 namespace atxtest_eval_deflated_sharpe_test {
@@ -55,6 +57,90 @@ TEST(EvalDsr, ReferenceValue_CitedConstant) {
 TEST(EvalDsr, DegenerateT_ReturnsNaN) {
   EXPECT_TRUE(std::isnan(probabilistic_sharpe(0.10, 0.0, 1, 0.0, 0.0)));  // T<2 degenerate
   EXPECT_TRUE(std::isnan(probabilistic_sharpe(0.10, 0.0, 0, 0.0, 0.0)));
+}
+
+// ---------------------------------------------------------------------------
+//  S4-4: deflated_sharpe_net_cost tests.
+// ---------------------------------------------------------------------------
+
+// Helper: build a synthetic PnL series of length n with constant per-period
+// return mu and zero-mean noise, along with a constant turnover series.
+// We use a simple alternating-sign noise so stats are well-defined and the
+// gross DSR is positive and meaningful.
+static std::vector<atx::f64> make_pnl(atx::usize n, atx::f64 mu, atx::f64 noise_amp) {
+  std::vector<atx::f64> out(n);
+  out[0] = 0.0; // structural zero
+  for (atx::usize t = 1U; t < n; ++t) {
+    // alternating noise so mean ≈ mu; individual values mu ± noise_amp
+    const atx::f64 sign = ((t % 2U) == 0U) ? 1.0 : -1.0;
+    out[t] = mu + sign * noise_amp;
+  }
+  return out;
+}
+
+static std::vector<atx::f64> make_turnover(atx::usize n, atx::f64 u) {
+  return std::vector<atx::f64>(n, u);
+}
+
+TEST(EvalDsrNetCost, HighTurnoverCostReducesDSR) {
+  // High turnover (0.8) + rt_cost_bps=10.0 drains enough from gross returns
+  // that the net-cost DSR is strictly less than the gross DSR (on the same
+  // gross series). We construct a MARGINAL case so neither DSR saturates to 1:
+  // small gross mu (0.001) and large noise (0.010) keep the gross SR low; high
+  // turnover with 10 bps cost adds a material per-period drag of ~0.0008/period.
+  // T_obs=19 (20-1) is small so neither DSR saturates, keeping both below 1.
+  constexpr atx::usize N_PERIODS = 20U;
+  constexpr atx::f64 MU = 0.001;
+  constexpr atx::f64 NOISE = 0.010;
+  constexpr atx::f64 U = 0.8;
+  constexpr atx::f64 COST_BPS = 10.0;
+  constexpr atx::usize N_TRIALS = 5U;
+
+  const auto pnl      = make_pnl(N_PERIODS, MU, NOISE);
+  const auto turnover = make_turnover(N_PERIODS, U);
+
+  // Gross DSR: compute gross SR/moments over pnl[1..T) directly.
+  // T_obs = N_PERIODS - 1 = 19 observations.
+  const auto pnl_span = std::span<const atx::f64>{pnl}.subspan(1);
+  const atx::usize T_obs = pnl_span.size();
+  const MeanStd ms = mean_std_pop(pnl_span);
+  const atx::f64 sr_gross = (ms.std > 0.0) ? ms.mean / ms.std : 0.0;
+  const atx::f64 skew_gross = skewness(pnl_span);
+  const atx::f64 exkurt_gross = excess_kurtosis(pnl_span);
+  const auto dsr_gross = deflated_sharpe(sr_gross, T_obs, skew_gross, exkurt_gross, N_TRIALS, std::nullopt);
+
+  // Net-cost DSR via the new helper.
+  const auto dsr_net = deflated_sharpe_net_cost(pnl, turnover, COST_BPS, N_TRIALS, std::nullopt);
+
+  // With high turnover and non-zero cost the net DSR must be strictly less.
+  EXPECT_LT(dsr_net.dsr, dsr_gross.dsr);
+}
+
+TEST(EvalDsrNetCost, ZeroCostEqualsGrossDSR) {
+  // rt_cost_bps = 0.0: r_net[t] == r_gross[t], so the net DSR must equal the
+  // gross DSR within floating-point epsilon (same arithmetic path).
+  constexpr atx::usize N_PERIODS = 200U;
+  constexpr atx::f64 MU = 0.003;
+  constexpr atx::f64 NOISE = 0.002;
+  constexpr atx::f64 U = 0.8;
+  constexpr atx::usize N_TRIALS = 30U;
+
+  const auto pnl      = make_pnl(N_PERIODS, MU, NOISE);
+  const auto turnover = make_turnover(N_PERIODS, U);
+
+  // Gross DSR (observation count = N_PERIODS - 1 = 199).
+  const auto pnl_span = std::span<const atx::f64>{pnl}.subspan(1);
+  const atx::usize T_obs = pnl_span.size();
+  const MeanStd ms = mean_std_pop(pnl_span);
+  const atx::f64 sr_gross = (ms.std > 0.0) ? ms.mean / ms.std : 0.0;
+  const atx::f64 skew_gross = skewness(pnl_span);
+  const atx::f64 exkurt_gross = excess_kurtosis(pnl_span);
+  const auto dsr_gross = deflated_sharpe(sr_gross, T_obs, skew_gross, exkurt_gross, N_TRIALS, std::nullopt);
+
+  const auto dsr_net = deflated_sharpe_net_cost(pnl, turnover, /*rt_cost_bps=*/0.0, N_TRIALS, std::nullopt);
+
+  // Both should agree to within floating-point round-off.
+  EXPECT_NEAR(dsr_net.dsr, dsr_gross.dsr, 1e-12);
 }
 
 

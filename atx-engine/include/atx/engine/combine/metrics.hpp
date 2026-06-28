@@ -36,9 +36,10 @@
 //  turnover = mean(u) over ALL periods (u[0] is a real trade, so it is NOT
 //  excluded, unlike the structural PnL zero).
 
-#include <cmath>  // std::sqrt, std::abs, std::isnan
-#include <limits> // std::numeric_limits (quiet_NaN for undefined moments)
-#include <span>   // std::span (non-owning stream inputs)
+#include <cmath>   // std::sqrt, std::abs, std::isnan
+#include <limits>  // std::numeric_limits (quiet_NaN for undefined moments)
+#include <span>    // std::span (non-owning stream inputs)
+#include <vector>  // std::vector (opt-in per-period turnover output)
 
 #include "atx/core/stats/online_stats.hpp" // stats::RunningVariance (Welford)
 #include "atx/core/types.hpp"              // atx::f64, atx::usize
@@ -135,18 +136,28 @@ struct PnlMoments {
   return max_dd;
 }
 
-// Mean per-period dollar-traded fraction = mean over t of u[t], where
-//   u[0]   = Σ_j |w_j[0]|           / book_size   (trade IN from flat),
-//   u[t>0] = Σ_j |w_j[t]−w_j[t-1]|  / book_size.
+// Shared turnover loop: fills *out_turnover (if non-null) with per-period u[t]
+// and returns the mean. Both compute_metrics (passing nullptr) and
+// compute_metrics_with_turnover call this so the formula lives in ONE place.
+//   u[0]   = Σ_j |w_j[0]|           / book_size   (trade IN from flat)
+//   u[t>0] = Σ_j |w_j[t]−w_j[t-1]|  / book_size
 // positions_flat is period-major then instrument-minor (n_periods*n_instruments).
-// One pass, O(T*N), no allocation. Returns 0 for an empty position stream.
-[[nodiscard]] inline atx::f64 mean_turnover(std::span<const atx::f64> positions_flat,
-                                            atx::usize n_instruments, atx::f64 book_size) noexcept {
+// One pass, O(T*N), no allocation on the hot path. Returns 0 for empty input.
+[[nodiscard]] inline atx::f64
+turnover_fill(std::span<const atx::f64> positions_flat, atx::usize n_instruments,
+              atx::f64 book_size, std::vector<atx::f64>* out_turnover) noexcept {
   if (n_instruments == 0U || positions_flat.empty()) {
+    if (out_turnover != nullptr) {
+      out_turnover->clear();
+    }
     return 0.0;
   }
   const atx::usize n_periods = positions_flat.size() / n_instruments;
   const atx::f64 inv_book = 1.0 / ((book_size > kEps) ? book_size : kEps);
+  // Resize the output vector once up front (avoids repeated reallocation).
+  if (out_turnover != nullptr) {
+    out_turnover->resize(n_periods);
+  }
   atx::f64 sum_u = 0.0;
   for (atx::usize t = 0U; t < n_periods; ++t) {
     const atx::usize off = t * n_instruments;
@@ -157,9 +168,20 @@ struct PnlMoments {
       const atx::f64 dw = cur - prev;
       traded += (dw < 0.0) ? -dw : dw;
     }
-    sum_u += traded * inv_book;
+    const atx::f64 u_t = traded * inv_book;
+    if (out_turnover != nullptr) {
+      (*out_turnover)[t] = u_t;
+    }
+    sum_u += u_t;
   }
   return (n_periods == 0U) ? 0.0 : sum_u / static_cast<atx::f64>(n_periods);
+}
+
+// Thin wrapper: mean turnover only (no per-period vector). Passes nullptr so
+// turnover_fill skips the vector path entirely — allocation-free.
+[[nodiscard]] inline atx::f64 mean_turnover(std::span<const atx::f64> positions_flat,
+                                            atx::usize n_instruments, atx::f64 book_size) noexcept {
+  return turnover_fill(positions_flat, n_instruments, book_size, nullptr);
 }
 
 } // namespace detail
@@ -202,6 +224,50 @@ struct PnlMoments {
 
   // fitness = sqrt(abs(returns)/max(turnover, 0.125)) * sharpe   (WQ §4.4).
   // turnover == 0 AND returns == 0 -> fitness 0 (NaN policy, avoids 0*inf forms).
+  const atx::f64 fitness_denom = (turnover > kTurnoverFloor) ? turnover : kTurnoverFloor;
+  const atx::f64 fitness = (turnover == 0.0 && returns == 0.0)
+                               ? 0.0
+                               : std::sqrt(std::abs(returns) / fitness_denom) * sharpe;
+
+  const atx::f64 drawdown = detail::max_drawdown(pnl);
+
+  return AlphaMetrics{sharpe, turnover, returns, drawdown, margin, fitness, holding_days};
+}
+
+// ===========================================================================
+//  compute_metrics_with_turnover — opt-in variant that ALSO fills a per-period
+//  turnover vector u[t] (S4-4).
+//
+//  When out_turnover is non-null it is resized to n_periods and filled with
+//  per-period u[t] = Σ_j |Δw_j| / book_size. The returned AlphaMetrics is
+//  byte-identical to compute_metrics(...) on the same inputs — the per-period
+//  vector is additional output, not an alternative path. When out_turnover is
+//  null this function behaves identically to compute_metrics (no allocation).
+//
+//  NOTE: out_turnover is a scratch allocation in the CALLER's hands; this
+//  function does not allocate on the hot path beyond what the caller requests
+//  by passing a non-null pointer.
+// ===========================================================================
+[[nodiscard]] inline AlphaMetrics compute_metrics_with_turnover(
+    std::span<const atx::f64> pnl, std::span<const atx::f64> positions_flat,
+    atx::usize n_instruments, atx::f64 book_size,
+    std::vector<atx::f64>* out_turnover /* nullable */) noexcept {
+  const detail::PnlMoments mom = detail::pnl_moments(pnl);
+
+  const atx::f64 sharpe = (mom.std_pop == 0.0 && !std::isnan(mom.mean))
+                              ? 0.0
+                              : std::sqrt(kAnnualizationDays) * mom.mean / mom.std_pop;
+  const atx::f64 returns = kAnnualizationDays * mom.mean;
+
+  // turnover_fill: fills out_turnover (if non-null) and returns the mean.
+  // This is the SINGLE shared loop — no formula duplication vs. compute_metrics.
+  const atx::f64 turnover =
+      detail::turnover_fill(positions_flat, n_instruments, book_size, out_turnover);
+
+  const atx::f64 turnover_eps = (turnover > kEps) ? turnover : kEps;
+  const atx::f64 margin = returns / turnover_eps;
+  const atx::f64 holding_days = 1.0 / turnover_eps;
+
   const atx::f64 fitness_denom = (turnover > kTurnoverFloor) ? turnover : kTurnoverFloor;
   const atx::f64 fitness = (turnover == 0.0 && returns == 0.0)
                                ? 0.0
