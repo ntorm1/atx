@@ -501,6 +501,19 @@ def _normalize_strings(values: tuple[str, ...] | list[str] | None) -> list[str]:
     return sorted({str(value).strip().upper() for value in values if str(value).strip()})
 
 
+def _normalize_ids(values: tuple[str, ...] | list[str] | None) -> list[str]:
+    """Normalize opaque identifiers (e.g. security_id) for filter joins.
+
+    Unlike _normalize_strings, this does NOT upper-case: security_id is an opaque
+    internal key (e.g. 'SEC-CIK-0000320193'), not a categorical code, so changing
+    its case would break the join. Matches the convention in entity_classification_asof
+    (which registers the raw security_id). Strips whitespace and de-dups only.
+    """
+    if values is None:
+        return []
+    return sorted({str(value).strip() for value in values if str(value).strip()})
+
+
 def _register_filter(store, relation_name: str, column_name: str, values: list[str]) -> bool:
     if not values:
         return False
@@ -976,7 +989,7 @@ def est_actual_asof(
         try:
             sid_join = ""
             mc_join = ""
-            sid_values = _normalize_strings(security_ids)
+            sid_values = _normalize_ids(security_ids)
             mc_values = _normalize_strings(measure_codes)
             if sid_values:
                 store.con.register(
@@ -1043,7 +1056,7 @@ def est_surprise_asof(
         try:
             sid_join = ""
             mc_join = ""
-            sid_values = _normalize_strings(security_ids)
+            sid_values = _normalize_ids(security_ids)
             mc_values = _normalize_strings(measure_codes)
             if sid_values:
                 store.con.register(
@@ -1098,7 +1111,7 @@ def est_consensus_asof(
         try:
             sid_join = ""
             mc_join = ""
-            sid_values = _normalize_strings(security_ids)
+            sid_values = _normalize_ids(security_ids)
             mc_values = _normalize_strings(measure_codes)
             if sid_values:
                 store.con.register(
@@ -1153,7 +1166,7 @@ def est_guidance_asof(
         try:
             sid_join = ""
             mc_join = ""
-            sid_values = _normalize_strings(security_ids)
+            sid_values = _normalize_ids(security_ids)
             mc_values = _normalize_strings(measure_codes)
             if sid_values:
                 store.con.register(

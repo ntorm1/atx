@@ -681,6 +681,44 @@ class TestAsofPIT:
         assert len(pit_rows2) == 1
         assert pit_rows2.iloc[0]["value"] == pytest.approx(1.55)
 
+    def test_asof_with_security_and_measure_filters(self, tmp_store):
+        """Filtered as-of exercises row_number() OVER a JOIN to TWO registered
+        DataFrames (sid + mc filters) — the exact pattern the S2 implementer
+        claimed was bugged in DuckDB 1.5.1. This regression test proves the
+        filtered path returns the correct columns/values (no scramble) and that
+        the filter actually excludes other securities/measures.
+        """
+        self._seed_two_revisions(tmp_store)  # sec_pit / EPS_DILUTED, revs 1.50 & 1.55
+        # Add a second security + a different measure so the filter has something to exclude.
+        _insert_company_fact(
+            tmp_store,
+            security_id="sec_other",
+            concept="Revenues",
+            fiscal_year=2023,
+            fiscal_period="Q4",
+            period_end="2023-12-31",
+            value=9999.0,
+            accession_number="acc-other",
+            available_at=dt.datetime(2024, 2, 1, 12, 0, 0),
+            form="10-K",
+        )
+        EstimateActualsDataset().run(tmp_store, EstimateActualsOptions())
+
+        df = est_actual_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 4, 1),
+            as_of_ts=dt.datetime(2024, 4, 1, 23, 59, 59),
+            security_ids=("sec_pit",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        assert len(df) == 1, "filter should return exactly the one matching series"
+        row = df.iloc[0]
+        assert row["security_id"] == "sec_pit"
+        assert row["measure_code"] == "EPS_DILUTED"
+        assert row["value"] == pytest.approx(1.55), "latest revision, columns not scrambled"
+        # The excluded security/measure must not leak through the JOIN filter.
+        assert "sec_other" not in set(df["security_id"])
+
     def test_est_surprise_asof_respects_available_at(self, tmp_store):
         _seed_sue_fixture(tmp_store)
         EstimateSurpriseDataset().run(tmp_store, EstimateSurpriseOptions(min_obs=4))
@@ -762,9 +800,26 @@ class TestQualityChecks:
         assert check.status == "failed", f"Expected failed for null value, got {check.status}"
 
     def test_clean_est_actual_passes_checks(self, tmp_store):
-        """With valid data, both checks should pass."""
+        """With POPULATED valid data, both checks should pass (not just on an
+        empty table — that would only prove the check doesn't false-positive)."""
         EstimateMeasureSeedDataset().run(tmp_store, EstimateMeasureSeedOptions())
-        # No rows → 0 violations → passes
+        # Populate real, valid actuals so the checks pass against actual data.
+        for fp, pe, val, acc in [
+            ("Q1", "2023-03-31", 1.00, "acc-q1"),
+            ("Q2", "2023-06-30", 1.10, "acc-q2"),
+            ("Q3", "2023-09-30", 1.20, "acc-q3"),
+            ("FY", "2023-12-31", 4.50, "acc-fy"),
+        ]:
+            tmp_store.con.execute(
+                """
+                INSERT INTO est_actual (
+                    security_id, measure_code, fiscal_year, fiscal_period,
+                    period_end, value, as_of_date, available_at, source, accession_number
+                )
+                VALUES ('sec_clean', 'EPS_DILUTED', 2023, ?, ?, ?, ?, now(), 'test', ?)
+                """,
+                [fp, pe, val, pe, acc],
+            )
         results = run_warehouse_quality_checks(tmp_store, record=False)
         fp_check = next(
             (r for r in results if r.check_name == "est_actual_invalid_fiscal_period"), None

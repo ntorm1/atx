@@ -375,11 +375,18 @@ def _compute_sue_series(
       NULL if fewer than min_obs prior Δ, or sigma == 0/NaN.
     """
     # Build a dict: (fy, fp) -> row for fast seasonal lookup
-    # Use EARLIEST available_at per (fy, fp) — no lookahead
+    # Use EARLIEST available_at per (fy, fp) — no lookahead. A NaT/None available_at
+    # sorts as "latest" (never preferred as originally-reported) so a real filing
+    # timestamp always wins; a group of all-NaT keeps the first row seen.
     earliest: dict[tuple[int, str], dict[str, Any]] = {}
     for _, row in df.iterrows():
         key = (int(row["fiscal_year"]), str(row["fiscal_period"]))
-        if key not in earliest or row["available_at"] < earliest[key]["available_at"]:
+        cur = row["available_at"]
+        if key not in earliest:
+            earliest[key] = row.to_dict()
+            continue
+        prev = earliest[key]["available_at"]
+        if pd.notna(cur) and (pd.isna(prev) or cur < prev):
             earliest[key] = row.to_dict()
 
     # Sort periods chronologically by period_end
@@ -495,7 +502,9 @@ class EstimateSurpriseDataset(Dataset):
                period_end, actual, available_at
         FROM ranked
         WHERE rn = 1
-        ORDER BY security_id, measure_code, fiscal_period != 'FY', period_end
+        -- Per-series chronological order is re-established in Python (sort_values +
+        -- _compute_sue_series sorted()); this ORDER BY is only for deterministic output.
+        ORDER BY security_id, measure_code, period_end
         """
         params = list(options.measure_codes) if options.measure_codes else []
         actuals_df = store.con.execute(sql, params).df()
@@ -654,6 +663,12 @@ class EstimateConsensusDataset(Dataset):
 
     Default-empty (licensed: IBES, FactSet Estimates, Zacks).
     Pass an injectable `provider: Callable[[], Iterable[dict]]` to populate.
+
+    Append/snapshot semantics: est_consensus has no primary key and rows are INSERTed
+    (not INSERT OR REPLACE). Each call appends the provider's rows verbatim, so a
+    provider that re-emits the same consensus snapshot will create duplicate rows.
+    Providers are responsible for emitting each (security, measure, period, consensus_date)
+    snapshot at most once (or the caller should truncate before a full reload).
     """
     dataset_id = "est_consensus"
     source_name = "est_consensus_injectable"
@@ -740,6 +755,11 @@ class EstimateGuidanceDataset(Dataset):
     Default-empty.  Real extraction requires SEC 8-K Item 2.02/7.01 free-text NER
     (documented as a TODO for a future sprint).  Provide both `fetch` and `parse`
     callables in options to populate.
+
+    Append/snapshot semantics: est_guidance has no primary key and rows are INSERTed
+    (not INSERT OR REPLACE). Re-running the same fetch/parse appends duplicate rows;
+    the fetch/parse pair is responsible for not re-emitting already-loaded guidance
+    (or the caller should truncate before a full reload).
     """
     dataset_id = "est_guidance"
     source_name = "est_guidance_injectable"
@@ -818,6 +838,11 @@ class EstimateRecommendationDataset(Dataset):
 
     Default-empty (licensed vendor data — IBES, FactSet, etc.).
     Pass an injectable `provider: Callable[[], Iterable[dict]]` to populate.
+
+    Append/snapshot semantics: est_recommendation has no primary key and rows are
+    INSERTed (not INSERT OR REPLACE). Each call appends; a provider that re-emits the
+    same rating events will create duplicates. The provider is responsible for emitting
+    each rating action at most once (or the caller should truncate before a full reload).
     """
     dataset_id = "est_recommendation"
     source_name = "est_recommendation_injectable"
