@@ -363,6 +363,23 @@ struct FitnessCfg {
 namespace detail {
 
 // =========================================================================
+//  Tradeable-profile turnover defaults (S4-4) — named, not magic numbers.
+//
+//  kTradeableMaxTurnover = 0.20: at a 10 bps round-trip and 0.20/period turnover
+//    the transaction-cost drag is ~2 bps/period — still below the minimum viable
+//    gross edge the tradeable profile targets. At 0.30+/period (the mean-reversion
+//    regime's natural maximum) costs exceed that floor, so 0.20 is the per-period
+//    turnover budget the search should treat as the soft ceiling.
+//  kTradeableTurnoverSlope = 2.0: an excess of 0.10 above the 0.20 target (i.e.
+//    turnover 0.30) gives mult = clamp(1 - 0.10/(0.20*2), 0, 1) = 0.75 — a 25%
+//    raw-fitness haircut. Meaningful but not catastrophic: it leaves the search
+//    latitude while discouraging chronically high turnover. (See finish_report for
+//    the multiplier formula these feed.)
+// =========================================================================
+inline constexpr atx::f64 kTradeableMaxTurnover = 0.20;  // per-period turnover budget
+inline constexpr atx::f64 kTradeableTurnoverSlope = 2.0; // penalty slope at the budget
+
+// =========================================================================
 //  SplitHalf — the W4a split-sample stability result over an OOS PnL stream.
 //
 //  sharpe_h1 / sharpe_h2 : the PER-PERIOD Sharpe (mean_std_pop's ms.mean/ms.std,
@@ -471,6 +488,46 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
                                           bool cost_active, const FitnessCfg &cfg);
 
 } // namespace detail
+
+// =========================================================================
+//  Tradeable-profile turnover helpers (S4-4) — OPT-IN, header-only inline.
+//
+//  These make the existing (default-inert) turnover-penalty mechanism actively
+//  useful for the tradeable profile WITHOUT changing any default: FitnessCfg{} is
+//  untouched, so the no-flag search path stays byte-identical. S7 calls
+//  tradeable_fitness_cfg() when the user passes --tradeable-profile and feeds a
+//  gate's cost_max_turnover through turnover_target_from_gate(); S4 only ships and
+//  proves the helpers.
+// =========================================================================
+
+/// A FitnessCfg with the recommended tradeable-profile turnover defaults
+/// (turnover_penalty_slope = kTradeableTurnoverSlope, max_turnover_target =
+/// kTradeableMaxTurnover). EVERY other field is the inert FitnessCfg{} default; the
+/// caller may override any field after the call. OPT-IN: FitnessCfg{} (the default)
+/// is unchanged, so no existing golden digest moves. Pure / thread-safe.
+[[nodiscard]] inline FitnessCfg tradeable_fitness_cfg() noexcept {
+  FitnessCfg cfg{}; // start from the inert defaults
+  cfg.turnover_penalty_slope = detail::kTradeableTurnoverSlope;
+  cfg.max_turnover_target = detail::kTradeableMaxTurnover;
+  return cfg;
+}
+
+/// Derive a max_turnover_target from a gate's cost_max_turnover threshold so the
+/// search penalty is coherent with admission: when the gate bars alphas with
+/// turnover > L, the search should be penalised for exceeding L rather than
+/// discovering them and failing admission. Returns L for L > 0, and +inf for
+/// L <= 0 (no gate -> no target -> the inert no-penalty value). The caller sets the
+/// result into FitnessCfg::max_turnover_target. Pure / thread-safe.
+[[nodiscard]] inline atx::f64 turnover_target_from_gate(atx::f64 gate_turnover_limit) noexcept {
+  return (gate_turnover_limit > 0.0) ? gate_turnover_limit
+                                     : std::numeric_limits<atx::f64>::infinity();
+}
+
+// Re-export the tradeable turnover constants into the factory namespace so callers
+// and tests reference them without reaching into `detail` (the values live once in
+// detail; these are aliases, not duplicates).
+inline constexpr atx::f64 kTradeableMaxTurnover = detail::kTradeableMaxTurnover;
+inline constexpr atx::f64 kTradeableTurnoverSlope = detail::kTradeableTurnoverSlope;
 
 // =========================================================================
 //  pool_aware_fitness — the §4.6 marginal-contribution score (OOS + deflated).
