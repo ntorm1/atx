@@ -3236,6 +3236,76 @@ def _check_specs(
             threshold=0.0,
             required_tables=("entity_classification",),
         ),
+        # ── S2: estimates ─────────────────────────────────────────────────────
+        SqlQualityCheck(
+            dataset_id="est_actual",
+            table_name="est_actual",
+            check_name="est_actual_null_value",
+            sql="SELECT count(*)::DOUBLE FROM est_actual WHERE value IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_actual",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_actual",
+            table_name="est_actual",
+            check_name="est_actual_invalid_fiscal_period",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_actual
+                WHERE fiscal_period NOT IN ('Q1','Q2','Q3','Q4','FY')
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_actual",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_actual",
+            table_name="est_actual",
+            check_name="est_actual_missing_available_at",
+            sql="SELECT count(*)::DOUBLE FROM est_actual WHERE available_at IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_actual",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_actual",
+            table_name="est_actual",
+            check_name="est_actual_duplicate_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT security_id, measure_code, fiscal_year, fiscal_period,
+                           accession_number, count(*) AS row_count
+                    FROM est_actual
+                    GROUP BY 1, 2, 3, 4, 5
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_actual",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_surprise",
+            table_name="est_surprise",
+            check_name="est_surprise_nonfinite_sue",
+            # sue must be NULL (insufficient history) or a finite number
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_surprise
+                WHERE sue IS NOT NULL
+                  AND NOT isfinite(sue)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_surprise",),
+            warn_if_missing=True,
+        ),
     )
 
 

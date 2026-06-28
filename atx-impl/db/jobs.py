@@ -51,6 +51,20 @@ from .reference_classifications import (
     SicTaxonomyDataset,
     SicTaxonomyOptions,
 )
+from .estimates import (
+    EstimateMeasureSeedDataset,
+    EstimateMeasureSeedOptions,
+    EstimateActualsDataset,
+    EstimateActualsOptions,
+    EstimateSurpriseDataset,
+    EstimateSurpriseOptions,
+    EstimateConsensusDataset,
+    EstimateConsensusOptions,
+    EstimateGuidanceDataset,
+    EstimateGuidanceOptions,
+    EstimateRecommendationDataset,
+    EstimateRecommendationOptions,
+)
 from .xbrl_taxonomy import XbrlTaxonomyDataset, XbrlTaxonomyOptions
 
 
@@ -430,6 +444,38 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         EntityClassificationDataset,
         _entity_classification_options,
     ),
+    EstimateMeasureSeedDataset.dataset_id: (
+        EstimateMeasureSeedDataset,
+        lambda p: EstimateMeasureSeedOptions(),
+    ),
+    EstimateActualsDataset.dataset_id: (
+        EstimateActualsDataset,
+        lambda p: EstimateActualsOptions(
+            measure_codes=_tuple_or_none(p.get("measure_codes")),
+            security_ids=_tuple_or_none(p.get("security_ids")),
+        ),
+    ),
+    EstimateSurpriseDataset.dataset_id: (
+        EstimateSurpriseDataset,
+        lambda p: EstimateSurpriseOptions(
+            measure_codes=_tuple_or_none(p.get("measure_codes")),
+            window=int(p.get("window", 8)),
+            min_obs=int(p.get("min_obs", 4)),
+            model=p.get("model", "srw_drift"),
+        ),
+    ),
+    EstimateConsensusDataset.dataset_id: (
+        EstimateConsensusDataset,
+        lambda p: EstimateConsensusOptions(),
+    ),
+    EstimateGuidanceDataset.dataset_id: (
+        EstimateGuidanceDataset,
+        lambda p: EstimateGuidanceOptions(),
+    ),
+    EstimateRecommendationDataset.dataset_id: (
+        EstimateRecommendationDataset,
+        lambda p: EstimateRecommendationOptions(),
+    ),
 }
 
 
@@ -631,6 +677,28 @@ class JobManager:
             params={"symbols": symbols},
             dependencies=["security_master", "sic_taxonomy", "fama_french_taxonomy", "naics_taxonomy"],
             **retry_policy,
+        )
+        # S2 estimates jobs
+        self.register_job(job_name="est_measure", dataset_id="est_measure", **retry_policy)
+        self.register_job(
+            job_name="est_actual",
+            dataset_id="est_actual",
+            params={"symbols": symbols},
+            # depends on sec_company_facts being loaded
+            dependencies=["sec_company_facts", "est_measure"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="est_surprise",
+            dataset_id="est_surprise",
+            # depends on est_actual; est_consensus is optional (soft-dep, not wired as hard dep)
+            dependencies=["est_actual"],
+            **retry_policy,
+        )
+        self.register_job(job_name="est_consensus", dataset_id="est_consensus", **retry_policy)
+        self.register_job(job_name="est_guidance", dataset_id="est_guidance", **retry_policy)
+        self.register_job(
+            job_name="est_recommendation", dataset_id="est_recommendation", **retry_policy
         )
 
     def run_job(

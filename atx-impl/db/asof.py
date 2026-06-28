@@ -953,6 +953,242 @@ def entity_classification_asof(
         return _run(store)
 
 
+def est_actual_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    measure_codes: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return the latest revision of each (security_id, measure_code, period_end) as-of a PIT ts.
+
+    Rows with available_at > as_of_ts are hidden (PIT semantics).
+    Latest revision = highest available_at <= as_of_ts per (security_id, measure_code, period_end).
+    """
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            sid_join = ""
+            mc_join = ""
+            sid_values = _normalize_strings(security_ids)
+            mc_values = _normalize_strings(measure_codes)
+            if sid_values:
+                store.con.register(
+                    "asof_est_actual_sid_filter",
+                    pd.DataFrame({"security_id": sid_values}),
+                )
+                registered.append("asof_est_actual_sid_filter")
+                sid_join = "JOIN asof_est_actual_sid_filter sf ON sf.security_id = a.security_id"
+            if mc_values:
+                store.con.register(
+                    "asof_est_actual_mc_filter",
+                    pd.DataFrame({"measure_code": mc_values}),
+                )
+                registered.append("asof_est_actual_mc_filter")
+                mc_join = "JOIN asof_est_actual_mc_filter mf ON mf.measure_code = a.measure_code"
+            sql = f"""
+            WITH ranked AS (
+                SELECT
+                    a.*,
+                    row_number() OVER (
+                        PARTITION BY a.security_id, a.measure_code, a.period_end
+                        ORDER BY a.available_at DESC NULLS LAST
+                    ) AS rn
+                FROM est_actual a
+                {sid_join}
+                {mc_join}
+                WHERE (a.available_at IS NULL OR a.available_at <= CAST(? AS TIMESTAMP))
+            )
+            SELECT * EXCLUDE (rn) FROM ranked WHERE rn = 1
+            ORDER BY security_id, measure_code, period_end
+            """
+            return store.con.execute(sql, [as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def est_surprise_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    measure_codes: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return est_surprise rows visible as-of a PIT timestamp.
+
+    est_surprise has ONE row per (security_id, measure_code, fiscal_year, fiscal_period)
+    (no revision chain) but available_at controls when the row becomes visible.
+    """
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            sid_join = ""
+            mc_join = ""
+            sid_values = _normalize_strings(security_ids)
+            mc_values = _normalize_strings(measure_codes)
+            if sid_values:
+                store.con.register(
+                    "asof_est_surprise_sid_filter",
+                    pd.DataFrame({"security_id": sid_values}),
+                )
+                registered.append("asof_est_surprise_sid_filter")
+                sid_join = "JOIN asof_est_surprise_sid_filter sf ON sf.security_id = s.security_id"
+            if mc_values:
+                store.con.register(
+                    "asof_est_surprise_mc_filter",
+                    pd.DataFrame({"measure_code": mc_values}),
+                )
+                registered.append("asof_est_surprise_mc_filter")
+                mc_join = "JOIN asof_est_surprise_mc_filter mf ON mf.measure_code = s.measure_code"
+            sql = f"""
+            SELECT s.*
+            FROM est_surprise s
+            {sid_join}
+            {mc_join}
+            WHERE (s.available_at IS NULL OR s.available_at <= CAST(? AS TIMESTAMP))
+            ORDER BY s.security_id, s.measure_code, s.period_end
+            """
+            return store.con.execute(sql, [as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def est_consensus_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    measure_codes: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return est_consensus rows visible as-of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            sid_join = ""
+            mc_join = ""
+            sid_values = _normalize_strings(security_ids)
+            mc_values = _normalize_strings(measure_codes)
+            if sid_values:
+                store.con.register(
+                    "asof_est_consensus_sid_filter",
+                    pd.DataFrame({"security_id": sid_values}),
+                )
+                registered.append("asof_est_consensus_sid_filter")
+                sid_join = "JOIN asof_est_consensus_sid_filter sf ON sf.security_id = c.security_id"
+            if mc_values:
+                store.con.register(
+                    "asof_est_consensus_mc_filter",
+                    pd.DataFrame({"measure_code": mc_values}),
+                )
+                registered.append("asof_est_consensus_mc_filter")
+                mc_join = "JOIN asof_est_consensus_mc_filter mf ON mf.measure_code = c.measure_code"
+            sql = f"""
+            SELECT c.*
+            FROM est_consensus c
+            {sid_join}
+            {mc_join}
+            WHERE (c.available_at IS NULL OR c.available_at <= CAST(? AS TIMESTAMP))
+            ORDER BY c.security_id, c.measure_code, c.period_end
+            """
+            return store.con.execute(sql, [as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def est_guidance_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    measure_codes: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return est_guidance rows visible as-of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            sid_join = ""
+            mc_join = ""
+            sid_values = _normalize_strings(security_ids)
+            mc_values = _normalize_strings(measure_codes)
+            if sid_values:
+                store.con.register(
+                    "asof_est_guidance_sid_filter",
+                    pd.DataFrame({"security_id": sid_values}),
+                )
+                registered.append("asof_est_guidance_sid_filter")
+                sid_join = "JOIN asof_est_guidance_sid_filter sf ON sf.security_id = g.security_id"
+            if mc_values:
+                store.con.register(
+                    "asof_est_guidance_mc_filter",
+                    pd.DataFrame({"measure_code": mc_values}),
+                )
+                registered.append("asof_est_guidance_mc_filter")
+                mc_join = "JOIN asof_est_guidance_mc_filter mf ON mf.measure_code = g.measure_code"
+            sql = f"""
+            SELECT g.*
+            FROM est_guidance g
+            {sid_join}
+            {mc_join}
+            WHERE (g.available_at IS NULL OR g.available_at <= CAST(? AS TIMESTAMP))
+            ORDER BY g.security_id, g.measure_code, g.period_end
+            """
+            return store.con.execute(sql, [as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
 def identifier_decisions_asof(
     as_of_date: dt.date,
     as_of_ts: dt.datetime | None = None,

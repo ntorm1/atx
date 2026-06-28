@@ -125,6 +125,170 @@ def _reference_classifications(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create S2 estimates tables: est_measure, est_actual, est_consensus, est_detail,
+    est_broker, est_analyst, est_guidance, est_recommendation, est_surprise."""
+    for statement in (
+        """
+        CREATE TABLE IF NOT EXISTS est_measure (
+            measure_code VARCHAR PRIMARY KEY,
+            label VARCHAR NOT NULL,
+            statement VARCHAR,
+            unit_type VARCHAR,
+            is_per_share BOOLEAN NOT NULL DEFAULT false,
+            higher_is_better BOOLEAN NOT NULL DEFAULT true,
+            us_gaap_concepts VARCHAR,
+            source VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS est_actual (
+            security_id VARCHAR NOT NULL,
+            measure_code VARCHAR NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            fiscal_period VARCHAR NOT NULL,
+            period_end DATE NOT NULL,
+            value DOUBLE,
+            unit VARCHAR,
+            form VARCHAR,
+            accession_number VARCHAR,
+            announce_date DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR,
+            source VARCHAR NOT NULL,
+            PRIMARY KEY (security_id, measure_code, fiscal_year, fiscal_period, accession_number)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_est_actual_key ON est_actual(security_id, measure_code, period_end)",
+        """
+        CREATE TABLE IF NOT EXISTS est_consensus (
+            security_id VARCHAR,
+            measure_code VARCHAR,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            period_end DATE,
+            consensus_date DATE,
+            mean DOUBLE,
+            median DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            stdev DOUBLE,
+            num_estimates INTEGER,
+            num_up INTEGER,
+            num_down INTEGER,
+            currency VARCHAR,
+            as_of_date DATE,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR,
+            source VARCHAR
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_est_consensus_key ON est_consensus(security_id, measure_code, period_end)",
+        """
+        CREATE TABLE IF NOT EXISTS est_detail (
+            security_id VARCHAR,
+            measure_code VARCHAR,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            period_end DATE,
+            broker_id VARCHAR,
+            analyst_id VARCHAR,
+            value DOUBLE,
+            estimate_date DATE,
+            as_of_date DATE,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR,
+            source VARCHAR
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS est_broker (
+            broker_id VARCHAR PRIMARY KEY,
+            broker_name VARCHAR,
+            source VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS est_analyst (
+            analyst_id VARCHAR PRIMARY KEY,
+            analyst_name VARCHAR,
+            broker_id VARCHAR,
+            source VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS est_guidance (
+            security_id VARCHAR,
+            measure_code VARCHAR,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            period_end DATE,
+            low DOUBLE,
+            high DOUBLE,
+            mid DOUBLE,
+            basis VARCHAR,
+            guidance_date DATE,
+            form VARCHAR,
+            accession_number VARCHAR,
+            as_of_date DATE,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR,
+            source VARCHAR
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_est_guidance_key ON est_guidance(security_id, measure_code, period_end)",
+        """
+        CREATE TABLE IF NOT EXISTS est_recommendation (
+            security_id VARCHAR,
+            broker_id VARCHAR,
+            analyst_id VARCHAR,
+            rating VARCHAR,
+            rating_standardized VARCHAR,
+            prior_rating VARCHAR,
+            action VARCHAR,
+            rating_date DATE,
+            as_of_date DATE,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR,
+            source VARCHAR
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS est_surprise (
+            security_id VARCHAR,
+            measure_code VARCHAR,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            period_end DATE,
+            actual DOUBLE,
+            expected DOUBLE,
+            surprise DOUBLE,
+            sue DOUBLE,
+            consensus_mean DOUBLE,
+            surprise_pct DOUBLE,
+            model VARCHAR,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR,
+            source VARCHAR NOT NULL,
+            PRIMARY KEY (security_id, measure_code, fiscal_year, fiscal_period)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_est_surprise_key ON est_surprise(security_id, measure_code, period_end)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -141,6 +305,11 @@ MIGRATIONS: list[Migration] = [
         version=3,
         name="reference_classifications",
         up=_reference_classifications,
+    ),
+    Migration(
+        version=4,
+        name="estimates",
+        up=_estimates,
     ),
 ]
 

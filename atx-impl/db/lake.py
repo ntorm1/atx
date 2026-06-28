@@ -63,6 +63,9 @@ DEFAULT_EXPORT_OBJECTS = (
     "taxonomy_node",
     "entity_classification",
     "taxonomy_mapping",
+    "est_measure",
+    "est_actual",
+    "est_surprise",
 )
 
 

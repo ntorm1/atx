@@ -432,6 +432,113 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_12_ind_port.html",
         ),
     ),
+    # ── S2: estimates ─────────────────────────────────────────────────────────
+    ProviderParityRow(
+        provider="FactSet Estimates / IBES / Zacks",
+        provider_domain="Reported actuals and earnings surprise",
+        warehouse_domain="estimates_actuals",
+        reference_tables=(
+            "FactSet Estimates API reported actuals",
+            "IBES actuals file",
+            "Refinitiv actuals",
+            "Zacks actuals feed",
+        ),
+        institutional_grain="Security fiscal-period reported actuals with PIT availability timestamps.",
+        institutional_keys=("security_id", "measure_code", "fiscal_year", "fiscal_period", "accession_number"),
+        pit_fields=("available_at", "announce_date", "source_loaded_at"),
+        factors_or_fields=("EPS diluted/basic", "revenue", "net income", "operating income", "SUE signal"),
+        open_substitute=(
+            "SEC XBRL companyfacts (sec_company_facts) mapped to measure codes via est_measure, "
+            "loaded into est_actual with PIT available_at carried from filing acceptance; "
+            "est_surprise computes Standardized Unexpected Earnings (SUE) via the "
+            "seasonal-random-walk-with-drift model (Foster-Olsen-Shevlin 1984), "
+            "the documented basis of the Post-Earnings Announcement Drift (PEAD) factor."
+        ),
+        warehouse_tables=("est_measure", "est_actual", "est_surprise"),
+        parity_status="implemented",
+        limitations=(
+            "Open XBRL covers US-GAAP concepts only; no non-GAAP adjustments, "
+            "no broker estimate revisions, no street-consensus actuals."
+        ),
+        next_gap="Add TTM/LTM actuals; enrich XBRL unit normalization for non-USD reporters.",
+        source_urls=(
+            "https://developer.factset.com/api-catalog/factset-estimates-api",
+            "https://www.sec.gov/search-filings/edgar-application-programming-interfaces",
+            "https://data.sec.gov/api/xbrl/companyfacts/",
+        ),
+    ),
+    ProviderParityRow(
+        provider="FactSet Estimates / IBES / Refinitiv / Zacks",
+        provider_domain="Consensus estimates",
+        warehouse_domain="estimates_consensus",
+        reference_tables=(
+            "FactSet Estimates consensus endpoint",
+            "IBES consensus summary file",
+            "Refinitiv consensus file",
+            "Zacks consensus feed",
+        ),
+        institutional_grain="Security-measure-period consensus rows with mean/median/stdev/count by as-of date.",
+        institutional_keys=("security_id", "measure_code", "fiscal_year", "fiscal_period", "consensus_date"),
+        pit_fields=("consensus_date", "available_at", "source_loaded_at"),
+        factors_or_fields=("mean estimate", "median estimate", "high/low estimate", "stdev", "num_estimates", "revisions"),
+        open_substitute="est_consensus table with injectable provider connector; default-empty.",
+        warehouse_tables=("est_consensus", "est_detail", "est_broker", "est_analyst"),
+        parity_status="partial",
+        limitations=(
+            "licensed: IBES/FactSet Estimates/Zacks; schema + injectable loader; no open-data source"
+        ),
+        next_gap="Wire licensed IBES/FactSet Estimates feed via injectable provider.",
+        source_urls=(
+            "https://developer.factset.com/api-catalog/factset-estimates-api",
+            "https://www.lseg.com/en/data-analytics/financial-data/estimates",
+        ),
+    ),
+    ProviderParityRow(
+        provider="FactSet Estimates / IBES / Refinitiv / Zacks",
+        provider_domain="Individual broker estimates and recommendations",
+        warehouse_domain="estimates_detail",
+        reference_tables=(
+            "FactSet Estimates detail endpoint",
+            "IBES detail file",
+            "Zacks detail feed",
+        ),
+        institutional_grain="Broker-analyst-measure-period estimate rows and recommendation change events.",
+        institutional_keys=("security_id", "broker_id", "analyst_id", "measure_code", "fiscal_year", "fiscal_period", "estimate_date"),
+        pit_fields=("estimate_date", "rating_date", "available_at", "source_loaded_at"),
+        factors_or_fields=("individual estimate", "broker rating", "rating direction", "price target"),
+        open_substitute="est_detail, est_recommendation, est_broker, est_analyst tables with injectable provider connectors; default-empty.",
+        warehouse_tables=("est_detail", "est_broker", "est_analyst", "est_recommendation"),
+        parity_status="partial",
+        limitations=(
+            "licensed: IBES/FactSet Estimates/Zacks; schema + injectable loader; no open-data source"
+        ),
+        next_gap="Wire licensed IBES/FactSet Estimates detail feed via injectable provider.",
+        source_urls=(
+            "https://developer.factset.com/api-catalog/factset-estimates-api",
+        ),
+    ),
+    ProviderParityRow(
+        provider="SEC EDGAR / FactSet Estimates",
+        provider_domain="Management guidance",
+        warehouse_domain="estimates_guidance",
+        reference_tables=(
+            "SEC 8-K Item 2.02 and 7.01 filings",
+            "FactSet Estimates guidance endpoint",
+        ),
+        institutional_grain="Security-measure-period management guidance ranges (low/high/mid) by guidance date.",
+        institutional_keys=("security_id", "measure_code", "fiscal_year", "fiscal_period", "guidance_date"),
+        pit_fields=("guidance_date", "available_at", "source_loaded_at"),
+        factors_or_fields=("guidance low/high/mid", "GAAP vs non-GAAP basis", "form", "accession_number"),
+        open_substitute="est_guidance table with injectable connector; default-empty. Real extraction requires SEC 8-K Item 2.02/7.01 free-text NER (documented TODO).",
+        warehouse_tables=("est_guidance",),
+        parity_status="partial",
+        limitations="SEC 8-K Item 2.02/7.01 free-text extraction; injectable connector",
+        next_gap="Implement SEC 8-K NER pipeline to extract guidance ranges from Item 2.02/7.01 text.",
+        source_urls=(
+            "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=8-K&dateb=&owner=include&count=40",
+            "https://developer.factset.com/api-catalog/factset-estimates-api",
+        ),
+    ),
     ProviderParityRow(
         provider="Renaissance Technologies",
         provider_domain="Quant research data and compute infrastructure",
