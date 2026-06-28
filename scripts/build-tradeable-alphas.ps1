@@ -26,16 +26,45 @@
   pwsh -NoProfile -File scripts\build-tradeable-alphas.ps1 -Stage augment,discover
   pwsh -NoProfile -File scripts\build-tradeable-alphas.ps1 -Stage pipeline
 
+.EXAMPLE
+  # Smoke profile: full pipeline end-to-end on the cached dev panel in ~5 min (wiring validation,
+  # loose gates so >=1 alpha admits and combine/optimize/report/book all run). NOT an edge run.
+  pwsh -NoProfile -File scripts\build-tradeable-alphas.ps1 -Profile smoke
+
 .NOTES
   S7-5: capstone harness.  S7-6 runs the real pipeline.
   Flag names verified against atx-impl/src/config.cpp.
   --admit-seeds-presearch does NOT exist; corrected to --protect-seed-elites / --mutate-seed-copies.
   discover does NOT write a panel (--panel-out is a no-op); downstream stages consume the augmented panel.
+
+  PROFILES (test efficiently without hour-long runs — separate Q1 wiring from Q2 edge):
+    -Profile prod  (default): full search (pop 300, gen 15) + strict build-profile gates on the full
+                              accept panel. Hours. The real net-of-cost edge run.
+    -Profile smoke          : small search (pop 40, gen 4) + LOOSE gates on the cached dev panel.
+                              ~5 min, exercises the SAME flag-wiring + every downstream stage so a
+                              code change can be validated end-to-end fast. Numbers are not edge-
+                              meaningful by design. Tune -Population/-Generations for even faster.
+
+  BUILD THE CACHED DEV PANEL ONCE (regenerable; not committed — lives under work/ which is ignored):
+    atx-impl panel --segs work\accept\segs --panel-out work\dev\dev-panel.bin `
+      --start 2022-01-01 --end 2023-12-31 --min-price 1.0 --min-adv-usd 25000000 --adv-window 20 `
+      --top-n-by-adv 300 --augment-panel --adv-windows 5,10,20,60 --require-sector 1 --compact-universe 1
+    # (require-sector/compact-universe are bool but NOT in config.cpp's valueless fast-path, so they
+    #  consume the next token as a dummy value and MUST be placed last — see canonical-acceptance-run.ps1)
 #>
 param(
     [ValidateSet('augment','discover','pipeline','all')]
     [string[]] $Stage     = @('all'),
     [switch]   $DryRun,
+    # Profile selects the speed/representativeness tier (population/generations + smoke defaults).
+    #   prod  = full search (pop 300, gen 15) on the full accept panel — hours; the real edge run.
+    #   smoke = small search (pop 40, gen 4); unless overridden, uses the cached dev panel
+    #           (work\dev\dev-panel.bin) and a separate work dir, and skips augment — minutes.
+    # Both profiles exercise the SAME flag-wiring path, so smoke validates the prod argv path.
+    [ValidateSet('prod','smoke')]
+    [string]   $Profile     = 'prod',
+    [int]      $Population   = 0,        # 0 = use profile default (prod 300 / smoke 40)
+    [int]      $Generations  = 0,        # 0 = use profile default (prod 15  / smoke 4)
     [string]   $WorkDir   = 'work\tradeable-build',
     [string]   $PanelBin  = 'work\accept\panel.bin',
     [string]   $SegsDir   = 'work\accept\segs',
@@ -72,10 +101,40 @@ function New-DiscoverArgv {
         [string] $DownstreamPanel,
         [string] $SeedFile,
         [string] $WorkDir,
-        [int]    $Workers = 0
+        [int]    $Workers     = 0,
+        [int]    $Population  = 300,
+        [int]    $Generations = 15,
+        # LooseGates = the smoke-profile admission set: floors dropped so >=1 alpha clears the
+        # gate and the WHOLE pipeline (combine/optimize/report/book) is exercised. This is a
+        # WIRING smoke, NOT an edge measurement — prod keeps the strict build-profile floors.
+        [switch] $LooseGates
     )
     $libraryDir = Join-Path $WorkDir '_library'
     $outDir     = Join-Path $WorkDir 'alphas'
+
+    if ($LooseGates) {
+        $gateArgs = [string[]]@(
+            '--cost-bps-admit',     '0',
+            '--min-holding-days',   '0',
+            '--min-dsr',            '0.0',
+            '--min-sharpe',         '0.0',
+            '--min-fitness',        '0.0',
+            '--max-turnover',       '1.0',
+            '--reject-price-scale', '1.0',
+            '--dsr-subwindows',     '0'
+        )
+    } else {
+        $gateArgs = [string[]]@(
+            '--cost-bps-admit',     '10',
+            '--min-holding-days',   '5',
+            '--min-dsr',            '0.5',
+            '--min-sharpe',         '0.25',
+            '--min-fitness',        '1.0',
+            '--max-turnover',       '0.50',
+            '--reject-price-scale', '0.5',
+            '--dsr-subwindows',     '3'
+        )
+    }
 
     $argv = [System.Collections.Generic.List[string]]::new()
     $argv.AddRange([string[]]@(
@@ -90,21 +149,16 @@ function New-DiscoverArgv {
         '--mutate-seed-copies',
         '--deflate-selection',
         '--min-viable-raw',         '0.05',
-        '--enable-wrap-in-op',
-        '--cost-bps-admit',         '10',
-        '--min-holding-days',       '5',
-        '--min-dsr',                '0.5',
-        '--min-sharpe',             '0.25',
-        '--min-fitness',            '1.0',
-        '--max-turnover',           '0.50',
-        '--reject-price-scale',     '0.5',
-        '--dsr-subwindows',         '3',
+        '--enable-wrap-in-op'
+    ))
+    $argv.AddRange($gateArgs)
+    $argv.AddRange([string[]]@(
         '--typed-fields',
         '--robust-holdout-frac',    '0.30',
         '--oos-fraction',           '0.25',
         '--alpha-out',              $outDir,
-        '--population',             '300',
-        '--generations',            '15'
+        '--population',             [string]$Population,
+        '--generations',            [string]$Generations
     ))
 
     if ($Workers -gt 0) {
@@ -216,6 +270,24 @@ function Show-RankedTable {
 
 if ($MyInvocation.InvocationName -ne '.') {
 
+    # Resolve profile -> effective population/generations + smoke defaults.
+    # An explicitly-passed -Population/-Generations/-PanelBin/-WorkDir/-Stage always wins
+    # (PSBoundParameters), so the profile only fills what the caller left at its default.
+    $profileDefaults = @{
+        prod  = @{ Pop = 300; Gen = 15 }
+        smoke = @{ Pop = 40;  Gen = 4  }
+    }
+    $effPopulation  = if ($Population  -gt 0) { $Population }  else { $profileDefaults[$Profile].Pop }
+    $effGenerations = if ($Generations -gt 0) { $Generations } else { $profileDefaults[$Profile].Gen }
+
+    if ($Profile -eq 'smoke') {
+        # The cached dev panel is already augmented, so smoke skips augment and reads it directly.
+        if (-not $PSBoundParameters.ContainsKey('PanelBin')) { $PanelBin = 'work\dev\dev-panel.bin' }
+        if (-not $PSBoundParameters.ContainsKey('WorkDir'))  { $WorkDir  = 'work\dev\smoke-build' }
+        if (-not $PSBoundParameters.ContainsKey('Stage'))    { $Stage    = @('discover','pipeline') }
+    }
+    Write-Host "[profile=$Profile] population=$effPopulation generations=$effGenerations panel=$PanelBin workdir=$WorkDir" -ForegroundColor DarkCyan
+
     # Resolve absolute WorkDir (make it absolute so downstream stages agree on paths)
     if (-not [System.IO.Path]::IsPathRooted($WorkDir)) {
         $WorkDir = Join-Path (Get-Location).Path $WorkDir
@@ -281,7 +353,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 Invoke-Stage 'augment' $argv
             }
             'discover' {
-                $argv = New-DiscoverArgv -DownstreamPanel $DownstreamPanel -SeedFile $SeedFile -WorkDir $WorkDir -Workers $Workers
+                $argv = New-DiscoverArgv -DownstreamPanel $DownstreamPanel -SeedFile $SeedFile -WorkDir $WorkDir -Workers $Workers -Population $effPopulation -Generations $effGenerations -LooseGates:($Profile -eq 'smoke')
                 Invoke-Stage 'discover' $argv
             }
             'combine'  {

@@ -153,6 +153,49 @@ Describe 'New-DiscoverArgv - --workers conditional' {
     }
 }
 
+Describe 'New-DiscoverArgv - LooseGates (smoke profile admission)' {
+
+    It 'prod (default) keeps strict floors: --min-fitness 1.0, --min-dsr 0.5' {
+        $argv = New-DiscoverArgv -DownstreamPanel $testPanel -SeedFile $testSeedFile -WorkDir $testWorkDir
+        $fi = [array]::IndexOf($argv, '--min-fitness')
+        $di = [array]::IndexOf($argv, '--min-dsr')
+        $argv[$fi + 1] | Should Be '1.0'
+        $argv[$di + 1] | Should Be '0.5'
+    }
+
+    It 'LooseGates drops floors to 0 so the pipeline is exercised: --min-fitness 0.0, --min-dsr 0.0, --dsr-subwindows 0' {
+        $argv = New-DiscoverArgv -DownstreamPanel $testPanel -SeedFile $testSeedFile -WorkDir $testWorkDir -LooseGates
+        $fi = [array]::IndexOf($argv, '--min-fitness')
+        $di = [array]::IndexOf($argv, '--min-dsr')
+        $si = [array]::IndexOf($argv, '--dsr-subwindows')
+        $argv[$fi + 1] | Should Be '0.0'
+        $argv[$di + 1] | Should Be '0.0'
+        $argv[$si + 1] | Should Be '0'
+    }
+}
+
+Describe 'New-DiscoverArgv - population/generations parameterized (profile tiers)' {
+
+    It 'defaults to prod search budget (population 300, generations 15)' {
+        $argv = New-DiscoverArgv -DownstreamPanel $testPanel -SeedFile $testSeedFile `
+                                 -WorkDir $testWorkDir
+        $pi = [array]::IndexOf($argv, '--population')
+        $gi = [array]::IndexOf($argv, '--generations')
+        $argv[$pi + 1] | Should Be '300'
+        $argv[$gi + 1] | Should Be '15'
+    }
+
+    It 'emits the smoke search budget when passed (population 40, generations 4)' {
+        $argv = New-DiscoverArgv -DownstreamPanel $testPanel -SeedFile $testSeedFile `
+                                 -WorkDir $testWorkDir -Population 40 -Generations 4
+        $pi = [array]::IndexOf($argv, '--population')
+        $gi = [array]::IndexOf($argv, '--generations')
+        $argv[$pi + 1] | Should Be '40'
+        $argv[$gi + 1] | Should Be '4'
+        ($argv -contains '300') | Should Be $false
+    }
+}
+
 Describe 'New-CombineArgv' {
 
     $argv = New-CombineArgv -DownstreamPanel $testPanel -WorkDir $testWorkDir
