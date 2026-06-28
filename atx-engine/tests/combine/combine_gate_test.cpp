@@ -323,5 +323,96 @@ TEST(AlphaGate, BoundaryAtMaxPoolCorrAccepts) {
   EXPECT_EQ(gate.admit(m, cand, pool), GateVerdict::Accept);
 }
 
+// ===========================================================================
+//  S4-1: Net-of-cost fitness floor — AlphaGate::admit
+// ===========================================================================
+// (a) gate_netcost_offpath: rt_cost_bps = 0.0 => off-path, byte-identical verdicts.
+// A candidate that would be accepted stays Accept; one that fails fitness still
+// RejectFitness — the zero-cost path never alters verdicts.
+TEST(AlphaGateNetCost, OffPathZeroCostPreservesVerdict) {
+  // Candidate A: clears all floors with rt_cost_bps=0.0 => Accept.
+  GateConfig cfg_zero;
+  cfg_zero.rt_cost_bps = 0.0; // inert default — off-path branch not taken
+  const AlphaGate gate_zero{cfg_zero};
+  const AlphaMetrics m_pass = passing_metrics(); // fitness=2.0, sharpe=2.0, turnover=0.30
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+  EXPECT_EQ(gate_zero.admit(m_pass, cand, pool), GateVerdict::Accept);
+
+  // Candidate B: raw fitness=0.5 < min_fitness=1.0 => RejectFitness regardless of cost=0.
+  AlphaMetrics m_fail = passing_metrics();
+  m_fail.fitness = 0.5;
+  EXPECT_EQ(gate_zero.admit(m_fail, cand, pool), GateVerdict::RejectFitness);
+}
+
+// (b) gate_netcost_onpath: rt_cost_bps > 0.0 flips Accept -> RejectFitness.
+// fitness=1.1, turnover=0.8, rt_cost_bps=10.0:
+//   eff_fitness = 1.1 - 0.8*10.0*0.1 = 0.3 < 1.0 => RejectFitness.
+// With rt_cost_bps=0.0: eff_fitness = 1.1 >= 1.0 => Accept (no other floor fails).
+// cfg.max_turnover is raised to 0.90 so turnover=0.8 does NOT pre-empt the fitness gate.
+TEST(AlphaGateNetCost, OnPathCostAdjustedFitnessFlips) {
+  // Build a candidate: gross fitness=1.1, turnover=0.8, sharpe=2.0 (passes sanity).
+  // With rt_cost_bps=10: eff_fitness = 1.1 - 0.8*10.0*0.1 = 0.3 => RejectFitness.
+  AlphaMetrics m;
+  m.fitness       = 1.1;
+  m.turnover      = 0.8;
+  m.sharpe        = 2.0;
+  m.returns       = 0.10;
+  m.drawdown      = 0.05;
+  m.margin        = 0.125;
+  m.holding_days  = 1.25;
+
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+
+  // With cost on: eff_fitness = 0.3 < 1.0 => must be RejectFitness.
+  GateConfig cfg_cost;
+  cfg_cost.rt_cost_bps  = 10.0;
+  cfg_cost.max_turnover = 0.90; // raise ceiling so turnover=0.8 does NOT trip RejectTurnover
+  const AlphaGate gate_cost{cfg_cost};
+  EXPECT_EQ(gate_cost.admit(m, cand, pool), GateVerdict::RejectFitness);
+
+  // With cost off (0.0): eff_fitness = 1.1 >= 1.0 => Accept (turnover 0.8 <= 0.90, sharpe passes).
+  GateConfig cfg_free;
+  cfg_free.rt_cost_bps  = 0.0;
+  cfg_free.max_turnover = 0.90;
+  const AlphaGate gate_free{cfg_free};
+  EXPECT_EQ(gate_free.admit(m, cand, pool), GateVerdict::Accept);
+}
+
+// (c) gate_netcost_twice: same inputs => same verdict on second call (no hidden state).
+TEST(AlphaGateNetCost, TwiceRunSameVerdict) {
+  AlphaMetrics m;
+  m.fitness       = 1.1;
+  m.turnover      = 0.8;
+  m.sharpe        = 2.0;
+  m.returns       = 0.10;
+  m.drawdown      = 0.05;
+  m.margin        = 0.125;
+  m.holding_days  = 1.25;
+
+  const AlphaStore pool;
+  const std::vector<f64> cand{0.0, 0.01, -0.02, 0.03};
+
+  // On-path: both calls must be RejectFitness.
+  GateConfig cfg_cost;
+  cfg_cost.rt_cost_bps  = 10.0;
+  cfg_cost.max_turnover = 0.90;
+  const AlphaGate gate_cost{cfg_cost};
+  const GateVerdict v1 = gate_cost.admit(m, cand, pool);
+  const GateVerdict v2 = gate_cost.admit(m, cand, pool);
+  EXPECT_EQ(v1, GateVerdict::RejectFitness);
+  EXPECT_EQ(v2, v1); // deterministic: no hidden state
+
+  // Off-path: both calls must be Accept.
+  GateConfig cfg_free;
+  cfg_free.rt_cost_bps  = 0.0;
+  cfg_free.max_turnover = 0.90;
+  const AlphaGate gate_free{cfg_free};
+  const GateVerdict v3 = gate_free.admit(m, cand, pool);
+  const GateVerdict v4 = gate_free.admit(m, cand, pool);
+  EXPECT_EQ(v3, GateVerdict::Accept);
+  EXPECT_EQ(v4, v3);
+}
 
 }  // namespace atxtest_combine_gate_test

@@ -55,6 +55,7 @@
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
 
 #include "atx/engine/combine/correlation.hpp" // pairwise_complete_corr (shared §3.3 helper)
+#include "atx/engine/combine/cost_util.hpp"   // combine::cost_adjusted_fitness, kFitnessCostScale
 #include "atx/engine/combine/metrics.hpp"     // AlphaMetrics (the floored fields)
 #include "atx/engine/combine/store.hpp"       // AlphaStore, AlphaId (the accepted pool)
 
@@ -111,7 +112,15 @@ struct AlphaGate {
     // failing condition is the verdict (deterministic).
     // Fitness (WQ-aligned) is the dominant primary gate; sharpe is a low
     // sanity floor only (the statistical-significance gate is DSR, factory-side).
-    if (metrics.fitness < cfg.min_fitness) {
+    //
+    // S4-1: when rt_cost_bps > 0 use cost-adjusted fitness so the floor is net-of-cost.
+    // At rt_cost_bps == 0 (default) the branch is not taken and eff_fitness ==
+    // metrics.fitness exactly — byte-identical to the pre-S4-1 path.
+    const atx::f64 eff_fitness =
+        (cfg.rt_cost_bps > 0.0)
+            ? combine::cost_adjusted_fitness(metrics.fitness, metrics.turnover, cfg.rt_cost_bps)
+            : metrics.fitness;
+    if (eff_fitness < cfg.min_fitness) {
       return GateVerdict::RejectFitness;
     }
     if (metrics.sharpe < cfg.min_sharpe) {

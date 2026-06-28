@@ -64,6 +64,7 @@
 #include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // f64, u8, u32, u64, usize
 
+#include "atx/engine/combine/cost_util.hpp" // combine::cost_adjusted_fitness (S4-1)
 #include "atx/engine/combine/gate.hpp"    // AlphaGate, GateConfig, GateVerdict
 #include "atx/engine/combine/metrics.hpp" // combine::AlphaMetrics
 #include "atx/engine/combine/store.hpp"   // combine::AlphaId
@@ -409,7 +410,14 @@ private:
     // before the corr gate is consulted). Match AlphaGate::admit's operators exactly.
     // Order mirrors §5.2: fitness (WQ-aligned primary) first, sharpe sanity floor second.
     const GateConfig &cfg = gate.cfg;
-    if (c.metrics.fitness < cfg.min_fitness) {
+    // S4-1: mirror AlphaGate::admit — use cost-adjusted fitness when rt_cost_bps > 0.
+    // At rt_cost_bps == 0 (default) the branch is not taken and eff_fitness ==
+    // c.metrics.fitness exactly — byte-identical to the pre-S4-1 path.
+    const atx::f64 eff_fitness =
+        (cfg.rt_cost_bps > 0.0)
+            ? combine::cost_adjusted_fitness(c.metrics.fitness, c.metrics.turnover, cfg.rt_cost_bps)
+            : c.metrics.fitness;
+    if (eff_fitness < cfg.min_fitness) {
       return AdmitKind::RejectFitness;
     }
     if (c.metrics.sharpe < cfg.min_sharpe) {

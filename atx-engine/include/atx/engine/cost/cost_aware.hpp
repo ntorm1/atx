@@ -48,6 +48,7 @@
 
 #include "atx/core/types.hpp" // atx::f64
 
+#include "atx/engine/combine/cost_util.hpp"  // combine::cost_adjusted_fitness, kFitnessCostScale (S4-1 leaf)
 #include "atx/engine/combine/gate.hpp"       // combine::GateConfig (max_turnover knob)
 #include "atx/engine/combine/metrics.hpp"    // combine::AlphaMetrics (fitness / turnover)
 #include "atx/engine/cost/calibration.hpp"   // cost::CalibratedCost (the calibrated coeffs)
@@ -68,7 +69,10 @@ inline constexpr atx::f64 kBpsPerUnit = 1.0e4;
 /// rt_cost_bps = 8, turnover 0.9 costs 0.72 fitness units, turnover 0.1 costs
 /// 0.08 — a >0.6-unit spread that flips a thin RAW-fitness lead. Documented, not
 /// fitted (the down-rank flip is the only invariant the test pins).
-inline constexpr atx::f64 kFitnessScale = 0.1;
+/// S4-1: the actual 0.1 constant lives in combine/cost_util.hpp (kFitnessCostScale)
+/// so gate.hpp, library.hpp, and this header all share ONE definition. This alias
+/// keeps the public name cost::kFitnessScale unchanged (existing call sites unchanged).
+inline constexpr atx::f64 kFitnessScale = combine::kFitnessCostScale;
 
 /// Gate-map sensitivity: how fast the max_turnover ceiling decays with cost. The
 /// ceiling is 0.70 · horizon / (horizon + kGateCostSensitivity · rt_cost_bps),
@@ -166,10 +170,11 @@ struct CostKnobs {
 /// kFitnessScale. A high-turnover alpha pays more, so two alphas with the same
 /// raw fitness are split by turnover, and a high-turnover net loser ranks below a
 /// low-turnover winner even when its RAW fitness is higher.
+/// S4-1: delegates to combine::cost_adjusted_fitness (combine/cost_util.hpp) so the
+/// formula and the 0.1 scale live in ONE place. Public signature + behaviour unchanged.
 [[nodiscard]] inline atx::f64 cost_adjusted_fitness(const combine::AlphaMetrics& m,
-                                                    atx::f64 rt_cost_bps) {
-  const atx::f64 cost_penalty = m.turnover * rt_cost_bps * kFitnessScale;
-  return m.fitness - cost_penalty;
+                                                    atx::f64 rt_cost_bps) noexcept {
+  return combine::cost_adjusted_fitness(m.fitness, m.turnover, rt_cost_bps);
 }
 
 } // namespace atx::engine::cost
