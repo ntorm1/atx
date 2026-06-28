@@ -13,9 +13,11 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -24,6 +26,7 @@
 
 #include "artifacts.hpp"
 #include "config.hpp"
+#include "serialize_panel.hpp"
 #include "stages.hpp"
 
 #include "atx/engine/combine/gate.hpp"       // combine::GateConfig (A1 library readback)
@@ -619,6 +622,319 @@ TEST_F(AtxImplE2E, ReportWithoutComboStillWorksAndIsByteIdentical) {
         const auto db = read_file(rep_b / tsv);
         EXPECT_FALSE(da.empty()) << tsv << " (report A) is empty";
         EXPECT_EQ(da, db) << tsv << " not byte-identical across standalone reports";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S6-3: DownstreamSignCapacityParticipation
+// ---------------------------------------------------------------------------
+// Proves all three S6 downstream fixes together on a single known-positive
+// synthetic alpha:
+//   S6-0 (sign-correct deploy)   — position_mode=true -> sign-preserving
+//                                  shape_book path -> positive Sharpe.
+//   S6-1 (realized-edge capacity) — capacity_floor>0 + target_aum>0 exercises
+//                                  alpha_capacity_aum / decorrelate_weights.
+//   S6-2 (trailing-ADV participation + p99) — report_aum>0 + volume field
+//                                  present -> finite p95_participation_pct.
+// Four assertions (all four must pass):
+//   1. Non-empty book: avg_names_held > 0
+//   2. Sign-correct Sharpe: portfolio_sharpe > 0
+//   3. Sane participation: p95_participation_pct < 100.0
+//   4. Net = Gross − Cost: |net − (gross − cost)| < 1e-9
+// Plus: twice-run stability (equal digest + equal summary.txt).
+//
+// Panel design: 50 instruments x 260 periods. Each instrument i has a
+// deterministic upward drift = 0.003 + 0.0002*i plus small LCG noise
+// (amplitude 0.005). alpha = rank(close) -> instrument 49 always highest ->
+// long best drifters, short worst -> mean cross-sectional return positive.
+// Drift spread / noise ratio makes the edge robust (IR >> 0, not flaky).
+// Volume is a large fixed constant so participation is well below 100%.
+// ---------------------------------------------------------------------------
+namespace s6_downstream {
+
+namespace fs = std::filesystem;
+
+// Simple 64-bit LCG returning values in (-1, 1).
+struct S6Lcg {
+    std::uint64_t s;
+    [[nodiscard]] double next() noexcept {
+        s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+        const std::uint64_t hi = s >> 11U;
+        const double u = static_cast<double>(hi) /
+                         static_cast<double>(1ULL << 53U);
+        return 2.0 * u - 1.0;
+    }
+};
+
+// Build a 260×50 panel with "close" and "volume" fields.
+// Instrument i has drift = 0.003 + 0.0002*i; noise amplitude = 0.005.
+// Volume is a large constant so participation stays well under 100%.
+static std::optional<atx::engine::alpha::Panel>
+make_s6_panel(atx::usize D, atx::usize M, std::uint64_t seed)
+{
+    using atx::f64;
+    using atx::usize;
+
+    std::vector<f64> close_data(D * M);
+    std::vector<f64> volume_data(D * M);
+    std::vector<double> px(M, 100.0);
+    S6Lcg rng{seed};
+
+    for (usize t = 0; t < D; ++t) {
+        for (usize i = 0; i < M; ++i) {
+            const double drift = 0.003 + 0.0002 * static_cast<double>(i);
+            px[i] *= (1.0 + drift + 0.005 * rng.next());
+            close_data[t * M + i] = px[i];
+            // Large ADV: 10M shares at ~$100 = $1B/day — participation stays tiny
+            volume_data[t * M + i] = 10'000'000.0;
+        }
+    }
+
+    std::vector<std::uint8_t> uni(D * M, 1u);  // all in universe
+    auto r = atx::engine::alpha::Panel::create(
+        D, M, {"close", "volume"}, {close_data, volume_data}, uni);
+    if (!r.has_value()) {
+        ADD_FAILURE() << "S6 panel build failed: " << r.error().to_string();
+        return std::nullopt;
+    }
+    return std::move(r.value());
+}
+
+// Write an alpha DSL file and return the directory path.
+static std::string make_s6_alpha_dir(const std::string& stem,
+                                     const std::string& dsl)
+{
+    const std::string dir =
+        (fs::temp_directory_path() /
+         ("atx_impl_s6downstream_alphas_" + stem)).string();
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    std::ofstream f{dir + "/alpha_0.dsl"};
+    f << dsl << '\n';
+    return dir;
+}
+
+// Parse a key=value line from summary.txt; returns NaN if absent.
+static double s6_read_kv(const fs::path& summary, const std::string& key)
+{
+    std::ifstream f(summary);
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.substr(0, eq) == key) return std::stod(line.substr(eq + 1));
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+// Run the combine->optimize->report chain, returning the report stage digest
+// and writing summary.txt into `report_dir`.
+struct S6ChainResult {
+    atx::u64  report_digest = 0;
+    double    avg_names_held        = std::numeric_limits<double>::quiet_NaN();
+    double    portfolio_sharpe      = std::numeric_limits<double>::quiet_NaN();
+    double    p95_participation_pct = std::numeric_limits<double>::quiet_NaN();
+    double    total_pnl_gross       = std::numeric_limits<double>::quiet_NaN();
+    double    total_pnl_net         = std::numeric_limits<double>::quiet_NaN();
+    double    total_pnl_cost        = std::numeric_limits<double>::quiet_NaN();
+};
+
+static ::testing::AssertionResult
+run_s6_chain(const std::string& panel_path,
+             const std::string& alpha_dir,
+             const std::string& tag,
+             S6ChainResult&     out)
+{
+    const fs::path work   = fs::temp_directory_path() /
+                            ("atx_impl_s6downstream_" + tag);
+    std::error_code ec;
+    fs::remove_all(work, ec);
+    fs::create_directories(work, ec);
+
+    const std::string combo_out  = (work / "combo.bin").string();
+    const std::string books_out  = (work / "books.bin").string();
+    const fs::path    report_dir = work / "report";
+    fs::create_directories(report_dir, ec);
+
+    // 1. Combine: single known-positive alpha -> w=[1.0] passthrough.
+    {
+        atx::impl::RunConfig cfg;
+        cfg.subcommand      = "combine";
+        cfg.panel           = panel_path;
+        cfg.alphas          = alpha_dir;
+        cfg.combo_out       = combo_out;
+        cfg.method          = "equal";
+        cfg.fit_begin       = 0;
+        cfg.fit_end         = 0;
+        // S6-1: enable capacity path.
+        cfg.capacity_floor  = 0.1;
+        cfg.target_aum      = 1e8;
+        auto r = atx::impl::run_combine(cfg);
+        if (!r.has_value())
+            return ::testing::AssertionFailure()
+                   << "run_combine failed: " << r.error().message();
+    }
+
+    // 2. Optimize: position_mode=true -> S6-0 sign-correct shape_book deploy.
+    {
+        atx::impl::RunConfig cfg;
+        cfg.subcommand    = "optimize";
+        cfg.panel         = panel_path;
+        cfg.combo         = combo_out;
+        cfg.books_out     = books_out;
+        cfg.gross         = 1.0;
+        cfg.name_cap      = 0.1;
+        cfg.rebalance     = "weekly";
+        cfg.position_mode = true;   // S6-0: sign-preserving deploy
+        auto r = atx::impl::run_optimize(cfg);
+        if (!r.has_value())
+            return ::testing::AssertionFailure()
+                   << "run_optimize failed: " << r.error().message();
+    }
+
+    // 3. Report: report_aum>0 -> S6-2 participation metrics.
+    {
+        atx::impl::RunConfig cfg;
+        cfg.subcommand = "report";
+        cfg.panel      = panel_path;
+        cfg.books      = books_out;
+        cfg.report_out = report_dir.string();
+        cfg.report_aum = 1e8;   // S6-2: realistic AUM for participation
+        auto r = atx::impl::run_report(cfg);
+        if (!r.has_value())
+            return ::testing::AssertionFailure()
+                   << "run_report failed: " << r.error().message();
+        out.report_digest = r->digest;
+    }
+
+    // Read summary.txt for assertion values.
+    const fs::path summary = report_dir / "summary.txt";
+    if (!fs::exists(summary))
+        return ::testing::AssertionFailure() << "summary.txt missing";
+
+    out.avg_names_held        = s6_read_kv(summary, "avg_names_held");
+    out.portfolio_sharpe      = s6_read_kv(summary, "portfolio_sharpe");
+    out.p95_participation_pct = s6_read_kv(summary, "p95_participation_pct");
+    out.total_pnl_gross       = s6_read_kv(summary, "total_pnl_gross");
+    out.total_pnl_net         = s6_read_kv(summary, "total_pnl_net");
+    out.total_pnl_cost        = s6_read_kv(summary, "total_pnl_cost");
+
+    return ::testing::AssertionSuccess();
+}
+
+} // namespace s6_downstream
+
+// ---------------------------------------------------------------------------
+// S6-3 test: DownstreamSignCapacityParticipation
+// ---------------------------------------------------------------------------
+TEST(AtxImplS6Downstream, DownstreamSignCapacityParticipation)
+{
+    using namespace s6_downstream;
+
+    static constexpr atx::usize kD    = 260u;  // periods (> 252)
+    static constexpr atx::usize kM    = 50u;   // instruments (>= 50)
+    static constexpr std::uint64_t kSeed = 0xC0FFEE42DEADULL;
+
+    // Build the synthetic panel once; write to a temp file.
+    auto panel_opt = make_s6_panel(kD, kM, kSeed);
+    ASSERT_TRUE(panel_opt.has_value());
+
+    const std::string panel_path =
+        (fs::temp_directory_path() / "atx_impl_s6downstream_panel.bin").string();
+    {
+        auto wr = atx::impl::write_panel(*panel_opt, panel_path);
+        ASSERT_TRUE(wr.has_value()) << "write_panel: " << wr.error().message();
+    }
+
+    // rank(close) on a panel with per-instrument drift: instrument i has higher
+    // drift => higher price over time => higher rank => long best drifters =>
+    // positive mean cross-sectional return (clear, robust signal).
+    const std::string alpha_dir = make_s6_alpha_dir("run", "rank(close)");
+
+    // --- Run #1 ---
+    s6_downstream::S6ChainResult res1{};
+    ASSERT_TRUE(run_s6_chain(panel_path, alpha_dir, "run1", res1));
+
+    // --- Assertion 1: Non-empty book ---
+    EXPECT_GT(res1.avg_names_held, 0.0)
+        << "avg_names_held must be > 0 (non-empty book); got "
+        << res1.avg_names_held;
+
+    // --- Assertion 2: Sign-correct Sharpe (S6-0) ---
+    EXPECT_GT(res1.portfolio_sharpe, 0.0)
+        << "portfolio_sharpe must be > 0 for positive-edge alpha (S6-0 sign-correct); got "
+        << res1.portfolio_sharpe;
+
+    // --- Assertion 3: Sane participation (S6-2) ---
+    EXPECT_LT(res1.p95_participation_pct, 100.0)
+        << "p95_participation_pct must be < 100.0 (sane ADV participation); got "
+        << res1.p95_participation_pct;
+
+    // --- Assertion 4: Net = Gross − Cost identity ---
+    ASSERT_TRUE(std::isfinite(res1.total_pnl_gross))
+        << "total_pnl_gross is not finite";
+    ASSERT_TRUE(std::isfinite(res1.total_pnl_net))
+        << "total_pnl_net is not finite";
+    ASSERT_TRUE(std::isfinite(res1.total_pnl_cost))
+        << "total_pnl_cost is not finite";
+    {
+        const double identity_err =
+            std::abs(res1.total_pnl_net -
+                     (res1.total_pnl_gross - res1.total_pnl_cost));
+        EXPECT_LT(identity_err, 1e-9)
+            << "Net=Gross-Cost identity violated: |net - (gross - cost)| = "
+            << identity_err
+            << " (net=" << res1.total_pnl_net
+            << " gross=" << res1.total_pnl_gross
+            << " cost=" << res1.total_pnl_cost << ")";
+    }
+
+    // --- Run #2: twice-run stability ---
+    s6_downstream::S6ChainResult res2{};
+    ASSERT_TRUE(run_s6_chain(panel_path, alpha_dir, "run2", res2));
+
+    EXPECT_EQ(res1.report_digest, res2.report_digest)
+        << "Report digest must be identical across two runs (determinism)";
+    // Also verify the summary values are numerically equal.
+    EXPECT_EQ(res1.avg_names_held,        res2.avg_names_held)
+        << "avg_names_held differs across runs";
+    EXPECT_EQ(res1.portfolio_sharpe,      res2.portfolio_sharpe)
+        << "portfolio_sharpe differs across runs";
+    EXPECT_EQ(res1.p95_participation_pct, res2.p95_participation_pct)
+        << "p95_participation_pct differs across runs";
+    EXPECT_EQ(res1.total_pnl_net,         res2.total_pnl_net)
+        << "total_pnl_net differs across runs";
+
+    // Emit measured values so they are captured in the test report.
+    // These lines appear in the test output for documentation.
+    std::printf("[S6-3 measured] avg_names_held=%.6f\n",
+                res1.avg_names_held);
+    std::printf("[S6-3 measured] portfolio_sharpe=%.6f\n",
+                res1.portfolio_sharpe);
+    std::printf("[S6-3 measured] p95_participation_pct=%.6f\n",
+                res1.p95_participation_pct);
+    std::printf("[S6-3 measured] net_pnl=%.6f gross_pnl=%.6f cost_pnl=%.6f "
+                "identity_err=%.2e\n",
+                res1.total_pnl_net, res1.total_pnl_gross, res1.total_pnl_cost,
+                std::abs(res1.total_pnl_net -
+                         (res1.total_pnl_gross - res1.total_pnl_cost)));
+    std::printf("[S6-3 measured] run1_digest=%llu run2_digest=%llu\n",
+                static_cast<unsigned long long>(res1.report_digest),
+                static_cast<unsigned long long>(res2.report_digest));
+
+    // Cleanup.
+    {
+        std::error_code ec;
+        fs::remove(panel_path, ec);
+        for (const char* tag : {"run1", "run2"}) {
+            fs::remove_all(
+                fs::temp_directory_path() /
+                ("atx_impl_s6downstream_" + std::string(tag)), ec);
+        }
+        fs::remove_all(
+            fs::temp_directory_path() /
+            "atx_impl_s6downstream_alphas_run", ec);
     }
 }
 
