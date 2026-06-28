@@ -72,7 +72,7 @@ struct GateConfig {
   atx::f64 max_turnover = 0.70; // generous default; cost-gate (WQ §6.5)
   atx::f64 max_pool_corr = 0.7; // reject if too correlated with an accepted alpha
 
-  // Cost / holding-period fields (S4 plumbing; inert at 0 — nothing reads them yet).
+  // Cost / holding-period fields (S4 plumbing; inert at the 0.0 default — read only when > 0.0).
   atx::f64 rt_cost_bps      = 0.0; // round-trip cost in bps; 0 => frictionless (no cost gate)
   atx::f64 min_holding_days = 0.0; // holding-period floor in periods; 0 => inert
 };

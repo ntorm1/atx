@@ -68,6 +68,7 @@ TEST(EvalDsr, DegenerateT_ReturnsNaN) {
 // gross DSR is positive and meaningful.
 static std::vector<atx::f64> make_pnl(atx::usize n, atx::f64 mu, atx::f64 noise_amp) {
   std::vector<atx::f64> out(n);
+  if (n == 0U) { return out; }
   out[0] = 0.0; // structural zero
   for (atx::usize t = 1U; t < n; ++t) {
     // alternating noise so mean ≈ mu; individual values mu ± noise_amp
