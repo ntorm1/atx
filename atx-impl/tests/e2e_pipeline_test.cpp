@@ -12,6 +12,7 @@
 //   - stay fast (in-process zip build, no disk seg files needed for run mode)
 
 #include <array>
+#include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -640,8 +641,11 @@ TEST_F(AtxImplE2E, ReportWithoutComboStillWorksAndIsByteIdentical) {
 //   1. Non-empty book: avg_names_held > 0
 //   2. Sign-correct Sharpe: portfolio_sharpe > 0
 //   3. Sane participation: p95_participation_pct < 100.0
-//   4. Net = Gross − Cost: |net − (gross − cost)| < 1e-9
+//   4. Net = Gross − Cost: cost_pnl > 0 (cost genuinely subtracted, gross != net)
+//      AND |net − (gross − cost)| < 1e-9
 // Plus: twice-run stability (equal digest + equal summary.txt).
+// Cost: optimize runs with cost_bps=2 so cost_pnl > 0 — the identity is a real
+// accounting check, not the trivial net==gross. 2 bps keeps the alpha profitable.
 //
 // Panel design: 50 instruments x 260 periods. Each instrument i has a
 // deterministic upward drift = 0.003 + 0.0002*i plus small LCG noise
@@ -652,7 +656,7 @@ TEST_F(AtxImplE2E, ReportWithoutComboStillWorksAndIsByteIdentical) {
 // ---------------------------------------------------------------------------
 namespace s6_downstream {
 
-namespace fs = std::filesystem;
+// (fs alias inherited from the enclosing atx_impl_e2e namespace.)
 
 // Simple 64-bit LCG returning values in (-1, 1).
 struct S6Lcg {
@@ -777,6 +781,10 @@ run_s6_chain(const std::string& panel_path,
     }
 
     // 2. Optimize: position_mode=true -> S6-0 sign-correct shape_book deploy.
+    //    cost_bps>0 (with the cost-bps set_flag) so cost_pnl > 0 in the report
+    //    and the Net=Gross-Cost identity is a REAL accounting check (cost is
+    //    genuinely subtracted), not the trivial net==gross case. 2 bps is small
+    //    enough that the strong synthetic edge stays profitable (Sharpe > 0).
     {
         atx::impl::RunConfig cfg;
         cfg.subcommand    = "optimize";
@@ -787,6 +795,8 @@ run_s6_chain(const std::string& panel_path,
         cfg.name_cap      = 0.1;
         cfg.rebalance     = "weekly";
         cfg.position_mode = true;   // S6-0: sign-preserving deploy
+        cfg.cost_bps      = 2.0;    // non-zero cost -> cost_pnl > 0
+        cfg.set_flags.emplace("cost-bps");
         auto r = atx::impl::run_optimize(cfg);
         if (!r.has_value())
             return ::testing::AssertionFailure()
@@ -871,7 +881,7 @@ TEST(AtxImplS6Downstream, DownstreamSignCapacityParticipation)
         << "p95_participation_pct must be < 100.0 (sane ADV participation); got "
         << res1.p95_participation_pct;
 
-    // --- Assertion 4: Net = Gross − Cost identity ---
+    // --- Assertion 4: Net = Gross − Cost identity (with cost genuinely > 0) ---
     ASSERT_TRUE(std::isfinite(res1.total_pnl_gross))
         << "total_pnl_gross is not finite";
     ASSERT_TRUE(std::isfinite(res1.total_pnl_net))
@@ -879,6 +889,18 @@ TEST(AtxImplS6Downstream, DownstreamSignCapacityParticipation)
     ASSERT_TRUE(std::isfinite(res1.total_pnl_cost))
         << "total_pnl_cost is not finite";
     {
+        // 4a. The cost path is genuinely exercised: cost_pnl > 0 (strict), so
+        //     gross != net. Without this the identity below collapses to the
+        //     trivial net==gross and proves nothing about cost subtraction.
+        EXPECT_GT(res1.total_pnl_cost, 0.0)
+            << "total_pnl_cost must be > 0 (cost_bps=2 must produce drag); got "
+            << res1.total_pnl_cost;
+        EXPECT_NE(res1.total_pnl_gross, res1.total_pnl_net)
+            << "gross_pnl must differ from net_pnl when cost > 0 (non-trivial "
+               "identity); gross=" << res1.total_pnl_gross
+            << " net=" << res1.total_pnl_net;
+
+        // 4b. Net = Gross − Cost accounting identity holds exactly.
         const double identity_err =
             std::abs(res1.total_pnl_net -
                      (res1.total_pnl_gross - res1.total_pnl_cost));
@@ -919,9 +941,9 @@ TEST(AtxImplS6Downstream, DownstreamSignCapacityParticipation)
                 res1.total_pnl_net, res1.total_pnl_gross, res1.total_pnl_cost,
                 std::abs(res1.total_pnl_net -
                          (res1.total_pnl_gross - res1.total_pnl_cost)));
-    std::printf("[S6-3 measured] run1_digest=%llu run2_digest=%llu\n",
-                static_cast<unsigned long long>(res1.report_digest),
-                static_cast<unsigned long long>(res2.report_digest));
+    std::printf("[S6-3 measured] run1_digest=%" PRIu64
+                " run2_digest=%" PRIu64 "\n",
+                res1.report_digest, res2.report_digest);
 
     // Cleanup.
     {
