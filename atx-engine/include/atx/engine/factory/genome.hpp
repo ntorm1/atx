@@ -50,6 +50,11 @@ struct Genome {
   Ast ast;               // the flat, relocatable arena (value-owned)
   Analysis analysis;     // cached analyze() result (shape/dtype/lookback per node)
   atx::u64 canon_hash{0}; // factory/canonical.hpp key (set in S3-2; 0 here)
+  // S3-2 opt-in seed-elite protection (protect_seed_elites knob). Set to true on
+  // every genome produced from a seed expression in init_population. Carried
+  // verbatim through clone() and mutate_one() so elite protection tracks the seed
+  // lineage across generations. Default false — zero cost when the knob is off.
+  bool from_seed{false};
   // INVARIANT: `analysis` is analyze(ast) and is Ok; `canon_hash` matches `ast`.
 
   // A structural deep copy: rebuild the arena, then REMAP the cached analysis

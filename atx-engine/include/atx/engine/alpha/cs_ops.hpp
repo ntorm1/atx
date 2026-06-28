@@ -237,6 +237,12 @@ struct CsScratch {
 //  CsRank — ordinal percentile in [0,1] over `valid`, tie-broken by ascending
 //  instrument index. Rank r (0-based) of n maps to r/(n-1); a singleton set
 //  maps to 0.5 (centred — avoids a degenerate 0/0). NaNs already excluded.
+//
+//  INVARIANT (REQUIRED for AuditExact): `valid` MUST be in ascending instrument-
+//  index order. The stable sort below preserves the pre-sort order of equal
+//  values, so `valid`'s order IS the tie-break criterion — a non-ascending
+//  `valid` would silently reorder tied ranks. Callers (cs_one_date) build it via
+//  a forward scan; see the invariant block there.
 // ===========================================================================
 inline void cs_rank_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
                         std::span<atx::f64> out, CsScratch &scratch) {
@@ -259,6 +265,13 @@ inline void cs_rank_row(std::span<const atx::f64> x, const std::vector<atx::usiz
 // ===========================================================================
 //  CsZscore — (x - mean) / sample-std over the valid set; out-of-set -> NaN.
 //  Fewer than 2 valid observations -> NaN sd -> all NaN.
+//
+//  INVARIANT (REQUIRED for AuditExact): `valid` MUST be in ascending instrument-
+//  index order. The per-cell zscore is order-agnostic, BUT the Σx and Σ(x-mean)²
+//  reductions accumulate in `valid` order and f64 addition is not associative —
+//  a permuted `valid` changes the summed bits (hence mean/sd, hence every cell)
+//  for ill-conditioned rows (large + small magnitudes). Ascending instrument
+//  index is the canonical reduction order, matching the oracle's gather+sum.
 // ===========================================================================
 inline void cs_zscore_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
                           std::span<atx::f64> out) {

@@ -211,9 +211,57 @@ struct WeightPolicy {
   /// span (the default) means group-neutralize OFF. With industry_neutral=false
   /// AND truncation=0.0 AND an empty group_map (all defaults) NONE of the P4-8
   /// branches run, so the output is BYTE-IDENTICAL to the Phase-2 pipeline.
+  ///
+  /// DELEGATES to the scratch overload with locally-owned buffers so there is
+  /// ONE implementation of the arithmetic (no duplicated logic block).
   [[nodiscard]] std::vector<atx::f64>
   to_target_weights(SignalView signal, const Universe &universe,
                     std::span<const atx::u32> group_map = {}) const {
+    std::vector<atx::f64> weights;
+    std::vector<atx::usize> live_idx;
+    std::vector<atx::f64> dense;
+    std::vector<atx::f64> transform_tmp;
+    to_target_weights(signal, universe, weights, live_idx, dense, transform_tmp, group_map);
+    return weights;
+  }
+
+  /// Caller-provided-scratch overload: same arithmetic as the allocating
+  /// overload but reuses pre-allocated buffers `weights_out`, `live_idx_out`,
+  /// `dense_out`, `transform_tmp` instead of allocating them per call.
+  ///
+  /// PRECONDITIONS (caller contract):
+  ///   * All four buffers may be any size on entry — they are resized/reset
+  ///     internally each call.
+  ///   * Intended use: declare the four buffers ONCE above a date loop and pass
+  ///     them on each call.  After warmup (the first date whose live count hits
+  ///     the run high-water mark) NO buffer allocates again — amortized O(1)
+  ///     allocations per alpha, NOT per date, eliminating ~4 allocs ×
+  ///     n_dates × n_alphas from the hot path.
+  ///
+  /// WHY a 4th buffer (`transform_tmp`): apply_transform (Rank/ZScore) is an
+  /// out-of-place primitive — it writes into a scratch and SWAPS it into
+  /// `dense_out`. If that scratch were a per-call local sized to the live count
+  /// k, the swap would shrink `dense_out`'s capacity to k, forcing a re-alloc on
+  /// the next date whenever k < n (the COMMON variable-NaN case). Threading a
+  /// caller-owned `transform_tmp` makes the swap PING-PONG two reused buffers:
+  /// both retain their high-water-mark capacity, so neither allocates after
+  /// warmup. (Raw transform skips the swap entirely — `transform_tmp` is unused.)
+  ///
+  /// ZEROING CONTRACT: the original allocating overload used `weights(n, 0.0)`,
+  /// which zero-fills every call.  This overload reproduces that exactly via
+  /// `weights_out.assign(n, 0.0)` — same zero-fill semantics, same output bytes.
+  /// `live_idx_out` and `dense_out` are cleared (then rebuilt from the compact
+  /// scan) each call, matching the "fresh compact" semantics of the original.
+  ///
+  /// NOT noexcept: apply_transform's assign may allocate on a growing live count.
+  ///
+  /// `group_map` has the same meaning as the allocating overload.
+  void to_target_weights(SignalView signal, const Universe &universe,
+                         std::vector<atx::f64> &weights_out,
+                         std::vector<atx::usize> &live_idx_out,
+                         std::vector<atx::f64> &dense_out,
+                         std::vector<atx::f64> &transform_tmp,
+                         std::span<const atx::u32> group_map = {}) const {
     ATX_ASSERT(signal.values.size() == universe.size());
 
     const atx::usize n = universe.size();
@@ -221,50 +269,53 @@ struct WeightPolicy {
     // universe-aligned group map, so a misconfigured industry_neutral without one
     // aborts in debug rather than silently no-op'ing (see header).
     ATX_ASSERT(!industry_neutral || group_map.size() == n);
-    std::vector<atx::f64> weights(n, 0.0);
+
+    // Zero-fill weights each call — matches the original `std::vector<f64>(n, 0.0)`.
+    weights_out.assign(n, 0.0);
     if (n == 0U) {
-      return weights;
+      return;
     }
 
     // --- compact the live (non-NaN) scores into a dense buffer -------------
-    // `live_idx[k]` is the universe index of the k-th live score; the dense
+    // `live_idx_out[k]` is the universe index of the k-th live score; the dense
     // buffer feeds the cross-section primitive (which has no NaN handling).
-    std::vector<atx::usize> live_idx;
-    std::vector<atx::f64> dense;
-    live_idx.reserve(n);
-    dense.reserve(n);
+    live_idx_out.clear();
+    dense_out.clear();
+    live_idx_out.reserve(n);
+    dense_out.reserve(n);
     for (atx::usize i = 0; i < n; ++i) {
       const atx::f64 v = signal.values[i];
       if (!std::isnan(v)) {
-        live_idx.push_back(i);
-        dense.push_back(v);
+        live_idx_out.push_back(i);
+        dense_out.push_back(v);
       }
     }
-    if (dense.empty()) {
-      return weights; // no opinions anywhere -> all zero
+    if (dense_out.empty()) {
+      return; // no opinions anywhere -> all zero
     }
 
     // Clamp tail outliers BEFORE transforming so a single extreme score cannot
     // dominate the standardization (material for ZScore; near-no-op for Rank).
     ATX_ASSERT(winsorize_limit >= 0.0 && winsorize_limit <= 0.5);
-    atx::core::stats::winsorize(std::span<atx::f64>{dense}, winsorize_limit, 1.0 - winsorize_limit);
+    atx::core::stats::winsorize(std::span<atx::f64>{dense_out}, winsorize_limit,
+                                1.0 - winsorize_limit);
 
-    apply_transform(dense);
+    apply_transform(dense_out, transform_tmp);
     // P4-8 GROUP-neutralize (CsDemeanG / §0-H semantics): demean WITHIN each group
     // before the global dollar-neutralize so the book carries no per-group net
     // exposure. Inert when industry_neutral is off (the default). After this each
     // group sums to ~0, so the subsequent global demean is a ~no-op.
     if (industry_neutral) {
-      group_demean(dense, live_idx, group_map);
+      group_demean(dense_out, live_idx_out, group_map);
     }
     if (dollar_neutral) {
-      atx::core::stats::demean(std::span<atx::f64>{dense}); // Sigma dense = 0
+      atx::core::stats::demean(std::span<atx::f64>{dense_out}); // Sigma dense = 0
     }
     // gross-normalize so Sigma|dense| == gross_leverage (Alpha101 `scale`). This
     // runs UNCONDITIONALLY (preserving the bit-identical-when-off path) AND puts
     // the weights into the FINAL gross-normalized units the truncation cap is
     // specified in — so the per-name cap compares apples-to-apples.
-    gross_normalize(dense);
+    gross_normalize(dense_out);
     // P4-8 TRUNCATE: cap |w_i| at `truncation` (now in gross-normalized units) via
     // a fixed-iteration clip-renorm (inert when truncation == 0). It re-normalizes
     // back to gross_leverage each pass and ENDS ON A CLIP so the cap is hard-
@@ -272,14 +323,13 @@ struct WeightPolicy {
     // gross_leverage (the cap wins — see header). No gross_normalize follows: that
     // would rescale the pinned weights and breach the cap.
     if (truncation > 0.0) {
-      truncate_renorm(dense);
+      truncate_renorm(dense_out);
     }
 
     // --- scatter the dense weights back to universe positions --------------
-    for (atx::usize k = 0; k < live_idx.size(); ++k) {
-      weights[live_idx[k]] = dense[k];
+    for (atx::usize k = 0; k < live_idx_out.size(); ++k) {
+      weights_out[live_idx_out[k]] = dense_out[k];
     }
-    return weights;
   }
 
   /// order_target_percent reconcile: emit the trade list that moves the current
@@ -320,26 +370,39 @@ private:
   /// Apply the configured cross-section transform IN PLACE to the dense live
   /// buffer. Exhaustive over Transform (no `default`): a new enumerator is a /W4
   /// warning here. Rank/ZScore are out-of-place primitives in atx-core, so we
-  /// transform through a same-size scratch and swap it in. Raw is the IDENTITY
-  /// passthrough: it must leave `dense` EXACTLY as winsorize produced it, so it
-  /// returns BEFORE the scratch is allocated/swapped — swapping in the empty
-  /// `out` would clobber the raw scores with zeros.
-  void apply_transform(std::vector<atx::f64> &dense) const {
+  /// transform through `tmp` (a CALLER-OWNED scratch buffer) and swap it in. Raw
+  /// is the IDENTITY passthrough: it must leave `dense` EXACTLY as winsorize
+  /// produced it, so it returns BEFORE `tmp` is sized/swapped — swapping in an
+  /// out-of-size `tmp` would clobber the raw scores.
+  ///
+  /// ALLOC CONTRACT (S1-1): `tmp` is supplied by the caller (hoisted above the
+  /// date loop) and ping-pongs with `dense` on each Rank/ZScore call. The swap
+  /// gives `dense` whatever capacity `tmp` had and vice-versa, so BOTH buffers
+  /// monotonically retain their high-water-mark capacity over the run — the
+  /// transform no longer discards `dense`'s capacity (the bug a per-call-local
+  /// `out` introduced: `out` was sized to the live count k, so after swap the
+  /// reused `dense` shrank to capacity k and re-allocated on the next date when
+  /// k < n). `tmp` is resized to the live count via assign(k, 0.0); after warmup
+  /// (a date whose live count equals the run max) NEITHER buffer allocates again.
+  void apply_transform(std::vector<atx::f64> &dense, std::vector<atx::f64> &tmp) const {
     if (transform == Transform::Raw) {
       return; // identity: keep the winsorized raw scores untouched
     }
-    std::vector<atx::f64> out(dense.size());
+    // Reuse `tmp`'s capacity: assign sizes it to the live count without freeing
+    // an already-large allocation (capacity only grows). The contents are fully
+    // overwritten by rank/zscore below, so the 0.0 fill value is irrelevant.
+    tmp.assign(dense.size(), 0.0);
     switch (transform) {
     case Transform::Rank:
-      atx::core::stats::rank(std::span<const atx::f64>{dense}, std::span<atx::f64>{out});
+      atx::core::stats::rank(std::span<const atx::f64>{dense}, std::span<atx::f64>{tmp});
       break;
     case Transform::ZScore:
-      atx::core::stats::zscore(std::span<const atx::f64>{dense}, std::span<atx::f64>{out});
+      atx::core::stats::zscore(std::span<const atx::f64>{dense}, std::span<atx::f64>{tmp});
       break;
     case Transform::Raw:
       return; // unreachable (handled above); the case keeps the switch exhaustive
     }
-    dense.swap(out);
+    dense.swap(tmp); // dense <- transformed; tmp keeps the old (max-capacity) buffer
   }
 
   /// Scale the dense buffer so Sigma|dense| == gross_leverage (Alpha101 `scale`).

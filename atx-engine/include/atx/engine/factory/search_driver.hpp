@@ -214,6 +214,48 @@ struct SearchConfig {
   // disabled path draws nothing extra). A failed wrap (Err) falls through to the
   // originally-drawn operator, so the population never stalls.
   atx::f64 wrap_in_op_prob{0.25};
+
+  // S3-2: opt-in seed-elite protection.
+  //
+  // protect_seed_elites (NEW, default false): when true, the top-ranked from_seed
+  // genome is force-inserted into the next generation's population for every
+  // generation where `gen < protect_until_gen`.  The insertion is POST-selection
+  // (after the canonical sort that establishes F2 canonical order) so it never
+  // perturbs the F2 determinism proof.  No RNG change; byte-identical when false.
+  //
+  // protect_until_gen (NEW, default 3): exclusive upper bound: protection active
+  // while `gen < protect_until_gen` (gens 0..protect_until_gen-1).  With the
+  // default 3, seed elites are force-inserted during gens 0, 1, 2 (NOT gen 3).
+  // Only read when protect_seed_elites is true.
+  //
+  // mutate_seed_copies (NEW, default false): when true AND seed_from_grammar=false,
+  // each cycled clone slot in init_population receives ONE seeded mutation via
+  // detail::seed_for(master_seed, kMutateSeedAxis, i) instead of being an
+  // identical copy.  Slot 0 always gets the seed original (unmutated).  The new
+  // RNG axis (kMutateSeedAxis) is distinct from all existing axes so the default
+  // path's draw sequence is unchanged — byte-identical when false.
+  bool protect_seed_elites{false};
+  atx::usize protect_until_gen{3};
+  bool mutate_seed_copies{false};
+
+  // S3-3: opt-in viable-only novelty floor.
+  //
+  // min_viable_raw (NEW, default 0.0): when > 0, any genome whose RAW fitness is
+  // strictly below this threshold has its behavioral descriptor ZEROED before it
+  // is submitted to BehavioralArchive::novelty(). A zero-variance descriptor
+  // produces distance 1.0 against every peer (same degenerate-corr edge as
+  // behavior.hpp §166-170), so a junk genome is still "maximally novel" relative
+  // to itself, but the archive NEVER learns its shape and viable genomes' novelty
+  // scores are no longer contaminated by junk as artificially close neighbors.
+  //
+  // The floor is applied ONLY at the descriptor-submission seam (behavioral_novelty_pass);
+  // it NEVER touches raw fitness, objectives, or the admission/scoring path — so
+  // by construction the default path (min_viable_raw == 0.0) is byte-identical to
+  // the pre-S3-3 behavior. The zeroing condition is `raw < cfg.min_viable_raw`:
+  // with the 0.0 default it can never fire (raw is non-negative, so `raw < 0.0` is
+  // always false), and a user-set floor simply moves the threshold up to that
+  // value. The 3 golden-digest tests confirm the default path is unchanged.
+  atx::f64 min_viable_raw{0.0};
 };
 
 // =========================================================================

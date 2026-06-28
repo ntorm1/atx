@@ -151,8 +151,9 @@ inline constexpr atx::usize kCostVolWindow = 60U;
 // .sharpe over the CPCV TEST folds, plus the candidate's full realized OOS PnL
 // stream (the diversification + deflation input).
 struct OosAggregate {
-  atx::f64 wq;     // mean fold WQ fitness
-  atx::f64 sharpe; // mean fold ANNUALIZED Sharpe (de-annualized before deflation)
+  atx::f64 wq;       // mean fold WQ fitness
+  atx::f64 sharpe;   // mean fold ANNUALIZED Sharpe (de-annualized before deflation)
+  atx::f64 turnover; // S3-0: mean fold turnover (same averaging as wq/sharpe)
   // The candidate's FULL realized PnL stream (length == n_periods). Used at full
   // length for corr-to-pool (must match the pool members' stream length; the
   // shared structural index-0 ~0 is mean-centered away in Pearson — correlation.hpp
@@ -209,6 +210,7 @@ slice_by_idx(std::span<const atx::f64> flat, std::span<const atx::usize> idx, at
 
   atx::f64 sum_wq = 0.0;
   atx::f64 sum_sharpe = 0.0;
+  atx::f64 sum_turnover = 0.0; // S3-0: accumulated alongside wq/sharpe, same valid-fold gate
   atx::usize n_valid = 0U;
   for (const eval::CpcvFold &fold : folds) {
     if (fold.test_idx.empty()) {
@@ -222,16 +224,20 @@ slice_by_idx(std::span<const atx::f64> flat, std::span<const atx::usize> idx, at
         combine::compute_metrics(test_pnl, test_pos, n_instruments, book_size);
     // A degenerate fold (zero-variance / single-obs) yields NaN moments; skip it
     // from the mean rather than poison the aggregate with NaN.
+    // S3-0: turnover is NOT NaN for a degenerate fold (mean_turnover returns 0 for
+    // an empty/zero-instrument stream, never NaN); we gate it on the same n_valid
+    // counter as wq/sharpe for a consistent average denominator.
     if (!std::isnan(m.fitness)) {
       sum_wq += m.fitness;
       sum_sharpe += std::isnan(m.sharpe) ? 0.0 : m.sharpe;
+      sum_turnover += m.turnover; // m.turnover is always finite (mean_turnover never NaN)
       ++n_valid;
     }
   }
   const atx::f64 inv = (n_valid == 0U) ? 0.0 : 1.0 / static_cast<atx::f64>(n_valid);
   // Full realized stream (length == n_periods) — see OosAggregate::oos_pnl.
   std::vector<atx::f64> oos_pnl(pnl0.begin(), pnl0.end());
-  return OosAggregate{sum_wq * inv, sum_sharpe * inv, std::move(oos_pnl)};
+  return OosAggregate{sum_wq * inv, sum_sharpe * inv, sum_turnover * inv, std::move(oos_pnl)};
 }
 
 // One label span per period: a point alpha's label is [t, t+1) (it informs only
@@ -279,7 +285,7 @@ eval_streams(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
              const alpha::Panel *weak_panel, alpha::Engine *engine,
-             const alpha::SignalSet *signals) {
+             const alpha::SignalSet *signals, CpcvCache *cpcv_cache) {
   // SAFETY (eps): the robustness ratio divides by wq; floor the denominator so a
   //               near-zero full-universe wq cannot blow the ratio to ±inf.
   constexpr atx::f64 kEps = 1e-12;
@@ -290,10 +296,19 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   // directly from the caller's precomputed SignalSet (bit-identical, see eval_streams).
   ATX_TRY(const alpha::AlphaStreams strm, eval_streams(cand, panel, policy, sim, engine, signals));
   const atx::usize insts = strm.n_instruments();
-  const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
-  const std::vector<eval::CpcvFold> folds =
-      eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-  OosAggregate agg = aggregate_oos(strm, folds, insts, cfg.book_size);
+
+  // S3-1 PERF: use cpcv_cache when supplied; fall back to recomputing when nullptr.
+  // Both paths produce bit-identical spans and folds (pure deterministic functions).
+  OosAggregate agg{};
+  if (cpcv_cache != nullptr) {
+    const CpcvCache::Entry &entry = cpcv_cache->get_or_build(strm.n_periods(), cfg.cpcv);
+    agg = aggregate_oos(strm, entry.folds, insts, cfg.book_size);
+  } else {
+    const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
+    const std::vector<eval::CpcvFold> folds =
+        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
+    agg = aggregate_oos(strm, folds, insts, cfg.book_size);
+  }
   const atx::f64 wq = agg.wq;
 
   // (3) sub-universe robustness (§0.8): re-eval on the weak-universe Panel.
@@ -301,10 +316,20 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   if (weak_panel != nullptr) {
     ATX_TRY(const alpha::AlphaStreams weak_strm, eval_streams(cand, *weak_panel, policy, sim));
     const atx::usize weak_insts = weak_strm.n_instruments();
-    const std::vector<eval::LabelSpan> weak_spans = point_label_spans(weak_strm.n_periods());
-    const std::vector<eval::CpcvFold> weak_folds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
-    const OosAggregate weak_agg = aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
+
+    // S3-1 PERF: same cache for weak panel path (the fold geometry is the same
+    // function of n_periods; only the streams differ).
+    OosAggregate weak_agg{};
+    if (cpcv_cache != nullptr) {
+      const CpcvCache::Entry &weak_entry =
+          cpcv_cache->get_or_build(weak_strm.n_periods(), cfg.cpcv);
+      weak_agg = aggregate_oos(weak_strm, weak_entry.folds, weak_insts, cfg.book_size);
+    } else {
+      const std::vector<eval::LabelSpan> weak_spans = point_label_spans(weak_strm.n_periods());
+      const std::vector<eval::CpcvFold> weak_folds =
+          eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
+      weak_agg = aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
+    }
     const atx::f64 denom = (std::abs(wq) > kEps) ? wq : kEps;
     robust = std::clamp(weak_agg.wq / denom, 0.0, 1.0);
   }
@@ -347,9 +372,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.target_aum);
   }
 
+  // S3-0: thread the OOS mean turnover (already computed in aggregate_oos with
+  // no additional eval) into FitnessCore so finish_report can apply the opt-in
+  // penalty.  The FitnessCore field order (matched by this aggregate init) is:
+  //   oos_pnl, wq, robust, dsr, haircut_sharpe, cost_bps, turnover,
+  //   sharpe_h1, sharpe_h2, split_stable
   return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
-                                   dsr.haircut_sharpe, cost_bps, split.sharpe_h1,
-                                   split.sharpe_h2, split.stable});
+                                   dsr.haircut_sharpe, cost_bps, agg.turnover,
+                                   split.sharpe_h1, split.sharpe_h2, split.stable});
 }
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
@@ -357,10 +387,51 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 // path) |corr-to-pool| of core.oos_pnl; diversify = clamp(1−redundancy, 0, 1) and
 // raw = wq * diversify * robust — identical to the original assembly. `cost_active`
 // (FitnessCfg.target_aum > 0) gates the S4.3 cost objective (objectives[4]).
+//
+// S3-0 TURNOVER PENALTY: when cfg.turnover_penalty_slope > 0.0 a multiplicative
+// discount `mult` in [kFloor, 1.0] is applied to `raw` after the product:
+//
+//   excess = max(0, turnover - max_turnover_target)
+//   slack  = max(max_turnover_target * slope, kPenaltyEps)   // div-by-zero guard
+//   mult   = clamp(1 - excess/slack, kFloor, 1.0)
+//
+// WHY THIS IS SAFE WITH max_turnover_target == +inf (the default):
+//   excess = max(0, turnover - inf) = max(0, -inf) = 0.0          (well-defined)
+//   slack  = max(inf * slope, kPenaltyEps) = +inf                 (well-defined)
+//   mult   = clamp(1.0 - 0.0/inf, 0.0, 1.0) = clamp(1.0, ...) = 1.0
+// 0.0/inf == 0.0 in IEEE 754; NOT NaN.  So the penalty is a clean no-op when
+// the target is +inf, regardless of slope.  The REAL bite happens only when
+// both slope > 0 AND max_turnover_target is finite.
 [[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy,
-                                          bool cost_active) {
+                                          bool cost_active, const FitnessCfg &cfg) {
+  // kFloor: prevents raw going negative (a negative raw would invert the selection
+  // ordering in ScalarRaw mode — floor at 0.0 means a heavily-penalised alpha
+  // scores the same as a degenerate zero-signal alpha, which is the right ceiling
+  // on damage). kPenaltyEps: the div-by-zero guard on slack; matched to the
+  // 1e-12 kEps convention already in use in fitness_core.
+  constexpr atx::f64 kFloor      = 0.0;
+  constexpr atx::f64 kPenaltyEps = 1e-12;
+
   const atx::f64 diversify = std::clamp(1.0 - redundancy, 0.0, 1.0);
-  const atx::f64 raw = core.wq * diversify * core.robust;
+  atx::f64 raw = core.wq * diversify * core.robust;
+
+  // S3-0 opt-in turnover penalty — entered ONLY when slope > 0 (default 0.0 ->
+  // branch never reached -> byte-identical to pre-S3-0, no NaN risk, no RNG).
+  if (cfg.turnover_penalty_slope > 0.0) {
+    const atx::f64 slope    = cfg.turnover_penalty_slope;
+    const atx::f64 target   = cfg.max_turnover_target;  // may be +inf (the default)
+    const atx::f64 turnover = core.turnover;
+    // excess = max(0, turnover - target). When target==+inf this is max(0,-inf)=0.
+    const atx::f64 excess = (turnover > target) ? (turnover - target) : 0.0;
+    // slack = max(target * slope, kPenaltyEps). When target==+inf: inf*slope=+inf.
+    // When target==0: 0*slope=0 -> guarded by kPenaltyEps.
+    const atx::f64 slack = std::max(target * slope, kPenaltyEps);
+    // mult in [kFloor, 1.0]. When excess==0: mult=1.0 (no penalty). When
+    // excess/slack >= 1: mult=kFloor (maximally penalised). IEEE 754: 0.0/+inf==0.0
+    // (not NaN), so the +inf-target path cleanly gives mult=1.0.
+    const atx::f64 mult = std::clamp(1.0 - excess / slack, kFloor, 1.0);
+    raw *= mult;
+  }
   FitnessReport rep{core.wq, redundancy, diversify,          core.robust,
                     raw,     core.dsr,   core.haircut_sharpe};
   // S4.1: project the existing fields into the multi-objective vector (NO new
@@ -395,6 +466,9 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   rep.sharpe_h1 = core.sharpe_h1;
   rep.sharpe_h2 = core.sharpe_h2;
   rep.split_stable = core.split_stable;
+  // S3-0: surface the OOS mean turnover the penalty reads (pure projection — does
+  // NOT enter `raw`, the objective vector, or the digest; byte-identical reporting).
+  rep.turnover = core.turnover;
   return rep;
 }
 
@@ -461,21 +535,26 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel,
-                   alpha::Engine *engine, const alpha::SignalSet *signals) {
+                   alpha::Engine *engine, const alpha::SignalSet *signals,
+                   CpcvCache *cpcv_cache) {
   // Steps 1, 3, 5 (pool-INDEPENDENT) — written once in fitness_core (byte-identical
-  // to the original body for those steps).
+  // to the original body for those steps).  S3-1: cpcv_cache forwarded to eliminate
+  // redundant span+fold rebuilds across genomes sharing the same (n_periods, cpcv).
   ATX_TRY(const detail::FitnessCore core,
-          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine, signals));
+          detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine, signals,
+                               cpcv_cache));
 
   // (2) diversification discount (F7): MEAN |corr-to-pool| of the OOS PnL — the
   // legacy AlphaStore semantics (UNCHANGED; the green S3 suite gates this).
   const atx::f64 redundancy =
       corr_to_pool(std::span<const atx::f64>{core.oos_pnl}, pool, Reduce::Mean);
 
-  // (4) raw = wq * diversify * robust, assembled into the report. S4.3: the cost
-  // objective (objectives[4]) is active iff target_aum > 0 (cost_bps is already in
-  // `core`, computed by fitness_core under the same guard).
-  return atx::core::Ok(detail::finish_report(core, redundancy, cfg.target_aum > 0.0));
+  // (4) raw = wq * diversify * robust (+ S3-0 opt-in turnover penalty), assembled
+  // into the report. S4.3: the cost objective (objectives[4]) is active iff
+  // target_aum > 0 (cost_bps is already in `core`, computed by fitness_core under
+  // the same guard). S3-0: cfg carries slope/max_turnover_target; finish_report
+  // applies the penalty when slope > 0.
+  return atx::core::Ok(detail::finish_report(core, redundancy, cfg.target_aum > 0.0, cfg));
 }
 
 } // namespace atx::engine::factory

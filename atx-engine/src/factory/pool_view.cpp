@@ -17,10 +17,11 @@ pool_aware_fitness(const Genome &cand, const PoolView &view, const alpha::Panel 
   // PoolView's chosen backing (O(N) exact AlphaStore, or O(neighbors) library).
   const atx::f64 redundancy = view.worst_corr(std::span<const atx::f64>{core.oos_pnl});
 
-  // (4) raw = wq * diversify * robust, assembled into the report. S4.3: the cost
-  // objective (objectives[4]) is active iff target_aum > 0 (cost_bps is already in
-  // `core`, computed by fitness_core under the same guard).
-  return atx::core::Ok(detail::finish_report(core, redundancy, cfg.target_aum > 0.0));
+  // (4) raw = wq * diversify * robust (+ S3-0 opt-in turnover penalty), assembled
+  // into the report. S4.3: the cost objective (objectives[4]) is active iff
+  // target_aum > 0 (cost_bps is already in `core`, computed by fitness_core under
+  // the same guard). S3-0: cfg carries slope/max_turnover_target forwarded here.
+  return atx::core::Ok(detail::finish_report(core, redundancy, cfg.target_aum > 0.0, cfg));
 }
 
 } // namespace atx::engine::factory

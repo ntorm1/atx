@@ -54,9 +54,14 @@
 //  Header-only, every function inline; the fitness path is COLD (one call per
 //  distinct candidate, never on the VM hot loop), so std::vector is fine.
 
-#include <array>  // std::array (the multi-objective vector, S4.1)
-#include <span>   // std::span
-#include <vector> // std::vector (fold-sliced streams)
+#include <array>   // std::array (the multi-objective vector, S4.1)
+#include <cstring> // std::memcpy (CpcvCache: embed embargo f64 as bit pattern for map key)
+#include <limits>  // std::numeric_limits (FitnessCfg::max_turnover_target default +inf)
+#include <map>     // std::map (CpcvCache: key-ordered, no custom hash needed)
+#include <mutex>   // std::mutex, std::lock_guard (CpcvCache thread-safety)
+#include <span>    // std::span
+#include <tuple>   // std::tuple (CpcvCache key)
+#include <vector>  // std::vector (fold-sliced streams)
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
@@ -78,6 +83,84 @@ class Engine;
 }
 
 namespace atx::engine::factory {
+
+// =========================================================================
+//  CpcvCache — a thread-safe cache of pre-built CPCV label spans + folds,
+//  keyed on (n_periods, n_groups, n_test_groups, embargo).
+//
+//  WHY: detail::fitness_core rebuilds point_label_spans(n_periods) and
+//  eval::cpcv_folds(spans, cfg.cpcv) for EVERY genome even though these
+//  depend ONLY on (n_periods, cfg.cpcv).  In a typical search (pop=60 ×
+//  gen=15) the same (n_periods, cpcv) pair is rebuilt 900+ times; this cache
+//  reduces that to a SINGLE build with O(1) cache-hit allocations thereafter.
+//
+//  THREAD SAFETY: the internal mutex serialises the rare cold-path insert.
+//  The hot-path lookup acquires the same lock, which is cheap (the lock is
+//  uncontested almost always once the cache is warm — typically just one entry
+//  for the main panel and at most one more for the weak panel).
+//
+//  BYTE IDENTITY: the cached spans and folds are bit-identical to recomputing
+//  them (they are pure deterministic functions of their inputs).  No value or
+//  RNG stream changes — purely a performance optimisation.
+//
+//  OWNERSHIP: pass a pointer to a CpcvCache that outlives every concurrent
+//  call that touches it.  The cache is NOT a member of SearchDriver; instead
+//  it is created per evaluate_generation call and passed into fitness_core via
+//  pool_aware_fitness so the cache's lifetime is always tighter than the
+//  objects it references.
+// =========================================================================
+struct CpcvCache {
+  // ---- key -----------------------------------------------------------------
+  // (n_periods, n_groups, n_test_groups, embargo_bits)
+  // embargo is stored as its IEEE-754 bit pattern to avoid float-equality UB.
+  using Key = std::tuple<atx::usize, atx::usize, atx::usize, atx::u64>;
+
+  struct Entry {
+    std::vector<eval::LabelSpan>  spans;
+    std::vector<eval::CpcvFold>   folds;
+  };
+
+  // ---- get_or_build --------------------------------------------------------
+  // Returns a CONST REFERENCE to the cached spans+folds for (n_periods, cpcv).
+  // On the first call for a given key the spans and folds are built and stored;
+  // subsequent calls return the stored result without recomputing.  Thread-safe.
+  [[nodiscard]] const Entry &get_or_build(atx::usize n_periods, const eval::CpcvConfig &cpcv) {
+    // Build the key: embed embargo as its bit pattern for a reliable map key.
+    atx::u64 embargo_bits{};
+    static_assert(sizeof(embargo_bits) == sizeof(cpcv.embargo), "f64 size mismatch");
+    std::memcpy(&embargo_bits, &cpcv.embargo, sizeof(embargo_bits));
+    const Key key{n_periods, cpcv.n_groups, cpcv.n_test_groups, embargo_bits};
+
+    {
+      std::lock_guard<std::mutex> g{mu_};
+      const auto it = map_.find(key);
+      if (it != map_.end()) {
+        return it->second; // cache hit — no recompute
+      }
+    }
+
+    // Cache miss: build outside the lock so other workers can proceed
+    // concurrently on their (different) keys.  The work is deterministic and
+    // idempotent, so a racing double-build is harmless (the second insert is
+    // a no-op via try_emplace).
+    Entry entry;
+    entry.spans.reserve(n_periods);
+    for (atx::usize t = 0U; t < n_periods; ++t) {
+      entry.spans.push_back(eval::LabelSpan{t, t + 1U});
+    }
+    entry.folds = eval::cpcv_folds(std::span<const eval::LabelSpan>{entry.spans}, cpcv);
+
+    std::lock_guard<std::mutex> g{mu_};
+    // try_emplace: if another thread raced and already inserted, keep theirs
+    // (deterministic same value; this build is discarded).
+    const auto [it, inserted] = map_.try_emplace(key, std::move(entry));
+    return it->second;
+  }
+
+private:
+  mutable std::mutex            mu_;
+  std::map<Key, Entry>          map_;
+};
 
 // =========================================================================
 //  kMaxObjectives — the fixed capacity of a candidate's objective vector (S4.1).
@@ -220,31 +303,61 @@ struct FitnessReport {
   atx::f64 sharpe_h1{0.0};
   atx::f64 sharpe_h2{0.0};
   bool split_stable{false};
+  // S3-0 OOS mean turnover (combine::AlphaMetrics::turnover averaged over the CPCV
+  // TEST folds — the value the opt-in turnover penalty reads). A pure projection of
+  // core.turnover; it does NOT enter `raw`, the objective vector, or the determinism
+  // digest, so surfacing it is byte-identical on every existing path (same pattern
+  // as sharpe_h1/sharpe_h2). default-init 0.0 for an eval-failure / empty stream.
+  atx::f64 turnover{0.0};
 };
 
 // =========================================================================
 //  FitnessCfg — the knobs the search feeds the fitness call.
 //
-//  trial_count : N for eval::deflated_sharpe (F4). Every distinct candidate the
-//                search scores increments it; a higher N lowers dsr.
-//  cpcv        : the CPCV fold geometry (TEST folds are the OOS partitions).
-//  book_size   : the notional divisor for turnover (1.0 when weights are already
-//                gross-normalized fractions, the extract_streams convention).
-//  target_aum  : the recorded artifact AUM at which the S4.3 cost objective is
-//                priced. 0 (the default) ⇒ the cost objective is OFF: no cost
-//                compute, no 5th objective, no eval-path change — a PURE no-op
-//                that keeps the boundary pin (and every existing digest) byte-
-//                identical. > 0 ⇒ the book round-trip cost is computed at this AUM
-//                and pushed (negated) into objectives[4] (n_objectives → 5).
-//  cost        : the calibrated cost coefficients (cost::round_trip_cost_bps reads
-//                its impact Y/δ/γ + slippage). Only consulted when target_aum > 0.
+//  trial_count            : N for eval::deflated_sharpe (F4). Every distinct
+//                           candidate the search scores increments it; a higher
+//                           N lowers dsr.
+//  cpcv                   : the CPCV fold geometry (TEST folds are the OOS
+//                           partitions).
+//  book_size              : the notional divisor for turnover (1.0 when weights
+//                           are already gross-normalized fractions, the
+//                           extract_streams convention).
+//  target_aum             : the recorded artifact AUM at which the S4.3 cost
+//                           objective is priced. 0 (the default) ⇒ the cost
+//                           objective is OFF: no cost compute, no 5th objective,
+//                           no eval-path change — a PURE no-op that keeps the
+//                           boundary pin (and every existing digest) byte-
+//                           identical. > 0 ⇒ the book round-trip cost is computed
+//                           at this AUM and pushed (negated) into objectives[4]
+//                           (n_objectives → 5).
+//  cost                   : the calibrated cost coefficients
+//                           (cost::round_trip_cost_bps reads its impact Y/δ/γ +
+//                           slippage). Only consulted when target_aum > 0.
+//  turnover_penalty_slope : S3-0 opt-in net-of-cost turnover penalty slope.
+//                           Default 0.0 ⇒ the penalty branch is NEVER entered
+//                           and the result is byte-identical to the pre-S3-0
+//                           path (no NaN/inf risk, no digest drift). When > 0
+//                           AND max_turnover_target is finite, excess turnover
+//                           above the target is penalised as a multiplicative
+//                           discount on `raw` (see finish_report). The penalty
+//                           uses the OOS mean turnover already computed by
+//                           aggregate_oos — no second eval pass.
+//  max_turnover_target    : S3-0 the target turnover threshold (per-period,
+//                           same units as combine::AlphaMetrics::turnover).
+//                           Default +inf ⇒ no turnover is considered "excess"
+//                           even when slope > 0 (the formula reduces to mult=1
+//                           because excess==0 and slack==+inf). Set a finite
+//                           positive value to activate the bite.
 // =========================================================================
 struct FitnessCfg {
   atx::usize trial_count = 1;
   eval::CpcvConfig cpcv{};
   atx::f64 book_size = 1.0;
-  atx::f64 target_aum = 0.0;   // S4.3: 0 ⇒ cost objective off (boundary-pin no-op)
-  cost::CalibratedCost cost{}; // S4.3: calibrated impact/slippage for the cost objective
+  atx::f64 target_aum = 0.0;                                    // S4.3: 0 ⇒ cost objective off
+  cost::CalibratedCost cost{};                                   // S4.3: calibrated impact/slippage
+  atx::f64 turnover_penalty_slope = 0.0;                        // S3-0: 0 ⇒ no penalty (default)
+  atx::f64 max_turnover_target =                                 // S3-0: +inf ⇒ no excess ever
+      std::numeric_limits<atx::f64>::infinity();
 };
 
 namespace detail {
@@ -300,6 +413,12 @@ struct FitnessCore {
   // fitness_core from the candidate's own streams (positions) + panel while they
   // are still live, so finish_report can project it into objectives[4] = -cost_bps.
   atx::f64 cost_bps{0.0};
+  // S3-0 OOS mean turnover (combine::AlphaMetrics::turnover averaged over CPCV TEST
+  // folds — the same averaging that produces `wq`). Computed by aggregate_oos and
+  // threaded here so finish_report can apply the opt-in turnover penalty WITHOUT a
+  // second eval pass. 0.0 when no TEST fold produced a valid turnover (degenerate
+  // stream; the penalty evaluates to mult=1 by the max(0, turnover-target) formula).
+  atx::f64 turnover{0.0};
   // W4a split-sample stability: each half's PER-PERIOD Sharpe (ms.mean/ms.std,
   // std==0 ⇒ 0) over the OOS PnL stream with the structural index-0 zero dropped,
   // split at the FLOOR midpoint (H1 = first floor(T/2) periods, H2 = the rest).
@@ -319,11 +438,18 @@ struct FitnessCore {
 // those steps — the legacy overload below now simply layers the Mean-based
 // redundancy on top, so its output is provably unchanged. Err propagates a
 // candidate compile/eval/extract failure (full or weak panel).
+//
+// S3-1 PERF: `cpcv_cache` (optional, default nullptr) is a thread-safe cache of
+// pre-built label spans + CPCV folds keyed on (n_periods, cpcv).  When supplied,
+// the first call for a given key builds and stores the result; every subsequent
+// call for the same key is O(1) and allocates nothing.  nullptr -> recompute on
+// every call (the legacy behaviour, byte-identical).
 [[nodiscard]] atx::core::Result<FitnessCore>
 fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &policy,
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
              const alpha::Panel *weak_panel, alpha::Engine *engine = nullptr,
-             const alpha::SignalSet *signals = nullptr);
+             const alpha::SignalSet *signals = nullptr,
+             CpcvCache *cpcv_cache = nullptr);
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
 // `redundancy` is the (Mean for the legacy AlphaStore path, Max for the PoolView
@@ -335,8 +461,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 // S4.1 {wq,diversify,robust} with n_objectives 3 and cost_bps 0 (boundary-pin
 // no-op). `cost_active` (not core.cost_bps != 0) is the gate, so a genuinely-zero
 // cost at a positive target_aum still registers the (uniform, inert) 5th objective.
+//
+// S3-0: when cfg.turnover_penalty_slope > 0.0, a multiplicative discount is applied
+// to `raw` AFTER the wq*diversify*robust product, based on core.turnover vs
+// cfg.max_turnover_target.  Default slope == 0.0 -> the if-branch is never entered
+// -> byte-identical to pre-S3-0 (the boundary-pin holds).  The cfg reference is
+// borrowed for the duration of the call only (no ownership).
 [[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy,
-                                          bool cost_active);
+                                          bool cost_active, const FitnessCfg &cfg);
 
 } // namespace detail
 
@@ -357,11 +489,15 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 //  `policy`, `sim`, `pool` for the duration of the call (no ownership taken).
 //  Returns Err only if the candidate fails to compile/evaluate/extract.
 // =========================================================================
+// S3-1 PERF: `cpcv_cache` (optional, default nullptr) is forwarded directly into
+// detail::fitness_core. When supplied, spans+folds are built once per unique
+// (n_periods, cpcv) and reused for every subsequent genome — O(1) per call.
 [[nodiscard]] atx::core::Result<FitnessReport>
 pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const alpha::Panel &panel,
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel = nullptr,
                    alpha::Engine *engine = nullptr,
-                   const alpha::SignalSet *signals = nullptr);
+                   const alpha::SignalSet *signals = nullptr,
+                   CpcvCache *cpcv_cache = nullptr);
 
 } // namespace atx::engine::factory
