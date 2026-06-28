@@ -25,281 +25,309 @@ class FundamentalStatementMapRow:
     is_core_metric: bool
     is_active: bool
     notes: str | None = None
+    item_id: int | None = None
+    industry_template: str = "ALL"
+    is_derived: bool = False
+    derivation_expr: str | None = None
 
 
 FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "Assets",
-        "balance_sheet",
-        "assets",
-        "assets",
-        "Assets",
-        "instant",
-        "debit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical balance sheet total assets.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "Liabilities",
-        "balance_sheet",
-        "liabilities",
-        "liabilities",
-        "Liabilities",
-        "instant",
-        "credit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical balance sheet total liabilities.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "StockholdersEquity",
-        "balance_sheet",
-        "equity",
-        "stockholders_equity",
-        "Stockholders' equity",
-        "instant",
-        "credit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical balance sheet stockholders' equity.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "CommonStocksIncludingAdditionalPaidInCapital",
-        "balance_sheet",
-        "equity",
-        "common_stock_and_apic",
-        "Common stock and additional paid-in capital",
-        "instant",
-        "credit",
-        "monetary",
-        1.0,
-        20,
-        True,
-        True,
-        "Equity capital component available from SEC companyfacts.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "RevenueFromContractWithCustomerExcludingAssessedTax",
-        "income_statement",
-        "revenue",
-        "revenue",
-        "Revenue",
-        "duration",
-        "credit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Preferred ASC 606 revenue concept when present.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "Revenues",
-        "income_statement",
-        "revenue",
-        "revenue",
-        "Revenue",
-        "duration",
-        "credit",
-        "monetary",
-        1.0,
-        20,
-        True,
-        True,
-        "Legacy/general revenue concept; lower priority than ASC 606 revenue.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "OperatingIncomeLoss",
-        "income_statement",
-        "profitability",
-        "operating_income",
-        "Operating income",
-        "duration",
-        "credit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical operating income or loss.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "NetIncomeLoss",
-        "income_statement",
-        "profitability",
-        "net_income",
-        "Net income",
-        "duration",
-        "credit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical net income or loss.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "NetCashProvidedByUsedInOperatingActivities",
-        "cash_flow",
-        "operating",
-        "operating_cash_flow",
-        "Operating cash flow",
-        "duration",
-        "debit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical net cash provided by operating activities.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "NetCashProvidedByUsedInInvestingActivities",
-        "cash_flow",
-        "investing",
-        "investing_cash_flow",
-        "Investing cash flow",
-        "duration",
-        "debit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical net cash provided by or used in investing activities.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "NetCashProvidedByUsedInFinancingActivities",
-        "cash_flow",
-        "financing",
-        "financing_cash_flow",
-        "Financing cash flow",
-        "duration",
-        "debit",
-        "monetary",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical net cash provided by or used in financing activities.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "PaymentsToAcquirePropertyPlantAndEquipment",
-        "cash_flow",
-        "investing",
-        "capital_expenditures",
-        "Capital expenditures",
-        "duration",
-        "credit",
-        "monetary",
-        -1.0,
-        10,
-        True,
-        True,
-        "Capital expenditures as signed cash outflow.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "PaymentsForRepurchaseOfCommonStock",
-        "cash_flow",
-        "financing",
-        "share_repurchases",
-        "Share repurchases",
-        "duration",
-        "credit",
-        "monetary",
-        -1.0,
-        10,
-        True,
-        True,
-        "Common stock repurchases as signed cash outflow.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "PaymentsOfDividends",
-        "cash_flow",
-        "financing",
-        "dividends_paid",
-        "Dividends paid",
-        "duration",
-        "credit",
-        "monetary",
-        -1.0,
-        10,
-        True,
-        True,
-        "Dividends paid as signed cash outflow.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "us-gaap",
-        "EarningsPerShareDiluted",
-        "per_share",
-        "earnings",
-        "eps_diluted",
-        "Diluted earnings per share",
-        "duration",
-        "credit",
-        "per_share",
-        1.0,
-        10,
-        True,
-        True,
-        "Canonical diluted EPS.",
-    ),
-    FundamentalStatementMapRow(
-        SOURCE_NAME,
-        "dei",
-        "EntityCommonStockSharesOutstanding",
-        "share_count",
-        "shares",
-        "shares_outstanding",
-        "Common shares outstanding",
-        "instant",
-        "credit",
-        "shares",
-        1.0,
-        10,
-        True,
-        True,
-        "DEI current common shares outstanding concept.",
-    ),
+    # ── §2.1 Income Statement ────────────────────────────────────────────────
+    # 1001 Total Revenue — 3-way COALESCE: ASC-606 (priority 10) → legacy Revenues (20) → SalesRevenueNet (30)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","RevenueFromContractWithCustomerExcludingAssessedTax","income_statement","revenue","revenue","Revenue","duration","credit","monetary",1.0,10,True,True,"Preferred ASC-606 revenue concept when present.",1001,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Revenues","income_statement","revenue","revenue","Revenue","duration","credit","monetary",1.0,20,True,True,"Legacy/general revenue concept; lower priority than ASC-606 revenue.",1001,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","SalesRevenueNet","income_statement","revenue","revenue","Revenue","duration","credit","monetary",1.0,30,False,True,"Pre-2018 net sales concept; lowest priority COALESCE fallback.",1001,"ALL",False,None),
+    # 1003 COGS
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CostOfGoodsAndServicesSold","income_statement","costs","cogs","Cost of revenue","duration","debit","monetary",1.0,10,True,True,"Post-2018 default COGS concept (ASC-606).",1003,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CostOfRevenue","income_statement","costs","cogs","Cost of revenue","duration","debit","monetary",1.0,20,False,True,"Alternative COGS concept.",1003,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CostOfGoodsSold","income_statement","costs","cogs","Cost of revenue","duration","debit","monetary",1.0,30,False,True,"Legacy COGS concept; lowest priority.",1003,"ALL",False,None),
+    # 1004 Gross Profit — has direct us-gaap tag, but also derived in Compustat
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","GrossProfit","income_statement","profitability","gross_profit","Gross profit","duration","credit","monetary",1.0,10,True,True,"Direct us-gaap gross profit tag.",1004,"ALL",False,None),
+    # 1005 SG&A
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","SellingGeneralAndAdministrativeExpense","income_statement","costs","sga","SG&A expense","duration","debit","monetary",1.0,10,True,True,"SG&A expense.",1005,"ALL",False,None),
+    # 1006 Selling expense only
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","SellingAndMarketingExpense","income_statement","costs","selling_expense","Selling expense","duration","debit","monetary",1.0,10,False,True,"Selling expense only.",1006,"ALL",False,None),
+    # 1007 G&A only
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","GeneralAndAdministrativeExpense","income_statement","costs","ga_expense","G&A expense","duration","debit","monetary",1.0,10,False,True,"General and administrative expense only.",1007,"ALL",False,None),
+    # 1008 R&D
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ResearchAndDevelopmentExpense","income_statement","costs","rd_expense","R&D expense","duration","debit","monetary",1.0,10,True,True,"R&D expense (ASC 730).",1008,"ALL",False,None),
+    # 1009 Advertising — [unverified]
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AdvertisingExpense","income_statement","costs","advertising_expense","Advertising expense","duration","debit","monetary",1.0,10,False,False,"[unverified] — not confirmed against primary vendor source.",1009,"ALL",False,None),
+    # 1010 Operating Expenses total — [unverified]
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingExpenses","income_statement","costs","operating_expenses","Operating expenses","duration","debit","monetary",1.0,10,False,False,"[unverified] — OperatingExpenses availability varies by filer.",1010,"ALL",False,None),
+    # 1011 D&A on income statement
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DepreciationAndAmortization","income_statement","costs","da_is","D&A (income statement)","duration","debit","monetary",1.0,10,True,True,"D&A when on income statement.",1011,"ALL",False,None),
+    # 1012 Depreciation only
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Depreciation","income_statement","costs","depreciation","Depreciation","duration","debit","monetary",1.0,10,False,True,"Depreciation only.",1012,"ALL",False,None),
+    # 1013 Amortization of intangibles
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AmortizationOfIntangibleAssets","income_statement","costs","amortization_intangibles","Amortization of intangibles","duration","debit","monetary",1.0,10,False,True,"Amortization of intangible assets.",1013,"ALL",False,None),
+    # 1014 Operating Income
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingIncomeLoss","income_statement","profitability","operating_income","Operating income","duration","credit","monetary",1.0,10,True,True,"Canonical operating income or loss.",1014,"ALL",False,None),
+    # 1015 Operating Income before D&A (EBITDA-ish from Compustat oibdp) — derived sentinel
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ebitda_oibdp","income_statement","profitability","ebitda_oibdp","Operating income before D&A","duration","credit","monetary",1.0,10,False,True,"Derived: operating income before D&A (Compustat oibdp equivalent).",1015,"ALL",True,"ebitda_oibdp = operating_income + da_is"),
+    # 1016 EBITDA standardised — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ebitda","income_statement","profitability","ebitda","EBITDA","duration","credit","monetary",1.0,10,True,True,"Derived: EBITDA = operating_income + da_cf (or da_is).",1016,"ALL",True,"ebitda = operating_income + da_cf"),
+    # 1017 EBIT — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ebit","income_statement","profitability","ebit","EBIT","duration","credit","monetary",1.0,10,True,True,"Derived: EBIT = pretax_income + interest_expense.",1017,"ALL",True,"ebit = pretax_income + interest_expense"),
+    # 1018 Interest Expense
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestExpense","income_statement","below_operating","interest_expense","Interest expense","duration","debit","monetary",1.0,10,True,True,"Total interest expense.",1018,"ALL",False,None),
+    # 1019 Interest Expense debt only
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestExpenseDebt","income_statement","below_operating","interest_expense_debt","Interest expense (debt)","duration","debit","monetary",1.0,10,False,True,"Interest expense on debt only.",1019,"ALL",False,None),
+    # 1020 Interest Income — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestIncome","income_statement","below_operating","interest_income","Interest income","duration","credit","monetary",1.0,10,False,True,"Interest income.",1020,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InvestmentIncomeInterest","income_statement","below_operating","interest_income","Interest income","duration","credit","monetary",1.0,20,False,True,"Investment interest income; lower priority fallback.",1020,"ALL",False,None),
+    # 1021 Non-operating Income
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NonoperatingIncomeExpense","income_statement","below_operating","nonoperating_income","Non-operating income (expense)","duration","credit","monetary",1.0,10,False,True,"Non-operating income or expense.",1021,"ALL",False,None),
+    # 1022 Special Items — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","RestructuringCharges","income_statement","special_items","special_items","Special items","duration","debit","monetary",1.0,10,False,True,"Restructuring charges as special items.",1022,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AssetImpairmentCharges","income_statement","special_items","special_items","Special items","duration","debit","monetary",1.0,20,False,True,"Asset impairment charges as special items fallback.",1022,"ALL",False,None),
+    # 1023 Pretax Income
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest","income_statement","profitability","pretax_income","Pretax income","duration","credit","monetary",1.0,10,True,True,"Pretax income.",1023,"ALL",False,None),
+    # 1024 Income Tax
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeTaxExpenseBenefit","income_statement","taxes","income_tax","Income tax expense","duration","debit","monetary",1.0,10,True,True,"Income tax expense or benefit.",1024,"ALL",False,None),
+    # 1025 Current Tax
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CurrentIncomeTaxExpenseBenefit","income_statement","taxes","current_tax","Current income tax","duration","debit","monetary",1.0,10,False,True,"Current income tax expense.",1025,"ALL",False,None),
+    # 1026 Deferred Tax (IS)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DeferredIncomeTaxExpenseBenefit","income_statement","taxes","deferred_tax_expense","Deferred income tax","duration","debit","monetary",1.0,10,False,True,"Deferred income tax expense.",1026,"ALL",False,None),
+    # 1027 Minority Interest P&L — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NetIncomeLossAttributableToNoncontrollingInterest","income_statement","profitability","minority_int_pl","Minority interest (P&L)","duration","debit","monetary",1.0,10,False,True,"Net income attributable to noncontrolling interest.",1027,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","MinorityInterestInNetIncomeLoss","income_statement","profitability","minority_int_pl","Minority interest (P&L)","duration","debit","monetary",1.0,20,False,False,"[unverified] legacy minority interest P&L concept.",1027,"ALL",False,None),
+    # 1028 Equity in affiliates
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossFromEquityMethodInvestments","income_statement","below_operating","equity_affiliates","Equity in affiliates","duration","credit","monetary",1.0,10,False,True,"Income from equity method investments.",1028,"ALL",False,None),
+    # 1029 Income Before Extraordinary
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossFromContinuingOperations","income_statement","profitability","ni_continuing","Net income (continuing ops)","duration","credit","monetary",1.0,10,True,True,"Income from continuing operations.",1029,"ALL",False,None),
+    # 1030 Discontinued Ops NI
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossFromDiscontinuedOperationsNetOfTax","income_statement","special_items","discontinued_ops_ni","Discontinued ops net income","duration","credit","monetary",1.0,10,False,True,"Net income from discontinued operations.",1030,"ALL",False,None),
+    # 1031 Net Income
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NetIncomeLoss","income_statement","profitability","net_income","Net income","duration","credit","monetary",1.0,10,True,True,"Canonical net income or loss.",1031,"ALL",False,None),
+    # 1032 Net Income to Common
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NetIncomeLossAvailableToCommonStockholdersBasic","income_statement","profitability","ni_to_common","Net income to common","duration","credit","monetary",1.0,10,True,True,"Net income available to common stockholders.",1032,"ALL",False,None),
+    # 1033 Preferred Dividends (IS)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PreferredStockDividends","income_statement","profitability","pref_dividends","Preferred dividends","duration","debit","monetary",1.0,10,False,True,"Preferred stock dividends declared.",1033,"ALL",False,None),
+    # 1034 EPS Basic
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","EarningsPerShareBasic","per_share","earnings","eps_basic","Basic EPS","duration","credit","per_share",1.0,10,True,True,"Basic earnings per share.",1034,"ALL",False,None),
+    # 1035 EPS Diluted
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","EarningsPerShareDiluted","per_share","earnings","eps_diluted","Diluted earnings per share","duration","credit","per_share",1.0,10,True,True,"Canonical diluted EPS.",1035,"ALL",False,None),
+    # 1036 EPS Basic incl extra
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossFromContinuingOperationsPerBasicShare","per_share","earnings","eps_basic_cont","Basic EPS (continuing ops)","duration","credit","per_share",1.0,10,False,True,"Basic EPS from continuing operations.",1036,"ALL",False,None),
+    # 1037 EPS Diluted incl extra
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossFromContinuingOperationsPerDilutedShare","per_share","earnings","eps_diluted_cont","Diluted EPS (continuing ops)","duration","credit","per_share",1.0,10,False,True,"Diluted EPS from continuing operations.",1037,"ALL",False,None),
+    # 1038 EPS Diluted LTM — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__eps_diluted_ltm","per_share","earnings","eps_diluted_ltm","Diluted EPS (LTM)","duration","credit","per_share",1.0,10,False,True,"Derived: trailing-twelve-month diluted EPS.",1038,"ALL",True,"eps_diluted_ltm = sum of 4 trailing quarters eps_diluted"),
+    # 1039 Shares Outstanding (period-end) — 2-way COALESCE: dei first, us-gaap second
+    FundamentalStatementMapRow(SOURCE_NAME,"dei","EntityCommonStockSharesOutstanding","share_count","shares","shares_outstanding","Common shares outstanding","instant","credit","shares",1.0,10,True,True,"DEI current common shares outstanding concept.",1039,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CommonStockSharesOutstanding","share_count","shares","shares_outstanding","Common shares outstanding","instant","credit","shares",1.0,20,False,True,"US-GAAP common stock shares outstanding; fallback to DEI.",1039,"ALL",False,None),
+    # 1040 Weighted Avg Shares Basic
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","WeightedAverageNumberOfSharesOutstandingBasic","share_count","shares","shares_basic_avg","Weighted avg shares (basic)","duration","credit","shares",1.0,10,True,True,"Weighted average basic shares outstanding.",1040,"ALL",False,None),
+    # 1041 Weighted Avg Shares Diluted
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","WeightedAverageNumberOfDilutedSharesOutstanding","share_count","shares","shares_diluted_avg","Weighted avg shares (diluted)","duration","credit","shares",1.0,10,True,True,"Weighted average diluted shares outstanding.",1041,"ALL",False,None),
+    # 1042 Normalised Income — derived (vendor-specific)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__normalized_income","income_statement","profitability","normalized_income","Normalised net income","duration","credit","monetary",1.0,10,False,True,"Derived: normalized net income excluding non-recurring items.",1042,"ALL",True,"normalized_income = net_income adjusted for special_items"),
+    # 1043 Common Dividends Declared per Share — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__dps_declared","per_share","dividends","dps_declared","Dividends per share (declared)","duration","credit","per_share",1.0,10,False,True,"Derived: common dividends declared per share.",1043,"ALL",True,"dps_declared = common_div_paid / shares_outstanding"),
+
+    # ── §2.2 Balance Sheet ───────────────────────────────────────────────────
+    # 1101 Total Assets
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Assets","balance_sheet","assets","total_assets","Total assets","instant","debit","monetary",1.0,10,True,True,"Canonical balance sheet total assets.",1101,"ALL",False,None),
+    # 1102 Current Assets
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AssetsCurrent","balance_sheet","assets","current_assets","Current assets","instant","debit","monetary",1.0,10,True,True,"Total current assets.",1102,"ALL",False,None),
+    # 1103 Cash & ST Investments — sum of two concepts; use CashAndCashEquivalentsAtCarryingValue as primary
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CashAndCashEquivalentsAtCarryingValue","balance_sheet","assets","cash_st_inv","Cash and ST investments","instant","debit","monetary",1.0,10,True,True,"Cash and cash equivalents; combined with ST investments for full cash_st_inv.",1103,"ALL",False,None),
+    # 1104 Cash only
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Cash","balance_sheet","assets","cash","Cash","instant","debit","monetary",1.0,10,False,True,"Cash only (narrow).",1104,"ALL",False,None),
+    # 1105 Short-Term Investments — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ShortTermInvestments","balance_sheet","assets","st_investments","Short-term investments","instant","debit","monetary",1.0,10,False,True,"Short-term investments.",1105,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","MarketableSecuritiesCurrent","balance_sheet","assets","st_investments","Short-term investments","instant","debit","monetary",1.0,20,False,True,"Marketable securities current; fallback for ST investments.",1105,"ALL",False,None),
+    # 1106 Accounts Receivable — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AccountsReceivableNetCurrent","balance_sheet","assets","ar","Accounts receivable","instant","debit","monetary",1.0,10,True,True,"Net accounts receivable.",1106,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ReceivablesNetCurrent","balance_sheet","assets","ar","Accounts receivable","instant","debit","monetary",1.0,20,False,True,"Net receivables current; fallback.",1106,"ALL",False,None),
+    # 1107 Inventory
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InventoryNet","balance_sheet","assets","inventory","Inventory","instant","debit","monetary",1.0,10,True,True,"Net inventory.",1107,"ALL",False,None),
+    # 1108 Prepaid Expense
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PrepaidExpenseCurrent","balance_sheet","assets","prepaid_expense","Prepaid expense","instant","debit","monetary",1.0,10,False,True,"Prepaid expense current.",1108,"ALL",False,None),
+    # 1109 Other Current Assets
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OtherAssetsCurrent","balance_sheet","assets","other_current_assets","Other current assets","instant","debit","monetary",1.0,10,False,True,"Other current assets.",1109,"ALL",False,None),
+    # 1110 PP&E Net
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PropertyPlantAndEquipmentNet","balance_sheet","assets","ppe_net","PP&E (net)","instant","debit","monetary",1.0,10,True,True,"Net PP&E.",1110,"ALL",False,None),
+    # 1111 PP&E Gross
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PropertyPlantAndEquipmentGross","balance_sheet","assets","ppe_gross","PP&E (gross)","instant","debit","monetary",1.0,10,True,True,"Gross PP&E.",1111,"ALL",False,None),
+    # 1112 Accumulated Depreciation
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment","balance_sheet","assets","accumulated_depreciation","Accumulated depreciation","instant","credit","monetary",1.0,10,False,True,"Accumulated depreciation on PP&E.",1112,"ALL",False,None),
+    # 1113 Intangibles total (item_id 1115 per source doc)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IntangibleAssetsNetExcludingGoodwill","balance_sheet","assets","intangibles_other","Intangibles (excl. goodwill)","instant","debit","monetary",1.0,10,True,True,"Intangible assets net excluding goodwill.",1115,"ALL",False,None),
+    # 1114 Goodwill
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Goodwill","balance_sheet","assets","goodwill","Goodwill","instant","debit","monetary",1.0,10,True,True,"Goodwill.",1114,"ALL",False,None),
+    # 1116 Operating Lease ROU asset
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingLeaseRightOfUseAsset","balance_sheet","assets","rou_asset","Operating lease ROU asset","instant","debit","monetary",1.0,10,False,True,"Right-of-use asset for operating leases (ASC 842).",1116,"ALL",False,None),
+    # 1117 Long-Term Investments — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LongTermInvestments","balance_sheet","assets","lt_investments","Long-term investments","instant","debit","monetary",1.0,10,False,True,"Long-term investments.",1117,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","EquityMethodInvestments","balance_sheet","assets","lt_investments","Long-term investments","instant","debit","monetary",1.0,20,False,True,"Equity method investments; fallback for LT investments.",1117,"ALL",False,None),
+    # 1118 Deferred Tax Assets
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DeferredIncomeTaxAssetsNet","balance_sheet","assets","deferred_tax_assets","Deferred tax assets","instant","debit","monetary",1.0,10,False,True,"Net deferred income tax assets.",1118,"ALL",False,None),
+    # 1119 Other LT Assets
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OtherAssetsNoncurrent","balance_sheet","assets","other_lt_assets","Other long-term assets","instant","debit","monetary",1.0,10,False,True,"Other noncurrent assets.",1119,"ALL",False,None),
+    # 1201 Total Liabilities
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Liabilities","balance_sheet","liabilities","total_liabilities","Total liabilities","instant","credit","monetary",1.0,10,True,True,"Canonical balance sheet total liabilities.",1201,"ALL",False,None),
+    # 1202 Current Liabilities
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LiabilitiesCurrent","balance_sheet","liabilities","current_liabilities","Current liabilities","instant","credit","monetary",1.0,10,True,True,"Total current liabilities.",1202,"ALL",False,None),
+    # 1203 Accounts Payable
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AccountsPayableCurrent","balance_sheet","liabilities","ap","Accounts payable","instant","credit","monetary",1.0,10,True,True,"Accounts payable current.",1203,"ALL",False,None),
+    # 1204 Accrued Liabilities
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AccruedLiabilitiesCurrent","balance_sheet","liabilities","accrued_liabilities","Accrued liabilities","instant","credit","monetary",1.0,10,False,True,"Accrued liabilities current.",1204,"ALL",False,None),
+    # 1205 Short-Term Debt — primary concept; note doc says sum of 3 us-gaap concepts
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LongTermDebtCurrent","balance_sheet","liabilities","st_debt","Short-term debt","instant","credit","monetary",1.0,10,True,True,"Current portion of long-term debt; primary ST debt concept.",1205,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ShortTermBorrowings","balance_sheet","liabilities","st_debt","Short-term debt","instant","credit","monetary",1.0,20,False,True,"Short-term borrowings; COALESCE component for ST debt.",1205,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CommercialPaper","balance_sheet","liabilities","st_debt","Short-term debt","instant","credit","monetary",1.0,30,False,True,"Commercial paper; lowest priority ST debt component.",1205,"ALL",False,None),
+    # 1206 Current portion of LT Debt — note: LongTermDebtCurrent is shared with st_debt (PK conflict);
+    # use DebtCurrent as the concept tag for current_portion_lt_debt to avoid overwrite.
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DebtCurrent","balance_sheet","liabilities","current_portion_lt_debt","Current portion of LT debt","instant","credit","monetary",1.0,10,False,True,"Current portion of long-term debt (DebtCurrent concept).",1206,"ALL",False,None),
+    # 1207 Long-Term Debt
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LongTermDebtNoncurrent","balance_sheet","liabilities","lt_debt","Long-term debt","instant","credit","monetary",1.0,10,True,True,"Long-term debt noncurrent.",1207,"ALL",False,None),
+    # 1208 Total Debt — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__total_debt","balance_sheet","liabilities","total_debt","Total debt","instant","credit","monetary",1.0,10,True,True,"Derived: total debt = ST debt + LT debt.",1208,"ALL",True,"total_debt = st_debt + lt_debt"),
+    # 1209 Operating Lease Liability — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingLeaseLiabilityCurrent","balance_sheet","liabilities","operating_lease_liability","Operating lease liability","instant","credit","monetary",1.0,10,False,True,"Current operating lease liability (ASC 842).",1209,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingLeaseLiabilityNoncurrent","balance_sheet","liabilities","operating_lease_liability","Operating lease liability","instant","credit","monetary",1.0,20,False,True,"Noncurrent operating lease liability (ASC 842).",1209,"ALL",False,None),
+    # 1210 Deferred Revenue
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DeferredRevenue","balance_sheet","liabilities","deferred_revenue","Deferred revenue","instant","credit","monetary",1.0,10,False,True,"Deferred revenue.",1210,"ALL",False,None),
+    # 1211 Deferred Tax Liabilities
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DeferredIncomeTaxLiabilitiesNet","balance_sheet","liabilities","deferred_tax_liabilities","Deferred tax liabilities","instant","credit","monetary",1.0,10,False,True,"Net deferred income tax liabilities.",1211,"ALL",False,None),
+    # 1212 Other LT Liabilities
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OtherLiabilitiesNoncurrent","balance_sheet","liabilities","other_lt_liabilities","Other long-term liabilities","instant","credit","monetary",1.0,10,False,True,"Other noncurrent liabilities.",1212,"ALL",False,None),
+    # 1213 Minority Interest BS
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","MinorityInterest","balance_sheet","equity","minority_int_bs","Minority interest (BS)","instant","credit","monetary",1.0,10,False,True,"Minority (noncontrolling) interest on balance sheet.",1213,"ALL",False,None),
+    # 1214 Preferred Stock
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PreferredStockValue","balance_sheet","equity","pref_stock","Preferred stock","instant","credit","monetary",1.0,10,False,True,"Preferred stock value.",1214,"ALL",False,None),
+    # 1215 Common Stock at par
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CommonStockValue","balance_sheet","equity","common_stock_par","Common stock (par)","instant","credit","monetary",1.0,10,False,True,"Common stock at par value.",1215,"ALL",False,None),
+    # 1216 Additional Paid-In Capital — 2-way COALESCE
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AdditionalPaidInCapital","balance_sheet","equity","apic","Additional paid-in capital","instant","credit","monetary",1.0,10,False,True,"Additional paid-in capital.",1216,"ALL",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AdditionalPaidInCapitalCommonStock","balance_sheet","equity","apic","Additional paid-in capital","instant","credit","monetary",1.0,20,False,True,"Additional paid-in capital (common stock specific); fallback.",1216,"ALL",False,None),
+    # 1217 Retained Earnings
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","RetainedEarningsAccumulatedDeficit","balance_sheet","equity","retained_earnings","Retained earnings","instant","credit","monetary",1.0,10,True,True,"Retained earnings or accumulated deficit.",1217,"ALL",False,None),
+    # 1218 AOCI
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AccumulatedOtherComprehensiveIncomeLossNetOfTax","balance_sheet","equity","aoci","AOCI","instant","credit","monetary",1.0,10,False,True,"Accumulated other comprehensive income (loss).",1218,"ALL",False,None),
+    # 1219 Treasury Stock
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","TreasuryStockValue","balance_sheet","equity","treasury_stock","Treasury stock","instant","debit","monetary",1.0,10,False,True,"Treasury stock at cost.",1219,"ALL",False,None),
+    # 1220 Common Equity — derived (Compustat ceq)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__common_equity","balance_sheet","equity","common_equity","Common equity","instant","credit","monetary",1.0,10,True,True,"Derived: common equity = total_equity - pref_stock - minority_int_bs.",1220,"ALL",True,"common_equity = total_equity - pref_stock"),
+    # 1221 Stockholders Equity
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","StockholdersEquity","balance_sheet","equity","stockholders_equity","Stockholders' equity","instant","credit","monetary",1.0,10,True,True,"Canonical balance sheet stockholders' equity.",1221,"ALL",False,None),
+    # 1222 Equity incl non-controlling
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest","balance_sheet","equity","equity_incl_minority","Equity incl. non-controlling","instant","credit","monetary",1.0,10,False,True,"Total equity including non-controlling interest.",1222,"ALL",False,None),
+    # 1223 Total Liab + Equity
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LiabilitiesAndStockholdersEquity","balance_sheet","liabilities","liab_and_equity","Total liabilities and equity","instant","credit","monetary",1.0,10,False,True,"Total liabilities and stockholders equity; must equal total assets.",1223,"ALL",False,None),
+    # CommonStocksIncludingAdditionalPaidInCapital — original row 4, item_id 1216
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CommonStocksIncludingAdditionalPaidInCapital","balance_sheet","equity","common_stock_and_apic","Common stock and additional paid-in capital","instant","credit","monetary",1.0,20,True,True,"Equity capital component available from SEC companyfacts.",1216,"ALL",False,None),
+
+    # ── §2.3 Cash Flow Statement ─────────────────────────────────────────────
+    # 1301 CFO
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NetCashProvidedByUsedInOperatingActivities","cash_flow","operating","operating_cash_flow","Operating cash flow","duration","debit","monetary",1.0,10,True,True,"Canonical net cash provided by operating activities.",1301,"ALL",False,None),
+    # 1302 CFO Continuing Ops
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NetCashProvidedByUsedInOperatingActivitiesContinuingOperations","cash_flow","operating","cfo_continuing","Operating cash flow (continuing)","duration","debit","monetary",1.0,10,False,True,"Net cash from operating activities (continuing operations).",1302,"ALL",False,None),
+    # 1303 CFI
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NetCashProvidedByUsedInInvestingActivities","cash_flow","investing","investing_cash_flow","Investing cash flow","duration","debit","monetary",1.0,10,True,True,"Canonical net cash provided by or used in investing activities.",1303,"ALL",False,None),
+    # 1304 CFF
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","NetCashProvidedByUsedInFinancingActivities","cash_flow","financing","financing_cash_flow","Financing cash flow","duration","debit","monetary",1.0,10,True,True,"Canonical net cash provided by or used in financing activities.",1304,"ALL",False,None),
+    # 1305 Capex
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsToAcquirePropertyPlantAndEquipment","cash_flow","investing","capital_expenditures","Capital expenditures","duration","credit","monetary",-1.0,10,True,True,"Capital expenditures as signed cash outflow.",1305,"ALL",False,None),
+    # 1306 Capex broader
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsToAcquireProductiveAssets","cash_flow","investing","capital_expenditures_broad","Capex (incl. intangibles)","duration","credit","monetary",-1.0,10,False,True,"Broader capex including intangible asset purchases.",1306,"ALL",False,None),
+    # 1307 D&A on CF
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DepreciationDepletionAndAmortization","cash_flow","operating","da_cf","D&A (cash flow)","duration","debit","monetary",1.0,10,True,True,"D&A add-back on cash flow statement.",1307,"ALL",False,None),
+    # 1308 Stock-Based Compensation
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ShareBasedCompensation","cash_flow","operating","stock_based_comp","Stock-based compensation","duration","debit","monetary",1.0,10,True,True,"Stock-based compensation add-back.",1308,"ALL",False,None),
+    # 1309 Acquisitions
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsToAcquireBusinessesNetOfCashAcquired","cash_flow","investing","acquisitions","Acquisitions","duration","credit","monetary",-1.0,10,False,True,"Acquisitions of businesses, net of cash.",1309,"ALL",False,None),
+    # 1310 Divestitures
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ProceedsFromDivestitureOfBusinesses","cash_flow","investing","divestitures","Divestitures","duration","debit","monetary",1.0,10,False,True,"Proceeds from divestitures.",1310,"ALL",False,None),
+    # 1311 Stock Issuance
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ProceedsFromIssuanceOfCommonStock","cash_flow","financing","stock_issuance","Stock issuance proceeds","duration","debit","monetary",1.0,10,False,True,"Proceeds from issuance of common stock.",1311,"ALL",False,None),
+    # 1312 Stock Repurchases
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsForRepurchaseOfCommonStock","cash_flow","financing","share_repurchases","Share repurchases","duration","credit","monetary",-1.0,10,True,True,"Common stock repurchases as signed cash outflow.",1312,"ALL",False,None),
+    # 1313 LT Debt Issued
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ProceedsFromIssuanceOfLongTermDebt","cash_flow","financing","lt_debt_issued","LT debt issued","duration","debit","monetary",1.0,10,False,True,"Proceeds from LT debt issuance.",1313,"ALL",False,None),
+    # 1314 LT Debt Repaid
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","RepaymentsOfLongTermDebt","cash_flow","financing","lt_debt_repaid","LT debt repaid","duration","credit","monetary",-1.0,10,False,True,"Repayments of long-term debt.",1314,"ALL",False,None),
+    # 1315 Net Change in Debt — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__net_change_debt","cash_flow","financing","net_change_debt","Net change in debt","duration","debit","monetary",1.0,10,False,True,"Derived: net change in debt = lt_debt_issued - lt_debt_repaid.",1315,"ALL",True,"net_change_debt = lt_debt_issued - lt_debt_repaid"),
+    # 1316 Common Dividends Paid
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsOfDividendsCommonStock","cash_flow","financing","common_div_paid","Common dividends paid","duration","credit","monetary",-1.0,10,False,True,"Common dividends paid as signed cash outflow.",1316,"ALL",False,None),
+    # 1317 Preferred Dividends Paid
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsOfDividendsPreferredStockAndPreferenceStock","cash_flow","financing","pref_div_paid","Preferred dividends paid","duration","credit","monetary",-1.0,10,False,True,"Preferred dividends paid as signed cash outflow.",1317,"ALL",False,None),
+    # 1318 Total Dividends Paid
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsOfDividends","cash_flow","financing","dividends_paid","Dividends paid","duration","credit","monetary",-1.0,10,True,True,"Dividends paid as signed cash outflow.",1318,"ALL",False,None),
+    # 1319 Change in AR
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncreaseDecreaseInAccountsReceivable","cash_flow","operating","change_in_ar","Change in accounts receivable","duration","credit","monetary",1.0,10,False,True,"Change in accounts receivable (increase = use of cash).",1319,"ALL",False,None),
+    # 1320 Change in Inventory
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncreaseDecreaseInInventories","cash_flow","operating","change_in_inventory","Change in inventory","duration","credit","monetary",1.0,10,False,True,"Change in inventories.",1320,"ALL",False,None),
+    # 1321 Change in AP
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncreaseDecreaseInAccountsPayable","cash_flow","operating","change_in_ap","Change in accounts payable","duration","debit","monetary",1.0,10,False,True,"Change in accounts payable.",1321,"ALL",False,None),
+    # 1322 Change in Working Capital — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__change_in_wc","cash_flow","operating","change_in_wc","Change in working capital","duration","debit","monetary",1.0,10,False,True,"Derived: change in working capital = sum of WC component changes.",1322,"ALL",True,"change_in_wc = change_in_ar + change_in_inventory + change_in_ap"),
+    # 1323 FX Effect on Cash
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","EffectOfExchangeRateOnCashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents","cash_flow","other","fx_effect_cash","FX effect on cash","duration","debit","monetary",1.0,10,False,True,"FX effect on cash and restricted cash.",1323,"ALL",False,None),
+    # 1324 Net Change in Cash
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect","cash_flow","other","net_change_cash","Net change in cash","duration","debit","monetary",1.0,10,False,True,"Net increase/decrease in cash and restricted cash.",1324,"ALL",False,None),
+    # 1325 Free Cash Flow — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__free_cash_flow","cash_flow","operating","free_cash_flow","Free cash flow","duration","debit","monetary",1.0,10,True,True,"Derived: FCF = operating_cash_flow - capital_expenditures.",1325,"ALL",True,"free_cash_flow = operating_cash_flow - capital_expenditures"),
+
+    # ── §2.4 Per-share / market / ratios (all derived) ──────────────────────
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__bvps","per_share","valuation","bvps","Book value per share","instant","credit","per_share",1.0,10,False,True,"Derived: book value per share = common_equity / shares_outstanding.",1401,"ALL",True,"bvps = common_equity / shares_outstanding"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__tangible_bvps","per_share","valuation","tangible_bvps","Tangible book value per share","instant","credit","per_share",1.0,10,False,True,"Derived: tangible BV/share = (common_equity - intangibles_other - goodwill) / shares_outstanding.",1402,"ALL",True,"tangible_bvps = (common_equity - goodwill - intangibles_other) / shares_outstanding"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__fcf_per_share","per_share","valuation","fcf_per_share","FCF per share","duration","credit","per_share",1.0,10,False,True,"Derived: FCF per share = free_cash_flow / shares_outstanding.",1403,"ALL",True,"fcf_per_share = free_cash_flow / shares_outstanding"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__sales_per_share","per_share","valuation","sales_per_share","Sales per share","duration","credit","per_share",1.0,10,False,True,"Derived: sales per share = revenue / shares_outstanding.",1404,"ALL",True,"sales_per_share = revenue / shares_outstanding"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__cash_per_share","per_share","valuation","cash_per_share","Cash per share","instant","credit","per_share",1.0,10,False,True,"Derived: cash per share = cash_st_inv / shares_outstanding.",1405,"ALL",True,"cash_per_share = cash_st_inv / shares_outstanding"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__dividend_yield","per_share","valuation","dividend_yield","Dividend yield","duration","credit","ratio",1.0,10,False,True,"Derived: dividend yield = dps_declared / price.",1406,"ALL",True,"dividend_yield = dps_declared / price"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__pe_ratio","per_share","valuation","pe_ratio","P/E ratio","duration","credit","ratio",1.0,10,False,True,"Derived: P/E = price / eps_diluted.",1407,"ALL",True,"pe_ratio = price / eps_diluted"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__pb_ratio","per_share","valuation","pb_ratio","P/B ratio","instant","credit","ratio",1.0,10,False,True,"Derived: P/B = price / bvps.",1408,"ALL",True,"pb_ratio = price / bvps"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ps_ratio","per_share","valuation","ps_ratio","P/S ratio","duration","credit","ratio",1.0,10,False,True,"Derived: P/S = price / sales_per_share.",1409,"ALL",True,"ps_ratio = price / sales_per_share"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__enterprise_value","per_share","valuation","enterprise_value","Enterprise value","instant","debit","monetary",1.0,10,False,True,"Derived: EV = market_cap + total_debt - cash_st_inv.",1410,"ALL",True,"enterprise_value = market_cap + total_debt - cash_st_inv"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ev_ebitda","per_share","valuation","ev_ebitda","EV/EBITDA","duration","credit","ratio",1.0,10,False,True,"Derived: EV/EBITDA = enterprise_value / ebitda.",1411,"ALL",True,"ev_ebitda = enterprise_value / ebitda"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ev_sales","per_share","valuation","ev_sales","EV/Sales","duration","credit","ratio",1.0,10,False,True,"Derived: EV/Sales = enterprise_value / revenue.",1412,"ALL",True,"ev_sales = enterprise_value / revenue"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__market_cap","per_share","valuation","market_cap","Market cap","instant","debit","monetary",1.0,10,False,True,"Derived: market cap = price * shares_outstanding.",1413,"ALL",True,"market_cap = price * shares_outstanding"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__gross_margin","per_share","valuation","gross_margin","Gross margin","duration","credit","ratio",1.0,10,False,True,"Derived: gross margin = gross_profit / revenue.",1414,"ALL",True,"gross_margin = gross_profit / revenue"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__operating_margin","per_share","valuation","operating_margin","Operating margin","duration","credit","ratio",1.0,10,False,True,"Derived: operating margin = operating_income / revenue.",1415,"ALL",True,"operating_margin = operating_income / revenue"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ebitda_margin","per_share","valuation","ebitda_margin","EBITDA margin","duration","credit","ratio",1.0,10,False,True,"Derived: EBITDA margin = ebitda / revenue.",1416,"ALL",True,"ebitda_margin = ebitda / revenue"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__net_margin","per_share","valuation","net_margin","Net margin","duration","credit","ratio",1.0,10,False,True,"Derived: net margin = net_income / revenue.",1417,"ALL",True,"net_margin = net_income / revenue"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__roa","per_share","valuation","roa","ROA","duration","credit","ratio",1.0,10,False,True,"Derived: ROA = net_income / total_assets.",1418,"ALL",True,"roa = net_income / total_assets"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__roe","per_share","valuation","roe","ROE","duration","credit","ratio",1.0,10,False,True,"Derived: ROE = net_income / common_equity.",1419,"ALL",True,"roe = net_income / common_equity"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__roic","per_share","valuation","roic","ROIC","duration","credit","ratio",1.0,10,False,True,"Derived: ROIC = operating_income * (1-tax_rate) / (total_debt + common_equity).",1420,"ALL",True,"roic = operating_income * (1 - effective_tax_rate) / (total_debt + common_equity)"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__current_ratio","per_share","valuation","current_ratio","Current ratio","instant","credit","ratio",1.0,10,False,True,"Derived: current ratio = current_assets / current_liabilities.",1421,"ALL",True,"current_ratio = current_assets / current_liabilities"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__debt_to_equity","per_share","valuation","debt_to_equity","Debt/equity","instant","credit","ratio",1.0,10,False,True,"Derived: D/E = total_debt / common_equity.",1422,"ALL",True,"debt_to_equity = total_debt / common_equity"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__interest_coverage","per_share","valuation","interest_coverage","Interest coverage","duration","credit","ratio",1.0,10,False,True,"Derived: interest coverage = ebit / interest_expense.",1423,"ALL",True,"interest_coverage = ebit / interest_expense"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__dso","per_share","valuation","dso","DSO (days)","duration","credit","ratio",1.0,10,False,True,"Derived: DSO = ar / revenue * 365.",1424,"ALL",True,"dso = ar / revenue * 365"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__dio","per_share","valuation","dio","DIO (days)","duration","credit","ratio",1.0,10,False,True,"Derived: DIO = inventory / cogs * 365.",1425,"ALL",True,"dio = inventory / cogs * 365"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__dpo","per_share","valuation","dpo","DPO (days)","duration","credit","ratio",1.0,10,False,True,"Derived: DPO = ap / cogs * 365.",1426,"ALL",True,"dpo = ap / cogs * 365"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ccc","per_share","valuation","ccc","Cash conversion cycle","duration","credit","ratio",1.0,10,False,True,"Derived: CCC = DSO + DIO - DPO.",1427,"ALL",True,"ccc = dso + dio - dpo"),
+
+    # ── §2.5 Additional operating / structural items ─────────────────────────
+    # 1428 Operating lease expense
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingLeaseExpense","income_statement","costs","operating_lease_expense","Operating lease expense","duration","debit","monetary",1.0,10,False,True,"Operating lease expense (ASC 842).",1428,"ALL",False,None),
+    # 1429 Finance lease ROU asset
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","FinanceLeaseRightOfUseAsset","balance_sheet","assets","finance_rou_asset","Finance lease ROU asset","instant","debit","monetary",1.0,10,False,True,"Right-of-use asset for finance leases (ASC 842).",1429,"ALL",False,None),
+    # 1430 Finance lease liability
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","FinanceLeaseLiability","balance_sheet","liabilities","finance_lease_liability","Finance lease liability","instant","credit","monetary",1.0,10,False,True,"Finance lease liability (ASC 842).",1430,"ALL",False,None),
+    # 1431 Income from operations (alternative tag used by some filers)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossBeforeGainOrLossOnSaleOfPropertiesExtraordinaryItemsAndCumulativeEffectsOfAccountingChanges","income_statement","profitability","income_before_special","Income before special items","duration","credit","monetary",1.0,10,False,True,"Income before gains/losses and special items.",1431,"ALL",False,None),
+    # 1432 Total comprehensive income
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ComprehensiveIncomeNetOfTax","income_statement","profitability","comprehensive_income","Comprehensive income","duration","credit","monetary",1.0,10,False,True,"Total comprehensive income net of tax.",1432,"ALL",False,None),
+    # 1433 Other comprehensive income
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OtherComprehensiveIncomeLossNetOfTax","income_statement","profitability","other_comprehensive_income","Other comprehensive income","duration","credit","monetary",1.0,10,False,True,"Other comprehensive income (loss) net of tax.",1433,"ALL",False,None),
+    # 1434 Total non-current assets — derived from total_assets - current_assets
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AssetsNoncurrent","balance_sheet","assets","noncurrent_assets","Non-current assets","instant","debit","monetary",1.0,10,False,True,"Total non-current assets.",1434,"ALL",False,None),
+    # 1435 Total non-current liabilities
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LiabilitiesNoncurrent","balance_sheet","liabilities","noncurrent_liabilities","Non-current liabilities","instant","credit","monetary",1.0,10,False,True,"Total non-current liabilities.",1435,"ALL",False,None),
+    # 1436 Net PP&E additions (capex from balance sheet change)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsToAcquireOtherProductiveAssets","cash_flow","investing","other_capex","Other capex","duration","credit","monetary",-1.0,10,False,True,"Payments to acquire other productive assets.",1436,"ALL",False,None),
+    # 1437 Interest paid (cash basis, from CF)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestPaid","cash_flow","operating","interest_paid","Interest paid","duration","credit","monetary",-1.0,10,False,True,"Cash interest paid (supplemental CF disclosure).",1437,"ALL",False,None),
+    # 1438 Income taxes paid (cash basis, from CF)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeTaxesPaid","cash_flow","operating","taxes_paid","Income taxes paid","duration","credit","monetary",-1.0,10,False,True,"Cash income taxes paid (supplemental CF disclosure).",1438,"ALL",False,None),
+    # 1439 Proceeds from sale of investments
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ProceedsFromSaleOfAvailableForSaleSecurities","cash_flow","investing","proceeds_from_investments","Proceeds from sale of investments","duration","debit","monetary",1.0,10,False,True,"Proceeds from sale of available-for-sale securities.",1439,"ALL",False,None),
+    # 1440 Net tangible assets — derived
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__net_tangible_assets","balance_sheet","assets","net_tangible_assets","Net tangible assets","instant","debit","monetary",1.0,10,False,True,"Derived: net tangible assets = total_assets - goodwill - intangibles_other.",1440,"ALL",True,"net_tangible_assets = total_assets - goodwill - intangibles_other"),
 )
 
 
@@ -325,9 +353,13 @@ def seed_fundamental_statement_map(store: DuckDBStore) -> int:
                 is_core_metric,
                 is_active,
                 notes,
+                item_id,
+                industry_template,
+                is_derived,
+                derivation_expr,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
             """,
             list(astuple(row)),
         )
@@ -458,6 +490,7 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
                  AND m.taxonomy = r.taxonomy
                  AND m.concept = r.concept
                  AND m.is_active
+                 AND m.is_derived = FALSE
                 LEFT JOIN securities s
                   ON s.security_id = r.security_id
             ),

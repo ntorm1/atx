@@ -151,7 +151,7 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         ),
         parity_status="partial",
         limitations="Compustat standardized taxonomy, history, and point-in-time snapshots are proprietary.",
-        next_gap="Scale companyfacts/filing-instance batches beyond the current five-issuer balanced XBRL coverage and add richer inline-XBRL transformation/unit normalization.",
+        next_gap="S4a canonical concept dictionary expanded to ≥147 active cross-industry concepts (item_ids 1001–1427); industry overlays (bank/insurance/REIT: S4b), rdq date capture (S4c), and DQC validation (S4d) still pending.",
         source_urls=(
             "https://www.marketplace.spglobal.com/en/datasets/compustat-financials-%288%29",
             "https://www.marketplace.spglobal.com/en/solutions/xpressfeed-%28b73250d6-a15c-4243-9016-3e5bf6300e43%29",

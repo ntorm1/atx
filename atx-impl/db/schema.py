@@ -833,6 +833,10 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             is_core_metric BOOLEAN NOT NULL DEFAULT true,
             is_active BOOLEAN NOT NULL DEFAULT true,
             notes VARCHAR,
+            item_id INTEGER,
+            industry_template VARCHAR DEFAULT 'ALL',
+            is_derived BOOLEAN DEFAULT FALSE,
+            derivation_expr VARCHAR,
             updated_at TIMESTAMP NOT NULL DEFAULT now(),
             PRIMARY KEY (source, taxonomy, concept)
         )

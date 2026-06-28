@@ -125,6 +125,29 @@ def _reference_classifications(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _fundamental_concept_dictionary(conn: duckdb.DuckDBPyConnection) -> None:
+    """S4a: add item_id, industry_template, is_derived, derivation_expr to fundamental_statement_map.
+
+    DuckDB requires dropping dependent indexes before ALTER TABLE, then recreating them.
+    All statements use ADD COLUMN IF NOT EXISTS so this is idempotent on fresh DBs where
+    ensure_quant_schema already created the table with these columns.
+    """
+    # Drop the index that depends on this table so ALTER TABLE can proceed.
+    conn.execute("DROP INDEX IF EXISTS idx_fundamental_statement_map_lookup")
+    for statement in (
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS item_id INTEGER",
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS industry_template VARCHAR DEFAULT 'ALL'",
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS is_derived BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS derivation_expr VARCHAR",
+    ):
+        conn.execute(statement)
+    # Recreate the index.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_map_lookup "
+        "ON fundamental_statement_map(taxonomy, concept, is_active)"
+    )
+
+
 def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
     """Create S2 estimates tables: est_measure, est_actual, est_consensus, est_detail,
     est_broker, est_analyst, est_guidance, est_recommendation, est_surprise."""
@@ -310,6 +333,11 @@ MIGRATIONS: list[Migration] = [
         version=4,
         name="estimates",
         up=_estimates,
+    ),
+    Migration(
+        version=5,
+        name="fundamental_concept_dictionary",
+        up=_fundamental_concept_dictionary,
     ),
 ]
 

@@ -3306,6 +3306,19 @@ def _check_specs(
             required_tables=("est_surprise",),
             warn_if_missing=True,
         ),
+        SqlQualityCheck(
+            dataset_id="fundamental_statement_map",
+            table_name="fundamental_statement_map",
+            check_name="fundamental_statement_map_concept_coverage",
+            sql="""
+                SELECT count(DISTINCT canonical_metric)::DOUBLE
+                FROM fundamental_statement_map
+                WHERE is_active = TRUE
+            """,
+            threshold=147.0,
+            comparator="ge",
+            required_tables=("fundamental_statement_map",),
+        ),
     )
 
 
