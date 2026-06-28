@@ -534,4 +534,129 @@ private:
   static constexpr atx::usize kTruncateIters = 8;
 };
 
+// ===========================================================================
+//  EmaDecayPolicy — opt-in STATEFUL EMA-decay sibling of WeightPolicy (P7-S4-1).
+//
+//  WHY a separate struct (not a flag on WeightPolicy): WeightPolicy is documented
+//  "pure configuration, holds no mutable state" and its caller-provided-scratch
+//  overload contract assumes the policy is `const` (every loop caller holds it as
+//  `const WeightPolicy&`). Adding mutable decay state to WeightPolicy would break
+//  that invariant and every const caller. EmaDecayPolicy instead OWNS the stateless
+//  `base` by value and layers a per-name EMA over the PREVIOUS call's smoothed
+//  output, leaving WeightPolicy byte-for-byte unchanged.
+//
+//  The decay rule (per step, per universe index i, ascending — determinism):
+//    smoothed[i] = ema_alpha * raw_target[i] + (1 - ema_alpha) * prev_smoothed[i]
+//  raw_target is base.to_target_weights(signal, universe, group_map) — the SAME
+//  stateless pipeline (winsorize -> transform -> [group-demean] -> dollar-neutral
+//  -> [truncate] -> gross-normalize). After the blend, when base.dollar_neutral is
+//  on, a final demean removes the small Σw drift the EMA introduces, then a gross-
+//  renormalize restores Σ|w| == base.gross_leverage so the smoothed book carries
+//  the SAME deployed gross as the stateless one. The result is scattered as the new
+//  prev_smoothed for the next call.
+//
+//  COLD START / reset(): on the first call after construction or reset(),
+//  prev_smoothed[i] == raw_target[i] (no prior information), so smoothed == raw and
+//  the call is identity — the cold-start book equals the stateless book.
+//
+//  INERT DEFAULT (ema_alpha == 1.0): the blend is the pass-through identity
+//  (smoothed[i] = 1*raw[i] + 0*prev[i] = raw[i]); to guarantee BYTE-IDENTITY with
+//  base.to_target_weights (re-running demean+gross_normalize on an already-
+//  normalized vector is identity only up to FP rounding), the ema_alpha >= 1.0 path
+//  SHORT-CIRCUITS: it returns raw verbatim and stores it as prev_smoothed. So the
+//  default policy is bit-for-bit the stateless path on every call.
+//
+//  Determinism: ascending index iteration, no RNG, no convergence-dependent exit;
+//  the only state is prev_weights_ (the previous smoothed output). Same signal
+//  series from a fresh policy -> bit-identical outputs.
+//
+//  PRECONDITION: 0 < ema_alpha <= 1.0 (asserted). gross_leverage / dollar_neutral /
+//  transform / truncation / winsorize_limit / industry_neutral are all inherited
+//  from `base` (configure them there). kTruncateIters in `base` is untouched.
+// ===========================================================================
+struct EmaDecayPolicy {
+  WeightPolicy base{};       // the stateless inner pipeline (delegated to)
+  atx::f64 ema_alpha = 1.0;  // 1.0 = identity / inert pass-through; (0,1) decays
+
+  /// Default: identity policy (default base, ema_alpha == 1.0, empty decay state).
+  EmaDecayPolicy() = default;
+
+  /// Configure the inner stateless pipeline and the decay strength. prev_weights_
+  /// starts empty (the next call is a cold start). The struct cannot be a plain
+  /// aggregate because prev_weights_ is private mutable state, so this 2-field
+  /// constructor preserves the `EmaDecayPolicy{base, alpha}` call site.
+  EmaDecayPolicy(WeightPolicy base_policy, atx::f64 alpha) noexcept
+      : base{base_policy}, ema_alpha{alpha} {}
+
+  /// Clear the decay state so the next call is a cold start (prev_smoothed == raw).
+  void reset() noexcept { prev_weights_.clear(); }
+
+  /// Map a cross-sectional signal to index-aligned, EMA-smoothed target weights
+  /// over `universe`. STATEFUL: blends against the previous call's smoothed output.
+  /// `group_map` has the same meaning as WeightPolicy::to_target_weights. Returns a
+  /// vector of universe size (allocates once per call; the stateless `base` does too
+  /// — this is the rebalance cadence, not a hot loop). See the header for the cold-
+  /// start, inert-default, and dollar-neutral-drift contracts.
+  [[nodiscard]] std::vector<atx::f64>
+  to_target_weights(SignalView signal, const Universe &universe,
+                    std::span<const atx::u32> group_map = {}) {
+    ATX_ASSERT(ema_alpha > 0.0 && ema_alpha <= 1.0);
+    std::vector<atx::f64> raw = base.to_target_weights(signal, universe, group_map);
+
+    // Inert default: ema_alpha == 1.0 is the pass-through identity. Return raw
+    // verbatim (byte-identical to the stateless path) and seed prev_weights_.
+    if (ema_alpha >= 1.0) {
+      prev_weights_ = raw;
+      return raw;
+    }
+
+    const atx::usize n = raw.size();
+    // Cold start: no prior smoothed output -> prev == raw, so smoothed == raw.
+    if (prev_weights_.size() != n) {
+      prev_weights_ = raw;
+      return raw;
+    }
+
+    // EMA blend against the previous smoothed output (ascending index).
+    std::vector<atx::f64> smoothed(n);
+    const atx::f64 one_minus = 1.0 - ema_alpha;
+    for (atx::usize i = 0; i < n; ++i) {
+      smoothed[i] = ema_alpha * raw[i] + one_minus * prev_weights_[i];
+    }
+    // The blend drifts Σw away from 0 (a convex combination of two zero-sum books
+    // is still zero-sum in exact arithmetic, but FP rounding leaves a residual);
+    // re-center when dollar-neutral so the smoothed book stays market-neutral.
+    if (base.dollar_neutral) {
+      atx::core::stats::demean(std::span<atx::f64>{smoothed});
+    }
+    // Restore the deployed gross Σ|w| == base.gross_leverage (Alpha101 `scale`); an
+    // all-zero smoothed book (degenerate) is left flat — no div-by-zero.
+    gross_renormalize(smoothed, base.gross_leverage);
+
+    prev_weights_ = smoothed; // becomes the prior for the next call
+    return smoothed;
+  }
+
+private:
+  /// Scale `w` so Σ|w| == gross (mirrors WeightPolicy::gross_normalize, but as a
+  /// free helper since base's is private). All-zero input -> left flat (no div-by-
+  /// zero). NaN cannot appear here: base produces 0 for dead names, the blend of
+  /// two finite books is finite.
+  static void gross_renormalize(std::vector<atx::f64> &w, atx::f64 gross) noexcept {
+    atx::f64 l1 = 0.0;
+    for (const atx::f64 x : w) {
+      l1 += (x < 0.0) ? -x : x;
+    }
+    if (l1 == 0.0) {
+      return; // degenerate all-zero -> leave flat
+    }
+    const atx::f64 scale = gross / l1;
+    for (atx::f64 &x : w) {
+      x *= scale;
+    }
+  }
+
+  std::vector<atx::f64> prev_weights_; // mutable decay state (previous smoothed book)
+};
+
 } // namespace atx::engine
