@@ -39,14 +39,13 @@
 #include <set>
 #include <span>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
-#include "atx/engine/alpha/datafields.hpp"
+#include "atx/engine/alpha/augment.hpp"
 #include "atx/engine/alpha/panel.hpp"
 
 namespace atx_impl_test {
@@ -130,114 +129,14 @@ collect_adv_windows(const std::vector<FixtureAlpha> &fx) {
   return out;
 }
 
-namespace detail {
-
-[[nodiscard]] inline atx::usize index_of(const std::vector<std::string> &names,
-                                         std::string_view name) noexcept {
-  for (atx::usize i = 0; i < names.size(); ++i) {
-    if (names[i] == name) {
-      return i;
-    }
-  }
-  return static_cast<atx::usize>(-1);
-}
-
-[[nodiscard]] inline bool has(const std::vector<std::string> &names,
-                              std::string_view name) noexcept {
-  return index_of(names, name) != static_cast<atx::usize>(-1);
-}
-
-} // namespace detail
-
 // Return a panel carrying every Alpha101 input field, derived from `base` (which
 // must provide at least open/high/low/close/volume). `adv_windows` is the set of
-// adv{d} columns to materialize (see collect_adv_windows).
+// adv{d} columns to materialize (see collect_adv_windows). Derivation details
+// (returns, cap, IndClass classifiers, dollar_volume/vwap/adv{d}) live in
+// atx::engine::alpha::with_alpha101_fields (atx/engine/alpha/augment.hpp).
 [[nodiscard]] inline atx::core::Result<Panel>
 augment_for_alpha101(const Panel &base, std::span<const atx::u16> adv_windows) {
-  const atx::usize D = base.dates();
-  const atx::usize I = base.instruments();
-  const atx::usize cells = D * I;
-
-  std::vector<std::string> names;
-  std::vector<std::vector<atx::f64>> data;
-  names.reserve(base.num_fields() + 8);
-  data.reserve(base.num_fields() + 8);
-  for (atx::usize f = 0; f < base.num_fields(); ++f) {
-    names.emplace_back(base.field_name(f));
-    const std::span<const atx::f64> col =
-        base.field_all(static_cast<atx::engine::alpha::FieldId>(f));
-    data.emplace_back(col.begin(), col.end());
-  }
-
-  std::vector<std::uint8_t> universe(cells, std::uint8_t{1});
-  for (atx::usize d = 0; d < D; ++d) {
-    for (atx::usize n = 0; n < I; ++n) {
-      universe[d * I + n] = base.in_universe(d, n) ? std::uint8_t{1} : std::uint8_t{0};
-    }
-  }
-
-  const atx::usize close_i = detail::index_of(names, "close");
-  if (close_i == static_cast<atx::usize>(-1)) {
-    return atx::core::Err(atx::core::ErrorCode::NotFound,
-                          "augment_for_alpha101: base panel has no 'close' field");
-  }
-
-  // returns = close[t]/close[t-1] - 1, per instrument (date-major stride I).
-  if (!detail::has(names, "returns")) {
-    const std::vector<atx::f64> &close = data[close_i];
-    std::vector<atx::f64> returns(cells, kNaN);
-    for (atx::usize n = 0; n < I; ++n) {
-      for (atx::usize d = 1; d < D; ++d) {
-        const atx::usize i = d * I + n;
-        const atx::usize p = (d - 1) * I + n;
-        if (universe[i] != 0 && universe[p] != 0) {
-          const atx::f64 c = close[i];
-          const atx::f64 pc = close[p];
-          returns[i] = (pc != 0.0) ? (c / pc - 1.0) : kNaN; // NaN inputs propagate
-        }
-      }
-    }
-    names.emplace_back("returns");
-    data.push_back(std::move(returns));
-  }
-
-  // cap = market_cap (copied). Fall back to close*1e8 only if market_cap absent.
-  if (!detail::has(names, "cap")) {
-    const atx::usize mc_i = detail::index_of(names, "market_cap");
-    std::vector<atx::f64> cap(cells, kNaN);
-    if (mc_i != static_cast<atx::usize>(-1)) {
-      cap = data[mc_i];
-    } else {
-      const std::vector<atx::f64> &close = data[close_i];
-      for (atx::usize i = 0; i < cells; ++i) {
-        if (universe[i] != 0) {
-          cap[i] = close[i] * 1.0e8;
-        }
-      }
-    }
-    names.emplace_back("cap");
-    data.push_back(std::move(cap));
-  }
-
-  // Group classifiers from the GICS sector code (widened f64 label). Absent ->
-  // a single constant group (label 0) so the group-aware ops still run.
-  {
-    const atx::usize sec_i = detail::index_of(names, "sector");
-    std::vector<atx::f64> sec(cells, 0.0);
-    if (sec_i != static_cast<atx::usize>(-1)) {
-      sec = data[sec_i];
-    }
-    for (std::string_view g : {"IndClass.sector", "IndClass.industry", "IndClass.subindustry"}) {
-      if (!detail::has(names, g)) {
-        names.emplace_back(g);
-        data.push_back(sec);
-      }
-    }
-  }
-
-  // Append dollar_volume / vwap / adv{d} via the engine's own derivation.
-  return atx::engine::alpha::datafields::with_datafields(
-      D, I, std::move(names), std::move(data), std::move(universe), adv_windows);
+  return atx::engine::alpha::with_alpha101_fields(base, adv_windows);
 }
 
 // Deterministic, multi-sector, long-history ORATS-shaped panel. Random-walk
