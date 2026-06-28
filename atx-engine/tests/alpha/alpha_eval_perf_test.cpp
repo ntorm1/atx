@@ -1795,71 +1795,54 @@ static void assert_bit_identical(const std::vector<atx::f64> &oracle,
   }
 }
 
-// Get the close/open columns from the panel (date-major flat buffer).
-[[nodiscard]] static std::span<const atx::f64> panel_close(const Panel &p) {
-  // Panel::field_data(0) or flat_buf access — use the signal set path.
-  // We rebuild from a known layout (same as make_ts_panel).
-  // Actually, capture via Engine evaluate of the identity "a = close".
-  (void)p;
-  // Return via oracle_unary on TsDelay(d=1) would be indirect. Instead, we
-  // directly hold the panel data as a local static built alongside the panel.
-  // This is fine because the tests call make_ts_panel() once per test.
-  // We use a thread_local cache populated the first time.
-  // HOWEVER: Panel doesn't expose raw field data directly from here.
-  // APPROACH: build the close/open vectors independently using the same LCG.
+// Build the panel's close and open column vectors from a single LCG instance,
+// interleaving draws exactly as make_ts_panel() does.  Populated once on first
+// call; subsequent calls are just a pointer load.
+static void build_panel_columns(std::vector<atx::f64> &close_out,
+                                std::vector<atx::f64> &open_out) {
+  atx::u64 lcg = 0x123456789ABCDEF0ULL;
+  auto next_f64 = [&lcg]() -> atx::f64 {
+    lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+    const atx::f64 u = static_cast<atx::f64>(static_cast<atx::u32>(lcg >> 32))
+                       / static_cast<atx::f64>(0xFFFFFFFFu);
+    return 1.0 + 9.0 * u;
+  };
+  const atx::usize nn = kDates * kInsts;
+  close_out.resize(nn);
+  open_out.resize(nn);
+  for (atx::usize t = 0; t < kDates; ++t) {
+    for (atx::usize j = 0; j < kInsts; ++j) {
+      const atx::usize i = t * kInsts + j;
+      const bool is_nan = ((i % 17) == 0);
+      close_out[i] = is_nan ? kTsNaN : next_f64();
+      // Cols 2 and 3 share the same close value on dates 10..14 to exercise
+      // the tie-break path in ts_rank.
+      if (!is_nan && (j == 3) && (t >= 10 && t < 15)) {
+        close_out[i] = close_out[t * kInsts + 2];
+      }
+      open_out[i] = is_nan ? kTsNaN : next_f64();
+    }
+  }
+}
+
+// Return a span over the cached close column (date-major flat buffer).
+// The Panel argument is unused — the column data are reconstructed from the
+// same LCG seed as make_ts_panel() so oracle comparisons are bit-exact.
+[[nodiscard]] static std::span<const atx::f64> panel_close(const Panel & /*p*/) {
   static std::vector<atx::f64> close_cache;
   static std::vector<atx::f64> open_cache;
   if (close_cache.empty()) {
-    atx::u64 lcg = 0x123456789ABCDEF0ULL;
-    auto next_f64 = [&lcg]() -> atx::f64 {
-      lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
-      const atx::f64 u = static_cast<atx::f64>(static_cast<atx::u32>(lcg >> 32))
-                         / static_cast<atx::f64>(0xFFFFFFFFu);
-      return 1.0 + 9.0 * u;
-    };
-    const atx::usize nn = kDates * kInsts;
-    close_cache.resize(nn);
-    open_cache.resize(nn);
-    for (atx::usize t = 0; t < kDates; ++t) {
-      for (atx::usize j = 0; j < kInsts; ++j) {
-        const atx::usize i = t * kInsts + j;
-        const bool is_nan = ((i % 17) == 0);
-        close_cache[i] = is_nan ? kTsNaN : next_f64();
-        if (!is_nan && (j == 3) && (t >= 10 && t < 15)) {
-          close_cache[i] = close_cache[t * kInsts + 2];
-        }
-        open_cache[i] = is_nan ? kTsNaN : next_f64();
-      }
-    }
+    build_panel_columns(close_cache, open_cache);
   }
   return std::span<const atx::f64>{close_cache};
 }
 
+// Return a span over the cached open column (date-major flat buffer).
 [[nodiscard]] static std::span<const atx::f64> panel_open() {
-  // Trigger population of both caches via panel_close.
+  static std::vector<atx::f64> close_cache;
   static std::vector<atx::f64> open_cache;
   if (open_cache.empty()) {
-    atx::u64 lcg = 0x123456789ABCDEF0ULL;
-    auto next_f64 = [&lcg]() -> atx::f64 {
-      lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
-      const atx::f64 u = static_cast<atx::f64>(static_cast<atx::u32>(lcg >> 32))
-                         / static_cast<atx::f64>(0xFFFFFFFFu);
-      return 1.0 + 9.0 * u;
-    };
-    const atx::usize nn = kDates * kInsts;
-    std::vector<atx::f64> tmp_close(nn);
-    open_cache.resize(nn);
-    for (atx::usize t = 0; t < kDates; ++t) {
-      for (atx::usize j = 0; j < kInsts; ++j) {
-        const atx::usize i = t * kInsts + j;
-        const bool is_nan = ((i % 17) == 0);
-        tmp_close[i] = is_nan ? kTsNaN : next_f64();
-        if (!is_nan && (j == 3) && (t >= 10 && t < 15)) {
-          tmp_close[i] = tmp_close[t * kInsts + 2];
-        }
-        open_cache[i] = is_nan ? kTsNaN : next_f64();
-      }
-    }
+    build_panel_columns(close_cache, open_cache);
   }
   return std::span<const atx::f64>{open_cache};
 }

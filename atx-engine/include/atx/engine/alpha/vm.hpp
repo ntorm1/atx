@@ -240,9 +240,10 @@ public:
   //     reset() does NOT call reset_live(); if the next program needs MORE slots
   //     or a different cell count, `ensure_pool()` will grow it.
   //   * All other scratch buffers (`ts_scratch_a_/b_`, `ts_dq_lo_/hi_`, `state_`,
-  //     `cs_valid_`, `cs_scratch_`) — retained at their current capacity. They
-  //     grow monotonically and are cleared/rebuilt at the start of each operation
-  //     that uses them, so stale content never leaks into a computation.
+  //     `cs_valid_`, `cs_scratch_`, `ts_col_`, `ts_col_b_`) — retained at their
+  //     current capacity. They grow monotonically and are cleared/rebuilt at the
+  //     start of each operation that uses them, so stale content never leaks into
+  //     a computation.
   //
   // PRECONDITIONS:
   //   * The Engine is bound to the SAME Panel (structurally enforced — there is
@@ -266,8 +267,9 @@ public:
     // stale FieldId from a prior program. The vector retains its storage capacity.
     // This is reset()'s ONLY substantive action: the pool and every other scratch
     // buffer are already in a clean-start state (see contract above). All other
-    // scratch buffers (ts_scratch_*, ts_dq_*, state_, cs_valid_, cs_scratch_) grow
-    // monotonically and are fully overwritten before any read on the next evaluate().
+    // scratch buffers (ts_scratch_*, ts_dq_*, state_, cs_valid_, cs_scratch_,
+    // ts_col_*, ts_col_b_) grow monotonically and are fully overwritten before
+    // any read on the next evaluate().
     field_remap_.clear();
   }
 
