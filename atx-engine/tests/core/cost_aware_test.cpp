@@ -155,7 +155,13 @@ TEST(CostAware, GateConfigForCostKeepsOtherFieldsAtDefaults) {
   EXPECT_DOUBLE_EQ(cfg.max_pool_corr,    defaults.max_pool_corr);     // 0.7
   EXPECT_DOUBLE_EQ(cfg.rt_cost_bps,      defaults.rt_cost_bps);       // 0.0
   EXPECT_DOUBLE_EQ(cfg.min_holding_days, defaults.min_holding_days);  // 0.0
-}
 
+  // Pin the literal S4-3 spec defaults so a silent GateConfig default drift is caught.
+  EXPECT_DOUBLE_EQ(defaults.min_sharpe,       0.25);
+  EXPECT_DOUBLE_EQ(defaults.min_fitness,      1.0);
+  EXPECT_DOUBLE_EQ(defaults.max_pool_corr,    0.7);
+  EXPECT_DOUBLE_EQ(defaults.rt_cost_bps,      0.0);
+  EXPECT_DOUBLE_EQ(defaults.min_holding_days, 0.0);
+}
 
 }  // namespace atxtest_cost_aware_test
