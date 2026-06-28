@@ -182,7 +182,6 @@ TEST(TsWelfordVar, NearConstantHighMean_MatchesTruth) {
   EXPECT_NEAR(out_var[t], truth_var, 1e-9) << "Welford var lost precision on high-mean window";
   EXPECT_NEAR(out_std[t], std::sqrt(truth_var), 1e-9);
   // The batch kernel must also be within 1e-9 of truth (it is the oracle ref).
-  std::vector<atx::f64> sort_buf(d, 0.0);
   const atx::f64 batch_var =
       atx::engine::alpha::detail::tsv_var(x, t, /*j=*/0, d, /*instruments=*/1);
   EXPECT_NEAR(batch_var, truth_var, 1e-9);
@@ -334,6 +333,37 @@ TEST(TsWelfordZscore, NearConstantHighMean_WithinToleranceOfOracle) {
   }
 }
 
+// TsZscore on an EXACTLY-constant window (M-3): var==0 -> the zscore is 0/0. Both
+// paths must agree (sqrt(0)==0, (x-mean)==0 -> NaN). Random panels never hit a
+// bit-exact-constant window, so this 0/0 degenerate is otherwise untested. The
+// kernel-vs-oracle parity here must be byte-for-byte on the non-finite result
+// (NaN==NaN, or ±inf parity if the oracle ever yields one).
+TEST(TsWelfordZscore, ConstantWindow_ZeroVarianceParityWithOracle) {
+  const atx::usize dates = 30;
+  const atx::usize instruments = 4;
+  const atx::usize cells = dates * instruments;
+  // A perfectly constant close column -> every full window has var == 0 exactly.
+  std::vector<std::vector<atx::f64>> cols = base_cols(cells, 0xC0FFEEULL);
+  for (atx::usize i = 0; i < cells; ++i) {
+    cols[0][i] = 42.0;
+  }
+  const Panel panel = make_panel(dates, instruments, std::move(cols));
+  const std::vector<atx::f64> fast = vm_values("ts_zscore(close, 10)", panel, EvalMode::ResearchFast);
+  const std::vector<atx::f64> oracle = oracle_values("ts_zscore(close, 10)", panel);
+  ASSERT_EQ(fast.size(), oracle.size());
+  bool saw_full_window = false;
+  for (atx::usize i = 0; i < fast.size(); ++i) {
+    // ResearchFast must yield the SAME result the batch oracle does, including the
+    // non-finite 0/0 outcome (same_cell: both NaN, or exactly value-equal incl ±inf).
+    EXPECT_TRUE(same_cell(fast[i], oracle[i]))
+        << "zscore const-window cell " << i << " fast=" << fast[i] << " oracle=" << oracle[i];
+    if (!std::isfinite(oracle[i])) {
+      saw_full_window = true; // a 0/0 (NaN/inf) cell was actually produced and matched
+    }
+  }
+  EXPECT_TRUE(saw_full_window) << "zero-variance 0/0 case was never exercised";
+}
+
 // TsAvDiff ADVERSARIAL ship/bail gate: mean ~1e6, av_diff amplitude ~1.0. Welford
 // av_diff vs batch oracle MUST be within atol=1e-7 (absolute) on every finite
 // cell, else TsAvDiff stays batch (remove from ts_is_online_variance_op) and the
@@ -362,6 +392,31 @@ TEST(TsWelfordAvDiff, AdversarialHighMean_WithinAtol1e7OfOracle) {
   }
   // Echo the measured worst-case absolute error for the ledger (atol=1e-7 gate).
   std::cerr << "[ts_av_diff adversarial] worst |welford-oracle| = " << worst << " (gate 1e-7)\n";
+}
+
+// TsAvDiff at d==1 (I-1 regression): the oracle's av_diff = w.back() - mean is
+// defined for n>=1, so at d==1 it yields x[t]-x[t] = 0.0 on EVERY finite cell. The
+// Welford kernel previously gated n<2 -> NaN there, a finite-vs-NaN divergence that
+// would bias ResearchFast av_diff(x, 1) genome selection. The kernel now special-
+// cases AvDiff at n==1, so ResearchFast must match the oracle (== 0.0) at d==1.
+TEST(TsWelfordAvDiff, WindowOne_MatchesOracleZero) {
+  const atx::usize dates = 40;
+  const atx::usize instruments = 6;
+  const atx::usize cells = dates * instruments;
+  // A finite-input fixture (the base_cols close column is NaN-free positive prices).
+  const Panel panel = make_panel(dates, instruments, base_cols(cells, 0xD1FF01ULL));
+  const std::vector<atx::f64> fast = vm_values("ts_av_diff(close, 1)", panel, EvalMode::ResearchFast);
+  const std::vector<atx::f64> oracle = oracle_values("ts_av_diff(close, 1)", panel);
+  ASSERT_EQ(fast.size(), oracle.size());
+  ASSERT_EQ(fast.size(), cells);
+  for (atx::usize i = 0; i < fast.size(); ++i) {
+    // Oracle is finite 0.0 at every cell (d==1, all finite) — assert the case is
+    // actually exercised, then that ResearchFast matches it (close-cell, atol 1e-7).
+    ASSERT_FALSE(std::isnan(oracle[i])) << "d==1 oracle must be finite at cell " << i;
+    EXPECT_EQ(oracle[i], 0.0) << "d==1 oracle av_diff must be exactly 0.0 at cell " << i;
+    EXPECT_TRUE(close_cell(fast[i], oracle[i], 1e-7, 0.0))
+        << "av_diff(d=1) cell " << i << " fast=" << fast[i] << " oracle=" << oracle[i];
+  }
 }
 
 // TsZscore / TsAvDiff on the shared random panel within their tolerances.

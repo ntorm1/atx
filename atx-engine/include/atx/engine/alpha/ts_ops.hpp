@@ -338,19 +338,19 @@ struct TsvFit {
   case OpCode::TsMax:
   case OpCode::TsScale:
     return true;
-  // DELIBERATELY BATCH (per-cell ts_value_at, BIT-EXACT vs the oracle):
-  //  * ts_var / ts_std / ts_zscore — a rolling Σx² variance (`sxx - sx*sx/n`)
-  //    suffers catastrophic cancellation on a high-mean/low-variance or
-  //    high-magnitude window (e.g. ts_std(volume,d) at 1e7..1e8, which alpha101
-  //    uses): it loses ~8 significant digits and can even go negative ->
-  //    a SPURIOUS inf/NaN zscore where the batch oracle is finite.
-  //  * ts_av_diff (x[t] - rolling mean) — its OUTPUT is itself a near-
-  //    cancellation (x[t] ≈ mean on a high-mean/low-variance window), so a tiny
-  //    rolling-mean drift blows up to a large RELATIVE error in the small
-  //    output (measured ~1.5e-4 rel at 1e6 magnitude). The batch per-window mean
-  //    keeps x-mean accurate. So av_diff stays batch + bit-exact.
-  // No O(1)-slide form of any of these is provably within 1e-9 on arbitrary-
-  // magnitude columns. See AlphaTsOnline_Adversarial.
+  // THE VARIANCE FAMILY (ts_var / ts_std / ts_zscore / ts_av_diff) is NOT routed
+  // by THIS helper. It has its own mode-gated dispatch (see ts_is_online_variance_op
+  // and tsv_welford_dispatch below):
+  //  * Under EvalMode::AuditExact (the default) it stays per-cell batch
+  //    (ts_value_at, BIT-EXACT vs the oracle) — the AuditExact byte-identity gate.
+  //  * Under EvalMode::ResearchFast it slides a Welford/Neumaier-compensated O(T)
+  //    kernel (S3-1/S3-2): the mean is a compensated running window-sum so the
+  //    rolling-Σx² catastrophic cancellation that sank the old naive slide (high-
+  //    mean/low-variance columns, e.g. ts_std(volume,d) at 1e7..1e8) never forms.
+  //    var/std/zscore conform at atol=rtol=1e-9; ts_av_diff was MEASURED at
+  //    |welford-oracle| = 4.66e-10 (well under the 1e-7 gate) and ships online too
+  //    — NOT the ~1.5e-4 the naive rolling-mean form produced. See
+  //    AlphaTsOnline_Adversarial / ts_online_variance_test.cpp.
   default:
     return false;
   }
@@ -610,6 +610,14 @@ inline void tsv_welford_var_family(TsvVarOut which, std::span<const atx::f64> x,
       }
     }
     const atx::usize oi = t * instruments + j;
+    // AvDiff is defined for n>=1 (oracle: w.back()-mean, finite at n==1 -> 0.0),
+    // unlike var/std/zscore which need n>=2 (sample variance) and are NaN at n==1
+    // in BOTH paths. Special-case AvDiff at n==1 so the ResearchFast kernel matches
+    // the batch oracle at d==1 (x[oi]==m -> 0.0) instead of spuriously gating NaN.
+    if (which == TsvVarOut::AvDiff && n == 1 && t + 1 >= d && nan_cnt == 0) {
+      out[oi] = x[oi] - m; // m == x[oi] (sole finite cell) -> 0.0; oracle-exact
+      continue;
+    }
     if (t + 1 < d || nan_cnt != 0 || n < 2) {
       out[oi] = kTsNaN; // warm-up / any-NaN / n<2 -> NaN (matches tsv_var gate)
       continue;

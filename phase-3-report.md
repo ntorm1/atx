@@ -140,3 +140,56 @@ No TODO/stub/fake-success. oracle.hpp untouched. clang-format clean; clang-tidy 
 - `atx-engine/bench/ts_variance_bench.cpp` — NEW (S3-1/S3-2 kernel benches).
 - `atx-engine/bench/ts_column_parallel_bench.cpp` — NEW (S3-3 parallelism bench).
 - `phase-3-progress.md` — ledger.
+
+---
+
+## Whole-branch review fix pass (2026-06-28)
+
+Review verdict: Spec approved, AuditExact byte-identity intact, with one Important +
+three Minor findings. All four fixed below; no scope expansion.
+
+### I-1 (Important) — ResearchFast `ts_av_diff(x, d=1)` returned NaN, oracle returns 0.0
+The Welford variance-family kernel (`tsv_welford_var_family`, ts_ops.hpp) gated every
+cell at `n<2 -> NaN`. The batch oracle's `TsAvDiff = w.back() - mean` is defined for
+n>=1, so at d==1 it yields `x[t]-x[t] = 0.0` on every finite cell. That finite-vs-NaN
+divergence was a selection-bias risk for ResearchFast av_diff genomes.
+**Fix (ResearchFast Welford dispatch ONLY — AuditExact/batch untouched):** before the
+`n<2` NaN gate, special-case `which==AvDiff && n==1 && t+1>=d && nan_cnt==0` to emit
+`x[oi]-m` (m==x[oi] for the sole finite cell -> exactly 0.0). var/std/zscore at n==1
+remain NaN in both paths (oracle is NaN there too) — deliberately unchanged.
+- Test added: `TsWelfordAvDiff.WindowOne_MatchesOracleZero` — ResearchFast av_diff(close,1)
+  == oracle (== 0.0) on a finite 40x6 fixture; close-cell, atol 1e-7. PASS.
+
+### M-1 (Minor) — stale `ts_is_online_op` comment block (ts_ops.hpp)
+The "DELIBERATELY BATCH … ts_av_diff stays batch ~1.5e-4 rel … no O(1)-slide within
+1e-9" block contradicted the shipped S3-1/S3-2 Welford slide. **Fix (comment-only):**
+rewrote the block to state the variance family is mode-gated via
+`ts_is_online_variance_op` / `tsv_welford_dispatch` — batch+bit-exact under AuditExact,
+Welford/Neumaier O(T) under ResearchFast (var/std/zscore at 1e-9; av_diff measured
+4.66e-10 < the 1e-7 gate, ships online).
+
+### M-3 (Minor) — untested zero-variance (0/0) TsZscore path
+Random panels never hit a bit-exact-constant window. **Fix:** added
+`TsWelfordZscore.ConstantWindow_ZeroVarianceParityWithOracle` — a perfectly constant
+close column (var==0 -> 0/0); asserts the ResearchFast Welford kernel yields the SAME
+non-finite result the batch oracle does (same_cell: NaN==NaN / ±inf parity) and that the
+degenerate cell is actually produced. PASS.
+
+### M-4 (Minor) — dead `sort_buf` local
+Removed the unused `std::vector<atx::f64> sort_buf(d, 0.0);` in
+`TsWelfordVar.NearConstantHighMean_MatchesTruth` (the adjacent `tsv_var` takes no
+scratch). agent.md §9 no-dead-code. The OTHER `sort_buf` (in `NaNInWindow_*`) is live
+(`ts_value_at` scratch) and left intact.
+
+### Build / test evidence
+Build (clang-cl 18, Ninja, vcvars64): `cmake --build build --target
+atx-engine-alpha-tests atx-engine-factory-tests` — clean link, no new warnings.
+- **alpha suite:** `atx-engine-alpha-tests` — **587/587 PASS** (585 pre-fix + 2 new:
+  I-1 WindowOne, M-3 ConstantWindow).
+- **oracle slice:** `atx-engine-factory-tests --gtest_filter=*Oracle*:*Golden*:*Digest*`
+  — **18/18 PASS**. AuditExact byte-identity gate green (I-1 lives in ResearchFast only).
+- Echo: `[ts_av_diff adversarial] worst |welford-oracle| = 4.65661e-10 (gate 1e-7)`.
+
+### Files changed (fix pass)
+- `atx-engine/include/atx/engine/alpha/ts_ops.hpp` — I-1 kernel special-case + M-1 comment.
+- `atx-engine/tests/alpha/ts_online_variance_test.cpp` — I-1 test + M-3 test + M-4 removal.
