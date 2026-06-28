@@ -8,6 +8,7 @@
 // Header-only, #pragma once.
 #pragma once
 
+#include <cmath>  // std::pow, std::exp, std::log (log-spaced AUM grid)
 #include <limits> // std::numeric_limits
 #include <span>   // std::span
 #include <vector> // std::vector
@@ -88,6 +89,83 @@ capacity_for_alpha(const alpha::AlphaStreams& streams, atx::usize alpha_idx,
 
   // Net edge stays positive across the entire grid.
   return std::numeric_limits<atx::f64>::infinity();
+}
+
+// ---------------------------------------------------------------------------
+//  compute_capacity_vector — the per-alpha capacity-AUM vector (P7-S4-2).
+//
+//  Returns, for each alpha a in [0, streams.n_alphas()) in ASCENDING order, the
+//  capacity AUM of that alpha's LAST-period target book — the AUM where the net
+//  frictionless edge crosses zero (capacity_point of the swept net-edge curve).
+//  This is the real per-name capacity vector that replaces the constant-1.0 stub
+//  in the driver's decorrelate_weights blend (S4 proves the math; S7 wires the
+//  driver call site — this header adds NO new cost model, REUSING capacity_for_alpha
+//  -> risk::capacity_curve and capacity_point verbatim).
+//
+//  AUM grid: a log-spaced grid of kCapacityAumGridPoints points from
+//  0.01*target_aum to 10*target_aum (two decades each side of the operational AUM
+//  — wide enough to bracket the zero-crossing in typical cases). The grid is a pure
+//  deterministic function of target_aum (same target_aum -> same grid -> same
+//  output); ascending alpha order, no RNG -> bit-deterministic.
+//
+//  Per-alpha capacity AUM semantics (the downstream cap_scale contract):
+//    * +inf  — the grid never crossed zero (the book has spare capacity at 10x the
+//              target). The caller's cap_scale = clamp(capacity/floor, 0, 1)
+//              clamps +inf to 1.0 (no penalty) — the existing contract.
+//    * 0     — the last-period book has no positive frictionless edge
+//              (capacity_point returns grid[0] which, on a positive grid, is only
+//              reached when net edge is already <= 0 at the smallest AUM; for a
+//              dead book gross<=0 so cap_scale -> ~0, fading it out).
+//    * finite in (0, +inf) — the interpolated zero-crossing AUM.
+//
+//  LIMITATION (documented, inherited from capacity_for_alpha): the book proxy is
+//  the LAST-period target weights (streams.positions(a, n_periods-1)), NOT a
+//  realized-PnL edge estimate. The p6-S6-1 realized-edge refinement is a driver-
+//  layer concern, out of scope for this engine-layer helper (see the S4 plan
+//  "capacity_for_alpha uses last-period weights" guardrail).
+//
+//  PRECONDITION: streams.n_periods() > 0 (ATX_CHECK in capacity_for_alpha). A
+//  non-positive target_aum yields a degenerate grid (all points <= 0); the curve
+//  then has no positive edge and capacity_point returns grid[0] (<= 0) — the caller
+//  must pass target_aum > 0 (the driver guards this, as it does for the stub path).
+//  PURE given (streams, panel, sim, target_aum); NO RNG; thread-safe (no shared
+//  state). Header-only inline — a cold, research-cadence call.
+// ---------------------------------------------------------------------------
+inline constexpr atx::usize kCapacityAumGridPoints = 20U; // log-spaced grid resolution
+
+[[nodiscard]] inline std::vector<atx::f64>
+compute_capacity_vector(const alpha::AlphaStreams& streams, const PanelView& panel,
+                        const exec::ExecutionSimulator& sim, atx::f64 target_aum) {
+  // Log-spaced AUM grid from 0.01*target_aum to 10*target_aum, ascending. Built
+  // once and reused for every alpha (the grid depends only on target_aum). For a
+  // single grid point the loop degenerates to the lone endpoint.
+  std::vector<atx::f64> aum_grid;
+  aum_grid.reserve(kCapacityAumGridPoints);
+  const atx::f64 lo = 0.01 * target_aum;
+  const atx::f64 hi = 10.0 * target_aum;
+  if (kCapacityAumGridPoints == 1U) {
+    aum_grid.push_back(lo);
+  } else {
+    // Geometric spacing: aum_k = lo * (hi/lo)^(k/(N-1)). Computed via exp/log so the
+    // ratio is exact at the endpoints (k=0 -> lo, k=N-1 -> hi) for lo > 0.
+    const atx::f64 log_lo = std::log(lo);
+    const atx::f64 log_hi = std::log(hi);
+    const atx::f64 denom = static_cast<atx::f64>(kCapacityAumGridPoints - 1U);
+    for (atx::usize k = 0U; k < kCapacityAumGridPoints; ++k) {
+      const atx::f64 frac = static_cast<atx::f64>(k) / denom;
+      aum_grid.push_back(std::exp(log_lo + frac * (log_hi - log_lo)));
+    }
+  }
+
+  const atx::usize n_alphas = streams.n_alphas();
+  std::vector<atx::f64> out;
+  out.reserve(n_alphas);
+  for (atx::usize a = 0U; a < n_alphas; ++a) { // ascending alpha order (determinism)
+    const std::vector<risk::CapacityPoint> curve =
+        capacity_for_alpha(streams, a, panel, sim, std::span<const atx::f64>{aum_grid});
+    out.push_back(capacity_point(std::span<const risk::CapacityPoint>{curve}));
+  }
+  return out;
 }
 
 } // namespace atx::engine::cost
