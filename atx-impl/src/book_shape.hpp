@@ -19,6 +19,13 @@
 // step 2. An asymmetric binding cap (more longs clipped than shorts, or vice versa)
 // can leave a small net residual, so downstream MUST NOT assume Sigma w == 0 after a
 // cap binds. Step 3's gross target is likewise best-effort under an infeasible cap.
+//
+// SIGN CONTRACT (S6-0): this transform is SIGN-PRESERVING for a combined
+// target-weight panel — it only demeans, positively rescales, and clips, so the
+// deployed book keeps the SAME direction as the input weights. This is the
+// sign-correct deploy route for a combined book (selected by RunConfig::position_mode).
+// The default MVO path instead re-weights by 1/dvar and re-centers, which can INVERT
+// the deployed book vs the realized returns (see stage_optimize.cpp ROOT CAUSE S6-0).
 
 #include <cmath>
 #include <cstdint>

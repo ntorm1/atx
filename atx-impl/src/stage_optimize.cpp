@@ -126,6 +126,12 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     };
 
     // 5a. Position-mode branch: signal-as-position deploy — skip MVO entirely.
+    // ROOT CAUSE S6-0: default MVO (λ=1) feeds combined target-weights as expected-returns;
+    // t=(1/2λ)·P V⁻¹ P α with diagonal V re-weights by 1/dvar and inverts the book
+    // (optimizer.hpp:318). The λ=0 branch t=demean(α) is sign-preserving (optimizer.hpp:317).
+    // When the input is a combined target-weight panel, use position-mode (shape_book) or
+    // force risk_aversion=0. The MVO math in optimizer.hpp is correct for a TRUE expected-return
+    // input — do not edit it.
     if (cfg.position_mode) {
         ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
         std::vector<atx::f64> books_flat(S * M, 0.0);
