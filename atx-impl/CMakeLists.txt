@@ -10,6 +10,8 @@ add_library(atx-impl-core STATIC
     src/stage_load.cpp
     src/stage_regime.cpp
     src/stage_panel.cpp
+    # Incremental panel append: append == full-rebuild byte-identical (p7 S6-1)
+    src/append_history_panel.cpp
     # FINRA short-interest augment core (p7 S2-1 / track-b B1; CLI deferred to S7)
     src/stage_augment.cpp
     src/stage_discover.cpp
