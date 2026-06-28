@@ -53,8 +53,9 @@
 //    * Select(c,a,b) : NaN c -> NaN, else c!=0 ? a : b.
 //    * Neg / Abs / Sign (NaN->NaN, ±/0) / Log = std::log.
 //    * LoadField NaNs out-of-universe cells (point-in-time). Const fills imm.
-//  Cross-sectional (Cs*) and time-series (Ts*) opcodes are NOT YET implemented:
-//  they return Err(NotImplemented) here and land in P3-7 / P3-8 respectively.
+//  Cross-sectional (Cs*) kernels are in cs_ops.hpp (P3-7); time-series (Ts*)
+//  kernels are in ts_ops.hpp (P3-8). Both families are fully implemented; the
+//  oracle differential (P3-9) enforces bit-exact agreement on the AuditExact path.
 //
 // SAFETY (topological execution): the Program's instruction stream is
 // topologically ordered (the linearizer emits in DAG NodeId order; every `src`

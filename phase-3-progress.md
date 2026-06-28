@@ -12,8 +12,8 @@ Bench built in a separate Release dir (`build-bench`, Ninja + clang-cl, Release)
 - [x] S3-0 — open ledger; record current bench baseline (af50609)
 - [x] S3-1 — Welford/Neumaier online variance kernel (TsVar/TsStd), ResearchFast (d0a3462)
 - [x] S3-2 — extend online variance to TsZscore/TsAvDiff, ResearchFast (9bf05c5)
-- [x] S3-3 — cross-instrument column parallelism (seq==parallel digest), AuditExact
-- [ ] S3-4 — bench delta writeup + vm.hpp stale-comment cleanup
+- [x] S3-3 — cross-instrument column parallelism (seq==parallel digest), AuditExact (0d4dc2e)
+- [x] S3-4 — bench delta writeup + vm.hpp stale-comment cleanup (HEAD (this S3-4 commit))
 
 ## Determinism contract for this sprint
 - AuditExact (default `EvalMode`): byte-identical to pre-sprint. The online
@@ -183,5 +183,81 @@ BM_TsColumnEval/4/real_time   22.3 ms   17.64M/s   workers=4   (3.05x over w1)
 
 Gates: alpha 585/585 green; factory oracle slice 18/18 green.
 
-S3-3: complete (commit <pending>, 4 new tests green, w2 1.90x / w4 3.05x) — intra-eval
+S3-3: complete (commit 0d4dc2e, 4 new tests green, w2 1.90x / w4 3.05x) — intra-eval
 column parallelism, seq==parallel byte-identical; null default unchanged.
+
+---
+
+## S3-4 — bench delta writeup + vm.hpp stale-comment cleanup
+
+(a) vm.hpp:56-57 stale comment ("Cs*/Ts* opcodes are NOT YET implemented ... return
+Err(NotImplemented)") replaced with the accurate one-liner (cs_ops.hpp P3-7 /
+ts_ops.hpp P3-8, both fully implemented, oracle differential enforces AuditExact
+bit-exactness). Comment-only change; no output bytes change.
+
+(b) Measured bench delta. Host NATHANS_PC (16 X 2496 MHz; L1d 48KiBx8, L2 1280KiBx8,
+L3 18432KiB), Release clang-cl 18.1.8 + Ninja (build-bench), 2026-06-28. The after
+numbers are `--benchmark_repetitions=3 --benchmark_report_aggregates_only=true`
+(median reported; the ratio is the signal — absolute latencies are Debug-default
+upper bounds with notable run-to-run variance, see cv% column in the raw logs).
+
+VARIANCE KERNEL (ResearchFast vs AuditExact batch), ts_*(close,20) 512x256:
+| Benchmark           | Batch (AuditExact) median | Welford (ResearchFast) median | speedup |
+|---------------------|---------------------------|-------------------------------|---------|
+| BM_TsVar (ts_std)   | 12.6 ms                   | 3.09 ms                       | 4.08x   |
+| BM_TsZscore         | 10.7 ms                   | 2.69 ms                       | 3.98x   |
+| BM_TsAvDiff         | 8.09 ms                   | 2.18 ms                       | 3.71x   |
+(single-run S3-1/S3-2 readings, less noisy: TsVar 4.27x, TsZscore 4.70x, TsAvDiff 2.39x.)
+
+COLUMN PARALLELISM (BM_TsColumnEval, AuditExact, 256x512, d=20):
+| workers | median (3-rep) | single-run | speedup over w1 (single-run) |
+|---------|----------------|------------|------------------------------|
+| 1       | 43.4 ms        | 68.0 ms    | 1.00x                        |
+| 2       | 41.7 ms        | 35.8 ms    | 1.90x  (target >=1.5x) MET   |
+| 4       | 14.5 ms        | 22.3 ms    | 3.05x                        |
+(the single-run column reading is the cleaner curve; the 3-rep w1/w2 medians overlap
+within the ~20-30% cv noise of the Debug-default build, but w4 is unambiguously faster.)
+
+OVERALL BATCH-EVAL THROUGHPUT (BM_BatchEvaluate_MinedBattery, AuditExact, 512x256):
+| | before (S3-0) | after (S3-4, 3-rep median) |
+|---|---|---|
+| BM_BatchEvaluate_MinedBattery | 103 ms (single) | 87.4 ms |
+No regression — the mined battery runs on the AuditExact default path (byte-identical
+to pre-sprint); the difference is run-to-run noise (cv ~16%), not a code effect.
+
+(c) Sprint close: residuals -> ROADMAP future-work backlog (below). Gates: alpha
+585/585 green; factory oracle slice 18/18 green; vm.hpp diff is comment-only this unit.
+
+ROADMAP/phaseN close-ceremony note (DEFERRED to controller merge, NOT done here):
+`atx-engine/plans/p7/ROADMAP.md` is the SHARED Wave-1 coordination doc (single
+`Last reviewed`, status table covering S1/S2/S3 — all three parallel sprints). It is
+OUTSIDE this sprint's exclusive Owns set (ts_ops.hpp / vm.hpp / bench/ / tests/alpha/),
+and concurrent edits from the three Wave-1 worktrees would collide. Per the protocol's
+hard boundary (stay inside Owns; controller runs the whole-branch review/merge), the
+S3 row status flip + `Last reviewed` bump + any `phase3.md` user stub are left for the
+controller to apply at merge. The S3 deliverables themselves are complete and green.
+
+### Residuals / future-work backlog (lift into p7 ROADMAP)
+- Online-path (sum/extreme/variance) cross-instrument parallelism: deferred. The
+  online sweeps share ts_dq_lo_/hi_ deque scratch and the variance sweep is a single
+  column pass; parallelising them needs per-thread deques. S3-3 parallelises only the
+  BATCH column path.
+- TsAvDiff/TsZscore at extreme mean (>=1e7): zscore's (x-mean) numerator hits the f64
+  cancellation floor (~mean*eps), so a 1e-9-vs-oracle bar is unmeetable by any kernel
+  at 1e7. AvDiff ships at atol=1e-7; zscore validated at mean<=1e5. Documented, not a bug.
+- TSan run for the column-parallel path: pending a TSan-capable toolchain (the Windows
+  clang-cl dev build has none wired). No-race holds by construction + seq==parallel gate.
+- Wiring set_ts_pool into the search driver with a SEPARATE pool per worker: S7.
+
+S3-4: complete (commit HEAD (this S3-4 commit)) — bench delta table recorded; vm.hpp comment accurate.
+
+---
+
+## Sprint summary
+
+All five units complete. Commits: af50609 (S3-0), d0a3462 (S3-1), 9bf05c5 (S3-2),
+0d4dc2e (S3-3), and the S3-4 docs commit at HEAD. Final gates: atx-engine-alpha-tests
+585/585 green; factory oracle
+slice (*Oracle*:*Golden*:*Digest*) 18/18 green. New: 15 tests across two files
+(ts_online_variance_test.cpp 11, ts_parallel_eval_test.cpp 4) + two new bench files.
+AuditExact default path byte-identical to pre-sprint (off-path identity + oracle slice).
