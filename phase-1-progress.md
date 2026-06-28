@@ -6,12 +6,12 @@ Worktree: C:\atx-wt\p7-s1
 
 ## Unit checklist (Sequencing order)
 
-- [ ] S1-0 — Open ledger + field plumbing (GateConfig/GateVerdict/AlphaMetrics)
-- [ ] S1-1 — DSR floor in AlphaGate::admit
-- [ ] S1-2 — PBO ceiling in AlphaGate::admit
-- [ ] S1-3 — require_split_stable gate in AlphaGate::admit
-- [ ] S1-4 — Thread cumulative trial-count into cascade_gate_passes bound
-- [ ] S1-5 — Reject-histogram layout pin + AdmitKind audit + telemetry
+- [x] S1-0 — Open ledger + field plumbing (GateConfig/GateVerdict/GateDeflation; AlphaMetrics NOT touched — see deviation) (d0c17a7)
+- [x] S1-1 — DSR floor in AlphaGate::admit (d0c17a7)
+- [x] S1-2 — PBO ceiling in AlphaGate::admit (d0c17a7)
+- [x] S1-3 — require_split_stable gate in AlphaGate::admit (d0c17a7)
+- [x] S1-4 — Thread trial-count into cascade_gate_passes bound (8b132dc)
+- [x] S1-5 — Reject-histogram layout pin + AdmitKind audit (b564c39)
 
 ## Determinism contract
 Inert defaults: min_dsr=0.0, max_pbo=1.0, require_split_stable=false, trial_count==1.
@@ -86,7 +86,7 @@ S1-4: complete (commit 8b132dc) — cascade_gate_passes now folds expected_max_s
   explicitly out of scope ("Out of scope: populating AlphaMetrics::dsr/pbo/split_stable").
   The S1 gate screens are for the standalone/library AlphaGate caller and are proven by
   the gate_dsr_pbo_test suite directly.
-S1-5: complete (commit <pending>) — histogram-layout pin + AdmitKind audit.
+S1-5: complete (commit b564c39) — histogram-layout pin + AdmitKind audit.
   The layout-pin static_asserts (GateVerdict::Accept=0 .. RejectSplitUnstable=7, count=8)
   ship in gate_dsr_pbo_test.cpp (committed in d0c17a7). NO further code change needed:
 
@@ -117,3 +117,22 @@ S1-5: complete (commit <pending>) — histogram-layout pin + AdmitKind audit.
   Existing factory_* + library_* suites green (histogram arrays zero-initialized; new
   GateVerdict buckets never written because the gate path that sets them is the standalone
   AlphaGate, which does not feed the AdmitKind-indexed factory histogram).
+
+## Sprint close — final gate results
+
+Commit range: 2eaf3da..b564c39
+  d0c17a7 feat(p7-s1): deflation gates in AlphaGate::admit (S1-0..S1-3)
+  8b132dc feat(p7-s1): thread realized trial-count N into cascade pre-gate (S1-4)
+  b564c39 docs(p7-s1): S1-5 reject-histogram layout pin + AdmitKind audit
+
+Files changed (all in Owns fence): gate.hpp, factory.cpp, tests/combine/gate_dsr_pbo_test.cpp,
+tests/factory/cascade_trial_count_test.cpp, phase-1-progress.md. AlphaMetrics (metrics.hpp),
+library.hpp, record.hpp UNTOUCHED.
+
+Final suite results (all green, zero regressions):
+  combine          : 129/129
+  factory (full)   : 208/208
+  library          :  43/43  (2 pre-existing DISABLED, unrelated)
+  byte-identity slice (factory *Oracle*:*Golden*:*Digest*): 18/18  green BEFORE and AFTER
+
+New tests added: 21 (combine gate_dsr_pbo_test) + 10 (factory cascade_trial_count_test) = 31.
