@@ -1,6 +1,9 @@
 file(GLOB ATX_IMPL_TEST_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
 add_executable(atx-impl-tests ${ATX_IMPL_TEST_SOURCES})
+# AtxImplSweep.SweepParallelEqualsSequentialDigest spawns atx-shm-worker.exe (process executor);
+# ensure the worker is built into bin/ whenever the test target is built.
+add_dependencies(atx-impl-tests atx-shm-worker)
 target_link_libraries(atx-impl-tests
     PRIVATE atx-impl-core GTest::gtest_main atx_warnings)
 find_package(Threads REQUIRED)
