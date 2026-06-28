@@ -63,7 +63,7 @@ S1-1: complete (commit d0c17a7) — DSR floor guard; 6 tests (off/on-reject/on-p
   sentinel/twice/seq==parallel) green.
 S1-2: complete (commit d0c17a7) — PBO ceiling guard; 6 tests green.
 S1-3: complete (commit d0c17a7) — split-stable guard; 5 tests green.
-S1-4: complete (commit <pending>) — cascade_gate_passes now folds expected_max_sharpe(N,1/T)
+S1-4: complete (commit 8b132dc) — cascade_gate_passes now folds expected_max_sharpe(N,1/T)
   into the keep side: keep iff sr_tr*factor + SR*_N >= min_dsr. Removed the
   static_cast<void>(trial_count) no-op. SAFE direction (looser with N) — the ONLY
   direction that preserves the binding AdmittedSetUnchanged + byte-identity proofs.
@@ -86,3 +86,34 @@ S1-4: complete (commit <pending>) — cascade_gate_passes now folds expected_max
   explicitly out of scope ("Out of scope: populating AlphaMetrics::dsr/pbo/split_stable").
   The S1 gate screens are for the standalone/library AlphaGate caller and are proven by
   the gate_dsr_pbo_test suite directly.
+S1-5: complete (commit <pending>) — histogram-layout pin + AdmitKind audit.
+  The layout-pin static_asserts (GateVerdict::Accept=0 .. RejectSplitUnstable=7, count=8)
+  ship in gate_dsr_pbo_test.cpp (committed in d0c17a7). NO further code change needed:
+
+  AdmitKind AUDIT (the plan's S1-5 mandated audit):
+  * The reject_histogram is std::array<usize,8> indexed by library::AdmitKind, NOT by
+    GateVerdict (factory.hpp:265; every write is reject_histogram[static_cast<usize>(kind)]
+    with kind: AdmitKind). It was ALREADY size 8 pre-S1 — the plan's "5 -> 8 for
+    GateVerdict-driven buckets" is a misread; the histogram is AdmitKind-driven. NO resize.
+  * AdmitKind does NOT mirror GateVerdict 1:1 — it DIVERGES:
+      AdmitKind  = {Accept, Duplicate, RejectSharpe, RejectFitness, RejectTurnover,
+                    RejectCorrelated, RejectPriceScale, RejectDsrSubwindow}  (8)
+      GateVerdict= {Accept, RejectSharpe, RejectFitness, RejectTurnover, RejectCorrelated,
+                    RejectDsr, RejectPbo, RejectSplitUnstable}               (8)
+    The library admit path (library.hpp::verdict_for) returns AdmitKind DIRECTLY and never
+    produces a GateVerdict::RejectDsr/Pbo/SplitUnstable, so NO new AdmitKind enumerator is
+    required and there is NO compile break. (Adding AdmitKind values is out of my Owns set
+    anyway — library.hpp is not owned — and is unnecessary.)
+  * There is NO `switch` on a GateVerdict value anywhere in the codebase (verified by grep).
+    The only enum-mapping switch is map_kind(AdmitKind)->GateVerdict in
+    library_integration_test.cpp (switches on AdmitKind, which I did not change -> still
+    exhaustive, no break). So appending the 3 GateVerdict enumerators forced ZERO
+    switch-arm additions and ZERO out-of-Owns edits — the authorized Owns-fence exception
+    was NOT needed.
+  * atx-impl/src/stage_discover.cpp prints the histogram by iterating
+    rep.reject_histogram.size() dynamically (robust to size); its comment "0..5" is now
+    stale (should read 0..7) but the code is correct and the file is Sprint-7 / out of my
+    Owns set, so it is left untouched (noted for Sprint 7).
+  Existing factory_* + library_* suites green (histogram arrays zero-initialized; new
+  GateVerdict buckets never written because the gate path that sets them is the standalone
+  AlphaGate, which does not feed the AdmitKind-indexed factory histogram).
