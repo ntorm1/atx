@@ -12,7 +12,7 @@ Tests set RunConfig fields directly.
 ## Unit checklist
 - [x] S5-0  Open ledger (marker) + Kelly math unit tests (kelly_sizing_test.cpp)
 - [x] S5-1  Conviction KV telemetry (apply_conviction collector + KV emission)
-- [ ] S5-3  Walk-forward conviction-awareness unit test (conviction_wf_test.cpp)
+- [x] S5-3  Walk-forward conviction-awareness unit test (conviction_wf_test.cpp)
 - [ ] S5-2  Fractional-Kelly wiring (config fields + Kelly call site + KV)
 - [ ] S5-4  Integration smoke + off-path byte-identity (conviction_sizing_test.cpp)
 
@@ -33,3 +33,8 @@ optional out_scores collector (default nullptr => off-path byte-identical); 3 ad
 KVs (conviction_scores / _dsr_terms / _stability_terms) emitted only when the
 collector is non-empty (i.e. --conviction on). WF folds pass nullptr (scratch, not
 telemetry). Score == (w_dsr*dsr+w_stab*stab)*0.75 pinned to the emitted terms.
+S5-3: complete (ConvictionWF 4/4 green; full eval group 77/77) -- engine-only unit
+test. Faithfully mirrors apply_conviction's per-alpha math + the WF fold-1 geometry
+(K=2 -> 3 segments) over a constructed asymmetric 2-alpha/T=60 fixture. Proves
+|sharpe_on - sharpe_off| > 1e-6 (conviction modulates the fold OOS Sharpe);
+conviction-off == bare-combiner exactly; twice-run bit-identical; n_windows=1 finite.
