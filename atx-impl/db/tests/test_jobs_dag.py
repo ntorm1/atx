@@ -1,0 +1,63 @@
+"""Test that seed_default_jobs() + enabled_job_order() produces a valid topological order."""
+
+from __future__ import annotations
+
+
+def test_seed_default_jobs_succeeds(tmp_store):
+    """seed_default_jobs should register jobs without raising."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    count = tmp_store.con.execute("SELECT count(*) FROM etl_job_definitions").fetchone()[0]
+    assert count > 0, "seed_default_jobs() registered no jobs"
+
+
+def test_enabled_job_order_is_topologically_valid(tmp_store):
+    """Every job in enabled_job_order() must appear after all its dependencies."""
+    from db.jobs import JobManager, normalize_dependencies
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert len(order) > 0, "enabled_job_order() returned empty list"
+
+    # Build dependency map
+    rows = tmp_store.con.execute(
+        "SELECT job_name, dependencies_json FROM etl_job_definitions WHERE enabled"
+    ).fetchall()
+    deps = {job_name: normalize_dependencies(deps_json) for job_name, deps_json in rows}
+
+    # For every job in order, all its dependencies must appear before it
+    seen: set[str] = set()
+    for job_name in order:
+        for dep in deps.get(job_name, []):
+            assert dep in seen, (
+                f"Job {job_name!r} appears before its dependency {dep!r} in the order"
+            )
+        seen.add(job_name)
+
+
+def test_enabled_job_order_contains_no_cycle(tmp_store):
+    """enabled_job_order() must not raise a cycle error."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    # If there is a cycle, enabled_job_order() raises RuntimeError
+    order = mgr.enabled_job_order()
+    assert isinstance(order, list)
+
+
+def test_enabled_job_order_no_duplicates(tmp_store):
+    """Each job should appear exactly once in the order."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert len(order) == len(set(order)), f"Duplicate jobs in order: {order}"

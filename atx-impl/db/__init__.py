@@ -64,6 +64,7 @@ from .symbol_directory import (
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
+from .migrations import MIGRATIONS, Migration, apply_pending_migrations
 from .watermarks import WatermarkRefreshResult, refresh_warehouse_watermarks
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions, archive_primary_document_url
 from .xbrl_taxonomy import (
@@ -98,6 +99,9 @@ __all__ = [
     "IdentifierResolutionCandidateDataset",
     "IdentifierResolutionOptions",
     "JobManager",
+    "MIGRATIONS",
+    "Migration",
+    "apply_pending_migrations",
     "LakeValidationProblem",
     "LakeValidationSummary",
     "ListingStatusIntervalDataset",

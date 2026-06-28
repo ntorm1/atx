@@ -56,6 +56,11 @@ class DuckDBStore:
         from .schema import ensure_quant_schema
 
         ensure_quant_schema(self)
+
+        # Apply any pending versioned migrations (idempotent; no-op if up to date).
+        from .migrations import apply_pending_migrations
+
+        apply_pending_migrations(self.con)
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS dataset_watermarks (
