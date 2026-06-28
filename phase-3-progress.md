@@ -11,8 +11,8 @@ Bench built in a separate Release dir (`build-bench`, Ninja + clang-cl, Release)
 ## Unit checklist
 - [x] S3-0 — open ledger; record current bench baseline (af50609)
 - [x] S3-1 — Welford/Neumaier online variance kernel (TsVar/TsStd), ResearchFast (d0a3462)
-- [x] S3-2 — extend online variance to TsZscore/TsAvDiff, ResearchFast
-- [ ] S3-3 — cross-instrument column parallelism (seq==parallel digest), AuditExact
+- [x] S3-2 — extend online variance to TsZscore/TsAvDiff, ResearchFast (9bf05c5)
+- [x] S3-3 — cross-instrument column parallelism (seq==parallel digest), AuditExact
 - [ ] S3-4 — bench delta writeup + vm.hpp stale-comment cleanup
 
 ## Determinism contract for this sprint
@@ -138,5 +138,50 @@ Both >= 2x target. MET.
 
 Gates: alpha 581/581 green; factory oracle slice 18/18 green.
 
-S3-2: complete (commit <pending>, 4 new tests green, zscore 4.70x / avdiff 2.39x) —
+S3-2: complete (commit 9bf05c5, 4 new tests green, zscore 4.70x / avdiff 2.39x) —
 TsZscore + TsAvDiff online; AvDiff met its adversarial 1e-7 gate (no bail-out).
+
+---
+
+## S3-3 — cross-instrument column parallelism for batch Ts ops, AuditExact
+
+`vm.hpp`: nullable `parallel::DetPool* ts_pool_` (default null = serial = unchanged
+bytes), `set_ts_pool`/`ts_pool`, four per-worker scratch vectors (`ts_col_thr_`,
+`ts_col_b_thr_`, `ts_scratch_a_thr_`, `ts_scratch_b_thr_`, sized to [n_workers] in
+set_ts_pool). The batch column loop in eval_time_series is refactored into a per-
+column helper `eval_ts_column(ctx, j, col, col_b, sa, sb)` called either serially
+(null pool — original loop, byte-for-byte) or across DetPool instrument bands. The
+ResearchFast variance sweep, the online sum/extreme sweeps, and the TsDelay/TsDelta
+direct path stay single-threaded this sprint (deferred to future-work).
+
+Determinism: AuditExact. Column independence is the proof — out[t*I+j] depends only
+on input column j, distinct j -> disjoint output slots, each band uses its OWN
+scratch (no shared mutable state). Seq==parallel digest is the GATE.
+
+set_ts_pool header documents the DEADLOCK constraint: the column pool MUST be a
+SEPARATE instance from the search-level det_pool (nesting two DetPool dispatches
+deadlocks). NOT wired into the search driver here (that is S7).
+
+Tests (ts_parallel_eval_test.cpp), all green:
+- TsColumnParallel.SeqEqualsParallel_DigestIdentical: TsStd+TsRank+TsCorr d=20 on
+  600x501 — null vs 2-worker vs 4-worker SignalSet byte-identical (every cell, NaN==NaN).
+- TsColumnParallel.NullPoolMatchesOneWorker.
+- TsColumnParallel.DefaultEngineHasNullTsPool (inert default).
+- TsColumnParallel.SingleInstrument_PoolNoOp (instruments>1 guard).
+
+TSan: NOT run — the dev build is clang-cl on Windows with no TSan toolchain wired
+here. Documented as TSan-PENDING. The no-race property holds by construction
+(per-worker scratch + disjoint output slots + read-only x/y), and the seq==parallel
+digest at {null,2,4} is the empirical correctness/no-corruption gate.
+
+Bench (build-bench Release, 256x512, instruments>>dates, d=20):
+```
+BM_TsColumnEval/1/real_time   68.0 ms    5.79M/s   workers=1
+BM_TsColumnEval/2/real_time   35.8 ms   10.98M/s   workers=2   (1.90x over w1; target >=1.5x) MET
+BM_TsColumnEval/4/real_time   22.3 ms   17.64M/s   workers=4   (3.05x over w1)
+```
+
+Gates: alpha 585/585 green; factory oracle slice 18/18 green.
+
+S3-3: complete (commit <pending>, 4 new tests green, w2 1.90x / w4 3.05x) — intra-eval
+column parallelism, seq==parallel byte-identical; null default unchanged.
