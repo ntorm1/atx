@@ -14,7 +14,7 @@ Tests set RunConfig fields directly.
 - [x] S5-1  Conviction KV telemetry (apply_conviction collector + KV emission)
 - [x] S5-3  Walk-forward conviction-awareness unit test (conviction_wf_test.cpp)
 - [x] S5-2  Fractional-Kelly wiring (config fields + Kelly call site + KV)
-- [ ] S5-4  Integration smoke + off-path byte-identity (conviction_sizing_test.cpp)
+- [x] S5-4  Integration smoke + off-path byte-identity (conviction_sizing_test.cpp)
 
 ## Determinism contract (every unit)
 - kelly_fraction=0.0 -> Kelly block skipped entirely; conviction=false -> no conviction KVs.
@@ -46,3 +46,26 @@ block gated on cfg.kelly_fraction>0: per-ALPHA mu/variance over [fit_begin,fit_e
 kelly_size replaces combo.weights; 3 additive KVs (kelly_fraction_used/kelly_gross/
 kelly_scale_applied). Off-path (frac=0) byte-identical, no KVs. FactorModel::create
 failure -> Err (fail-closed).
+S5-4: complete (AtxImplConvictionSizing 15/15; full atx-impl-tests 186 pass / 4
+pre-existing skips; engine oracle/golden/digest slice 18/18). Integration cases:
+all-knobs-off byte-identity (mandatory class-a guard); conviction-only / kelly-only /
+combined / WF+conviction compose with correct KV presence/absence + twice-run identity.
+Fixture 3 alphas x 60 periods x 20 instruments.
+
+## Pre-existing base failures (NOT S5 regressions)
+RobustPipelineE2E.NoiseGrowsRobustLibraryByZero and
+RobustPipelineE2E.SyntheticPanelAdmitsRobustSurvivors (risk group) FAIL on the base
+e0659e4 independently of S5 — verified by removing kelly_sizing_test.cpp from the
+build and rebuilding: both still fail. atx-engine-risk-tests does not link the
+atx-impl code S5 changed; S5's only risk-group delta is the additive Kelly test file.
+These are statistical/data E2E pipeline assertions unrelated to conviction/Kelly.
+
+## Final gate summary
+- atx-engine-risk-tests: KellySizingMath 7/7 + KellySizing 6/6 green; 251/253 group
+  (2 pre-existing RobustPipelineE2E failures, see above).
+- atx-engine-eval-tests: 77/77 (ConvictionWF 4/4).
+- atx-impl-tests: 186 pass / 4 pre-existing skips / 0 fail (AtxImplConvictionSizing
+  15/15; AtxImplCombine 27/27 off-path byte-identity held).
+- engine byte-identity slice (*Oracle*:*Golden*:*Digest*): 18/18.
+- oracle.hpp untouched; conviction.hpp / kelly_sizing.hpp bodies untouched;
+  config.cpp untouched (D4).

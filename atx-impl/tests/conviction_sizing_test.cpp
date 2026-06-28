@@ -477,4 +477,162 @@ TEST(AtxImplConvictionSizing, KellyRunIsTwiceRunIdentical) {
   cleanup(fx, {combo1, combo2});
 }
 
+// ===========================================================================
+// S5-4 (a): off-path byte-identity (the MANDATORY class-a regression guard for the
+// whole sprint). All knobs off (conviction=false, kelly_fraction=0, walk_forward=0):
+// two runs => identical digests AND none of conviction_scores / kelly_gross /
+// walk_forward_oos_sharpe present.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, AllKnobsOffByteIdentical) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("s54_off");
+  const std::string combo1 = (fs::temp_directory_path() / "atx_cvtsz_s54_off1.bin").string();
+  const std::string combo2 = (fs::temp_directory_path() / "atx_cvtsz_s54_off2.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, combo1);
+  cfg.conviction = false;
+  cfg.kelly_fraction = 0.0;
+  cfg.walk_forward = 0;
+  auto r1 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().message();
+  cfg.combo_out = combo2;
+  auto r2 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+  EXPECT_EQ(r1->digest, r2->digest);
+  EXPECT_NE(r1->digest, atx::u64{0});
+  EXPECT_EQ(read_bytes(combo1), read_bytes(combo2));
+
+  EXPECT_FALSE(find_kv(*r1, "conviction_scores").has_value());
+  EXPECT_FALSE(find_kv(*r1, "kelly_gross").has_value());
+  EXPECT_FALSE(find_kv(*r1, "walk_forward_oos_sharpe").has_value());
+
+  cleanup(fx, {combo1, combo2});
+}
+
+// ===========================================================================
+// S5-4 (b): conviction-only — conviction_scores present, kelly_gross absent; the
+// digest differs from the all-off baseline; twice-run identical.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, ConvictionOnlyComposes) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("s54_cvt");
+  const std::string base = (fs::temp_directory_path() / "atx_cvtsz_s54_cvt_base.bin").string();
+  const std::string c1 = (fs::temp_directory_path() / "atx_cvtsz_s54_cvt1.bin").string();
+  const std::string c2 = (fs::temp_directory_path() / "atx_cvtsz_s54_cvt2.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, base);
+  auto r_base = atx::impl::run_combine(cfg); // all off
+  ASSERT_TRUE(r_base.has_value()) << r_base.error().message();
+
+  cfg.conviction = true;
+  cfg.combo_out = c1;
+  auto r1 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().message();
+  cfg.combo_out = c2;
+  auto r2 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+  EXPECT_TRUE(find_kv(*r1, "conviction_scores").has_value());
+  EXPECT_FALSE(find_kv(*r1, "kelly_gross").has_value());
+  EXPECT_NE(r1->digest, r_base->digest) << "conviction must change the book vs all-off";
+  EXPECT_EQ(r1->digest, r2->digest) << "conviction-only twice-run identical";
+
+  cleanup(fx, {base, c1, c2});
+}
+
+// ===========================================================================
+// S5-4 (c): kelly-only (no prior conviction) — kelly_gross present, conviction_scores
+// absent; digest differs from baseline; twice-run identical.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, KellyOnlyComposes) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("s54_kelly");
+  const std::string base = (fs::temp_directory_path() / "atx_cvtsz_s54_kelly_base.bin").string();
+  const std::string c1 = (fs::temp_directory_path() / "atx_cvtsz_s54_kelly1.bin").string();
+  const std::string c2 = (fs::temp_directory_path() / "atx_cvtsz_s54_kelly2.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, base);
+  auto r_base = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r_base.has_value()) << r_base.error().message();
+
+  cfg.conviction = false;
+  cfg.kelly_fraction = 0.25;
+  cfg.combo_out = c1;
+  auto r1 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().message();
+  cfg.combo_out = c2;
+  auto r2 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+  EXPECT_TRUE(find_kv(*r1, "kelly_gross").has_value());
+  EXPECT_FALSE(find_kv(*r1, "conviction_scores").has_value());
+  EXPECT_NE(r1->digest, r_base->digest) << "kelly must change the book vs all-off";
+  EXPECT_EQ(r1->digest, r2->digest) << "kelly-only twice-run identical";
+
+  cleanup(fx, {base, c1, c2});
+}
+
+// ===========================================================================
+// S5-4 (d): combined — conviction=true, kelly_fraction=0.25 => both KV families
+// present; kelly_gross <= 1.0 (default max_gross); twice-run identical.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, CombinedKnobsComposeBounded) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("s54_both");
+  const std::string c1 = (fs::temp_directory_path() / "atx_cvtsz_s54_both1.bin").string();
+  const std::string c2 = (fs::temp_directory_path() / "atx_cvtsz_s54_both2.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, c1);
+  cfg.conviction = true;
+  cfg.kelly_fraction = 0.25;
+  auto r1 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().message();
+  cfg.combo_out = c2;
+  auto r2 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+  EXPECT_TRUE(find_kv(*r1, "conviction_scores").has_value());
+  ASSERT_TRUE(find_kv(*r1, "kelly_gross").has_value());
+  EXPECT_LE(std::stod(*find_kv(*r1, "kelly_gross")), 1.0 + 1e-9);
+  EXPECT_EQ(r1->digest, r2->digest) << "combined twice-run identical";
+
+  cleanup(fx, {c1, c2});
+}
+
+// ===========================================================================
+// S5-4 (e): WF + conviction — conviction=true, walk_forward=2 =>
+// walk_forward_oos_sharpe KV present and finite; twice-run identical. Validates the
+// T7 NEW-1 path end-to-end in atx-impl.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, WalkForwardWithConvictionEmitsFiniteSharpe) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("s54_wf");
+  const std::string c1 = (fs::temp_directory_path() / "atx_cvtsz_s54_wf1.bin").string();
+  const std::string c2 = (fs::temp_directory_path() / "atx_cvtsz_s54_wf2.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, c1);
+  cfg.conviction = true;
+  cfg.walk_forward = 2;
+  auto r1 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().message();
+  cfg.combo_out = c2;
+  auto r2 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+  const auto wf = find_kv(*r1, "walk_forward_oos_sharpe");
+  ASSERT_TRUE(wf.has_value()) << "walk_forward_oos_sharpe must be present with --walk-forward";
+  const auto folds = parse_csv(*wf);
+  EXPECT_EQ(folds.size(), 2u) << "2 folds -> 2 per-fold Sharpes";
+  for (const f64 s : folds) {
+    EXPECT_TRUE(std::isfinite(s)) << "each fold OOS Sharpe must be finite";
+  }
+  const auto mean = find_kv(*r1, "walk_forward_oos_sharpe_mean");
+  ASSERT_TRUE(mean.has_value());
+  EXPECT_TRUE(std::isfinite(std::stod(*mean)));
+  EXPECT_EQ(r1->digest, r2->digest) << "WF+conviction twice-run identical";
+
+  cleanup(fx, {c1, c2});
+}
+
 } // namespace atxtest_conviction_sizing
