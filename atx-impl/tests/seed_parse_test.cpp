@@ -509,4 +509,99 @@ TEST(SeedParse, CsResidualizeNeutralizesSectorAndSize) {
         << "beta=" << beta_resid << " dot=" << dot;
 }
 
+// ---------------------------------------------------------------------------
+// S2-4 — multi-family seed catalog (short-interest + liquidity).
+//
+// Build a panel that carries EVERY field the two new fixtures reference so the
+// field-set is provably self-consistent, then parse + typecheck every line via
+// the same parse_fixture_file path the B2/B3 tests use. Numerical values are
+// irrelevant for parse+typecheck (the analyzer resolves field names from the
+// AST and group-ness from is_group_field), so constant placeholders suffice —
+// shape coherence is what is asserted.
+// ---------------------------------------------------------------------------
+
+// Panel carrying all four-family fields: si_dtc/si_util/si_chg (short-interest),
+// illiq/adv20/dollar_volume (liquidity), plus returns, sector, cap.
+static std::optional<Panel> make_multi_family_panel() {
+    static constexpr usize kD = 8;
+    static constexpr usize kN = 4;
+    const usize cells = kD * kN;
+
+    // sector split into 2 groups so group_neutralize(..., sector) typechecks and
+    // evaluates (is_group_field("sector") -> DType::Group).
+    std::vector<f64> sector(cells);
+    for (usize d = 0; d < kD; ++d) {
+        for (usize n = 0; n < kN; ++n) {
+            sector[d * kN + n] = (n < kN / 2) ? 0.0 : 1.0;
+        }
+    }
+    // Non-degenerate placeholders (distinct per cell; no all-NaN columns).
+    auto ramp = [&](f64 base, f64 step) {
+        std::vector<f64> v(cells);
+        for (usize i = 0; i < cells; ++i) {
+            v[i] = base + static_cast<f64>(i) * step;
+        }
+        return v;
+    };
+
+    const std::vector<std::string> names = {
+        "si_dtc", "si_util", "si_chg",
+        "illiq", "adv20", "dollar_volume",
+        "returns", "sector", "cap"
+    };
+    std::vector<std::vector<f64>> cols = {
+        ramp(2.0, 0.01), ramp(0.10, 0.001), ramp(-1.0, 0.02),
+        ramp(0.0, 0.005), ramp(1.0e6, 1.0e3), ramp(1.0e8, 1.0e5),
+        ramp(0.001, 0.0001), sector, ramp(1.0e9, 1.0e6)
+    };
+
+    auto r = Panel::create(kD, kN, names, cols, {});
+    if (!r.has_value()) {
+        ADD_FAILURE() << "multi-family panel fixture must build: "
+                      << r.error().to_string();
+        return std::nullopt;
+    }
+    return std::move(r.value());
+}
+
+// Test: ShortInterestSeedsParsesAndTypechecks
+//
+// Every non-comment line in short_interest_seeds.txt parses + typechecks against
+// the multi-family panel and references at least one of si_dtc/si_util/si_chg.
+TEST(SeedParse, ShortInterestSeedsParsesAndTypechecks) {
+    auto panel_opt = make_multi_family_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+
+    const std::string fixture_path =
+        std::string{ATX_IMPL_TESTS_DIR} +
+        "/fixtures/short_interest_seeds.txt";
+
+    const std::set<std::string> short_interest_fields = {
+        "si_dtc", "si_util", "si_chg"
+    };
+
+    const int n = parse_fixture_file(fixture_path, short_interest_fields);
+    EXPECT_GT(n, 0) << "fixture must contain at least one parseable expression";
+}
+
+// Test: LiquiditySeedsParsesAndTypechecks
+//
+// Every non-comment line in liquidity_seeds.txt parses + typechecks against the
+// multi-family panel and references at least one of illiq/adv20/dollar_volume.
+TEST(SeedParse, LiquiditySeedsParsesAndTypechecks) {
+    auto panel_opt = make_multi_family_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+
+    const std::string fixture_path =
+        std::string{ATX_IMPL_TESTS_DIR} +
+        "/fixtures/liquidity_seeds.txt";
+
+    const std::set<std::string> liquidity_fields = {
+        "illiq", "adv20", "dollar_volume"
+    };
+
+    const int n = parse_fixture_file(fixture_path, liquidity_fields);
+    EXPECT_GT(n, 0) << "fixture must contain at least one parseable expression";
+}
+
 } // namespace atxtest_seed_parse
