@@ -53,8 +53,9 @@
 //    * Select(c,a,b) : NaN c -> NaN, else c!=0 ? a : b.
 //    * Neg / Abs / Sign (NaN->NaN, ±/0) / Log = std::log.
 //    * LoadField NaNs out-of-universe cells (point-in-time). Const fills imm.
-//  Cross-sectional (Cs*) and time-series (Ts*) opcodes are NOT YET implemented:
-//  they return Err(NotImplemented) here and land in P3-7 / P3-8 respectively.
+//  Cross-sectional (Cs*) kernels are in cs_ops.hpp (P3-7); time-series (Ts*)
+//  kernels are in ts_ops.hpp (P3-8). Both families are fully implemented; the
+//  oracle differential (P3-9) enforces bit-exact agreement on the AuditExact path.
 //
 // SAFETY (topological execution): the Program's instruction stream is
 // topologically ordered (the linearizer emits in DAG NodeId order; every `src`
@@ -84,6 +85,8 @@
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/state_ops.hpp"
 #include "atx/engine/alpha/ts_ops.hpp"
+
+#include "atx/engine/parallel/det_pool.hpp" // optional intra-eval column pool (S3-3)
 
 namespace atx::engine::alpha {
 
@@ -194,6 +197,28 @@ inline void vm_map_cmp(std::span<const atx::f64> a, std::span<const atx::f64> b,
 } // namespace detail
 
 // =========================================================================
+//  EvalMode — the two-tier determinism contract (p7 ROADMAP §Shared
+//  determinism contract; p6 S1-0 plumbing pattern).
+//
+//  AuditExact (DEFAULT, inert): the engine's pinned contract verbatim — every Ts*
+//  kernel takes the batch (oracle-bit-exact) path, output byte-identical across
+//  all worker counts and identical to pre-sprint. This is the publication path.
+//
+//  ResearchFast (opt-in): perf wins that change bits ship here — e.g. the p7 S3-1
+//  Welford/Neumaier online variance family (ts_ops.hpp tsv_welford_*), whose
+//  accumulation order differs from the oracle's two-pass chronological recompute.
+//  Provably more accurate, NOT bit-identical, so gated. Alphas discovered under
+//  ResearchFast are re-scored on the AuditExact path before publication.
+//
+//  The mode is a per-Engine field defaulting to AuditExact, so the no-flag path is
+//  byte-identical to pre-sprint. Set via Engine::set_eval_mode before evaluate().
+// =========================================================================
+enum class EvalMode : atx::u8 {
+  AuditExact = 0, // default, inert: batch kernels, oracle-bit-exact
+  ResearchFast,   // opt-in: online variance family (tolerance, not bit-exact)
+};
+
+// =========================================================================
 //  Engine — the fast vectorized executor (the production path).
 //
 //  Borrows the Panel for its lifetime, owns a reusable SlotPool + field-remap
@@ -216,6 +241,44 @@ public:
   // touching raw internals: stable capacity ⟺ no realloc (ensure_pool only
   // grows when want_slots > capacity or cells_per_slot changes).
   [[nodiscard]] atx::usize pool_capacity() const noexcept { return pool_.capacity(); }
+
+  // EvalMode plumbing (p7 S3-1). The mode selects the Ts* variance-family
+  // execution tier: AuditExact (default) keeps the batch kernel byte-identical to
+  // the oracle; ResearchFast routes TsVar/TsStd/TsZscore/TsAvDiff through the O(T)
+  // Welford/Neumaier online sweep (faster, tolerance-conformant, NOT bit-exact).
+  // Set BEFORE evaluate(); affects only the variance-family ops, nothing else.
+  void set_eval_mode(EvalMode mode) noexcept { mode_ = mode; }
+  [[nodiscard]] EvalMode eval_mode() const noexcept { return mode_; }
+
+  // Cross-instrument column parallelism (p7 S3-3). When a non-null DetPool is set,
+  // the BATCH Ts path (eval_time_series's column-extract loop) dispatches its
+  // instrument columns across the pool's workers; each column is independent
+  // (out[t*I+j] depends only on input column j, disjoint output slots, per-worker
+  // scratch), so the result is bit-identical to the serial loop — AuditExact. When
+  // null (the DEFAULT), eval_time_series runs the original single-threaded loop,
+  // byte-for-byte unchanged. Set BEFORE evaluate(); the Engine BORROWS the pool
+  // (non-owning) for the duration — the caller owns its lifetime.
+  //
+  // DEADLOCK CONSTRAINT (REQUIRED): this pool MUST be a SEPARATE instance from any
+  // outer search-level DetPool driving genome-level parallelism. A DetPool worker
+  // that calls back into the SAME pool's parallel_for would block on a barrier that
+  // can never complete (all workers parked inside the outer job). Wiring this into
+  // the search driver (which already nests a det_pool) is deferred to S7 and must
+  // construct a distinct column pool per worker thread.
+  void set_ts_pool(atx::engine::parallel::DetPool *pool) {
+    ts_pool_ = pool;
+    // Pre-size the OUTER per-worker scratch vectors to n_workers up front so no
+    // thread ever resizes the shared outer vector (only its OWN inner vector grows,
+    // inside the band body). A null pool needs no per-worker scratch.
+    const atx::usize w = (pool != nullptr) ? pool->n_workers() : atx::usize{0};
+    if (ts_col_thr_.size() < w) {
+      ts_col_thr_.resize(w);
+      ts_col_b_thr_.resize(w);
+      ts_scratch_a_thr_.resize(w);
+      ts_scratch_b_thr_.resize(w);
+    }
+  }
+  [[nodiscard]] atx::engine::parallel::DetPool *ts_pool() const noexcept { return ts_pool_; }
 
   // Prepare the Engine to evaluate a DIFFERENT Program on the SAME Panel.
   //
@@ -846,6 +909,18 @@ private:
       }
       return atx::core::Ok();
     }
+    // ResearchFast variance family (p7 S3-1/S3-2): TsVar/TsStd/TsZscore/TsAvDiff
+    // route through the O(T) Welford/Neumaier online column sweep ONLY under
+    // EvalMode::ResearchFast. Under AuditExact (the default) ts_is_online_variance_op
+    // is never consulted, so the variance family falls through to the batch path
+    // below — byte-identical to the oracle. The Welford sweep is per-instrument-
+    // column and self-contained (no scratch), so it needs no column-extract.
+    if (mode_ == EvalMode::ResearchFast && detail::ts_is_online_variance_op(in.op)) {
+      for (atx::usize j = 0; j < instruments; ++j) {
+        detail::tsv_welford_dispatch(in.op, x, out, dates, j, d, instruments);
+      }
+      return atx::core::Ok();
+    }
     // Pure-lookback direct path (TsDelay/TsDelta): ORIGINAL strided access,
     // instrument-outer/date-inner, reading x[(t-d)*I+j] (+ x[t*I+j] for delta)
     // directly from the panel. This is the EXACT pre-transpose code — trivially
@@ -876,40 +951,95 @@ private:
     // ts_scratch_a_ / ts_scratch_b_ retain their existing role (window-d scratch
     // for sort/gather/pair inside the kernel); ts_col_ / ts_col_b_ are the new
     // dates-sized column buffers, grown monotonically as Engine members.
+    // S3-3: dispatch the instrument columns either serially (null pool, the
+    // original loop — byte-for-byte unchanged) or across DetPool bands. Column
+    // independence (disjoint output slots, per-band scratch) makes the parallel
+    // result bit-identical to serial, so this stays AuditExact. The pool is used
+    // only for instruments>1 (a single column has no work to split).
+    const TsBatchCtx ctx{in, x, y, out, dates, instruments, d, binary_series, ou_rolling};
+    if (ts_pool_ != nullptr && instruments > 1) {
+      // Each index j is handled by exactly one worker `wid`; the body writes only
+      // column j's output slots and reads only column j (+ shared read-only x/y),
+      // using THIS worker's private scratch — no cross-thread shared mutable state.
+      ts_pool_->parallel_for(instruments, [this, &ctx](atx::usize j, atx::usize wid) {
+        eval_ts_column(ctx, j, ts_col_thr_[wid], ts_col_b_thr_[wid], ts_scratch_a_thr_[wid],
+                       ts_scratch_b_thr_[wid]);
+      });
+      return atx::core::Ok();
+    }
     if (dates > ts_col_.size()) {
       ts_col_.resize(dates);
       ts_col_b_.resize(dates);
     }
     for (atx::usize j = 0; j < instruments; ++j) {
-      // Extract column j of x into ts_col_.
-      for (atx::usize s = 0; s < dates; ++s) {
-        ts_col_[s] = x[s * instruments + j];
-      }
-      const std::span<const atx::f64> col{ts_col_.data(), dates};
-      if (binary_series) {
-        // Extract column j of y into ts_col_b_.
-        for (atx::usize s = 0; s < dates; ++s) {
-          ts_col_b_[s] = y[s * instruments + j];
-        }
-        const std::span<const atx::f64> col_b{ts_col_b_.data(), dates};
-        for (atx::usize t = 0; t < dates; ++t) {
-          // instruments=1, j=0: col[k*1+0] == col[k] == x[k*I+j]. Same order.
-          out[t * instruments + j] =
-              detail::ts_pair_at(in.op, col, col_b, t, 0, d, 1, ts_scratch_a_, ts_scratch_b_);
-        }
-      } else if (ou_rolling) {
-        for (atx::usize t = 0; t < dates; ++t) {
-          out[t * instruments + j] =
-              detail::ou_value_at(in.op, col, t, 0, d, 1, ts_scratch_a_);
-        }
-      } else {
-        for (atx::usize t = 0; t < dates; ++t) {
-          out[t * instruments + j] =
-              detail::ts_value_at(in.op, col, t, 0, d, 1, ts_scratch_a_, in.imm[0]);
-        }
-      }
+      eval_ts_column(ctx, j, ts_col_, ts_col_b_, ts_scratch_a_, ts_scratch_b_);
     }
     return atx::core::Ok();
+  }
+
+  // Immutable per-evaluate context shared by every instrument column of a single
+  // batch Ts op (so the column body — serial or parallel — reads one bundle).
+  struct TsBatchCtx {
+    const Instr &in;
+    std::span<const atx::f64> x;
+    std::span<const atx::f64> y; // empty unless binary_series
+    std::span<atx::f64> out;
+    atx::usize dates;
+    atx::usize instruments;
+    atx::usize d;
+    bool binary_series;
+    bool ou_rolling;
+  };
+
+  // Evaluate ONE instrument column `j` of a batch Ts op into ctx.out, using the
+  // caller-provided scratch (the serial Engine buffers, or this worker's private
+  // per-thread buffers under S3-3 column parallelism). `col` / `col_b` are the
+  // dates-sized column extracts; `sa` / `sb` are the window-d sort/pair scratch.
+  //
+  // SAFETY (bit-exactness + thread-safety): identical arithmetic to the original
+  // serial loop — extract column j (strided), then call the kernel with
+  // instruments=1, j=0 so col[k] == x[k*I+j] in the SAME chronological order. The
+  // only reads outside this column are the read-only x/y spans; the only writes are
+  // ctx.out[t*I+j] for this j. Distinct j -> disjoint output slots, so concurrent
+  // columns never collide. Each scratch buffer belongs to exactly one caller.
+  void eval_ts_column(const TsBatchCtx &ctx, atx::usize j, std::vector<atx::f64> &col,
+                      std::vector<atx::f64> &col_b, std::vector<atx::f64> &sa,
+                      std::vector<atx::f64> &sb) {
+    const atx::usize dates = ctx.dates;
+    const atx::usize instruments = ctx.instruments;
+    const atx::usize d = ctx.d;
+    // Grow-only resize of THIS caller's scratch (no shared-vector mutation under
+    // parallelism: each worker owns its own col/col_b/sa/sb).
+    if (col.size() < dates) {
+      col.resize(dates);
+      col_b.resize(dates);
+    }
+    if (sa.size() < d) {
+      sa.resize(d);
+      sb.resize(d);
+    }
+    for (atx::usize s = 0; s < dates; ++s) {
+      col[s] = ctx.x[s * instruments + j];
+    }
+    const std::span<const atx::f64> cspan{col.data(), dates};
+    if (ctx.binary_series) {
+      for (atx::usize s = 0; s < dates; ++s) {
+        col_b[s] = ctx.y[s * instruments + j];
+      }
+      const std::span<const atx::f64> cb{col_b.data(), dates};
+      for (atx::usize t = 0; t < dates; ++t) {
+        ctx.out[t * instruments + j] = detail::ts_pair_at(ctx.in.op, cspan, cb, t, 0, d, 1, sa, sb);
+      }
+    } else if (ctx.ou_rolling) {
+      for (atx::usize t = 0; t < dates; ++t) {
+        ctx.out[t * instruments + j] = detail::ou_value_at(ctx.in.op, cspan, t, 0, d, 1, sa);
+      }
+    } else {
+      for (atx::usize t = 0; t < dates; ++t) {
+        ctx.out[t * instruments + j] =
+            detail::ts_value_at(ctx.in.op, cspan, t, 0, d, 1, sa, ctx.in.imm[0]);
+      }
+    }
   }
 
   // ---- stateful recurrence (forward scan, true cross-date state) -----------
@@ -1059,6 +1189,7 @@ private:
   }
 
   const Panel &panel_;
+  EvalMode mode_{EvalMode::AuditExact}; // determinism tier (p7 S3-1); default inert
   SlotPool pool_{1, 1};                // reused across calls; grown on demand
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
@@ -1073,6 +1204,18 @@ private:
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
   std::vector<atx::usize> cs_valid_;   // Cs* per-date valid-index scratch; grown once, cleared per date
   detail::CsScratch cs_scratch_;       // Cs* grouped/sort scratch; grown once, reset per date
+  // S3-3: optional intra-eval column pool + PER-WORKER scratch. ts_pool_ is null by
+  // default (serial). When set, the batch column loop runs over instrument bands on
+  // the pool; each worker `wid` owns ts_col_thr_[wid] (x column), ts_col_b_thr_[wid]
+  // (y column), ts_scratch_a_thr_[wid] / ts_scratch_b_thr_[wid] (window-d sort/pair
+  // scratch) so no two threads touch shared mutable state. All four are sized to
+  // [n_workers] up front in set_ts_pool() and grown lazily inside the band body
+  // (same growth-only pattern as the serial buffers), so there is no growth race.
+  atx::engine::parallel::DetPool *ts_pool_{nullptr}; // borrowed; null = single-threaded
+  std::vector<std::vector<atx::f64>> ts_col_thr_;       // per-worker x column-extract (dates)
+  std::vector<std::vector<atx::f64>> ts_col_b_thr_;     // per-worker y column-extract (dates)
+  std::vector<std::vector<atx::f64>> ts_scratch_a_thr_; // per-worker window scratch a (d)
+  std::vector<std::vector<atx::f64>> ts_scratch_b_thr_; // per-worker window scratch b (d)
 };
 
 } // namespace atx::engine::alpha
