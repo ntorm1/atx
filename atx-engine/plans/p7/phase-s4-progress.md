@@ -41,14 +41,14 @@ No CMakeLists edits are required (all four dirs are CONFIGURE_DEPENDS-globbed).
 
 ## Unit checklist
 
-- [ ] S4-0  marker + ledger (this commit)
-- [ ] S4-1  EmaDecayPolicy (opt-in stateful EMA-decay WeightPolicy sibling);
+- [x] S4-0  marker + ledger (this commit)
+- [x] S4-1  EmaDecayPolicy (opt-in stateful EMA-decay WeightPolicy sibling);
             ema_alpha=1.0 inert default. WeightPolicyDecay.* (4) green.
-- [ ] S4-2  compute_capacity_vector (per-alpha capacity AUM from last-period book).
-            CapacityVector.* (4) green; stage_combine.cpp untouched.
-- [ ] S4-3  CapacityScorecard struct + emit_capacity_scorecard. CapacityScorecard.*
-            (4) green; no existing source modified.
-- [ ] S4-4  tradeable_fitness_cfg() + turnover_target_from_gate() (header-only inline,
+- [x] S4-2  compute_capacity_vector (per-alpha capacity AUM from last-period book).
+            CapacityVector.* (3 runtime + reviewer-gate (a)) green; stage_combine.cpp untouched.
+- [x] S4-3  CapacityScorecard struct + emit_capacity_scorecard. CapacityScorecard.*
+            (3 runtime + reviewer-gate (a)) green; no existing source modified.
+- [x] S4-4  tradeable_fitness_cfg() + turnover_target_from_gate() (header-only inline,
             fitness.hpp per D3). FitnessTurnover.* (4) green; fitness.cpp untouched.
 
 ## Byte-identity gate (run green before AND after every unit)
@@ -58,4 +58,50 @@ No CMakeLists edits are required (all four dirs are CONFIGURE_DEPENDS-globbed).
 
 ## Progress
 
-S4-0: complete (commit <pending>) — ledger opened; base main @ e0659e4; no source.
+S4-0: complete (commit 09e372a) — ledger opened; base main @ e0659e4; no source.
+S4-1: complete (commit b2a891e, WeightPolicyDecay.* 4/4 green) — EmaDecayPolicy
+      opt-in stateful sibling; ema_alpha=1.0 short-circuits to byte-identical
+      pass-through. WeightPolicy struct unchanged, kTruncateIters=8 preserved.
+      Byte-id gate 18/18; full core suite 303/303 (zero regressions). Test in
+      tests/core/ (no `loop` CMake group — drift noted above).
+S4-2: complete (commit 4920326, CapacityVector.* 3/3 runtime green) —
+      compute_capacity_vector: per-alpha last-period book swept over a 20-pt
+      log-spaced AUM grid -> capacity_point. Reuses capacity_for_alpha +
+      capacity_point (no second cost model). stage_combine.cpp diff EMPTY
+      (class-a reviewer gate); byte-id gate 18/18; full core suite 306/306.
+      Class (a) is a reviewer/diff gate not a runtime case (3 runtime b/c/d).
+      Test in tests/core/ (no `cost` group — drift noted above).
+S4-4: complete (commit 60c0dbf, FitnessTurnover.* 4/4 green) —
+      tradeable_fitness_cfg() (slope=2.0, target=0.20) + turnover_target_from_gate
+      (L>0->L, else +inf), header-only inline per D3. Named detail constants
+      kTradeable{TurnoverSlope,MaxTurnover} + public aliases. FitnessCfg{}
+      default unchanged; src/factory/fitness.cpp diff EMPTY (D3 honored). Penalty
+      mult verified to 1e-12 at turnover {0.10,0.30,0.60}. Byte-id gate 18/18;
+      full factory suite 212/212. (Done before S4-3 per plan commit order;
+      independent of S4-3.)
+S4-3: complete (commit 8d9f8f1, CapacityScorecard.* 3/3 runtime green) —
+      CapacityScorecard{capacity_point_aum, gross_edge_bps, net_edge_at_target,
+      curve} + emit_capacity_scorecard. Delegates to capacity_for_book +
+      capacity_point + risk::detail::gross_edge_bps (one cost surface). On a
+      4-identical-name fixture: monotone curve, gross == analytic, capacity_point
+      within 5% of the closed-form crossing, net@target eroded below gross.
+      No existing source modified; byte-id gate 18/18; full core suite 309/309.
+      Class (a) is the reviewer/diff gate (3 runtime b/c/d). Test in tests/core/.
+
+## Final gate results
+
+- WeightPolicyDecay.* 4/4, CapacityVector.* 3/3, CapacityScorecard.* 3/3
+  (all in atx-engine-core-tests), FitnessTurnover.* 4/4 (atx-engine-factory-tests).
+  14 new runtime tests; the three "class (a) off-path byte-identity" cases for
+  S4-2/S4-3 are reviewer/diff gates (no source call site modified), not runtime
+  rows; S4-1/S4-4 class (a) ARE runtime rows.
+- Byte-identity gate (atx-engine-factory-tests *Oracle*:*Golden*:*Digest*):
+  18/18 green — verified at base AND after every unit (S4-1, S4-2, S4-4, S4-3).
+- Full atx-engine-core-tests: 309/309 (303 baseline + 6 new core tests).
+- Full atx-engine-factory-tests: 212/212 (208 baseline + 4 new).
+- Owned-file diff only: loop/weight_policy.hpp, cost/capacity.hpp,
+  factory/fitness.hpp (header per D3), + 4 new test files. NO change to
+  src/factory/fitness.cpp (D3), stage_combine.cpp, stage_discover.cpp,
+  config.{hpp,cpp}, conviction.hpp, kelly_sizing.hpp, gate.hpp, or any oracle.hpp.
+- WeightPolicy struct body unchanged; kTruncateIters=8 preserved.
+- No CMakeLists edits; no golden re-baseline; oracle.hpp frozen.
