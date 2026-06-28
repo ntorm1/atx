@@ -87,6 +87,16 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     c_opt.panel     = (work / "panel.bin").string();
     c_opt.combo     = (work / "combo.bin").string();
     c_opt.books_out = (work / "books.bin").string();
+    // S7-4: engage the S6 sign-correct deploy path by default. Signal-as-position deploy
+    // (position_mode) skips mean-variance optimize — the S6 work proved that path yields a
+    // sign-correct, non-empty book with a sane participation footprint, whereas the MVO path
+    // could invert the book sign. Default it ON only when the user has not explicitly chosen a
+    // deploy mode (mirrors the holdout-frac guard at line 82). An explicit --position-mode or
+    // --risk-aversion (either in set_flags) overrides.
+    if (cfg.set_flags.count("position-mode") == 0 &&
+        cfg.set_flags.count("risk-aversion") == 0) {
+        c_opt.position_mode = true;
+    }
     ATX_TRY(auto d_opt, run_optimize(c_opt));
 
     // 6. report

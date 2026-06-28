@@ -220,6 +220,11 @@ static ::testing::AssertionResult run_staged(const atx::impl::RunConfig& base_cf
     c_opt.panel     = (fs::path{work} / "panel.bin").string();
     c_opt.combo     = (fs::path{work} / "combo.bin").string();
     c_opt.books_out = (fs::path{work} / "books.bin").string();
+    // S7-4: mirror run_all's position_mode default so staged == run.
+    if (cfg.set_flags.count("position-mode") == 0 &&
+        cfg.set_flags.count("risk-aversion") == 0) {
+        c_opt.position_mode = true;
+    }
     auto r_opt = atx::impl::run_optimize(c_opt);
     if (!r_opt.has_value())
         return ::testing::AssertionFailure() << "run_optimize: " << r_opt.error().message();
@@ -423,6 +428,35 @@ TEST_F(AtxImplE2E, ReportBytesDeterministic) {
         EXPECT_FALSE(da.empty()) << tsv << " (run A) is empty";
         EXPECT_EQ(da, db) << tsv << " is not byte-identical across two runs (R8 violation)";
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test S7-4: RunDefaultDeployEqualsExplicitPositionMode
+// S7-4: run_all with NO deploy flag must take the sign-correct position-mode
+// path by default, i.e. produce the SAME digest as an explicit --position-mode
+// run, and (sanity) NOT the same as an explicit risk-aversion (MVO) run.
+// ---------------------------------------------------------------------------
+TEST_F(AtxImplE2E, RunDefaultDeployEqualsExplicitPositionMode) {
+    // default run (no deploy flag set)
+    const fs::path def_work   = make_work_dir("s74_def_work");
+    const fs::path def_report = make_work_dir("s74_def_report");
+    atx::impl::RunConfig def =
+        make_base_cfg(s_zip_, def_work.string(), def_report.string());
+    auto rd = atx::impl::run_all(def);
+    ASSERT_TRUE(rd.has_value()) << rd.error().message();
+
+    // explicit position-mode run (fresh work dir): set the flag AND mark it in set_flags
+    const fs::path exp_work   = make_work_dir("s74_exp_work");
+    const fs::path exp_report = make_work_dir("s74_exp_report");
+    atx::impl::RunConfig exp =
+        make_base_cfg(s_zip_, exp_work.string(), exp_report.string());
+    exp.position_mode = true;
+    exp.set_flags.insert("position-mode");
+    auto re = atx::impl::run_all(exp);
+    ASSERT_TRUE(re.has_value()) << re.error().message();
+
+    EXPECT_EQ(rd->digest, re->digest)
+        << "default run_all must engage position-mode deploy (sign-correct path)";
 }
 
 // ---------------------------------------------------------------------------
