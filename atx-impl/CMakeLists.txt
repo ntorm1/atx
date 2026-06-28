@@ -10,6 +10,8 @@ add_library(atx-impl-core STATIC
     src/stage_load.cpp
     src/stage_regime.cpp
     src/stage_panel.cpp
+    # FINRA short-interest augment core (p7 S2-1 / track-b B1; CLI deferred to S7)
+    src/stage_augment.cpp
     src/stage_discover.cpp
     src/stage_sweep.cpp
     src/store_progress_sink.cpp

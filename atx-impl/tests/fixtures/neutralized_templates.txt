@@ -1,0 +1,42 @@
+# Factor-neutral-by-construction seed templates (Task B3).
+# Format: `<id>: <dsl-expression>`. Lines beginning with '#' are comments.
+# All expressions parse + typecheck against a panel carrying:
+#   close, raw_close, volume, high, low, open, market_cap, sector,
+#   earnFlag, atmCenI_21d, atmCenI_126d, nEarnCnt_5d, returns.
+# Ops used: cs_residualize, ts_mean, ts_std, rank, zscore (all in registry.cpp).
+# Convention:
+#   *_ss  = sector+size-neutral: cs_residualize(<signal>, sector, market_cap)
+#   *_s   = sector-only-neutral: cs_residualize(<signal>, sector)
+
+# ---- Momentum (12-1) — sector+size-neutral ----------------------------------
+mom_ss1: cs_residualize(ts_mean(returns, 252) - ts_mean(returns, 21), sector, market_cap)
+
+# Ranked momentum, sector+size-neutral
+mom_ss2: cs_residualize(rank(ts_mean(returns, 252) - ts_mean(returns, 21)), sector, market_cap)
+
+# Sector-only sibling for comparison
+mom_s1: cs_residualize(ts_mean(returns, 252) - ts_mean(returns, 21), sector)
+
+# ---- Low-volatility anomaly — sector+size-neutral ---------------------------
+lv_ss1: cs_residualize(-1 * ts_std(returns, 20), sector, market_cap)
+
+# Z-scored low-vol, sector+size-neutral
+lv_ss2: cs_residualize(zscore(-1 * ts_std(returns, 20)), sector, market_cap)
+
+# Sector-only sibling
+lv_s1: cs_residualize(-1 * ts_std(returns, 20), sector)
+
+# ---- Short-term reversal — sector+size-neutral ------------------------------
+rev_ss1: cs_residualize(-1 * ts_mean(returns, 5), sector, market_cap)
+
+# Sector-only sibling
+rev_s1: cs_residualize(-1 * ts_mean(returns, 5), sector)
+
+# ---- IV term-structure slope — sector+size-neutral --------------------------
+ivts_ss1: cs_residualize(rank(atmCenI_21d / atmCenI_126d), sector, market_cap)
+
+# IV vs realized vol gap, sector+size-neutral
+ivrv_ss1: cs_residualize(rank(atmCenI_21d - ts_std(returns, 21)), sector, market_cap)
+
+# Sector-only IV sibling
+ivts_s1: cs_residualize(rank(atmCenI_21d / atmCenI_126d), sector)

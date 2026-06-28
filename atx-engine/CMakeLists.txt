@@ -74,6 +74,8 @@ add_library(atx-engine STATIC
     src/data/orats_history.cpp
     # ORATS history panel helpers: orats_total_return_close (p3 S3-3)
     src/data/history_panel.cpp
+    # FINRA consolidated short-interest causal loader (p7 S2-1 / track-b B1)
+    src/data/finra_short.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
     src/parallel/process_executor.cpp

@@ -1,0 +1,45 @@
+# IV-surface & earnings seed templates for alpha-discovery GA warm-start (Task B2).
+# Format: `<id>: <dsl-expression>`. Lines beginning with '#' are comments.
+# All expressions parse + typecheck against a panel carrying:
+#   close, raw_close, volume, high, low, open, market_cap, sector,
+#   earnFlag, atmCenI_21d, atmCenI_126d, nEarnCnt_5d, returns.
+# Ops used: rank, zscore, group_neutralize, ts_std, ts_mean,
+#            signedpower (all confirmed in registry.cpp).
+# Sector-neutral convention: every template wrapped in group_neutralize(..., sector).
+# Dormant fields activated: atmCenI_21d, atmCenI_126d, earnFlag, nEarnCnt_5d.
+
+# ---- IV term-structure slope ------------------------------------------------
+# Rank of front/back ATM implied move ratio: long upward-sloping IV term structure
+ivts1: group_neutralize(rank(atmCenI_21d / atmCenI_126d), sector)
+
+# Signed-power shaped version: penalise extreme ratios
+ivts2: group_neutralize(signedpower(zscore(atmCenI_21d / atmCenI_126d), 2), sector)
+
+# ---- IV minus realized gap -------------------------------------------------
+# Front IV minus 21-day realized vol of returns: long understated realized risk
+ivrv1: group_neutralize(rank(atmCenI_21d - ts_std(returns, 21)), sector)
+
+# 126-day variant: back-month IV vs 63-day realized vol
+ivrv2: group_neutralize(rank(atmCenI_126d - ts_std(returns, 63)), sector)
+
+# ---- Earnings-count conditioned --------------------------------------------
+# Scale front IV by inverse of recent earnings count (avoids earnings-event noise)
+ec1: group_neutralize(rank(atmCenI_21d / (nEarnCnt_5d + 1)), sector)
+
+# Ratio of IV slope conditioned on low earnings count
+ec2: group_neutralize(rank(atmCenI_21d / (atmCenI_126d + nEarnCnt_5d + 1)), sector)
+
+# ---- Earnings avoidance gate -----------------------------------------------
+# Hold momentum signal only on non-earnings days; close position on earnings days
+# trade_when(trigger: Mask, alpha: f64, exit: Mask) -- trigger/exit are comparisons
+eag1: group_neutralize(trade_when(earnFlag == 0, ts_mean(returns, 21), earnFlag > 0), sector)
+
+# IV signal gated off on earnings days
+eag2: group_neutralize(trade_when(earnFlag == 0, rank(atmCenI_21d), earnFlag > 0), sector)
+
+# ---- Combined IV + earnings ------------------------------------------------
+# IV term-structure held only when no recent earnings events
+comb1: group_neutralize(trade_when(nEarnCnt_5d == 0, rank(atmCenI_21d / atmCenI_126d), nEarnCnt_5d > 0), sector)
+
+# Realized vol gap with earnings-count scaling
+comb2: group_neutralize(rank((atmCenI_21d - ts_std(returns, 21)) / (nEarnCnt_5d + 1)), sector)
