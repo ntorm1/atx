@@ -1,0 +1,170 @@
+# p7 Sprint 1 — Deflation Gates & Honest Selection — Progress Ledger
+
+Base: main @ 2eaf3da
+Branch: feat/p7-s1
+Worktree: C:\atx-wt\p7-s1
+
+## Unit checklist (Sequencing order)
+
+- [x] S1-0 — Open ledger + field plumbing (GateConfig/GateVerdict/GateDeflation; AlphaMetrics NOT touched — see deviation) (d0c17a7)
+- [x] S1-1 — DSR floor in AlphaGate::admit (d0c17a7)
+- [x] S1-2 — PBO ceiling in AlphaGate::admit (d0c17a7)
+- [x] S1-3 — require_split_stable gate in AlphaGate::admit (d0c17a7)
+- [x] S1-4 — Thread trial-count into cascade_gate_passes bound (8b132dc)
+- [x] S1-5 — Reject-histogram layout pin + AdmitKind audit (b564c39)
+
+## Determinism contract
+Inert defaults: min_dsr=0.0, max_pbo=1.0, require_split_stable=false, trial_count==1.
+At inert defaults all outputs byte-identical to pre-sprint.
+Byte-identity gate: atx-engine-factory-tests --gtest_filter=*Oracle*:*Golden*:*Digest*
+
+## DESIGN DEVIATION (binding — flagged for whole-branch review)
+
+The plan (S1-0, dependency map line 137, risk table) instructs adding `dsr`/`pbo`/
+`split_stable` fields to `combine::AlphaMetrics`, asserting "neither struct is
+serialized." This is FACTUALLY WRONG: `AlphaMetrics` is embedded VERBATIM in the
+on-disk library record `library/record.hpp::AlphaDirEntry` (line 110), memcpy'd to
+segment files (record.hpp:272) and pinned by `static_assert(sizeof(AlphaMetrics)==56)`
++ `static_assert(sizeof(AlphaDirEntry)==96)` (record.hpp:128,130). Adding 3 fields:
+  (1) breaks those frozen static_asserts in `record.hpp` (NOT in my Owns set);
+  (2) changes the on-disk segment bytes -> changes segment CRC + manifest version_id
+      -> breaks byte-identity of every library golden/digest — FORBIDDEN by the p7
+      determinism contract (verified: a build with the fields on AlphaMetrics failed
+      the two record.hpp static_asserts).
+`record.hpp` is out of my Owns set and a format-version bump is far larger than a
+mechanical edit, so editing it is not authorized.
+
+RESOLUTION (Option B, byte-identity-safe, fully in Owns fence): carry the three
+per-candidate deflation scalars in a NEW non-serialized POD `combine::GateDeflation`
+{dsr=1.0, pbo=0.0, split_stable=false} (gate.hpp, OWNED), passed to
+`AlphaGate::admit(..., const GateDeflation& defl = kInertDeflation)` as a defaulted
+trailing parameter. Every pre-S1 caller (omitting `defl`) gets the inert instance ->
+byte-identical verdict. The plan's GateConfig thresholds, GateVerdict enumerators,
+inert sentinels, insertion point, operators, and all four determinism classes are
+implemented exactly as specified; only the CARRIER of the per-candidate scalars
+differs (GateDeflation vs. the serialized AlphaMetrics). AlphaMetrics is UNCHANGED
+(still 56 bytes). The library `verdict_for` path (library.hpp, out of Owns) does not
+yet read GateDeflation — wiring it is a later/Sprint-7 concern and is out of fence.
+
+## Progress log
+
+S1-0..S1-3 are co-located in gate.hpp (the plan places all of GateConfig/GateVerdict/
+AlphaMetrics-carrier plumbing AND the three admit() checks in one header) + one test
+file, so they ship in ONE commit. Per-unit status recorded below; all gated together
+(combine 129/129, factory oracle/golden/digest 18/18, all green before+after).
+
+S1-0: complete (commit d0c17a7) — GateConfig deflation fields + GateVerdict append
+  (RejectDsr=5/RejectPbo=6/RejectSplitUnstable=7) + GateDeflation carrier POD +
+  layout-pin/sentinel tests. AlphaMetrics NOT touched (serialized; see deviation).
+  Drift: plan test file name gate_dsr_pbo_tests.cpp -> gate_dsr_pbo_test.cpp (the
+  engine glob is *_test.cpp singular). Drift: deflation carrier is GateDeflation not
+  AlphaMetrics (serialization deviation above).
+S1-1: complete (commit d0c17a7) — DSR floor guard; 6 tests (off/on-reject/on-pass/
+  sentinel/twice/seq==parallel) green.
+S1-2: complete (commit d0c17a7) — PBO ceiling guard; 6 tests green.
+S1-3: complete (commit d0c17a7) — split-stable guard; 5 tests green.
+S1-4: complete (commit 8b132dc) — cascade_gate_passes now folds expected_max_sharpe(N,1/T)
+  into the keep side: keep iff sr_tr*factor + SR*_N >= min_dsr. Removed the
+  static_cast<void>(trial_count) no-op. SAFE direction (looser with N) — the ONLY
+  direction that preserves the binding AdmittedSetUnchanged + byte-identity proofs.
+  Plan prose said "stricter with N" but its concrete formula (+SR*_N) and concrete
+  monotone test (skip@100 => skip@10) are BOTH the looser direction; the "stricter"
+  prose is the plan's internal inconsistency — documented in factory.cpp + here.
+  Tests: 10 (7 direct-math-mirror inert/monotone/safe/twice + 3 end-to-end real-N
+  byte-identity/seq==parallel/twice via mine_into_oos + ProcessExecutor). Existing
+  cascade + Oracle/Golden/Digest (31/31) green before+after.
+  Drift: cascade_gate_passes is TU-local (anon namespace), so direct unit tests use a
+  verbatim math mirror (same eval::expected_max_sharpe + kAnnualizationDays); the real
+  predicate is exercised end-to-end through the mine paths.
+  Risk-table check (metrics propagation): the factory's gate-call sites (factory.cpp:250
+  mine, and admit_on_holdout via verdict_for) pass hold_metrics from compute_metrics,
+  which does NOT set dsr/pbo/split_stable — and now CANNOT (AlphaMetrics is the serialized
+  56-byte record). The factory does NOT pass a GateDeflation, so the new gate screens are
+  dormant on the factory path BY DESIGN: the factory tier already enforces DSR/PBO/split
+  via its own machinery (dsr>=cfg.min_dsr accept-expr, finalize_run_pbo, split_floor_ok).
+  Wiring GateDeflation into the factory would DOUBLE-gate and risk byte-identity, and is
+  explicitly out of scope ("Out of scope: populating AlphaMetrics::dsr/pbo/split_stable").
+  The S1 gate screens are for the standalone/library AlphaGate caller and are proven by
+  the gate_dsr_pbo_test suite directly.
+S1-5: complete (commit b564c39) — histogram-layout pin + AdmitKind audit.
+  The layout-pin static_asserts (GateVerdict::Accept=0 .. RejectSplitUnstable=7, count=8)
+  ship in gate_dsr_pbo_test.cpp (committed in d0c17a7). NO further code change needed:
+
+  AdmitKind AUDIT (the plan's S1-5 mandated audit):
+  * The reject_histogram is std::array<usize,8> indexed by library::AdmitKind, NOT by
+    GateVerdict (factory.hpp:265; every write is reject_histogram[static_cast<usize>(kind)]
+    with kind: AdmitKind). It was ALREADY size 8 pre-S1 — the plan's "5 -> 8 for
+    GateVerdict-driven buckets" is a misread; the histogram is AdmitKind-driven. NO resize.
+  * AdmitKind does NOT mirror GateVerdict 1:1 — it DIVERGES:
+      AdmitKind  = {Accept, Duplicate, RejectSharpe, RejectFitness, RejectTurnover,
+                    RejectCorrelated, RejectPriceScale, RejectDsrSubwindow}  (8)
+      GateVerdict= {Accept, RejectSharpe, RejectFitness, RejectTurnover, RejectCorrelated,
+                    RejectDsr, RejectPbo, RejectSplitUnstable}               (8)
+    The library admit path (library.hpp::verdict_for) returns AdmitKind DIRECTLY and never
+    produces a GateVerdict::RejectDsr/Pbo/SplitUnstable, so NO new AdmitKind enumerator is
+    required and there is NO compile break. (Adding AdmitKind values is out of my Owns set
+    anyway — library.hpp is not owned — and is unnecessary.)
+  * There is NO `switch` on a GateVerdict value anywhere in the codebase (verified by grep).
+    The only enum-mapping switch is map_kind(AdmitKind)->GateVerdict in
+    library_integration_test.cpp (switches on AdmitKind, which I did not change -> still
+    exhaustive, no break). So appending the 3 GateVerdict enumerators forced ZERO
+    switch-arm additions and ZERO out-of-Owns edits — the authorized Owns-fence exception
+    was NOT needed.
+  * atx-impl/src/stage_discover.cpp prints the histogram by iterating
+    rep.reject_histogram.size() dynamically (robust to size); its comment "0..5" is now
+    stale (should read 0..7) but the code is correct and the file is Sprint-7 / out of my
+    Owns set, so it is left untouched (noted for Sprint 7).
+  Existing factory_* + library_* suites green (histogram arrays zero-initialized; new
+  GateVerdict buckets never written because the gate path that sets them is the standalone
+  AlphaGate, which does not feed the AdmitKind-indexed factory histogram).
+
+## Sprint close — final gate results
+
+Commit range: 2eaf3da..b564c39
+  d0c17a7 feat(p7-s1): deflation gates in AlphaGate::admit (S1-0..S1-3)
+  8b132dc feat(p7-s1): thread realized trial-count N into cascade pre-gate (S1-4)
+  b564c39 docs(p7-s1): S1-5 reject-histogram layout pin + AdmitKind audit
+
+Files changed (all in Owns fence): gate.hpp, factory.cpp, tests/combine/gate_dsr_pbo_test.cpp,
+tests/factory/cascade_trial_count_test.cpp, phase-1-progress.md. AlphaMetrics (metrics.hpp),
+library.hpp, record.hpp UNTOUCHED.
+
+Final suite results (all green, zero regressions):
+  combine          : 129/129
+  factory (full)   : 208/208
+  library          :  43/43  (2 pre-existing DISABLED, unrelated)
+  byte-identity slice (factory *Oracle*:*Golden*:*Digest*): 18/18  green BEFORE and AFTER
+
+New tests added: 21 (combine gate_dsr_pbo_test) + 10 (factory cascade_trial_count_test) = 31.
+
+## Post-review reconciliation (controller, independent opus whole-branch review)
+
+Review verdict: Spec ✅ / Quality "changes required" — but NO Critical, ONE Important (S1-4
+direction), and 2 cosmetic Minors. Verified independently: scope == Owns fence (only gate.hpp,
+factory.cpp, 2 test files, ledger changed); AlphaMetrics/record.hpp/library.hpp/oracle.hpp absent
+from diff; no golden edited; enum appended at END; GateDeflation deviation is the correct
+byte-identity-safe call. Tests confirmed real end-to-end (not vacuous), incl. RealRunAdmittedSet-
+UnchangedAtRealN with ASSERT_GT(admitted,0) + EXPECT_GT(n_cascade_skipped,0) guards.
+
+S1-4 DIRECTION (the Important item) — RESOLVED, ship as-is (Option A):
+- The code already documents the looser/safe direction honestly (the in-code "spec reconciliation"
+  NOTE). The genuinely-STRICTER pre-gate (the plan's prose intent) CANNOT land inside p7-S1's frozen
+  byte-identity fence: tightening-with-N would skip candidates the gate-off run evaluated, changing
+  n_cascade_skipped/digest/reject_histogram — i.e. it requires a golden re-baseline, which the
+  determinism contract forbids. So the safe direction is the only contract-compatible one.
+- IMPORTANT clarification (now also in factory.cpp): cumulative-N deflation IS enforced — at the
+  DOWNSTREAM holdout DSR gate (prior_r1 + res.trial_count), which is pre-existing and confirmed. The
+  cascade pre-gate is a perf pre-filter, NOT the deflation mechanism; S1-4 removes its cosmetic void
+  and threads N in the safe direction (no deflationary teeth in the pre-gate, and none is needed).
+- Controller fix applied (commit below, doc/comment-only, behavior-invariant): reworded the variance-
+  proxy comment (Minor #3 — "V=1/T (T~kAnnualizationDays)" conflated the annualization constant with
+  sample length → now "fixed 1/252, NOT the holdout sample length T") and added the downstream-gate
+  clarification at the call site.
+
+Carry-forward (recorded in controller ledger; NOT S1 defects):
+- S7 MUST wire GateDeflation into library::verdict_for, else the new DSR/PBO/split screens remain
+  dead code on every live caller (Minor #2 — consistent with plan's "Sprint-7 owns wiring").
+- ROADMAP S1 row / north-star wording to be corrected at Wave-1 merge: cumulative-N deflation lives
+  at the holdout DSR gate (confirmed); the "stricter cascade pre-gate / anti-snooping pre-filter"
+  framing is dropped — the pre-gate does not deflate.
+- stage_discover.cpp histogram "0..5" stale comment → S7 (out of S1 Owns; left untouched).
