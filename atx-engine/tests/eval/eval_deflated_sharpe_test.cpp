@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include <cmath>
-#include <limits>
 #include <optional>
 #include <vector>
 #include "atx/engine/eval/deflated_sharpe.hpp"
@@ -141,6 +140,27 @@ TEST(EvalDsrNetCost, ZeroCostEqualsGrossDSR) {
 
   // Both should agree to within floating-point round-off.
   EXPECT_NEAR(dsr_net.dsr, dsr_gross.dsr, 1e-12);
+}
+
+TEST(EvalDsrNetCost, MismatchedSpanLengthsReturnNaN) {
+  // Release-safe guard: a size mismatch must NOT read turnover out of bounds — it
+  // fails safe to a NaN DsrResult (the assert is debug-only; this covers NDEBUG).
+  const std::vector<atx::f64> pnl{0.0, 0.01, -0.02, 0.03, 0.00};
+  const std::vector<atx::f64> turnover{0.5, 0.5, 0.5}; // shorter than pnl
+  const auto d = deflated_sharpe_net_cost(pnl, turnover, 10.0, 5U, std::nullopt);
+  EXPECT_TRUE(std::isnan(d.dsr));
+  EXPECT_TRUE(std::isnan(d.psr));
+  EXPECT_TRUE(std::isnan(d.sr_star));
+  EXPECT_TRUE(std::isnan(d.haircut_sharpe));
+}
+
+TEST(EvalDsrNetCost, DegenerateShortSeriesReturnsNaN) {
+  // Fewer than 1 return observation (length-1 stream: only the structural zero)
+  // is degenerate -> NaN DsrResult (mirrors compute_metrics's 0-observation policy).
+  const std::vector<atx::f64> pnl{0.0};
+  const std::vector<atx::f64> turnover{0.8};
+  const auto d = deflated_sharpe_net_cost(pnl, turnover, 10.0, 5U, std::nullopt);
+  EXPECT_TRUE(std::isnan(d.dsr));
 }
 
 

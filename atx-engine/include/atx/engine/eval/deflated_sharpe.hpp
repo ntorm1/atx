@@ -38,7 +38,6 @@
 //  * N == 1 means "no selection": SR*_1 = 0, so DSR collapses to PSR(0).
 
 #include <algorithm> // std::max
-#include <cassert>   // assert (span-length validation)
 #include <cmath>     // std::sqrt, std::exp
 #include <limits>    // std::numeric_limits (quiet_NaN for degenerate inputs)
 #include <optional>  // std::optional (caller-supplied cross-trial variance)
@@ -172,20 +171,32 @@ struct DsrResult {
 //  allocated to hold r_net[1..T). This is an analysis helper (not a VM hot
 //  path), so a single vector scratch is acceptable; it is documented here.
 //
-//  PRECONDITION: pnl.size() == turnover.size(); asserted at entry.
+//  PRECONDITION: pnl.size() == turnover.size(). A RELEASE build (NDEBUG) must
+//  never read turnover[t] out of bounds, so this guard is ALWAYS-ON (not a
+//  debug-only assert, which would both compile out under NDEBUG — leaving the OOB
+//  read — and abort a debug-build test that exercises the mismatch path). A size
+//  mismatch, or any degenerate input yielding < 1 observation, fails SAFE to a
+//  NaN DsrResult, matching this file's "degenerate inputs return NaN" pattern
+//  (cf. probabilistic_sharpe T<2 and deflated_sharpe). No UB ever, in any build.
 // ===========================================================================
 [[nodiscard]] inline DsrResult deflated_sharpe_net_cost(std::span<const atx::f64> pnl,
                                                         std::span<const atx::f64> turnover,
                                                         atx::f64 rt_cost_bps, atx::usize N,
                                                         std::optional<atx::f64> var) noexcept {
-  // Span-length validation: pnl and turnover must be the same length.
-  assert(pnl.size() == turnover.size());
+  // SAFETY (always-on, both debug and release): a size mismatch would read
+  // turnover[t] out of bounds; fewer than 1 return observation (pnl.size() < 2,
+  // only the structural zero) is degenerate. Fail safe to a NaN DsrResult rather
+  // than risk OOB or feed a 0-observation moment set into deflated_sharpe.
+  if (pnl.size() != turnover.size() || pnl.size() < 2U) {
+    const atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
+    return DsrResult{nan, nan, nan, nan};
+  }
 
   // Build r_net over r_net[1..T) (the §0-F structural-zero exclusion):
   // index 0 is a structural zero in pnl; skipping it here mirrors the moment
   // exclusion in compute_metrics and deflated_sharpe's existing convention.
   // SCRATCH: single vector allocation, acceptable for an analysis helper.
-  const atx::usize T_obs = (pnl.size() > 0U) ? pnl.size() - 1U : 0U;
+  const atx::usize T_obs = pnl.size() - 1U; // >= 1 (guarded above)
   std::vector<atx::f64> r_net;
   r_net.reserve(T_obs);
   const atx::f64 cost_per_unit = rt_cost_bps / 1.0e4;
