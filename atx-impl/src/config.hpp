@@ -239,6 +239,20 @@ struct RunConfig {
     // Σ|w|=1. Default false => the gated block is skipped and combo.bin is byte-identical.
     bool        conviction = false;  // --conviction
 
+    // --kelly-fraction / --kelly-max-gross (S5-2, opt-in): fractional-Kelly,
+    // conviction-scaled, covariance-aware sizing of the combined book. When
+    // kelly_fraction > 0, the combiner's renormalized weights are REPLACED by the
+    // Kelly target f = kelly_fraction * V^{-1}mu, scaled per-alpha by conviction
+    // (S5-1 scores when --conviction is on, else an all-1.0 vector) and gross-clamped
+    // to kelly_max_gross. V is a diagonal FactorModel built from per-alpha realized
+    // PnL variance over the fit window (the minimal-scope covariance; a full factor
+    // model is out of S5 scope). Default 0.0 = OFF => the Kelly block is skipped
+    // entirely and combo.bin / the digest are byte-identical to today. See
+    // risk/kelly_sizing.hpp. (CLI arg parsing in config.cpp is deferred to S7; these
+    // fields are set directly on RunConfig until then.)
+    double      kelly_fraction  = 0.0; // --kelly-fraction  (0.0 = off = byte-identical)
+    double      kelly_max_gross = 1.0; // --kelly-max-gross (cap on Sum|w|; <=0 disables clamp)
+
     // --walk-forward <k> (D3b, opt-in): when k>=1, run an expanding-window k-fold walk-forward re-fit of
     // the combiner over [fit_begin, np) and RECORD each fold's OOS Sharpe + their mean as telemetry. The
     // shipped combo.bin is unchanged (WF re-fits are scratch). Default 0 = off => byte-identical, no extra work.
