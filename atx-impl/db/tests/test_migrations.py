@@ -4,13 +4,14 @@ from __future__ import annotations
 
 
 def test_migrations_recorded_after_bootstrap(tmp_store):
-    """After bootstrap, schema_migrations should contain versions 1 and 2."""
+    """After bootstrap, schema_migrations should contain versions 1, 2, and 3."""
     rows = tmp_store.con.execute(
         "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$' ORDER BY 1"
     ).fetchall()
     versions = [row[0] for row in rows]
     assert 1 in versions, f"Migration 0001 not recorded; found: {versions}"
     assert 2 in versions, f"Migration 0002 not recorded; found: {versions}"
+    assert 3 in versions, f"Migration 0003 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -73,3 +74,18 @@ def test_migration_description_recorded(tmp_store):
     assert by_version.get(2) == "schema_evolution_alters", (
         f"Expected schema_evolution_alters, got {by_version.get(2)!r}"
     )
+    assert by_version.get(3) == "reference_classifications", (
+        f"Expected reference_classifications, got {by_version.get(3)!r}"
+    )
+
+
+def test_migration_0003_tables_exist(tmp_store):
+    """Tables introduced by migration 0003 must exist after bootstrap."""
+    tables_query = """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'main'
+    """
+    table_names = {row[0] for row in tmp_store.con.execute(tables_query).fetchall()}
+    for expected in ("taxonomy", "taxonomy_node", "entity_classification", "taxonomy_mapping"):
+        assert expected in table_names, f"Table '{expected}' missing after bootstrap"

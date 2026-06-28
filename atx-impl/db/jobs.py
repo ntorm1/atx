@@ -41,6 +41,16 @@ from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
 from .warehouse import json_dumps, now_utc_naive
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
+from .reference_classifications import (
+    EntityClassificationDataset,
+    EntityClassificationOptions,
+    FamaFrenchTaxonomyDataset,
+    FamaFrenchTaxonomyOptions,
+    NaicsTaxonomyDataset,
+    NaicsTaxonomyOptions,
+    SicTaxonomyDataset,
+    SicTaxonomyOptions,
+)
 from .xbrl_taxonomy import XbrlTaxonomyDataset, XbrlTaxonomyOptions
 
 
@@ -364,6 +374,15 @@ def _ownership_feature_options(params: dict[str, Any]) -> OwnershipFeatureOption
     )
 
 
+def _entity_classification_options(params: dict[str, Any]) -> EntityClassificationOptions:
+    _default = EntityClassificationOptions()
+    return EntityClassificationOptions(
+        symbols=_tuple_or_none(params.get("symbols")),
+        user_agent=params.get("user_agent", _default.user_agent),
+        request_timeout=int(params.get("request_timeout", _default.request_timeout)),
+    )
+
+
 def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     default = FredMacroOptions()
     return FredMacroOptions(
@@ -404,6 +423,13 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
+    SicTaxonomyDataset.dataset_id: (SicTaxonomyDataset, lambda p: SicTaxonomyOptions()),
+    FamaFrenchTaxonomyDataset.dataset_id: (FamaFrenchTaxonomyDataset, lambda p: FamaFrenchTaxonomyOptions()),
+    NaicsTaxonomyDataset.dataset_id: (NaicsTaxonomyDataset, lambda p: NaicsTaxonomyOptions()),
+    EntityClassificationDataset.dataset_id: (
+        EntityClassificationDataset,
+        _entity_classification_options,
+    ),
 }
 
 
@@ -594,6 +620,16 @@ class JobManager:
             dataset_id="equity_daily_features",
             params={"symbols": symbols},
             dependencies=["daily_bars"],
+            **retry_policy,
+        )
+        self.register_job(job_name="sic_taxonomy", dataset_id="sic_taxonomy", **retry_policy)
+        self.register_job(job_name="fama_french_taxonomy", dataset_id="fama_french_taxonomy", **retry_policy)
+        self.register_job(job_name="naics_taxonomy", dataset_id="naics_taxonomy", **retry_policy)
+        self.register_job(
+            job_name="entity_classification",
+            dataset_id="entity_classification",
+            params={"symbols": symbols},
+            dependencies=["security_master", "sic_taxonomy", "fama_french_taxonomy", "naics_taxonomy"],
             **retry_policy,
         )
 

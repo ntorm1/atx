@@ -59,6 +59,10 @@ DEFAULT_EXPORT_OBJECTS = (
     "macro_observations",
     "universe_memberships",
     "provider_parity_matrix",
+    "taxonomy",
+    "taxonomy_node",
+    "entity_classification",
+    "taxonomy_mapping",
 )
 
 

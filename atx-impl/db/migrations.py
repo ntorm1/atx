@@ -57,6 +57,74 @@ def _schema_evolution_alters(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _reference_classifications(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create the S1 reference-classification tables if they don't already exist.
+
+    These tables are also created by ensure_quant_schema (CREATE TABLE IF NOT EXISTS),
+    so this migration is a no-op for databases that run ensure_quant_schema first.
+    It exists so the migration log has a versioned record of when the tables were introduced.
+    """
+    for statement in (
+        """
+        CREATE TABLE IF NOT EXISTS taxonomy (
+            taxonomy_id VARCHAR PRIMARY KEY,
+            code VARCHAR NOT NULL UNIQUE,
+            name VARCHAR NOT NULL,
+            provider VARCHAR,
+            version VARCHAR,
+            is_hierarchical BOOLEAN NOT NULL DEFAULT true,
+            description VARCHAR,
+            source VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS taxonomy_node (
+            node_id VARCHAR PRIMARY KEY,
+            taxonomy_id VARCHAR NOT NULL,
+            node_code VARCHAR NOT NULL,
+            node_label VARCHAR NOT NULL,
+            parent_node_id VARCHAR,
+            level INTEGER NOT NULL,
+            sort_order INTEGER
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS entity_classification (
+            classification_id VARCHAR PRIMARY KEY,
+            security_id VARCHAR NOT NULL,
+            taxonomy_id VARCHAR NOT NULL,
+            node_id VARCHAR NOT NULL,
+            node_code VARCHAR NOT NULL,
+            is_primary BOOLEAN NOT NULL DEFAULT false,
+            valid_from DATE NOT NULL,
+            valid_to DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR,
+            source VARCHAR NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS taxonomy_mapping (
+            mapping_id VARCHAR PRIMARY KEY,
+            from_taxonomy_id VARCHAR NOT NULL,
+            from_node_code VARCHAR NOT NULL,
+            to_taxonomy_id VARCHAR NOT NULL,
+            to_node_code VARCHAR NOT NULL,
+            relationship VARCHAR NOT NULL,
+            confidence DOUBLE,
+            source VARCHAR
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_entity_classification_security ON entity_classification(security_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_classification_taxonomy_code ON entity_classification(taxonomy_id, node_code)",
+        "CREATE INDEX IF NOT EXISTS idx_taxonomy_node_taxonomy_parent ON taxonomy_node(taxonomy_id, parent_node_id)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -68,6 +136,11 @@ MIGRATIONS: list[Migration] = [
         version=2,
         name="schema_evolution_alters",
         up=_schema_evolution_alters,
+    ),
+    Migration(
+        version=3,
+        name="reference_classifications",
+        up=_reference_classifications,
     ),
 ]
 

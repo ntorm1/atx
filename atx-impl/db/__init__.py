@@ -3,6 +3,7 @@
 from .asof import (
     corporate_actions_asof,
     daily_panel_asof,
+    entity_classification_asof,
     features_asof,
     fundamental_periods_asof,
     fundamental_statements_asof,
@@ -65,6 +66,17 @@ from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
 from .migrations import MIGRATIONS, Migration, apply_pending_migrations
+from .reference_classifications import (
+    EntityClassificationDataset,
+    EntityClassificationOptions,
+    FamaFrenchTaxonomyDataset,
+    FamaFrenchTaxonomyOptions,
+    NaicsTaxonomyDataset,
+    NaicsTaxonomyOptions,
+    SicTaxonomyDataset,
+    SicTaxonomyOptions,
+    fama_french_12_for_sic,
+)
 from .watermarks import WatermarkRefreshResult, refresh_warehouse_watermarks
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions, archive_primary_document_url
 from .xbrl_taxonomy import (
@@ -135,8 +147,18 @@ __all__ = [
     "XbrlTaxonomyOptions",
     "archive_primary_document_url",
     "build_listing_status_intervals",
+    "EntityClassificationDataset",
+    "EntityClassificationOptions",
+    "FamaFrenchTaxonomyDataset",
+    "FamaFrenchTaxonomyOptions",
+    "NaicsTaxonomyDataset",
+    "NaicsTaxonomyOptions",
+    "SicTaxonomyDataset",
+    "SicTaxonomyOptions",
     "connect",
     "corporate_actions_asof",
+    "entity_classification_asof",
+    "fama_french_12_for_sic",
     "daily_panel_asof",
     "features_asof",
     "fundamental_periods_asof",

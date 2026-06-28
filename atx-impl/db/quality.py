@@ -3186,6 +3186,52 @@ def _check_specs(
             threshold=0.0,
             required_tables=("table_catalog",),
         ),
+        # ── S1: reference classifications ────────────────────────────────────
+        SqlQualityCheck(
+            dataset_id="entity_classification",
+            table_name="entity_classification",
+            check_name="orphan_entity_classification_security_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM entity_classification ec
+                LEFT JOIN securities s ON s.security_id = ec.security_id
+                WHERE s.security_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("entity_classification", "securities"),
+        ),
+        SqlQualityCheck(
+            dataset_id="entity_classification",
+            table_name="entity_classification",
+            check_name="entity_classification_invalid_node_references",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM entity_classification ec
+                LEFT JOIN taxonomy_node tn
+                  ON tn.node_id = ec.node_id
+                 AND tn.node_code = ec.node_code
+                WHERE tn.node_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("entity_classification", "taxonomy_node"),
+        ),
+        SqlQualityCheck(
+            dataset_id="entity_classification",
+            table_name="entity_classification",
+            check_name="entity_classification_multiple_open_primary_sic",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT security_id, taxonomy_id, count(*) AS open_count
+                    FROM entity_classification
+                    WHERE is_primary AND valid_to IS NULL
+                    GROUP BY security_id, taxonomy_id
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("entity_classification",),
+        ),
     )
 
 

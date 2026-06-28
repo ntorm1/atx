@@ -404,6 +404,35 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         ),
     ),
     ProviderParityRow(
+        provider="SEC EDGAR / OMB / BLS",
+        provider_domain="Industry classification (SIC, GICS, NAICS, ICB)",
+        warehouse_domain="reference_classifications",
+        reference_tables=("SEC SIC codes", "BLS NAICS 2022 hierarchy", "Fama-French 12/48/49 industry groupings"),
+        institutional_grain="Taxonomy hierarchy rows (division, sector, group, industry) and PIT entity-level classification rows.",
+        institutional_keys=("taxonomy_id", "node_code", "security_id", "valid_from", "valid_to"),
+        pit_fields=("valid_from", "valid_to", "as_of_date", "available_at", "source_loaded_at"),
+        factors_or_fields=("SIC division/group/industry", "Fama-French 12 industry", "NAICS 2-digit sector", "primary vs. derived classification flag"),
+        open_substitute=(
+            "SEC EDGAR submissions SIC codes loaded into taxonomy + taxonomy_node hierarchy and PIT entity_classification rows; "
+            "Fama-French 12 SIC-range crosswalk embedded in warehouse ETL; "
+            "NAICS 2022 20-sector spine seeded statically from BLS/Census public files."
+        ),
+        warehouse_tables=(
+            "taxonomy",
+            "taxonomy_node",
+            "entity_classification",
+            "taxonomy_mapping",
+        ),
+        parity_status="partial",
+        limitations="GICS (MSCI/S&P) and ICB (FTSE) are licensed taxonomies not available as open data; 6-digit NAICS crosswalk and Fama-French 48/49 groupings not yet seeded.",
+        next_gap="GICS/ICB licensing; full 6-digit NAICS crosswalk; FF48/49",
+        source_urls=(
+            "https://www.sec.gov/info/edgar/siccodes.htm",
+            "https://www.census.gov/naics/",
+            "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_12_ind_port.html",
+        ),
+    ),
+    ProviderParityRow(
         provider="Renaissance Technologies",
         provider_domain="Quant research data and compute infrastructure",
         warehouse_domain="operations",
