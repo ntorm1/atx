@@ -314,4 +314,167 @@ TEST(AtxImplConvictionSizing, ConvictionKvsAreTwiceRunIdentical) {
   cleanup(fx, {combo1, combo2});
 }
 
+// read combo.bin bytes for a byte-identity check.
+static std::vector<char> read_bytes(const std::string &path) {
+  std::ifstream f{path, std::ios::binary};
+  return std::vector<char>{std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+}
+
+// ===========================================================================
+// S5-2 (a): off-path byte-identity — kelly_fraction=0.0 (default) => digest
+// unchanged from the no-Kelly baseline; the three kelly_* KVs are absent.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, KellyOffIsByteIdentical) {
+  namespace fs = std::filesystem;
+
+  // (default field check) kelly_fraction / kelly_max_gross defaults.
+  atx::impl::RunConfig def;
+  EXPECT_EQ(def.kelly_fraction, 0.0);
+  EXPECT_EQ(def.kelly_max_gross, 1.0);
+
+  const Fixture fx = make_fixture("kelly_off");
+  const std::string combo_base = (fs::temp_directory_path() / "atx_cvtsz_kelly_base.bin").string();
+  const std::string combo_zero = (fs::temp_directory_path() / "atx_cvtsz_kelly_zero.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, combo_base);
+  auto r_base = atx::impl::run_combine(cfg); // kelly_fraction stays 0.0 (default)
+  ASSERT_TRUE(r_base.has_value()) << r_base.error().message();
+
+  cfg.kelly_fraction = 0.0; // explicit off
+  cfg.combo_out = combo_zero;
+  auto r_zero = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r_zero.has_value()) << r_zero.error().message();
+
+  EXPECT_EQ(r_base->digest, r_zero->digest) << "kelly_fraction 0 must be byte-identical to default";
+  EXPECT_NE(r_base->digest, atx::u64{0});
+  EXPECT_EQ(read_bytes(combo_base), read_bytes(combo_zero));
+
+  EXPECT_FALSE(find_kv(*r_base, "kelly_fraction_used").has_value());
+  EXPECT_FALSE(find_kv(*r_base, "kelly_gross").has_value());
+  EXPECT_FALSE(find_kv(*r_base, "kelly_scale_applied").has_value());
+
+  cleanup(fx, {combo_base, combo_zero});
+}
+
+// ===========================================================================
+// S5-2 (b): on-path weights change — kelly_fraction=0.25 produces a DIFFERENT
+// combined book than the no-Kelly run, and the kelly_* KVs are present.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, KellyOnChangesWeightsAndEmitsKvs) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("kelly_on");
+  const std::string combo_off = (fs::temp_directory_path() / "atx_cvtsz_kelly_on_off.bin").string();
+  const std::string combo_on = (fs::temp_directory_path() / "atx_cvtsz_kelly_on_on.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, combo_off);
+  auto r_off = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r_off.has_value()) << r_off.error().message();
+
+  cfg.kelly_fraction = 0.25;
+  cfg.combo_out = combo_on;
+  auto r_on = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r_on.has_value()) << r_on.error().message();
+
+  EXPECT_NE(r_on->digest, r_off->digest) << "kelly_fraction>0 must change the combined book";
+
+  const auto frac = find_kv(*r_on, "kelly_fraction_used");
+  const auto gross = find_kv(*r_on, "kelly_gross");
+  const auto scale = find_kv(*r_on, "kelly_scale_applied");
+  ASSERT_TRUE(frac.has_value());
+  ASSERT_TRUE(gross.has_value());
+  ASSERT_TRUE(scale.has_value());
+  EXPECT_NEAR(std::stod(*frac), 0.25, 1e-9);
+
+  cleanup(fx, {combo_off, combo_on});
+}
+
+// ===========================================================================
+// S5-2 (c): gross is bounded — with kelly_max_gross=1.0 (default), kelly_gross <= 1
+// always; and kelly_scale_applied < 1.0 exactly when the unclamped gross exceeded 1.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, KellyGrossIsBounded) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("kelly_gross");
+  const std::string combo = (fs::temp_directory_path() / "atx_cvtsz_kelly_gross.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, combo);
+  cfg.kelly_fraction = 0.25;
+  cfg.kelly_max_gross = 1.0;
+  auto r = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().message();
+
+  const f64 gross = std::stod(*find_kv(*r, "kelly_gross"));
+  const f64 scale = std::stod(*find_kv(*r, "kelly_scale_applied"));
+  EXPECT_LE(gross, 1.0 + 1e-9) << "kelly_gross must respect max_gross=1.0";
+  EXPECT_GT(gross, 0.0);
+  // scale < 1 iff the clamp bound; scale == 1 iff slack. Either way scale in (0,1].
+  EXPECT_GT(scale, 0.0);
+  EXPECT_LE(scale, 1.0 + 1e-12);
+
+  cleanup(fx, {combo});
+}
+
+// ===========================================================================
+// S5-2 (d): kelly × conviction interaction — with both --conviction and
+// --kelly-fraction, the Kelly weights reflect the per-alpha conviction scaling;
+// the combined book differs from the kelly-only run (conviction modulates mu's
+// per-name scale). Pins that the two knobs compose.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, KellyWithConvictionComposes) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("kelly_cvt");
+  const std::string combo_k = (fs::temp_directory_path() / "atx_cvtsz_kelly_only.bin").string();
+  const std::string combo_kc = (fs::temp_directory_path() / "atx_cvtsz_kelly_cvt.bin").string();
+
+  // Kelly only (no conviction).
+  atx::impl::RunConfig cfg = base_cfg(fx, combo_k);
+  cfg.kelly_fraction = 0.25;
+  cfg.conviction = false;
+  auto r_k = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r_k.has_value()) << r_k.error().message();
+
+  // Kelly + conviction.
+  cfg.conviction = true;
+  cfg.combo_out = combo_kc;
+  auto r_kc = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r_kc.has_value()) << r_kc.error().message();
+
+  // Both KV families present in the combined run.
+  EXPECT_TRUE(find_kv(*r_kc, "kelly_gross").has_value());
+  EXPECT_TRUE(find_kv(*r_kc, "conviction_scores").has_value());
+  // Conviction modulates the per-alpha conviction vector Kelly consumes, so the
+  // combined book differs from the kelly-only book (the fixture alphas have
+  // distinct conviction scores < 1).
+  EXPECT_NE(r_k->digest, r_kc->digest)
+      << "conviction must modulate the Kelly-sized book vs kelly-only";
+
+  cleanup(fx, {combo_k, combo_kc});
+}
+
+// ===========================================================================
+// S5-2 (e): twice-run — same inputs => byte-identical weights/digest and KVs.
+// ===========================================================================
+TEST(AtxImplConvictionSizing, KellyRunIsTwiceRunIdentical) {
+  namespace fs = std::filesystem;
+  const Fixture fx = make_fixture("kelly_twice");
+  const std::string combo1 = (fs::temp_directory_path() / "atx_cvtsz_kelly_twice1.bin").string();
+  const std::string combo2 = (fs::temp_directory_path() / "atx_cvtsz_kelly_twice2.bin").string();
+
+  atx::impl::RunConfig cfg = base_cfg(fx, combo1);
+  cfg.kelly_fraction = 0.25;
+  auto r1 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().message();
+  cfg.combo_out = combo2;
+  auto r2 = atx::impl::run_combine(cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().message();
+
+  EXPECT_EQ(r1->digest, r2->digest);
+  EXPECT_EQ(read_bytes(combo1), read_bytes(combo2));
+  for (const char *key : {"kelly_fraction_used", "kelly_gross", "kelly_scale_applied"}) {
+    EXPECT_EQ(find_kv(*r1, key), find_kv(*r2, key)) << key << " must be deterministic";
+  }
+
+  cleanup(fx, {combo1, combo2});
+}
+
 } // namespace atxtest_conviction_sizing

@@ -13,7 +13,7 @@ Tests set RunConfig fields directly.
 - [x] S5-0  Open ledger (marker) + Kelly math unit tests (kelly_sizing_test.cpp)
 - [x] S5-1  Conviction KV telemetry (apply_conviction collector + KV emission)
 - [x] S5-3  Walk-forward conviction-awareness unit test (conviction_wf_test.cpp)
-- [ ] S5-2  Fractional-Kelly wiring (config fields + Kelly call site + KV)
+- [x] S5-2  Fractional-Kelly wiring (config fields + Kelly call site + KV)
 - [ ] S5-4  Integration smoke + off-path byte-identity (conviction_sizing_test.cpp)
 
 ## Determinism contract (every unit)
@@ -38,3 +38,11 @@ test. Faithfully mirrors apply_conviction's per-alpha math + the WF fold-1 geome
 (K=2 -> 3 segments) over a constructed asymmetric 2-alpha/T=60 fixture. Proves
 |sharpe_on - sharpe_off| > 1e-6 (conviction modulates the fold OOS Sharpe);
 conviction-off == bare-combiner exactly; twice-run bit-identical; n_windows=1 finite.
+S5-2: complete (AtxImplConvictionSizing 10/10; AtxImplCombine 27/27 no regress; full
+atx-impl-tests 181 pass / 4 pre-existing skips) -- D4: config.hpp gains kelly_fraction
+=0.0 + kelly_max_gross=1.0 (config.cpp untouched; CLI parse deferred to S7). Kelly
+block gated on cfg.kelly_fraction>0: per-ALPHA mu/variance over [fit_begin,fit_end)
+-> diagonal FactorModel (X=0,F=[1],D=var); conviction vec = S5-1 scores (or all-1.0);
+kelly_size replaces combo.weights; 3 additive KVs (kelly_fraction_used/kelly_gross/
+kelly_scale_applied). Off-path (frac=0) byte-identical, no KVs. FactorModel::create
+failure -> Err (fail-closed).

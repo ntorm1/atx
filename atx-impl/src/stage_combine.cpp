@@ -31,6 +31,9 @@
 #include "atx/engine/eval/stats_ext.hpp"       // eval::mean_std_pop (MeanStd), skewness, excess_kurtosis
 #include "atx/engine/library/library.hpp"      // library::Library, AlphaId, AlphaRecordView (8.B)
 #include "atx/engine/loop/weight_policy.hpp"   // engine::WeightPolicy
+#include "atx/engine/risk/factor_model.hpp"    // risk::FactorModel (S5-2 diagonal cov)
+#include "atx/engine/risk/kelly_sizing.hpp"    // risk::kelly_size, KellyConfig, KellyWeights (S5-2)
+#include "atx/core/linalg/linalg.hpp"          // core::linalg::VecX, MatX (S5-2 Kelly inputs)
 
 #include "artifacts.hpp"
 #include "config.hpp"
@@ -559,6 +562,107 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
                          pool.n_alphas(), &conviction_scores);
     }
 
+    // 8b-2. (S5-2) Opt-in fractional-Kelly sizing. Replaces the combiner's
+    //     renormalized (post-conviction, if --conviction) weights with a covariance-
+    //     aware, conviction-scaled Kelly target over the ALPHAS of the pool:
+    //         f = kelly_fraction * V^{-1} mu ,  w_a = conviction[a] * f_a ,  gross-clamp
+    //     where each ALPHA is a "name" for the sizing layer (the combine stage's
+    //     natural unit), mu[a] is alpha a's realized mean PnL over [fit_begin, fit_end),
+    //     and V is a DIAGONAL FactorModel of per-alpha realized PnL variance over the
+    //     same fit window. The diagonal form is the deliberate minimal scope (the plan's
+    //     risks/guardrails): kelly_size is agnostic to how rich the FactorModel is
+    //     (Woodbury works on the degenerate K=0/zero-exposure diagonal case), and a full
+    //     statistical factor model is out of S5 scope. Per-alpha conviction is the S5-1
+    //     scores when --conviction is on, else an all-1.0 vector (full conviction for
+    //     every alpha, so Kelly operates without a haircut). Off (kelly_fraction <= 0)
+    //     => this entire block is skipped, combo.weights is untouched, the digest is
+    //     byte-identical, and the three kelly_* KVs are absent. The block runs ONLY
+    //     inside the gate; no side-channel writes outside it.
+    //
+    //     SCOPE CAVEAT: this sizes the SHIPPED book (combo.weights) AFTER the WF loop's
+    //     scratch scoring, so the WF OOS telemetry measures the conviction-weighted but
+    //     NOT the Kelly-weighted book (making WF Kelly-aware would require fitting a
+    //     FactorModel inside every fold — explicitly out of S5 scope).
+    std::string kelly_fraction_used_str;
+    std::string kelly_gross_str;
+    std::string kelly_scale_applied_str;
+    if (cfg.kelly_fraction > 0.0) {
+        namespace risk = atx::engine::risk;
+        using atx::core::linalg::MatX;
+        using atx::core::linalg::VecX;
+
+        const atx::usize na = pool.n_alphas();
+        ATX_ASSERT(combo.weights.size() == na); // one weight per pool alpha (step-9 invariant)
+
+        // Per-alpha realized mean PnL (mu) and population variance (the diagonal D) over
+        // the fit window [fit_begin, fit_end). The window is guaranteed >= 2 periods by
+        // the fit_end resolution above. A degenerate (zero-variance) alpha is floored by
+        // FactorModel::create (kSpecificVarFloor) so V stays positive-definite.
+        const atx::usize wlen = (fit_end > fit_begin) ? (fit_end - fit_begin) : 0U;
+        VecX mu(static_cast<Eigen::Index>(na));
+        VecX d(static_cast<Eigen::Index>(na));
+        for (atx::usize a = 0; a < na; ++a) {
+            const std::span<const atx::f64> pnl = pool.pnl(combine::AlphaId{static_cast<atx::u32>(a)});
+            atx::f64 sum = 0.0;
+            atx::usize n = 0U;
+            for (atx::usize i = 0; i < wlen; ++i) {
+                const atx::f64 p = pnl[fit_begin + i];
+                if (std::isfinite(p)) { sum += p; ++n; }
+            }
+            const atx::f64 mean = (n == 0U) ? 0.0 : sum / static_cast<atx::f64>(n);
+            atx::f64 ss = 0.0;
+            for (atx::usize i = 0; i < wlen; ++i) {
+                const atx::f64 p = pnl[fit_begin + i];
+                if (std::isfinite(p)) { const atx::f64 dv = p - mean; ss += dv * dv; }
+            }
+            const atx::f64 var = (n == 0U) ? 0.0 : ss / static_cast<atx::f64>(n);
+            mu[static_cast<Eigen::Index>(a)] = mean;
+            d[static_cast<Eigen::Index>(a)] = var; // floored to >0 by FactorModel::create
+        }
+
+        // Per-alpha conviction in [0,1]: the S5-1 scores when --conviction is on (same
+        // order, one per alpha), else full conviction (1.0) for every alpha. A zero
+        // conviction propagates exactly to a 0.0 Kelly weight (kelly_size's contract).
+        VecX conv(static_cast<Eigen::Index>(na));
+        for (atx::usize a = 0; a < na; ++a) {
+            atx::f64 c = 1.0;
+            if (cfg.conviction && a < conviction_scores.size()) {
+                c = conviction_scores[a].score; // already in [0,1] (conviction() guarantee)
+            }
+            if (c < 0.0) c = 0.0;
+            if (c > 1.0) c = 1.0;
+            conv[static_cast<Eigen::Index>(a)] = c;
+        }
+
+        // Diagonal FactorModel V = diag(D): zero exposures (X = na x 1 of zeros) so the
+        // factor block X F Xᵀ vanishes and V == diag(D). K=1 with F=[1] is the minimal
+        // SPD form create() accepts; F is irrelevant since X is zero.
+        MatX x = MatX::Zero(static_cast<Eigen::Index>(na), 1);
+        MatX f(1, 1);
+        f(0, 0) = 1.0;
+        auto fm = risk::FactorModel::create(std::move(x), std::move(f), d, fit_begin, fit_end);
+        if (!fm.has_value()) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "combine: --kelly-fraction could not build the diagonal "
+                                  "covariance: " + fm.error().message());
+        }
+
+        risk::KellyConfig kcfg{};
+        kcfg.kelly_fraction = cfg.kelly_fraction;
+        kcfg.max_gross = cfg.kelly_max_gross;
+        const risk::KellyWeights kw = risk::kelly_size(mu, *fm, conv, kcfg);
+
+        // Replace the shipped per-alpha weights with the Kelly target (in AlphaId order).
+        ATX_ASSERT(static_cast<atx::usize>(kw.weights.size()) == na);
+        for (atx::usize a = 0; a < na; ++a) {
+            combo.weights[a] = kw.weights[static_cast<Eigen::Index>(a)];
+        }
+
+        kelly_fraction_used_str = std::to_string(cfg.kelly_fraction);
+        kelly_gross_str         = std::to_string(kw.gross);
+        kelly_scale_applied_str = std::to_string(kw.scale_applied);
+    }
+
     // T6 capacity telemetry (additive; populated only on the opt-in capacity path).
     // capacity_alpha_aum holds the per-alpha capacity AUM (dollars) in AlphaId order;
     // these feed step-14 kvs ONLY — never combo.bin, the digest, or any hashed artifact.
@@ -924,6 +1028,18 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
         sr.kvs.emplace_back("conviction_scores", std::move(scores_csv));
         sr.kvs.emplace_back("conviction_dsr_terms", std::move(dsr_csv));
         sr.kvs.emplace_back("conviction_stability_terms", std::move(stab_csv));
+    }
+    // S5-2: additive fractional-Kelly telemetry — present ONLY when kelly_fraction > 0
+    // (the strings are empty otherwise, so the default kvs set is byte-identical). These
+    // record the realized Kelly sizing of the shipped book; they feed kvs ONLY (the
+    // weights themselves are already folded into combo.bin above when the block ran).
+    //   kelly_fraction_used  — the cfg.kelly_fraction applied.
+    //   kelly_gross          — realized Sum|w| after the gross clamp.
+    //   kelly_scale_applied  — gross-clamp factor (1.0 when the clamp was not binding).
+    if (!kelly_fraction_used_str.empty()) {
+        sr.kvs.emplace_back("kelly_fraction_used", std::move(kelly_fraction_used_str));
+        sr.kvs.emplace_back("kelly_gross",         std::move(kelly_gross_str));
+        sr.kvs.emplace_back("kelly_scale_applied", std::move(kelly_scale_applied_str));
     }
     return atx::core::Ok(std::move(sr));
 }
