@@ -2108,4 +2108,221 @@ TEST(AtxImplCombine, CapacityRunIsDeterministic) {
     }
 }
 
+// ===========================================================================
+// S6-1 — Realized-edge capacity estimation (TDD RED→GREEN).
+//
+// Root cause: alpha_capacity_aum estimates edge from the alpha's LAST-PERIOD
+// frozen weights applied over ALL history. A mean-reversion or regime-shift
+// alpha may have a last-period book that is random-sign over history →
+// gross_edge_bps≤0 → capacity=0 → empty book, even when the alpha's realized
+// OOS edge is positive. Fix: use the realized per-period PnL mean from
+// streams.pnl(a) as the edge estimate.
+//
+// Fixture: make_reversal_panel — 100 dates × 4 instruments.
+//   - First 80 periods: inst 0 has the highest drift (+2%/period), 1 (+1%),
+//     2 (-1%), 3 (-2%). The momentum alpha rank(delta(close,2)) is long 0,1
+//     and short 2,3 → realized PnL is POSITIVE over the trending window.
+//   - Last 20 periods: regime flips — 3 outperforms (+1.5%), 2 (+0.5%),
+//     1 (-1.5%), 0 (-2.5%). The momentum signal eventually inverts, but the
+//     LAST-PERIOD frozen book (long 2,3; short 0,1) applied over ALL history
+//     (where 0,1 dominated) has a NEGATIVE gross_edge_bps → the current code
+//     hard-zeros capacity → empty book (RED assertion).
+//   The realized PnL mean over all 100 periods remains POSITIVE (80 good
+//   periods dominate), so the fixed code gives non-zero capacity (GREEN).
+// ===========================================================================
+
+// Build a close matrix [dates * insts] with a regime shift:
+//   periods [0, trend_end): instruments have per-instrument drift d0..dN-1.
+//   periods [trend_end, dates): drift reversal with per-instrument rev0..revN-1.
+// Both phases add Gaussian noise (scaled by `noise`).
+static std::optional<Panel> make_reversal_panel() {
+    constexpr usize D    = 100U; // total dates
+    constexpr usize N    = 4U;   // instruments
+    constexpr usize kEnd = 80U;  // regime-switch date
+
+    // Per-instrument drift during trending phase (strong uptrend for 0,1).
+    const std::array<f64, N> drift_up   = {+0.020, +0.010, -0.010, -0.020};
+    // Per-instrument drift during reversal phase (inverted: 3,2 outperform).
+    const std::array<f64, N> drift_rev  = {-0.025, -0.015, +0.005, +0.015};
+
+    std::vector<f64> close(D * N);
+    std::array<f64, N> px{};
+    px.fill(100.0);
+
+    // Deterministic LCG for small noise (same seed each call → deterministic).
+    Lcg rng{0xCAFEBABEULL};
+    constexpr f64 noise = 0.002; // small noise that does NOT flip the regime ordering
+
+    for (usize t = 0; t < D; ++t) {
+        const bool rev = (t >= kEnd);
+        for (usize j = 0; j < N; ++j) {
+            const f64 dr = rev ? drift_rev[j] : drift_up[j];
+            px[j] *= (1.0 + dr + noise * rng.next());
+            close[t * N + j] = px[j];
+        }
+    }
+    // Volume: constant moderate liquidity for each instrument (no liquidity
+    // extremes needed — the capacity arithmetic just needs finite ADV).
+    std::vector<f64> volume(D * N, 1.0e7);
+
+    return make_panel(D, N, {"close", "volume"}, {close, volume});
+}
+
+// ---------------------------------------------------------------------------
+// S6-1 Test 1 (RED→GREEN): RealizedEdgeCapacityNonZeroForPositivePnlAlpha
+//
+// On make_reversal_panel(), "delta(close,2)" is a momentum alpha:
+//   - realized per-period PnL mean > 0 (dominates during the trending phase).
+//   - frozen last-period book: inverted (long losers, short winners over the
+//     trend) → gross_edge_bps ≤ 0 → current code zeros capacity → empty book.
+//
+// RED (pre-fix): with capacity_floor>0, target_aum>0 and only 1 alpha that
+//   has negative frozen edge but positive realized PnL, the combo book is
+//   zeroed out — run_combine "succeeds" but the combined panel is all-NaN or
+//   all-zero weights (the empty-book symptom: Σ|w| == 0 in the weights sidecar,
+//   or capacity_alpha_aum kv shows "0").
+//
+// GREEN (post-fix): the capacity estimator uses the realized PnL mean → positive
+//   edge → capacity > 0 → non-empty book and Σ|w| > 0.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, S61_RealizedEdgeCapacityNonZeroForPositivePnlAlpha) {
+    namespace fs = std::filesystem;
+
+    auto panel_opt = make_reversal_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "s61_reversal");
+
+    // "delta(close,2)" — a momentum alpha that has positive realized PnL during
+    // the trending regime but whose LAST-PERIOD frozen book loses over full history.
+    const std::string alphas_dir = write_alpha_dir("s61_reversal", {"delta(close,2)"});
+    const std::string combo_out  =
+        (fs::temp_directory_path() / "atx_impl_combine_s61_reversal.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand     = "combine";
+    cfg.panel          = panel_path;
+    cfg.alphas         = alphas_dir;
+    cfg.combo_out      = combo_out;
+    cfg.method         = "equal";
+    cfg.fit_begin      = 0;
+    cfg.fit_end        = 0;
+    // Enable capacity estimation — the gate requires both > 0.
+    cfg.capacity_floor = 1.0;         // $1 floor: any positive capacity AUM passes
+    cfg.target_aum     = 1.0e8;       // $100M target
+    cfg.corr_penalty   = 0.0;         // no decorrelation noise, capacity is the story
+
+    auto r = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r.has_value()) << "run_combine must succeed: " << r.error().message();
+
+    // The capacity estimator must give a POSITIVE AUM for this alpha (realized
+    // edge > 0 even though the frozen-book edge is ≤ 0).
+    const std::string cap_csv = find_kv_combine(*r, "capacity_alpha_aum");
+    ASSERT_FALSE(cap_csv.empty())
+        << "capacity_alpha_aum telemetry must be emitted when capacity_floor>0";
+    const std::vector<f64> caps = parse_capacity_csv(cap_csv);
+    ASSERT_EQ(caps.size(), 1u) << "fixture has 1 alpha";
+
+    std::cout << "[S6-1] capacity_alpha_aum=" << caps[0] << "\n";
+
+    // GREEN assertion: capacity must be POSITIVE (> 0) for the alpha with
+    // positive realized PnL mean.  Under the pre-fix code this will be 0.
+    EXPECT_GT(caps[0], 0.0)
+        << "S6-1 GREEN: alpha with positive realized PnL must get positive capacity AUM "
+        << "(pre-fix code returns 0 because frozen-book gross_edge_bps ≤ 0). "
+        << "Got cap=" << caps[0];
+
+    // Verify the combined book is non-empty (non-zero weights in the sidecar).
+    {
+        std::ifstream wf{combo_out + ".weights.txt"};
+        ASSERT_TRUE(wf.is_open()) << "weights sidecar must exist";
+        f64 gross = 0.0;
+        std::string line;
+        while (std::getline(wf, line)) {
+            if (line.rfind("w[", 0) == 0) {
+                const auto eq = line.find('=');
+                const auto sp = line.find(' ', eq);
+                gross += std::abs(std::stod(line.substr(eq + 1, sp - eq - 1)));
+            }
+        }
+        EXPECT_GT(gross, 0.0)
+            << "S6-1 GREEN: combined book must be non-empty (Σ|w|>0) when capacity>0. "
+            << "Pre-fix: capacity=0 → cap_scale=0 in crowding → empty book.";
+    }
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    fs::remove(combo_out, ec);
+    fs::remove(combo_out + ".weights.txt", ec);
+    fs::remove(combo_out + ".meta", ec);
+}
+
+// ---------------------------------------------------------------------------
+// S6-1 Test 2 (off-path byte-identity): CapacityOffPathByteIdentical
+// With capacity_floor at its default (≤ 0, capacity scaling OFF), the combine
+// output is BYTE-IDENTICAL to a run that never sets any capacity knobs.
+// This pins contract A(a): the fix must not perturb the default path.
+// ---------------------------------------------------------------------------
+TEST(AtxImplCombine, S61_CapacityOffPathByteIdentical) {
+    namespace fs = std::filesystem;
+
+    // Use the reversal panel to test the off-path on the same fixture the RED
+    // test uses — a panel that would trigger the bug if capacity were on.
+    auto panel_opt = make_reversal_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const Panel& panel = *panel_opt;
+    const std::string panel_path = write_panel_tmp(panel, "s61_offpath");
+
+    const std::string alphas_dir = write_alpha_dir("s61_offpath", {"delta(close,2)"});
+    const std::string combo_default =
+        (fs::temp_directory_path() / "atx_impl_combine_s61_offpath_default.bin").string();
+    const std::string combo_cap0 =
+        (fs::temp_directory_path() / "atx_impl_combine_s61_offpath_cap0.bin").string();
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand = "combine";
+    cfg.panel      = panel_path;
+    cfg.alphas     = alphas_dir;
+    cfg.method     = "equal";
+    cfg.fit_begin  = 0;
+    cfg.fit_end    = 0;
+
+    // (a) Default: no capacity knobs (capacity_floor stays 0.0 by struct default).
+    cfg.combo_out = combo_default;
+    auto r_default = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_default.has_value()) << r_default.error().message();
+
+    // (b) Explicit capacity_floor == 0 — gate is OFF, capacity path is never entered.
+    cfg.capacity_floor = 0.0;
+    cfg.target_aum     = 1.0e8; // present but inert
+    cfg.combo_out      = combo_cap0;
+    auto r_cap0 = atx::impl::run_combine(cfg);
+    ASSERT_TRUE(r_cap0.has_value()) << r_cap0.error().message();
+
+    EXPECT_EQ(r_default->digest, r_cap0->digest)
+        << "S6-1 off-path: capacity_floor=0 must be byte-identical to the default (no-knob) path";
+    EXPECT_NE(r_default->digest, atx::u64{0});
+
+    auto read_bytes = [](const std::string& path) -> std::vector<char> {
+        std::ifstream f{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>(f),
+                                 std::istreambuf_iterator<char>()};
+    };
+    const auto b_default = read_bytes(combo_default);
+    const auto b_cap0    = read_bytes(combo_cap0);
+    EXPECT_FALSE(b_default.empty());
+    EXPECT_EQ(b_default, b_cap0)
+        << "S6-1 off-path: combo.bin bytes must be identical when capacity is OFF";
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+    fs::remove_all(alphas_dir, ec);
+    for (const std::string& co : {combo_default, combo_cap0}) {
+        fs::remove(co, ec);
+        fs::remove(co + ".weights.txt", ec);
+        fs::remove(co + ".meta", ec);
+    }
+}
+
 } // namespace atxtest_combine

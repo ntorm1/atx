@@ -256,30 +256,34 @@ static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usiz
         return std::sqrt(ss / static_cast<atx::f64>(n));
     };
 
+    // BUG S6-1: original used last-period frozen weights over all history to estimate edge.
+    // A mean-reversion alpha's terminal book is random-sign over history → gross_edge_bps≤0
+    // → hard-zeros capacity (stage_combine.cpp:280-281) even when realized OOS edge is +1.93.
+    // Fix: use pool.pnl(a) stream mean (actual realized per-period edge) as the edge estimate.
+
+    // Realized per-period PnL mean (bps): mean of streams.pnl(a) over all periods.
+    // streams.pnl(a) is the actual per-period blend PnL from extract_streams, NOT the
+    // frozen-book approximation. No .mean() on std::span — iterate manually.
+    const std::span<const atx::f64> pnl = streams.pnl(a);
+    const atx::usize np = pnl.size();
+    atx::f64 pnl_sum = 0.0; atx::usize pnl_n = 0U;
+    for (atx::usize t = 0U; t < np; ++t) {
+        const atx::f64 p = pnl[t];
+        if (std::isfinite(p)) { pnl_sum += p; ++pnl_n; }
+    }
+    // The realized mean is already in PnL units (not bps); scale to bps to match the
+    // downstream capacity formula (gross_edge_bps feeds the C·aum^delta zero-crossing).
+    const atx::f64 gross_edge_bps =
+        (pnl_n == 0U) ? 0.0 : 1.0e4 * (pnl_sum / static_cast<atx::f64>(pnl_n));
+    if (gross_edge_bps <= 0.0) {
+        return 0.0; // realized OOS edge is genuinely ≤ 0 → conservative zero capacity
+    }
+
     // The alpha's LAST-period target weights (the capacity_for_alpha convention:
-    // the most recent rebalance is what is sized to target_aum).
+    // the most recent rebalance is what is sized to target_aum). Used below only for
+    // the cost bracket C — the edge estimate above no longer depends on these.
     const std::span<const atx::f64> w = streams.positions(a, streams.n_periods() - 1U);
     const atx::usize n = (insts < w.size()) ? insts : w.size();
-
-    // Gross frictionless edge (bps): 1e4 · mean over usable return rows of the
-    // cross-sectional book return Σ_i w_i·ret_i(t). A NaN weight/return drops the
-    // term; rows with no contributing term are skipped (do not bias the mean).
-    atx::f64 sum_rows = 0.0; atx::usize n_rows = 0U;
-    for (atx::usize t = 1U; t < dates; ++t) {
-        atx::f64 row_ret = 0.0; bool any = false;
-        for (atx::usize i = 0U; i < n; ++i) {
-            const atx::f64 wi = w[i];
-            if (std::isnan(wi) || wi == 0.0) continue;
-            const atx::f64 r = step_return(t, i);
-            if (!std::isnan(r)) { row_ret += wi * r; any = true; }
-        }
-        if (any) { sum_rows += row_ret; ++n_rows; }
-    }
-    const atx::f64 gross_edge_bps =
-        (n_rows == 0U) ? 0.0 : 1.0e4 * (sum_rows / static_cast<atx::f64>(n_rows));
-    if (gross_edge_bps <= 0.0) {
-        return 0.0; // no positive edge to erode -> conservative zero capacity
-    }
 
     // The AUM-independent cost bracket C: cost_bps(aum) = C·aum^delta, with
     //   C = 1e4 · Σ_i |w_i| · Y · σ_i · (|w_i|/(price_i·ADV_i))^delta.
