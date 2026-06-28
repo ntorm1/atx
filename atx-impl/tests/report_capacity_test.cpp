@@ -11,28 +11,32 @@
 //   Write both to temp files; wire up the .meta.txt sidecar and run run_report.
 //   Parse summary.txt and verify the capacity metrics match hand-computed values.
 //
-// Hand-calculation (AUM = 1e9):
-//   Period 0: date_idx 2
-//     name 0:  w=0.5, raw_close=100, volume=500000 -> dvol=50000000
-//              part = (0.5 * 1e9) / 50000000 = 10.0
-//     name 1:  w=0.5, raw_close=200, volume=100000 -> dvol=20000000
-//              part = (0.5 * 1e9) / 20000000 = 25.0
-//   Period 1: date_idx 4
-//     name 0:  w=0.4, raw_close=110, volume=500000 -> dvol=55000000
-//              part = (0.4 * 1e9) / 55000000 ≈ 7.2727...
-//     name 1:  w=0.6, raw_close=210, volume=100000 -> dvol=21000000
-//              part = (0.6 * 1e9) / 21000000 ≈ 28.5714...
+// Hand-calculation (AUM = 1e9) — S6-2 trailing-20d dvol + winsorise at 1.0:
+//   D=6, kAdvWindow=20 => trailing window = [0, d] (all dates up to and including d).
+//   Volume is constant across dates => trailing avg dvol = single-day dvol.
 //
-//   All 4 parts: [10.0, 25.0, 7.2727..., 28.5714...]
-//   max  = 28.5714...   -> max_participation_pct
-//   median = middle of sorted [7.2727, 10.0, 25.0, 28.5714] at idx floor(0.95*3)=2 -> p95
-//            n=4, median = (vals[1]+vals[2])/2 = (10+25)/2 = 17.5
-//   p95: idx = floor(0.95*3) = floor(2.85) = 2 -> 25.0
+//   Period 0: date_idx 2, window dates [0..2] (3 rows, all constant volume)
+//     name 0:  w=0.5, trailing avg dvol = 100 * 50,000,000 = 5,000,000,000
+//              notional = 0.5 * 1e9 = 5e8; part = 5e8/5e9 = 0.10  (10%)
+//     name 1:  w=0.5, trailing avg dvol = 200 * 10,000,000 = 2,000,000,000
+//              part = 5e8/2e9 = 0.25  (25%)
+//   Period 1: date_idx 4, window dates [0..4] (5 rows, constant volume)
+//     name 0:  w=0.4, prices vary: (100+102+100+104+110)/5 = 103.2; dvol_avg = 103.2 * 50M = 5,160,000,000
+//              notional = 0.4 * 1e9 = 4e8; part = 4e8/5.16e9 ≈ 0.07752
+//     name 1:  w=0.6, prices vary: (200+202+200+205+210)/5 = 203.4; dvol_avg = 203.4 * 10M = 2,034,000,000
+//              part = 6e8/2.034e9 ≈ 0.29498
+//
+//   All 4 parts (< 1.0 => no winsorise clip):
+//     [0.10, 0.25, 0.07752..., 0.29498...]
+//   sorted: [0.07752, 0.10, 0.25, 0.29498]
+//   max  = 0.29498  -> max_participation_pct = 29.498...
+//   p95: idx = floor(0.95*3) = 2 -> 0.25 -> 25.0%
+//   median: n=4 -> (vals[1]+vals[2])/2 = (0.10+0.25)/2 = 0.175 -> 17.5%
 //   avg_names_held: (2+2)/2 = 2.0
 //
 // pct_gross_over_5pct_adv (>5% threshold):
-//   Period 0: parts: name0=10 (>5%) -> w=0.5; name1=25 (>5%) -> w=0.5 => sum=1.0
-//   Period 1: parts: name0≈7.27 (>5%) -> w=0.4; name1≈28.57 (>5%) -> w=0.6 => sum=1.0
+//   Period 0: parts: name0=0.10 (>5%) -> w=0.5; name1=0.25 (>5%) -> w=0.5 => sum=1.0
+//   Period 1: parts: name0≈0.0775 (>5%) -> w=0.4; name1≈0.295 (>5%) -> w=0.6 => sum=1.0
 //   mean = (1.0 + 1.0)/2 = 1.0
 
 #include <array>
@@ -120,14 +124,18 @@ make_capacity_research_panel(const fs::path& out)
     // close == raw_close (to satisfy TRI return computation)
     const std::array<double, D * M> close_vals = raw_close_vals;
 
-    // volume: date-major
+    // volume: date-major.
+    // Scaled up (50M and 10M shares) so trailing-ADV participation stays < 1.0
+    // (below the winsorise cap) and the hand-computed math test remains exact.
+    //   name0: dvol = raw_close * 50,000,000  (e.g. 100*50M = 5e9 => part≈0.10 @ AUM=1e9,w=0.5)
+    //   name1: dvol = raw_close * 10,000,000  (e.g. 200*10M = 2e9 => part=0.25 @ AUM=1e9,w=0.5)
     const std::array<double, D * M> volume_vals = {
-        500000.0, 100000.0,
-        500000.0, 100000.0,
-        500000.0, 100000.0,
-        500000.0, 100000.0,
-        500000.0, 100000.0,
-        500000.0, 100000.0,
+        50000000.0, 10000000.0,
+        50000000.0, 10000000.0,
+        50000000.0, 10000000.0,
+        50000000.0, 10000000.0,
+        50000000.0, 10000000.0,
+        50000000.0, 10000000.0,
     };
 
     std::vector<atx::f64> raw_close_v(raw_close_vals.begin(), raw_close_vals.end());
@@ -240,7 +248,7 @@ protected:
 
 // ---------------------------------------------------------------------------
 // Test 1: CapacityFootprintMathIsCorrect
-// Hand-compute all metrics for AUM=1e9 and verify they match summary.txt.
+// Hand-compute all metrics for AUM=1e9 with S6-2 trailing-20d dvol formula.
 // ---------------------------------------------------------------------------
 TEST_F(ReportCapacity, CapacityFootprintMathIsCorrect)
 {
@@ -260,31 +268,58 @@ TEST_F(ReportCapacity, CapacityFootprintMathIsCorrect)
     // avg_names_held = (2 + 2) / 2 = 2.0
     EXPECT_NEAR(avg_names, 2.0, 1e-9) << "avg_names_held mismatch";
 
-    // Hand-computed participations (see file header comment):
-    //   name0 period0: (0.5 * 1e9) / (100 * 500000) = 10.0
-    //   name1 period0: (0.5 * 1e9) / (200 * 100000) = 25.0
-    //   name0 period1: (0.4 * 1e9) / (110 * 500000) ≈ 7.27272...
-    //   name1 period1: (0.6 * 1e9) / (210 * 100000) ≈ 28.5714...
+    // S6-2 hand-computed participations (trailing-20d avg dvol, kAdvWindow=20):
+    // Volume is constant across all 6 dates.  D=6 < kAdvWindow=20, so the window
+    // always starts at date 0 and ends at date d (inclusive).
+    //
+    // raw_close (name0): {100, 102, 100, 104, 110, 112}
+    // raw_close (name1): {200, 202, 200, 205, 210, 215}
+    // volume (name0) = 50,000,000 (all dates)
+    // volume (name1) = 10,000,000 (all dates)
+    //
+    // Period 0, date_idx=2, window=[0..2]:
+    //   avg_rc0 = (100+102+100)/3 = 302/3; adv0 = (302/3)*50M
+    //   avg_rc1 = (200+202+200)/3 = 602/3; adv1 = (602/3)*10M
+    //   part00 = (0.5*1e9) / ((302/3)*50M)
+    //   part10 = (0.5*1e9) / ((602/3)*10M)
+    //
+    // Period 1, date_idx=4, window=[0..4]:
+    //   avg_rc0 = (100+102+100+104+110)/5 = 516/5; adv0 = (516/5)*50M
+    //   avg_rc1 = (200+202+200+205+210)/5 = 1017/5; adv1 = (1017/5)*10M
+    //   part01 = (0.4*1e9) / ((516/5)*50M)
+    //   part11 = (0.6*1e9) / ((1017/5)*10M)
+    //
+    // All parts are < 1.0 (winsorise cap) so no clamp needed.
 
-    const double part00 = (0.5 * 1e9) / (100.0 * 500000.0);  // 10.0
-    const double part10 = (0.5 * 1e9) / (200.0 * 100000.0);  // 25.0
-    // part01 = (0.4*1e9)/(110*500000) ≈ 7.2727 — used indirectly in sorted order
-    const double part11 = (0.6 * 1e9) / (210.0 * 100000.0);  // ~28.5714
+    // Period 0 (date_idx=2, 3 dates in window)
+    const double adv0_p0 = (302.0 / 3.0) * 50000000.0;
+    const double adv1_p0 = (602.0 / 3.0) * 10000000.0;
+    const double part00  = (0.5 * 1e9) / adv0_p0;
+    const double part10  = (0.5 * 1e9) / adv1_p0;
 
-    // max = part11 * 100 (stored as percentage)
+    // Period 1 (date_idx=4, 5 dates in window)
+    const double adv0_p1 = (516.0 / 5.0) * 50000000.0;
+    const double adv1_p1 = (1017.0 / 5.0) * 10000000.0;
+    const double part01  = (0.4 * 1e9) / adv0_p1;
+    const double part11  = (0.6 * 1e9) / adv1_p1;
+
+    // Verify all are below the winsorise cap (otherwise the sorted order would break)
+    ASSERT_LT(part00, 1.0) << "fixture error: part00 must be < 1.0 (winsorise cap)";
+    ASSERT_LT(part10, 1.0) << "fixture error: part10 must be < 1.0";
+    ASSERT_LT(part01, 1.0) << "fixture error: part01 must be < 1.0";
+    ASSERT_LT(part11, 1.0) << "fixture error: part11 must be < 1.0";
+
+    // sorted parts: ascending order [part01, part00, part10, part11]
+    // n=4; p95 idx = floor(0.95*3) = floor(2.85) = 2 => sorted[2] = part10
+    // max = part11 (the largest)
     EXPECT_NEAR(max_part, part11 * 100.0, 1e-4) << "max_participation_pct mismatch";
-
-    // sorted parts: [part01, part00, part10, part11]
-    // n=4; p95 idx = floor(0.95 * 3) = floor(2.85) = 2 => part10 = 25.0
-    // stored as percentage => part10 * 100
     EXPECT_NEAR(p95_part, part10 * 100.0, 1e-4) << "p95_participation_pct mismatch";
 
-    // median: middle of sorted 4 values => (vals[1]+vals[2])/2 = (part00+part10)/2
-    // stored as percentage
+    // median: n=4 even => (sorted[1]+sorted[2])/2 = (part00+part10)/2
     const double expected_median = (part00 + part10) / 2.0 * 100.0;
     EXPECT_NEAR(med_part, expected_median, 1e-4) << "median_participation_pct mismatch";
 
-    // pct_gross_over_5pct_adv: all 4 parts > 5%, so per-period sum of |w| = 1.0
+    // pct_gross_over_5pct_adv: all 4 parts > 5% (0.05), so per-period sum of |w| = 1.0
     EXPECT_NEAR(pct_over, 1.0, 1e-9) << "pct_gross_over_5pct_adv mismatch";
 }
 

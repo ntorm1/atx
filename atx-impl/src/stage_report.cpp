@@ -355,17 +355,25 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
 
         // 7b. Compute capacity-footprint metrics (%ADV participation at report_aum).
         //
+        // BUG S6-2: original dvol = rc * vol was a single-day snapshot; one thin-volume name
+        // inflates participation to millions of percent. Fix: 20-day trailing avg dollar-volume
+        // mirrors stage_combine.cpp:321-330 (alpha_max_participation, kAdvWindow=20).
+        //
         // For each rebalance period s and each in-universe held name i (|w|>0):
-        //   dvol    = raw_close[d,i] * volume[d,i]   (d = sched.periods[s])
+        //   dvol    = trailing-20d mean of raw_close[t,i]*volume[t,i] up to date d
         //   notional= |w| * report_aum
-        //   part    = notional / dvol  (skip if dvol <= 0 or NaN)
+        //   part    = clamp(notional / dvol, 0, 1.0)   (winsorise at 100% ADV)
         // Aggregates over all finite (s,i) participations:
         //   avg_names_held   — mean over periods of count(|w|>0)
-        //   max_participation_pct, p95_participation_pct, median_participation_pct
+        //   max_participation_pct, p95_participation_pct, p99_participation_pct,
+        //   median_participation_pct
         //   pct_gross_over_5pct_adv — mean over periods of Σ_{part_i>0.05}|w_i|
+        constexpr atx::usize kAdvWindow   = 20U;     // mirror stage_combine.cpp:323
+        constexpr atx::f64   kPartCap     = 1.0;     // winsorise at 100% ADV
         atx::f64 avg_names_held  = 0.0;
         atx::f64 max_part_pct    = 0.0;
         atx::f64 p95_part_pct    = 0.0;
+        atx::f64 p99_part_pct    = 0.0;
         atx::f64 med_part_pct    = 0.0;
         atx::f64 pct_gross_over5 = 0.0;
 
@@ -383,6 +391,10 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 atx::usize names_held    = 0;
                 atx::f64   gross_over5_s = 0.0;
 
+                // Trailing-20d window ending at date d (inclusive).
+                // start is clamped to 0 so we never underflow at data start.
+                const atx::usize win_start = (d + 1U >= kAdvWindow) ? (d + 1U - kAdvWindow) : 0U;
+
                 for (atx::usize i = 0; i < M; ++i) {
                     const atx::f64 w = book_row[i];
                     const atx::f64 abs_w = w < 0.0 ? -w : w;
@@ -391,14 +403,27 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
 
                     ++names_held;
 
-                    const atx::f64 rc   = raw_close[d * M + i];
-                    const atx::f64 vol  = volume_span[d * M + i];
-                    const atx::f64 dvol = rc * vol;
+                    // Trailing-20d average dollar-volume (mirrors stage_combine.cpp:325-334).
+                    atx::f64  adv_sum = 0.0;
+                    atx::usize adv_n  = 0U;
+                    for (atx::usize t = win_start; t <= d; ++t) {
+                        const atx::f64 rc_t = raw_close[t * M + i];
+                        const atx::f64 v_t  = volume_span[t * M + i];
+                        if (std::isfinite(rc_t) && std::isfinite(v_t)) {
+                            adv_sum += rc_t * v_t;
+                            ++adv_n;
+                        }
+                    }
+                    if (adv_n == 0U) continue;
+                    const atx::f64 dvol = adv_sum / static_cast<atx::f64>(adv_n);
                     if (!std::isfinite(dvol) || dvol <= 0.0) continue;
 
                     const atx::f64 notional = abs_w * report_aum;
-                    const atx::f64 part     = notional / dvol;
-                    if (!std::isfinite(part)) continue;
+                    // Winsorise: clamp per-name participation at kPartCap (1.0 = 100% ADV)
+                    // before aggregation so one illiquid name cannot dominate the distribution.
+                    const atx::f64 part_raw = notional / dvol;
+                    if (!std::isfinite(part_raw)) continue;
+                    const atx::f64 part = (part_raw > kPartCap) ? kPartCap : part_raw;
 
                     parts.push_back(part);
                     if (part > 0.05) {
@@ -424,6 +449,11 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 const atx::usize p95_idx =
                     static_cast<atx::usize>(0.95 * static_cast<atx::f64>(n - 1));
                 p95_part_pct = sorted_parts[p95_idx] * 100.0;
+
+                // p99: index = floor(0.99 * (n-1))
+                const atx::usize p99_idx =
+                    static_cast<atx::usize>(0.99 * static_cast<atx::f64>(n - 1));
+                p99_part_pct = sorted_parts[p99_idx] * 100.0;
 
                 // median: middle element for odd n; average of two middles for even n
                 if (n % 2 == 1) {
@@ -476,6 +506,7 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 sm_file << "avg_names_held=" << std::to_string(avg_names_held) << "\n";
                 sm_file << "max_participation_pct=" << std::to_string(max_part_pct) << "\n";
                 sm_file << "p95_participation_pct=" << std::to_string(p95_part_pct) << "\n";
+                sm_file << "p99_participation_pct=" << std::to_string(p99_part_pct) << "\n";
                 sm_file << "median_participation_pct=" << std::to_string(med_part_pct) << "\n";
                 sm_file << "pct_gross_over_5pct_adv=" << std::to_string(pct_gross_over5) << "\n";
                 // (A2b) Portfolio Sharpe + IS/OOS split (additive; after the
@@ -520,6 +551,8 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
             {"pnl_net",               std::to_string(total_pnl_net)},
             {"avg_gross",             std::to_string(avg_gross_leverage)},
             {"max_participation_pct", std::to_string(max_part_pct)},
+            {"p95_participation_pct", std::to_string(p95_part_pct)},
+            {"p99_participation_pct", std::to_string(p99_part_pct)},
             // (A2b) Surface portfolio Sharpe to programmatic callers (e.g. the A4
             // acceptance test) without re-parsing summary.txt. Digest is over the
             // rep.* numeric series only, so these kvs do NOT affect it.
