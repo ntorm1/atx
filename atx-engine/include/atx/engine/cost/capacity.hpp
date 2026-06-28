@@ -124,10 +124,12 @@ capacity_for_alpha(const alpha::AlphaStreams& streams, atx::usize alpha_idx,
 //  layer concern, out of scope for this engine-layer helper (see the S4 plan
 //  "capacity_for_alpha uses last-period weights" guardrail).
 //
-//  PRECONDITION: streams.n_periods() > 0 (ATX_CHECK in capacity_for_alpha). A
-//  non-positive target_aum yields a degenerate grid (all points <= 0); the curve
-//  then has no positive edge and capacity_point returns grid[0] (<= 0) — the caller
-//  must pass target_aum > 0 (the driver guards this, as it does for the stub path).
+//  PRECONDITION: streams.n_periods() > 0 (ATX_CHECK in capacity_for_alpha) AND
+//  target_aum > 0.0 (ATX_CHECK at entry below). target_aum MUST be strictly
+//  positive: the log-spaced grid takes std::log(0.01*target_aum), so a non-positive
+//  target_aum would produce -inf/NaN grid points — the helper checks this
+//  precondition and fails closed; it does NOT silently degrade on non-positive
+//  input. The driver guards this, as it does for the stub path.
 //  PURE given (streams, panel, sim, target_aum); NO RNG; thread-safe (no shared
 //  state). Header-only inline — a cold, research-cadence call.
 // ---------------------------------------------------------------------------
@@ -136,6 +138,7 @@ inline constexpr atx::usize kCapacityAumGridPoints = 20U; // log-spaced grid res
 [[nodiscard]] inline std::vector<atx::f64>
 compute_capacity_vector(const alpha::AlphaStreams& streams, const PanelView& panel,
                         const exec::ExecutionSimulator& sim, atx::f64 target_aum) {
+  ATX_CHECK(target_aum > 0.0); // log-spaced grid needs a strictly positive AUM
   // Log-spaced AUM grid from 0.01*target_aum to 10*target_aum, ascending. Built
   // once and reused for every alpha (the grid depends only on target_aum). For a
   // single grid point the loop degenerates to the lone endpoint.

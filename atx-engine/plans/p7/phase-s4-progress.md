@@ -105,3 +105,15 @@ S4-3: complete (commit 8d9f8f1, CapacityScorecard.* 3/3 runtime green) —
   config.{hpp,cpp}, conviction.hpp, kelly_sizing.hpp, gate.hpp, or any oracle.hpp.
 - WeightPolicy struct body unchanged; kTruncateIters=8 preserved.
 - No CMakeLists edits; no golden re-baseline; oracle.hpp frozen.
+
+## Post-review fix
+
+Post-review fix (review I-1): guard compute_capacity_vector against non-positive
+target_aum. Added `ATX_CHECK(target_aum > 0.0)` at function entry (mirrors the
+existing ATX_CHECK discipline in capacity_for_alpha) so the [[nodiscard]] helper
+fails closed instead of feeding std::log(<=0) into the log-spaced grid; corrected
+the stale header comment (removed the incorrect "degenerate grid / returns grid[0]"
+wording, now states target_aum must be strictly positive and the helper checks the
+precondition). Precondition-only: byte-identical for all valid (target_aum>0) inputs.
+Only cost/capacity.hpp changed. CapacityVector.* 3/3 green; byte-identity slice
+(atx-engine-factory-tests *Oracle*:*Golden*:*Digest*) 18/18 green (build unity-OFF).
