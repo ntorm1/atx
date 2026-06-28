@@ -266,6 +266,49 @@ inline std::vector<atx::f64> rolling_sample_std(std::span<const atx::f64> src,
   return out;
 }
 
+// Subtract the within-group cross-sectional mean of `src` from each cell, per
+// date, over the in-universe non-NaN cells (group_neutralize / CsNeutG). A cell
+// whose group label is NaN, or which is out-of-universe / NaN, stays NaN. When
+// `group` is empty the whole universe is one group (global demean). `out` is
+// pre-filled NaN; only valid cells are written. Means accumulate in ascending
+// instrument order to match the engine reduction order.
+inline void group_demean_row(std::span<const atx::f64> row, std::span<const atx::f64> group,
+                             std::span<const std::uint8_t> univ, std::span<atx::f64> out) {
+  const atx::usize n_inst = row.size();
+  // Two passes over the row: accumulate per-group sum/count, then write residuals.
+  // Groups are identified by their f64 label value (exact equality, as the engine
+  // does); a tiny linear scan suffices for the small cross-sections here.
+  for (atx::usize i = 0; i < n_inst; ++i) {
+    const bool in = univ.empty() || univ[i] != 0;
+    if (!in || std::isnan(row[i])) {
+      continue;
+    }
+    const bool has_group = !group.empty();
+    if (has_group && std::isnan(group[i])) {
+      continue; // no group -> stays NaN
+    }
+    const atx::f64 g = has_group ? group[i] : 0.0;
+    atx::f64 sum = 0.0;
+    atx::usize cnt = 0;
+    for (atx::usize j = 0; j < n_inst; ++j) {
+      const bool jin = univ.empty() || univ[j] != 0;
+      if (!jin || std::isnan(row[j])) {
+        continue;
+      }
+      const bool jhas = !group.empty();
+      if (jhas && std::isnan(group[j])) {
+        continue;
+      }
+      const atx::f64 gj = jhas ? group[j] : 0.0;
+      if (gj == g) {
+        sum += row[j];
+        ++cnt;
+      }
+    }
+    out[i] = row[i] - sum / static_cast<atx::f64>(cnt); // cnt >= 1 (i itself is in)
+  }
+}
+
 } // namespace detail
 
 // Append three IV-surface columns derived from already-loaded ORATS options /
@@ -404,6 +447,101 @@ inline std::vector<atx::f64> rolling_sample_std(std::span<const atx::f64> src,
     }
     names.emplace_back("iv_lo");
     data.push_back(std::move(iv_lo));
+  }
+
+  return Panel::create(D, I, std::move(names), std::move(data), std::move(universe));
+}
+
+// Append one liquidity column and return the augmented Panel:
+//
+//   illiq = group_neutralize(zscore(-1 * adv20), sector)
+//
+// The Amihud (2002) illiquidity intuition as a pure derivation over the existing
+// `adv20` column: zscore is the cross-sectional sample z (ddof=1) per date over
+// in-universe non-NaN cells; negating ADV makes LOW liquidity -> HIGH illiquidity
+// -> POSITIVE signal; group_neutralize then demeans within each `sector` so the
+// signal is a sector-relative illiquidity rank (long low-liquidity names).
+//
+// CONTRACT
+//   * Requires `adv20`: Err(NotFound) if absent (the caller must pass adv_windows
+//     containing 20 through with_alpha101_fields / with_datafields first).
+//   * `sector` is OPTIONAL: when absent, group_neutralize degenerates to a GLOBAL
+//     cross-sectional demean (the whole universe is one group) — NOT an error.
+//     (After zscore the row already has mean ~0, so the global demean is a no-op
+//     up to floating-point rounding.)
+//   * A cell is NaN where adv20 is NaN, the instrument is out-of-universe, the
+//     cross-section has < 2 valid obs (zscore NaN), or (with sector) the sector
+//     label is NaN.
+//   * IDEMPOTENT: guarded by detail::has_field; re-calling adds no duplicate.
+//
+// Determinism: opt-in only; no default path calls this. Appends at the END.
+[[nodiscard]] inline atx::core::Result<Panel> with_liquidity_fields(const Panel &base) {
+  const atx::usize D = base.dates();
+  const atx::usize I = base.instruments();
+  const atx::usize cells = D * I;
+
+  std::vector<std::string> names;
+  std::vector<std::vector<atx::f64>> data;
+  names.reserve(base.num_fields() + 1);
+  data.reserve(base.num_fields() + 1);
+  for (atx::usize f = 0; f < base.num_fields(); ++f) {
+    names.emplace_back(base.field_name(f));
+    const std::span<const atx::f64> col = base.field_all(static_cast<FieldId>(f));
+    data.emplace_back(col.begin(), col.end());
+  }
+
+  std::vector<std::uint8_t> universe(cells, std::uint8_t{1});
+  for (atx::usize d = 0; d < D; ++d) {
+    for (atx::usize n = 0; n < I; ++n) {
+      universe[d * I + n] = base.in_universe(d, n) ? std::uint8_t{1} : std::uint8_t{0};
+    }
+  }
+  const std::span<const std::uint8_t> univ{universe};
+
+  const atx::usize adv_i = datafields::detail::field_index(names, "adv20");
+  if (adv_i == static_cast<atx::usize>(-1)) {
+    return atx::core::Err(
+        atx::core::ErrorCode::NotFound,
+        "with_liquidity_fields: panel has no 'adv20' field (call with_alpha101_fields with window "
+        "20 first)");
+  }
+  const atx::usize sec_i = datafields::detail::field_index(names, "sector");
+
+  if (!datafields::detail::has_field(names, "illiq")) {
+    const std::vector<atx::f64> adv20 = data[adv_i];
+    const std::vector<atx::f64> *sector =
+        (sec_i == static_cast<atx::usize>(-1)) ? nullptr : &data[sec_i];
+
+    // neg = -1 * adv20 (NaN propagates; out-of-universe stays NaN).
+    std::vector<atx::f64> neg(cells, kAugNaN);
+    for (atx::usize i = 0; i < cells; ++i) {
+      if (univ[i] != 0 && !std::isnan(adv20[i])) {
+        neg[i] = -1.0 * adv20[i];
+      }
+    }
+
+    // z = cross-sectional zscore(neg) per date.
+    std::vector<atx::f64> z(cells, kAugNaN);
+    for (atx::usize d = 0; d < D; ++d) {
+      detail::cs_zscore_row_aug(std::span<const atx::f64>{neg}.subspan(d * I, I),
+                                univ.subspan(d * I, I),
+                                std::span<atx::f64>{z}.subspan(d * I, I));
+    }
+
+    // illiq = group_demean(z, sector) per date (global demean if sector absent).
+    std::vector<atx::f64> illiq(cells, kAugNaN);
+    const std::span<const atx::f64> sec_span =
+        (sector == nullptr) ? std::span<const atx::f64>{} : std::span<const atx::f64>{*sector};
+    for (atx::usize d = 0; d < D; ++d) {
+      const std::span<const atx::f64> grp =
+          sec_span.empty() ? std::span<const atx::f64>{} : sec_span.subspan(d * I, I);
+      detail::group_demean_row(std::span<const atx::f64>{z}.subspan(d * I, I), grp,
+                               univ.subspan(d * I, I),
+                               std::span<atx::f64>{illiq}.subspan(d * I, I));
+    }
+
+    names.emplace_back("illiq");
+    data.push_back(std::move(illiq));
   }
 
   return Panel::create(D, I, std::move(names), std::move(data), std::move(universe));
