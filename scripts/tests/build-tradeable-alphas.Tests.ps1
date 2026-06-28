@@ -122,6 +122,14 @@ Describe 'New-DiscoverArgv - regression guard: removed flag absent' {
     It 'does NOT contain --admit-seeds-presearch (flag was removed / never existed)' {
         ($argv -contains '--admit-seeds-presearch') | Should Be $false
     }
+
+    It 'uses --alpha-out for the discover output dir (discover reads cfg.alpha_out, not cfg.out)' {
+        ($argv -contains '--alpha-out') | Should Be $true
+    }
+
+    It 'does NOT use bare --out for discover (that sets cfg.out, which discover ignores)' {
+        ($argv -contains '--out') | Should Be $false
+    }
 }
 
 Describe 'New-DiscoverArgv - --workers conditional' {

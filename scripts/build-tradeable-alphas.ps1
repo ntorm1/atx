@@ -102,7 +102,7 @@ function New-DiscoverArgv {
         '--typed-fields',
         '--robust-holdout-frac',    '0.30',
         '--oos-fraction',           '0.25',
-        '--out',                    $outDir,
+        '--alpha-out',              $outDir,
         '--population',             '300',
         '--generations',            '15'
     ))
