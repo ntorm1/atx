@@ -194,6 +194,28 @@ inline void vm_map_cmp(std::span<const atx::f64> a, std::span<const atx::f64> b,
 } // namespace detail
 
 // =========================================================================
+//  EvalMode — the two-tier determinism contract (p7 ROADMAP §Shared
+//  determinism contract; p6 S1-0 plumbing pattern).
+//
+//  AuditExact (DEFAULT, inert): the engine's pinned contract verbatim — every Ts*
+//  kernel takes the batch (oracle-bit-exact) path, output byte-identical across
+//  all worker counts and identical to pre-sprint. This is the publication path.
+//
+//  ResearchFast (opt-in): perf wins that change bits ship here — e.g. the p7 S3-1
+//  Welford/Neumaier online variance family (ts_ops.hpp tsv_welford_*), whose
+//  accumulation order differs from the oracle's two-pass chronological recompute.
+//  Provably more accurate, NOT bit-identical, so gated. Alphas discovered under
+//  ResearchFast are re-scored on the AuditExact path before publication.
+//
+//  The mode is a per-Engine field defaulting to AuditExact, so the no-flag path is
+//  byte-identical to pre-sprint. Set via Engine::set_eval_mode before evaluate().
+// =========================================================================
+enum class EvalMode : atx::u8 {
+  AuditExact = 0, // default, inert: batch kernels, oracle-bit-exact
+  ResearchFast,   // opt-in: online variance family (tolerance, not bit-exact)
+};
+
+// =========================================================================
 //  Engine — the fast vectorized executor (the production path).
 //
 //  Borrows the Panel for its lifetime, owns a reusable SlotPool + field-remap
@@ -216,6 +238,14 @@ public:
   // touching raw internals: stable capacity ⟺ no realloc (ensure_pool only
   // grows when want_slots > capacity or cells_per_slot changes).
   [[nodiscard]] atx::usize pool_capacity() const noexcept { return pool_.capacity(); }
+
+  // EvalMode plumbing (p7 S3-1). The mode selects the Ts* variance-family
+  // execution tier: AuditExact (default) keeps the batch kernel byte-identical to
+  // the oracle; ResearchFast routes TsVar/TsStd/TsZscore/TsAvDiff through the O(T)
+  // Welford/Neumaier online sweep (faster, tolerance-conformant, NOT bit-exact).
+  // Set BEFORE evaluate(); affects only the variance-family ops, nothing else.
+  void set_eval_mode(EvalMode mode) noexcept { mode_ = mode; }
+  [[nodiscard]] EvalMode eval_mode() const noexcept { return mode_; }
 
   // Prepare the Engine to evaluate a DIFFERENT Program on the SAME Panel.
   //
@@ -846,6 +876,18 @@ private:
       }
       return atx::core::Ok();
     }
+    // ResearchFast variance family (p7 S3-1/S3-2): TsVar/TsStd/TsZscore/TsAvDiff
+    // route through the O(T) Welford/Neumaier online column sweep ONLY under
+    // EvalMode::ResearchFast. Under AuditExact (the default) ts_is_online_variance_op
+    // is never consulted, so the variance family falls through to the batch path
+    // below — byte-identical to the oracle. The Welford sweep is per-instrument-
+    // column and self-contained (no scratch), so it needs no column-extract.
+    if (mode_ == EvalMode::ResearchFast && detail::ts_is_online_variance_op(in.op)) {
+      for (atx::usize j = 0; j < instruments; ++j) {
+        detail::tsv_welford_dispatch(in.op, x, out, dates, j, d, instruments);
+      }
+      return atx::core::Ok();
+    }
     // Pure-lookback direct path (TsDelay/TsDelta): ORIGINAL strided access,
     // instrument-outer/date-inner, reading x[(t-d)*I+j] (+ x[t*I+j] for delta)
     // directly from the panel. This is the EXACT pre-transpose code — trivially
@@ -1059,6 +1101,7 @@ private:
   }
 
   const Panel &panel_;
+  EvalMode mode_{EvalMode::AuditExact}; // determinism tier (p7 S3-1); default inert
   SlotPool pool_{1, 1};                // reused across calls; grown on demand
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
