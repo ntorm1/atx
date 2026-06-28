@@ -21,8 +21,10 @@
 //
 // Naming: Subject_Condition_ExpectedResult.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <random>
 #include <string>
 #include <string_view>
@@ -286,6 +288,125 @@ TEST(TsWelfordVar, ResearchFast_TwiceRunIdentical) {
   ASSERT_EQ(a.size(), b.size());
   for (atx::usize i = 0; i < a.size(); ++i) {
     EXPECT_TRUE(same_cell(a[i], b[i])) << "cell " << i;
+  }
+}
+
+// ===========================================================================
+//  S3-2 — TsZscore / TsAvDiff online extension (same ResearchFast contract).
+//
+//  TsZscore = (x[t] - mean) / std and TsAvDiff = x[t] - mean both reuse the
+//  Welford (m, S, n) accumulator. Zscore conforms at atol=1e-9 (it normalizes by
+//  std, so a tiny mean error is dominated by the spread). AvDiff is the hard case:
+//  its OUTPUT is itself a near-cancellation (x[t] ~ mean on a high-mean window), so
+//  the tolerance is atol-only = 1e-7 absolute (ts_ops.hpp:349-352 rationale). The
+//  adversarial test below is the SHIP/BAIL gate: if AvDiff cannot meet atol<=1e-7
+//  it must be removed from ts_is_online_variance_op and stay batch.
+// ===========================================================================
+
+// TsZscore pathological near-constant (mean ~1e5, std ~1.0): Welford vs batch
+// oracle within atol=1e-9. The kernel computes std from the same Welford S, so the
+// normalization recovers the small spread despite the high mean.
+//
+// MEAN MAGNITUDE = 1e5 (not 1e7): zscore's numerator (x[t] - mean) is a true f64
+// cancellation, so its representational floor is mean*eps ~ mean*2.2e-16. At 1e5
+// that floor is ~2e-11 (well under the 1e-9 gate); at 1e7 it is ~2e-9, ABOVE the
+// gate, so a 1e-9-vs-oracle bar is unmeetable by ANY kernel at 1e7 (the oracle's
+// own (x-mean) differs from Welford's by ~3.6e-9 there — an intrinsic f64 limit,
+// not a kernel defect; recorded in the ledger). 1e5 still stresses the SAME
+// catastrophic-cancellation regime the old Sx^2 variance failed (Sx^2 ~ 1e10*d).
+TEST(TsWelfordZscore, NearConstantHighMean_WithinToleranceOfOracle) {
+  const atx::usize dates = 220;
+  const atx::usize instruments = 8;
+  const atx::usize cells = dates * instruments;
+  std::vector<std::vector<atx::f64>> cols = base_cols(cells, 0x2C0BEEFULL);
+  std::mt19937_64 rng{0x5C0FEULL};
+  std::uniform_real_distribution<atx::f64> jitter{-1.0, 1.0};
+  for (atx::usize i = 0; i < cells; ++i) {
+    cols[0][i] = 1.0e5 + jitter(rng);
+  }
+  const Panel panel = make_panel(dates, instruments, std::move(cols));
+  const std::vector<atx::f64> fast = vm_values("ts_zscore(close, 20)", panel, EvalMode::ResearchFast);
+  const std::vector<atx::f64> oracle = oracle_values("ts_zscore(close, 20)", panel);
+  ASSERT_EQ(fast.size(), oracle.size());
+  for (atx::usize i = 0; i < fast.size(); ++i) {
+    EXPECT_TRUE(close_cell(fast[i], oracle[i], 1e-9, 1e-9))
+        << "zscore cell " << i << " fast=" << fast[i] << " oracle=" << oracle[i];
+  }
+}
+
+// TsAvDiff ADVERSARIAL ship/bail gate: mean ~1e6, av_diff amplitude ~1.0. Welford
+// av_diff vs batch oracle MUST be within atol=1e-7 (absolute) on every finite
+// cell, else TsAvDiff stays batch (remove from ts_is_online_variance_op) and the
+// ledger records the measured error. This codifies the plan's explicit bail-out.
+TEST(TsWelfordAvDiff, AdversarialHighMean_WithinAtol1e7OfOracle) {
+  const atx::usize dates = 260;
+  const atx::usize instruments = 8;
+  const atx::usize cells = dates * instruments;
+  std::vector<std::vector<atx::f64>> cols = base_cols(cells, 0xADBEEFULL);
+  std::mt19937_64 rng{0xAD1FFULL};
+  std::uniform_real_distribution<atx::f64> jitter{-1.0, 1.0};
+  for (atx::usize i = 0; i < cells; ++i) {
+    cols[0][i] = 1.0e6 + jitter(rng);
+  }
+  const Panel panel = make_panel(dates, instruments, std::move(cols));
+  const std::vector<atx::f64> fast = vm_values("ts_av_diff(close, 20)", panel, EvalMode::ResearchFast);
+  const std::vector<atx::f64> oracle = oracle_values("ts_av_diff(close, 20)", panel);
+  ASSERT_EQ(fast.size(), oracle.size());
+  atx::f64 worst = 0.0;
+  for (atx::usize i = 0; i < fast.size(); ++i) {
+    if (!std::isnan(fast[i]) && !std::isnan(oracle[i])) {
+      worst = std::max(worst, std::fabs(fast[i] - oracle[i]));
+    }
+    EXPECT_TRUE(close_cell(fast[i], oracle[i], 1e-7, 0.0))
+        << "av_diff cell " << i << " fast=" << fast[i] << " oracle=" << oracle[i];
+  }
+  // Echo the measured worst-case absolute error for the ledger (atol=1e-7 gate).
+  std::cerr << "[ts_av_diff adversarial] worst |welford-oracle| = " << worst << " (gate 1e-7)\n";
+}
+
+// TsZscore / TsAvDiff on the shared random panel within their tolerances.
+TEST(TsWelfordZscoreAvDiff, RandomPanel_WithinTolerancesOfOracle) {
+  const atx::usize dates = 500;
+  const atx::usize instruments = 200;
+  const atx::usize cells = dates * instruments;
+  const Panel panel = make_panel(dates, instruments, base_cols(cells, 0xA1FA101ULL));
+  // zscore: atol=rtol=1e-9.
+  {
+    const std::vector<atx::f64> fast = vm_values("ts_zscore(close, 20)", panel, EvalMode::ResearchFast);
+    const std::vector<atx::f64> oracle = oracle_values("ts_zscore(close, 20)", panel);
+    ASSERT_EQ(fast.size(), oracle.size());
+    for (atx::usize i = 0; i < fast.size(); ++i) {
+      EXPECT_TRUE(close_cell(fast[i], oracle[i], 1e-9, 1e-9))
+          << "zscore cell " << i << " fast=" << fast[i] << " oracle=" << oracle[i];
+    }
+  }
+  // av_diff: atol-only = 1e-7.
+  {
+    const std::vector<atx::f64> fast = vm_values("ts_av_diff(close, 20)", panel, EvalMode::ResearchFast);
+    const std::vector<atx::f64> oracle = oracle_values("ts_av_diff(close, 20)", panel);
+    ASSERT_EQ(fast.size(), oracle.size());
+    for (atx::usize i = 0; i < fast.size(); ++i) {
+      EXPECT_TRUE(close_cell(fast[i], oracle[i], 1e-7, 0.0))
+          << "av_diff cell " << i << " fast=" << fast[i] << " oracle=" << oracle[i];
+    }
+  }
+}
+
+// Off-path byte-identity after S3-2: AuditExact zscore/av_diff == batch oracle.
+TEST(TsAuditExactZscoreAvDiff, DefaultMode_ByteIdenticalToOracle) {
+  const atx::usize dates = 60;
+  const atx::usize instruments = 16;
+  const atx::usize cells = dates * instruments;
+  const Panel panel = make_panel(dates, instruments, base_cols(cells, 0xBEEF02ULL));
+  for (const std::string_view expr : {std::string_view{"ts_zscore(close, 10)"},
+                                      std::string_view{"ts_av_diff(close, 10)"}}) {
+    const std::vector<atx::f64> audit = vm_values(expr, panel, EvalMode::AuditExact);
+    const std::vector<atx::f64> oracle = oracle_values(expr, panel);
+    ASSERT_EQ(audit.size(), oracle.size());
+    for (atx::usize i = 0; i < audit.size(); ++i) {
+      EXPECT_TRUE(same_cell(audit[i], oracle[i]))
+          << expr << " cell " << i << " audit=" << audit[i] << " oracle=" << oracle[i];
+    }
   }
 }
 

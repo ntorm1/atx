@@ -10,8 +10,8 @@ Bench built in a separate Release dir (`build-bench`, Ninja + clang-cl, Release)
 
 ## Unit checklist
 - [x] S3-0 — open ledger; record current bench baseline (af50609)
-- [x] S3-1 — Welford/Neumaier online variance kernel (TsVar/TsStd), ResearchFast
-- [ ] S3-2 — extend online variance to TsZscore/TsAvDiff, ResearchFast
+- [x] S3-1 — Welford/Neumaier online variance kernel (TsVar/TsStd), ResearchFast (d0a3462)
+- [x] S3-2 — extend online variance to TsZscore/TsAvDiff, ResearchFast
 - [ ] S3-3 — cross-instrument column parallelism (seq==parallel digest), AuditExact
 - [ ] S3-4 — bench delta writeup + vm.hpp stale-comment cleanup
 
@@ -98,5 +98,45 @@ Ratio: 23.5 / 5.50 = 4.27x faster (target >= 2x at d=20). MET.
 
 Gates: alpha 577/577 green; factory oracle slice (*Oracle*:*Golden*:*Digest*) 18/18 green.
 
-S3-1: complete (commit <pending>, 7 new tests green, 4.27x kernel speedup) — Welford
+S3-1: complete (commit d0a3462, 7 new tests green, 4.27x kernel speedup) — Welford
 variance family lands behind ResearchFast; AuditExact byte-identical.
+
+---
+
+## S3-2 — extend online variance to TsZscore / TsAvDiff, ResearchFast
+
+The S3-1 Welford accumulator already produces (m, S, n) per cell; TsZscore =
+(x[t]-m)/std and TsAvDiff = x[t]-m reuse it (`tsv_welford_zscore_col` /
+`tsv_welford_avdiff_col`, both in `tsv_welford_var_family`). `ts_is_online_variance_op`
+and `tsv_welford_dispatch` already cover all four ops (landed in S3-1). S3-2 adds
+the validation + the AvDiff ship/bail gate. No vm.hpp structural change.
+
+TsAvDiff SHIP DECISION: ships online. The adversarial fixture (mean ~1e6, av_diff
+amplitude ~1.0, d=20) measured worst |welford - oracle| = 4.66e-10 << the 1e-7 atol
+gate -> the plan's bail-out is NOT triggered. AvDiff stays in the online dispatch.
+
+TsZscore tolerance note (numerically honest): zscore's numerator (x[t]-mean) is a
+true f64 cancellation, so the achievable atol-vs-oracle scales with mean*eps. At
+mean=1e7 the floor is ~2e-9 (the oracle's own (x-mean) and Welford's differ by
+~3.6e-9 there — an INTRINSIC f64 limit, not a kernel defect), so the pathological
+zscore fixture uses mean=1e5 (floor ~2e-11, comfortably under the 1e-9 gate) while
+still stressing the SAME catastrophic-cancellation regime (Sx^2 ~ 1e10*d) the old
+rolling variance failed. The random-panel zscore (price magnitudes) passes 1e-9.
+
+Tests (ts_online_variance_test.cpp), all green:
+- TsWelfordZscore.NearConstantHighMean_WithinToleranceOfOracle (mean 1e5, atol 1e-9).
+- TsWelfordAvDiff.AdversarialHighMean_WithinAtol1e7OfOracle (worst 4.66e-10).
+- TsWelfordZscoreAvDiff.RandomPanel_WithinTolerancesOfOracle (zscore 1e-9, avdiff 1e-7).
+- TsAuditExactZscoreAvDiff.DefaultMode_ByteIdenticalToOracle (off-path identity).
+
+Bench (build-bench Release, 512x256, d=20):
+```
+BM_TsZscoreBatch    18.5 ms    7.70M/s   ->  BM_TsZscoreWelford   3.94 ms   39.90M/s   = 4.70x
+BM_TsAvDiffBatch     8.28 ms   17.40M/s   ->  BM_TsAvDiffWelford   3.46 ms   42.54M/s   = 2.39x
+```
+Both >= 2x target. MET.
+
+Gates: alpha 581/581 green; factory oracle slice 18/18 green.
+
+S3-2: complete (commit <pending>, 4 new tests green, zscore 4.70x / avdiff 2.39x) —
+TsZscore + TsAvDiff online; AvDiff met its adversarial 1e-7 gate (no bail-out).
