@@ -268,7 +268,8 @@ void admit_fixture(lib::Library &facade, usize n) {
 }
 
 // Map a facade AdmitKind to the combine GateVerdict (for the exit#3 differential).
-// Duplicate has no GateVerdict analog; the probe set contains no duplicates.
+// Duplicate and the holdout-only rejects (RejectPriceScale / RejectDsrSubwindow)
+// have no GateVerdict analog; the probe set contains none of them.
 [[nodiscard]] GateVerdict map_kind(AdmitKind k) {
   switch (k) {
   case AdmitKind::Accept:
@@ -282,9 +283,11 @@ void admit_fixture(lib::Library &facade, usize n) {
   case AdmitKind::RejectCorrelated:
     return GateVerdict::RejectCorrelated;
   case AdmitKind::Duplicate:
+  case AdmitKind::RejectPriceScale:
+  case AdmitKind::RejectDsrSubwindow:
     break;
   }
-  return GateVerdict::Accept; // unreachable for the probe set (no duplicates)
+  return GateVerdict::Accept; // unreachable for the probe set (no duplicates/holdout rejects)
 }
 
 // ====== exit #1 ======
