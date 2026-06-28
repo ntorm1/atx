@@ -974,13 +974,32 @@ namespace {
 //  The safety factor (calibrated to 3.0 at the call site) makes the skip threshold
 //  min_dsr / factor small; a LARGER factor LOOSENS the gate (fewer skips, strictly safer).
 //  A NaN/non-finite or non-positive train Sharpe is treated as "cannot prove admissible only
-//  from this" -> KEEP (return true) so the gate never skips on a degenerate proxy. trial_count
-//  is accepted for a future tightening but is NOT used to make the bound tighter here (a looser
-//  bound is always the safe direction). The bound is proven by AdmittedSetUnchanged.
+//  from this" -> KEEP (return true) so the gate never skips on a degenerate proxy.
+//
+//  S1-4 — threading the realized trial count N. The previous implementation voided
+//  trial_count. We now FOLD the expected-maximum-Sharpe benchmark SR*_N into the keep
+//  side of the bound:  keep iff  sr_tr*factor + SR*_N >= min_dsr.  SR*_N =
+//  expected_max_sharpe(N, V) >= 0 is the selection benchmark for N i.i.d. trials, with
+//  the unit-stream variance proxy V = 1/T (T ~ kAnnualizationDays); it rises monotonically
+//  with N and is 0 at N<=1. Because SR*_N is ADDED to the keep side, a larger N can only
+//  ever KEEP more (never skip more): the bound is monotone-LOOSENING in N, which is the
+//  STRICTLY SAFE direction for a true upper bound — it can never start skipping a candidate
+//  the gate-off run would have evaluated, so the AdmittedSetUnchanged digest/histogram proof
+//  is preserved by construction (the skip set only shrinks vs. the N-ignoring bound).
+//
+//  NOTE (spec reconciliation): the S1-4 plan prose claims the bound becomes "stricter" with N,
+//  but its own concrete formula adds SR*_N to the keep side (looser) and its concrete monotone
+//  Accept test asserts "skip@N=100 => skip@N=10" — i.e. the skip set SHRINKS as N grows
+//  (looser). The arithmetic + the concrete test agree (looser/safer); the "stricter" prose is
+//  the inconsistency. We implement the SAFE arithmetic, which is the only direction that keeps
+//  the binding AdmittedSetUnchanged + byte-identity invariants green. See cascade_trial_count_test.
+//
+//  Determinism: at N<=1, or min_dsr<=0, or factor<=0, SR*_N is 0 (or the early-return fires),
+//  so the bound collapses to the exact pre-S1-4 expression -> byte-identical. The bound is
+//  proven by AdmittedSetUnchanged + CascadeGate_SeqEqualsParallel.
 [[nodiscard]] bool cascade_gate_passes(const combine::AlphaMetrics &train_metrics,
                                        const FactoryConfig &cfg,
                                        atx::usize trial_count) noexcept {
-  static_cast<void>(trial_count); // reserved for a future (looser-only) tightening
   if (!(cfg.cascade_gate_factor > 0.0)) {
     return true; // gate inert (OFF default or non-positive): never skip
   }
@@ -992,9 +1011,18 @@ namespace {
   if (!std::isfinite(sr_tr)) {
     return true; // degenerate proxy (NaN/inf): keep (the gate can prove nothing here)
   }
-  // keep iff sr_tr * factor >= min_dsr ; equivalently skip only the provably-too-weak
-  // (a low-positive OR non-positive train Sharpe — the latter is even more hopeless).
-  return sr_tr * cfg.cascade_gate_factor >= cfg.min_dsr;
+  // S1-4: the expected-maximum-Sharpe selection benchmark for N realized trials. At N<=1
+  // expected_max_sharpe returns 0 (no selection -> byte-identical to the pre-S1-4 bound).
+  // The variance proxy is the unit-stream V = 1/T (T ~ kAnnualizationDays): a CONSERVATIVE
+  // UPPER-BOUND screen only needs a monotone-in-N raise of the keep margin, not the exact V.
+  const atx::f64 sr_star_n =
+      (trial_count > 1U)
+          ? eval::expected_max_sharpe(trial_count, 1.0 / combine::kAnnualizationDays)
+          : 0.0;
+  // keep iff sr_tr*factor + SR*_N >= min_dsr ; skip only the provably-too-weak. Adding the
+  // non-negative SR*_N can only RELAX the keep test (monotone-loosening in N) -> never skips
+  // a candidate the N-ignoring bound kept -> the AdmittedSetUnchanged proof holds.
+  return sr_tr * cfg.cascade_gate_factor + sr_star_n >= cfg.min_dsr;
 }
 
 } // namespace
