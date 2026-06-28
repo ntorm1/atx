@@ -65,3 +65,15 @@ scratch/
 
 # Subagent-driven-dev scratch (ledger, briefs, reports) — not versioned
 .superpowers/
+
+
+*.duckdb
+
+# Python warehouse (atx-impl/db) — code is tracked; data artifacts are not
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+# Parquet lakehouse exports are reproducible from the DuckDB warehouse
+atx-impl/db/lake/
