@@ -210,6 +210,69 @@ public:
   // until then).
   explicit Engine(const Panel &panel) noexcept : panel_{panel} {}
 
+  // The capacity (max simultaneously-live slots) of the SlotPool's backing
+  // storage. Stable as long as no reallocation occurs (i.e. same num_slots and
+  // cells between calls). Exposed so tests can probe for reallocation without
+  // touching raw internals: stable capacity ⟺ no realloc (ensure_pool only
+  // grows when want_slots > capacity or cells_per_slot changes).
+  [[nodiscard]] atx::usize pool_capacity() const noexcept { return pool_.capacity(); }
+
+  // Prepare the Engine to evaluate a DIFFERENT Program on the SAME Panel.
+  //
+  // WHY THIS EXISTS: `evaluate()` already reuses the SlotPool and per-date Cs*
+  // scratch across successive calls on the same Program. But each `evaluate()`
+  // call re-runs `resolve_fields()`, which re-maps the new Program's field names
+  // to Panel FieldIds and rebuilds `field_remap_`. For a factory worker that
+  // evaluates many distinct Programs on one Panel, paying the field-remap cost
+  // per call is fine — `reset()` exists so S2 can hoist one warm Engine per
+  // worker and skip re-constructing it between genomes.
+  //
+  // WHAT IS CLEARED:
+  //   * `field_remap_` — cleared (zeroed) so `resolve_fields()` rebuilds it for
+  //     the next program's field set. A stale remap from a prior program that
+  //     silently shadows the new program's fields is a Critical bug; clearing it
+  //     makes any accidental reuse of stale data crash loudly on a bounds check.
+  //
+  // WHAT IS RETAINED (no reallocation):
+  //   * `pool_` — the SlotPool's backing storage and capacity are kept. Its
+  //     live-slot counter is already 0 after a normal successful evaluate()
+  //     (every acquire has a matching Free/release — see the dispatch loop).
+  //     reset() does NOT call reset_live(); if the next program needs MORE slots
+  //     or a different cell count, `ensure_pool()` will grow it.
+  //   * All other scratch buffers (`ts_scratch_a_/b_`, `ts_dq_lo_/hi_`, `state_`,
+  //     `cs_valid_`, `cs_scratch_`, `ts_col_`, `ts_col_b_`) — retained at their
+  //     current capacity. They grow monotonically and are cleared/rebuilt at the
+  //     start of each operation that uses them, so stale content never leaks into
+  //     a computation.
+  //
+  // PRECONDITIONS:
+  //   * The Engine is bound to the SAME Panel (structurally enforced — there is
+  //     no way to rebind the panel).
+  //   * Call only after a successful evaluate() or on a fresh Engine, where
+  //     pool_.live()==0 already holds: every slot acquired during evaluate() is
+  //     released by the corresponding Free instruction in the same dispatch loop,
+  //     so a complete evaluate() always exits with live()==0. reset() therefore
+  //     only needs to clear the per-program field remap.
+  //
+  // EXCEPTION SAFETY: noexcept — only zeroes a vector's contents (capacity
+  // kept), which does not throw.
+  void reset() noexcept {
+    // PRECONDITION CHECK: a clean reset assumes the prior evaluate() balanced every
+    // acquire() with a Free/release (live()==0). This holds after a successful
+    // evaluate() by the linearizer's one-Free-per-live-node contract; the assert
+    // fails loud if a caller reset()s after a partial/errored evaluate. Uses the
+    // pre-existing SlotPool::live() accessor — no pool mutation, no panel.hpp edit.
+    ATX_ASSERT(pool_.live() == 0);
+    // Clear the field remap so the next resolve_fields() cannot accidentally read a
+    // stale FieldId from a prior program. The vector retains its storage capacity.
+    // This is reset()'s ONLY substantive action: the pool and every other scratch
+    // buffer are already in a clean-start state (see contract above). All other
+    // scratch buffers (ts_scratch_*, ts_dq_*, state_, cs_valid_, cs_scratch_,
+    // ts_col_*, ts_col_b_) grow monotonically and are fully overwritten before
+    // any read on the next evaluate().
+    field_remap_.clear();
+  }
+
   // Evaluate a compiled Program -> one alpha per root. Element-wise / logical /
   // select are implemented; Cs*/Ts* return Err(NotImplemented) until P3-7/P3-8.
   //
@@ -645,6 +708,16 @@ private:
   static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
                           std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
                           std::vector<atx::usize> &valid, detail::CsScratch &scratch) {
+    // INVARIANT (REQUIRED — not accidental): the forward scan produces `valid`
+    // in strictly ascending instrument-index order, and every downstream kernel
+    // depends on it for AuditExact-determinism:
+    //   * cs_rank_row's stable sort breaks ties by this pre-sort order, so a
+    //     non-ascending scan would silently flip tied-rank outputs;
+    //   * the reduction kernels (cs_zscore_row's Σx / Σ(x-mean)², the grouped
+    //     sums) accumulate in this scan order, and f64 addition is not
+    //     associative — a permuted scan changes the summed bits in some cells.
+    // Reordering worker dispatch or splitting the row therefore must NOT permute
+    // this scan; ascending instrument index is the one canonical order.
     valid.clear();
     for (atx::usize i = 0; i < x.size(); ++i) {
       out[i] = detail::kVmNaN; // default every cell (out-of-set stays NaN)
@@ -737,6 +810,17 @@ private:
     // they take the same windowed path but a distinct per-cell kernel.
     const bool ou_rolling = (in.op == OpCode::OuTheta || in.op == OpCode::OuHalflife ||
                              in.op == OpCode::OuMean || in.op == OpCode::OuZscore);
+    // S1-3 (narrowed): pure-lookback ops read a FIXED O(1) set of elements per
+    // cell — NOT a d-length window scan — so the column-extract transpose can
+    // never help them: there is no window reuse to make contiguous, and copying
+    // the whole O(dates) column (strided) just to serve single-element lookups is
+    // pure overhead (a guaranteed ~2x regression by construction). delay reads
+    // one element x[(t-d)*I+j]; delta reads two (x[t]-x[t-d]). Both are among the
+    // most common alpha operators, so they STAY on the original direct strided
+    // path below. (Every OTHER batch op — Var/Std/Rank/Med/Mad/Skew/Kurt/Slope/
+    // Rsquare/Resid/Product/ArgMin/ArgMax/Decay*/Wma/Ema/Zscore/AvDiff/Backfill/
+    // CountNans/Quantile/Moment/Entropy/Corr/Cov/Regression/OU* — scans a window
+    // of up to d elements per cell and is wash-to-win under the transpose.)
 
     // Reusable scratch sized to the window: NO per-cell allocation (grown only
     // when `d` exceeds any prior call). Only the batch sort/pair ops touch it.
@@ -762,15 +846,67 @@ private:
       }
       return atx::core::Ok();
     }
+    // Pure-lookback direct path (TsDelay/TsDelta): ORIGINAL strided access,
+    // instrument-outer/date-inner, reading x[(t-d)*I+j] (+ x[t*I+j] for delta)
+    // directly from the panel. This is the EXACT pre-transpose code — trivially
+    // bit-exact (it is the unmodified original lookup) — and it pays NO column
+    // extraction cost, so these high-frequency ops keep their baseline speed.
+    if (in.op == OpCode::TsDelay || in.op == OpCode::TsDelta) {
+      for (atx::usize j = 0; j < instruments; ++j) {
+        for (atx::usize t = 0; t < dates; ++t) {
+          out[t * instruments + j] =
+              detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_, in.imm[0]);
+        }
+      }
+      return atx::core::Ok();
+    }
+    // S1-3: Column-extract transpose — extract instrument column j once into a
+    // contiguous scratch buffer, then call the kernel with instruments=1, j=0.
+    //
+    // SAFETY (bit-exactness): each kernel element at (t,j) reads x[k*I+j] for
+    // k in [t+1-d, t].  After extracting ts_col_[s] = x[s*I+j] for all s, the
+    // kernel with instruments=1, j=0 reads col[k*1+0] = col[k] = x[k*I+j].
+    // The chronological accumulation order k=t+1-d..t is UNCHANGED — every f64
+    // multiply/add fires on the same operands in the same sequence.  The only
+    // difference is memory layout; the arithmetic result is bit-for-bit identical.
+    // tsv_gather, tsv_var, tsv_lin_fit, tsv_rank, and ou_ar1_fit all read
+    // monotonically from buf[0..d-1] which maps to col[t+1-d..t] — same elements,
+    // same order.  Bit-exact by construction.
+    //
+    // ts_scratch_a_ / ts_scratch_b_ retain their existing role (window-d scratch
+    // for sort/gather/pair inside the kernel); ts_col_ / ts_col_b_ are the new
+    // dates-sized column buffers, grown monotonically as Engine members.
+    if (dates > ts_col_.size()) {
+      ts_col_.resize(dates);
+      ts_col_b_.resize(dates);
+    }
     for (atx::usize j = 0; j < instruments; ++j) {
-      for (atx::usize t = 0; t < dates; ++t) {
-        out[t * instruments + j] =
-            ou_rolling
-                ? detail::ou_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_)
-            : binary_series ? detail::ts_pair_at(in.op, x, y, t, j, d, instruments, ts_scratch_a_,
-                                                 ts_scratch_b_)
-                            : detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_,
-                                                  in.imm[0]);
+      // Extract column j of x into ts_col_.
+      for (atx::usize s = 0; s < dates; ++s) {
+        ts_col_[s] = x[s * instruments + j];
+      }
+      const std::span<const atx::f64> col{ts_col_.data(), dates};
+      if (binary_series) {
+        // Extract column j of y into ts_col_b_.
+        for (atx::usize s = 0; s < dates; ++s) {
+          ts_col_b_[s] = y[s * instruments + j];
+        }
+        const std::span<const atx::f64> col_b{ts_col_b_.data(), dates};
+        for (atx::usize t = 0; t < dates; ++t) {
+          // instruments=1, j=0: col[k*1+0] == col[k] == x[k*I+j]. Same order.
+          out[t * instruments + j] =
+              detail::ts_pair_at(in.op, col, col_b, t, 0, d, 1, ts_scratch_a_, ts_scratch_b_);
+        }
+      } else if (ou_rolling) {
+        for (atx::usize t = 0; t < dates; ++t) {
+          out[t * instruments + j] =
+              detail::ou_value_at(in.op, col, t, 0, d, 1, ts_scratch_a_);
+        }
+      } else {
+        for (atx::usize t = 0; t < dates; ++t) {
+          out[t * instruments + j] =
+              detail::ts_value_at(in.op, col, t, 0, d, 1, ts_scratch_a_, in.imm[0]);
+        }
       }
     }
     return atx::core::Ok();
@@ -927,6 +1063,11 @@ private:
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
+  // S1-3: per-instrument column-extract buffers (dates-sized).  Grown
+  // monotonically; never allocated inside the (t,j) hot loop.  ts_col_ holds the
+  // extracted x column; ts_col_b_ the y column for binary ops.
+  std::vector<atx::f64> ts_col_;       // Ts* column-extract scratch for x; size=dates
+  std::vector<atx::f64> ts_col_b_;     // Ts* column-extract scratch for y (binary ops)
   std::vector<atx::usize> ts_dq_lo_;   // Ts online min/scale monotonic deque (date indices)
   std::vector<atx::usize> ts_dq_hi_;   // Ts online max/scale monotonic deque (date indices)
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
