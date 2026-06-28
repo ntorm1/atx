@@ -3,7 +3,7 @@
 **Last reviewed:** 2026-06-28
 **Started:** Wave 1 (S1 deflation · S2 breadth · S3 eval-VM) merged 2026-06-28 (`4a2113b`); Wave 2
 (S4 turnover/capacity · S5 conviction sizing) merged 2026-06-28 (`d95ce04`). Spine S1–S5 all on main.
-Next: Wave 3 (S6 incremental panel, S7 wire + dev-panel validate) — not yet open. V1 unblocked
+Next: Wave 3 (S6 incremental panel ⏳ open `feat/p7-s6`, S7 wire + dev-panel validate). V1 unblocked
 (operator prod run after S7 wires the Wave-1/2 carry-forwards). See `TRACKER.md` for live status.
 **Source:** p6 close-out (`atx-impl/research/2026-06-27-tradeable-alpha-results.md`) + a 4-explorer
 survey of the post-p6 engine (2026-06-28); user direction 2026-06-28 (small targeted tests, parallel
