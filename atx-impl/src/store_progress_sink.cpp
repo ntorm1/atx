@@ -35,11 +35,18 @@ atx::core::Status StoreProgressSink::on_generation(
   state.best_per_gen_blob    = s.best_per_gen_blob;
   state.digest               = s.digest;
   state.candidates_generated = static_cast<atx::i64>(s.candidates_generated);
+  // Real per-checkpoint wall-clock: monotonic ms since sink construction (search
+  // start). steady_clock is monotonic so this never goes backwards across
+  // generations; stored as provenance in pipeline_iteration, NEVER an engine
+  // determinism input (the search digest / panel.bin are unaffected — see S6-5).
+  const auto elapsed = std::chrono::steady_clock::now() - start_tp_;
+  const atx::i64 wall_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
   return rec_.save_checkpoint(
       static_cast<atx::i64>(s.generation), blob,
       static_cast<atx::i64>(s.population.size()), s.best_fitness, s.mean_fitness,
       static_cast<atx::i64>(s.n_evaluated), static_cast<atx::i64>(s.n_unique),
-      /*wall_ms*/ 0, now_unix(), state);
+      wall_ms, now_unix(), state);
 }
 
 atx::u64 compute_discover_fingerprint(const RunConfig& cfg) {
