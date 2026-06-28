@@ -1,0 +1,30 @@
+# Liquidity seed templates (S2 — atx p7).
+# Parse + typecheck against panel carrying illiq, adv20, dollar_volume,
+# returns, sector, cap (after with_alpha101_fields + with_liquidity_fields).
+# Format: `<id>: <dsl-expression>`. Lines beginning with '#' are comments.
+# Every seed references at least one of illiq, adv20, dollar_volume and is
+# sector-neutral via group_neutralize(..., sector).
+
+# Sector-neutral illiquidity (the Amihud signal itself)
+liq1: group_neutralize(rank(illiq), sector)
+
+# Illiquidity z-score
+liq2: group_neutralize(zscore(illiq), sector)
+
+# Low-ADV (illiquid) names with positive recent return: contrarian
+liq3: group_neutralize(rank(illiq * ts_mean(returns, 5)), sector)
+
+# ADV momentum: names whose liquidity is growing
+liq4: group_neutralize(rank(ts_mean(adv20, 5) - adv20), sector)
+
+# Size-neutralized illiquidity (adv relative to market cap)
+liq5: group_neutralize(rank(adv20 / cap), sector)
+
+# Negative ADV: short liquid names (crowded)
+liq6: group_neutralize(-1 * rank(adv20), sector)
+
+# Dollar volume z-score
+liq7: group_neutralize(zscore(dollar_volume), sector)
+
+# Low dollar-volume with reversal: short recent winners among illiquid
+liq8: group_neutralize(rank(-1 * dollar_volume * ts_mean(returns, 21)), sector)

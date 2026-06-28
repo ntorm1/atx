@@ -402,3 +402,282 @@ TEST(DelegationIdentity, ProductionMatchesTestHelper) {
     }();
   }
 }
+
+// ============================================================================
+//  Suite: Augment — FINRA short-interest augment core (p7 S2-1, from track-b).
+//
+//  Drives the PURE augment core (atx::impl::augment_panel_with_finra) on a
+//  SYNTHETIC research Panel + SYNTHETIC FINRA parquet partitions + an in-memory
+//  axis (epoch-day dates + ticker->column map). No seg files, no symbology, no
+//  real download, NO CLI (run_augment is deferred to S7 per decision D1).
+//
+//  Tests:
+//    1. AppendsThreeFieldsAtEnd  — augmented panel has exactly N+3 fields; the
+//                                  first N field NAMES and COLUMN BYTES are
+//                                  bitwise-identical; si_dtc/si_util/si_chg sit at
+//                                  FieldIds N, N+1, N+2; universe mask carried over.
+//    2. CausalityInPanel         — a FINRA obs is NaN in the appended panel on
+//                                  every date < its publish_day, present after.
+//    3. RoundTripDigestMatches   — read_panel(write_panel(aug)) reproduces aug
+//                                  (NaN-aware cell equality); digest stable.
+//    4. UtilFromPanelShares      — si_util uses shares = market_cap/raw_close
+//                                  derived from the panel (not the ADV fallback).
+// ============================================================================
+
+#include <cstdint>
+#include <unordered_map>
+
+#include <filesystem>
+
+#include "atx/core/datetime.hpp"
+#include "atx/core/io/parquet_writer.hpp"
+
+#include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/data/dataset_schema.hpp"
+#include "atx/engine/data/finra_short.hpp"
+
+#include "serialize_panel.hpp"
+#include "stage_augment.hpp"
+
+namespace atxtest_augment {
+
+namespace fs = std::filesystem;
+using atx::core::time::Timestamp;
+using atx::engine::alpha::FieldId;
+using atx::engine::alpha::Panel;
+using atx::engine::data::DateKey;
+using atx::engine::data::InstKey;
+
+namespace {
+
+constexpr atx::i64 kNsPerDay = 86'400LL * 1'000'000'000LL;
+
+struct FinraRow {
+  std::string symbol;
+  atx::i64 settle_day;
+  atx::i64 current_short;
+  atx::i64 avg_daily_volume;
+  atx::f64 days_to_cover;
+  atx::f64 change_percent;
+};
+
+[[nodiscard]] bool write_partition(const fs::path &root, const std::string &date_dir,
+                                   const std::vector<FinraRow> &rows) {
+  std::vector<std::string> symbol;
+  std::vector<Timestamp> settle;
+  std::vector<atx::i64> cur_short;
+  std::vector<atx::i64> adv;
+  std::vector<atx::f64> dtc;
+  std::vector<atx::f64> chg;
+  for (const auto &r : rows) {
+    symbol.push_back(r.symbol);
+    settle.push_back(Timestamp::from_unix_nanos(r.settle_day * kNsPerDay));
+    cur_short.push_back(r.current_short);
+    adv.push_back(r.avg_daily_volume);
+    dtc.push_back(r.days_to_cover);
+    chg.push_back(r.change_percent);
+  }
+  const std::vector<atx::core::io::WriteColumn> cols = {
+      {"settlement_date", std::span<const Timestamp>(settle)},
+      {"symbol", std::span<const std::string>(symbol)},
+      {"current_short_position_quantity", std::span<const atx::i64>(cur_short)},
+      {"average_daily_volume_quantity", std::span<const atx::i64>(adv)},
+      {"days_to_cover_quantity", std::span<const atx::f64>(dtc)},
+      {"change_percent", std::span<const atx::f64>(chg)},
+  };
+  const fs::path path = root / ("date=" + date_dir) / "part-00000.parquet";
+  return atx::core::io::write_parquet(cols, path.string()).has_value();
+}
+
+struct TempRoot {
+  fs::path path;
+  explicit TempRoot(const std::string &tag) {
+    path = fs::temp_directory_path() /
+           ("atx_aug_" + tag + "_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+    std::error_code ec;
+    fs::remove_all(path, ec);
+    fs::create_directories(path, ec);
+  }
+  ~TempRoot() {
+    std::error_code ec;
+    fs::remove_all(path, ec);
+  }
+};
+
+// A 3-date x 2-instrument research panel carrying market_cap + raw_close so the
+// augment core can derive a shares denominator. Column 0 = ticker "AAA",
+// column 1 = ticker "BBB" (mapped via sym_to_inst below). market_cap/raw_close
+// are constant so shares = market_cap/raw_close is a known number.
+[[nodiscard]] Panel make_input_panel() {
+  const atx::usize D = 3;
+  const atx::usize N = 2;
+  std::vector<atx::f64> close(D * N, 100.0);
+  std::vector<atx::f64> raw_close(D * N, 10.0);
+  std::vector<atx::f64> market_cap(D * N);
+  for (atx::usize d = 0; d < D; ++d) {
+    market_cap[d * N + 0] = 10'000'000.0; // shares col0 = 1,000,000
+    market_cap[d * N + 1] = 20'000'000.0; // shares col1 = 2,000,000
+  }
+  std::vector<std::string> names = {"close", "raw_close", "market_cap"};
+  std::vector<std::vector<atx::f64>> data = {close, raw_close, market_cap};
+  // Mask: col1 out-of-universe on date 0 (to prove the mask carries over verbatim).
+  std::vector<std::uint8_t> universe = {1, 0, 1, 1, 1, 1};
+  auto r = Panel::create(D, N, std::move(names), std::move(data), std::move(universe));
+  return std::move(r).value();
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// 1. Append-only invariant: existing fields/columns bitwise-unchanged.
+// ---------------------------------------------------------------------------
+TEST(Augment, AppendsThreeFieldsAtEnd) {
+  TempRoot root("append");
+  // Both panel symbols get one visible obs (settle 0 -> publish 10, all dates>=20).
+  ASSERT_TRUE(write_partition(root.path, "p1",
+                              {{"AAA", 0, 1'000, 100, 2.0, 1.0}, {"BBB", 0, 2'000, 200, 4.0, 2.0}}));
+
+  Panel input = make_input_panel();
+  const std::vector<DateKey> dates = {20, 21, 22}; // all >= publish_day 10
+  const std::unordered_map<std::string, InstKey> sym_to_inst = {{"AAA", 0}, {"BBB", 1}};
+
+  auto res = atx::impl::augment_panel_with_finra(input, root.path.string(), dates, sym_to_inst,
+                                                 /*lag_days=*/10);
+  ASSERT_TRUE(res.has_value()) << res.error().message();
+  const Panel &aug = *res;
+
+  // Shape: exactly N+3 fields, same dates/instruments.
+  ASSERT_EQ(aug.num_fields(), input.num_fields() + 3);
+  EXPECT_EQ(aug.dates(), input.dates());
+  EXPECT_EQ(aug.instruments(), input.instruments());
+
+  // First N fields: names AND column bytes identical.
+  for (atx::usize f = 0; f < input.num_fields(); ++f) {
+    EXPECT_EQ(aug.field_name(static_cast<FieldId>(f)), input.field_name(static_cast<FieldId>(f)))
+        << "field name changed at id " << f;
+    auto a = aug.field_all(static_cast<FieldId>(f));
+    auto b = input.field_all(static_cast<FieldId>(f));
+    ASSERT_EQ(a.size(), b.size());
+    for (atx::usize c = 0; c < a.size(); ++c) {
+      // Bitwise identity (these inputs carry no NaN).
+      EXPECT_EQ(a[c], b[c]) << "column byte changed at field " << f << " cell " << c;
+    }
+  }
+
+  // The three new fields sit at exactly N, N+1, N+2 with the canonical names.
+  const auto N = input.num_fields();
+  EXPECT_EQ(aug.field_name(static_cast<FieldId>(N + 0)), "si_dtc");
+  EXPECT_EQ(aug.field_name(static_cast<FieldId>(N + 1)), "si_util");
+  EXPECT_EQ(aug.field_name(static_cast<FieldId>(N + 2)), "si_chg");
+
+  // Universe mask carried over verbatim.
+  for (atx::usize d = 0; d < aug.dates(); ++d) {
+    for (atx::usize i = 0; i < aug.instruments(); ++i) {
+      EXPECT_EQ(aug.in_universe(d, i), input.in_universe(d, i))
+          << "universe changed at (" << d << "," << i << ")";
+    }
+  }
+
+  // Sanity: si_dtc for AAA (col0) on date 20 == 2.0; BBB (col1) == 4.0.
+  auto dtc = aug.field_id("si_dtc");
+  ASSERT_TRUE(dtc.has_value());
+  const atx::usize NI = aug.instruments();
+  EXPECT_DOUBLE_EQ(aug.field_all(*dtc)[0 * NI + 0], 2.0);
+  EXPECT_DOUBLE_EQ(aug.field_all(*dtc)[0 * NI + 1], 4.0);
+}
+
+// ---------------------------------------------------------------------------
+// 2. Causality survives the panel append (NaN before publish, value after).
+// ---------------------------------------------------------------------------
+TEST(Augment, CausalityInPanel) {
+  TempRoot root("causal");
+  // AAA: settle 100 -> publish 110 (lag 10). dtc = 5.0.
+  ASSERT_TRUE(write_partition(root.path, "p1", {{"AAA", 100, 1, 1, 5.0, 0.0}}));
+
+  Panel input = make_input_panel();
+  const std::vector<DateKey> dates = {105, 110, 120}; // straddle publish 110
+  const std::unordered_map<std::string, InstKey> sym_to_inst = {{"AAA", 0}};
+
+  auto res = atx::impl::augment_panel_with_finra(input, root.path.string(), dates, sym_to_inst,
+                                                 /*lag_days=*/10);
+  ASSERT_TRUE(res.has_value()) << res.error().message();
+  const Panel &aug = *res;
+  auto dtc = aug.field_id("si_dtc");
+  ASSERT_TRUE(dtc.has_value());
+  const std::span<const atx::f64> col = aug.field_all(*dtc);
+  const atx::usize NI = aug.instruments();
+
+  EXPECT_TRUE(std::isnan(col[0 * NI + 0])) << "date 105 < publish 110 must be NaN";
+  EXPECT_DOUBLE_EQ(col[1 * NI + 0], 5.0); // date 110 == publish -> visible
+  EXPECT_DOUBLE_EQ(col[2 * NI + 0], 5.0); // date 120 -> forward-fill
+}
+
+// ---------------------------------------------------------------------------
+// 3. Round-trip: read_panel(write_panel(aug)) == aug; digest stable.
+// ---------------------------------------------------------------------------
+TEST(Augment, RoundTripDigestMatches) {
+  TempRoot root("rt");
+  ASSERT_TRUE(write_partition(root.path, "p1", {{"AAA", 0, 1'000, 100, 2.0, 1.0}}));
+
+  Panel input = make_input_panel();
+  const std::vector<DateKey> dates = {20, 21, 22};
+  const std::unordered_map<std::string, InstKey> sym_to_inst = {{"AAA", 0}};
+
+  auto res = atx::impl::augment_panel_with_finra(input, root.path.string(), dates, sym_to_inst, 10);
+  ASSERT_TRUE(res.has_value()) << res.error().message();
+  const Panel &aug = *res;
+
+  const std::string path = (root.path / "research_aug.bin").string();
+  auto w1 = atx::impl::write_panel(aug, path);
+  ASSERT_TRUE(w1.has_value()) << w1.error().message();
+  // Stable digest across two writes.
+  auto w2 = atx::impl::write_panel(aug, (root.path / "research_aug2.bin").string());
+  ASSERT_TRUE(w2.has_value());
+  EXPECT_EQ(*w1, *w2) << "augment digest must be stable across writes";
+
+  auto rr = atx::impl::read_panel(path);
+  ASSERT_TRUE(rr.has_value()) << rr.error().message();
+  const Panel &back = *rr;
+  ASSERT_EQ(back.num_fields(), aug.num_fields());
+  ASSERT_EQ(back.dates(), aug.dates());
+  ASSERT_EQ(back.instruments(), aug.instruments());
+  for (atx::usize f = 0; f < aug.num_fields(); ++f) {
+    auto a = aug.field_all(static_cast<FieldId>(f));
+    auto b = back.field_all(static_cast<FieldId>(f));
+    ASSERT_EQ(a.size(), b.size());
+    for (atx::usize c = 0; c < a.size(); ++c) {
+      if (std::isnan(a[c])) {
+        EXPECT_TRUE(std::isnan(b[c])) << "field " << f << " cell " << c << " expected NaN";
+      } else {
+        EXPECT_EQ(a[c], b[c]) << "field " << f << " cell " << c << " mismatch";
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. si_util uses panel-derived shares (market_cap/raw_close), not ADV.
+// ---------------------------------------------------------------------------
+TEST(Augment, UtilFromPanelShares) {
+  TempRoot root("util");
+  // AAA -> col0. shares col0 = market_cap/raw_close = 10,000,000/10 = 1,000,000.
+  // current_short = 250,000 -> si_util = 250,000 / 1,000,000 = 0.25.
+  // ADV = 50,000 would give 5.0, so a 0.25 result PROVES shares (not ADV) was used.
+  ASSERT_TRUE(write_partition(root.path, "p1", {{"AAA", 0, 250'000, 50'000, 3.0, 0.0}}));
+
+  Panel input = make_input_panel(); // 3 dates x 2 instruments
+  const std::vector<DateKey> dates = {20, 21, 22};
+  const std::unordered_map<std::string, InstKey> sym_to_inst = {{"AAA", 0}};
+
+  auto res = atx::impl::augment_panel_with_finra(input, root.path.string(), dates, sym_to_inst, 10);
+  ASSERT_TRUE(res.has_value()) << res.error().message();
+  const Panel &aug = *res;
+  auto util = aug.field_id("si_util");
+  ASSERT_TRUE(util.has_value());
+  const atx::usize NI = aug.instruments();
+  // All dates >= publish_day 10, so si_util is the same on every date for col0.
+  EXPECT_DOUBLE_EQ(aug.field_all(*util)[0 * NI + 0], 0.25)
+      << "si_util must use panel shares (market_cap/raw_close), not ADV";
+}
+
+} // namespace atxtest_augment

@@ -1,0 +1,38 @@
+# Short-interest seed templates (S2 — atx p7).
+# Parse + typecheck against panel carrying si_dtc, si_util, si_chg,
+# returns, sector (after augment + with_alpha101_fields).
+# Format: `<id>: <dsl-expression>`. Lines beginning with '#' are comments.
+# Every seed references at least one of si_dtc, si_util, si_chg and is
+# sector-neutral via group_neutralize(..., sector).
+# NOTE: seeds that reference adv20 require the panel to carry adv20 (pass
+# adv_windows containing 20 through with_alpha101_fields in production).
+
+# Days-to-cover: long high short-squeeze potential
+si1: group_neutralize(rank(si_dtc), sector)
+
+# Utilization: long high-borrow-demand names
+si2: group_neutralize(rank(si_util), sector)
+
+# Short-change: long increasing short interest (short-squeeze anticipation)
+si3: group_neutralize(rank(si_chg), sector)
+
+# DTC z-score sector-neutral
+si4: group_neutralize(zscore(si_dtc), sector)
+
+# Negative DTC: contrarian — short high-DTC (momentum side)
+si5: group_neutralize(-1 * rank(si_dtc), sector)
+
+# Utilization scaled by 21d returns: crowded-short reversal
+si6: group_neutralize(rank(si_util * (-1 * ts_mean(returns, 21))), sector)
+
+# Short-change x DTC interaction
+si7: group_neutralize(rank(si_dtc * si_chg), sector)
+
+# DTC minus adv20-ranked illiquidity (borrow premium proxy)
+si8: group_neutralize(rank(si_dtc - rank(adv20)), sector)
+
+# Util x return reversal: high-util names with recent negative returns
+si9: group_neutralize(rank(si_util * (-1 * ts_mean(returns, 5))), sector)
+
+# Short-change z-score sector-neutral
+si10: group_neutralize(zscore(si_chg), sector)
