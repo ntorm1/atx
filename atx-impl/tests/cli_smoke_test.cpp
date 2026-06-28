@@ -312,6 +312,159 @@ TEST(Config, ResumeWithoutRunDbRejected) {
     EXPECT_EQ(cfg.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
+// ---------------------------------------------------------------------------
+// S7 parse round-trip tests
+// ---------------------------------------------------------------------------
+
+// Test S7-1: S3 search net-cost / seed-handling knobs
+TEST(Config, ParsesS7SearchKnobs) {
+    const char* argv[] = {
+        "atx", "discover",
+        "--turnover-penalty-slope", "0.1",
+        "--max-turnover-target",    "0.25",
+        "--protect-seed-elites",
+        "--mutate-seed-copies",
+        "--min-viable-raw",         "0.05",
+    };
+    auto cfg = atx::impl::parse_args(10, const_cast<char**>(argv));
+    ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().message());
+    EXPECT_DOUBLE_EQ(cfg.value().turnover_penalty_slope, 0.1);
+    EXPECT_DOUBLE_EQ(cfg.value().max_turnover_target,    0.25);
+    EXPECT_TRUE(cfg.value().protect_seed_elites);
+    EXPECT_TRUE(cfg.value().mutate_seed_copies);
+    EXPECT_DOUBLE_EQ(cfg.value().min_viable_raw, 0.05);
+}
+
+// Test S7-2: S4 cost-aware gate knobs
+TEST(Config, ParsesS7GateKnobs) {
+    const char* argv[] = {
+        "atx", "discover",
+        "--cost-bps-admit",    "10",
+        "--min-holding-days",  "5",
+        "--cost-max-turnover", "0.5",
+    };
+    auto cfg = atx::impl::parse_args(8, const_cast<char**>(argv));
+    ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().message());
+    EXPECT_DOUBLE_EQ(cfg.value().cost_bps_admit,    10.0);
+    EXPECT_DOUBLE_EQ(cfg.value().min_holding_days,   5.0);
+    EXPECT_DOUBLE_EQ(cfg.value().cost_max_turnover,  0.5);
+}
+
+// Test S7-3: S5 panel-augment knobs
+TEST(Config, ParsesAdvWindowsList) {
+    // Happy path: --augment-panel --adv-windows 5,10,20,60
+    {
+        const char* argv[] = {
+            "atx", "panel",
+            "--augment-panel",
+            "--adv-windows", "5,10,20,60",
+        };
+        auto cfg = atx::impl::parse_args(5, const_cast<char**>(argv));
+        ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().message());
+        EXPECT_TRUE(cfg.value().augment_panel);
+        ASSERT_EQ(cfg.value().adv_windows.size(), 4u);
+        EXPECT_EQ(cfg.value().adv_windows[0], 5);
+        EXPECT_EQ(cfg.value().adv_windows[1], 10);
+        EXPECT_EQ(cfg.value().adv_windows[2], 20);
+        EXPECT_EQ(cfg.value().adv_windows[3], 60);
+    }
+
+    // Error: empty value
+    {
+        const char* argv[] = {
+            "atx", "panel",
+            "--adv-windows", "",
+        };
+        auto cfg = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(cfg.has_value()) << "expected Err on empty --adv-windows";
+    }
+
+    // Error: 0 is out of range (need 1..65535)
+    {
+        const char* argv[] = {
+            "atx", "panel",
+            "--adv-windows", "0",
+        };
+        auto cfg = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(cfg.has_value()) << "expected Err on --adv-windows 0";
+    }
+
+    // Error: 70000 exceeds u16 max (65535)
+    {
+        const char* argv[] = {
+            "atx", "panel",
+            "--adv-windows", "70000",
+        };
+        auto cfg = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(cfg.has_value()) << "expected Err on --adv-windows 70000";
+    }
+
+    // Error: empty token in list (5,,20)
+    {
+        const char* argv[] = {
+            "atx", "panel",
+            "--adv-windows", "5,,20",
+        };
+        auto cfg = atx::impl::parse_args(4, const_cast<char**>(argv));
+        EXPECT_FALSE(cfg.has_value()) << "expected Err on --adv-windows 5,,20";
+    }
+}
+
+// Test S7-4: config-file round-trip for S7 flags
+TEST(Config, S7FlagsConfigFileRoundTrip) {
+    namespace fs = std::filesystem;
+    const fs::path tmp_path =
+        fs::temp_directory_path() / "atx_impl_S7FlagsRoundTrip.cfg";
+    {
+        std::ofstream f(tmp_path);
+        ASSERT_TRUE(f.is_open()) << "failed to open temp config: " << tmp_path;
+        // S7-1 discover flags
+        f << "turnover-penalty-slope=0.1\n";
+        f << "max-turnover-target=0.25\n";
+        f << "protect-seed-elites=\n";
+        f << "mutate-seed-copies=\n";
+        f << "min-viable-raw=0.05\n";
+        // S7-2 gate flags
+        f << "cost-bps-admit=10\n";
+        f << "min-holding-days=5\n";
+        f << "cost-max-turnover=0.5\n";
+    }
+    auto fcfg = atx::impl::parse_config_file(tmp_path.string(), "discover");
+    ASSERT_TRUE(fcfg.has_value()) << (fcfg ? "" : fcfg.error().message());
+    EXPECT_DOUBLE_EQ(fcfg.value().turnover_penalty_slope, 0.1);
+    EXPECT_DOUBLE_EQ(fcfg.value().max_turnover_target,    0.25);
+    EXPECT_TRUE(fcfg.value().protect_seed_elites);
+    EXPECT_TRUE(fcfg.value().mutate_seed_copies);
+    EXPECT_DOUBLE_EQ(fcfg.value().min_viable_raw,        0.05);
+    EXPECT_DOUBLE_EQ(fcfg.value().cost_bps_admit,        10.0);
+    EXPECT_DOUBLE_EQ(fcfg.value().min_holding_days,       5.0);
+    EXPECT_DOUBLE_EQ(fcfg.value().cost_max_turnover,      0.5);
+
+    // Panel flags round-trip (separate parse_config_file with panel subcommand)
+    {
+        const fs::path tmp2 =
+            fs::temp_directory_path() / "atx_impl_S7PanelRoundTrip.cfg";
+        {
+            std::ofstream f2(tmp2);
+            ASSERT_TRUE(f2.is_open());
+            f2 << "augment-panel=\n";
+            f2 << "adv-windows=5,10,20,60\n";
+        }
+        auto pcfg = atx::impl::parse_config_file(tmp2.string(), "panel");
+        ASSERT_TRUE(pcfg.has_value()) << (pcfg ? "" : pcfg.error().message());
+        EXPECT_TRUE(pcfg.value().augment_panel);
+        ASSERT_EQ(pcfg.value().adv_windows.size(), 4u);
+        EXPECT_EQ(pcfg.value().adv_windows[0], 5);
+        EXPECT_EQ(pcfg.value().adv_windows[3], 60);
+
+        std::error_code ec2;
+        fs::remove(tmp2, ec2);
+    }
+
+    std::error_code ec;
+    fs::remove(tmp_path, ec);
+}
+
 TEST(AtxImplCli, RegimeStageBuildsSegment) {
   namespace fs = std::filesystem;
   const fs::path dir = fs::temp_directory_path() / "atx_impl_regime_smoke";

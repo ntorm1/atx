@@ -38,6 +38,9 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "typed-fields")       { cfg.typed_fields       = true; return atx::core::Ok(); } // R1
     if (flag == "pbo-hard-block")     { cfg.pbo_hard_block     = true; return atx::core::Ok(); } // R3
     if (flag == "deflate-selection")  { cfg.deflate_selection  = true; return atx::core::Ok(); } // R4
+    if (flag == "protect-seed-elites") { cfg.protect_seed_elites = true; return atx::core::Ok(); } // S7-1
+    if (flag == "mutate-seed-copies")  { cfg.mutate_seed_copies  = true; return atx::core::Ok(); } // S7-1
+    if (flag == "augment-panel")       { cfg.augment_panel        = true; return atx::core::Ok(); } // S7-3
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -109,6 +112,29 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                 + std::string(value) + "'");
         }
         cfg.weight_transform = std::move(lowered);
+        return atx::core::Ok();
+    }
+
+    // --adv-windows (S7-3): comma-separated list of u16 ADV windows (e.g. "5,10,20,60").
+    if (flag == "adv-windows") {
+        cfg.adv_windows.clear();
+        std::string_view rest = value;
+        if (rest.empty())
+            return atx::core::Err(EC::InvalidArgument, "--adv-windows: empty value");
+        while (!rest.empty()) {
+            const auto comma = rest.find(',');
+            const std::string_view tok = rest.substr(0, comma);
+            if (tok.empty())
+                return atx::core::Err(EC::InvalidArgument, "--adv-windows: empty window in list");
+            unsigned long w = 0;
+            auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), w);
+            if (ec != std::errc{} || ptr != tok.data() + tok.size() || w == 0 || w > 65535)
+                return atx::core::Err(EC::InvalidArgument,
+                    std::string("--adv-windows: invalid window '") + std::string(tok) + "' (need 1..65535)");
+            cfg.adv_windows.push_back(static_cast<atx::u16>(w));
+            if (comma == std::string_view::npos) break;
+            rest.remove_prefix(comma + 1);
+        }
         return atx::core::Ok();
     }
 
@@ -203,6 +229,12 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "min-fitness")       return parse_double(cfg.min_fitness);
     if (flag == "max-turnover")      return parse_double(cfg.max_turnover);
     if (flag == "max-pool-corr")     return parse_double(cfg.max_pool_corr);
+    if (flag == "cost-bps-admit")    return parse_double(cfg.cost_bps_admit);   // S7-2
+    if (flag == "min-holding-days")  return parse_double(cfg.min_holding_days); // S7-2
+    if (flag == "cost-max-turnover") return parse_double(cfg.cost_max_turnover); // S7-2
+    if (flag == "turnover-penalty-slope") return parse_double(cfg.turnover_penalty_slope); // S7-1
+    if (flag == "max-turnover-target")    return parse_double(cfg.max_turnover_target);    // S7-1
+    if (flag == "min-viable-raw")         return parse_double(cfg.min_viable_raw);         // S7-1
     if (flag == "target-aum")        return parse_double(cfg.target_aum);
     if (flag == "workers")           return parse_long(cfg.workers);
     if (flag == "oos-fraction")      return parse_double(cfg.oos_fraction);
@@ -316,7 +348,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;

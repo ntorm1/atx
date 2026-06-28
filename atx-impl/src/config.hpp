@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/types.hpp"  // atx::u16 (needed for adv_windows)
 
 namespace atx::impl {
 
@@ -64,6 +65,10 @@ struct RunConfig {
     double      min_fitness   = 1.0;   // --min-fitness   (AlphaGate WorldQuant-fitness floor)
     double      max_turnover  = 0.70;  // --max-turnover  (AlphaGate per-alpha turnover cap)
     double      max_pool_corr = 0.70;  // --max-pool-corr (AlphaGate max |corr| to any admitted alpha)
+    // -- S7-2: S4 cost-aware admission-gate knobs (inert defaults -> byte-identical) --
+    double cost_bps_admit    = 0.0; // --cost-bps-admit   -> GateConfig.rt_cost_bps
+    double min_holding_days  = 0.0; // --min-holding-days -> GateConfig.min_holding_days
+    double cost_max_turnover = 0.0; // --cost-max-turnover (0 = off; else overrides GateConfig.max_turnover)
     double      target_aum    = 0.0;   // --target-aum    (capacity cost objective; 0 = off)
     long        workers       = 0;     // --workers       (search DetPool fan-out; 0 = auto = cores-1).
                                        // Digest-invariant (F1): affects speed/memory, never bits.
@@ -127,6 +132,12 @@ struct RunConfig {
     // DEFAULT FALSE: absent this flag the SearchConfig knob defaults false and the
     // factory's mutate_one path is byte-identical to today (kGoldenDigest pin).
     bool        enable_wrap_in_op = false; // --enable-wrap-in-op
+    // -- S7-1: S3 search net-cost / seed-handling knobs (inert defaults -> byte-identical) --
+    double turnover_penalty_slope = 0.0;                                  // --turnover-penalty-slope -> FitnessCfg
+    double max_turnover_target    = std::numeric_limits<double>::infinity(); // --max-turnover-target -> FitnessCfg
+    bool   protect_seed_elites    = false;                               // --protect-seed-elites -> SearchConfig
+    bool   mutate_seed_copies     = false;                               // --mutate-seed-copies  -> SearchConfig
+    double min_viable_raw         = 0.0;                                 // --min-viable-raw      -> SearchConfig
 
     // --reject-price-scale (R2): opt-in admission gate. Rejects a candidate whose
     // holdout book is a trivial 1/price (price-scale) tilt. The threshold is the
@@ -173,6 +184,10 @@ struct RunConfig {
     // Default 20 (matching the manual capacity-universe validation). --min-adv is an
     // alias parse arm for cfg.min_adv_usd so "--min-adv 50e6" works as documented.
     long        adv_window = 20;           // --adv-window (used only when screen active)
+    // -- S7-3: S5 panel-augment knobs. adv_windows MUST be std::vector<atx::u16> — stage_panel.cpp
+    // already assigns cfg.adv_windows directly into a std::vector<atx::u16>. empty => {adv_window}.
+    std::vector<atx::u16> adv_windows;      // --adv-windows (comma-separated list)
+    bool                  augment_panel = false; // --augment-panel (valueless bool)
 
     // --library-dir (8.A): a STABLE on-disk library::Library directory that
     // ACCUMULATES admitted alphas across discover runs/seeds (the library is

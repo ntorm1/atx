@@ -416,6 +416,10 @@ atx::core::Result<StageResult> run_discover_gated(
     gc.min_fitness   = cfg.min_fitness;
     gc.max_turnover  = cfg.max_turnover;
     gc.max_pool_corr = cfg.max_pool_corr;
+    // S7-2: S4 cost-aware gate knobs (0.0 inert -> AlphaGate behaves byte-identically).
+    gc.rt_cost_bps      = cfg.cost_bps_admit;
+    gc.min_holding_days = cfg.min_holding_days;
+    if (cfg.cost_max_turnover > 0.0) gc.max_turnover = cfg.cost_max_turnover;
     const combine::AlphaGate gate{gc};
 
     // Factory config: search budget + grammar + capacity (target_aum) + the S1
@@ -860,6 +864,14 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     sc.enable_behavioral_novelty = true;
     // W1b: opt-in wrap_in_op mutation (default false -> byte-identical legacy path).
     sc.enable_wrap_in_op = cfg.enable_wrap_in_op;
+    // S7-1: S3 search net-cost / seed-handling knobs. Set on `sc` (the single SearchConfig
+    // source): the ungated path uses driver.run(sc); the gated path copies via fcfg.search = sc.
+    sc.protect_seed_elites            = cfg.protect_seed_elites;
+    sc.mutate_seed_copies             = cfg.mutate_seed_copies;
+    sc.min_viable_raw                 = cfg.min_viable_raw;
+    sc.deflate_selection              = cfg.deflate_selection;            // also fixes the ungated path (was only set on fcfg.search)
+    sc.fitness.turnover_penalty_slope = cfg.turnover_penalty_slope;
+    sc.fitness.max_turnover_target    = cfg.max_turnover_target;
 
     // Parallelize the search (digest-invariant: SearchConfig::n_workers affects
     // speed/memory, never bits — F1). --workers overrides; 0 = auto (cores-1).

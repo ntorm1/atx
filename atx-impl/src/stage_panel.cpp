@@ -18,11 +18,6 @@
 namespace atx::impl {
 
 atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
-    // SPRINT7-WIRES: Sprint 7 must declare the following fields in RunConfig
-    // (config.hpp) before enabling ATX_PANEL_AUGMENT in its build profile:
-    //   cfg.augment_panel : bool                       — master on/off switch
-    //   cfg.adv_windows   : std::vector<atx::u16>      — adv{d} window list
-    // Until those are present the #if block below stays compiled out (guard OFF).
 
     // 1. Validate required fields.
     if (cfg.segs.empty() || cfg.panel_out.empty()) {
@@ -62,16 +57,16 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
     hc.compact_to_universe = cfg.compact_universe; // drop never-in-universe columns
     ATX_TRY(auto hp, atx::engine::data::build_history_panel(hc));
 
-    // SPRINT7-WIRES: cfg.augment_panel (bool) and cfg.adv_windows (vector<u16>) are
-    // declared in config.hpp by Sprint 7; until then this opt-in path is compiled
-    // out so the default panel.bin stays byte-identical.
-#if defined(ATX_PANEL_AUGMENT) // Sprint 7 turns this on via its build profile
-    const std::vector<atx::u16> adv_wins =
-        cfg.adv_windows.empty()
-            ? std::vector<atx::u16>{static_cast<atx::u16>(cfg.adv_window)}
-            : cfg.adv_windows;
-    ATX_TRY(hp.panel, atx::engine::alpha::with_alpha101_fields(hp.panel, adv_wins));
-#endif // ATX_PANEL_AUGMENT
+    // S7-3: opt-in Alpha101 panel augmentation. Default (augment_panel=false, adv_windows
+    // empty) skips this entirely -> panel.bin byte-identical. Empty list falls back to the
+    // single legacy --adv-window.
+    if (cfg.augment_panel || !cfg.adv_windows.empty()) {
+        const std::vector<atx::u16> adv_wins =
+            cfg.adv_windows.empty()
+                ? std::vector<atx::u16>{static_cast<atx::u16>(cfg.adv_window)}
+                : cfg.adv_windows;
+        ATX_TRY(hp.panel, atx::engine::alpha::with_alpha101_fields(hp.panel, adv_wins));
+    }
 
     // 5. Serialize.
     ATX_TRY(auto wd, write_panel(hp.panel, cfg.panel_out));
@@ -92,14 +87,21 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
         char ts_buf[32]{};
         std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%SZ", &gm);
 
-        // Compile-time constants reflect the augmentation state of THIS build.
-#if defined(ATX_PANEL_AUGMENT)
-        const char* adv_windows_val = "augmented"; // Sprint 7 will emit the real window list
-        const char* augmented_val   = "true";
-#else
-        const char* adv_windows_val = "none";
-        const char* augmented_val   = "false";
-#endif
+        // Runtime values reflect actual augmentation state (S7-3 wired).
+        const bool did_augment = cfg.augment_panel || !cfg.adv_windows.empty();
+        std::string adv_windows_val = "none";
+        if (did_augment) {
+            if (cfg.adv_windows.empty()) {
+                adv_windows_val = std::to_string(cfg.adv_window);
+            } else {
+                adv_windows_val.clear();
+                for (std::size_t i = 0; i < cfg.adv_windows.size(); ++i) {
+                    if (i) adv_windows_val += ",";
+                    adv_windows_val += std::to_string(cfg.adv_windows[i]);
+                }
+            }
+        }
+        const char* augmented_val = did_augment ? "true" : "false";
 
         const std::string meta_path = cfg.panel_out + ".meta.txt";
         std::ofstream mf(meta_path, std::ios::out | std::ios::trunc);
