@@ -352,8 +352,8 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "v_thirteenf_positioning_by_security",
         ),
         parity_status="partial",
-        limitations="13F is quarterly, delayed, long-only for reportable securities; current loaded holdings breadth may be filtered by bootstrap CUSIP options; the 2023-01-03 x1000 VALUE-unit cutover is not yet normalized for pre-2023 backfills, and authoritative cross-CIK rollups require a curated continuity seed.",
-        next_gap="Apply the 2023-01-03 VALUE-unit cutover for pre-2023 backfills, load a curated subadvisor / M&A-continuity seed into filer_13f_cik_alias, run full-holdings multi-period refreshes, broaden CUSIP/security reconciliation, and add manager-level style/concentration history.",
+        limitations="13F is quarterly, delayed, long-only for reportable securities; current loaded holdings breadth may be filtered by bootstrap CUSIP options; the 2023-01-03 x1000 VALUE-unit cutover is normalized at load (S6b), but authoritative cross-CIK rollups still require a curated continuity seed.",
+        next_gap="Load a curated subadvisor / M&A-continuity seed into filer_13f_cik_alias, run full-holdings multi-period refreshes, broaden CUSIP/security reconciliation, and add manager-level style/concentration history.",
         source_urls=(
             "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets",
             "https://www.sec.gov/files/form_13f_readme.pdf",

@@ -140,6 +140,54 @@ def float_series(values: pd.Series) -> pd.Series:
     return pd.to_numeric(values.replace("", pd.NA), errors="coerce")
 
 
+# SEC Form 13F amended rules require the information-table VALUE column to be
+# reported in whole dollars for filings whose periodOfReport is on/after
+# 2023-01-01 (effective for filings made on/after 2023-01-03). For earlier
+# periods VALUE is reported in *thousands* of dollars. Normalizing everything to
+# whole dollars avoids a silent 1000x understatement when SUMming mixed-vintage
+# holdings — the classic 13F backfill bug. Current loaded periods are all
+# post-cutover (multiplier 1), so this is a no-op for existing rows.
+VALUE_UNIT_CUTOVER_PERIOD = dt.date(2022, 12, 31)
+
+
+def value_unit_multiplier(period_of_report: object) -> int:
+    """Return the VALUE->whole-dollars multiplier for a filing period.
+
+    1000 when ``period_of_report`` is on/before 2022-12-31 (VALUE was in
+    thousands), 1 afterward, and 1 when the period is missing/unparseable.
+    """
+    if period_of_report is None:
+        return 1
+    try:
+        if pd.isna(period_of_report):
+            return 1
+    except (TypeError, ValueError):
+        pass
+    timestamp = pd.Timestamp(period_of_report)
+    if pd.isna(timestamp):
+        return 1
+    return 1000 if timestamp <= pd.Timestamp(VALUE_UNIT_CUTOVER_PERIOD) else 1
+
+
+def apply_value_unit_cutover(
+    frame: pd.DataFrame,
+    accession_periods: dict[str, dt.date],
+) -> pd.DataFrame:
+    """Scale ``value_usd`` to whole dollars using each holding's filing period.
+
+    ``accession_periods`` maps accession_number -> period_of_report. Holdings
+    whose accession is absent from the map are left unscaled (safe default).
+    """
+    if frame.empty or "value_usd" not in frame.columns or "accession_number" not in frame.columns:
+        return frame
+    multipliers = frame["accession_number"].map(
+        lambda accession: value_unit_multiplier(accession_periods.get(accession))
+    )
+    scaled = frame.copy()
+    scaled["value_usd"] = scaled["value_usd"] * multipliers.astype("int64")
+    return scaled
+
+
 def normalize_submission(frame: pd.DataFrame, source_period: str) -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -450,6 +498,17 @@ class ThirteenFDataSet(Dataset):
         options: ThirteenFOptions,
     ) -> int:
         rows = 0
+        # Map each accession to its period_of_report so VALUE can be normalized
+        # to whole dollars across the 2023-01-03 unit cutover (see
+        # value_unit_multiplier). Submissions for this source_period were loaded
+        # just before holdings in ThirteenFDataSet.load.
+        accession_periods = {
+            accession: period
+            for accession, period in store.con.execute(
+                "SELECT accession_number, period_of_report FROM thirteenf_submissions WHERE source_period = ?",
+                [source_period],
+            ).fetchall()
+        }
         with zipfile.ZipFile(zip_path) as archive:
             with archive.open("INFOTABLE.tsv") as handle:
                 for raw_chunk in pd.read_csv(
@@ -463,6 +522,7 @@ class ThirteenFDataSet(Dataset):
                     if filtered.empty:
                         continue
                     normalized = normalize_holdings(filtered, source_period)
+                    normalized = apply_value_unit_cutover(normalized, accession_periods)
                     normalized = self._apply_security_ids(store, normalized, options)
                     rows += self._load_member(store, normalized, "thirteenf_holdings")
         return rows
