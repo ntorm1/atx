@@ -88,11 +88,28 @@ class TestComputeRatioRows:
             ("buyback_to_net_income", 0.50),
             ("total_payout_ratio", 0.65),
             ("book_value_per_share", 4.0),
+            # S9b: efficiency / cash-flow-coverage / reinvestment ratios
+            ("asset_turnover", 400.0 / 350.0),
+            ("equity_turnover", 400.0 / 60.0),
+            ("operating_return_on_assets", 120.0 / 350.0),
+            ("operating_cash_flow_margin", 130.0 / 400.0),
+            ("operating_cash_flow_to_assets", 130.0 / 350.0),
+            ("operating_cash_flow_to_liabilities", 130.0 / 290.0),
+            ("capex_to_operating_cash_flow", 30.0 / 130.0),
+            ("retention_ratio", (100.0 - 15.0) / 100.0),
         ],
     )
     def test_ratio_values(self, code, expected):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
         assert rows[code].value == pytest.approx(expected)
+
+    def test_efficiency_ratios_have_efficiency_category(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+        assert rows["asset_turnover"].ratio_category == "efficiency"
+        assert rows["equity_turnover"].ratio_category == "efficiency"
+        # equity_turnover denominator is equity -> not meaningful when negative
+        neg = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(equity=-10.0)])))
+        assert neg["equity_turnover"].is_meaningful is False
 
     def test_free_cash_flow_is_level_kind_in_currency(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))

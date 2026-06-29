@@ -141,6 +141,33 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
     RatioDef("book_value_per_share", "per_share", "per_share", "currency_per_share",
              "stockholders_equity", "shares_outstanding", ("equity", "shares"),
              lambda r: (r["equity"], r["shares"])),
+    # --- efficiency / activity (S9b) --------------------------------------
+    RatioDef("asset_turnover", "efficiency", "ratio", "ratio",
+             "revenue", "assets", ("rev", "assets"),
+             lambda r: (r["rev"], r["assets"])),
+    RatioDef("equity_turnover", "efficiency", "ratio", "ratio",
+             "revenue", "stockholders_equity", ("rev", "equity"),
+             lambda r: (r["rev"], r["equity"]), require_positive_denominator=True),
+    # --- additional profitability / cash-flow coverage (S9b) --------------
+    RatioDef("operating_return_on_assets", "profitability", "ratio", "ratio",
+             "operating_income", "assets", ("oi", "assets"),
+             lambda r: (r["oi"], r["assets"])),
+    RatioDef("operating_cash_flow_margin", "cash_flow", "ratio", "ratio",
+             "operating_cash_flow", "revenue", ("ocf", "rev"),
+             lambda r: (r["ocf"], r["rev"])),
+    RatioDef("operating_cash_flow_to_assets", "cash_flow", "ratio", "ratio",
+             "operating_cash_flow", "assets", ("ocf", "assets"),
+             lambda r: (r["ocf"], r["assets"])),
+    RatioDef("operating_cash_flow_to_liabilities", "cash_flow", "ratio", "ratio",
+             "operating_cash_flow", "liabilities", ("ocf", "liabilities"),
+             lambda r: (r["ocf"], r["liabilities"]), require_positive_denominator=True),
+    RatioDef("capex_to_operating_cash_flow", "cash_flow", "ratio", "ratio",
+             "abs_capital_expenditures", "operating_cash_flow", ("capex", "ocf"),
+             lambda r: (_abs(r["capex"]), r["ocf"]), require_positive_denominator=True),
+    # --- payout / reinvestment (S9b) --------------------------------------
+    RatioDef("retention_ratio", "payout", "ratio", "ratio",
+             "net_income_minus_dividends", "net_income", ("ni", "div"),
+             lambda r: (r["ni"] - _abs(r["div"]), r["ni"]), require_positive_denominator=True),
 )
 
 
