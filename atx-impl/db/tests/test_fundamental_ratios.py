@@ -62,6 +62,11 @@ def _wide_row(**overrides) -> dict:
         "ocf_prior": 104.0, "ocf_prior_av": _ts("2025-05-01"),
         "assets_prior": 300.0, "assets_prior_av": _ts("2025-05-03"),
         "equity_prior": 50.0, "equity_prior_av": _ts("2025-05-01"),
+        # consolidated inline-XBRL instant metrics for liquidity ratios (S10a)
+        "current_assets": 200.0, "current_assets_av": _ts("2026-05-01"),
+        "current_liabilities": 100.0, "current_liabilities_av": _ts("2026-05-01"),
+        "cash_and_equivalents": 40.0, "cash_and_equivalents_av": _ts("2026-05-01"),
+        "inventory": 30.0, "inventory_av": _ts("2026-05-01"),
     }
     base.update(overrides)
     return base
@@ -116,6 +121,12 @@ class TestComputeRatioRows:
             ("average_return_on_equity", 100.0 / ((60.0 + 50.0) / 2)),
             ("operating_cash_flow_to_average_assets", 130.0 / ((350.0 + 300.0) / 2)),
             ("equity_growth_yoy", (60.0 - 50.0) / 50.0),
+            # S10a: liquidity / working-capital ratios (consolidated XBRL instants)
+            ("current_ratio", 200.0 / 100.0),
+            ("quick_ratio", (200.0 - 30.0) / 100.0),
+            ("cash_ratio", 40.0 / 100.0),
+            ("working_capital", 100.0),
+            ("working_capital_to_assets", (200.0 - 100.0) / 350.0),
         ],
     )
     def test_ratio_values(self, code, expected):
@@ -152,6 +163,17 @@ class TestComputeRatioRows:
         rows = _by_code(compute_ratio_rows(pd.DataFrame([row])))
         g = rows["net_income_growth_yoy"]
         assert g.is_meaningful is False  # sign of % change is ambiguous off a negative base
+
+    def test_quick_ratio_treats_missing_inventory_as_zero(self):
+        # firms that report no InventoryNet (software/aerospace) -> quick == current
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(inventory=None, inventory_av=None)])))
+        assert rows["quick_ratio"].value == pytest.approx(200.0 / 100.0)
+        assert rows["current_ratio"].value == pytest.approx(200.0 / 100.0)
+
+    def test_liquidity_dropped_without_current_liabilities(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(current_liabilities=None, current_liabilities_av=None)])))
+        for code in ("current_ratio", "quick_ratio", "cash_ratio", "working_capital"):
+            assert code not in rows
 
     def test_average_balance_returns_need_both_balances(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
@@ -341,6 +363,34 @@ class TestRefreshIntegration:
         n2 = tmp_store.con.execute("SELECT count(*) FROM fundamental_ratios").fetchone()[0]
         assert r1.rows_loaded == r2.rows_loaded
         assert n1 == n2  # no duplication on re-run
+
+    def test_reads_liquidity_metrics_from_xbrl_table(self, tmp_store):
+        sid, sym, end = _seed_minimal(tmp_store)
+        av = dt.datetime(2026, 5, 1, 22, 0)
+
+        def _xm(metric, value):
+            tmp_store.con.execute(
+                """
+                INSERT INTO fundamental_xbrl_metric (
+                    metric_id, source, security_id, symbol, cik, canonical_metric, concept,
+                    taxonomy, period_type, period_end, value, is_latest_revision, as_of_date, available_at
+                ) VALUES (?, 'x', ?, ?, '320193', ?, ?, 'us-gaap', 'instant', ?, ?, true, ?, ?)
+                """,
+                [f"{metric}|{end}", sid, sym, metric, metric, end, value, end, av],
+            )
+
+        _xm("current_assets", 200.0)
+        _xm("current_liabilities", 100.0)
+        _xm("cash_and_equivalents", 40.0)
+        _xm("inventory", 30.0)
+        FundamentalRatiosDataset().run(tmp_store, FundamentalRatiosOptions())
+        df = tmp_store.con.execute(
+            "SELECT ratio_code, value FROM fundamental_ratios WHERE ratio_category='liquidity'"
+        ).df()
+        codes = dict(zip(df["ratio_code"], df["value"]))
+        assert codes["current_ratio"] == pytest.approx(2.0)
+        assert codes["quick_ratio"] == pytest.approx(1.7)
+        assert codes["cash_ratio"] == pytest.approx(0.4)
 
     def test_no_duplicate_natural_keys(self, tmp_store):
         _seed_minimal(tmp_store)

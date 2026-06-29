@@ -2491,8 +2491,8 @@ def _fundamental_ratios(conn: duckdb.DuckDBPyConnection) -> None:
             END AS semantic_type,
             CASE c.column_name
                 WHEN 'ratio_code' THEN 'Stable ratio identifier (e.g. net_profit_margin, return_on_equity, free_cash_flow).'
-                WHEN 'ratio_category' THEN 'Ratio family: profitability, leverage, efficiency, cash_flow, payout, per_share, or growth.'
-                WHEN 'ratio_kind' THEN 'ratio (dimensionless), level (currency amount), per_share, or growth (year-over-year fractional change).'
+                WHEN 'ratio_category' THEN 'Ratio family: profitability, leverage, efficiency, liquidity, cash_flow, payout, per_share, or growth.'
+                WHEN 'ratio_kind' THEN 'ratio (dimensionless), level (currency sum), difference (currency net), per_share, or growth (year-over-year fractional change).'
                 WHEN 'basis' THEN 'Input basis for the ratio (ttm = trailing-twelve-month flows over the instant balance at period_end).'
                 WHEN 'value' THEN 'Computed ratio value; numerator_value / denominator_value for ratio/per_share kinds, numerator_value + denominator_value for level kinds.'
                 WHEN 'numerator_value' THEN 'Effective numerator operand used to compute value (post sign/abs transform).'
@@ -2517,6 +2517,129 @@ def _fundamental_ratios(conn: duckdb.DuckDBPyConnection) -> None:
         WHERE c.schema_name = 'main'
           AND coalesce(c.internal, false) = false
           AND c.table_name = 'fundamental_ratios'
+        """
+    )
+
+
+def _fundamental_xbrl_metric(conn: duckdb.DuckDBPyConnection) -> None:
+    """S10a: consolidated inline-XBRL metric extraction surface.
+
+    Canonical metric rows pulled from the already-cached ``xbrl_filing_facts`` for
+    concepts the narrow companyfacts feed never carried (current assets/liabilities,
+    cash, inventory, ...). Only entity-level (non-segment) facts are kept — selected
+    via the fact's filing context having zero dimension members — so values are
+    consolidated totals, not segment breakdowns. Bitemporal: ``available_at`` is the
+    filing acceptance time, ``as_of_date`` the balance/period date; all filing
+    vintages are retained with ``is_latest_revision`` flagging the most recent.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_xbrl_metric (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            canonical_metric VARCHAR NOT NULL,
+            concept VARCHAR NOT NULL,
+            taxonomy VARCHAR NOT NULL DEFAULT 'us-gaap',
+            unit VARCHAR,
+            period_type VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            accession_number VARCHAR,
+            value DOUBLE,
+            raw_value VARCHAR,
+            revision_seq INTEGER NOT NULL DEFAULT 0,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_xbrl_metric_key ON fundamental_xbrl_metric(security_id, canonical_metric, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_xbrl_metric_metric ON fundamental_xbrl_metric(canonical_metric, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_xbrl_metric_asof ON fundamental_xbrl_metric(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_xbrl_metric_latest ON fundamental_xbrl_metric(is_latest_revision, period_type)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_xbrl_metric',
+            'sec_edgar',
+            'Consolidated inline-XBRL canonical metrics',
+            'Entity-level (non-segment) us-gaap facts extracted from cached inline-XBRL filings into canonical metrics (current assets/liabilities, cash, inventory, ...) that the companyfacts feed does not carry; bitemporal with restatement vintages.',
+            'security_id,canonical_metric,period_end',
+            'fundamental_xbrl_metric', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_xbrl_metric', 'silver', 'fundamental_xbrl_metric',
+            'security_id,canonical_metric,period_end',
+            'Canonical metrics extracted from consolidated inline-XBRL facts (one row per security, metric, period, filing vintage).',
+            '["metric_id"]',
+            'Consolidated totals only (fact context has zero dimension members). Resolve with available_at <= query ts and is_latest_revision; available_at is the filing acceptance time.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('metric_id', 'security_id', 'cik', 'accession_number', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('period_end', 'period_start', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'canonical_metric' THEN 'Warehouse-canonical metric name (e.g. current_assets, current_liabilities, cash_and_equivalents, inventory).'
+                WHEN 'concept' THEN 'Source us-gaap concept local name the metric was mapped from.'
+                WHEN 'period_type' THEN 'instant (balance date) or duration (period flow).'
+                WHEN 'is_latest_revision' THEN 'True for the most recent filing vintage of this (security, metric, period).'
+                WHEN 'available_at' THEN 'Filing acceptance timestamp; the metric is knowable only at/after this instant.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) IN ('period_end', 'period_start', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_xbrl_metric'
         """
     )
 
@@ -2682,6 +2805,11 @@ MIGRATIONS: list[Migration] = [
         version=32,
         name="fundamental_ratios",
         up=_fundamental_ratios,
+    ),
+    Migration(
+        version=33,
+        name="fundamental_xbrl_metric",
+        up=_fundamental_xbrl_metric,
     ),
 ]
 

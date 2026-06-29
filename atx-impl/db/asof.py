@@ -2550,6 +2550,70 @@ def offexchange_security_period_asof(
         return _run(store)
 
 
+FUNDAMENTAL_XBRL_METRIC_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible AS (
+    SELECT
+        x.*,
+        row_number() OVER (
+            PARTITION BY x.security_id, x.canonical_metric, x.period_end
+            ORDER BY x.available_at DESC, x.revision_seq DESC, x.metric_id DESC
+        ) AS rn
+    FROM fundamental_xbrl_metric x
+    {symbol_join}
+    {metric_join}
+    CROSS JOIN params p
+    WHERE x.available_at <= p.as_of_ts
+      AND x.as_of_date <= p.as_of_date
+)
+SELECT * EXCLUDE (rn)
+FROM visible
+WHERE rn = 1
+ORDER BY symbol, canonical_metric, period_end
+"""
+
+
+def fundamental_xbrl_metric_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: "DuckDBStore | None" = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    canonical_metrics: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Return the latest-visible consolidated inline-XBRL metric per key as of a point in time."""
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    metric_values = _normalize_strings(canonical_metrics)
+
+    def _run(active):
+        registered = []
+        try:
+            symbol_join = ""
+            metric_join = ""
+            if _register_filter(active, "asof_xbrlm_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_xbrlm_symbol_filter")
+                symbol_join = "JOIN asof_xbrlm_symbol_filter sf ON sf.symbol = x.symbol"
+            if _register_filter(active, "asof_xbrlm_metric_filter", "canonical_metric", metric_values):
+                registered.append("asof_xbrlm_metric_filter")
+                metric_join = "JOIN asof_xbrlm_metric_filter mf ON mf.canonical_metric = upper(x.canonical_metric)"
+            sql = FUNDAMENTAL_XBRL_METRIC_ASOF_SQL.format(symbol_join=symbol_join, metric_join=metric_join)
+            return active.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)
+
+
 FUNDAMENTAL_RATIOS_ASOF_SQL = """
 WITH params AS (
     SELECT

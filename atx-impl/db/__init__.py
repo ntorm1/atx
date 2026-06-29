@@ -23,6 +23,7 @@ from .asof import (
     fundamental_ratios_asof,
     fundamental_statements_asof,
     fundamental_ttm_asof,
+    fundamental_xbrl_metric_asof,
     fundamentals_asof,
     identifier_decisions_asof,
     insider_relationships_asof,
@@ -83,6 +84,13 @@ from .fundamental_ratios import (
     FundamentalRatiosOptions,
     compute_ratio_rows,
     refresh_fundamental_ratios,
+)
+from .fundamental_xbrl_metrics import (
+    CONCEPT_MAP,
+    FundamentalXbrlMetricDataset,
+    FundamentalXbrlMetricOptions,
+    normalize_xbrl_metric_rows,
+    refresh_fundamental_xbrl_metrics,
 )
 from .fundamental_statements import (
     refresh_fundamental_periods,
@@ -232,6 +240,11 @@ __all__ = [
     "compute_ratio_rows",
     "refresh_fundamental_ratios",
     "fundamental_ratios_asof",
+    "FundamentalXbrlMetricDataset",
+    "FundamentalXbrlMetricOptions",
+    "normalize_xbrl_metric_rows",
+    "refresh_fundamental_xbrl_metrics",
+    "fundamental_xbrl_metric_asof",
     "fundamental_statements_asof",
     "fundamental_ttm_asof",
     "IdentifierResolutionDecisionDataset",

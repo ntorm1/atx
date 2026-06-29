@@ -90,6 +90,14 @@ def _abs(x: float) -> float:
     return abs(float(x))
 
 
+def _z(x: Any) -> float:
+    """Coalesce a missing/NaN optional input to 0.0 (e.g. unreported inventory)."""
+    try:
+        return 0.0 if pd.isna(x) else float(x)
+    except (TypeError, ValueError):
+        return 0.0 if x is None else float(x)
+
+
 RATIO_DEFS: tuple[RatioDef, ...] = (
     # --- profitability -----------------------------------------------------
     RatioDef("net_profit_margin", "profitability", "ratio", "ratio",
@@ -203,7 +211,34 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
     RatioDef("operating_cash_flow_to_average_assets", "cash_flow", "ratio", "ratio",
              "operating_cash_flow", "average_assets", ("ocf", "assets", "assets_prior"),
              lambda r: (r["ocf"], (r["assets"] + r["assets_prior"]) / 2), require_positive_denominator=True),
+    # --- liquidity / working capital (S10a; consolidated inline-XBRL instants) ---
+    RatioDef("current_ratio", "liquidity", "ratio", "ratio",
+             "current_assets", "current_liabilities", ("current_assets", "current_liabilities"),
+             lambda r: (r["current_assets"], r["current_liabilities"]), require_positive_denominator=True),
+    RatioDef("quick_ratio", "liquidity", "ratio", "ratio",
+             "current_assets_minus_inventory", "current_liabilities", ("current_assets", "current_liabilities"),
+             lambda r: (r["current_assets"] - _z(r.get("inventory")), r["current_liabilities"]),
+             require_positive_denominator=True),
+    RatioDef("cash_ratio", "liquidity", "ratio", "ratio",
+             "cash_and_equivalents", "current_liabilities", ("cash_and_equivalents", "current_liabilities"),
+             lambda r: (r["cash_and_equivalents"], r["current_liabilities"]), require_positive_denominator=True),
+    RatioDef("working_capital", "liquidity", "difference", "currency",
+             "current_assets", "current_liabilities", ("current_assets", "current_liabilities"),
+             lambda r: (r["current_assets"], r["current_liabilities"])),
+    RatioDef("working_capital_to_assets", "liquidity", "ratio", "ratio",
+             "working_capital", "assets", ("current_assets", "current_liabilities", "assets"),
+             lambda r: (r["current_assets"] - r["current_liabilities"], r["assets"]),
+             require_positive_denominator=True),
 )
+
+# Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
+# (fundamental_xbrl_metric), pivoted into the wide frame alongside statement-point balances.
+XBRL_BALANCE_INPUTS = {
+    "current_assets": "current_assets",
+    "current_liabilities": "current_liabilities",
+    "cash_and_equivalents": "cash_and_equivalents",
+    "inventory": "inventory",
+}
 
 # Metrics for which a prior-year value is paired in (for YoY growth and
 # average-balance ratios).
@@ -264,6 +299,9 @@ def compute_ratio_rows(
             den = float(den)
             if d.kind == "level":
                 value = num + den
+                is_meaningful = True
+            elif d.kind == "difference":
+                value = num - den
                 is_meaningful = True
             elif d.kind == "growth":
                 if den == 0:
@@ -388,6 +426,9 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
         registered = True
         sym_join_t = "JOIN ratio_symbol_filter rsf ON rsf.symbol = t.symbol"
         sym_join_b = "JOIN ratio_symbol_filter rsf ON rsf.symbol = s.symbol"
+        sym_join_x = "JOIN ratio_symbol_filter rsf ON rsf.symbol = x.symbol"
+    else:
+        sym_join_x = ""
 
     sql = f"""
         WITH ttm AS (
@@ -415,17 +456,34 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             {sym_join_b}
             WHERE s.is_latest_revision AND s.period_type = 'instant'
             GROUP BY s.security_id, s.period_end
+        ),
+        balx AS (
+            SELECT
+                x.security_id,
+                x.period_end,
+                {_pivot_case('x', 'value', XBRL_BALANCE_INPUTS)}
+            FROM fundamental_xbrl_metric x
+            {sym_join_x}
+            WHERE x.is_latest_revision AND x.period_type = 'instant'
+            GROUP BY x.security_id, x.period_end
         )
         SELECT
             ttm.*,
             bal.assets, bal.assets_av,
             bal.liabilities, bal.liabilities_av,
             bal.equity, bal.equity_av,
-            bal.shares, bal.shares_av
+            bal.shares, bal.shares_av,
+            balx.current_assets, balx.current_assets_av,
+            balx.current_liabilities, balx.current_liabilities_av,
+            balx.cash_and_equivalents, balx.cash_and_equivalents_av,
+            balx.inventory, balx.inventory_av
         FROM ttm
         LEFT JOIN bal
           ON bal.security_id = ttm.security_id
          AND bal.period_end = ttm.period_end
+        LEFT JOIN balx
+          ON balx.security_id = ttm.security_id
+         AND balx.period_end = ttm.period_end
     """
     try:
         wide = store.con.execute(sql).df()

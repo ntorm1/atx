@@ -4735,8 +4735,8 @@ def _check_specs(
                    OR source IS NULL OR source = ''
                    OR security_id IS NULL OR security_id = ''
                    OR ratio_code IS NULL OR ratio_code = ''
-                   OR ratio_category NOT IN ('profitability', 'leverage', 'cash_flow', 'payout', 'per_share', 'efficiency', 'growth')
-                   OR ratio_kind NOT IN ('ratio', 'level', 'per_share', 'growth')
+                   OR ratio_category NOT IN ('profitability', 'leverage', 'cash_flow', 'payout', 'per_share', 'efficiency', 'growth', 'liquidity')
+                   OR ratio_kind NOT IN ('ratio', 'level', 'per_share', 'growth', 'difference')
                    OR unit NOT IN ('ratio', 'currency', 'currency_per_share')
                    OR period_end IS NULL
                    OR as_of_date IS NULL
@@ -4759,6 +4759,61 @@ def _check_specs(
             threshold=0.0,
             comparator="eq",
             required_tables=("fundamental_ratios",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_xbrl_metric",
+            table_name="fundamental_xbrl_metric",
+            check_name="duplicate_fundamental_xbrl_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT metric_id, count(*) AS n
+                    FROM fundamental_xbrl_metric
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_xbrl_metric",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_xbrl_metric",
+            table_name="fundamental_xbrl_metric",
+            check_name="multiple_latest_fundamental_xbrl_metric_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT security_id, canonical_metric, period_end, count(*) AS n
+                    FROM fundamental_xbrl_metric
+                    WHERE is_latest_revision
+                    GROUP BY 1, 2, 3
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_xbrl_metric",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_xbrl_metric",
+            table_name="fundamental_xbrl_metric",
+            check_name="bad_fundamental_xbrl_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fundamental_xbrl_metric
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR canonical_metric IS NULL OR canonical_metric = ''
+                   OR concept IS NULL OR concept = ''
+                   OR period_type NOT IN ('instant', 'duration')
+                   OR period_end IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_xbrl_metric",),
         ),
         SqlQualityCheck(
             dataset_id="fundamental_ratios",
