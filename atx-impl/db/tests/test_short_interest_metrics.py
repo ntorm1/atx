@@ -95,6 +95,41 @@ class TestComputeShortInterestMetrics:
         assert by[("S1", dt.date(2026, 5, 15))].days_to_cover_percentile == pytest.approx(1.0)
         assert by[("S1", dt.date(2026, 5, 15))].universe_count == 1
 
+    def test_cross_sectional_zscore_within_cohort(self):
+        # cohort days_to_cover = {1, 2, 4} -> population mean 7/3, std 1.2472
+        rows = [
+            _row("S1", "AAA", 100, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),  # dtc=1
+            _row("S2", "BBB", 200, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),  # dtc=2
+            _row("S3", "CCC", 400, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),  # dtc=4
+        ]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        by = {r.security_id: r for r in out.itertuples(index=False)}
+        mean = 7 / 3
+        std = (((1 - mean) ** 2 + (2 - mean) ** 2 + (4 - mean) ** 2) / 3) ** 0.5
+        assert by["S3"].days_to_cover_zscore == pytest.approx((4 - mean) / std)
+        assert by["S1"].days_to_cover_zscore == pytest.approx((1 - mean) / std)
+
+    def test_zscore_nan_for_single_name_cohort(self):
+        out = compute_short_interest_metrics(pd.DataFrame([
+            _row("S1", "AAA", 100, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),
+        ]))
+        assert pd.isna(out.iloc[0]["days_to_cover_zscore"])  # std=0 -> undefined
+
+    def test_days_to_cover_trend_vs_prior_settlement(self):
+        # same security across two settlements; trend = dtc_t - dtc_{t-1}
+        rows = [
+            _row("S1", "AAA", 100, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),  # dtc=1.0
+            _row("S1", "AAA", 250, 100, 100, dt.date(2026, 5, 15), _ts("2026-05-25")),  # dtc=2.5
+        ]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        by = {r.settlement_date: r for r in out.itertuples(index=False)}
+        # earliest settlement has no prior
+        assert pd.isna(by[dt.date(2026, 4, 30)].days_to_cover_prev)
+        assert pd.isna(by[dt.date(2026, 4, 30)].days_to_cover_change)
+        # later settlement: prior dtc = 1.0, change = +1.5
+        assert by[dt.date(2026, 5, 15)].days_to_cover_prev == pytest.approx(1.0)
+        assert by[dt.date(2026, 5, 15)].days_to_cover_change == pytest.approx(1.5)
+
     def test_metric_id_deterministic_and_unique(self):
         rows = pd.DataFrame([
             _row("S1", "AAA", 100, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),

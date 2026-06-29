@@ -2776,6 +2776,47 @@ def _short_interest_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _short_interest_metrics_trend(conn: duckdb.DuckDBPyConnection) -> None:
+    """S12: add the time-series trend + cross-sectional z-score columns.
+
+    ``days_to_cover_zscore`` is the within-settlement-cohort standardized days-to-cover
+    (population std; complements the percentile by capturing tail magnitude).
+    ``days_to_cover_prev`` / ``days_to_cover_change`` are the prior-settlement
+    days-to-cover and its change for the same security — rising days-to-cover signals
+    building short pressure. All are recomputed wholesale by the loader.
+    """
+    for column in (
+        "days_to_cover_zscore DOUBLE",
+        "days_to_cover_prev DOUBLE",
+        "days_to_cover_change DOUBLE",
+    ):
+        conn.execute(f"ALTER TABLE short_interest_metrics ADD COLUMN IF NOT EXISTS {column}")
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name, 'measure',
+            CASE c.column_name
+                WHEN 'days_to_cover_zscore' THEN 'Standardized days-to-cover within the settlement cohort (population std); NaN for a single-name cohort.'
+                WHEN 'days_to_cover_prev' THEN 'Recomputed days-to-cover at the prior settlement for the same security.'
+                WHEN 'days_to_cover_change' THEN 'Change in days-to-cover vs the prior settlement (rising = building short pressure).'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END AS description,
+            true AS nullable,
+            CASE WHEN c.column_name = 'days_to_cover_zscore' THEN 'zscore' ELSE 'days' END AS unit,
+            NULL AS source_field, now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND c.table_name = 'short_interest_metrics'
+          AND c.column_name IN ('days_to_cover_zscore', 'days_to_cover_prev', 'days_to_cover_change')
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -2947,6 +2988,11 @@ MIGRATIONS: list[Migration] = [
         version=34,
         name="short_interest_metrics",
         up=_short_interest_metrics,
+    ),
+    Migration(
+        version=35,
+        name="short_interest_metrics_trend",
+        up=_short_interest_metrics_trend,
     ),
 ]
 

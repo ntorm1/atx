@@ -45,6 +45,7 @@ SHORT_INTEREST_METRIC_COLUMNS = [
     "short_interest_change", "short_interest_change_pct", "days_to_cover",
     "days_to_cover_source", "short_pct_shares_outstanding",
     "days_to_cover_percentile", "short_interest_change_pct_percentile",
+    "days_to_cover_zscore", "days_to_cover_prev", "days_to_cover_change",
     "universe_count", "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
 
@@ -103,12 +104,27 @@ def compute_short_interest_metrics(
     else:
         out["short_pct_shares_outstanding"] = pd.NA
 
-    # Cross-sectional percentile within each settlement cohort (the short-interest
-    # anomaly signal). rank(pct=True) yields (0, 1]; NaN inputs stay NaN.
+    # Order by (security, settlement) so the per-security trend lag is well-defined.
+    out = out.sort_values(["security_id", "settlement_date"])
+
+    # Cross-sectional percentile + z-score within each settlement cohort (the
+    # short-interest anomaly signal). rank(pct=True) yields (0, 1]; the z-score uses
+    # the population std so it is defined for any cohort of >= 2 distinct values, and
+    # is NaN for a single-name (or all-equal) cohort. Both are point-in-time safe: a
+    # settlement's whole cohort publishes together.
     grp = out.groupby("settlement_date")
     out["days_to_cover_percentile"] = grp["days_to_cover"].rank(pct=True)
     out["short_interest_change_pct_percentile"] = grp["short_interest_change_pct"].rank(pct=True)
+    cohort_mean = grp["days_to_cover"].transform("mean")
+    cohort_std = grp["days_to_cover"].transform(lambda s: s.std(ddof=0))
+    out["days_to_cover_zscore"] = (out["days_to_cover"] - cohort_mean) / cohort_std.where(cohort_std > 0)
     out["universe_count"] = grp["days_to_cover"].transform("count").astype("Int64")
+
+    # Time-series trend: days-to-cover vs the prior settlement for the same security
+    # (rising days-to-cover = building short pressure). The prior settlement was
+    # published earlier, so the change is knowable at the current publication instant.
+    out["days_to_cover_prev"] = out.groupby("security_id")["days_to_cover"].shift(1)
+    out["days_to_cover_change"] = out["days_to_cover"] - out["days_to_cover_prev"]
 
     out["source"] = source
     out["run_id"] = run_id
