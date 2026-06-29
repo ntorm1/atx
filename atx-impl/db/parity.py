@@ -85,11 +85,12 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "shares_outstanding_history",
             "delist_code_dim",
             "delisting_events",
+            "delisting_return_observations",
             "v_equity_daily_returns",
         ),
         parity_status="partial",
-        limitations="Local archive does not provide the full licensed FactSet adjustment chain, official terminal returns, or global coverage.",
-        next_gap="Add quote/close-type depth, Form 25/15 terminal event evidence, and richer spinoff/merger adjustment policies.",
+        limitations="Local archive does not provide the full licensed FactSet adjustment chain, global coverage, or populated observed terminal-return feed by default.",
+        next_gap="Load observed terminal-return evidence, add quote/close-type depth, Form 25/15 event evidence, and richer spinoff/merger adjustment policies.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-prices-api",
             "https://developer.factset.com/api-catalog/factset-global-prices-api",
@@ -244,7 +245,7 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         open_substitute=(
             "equity_daily_bars, v_equity_daily_returns, corporate_actions, event-level and daily adjustment "
             "factors, SEC XBRL share-count history, Nasdaq add/delete events, listing-status intervals, and "
-            "delisting_events public proxy rows "
+            "delisting_events public proxy rows, and injectable delisting_return_observations "
             "from local/public evidence."
         ),
         warehouse_tables=(
@@ -257,11 +258,12 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "listing_status_intervals",
             "delist_code_dim",
             "delisting_events",
+            "delisting_return_observations",
             "v_equity_daily_returns",
         ),
         parity_status="partial",
-        limitations="Open substitute has public delisting evidence but still lacks official CRSP DLSTCD/DLRET and survivorship-bias-free full history.",
-        next_gap="Add observed terminal-return evidence, optional imputation policy backtests, quote/close-type depth, and return-adjustment diagnostics.",
+        limitations="Open substitute has public delisting evidence and an injectable observed-return surface, but the default DB still lacks populated official CRSP DLSTCD/DLRET and survivorship-bias-free full history.",
+        next_gap="Populate observed terminal-return evidence, reconcile CRSP DLSTCD, add optional imputation policy backtests, quote/close-type depth, and return-adjustment diagnostics.",
         source_urls=(
             "https://www.crsp.org/research/crsp-us-stock-databases/",
             "https://www.crsp.org/crsp_pdf/crsp-us-stock-indexes-databases-guide-flat-file-format-1-0/",

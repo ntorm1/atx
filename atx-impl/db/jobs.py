@@ -15,7 +15,12 @@ from .calendar import TradingCalendarDataset, TradingCalendarOptions
 from .connection import DuckDBStore
 from .corporate_actions import CorporateActionsDataset, CorporateActionsOptions
 from .daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
-from .delisting import DelistingEventDataset, DelistingEventOptions
+from .delisting import (
+    DelistingEventDataset,
+    DelistingEventOptions,
+    DelistingReturnObservationDataset,
+    DelistingReturnObservationOptions,
+)
 from .dataset import Dataset, DatasetLoadResult
 from .features import (
     EquityDailyFeatureDataset,
@@ -232,6 +237,18 @@ def _delisting_event_options(params: dict[str, Any]) -> DelistingEventOptions:
             params.get("apply_shumway_warther_imputation"),
             default.apply_shumway_warther_imputation,
         ),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _delisting_return_observation_options(params: dict[str, Any]) -> DelistingReturnObservationOptions:
+    default = DelistingReturnObservationOptions()
+    return DelistingReturnObservationOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source=params.get("source") or default.source,
+        provider=params.get("provider") or default.provider,
+        vendor_security_id_type=params.get("vendor_security_id_type") or default.vendor_security_id_type,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
         run_id=params.get("run_id") or default.run_id,
     )
 
@@ -535,6 +552,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         _daily_adjustment_factor_options,
     ),
     DelistingEventDataset.dataset_id: (DelistingEventDataset, _delisting_event_options),
+    DelistingReturnObservationDataset.dataset_id: (
+        DelistingReturnObservationDataset,
+        _delisting_return_observation_options,
+    ),
     FinraShortInterestDataset.dataset_id: (FinraShortInterestDataset, _finra_options),
     ShortInterestFeatureDataset.dataset_id: (ShortInterestFeatureDataset, _short_interest_feature_options),
     ThirteenFDataSet.dataset_id: (ThirteenFDataSet, _thirteenf_options),

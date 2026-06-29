@@ -13,6 +13,7 @@ def test_key_dataset_classes_importable():
         AlphaResearchDataset,
         CorporateActionsDataset,
         DelistingEventDataset,
+        DelistingReturnObservationDataset,
         DuckDBStore,
         EquityDailyFeatureDataset,
         FinraShortInterestDataset,
@@ -29,6 +30,7 @@ def test_key_dataset_classes_importable():
     assert AlphaResearchDataset is not None
     assert CorporateActionsDataset is not None
     assert DelistingEventDataset is not None
+    assert DelistingReturnObservationDataset is not None
     assert DuckDBStore is not None
     assert EquityDailyFeatureDataset is not None
     assert FinraShortInterestDataset is not None

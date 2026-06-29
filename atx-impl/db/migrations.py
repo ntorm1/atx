@@ -550,6 +550,58 @@ def _delisting_events(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _delisting_return_observations(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5e: injectable observed delisting-return facts and event lineage fields."""
+
+    for statement in (
+        "ALTER TABLE delisting_events ADD COLUMN IF NOT EXISTS return_observation_id VARCHAR",
+        "ALTER TABLE delisting_events ADD COLUMN IF NOT EXISTS return_observation_source VARCHAR",
+        "ALTER TABLE delisting_events ADD COLUMN IF NOT EXISTS return_observation_provider VARCHAR",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS delisting_return_observations (
+            delisting_return_observation_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            provider VARCHAR NOT NULL,
+            source_file VARCHAR,
+            source_file_sha256 VARCHAR,
+            security_id VARCHAR,
+            symbol VARCHAR,
+            vendor_security_id VARCHAR,
+            vendor_security_id_type VARCHAR,
+            delist_date DATE NOT NULL,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            delist_code VARCHAR,
+            vendor_delist_code VARCHAR,
+            crsp_dlstcd INTEGER,
+            delist_amount DOUBLE,
+            delist_price DOUBLE,
+            delisting_return DOUBLE NOT NULL,
+            delisting_return_ex_div DOUBLE,
+            delist_pay_date DATE,
+            next_pricing_date DATE,
+            successor_security_id VARCHAR,
+            successor_vendor_security_id VARCHAR,
+            return_basis VARCHAR NOT NULL,
+            currency VARCHAR,
+            raw_payload_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_delisting_return_observations_security ON delisting_return_observations(security_id, delist_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_return_observations_symbol ON delisting_return_observations(symbol, delist_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_return_observations_vendor ON delisting_return_observations(provider, vendor_security_id_type, vendor_security_id, delist_date)",
+    ):
+        conn.execute(statement)
+
+
 def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
     """Create S2 estimates tables: est_measure, est_actual, est_consensus, est_detail,
     est_broker, est_analyst, est_guidance, est_recommendation, est_surprise."""
@@ -1179,6 +1231,11 @@ MIGRATIONS: list[Migration] = [
         version=14,
         name="delisting_events",
         up=_delisting_events,
+    ),
+    Migration(
+        version=15,
+        name="delisting_return_observations",
+        up=_delisting_return_observations,
     ),
 ]
 

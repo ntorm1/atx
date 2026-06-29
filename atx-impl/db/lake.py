@@ -21,6 +21,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "listing_status_intervals",
     "delist_code_dim",
     "delisting_events",
+    "delisting_return_observations",
     "equity_daily_bars",
     "corporate_actions",
     "corp_action_type_dim",

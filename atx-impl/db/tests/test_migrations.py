@@ -17,6 +17,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 12 in versions, f"Migration 0012 not recorded; found: {versions}"
     assert 13 in versions, f"Migration 0013 not recorded; found: {versions}"
     assert 14 in versions, f"Migration 0014 not recorded; found: {versions}"
+    assert 15 in versions, f"Migration 0015 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -219,3 +220,56 @@ def test_migration_0014_delisting_events_exist(tmp_store):
         "return_policy",
         "evidence_confidence",
     }.issubset(columns)
+
+
+def test_migration_0015_delisting_return_observations_exist(tmp_store):
+    """Migration 0015 adds injectable observed terminal-return facts."""
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+            """
+        ).fetchall()
+    }
+    assert "delisting_return_observations" in tables
+
+    event_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'delisting_events'
+            """
+        ).fetchall()
+    }
+    assert {
+        "return_observation_id",
+        "return_observation_source",
+        "return_observation_provider",
+    }.issubset(event_columns)
+
+    observation_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'delisting_return_observations'
+            """
+        ).fetchall()
+    }
+    assert {
+        "delisting_return_observation_id",
+        "provider",
+        "vendor_security_id",
+        "delist_date",
+        "delisting_return",
+        "available_at",
+        "return_basis",
+    }.issubset(observation_columns)

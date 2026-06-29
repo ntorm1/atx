@@ -77,6 +77,7 @@ PUBLIC_ROW_COUNT_TABLES = (
     "listing_status_intervals",
     "delist_code_dim",
     "delisting_events",
+    "delisting_return_observations",
     "sec_company_facts",
     "fundamental_points",
     "xbrl_taxonomy_packages",
@@ -198,6 +199,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "nasdaq_symbol_directory": job_name(args.job_prefix, "nasdaq_symbol_directory"),
         "nasdaq_listing_events": job_name(args.job_prefix, "nasdaq_listing_events"),
         "listing_status_intervals": job_name(args.job_prefix, "listing_status_intervals"),
+        "delisting_return_observations": job_name(args.job_prefix, "delisting_return_observations"),
         "delisting_events": job_name(args.job_prefix, "delisting_events"),
         "sec_company_facts": job_name(args.job_prefix, "sec_company_facts"),
         "xbrl_taxonomy": job_name(args.job_prefix, "xbrl_taxonomy"),
@@ -281,6 +283,24 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         )
         ordered.append(names["listing_status_intervals"])
 
+    delisting_dependencies = [] if args.skip_listing_status else [names["listing_status_intervals"]]
+    if args.delisting_return_file:
+        manager.register_job(
+            job_name=names["delisting_return_observations"],
+            dataset_id="delisting_return_observations",
+            params=clean_params(
+                {
+                    "source_file": str(args.delisting_return_file),
+                    "provider": args.delisting_return_provider,
+                    "vendor_security_id_type": args.delisting_return_vendor_id_type,
+                }
+            ),
+            dependencies=[],
+            **retry_policy,
+        )
+        ordered.append(names["delisting_return_observations"])
+        delisting_dependencies.append(names["delisting_return_observations"])
+
     if not args.skip_delistings:
         manager.register_job(
             job_name=names["delisting_events"],
@@ -290,7 +310,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
                     "apply_shumway_warther_imputation": args.impute_delist_returns,
                 }
             ),
-            dependencies=[] if args.skip_listing_status else [names["listing_status_intervals"]],
+            dependencies=delisting_dependencies,
             **retry_policy,
         )
         ordered.append(names["delisting_events"])
@@ -680,6 +700,32 @@ def collect_public_summaries(store: DuckDBStore) -> dict[str, Any]:
             "max_delist_date": row[5],
             "max_available_at": row[6],
         }
+    if table_or_view_exists(store, "delisting_return_observations"):
+        rows = store.con.execute(
+            """
+            SELECT
+                provider,
+                count(*) AS rows,
+                count(DISTINCT coalesce(security_id, symbol, vendor_security_id)) AS securities,
+                min(delist_date) AS min_delist_date,
+                max(delist_date) AS max_delist_date,
+                max(available_at) AS max_available_at
+            FROM delisting_return_observations
+            GROUP BY provider
+            ORDER BY rows DESC, provider
+            """
+        ).fetchall()
+        summaries["delisting_return_observations_by_provider"] = [
+            {
+                "provider": row[0],
+                "rows": int(row[1]),
+                "securities": int(row[2]),
+                "min_delist_date": row[3],
+                "max_delist_date": row[4],
+                "max_available_at": row[5],
+            }
+            for row in rows
+        ]
     if table_or_view_exists(store, "fundamental_points"):
         rows = store.con.execute(
             """
@@ -906,6 +952,7 @@ def refresh_watermarks(db_path: Path) -> dict[str, Any]:
         "identifier_resolution_decisions.",
         "delist_code_dim.",
         "delisting_events.",
+        "delisting_return_observations.",
         "listing_status_intervals.",
         "nasdaq_listing_events.",
         "nasdaq_symbol_directory.",
@@ -972,6 +1019,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-listing-status", action="store_true")
     parser.add_argument("--skip-delistings", action="store_true")
     parser.add_argument("--impute-delist-returns", action="store_true")
+    parser.add_argument("--delisting-return-file", type=Path)
+    parser.add_argument("--delisting-return-provider", default="INJECTED")
+    parser.add_argument("--delisting-return-vendor-id-type", default="PERMNO")
     parser.add_argument("--skip-company-facts", action="store_true")
     parser.add_argument("--skip-xbrl-taxonomy", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")

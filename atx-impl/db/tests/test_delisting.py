@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pandas as pd
 import pytest
 
 
@@ -194,6 +195,24 @@ def test_delisting_events_apply_imputation_only_when_requested(tmp_store):
     )
 
 
+def test_delisting_event_dataset_run_returns_load_result(tmp_store):
+    from db.delisting import DelistingEventDataset, DelistingEventOptions
+
+    _seed_security(tmp_store)
+    _insert_listing_status(
+        tmp_store,
+        listing_status_id="inactive-status-dataset",
+        status="inactive",
+        valid_from=dt.date(2024, 3, 5),
+    )
+
+    result = DelistingEventDataset().run(tmp_store, DelistingEventOptions())
+
+    assert result.dataset_id == "delisting_events"
+    assert result.rows_loaded == 1
+    assert result.run_id is not None
+
+
 def test_snapshot_absence_delisting_proxy_is_opt_in_and_low_confidence(tmp_store):
     from db.delisting import DelistingEventOptions, refresh_delisting_events
 
@@ -224,3 +243,80 @@ def test_snapshot_absence_delisting_proxy_is_opt_in_and_low_confidence(tmp_store
         """
     ).fetchone()
     assert row == ("SNAPSHOT_ABSENCE", None, True, "low")
+
+
+def test_observed_delisting_return_observations_enrich_asof_without_lookahead(tmp_store, tmp_path):
+    from db.asof import delisting_events_asof, delisting_return_observations_asof
+    from db.delisting import (
+        DelistingReturnObservationOptions,
+        load_delisting_return_observations,
+        refresh_delisting_events,
+    )
+
+    _seed_security(tmp_store)
+    _insert_listing_status(
+        tmp_store,
+        listing_status_id="inactive-status-observed",
+        status="inactive",
+        valid_from=dt.date(2024, 4, 1),
+        as_of_date=dt.date(2024, 4, 1),
+        available_at=dt.datetime(2024, 4, 2, 12, 0),
+    )
+    refresh_delisting_events(tmp_store)
+
+    csv_path = tmp_path / "crsp_dsedelist_sample.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "PERMNO,security_id,TICKER,DLSTDT,DLSTCD,DLRET,DLRETX,DLPRC,DLAMT,available_at",
+                "12345,SEC-TEST-DELIST,DLS,2024-04-01,233,0.041667,0.040000,48.0,50.0,2024-04-03T12:00:00",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_delisting_return_observations(
+        tmp_store,
+        DelistingReturnObservationOptions(
+            source_file=csv_path,
+            provider="CRSP_SAMPLE",
+        ),
+    )
+    assert loaded == 1
+
+    db_path = tmp_store.path
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    before_observation = delisting_events_asof(
+        dt.date(2024, 4, 2),
+        as_of_ts=dt.datetime(2024, 4, 2, 13, 0),
+        db_path=db_path,
+        symbols=("DLS",),
+    )
+    after_observation = delisting_events_asof(
+        dt.date(2024, 4, 3),
+        as_of_ts=dt.datetime(2024, 4, 3, 13, 0),
+        db_path=db_path,
+        symbols=("DLS",),
+    )
+    observations = delisting_return_observations_asof(
+        dt.date(2024, 4, 3),
+        as_of_ts=dt.datetime(2024, 4, 3, 13, 0),
+        db_path=db_path,
+        symbols=("DLS",),
+        providers=("CRSP_SAMPLE",),
+    )
+
+    assert len(before_observation) == 1
+    assert before_observation.iloc[0]["delisting_return"] is None or pd.isna(
+        before_observation.iloc[0]["delisting_return"]
+    )
+    assert len(after_observation) == 1
+    enriched = after_observation.iloc[0]
+    assert enriched["delisting_return"] == pytest.approx(0.041667)
+    assert enriched["delisting_return_type"] == "OBSERVED_SOURCE"
+    assert enriched["is_return_imputed"] == False
+    assert enriched["return_policy"] == "observed_source"
+    assert enriched["return_observation_provider"] == "CRSP_SAMPLE"
+    assert len(observations) == 1
+    assert observations.iloc[0]["crsp_dlstcd"] == 233

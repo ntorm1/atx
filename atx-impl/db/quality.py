@@ -808,6 +808,82 @@ def _check_specs(
             required_tables=("delisting_events", "listing_status_intervals"),
         ),
         SqlQualityCheck(
+            dataset_id="delisting_events",
+            table_name="delisting_events",
+            check_name="orphan_delisting_event_return_observations",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delisting_events d
+                LEFT JOIN delisting_return_observations o
+                  ON o.delisting_return_observation_id = d.return_observation_id
+                WHERE d.return_observation_id IS NOT NULL
+                  AND o.delisting_return_observation_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("delisting_events", "delisting_return_observations"),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_return_observations",
+            table_name="delisting_return_observations",
+            check_name="duplicate_delisting_return_observations",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT delisting_return_observation_id, count(*) AS row_count
+                    FROM delisting_return_observations
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("delisting_return_observations",),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_return_observations",
+            table_name="delisting_return_observations",
+            check_name="bad_delisting_return_observation_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delisting_return_observations o
+                WHERE o.delisting_return_observation_id IS NULL
+                   OR o.delisting_return_observation_id = ''
+                   OR o.source IS NULL
+                   OR o.source = ''
+                   OR o.provider IS NULL
+                   OR o.provider = ''
+                   OR (
+                       coalesce(o.security_id, '') = ''
+                       AND coalesce(o.symbol, '') = ''
+                       AND coalesce(o.vendor_security_id, '') = ''
+                   )
+                   OR o.delist_date IS NULL
+                   OR o.as_of_date IS NULL
+                   OR o.available_at IS NULL
+                   OR o.delisting_return IS NULL
+                   OR o.delisting_return < -1.0
+                   OR o.delisting_return > 10.0
+                   OR o.return_basis IS NULL
+                   OR o.return_basis = ''
+            """,
+            threshold=0.0,
+            required_tables=("delisting_return_observations",),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_return_observations",
+            table_name="delisting_return_observations",
+            check_name="orphan_delisting_return_observation_security_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delisting_return_observations o
+                LEFT JOIN securities s
+                  ON s.security_id = o.security_id
+                WHERE o.security_id IS NOT NULL
+                  AND s.security_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("delisting_return_observations", "securities"),
+        ),
+        SqlQualityCheck(
             dataset_id="sec_company_facts",
             table_name="fundamental_points",
             check_name="fundamental_period_after_asof",
@@ -3655,6 +3731,12 @@ def _check_specs(
                     UNION ALL
                     SELECT 'delisting_events', 'max_available_at', count(*) FROM delisting_events
                     UNION ALL
+                    SELECT 'delisting_return_observations', 'max_delist_date', count(*) FROM delisting_return_observations
+                    UNION ALL
+                    SELECT 'delisting_return_observations', 'max_as_of_date', count(*) FROM delisting_return_observations
+                    UNION ALL
+                    SELECT 'delisting_return_observations', 'max_available_at', count(*) FROM delisting_return_observations
+                    UNION ALL
                     SELECT 'fred_macro', 'max_observation_date', count(*) FROM macro_observations
                     UNION ALL
                     SELECT 'trading_calendar', 'max_trade_date', count(*) FROM trading_calendar
@@ -3716,6 +3798,7 @@ def _check_specs(
                 "listing_status_intervals",
                 "delist_code_dim",
                 "delisting_events",
+                "delisting_return_observations",
                 "macro_observations",
                 "trading_calendar",
                 "universe_memberships",

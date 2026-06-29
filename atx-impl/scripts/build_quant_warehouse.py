@@ -13,7 +13,12 @@ from db.adjustment_factors import AdjustmentFactorHistoryDataset, AdjustmentFact
 from db.calendar import TradingCalendarDataset, TradingCalendarOptions
 from db.corporate_actions import CorporateActionsDataset, CorporateActionsOptions
 from db.daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
-from db.delisting import DelistingEventDataset, DelistingEventOptions
+from db.delisting import (
+    DelistingEventDataset,
+    DelistingEventOptions,
+    DelistingReturnObservationDataset,
+    DelistingReturnObservationOptions,
+)
 from db.features import (
     EquityDailyFeatureDataset,
     FeatureBuildOptions,
@@ -63,6 +68,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-listing-status", action="store_true")
     parser.add_argument("--skip-delistings", action="store_true")
     parser.add_argument("--impute-delist-returns", action="store_true")
+    parser.add_argument("--delisting-return-file", type=Path)
+    parser.add_argument("--delisting-return-provider", default=DelistingReturnObservationOptions().provider)
+    parser.add_argument(
+        "--delisting-return-vendor-id-type",
+        default=DelistingReturnObservationOptions().vendor_security_id_type,
+    )
     parser.add_argument("--skip-macro", action="store_true")
     parser.add_argument("--skip-universe", action="store_true")
     parser.add_argument("--macro-series", default="DGS10,DGS2,FEDFUNDS,UNRATE,CPIAUCSL,VIXCLS")
@@ -93,6 +104,17 @@ def main() -> int:
         if not args.skip_listing_status:
             results.append(ListingStatusIntervalDataset().run(store, ListingStatusIntervalOptions()))
             if not args.skip_delistings:
+                if args.delisting_return_file:
+                    results.append(
+                        DelistingReturnObservationDataset().run(
+                            store,
+                            DelistingReturnObservationOptions(
+                                source_file=args.delisting_return_file,
+                                provider=args.delisting_return_provider,
+                                vendor_security_id_type=args.delisting_return_vendor_id_type,
+                            ),
+                        )
+                    )
                 results.append(
                     DelistingEventDataset().run(
                         store,
