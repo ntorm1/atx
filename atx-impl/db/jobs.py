@@ -33,6 +33,7 @@ from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_d
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
+from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
 from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
@@ -680,6 +681,15 @@ def _short_interest_metrics_options(params: dict[str, Any]) -> ShortInterestMetr
     )
 
 
+def _macro_metrics_options(params: dict[str, Any]) -> MacroMetricsOptions:
+    default = MacroMetricsOptions()
+    return MacroMetricsOptions(
+        source=params.get("source") or default.source,
+        series_ids=_tuple_or_none(params.get("series_ids")) or default.series_ids,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     default = FredMacroOptions()
     return FredMacroOptions(
@@ -746,6 +756,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     FundamentalRatiosDataset.dataset_id: (FundamentalRatiosDataset, _fundamental_ratios_options),
     FundamentalXbrlMetricDataset.dataset_id: (FundamentalXbrlMetricDataset, _fundamental_xbrl_metric_options),
     ShortInterestMetricsDataset.dataset_id: (ShortInterestMetricsDataset, _short_interest_metrics_options),
+    MacroMetricsDataset.dataset_id: (MacroMetricsDataset, _macro_metrics_options),
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
@@ -1080,6 +1091,12 @@ class JobManager:
             **retry_policy,
         )
         self.register_job(job_name="fred_macro", dataset_id="fred_macro", **retry_policy)
+        self.register_job(
+            job_name="macro_metrics",
+            dataset_id="macro_metrics",
+            dependencies=["fred_macro"],
+            **retry_policy,
+        )
         self.register_job(
             job_name="trading_calendar",
             dataset_id="trading_calendar",

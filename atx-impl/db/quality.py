@@ -4869,6 +4869,38 @@ def _check_specs(
             comparator="eq",
             required_tables=("short_interest_metrics",),
         ),
+        SqlQualityCheck(
+            dataset_id="macro_metrics",
+            table_name="macro_metrics",
+            check_name="duplicate_macro_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT source, series_id, observation_date
+                    FROM macro_metrics
+                    GROUP BY 1, 2, 3 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("macro_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="macro_metrics",
+            table_name="macro_metrics",
+            check_name="bad_macro_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM macro_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR series_id IS NULL OR series_id = ''
+                   OR observation_date IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("macro_metrics",),
+        ),
     )
 
 

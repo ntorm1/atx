@@ -2817,6 +2817,129 @@ def _short_interest_metrics_trend(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _macro_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S13: derived macro-analytics surface.
+
+    One row per (series_id, observation_date) computed from the cached FRED
+    ``macro_observations`` feed: per-series level, change vs prior observation,
+    year-over-year change/growth, and an expanding z-score (regime position vs
+    history-to-date), plus a synthetic ``T10Y2Y`` term-spread series (DGS10 - DGS2,
+    the canonical yield-curve regime signal). Bitemporal: ``as_of_date`` is the
+    observation date, ``available_at`` carried from the source observation.
+
+    PIT caveat: the raw feed is the latest-revision FRED graph CSV (not ALFRED
+    vintages), so macro-revision PIT is approximate — ``available_at`` reflects the
+    warehouse load, not the true first-release time. All derived values use only the
+    current and earlier observations (YoY looks ~1y back; the z-score is expanding),
+    so there is no forward leakage within the latest-revision series.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS macro_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            series_id VARCHAR NOT NULL,
+            observation_date DATE NOT NULL,
+            frequency VARCHAR,
+            units VARCHAR,
+            value DOUBLE,
+            change_abs DOUBLE,
+            change_yoy DOUBLE,
+            yoy_growth DOUBLE,
+            zscore DOUBLE,
+            is_synthetic BOOLEAN NOT NULL DEFAULT false,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_macro_metrics_key ON macro_metrics(series_id, observation_date)",
+        "CREATE INDEX IF NOT EXISTS idx_macro_metrics_date ON macro_metrics(observation_date)",
+        "CREATE INDEX IF NOT EXISTS idx_macro_metrics_asof ON macro_metrics(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'macro_metrics',
+            'fred',
+            'Derived macro analytics',
+            'Per-series macro analytics derived from the cached FRED observation feed (level, change, year-over-year change/growth, expanding z-score) plus a synthetic 10Y-2Y Treasury term-spread series; bitemporal, latest-revision FRED (not ALFRED vintages).',
+            'series_id,observation_date',
+            'macro_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'macro_metrics', 'silver', 'macro_metrics',
+            'series_id,observation_date',
+            'Derived macro metrics (one row per series, observation date).',
+            '["metric_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision. Latest-revision FRED (not ALFRED), so macro-revision PIT is approximate; derived values use only current+earlier observations.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('metric_id', 'series_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('observation_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('is_latest_revision', 'is_synthetic') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'value' THEN 'Series level at the observation date (or the 10Y-2Y spread for the synthetic T10Y2Y series).'
+                WHEN 'change_abs' THEN 'Change vs the prior observation of the same series.'
+                WHEN 'change_yoy' THEN 'Value minus the value ~1 year earlier (absolute; percentage points for rate series).'
+                WHEN 'yoy_growth' THEN 'Year-over-year growth (value / value_1y_ago - 1); for CPI this is the inflation rate. NULL when the year-ago base is non-positive.'
+                WHEN 'zscore' THEN 'Expanding z-score of the level vs the series history up to and including this observation (regime position).'
+                WHEN 'is_synthetic' THEN 'True for derived cross-series rows (e.g. T10Y2Y term spread).'
+                WHEN 'available_at' THEN 'Source observation availability (warehouse load for latest-revision FRED; not ALFRED first-release).'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('observation_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN c.column_name = 'yoy_growth' THEN 'ratio'
+                WHEN c.column_name = 'zscore' THEN 'zscore'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'macro_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -2993,6 +3116,11 @@ MIGRATIONS: list[Migration] = [
         version=35,
         name="short_interest_metrics_trend",
         up=_short_interest_metrics_trend,
+    ),
+    Migration(
+        version=36,
+        name="macro_metrics",
+        up=_macro_metrics,
     ),
 ]
 
