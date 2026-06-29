@@ -283,6 +283,67 @@ TEST(AtxImplPanel, BuildsPanelFromSegments) {
 }
 
 // ---------------------------------------------------------------------------
+// AtxImplPanel.DefaultPathByteIdentical (S6-2)
+//
+// The ATX_PANEL_INCREMENTAL opt-in is OFF in every default/CI build, so run_panel
+// takes the unchanged full-rebuild path. Two default-path runs on the same
+// synthetic fixture must produce byte-identical panel.bin output (same fnv1a64
+// digest, same file bytes) — the guard-off no-regression proof for S6-2.
+// ---------------------------------------------------------------------------
+TEST(AtxImplPanel, DefaultPathByteIdentical) {
+    const fs::path seg_dir = fs::temp_directory_path() / "atx_impl_s62_default_seg";
+    {
+        std::error_code ec;
+        fs::remove_all(seg_dir, ec);
+        fs::create_directories(seg_dir, ec);
+    }
+
+    constexpr int kDates = 12;
+    constexpr int kInstr = 5;
+    const atx::i64 kDayNanos = 86400LL * 1'000'000'000LL;
+    const atx::i64 kDay0     = 18263LL * kDayNanos;
+    for (int d = 0; d < kDates; ++d) {
+        const atx::i64 dn    = kDay0 + static_cast<atx::i64>(d) * kDayNanos;
+        const std::string fn = "seg_" + std::to_string(3000 + d) + ".seg";
+        write_seg_day(seg_dir, fn, dn, kInstr, 80.0 + static_cast<atx::f64>(d) * 0.3);
+    }
+
+    auto run_once = [&](const char* tag) -> std::string {
+        const std::string panel_out =
+            (fs::temp_directory_path() / (std::string("atx_impl_s62_") + tag + ".bin")).string();
+        fs::remove(fs::path(panel_out));
+        fs::remove(fs::path(panel_out + ".meta.txt"));
+        atx::impl::RunConfig cfg;
+        cfg.segs         = seg_dir.string();
+        cfg.panel_out    = panel_out;
+        cfg.min_adv_usd  = 0.0;
+        cfg.top_n_by_adv = 0;
+        auto r = atx::impl::run_panel(cfg);
+        EXPECT_TRUE(r.has_value()) << "run_panel failed: " << (r ? "" : r.error().message());
+        return panel_out;
+    };
+
+    const std::string a = run_once("a");
+    const std::string b = run_once("b");
+
+    std::ifstream fa(a, std::ios::binary);
+    std::ifstream fb(b, std::ios::binary);
+    const std::string ba((std::istreambuf_iterator<char>(fa)), std::istreambuf_iterator<char>());
+    const std::string bb((std::istreambuf_iterator<char>(fb)), std::istreambuf_iterator<char>());
+    EXPECT_FALSE(ba.empty());
+    EXPECT_EQ(ba, bb) << "default-path run_panel must be byte-identical across runs";
+
+    {
+        std::error_code ec;
+        fs::remove_all(seg_dir, ec);
+        fs::remove(fs::path(a), ec);
+        fs::remove(fs::path(b), ec);
+        fs::remove(fs::path(a + ".meta.txt"), ec);
+        fs::remove(fs::path(b + ".meta.txt"), ec);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AtxImplPanel.SidecarMetaWrittenAlongsidePanel (S5-3)
 //
 // Verifies that run_panel emits a <panel_out>.meta.txt sidecar beside the

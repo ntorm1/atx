@@ -8,6 +8,7 @@
 #include <limits>    // std::numeric_limits (W2 NaN vwap stub)
 #include <fstream>
 #include <iomanip>
+#include <locale>    // std::locale::classic (S6 fix: pin config_json formatting locale)
 #include <optional>
 #include <sstream>
 #include <string>
@@ -45,6 +46,13 @@
 #include "stage_discover_detail.hpp"             // atx::impl::detail::apply_capacity_screen (Fix 1: testable)
 #include "store_progress_sink.hpp"               // StoreProgressSink, compute_discover_fingerprint, fp_hex, now_unix
 
+// engine_git_sha (S6-4): baked at configure time by atx-impl/CMakeLists.txt.
+// Fallback for any TU compiled without the compile definition (e.g. a build that
+// lacks the bake step) so the provenance string is always a defined value.
+#ifndef ATX_ENGINE_GIT_SHA
+#define ATX_ENGINE_GIT_SHA "unknown"
+#endif
+
 namespace atx::impl {
 
 namespace exec = atx::engine::exec;
@@ -67,6 +75,143 @@ namespace {
         return T::Raw;
     }
     return T::Rank; // "rank" (and the validated default) -> Rank
+}
+
+// ---------------------------------------------------------------------------
+// config_json provenance (S6-4).
+//
+// Build a compact, DETERMINISTIC JSON snapshot of the discover-stage config
+// fields that affect WHICH alphas are admitted or HOW they are scored, so a
+// future reader can reconstruct the exact gate/seed/search environment of a run.
+// It contains ONLY config-parameter key/value pairs — NO wall-clock timestamps —
+// so two same-config runs produce the identical string (required by the round-
+// trip test and the determinism contract). Stored in PipelineRunRow.config_json
+// (run-DB metadata); it never enters panel.bin or the discover search digest
+// (S6-5 tripwire). Hand-rolled (no JSON dependency exists in this layer; the only
+// nlohmann copy is vendored deep inside databento third-party — not pulled in).
+//
+// S6-PROVENANCE-SUBSET: covers the admission/scoring + seed/search knobs below.
+// Pure output-formatting / I/O-path fields (alpha_out, run_db, library_dir,
+// workers, executor) are intentionally omitted — they do not affect the admitted
+// set or scoring. Extend this list (and the round-trip test) if a new
+// admission/scoring knob is added.
+[[nodiscard]] std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 2);
+    for (const char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x",
+                                  static_cast<unsigned>(static_cast<unsigned char>(c)));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+// Format a double for JSON. Finite values use a round-trippable representation
+// (max_digits10); non-finite values (the inert +/-inf and NaN sentinels used by
+// some gate defaults) are emitted as JSON strings since JSON has no inf/nan
+// literal — the round-trip test parses them back to the same sentinel.
+[[nodiscard]] std::string json_num(atx::f64 v) {
+    if (std::isnan(v))      return "\"nan\"";
+    if (std::isinf(v))      return v < 0.0 ? "\"-inf\"" : "\"inf\"";
+    std::ostringstream os;
+    // Pin the classic ("C") locale so the decimal separator is always '.' and no
+    // digit grouping is applied, regardless of the process/global locale. The
+    // determinism contract requires byte-identical config_json across runs/hosts;
+    // a future std::locale::global(...) or a host whose default imbues a comma
+    // separator / thousands grouping would otherwise corrupt the JSON + round-trip.
+    os.imbue(std::locale::classic());
+    os << std::setprecision(17) << v;
+    return os.str();
+}
+
+[[nodiscard]] std::string build_config_json(const RunConfig& cfg) {
+    std::ostringstream os;
+    // Pin the classic ("C") locale so integer fields are emitted without digit
+    // grouping (and any stream-formatted text uses the C locale), regardless of the
+    // process/global locale — keeps config_json locale-independent (see json_num).
+    os.imbue(std::locale::classic());
+    const char* sep = "";
+    auto kv_s = [&](const char* k, const std::string& v) {
+        os << sep << '"' << k << "\":\"" << json_escape(v) << '"';
+        sep = ",";
+    };
+    auto kv_b = [&](const char* k, bool v) {
+        os << sep << '"' << k << "\":" << (v ? "true" : "false");
+        sep = ",";
+    };
+    auto kv_i = [&](const char* k, long long v) {
+        os << sep << '"' << k << "\":" << v;
+        sep = ",";
+    };
+    auto kv_d = [&](const char* k, atx::f64 v) {
+        os << sep << '"' << k << "\":" << json_num(v);
+        sep = ",";
+    };
+
+    os << '{';
+    // Provenance-format version so a reader can branch on schema evolution.
+    kv_i("v", 1);
+    // Panel + seed/search environment.
+    kv_s("panel", cfg.panel);
+    kv_i("seed", static_cast<long long>(cfg.seed));
+    kv_i("population", cfg.population);
+    kv_i("generations", cfg.generations);
+    // Gate floors (admission).
+    kv_b("gated", cfg.gated);
+    kv_d("min_sharpe", cfg.min_sharpe);
+    kv_d("min_fitness", cfg.min_fitness);
+    kv_d("max_turnover", cfg.max_turnover);
+    kv_d("max_pool_corr", cfg.max_pool_corr);
+    kv_d("min_dsr", cfg.min_dsr);
+    // Cost-aware admission knobs (S4 / S7-2).
+    kv_d("cost_bps_admit", cfg.cost_bps_admit);
+    kv_d("min_holding_days", cfg.min_holding_days);
+    kv_d("cost_max_turnover", cfg.cost_max_turnover);
+    kv_d("target_aum", cfg.target_aum);
+    // OOS / robustness admission geometry.
+    kv_d("oos_fraction", cfg.oos_fraction);
+    kv_d("oos_embargo", cfg.oos_embargo);
+    kv_i("oos_windows", cfg.oos_windows);
+    kv_i("oos_window", cfg.oos_window);
+    kv_d("min_split_sharpe", cfg.min_split_sharpe);
+    kv_d("max_pbo", cfg.max_pbo);
+    kv_b("pbo_hard_block", cfg.pbo_hard_block);
+    kv_i("dsr_subwindows", cfg.dsr_subwindows);
+    kv_d("robust_holdout_frac", cfg.robust_holdout_frac);
+    kv_d("max_price_scale_corr", cfg.max_price_scale_corr);
+    kv_b("deflate_selection", cfg.deflate_selection);
+    // Grammar / field discipline.
+    kv_b("typed_fields", cfg.typed_fields);
+    kv_i("field_cardinality_max", cfg.field_cardinality_max);
+    // Search fitness / seed-handling (S3 / S7-1).
+    kv_d("turnover_penalty_slope", cfg.turnover_penalty_slope);
+    kv_d("max_turnover_target", cfg.max_turnover_target);
+    kv_b("protect_seed_elites", cfg.protect_seed_elites);
+    kv_b("mutate_seed_copies", cfg.mutate_seed_copies);
+    kv_d("min_viable_raw", cfg.min_viable_raw);
+    kv_b("enable_wrap_in_op", cfg.enable_wrap_in_op);
+    // Weight policy (book scoring).
+    kv_s("weight_transform", cfg.weight_transform);
+    kv_d("winsorize_limit", cfg.winsorize_limit);
+    kv_b("industry_neutral", cfg.industry_neutral);
+    kv_d("gross_leverage", cfg.gross_leverage);
+    os << '}';
+    return os.str();
 }
 
 } // namespace
@@ -537,8 +682,11 @@ atx::core::Result<StageResult> run_discover_gated(
             row.population        = static_cast<atx::i64>(cfg.population);
             row.total_generations = static_cast<atx::i64>(cfg.generations);
             row.panel_path        = cfg.panel;
-            row.config_json       = "";
-            row.engine_git_sha    = "";
+            // S6-4 provenance: deterministic config snapshot (admission/scoring keys,
+            // no timestamps) + the build-time engine git SHA. Both are run-DB metadata
+            // only — they never enter panel.bin or the discover search digest (S6-5).
+            row.config_json       = build_config_json(cfg);
+            row.engine_git_sha    = ATX_ENGINE_GIT_SHA;
             row.created_at        = now_unix();
             ATX_TRY(auto r, store::PipelineRecorder::begin(sdb->db(), row));
             rec.emplace(std::move(r));

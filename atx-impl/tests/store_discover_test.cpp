@@ -23,12 +23,14 @@
 // use the full run; the in-memory sink test is kept as the fast, isolated regression.
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -220,6 +222,52 @@ TEST(AtxImplStoreDiscover, SinkWritesCheckpointRows) {
     ASSERT_EQ(pop.size(), 2u);
     EXPECT_EQ(pop[0], "rank(close)");
     EXPECT_EQ(pop[1], "delta(close,2)");
+}
+
+// ---------------------------------------------------------------------------
+// 2b. StoreProgressSink_WallMsNonZero (S6-3) — the sink records a real per-
+//     checkpoint wall-clock elapsed (steady_clock since sink construction), not
+//     the old hardcoded 0. We drive one checkpoint after a tiny delay and assert
+//     the persisted pipeline_iteration.wall_ms is > 0 and plausibly bounded
+//     (< 24h) — a value check, never an exact-millisecond assertion.
+// ---------------------------------------------------------------------------
+TEST(AtxImplStoreDiscover, StoreProgressSinkWallMsNonZero) {
+    auto db_r = store::StoreDb::open_memory();
+    ASSERT_TRUE(db_r.has_value()) << db_r.error().message();
+    store::StoreDb db = std::move(*db_r);
+
+    store::PipelineRunRow row;
+    row.pipeline_run_id   = "deadbeef0000be01";
+    row.fingerprint       = 0xDEADBEEF0000BE01ULL;
+    row.stage             = "discover";
+    row.master_seed       = 1234ULL;
+    row.population        = 2;
+    row.total_generations = 1;
+    row.panel_path        = "mem";
+    row.created_at        = atx::impl::now_unix();
+    auto rec_r = store::PipelineRecorder::begin(db.db(), row);
+    ASSERT_TRUE(rec_r.has_value()) << rec_r.error().message();
+    store::PipelineRecorder rec = std::move(*rec_r);
+
+    atx::impl::StoreProgressSink sink{rec};
+    // A few ms of elapsed since sink construction so the recorded wall_ms is a
+    // measurable, strictly-positive value (the plan permits a small sleep here).
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+
+    atx::engine::factory::GenerationSnapshot snap;
+    snap.generation   = 0;
+    snap.population    = {"rank(close)", "delta(close,2)"};
+    snap.best_fitness  = 1.0;
+    snap.mean_fitness  = 0.5;
+    snap.n_evaluated   = 4;
+    snap.n_unique      = 2;
+    auto st = sink.on_generation(snap);
+    ASSERT_TRUE(st.has_value()) << st.error().message();
+
+    const atx::i64 wall_ms = count_rows(db, "SELECT wall_ms FROM pipeline_iteration LIMIT 1");
+    EXPECT_GT(wall_ms, 0) << "wall_ms must be a real positive elapsed, not the old hardcoded 0";
+    EXPECT_LT(wall_ms, 24LL * 60LL * 60LL * 1000LL)
+        << "wall_ms must be plausibly bounded (< 24h)";
 }
 
 // ---------------------------------------------------------------------------

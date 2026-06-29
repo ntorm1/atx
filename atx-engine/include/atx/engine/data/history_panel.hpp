@@ -95,4 +95,57 @@ orats_total_return_close(std::span<const atx::f64> close,
 // partition, an empty window, or a shape mismatch (propagated).
 [[nodiscard]] atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg);
 
+// =========================================================================
+//  append_history_panel (S6-1) — incremental panel extension
+// =========================================================================
+//
+// CONTRACT — byte-identical to a full rebuild over the combined date range.
+//   Given an already-built `existing` Panel (loaded from panel.bin) and a
+//   directory of NEW per-date .seg files for dates STRICTLY AFTER the existing
+//   panel's last date, return an extended HistoryPanel whose serialized bytes
+//   (and therefore its fnv1a64 panel.bin trailer) are IDENTICAL to
+//   build_history_panel() run over the whole combined range. This identity — not
+//   an assertion — is the central correctness gate (S6-1 byte-identity test).
+//
+//   `combined_cfg` describes the COMBINED build: combined_cfg.seg_dir MUST be a
+//   directory holding BOTH the existing and the new per-date segments (the normal
+//   data-loop layout — a new day's .seg is dropped into the same partition), and
+//   combined_cfg.window MUST span the combined [first_existing, last_new] range
+//   (an unset/default window selects all segments, which is the common case).
+//   `new_seg_dir` is the directory of ONLY the new-date segments; it is read to
+//   (a) detect the no-op case and (b) enforce the strictly-after ordering — it is
+//   NOT a second data source. (`new_seg_dir` may equal combined_cfg.seg_dir only
+//   when the partition contains exclusively new dates, which is not the append
+//   case; pass a distinct new-only directory.)
+//
+// DETERMINISM — why this is byte-identical by construction.
+//   Every history-panel field at date t depends only on data at dates <= t: TRI
+//   close (close*cumret) is per-row, market_cap (shares*raw_close) is per-cell,
+//   sector is per-cell, and ADV is the engine's CAUSAL trailing mean (window
+//   [t-w+1, t], no look-ahead). Appending later dates therefore cannot perturb
+//   any earlier row. The instrument axis is the first-seen union in ascending
+//   date order, so the existing instruments keep their column positions and any
+//   brand-new symbol lands at the tail — exactly as a full rebuild orders them.
+//
+// PRECONDITIONS / ERRORS (fail closed):
+//   * new_seg_dir contains no in-window dates  -> Ok(existing unchanged) (no-op).
+//   * any new-seg date <= existing panel's last date (i.e. the combined build
+//     would not extend strictly past `existing`) -> Err(InvalidArgument).
+//   * combined_cfg.compact_to_universe == true -> Err(InvalidArgument): column
+//     compaction is a whole-window decision that has no stable incremental
+//     meaning here; the caller must append on an uncompacted panel.
+//   * any error from the underlying full build is propagated.
+//
+// IMPLEMENTATION NOTE (honest limitation): alpha::Panel carries neither a symbol
+//   axis nor a date axis, so the new rows cannot be spliced onto `existing`
+//   purely in memory without re-deriving identity from the segments. This unit
+//   therefore re-reads the combined partition through build_history_panel and
+//   VERIFIES that the rebuild's first existing.dates() rows are byte-identical to
+//   `existing` (turning any latent divergence into a loud error rather than a
+//   silent one). A zero-re-read in-memory splice is deferred (it needs a panel
+//   symbol/date axis — out of S6 scope).
+[[nodiscard]] atx::core::Result<HistoryPanel>
+append_history_panel(const alpha::Panel &existing, const std::string &new_seg_dir,
+                     const HistoryDataConfig &combined_cfg);
+
 } // namespace atx::engine::data
