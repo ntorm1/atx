@@ -3108,6 +3108,143 @@ def _short_interest_metrics_momentum(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _thirteenf_position_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S16: derived 13F manager-level position-flow analytics surface.
+
+    One row per (manager_id, security_id, report_period) computed from the cached
+    ``thirteenf_security_positions`` + ``thirteenf_manager_reports`` feed: the
+    quarter-over-quarter common-share position change and a NEW / ADDED / TRIMMED /
+    UNCHANGED / EXITED action (the canonical 13F "smart-money flow" signal), plus
+    voting-authority concentration. Complements the issuer-level rollup
+    ``thirteenf_security_ownership`` (built by :mod:`db.ownership`) with the per-manager
+    conviction layer. Bitemporal: ``as_of_date`` is the report period, ``available_at``
+    the filing's availability instant (approximate — the cached feed carries the
+    warehouse ingest time, never earlier than the true SEC filing). PIT-safe: every value
+    uses only this manager's current and immediately-prior-quarter filings.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS thirteenf_position_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            manager_id VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cusip VARCHAR,
+            name_of_issuer VARCHAR,
+            report_period DATE NOT NULL,
+            filing_date DATE,
+            shares_held DOUBLE,
+            value_usd DOUBLE,
+            portfolio_weight DOUBLE,
+            shares_held_prev DOUBLE,
+            shares_change DOUBLE,
+            shares_change_pct DOUBLE,
+            value_change DOUBLE,
+            position_action VARCHAR,
+            is_new_position BOOLEAN,
+            is_closed_position BOOLEAN,
+            voting_sole_pct DOUBLE,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_position_metrics_key ON thirteenf_position_metrics(manager_id, security_id, report_period)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_position_metrics_security ON thirteenf_position_metrics(security_id, report_period)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_position_metrics_asof ON thirteenf_position_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_position_metrics_action ON thirteenf_position_metrics(position_action)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_position_metrics_latest ON thirteenf_position_metrics(is_latest_revision)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'thirteenf_position_metrics',
+            'sec',
+            'Derived 13F manager-level position analytics',
+            'Per-manager institutional position analytics derived from the cached SEC Form 13F holdings feed: quarter-over-quarter common-share change, NEW/ADDED/TRIMMED/UNCHANGED/EXITED action, and voting-authority concentration. Complements the issuer-level thirteenf_security_ownership rollup. Bitemporal with filing-time availability.',
+            'manager_id,security_id,report_period',
+            'thirteenf_position_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'thirteenf_position_metrics', 'silver', 'thirteenf_position_metrics',
+            'manager_id,security_id,report_period',
+            'Derived 13F manager-level position-flow metrics (one row per manager, security, report period; plus synthetic EXITED rows for dropped holdings).',
+            '["metric_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision. available_at is the filing availability instant; it is approximate (the cached feed carries the warehouse ingest time) but conservative — never earlier than the true SEC filing. Each value uses only the manager''s current and immediately-prior-quarter filings, so it is point-in-time safe.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('metric_id', 'manager_id', 'security_id', 'run_id', 'cusip') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('report_period', 'as_of_date', 'filing_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'shares_held' THEN 'Aggregate common-share quantity the manager held in the issuer at the report period (0 for an EXITED row).'
+                WHEN 'value_usd' THEN 'Aggregate reported common-share market value (USD) the manager held in the issuer.'
+                WHEN 'shares_held_prev' THEN 'Common-share quantity held in the immediately-prior quarter (NULL for a NEW position).'
+                WHEN 'shares_change' THEN 'Common-share quantity change vs the prior quarter (NULL for NEW).'
+                WHEN 'shares_change_pct' THEN 'Share change as a fraction of the prior-quarter holding (NULL when prior <= 0).'
+                WHEN 'value_change' THEN 'Reported value change vs the prior quarter (NULL for NEW).'
+                WHEN 'position_action' THEN 'NEW / ADDED / TRIMMED / UNCHANGED / EXITED classification of the quarter-over-quarter move.'
+                WHEN 'is_new_position' THEN 'True when the manager had no prior-quarter holding of this issuer.'
+                WHEN 'is_closed_position' THEN 'True for a synthetic EXITED row (manager filed the quarter but dropped a prior holding).'
+                WHEN 'voting_sole_pct' THEN 'Sole voting authority as a fraction of total (sole+shared+none) voting authority.'
+                WHEN 'available_at' THEN 'Filing availability instant; the metric is knowable only at/after this instant (approximate, never earlier than the true SEC filing).'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) IN ('report_period', 'as_of_date', 'filing_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%_pct%' THEN 'ratio'
+                WHEN lower(c.column_name) = 'value_usd' OR lower(c.column_name) = 'value_change' THEN 'usd'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'thirteenf_position_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -3299,6 +3436,11 @@ MIGRATIONS: list[Migration] = [
         version=38,
         name="short_interest_metrics_momentum",
         up=_short_interest_metrics_momentum,
+    ),
+    Migration(
+        version=39,
+        name="thirteenf_position_metrics",
+        up=_thirteenf_position_metrics,
     ),
 ]
 

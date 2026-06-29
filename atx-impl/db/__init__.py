@@ -28,6 +28,7 @@ from .asof import (
     short_interest_metrics_asof,
     macro_metrics_asof,
     equity_price_metrics_asof,
+    thirteenf_position_metrics_asof,
     identifier_decisions_asof,
     insider_relationships_asof,
     insider_transactions_asof,
@@ -112,6 +113,12 @@ from .equity_price_metrics import (
     EquityPriceMetricsOptions,
     compute_equity_price_metrics,
     refresh_equity_price_metrics,
+)
+from .thirteenf_position_metrics import (
+    ThirteenFPositionMetricsDataset,
+    ThirteenFPositionMetricsOptions,
+    compute_position_metrics,
+    refresh_position_metrics,
 )
 from .fundamental_statements import (
     refresh_fundamental_periods,
@@ -281,6 +288,11 @@ __all__ = [
     "compute_equity_price_metrics",
     "refresh_equity_price_metrics",
     "equity_price_metrics_asof",
+    "ThirteenFPositionMetricsDataset",
+    "ThirteenFPositionMetricsOptions",
+    "compute_position_metrics",
+    "refresh_position_metrics",
+    "thirteenf_position_metrics_asof",
     "fundamental_statements_asof",
     "fundamental_ttm_asof",
     "IdentifierResolutionDecisionDataset",

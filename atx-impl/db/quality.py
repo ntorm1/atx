@@ -4935,6 +4935,41 @@ def _check_specs(
             comparator="eq",
             required_tables=("equity_price_metrics",),
         ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_position_metrics",
+            table_name="thirteenf_position_metrics",
+            check_name="duplicate_thirteenf_position_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT source, manager_id, security_id, report_period
+                    FROM thirteenf_position_metrics
+                    GROUP BY 1, 2, 3, 4 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_position_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_position_metrics",
+            table_name="thirteenf_position_metrics",
+            check_name="bad_thirteenf_position_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM thirteenf_position_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR manager_id IS NULL OR manager_id = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR report_period IS NULL
+                   OR as_of_date IS NULL
+                   OR position_action NOT IN ('NEW', 'ADDED', 'TRIMMED', 'UNCHANGED', 'EXITED')
+                   OR (is_closed_position AND shares_held <> 0)
+                   OR (is_new_position AND shares_held_prev IS NOT NULL)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_position_metrics",),
+        ),
     )
 
 

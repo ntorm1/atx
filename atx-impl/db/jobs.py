@@ -35,6 +35,7 @@ from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalX
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
 from .equity_price_metrics import EquityPriceMetricsDataset, EquityPriceMetricsOptions
+from .thirteenf_position_metrics import ThirteenFPositionMetricsDataset, ThirteenFPositionMetricsOptions
 from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
@@ -700,6 +701,15 @@ def _equity_price_metrics_options(params: dict[str, Any]) -> EquityPriceMetricsO
     )
 
 
+def _thirteenf_position_metrics_options(params: dict[str, Any]) -> ThirteenFPositionMetricsOptions:
+    default = ThirteenFPositionMetricsOptions()
+    return ThirteenFPositionMetricsOptions(
+        source=params.get("source") or default.source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     default = FredMacroOptions()
     return FredMacroOptions(
@@ -768,6 +778,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ShortInterestMetricsDataset.dataset_id: (ShortInterestMetricsDataset, _short_interest_metrics_options),
     MacroMetricsDataset.dataset_id: (MacroMetricsDataset, _macro_metrics_options),
     EquityPriceMetricsDataset.dataset_id: (EquityPriceMetricsDataset, _equity_price_metrics_options),
+    ThirteenFPositionMetricsDataset.dataset_id: (ThirteenFPositionMetricsDataset, _thirteenf_position_metrics_options),
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
@@ -1112,6 +1123,12 @@ class JobManager:
             job_name="equity_price_metrics",
             dataset_id="equity_price_metrics",
             dependencies=["daily_bars"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="thirteenf_position_metrics",
+            dataset_id="thirteenf_position_metrics",
+            dependencies=["sec_13f_ownership_features"],
             **retry_policy,
         )
         self.register_job(

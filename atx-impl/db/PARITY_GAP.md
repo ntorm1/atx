@@ -89,6 +89,7 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 
 **Current state — BUILT:**
 - `thirteenf_managers` (10,672) ← `filer_13f`; `thirteenf_manager_reports` (11,761) ← `filing_13f`; `thirteenf_security_positions` (10,564) ← `holding_13f`; `thirteenf_security_ownership` (54) = security-side QoQ rollup (a bonus aggregate). Loaders: `thirteenf.py`, `ownership.py`.
+- **`thirteenf_position_metrics` BUILT (S16)** — manager-side conviction-flow surface (migration `0039`, `db/thirteenf_position_metrics.py`): per-(manager_id, security_id, report_period) QoQ common-share change, `position_action` ∈ NEW/ADDED/TRIMMED/UNCHANGED/EXITED (exits inferred from `thirteenf_manager_reports` filed-quarter set), and `voting_sole_pct` concentration. Complements the issuer-side `thirteenf_security_ownership`. Full house wiring (`thirteenf_position_metrics_asof` + `query_asof --view thirteenf-position-metrics`, jobs DAG ← `sec_13f_ownership_features`, 2 quality checks, lake, watermarks, build script). Live: **6,595 rows / 6,032 managers / 54 quarters** (392 real continuations + 8 exits; NEW-heavy because the cache's pre-2026 consecutive coverage is sparse — deepens as more historical quarters load).
 - Schema already handles the hard parts: `put_call`, `investment_discretion`, `voting_auth_sole/shared/none`, `share_quantity_type`, `is_amendment`/`amendment_type`, `is_confidential_omitted`, `portfolio_weight`, `available_at` bitemporal.
 
 **Gap:**

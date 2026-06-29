@@ -50,6 +50,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "short_interest_metrics",
     "macro_metrics",
     "equity_price_metrics",
+    "thirteenf_position_metrics",
     "feature_build_manifests",
     "feature_definitions",
     "feature_set_catalog",
