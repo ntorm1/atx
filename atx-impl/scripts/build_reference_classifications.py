@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
         help="Offline CIK->SIC CSV (cols: cik, sic[, sic_description]); skips SEC network calls.",
     )
     parser.add_argument(
+        "--submissions-zip",
+        type=Path,
+        default=None,
+        help="Offline SEC bulk submissions.zip (one CIK##########.json per filer); skips SEC network calls.",
+    )
+    parser.add_argument(
         "--user-agent",
         default=EntityClassificationOptions().user_agent,
         help="HTTP User-Agent sent to SEC EDGAR (format: 'AppName email@example.com').",
@@ -88,6 +94,7 @@ def main() -> int:
             EntityClassificationOptions(
                 symbols=symbols,
                 sic_file=args.sic_file,
+                submissions_zip=args.submissions_zip,
                 user_agent=args.user_agent,
                 request_timeout=args.request_timeout,
             ),

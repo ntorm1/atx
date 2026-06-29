@@ -18,9 +18,11 @@ NAICS 2022 (Census Bureau, public domain).
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -944,6 +946,37 @@ def _make_csv_fetcher(path: str | Path) -> Callable[[str | int], dict | None]:
     return fetch
 
 
+def _make_submissions_zip_fetcher(path: str | Path) -> Callable[[str | int], dict | None]:
+    """Return an OFFLINE fetcher backed by the SEC bulk ``submissions.zip``.
+
+    SEC publishes a free bulk archive at
+    ``https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip``
+    containing one ``CIK##########.json`` per filer, each carrying a top-level
+    ``sic`` / ``sicDescription``. Lookups are lazy (one member read per CIK) so the
+    ~1 GB archive never needs to be loaded into memory. Download is a one-time
+    operator step; this fetcher and all tests run purely against a local file.
+    """
+    archive = zipfile.ZipFile(path)
+    names = set(archive.namelist())
+
+    def fetch(cik: str | int) -> dict | None:
+        raw = str(cik).strip()
+        try:
+            member = f"CIK{int(raw):010d}.json"
+        except ValueError:
+            return None
+        if member not in names:
+            return None
+        with archive.open(member) as handle:
+            data = json.load(handle)
+        sic = data.get("sic")
+        if not sic:
+            return None
+        return {"sic": str(sic), "sicDescription": data.get("sicDescription")}
+
+    return fetch
+
+
 # ---------------------------------------------------------------------------
 # Dataset 4: EntityClassificationDataset
 # ---------------------------------------------------------------------------
@@ -963,6 +996,7 @@ class EntityClassificationOptions:
     """
     fetcher: Callable[[str | int], dict | None] | None = None
     sic_file: Path | None = None
+    submissions_zip: Path | None = None
     symbols: tuple[str, ...] | None = None
     user_agent: str = _DEFAULT_USER_AGENT
     request_timeout: int = 30
@@ -994,6 +1028,8 @@ class EntityClassificationDataset(Dataset):
     ) -> DatasetLoadResult:
         if options.fetcher is not None:
             fetcher = options.fetcher
+        elif options.submissions_zip is not None:
+            fetcher = _make_submissions_zip_fetcher(options.submissions_zip)
         elif options.sic_file is not None:
             fetcher = _make_csv_fetcher(options.sic_file)
         else:

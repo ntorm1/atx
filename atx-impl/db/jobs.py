@@ -614,9 +614,11 @@ def _blockholder_ownership_options(params: dict[str, Any]) -> BlockholderOwnersh
 def _entity_classification_options(params: dict[str, Any]) -> EntityClassificationOptions:
     _default = EntityClassificationOptions()
     sic_file = params.get("sic_file")
+    submissions_zip = params.get("submissions_zip")
     return EntityClassificationOptions(
         symbols=_tuple_or_none(params.get("symbols")),
         sic_file=Path(sic_file) if sic_file else _default.sic_file,
+        submissions_zip=Path(submissions_zip) if submissions_zip else _default.submissions_zip,
         user_agent=params.get("user_agent", _default.user_agent),
         request_timeout=int(params.get("request_timeout", _default.request_timeout)),
     )

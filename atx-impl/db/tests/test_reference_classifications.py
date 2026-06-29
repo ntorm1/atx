@@ -589,3 +589,52 @@ class TestOfflineSicCsvFetcher:
             """
         ).fetchone()
         assert ff is not None and ff[0] == "BusEq"
+
+
+class TestSecBulkSubmissionsZipFetcher:
+    """Offline SEC bulk submissions.zip -> CIK/SIC fetcher (no network)."""
+
+    def _make_fixture_zip(self, tmp_path):
+        import json
+        import zipfile
+        zip_path = tmp_path / "submissions.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr(
+                "CIK0000789019.json",
+                json.dumps({"cik": "789019", "sic": "7372", "sicDescription": "Prepackaged Software"}),
+            )
+            zf.writestr(
+                "CIK0000019617.json",
+                json.dumps({"cik": 19617, "sic": "6022", "sicDescription": "State Banks"}),
+            )
+        return zip_path
+
+    def test_zip_fetcher_resolves_padded_cik(self, tmp_path):
+        from db.reference_classifications import _make_submissions_zip_fetcher
+        fetch = _make_submissions_zip_fetcher(self._make_fixture_zip(tmp_path))
+        assert fetch("789019")["sic"] == "7372"
+        assert fetch(19617)["sic"] == "6022"
+        assert fetch("999999") is None
+
+    def test_submissions_zip_populates_entity_classification_offline(self, tmp_store, tmp_path):
+        from db.reference_classifications import EntityClassificationDataset, EntityClassificationOptions
+        _seed_all_taxonomies(tmp_store)
+        _insert_security(tmp_store, "SEC-CIK-0000789019", "789019", "MSFT")
+        _insert_security(tmp_store, "SEC-CIK-0000019617", "19617", "JPM")
+
+        EntityClassificationDataset().run(
+            tmp_store,
+            EntityClassificationOptions(submissions_zip=self._make_fixture_zip(tmp_path)),
+        )
+
+        rows = tmp_store.con.execute(
+            """
+            SELECT s.primary_symbol, ec.node_code
+            FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            JOIN securities s ON s.security_id = ec.security_id
+            WHERE t.code = 'SIC' AND ec.is_primary
+            ORDER BY s.primary_symbol
+            """
+        ).fetchall()
+        assert rows == [("JPM", "6022"), ("MSFT", "7372")]
