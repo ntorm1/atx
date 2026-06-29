@@ -29,6 +29,41 @@ target_link_libraries(atx-impl-core
 find_package(Threads REQUIRED)
 target_link_libraries(atx-impl-core PRIVATE Threads::Threads)
 
+# ---------------------------------------------------------------------------
+# engine_git_sha provenance bake (p7 S6-4).
+# Resolve the engine's git commit at configure time and bake it into a compile
+# definition ATX_ENGINE_GIT_SHA consumed by stage_discover.cpp. Appends "-dirty"
+# when the working tree has uncommitted changes; falls back to "unknown" if git
+# is unavailable (CI / source tarball). This is provenance only — it never enters
+# panel.bin or the discover search digest (guarded by the S6-5 tripwire).
+# ---------------------------------------------------------------------------
+set(ATX_ENGINE_GIT_SHA "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _atx_git_sha
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _atx_git_rc
+        ERROR_QUIET)
+    if(_atx_git_rc EQUAL 0 AND _atx_git_sha)
+        set(ATX_ENGINE_GIT_SHA "${_atx_git_sha}")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" status --porcelain
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _atx_git_dirty
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(_atx_git_dirty)
+            set(ATX_ENGINE_GIT_SHA "${ATX_ENGINE_GIT_SHA}-dirty")
+        endif()
+    endif()
+endif()
+message(STATUS "atx-impl engine_git_sha: ${ATX_ENGINE_GIT_SHA}")
+target_compile_definitions(atx-impl-core PRIVATE
+    ATX_ENGINE_GIT_SHA="${ATX_ENGINE_GIT_SHA}")
+
 add_executable(atx-impl src/main.cpp)
 target_link_libraries(atx-impl PRIVATE atx-impl-core atx_warnings)
 
