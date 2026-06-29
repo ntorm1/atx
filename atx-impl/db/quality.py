@@ -5004,6 +5004,56 @@ def _check_specs(
             comparator="eq",
             required_tables=("corporate_action_dividend_metrics",),
         ),
+        SqlQualityCheck(
+            dataset_id="corporate_action_split_metrics",
+            table_name="corporate_action_split_metrics",
+            check_name="duplicate_corporate_action_split_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT source, factor_source, daily_adjustment_source, coalesce(bar_source, ''), event_ref_id
+                    FROM corporate_action_split_metrics
+                    GROUP BY 1, 2, 3, 4, 5 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("corporate_action_split_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="corporate_action_split_metrics",
+            table_name="corporate_action_split_metrics",
+            check_name="bad_corporate_action_split_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM corporate_action_split_metrics
+                WHERE split_metric_id IS NULL OR split_metric_id = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR event_ref_id IS NULL OR event_ref_id = ''
+                   OR ex_date IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR factor_price <= 0
+                   OR factor_shares <= 0
+                   OR reconciliation_status NOT IN ('RECONCILED', 'MISMATCH', 'MISSING_DAILY_FACTOR')
+                   OR (is_reconciled AND reconciliation_status <> 'RECONCILED')
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("corporate_action_split_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="corporate_action_split_metrics",
+            table_name="corporate_action_split_metrics",
+            check_name="mismatched_corporate_action_split_factors",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM corporate_action_split_metrics
+                WHERE reconciliation_status = 'MISMATCH'
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("corporate_action_split_metrics",),
+        ),
     )
 
 

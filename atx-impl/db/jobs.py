@@ -36,7 +36,12 @@ from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMe
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
 from .equity_price_metrics import EquityPriceMetricsDataset, EquityPriceMetricsOptions
 from .thirteenf_position_metrics import ThirteenFPositionMetricsDataset, ThirteenFPositionMetricsOptions
-from .corporate_action_metrics import CorporateActionDividendMetricsDataset, CorporateActionDividendMetricsOptions
+from .corporate_action_metrics import (
+    CorporateActionDividendMetricsDataset,
+    CorporateActionDividendMetricsOptions,
+    CorporateActionSplitMetricsDataset,
+    CorporateActionSplitMetricsOptions,
+)
 from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
@@ -720,6 +725,18 @@ def _corporate_action_dividend_metrics_options(params: dict[str, Any]) -> Corpor
     )
 
 
+def _corporate_action_split_metrics_options(params: dict[str, Any]) -> CorporateActionSplitMetricsOptions:
+    default = CorporateActionSplitMetricsOptions()
+    return CorporateActionSplitMetricsOptions(
+        source=params.get("source") or default.source,
+        factor_source=params.get("factor_source") or default.factor_source,
+        daily_adjustment_source=params.get("daily_adjustment_source") or default.daily_adjustment_source,
+        bar_source=params.get("bar_source") or default.bar_source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     default = FredMacroOptions()
     return FredMacroOptions(
@@ -790,6 +807,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     EquityPriceMetricsDataset.dataset_id: (EquityPriceMetricsDataset, _equity_price_metrics_options),
     ThirteenFPositionMetricsDataset.dataset_id: (ThirteenFPositionMetricsDataset, _thirteenf_position_metrics_options),
     CorporateActionDividendMetricsDataset.dataset_id: (CorporateActionDividendMetricsDataset, _corporate_action_dividend_metrics_options),
+    CorporateActionSplitMetricsDataset.dataset_id: (CorporateActionSplitMetricsDataset, _corporate_action_split_metrics_options),
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
@@ -1146,6 +1164,12 @@ class JobManager:
             job_name="corporate_action_dividend_metrics",
             dataset_id="corporate_action_dividend_metrics",
             dependencies=["corporate_actions", "daily_bars"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="corporate_action_split_metrics",
+            dataset_id="corporate_action_split_metrics",
+            dependencies=["adjustment_factor_history", "daily_adjustment_factors"],
             **retry_policy,
         )
         self.register_job(

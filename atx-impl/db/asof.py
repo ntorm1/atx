@@ -2740,6 +2740,59 @@ def corporate_action_dividend_metrics_asof(
         return _run(opened)
 
 
+CORPORATE_ACTION_SPLIT_METRICS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT m.*
+FROM corporate_action_split_metrics m
+{symbol_join}
+CROSS JOIN params p
+WHERE m.available_at <= p.as_of_ts
+  AND m.as_of_date <= p.as_of_date
+  AND m.is_latest_revision
+ORDER BY m.symbol, m.ex_date, m.bar_source
+"""
+
+
+def corporate_action_split_metrics_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: "DuckDBStore | None" = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Return latest-visible split-event adjustment reconciliation rows as of a point in time.
+
+    ``available_at`` is the max of the split event availability and adjacent daily
+    adjustment-factor rows used for reconciliation. Missing daily rows are preserved
+    as ``reconciliation_status='MISSING_DAILY_FACTOR'`` rather than silently dropped.
+    """
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+
+    def _run(active):
+        registered = []
+        try:
+            symbol_join = ""
+            if _register_filter(active, "asof_casplit_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_casplit_symbol_filter")
+                symbol_join = "JOIN asof_casplit_symbol_filter sf ON sf.symbol = m.symbol"
+            sql = CORPORATE_ACTION_SPLIT_METRICS_ASOF_SQL.format(symbol_join=symbol_join)
+            return active.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)
+
+
 EQUITY_PRICE_METRICS_ASOF_SQL = """
 WITH params AS (
     SELECT

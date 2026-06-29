@@ -91,6 +91,8 @@ def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_sto
     assert order.index("daily_bars") < order.index("corporate_actions")
     assert order.index("corporate_actions") < order.index("adjustment_factor_history")
     assert order.index("adjustment_factor_history") < order.index("daily_adjustment_factors")
+    assert "corporate_action_split_metrics" in order
+    assert order.index("daily_adjustment_factors") < order.index("corporate_action_split_metrics")
 
 
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):

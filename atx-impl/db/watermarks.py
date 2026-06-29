@@ -346,6 +346,16 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'corporate_action_split_metrics', 'max_ex_date', max(ex_date)::VARCHAR
+    FROM corporate_action_split_metrics
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'corporate_action_split_metrics', 'max_available_at', max(available_at)::VARCHAR
+    FROM corporate_action_split_metrics
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'sec_submissions', 'max_filing_date', max(filing_date)::VARCHAR
     FROM sec_submissions
     HAVING count(*) > 0

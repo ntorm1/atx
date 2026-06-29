@@ -3395,6 +3395,151 @@ def _corporate_action_dividend_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _corporate_action_split_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S19: split-event factor reconciliation against daily adjustment factors.
+
+    One row per normalized split event from ``adjustment_factor_history`` and daily
+    bar source. The table records the adjacent pre/post daily adjustment-factor
+    rows and verifies that the daily split-factor step equals the event-level
+    price/share factors, preserving missing daily coverage as an explicit status.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corporate_action_split_metrics (
+            split_metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            factor_source VARCHAR NOT NULL,
+            daily_adjustment_source VARCHAR NOT NULL,
+            bar_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            ex_date DATE NOT NULL,
+            event_ref_id VARCHAR NOT NULL,
+            source_action_source VARCHAR,
+            classification_reason VARCHAR,
+            factor_price DOUBLE NOT NULL,
+            factor_shares DOUBLE NOT NULL,
+            ratio_numerator DOUBLE,
+            ratio_denominator DOUBLE,
+            split_ratio DOUBLE,
+            pre_trade_date DATE,
+            post_trade_date DATE,
+            pre_raw_close DOUBLE,
+            post_raw_close DOUBLE,
+            pre_split_adjusted_close DOUBLE,
+            post_split_adjusted_close DOUBLE,
+            raw_close_return DOUBLE,
+            split_adjusted_return DOUBLE,
+            pre_split_price_factor DOUBLE,
+            post_split_price_factor DOUBLE,
+            observed_factor_price_step DOUBLE,
+            factor_price_error DOUBLE,
+            pre_split_share_factor DOUBLE,
+            post_split_share_factor DOUBLE,
+            observed_factor_share_step DOUBLE,
+            factor_share_error DOUBLE,
+            reconciliation_status VARCHAR NOT NULL,
+            is_reconciled BOOLEAN NOT NULL DEFAULT false,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_corp_split_metrics_key ON corporate_action_split_metrics(security_id, ex_date)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_split_metrics_event ON corporate_action_split_metrics(event_ref_id)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_split_metrics_asof ON corporate_action_split_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_split_metrics_status ON corporate_action_split_metrics(reconciliation_status)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'corporate_action_split_metrics',
+            'atx_warehouse',
+            'Derived split adjustment reconciliation',
+            'Per split-event analytics that reconcile normalized adjustment_factor_history split factors against adjacent daily_adjustment_factors rows and expose raw vs split-adjusted event-window returns.',
+            'security_id,ex_date,event_ref_id,bar_source',
+            'corporate_action_split_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'corporate_action_split_metrics', 'silver', 'corporate_action_split_metric',
+            'security_id,ex_date,event_ref_id,bar_source',
+            'Derived per-split-event adjustment-factor reconciliation metrics.',
+            '["split_metric_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision. Missing daily rows are preserved with reconciliation_status=MISSING_DAILY_FACTOR; mismatches are quality failures.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('event_ref_id', 'security_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('ex_date', 'pre_trade_date', 'post_trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'factor_price' THEN 'Event-level split price factor from adjustment_factor_history.'
+                WHEN 'factor_shares' THEN 'Event-level split share factor from adjustment_factor_history.'
+                WHEN 'split_ratio' THEN 'Split ratio expressed as post-split shares per pre-split share.'
+                WHEN 'pre_trade_date' THEN 'Nearest trading date before the split ex-date used for daily-factor reconciliation.'
+                WHEN 'post_trade_date' THEN 'First trading date on or after the split ex-date used for daily-factor reconciliation.'
+                WHEN 'observed_factor_price_step' THEN 'Observed daily split price-factor step: pre_split_price_factor / post_split_price_factor.'
+                WHEN 'observed_factor_share_step' THEN 'Observed daily split share-factor step: pre_split_share_factor / post_split_share_factor.'
+                WHEN 'factor_price_error' THEN 'Observed minus event-level split price factor.'
+                WHEN 'factor_share_error' THEN 'Observed minus event-level split share factor.'
+                WHEN 'raw_close_return' THEN 'Raw close return across the split boundary (post_raw_close / pre_raw_close - 1).'
+                WHEN 'split_adjusted_return' THEN 'Split-adjusted close return across the split boundary.'
+                WHEN 'reconciliation_status' THEN 'RECONCILED, MISMATCH, or MISSING_DAILY_FACTOR.'
+                WHEN 'available_at' THEN 'Max availability of the split event and adjacent daily factor rows used for reconciliation.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('ex_date', 'pre_trade_date', 'post_trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%return%' OR lower(c.column_name) LIKE '%error%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%factor%' OR lower(c.column_name) LIKE '%ratio%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%close%' THEN 'currency'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'corporate_action_split_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -3601,6 +3746,11 @@ MIGRATIONS: list[Migration] = [
         version=41,
         name="corporate_action_dividend_metrics",
         up=_corporate_action_dividend_metrics,
+    ),
+    Migration(
+        version=42,
+        name="corporate_action_split_metrics",
+        up=_corporate_action_split_metrics,
     ),
 ]
 

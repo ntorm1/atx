@@ -34,6 +34,7 @@ from db.asof import (
     equity_price_metrics_asof,
     thirteenf_position_metrics_asof,
     corporate_action_dividend_metrics_asof,
+    corporate_action_split_metrics_asof,
     offexchange_security_period_asof,
     offexchange_volume_asof,
     fundamental_statements_asof,
@@ -82,6 +83,7 @@ def parse_args() -> argparse.Namespace:
             "equity-price-metrics",
             "thirteenf-position-metrics",
             "corporate-action-dividend-metrics",
+            "corporate-action-split-metrics",
             "fundamental-periods",
             "shares-outstanding",
             "adjustment-factors",
@@ -231,6 +233,13 @@ def main() -> int:
         )
     elif args.view == "corporate-action-dividend-metrics":
         frame = corporate_action_dividend_metrics_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "corporate-action-split-metrics":
+        frame = corporate_action_split_metrics_asof(
             args.as_of_date,
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,

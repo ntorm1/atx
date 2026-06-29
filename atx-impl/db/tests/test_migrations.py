@@ -83,6 +83,41 @@ def test_migrations_unique_versions():
     assert len(versions) == len(set(versions)), f"Duplicate migration versions: {versions}"
 
 
+def test_migration_0042_catalogs_corporate_action_split_metrics(tmp_store):
+    """Migration 0042 adds and catalogs split-event reconciliation metrics."""
+
+    table_exists = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'corporate_action_split_metrics'
+        """
+    ).fetchone()[0]
+    assert table_exists == 1
+
+    catalog_rows = tmp_store.con.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'corporate_action_split_metrics'),
+            (SELECT count(*) FROM table_catalog WHERE table_name = 'corporate_action_split_metrics'),
+            (
+                SELECT count(*)
+                FROM duckdb_columns() c
+                WHERE c.schema_name = 'main'
+                  AND c.table_name = 'corporate_action_split_metrics'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM field_catalog f
+                      WHERE f.table_name = c.table_name
+                        AND f.field_name = c.column_name
+                  )
+            )
+        """
+    ).fetchone()
+    assert catalog_rows == (1, 1, 0)
+
+
 def test_migration_description_recorded(tmp_store):
     """The description (name) column should be stored alongside the version."""
     rows = tmp_store.con.execute(
