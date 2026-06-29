@@ -4707,6 +4707,76 @@ def _check_specs(
             comparator="eq",
             required_tables=("offexchange_security_period",),
         ),
+        SqlQualityCheck(
+            dataset_id="fundamental_ratios",
+            table_name="fundamental_ratios",
+            check_name="duplicate_fundamental_ratio_natural_keys",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, security_id, ratio_code, basis, period_end, count(*) AS n
+                    FROM fundamental_ratios
+                    GROUP BY 1, 2, 3, 4, 5
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_ratios",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_ratios",
+            table_name="fundamental_ratios",
+            check_name="bad_fundamental_ratio_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fundamental_ratios
+                WHERE ratio_id IS NULL OR ratio_id = ''
+                   OR source IS NULL OR source = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR ratio_code IS NULL OR ratio_code = ''
+                   OR ratio_category NOT IN ('profitability', 'leverage', 'cash_flow', 'payout', 'per_share')
+                   OR ratio_kind NOT IN ('ratio', 'level', 'per_share')
+                   OR unit NOT IN ('ratio', 'currency', 'currency_per_share')
+                   OR period_end IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR value IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_ratios",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_ratios",
+            table_name="fundamental_ratios",
+            check_name="non_finite_fundamental_ratio_values",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fundamental_ratios
+                WHERE value IS NOT NULL AND (isnan(value) OR isinf(value))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_ratios",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_ratios",
+            table_name="fundamental_ratios",
+            check_name="ratio_kind_division_consistency",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fundamental_ratios
+                WHERE ratio_kind IN ('ratio', 'per_share')
+                  AND denominator_value IS NOT NULL
+                  AND numerator_value IS NOT NULL
+                  AND denominator_value <> 0
+                  AND abs(value - (numerator_value / denominator_value)) > 1e-6 * (1 + abs(value))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_ratios",),
+        ),
     )
 
 

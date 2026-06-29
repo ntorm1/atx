@@ -2548,3 +2548,76 @@ def offexchange_security_period_asof(
     path = store_or_path if store_or_path is not None else db_path
     with connect(path, read_only=True) as store:
         return _run(store)
+
+
+FUNDAMENTAL_RATIOS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT r.*
+FROM fundamental_ratios r
+{symbol_join}
+{code_join}
+{category_join}
+CROSS JOIN params p
+WHERE r.available_at <= p.as_of_ts
+  AND r.as_of_date <= p.as_of_date
+  AND r.is_latest_revision
+ORDER BY r.symbol, r.ratio_code, r.basis, r.period_end
+"""
+
+
+def fundamental_ratios_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: "DuckDBStore | None" = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    ratio_codes: tuple[str, ...] | list[str] | None = None,
+    categories: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Return latest-visible derived financial ratios as of a point in time.
+
+    Each ratio's ``available_at`` is the max availability of its specific inputs,
+    so a ratio appears only once every input it consumes was knowable at as_of_ts.
+    Pass an open ``store`` to read through an existing connection (DuckDB forbids a
+    second connection to the same file); otherwise a read-only connection to
+    ``db_path`` is opened.
+    """
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    code_values = _normalize_strings(ratio_codes)
+    category_values = _normalize_strings(categories)
+
+    def _run(active):
+        registered = []
+        try:
+            symbol_join = ""
+            code_join = ""
+            category_join = ""
+            if _register_filter(active, "asof_ratios_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_ratios_symbol_filter")
+                symbol_join = "JOIN asof_ratios_symbol_filter sf ON sf.symbol = r.symbol"
+            if _register_filter(active, "asof_ratios_code_filter", "ratio_code", code_values):
+                registered.append("asof_ratios_code_filter")
+                code_join = "JOIN asof_ratios_code_filter cf ON cf.ratio_code = upper(r.ratio_code)"
+            if _register_filter(active, "asof_ratios_category_filter", "ratio_category", category_values):
+                registered.append("asof_ratios_category_filter")
+                category_join = "JOIN asof_ratios_category_filter gf ON gf.ratio_category = upper(r.ratio_category)"
+            sql = FUNDAMENTAL_RATIOS_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                code_join=code_join,
+                category_join=category_join,
+            )
+            return active.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)

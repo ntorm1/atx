@@ -45,6 +45,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "fundamental_statement_points",
     "fundamental_ttm_points",
     "fundamental_periods",
+    "fundamental_ratios",
     "feature_build_manifests",
     "feature_definitions",
     "feature_set_catalog",

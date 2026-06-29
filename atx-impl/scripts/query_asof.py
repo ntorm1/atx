@@ -27,6 +27,7 @@ from db.asof import (
     features_asof,
     filer_aliases_asof,
     fundamental_periods_asof,
+    fundamental_ratios_asof,
     offexchange_security_period_asof,
     offexchange_volume_asof,
     fundamental_statements_asof,
@@ -68,6 +69,7 @@ def parse_args() -> argparse.Namespace:
             "fundamentals",
             "fundamental-statements",
             "fundamental-ttm",
+            "fundamental-ratios",
             "fundamental-periods",
             "shares-outstanding",
             "adjustment-factors",
@@ -170,6 +172,14 @@ def main() -> int:
             symbols=parse_csv(args.symbols),
             metrics=parse_csv(args.metrics),
             statement_types=parse_csv(args.statement_types),
+        )
+    elif args.view == "fundamental-ratios":
+        frame = fundamental_ratios_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+            ratio_codes=parse_csv(args.metrics),
         )
     elif args.view == "fundamental-periods":
         frame = fundamental_periods_asof(

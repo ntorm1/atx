@@ -2386,6 +2386,141 @@ def _catalog_backfill_reference_and_views(conn: duckdb.DuckDBPyConnection) -> No
         )
 
 
+def _fundamental_ratios(conn: duckdb.DuckDBPyConnection) -> None:
+    """S9a: derived point-in-time financial-ratio surface.
+
+    A single long-format fact table (one row per security, period, ratio_code)
+    computed from the bitemporal TTM flows (``fundamental_ttm_points``) and the
+    instant balances (``fundamental_statement_points``). Each ratio carries its
+    own ``available_at`` = max availability of the specific inputs it consumes,
+    so an as-of query returns a ratio only once every input it depends on was
+    knowable. This is the Compustat/FactSet "calculated items" parity surface.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_ratios (
+            ratio_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            upstream_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            ratio_code VARCHAR NOT NULL,
+            ratio_category VARCHAR NOT NULL,
+            ratio_kind VARCHAR NOT NULL,
+            basis VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            value DOUBLE,
+            numerator_code VARCHAR,
+            numerator_value DOUBLE,
+            denominator_code VARCHAR,
+            denominator_value DOUBLE,
+            is_meaningful BOOLEAN NOT NULL DEFAULT true,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            input_codes_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_key ON fundamental_ratios(security_id, ratio_code, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_symbol ON fundamental_ratios(symbol, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_asof ON fundamental_ratios(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_code ON fundamental_ratios(ratio_code, basis)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_ratios',
+            'sec_edgar',
+            'Derived point-in-time financial ratios',
+            'Compustat/FactSet-style calculated financial ratios (profitability, leverage, cash-flow, payout, per-share) derived from trailing-twelve-month fundamental flows and instant balances, with per-ratio bitemporal availability.',
+            'security_id,ratio_code,basis,period_end',
+            'fundamental_ratios', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_ratios', 'gold', 'fundamental_ratios',
+            'security_id,ratio_code,basis,period_end',
+            'Long-format derived financial-ratio fact: one row per (security, period, ratio_code) over a TTM/instant basis.',
+            '["ratio_id"]',
+            'Each ratio''s available_at is the max availability of its specific inputs; resolve with available_at <= query ts. as_of_date is the period_end (TTM window close). v1 stores the latest-revision vintage; restatement-vintage ratio history is a planned refinement.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('ratio_id', 'security_id', 'cik', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('period_end', 'period_start', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN lower(c.column_name) IN ('is_meaningful', 'is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'ratio_code' THEN 'Stable ratio identifier (e.g. net_profit_margin, return_on_equity, free_cash_flow).'
+                WHEN 'ratio_category' THEN 'Ratio family: profitability, leverage, cash_flow, payout, or per_share.'
+                WHEN 'ratio_kind' THEN 'ratio (dimensionless), level (currency amount), or per_share.'
+                WHEN 'basis' THEN 'Input basis for the ratio (ttm = trailing-twelve-month flows over the instant balance at period_end).'
+                WHEN 'value' THEN 'Computed ratio value; numerator_value / denominator_value for ratio/per_share kinds, numerator_value + denominator_value for level kinds.'
+                WHEN 'numerator_value' THEN 'Effective numerator operand used to compute value (post sign/abs transform).'
+                WHEN 'denominator_value' THEN 'Effective denominator operand used to compute value.'
+                WHEN 'is_meaningful' THEN 'False when the denominator is non-positive (e.g. ROE with negative equity), so the sign is economically misleading.'
+                WHEN 'is_latest_revision' THEN 'True for the latest-revision vintage of the inputs (v1 stores only the latest vintage).'
+                WHEN 'available_at' THEN 'Max availability timestamp across the ratio''s inputs; the ratio is knowable only at/after this instant.'
+                WHEN 'period_end' THEN 'TTM window close / instant balance date the ratio is computed at.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN c.column_name = 'value' THEN 'ratio_or_currency'
+                WHEN lower(c.column_name) IN ('numerator_value', 'denominator_value') THEN 'currency'
+                WHEN lower(c.column_name) IN ('period_end', 'period_start', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_ratios'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -2542,6 +2677,11 @@ MIGRATIONS: list[Migration] = [
         version=31,
         name="catalog_backfill_reference_and_views",
         up=_catalog_backfill_reference_and_views,
+    ),
+    Migration(
+        version=32,
+        name="fundamental_ratios",
+        up=_fundamental_ratios,
     ),
 ]
 

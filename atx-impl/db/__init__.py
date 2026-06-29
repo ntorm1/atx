@@ -20,6 +20,7 @@ from .asof import (
     features_asof,
     filer_aliases_asof,
     fundamental_periods_asof,
+    fundamental_ratios_asof,
     fundamental_statements_asof,
     fundamental_ttm_asof,
     fundamentals_asof,
@@ -76,6 +77,13 @@ from .filer_alias import (
     resolve_primary_cik,
 )
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions
+from .fundamental_ratios import (
+    RATIO_DEFS,
+    FundamentalRatiosDataset,
+    FundamentalRatiosOptions,
+    compute_ratio_rows,
+    refresh_fundamental_ratios,
+)
 from .fundamental_statements import (
     refresh_fundamental_periods,
     refresh_fundamental_statement_points,
@@ -218,6 +226,12 @@ __all__ = [
     "offexchange_security_period_asof",
     "FundamentalFeatureBuildOptions",
     "FundamentalFeatureDataset",
+    "FundamentalRatiosDataset",
+    "FundamentalRatiosOptions",
+    "RATIO_DEFS",
+    "compute_ratio_rows",
+    "refresh_fundamental_ratios",
+    "fundamental_ratios_asof",
     "fundamental_statements_asof",
     "fundamental_ttm_asof",
     "IdentifierResolutionDecisionDataset",
