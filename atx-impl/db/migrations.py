@@ -2336,6 +2336,56 @@ def _offexchange_transparency(conn: duckdb.DuckDBPyConnection) -> None:
         )
 
 
+def _catalog_backfill_reference_and_views(conn: duckdb.DuckDBPyConnection) -> None:
+    """S7b: backfill table_catalog for reference-classification tables (built in
+    migration 3 but never catalogued) and the off-exchange security-period view,
+    closing the standing missing_table_catalog_entries quality failure for them."""
+
+    rows = (
+        (
+            "taxonomy", "gold", "industry_taxonomy", "taxonomy_id",
+            "Industry-classification taxonomy registry (SIC, NAICS, Fama-French, etc.).",
+            '["taxonomy_id"]',
+            "Reference dimension; taxonomy revisions are tracked via taxonomy_node bitemporal validity, not here.",
+        ),
+        (
+            "taxonomy_node", "gold", "industry_taxonomy", "taxonomy_id,node_code",
+            "Hierarchical nodes within an industry taxonomy (division/major-group/leaf).",
+            '["node_id"]',
+            "node_code is unique within a taxonomy; parent_node_id encodes the hierarchy.",
+        ),
+        (
+            "taxonomy_mapping", "gold", "industry_taxonomy", "from_taxonomy_id,from_node_code,to_taxonomy_id,to_node_code",
+            "Many-to-many crosswalk between taxonomy nodes (e.g. SIC to NAICS) with a confidence weight.",
+            '["mapping_id"]',
+            "Crosswalks are many-to-many; confidence captures approximate mappings.",
+        ),
+        (
+            "entity_classification", "silver", "entity_classification", "security_id,taxonomy_id,node_code,valid_from",
+            "PIT entity-to-taxonomy-node classifications (primary SIC plus derived Fama-French/NAICS).",
+            '["classification_id"]',
+            "Resolve with valid_from/valid_to covering the query date and available_at visible; is_primary marks the authoritative SIC.",
+        ),
+        (
+            "v_offexchange_security_period", "silver", "offexchange_transparency", "symbol,period_type,summary_start_date",
+            "Security-joined off-exchange ATS-share rollup view exposing ticker and security name.",
+            '["security_period_id"]',
+            "View over offexchange_security_period LEFT JOIN securities; inherits the rollup PIT columns.",
+        ),
+    )
+    for table_name, layer, entity, grain, description, natural_key, pit_notes in rows:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO table_catalog (
+                table_name, layer, entity, grain, description,
+                natural_key_json, pit_notes, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, now())
+            """,
+            [table_name, layer, entity, grain, description, natural_key, pit_notes],
+        )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -2487,6 +2537,11 @@ MIGRATIONS: list[Migration] = [
         version=30,
         name="offexchange_transparency",
         up=_offexchange_transparency,
+    ),
+    Migration(
+        version=31,
+        name="catalog_backfill_reference_and_views",
+        up=_catalog_backfill_reference_and_views,
     ),
 ]
 
