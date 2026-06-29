@@ -76,6 +76,9 @@ def _wide_row(**overrides) -> dict:
         "cash_and_equivalents": 40.0, "cash_and_equivalents_av": _ts("2026-05-01"),
         "inventory": 30.0, "inventory_av": _ts("2026-05-01"),
         "long_term_debt": 90.0, "long_term_debt_av": _ts("2026-05-01"),
+        # consolidated inline-XBRL instant asset-structure metrics (S10g)
+        "property_plant_equipment_net": 120.0, "property_plant_equipment_net_av": _ts("2026-05-01"),
+        "accounts_receivable": 50.0, "accounts_receivable_av": _ts("2026-05-01"),
         # consolidated inline-XBRL annual (duration) flow metrics for margin/coverage (S10c)
         "gross_profit": 180.0, "gross_profit_av": _ts("2026-05-01"),
         "cost_of_revenue": 220.0, "cost_of_revenue_av": _ts("2026-05-01"),
@@ -158,6 +161,10 @@ class TestComputeRatioRows:
             ("equity_to_liabilities", 60.0 / 290.0),
             # S10e: Piotroski F-score (all 9 signals pass on the canonical full row)
             ("piotroski_f_score", 9.0),
+            # S10g: asset-structure / activity ratios (consolidated XBRL instants)
+            ("fixed_asset_turnover", 400.0 / 120.0),
+            ("receivables_turnover", 400.0 / 50.0),
+            ("ppe_to_assets", 120.0 / 350.0),
         ],
     )
     def test_ratio_values(self, code, expected):

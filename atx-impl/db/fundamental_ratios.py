@@ -261,6 +261,16 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
     RatioDef("equity_turnover", "efficiency", "ratio", "ratio",
              "revenue", "stockholders_equity", ("rev", "equity"),
              lambda r: (r["rev"], r["equity"]), require_positive_denominator=True),
+    # --- asset-structure / activity (S10g; consolidated inline-XBRL instants) ---
+    RatioDef("fixed_asset_turnover", "efficiency", "ratio", "ratio",
+             "revenue", "property_plant_equipment_net", ("rev", "property_plant_equipment_net"),
+             lambda r: (r["rev"], r["property_plant_equipment_net"]), require_positive_denominator=True),
+    RatioDef("receivables_turnover", "efficiency", "ratio", "ratio",
+             "revenue", "accounts_receivable", ("rev", "accounts_receivable"),
+             lambda r: (r["rev"], r["accounts_receivable"]), require_positive_denominator=True),
+    RatioDef("ppe_to_assets", "efficiency", "ratio", "ratio",
+             "property_plant_equipment_net", "assets", ("property_plant_equipment_net", "assets"),
+             lambda r: (r["property_plant_equipment_net"], r["assets"]), require_positive_denominator=True),
     # --- additional profitability / cash-flow coverage (S9b) --------------
     RatioDef("operating_return_on_assets", "profitability", "ratio", "ratio",
              "operating_income", "assets", ("oi", "assets"),
@@ -409,6 +419,8 @@ XBRL_BALANCE_INPUTS = {
     "long_term_debt": "long_term_debt",
     "retained_earnings": "retained_earnings",
     "common_shares_outstanding": "common_shares_outstanding",  # period-end shares for Piotroski (S10e)
+    "property_plant_equipment_net": "property_plant_equipment_net",  # asset structure (S10g)
+    "accounts_receivable": "accounts_receivable",  # asset structure (S10g)
 }
 
 # Annual (duration) flow metrics from the consolidated inline-XBRL extraction,
@@ -689,6 +701,8 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             balx.long_term_debt, balx.long_term_debt_av,
             balx.retained_earnings, balx.retained_earnings_av,
             balx.common_shares_outstanding, balx.common_shares_outstanding_av,
+            balx.property_plant_equipment_net, balx.property_plant_equipment_net_av,
+            balx.accounts_receivable, balx.accounts_receivable_av,
             flowx.gross_profit, flowx.gross_profit_av,
             flowx.cost_of_revenue, flowx.cost_of_revenue_av,
             flowx.interest_expense, flowx.interest_expense_av,

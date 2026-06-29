@@ -123,6 +123,11 @@ class TestNormalizeXbrlMetrics:
         assert r["period_type"] == "instant"
         assert r["value"] == 15.0e9
 
+    def test_concept_map_covers_asset_structure_instants(self):
+        # S10g asset-structure / activity inputs
+        assert CONCEPT_MAP["PropertyPlantAndEquipmentNet"] == "property_plant_equipment_net"
+        assert CONCEPT_MAP["AccountsReceivableNetCurrent"] == "accounts_receivable"
+
     def test_concept_map_covers_flow_inputs(self):
         assert CONCEPT_MAP["GrossProfit"] == "gross_profit"
         assert CONCEPT_MAP["CostOfGoodsAndServicesSold"] == "cost_of_revenue"

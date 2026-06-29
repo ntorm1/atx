@@ -48,6 +48,10 @@ INSTANT_CONCEPT_MAP = {
     # period close), this aligns to the fiscal period_end so it pairs year-over-year —
     # the share-issuance input the Piotroski F-score needs (S10e).
     "CommonStockSharesOutstanding": "common_shares_outstanding",
+    # Asset-structure / activity inputs (S10g): net PP&E and trade receivables drive
+    # fixed-asset turnover, receivables turnover, and capital intensity.
+    "PropertyPlantAndEquipmentNet": "property_plant_equipment_net",
+    "AccountsReceivableNetCurrent": "accounts_receivable",
 }
 
 # Duration (flow) concepts — picked from ~annual (350-380 day) duration contexts only,
