@@ -269,6 +269,38 @@ class TestComputeRatioRows:
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(gross_profit_prior=None, gross_profit_prior_av=None)])))
         assert "piotroski_f_score" not in rows
 
+    def test_ohlson_o_score_composite(self):
+        import math
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+        o = rows["ohlson_o_score"]
+        ta, tl, ca, cl, ni, ni0, ocf = 350.0, 290.0, 200.0, 100.0, 100.0, 80.0, 130.0
+        expected = (
+            -1.32 - 0.407 * math.log(ta) + 6.03 * (tl / ta) - 1.43 * ((ca - cl) / ta)
+            + 0.0757 * (cl / ca) - 1.72 * 0.0 - 2.37 * (ni / ta) - 1.83 * (ocf / tl)
+            + 0.285 * 0.0 - 0.521 * ((ni - ni0) / (abs(ni) + abs(ni0)))
+        )
+        assert o.value == pytest.approx(expected)
+        assert o.ratio_kind == "score"
+        assert o.ratio_category == "health"
+        assert o.unit == "score"
+        assert o.is_meaningful is True
+
+    def test_ohlson_distress_raises_score(self):
+        # book-insolvent (liabilities > assets) with two consecutive yearly losses
+        distressed = _by_code(compute_ratio_rows(pd.DataFrame([
+            _wide_row(liabilities=400.0, ni=-50.0, ni_prior=-30.0)
+        ])))["ohlson_o_score"].value
+        healthy = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))["ohlson_o_score"].value
+        # higher O => higher modeled bankruptcy probability
+        assert distressed > healthy
+
+    def test_ohlson_dropped_when_input_missing(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(liabilities=None, liabilities_av=None)])))
+        assert "ohlson_o_score" not in rows
+        # also drops without the prior-year net income (INTWO / CHIN terms uncomputable)
+        gone = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(ni_prior=None, ni_prior_av=None)])))
+        assert "ohlson_o_score" not in gone
+
     def test_free_cash_flow_is_level_kind_in_currency(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
         fcf = rows["free_cash_flow"]

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -158,6 +159,47 @@ def _piotroski_f_score(r: dict) -> float | None:
         turn > turn0,       # 9. rising asset turnover
     )
     return float(sum(1 for s in signals if s))
+
+
+def _ohlson_o_score(r: dict) -> float | None:
+    """Ohlson (1980) O-score: a nine-term logit of bankruptcy probability.
+
+    O = -1.32 - 0.407·SIZE + 6.03·TLTA - 1.43·WCTA + 0.0757·CLCA
+        - 1.72·OENEG - 2.37·NITA - 1.83·FUTL + 0.285·INTWO - 0.521·CHIN
+    where SIZE=ln(total assets), TLTA=liabilities/assets, WCTA=working capital/assets,
+    CLCA=current liabilities/current assets, OENEG=1 if liabilities>assets (book
+    insolvency), NITA=net income/assets, FUTL=operating cash flow/liabilities (funds-
+    from-operations proxy), INTWO=1 if net loss in both this and the prior year, and
+    CHIN=(NI_t-NI_{t-1})/(|NI_t|+|NI_{t-1}|). Higher O => higher modeled default
+    probability (P = 1/(1+e^-O); the paper's cutoff is O>0.5 i.e. ~0.038 on the logit).
+
+    SIZE's original GNP-price-level deflator is omitted (assets in USD): a constant
+    additive shift that preserves the cross-sectional ranking the score is used for.
+    Returns None when assets, liabilities, or current assets are non-positive (the
+    ratios/log would be undefined), so the row is skipped rather than emitting garbage.
+    """
+    ta = float(r["assets"])
+    tl = float(r["liabilities"])
+    ca = float(r["current_assets"])
+    cl = float(r["current_liabilities"])
+    if ta <= 0 or tl <= 0 or ca <= 0:
+        return None
+    ni = float(r["ni"])
+    ni0 = float(r["ni_prior"])
+    ocf = float(r["ocf"])
+    chin_den = abs(ni) + abs(ni0)
+    return (
+        -1.32
+        - 0.407 * math.log(ta)
+        + 6.03 * (tl / ta)
+        - 1.43 * ((ca - cl) / ta)
+        + 0.0757 * (cl / ca)
+        - 1.72 * (1.0 if tl > ta else 0.0)
+        - 2.37 * (ni / ta)
+        - 1.83 * (ocf / tl)
+        + 0.285 * (1.0 if (ni < 0 and ni0 < 0) else 0.0)
+        - 0.521 * ((ni - ni0) / chin_den if chin_den != 0 else 0.0)
+    )
 
 
 RATIO_DEFS: tuple[RatioDef, ...] = (
@@ -347,6 +389,14 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
               "current_liabilities_prior", "common_shares_outstanding_prior", "gross_profit_prior", "rev_prior"),
              lambda r: (None, None),
              composite=lambda r: _piotroski_f_score(r)),
+    # Ohlson O-score (S10f): nine-term bankruptcy-probability logit. Needs only the
+    # current balances/flows + prior-year net income (already paired) — no new XBRL
+    # concept — so it emits wherever current assets/liabilities and a prior year exist.
+    RatioDef("ohlson_o_score", "health", "score", "score",
+             "ohlson_o_score_terms", "n/a",
+             ("assets", "liabilities", "current_assets", "current_liabilities", "ni", "ocf", "ni_prior"),
+             lambda r: (None, None),
+             composite=lambda r: _ohlson_o_score(r)),
 )
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
