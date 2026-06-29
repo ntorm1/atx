@@ -4901,6 +4901,40 @@ def _check_specs(
             comparator="eq",
             required_tables=("macro_metrics",),
         ),
+        SqlQualityCheck(
+            dataset_id="equity_price_metrics",
+            table_name="equity_price_metrics",
+            check_name="duplicate_equity_price_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT source, security_id, trade_date
+                    FROM equity_price_metrics
+                    GROUP BY 1, 2, 3 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("equity_price_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="equity_price_metrics",
+            table_name="equity_price_metrics",
+            check_name="bad_equity_price_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM equity_price_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR trade_date IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR (pct_from_high_252d IS NOT NULL AND pct_from_high_252d > 1e-9)
+                   OR (realized_vol_20d IS NOT NULL AND realized_vol_20d < 0)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("equity_price_metrics",),
+        ),
     )
 
 

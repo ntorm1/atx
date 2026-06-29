@@ -2940,6 +2940,132 @@ def _macro_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _equity_price_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S14: derived daily price-analytics surface.
+
+    One row per (security_id, trade_date) computed from the cached
+    ``equity_daily_bars`` feed: split/dividend-adjusted daily and log returns, the
+    overnight gap, trailing realized volatility (20d/60d, annualized), trailing-return
+    momentum (21d/126d), distance from the trailing 252-day high, and dollar volume.
+    Bitemporal: ``as_of_date`` is the trade date, ``available_at`` carried from the bar.
+    Every rolling/lag feature uses only the current and earlier bars, so there is no
+    forward leakage.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS equity_price_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            trade_date DATE NOT NULL,
+            close DOUBLE,
+            adjusted_close DOUBLE,
+            volume BIGINT,
+            dollar_volume DOUBLE,
+            daily_return DOUBLE,
+            log_return DOUBLE,
+            gap_return DOUBLE,
+            realized_vol_20d DOUBLE,
+            realized_vol_60d DOUBLE,
+            momentum_21d DOUBLE,
+            momentum_126d DOUBLE,
+            pct_from_high_252d DOUBLE,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_equity_price_metrics_key ON equity_price_metrics(security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_equity_price_metrics_date ON equity_price_metrics(trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_equity_price_metrics_asof ON equity_price_metrics(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'equity_price_metrics',
+            'pricing',
+            'Derived daily price analytics',
+            'Per-security daily price analytics derived from the cached adjusted daily bars (daily/log return, overnight gap, trailing realized volatility, momentum, distance from trailing high, dollar volume); bitemporal.',
+            'security_id,trade_date',
+            'equity_price_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'equity_price_metrics', 'silver', 'equity_price_metrics',
+            'security_id,trade_date',
+            'Derived daily price metrics (one row per security, trade date).',
+            '["metric_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision. Rolling/lag features use only current and earlier bars; returns are computed on the split/dividend-adjusted close.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('metric_id', 'security_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'adjusted_close' THEN 'Split/dividend back-adjusted close, computed from the bar close times the product of future split_factor values (the feed adjusted_close is unreliable in the cached sample).'
+                WHEN 'daily_return' THEN 'Back-adjusted-close simple return vs the prior trading day.'
+                WHEN 'log_return' THEN 'Natural-log return on the back-adjusted close.'
+                WHEN 'gap_return' THEN 'Overnight gap on the back-adjusted basis: adjusted open / prior-day adjusted close - 1.'
+                WHEN 'realized_vol_20d' THEN 'Annualized standard deviation of the trailing 20 daily returns.'
+                WHEN 'realized_vol_60d' THEN 'Annualized standard deviation of the trailing 60 daily returns.'
+                WHEN 'momentum_21d' THEN 'Trailing 21-trading-day back-adjusted-close return.'
+                WHEN 'momentum_126d' THEN 'Trailing 126-trading-day back-adjusted-close return.'
+                WHEN 'pct_from_high_252d' THEN 'Back-adjusted close divided by the trailing 252-day adjusted high minus 1 (drawdown from the rolling high; <= 0).'
+                WHEN 'dollar_volume' THEN 'Close price times share volume (traded notional).'
+                WHEN 'available_at' THEN 'Bar availability timestamp; the metric is knowable only at/after this instant.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%return%' OR lower(c.column_name) LIKE '%vol%' OR lower(c.column_name) LIKE 'momentum%' OR lower(c.column_name) LIKE 'pct_%' THEN 'ratio'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'equity_price_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -3121,6 +3247,11 @@ MIGRATIONS: list[Migration] = [
         version=36,
         name="macro_metrics",
         up=_macro_metrics,
+    ),
+    Migration(
+        version=37,
+        name="equity_price_metrics",
+        up=_equity_price_metrics,
     ),
 ]
 

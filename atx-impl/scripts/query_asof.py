@@ -31,6 +31,7 @@ from db.asof import (
     fundamental_xbrl_metric_asof,
     short_interest_metrics_asof,
     macro_metrics_asof,
+    equity_price_metrics_asof,
     offexchange_security_period_asof,
     offexchange_volume_asof,
     fundamental_statements_asof,
@@ -76,6 +77,7 @@ def parse_args() -> argparse.Namespace:
             "fundamental-xbrl-metric",
             "short-interest-metrics",
             "macro-metrics",
+            "equity-price-metrics",
             "fundamental-periods",
             "shares-outstanding",
             "adjustment-factors",
@@ -208,6 +210,13 @@ def main() -> int:
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,
             series_ids=parse_csv(args.metrics) or parse_csv(args.symbols),
+        )
+    elif args.view == "equity-price-metrics":
+        frame = equity_price_metrics_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
         )
     elif args.view == "fundamental-periods":
         frame = fundamental_periods_asof(
