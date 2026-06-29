@@ -180,6 +180,7 @@ def refresh_adjustment_factor_history(
                 symbol,
                 ex_date,
                 event_type,
+                classification_reason,
                 type_code,
                 event_ref_id,
                 factor_price,
@@ -195,36 +196,112 @@ def refresh_adjustment_factor_history(
                 run_id,
                 source_loaded_at
             )
-            WITH classified AS (
+            WITH source_rows AS (
                 SELECT
                     c.*,
-                    sha256(
-                        concat_ws(
-                            '|',
-                            c.source,
-                            c.security_id,
-                            coalesce(c.symbol, ''),
-                            c.action_type,
-                            CAST(c.ex_date AS VARCHAR),
-                            coalesce(CAST(c.cash_amount AS VARCHAR), ''),
-                            coalesce(CAST(c.split_from AS VARCHAR), ''),
-                            coalesce(CAST(c.split_to AS VARCHAR), ''),
-                            coalesce(CAST(c.adjustment_factor AS VARCHAR), '')
-                        )
-                    ) AS event_ref_id,
                     CASE
-                        WHEN c.action_type ILIKE '%spin%' THEN 'SPINOFF'
-                        WHEN c.action_type ILIKE '%merger%' OR c.action_type ILIKE '%exchange%' THEN 'MERGER'
-                        WHEN (c.split_from IS NOT NULL AND c.split_to IS NOT NULL AND c.split_from > 0 AND c.split_to > 0)
-                          OR c.action_type ILIKE '%split%' THEN 'SPLIT'
-                        WHEN (c.cash_amount IS NOT NULL AND c.cash_amount <> 0)
-                          OR c.action_type ILIKE '%dividend%' THEN 'CASH_DIV'
-                        ELSE 'OTHER'
-                    END AS event_type
+                        WHEN c.adjustment_factor IS NULL OR c.adjustment_factor <= 0 THEN NULL
+                        WHEN abs(c.adjustment_factor - 0.1) <= 0.0005 THEN 10.0
+                        WHEN abs(c.adjustment_factor - 0.125) <= 0.0005 THEN 8.0
+                        WHEN abs(c.adjustment_factor - 0.2) <= 0.0005 THEN 5.0
+                        WHEN abs(c.adjustment_factor - 0.25) <= 0.0005 THEN 4.0
+                        WHEN abs(c.adjustment_factor - (1.0 / 3.0)) <= 0.0005 THEN 3.0
+                        WHEN abs(c.adjustment_factor - 0.4) <= 0.0005 THEN 2.5
+                        WHEN abs(c.adjustment_factor - 0.5) <= 0.0005 THEN 2.0
+                        WHEN abs(c.adjustment_factor - (2.0 / 3.0)) <= 0.0005 THEN 1.5
+                        WHEN abs(c.adjustment_factor - 1.5) <= 0.0005 THEN (2.0 / 3.0)
+                        WHEN abs(c.adjustment_factor - 2.0) <= 0.0005 THEN 0.5
+                        WHEN abs(c.adjustment_factor - 2.5) <= 0.0005 THEN 0.4
+                        WHEN abs(c.adjustment_factor - 3.0) <= 0.0005 THEN (1.0 / 3.0)
+                        WHEN abs(c.adjustment_factor - 4.0) <= 0.0005 THEN 0.25
+                        WHEN abs(c.adjustment_factor - 5.0) <= 0.0005 THEN 0.2
+                        WHEN abs(c.adjustment_factor - 8.0) <= 0.0005 THEN 0.125
+                        WHEN abs(c.adjustment_factor - 10.0) <= 0.0005 THEN 0.1
+                        ELSE NULL
+                    END AS split_like_share_factor,
+                    try_cast(
+                        CASE
+                            WHEN c.details_json IS NOT NULL AND json_valid(c.details_json)
+                                THEN json_extract_string(c.details_json, '$.close_pr')
+                            ELSE NULL
+                        END AS DOUBLE
+                    ) AS evidence_close_price
                 FROM corporate_actions c
                 WHERE c.security_id IS NOT NULL
                   AND c.security_id <> ''
                   AND c.ex_date IS NOT NULL
+            ),
+            classified AS (
+                SELECT
+                    sr.*,
+                    sha256(
+                        concat_ws(
+                            '|',
+                            sr.source,
+                            sr.security_id,
+                            coalesce(sr.symbol, ''),
+                            sr.action_type,
+                            CAST(sr.ex_date AS VARCHAR),
+                            coalesce(CAST(sr.cash_amount AS VARCHAR), ''),
+                            coalesce(CAST(sr.split_from AS VARCHAR), ''),
+                            coalesce(CAST(sr.split_to AS VARCHAR), ''),
+                            coalesce(CAST(sr.adjustment_factor AS VARCHAR), '')
+                        )
+                    ) AS event_ref_id,
+                    CASE
+                        WHEN sr.action_type ILIKE '%spin%' THEN 'SPINOFF'
+                        WHEN sr.action_type ILIKE '%merger%' OR sr.action_type ILIKE '%exchange%' THEN 'MERGER'
+                        WHEN (sr.split_from IS NOT NULL AND sr.split_to IS NOT NULL AND sr.split_from > 0 AND sr.split_to > 0)
+                          OR sr.action_type ILIKE '%split%' THEN 'SPLIT'
+                        WHEN sr.split_like_share_factor IS NOT NULL
+                         AND sr.cash_amount IS NOT NULL
+                         AND sr.cash_amount >= CASE
+                             WHEN sr.evidence_close_price IS NOT NULL AND sr.evidence_close_price > 0
+                                 THEN greatest(1.0, abs(sr.evidence_close_price) * 0.75)
+                             ELSE 5.0
+                         END
+                         AND sr.action_type ILIKE '%inferred%'
+                            THEN 'SPLIT'
+                        WHEN sr.split_like_share_factor IS NOT NULL
+                         AND sr.cash_amount IS NOT NULL
+                         AND sr.cash_amount >= CASE
+                             WHEN sr.evidence_close_price IS NOT NULL AND sr.evidence_close_price > 0
+                                 THEN greatest(1.0, abs(sr.evidence_close_price) * 0.75)
+                             ELSE 5.0
+                         END
+                            THEN 'OTHER'
+                        WHEN (sr.cash_amount IS NOT NULL AND sr.cash_amount <> 0)
+                          OR sr.action_type ILIKE '%dividend%' THEN 'CASH_DIV'
+                        ELSE 'OTHER'
+                    END AS event_type,
+                    CASE
+                        WHEN sr.action_type ILIKE '%spin%' THEN 'action_type:spinoff'
+                        WHEN sr.action_type ILIKE '%merger%' OR sr.action_type ILIKE '%exchange%' THEN 'action_type:merger_or_exchange'
+                        WHEN sr.split_from IS NOT NULL AND sr.split_to IS NOT NULL AND sr.split_from > 0 AND sr.split_to > 0
+                            THEN 'explicit_split_ratio'
+                        WHEN sr.action_type ILIKE '%split%' THEN 'action_type:split'
+                        WHEN sr.split_like_share_factor IS NOT NULL
+                         AND sr.cash_amount IS NOT NULL
+                         AND sr.cash_amount >= CASE
+                             WHEN sr.evidence_close_price IS NOT NULL AND sr.evidence_close_price > 0
+                                 THEN greatest(1.0, abs(sr.evidence_close_price) * 0.75)
+                             ELSE 5.0
+                         END
+                         AND sr.action_type ILIKE '%inferred%'
+                            THEN 'split_like_inferred_cash_artifact'
+                        WHEN sr.split_like_share_factor IS NOT NULL
+                         AND sr.cash_amount IS NOT NULL
+                         AND sr.cash_amount >= CASE
+                             WHEN sr.evidence_close_price IS NOT NULL AND sr.evidence_close_price > 0
+                                 THEN greatest(1.0, abs(sr.evidence_close_price) * 0.75)
+                             ELSE 5.0
+                         END
+                            THEN 'split_like_cash_artifact_quarantined'
+                        WHEN (sr.cash_amount IS NOT NULL AND sr.cash_amount <> 0)
+                          OR sr.action_type ILIKE '%dividend%' THEN 'cash_amount_or_dividend_action_type'
+                        ELSE 'unmapped_action_type'
+                    END AS classification_reason
+                FROM source_rows sr
             ),
             factors AS (
                 SELECT
@@ -236,6 +313,11 @@ def refresh_adjustment_factor_history(
                          AND c.split_from > 0
                          AND c.split_to > 0
                             THEN c.split_from / c.split_to
+                        WHEN c.event_type = 'SPLIT'
+                         AND c.split_like_share_factor IS NOT NULL
+                         AND c.adjustment_factor IS NOT NULL
+                         AND c.adjustment_factor > 0
+                            THEN c.adjustment_factor
                         WHEN c.adjustment_factor IS NOT NULL AND c.adjustment_factor > 0
                             THEN c.adjustment_factor
                         ELSE 1.0
@@ -247,6 +329,10 @@ def refresh_adjustment_factor_history(
                          AND c.split_from > 0
                          AND c.split_to > 0
                             THEN c.split_to / c.split_from
+                        WHEN c.event_type = 'SPLIT'
+                         AND c.split_like_share_factor IS NOT NULL
+                         AND c.split_like_share_factor > 0
+                            THEN c.split_like_share_factor
                         ELSE 1.0
                     END AS factor_shares
                 FROM classified c
@@ -288,13 +374,33 @@ def refresh_adjustment_factor_history(
                 s.symbol,
                 s.ex_date,
                 s.event_type,
+                s.classification_reason,
                 s.type_code,
                 s.event_ref_id,
                 s.factor_price,
                 s.factor_shares,
                 s.factor_shares AS factor_volume,
-                s.split_to AS ratio_numerator,
-                s.split_from AS ratio_denominator,
+                CASE
+                    WHEN s.event_type = 'SPLIT' AND s.split_to IS NOT NULL THEN s.split_to
+                    WHEN s.event_type = 'SPLIT'
+                     AND s.split_like_share_factor IS NOT NULL
+                     AND s.split_like_share_factor >= 1.0
+                        THEN s.split_like_share_factor
+                    WHEN s.event_type = 'SPLIT' AND s.split_like_share_factor IS NOT NULL THEN 1.0
+                    ELSE NULL
+                END AS ratio_numerator,
+                CASE
+                    WHEN s.event_type = 'SPLIT' AND s.split_from IS NOT NULL THEN s.split_from
+                    WHEN s.event_type = 'SPLIT'
+                     AND s.split_like_share_factor IS NOT NULL
+                     AND s.split_like_share_factor >= 1.0
+                        THEN 1.0
+                    WHEN s.event_type = 'SPLIT'
+                     AND s.split_like_share_factor IS NOT NULL
+                     AND s.split_like_share_factor > 0
+                        THEN 1.0 / s.split_like_share_factor
+                    ELSE NULL
+                END AS ratio_denominator,
                 CASE WHEN s.event_type = 'CASH_DIV' THEN s.cash_amount ELSE NULL END AS cash_div_amount,
                 CASE WHEN s.event_type = 'CASH_DIV' THEN 'USD' ELSE NULL END AS cash_div_currency,
                 s.cumulative_price_factor,

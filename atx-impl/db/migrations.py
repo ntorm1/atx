@@ -425,6 +425,22 @@ def _corporate_action_adjustment_factors(conn: duckdb.DuckDBPyConnection) -> Non
         conn.execute(statement)
 
 
+def _adjustment_factor_classification_reason(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5b: record why a raw corporate action normalized to an event type."""
+
+    conn.execute(
+        "ALTER TABLE adjustment_factor_history ADD COLUMN IF NOT EXISTS classification_reason VARCHAR"
+    )
+    conn.execute(
+        """
+        UPDATE adjustment_factor_history
+        SET classification_reason = 'legacy_pre_0012_unclassified'
+        WHERE classification_reason IS NULL
+           OR classification_reason = ''
+        """
+    )
+
+
 def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
     """Create S2 estimates tables: est_measure, est_actual, est_consensus, est_detail,
     est_broker, est_analyst, est_guidance, est_recommendation, est_surprise."""
@@ -1039,6 +1055,11 @@ MIGRATIONS: list[Migration] = [
         version=11,
         name="corporate_action_adjustment_factors",
         up=_corporate_action_adjustment_factors,
+    ),
+    Migration(
+        version=12,
+        name="adjustment_factor_classification_reason",
+        up=_adjustment_factor_classification_reason,
     ),
 ]
 

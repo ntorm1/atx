@@ -14,6 +14,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 3 in versions, f"Migration 0003 not recorded; found: {versions}"
     assert 10 in versions, f"Migration 0010 not recorded; found: {versions}"
     assert 11 in versions, f"Migration 0011 not recorded; found: {versions}"
+    assert 12 in versions, f"Migration 0012 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -146,6 +147,7 @@ def test_migration_0011_adjustment_factor_tables_exist(tmp_store):
         "security_id",
         "ex_date",
         "event_type",
+        "classification_reason",
         "factor_price",
         "factor_shares",
         "available_at",

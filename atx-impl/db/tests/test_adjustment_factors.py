@@ -182,6 +182,88 @@ def test_adjustment_factor_dataset_records_run(tmp_store):
     )
 
 
+def test_split_like_inferred_cash_artifact_promotes_to_split(tmp_store):
+    from db.adjustment_factors import refresh_adjustment_factor_history
+
+    _seed_security(tmp_store)
+    _insert_corporate_action(
+        tmp_store,
+        action_type="cash_dividend_inferred",
+        ex_date=dt.date(2024, 8, 13),
+        cash_amount=39.41,
+        adjustment_factor=0.5,
+    )
+
+    assert refresh_adjustment_factor_history(tmp_store) == 1
+
+    row = tmp_store.con.execute(
+        """
+        SELECT
+            event_type,
+            type_code,
+            classification_reason,
+            factor_price,
+            factor_shares,
+            ratio_numerator,
+            ratio_denominator,
+            cash_div_amount
+        FROM adjustment_factor_history
+        """
+    ).fetchone()
+
+    assert row == (
+        "SPLIT",
+        500000,
+        "split_like_inferred_cash_artifact",
+        0.5,
+        2.0,
+        2.0,
+        1.0,
+        None,
+    )
+
+
+def test_split_like_non_inferred_cash_artifact_quarantines_as_other(tmp_store):
+    from db.adjustment_factors import refresh_adjustment_factor_history
+
+    _seed_security(tmp_store)
+    _insert_corporate_action(
+        tmp_store,
+        action_type="cash_dividend",
+        ex_date=dt.date(2024, 8, 13),
+        cash_amount=39.41,
+        adjustment_factor=0.5,
+    )
+
+    assert refresh_adjustment_factor_history(tmp_store) == 1
+
+    row = tmp_store.con.execute(
+        """
+        SELECT
+            event_type,
+            type_code,
+            classification_reason,
+            factor_price,
+            factor_shares,
+            ratio_numerator,
+            ratio_denominator,
+            cash_div_amount
+        FROM adjustment_factor_history
+        """
+    ).fetchone()
+
+    assert row == (
+        "OTHER",
+        900000,
+        "split_like_cash_artifact_quarantined",
+        0.5,
+        1.0,
+        None,
+        None,
+        None,
+    )
+
+
 def test_adjustment_factors_asof_filters_by_availability_and_event_type(tmp_store):
     from db.adjustment_factors import refresh_adjustment_factor_history
     from db.asof import adjustment_factors_asof
@@ -211,6 +293,45 @@ def test_adjustment_factors_asof_filters_by_availability_and_event_type(tmp_stor
         dt.date(2024, 1, 15),
         dt.date(2024, 2, 15),
     ]
+
+
+def test_adjustment_factors_asof_exposes_promoted_split_artifact(tmp_store):
+    from db.adjustment_factors import refresh_adjustment_factor_history
+    from db.asof import adjustment_factors_asof
+
+    _seed_security(tmp_store)
+    _insert_corporate_action(
+        tmp_store,
+        action_type="cash_dividend_inferred",
+        ex_date=dt.date(2024, 8, 13),
+        cash_amount=39.41,
+        adjustment_factor=0.5,
+    )
+    refresh_adjustment_factor_history(tmp_store)
+    db_path = tmp_store.path
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    split_visible = adjustment_factors_asof(
+        dt.date(2024, 8, 14),
+        db_path=db_path,
+        symbols=("AAPL",),
+        event_types=("SPLIT",),
+    )
+    cash_visible = adjustment_factors_asof(
+        dt.date(2024, 8, 14),
+        db_path=db_path,
+        symbols=("AAPL",),
+        event_types=("CASH_DIV",),
+    )
+
+    assert cash_visible.empty
+    assert split_visible["event_type"].tolist() == ["SPLIT"]
+    assert split_visible["classification_reason"].tolist() == [
+        "split_like_inferred_cash_artifact"
+    ]
+    assert split_visible["factor_price"].tolist() == [0.5]
+    assert split_visible["factor_shares"].tolist() == [2.0]
 
 
 def test_adjustment_factor_quality_checks_and_watermarks_pass_clean_sample(tmp_store):

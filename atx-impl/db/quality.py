@@ -237,6 +237,8 @@ def _check_specs(
                    OR a.ex_date IS NULL
                    OR a.event_type IS NULL
                    OR a.event_type = ''
+                   OR a.classification_reason IS NULL
+                   OR a.classification_reason = ''
                    OR d.type_code IS NULL
                    OR d.event_type <> a.event_type
                    OR a.event_ref_id IS NULL

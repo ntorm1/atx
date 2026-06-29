@@ -526,7 +526,8 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             available_at TIMESTAMP,
             run_id VARCHAR,
             source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
-            updated_at TIMESTAMP NOT NULL DEFAULT now()
+            updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            classification_reason VARCHAR
         )
         """
     )
@@ -2065,6 +2066,7 @@ COMMON_FIELD_DESCRIPTIONS = {
     "effective_date": "Date on which an event or point-in-time observation becomes economically effective.",
     "ex_date": "Ex-date for a distribution or corporate-action event.",
     "event_type": "Normalized event type used for corporate-action and adjustment-factor rows.",
+    "classification_reason": "Audit reason explaining how a raw corporate-action row was normalized.",
     "type_code": "Corporate-action type code aligned to CRSP distribution buckets and DTCC CAEV labels where available.",
     "event_ref_id": "Deterministic identifier for the originating corporate-action event evidence.",
     "factor_price": "Event-level price adjustment multiplier.",
