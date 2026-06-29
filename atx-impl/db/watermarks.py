@@ -85,6 +85,21 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'filer_13f_cik_alias', 'max_valid_from', max(valid_from)::VARCHAR
+    FROM filer_13f_cik_alias
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'filer_13f_cik_alias', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM filer_13f_cik_alias
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'filer_13f_cik_alias', 'max_available_at', max(available_at)::VARCHAR
+    FROM filer_13f_cik_alias
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'sec_13f_ownership_features', 'max_report_period', max(report_period)::VARCHAR
     FROM thirteenf_security_ownership
     HAVING count(*) > 0

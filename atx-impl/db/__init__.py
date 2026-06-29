@@ -18,6 +18,7 @@ from .asof import (
     est_security_links_asof,
     est_surprise_asof,
     features_asof,
+    filer_aliases_asof,
     fundamental_periods_asof,
     fundamental_statements_asof,
     fundamental_ttm_asof,
@@ -64,6 +65,13 @@ from .features import (
     FundamentalFeatureBuildOptions,
     FundamentalFeatureDataset,
     refresh_feature_lineage,
+)
+from .filer_alias import (
+    FilerAliasDataset,
+    FilerAliasOptions,
+    normalize_filer_name,
+    refresh_filer_aliases,
+    resolve_primary_cik,
 )
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions
 from .fundamental_statements import (
@@ -180,6 +188,12 @@ __all__ = [
     "DuckDBStore",
     "EquityDailyFeatureDataset",
     "FeatureBuildOptions",
+    "FilerAliasDataset",
+    "FilerAliasOptions",
+    "normalize_filer_name",
+    "refresh_filer_aliases",
+    "resolve_primary_cik",
+    "filer_aliases_asof",
     "FinraShortInterestDataset",
     "FinraShortInterestOptions",
     "FredMacroDataset",

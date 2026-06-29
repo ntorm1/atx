@@ -1976,6 +1976,152 @@ def _estimate_guidance_extraction_indexes(conn: duckdb.DuckDBPyConnection) -> No
         conn.execute(statement)
 
 
+def _filer_13f_cik_alias(conn: duckdb.DuckDBPyConnection) -> None:
+    """S6a: 13F filer entity-resolution (CIK alias / subadvisor / M&A-continuity).
+
+    Bitemporal alias spine resolving each 13F filer CIK to a canonical primary CIK.
+    The auto-derived layer is high precision (SELF identity + intra-CIK NAME_HISTORY),
+    cross-CIK same-name links are emitted only as low-confidence NAME_MATCH_CANDIDATE
+    rows, and authoritative subadvisor / M&A rollups arrive via an injectable seed.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS filer_13f_cik_alias (
+            alias_id VARCHAR PRIMARY KEY,
+            primary_cik VARCHAR NOT NULL,
+            alias_cik VARCHAR NOT NULL,
+            alias_type VARCHAR NOT NULL,
+            manager_id VARCHAR,
+            normalized_name VARCHAR,
+            raw_name VARCHAR,
+            cluster_key VARCHAR,
+            valid_from DATE NOT NULL,
+            valid_to DATE,
+            is_current BOOLEAN NOT NULL DEFAULT true,
+            confidence DOUBLE NOT NULL DEFAULT 1.0,
+            evidence VARCHAR,
+            source VARCHAR NOT NULL,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_filer_alias_alias_cik ON filer_13f_cik_alias(alias_cik, alias_type, valid_from)",
+        "CREATE INDEX IF NOT EXISTS idx_filer_alias_primary_cik ON filer_13f_cik_alias(primary_cik, alias_type)",
+        "CREATE INDEX IF NOT EXISTS idx_filer_alias_asof ON filer_13f_cik_alias(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_filer_alias_cluster ON filer_13f_cik_alias(cluster_key)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id,
+            source_system_id,
+            name,
+            description,
+            grain,
+            primary_table,
+            pit_column,
+            available_at_column,
+            updated_at
+        )
+        VALUES (
+            'filer_13f_cik_alias',
+            'sec_edgar',
+            '13F filer entity-resolution aliases',
+            'Bitemporal CIK alias / subadvisor / M&A-continuity rollup for 13F filing managers, derived from thirteenf_managers plus an injectable curated continuity seed.',
+            'alias_cik,alias_type,valid_from',
+            'filer_13f_cik_alias',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name,
+            layer,
+            entity,
+            grain,
+            description,
+            natural_key_json,
+            pit_notes,
+            updated_at
+        )
+        VALUES (
+            'filer_13f_cik_alias',
+            'silver',
+            'filer_13f_entity_resolution',
+            'alias_cik,alias_type,valid_from',
+            '13F filer CIK alias / subadvisor / M&A-continuity entity-resolution spine for institutional-ownership rollups.',
+            '["alias_id"]',
+            'Resolve a filer CIK to its primary CIK only with rows whose valid_from/valid_to window covers the query date and whose available_at is visible; default resolution uses confidence>=1.0 so low-confidence NAME_MATCH_CANDIDATE links never silently merge unrelated managers.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name,
+            field_name,
+            semantic_type,
+            description,
+            nullable,
+            unit,
+            source_field,
+            updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'alias_id', 'primary_cik', 'alias_cik', 'manager_id', 'run_id'
+                ) THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%_date' OR upper(c.data_type) = 'DATE' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) = 'confidence' OR upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                WHEN lower(c.column_name) = 'is_current' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'alias_id' THEN 'Deterministic 13F filer-alias row identifier.'
+                WHEN 'primary_cik' THEN 'Canonical rollup CIK this alias resolves to.'
+                WHEN 'alias_cik' THEN 'Filing-manager CIK being resolved.'
+                WHEN 'alias_type' THEN 'SELF, NAME_HISTORY, NAME_MATCH_CANDIDATE, SUBADVISOR, MA_CONTINUITY, or MANUAL.'
+                WHEN 'normalized_name' THEN 'Legal-form-stripped uppercase manager name used for clustering.'
+                WHEN 'cluster_key' THEN 'Normalized-name cluster key for cross-CIK same-name candidates.'
+                WHEN 'confidence' THEN 'Resolution confidence from 0 to 1; authoritative rollups are 1.0, same-name candidates 0.5.'
+                WHEN 'is_current' THEN 'True when this alias window is the latest for the alias_cik.'
+                WHEN 'evidence' THEN 'Short provenance note for the alias row.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on filer_13f_cik_alias.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN c.column_name = 'confidence' THEN '0..1'
+                WHEN lower(c.column_name) LIKE '%_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'filer_13f_cik_alias'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -2117,6 +2263,11 @@ MIGRATIONS: list[Migration] = [
         version=28,
         name="estimate_guidance_extraction_indexes",
         up=_estimate_guidance_extraction_indexes,
+    ),
+    Migration(
+        version=29,
+        name="filer_13f_cik_alias",
+        up=_filer_13f_cik_alias,
     ),
 ]
 

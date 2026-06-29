@@ -28,6 +28,7 @@ from .features import (
     FundamentalFeatureBuildOptions,
     FundamentalFeatureDataset,
 )
+from .filer_alias import FilerAliasDataset, FilerAliasOptions
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
@@ -614,6 +615,18 @@ def _entity_classification_options(params: dict[str, Any]) -> EntityClassificati
     )
 
 
+def _filer_alias_options(params: dict[str, Any]) -> FilerAliasOptions:
+    default = FilerAliasOptions()
+    seed_file = params.get("seed_file")
+    return FilerAliasOptions(
+        source=params.get("source") or default.source,
+        seed_file=Path(seed_file) if seed_file else default.seed_file,
+        seed_source=params.get("seed_source") or default.seed_source,
+        replace=_bool_param(params.get("replace"), default.replace),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     default = FredMacroOptions()
     return FredMacroOptions(
@@ -645,6 +658,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     FinraShortInterestDataset.dataset_id: (FinraShortInterestDataset, _finra_options),
     ShortInterestFeatureDataset.dataset_id: (ShortInterestFeatureDataset, _short_interest_feature_options),
     ThirteenFDataSet.dataset_id: (ThirteenFDataSet, _thirteenf_options),
+    FilerAliasDataset.dataset_id: (FilerAliasDataset, _filer_alias_options),
     OwnershipFeatureDataset.dataset_id: (OwnershipFeatureDataset, _ownership_feature_options),
     InsiderOwnershipDataset.dataset_id: (InsiderOwnershipDataset, _insider_ownership_options),
     BlockholderOwnershipDataset.dataset_id: (BlockholderOwnershipDataset, _blockholder_ownership_options),
@@ -882,6 +896,12 @@ class JobManager:
         self.register_job(
             job_name="sec_13f_ownership_features",
             dataset_id="sec_13f_ownership_features",
+            dependencies=["sec_13f"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="filer_13f_cik_alias",
+            dataset_id="filer_13f_cik_alias",
             dependencies=["sec_13f"],
             **retry_policy,
         )

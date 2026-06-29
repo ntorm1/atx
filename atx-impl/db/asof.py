@@ -2380,3 +2380,72 @@ def identifier_decisions_asof(
         finally:
             for relation in registered:
                 store.con.unregister(relation)
+
+
+FILER_ALIASES_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts,
+        CAST(? AS DOUBLE) AS min_conf
+)
+SELECT fa.*
+FROM filer_13f_cik_alias fa
+{cik_join}
+{type_join}
+CROSS JOIN params p
+WHERE fa.valid_from <= p.as_of_date
+  AND coalesce(fa.valid_to, DATE '9999-12-31') > p.as_of_date
+  AND (fa.available_at IS NULL OR fa.available_at <= p.as_of_ts)
+  AND fa.confidence >= p.min_conf
+ORDER BY fa.alias_cik, fa.alias_type, fa.valid_from
+"""
+
+
+def filer_aliases_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    alias_cik: str | None = None,
+    alias_types: tuple[str, ...] | list[str] | None = None,
+    min_confidence: float = 0.0,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return PIT-valid 13F filer-alias rows.
+
+    The default ``min_confidence=0.0`` surfaces every alias type (including
+    low-confidence NAME_MATCH_CANDIDATE links) for inspection; raise it to 1.0 to
+    see only the authoritative rollup spine. Use ``resolve_primary_cik`` for actual
+    CIK resolution, which defaults to authoritative-only.
+    """
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    type_values = _normalize_strings(alias_types)
+
+    def _run(store):
+        registered = []
+        try:
+            cik_join = ""
+            type_join = ""
+            if alias_cik is not None:
+                store.con.register("asof_filer_alias_cik_filter", pd.DataFrame({"alias_cik": [alias_cik]}))
+                registered.append("asof_filer_alias_cik_filter")
+                cik_join = "JOIN asof_filer_alias_cik_filter cf ON cf.alias_cik = fa.alias_cik"
+            if type_values:
+                store.con.register("asof_filer_alias_type_filter", pd.DataFrame({"alias_type": type_values}))
+                registered.append("asof_filer_alias_type_filter")
+                type_join = "JOIN asof_filer_alias_type_filter tf ON tf.alias_type = fa.alias_type"
+            sql = FILER_ALIASES_ASOF_SQL.format(cik_join=cik_join, type_join=type_join)
+            return store.con.execute(sql, [as_of_date, as_of_ts, float(min_confidence)]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)

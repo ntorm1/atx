@@ -25,6 +25,7 @@ from db.asof import (
     est_security_links_asof,
     est_surprise_asof,
     features_asof,
+    filer_aliases_asof,
     fundamental_periods_asof,
     fundamental_statements_asof,
     fundamental_ttm_asof,
@@ -86,6 +87,7 @@ def parse_args() -> argparse.Namespace:
             "universe",
             "corporate-actions",
             "13f-positioning",
+            "filer-aliases",
             "identifier-decisions",
         ],
         default="securities",
@@ -124,6 +126,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--universe-id", default="us_liquid_equity_v1")
     parser.add_argument("--cusips", help="Comma-separated CUSIP filter for 13F positioning.")
     parser.add_argument("--decision-statuses", help="Comma-separated identifier decision statuses.")
+    parser.add_argument("--alias-cik", help="Filter filer-aliases to a single filing-manager CIK.")
+    parser.add_argument("--alias-types", help="Comma-separated filer-alias type filter (SELF, NAME_HISTORY, ...).")
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.0,
+        help="Minimum filer-alias confidence to include (default 0.0 = all, including candidates).",
+    )
     return parser.parse_args()
 
 
@@ -335,6 +345,15 @@ def main() -> int:
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,
             cusips=parse_csv(args.cusips),
+        )
+    elif args.view == "filer-aliases":
+        frame = filer_aliases_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            alias_cik=args.alias_cik,
+            alias_types=parse_csv(args.alias_types),
+            min_confidence=args.min_confidence,
         )
     else:
         frame = identifier_decisions_asof(

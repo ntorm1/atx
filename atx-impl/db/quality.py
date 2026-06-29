@@ -4595,6 +4595,59 @@ def _check_specs(
             comparator="eq",
             required_tables=("fundamental_statement_map",),
         ),
+        SqlQualityCheck(
+            dataset_id="filer_13f_cik_alias",
+            table_name="filer_13f_cik_alias",
+            check_name="filer_alias_overlapping_authoritative_windows",
+            sql="""
+                WITH auth AS (
+                    SELECT alias_id, alias_cik, valid_from,
+                           coalesce(valid_to, DATE '9999-12-31') AS valid_to
+                    FROM filer_13f_cik_alias
+                    WHERE alias_type IN ('SELF', 'SUBADVISOR', 'MA_CONTINUITY', 'MANUAL')
+                )
+                SELECT count(*)::DOUBLE
+                FROM auth a
+                JOIN auth b
+                  ON a.alias_cik = b.alias_cik
+                 AND a.alias_id <> b.alias_id
+                 AND a.valid_from < b.valid_to
+                 AND b.valid_from < a.valid_to
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("filer_13f_cik_alias",),
+        ),
+        SqlQualityCheck(
+            dataset_id="filer_13f_cik_alias",
+            table_name="filer_13f_cik_alias",
+            check_name="filer_alias_confidence_out_of_range",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filer_13f_cik_alias
+                WHERE confidence < 0.0 OR confidence > 1.0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("filer_13f_cik_alias",),
+        ),
+        SqlQualityCheck(
+            dataset_id="filer_13f_cik_alias",
+            table_name="filer_13f_cik_alias",
+            check_name="filer_alias_candidate_primary_has_self",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filer_13f_cik_alias c
+                WHERE c.alias_type = 'NAME_MATCH_CANDIDATE'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM filer_13f_cik_alias s
+                      WHERE s.alias_type = 'SELF' AND s.alias_cik = c.primary_cik
+                  )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("filer_13f_cik_alias",),
+        ),
     )
 
 

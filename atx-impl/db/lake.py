@@ -59,6 +59,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "thirteenf_manager_reports",
     "thirteenf_security_positions",
     "thirteenf_security_ownership",
+    "filer_13f_cik_alias",
     "v_thirteenf_positioning_by_security",
     "insider",
     "filing_form4",
