@@ -29,6 +29,7 @@ from .asof import (
     macro_metrics_asof,
     equity_price_metrics_asof,
     thirteenf_position_metrics_asof,
+    corporate_action_dividend_metrics_asof,
     identifier_decisions_asof,
     insider_relationships_asof,
     insider_transactions_asof,
@@ -119,6 +120,12 @@ from .thirteenf_position_metrics import (
     ThirteenFPositionMetricsOptions,
     compute_position_metrics,
     refresh_position_metrics,
+)
+from .corporate_action_metrics import (
+    CorporateActionDividendMetricsDataset,
+    CorporateActionDividendMetricsOptions,
+    compute_dividend_metrics,
+    refresh_dividend_metrics,
 )
 from .fundamental_statements import (
     refresh_fundamental_periods,
@@ -293,6 +300,11 @@ __all__ = [
     "compute_position_metrics",
     "refresh_position_metrics",
     "thirteenf_position_metrics_asof",
+    "CorporateActionDividendMetricsDataset",
+    "CorporateActionDividendMetricsOptions",
+    "compute_dividend_metrics",
+    "refresh_dividend_metrics",
+    "corporate_action_dividend_metrics_asof",
     "fundamental_statements_asof",
     "fundamental_ttm_asof",
     "IdentifierResolutionDecisionDataset",

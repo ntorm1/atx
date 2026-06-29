@@ -3272,6 +3272,129 @@ def _macro_metrics_regime_percentile(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _corporate_action_dividend_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S18: derived cash-dividend analytics (corporate actions x pricing).
+
+    One row per (security_id, ex_date) cash-dividend event from ``corporate_actions``,
+    enriched with the ex-date close from ``equity_daily_bars`` to derive spot and
+    trailing-twelve-month dividend yield, the TTM dividend sum/count, and the
+    year-over-year dividend growth. Bitemporal: ``as_of_date`` is the ex-date,
+    ``available_at`` the later of the dividend-inference and bar availabilities. Every
+    value uses only this security's current and earlier dividends/bars — no forward
+    leakage.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corporate_action_dividend_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            ex_date DATE NOT NULL,
+            record_date DATE,
+            payable_date DATE,
+            cash_amount DOUBLE,
+            close_on_ex DOUBLE,
+            dividend_yield_spot DOUBLE,
+            ttm_dividend DOUBLE,
+            ttm_dividend_count INTEGER,
+            dividend_yield_ttm DOUBLE,
+            dividend_growth_yoy DOUBLE,
+            dividend_ordinal INTEGER,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_corp_div_metrics_key ON corporate_action_dividend_metrics(security_id, ex_date)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_div_metrics_exdate ON corporate_action_dividend_metrics(ex_date)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_div_metrics_asof ON corporate_action_dividend_metrics(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'corporate_action_dividend_metrics',
+            'corporate_actions',
+            'Derived cash-dividend analytics',
+            'Per cash-dividend event analytics derived from corporate_actions joined to the ex-date close in equity_daily_bars: spot and trailing-twelve-month dividend yield, TTM dividend sum/count, and year-over-year dividend growth; bitemporal.',
+            'security_id,ex_date',
+            'corporate_action_dividend_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'corporate_action_dividend_metrics', 'silver', 'corporate_action_dividend_metrics',
+            'security_id,ex_date',
+            'Derived per-dividend-event metrics (one row per security, ex-date).',
+            '["metric_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision. TTM/growth windows use only current and earlier dividends; yield uses the ex-date close.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('metric_id', 'security_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('ex_date', 'record_date', 'payable_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'cash_amount' THEN 'Cash dividend per share at the ex-date.'
+                WHEN 'close_on_ex' THEN 'Unadjusted close from equity_daily_bars on the ex-date.'
+                WHEN 'dividend_yield_spot' THEN 'Single-payment yield: cash_amount / ex-date close.'
+                WHEN 'ttm_dividend' THEN 'Sum of cash dividends over the trailing 365 days (inclusive of this one).'
+                WHEN 'ttm_dividend_count' THEN 'Number of cash dividends in the trailing 365 days.'
+                WHEN 'dividend_yield_ttm' THEN 'Trailing-twelve-month dividend yield: ttm_dividend / ex-date close.'
+                WHEN 'dividend_growth_yoy' THEN 'Growth of this dividend vs the nearest dividend ~1 year earlier ((cur - prior)/prior).'
+                WHEN 'dividend_ordinal' THEN 'Sequential index of this dividend within the security (1 = earliest observed).'
+                WHEN 'available_at' THEN 'Later of the dividend-inference and ex-date bar availability; knowable only at/after this instant.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('ex_date', 'record_date', 'payable_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%yield%' OR lower(c.column_name) LIKE '%growth%' THEN 'ratio'
+                WHEN lower(c.column_name) IN ('cash_amount', 'close_on_ex', 'ttm_dividend') THEN 'currency'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'corporate_action_dividend_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -3473,6 +3596,11 @@ MIGRATIONS: list[Migration] = [
         version=40,
         name="macro_metrics_regime_percentile",
         up=_macro_metrics_regime_percentile,
+    ),
+    Migration(
+        version=41,
+        name="corporate_action_dividend_metrics",
+        up=_corporate_action_dividend_metrics,
     ),
 ]
 

@@ -4970,6 +4970,40 @@ def _check_specs(
             comparator="eq",
             required_tables=("thirteenf_position_metrics",),
         ),
+        SqlQualityCheck(
+            dataset_id="corporate_action_dividend_metrics",
+            table_name="corporate_action_dividend_metrics",
+            check_name="duplicate_corporate_action_dividend_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT source, security_id, ex_date
+                    FROM corporate_action_dividend_metrics
+                    GROUP BY 1, 2, 3 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("corporate_action_dividend_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="corporate_action_dividend_metrics",
+            table_name="corporate_action_dividend_metrics",
+            check_name="bad_corporate_action_dividend_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM corporate_action_dividend_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR ex_date IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR (dividend_yield_spot IS NOT NULL AND dividend_yield_spot < 0)
+                   OR (ttm_dividend_count IS NOT NULL AND ttm_dividend_count < 1)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("corporate_action_dividend_metrics",),
+        ),
     )
 
 
