@@ -71,10 +71,11 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 - `est_measure`, `est_actual`, and `est_surprise` are real: SEC companyfacts actuals map into canonical estimate measures and SUE is computed PIT-safely from originally reported actuals.
 - `est_detail` now has an injectable CSV loader for IBES-like or normalized detail rows, with `anndats`/`actdats`/`revdats`/`stop_date`, source-file hashes, broker/analyst alias dimensions, `est_period_dim`, watermarks, lake exports, quality checks, and `est_detail_asof`.
 - `est_consensus` now has an injectable CSV loader for IBES `statsumu`-style or normalized summary rows, with `statpers`/`fpedats` aliases, stable snapshot ids, source-file hashes, `est_period_dim` updates, 105-day stale windows, watermarks, quality checks, and latest-snapshot `est_consensus_asof`.
-- `est_guidance` and `est_recommendation` remain injectable/default-empty surfaces.
+- `est_recommendation` now has an injectable CSV loader for IBES `recddet`/`ptgdet`-style or normalized recommendation and price-target rows, with canonical IBES rating scale, broker/analyst aliases, source-file hashes, active-window as-of semantics, watermarks, and quality checks.
+- `est_guidance` remains an injectable/default-empty surface.
 
 **Gap:**
-- Populated licensed/public estimate feeds are not in the default DB. Full parity still needs real IBES/FactSet/CIQ/Zacks detail and summary files, vendor-ID reconciliation, recommendation/price-target normalization, and SEC 8-K Item 2.02/7.01 guidance NER.
+- Populated licensed/public estimate feeds are not in the default DB. Full parity still needs real IBES/FactSet/CIQ/Zacks detail/summary/recommendation/price-target files, vendor-ID reconciliation, recommendation/price-target summary normalization, and SEC 8-K Item 2.02/7.01 guidance NER.
 - **Connectors:** primary public path is SEC EDGAR 8-K Item 2.02 (results) + 7.01 (Reg-FD guidance) prose extraction; secondary public aggregators (Zacks/Yahoo/Nasdaq — license-murky, sourced from IBES). Vendor truth (IBES via WRDS `ibes.detu_epsus`/`statsumu_epsus`/`recddet`, FactSet Estimates API, Bloomberg BEst, CIQ `ciqEstimateNumericData`) is licensed.
 - **Quality gotchas to encode:** IBES broker-ID reshuffle (2018: 13.8% brokers / 30.7% analysts reassigned — never join on numeric broker_id across vintages); `revdats`-bumped FPI gotcha (filter `anndats ≤ D ≤ revdats`, join on `fpedats` not `fpi`); **Bloomberg recommendation scale inverts IBES** (5=Buy vs 1=Buy); P-vs-D EPS mixing (~5–8% silent error); stopped-estimate filter (`estimate_type != 'S'`); 105-day stale scrub on consensus.
 

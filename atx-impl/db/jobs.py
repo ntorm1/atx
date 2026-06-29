@@ -280,6 +280,19 @@ def _estimate_consensus_options(params: dict[str, Any]) -> EstimateConsensusOpti
     )
 
 
+def _estimate_recommendation_options(params: dict[str, Any]) -> EstimateRecommendationOptions:
+    default = EstimateRecommendationOptions()
+    return EstimateRecommendationOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source=params.get("source") or default.source,
+        provider_name=params.get("provider_name") or default.provider_name,
+        vendor_security_id_type=params.get("vendor_security_id_type") or default.vendor_security_id_type,
+        source_vendor_table=params.get("source_vendor_table") or default.source_vendor_table,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _finra_options(params: dict[str, Any]) -> FinraShortInterestOptions:
     default = FinraShortInterestOptions()
     return FinraShortInterestOptions(
@@ -656,7 +669,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ),
     EstimateRecommendationDataset.dataset_id: (
         EstimateRecommendationDataset,
-        lambda p: EstimateRecommendationOptions(),
+        _estimate_recommendation_options,
     ),
 }
 

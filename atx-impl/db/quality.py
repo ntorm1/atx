@@ -4141,6 +4141,83 @@ def _check_specs(
             warn_if_missing=True,
         ),
         SqlQualityCheck(
+            dataset_id="est_recommendation",
+            table_name="est_recommendation",
+            check_name="est_recommendation_missing_available_at",
+            sql="SELECT count(*)::DOUBLE FROM est_recommendation WHERE available_at IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation",
+            table_name="est_recommendation",
+            check_name="est_recommendation_duplicate_id",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT est_recommendation_id, count(*) AS row_count
+                    FROM est_recommendation
+                    WHERE est_recommendation_id IS NOT NULL
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation",
+            table_name="est_recommendation",
+            check_name="est_recommendation_invalid_code",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_recommendation
+                WHERE recommendation_code IS NOT NULL
+                  AND recommendation_code NOT BETWEEN 1 AND 5
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation",
+            table_name="est_recommendation",
+            check_name="est_recommendation_invalid_price_target",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_recommendation
+                WHERE (price_target IS NOT NULL AND price_target <= 0)
+                   OR (target_horizon_months IS NOT NULL AND target_horizon_months <= 0)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation",
+            table_name="est_recommendation",
+            check_name="est_recommendation_invalid_active_window",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_recommendation
+                WHERE rating_date IS NOT NULL
+                  AND (
+                        (revision_date IS NOT NULL AND revision_date < rating_date)
+                     OR (stop_date IS NOT NULL AND stop_date < rating_date)
+                  )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
             dataset_id="est_detail",
             table_name="est_detail",
             check_name="est_detail_missing_available_at",

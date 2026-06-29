@@ -93,6 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measure-codes", help="Comma-separated estimate measure-code filter.")
     parser.add_argument("--brokers", help="Comma-separated estimate broker_id filter.")
     parser.add_argument("--analysts", help="Comma-separated estimate analyst_id filter.")
+    parser.add_argument("--recommendation-event-types", help="Comma-separated recommendation event-type filter.")
     parser.add_argument(
         "--include-stale-estimates",
         action="store_true",
@@ -257,6 +258,9 @@ def main() -> int:
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,
             security_ids=parse_id_csv(args.security_ids),
+            symbols=parse_csv(args.symbols),
+            providers=parse_csv(args.providers),
+            event_types=parse_csv(args.recommendation_event_types),
             broker_ids=parse_id_csv(args.brokers),
             analyst_ids=parse_id_csv(args.analysts),
         )

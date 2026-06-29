@@ -21,6 +21,10 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 16 in versions, f"Migration 0016 not recorded; found: {versions}"
     assert 17 in versions, f"Migration 0017 not recorded; found: {versions}"
     assert 18 in versions, f"Migration 0018 not recorded; found: {versions}"
+    assert 19 in versions, f"Migration 0019 not recorded; found: {versions}"
+    assert 20 in versions, f"Migration 0020 not recorded; found: {versions}"
+    assert 21 in versions, f"Migration 0021 not recorded; found: {versions}"
+    assert 22 in versions, f"Migration 0022 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -158,6 +162,42 @@ def test_migration_0011_adjustment_factor_tables_exist(tmp_store):
         "factor_shares",
         "available_at",
     }.issubset(columns)
+
+
+def test_migration_0021_catalogs_est_recommendation_fields(tmp_store):
+    """Migration 0021 backfills field_catalog for recommendation-event columns."""
+
+    missing = tmp_store.con.execute(
+        """
+        SELECT c.column_name
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND c.table_name = 'est_recommendation'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM field_catalog f
+              WHERE f.table_name = c.table_name
+                AND f.field_name = c.column_name
+          )
+        ORDER BY c.column_index
+        """
+    ).fetchall()
+    assert missing == []
+
+
+def test_migration_0022_catalogs_est_recommendation_identifiers(tmp_store):
+    """Migration 0022 preserves identifier semantics for key recommendation fields."""
+
+    rows = tmp_store.con.execute(
+        """
+        SELECT field_name, semantic_type
+        FROM field_catalog
+        WHERE table_name = 'est_recommendation'
+          AND field_name IN ('symbol', 'source_file_sha256')
+        ORDER BY field_name
+        """
+    ).fetchall()
+    assert rows == [("source_file_sha256", "identifier"), ("symbol", "identifier")]
 
 
 def test_migration_0013_daily_adjustment_factors_exist(tmp_store):

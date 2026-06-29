@@ -1324,6 +1324,175 @@ def _estimate_consensus_snapshot_indexes(conn: duckdb.DuckDBPyConnection) -> Non
         conn.execute(statement)
 
 
+def _estimate_recommendation_events(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5h: vendor-injectable recommendation and price-target events."""
+
+    for statement in (
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS est_recommendation_id VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS provider VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS symbol VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS vendor_security_id VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS vendor_security_id_type VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS cusip VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS source_vendor_table VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS vendor_broker_id VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS vendor_analyst_id VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS broker_mask_code VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS analyst_mask_code VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS broker_name VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS analyst_name VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS recommendation_code INTEGER",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS recommendation_label VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS prior_recommendation_code INTEGER",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS prior_recommendation_label VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS rating_scale VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS event_type VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS price_target DOUBLE",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS target_currency VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS target_horizon_months INTEGER",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS industry_code VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS is_industry_recommendation BOOLEAN",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS usfirm VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS announce_date DATE",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS announce_time TIME",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS activation_date DATE",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS activation_time TIME",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS revision_date DATE",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS revision_time TIME",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS stop_date DATE",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS source_file VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS source_file_sha256 VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS raw_payload_json VARCHAR",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+    ):
+        conn.execute(statement)
+
+
+def _estimate_recommendation_event_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5h: index recommendation and price-target events after schema migration."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_id ON est_recommendation(est_recommendation_id)",
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_security ON est_recommendation(security_id, event_type, rating_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_symbol ON est_recommendation(symbol, event_type, rating_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_vendor ON est_recommendation(provider, vendor_security_id_type, vendor_security_id, event_type, rating_date)",
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_broker ON est_recommendation(broker_id, analyst_id, rating_date, available_at)",
+    ):
+        conn.execute(statement)
+
+
+def _estimate_recommendation_catalog_fields(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5h: catalog additive recommendation columns for already-migrated databases."""
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name,
+            field_name,
+            semantic_type,
+            description,
+            nullable,
+            unit,
+            source_field,
+            updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'security_id', 'source_id', 'run_id', 'broker_id', 'analyst_id',
+                    'est_recommendation_id', 'symbol', 'vendor_security_id', 'cusip',
+                    'vendor_broker_id', 'vendor_analyst_id', 'broker_mask_code',
+                    'analyst_mask_code', 'source_file_sha256'
+                ) THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%_date' OR upper(c.data_type) = 'DATE' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) = 'TIME' THEN 'time'
+                WHEN upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN lower(c.column_name) LIKE '%price%' THEN 'price'
+                WHEN lower(c.column_name) LIKE '%value%'
+                  OR lower(c.column_name) LIKE '%amount%'
+                  OR lower(c.column_name) LIKE '%factor%'
+                  OR lower(c.column_name) LIKE '%return%'
+                  OR lower(c.column_name) LIKE '%percent%'
+                  OR lower(c.column_name) LIKE '%rate%'
+                  OR lower(c.column_name) LIKE '%weight%'
+                  OR lower(c.column_name) LIKE '%ratio%'
+                  OR upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL')
+                THEN 'measure'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'est_recommendation_id' THEN 'Deterministic recommendation or price-target event identifier.'
+                WHEN 'provider' THEN 'Provider namespace for the injected recommendation feed.'
+                WHEN 'vendor_security_id' THEN 'Provider security identifier, such as an IBES ticker.'
+                WHEN 'vendor_security_id_type' THEN 'Identifier type for vendor_security_id.'
+                WHEN 'source_vendor_table' THEN 'Original vendor table family, such as recddet or ptgdet.'
+                WHEN 'vendor_broker_id' THEN 'Broker identifier as published by the source file.'
+                WHEN 'vendor_analyst_id' THEN 'Analyst identifier as published by the source file.'
+                WHEN 'broker_mask_code' THEN 'Masked or alternate broker code from the vendor file.'
+                WHEN 'analyst_mask_code' THEN 'Masked or alternate analyst code from the vendor file.'
+                WHEN 'broker_name' THEN 'Broker or estimator display name from the source row.'
+                WHEN 'analyst_name' THEN 'Analyst display name from the source row.'
+                WHEN 'recommendation_code' THEN 'Canonical recommendation code where lower values are more bullish.'
+                WHEN 'recommendation_label' THEN 'Canonical recommendation label.'
+                WHEN 'prior_recommendation_code' THEN 'Prior canonical recommendation code when supplied or derived.'
+                WHEN 'prior_recommendation_label' THEN 'Prior canonical recommendation label.'
+                WHEN 'rating_scale' THEN 'Rating scale namespace used to interpret recommendation_code.'
+                WHEN 'event_type' THEN 'Normalized recommendation event type.'
+                WHEN 'price_target' THEN 'Broker price target value.'
+                WHEN 'target_currency' THEN 'Currency for price_target.'
+                WHEN 'target_horizon_months' THEN 'Target horizon in months.'
+                WHEN 'industry_code' THEN 'Industry recommendation code when the row is not issuer-specific.'
+                WHEN 'is_industry_recommendation' THEN 'True when the recommendation applies to an industry row.'
+                WHEN 'usfirm' THEN 'Vendor flag for US-firm rows.'
+                WHEN 'announce_date' THEN 'Date the recommendation or target was announced.'
+                WHEN 'announce_time' THEN 'Time the recommendation or target was announced.'
+                WHEN 'activation_date' THEN 'Date the vendor feed made the recommendation active.'
+                WHEN 'activation_time' THEN 'Time the vendor feed made the recommendation active.'
+                WHEN 'revision_date' THEN 'Date through which the recommendation remains active or was revised.'
+                WHEN 'revision_time' THEN 'Revision or stop-window time from the vendor feed.'
+                WHEN 'stop_date' THEN 'Explicit stop date when supplied by the provider.'
+                WHEN 'source_file' THEN 'Path of the injected source file used for this row.'
+                WHEN 'source_file_sha256' THEN 'SHA-256 hash of the injected source file.'
+                WHEN 'raw_payload_json' THEN 'Normalized raw source payload for lineage and audit.'
+                WHEN 'updated_at' THEN 'Warehouse update timestamp for this row.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on est_recommendation.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN c.column_name = 'price_target' THEN 'target_currency'
+                WHEN c.column_name = 'target_horizon_months' THEN 'months'
+                WHEN lower(c.column_name) LIKE '%_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'est_recommendation'
+        """
+    )
+
+
+def _estimate_recommendation_catalog_semantics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5h: tighten identifier semantics for recommendation catalog fields."""
+
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET semantic_type = 'identifier',
+            updated_at = now()
+        WHERE table_name = 'est_recommendation'
+          AND field_name IN ('symbol', 'source_file_sha256')
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -1415,6 +1584,26 @@ MIGRATIONS: list[Migration] = [
         version=18,
         name="estimate_consensus_snapshot_indexes",
         up=_estimate_consensus_snapshot_indexes,
+    ),
+    Migration(
+        version=19,
+        name="estimate_recommendation_events",
+        up=_estimate_recommendation_events,
+    ),
+    Migration(
+        version=20,
+        name="estimate_recommendation_event_indexes",
+        up=_estimate_recommendation_event_indexes,
+    ),
+    Migration(
+        version=21,
+        name="estimate_recommendation_catalog_fields",
+        up=_estimate_recommendation_catalog_fields,
+    ),
+    Migration(
+        version=22,
+        name="estimate_recommendation_catalog_semantics",
+        up=_estimate_recommendation_catalog_semantics,
     ),
 ]
 

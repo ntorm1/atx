@@ -38,7 +38,7 @@ from db.estimates import (
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
-from db.asof import est_actual_asof, est_consensus_asof, est_detail_asof, est_surprise_asof
+from db.asof import est_actual_asof, est_consensus_asof, est_detail_asof, est_recommendation_asof, est_surprise_asof
 from db.quality import run_warehouse_quality_checks
 
 
@@ -136,6 +136,12 @@ class TestMigration:
             "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) = 18"
         ).fetchall()
         assert len(rows) == 1, "Migration version 18 not recorded in schema_migrations"
+
+    def test_schema_migrations_version_22(self, tmp_store):
+        rows = tmp_store.con.execute(
+            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) IN (19, 20, 21, 22)"
+        ).fetchall()
+        assert len(rows) == 4, "Migration versions 19/20/21/22 not recorded in schema_migrations"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -762,6 +768,135 @@ class TestInjectableLoaders:
         assert result.rows_loaded == 1
         count = tmp_store.con.execute("SELECT count(*) FROM est_recommendation").fetchone()[0]
         assert count == 1
+
+    def test_recommendation_file_loader_normalizes_ibes_rec_and_price_target_rows(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_recommendations.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,cusip,estimator,analys,emaskcd,amaskcd,broker,analyst,ireccd,itext,prior_ireccd,anndats,anntims,actdats,acttims,revdats,revtims,ind_idx,usfirm,value,horizon,estcur",
+                    "AAPL,AAPL,03783310,101,9001,501,7001,Goldman Sachs,Jane Doe,2,BUY,3,2024-01-15,09:30:00,2024-01-16,10:00:00,2024-02-09,16:00:00,,1,,,",
+                    "AAPL,AAPL,03783310,101,9001,501,7001,Goldman Sachs,Jane Doe,,, ,2024-01-20,09:00:00,2024-01-20,10:00:00,2024-02-20,16:00:00,,1,210.5,12,USD",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = EstimateRecommendationDataset().run(
+            tmp_store,
+            EstimateRecommendationOptions(
+                source_file=source,
+                provider_name="IBES",
+                vendor_security_id_type="IBES_TICKER",
+                source_vendor_table="recddet_ptgdet_fixture",
+            ),
+        )
+
+        assert result.rows_loaded == 2
+        rec = tmp_store.con.execute(
+            """
+            SELECT
+                provider, security_id, symbol, vendor_security_id,
+                recommendation_code, recommendation_label, rating_standardized,
+                prior_recommendation_code, action, event_type, available_at,
+                broker_id, analyst_id
+            FROM est_recommendation
+            WHERE event_type = 'RECOMMENDATION'
+            """
+        ).fetchone()
+        assert rec is not None
+        assert rec[0] == "IBES"
+        assert rec[1] == "US-TICKER-AAPL"
+        assert rec[2] == "AAPL"
+        assert rec[3] == "AAPL"
+        assert rec[4] == 2
+        assert rec[5] == "Buy"
+        assert rec[6] == "BUY"
+        assert rec[7] == 3
+        assert rec[8] == "UPGRADE"
+        assert rec[9] == "RECOMMENDATION"
+        assert rec[10] == dt.datetime(2024, 1, 16, 10, 0, 0)
+        assert rec[11].startswith("EST-BROKER-")
+        assert rec[12].startswith("EST-ANALYST-")
+
+        target = tmp_store.con.execute(
+            """
+            SELECT event_type, price_target, target_horizon_months, target_currency
+            FROM est_recommendation
+            WHERE event_type = 'PRICE_TARGET'
+            """
+        ).fetchone()
+        assert target == ("PRICE_TARGET", pytest.approx(210.5), 12, "USD")
+
+        counts = tmp_store.con.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM est_broker),
+                (SELECT count(*) FROM est_analyst),
+                (SELECT count(*) FROM est_broker_alias),
+                (SELECT count(*) FROM est_analyst_alias),
+                (SELECT count(*) FROM raw_source_files WHERE dataset_id = 'est_recommendation')
+            """
+        ).fetchone()
+        assert counts == (2, 2, 6, 6, 1)
+
+    def test_recommendation_file_loader_is_idempotent_per_source_file(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_recommendations.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,estimator,analys,ireccd,itext,anndats,actdats",
+                    "AAPL,AAPL,101,9001,2,BUY,2024-01-15,2024-01-16",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        options = EstimateRecommendationOptions(source_file=source, provider_name="IBES")
+        r1 = EstimateRecommendationDataset().run(tmp_store, options)
+        r2 = EstimateRecommendationDataset().run(tmp_store, options)
+        count = tmp_store.con.execute("SELECT count(*) FROM est_recommendation").fetchone()[0]
+        assert r1.rows_loaded == 1
+        assert r2.rows_loaded == 1
+        assert count == 1
+
+    def test_recommendation_asof_respects_revision_window_and_event_type(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_recommendations.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,estimator,analys,ireccd,itext,anndats,actdats,acttims,revdats,value,horizon,estcur",
+                    "AAPL,AAPL,101,9001,2,BUY,2024-01-15,2024-01-16,10:00:00,2024-02-09,,,",
+                    "AAPL,AAPL,101,9001,3,HOLD,2024-02-10,2024-02-10,10:00:00,2024-03-15,,,",
+                    "AAPL,AAPL,101,9001,,,2024-02-12,2024-02-12,10:00:00,2024-03-15,205,12,USD",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        EstimateRecommendationDataset().run(
+            tmp_store,
+            EstimateRecommendationOptions(source_file=source, provider_name="IBES"),
+        )
+
+        jan = est_recommendation_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 1, 20),
+            as_of_ts=dt.datetime(2024, 1, 20, 23, 59, 59),
+            symbols=("AAPL",),
+            event_types=("RECOMMENDATION",),
+        )
+        feb = est_recommendation_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 12),
+            as_of_ts=dt.datetime(2024, 2, 12, 23, 59, 59),
+            symbols=("AAPL",),
+        )
+
+        assert len(jan) == 1
+        assert jan.iloc[0]["recommendation_code"] == 2
+        assert len(feb) == 2
+        by_type = {row["event_type"]: row for _, row in feb.iterrows()}
+        assert by_type["RECOMMENDATION"]["recommendation_code"] == 3
+        assert by_type["PRICE_TARGET"]["price_target"] == pytest.approx(205.0)
 
     def test_detail_file_loader_normalizes_ibes_style_rows(self, tmp_store, tmp_path):
         source = tmp_path / "ibes_detail.csv"

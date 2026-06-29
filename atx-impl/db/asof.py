@@ -2000,6 +2000,9 @@ def est_recommendation_asof(
     as_of_date: dt.date,
     as_of_ts: dt.datetime | None = None,
     security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    providers: tuple[str, ...] | list[str] | None = None,
+    event_types: tuple[str, ...] | list[str] | None = None,
     broker_ids: tuple[str, ...] | list[str] | None = None,
     analyst_ids: tuple[str, ...] | list[str] | None = None,
     db_path: Path | str = DEFAULT_DB_PATH,
@@ -2014,11 +2017,23 @@ def est_recommendation_asof(
         try:
             joins = []
             sid_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_symbols(symbols)
+            provider_values = _normalize_strings(providers)
+            event_type_values = _normalize_strings(event_types)
             broker_values = _normalize_ids(broker_ids)
             analyst_values = _normalize_ids(analyst_ids)
             if _register_filter(store, "asof_est_rec_sid_filter", "security_id", sid_values):
                 registered.append("asof_est_rec_sid_filter")
                 joins.append("JOIN asof_est_rec_sid_filter sf ON sf.security_id = r.security_id")
+            if _register_filter(store, "asof_est_rec_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_est_rec_symbol_filter")
+                joins.append("JOIN asof_est_rec_symbol_filter syf ON syf.symbol = r.symbol")
+            if _register_filter(store, "asof_est_rec_provider_filter", "provider", provider_values):
+                registered.append("asof_est_rec_provider_filter")
+                joins.append("JOIN asof_est_rec_provider_filter pf ON pf.provider = r.provider")
+            if _register_filter(store, "asof_est_rec_event_type_filter", "event_type", event_type_values):
+                registered.append("asof_est_rec_event_type_filter")
+                joins.append("JOIN asof_est_rec_event_type_filter ef ON ef.event_type = r.event_type")
             if _register_filter(store, "asof_est_rec_broker_filter", "broker_id", broker_values):
                 registered.append("asof_est_rec_broker_filter")
                 joins.append("JOIN asof_est_rec_broker_filter bf ON bf.broker_id = r.broker_id")
@@ -2035,8 +2050,20 @@ def est_recommendation_asof(
                 SELECT
                     r.*,
                     row_number() OVER (
-                        PARTITION BY r.security_id, coalesce(r.broker_id, ''), coalesce(r.analyst_id, '')
-                        ORDER BY r.available_at DESC NULLS LAST, r.rating_date DESC NULLS LAST, r.source_loaded_at DESC NULLS LAST
+                        PARTITION BY
+                            coalesce(r.security_id, ''),
+                            coalesce(r.symbol, ''),
+                            coalesce(r.vendor_security_id, ''),
+                            coalesce(r.event_type, ''),
+                            coalesce(r.broker_id, ''),
+                            coalesce(r.analyst_id, '')
+                        ORDER BY
+                            r.available_at DESC NULLS LAST,
+                            r.activation_date DESC NULLS LAST,
+                            r.rating_date DESC NULLS LAST,
+                            r.announce_date DESC NULLS LAST,
+                            r.source_loaded_at DESC NULLS LAST,
+                            r.est_recommendation_id DESC NULLS LAST
                     ) AS rn
                 FROM est_recommendation r
                 {' '.join(joins)}
@@ -2044,11 +2071,14 @@ def est_recommendation_asof(
                 WHERE (r.available_at IS NULL OR r.available_at <= p.as_of_ts)
                   AND (r.as_of_date IS NULL OR r.as_of_date <= p.as_of_date)
                   AND (r.rating_date IS NULL OR r.rating_date <= p.as_of_date)
+                  AND (r.announce_date IS NULL OR r.announce_date <= p.as_of_date)
+                  AND (r.revision_date IS NULL OR r.revision_date >= p.as_of_date)
+                  AND (r.stop_date IS NULL OR r.stop_date > p.as_of_date)
             )
             SELECT * EXCLUDE (rn)
             FROM ranked
             WHERE rn = 1
-            ORDER BY security_id, broker_id, analyst_id, rating_date
+            ORDER BY provider, symbol, security_id, event_type, broker_id, analyst_id, rating_date
             """
             return store.con.execute(sql, [as_of_date, as_of_ts]).df()
         finally:

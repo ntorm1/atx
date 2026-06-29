@@ -386,6 +386,12 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'est_recommendation', 'max_price_target_date', max(rating_date)::VARCHAR
+    FROM est_recommendation
+    WHERE price_target IS NOT NULL
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'est_recommendation', 'max_available_at', max(available_at)::VARCHAR
     FROM est_recommendation
     HAVING count(*) > 0

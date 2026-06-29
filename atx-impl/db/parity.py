@@ -645,14 +645,15 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         open_substitute=(
             "est_detail CSV injector normalizes IBES-like detail files and normalized files into "
             "est_detail with est_broker/est_analyst alias dimensions, est_period_dim, source-file hashes, "
-            "and est_detail_asof PIT queries; est_recommendation remains injectable/default-empty."
+            "and est_detail_asof PIT queries; est_recommendation CSV injector normalizes IBES recddet/ptgdet-style "
+            "recommendation and price-target events with canonical IBES 1=Strong Buy..5=Sell scale and active-window as-of queries."
         ),
         warehouse_tables=("est_detail", "est_broker", "est_broker_alias", "est_analyst", "est_analyst_alias", "est_period_dim", "est_recommendation"),
         parity_status="partial",
         limitations=(
             "detail broker estimates remain licensed or manually injectable; no public source can reconstruct full broker/analyst grain"
         ),
-        next_gap="Load a real licensed IBES/FactSet Estimates file, then add price-target and recommendation detail normalization.",
+        next_gap="Load a real licensed IBES/FactSet Estimates file, add recommendation/price-target summary normalization, and reconcile vendor identifiers.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-estimates-api",
         ),

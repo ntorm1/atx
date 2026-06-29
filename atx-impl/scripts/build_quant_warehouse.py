@@ -34,6 +34,8 @@ from db.estimates import (
     EstimateDetailOptions,
     EstimateMeasureSeedDataset,
     EstimateMeasureSeedOptions,
+    EstimateRecommendationDataset,
+    EstimateRecommendationOptions,
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
@@ -85,6 +87,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--estimate-detail-vendor-id-type",
         default=EstimateDetailOptions().vendor_security_id_type,
+    )
+    parser.add_argument("--estimate-recommendation-file", type=Path)
+    parser.add_argument("--estimate-recommendation-provider", default=EstimateRecommendationOptions().provider_name)
+    parser.add_argument(
+        "--estimate-recommendation-vendor-id-type",
+        default=EstimateRecommendationOptions().vendor_security_id_type,
+    )
+    parser.add_argument(
+        "--estimate-recommendation-source-table",
+        default=EstimateRecommendationOptions().source_vendor_table,
     )
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-13f", action="store_true")
@@ -264,6 +276,18 @@ def main() -> int:
                                 source_file=args.estimate_detail_file,
                                 provider=args.estimate_detail_provider,
                                 vendor_security_id_type=args.estimate_detail_vendor_id_type,
+                            ),
+                        )
+                    )
+                if args.estimate_recommendation_file:
+                    results.append(
+                        EstimateRecommendationDataset().run(
+                            store,
+                            EstimateRecommendationOptions(
+                                source_file=args.estimate_recommendation_file,
+                                provider_name=args.estimate_recommendation_provider,
+                                vendor_security_id_type=args.estimate_recommendation_vendor_id_type,
+                                source_vendor_table=args.estimate_recommendation_source_table,
                             ),
                         )
                     )

@@ -223,6 +223,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "est_consensus": job_name(args.job_prefix, "est_consensus"),
         "est_surprise": job_name(args.job_prefix, "est_surprise"),
         "est_detail": job_name(args.job_prefix, "est_detail"),
+        "est_recommendation": job_name(args.job_prefix, "est_recommendation"),
         "finra_short_interest": job_name(args.job_prefix, "finra_short_interest"),
         "finra_short_interest_features": job_name(args.job_prefix, "finra_short_interest_features"),
         "sec_13f": job_name(args.job_prefix, "sec_13f"),
@@ -444,6 +445,22 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
                 **retry_policy,
             )
             ordered.append(names["est_detail"])
+        if args.estimate_recommendation_file:
+            manager.register_job(
+                job_name=names["est_recommendation"],
+                dataset_id="est_recommendation",
+                params=clean_params(
+                    {
+                        "source_file": str(args.estimate_recommendation_file),
+                        "provider_name": args.estimate_recommendation_provider,
+                        "vendor_security_id_type": args.estimate_recommendation_vendor_id_type,
+                        "source_vendor_table": args.estimate_recommendation_source_table,
+                    }
+                ),
+                dependencies=[],
+                **retry_policy,
+            )
+            ordered.append(names["est_recommendation"])
 
     if not args.skip_submissions:
         manager.register_job(
@@ -1116,6 +1133,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--estimate-detail-file", type=Path)
     parser.add_argument("--estimate-detail-provider", default="INJECTED")
     parser.add_argument("--estimate-detail-vendor-id-type", default="IBES_TICKER")
+    parser.add_argument("--estimate-recommendation-file", type=Path)
+    parser.add_argument("--estimate-recommendation-provider", default="INJECTED")
+    parser.add_argument("--estimate-recommendation-vendor-id-type", default="IBES_TICKER")
+    parser.add_argument("--estimate-recommendation-source-table")
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-xbrl-filing-contexts", action="store_true")
     parser.add_argument("--skip-finra", action="store_true")

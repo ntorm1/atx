@@ -98,6 +98,16 @@ def parse_args() -> argparse.Namespace:
         "--estimate-detail-vendor-id-type",
         default=EstimateDetailOptions().vendor_security_id_type,
     )
+    parser.add_argument("--estimate-recommendation-file", type=Path)
+    parser.add_argument("--estimate-recommendation-provider", default=EstimateRecommendationOptions().provider_name)
+    parser.add_argument(
+        "--estimate-recommendation-vendor-id-type",
+        default=EstimateRecommendationOptions().vendor_security_id_type,
+    )
+    parser.add_argument(
+        "--estimate-recommendation-source-table",
+        default=EstimateRecommendationOptions().source_vendor_table,
+    )
     return parser.parse_args()
 
 
@@ -199,8 +209,27 @@ def main() -> int:
             r5 = EstimateGuidanceDataset().run(store, EstimateGuidanceOptions())
             print(json.dumps({"step": "est_guidance", "rows_loaded": r5.rows_loaded}, indent=2, default=str))
 
-            r6 = EstimateRecommendationDataset().run(store, EstimateRecommendationOptions())
-            print(json.dumps({"step": "est_recommendation", "rows_loaded": r6.rows_loaded}, indent=2, default=str))
+        if args.estimate_recommendation_file or args.run_injectable:
+            r6 = EstimateRecommendationDataset().run(
+                store,
+                EstimateRecommendationOptions(
+                    source_file=args.estimate_recommendation_file,
+                    provider_name=args.estimate_recommendation_provider,
+                    vendor_security_id_type=args.estimate_recommendation_vendor_id_type,
+                    source_vendor_table=args.estimate_recommendation_source_table,
+                ),
+            )
+            print(
+                json.dumps(
+                    {
+                        "step": "est_recommendation",
+                        "rows_loaded": r6.rows_loaded,
+                        "details": r6.details,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
 
     return 0
 
