@@ -76,6 +76,21 @@ class TestComputeMacroMetrics:
         assert np.isfinite(out.iloc[-1]["zscore"])
         assert out.iloc[-1]["zscore"] > 0
 
+    def test_expanding_pct_rank_regime(self):
+        # ascending values each set a new high (regime percentile 1.0); a later dip
+        # ranks at the fraction of prior+current history at or below it.
+        base = dt.date(2024, 1, 1)
+        vals = [10.0, 20.0, 30.0, 15.0]
+        rows = [_obs("VIXCLS", base + dt.timedelta(days=i), v, frequency="daily")
+                for i, v in enumerate(vals)]
+        out = compute_macro_metrics(pd.DataFrame(rows)).sort_values("observation_date").reset_index(drop=True)
+        # first observation: alone in its history -> top of its own (1-point) distribution
+        assert out.iloc[0]["expanding_pct_rank"] == pytest.approx(1.0)
+        # each new high stays at 1.0
+        assert out.iloc[2]["expanding_pct_rank"] == pytest.approx(1.0)
+        # the dip to 15 sits at {10, 15} <= 15 out of {10,20,30,15} -> 2/4 = 0.5
+        assert out.iloc[3]["expanding_pct_rank"] == pytest.approx(0.5)
+
     def test_synthetic_term_spread(self):
         rows = [
             _obs("DGS10", "2024-01-02", 4.0, frequency="daily"),

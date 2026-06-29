@@ -44,9 +44,24 @@ ZSCORE_MIN_PERIODS = 24  # need this many history points before a z-score is def
 
 MACRO_METRIC_COLUMNS = [
     "metric_id", "source", "series_id", "observation_date", "frequency", "units",
-    "value", "change_abs", "change_yoy", "yoy_growth", "zscore", "is_synthetic",
-    "is_latest_revision", "as_of_date", "available_at", "run_id",
+    "value", "change_abs", "change_yoy", "yoy_growth", "zscore", "expanding_pct_rank",
+    "is_synthetic", "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
+
+
+def _expanding_pct_rank(window: np.ndarray) -> float:
+    """Fraction of the expanding (prior+current) history at or below the current value.
+
+    The canonical regime signal ("VIX is in the 95th percentile of its history"). NaNs
+    are excluded from the base; returns NaN when the current value is missing.
+    """
+    cur = window[-1]
+    if np.isnan(cur):
+        return np.nan
+    valid = window[~np.isnan(window)]
+    if valid.size == 0:
+        return np.nan
+    return float(np.mean(valid <= cur))
 
 
 @dataclass(frozen=True)
@@ -96,6 +111,10 @@ def _derive_one_series(g: pd.DataFrame) -> pd.DataFrame:
     emean = value.expanding(min_periods=ZSCORE_MIN_PERIODS).mean()
     estd = value.expanding(min_periods=ZSCORE_MIN_PERIODS).std(ddof=0)
     g["zscore"] = (value - emean) / estd.where(estd > 0)
+    # Expanding regime percentile (0, 1]: where the current value sits within the
+    # series' own history so far. Defined from the first observation (no min-periods
+    # floor) — early-history percentiles are over a small sample, by construction.
+    g["expanding_pct_rank"] = value.expanding(min_periods=1).apply(_expanding_pct_rank, raw=True)
     return g
 
 

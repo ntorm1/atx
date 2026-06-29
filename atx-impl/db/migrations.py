@@ -3245,6 +3245,33 @@ def _thirteenf_position_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _macro_metrics_regime_percentile(conn: duckdb.DuckDBPyConnection) -> None:
+    """S17: add the expanding regime-percentile column to macro_metrics.
+
+    ``expanding_pct_rank`` is where the current observation sits within the series' own
+    history so far (0, 1] — the canonical macro regime signal ("VIX in its 95th
+    percentile"). Recomputed wholesale by the loader; rides the existing as-of / jobs /
+    lake / watermark wiring.
+    """
+    conn.execute("ALTER TABLE macro_metrics ADD COLUMN IF NOT EXISTS expanding_pct_rank DOUBLE")
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name, 'measure',
+            'Expanding regime percentile (0-1] of the observation within the series own history so far; higher = elevated vs its past.',
+            coalesce(c.is_nullable, true), 'ratio', NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND c.table_name = 'macro_metrics'
+          AND c.column_name = 'expanding_pct_rank'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -3441,6 +3468,11 @@ MIGRATIONS: list[Migration] = [
         version=39,
         name="thirteenf_position_metrics",
         up=_thirteenf_position_metrics,
+    ),
+    Migration(
+        version=40,
+        name="macro_metrics_regime_percentile",
+        up=_macro_metrics_regime_percentile,
     ),
 ]
 
