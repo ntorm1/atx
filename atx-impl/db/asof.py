@@ -234,6 +234,61 @@ ORDER BY a.security_id, a.ex_date, a.event_type, a.event_ref_id
 """
 
 
+DAILY_ADJUSTMENT_FACTORS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        d.*,
+        row_number() OVER (
+            PARTITION BY d.source, d.bar_source, d.factor_source, d.security_id, d.trade_date
+            ORDER BY d.as_of_date DESC,
+                     d.available_at DESC NULLS LAST,
+                     d.source_loaded_at DESC NULLS LAST,
+                     d.daily_adjustment_id DESC
+        ) AS rn
+    FROM daily_adjustment_factors d
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE d.trade_date <= p.as_of_date
+      AND d.as_of_date <= p.as_of_date
+      AND (d.available_at IS NULL OR d.available_at <= p.as_of_ts)
+)
+SELECT
+    daily_adjustment_id,
+    source,
+    bar_source,
+    factor_source,
+    security_id,
+    symbol,
+    trade_date,
+    as_of_date,
+    split_price_factor,
+    split_share_factor,
+    dividend_total_return_factor,
+    total_return_price_factor,
+    raw_close,
+    split_adjusted_close,
+    total_return_adjusted_close,
+    raw_volume,
+    split_adjusted_volume,
+    visible_event_count,
+    split_event_count,
+    cash_div_event_count,
+    last_factor_ex_date,
+    available_at,
+    run_id,
+    source_loaded_at,
+    updated_at
+FROM ranked
+WHERE rn = 1
+ORDER BY security_id, trade_date, bar_source, factor_source
+"""
+
+
 DAILY_PANEL_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -890,6 +945,29 @@ def adjustment_factors_asof(
                 symbol_join=symbol_join,
                 event_type_join=event_type_join,
             )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+
+def daily_adjustment_factors_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            if _register_filter(store, "asof_daily_adjustment_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_daily_adjustment_symbol_filter")
+                symbol_join = "JOIN asof_daily_adjustment_symbol_filter sf ON sf.symbol = d.symbol"
+            sql = DAILY_ADJUSTMENT_FACTORS_ASOF_SQL.format(symbol_join=symbol_join)
             return store.con.execute(sql, [as_of_date, as_of_ts]).df()
         finally:
             for relation in registered:

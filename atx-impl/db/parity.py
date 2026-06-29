@@ -238,12 +238,15 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         pit_fields=("trade date", "ex/distribution dates", "delisting date", "release/load timestamp"),
         factors_or_fields=("returns", "prices", "volume", "shares", "distributions", "delisting returns"),
         open_substitute=(
-            "equity_daily_bars, v_equity_daily_returns, corporate_actions, SEC XBRL share-count history, "
-            "Nasdaq add/delete events, and listing-status intervals from local/public evidence."
+            "equity_daily_bars, v_equity_daily_returns, corporate_actions, event-level and daily adjustment "
+            "factors, SEC XBRL share-count history, Nasdaq add/delete events, and listing-status intervals "
+            "from local/public evidence."
         ),
         warehouse_tables=(
             "equity_daily_bars",
             "corporate_actions",
+            "adjustment_factor_history",
+            "daily_adjustment_factors",
             "shares_outstanding_history",
             "nasdaq_listing_events",
             "listing_status_intervals",
@@ -251,7 +254,7 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         ),
         parity_status="partial",
         limitations="Open substitute lacks official CRSP delisting returns and survivorship-bias-free full history.",
-        next_gap="Add delisting-return estimates, adjustment factor history, and return-adjustment diagnostics.",
+        next_gap="Add delisting-return estimates, quote/close-type depth, and return-adjustment diagnostics.",
         source_urls=(
             "https://www.crsp.org/research/crsp-us-stock-databases/",
             "https://www.crsp.org/crsp_pdf/crsp-us-stock-indexes-databases-guide-flat-file-format-1-0/",

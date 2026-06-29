@@ -4,6 +4,7 @@ from .asof import (
     adjustment_factors_asof,
     blockholder_asof,
     corporate_actions_asof,
+    daily_adjustment_factors_asof,
     daily_panel_asof,
     entity_classification_asof,
     est_actual_asof,
@@ -36,6 +37,11 @@ from .adjustment_factors import (
 from .alpha_research import AlphaResearchDataset, AlphaResearchOptions
 from .connection import DEFAULT_DB_PATH, DuckDBStore, connect
 from .corporate_actions import CorporateActionsDataset, CorporateActionsOptions
+from .daily_adjustments import (
+    DailyAdjustmentFactorDataset,
+    DailyAdjustmentFactorOptions,
+    refresh_daily_adjustment_factors,
+)
 from .dataset import Dataset, DatasetLoadResult
 from .features import (
     EquityDailyFeatureDataset,
@@ -143,6 +149,8 @@ __all__ = [
     "COMPANY_FACT_SYMBOL_SOURCES",
     "Dataset",
     "DatasetLoadResult",
+    "DailyAdjustmentFactorDataset",
+    "DailyAdjustmentFactorOptions",
     "DuckDBStore",
     "EquityDailyFeatureDataset",
     "FeatureBuildOptions",
@@ -232,6 +240,7 @@ __all__ = [
     "EstimateRecommendationDataset",
     "EstimateRecommendationOptions",
     "fama_french_12_for_sic",
+    "daily_adjustment_factors_asof",
     "daily_panel_asof",
     "features_asof",
     "fundamental_periods_asof",
@@ -254,6 +263,7 @@ __all__ = [
     "refresh_xbrl_taxonomy",
     "refresh_xbrl_validation_results",
     "refresh_adjustment_factor_history",
+    "refresh_daily_adjustment_factors",
     "resolve_companyfacts_targets",
     "security_master_asof",
     "shares_outstanding_asof",

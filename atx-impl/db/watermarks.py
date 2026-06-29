@@ -40,6 +40,21 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'daily_adjustment_factors', 'max_trade_date', max(trade_date)::VARCHAR
+    FROM daily_adjustment_factors
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'daily_adjustment_factors', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM daily_adjustment_factors
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'daily_adjustment_factors', 'max_available_at', max(available_at)::VARCHAR
+    FROM daily_adjustment_factors
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'shares_outstanding_history', 'max_effective_date', max(effective_date)::VARCHAR
     FROM shares_outstanding_history
     HAVING count(*) > 0

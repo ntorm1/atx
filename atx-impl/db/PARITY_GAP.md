@@ -18,7 +18,7 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 | 3 | Ownership-13F | 4 | thirteenf_managers, thirteenf_manager_reports, thirteenf_security_positions, thirteenf_security_ownership | filer CIK-alias / entity-resolution layer thin; FIGI mostly null | `filer_13f_cik_alias` (subadvisor rollup), N-PORT cross-link | thirteenf.py, ownership.py | 6 (extend) |
 | 4 | Insider ownership (3/4/5, 13D/G) | ~15 | — | — | **ALL**: insider, insider_relationship, insider_transaction, filing_form4, blockholder_filing, blockholder_reporting_person, fund, fund_class, filing_nport, fund_holding, form144_intent, tradingplan_10b5_1, proxy_vote, congressional_disclosure | none | **3** |
 | 5 | Corporate actions | ~10 | corporate_actions (142 rows, single flat table) | flat table covers div/split only | corp_action_type_dim (DISTCD/CAEV), adjustment_factor, delisting+delist_code_dim (DLRET), name_history, ticker_history, spinoff_basis_allocation, offering, trading_halt | corporate_actions.py | 5 |
-| 6 | Pricing / market data | 6 | equity_daily_bars (9.8k rows), shares_outstanding_history (342 rows) | OHLCV plus PIT SEC XBRL share counts; single adj_close, no factor split | quote_eod, adjustment_factor_history, bar_intraday, 3-close semantics, dlret, float/treasury shares | ticker_history.py, shares_outstanding.py | 5 |
+| 6 | Pricing / market data | 6 | equity_daily_bars (9.8k rows), shares_outstanding_history (342 rows), adjustment_factor_history, daily_adjustment_factors | OHLCV plus PIT SEC XBRL share counts; event-level and daily split/total-return factors from local public evidence | quote_eod, bar_intraday, 3-close semantics, dlret, float/treasury shares, full spinoff/merger factor policy | ticker_history.py, shares_outstanding.py, adjustment_factors.py, daily_adjustments.py | 5 |
 | 7 | ESG / sustainability | 5 | — | — | **ALL**: esg_metric_dim, esg_metric, esg_score, esg_controversy, ghg_emission | none | 7 |
 | 8 | Reference classifications | ~8 | — | sec_company_tickers carries CIK↔ticker only | **ALL**: taxonomy, taxonomy_node, entity_classification, taxonomy_mapping, sic_code_dim, naics_code_dim, isic_code_dim, nace_code_dim | none (SIC sits unused in XBRL filings) | **2** |
 | 9 | Off-exchange / short-interest | ~6 | finra_short_interest (66k rows) | short interest only; bi-monthly | offexchange_volume (ATS), offexchange_venue, offexchange_security_period, quote/borrow-fee | finra.py, short_interest_features.py | 6 |
@@ -129,13 +129,14 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 **Current state — PARTIAL:**
 - `equity_daily_bars` (9,834) ← `bar_daily`: `open/high/low/close/adjusted_close/volume/vwap`, `dividend_amount`, `split_factor`, `is_adjusted`, `available_at`. Loader `ticker_history.py`. View `v_equity_daily_returns`.
 - `shares_outstanding_history` (342) ← public SEC XBRL `fundamental_statement_points`: `shares_outstanding`, `shares_basic_avg`, `shares_diluted_avg` with `effective_date`, `as_of_date`, `available_at`, accession, revision metadata, as-of reader, watermarks, and quality checks. Loader `shares_outstanding.py`.
+- `adjustment_factor_history` + `daily_adjustment_factors` derive event-level and daily PIT split/total-return factors from normalized `corporate_actions`, with classifier reasons, as-of readers, watermarks, quality checks, and lake export coverage.
 - `short_interest` need served by `finra_short_interest` (Domain 9).
 
 **Gap:**
-- **Single `adjusted_close`** — does not separate split-only (`adj_close_split`) from split+div total-return (`adj_close_total`); no `cfacpr`/`cfacshr` cumulative factors. This is the "3 adjusted-close semantics" trap; cannot reproduce CRSP/Compustat total-return.
+- **Single source `adjusted_close` remains on `equity_daily_bars`** — split-only and split+dividend total-return close now live in `daily_adjustment_factors`, but downstream return/panel views have not yet been switched to those explicit semantics.
 - No **`quote_eod`** (bid/ask/spread, close_type A/T/B), no three-close model (official auction vs consolidated tape vs composite).
 - **Share-count limits:** `shares_outstanding_history` now covers public XBRL current/basic/diluted share counts, but it is not yet a CRSP daily `SHROUT` equivalent and does not cover float, treasury shares, exchange-sourced daily shares, or split-factor-integrated daily market-cap restatements.
-- No **`bar_intraday`**, no **`adjustment_factor_history`** cross-linked to corp_action.
+- No **`bar_intraday`**; corporate-action factors are still local/public-evidence derived and do not yet include full spinoff, merger, or delisting-return policies.
 - **Connectors:** present — local archive only. Missing: CRSP DSF/MSF (delisting-correct), Polygon/Tiingo/Alpaca (modern forward bars), Compustat `co_secd`. PIT integrity: free APIs restate adj_close without snapshot retention — must compute own from raw events.
 
 ### Domain 7 — ESG / sustainability  ·  Status: MISSING

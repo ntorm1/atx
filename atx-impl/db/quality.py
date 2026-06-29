@@ -267,6 +267,77 @@ def _check_specs(
             required_tables=("adjustment_factor_history", "securities"),
         ),
         SqlQualityCheck(
+            dataset_id="daily_adjustment_factors",
+            table_name="daily_adjustment_factors",
+            check_name="duplicate_daily_adjustment_factors",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        source,
+                        bar_source,
+                        factor_source,
+                        security_id,
+                        trade_date,
+                        as_of_date,
+                        count(*) AS row_count
+                    FROM daily_adjustment_factors
+                    GROUP BY 1, 2, 3, 4, 5, 6
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("daily_adjustment_factors",),
+        ),
+        SqlQualityCheck(
+            dataset_id="daily_adjustment_factors",
+            table_name="daily_adjustment_factors",
+            check_name="bad_daily_adjustment_factor_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM daily_adjustment_factors d
+                WHERE d.daily_adjustment_id IS NULL
+                   OR d.daily_adjustment_id = ''
+                   OR d.source IS NULL
+                   OR d.source = ''
+                   OR d.bar_source IS NULL
+                   OR d.bar_source = ''
+                   OR d.factor_source IS NULL
+                   OR d.factor_source = ''
+                   OR d.security_id IS NULL
+                   OR d.security_id = ''
+                   OR d.trade_date IS NULL
+                   OR d.as_of_date IS NULL
+                   OR d.as_of_date < d.trade_date
+                   OR d.split_price_factor <= 0
+                   OR d.split_share_factor <= 0
+                   OR d.dividend_total_return_factor <= 0
+                   OR d.total_return_price_factor <= 0
+                   OR d.raw_close <= 0
+                   OR d.split_adjusted_close <= 0
+                   OR d.total_return_adjusted_close <= 0
+                   OR d.visible_event_count < 0
+                   OR d.split_event_count < 0
+                   OR d.cash_div_event_count < 0
+                   OR d.available_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("daily_adjustment_factors",),
+        ),
+        SqlQualityCheck(
+            dataset_id="daily_adjustment_factors",
+            table_name="daily_adjustment_factors",
+            check_name="orphan_daily_adjustment_factor_security_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM daily_adjustment_factors d
+                LEFT JOIN securities s ON s.security_id = d.security_id
+                WHERE s.security_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("daily_adjustment_factors", "securities"),
+        ),
+        SqlQualityCheck(
             dataset_id="shares_outstanding_history",
             table_name="shares_outstanding_history",
             check_name="duplicate_shares_outstanding_history",
@@ -3355,6 +3426,12 @@ def _check_specs(
                     UNION ALL
                     SELECT 'adjustment_factor_history', 'max_available_at', count(*) FROM adjustment_factor_history
                     UNION ALL
+                    SELECT 'daily_adjustment_factors', 'max_trade_date', count(*) FROM daily_adjustment_factors
+                    UNION ALL
+                    SELECT 'daily_adjustment_factors', 'max_as_of_date', count(*) FROM daily_adjustment_factors
+                    UNION ALL
+                    SELECT 'daily_adjustment_factors', 'max_available_at', count(*) FROM daily_adjustment_factors
+                    UNION ALL
                     SELECT 'shares_outstanding_history', 'max_effective_date', count(*) FROM shares_outstanding_history
                     UNION ALL
                     SELECT 'shares_outstanding_history', 'max_available_at', count(*) FROM shares_outstanding_history
@@ -3468,6 +3545,7 @@ def _check_specs(
                 "corporate_actions",
                 "corp_action_type_dim",
                 "adjustment_factor_history",
+                "daily_adjustment_factors",
                 "shares_outstanding_history",
                 "finra_short_interest",
                 "finra_short_interest_backfill_manifests",

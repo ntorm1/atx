@@ -12,6 +12,7 @@ from db import DEFAULT_DB_PATH, DuckDBStore
 from db.adjustment_factors import AdjustmentFactorHistoryDataset, AdjustmentFactorHistoryOptions
 from db.calendar import TradingCalendarDataset, TradingCalendarOptions
 from db.corporate_actions import CorporateActionsDataset, CorporateActionsOptions
+from db.daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
 from db.features import (
     EquityDailyFeatureDataset,
     FeatureBuildOptions,
@@ -53,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-identifier-decisions", action="store_true")
     parser.add_argument("--skip-corporate-actions", action="store_true")
     parser.add_argument("--skip-adjustment-factors", action="store_true")
+    parser.add_argument("--skip-daily-adjustments", action="store_true")
     parser.add_argument("--skip-symbol-directory", action="store_true")
     parser.add_argument("--skip-macro", action="store_true")
     parser.add_argument("--skip-universe", action="store_true")
@@ -101,6 +103,13 @@ def main() -> int:
                         AdjustmentFactorHistoryOptions(),
                     )
                 )
+                if not args.skip_daily_adjustments:
+                    results.append(
+                        DailyAdjustmentFactorDataset().run(
+                            store,
+                            DailyAdjustmentFactorOptions(),
+                        )
+                    )
         results.append(
             FinraShortInterestDataset().run(
                 store,

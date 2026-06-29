@@ -23,6 +23,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "corporate_actions",
     "corp_action_type_dim",
     "adjustment_factor_history",
+    "daily_adjustment_factors",
     "shares_outstanding_history",
     "v_alpha_daily_panel",
     "fundamental_points",

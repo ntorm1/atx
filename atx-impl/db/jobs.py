@@ -14,6 +14,7 @@ from .alpha_research import AlphaResearchDataset, AlphaResearchOptions
 from .calendar import TradingCalendarDataset, TradingCalendarOptions
 from .connection import DuckDBStore
 from .corporate_actions import CorporateActionsDataset, CorporateActionsOptions
+from .daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
 from .dataset import Dataset, DatasetLoadResult
 from .features import (
     EquityDailyFeatureDataset,
@@ -128,6 +129,16 @@ def _date_or_none(value: Any) -> dt.date | None:
     return parse_date(value)
 
 
+def _datetime_or_none(value: Any) -> dt.datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time())
+    return dt.datetime.fromisoformat(str(value))
+
+
 def _path(value: Any, default: Path) -> Path:
     if value in (None, ""):
         return default
@@ -191,6 +202,18 @@ def _adjustment_factor_options(params: dict[str, Any]) -> AdjustmentFactorHistor
     default = AdjustmentFactorHistoryOptions()
     return AdjustmentFactorHistoryOptions(
         source=params.get("source") or default.source,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _daily_adjustment_factor_options(params: dict[str, Any]) -> DailyAdjustmentFactorOptions:
+    default = DailyAdjustmentFactorOptions()
+    return DailyAdjustmentFactorOptions(
+        source=params.get("source") or default.source,
+        factor_source=params.get("factor_source") or default.factor_source,
+        bar_source=params.get("bar_source") or default.bar_source,
+        as_of_date=_date_or_none(params.get("as_of_date")),
+        as_of_ts=_datetime_or_none(params.get("as_of_ts")),
         run_id=params.get("run_id") or default.run_id,
     )
 
@@ -489,6 +512,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         AdjustmentFactorHistoryDataset,
         _adjustment_factor_options,
     ),
+    DailyAdjustmentFactorDataset.dataset_id: (
+        DailyAdjustmentFactorDataset,
+        _daily_adjustment_factor_options,
+    ),
     FinraShortInterestDataset.dataset_id: (FinraShortInterestDataset, _finra_options),
     ShortInterestFeatureDataset.dataset_id: (ShortInterestFeatureDataset, _short_interest_feature_options),
     ThirteenFDataSet.dataset_id: (ThirteenFDataSet, _thirteenf_options),
@@ -674,6 +701,12 @@ class JobManager:
             job_name="adjustment_factor_history",
             dataset_id="adjustment_factor_history",
             dependencies=["corporate_actions"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="daily_adjustment_factors",
+            dataset_id="daily_adjustment_factors",
+            dependencies=["adjustment_factor_history"],
             **retry_policy,
         )
         self.register_job(

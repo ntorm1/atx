@@ -533,6 +533,37 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
     )
     con.execute(
         """
+        CREATE TABLE IF NOT EXISTS daily_adjustment_factors (
+            daily_adjustment_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            bar_source VARCHAR NOT NULL,
+            factor_source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            trade_date DATE NOT NULL,
+            as_of_date DATE NOT NULL,
+            split_price_factor DOUBLE NOT NULL,
+            split_share_factor DOUBLE NOT NULL,
+            dividend_total_return_factor DOUBLE NOT NULL,
+            total_return_price_factor DOUBLE NOT NULL,
+            raw_close DOUBLE NOT NULL,
+            split_adjusted_close DOUBLE NOT NULL,
+            total_return_adjusted_close DOUBLE NOT NULL,
+            raw_volume BIGINT,
+            split_adjusted_volume DOUBLE,
+            visible_event_count INTEGER NOT NULL,
+            split_event_count INTEGER NOT NULL,
+            cash_div_event_count INTEGER NOT NULL,
+            last_factor_ex_date DATE,
+            available_at TIMESTAMP,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS shares_outstanding_history (
             share_history_id VARCHAR PRIMARY KEY,
             source VARCHAR NOT NULL,
@@ -1573,6 +1604,8 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_corp_action_type_dim_event ON corp_action_type_dim(event_type, type_code)",
         "CREATE INDEX IF NOT EXISTS idx_adjustment_factor_history_security ON adjustment_factor_history(security_id, ex_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_adjustment_factor_history_event ON adjustment_factor_history(event_type, type_code, ex_date)",
+        "CREATE INDEX IF NOT EXISTS idx_daily_adjustment_factors_security ON daily_adjustment_factors(security_id, trade_date, as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_daily_adjustment_factors_symbol ON daily_adjustment_factors(symbol, trade_date, as_of_date)",
         "CREATE INDEX IF NOT EXISTS idx_shares_outstanding_history_security ON shares_outstanding_history(security_id, share_count_type, effective_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_shares_outstanding_history_latest ON shares_outstanding_history(is_latest_revision, security_id, share_count_type)",
         "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_security_asof ON sec_company_facts(security_id, filed_date)",
@@ -1882,6 +1915,7 @@ def _seed_catalog(store: DuckDBStore) -> None:
         ("sec_blockholder_ownership", "sec_edgar", "SEC Schedule 13D/G blockholder ownership", "Structured Schedule 13D/G XML filings normalized into blockholder filing and reporting-person beneficial-owner tables.", "security,filing,reporting_person", "blockholder_filing", "event_date", "available_at"),
         ("sec_company_facts", "sec_edgar", "SEC company facts", "XBRL company facts normalized into PIT fundamental points.", "security_id,concept,period", "fundamental_points", "period_end", "available_at"),
         ("shares_outstanding_history", "sec_edgar", "Shares outstanding history", "PIT share-count history derived from SEC XBRL shares outstanding/basic average/diluted average facts.", "security_id,share_count_type,effective_date,accession", "shares_outstanding_history", "effective_date", "available_at"),
+        ("daily_adjustment_factors", "atx_warehouse", "Daily adjustment factors", "PIT daily split and total-return adjustment factors materialized from daily bars and event-level corporate actions.", "security_id,trade_date,as_of_date,source", "daily_adjustment_factors", "as_of_date", "available_at"),
         ("xbrl_concept_catalog", "sec_edgar", "XBRL concept catalog", "Concept-level SEC companyfacts metadata with observed units, forms, availability, and fact coverage.", "source,taxonomy,concept", "xbrl_concept_catalog", "updated_at", "updated_at"),
         ("xbrl_taxonomy", "sec_edgar", "XBRL taxonomy relationships", "FASB US GAAP and SEC Reporting Taxonomy package metadata, presentation/calculation/definition relationships, dimensional edges, and observed SEC companyfacts frames.", "taxonomy_package,linkbase,role,concept_relationship", "xbrl_taxonomy_relationships", "release_year", "source_loaded_at"),
         ("xbrl_dimensions", "sec_edgar", "XBRL dimensional taxonomy", "Definition-linkbase dimensional edges for axes, domains, members, tables, and line items.", "taxonomy_package,role,source_concept,target_concept", "xbrl_dimension_edges", "release_year", "source_loaded_at"),
@@ -1957,6 +1991,7 @@ def _seed_catalog(store: DuckDBStore) -> None:
         ("corporate_actions", "silver", "corporate_action", "security_id,ex_date,action_type", "Corporate action facts when source data supports them.", '["source","security_id","ex_date","action_type"]', "Use ex_date and available_at to avoid lookahead."),
         ("corp_action_type_dim", "dimension", "corporate_action_type", "type_code", "Corporate-action type-code dimension aligned to CRSP distribution buckets and DTCC CAEV labels where public mappings are available.", '["type_code"]', "Small seed dimension; source_loaded_at records last seed refresh."),
         ("adjustment_factor_history", "silver", "adjustment_factor", "security_id,ex_date,event_type,source", "Event-level price/share/volume adjustment factors derived from corporate_actions.", '["adjustment_factor_id"]', "Use event_ref_id to audit the originating corporate_actions row; cumulative factors are event-chain products, not daily CFACPR/CFACSHR yet."),
+        ("daily_adjustment_factors", "silver", "price_adjustment", "security_id,trade_date,as_of_date,source", "Daily split-only and total-return adjustment factors plus adjusted close derivatives.", '["daily_adjustment_id"]', "Use as_of_date and available_at to avoid applying future corporate actions."),
         ("shares_outstanding_history", "silver", "shares_outstanding", "source,security_id,share_count_type,effective_date,accession_number", "PIT share-count history derived from normalized SEC XBRL share-count facts.", '["share_history_id"]', "Use effective_date/as_of_date/available_at for as-of-safe market-cap and float-proxy research."),
         ("sec_company_facts", "bronze", "fundamental", "security_id,taxonomy,concept,unit,period_start,period_end,filed_date,accession_number", "SEC companyfacts XBRL facts.", '["security_id","taxonomy","concept","unit","period_start","period_end","filed_date","accession_number"]', "Append/revision-aware by filing date and accession."),
         ("xbrl_concept_catalog", "catalog", "xbrl_concept", "source,taxonomy,concept", "Observed SEC XBRL concept metadata, units, forms, date ranges, availability ranges, and coverage counts.", '["source","taxonomy","concept"]', "Derived from loaded facts; updated_at records catalog refresh and last_available_at records latest observed filing availability."),
@@ -2072,6 +2107,18 @@ COMMON_FIELD_DESCRIPTIONS = {
     "factor_price": "Event-level price adjustment multiplier.",
     "factor_shares": "Event-level shares-outstanding adjustment multiplier.",
     "factor_volume": "Event-level volume adjustment multiplier.",
+    "split_price_factor": "Backward-cumulative split-only multiplier applied to raw daily prices for the snapshot.",
+    "split_share_factor": "Backward-cumulative split-only multiplier applied to shares or volume for the snapshot.",
+    "dividend_total_return_factor": "Backward-cumulative cash-dividend reinvestment multiplier for total-return adjusted close.",
+    "total_return_price_factor": "Combined split and dividend multiplier applied to raw daily prices for total-return adjusted close.",
+    "raw_close": "Unadjusted daily close carried from the source bar.",
+    "split_adjusted_close": "Raw close adjusted only for visible future split events in the snapshot.",
+    "total_return_adjusted_close": "Raw close adjusted for visible future split and cash-dividend events in the snapshot.",
+    "split_adjusted_volume": "Daily volume restated into post-split share units for the snapshot.",
+    "visible_event_count": "Count of visible future adjustment-factor events considered for the daily factor row.",
+    "split_event_count": "Count of visible future split events contributing to split factors.",
+    "cash_div_event_count": "Count of visible future cash-dividend events contributing to total-return factors.",
+    "last_factor_ex_date": "Latest visible future event ex-date considered for the daily factor row.",
     "cumulative_price_factor": "Product of visible event price factors for the security's adjustment chain at the event row.",
     "cumulative_share_factor": "Product of visible event share factors for the security's adjustment chain at the event row.",
     "share_count_type": "Canonical share-count measure, such as shares_outstanding, shares_basic_avg, or shares_diluted_avg.",

@@ -87,5 +87,7 @@ def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_sto
     assert "daily_bars" in order
     assert "corporate_actions" in order
     assert "adjustment_factor_history" in order
+    assert "daily_adjustment_factors" in order
     assert order.index("daily_bars") < order.index("corporate_actions")
     assert order.index("corporate_actions") < order.index("adjustment_factor_history")
+    assert order.index("adjustment_factor_history") < order.index("daily_adjustment_factors")

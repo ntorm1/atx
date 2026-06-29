@@ -441,6 +441,47 @@ def _adjustment_factor_classification_reason(conn: duckdb.DuckDBPyConnection) ->
     )
 
 
+def _daily_adjustment_factors(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5c: PIT daily split and total-return adjustment factors."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_adjustment_factors (
+            daily_adjustment_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            bar_source VARCHAR NOT NULL,
+            factor_source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            trade_date DATE NOT NULL,
+            as_of_date DATE NOT NULL,
+            split_price_factor DOUBLE NOT NULL,
+            split_share_factor DOUBLE NOT NULL,
+            dividend_total_return_factor DOUBLE NOT NULL,
+            total_return_price_factor DOUBLE NOT NULL,
+            raw_close DOUBLE NOT NULL,
+            split_adjusted_close DOUBLE NOT NULL,
+            total_return_adjusted_close DOUBLE NOT NULL,
+            raw_volume BIGINT,
+            split_adjusted_volume DOUBLE,
+            visible_event_count INTEGER NOT NULL,
+            split_event_count INTEGER NOT NULL,
+            cash_div_event_count INTEGER NOT NULL,
+            last_factor_ex_date DATE,
+            available_at TIMESTAMP,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_daily_adjustment_factors_security ON daily_adjustment_factors(security_id, trade_date, as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_daily_adjustment_factors_symbol ON daily_adjustment_factors(symbol, trade_date, as_of_date)",
+    ):
+        conn.execute(statement)
+
+
 def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
     """Create S2 estimates tables: est_measure, est_actual, est_consensus, est_detail,
     est_broker, est_analyst, est_guidance, est_recommendation, est_surprise."""
@@ -1060,6 +1101,11 @@ MIGRATIONS: list[Migration] = [
         version=12,
         name="adjustment_factor_classification_reason",
         up=_adjustment_factor_classification_reason,
+    ),
+    Migration(
+        version=13,
+        name="daily_adjustment_factors",
+        up=_daily_adjustment_factors,
     ),
 ]
 

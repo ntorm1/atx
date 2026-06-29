@@ -12,6 +12,7 @@ from db import DEFAULT_DB_PATH
 from db.asof import (
     adjustment_factors_asof,
     corporate_actions_asof,
+    daily_adjustment_factors_asof,
     daily_panel_asof,
     features_asof,
     fundamental_periods_asof,
@@ -50,6 +51,7 @@ def parse_args() -> argparse.Namespace:
             "fundamental-periods",
             "shares-outstanding",
             "adjustment-factors",
+            "daily-adjustments",
             "daily-panel",
             "features",
             "short-interest",
@@ -130,6 +132,13 @@ def main() -> int:
             db_path=args.db_path,
             symbols=parse_csv(args.symbols),
             event_types=parse_csv(args.event_types),
+        )
+    elif args.view == "daily-adjustments":
+        frame = daily_adjustment_factors_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
         )
     elif args.view == "daily-panel":
         frame = daily_panel_asof(
