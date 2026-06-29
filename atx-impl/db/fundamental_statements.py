@@ -31,12 +31,135 @@ class FundamentalStatementMapRow:
     derivation_expr: str | None = None
 
 
+FUNDAMENTAL_STATEMENT_MAP_KEY = ("source", "taxonomy", "concept", "industry_template")
+
+
+def _fundamental_statement_map_pk_columns(store: DuckDBStore) -> tuple[str, ...]:
+    try:
+        row = store.con.execute(
+            """
+            SELECT constraint_column_names
+            FROM duckdb_constraints()
+            WHERE table_name = 'fundamental_statement_map'
+              AND constraint_type = 'PRIMARY KEY'
+            """
+        ).fetchone()
+    except Exception:
+        return ()
+    if row is None or row[0] is None:
+        return ()
+    return tuple(str(col) for col in row[0])
+
+
+def _create_fundamental_statement_map_table(store: DuckDBStore, table_name: str) -> None:
+    store.con.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            source VARCHAR NOT NULL,
+            taxonomy VARCHAR NOT NULL,
+            concept VARCHAR NOT NULL,
+            statement_type VARCHAR NOT NULL,
+            statement_section VARCHAR NOT NULL,
+            canonical_metric VARCHAR NOT NULL,
+            canonical_label VARCHAR NOT NULL,
+            period_type VARCHAR NOT NULL,
+            normal_balance VARCHAR NOT NULL,
+            unit_type VARCHAR NOT NULL,
+            value_multiplier DOUBLE NOT NULL DEFAULT 1.0,
+            concept_priority INTEGER NOT NULL DEFAULT 100,
+            is_core_metric BOOLEAN NOT NULL DEFAULT true,
+            is_active BOOLEAN NOT NULL DEFAULT true,
+            notes VARCHAR,
+            item_id INTEGER,
+            industry_template VARCHAR DEFAULT 'ALL',
+            is_derived BOOLEAN DEFAULT FALSE,
+            derivation_expr VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (source, taxonomy, concept, industry_template)
+        )
+        """
+    )
+
+
+def _ensure_fundamental_statement_map_storage(store: DuckDBStore) -> None:
+    """Keep the map table keyed by source/taxonomy/concept/template on old DBs."""
+
+    _create_fundamental_statement_map_table(store, "fundamental_statement_map")
+    store.con.execute("DROP INDEX IF EXISTS idx_fundamental_statement_map_lookup")
+    for statement in (
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS item_id INTEGER",
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS industry_template VARCHAR DEFAULT 'ALL'",
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS is_derived BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE fundamental_statement_map ADD COLUMN IF NOT EXISTS derivation_expr VARCHAR",
+    ):
+        store.con.execute(statement)
+
+    if _fundamental_statement_map_pk_columns(store) == FUNDAMENTAL_STATEMENT_MAP_KEY:
+        return
+
+    scratch = "fundamental_statement_map_rekey"
+    store.con.execute(f"DROP TABLE IF EXISTS {scratch}")
+    _create_fundamental_statement_map_table(store, scratch)
+    store.con.execute(
+        f"""
+        INSERT OR REPLACE INTO {scratch} (
+            source,
+            taxonomy,
+            concept,
+            statement_type,
+            statement_section,
+            canonical_metric,
+            canonical_label,
+            period_type,
+            normal_balance,
+            unit_type,
+            value_multiplier,
+            concept_priority,
+            is_core_metric,
+            is_active,
+            notes,
+            item_id,
+            industry_template,
+            is_derived,
+            derivation_expr,
+            updated_at
+        )
+        SELECT
+            source,
+            taxonomy,
+            concept,
+            statement_type,
+            statement_section,
+            canonical_metric,
+            canonical_label,
+            period_type,
+            normal_balance,
+            unit_type,
+            value_multiplier,
+            concept_priority,
+            is_core_metric,
+            is_active,
+            notes,
+            item_id,
+            coalesce(nullif(industry_template, ''), 'ALL') AS industry_template,
+            coalesce(is_derived, FALSE) AS is_derived,
+            derivation_expr,
+            coalesce(updated_at, now()) AS updated_at
+        FROM fundamental_statement_map
+        """
+    )
+    store.con.execute("DROP TABLE fundamental_statement_map")
+    store.con.execute(f"ALTER TABLE {scratch} RENAME TO fundamental_statement_map")
+
+
 FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     # ── §2.1 Income Statement ────────────────────────────────────────────────
     # 1001 Total Revenue — 3-way COALESCE: ASC-606 (priority 10) → legacy Revenues (20) → SalesRevenueNet (30)
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","RevenueFromContractWithCustomerExcludingAssessedTax","income_statement","revenue","revenue","Revenue","duration","credit","monetary",1.0,10,True,True,"Preferred ASC-606 revenue concept when present.",1001,"ALL",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Revenues","income_statement","revenue","revenue","Revenue","duration","credit","monetary",1.0,20,True,True,"Legacy/general revenue concept; lower priority than ASC-606 revenue.",1001,"ALL",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","SalesRevenueNet","income_statement","revenue","revenue","Revenue","duration","credit","monetary",1.0,30,False,True,"Pre-2018 net sales concept; lowest priority COALESCE fallback.",1001,"ALL",False,None),
+    # 1002 Sales legacy (alias)
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__sales_legacy","income_statement","revenue","sales_legacy","Sales (legacy)","duration","credit","monetary",1.0,10,False,True,"Authorized S4a alias; numerically identical to total revenue for industrials.",1002,"ALL",True,"sales_legacy = revenue"),
     # 1003 COGS
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CostOfGoodsAndServicesSold","income_statement","costs","cogs","Cost of revenue","duration","debit","monetary",1.0,10,True,True,"Post-2018 default COGS concept (ASC-606).",1003,"ALL",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CostOfRevenue","income_statement","costs","cogs","Cost of revenue","duration","debit","monetary",1.0,20,False,True,"Alternative COGS concept.",1003,"ALL",False,None),
@@ -153,7 +276,9 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PropertyPlantAndEquipmentGross","balance_sheet","assets","ppe_gross","PP&E (gross)","instant","debit","monetary",1.0,10,True,True,"Gross PP&E.",1111,"ALL",False,None),
     # 1112 Accumulated Depreciation
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment","balance_sheet","assets","accumulated_depreciation","Accumulated depreciation","instant","credit","monetary",1.0,10,False,True,"Accumulated depreciation on PP&E.",1112,"ALL",False,None),
-    # 1113 Intangibles total (item_id 1115 per source doc)
+    # 1113 Intangibles total
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__intangibles_total","balance_sheet","assets","intangibles_total","Intangibles (total)","instant","debit","monetary",1.0,10,False,True,"Derived: total intangibles = intangibles excluding goodwill + goodwill.",1113,"ALL",True,"intangibles_total = intangibles_other + goodwill"),
+    # 1115 Intangibles excluding goodwill
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IntangibleAssetsNetExcludingGoodwill","balance_sheet","assets","intangibles_other","Intangibles (excl. goodwill)","instant","debit","monetary",1.0,10,True,True,"Intangible assets net excluding goodwill.",1115,"ALL",False,None),
     # 1114 Goodwill
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Goodwill","balance_sheet","assets","goodwill","Goodwill","instant","debit","monetary",1.0,10,True,True,"Goodwill.",1114,"ALL",False,None),
@@ -300,40 +425,62 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__dio","per_share","valuation","dio","DIO (days)","duration","credit","ratio",1.0,10,False,True,"Derived: DIO = inventory / cogs * 365.",1425,"ALL",True,"dio = inventory / cogs * 365"),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__dpo","per_share","valuation","dpo","DPO (days)","duration","credit","ratio",1.0,10,False,True,"Derived: DPO = ap / cogs * 365.",1426,"ALL",True,"dpo = ap / cogs * 365"),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ccc","per_share","valuation","ccc","Cash conversion cycle","duration","credit","ratio",1.0,10,False,True,"Derived: CCC = DSO + DIO - DPO.",1427,"ALL",True,"ccc = dso + dio - dpo"),
-
-    # ── §2.5 Additional operating / structural items ─────────────────────────
-    # 1428 Operating lease expense
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingLeaseExpense","income_statement","costs","operating_lease_expense","Operating lease expense","duration","debit","monetary",1.0,10,False,True,"Operating lease expense (ASC 842).",1428,"ALL",False,None),
-    # 1429 Finance lease ROU asset
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","FinanceLeaseRightOfUseAsset","balance_sheet","assets","finance_rou_asset","Finance lease ROU asset","instant","debit","monetary",1.0,10,False,True,"Right-of-use asset for finance leases (ASC 842).",1429,"ALL",False,None),
-    # 1430 Finance lease liability
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","FinanceLeaseLiability","balance_sheet","liabilities","finance_lease_liability","Finance lease liability","instant","credit","monetary",1.0,10,False,True,"Finance lease liability (ASC 842).",1430,"ALL",False,None),
-    # 1431 Income from operations (alternative tag used by some filers)
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeLossBeforeGainOrLossOnSaleOfPropertiesExtraordinaryItemsAndCumulativeEffectsOfAccountingChanges","income_statement","profitability","income_before_special","Income before special items","duration","credit","monetary",1.0,10,False,True,"Income before gains/losses and special items.",1431,"ALL",False,None),
-    # 1432 Total comprehensive income
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ComprehensiveIncomeNetOfTax","income_statement","profitability","comprehensive_income","Comprehensive income","duration","credit","monetary",1.0,10,False,True,"Total comprehensive income net of tax.",1432,"ALL",False,None),
-    # 1433 Other comprehensive income
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OtherComprehensiveIncomeLossNetOfTax","income_statement","profitability","other_comprehensive_income","Other comprehensive income","duration","credit","monetary",1.0,10,False,True,"Other comprehensive income (loss) net of tax.",1433,"ALL",False,None),
-    # 1434 Total non-current assets — derived from total_assets - current_assets
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AssetsNoncurrent","balance_sheet","assets","noncurrent_assets","Non-current assets","instant","debit","monetary",1.0,10,False,True,"Total non-current assets.",1434,"ALL",False,None),
-    # 1435 Total non-current liabilities
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LiabilitiesNoncurrent","balance_sheet","liabilities","noncurrent_liabilities","Non-current liabilities","instant","credit","monetary",1.0,10,False,True,"Total non-current liabilities.",1435,"ALL",False,None),
-    # 1436 Net PP&E additions (capex from balance sheet change)
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PaymentsToAcquireOtherProductiveAssets","cash_flow","investing","other_capex","Other capex","duration","credit","monetary",-1.0,10,False,True,"Payments to acquire other productive assets.",1436,"ALL",False,None),
-    # 1437 Interest paid (cash basis, from CF)
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestPaid","cash_flow","operating","interest_paid","Interest paid","duration","credit","monetary",-1.0,10,False,True,"Cash interest paid (supplemental CF disclosure).",1437,"ALL",False,None),
-    # 1438 Income taxes paid (cash basis, from CF)
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","IncomeTaxesPaid","cash_flow","operating","taxes_paid","Income taxes paid","duration","credit","monetary",-1.0,10,False,True,"Cash income taxes paid (supplemental CF disclosure).",1438,"ALL",False,None),
-    # 1439 Proceeds from sale of investments
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ProceedsFromSaleOfAvailableForSaleSecurities","cash_flow","investing","proceeds_from_investments","Proceeds from sale of investments","duration","debit","monetary",1.0,10,False,True,"Proceeds from sale of available-for-sale securities.",1439,"ALL",False,None),
-    # 1440 Net tangible assets — derived
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__net_tangible_assets","balance_sheet","assets","net_tangible_assets","Net tangible assets","instant","debit","monetary",1.0,10,False,True,"Derived: net tangible assets = total_assets - goodwill - intangibles_other.",1440,"ALL",True,"net_tangible_assets = total_assets - goodwill - intangibles_other"),
+    # -- S4b §2.5 Banks (FS template) ------------------------------------------------
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__net_interest_income","bank_statement","interest","net_interest_income","Net interest income","duration","credit","monetary",1.0,10,True,True,"Derived: net interest income = bank interest income - bank interest expense.",1501,"BK",True,"net_interest_income = interest_income_bank - interest_expense_bank"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__nim","bank_statement","ratio","nim","Net interest margin","duration","credit","ratio",1.0,10,False,True,"Derived bank ratio; vendor/open source priority from §2.5.",1502,"BK",True,"nim = net_interest_income / average_earning_assets"),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestAndDividendIncomeOperating","bank_statement","interest","interest_income_bank","Interest income - total","duration","credit","monetary",1.0,10,True,True,"Bank interest and dividend income operating.",1503,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestExpense","bank_statement","interest","interest_expense_bank","Interest expense - bank","duration","debit","monetary",1.0,10,True,True,"Bank-template override of industrial interest expense.",1504,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ProvisionForLoanAndLeaseLosses","bank_statement","credit","loan_loss_provision","Provision for loan losses","duration","debit","monetary",1.0,10,True,True,"Provision for loan and lease losses.",1505,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__allowance_loan_lease_losses","bank_statement","credit","allowance_loan_lease_losses","Allowance for loan & lease losses","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.5 lists no verified us-gaap concept.",1506,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__nonperforming_loans","bank_statement","credit","nonperforming_loans","Non-performing loans","instant","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.5 lists no verified us-gaap concept.",1507,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__net_charge_offs","bank_statement","credit","net_charge_offs","Net charge-offs","duration","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.5 lists no verified us-gaap concept.",1508,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LoansAndLeasesReceivableNetReportedAmount","bank_statement","balance_sheet","total_loans","Total loans","instant","debit","monetary",1.0,10,True,True,"Total loans using SEC companyfacts bank concept.",1509,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__total_deposits","bank_statement","balance_sheet","total_deposits","Total deposits","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.5 lists no verified us-gaap concept.",1510,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__tier1_capital","bank_statement","capital","tier1_capital","Tier 1 capital","instant","credit","monetary",1.0,10,False,False,"Regulatory capital line; vendor/open-data gap in §2.5.",1511,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__tier1_capital_ratio","bank_statement","capital","tier1_capital_ratio","Tier 1 capital ratio","instant","credit","ratio",1.0,10,False,False,"Regulatory ratio; vendor/open-data gap in §2.5.",1512,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__cet1","bank_statement","capital","cet1","CET1 (Common Equity Tier 1)","instant","credit","monetary",1.0,10,False,False,"Regulatory capital line; vendor/open-data gap in §2.5.",1513,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__risk_weighted_assets","bank_statement","capital","risk_weighted_assets","Risk-weighted assets","instant","debit","monetary",1.0,10,False,False,"Regulatory denominator; vendor/open-data gap in §2.5.",1514,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__efficiency_ratio","bank_statement","ratio","efficiency_ratio","Efficiency ratio","duration","credit","ratio",1.0,10,False,False,"Bank operating efficiency ratio; vendor/open-data gap in §2.5.",1515,"BK",False,None),
+    # -- S4b §2.6 Insurance ----------------------------------------------------------
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PremiumsEarnedNet","insurance_statement","revenue","premiums_earned","Premiums earned","duration","credit","monetary",1.0,10,True,True,"Insurance premiums earned.",1601,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__premiums_written","insurance_statement","revenue","premiums_written","Premiums written","duration","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1602,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__loss_reserves","insurance_statement","balance_sheet","loss_reserves","Loss reserves","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1603,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__insurance_benefits_paid","insurance_statement","claims","insurance_benefits_paid","Insurance benefits paid","duration","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1604,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__unpaid_claim_liability","insurance_statement","balance_sheet","unpaid_claim_liability","Unpaid claim liability","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1605,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__loss_ratio","insurance_statement","ratio","loss_ratio","Loss ratio","duration","credit","ratio",1.0,10,False,False,"Insurance ratio from vendor feed or derived claim/premium components.",1606,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__expense_ratio","insurance_statement","ratio","expense_ratio","Expense ratio","duration","credit","ratio",1.0,10,False,False,"Insurance ratio from vendor feed or derived expense/premium components.",1607,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__combined_ratio","insurance_statement","ratio","combined_ratio","Combined ratio","duration","credit","ratio",1.0,10,False,False,"Insurance ratio from vendor feed or loss_ratio + expense_ratio.",1608,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__investment_portfolio","insurance_statement","balance_sheet","investment_portfolio","Investment portfolio","instant","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1609,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__insurance_float","insurance_statement","balance_sheet","insurance_float","Insurance float","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1610,"IS",False,None),
+    # -- S4b §2.7 REITs ---------------------------------------------------------------
+    FundamentalStatementMapRow(SOURCE_NAME,"nareit","FundsFromOperations","reit_statement","cash_flow","ffo","Funds from operations (FFO)","duration","credit","monetary",1.0,10,True,True,"Nareit-defined FFO; often custom extension rather than core us-gaap.",1701,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ffo_per_share","reit_statement","per_share","ffo_per_share","FFO per share","duration","credit","per_share",1.0,10,False,True,"Derived: FFO per share = FFO / diluted shares.",1702,"RT",True,"ffo_per_share = ffo / shares_diluted_avg"),
+    FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__affo","reit_statement","cash_flow","affo","Adjusted FFO (AFFO)","duration","credit","monetary",1.0,10,False,False,"Company-specific extension/vendor item; no verified common us-gaap concept in §2.7.",1703,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__affo_per_share","reit_statement","per_share","affo_per_share","AFFO per share","duration","credit","per_share",1.0,10,False,True,"Derived: AFFO per share = AFFO / diluted shares.",1704,"RT",True,"affo_per_share = affo / shares_diluted_avg"),
+    FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__noi","reit_statement","property","noi","Net operating income (NOI)","duration","credit","monetary",1.0,10,False,False,"REIT extension/vendor item; no verified common us-gaap concept in §2.7.",1705,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__same_store_noi","reit_statement","property","same_store_noi","Same-store NOI","duration","credit","monetary",1.0,10,False,False,"REIT extension/vendor item; no verified common us-gaap concept in §2.7.",1706,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__occupancy_rate","reit_statement","operating_kpi","occupancy_rate","Occupancy rate (%)","instant","credit","ratio",1.0,10,False,False,"REIT extension/vendor KPI; no verified common us-gaap concept in §2.7.",1707,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__rent_per_square_foot","reit_statement","operating_kpi","rent_per_square_foot","Rent per square foot","duration","credit","ratio",1.0,10,False,False,"REIT extension/vendor KPI; no verified common us-gaap concept in §2.7.",1708,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__gross_leasable_area","reit_statement","operating_kpi","gross_leasable_area","Gross leasable area","instant","debit","quantity",1.0,10,False,False,"REIT extension/vendor KPI; no verified common us-gaap concept in §2.7.",1709,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__nav_per_share","reit_statement","valuation","nav_per_share","Net asset value per share","instant","credit","per_share",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1710,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__capitalization_rate","reit_statement","valuation","capitalization_rate","Capitalisation rate","instant","credit","ratio",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1711,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__ffo_payout_ratio","reit_statement","valuation","ffo_payout_ratio","FFO payout ratio","duration","credit","ratio",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1712,"RT",False,None),
 )
 
 
 def seed_fundamental_statement_map(store: DuckDBStore) -> int:
     """Seed canonical statement mappings for public SEC companyfacts concepts."""
 
+    _ensure_fundamental_statement_map_storage(store)
+    store.con.execute(
+        """
+        DELETE FROM fundamental_statement_map
+        WHERE source = ?
+          AND industry_template = 'ALL'
+          AND item_id BETWEEN 1428 AND 1440
+        """,
+        [SOURCE_NAME],
+    )
     for row in FUNDAMENTAL_STATEMENT_MAP_ROWS:
         store.con.execute(
             """
@@ -363,6 +510,10 @@ def seed_fundamental_statement_map(store: DuckDBStore) -> int:
             """,
             list(astuple(row)),
         )
+    store.con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_map_lookup "
+        "ON fundamental_statement_map(taxonomy, concept, is_active)"
+    )
     return len(FUNDAMENTAL_STATEMENT_MAP_ROWS)
 
 
@@ -414,7 +565,38 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
                 source_url,
                 source_loaded_at
             )
-            WITH mapped AS (
+            WITH security_industry_templates AS (
+                SELECT
+                    ec.security_id,
+                    CASE
+                        WHEN max(
+                            CASE
+                                WHEN try_cast(ec.node_code AS INTEGER) BETWEEN 6000 AND 6199 THEN 1
+                                ELSE 0
+                            END
+                        ) > 0 THEN 'BK'
+                        WHEN max(
+                            CASE
+                                WHEN try_cast(ec.node_code AS INTEGER) BETWEEN 6300 AND 6411 THEN 1
+                                ELSE 0
+                            END
+                        ) > 0 THEN 'IS'
+                        WHEN max(
+                            CASE
+                                WHEN try_cast(ec.node_code AS INTEGER) = 6798 THEN 1
+                                ELSE 0
+                            END
+                        ) > 0 THEN 'RT'
+                        ELSE 'ALL'
+                    END AS industry_template
+                FROM entity_classification ec
+                JOIN taxonomy tx
+                  ON tx.taxonomy_id = ec.taxonomy_id
+                 AND tx.code = 'SIC'
+                WHERE ec.valid_to IS NULL
+                GROUP BY ec.security_id
+            ),
+            mapped AS (
                 SELECT
                     sha256(
                         concat_ws(
@@ -485,10 +667,16 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
                             r.fact_revision_id
                     ) AS canonical_rank
                 FROM fundamental_fact_revisions r
+                LEFT JOIN security_industry_templates it
+                  ON it.security_id = r.security_id
                 JOIN fundamental_statement_map m
                   ON m.source = r.source
                  AND m.taxonomy = r.taxonomy
                  AND m.concept = r.concept
+                 AND (
+                        m.industry_template = 'ALL'
+                     OR m.industry_template = coalesce(it.industry_template, 'ALL')
+                 )
                  AND m.is_active
                  AND m.is_derived = FALSE
                 LEFT JOIN securities s
@@ -588,11 +776,16 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                 cik,
                 period_start,
                 period_end,
+                datadate,
                 period_days,
                 normalized_period_type,
                 calendar_year,
                 calendar_quarter,
                 calendar_period,
+                rdq,
+                pdate,
+                fdate,
+                ldate,
                 as_of_date,
                 available_at,
                 form,
@@ -617,7 +810,7 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                 latest_available_at,
                 source_loaded_at
             )
-            WITH grouped AS (
+            WITH grouped_base AS (
                 SELECT
                     sha256(
                         concat_ws(
@@ -644,6 +837,7 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                     any_value(cik) AS cik,
                     period_start,
                     period_end,
+                    period_end AS datadate,
                     CASE
                         WHEN period_start IS NULL THEN NULL
                         ELSE date_diff('day', period_start, period_end) + 1
@@ -663,6 +857,7 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                         || 'Q'
                         || CAST(EXTRACT(QUARTER FROM period_end) AS VARCHAR) AS calendar_period,
                     max(as_of_date) AS as_of_date,
+                    max(as_of_date) AS fdate,
                     max(available_at) AS available_at,
                     any_value(form) AS form,
                     accession_number,
@@ -693,13 +888,48 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                   AND accession_number <> ''
                 GROUP BY source, security_id, period_start, period_end, accession_number
             ),
+            rdq_candidates AS (
+                SELECT
+                    security_id,
+                    coalesce(report_date, filing_date, CAST(acceptance_datetime AS DATE)) AS rdq,
+                    acceptance_datetime AS rdq_available_at,
+                    accession_number AS rdq_accession_number,
+                    source_url AS rdq_source_url
+                FROM sec_submissions
+                WHERE form = '8-K'
+                  AND coalesce(items, '') LIKE '%2.02%'
+                  AND coalesce(report_date, filing_date, CAST(acceptance_datetime AS DATE)) IS NOT NULL
+            ),
+            grouped AS (
+                SELECT
+                    grouped_base.*,
+                    rdq.rdq,
+                    rdq.rdq AS pdate
+                FROM grouped_base
+                LEFT JOIN LATERAL (
+                    SELECT
+                        r.rdq,
+                        r.rdq_available_at,
+                        r.rdq_accession_number
+                    FROM rdq_candidates r
+                    WHERE r.security_id = grouped_base.security_id
+                      AND r.rdq >= grouped_base.period_end
+                      AND r.rdq <= grouped_base.fdate
+                    ORDER BY
+                        r.rdq,
+                        r.rdq_available_at NULLS LAST,
+                        r.rdq_accession_number
+                    LIMIT 1
+                ) rdq ON true
+            ),
             sequenced AS (
                 SELECT
                     grouped.*,
                     row_number() OVER period_window AS revision_sequence,
                     count(*) OVER period_window AS revision_count,
                     min(available_at) OVER period_window AS first_available_at,
-                    max(available_at) OVER period_window AS latest_available_at
+                    max(available_at) OVER period_window AS latest_available_at,
+                    CAST(max(available_at) OVER period_window AS DATE) AS ldate
                 FROM grouped
                 WINDOW period_window AS (
                     PARTITION BY period_group_id
@@ -720,11 +950,16 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                 cik,
                 period_start,
                 period_end,
+                datadate,
                 period_days,
                 normalized_period_type,
                 calendar_year,
                 calendar_quarter,
                 calendar_period,
+                rdq,
+                pdate,
+                fdate,
+                ldate,
                 as_of_date,
                 available_at,
                 form,

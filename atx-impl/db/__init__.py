@@ -1,6 +1,8 @@
 """DuckDB-backed dataset utilities for atx-impl."""
 
 from .asof import (
+    adjustment_factors_asof,
+    blockholder_asof,
     corporate_actions_asof,
     daily_panel_asof,
     entity_classification_asof,
@@ -14,13 +16,22 @@ from .asof import (
     fundamental_ttm_asof,
     fundamentals_asof,
     identifier_decisions_asof,
+    insider_relationships_asof,
+    insider_transactions_asof,
     listing_status_asof,
     macro_asof,
     ownership_asof,
     security_master_asof,
+    shares_outstanding_asof,
     short_interest_asof,
     thirteenf_positioning_asof,
     universe_asof,
+)
+from .adjustment_factors import (
+    AdjustmentFactorHistoryDataset,
+    AdjustmentFactorHistoryOptions,
+    refresh_adjustment_factor_history,
+    seed_corp_action_type_dim,
 )
 from .alpha_research import AlphaResearchDataset, AlphaResearchOptions
 from .connection import DEFAULT_DB_PATH, DuckDBStore, connect
@@ -50,6 +61,12 @@ from .fundamentals import (
 )
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
+from .insider_ownership import (
+    BlockholderOwnershipDataset,
+    BlockholderOwnershipOptions,
+    InsiderOwnershipDataset,
+    InsiderOwnershipOptions,
+)
 from .jobs import JobManager
 from .lake import LakeValidationProblem, LakeValidationSummary, validate_lake_export
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions, build_listing_status_intervals
@@ -59,6 +76,11 @@ from .quality import QualityResult, run_warehouse_quality_checks
 from .queries import SHORT_INTEREST_WITH_13F_SQL, short_interest_with_13f_positioning
 from .sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from .security_master import SecurityMasterDataset, SecurityMasterOptions
+from .shares_outstanding import (
+    SharesOutstandingHistoryDataset,
+    SharesOutstandingHistoryOptions,
+    refresh_shares_outstanding_history,
+)
 from .short_interest_features import ShortInterestFeatureDataset, ShortInterestFeatureOptions
 from .symbol_directory import (
     NasdaqListingEventsDataset,
@@ -103,11 +125,19 @@ from .xbrl_taxonomy import (
     refresh_xbrl_fact_frames,
     refresh_xbrl_taxonomy,
 )
+from .xbrl_validation import (
+    XbrlValidationDataset,
+    XbrlValidationOptions,
+    refresh_xbrl_validation_results,
+)
 
 __all__ = [
     "DEFAULT_DB_PATH",
+    "AdjustmentFactorHistoryDataset",
+    "AdjustmentFactorHistoryOptions",
     "AlphaResearchDataset",
     "AlphaResearchOptions",
+    "blockholder_asof",
     "CorporateActionsDataset",
     "CorporateActionsOptions",
     "COMPANY_FACT_SYMBOL_SOURCES",
@@ -128,6 +158,10 @@ __all__ = [
     "IdentifierResolutionDecisionOptions",
     "IdentifierResolutionCandidateDataset",
     "IdentifierResolutionOptions",
+    "BlockholderOwnershipDataset",
+    "BlockholderOwnershipOptions",
+    "InsiderOwnershipDataset",
+    "InsiderOwnershipOptions",
     "JobManager",
     "MIGRATIONS",
     "Migration",
@@ -150,6 +184,8 @@ __all__ = [
     "SecSubmissionsOptions",
     "SecurityMasterDataset",
     "SecurityMasterOptions",
+    "SharesOutstandingHistoryDataset",
+    "SharesOutstandingHistoryOptions",
     "ShortInterestFeatureDataset",
     "ShortInterestFeatureOptions",
     "ThirteenFDataSet",
@@ -163,7 +199,10 @@ __all__ = [
     "XbrlFilingContextOptions",
     "XbrlTaxonomyDataset",
     "XbrlTaxonomyOptions",
+    "XbrlValidationDataset",
+    "XbrlValidationOptions",
     "archive_primary_document_url",
+    "adjustment_factors_asof",
     "build_listing_status_intervals",
     "EntityClassificationDataset",
     "EntityClassificationOptions",
@@ -198,6 +237,8 @@ __all__ = [
     "fundamental_periods_asof",
     "fundamentals_asof",
     "identifier_decisions_asof",
+    "insider_relationships_asof",
+    "insider_transactions_asof",
     "listing_status_asof",
     "macro_asof",
     "ownership_asof",
@@ -211,11 +252,16 @@ __all__ = [
     "refresh_xbrl_concept_catalog",
     "refresh_xbrl_fact_frames",
     "refresh_xbrl_taxonomy",
+    "refresh_xbrl_validation_results",
+    "refresh_adjustment_factor_history",
     "resolve_companyfacts_targets",
     "security_master_asof",
+    "shares_outstanding_asof",
+    "refresh_shares_outstanding_history",
     "short_interest_asof",
     "short_interest_with_13f_positioning",
     "seed_fundamental_statement_map",
+    "seed_corp_action_type_dim",
     "thirteenf_positioning_asof",
     "universe_asof",
     "validate_lake_export",

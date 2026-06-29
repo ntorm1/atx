@@ -180,6 +180,162 @@ def _check_specs(
             required_tables=("corporate_actions", "securities"),
         ),
         SqlQualityCheck(
+            dataset_id="adjustment_factor_history",
+            table_name="corp_action_type_dim",
+            check_name="bad_corp_action_type_dim_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM corp_action_type_dim
+                WHERE type_code IS NULL
+                   OR event_type IS NULL
+                   OR event_type = ''
+                   OR category IS NULL
+                   OR category = ''
+                   OR sub_category IS NULL
+                   OR sub_category = ''
+                   OR description IS NULL
+                   OR description = ''
+                   OR affects_price IS NULL
+                   OR affects_shares IS NULL
+                   OR mandatory IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("corp_action_type_dim",),
+        ),
+        SqlQualityCheck(
+            dataset_id="adjustment_factor_history",
+            table_name="adjustment_factor_history",
+            check_name="duplicate_adjustment_factor_history",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT adjustment_factor_id, count(*) AS row_count
+                    FROM adjustment_factor_history
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("adjustment_factor_history",),
+        ),
+        SqlQualityCheck(
+            dataset_id="adjustment_factor_history",
+            table_name="adjustment_factor_history",
+            check_name="bad_adjustment_factor_history_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM adjustment_factor_history a
+                LEFT JOIN corp_action_type_dim d ON d.type_code = a.type_code
+                WHERE a.adjustment_factor_id IS NULL
+                   OR a.adjustment_factor_id = ''
+                   OR a.source IS NULL
+                   OR a.source = ''
+                   OR a.source_action_source IS NULL
+                   OR a.source_action_source = ''
+                   OR a.security_id IS NULL
+                   OR a.security_id = ''
+                   OR a.ex_date IS NULL
+                   OR a.event_type IS NULL
+                   OR a.event_type = ''
+                   OR d.type_code IS NULL
+                   OR d.event_type <> a.event_type
+                   OR a.event_ref_id IS NULL
+                   OR a.event_ref_id = ''
+                   OR a.factor_price <= 0
+                   OR a.factor_shares <= 0
+                   OR a.factor_volume <= 0
+                   OR a.cumulative_price_factor <= 0
+                   OR a.cumulative_share_factor <= 0
+                   OR a.available_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("adjustment_factor_history", "corp_action_type_dim"),
+        ),
+        SqlQualityCheck(
+            dataset_id="adjustment_factor_history",
+            table_name="adjustment_factor_history",
+            check_name="orphan_adjustment_factor_security_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM adjustment_factor_history a
+                LEFT JOIN securities s ON s.security_id = a.security_id
+                WHERE s.security_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("adjustment_factor_history", "securities"),
+        ),
+        SqlQualityCheck(
+            dataset_id="shares_outstanding_history",
+            table_name="shares_outstanding_history",
+            check_name="duplicate_shares_outstanding_history",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT share_history_id, count(*) AS row_count
+                    FROM shares_outstanding_history
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("shares_outstanding_history",),
+        ),
+        SqlQualityCheck(
+            dataset_id="shares_outstanding_history",
+            table_name="shares_outstanding_history",
+            check_name="bad_shares_outstanding_history_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM shares_outstanding_history
+                WHERE share_history_id IS NULL
+                   OR share_history_id = ''
+                   OR source IS NULL
+                   OR source = ''
+                   OR security_id IS NULL
+                   OR security_id = ''
+                   OR cik IS NULL
+                   OR cik = ''
+                   OR share_count_type NOT IN ('shares_outstanding', 'shares_basic_avg', 'shares_diluted_avg')
+                   OR taxonomy IS NULL
+                   OR taxonomy = ''
+                   OR concept IS NULL
+                   OR concept = ''
+                   OR unit IS NULL
+                   OR unit = ''
+                   OR period_type NOT IN ('instant', 'duration')
+                   OR period_end IS NULL
+                   OR effective_date IS NULL
+                   OR effective_date <> period_end
+                   OR as_of_date IS NULL
+                   OR period_end > as_of_date
+                   OR available_at IS NULL
+                   OR accession_number IS NULL
+                   OR accession_number = ''
+                   OR revision_sequence < 1
+                   OR revision_count < 1
+                   OR revision_sequence > revision_count
+                   OR is_latest_revision <> (revision_sequence = revision_count)
+                   OR share_count < 0
+                   OR source_url IS NULL
+                   OR source_url = ''
+            """,
+            threshold=0.0,
+            required_tables=("shares_outstanding_history",),
+        ),
+        SqlQualityCheck(
+            dataset_id="shares_outstanding_history",
+            table_name="shares_outstanding_history",
+            check_name="orphan_shares_outstanding_security_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM shares_outstanding_history h
+                LEFT JOIN securities s ON s.security_id = h.security_id
+                WHERE s.security_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("shares_outstanding_history", "securities"),
+        ),
+        SqlQualityCheck(
             dataset_id="sec_security_master",
             table_name="security_identifier_history",
             check_name="duplicate_identifier_history_keys",
@@ -999,6 +1155,79 @@ def _check_specs(
             required_tables=("xbrl_filing_facts", "sec_submissions"),
         ),
         SqlQualityCheck(
+            dataset_id="xbrl_validation",
+            table_name="xbrl_validation_results",
+            check_name="duplicate_xbrl_validation_results",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT validation_id, count(*) AS row_count
+                    FROM xbrl_validation_results
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_validation_results",),
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_validation",
+            table_name="xbrl_validation_results",
+            check_name="bad_xbrl_validation_result_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_validation_results
+                WHERE validation_id IS NULL
+                   OR validation_id = ''
+                   OR validation_run_id IS NULL
+                   OR validation_run_id = ''
+                   OR rule_family NOT IN ('calculation_linkbase', 'dqc')
+                   OR rule_code IS NULL
+                   OR rule_code = ''
+                   OR severity NOT IN ('info', 'warning', 'error')
+                   OR status NOT IN ('passed', 'failed', 'warning', 'skipped')
+                   OR security_id IS NULL
+                   OR security_id = ''
+                   OR cik IS NULL
+                   OR cik = ''
+                   OR accession_number IS NULL
+                   OR accession_number = ''
+                   OR primary_document IS NULL
+                   OR primary_document = ''
+                   OR parent_concept IS NULL
+                   OR parent_concept = ''
+                   OR context_ref IS NULL
+                   OR context_ref = ''
+                   OR tolerance < 0
+                   OR child_count < 0
+                   OR child_facts_json IS NULL
+                   OR child_facts_json = ''
+                   OR source_url IS NULL
+                   OR source_url = ''
+                   OR source_loaded_at IS NULL
+                   OR (rule_family = 'calculation_linkbase' AND parent_value IS NULL)
+                   OR (rule_family = 'calculation_linkbase' AND child_weighted_sum IS NULL)
+                   OR (rule_family = 'calculation_linkbase' AND absolute_difference IS NULL)
+                   OR (status = 'passed' AND absolute_difference > tolerance)
+                   OR (status = 'failed' AND absolute_difference <= tolerance)
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_validation_results",),
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_validation",
+            table_name="xbrl_validation_results",
+            check_name="failed_xbrl_calculation_linkbase_checks",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_validation_results
+                WHERE rule_family = 'calculation_linkbase'
+                  AND status = 'failed'
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_validation_results",),
+        ),
+        SqlQualityCheck(
             dataset_id="fundamental_fact_revisions",
             table_name="fundamental_fact_revisions",
             check_name="duplicate_fundamental_fact_revision_keys",
@@ -1167,9 +1396,9 @@ def _check_specs(
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM (
-                    SELECT source, taxonomy, concept, count(*) AS row_count
+                    SELECT source, taxonomy, concept, industry_template, count(*) AS row_count
                     FROM fundamental_statement_map
-                    GROUP BY 1, 2, 3
+                    GROUP BY 1, 2, 3, 4
                     HAVING count(*) > 1
                 )
             """,
@@ -1547,7 +1776,16 @@ def _check_specs(
                    OR cik IS NULL
                    OR cik = ''
                    OR period_end IS NULL
+                   OR datadate IS NULL
+                   OR datadate <> period_end
                    OR as_of_date IS NULL
+                   OR fdate IS NULL
+                   OR fdate <> as_of_date
+                   OR ldate IS NULL
+                   OR ldate < fdate
+                   OR (rdq IS NOT NULL AND rdq < datadate)
+                   OR (rdq IS NOT NULL AND rdq > fdate)
+                   OR (pdate IS NOT NULL AND pdate IS DISTINCT FROM rdq)
                    OR period_end > as_of_date
                    OR available_at IS NULL
                    OR accession_number IS NULL
@@ -2073,6 +2311,218 @@ def _check_specs(
             """,
             threshold=0.0,
             required_tables=("thirteenf_security_ownership", "feature_values"),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_insider_ownership",
+            table_name="filing_form4",
+            check_name="duplicate_form4_filings",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT accession_number, count(*) AS row_count
+                    FROM filing_form4
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("filing_form4",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_insider_ownership",
+            table_name="filing_form4",
+            check_name="bad_form4_filing_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filing_form4
+                WHERE filing_id IS NULL
+                   OR filing_id = ''
+                   OR accession_number IS NULL
+                   OR accession_number = ''
+                   OR security_id IS NULL
+                   OR security_id = ''
+                   OR form_type NOT IN ('3', '3/A', '4', '4/A', '5', '5/A')
+                   OR available_at IS NULL
+                   OR source_url IS NULL
+                   OR source_url = ''
+            """,
+            threshold=0.0,
+            required_tables=("filing_form4",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_insider_ownership",
+            table_name="insider_relationship",
+            check_name="bad_insider_relationship_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM insider_relationship
+                WHERE relationship_id IS NULL
+                   OR relationship_id = ''
+                   OR accession_number IS NULL
+                   OR accession_number = ''
+                   OR insider_id IS NULL
+                   OR insider_id = ''
+                   OR full_name IS NULL
+                   OR full_name = ''
+                   OR security_id IS NULL
+                   OR security_id = ''
+                   OR valid_from IS NULL
+                   OR (valid_to IS NOT NULL AND valid_to <= valid_from)
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("insider_relationship",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_insider_ownership",
+            table_name="insider_transaction",
+            check_name="duplicate_insider_transaction_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT transaction_id, count(*) AS row_count
+                    FROM insider_transaction
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("insider_transaction",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_insider_ownership",
+            table_name="insider_transaction",
+            check_name="bad_insider_transaction_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM insider_transaction
+                WHERE transaction_id IS NULL
+                   OR transaction_id = ''
+                   OR filing_id IS NULL
+                   OR filing_id = ''
+                   OR accession_number IS NULL
+                   OR accession_number = ''
+                   OR insider_id IS NULL
+                   OR insider_id = ''
+                   OR security_id IS NULL
+                   OR security_id = ''
+                   OR transaction_date IS NULL
+                   OR transaction_code IS NULL
+                   OR upper(transaction_code) NOT IN (
+                        'P','S','A','D','F','I','M','G','L','W','Z','C','E','H',
+                        'O','X','U','J','K','V','Q','R','B','T','N','Y','1','2'
+                   )
+                   OR coalesce(transaction_shares, 0) < 0
+                   OR coalesce(shares_owned_following, 0) < 0
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("insider_transaction",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_insider_ownership",
+            table_name="insider_transaction",
+            check_name="orphan_insider_transactions",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM insider_transaction t
+                LEFT JOIN filing_form4 f ON f.filing_id = t.filing_id
+                LEFT JOIN insider i ON i.insider_id = t.insider_id
+                WHERE f.filing_id IS NULL
+                   OR i.insider_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("insider_transaction", "filing_form4", "insider"),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_insider_ownership",
+            table_name="tradingplan_10b5_1",
+            check_name="bad_tradingplan_10b5_1_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM tradingplan_10b5_1
+                WHERE plan_id IS NULL
+                   OR plan_id = ''
+                   OR insider_id IS NULL
+                   OR insider_id = ''
+                   OR security_id IS NULL
+                   OR security_id = ''
+                   OR adoption_date IS NULL
+                   OR transaction_count < 1
+                   OR cooling_off_days < 0
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("tradingplan_10b5_1",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_blockholder_ownership",
+            table_name="blockholder_filing",
+            check_name="duplicate_blockholder_filings",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT accession_number, count(*) AS row_count
+                    FROM blockholder_filing
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("blockholder_filing",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_blockholder_ownership",
+            table_name="blockholder_filing",
+            check_name="bad_blockholder_filing_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM blockholder_filing
+                WHERE filing_id IS NULL
+                   OR filing_id = ''
+                   OR accession_number IS NULL
+                   OR accession_number = ''
+                   OR schedule_type NOT IN ('13D', '13D/A', '13G', '13G/A')
+                   OR source_url IS NULL
+                   OR source_url = ''
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("blockholder_filing",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_blockholder_ownership",
+            table_name="blockholder_reporting_person",
+            check_name="bad_blockholder_reporting_person_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM blockholder_reporting_person
+                WHERE reporting_person_id IS NULL
+                   OR reporting_person_id = ''
+                   OR filing_id IS NULL
+                   OR filing_id = ''
+                   OR reporting_person_seq IS NULL
+                   OR reporting_person_seq < 1
+                   OR reporting_person_name IS NULL
+                   OR reporting_person_name = ''
+                   OR coalesce(percent_of_class, 0) < 0
+                   OR coalesce(percent_of_class, 0) > 100
+            """,
+            threshold=0.0,
+            required_tables=("blockholder_reporting_person",),
+        ),
+        SqlQualityCheck(
+            dataset_id="sec_blockholder_ownership",
+            table_name="blockholder_reporting_person",
+            check_name="orphan_blockholder_reporting_persons",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM blockholder_reporting_person p
+                LEFT JOIN blockholder_filing f ON f.filing_id = p.filing_id
+                WHERE f.filing_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("blockholder_reporting_person", "blockholder_filing"),
         ),
         SqlQualityCheck(
             dataset_id="identifier_resolution_candidates",
@@ -2897,6 +3347,16 @@ def _check_specs(
                     UNION ALL
                     SELECT 'corporate_actions', 'max_ex_date', count(*) FROM corporate_actions
                     UNION ALL
+                    SELECT 'corp_action_type_dim', 'max_updated_at', count(*) FROM corp_action_type_dim
+                    UNION ALL
+                    SELECT 'adjustment_factor_history', 'max_ex_date', count(*) FROM adjustment_factor_history
+                    UNION ALL
+                    SELECT 'adjustment_factor_history', 'max_available_at', count(*) FROM adjustment_factor_history
+                    UNION ALL
+                    SELECT 'shares_outstanding_history', 'max_effective_date', count(*) FROM shares_outstanding_history
+                    UNION ALL
+                    SELECT 'shares_outstanding_history', 'max_available_at', count(*) FROM shares_outstanding_history
+                    UNION ALL
                     SELECT 'finra_short_interest', 'max_settlement_date', count(*) FROM finra_short_interest
                     UNION ALL
                     SELECT 'finra_short_interest_backfills', 'last_finished_at', count(*) FROM finra_short_interest_backfill_manifests
@@ -3004,6 +3464,9 @@ def _check_specs(
                 "dataset_watermarks",
                 "tbltickerhistory_daily",
                 "corporate_actions",
+                "corp_action_type_dim",
+                "adjustment_factor_history",
+                "shares_outstanding_history",
                 "finra_short_interest",
                 "finra_short_interest_backfill_manifests",
                 "thirteenf_submissions",
@@ -3311,12 +3774,36 @@ def _check_specs(
             table_name="fundamental_statement_map",
             check_name="fundamental_statement_map_concept_coverage",
             sql="""
-                SELECT count(DISTINCT canonical_metric)::DOUBLE
+                SELECT count(DISTINCT item_id)::DOUBLE
                 FROM fundamental_statement_map
-                WHERE is_active = TRUE
+                WHERE industry_template = 'ALL'
+                  AND (
+                      item_id BETWEEN 1001 AND 1043
+                   OR item_id BETWEEN 1101 AND 1119
+                   OR item_id BETWEEN 1201 AND 1223
+                   OR item_id BETWEEN 1301 AND 1325
+                   OR item_id BETWEEN 1401 AND 1427
+                  )
             """,
-            threshold=147.0,
+            threshold=137.0,
             comparator="ge",
+            required_tables=("fundamental_statement_map",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_statement_map",
+            table_name="fundamental_statement_map",
+            check_name="fundamental_statement_map_industry_overlay_coverage",
+            sql="""
+                SELECT count(DISTINCT item_id)::DOUBLE
+                FROM fundamental_statement_map
+                WHERE (
+                       (industry_template = 'BK' AND item_id BETWEEN 1501 AND 1515)
+                    OR (industry_template = 'IS' AND item_id BETWEEN 1601 AND 1610)
+                    OR (industry_template = 'RT' AND item_id BETWEEN 1701 AND 1712)
+                )
+            """,
+            threshold=37.0,
+            comparator="eq",
             required_tables=("fundamental_statement_map",),
         ),
     )

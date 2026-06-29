@@ -9,6 +9,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .adjustment_factors import AdjustmentFactorHistoryDataset, AdjustmentFactorHistoryOptions
 from .alpha_research import AlphaResearchDataset, AlphaResearchOptions
 from .calendar import TradingCalendarDataset, TradingCalendarOptions
 from .connection import DuckDBStore
@@ -24,11 +25,20 @@ from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_d
 from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
+from .insider_ownership import (
+    DEFAULT_BLOCKHOLDER_FORMS,
+    DEFAULT_FORMS,
+    BlockholderOwnershipDataset,
+    BlockholderOwnershipOptions,
+    InsiderOwnershipDataset,
+    InsiderOwnershipOptions,
+)
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
 from .macro import FredMacroDataset, FredMacroOptions
 from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
 from .sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from .security_master import SecurityMasterDataset, SecurityMasterOptions
+from .shares_outstanding import SharesOutstandingHistoryDataset, SharesOutstandingHistoryOptions
 from .short_interest_features import ShortInterestFeatureDataset, ShortInterestFeatureOptions
 from .symbol_directory import (
     NasdaqListingEventsDataset,
@@ -41,6 +51,7 @@ from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
 from .warehouse import json_dumps, now_utc_naive
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
+from .xbrl_validation import XbrlValidationDataset, XbrlValidationOptions
 from .reference_classifications import (
     EntityClassificationDataset,
     EntityClassificationOptions,
@@ -123,6 +134,14 @@ def _path(value: Any, default: Path) -> Path:
     return Path(value)
 
 
+def _path_tuple_or_none(value: Any) -> tuple[Path, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return tuple(Path(part.strip()) for part in value.split(",") if part.strip())
+    return tuple(Path(str(part)) for part in value if str(part).strip())
+
+
 def _nonnegative_int(value: Any, name: str) -> int:
     parsed = int(value)
     if parsed < 0:
@@ -165,6 +184,14 @@ def _corporate_actions_options(params: dict[str, Any]) -> CorporateActionsOption
         source=params.get("source", default.source),
         min_cash_amount=float(params.get("min_cash_amount", default.min_cash_amount)),
         max_dividend_factor=float(params.get("max_dividend_factor", default.max_dividend_factor)),
+    )
+
+
+def _adjustment_factor_options(params: dict[str, Any]) -> AdjustmentFactorHistoryOptions:
+    default = AdjustmentFactorHistoryOptions()
+    return AdjustmentFactorHistoryOptions(
+        source=params.get("source") or default.source,
+        run_id=params.get("run_id") or default.run_id,
     )
 
 
@@ -255,6 +282,14 @@ def _company_facts_options(params: dict[str, Any]) -> SecCompanyFactsOptions:
         as_of_date=_date_or_none(params.get("as_of_date")),
         request_timeout=int(params.get("request_timeout", default.request_timeout)),
         user_agent=params.get("user_agent", default.user_agent),
+    )
+
+
+def _shares_outstanding_options(params: dict[str, Any]) -> SharesOutstandingHistoryOptions:
+    default = SharesOutstandingHistoryOptions()
+    return SharesOutstandingHistoryOptions(
+        source=params.get("source") or default.source,
+        run_id=params.get("run_id") or default.run_id,
     )
 
 
@@ -354,6 +389,14 @@ def _xbrl_filing_context_options(params: dict[str, Any]) -> XbrlFilingContextOpt
     )
 
 
+def _xbrl_validation_options(params: dict[str, Any]) -> XbrlValidationOptions:
+    default = XbrlValidationOptions()
+    return XbrlValidationOptions(
+        absolute_tolerance=float(params.get("absolute_tolerance", default.absolute_tolerance)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _symbol_directory_options(params: dict[str, Any]) -> NasdaqSymbolDirectoryOptions:
     default = NasdaqSymbolDirectoryOptions()
     return NasdaqSymbolDirectoryOptions(
@@ -388,6 +431,36 @@ def _ownership_feature_options(params: dict[str, Any]) -> OwnershipFeatureOption
     )
 
 
+def _insider_ownership_options(params: dict[str, Any]) -> InsiderOwnershipOptions:
+    default = InsiderOwnershipOptions()
+    return InsiderOwnershipOptions(
+        symbols=_tuple_or_none(params.get("symbols", default.symbols)) or default.symbols,
+        forms=_tuple_or_none(params.get("forms", default.forms)) or default.forms,
+        accession_numbers=_string_tuple_or_none(params.get("accession_numbers")),
+        source_urls=_string_tuple_or_none(params.get("source_urls")),
+        source_files=_path_tuple_or_none(params.get("source_files")),
+        max_filings=int(params.get("max_filings", default.max_filings)),
+        request_timeout=int(params.get("request_timeout", default.request_timeout)),
+        user_agent=params.get("user_agent", default.user_agent),
+        source=params.get("source", default.source),
+    )
+
+
+def _blockholder_ownership_options(params: dict[str, Any]) -> BlockholderOwnershipOptions:
+    default = BlockholderOwnershipOptions()
+    return BlockholderOwnershipOptions(
+        symbols=_tuple_or_none(params.get("symbols", default.symbols)) or default.symbols,
+        forms=_tuple_or_none(params.get("forms", default.forms)) or default.forms,
+        accession_numbers=_string_tuple_or_none(params.get("accession_numbers")),
+        source_urls=_string_tuple_or_none(params.get("source_urls")),
+        source_files=_path_tuple_or_none(params.get("source_files")),
+        max_filings=int(params.get("max_filings", default.max_filings)),
+        request_timeout=int(params.get("request_timeout", default.request_timeout)),
+        user_agent=params.get("user_agent", default.user_agent),
+        source=params.get("source", default.source),
+    )
+
+
 def _entity_classification_options(params: dict[str, Any]) -> EntityClassificationOptions:
     _default = EntityClassificationOptions()
     return EntityClassificationOptions(
@@ -412,10 +485,16 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     SecurityMasterDataset.dataset_id: (SecurityMasterDataset, _security_master_options),
     TickerHistoryDataset.dataset_id: (TickerHistoryDataset, _ticker_history_options),
     CorporateActionsDataset.dataset_id: (CorporateActionsDataset, _corporate_actions_options),
+    AdjustmentFactorHistoryDataset.dataset_id: (
+        AdjustmentFactorHistoryDataset,
+        _adjustment_factor_options,
+    ),
     FinraShortInterestDataset.dataset_id: (FinraShortInterestDataset, _finra_options),
     ShortInterestFeatureDataset.dataset_id: (ShortInterestFeatureDataset, _short_interest_feature_options),
     ThirteenFDataSet.dataset_id: (ThirteenFDataSet, _thirteenf_options),
     OwnershipFeatureDataset.dataset_id: (OwnershipFeatureDataset, _ownership_feature_options),
+    InsiderOwnershipDataset.dataset_id: (InsiderOwnershipDataset, _insider_ownership_options),
+    BlockholderOwnershipDataset.dataset_id: (BlockholderOwnershipDataset, _blockholder_ownership_options),
     IdentifierResolutionCandidateDataset.dataset_id: (
         IdentifierResolutionCandidateDataset,
         _identifier_resolution_options,
@@ -425,8 +504,13 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         _identifier_decision_options,
     ),
     SecCompanyFactsDataset.dataset_id: (SecCompanyFactsDataset, _company_facts_options),
+    SharesOutstandingHistoryDataset.dataset_id: (
+        SharesOutstandingHistoryDataset,
+        _shares_outstanding_options,
+    ),
     XbrlTaxonomyDataset.dataset_id: (XbrlTaxonomyDataset, _xbrl_taxonomy_options),
     XbrlFilingContextDataset.dataset_id: (XbrlFilingContextDataset, _xbrl_filing_context_options),
+    XbrlValidationDataset.dataset_id: (XbrlValidationDataset, _xbrl_validation_options),
     SecSubmissionsDataset.dataset_id: (SecSubmissionsDataset, _submissions_options),
     NasdaqSymbolDirectoryDataset.dataset_id: (NasdaqSymbolDirectoryDataset, _symbol_directory_options),
     NasdaqListingEventsDataset.dataset_id: (NasdaqListingEventsDataset, _listing_events_options),
@@ -587,6 +671,12 @@ class JobManager:
             **retry_policy,
         )
         self.register_job(
+            job_name="adjustment_factor_history",
+            dataset_id="adjustment_factor_history",
+            dependencies=["corporate_actions"],
+            **retry_policy,
+        )
+        self.register_job(
             job_name="finra_short_interest",
             dataset_id="finra_short_interest",
             params={"symbol": symbols[0] if symbols else None},
@@ -607,6 +697,34 @@ class JobManager:
             **retry_policy,
         )
         self.register_job(
+            job_name="sec_ownership_submissions",
+            dataset_id="sec_submissions",
+            params={"symbols": symbols, "forms": DEFAULT_FORMS},
+            dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="sec_insider_ownership",
+            dataset_id="sec_insider_ownership",
+            params={"symbols": symbols, "forms": DEFAULT_FORMS, "max_filings": 25},
+            dependencies=["sec_ownership_submissions"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="sec_blockholder_submissions",
+            dataset_id="sec_submissions",
+            params={"symbols": symbols, "forms": DEFAULT_BLOCKHOLDER_FORMS},
+            dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="sec_blockholder_ownership",
+            dataset_id="sec_blockholder_ownership",
+            params={"symbols": symbols, "forms": DEFAULT_BLOCKHOLDER_FORMS, "max_filings": 25},
+            dependencies=["sec_blockholder_submissions"],
+            **retry_policy,
+        )
+        self.register_job(
             job_name="identifier_resolution_candidates",
             dataset_id="identifier_resolution_candidates",
             dependencies=["sec_13f"],
@@ -623,6 +741,12 @@ class JobManager:
             dataset_id="sec_company_facts",
             params={"symbols": symbols},
             dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="shares_outstanding_history",
+            dataset_id="shares_outstanding_history",
+            dependencies=["sec_company_facts"],
             **retry_policy,
         )
         self.register_job(job_name="xbrl_taxonomy", dataset_id="xbrl_taxonomy", **retry_policy)
@@ -645,6 +769,12 @@ class JobManager:
             dataset_id="xbrl_filing_contexts",
             params={"symbols": symbols, "max_filings": 3},
             dependencies=["sec_submissions"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="xbrl_validation",
+            dataset_id="xbrl_validation",
+            dependencies=["xbrl_taxonomy", "xbrl_filing_contexts"],
             **retry_policy,
         )
         self.register_job(job_name="fred_macro", dataset_id="fred_macro", **retry_policy)

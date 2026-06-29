@@ -1,7 +1,7 @@
 # ats-eqt Parity Gap Matrix
 
 **Purpose:** Table-by-table, domain-by-domain gap analysis driving the multi-sprint build toward FactSet / S&P-Compustat / Refinitiv parity on equity fundamentals + ownership + supply-chain.
-**Target (blueprint):** `C:\atx\archive\research\` — `schemas/data_models_and_methodology.md` (consolidated DDL), `schemas/cross_vendor_field_map.md` (147+ canonical fields), `datasets/*.md` (per-dataset DDL), `sources/public_data_sources.md` (44+ upstream sources).
+**Target (blueprint):** `C:\atx\archive\research\` — `schemas/data_models_and_methodology.md` (consolidated DDL), `schemas/cross_vendor_field_map.md` (137 cross-industry + 37 overlay canonical fundamentals fields), `datasets/*.md` (per-dataset DDL), `sources/public_data_sources.md` (44+ upstream sources).
 **Current (built):** `C:\atx\atx-impl\db\schema.py` (60 `CREATE TABLE`, 9 views), loader modules in `db/`, parity ledger seed `db/parity.py` (14 provider rows).
 **Author:** read-only analysis, 2026-06-28. No code modified.
 
@@ -13,12 +13,12 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 
 | # | Domain | Target tables (n) | Built | Partial | Missing | Current loader(s) | Sprint |
 |---|--------|------:|-------|---------|---------|-------------------|:------:|
-| 1 | Fundamentals (XBRL/us-gaap) | ~14 | sec_company_facts, fundamental_points, fundamental_statement_points, fundamental_ttm_points, fundamental_periods, fundamental_fact_revisions, xbrl_* (10 tables) | statement_map (16 rows), no industry-template overlay, no as-reported/standardized split | `xbrl_concept_map` formal dict, bank/insurance/REIT overlays, 4-date PIT (rdq/pdate/fdate/ldate as named cols) | fundamentals.py, xbrl_taxonomy.py, xbrl_filing_contexts.py | 8 (polish) |
+| 1 | Fundamentals (XBRL/us-gaap) | ~14 | sec_company_facts, fundamental_points, fundamental_statement_points, fundamental_ttm_points, fundamental_periods, fundamental_fact_revisions, xbrl_* + xbrl_validation_results | S4a/S4b statement map, rdq/four-date period fields, and SQL calc-linkbase validation are built; full Arelle/DQC sidecar and vendor reconciliation remain | full DQC 150+ execution, cross-vendor `fact_disagreement`, richer as-reported press-release extraction | fundamentals.py, fundamental_statements.py, xbrl_taxonomy.py, xbrl_filing_contexts.py, xbrl_validation.py | 8 (polish) |
 | 2 | Estimates (IBES/consensus) | ~11 | — | — | **ALL**: est_broker, est_analyst, est_measure_dim, est_period_dim, est_detail/est_fact, est_consensus, est_actual, est_recommendation, est_guidance | none | **1** |
 | 3 | Ownership-13F | 4 | thirteenf_managers, thirteenf_manager_reports, thirteenf_security_positions, thirteenf_security_ownership | filer CIK-alias / entity-resolution layer thin; FIGI mostly null | `filer_13f_cik_alias` (subadvisor rollup), N-PORT cross-link | thirteenf.py, ownership.py | 6 (extend) |
 | 4 | Insider ownership (3/4/5, 13D/G) | ~15 | — | — | **ALL**: insider, insider_relationship, insider_transaction, filing_form4, blockholder_filing, blockholder_reporting_person, fund, fund_class, filing_nport, fund_holding, form144_intent, tradingplan_10b5_1, proxy_vote, congressional_disclosure | none | **3** |
 | 5 | Corporate actions | ~10 | corporate_actions (142 rows, single flat table) | flat table covers div/split only | corp_action_type_dim (DISTCD/CAEV), adjustment_factor, delisting+delist_code_dim (DLRET), name_history, ticker_history, spinoff_basis_allocation, offering, trading_halt | corporate_actions.py | 5 |
-| 6 | Pricing / market data | 6 | equity_daily_bars (9.8k rows) | OHLCV only; single adj_close, no factor split | quote_eod, shares_outstanding_history, adjustment_factor_history, bar_intraday, 3-close semantics, dlret | ticker_history.py | 5 |
+| 6 | Pricing / market data | 6 | equity_daily_bars (9.8k rows), shares_outstanding_history (342 rows) | OHLCV plus PIT SEC XBRL share counts; single adj_close, no factor split | quote_eod, adjustment_factor_history, bar_intraday, 3-close semantics, dlret, float/treasury shares | ticker_history.py, shares_outstanding.py | 5 |
 | 7 | ESG / sustainability | 5 | — | — | **ALL**: esg_metric_dim, esg_metric, esg_score, esg_controversy, ghg_emission | none | 7 |
 | 8 | Reference classifications | ~8 | — | sec_company_tickers carries CIK↔ticker only | **ALL**: taxonomy, taxonomy_node, entity_classification, taxonomy_mapping, sic_code_dim, naics_code_dim, isic_code_dim, nace_code_dim | none (SIC sits unused in XBRL filings) | **2** |
 | 9 | Off-exchange / short-interest | ~6 | finra_short_interest (66k rows) | short interest only; bi-monthly | offexchange_volume (ATS), offexchange_venue, offexchange_security_period, quote/borrow-fee | finra.py, short_interest_features.py | 6 |
@@ -42,15 +42,17 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 **Current state — mostly BUILT:**
 - `sec_company_facts` (companyfacts.json facts) — `fundamentals.py`, ~12k+ facts.
 - `fundamental_points` (12,318) / `fundamental_statement_points` (12,315) / `fundamental_ttm_points` (7,377) / `fundamental_periods` (3,206) / `fundamental_fact_revisions` (12,318) — bitemporal restatement chain with `as_of_date`/`available_at`. This already implements the "as-first-reported → restated" two-tier + revision audit (`is_latest_revision`, `previous_value`, `value_delta`).
-- `fundamental_statement_map` (16 rows) = the `xbrl_concept_map` equivalent — backed by `fundamental_statements.py` seed.
+- `fundamental_statement_map` S4a cross-industry seed (137 authorized item_ids; multiple rows where concepts coalesce) = the `xbrl_concept_map` equivalent — backed by `fundamental_statements.py` seed.
 - Full XBRL substrate: `xbrl_concept_catalog`, `xbrl_taxonomy_packages/roles/relationships`, `xbrl_dimension_edges`, `xbrl_fact_frames` (1,204), `xbrl_filing_contexts` (6,878), `xbrl_filing_dimensions` (14k), `xbrl_filing_facts` (25k) — `xbrl_taxonomy.py`, `xbrl_filing_contexts.py`.
 
 **Gap:**
-- `fundamental_statement_map` is only **16 rows** vs the 147-concept canonical dictionary in `cross_vendor_field_map.md` — concept coverage is the real fundamentals gap, not table shape.
+- `fundamental_statement_map` S4a scope is exactly **137** authorized cross-industry item_ids from `cross_vendor_field_map.md` sections 2.1-2.4; S4b adds 37 bank/insurance/REIT overlay item_ids from sections 2.5-2.7.
 - No **industry-template overlay**: zero bank (`tdsa`, `nim`, `pln`, `alll`), insurance (`losres`, `pncia`), or REIT/Nareit-FFO concepts. `securities.asset_class` exists but no `industry_template` routing.
 - Four-date PIT is implicit (`as_of_date` + `available_at`) but `rdq` (press-release date from 8-K Item 2.02) is **not separately captured** — needed for contemporaneous earnings-reaction studies.
 - **Missing quality checks:** calculation-linkbase summation validation, DQC 150+ rules, cross-vendor reconciliation table (`fact_disagreement`).
 - **Connectors present** (SEC companyfacts.json, Frames, taxonomy packages). **Missing:** DERA Financial Statement Data Sets bulk (SUB/NUM/TAG/PRE) for pre-API backfill; Sharadar SF1 / SimFin as reconciliation baselines.
+
+**S4 implementation update:** S4a/S4b/S4c/S4d now cover exact 137 cross-industry item_ids, 37 bank/insurance/REIT overlays, `fundamental_periods.datadate/rdq/pdate/fdate/ldate`, and SQL calculation-linkbase validation rows in `xbrl_validation_results`. Remaining fundamentals gaps are full Arelle/DQC 150+ rule execution, cross-vendor `fact_disagreement`, and richer EX-99 press-release actual extraction.
 
 ### Domain 2 — Estimates (analyst / IBES / consensus)  ·  Status: MISSING
 
@@ -126,12 +128,13 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 
 **Current state — PARTIAL:**
 - `equity_daily_bars` (9,834) ← `bar_daily`: `open/high/low/close/adjusted_close/volume/vwap`, `dividend_amount`, `split_factor`, `is_adjusted`, `available_at`. Loader `ticker_history.py`. View `v_equity_daily_returns`.
+- `shares_outstanding_history` (342) ← public SEC XBRL `fundamental_statement_points`: `shares_outstanding`, `shares_basic_avg`, `shares_diluted_avg` with `effective_date`, `as_of_date`, `available_at`, accession, revision metadata, as-of reader, watermarks, and quality checks. Loader `shares_outstanding.py`.
 - `short_interest` need served by `finra_short_interest` (Domain 9).
 
 **Gap:**
 - **Single `adjusted_close`** — does not separate split-only (`adj_close_split`) from split+div total-return (`adj_close_total`); no `cfacpr`/`cfacshr` cumulative factors. This is the "3 adjusted-close semantics" trap; cannot reproduce CRSP/Compustat total-return.
 - No **`quote_eod`** (bid/ask/spread, close_type A/T/B), no three-close model (official auction vs consolidated tape vs composite).
-- No **`shares_outstanding_history`** (basic/diluted/treasury/float) — blocks precise PIT market-cap. (XBRL has `dei:` shares but no dedicated daily SHROUT table.)
+- **Share-count limits:** `shares_outstanding_history` now covers public XBRL current/basic/diluted share counts, but it is not yet a CRSP daily `SHROUT` equivalent and does not cover float, treasury shares, exchange-sourced daily shares, or split-factor-integrated daily market-cap restatements.
 - No **`bar_intraday`**, no **`adjustment_factor_history`** cross-linked to corp_action.
 - **Connectors:** present — local archive only. Missing: CRSP DSF/MSF (delisting-correct), Polygon/Tiingo/Alpaca (modern forward bars), Compustat `co_secd`. PIT integrity: free APIs restate adj_close without snapshot retention — must compute own from raw events.
 
@@ -200,7 +203,7 @@ Ordering rationale: maximize (parity impact × inverse effort). Estimates and re
 | **1** | Estimates | Entire `est_*` store absent | `est_detail` + `est_consensus` + `est_recommendation` + `est_guidance` tables exist; 8-K Item 2.02/7.01 NER loader populates guidance for ≥500 issuers; consensus uses canonical IBES 1–5 rec scale; row counts in `lake/est_*/_manifest.json`. |
 | **2** | Reference classifications | No taxonomy tables; SIC/NAICS unextracted | `taxonomy`/`taxonomy_node`/`entity_classification`/`sic_code_dim`(authority-keyed)/`naics_code_dim` exist; SEC-assigned SIC + NAICS + Fama-French + TRBC-via-PermID loaded for the full security universe with bitemporal `valid_from`. |
 | **3** | Insider ownership | No Form 3/4/5 or 13D/G parsing | `insider`/`insider_transaction`/`filing_form4` populated from EDGAR Ownership XML with full 28-letter `transaction_code` + `rule_10b5_1_indicator`; `blockholder_filing` handles post-2024-12-18 XML; ≥1 quarter of Form-4 backfill loaded. |
-| **4** | Fundamentals (concept coverage) | `statement_map` 16 rows vs 147 canonical; no industry overlay | `fundamental_statement_map` ≥147 canonical us-gaap concepts; bank/insurance/REIT-FFO overlay rows added; `rdq` (8-K 2.02 date) captured; calc-linkbase + DQC validation writes to `data_quality_checks`. |
+| **4** | Fundamentals (concept coverage) | S4a cross-industry dictionary corrected to 137 item_ids; S4b overlays seeded | `fundamental_statement_map` covers exactly the 137 authorized cross-industry item_ids from sections 2.1-2.4 plus 37 bank/insurance/REIT-FFO overlay item_ids from sections 2.5-2.7; `rdq` (8-K 2.02 date) captured; calc-linkbase + DQC validation writes to `data_quality_checks`. |
 | **5** | Corp actions + Pricing depth | Flat corp_action; single adj_close | `corp_action_type_dim` (DISTCD/CAEV) + `delisting`(+`dlret`) + `adjustment_factor`(CFACPR/CFACSHR split) exist; `equity_daily_bars` gains `adj_close_split`/`adj_close_total` + `shares_outstanding_history`; spinoff `Form 8937` loader stub. |
 | **6** | 13F extension + Off-exchange ATS | No filer entity-resolution; no ATS volume | `filer_13f_cik_alias` (subadvisor/M&A rollup) populated; 2023-01-03 ×1000 cutover verified; `offexchange_volume`/`offexchange_venue` loaded from FINRA weeklySummary API with ATS % rollup. |
 | **7** | ESG / sustainability | No ESG store | `esg_metric_dim`/`esg_metric`/`ghg_emission`/`esg_score`(redistributable=FALSE)/`esg_controversy` exist; 10-K Item 1/1A + Form SD + CA SB 253 + CDP loaders populate raw disclosed metrics with bitemporal evidence trail. |

@@ -351,8 +351,10 @@ class TestEntityClassificationAsof:
 
     def test_asof_returns_row_within_validity(self, tmp_store):
         from db.asof import entity_classification_asof
+        from db.warehouse import now_utc_naive
+
         self._seed_and_classify(tmp_store, "SEC-CIK-0000789019", "789019", 7372)
-        today = dt.date.today()
+        today = now_utc_naive().date()
         # Omit as_of_ts: the reader defaults to a UTC-naive end-of-day timestamp,
         # matching how the writer stores available_at (now_utc_naive, UTC). Passing
         # a local datetime.now() would compare local wall-clock against a UTC-naive

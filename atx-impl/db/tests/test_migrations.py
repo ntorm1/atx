@@ -12,6 +12,8 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 1 in versions, f"Migration 0001 not recorded; found: {versions}"
     assert 2 in versions, f"Migration 0002 not recorded; found: {versions}"
     assert 3 in versions, f"Migration 0003 not recorded; found: {versions}"
+    assert 10 in versions, f"Migration 0010 not recorded; found: {versions}"
+    assert 11 in versions, f"Migration 0011 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -89,3 +91,62 @@ def test_migration_0003_tables_exist(tmp_store):
     table_names = {row[0] for row in tmp_store.con.execute(tables_query).fetchall()}
     for expected in ("taxonomy", "taxonomy_node", "entity_classification", "taxonomy_mapping"):
         assert expected in table_names, f"Table '{expected}' missing after bootstrap"
+
+
+def test_migration_0010_shares_outstanding_history_exists(tmp_store):
+    """Migration 0010 adds the PIT share-count spine."""
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'shares_outstanding_history'
+            """
+        ).fetchall()
+    }
+    assert {
+        "share_history_id",
+        "security_id",
+        "share_count_type",
+        "effective_date",
+        "available_at",
+        "share_count",
+    }.issubset(columns)
+
+
+def test_migration_0011_adjustment_factor_tables_exist(tmp_store):
+    """Migration 0011 adds corporate-action type and adjustment-factor history tables."""
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+            """
+        ).fetchall()
+    }
+    assert {"corp_action_type_dim", "adjustment_factor_history"}.issubset(tables)
+
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'adjustment_factor_history'
+            """
+        ).fetchall()
+    }
+    assert {
+        "adjustment_factor_id",
+        "security_id",
+        "ex_date",
+        "event_type",
+        "factor_price",
+        "factor_shares",
+        "available_at",
+    }.issubset(columns)

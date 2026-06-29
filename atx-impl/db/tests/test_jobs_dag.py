@@ -61,3 +61,31 @@ def test_enabled_job_order_no_duplicates(tmp_store):
 
     order = mgr.enabled_job_order()
     assert len(order) == len(set(order)), f"Duplicate jobs in order: {order}"
+
+
+def test_default_jobs_include_shares_after_sec_company_facts(tmp_store):
+    """Share-count history depends on normalized SEC statement points."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "sec_company_facts" in order
+    assert "shares_outstanding_history" in order
+    assert order.index("sec_company_facts") < order.index("shares_outstanding_history")
+
+
+def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_store):
+    """Adjustment factors are derived from normalized corporate-action events."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "daily_bars" in order
+    assert "corporate_actions" in order
+    assert "adjustment_factor_history" in order
+    assert order.index("daily_bars") < order.index("corporate_actions")
+    assert order.index("corporate_actions") < order.index("adjustment_factor_history")

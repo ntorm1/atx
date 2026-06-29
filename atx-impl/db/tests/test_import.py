@@ -9,6 +9,7 @@ def test_import_db():
 
 def test_key_dataset_classes_importable():
     from db import (
+        AdjustmentFactorHistoryDataset,
         AlphaResearchDataset,
         CorporateActionsDataset,
         DuckDBStore,
@@ -18,10 +19,12 @@ def test_key_dataset_classes_importable():
         SecCompanyFactsDataset,
         SecSubmissionsDataset,
         SecurityMasterDataset,
+        SharesOutstandingHistoryDataset,
         TickerHistoryDataset,
         ThirteenFDataSet,
         UniverseMembershipDataset,
     )
+    assert AdjustmentFactorHistoryDataset is not None
     assert AlphaResearchDataset is not None
     assert CorporateActionsDataset is not None
     assert DuckDBStore is not None
@@ -31,6 +34,7 @@ def test_key_dataset_classes_importable():
     assert SecCompanyFactsDataset is not None
     assert SecSubmissionsDataset is not None
     assert SecurityMasterDataset is not None
+    assert SharesOutstandingHistoryDataset is not None
     assert TickerHistoryDataset is not None
     assert ThirteenFDataSet is not None
     assert UniverseMembershipDataset is not None

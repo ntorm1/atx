@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from db import DEFAULT_DB_PATH
 from db.asof import (
+    adjustment_factors_asof,
     corporate_actions_asof,
     daily_panel_asof,
     features_asof,
@@ -20,6 +21,7 @@ from db.asof import (
     identifier_decisions_asof,
     macro_asof,
     security_master_asof,
+    shares_outstanding_asof,
     short_interest_asof,
     thirteenf_positioning_asof,
     universe_asof,
@@ -46,6 +48,8 @@ def parse_args() -> argparse.Namespace:
             "fundamental-statements",
             "fundamental-ttm",
             "fundamental-periods",
+            "shares-outstanding",
+            "adjustment-factors",
             "daily-panel",
             "features",
             "short-interest",
@@ -62,6 +66,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metrics", help="Comma-separated fundamental metric filter.")
     parser.add_argument("--statement-types", help="Comma-separated statement type filter.")
     parser.add_argument("--period-types", help="Comma-separated normalized fundamental period type filter.")
+    parser.add_argument("--share-count-types", help="Comma-separated share-count type filter.")
+    parser.add_argument("--event-types", help="Comma-separated corporate-action adjustment event type filter.")
     parser.add_argument("--feature-set", default="equity_daily_v1")
     parser.add_argument("--features", help="Comma-separated feature-name filter.")
     parser.add_argument("--series-ids", help="Comma-separated macro/FRED series filter.")
@@ -108,6 +114,22 @@ def main() -> int:
             db_path=args.db_path,
             symbols=parse_csv(args.symbols),
             normalized_period_types=parse_csv(args.period_types),
+        )
+    elif args.view == "shares-outstanding":
+        frame = shares_outstanding_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+            share_count_types=parse_csv(args.share_count_types),
+        )
+    elif args.view == "adjustment-factors":
+        frame = adjustment_factors_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+            event_types=parse_csv(args.event_types),
         )
     elif args.view == "daily-panel":
         frame = daily_panel_asof(

@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from db import DEFAULT_DB_PATH, DuckDBStore
+from db.adjustment_factors import AdjustmentFactorHistoryDataset, AdjustmentFactorHistoryOptions
 from db.calendar import TradingCalendarDataset, TradingCalendarOptions
 from db.corporate_actions import CorporateActionsDataset, CorporateActionsOptions
 from db.features import (
@@ -24,6 +25,7 @@ from db.identifier_resolution import IdentifierResolutionCandidateDataset, Ident
 from db.macro import FredMacroDataset, FredMacroOptions
 from db.sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from db.security_master import SecurityMasterDataset, SecurityMasterOptions
+from db.shares_outstanding import SharesOutstandingHistoryDataset, SharesOutstandingHistoryOptions
 from db.symbol_directory import NasdaqSymbolDirectoryDataset, NasdaqSymbolDirectoryOptions
 from db.thirteenf import ThirteenFDataSet, ThirteenFOptions
 from db.ticker_history import DEFAULT_TICKER_HISTORY_ZIP, TickerHistoryDataset, TickerHistoryOptions
@@ -43,12 +45,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ticker-chunk-size", type=int, default=200_000)
     parser.add_argument("--ticker-max-chunks", type=int, help="Smoke-test cap; omit for full ZIP scan.")
     parser.add_argument("--skip-fundamentals", action="store_true")
+    parser.add_argument("--skip-shares-outstanding", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-13f", action="store_true")
     parser.add_argument("--skip-identifier-resolution", action="store_true")
     parser.add_argument("--skip-identifier-decisions", action="store_true")
     parser.add_argument("--skip-corporate-actions", action="store_true")
+    parser.add_argument("--skip-adjustment-factors", action="store_true")
     parser.add_argument("--skip-symbol-directory", action="store_true")
     parser.add_argument("--skip-macro", action="store_true")
     parser.add_argument("--skip-universe", action="store_true")
@@ -90,6 +94,13 @@ def main() -> int:
         )
         if not args.skip_corporate_actions:
             results.append(CorporateActionsDataset().run(store, CorporateActionsOptions()))
+            if not args.skip_adjustment_factors:
+                results.append(
+                    AdjustmentFactorHistoryDataset().run(
+                        store,
+                        AdjustmentFactorHistoryOptions(),
+                    )
+                )
         results.append(
             FinraShortInterestDataset().run(
                 store,
@@ -129,6 +140,13 @@ def main() -> int:
                     SecCompanyFactsOptions(symbols=symbols),
                 )
             )
+            if not args.skip_shares_outstanding:
+                results.append(
+                    SharesOutstandingHistoryDataset().run(
+                        store,
+                        SharesOutstandingHistoryOptions(),
+                    )
+                )
             if not args.skip_fundamental_features:
                 results.append(
                     FundamentalFeatureDataset().run(

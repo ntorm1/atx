@@ -72,11 +72,20 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         institutional_keys=("fsymId", "price date", "corporate action event id/date"),
         pit_fields=("trade_date", "event/ex_date", "pricing availability timestamp", "source_loaded_at"),
         factors_or_fields=("OHLCV", "returns", "shares", "splits", "dividends", "event-based corporate actions"),
-        open_substitute="Local tbltickerhistory daily bars plus inferred split/dividend corporate actions.",
-        warehouse_tables=("tbltickerhistory_daily", "equity_daily_bars", "corporate_actions", "v_equity_daily_returns"),
+        open_substitute=(
+            "Local tbltickerhistory daily bars plus inferred split/dividend corporate actions and "
+            "SEC XBRL-derived PIT share-count history."
+        ),
+        warehouse_tables=(
+            "tbltickerhistory_daily",
+            "equity_daily_bars",
+            "corporate_actions",
+            "shares_outstanding_history",
+            "v_equity_daily_returns",
+        ),
         parity_status="partial",
         limitations="Local archive does not provide the full licensed FactSet adjustment chain or global coverage.",
-        next_gap="Add delisting-return proxies, split/dividend adjustment audit trails, and share-count history.",
+        next_gap="Add delisting-return proxies plus split/dividend adjustment audit trails with separate price/share factors.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-prices-api",
             "https://developer.factset.com/api-catalog/factset-global-prices-api",
@@ -151,7 +160,7 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         ),
         parity_status="partial",
         limitations="Compustat standardized taxonomy, history, and point-in-time snapshots are proprietary.",
-        next_gap="S4a canonical concept dictionary expanded to ≥147 active cross-industry concepts (item_ids 1001–1427); industry overlays (bank/insurance/REIT: S4b), rdq date capture (S4c), and DQC validation (S4d) still pending.",
+        next_gap="S4a/S4b concept dictionary now covers 137 authorized cross-industry item_ids plus 37 bank/insurance/REIT overlay item_ids; rdq date capture (S4c), DQC validation (S4d), and broader issuer backfill remain pending.",
         source_urls=(
             "https://www.marketplace.spglobal.com/en/datasets/compustat-financials-%288%29",
             "https://www.marketplace.spglobal.com/en/solutions/xpressfeed-%28b73250d6-a15c-4243-9016-3e5bf6300e43%29",
@@ -228,11 +237,21 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         institutional_keys=("PERMNO", "trade date", "distribution event", "delisting event"),
         pit_fields=("trade date", "ex/distribution dates", "delisting date", "release/load timestamp"),
         factors_or_fields=("returns", "prices", "volume", "shares", "distributions", "delisting returns"),
-        open_substitute="equity_daily_bars, v_equity_daily_returns, corporate_actions, Nasdaq add/delete events, and listing-status intervals from local/public evidence.",
-        warehouse_tables=("equity_daily_bars", "corporate_actions", "nasdaq_listing_events", "listing_status_intervals", "v_equity_daily_returns"),
+        open_substitute=(
+            "equity_daily_bars, v_equity_daily_returns, corporate_actions, SEC XBRL share-count history, "
+            "Nasdaq add/delete events, and listing-status intervals from local/public evidence."
+        ),
+        warehouse_tables=(
+            "equity_daily_bars",
+            "corporate_actions",
+            "shares_outstanding_history",
+            "nasdaq_listing_events",
+            "listing_status_intervals",
+            "v_equity_daily_returns",
+        ),
         parity_status="partial",
         limitations="Open substitute lacks official CRSP delisting returns and survivorship-bias-free full history.",
-        next_gap="Add delisting-return estimates, official open exchange calendars where possible, and return-adjustment diagnostics.",
+        next_gap="Add delisting-return estimates, adjustment factor history, and return-adjustment diagnostics.",
         source_urls=(
             "https://www.crsp.org/research/crsp-us-stock-databases/",
             "https://www.crsp.org/crsp_pdf/crsp-us-stock-indexes-databases-guide-flat-file-format-1-0/",
@@ -312,6 +331,99 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets",
             "https://www.sec.gov/files/form_13f_readme.pdf",
             "https://www.sec.gov/rules-regulations/staff-guidance/division-investment-management-frequently-asked-questions/frequently-asked-questions-about-form-13f",
+        ),
+    ),
+    ProviderParityRow(
+        provider="SEC EDGAR / FactSet Ownership / S&P Capital IQ Pro",
+        provider_domain="Section 16 insider ownership",
+        warehouse_domain="ownership",
+        reference_tables=(
+            "SEC Forms 3/4/5 ownership XML",
+            "FactSet Ownership insider transactions",
+            "S&P Capital IQ ciqInsider / ciqInsiderTransaction",
+        ),
+        institutional_grain="Reporting owner, issuer, filing accession, transaction row, and disclosed holding row.",
+        institutional_keys=(
+            "accession_number",
+            "reporting_owner_cik",
+            "issuer_cik",
+            "transaction_ordinal",
+            "transaction_code",
+        ),
+        pit_fields=("period_of_report", "transaction_date", "filing_date", "acceptance_datetime", "available_at"),
+        factors_or_fields=(
+            "director/officer/10-percent-owner role flags",
+            "28-code Section 16 transaction taxonomy",
+            "direct/indirect ownership",
+            "shares/price/holdings",
+            "derivative rows",
+            "Rule 10b5-1 indicator and adoption date",
+        ),
+        open_substitute=(
+            "SEC ownership XML normalized into insider, filing_form4, insider_relationship, "
+            "insider_transaction, insider_holding, and tradingplan_10b5_1 tables."
+        ),
+        warehouse_tables=(
+            "insider",
+            "filing_form4",
+            "insider_relationship",
+            "insider_transaction",
+            "insider_holding",
+            "tradingplan_10b5_1",
+        ),
+        parity_status="partial",
+        limitations=(
+            "Open SEC XML covers Section 16 filings but lacks vendor backfilled role normalization, "
+            "pre-2023 10b5-1 plan inference, insider scoring, and cross-person household/entity rollups."
+        ),
+        next_gap="Add 13D/G parser, Form 144 reconciliation, N-PORT fund holdings, and richer insider role/cluster scoring.",
+        source_urls=(
+            "https://www.sec.gov/edgar/searchedgar/ownershipformcodes.html",
+            "https://www.sec.gov/page/edgar-ownership-xml-tech-spec",
+            "https://data.sec.gov/",
+            "https://www.factset.com/marketplace/catalog/product/factset-ownership",
+            "https://www.spglobal.com/market-intelligence/en/solutions/products/sp-capital-iq-pro",
+        ),
+    ),
+    ProviderParityRow(
+        provider="SEC EDGAR / FactSet Ownership / S&P Capital IQ Pro / WhaleWisdom",
+        provider_domain="Schedule 13D/G blockholder ownership",
+        warehouse_domain="ownership",
+        reference_tables=(
+            "SEC Schedule 13D/G filings",
+            "FactSet Ownership beneficial owners",
+            "S&P Capital IQ activism and ownership",
+            "WhaleWisdom Schedule 13D/G",
+        ),
+        institutional_grain="Issuer, filing accession, reporting person, beneficial ownership amount, and percent of class.",
+        institutional_keys=("accession_number", "issuer_cik", "CUSIP", "reporting_person_seq"),
+        pit_fields=("event_date", "filing_date", "available_at", "source_loaded_at"),
+        factors_or_fields=(
+            "5%+ beneficial-owner identity",
+            "Schedule 13D vs 13G type",
+            "voting/dispositive power",
+            "aggregate beneficial ownership",
+            "percent of class",
+            "purpose-of-transaction text",
+        ),
+        open_substitute=(
+            "SEC structured Schedule 13D/G XML normalized into blockholder_filing and "
+            "blockholder_reporting_person landing tables with PIT availability."
+        ),
+        warehouse_tables=("blockholder_filing", "blockholder_reporting_person"),
+        parity_status="partial",
+        limitations=(
+            "Structured XML is only dependable for the post-2024 modernization window; "
+            "pre-XML HTML/text backfile parsing, activism campaign classification, and "
+            "reporting-person rollups remain vendor gaps."
+        ),
+        next_gap="Add pre-2024 13D/G HTML parser, amendment-chain reconstruction, and activism campaign/topic classifiers.",
+        source_urls=(
+            "https://www.sec.gov/edgar/search/",
+            "https://data.sec.gov/",
+            "https://www.factset.com/marketplace/catalog/product/factset-ownership",
+            "https://www.spglobal.com/market-intelligence/en/solutions/products/sp-capital-iq-pro",
+            "https://whalewisdom.com/schedule13d",
         ),
     ),
     ProviderParityRow(

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+import duckdb
+
 from .connection import DuckDBStore
 
 
@@ -20,6 +22,31 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     """
     SELECT 'corporate_actions', 'max_ex_date', max(ex_date)::VARCHAR
     FROM corporate_actions
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'corp_action_type_dim', 'max_updated_at', max(updated_at)::VARCHAR
+    FROM corp_action_type_dim
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'adjustment_factor_history', 'max_ex_date', max(ex_date)::VARCHAR
+    FROM adjustment_factor_history
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'adjustment_factor_history', 'max_available_at', max(available_at)::VARCHAR
+    FROM adjustment_factor_history
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'shares_outstanding_history', 'max_effective_date', max(effective_date)::VARCHAR
+    FROM shares_outstanding_history
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'shares_outstanding_history', 'max_available_at', max(available_at)::VARCHAR
+    FROM shares_outstanding_history
     HAVING count(*) > 0
     """,
     """
@@ -56,6 +83,36 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     SELECT 'sec_13f_ownership_features', 'max_as_of_date:sec_13f_ownership_v1', max(as_of_date)::VARCHAR
     FROM feature_values
     WHERE feature_set = 'sec_13f_ownership_v1'
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'sec_insider_ownership', 'max_period_of_report', max(period_of_report)::VARCHAR
+    FROM filing_form4
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'sec_insider_ownership', 'max_available_at', max(available_at)::VARCHAR
+    FROM filing_form4
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'sec_insider_ownership', 'max_transaction_date', max(transaction_date)::VARCHAR
+    FROM insider_transaction
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'sec_insider_ownership', 'max_10b5_1_adoption_date', max(adoption_date)::VARCHAR
+    FROM tradingplan_10b5_1
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'sec_blockholder_ownership', 'max_event_date', max(event_date)::VARCHAR
+    FROM blockholder_filing
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'sec_blockholder_ownership', 'max_available_at', max(available_at)::VARCHAR
+    FROM blockholder_filing
     HAVING count(*) > 0
     """,
     """
@@ -304,7 +361,13 @@ class WatermarkRefreshResult:
 
 def _watermark_rows(store: DuckDBStore) -> Iterable[tuple[str, str, str]]:
     for sql in WATERMARK_QUERIES:
-        for dataset_id, watermark_name, watermark_value in store.con.execute(sql).fetchall():
+        try:
+            rows = store.con.execute(sql).fetchall()
+        except duckdb.CatalogException as exc:
+            if "does not exist" in str(exc):
+                continue
+            raise
+        for dataset_id, watermark_name, watermark_value in rows:
             if dataset_id and watermark_name and watermark_value is not None:
                 yield str(dataset_id), str(watermark_name), str(watermark_value)
 

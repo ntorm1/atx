@@ -2,7 +2,8 @@
 
 Groups:
 1. migration:     version 5 recorded; 4 new columns exist on fundamental_statement_map.
-2. seed coverage: ≥147 distinct active canonical_metrics after seeding.
+2. seed coverage: exactly 137 authorized S4a item_ids after seeding.
+2b. overlays:    exactly 37 S4b bank/insurance/REIT item_ids under the right templates.
 3. original 16:   all original canonical_metrics still present.
 4. item_ids:      all active rows have non-NULL item_id; multi-concept metrics share item_id
                   and have strictly increasing concept_priority.
@@ -19,6 +20,21 @@ import datetime as dt
 import pytest
 
 
+AUTHORIZED_S4A_ITEM_IDS = (
+    set(range(1001, 1044))
+    | set(range(1101, 1120))
+    | set(range(1201, 1224))
+    | set(range(1301, 1326))
+    | set(range(1401, 1428))
+)
+
+AUTHORIZED_S4B_OVERLAY_ITEM_IDS = {
+    "BK": set(range(1501, 1516)),
+    "IS": set(range(1601, 1611)),
+    "RT": set(range(1701, 1713)),
+}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -30,6 +46,47 @@ def _seed_security(store, security_id: str = "sec_s4a_001") -> None:
         VALUES (?, ?, 'S4a Test Co', 'test')
         """,
         [security_id, security_id.upper()],
+    )
+
+
+def _seed_sic_classification(store, security_id: str, sic_code: str) -> None:
+    taxonomy_row = store.con.execute(
+        "SELECT taxonomy_id FROM taxonomy WHERE code = 'SIC'"
+    ).fetchone()
+    if taxonomy_row is None:
+        taxonomy_id = "taxonomy_sic_test"
+        store.con.execute(
+            """
+            INSERT INTO taxonomy (
+                taxonomy_id, code, name, provider, version, is_hierarchical, description, source
+            )
+            VALUES (?, 'SIC', 'Standard Industrial Classification', 'SEC', 'test', true, 'Test SIC taxonomy', 'test')
+            """,
+            [taxonomy_id],
+        )
+    else:
+        taxonomy_id = str(taxonomy_row[0])
+
+    node_id = f"node_sic_{sic_code}"
+    store.con.execute(
+        """
+        INSERT OR REPLACE INTO taxonomy_node (
+            node_id, taxonomy_id, node_code, node_label, parent_node_id, level, sort_order
+        )
+        VALUES (?, ?, ?, ?, NULL, 3, 0)
+        """,
+        [node_id, taxonomy_id, sic_code, f"SIC {sic_code}"],
+    )
+    classification_id = f"classification_{security_id}_{sic_code}"
+    store.con.execute(
+        """
+        INSERT OR REPLACE INTO entity_classification (
+            classification_id, security_id, taxonomy_id, node_id, node_code,
+            is_primary, valid_from, valid_to, as_of_date, available_at, source_loaded_at, run_id, source
+        )
+        VALUES (?, ?, ?, ?, ?, true, DATE '2020-01-01', NULL, DATE '2020-01-01', now(), now(), 'test', 'test')
+        """,
+        [classification_id, security_id, taxonomy_id, node_id, sic_code],
     )
 
 
@@ -73,12 +130,13 @@ def _insert_company_fact(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_migration_5_recorded(tmp_store):
-    """Migration version 5 must be recorded in schema_migrations after bootstrap."""
+    """Concept-dictionary migrations must be recorded in schema_migrations after bootstrap."""
     rows = tmp_store.con.execute(
         "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$' ORDER BY 1"
     ).fetchall()
     versions = [row[0] for row in rows]
     assert 5 in versions, f"Migration 0005 not recorded; found: {versions}"
+    assert 7 in versions, f"Migration 0007 not recorded; found: {versions}"
 
 
 def test_migration_5_columns_exist(tmp_store):
@@ -98,19 +156,66 @@ def test_migration_5_columns_exist(tmp_store):
         assert col in cols, f"Column '{col}' missing from fundamental_statement_map"
 
 
+def test_statement_map_key_includes_industry_template(tmp_store):
+    """The physical key must allow template overlays for the same SEC concept."""
+    row = tmp_store.con.execute(
+        """
+        SELECT constraint_column_names
+        FROM duckdb_constraints()
+        WHERE table_name = 'fundamental_statement_map'
+          AND constraint_type = 'PRIMARY KEY'
+        """
+    ).fetchone()
+    assert row is not None
+    assert tuple(row[0]) == ("source", "taxonomy", "concept", "industry_template")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Seed coverage
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_seed_active_concept_count(tmp_store):
-    """After seeding, ≥147 distinct active canonical_metrics must exist."""
+def test_seed_authorized_s4a_item_id_coverage(tmp_store):
+    """After seeding, the cross-industry S4a item_id set must be exact."""
     from db.fundamental_statements import seed_fundamental_statement_map
 
     seed_fundamental_statement_map(tmp_store)
-    count = tmp_store.con.execute(
-        "SELECT count(DISTINCT canonical_metric) FROM fundamental_statement_map WHERE is_active = TRUE"
-    ).fetchone()[0]
-    assert count >= 147, f"Expected ≥147 active canonical metrics, got {count}"
+    actual = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT DISTINCT item_id
+            FROM fundamental_statement_map
+            WHERE industry_template = 'ALL'
+              AND item_id IS NOT NULL
+            """
+        ).fetchall()
+    }
+    assert len(AUTHORIZED_S4A_ITEM_IDS) == 137
+    assert actual == AUTHORIZED_S4A_ITEM_IDS, (
+        "Seeded S4a item_ids differ from authorized cross-industry ranges; "
+        f"missing={sorted(AUTHORIZED_S4A_ITEM_IDS - actual)}, "
+        f"extra={sorted(actual - AUTHORIZED_S4A_ITEM_IDS)}"
+    )
+
+
+def test_seed_authorized_s4b_overlay_item_id_coverage(tmp_store):
+    """S4b bank/insurance/REIT overlays must match §2.5-2.7 exactly."""
+    from db.fundamental_statements import seed_fundamental_statement_map
+
+    seed_fundamental_statement_map(tmp_store)
+    rows = tmp_store.con.execute(
+        """
+        SELECT industry_template, item_id
+        FROM fundamental_statement_map
+        WHERE industry_template IN ('BK', 'IS', 'RT')
+          AND item_id IS NOT NULL
+        """
+    ).fetchall()
+    by_template: dict[str, set[int]] = {"BK": set(), "IS": set(), "RT": set()}
+    for template, item_id in rows:
+        by_template[str(template)].add(int(item_id))
+    assert by_template == AUTHORIZED_S4B_OVERLAY_ITEM_IDS
+    assert sum(len(values) for values in by_template.values()) == 37
 
 
 def test_seed_idempotent(tmp_store):
@@ -122,9 +227,9 @@ def test_seed_idempotent(tmp_store):
     dupes = tmp_store.con.execute(
         """
         SELECT count(*) FROM (
-            SELECT source, taxonomy, concept, count(*) AS n
+            SELECT source, taxonomy, concept, industry_template, count(*) AS n
             FROM fundamental_statement_map
-            GROUP BY 1, 2, 3
+            GROUP BY 1, 2, 3, 4
             HAVING n > 1
         )
         """
@@ -206,15 +311,36 @@ def test_revenue_coalesce_priority(tmp_store):
     assert priorities == sorted(set(priorities)), f"Revenue concept_priorities not strictly increasing: {priorities}"
 
 
-def test_industry_template_all_for_everything(tmp_store):
-    """All rows in this sprint must have industry_template='ALL'."""
+def test_industry_templates_are_authorized(tmp_store):
+    """Only ALL plus the S4b overlay templates should be present."""
     from db.fundamental_statements import seed_fundamental_statement_map
 
     seed_fundamental_statement_map(tmp_store)
-    non_all = tmp_store.con.execute(
-        "SELECT count(*) FROM fundamental_statement_map WHERE industry_template <> 'ALL'"
-    ).fetchone()[0]
-    assert non_all == 0, f"{non_all} rows have industry_template != 'ALL'"
+    templates = {
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT DISTINCT industry_template FROM fundamental_statement_map"
+        ).fetchall()
+    }
+    assert templates == {"ALL", "BK", "IS", "RT"}
+
+
+def test_bank_overlay_concept_coexists_with_core_interest_expense(tmp_store):
+    """Bank overlays may reuse a real us-gaap tag without replacing the ALL row."""
+    from db.fundamental_statements import seed_fundamental_statement_map
+
+    seed_fundamental_statement_map(tmp_store)
+    rows = tmp_store.con.execute(
+        """
+        SELECT industry_template, canonical_metric, item_id
+        FROM fundamental_statement_map
+        WHERE taxonomy = 'us-gaap'
+          AND concept = 'InterestExpense'
+        ORDER BY industry_template
+        """
+    ).fetchall()
+    assert ("ALL", "interest_expense", 1018) in rows
+    assert ("BK", "interest_expense_bank", 1504) in rows
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,6 +476,61 @@ def test_loader_still_works_for_core_metrics(tmp_store):
     assert derived_in_points == 0, f"Derived sentinels leaked into statement_points: {derived_in_points}"
 
 
+def test_bank_overlay_statement_points_are_sic_gated(tmp_store):
+    """A bank SIC should activate BK overlays; an industrial security should not."""
+    from db.fundamental_statements import seed_fundamental_statement_map, refresh_fundamental_statement_points
+    from db.fundamentals import refresh_fundamental_fact_revisions
+
+    _seed_security(tmp_store, "sec_bank_001")
+    _seed_sic_classification(tmp_store, "sec_bank_001", "6022")
+    _insert_company_fact(
+        tmp_store,
+        security_id="sec_bank_001",
+        concept="InterestExpense",
+        value=100.0,
+        accession_number="0000011111-24-000001",
+    )
+
+    _seed_security(tmp_store, "sec_ind_001")
+    _insert_company_fact(
+        tmp_store,
+        security_id="sec_ind_001",
+        concept="InterestExpense",
+        value=200.0,
+        accession_number="0000022222-24-000001",
+    )
+
+    seed_fundamental_statement_map(tmp_store)
+    refresh_fundamental_fact_revisions(tmp_store)
+    refresh_fundamental_statement_points(tmp_store)
+
+    bank_metrics = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT canonical_metric
+            FROM fundamental_statement_points
+            WHERE security_id = 'sec_bank_001'
+              AND concept = 'InterestExpense'
+            """
+        ).fetchall()
+    }
+    industrial_metrics = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT canonical_metric
+            FROM fundamental_statement_points
+            WHERE security_id = 'sec_ind_001'
+              AND concept = 'InterestExpense'
+            """
+        ).fetchall()
+    }
+    assert {"interest_expense", "interest_expense_bank"} <= bank_metrics
+    assert "interest_expense" in industrial_metrics
+    assert "interest_expense_bank" not in industrial_metrics
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Quality check
 # ─────────────────────────────────────────────────────────────────────────────
@@ -369,4 +550,4 @@ def test_quality_check_concept_coverage_passes(tmp_store):
     assert result.status == "passed", (
         f"Quality check failed: observed={result.observed_value}, threshold={result.threshold_value}"
     )
-    assert result.observed_value >= 147, f"Observed concept count {result.observed_value} < 147"
+    assert result.observed_value >= 137, f"Observed S4a item-id count {result.observed_value} < 137"

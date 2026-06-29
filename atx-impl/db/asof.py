@@ -184,6 +184,56 @@ ORDER BY security_id, period_end, period_start
 """
 
 
+SHARES_OUTSTANDING_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        s.*,
+        row_number() OVER (
+            PARTITION BY s.security_id, s.share_count_type
+            ORDER BY s.effective_date DESC,
+                     s.as_of_date DESC,
+                     s.available_at DESC NULLS LAST,
+                     s.source_loaded_at DESC NULLS LAST,
+                     s.share_history_id DESC
+        ) AS rn
+    FROM shares_outstanding_history s
+    {symbol_join}
+    {share_type_join}
+    CROSS JOIN params p
+    WHERE s.effective_date <= p.as_of_date
+      AND s.as_of_date <= p.as_of_date
+      AND (s.available_at IS NULL OR s.available_at <= p.as_of_ts)
+)
+SELECT *
+FROM ranked
+WHERE rn = 1
+ORDER BY security_id, share_count_type
+"""
+
+
+ADJUSTMENT_FACTORS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT
+    a.*
+FROM adjustment_factor_history a
+{symbol_join}
+{event_type_join}
+CROSS JOIN params p
+WHERE a.ex_date <= p.as_of_date
+  AND (a.available_at IS NULL OR a.available_at <= p.as_of_ts)
+ORDER BY a.security_id, a.ex_date, a.event_type, a.event_ref_id
+"""
+
+
 DAILY_PANEL_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -450,6 +500,80 @@ ORDER BY coalesce(symbol, cusip), security_id
 """
 
 
+INSIDER_TRANSACTIONS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT t.*
+FROM insider_transaction t
+{security_join}
+{insider_join}
+{code_join}
+CROSS JOIN params p
+WHERE coalesce(t.transaction_date, t.as_of_date) <= p.as_of_date
+  AND (t.as_of_date IS NULL OR t.as_of_date <= p.as_of_date)
+  AND (t.available_at IS NULL OR t.available_at <= p.as_of_ts)
+ORDER BY coalesce(t.transaction_date, t.as_of_date), t.security_id, t.insider_id, t.transaction_ordinal
+"""
+
+
+INSIDER_RELATIONSHIPS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT r.*
+FROM insider_relationship r
+{security_join}
+{insider_join}
+CROSS JOIN params p
+WHERE r.valid_from <= p.as_of_date
+  AND coalesce(r.valid_to, DATE '9999-12-31') > p.as_of_date
+  AND (r.as_of_date IS NULL OR r.as_of_date <= p.as_of_date)
+  AND (r.available_at IS NULL OR r.available_at <= p.as_of_ts)
+ORDER BY r.security_id, r.insider_id, r.valid_from
+"""
+
+
+BLOCKHOLDER_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT
+    f.*,
+    p.reporting_person_id,
+    p.reporting_person_seq,
+    p.insider_id,
+    p.entity_id,
+    p.reporting_person_name,
+    p.type_of_reporting_person,
+    p.citizenship_or_place_of_org,
+    p.source_of_funds,
+    p.sole_voting_power,
+    p.shared_voting_power,
+    p.sole_dispositive_power,
+    p.shared_dispositive_power,
+    p.aggregate_beneficially_owned,
+    p.percent_of_class,
+    p.excludes_certain_shares,
+    p.legal_proceedings_flag
+FROM blockholder_filing f
+LEFT JOIN blockholder_reporting_person p
+  ON p.filing_id = f.filing_id
+{security_join}
+{schedule_join}
+CROSS JOIN params prm
+WHERE coalesce(f.event_date, f.filing_date) <= prm.as_of_date
+  AND (f.available_at IS NULL OR f.available_at <= prm.as_of_ts)
+ORDER BY coalesce(f.event_date, f.filing_date), f.accession_number, p.reporting_person_seq
+"""
+
+
 IDENTIFIER_DECISIONS_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -702,6 +826,76 @@ def fundamental_periods_asof(
                 store.con.unregister(relation)
 
 
+def shares_outstanding_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    share_count_types: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    share_type_values = _normalize_strings(share_count_types)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            share_type_join = ""
+            if _register_filter(store, "asof_shares_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_shares_symbol_filter")
+                symbol_join = "JOIN asof_shares_symbol_filter sf ON sf.symbol = s.symbol"
+            if _register_filter(store, "asof_shares_type_filter", "share_count_type", share_type_values):
+                registered.append("asof_shares_type_filter")
+                share_type_join = (
+                    "JOIN asof_shares_type_filter stf "
+                    "ON stf.share_count_type = upper(s.share_count_type)"
+                )
+            sql = SHARES_OUTSTANDING_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                share_type_join=share_type_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+
+def adjustment_factors_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    event_types: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    event_type_values = _normalize_strings(event_types)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            event_type_join = ""
+            if _register_filter(store, "asof_adjustment_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_adjustment_symbol_filter")
+                symbol_join = "JOIN asof_adjustment_symbol_filter sf ON sf.symbol = a.symbol"
+            if _register_filter(store, "asof_adjustment_event_type_filter", "event_type", event_type_values):
+                registered.append("asof_adjustment_event_type_filter")
+                event_type_join = (
+                    "JOIN asof_adjustment_event_type_filter etf "
+                    "ON etf.event_type = upper(a.event_type)"
+                )
+            sql = ADJUSTMENT_FACTORS_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                event_type_join=event_type_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+
 def daily_panel_asof(
     as_of_date: dt.date,
     as_of_ts: dt.datetime | None = None,
@@ -898,6 +1092,142 @@ def ownership_asof(
         finally:
             for relation in registered:
                 store.con.unregister(relation)
+
+
+def insider_transactions_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    insider_ids: tuple[str, ...] | list[str] | None = None,
+    transaction_codes: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return Section 16 insider transactions visible as-of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            security_join = ""
+            insider_join = ""
+            code_join = ""
+            security_values = _normalize_ids(security_ids)
+            insider_values = _normalize_ids(insider_ids)
+            code_values = _normalize_strings(transaction_codes)
+            if _register_filter(store, "asof_insider_tx_security_filter", "security_id", security_values):
+                registered.append("asof_insider_tx_security_filter")
+                security_join = "JOIN asof_insider_tx_security_filter sf ON sf.security_id = t.security_id"
+            if _register_filter(store, "asof_insider_tx_insider_filter", "insider_id", insider_values):
+                registered.append("asof_insider_tx_insider_filter")
+                insider_join = "JOIN asof_insider_tx_insider_filter inf ON inf.insider_id = t.insider_id"
+            if _register_filter(store, "asof_insider_tx_code_filter", "transaction_code", code_values):
+                registered.append("asof_insider_tx_code_filter")
+                code_join = "JOIN asof_insider_tx_code_filter cf ON cf.transaction_code = upper(t.transaction_code)"
+            sql = INSIDER_TRANSACTIONS_ASOF_SQL.format(
+                security_join=security_join,
+                insider_join=insider_join,
+                code_join=code_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def insider_relationships_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    insider_ids: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return insider issuer-role relationships visible as-of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            security_join = ""
+            insider_join = ""
+            security_values = _normalize_ids(security_ids)
+            insider_values = _normalize_ids(insider_ids)
+            if _register_filter(store, "asof_insider_rel_security_filter", "security_id", security_values):
+                registered.append("asof_insider_rel_security_filter")
+                security_join = "JOIN asof_insider_rel_security_filter sf ON sf.security_id = r.security_id"
+            if _register_filter(store, "asof_insider_rel_insider_filter", "insider_id", insider_values):
+                registered.append("asof_insider_rel_insider_filter")
+                insider_join = "JOIN asof_insider_rel_insider_filter inf ON inf.insider_id = r.insider_id"
+            sql = INSIDER_RELATIONSHIPS_ASOF_SQL.format(
+                security_join=security_join,
+                insider_join=insider_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def blockholder_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    schedule_types: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return Schedule 13D/G blockholder rows visible as-of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            security_join = ""
+            schedule_join = ""
+            security_values = _normalize_ids(security_ids)
+            schedule_values = _normalize_strings(schedule_types)
+            if _register_filter(store, "asof_blockholder_security_filter", "security_id", security_values):
+                registered.append("asof_blockholder_security_filter")
+                security_join = "JOIN asof_blockholder_security_filter sf ON sf.security_id = f.security_id"
+            if _register_filter(store, "asof_blockholder_schedule_filter", "schedule_type", schedule_values):
+                registered.append("asof_blockholder_schedule_filter")
+                schedule_join = "JOIN asof_blockholder_schedule_filter stf ON stf.schedule_type = upper(f.schedule_type)"
+            sql = BLOCKHOLDER_ASOF_SQL.format(
+                security_join=security_join,
+                schedule_join=schedule_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
 
 
 def entity_classification_asof(
