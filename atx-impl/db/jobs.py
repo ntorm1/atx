@@ -44,6 +44,11 @@ from .insider_ownership import (
 )
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
 from .macro import FredMacroDataset, FredMacroOptions
+from .offexchange import (
+    FinraOffExchangeDataset,
+    FinraOffExchangeOptions,
+    OffExchangeSecurityPeriodDataset,
+)
 from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
 from .sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from .security_master import SecurityMasterDataset, SecurityMasterOptions
@@ -615,6 +620,19 @@ def _entity_classification_options(params: dict[str, Any]) -> EntityClassificati
     )
 
 
+def _offexchange_volume_options(params: dict[str, Any]) -> FinraOffExchangeOptions:
+    default = FinraOffExchangeOptions()
+    source_file = params.get("source_file")
+    return FinraOffExchangeOptions(
+        source_file=Path(source_file) if source_file else default.source_file,
+        source=params.get("source") or default.source,
+        period_type=params.get("period_type") or default.period_type,
+        tier=params.get("tier") or default.tier,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _filer_alias_options(params: dict[str, Any]) -> FilerAliasOptions:
     default = FilerAliasOptions()
     seed_file = params.get("seed_file")
@@ -659,6 +677,11 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ShortInterestFeatureDataset.dataset_id: (ShortInterestFeatureDataset, _short_interest_feature_options),
     ThirteenFDataSet.dataset_id: (ThirteenFDataSet, _thirteenf_options),
     FilerAliasDataset.dataset_id: (FilerAliasDataset, _filer_alias_options),
+    FinraOffExchangeDataset.dataset_id: (FinraOffExchangeDataset, _offexchange_volume_options),
+    OffExchangeSecurityPeriodDataset.dataset_id: (
+        OffExchangeSecurityPeriodDataset,
+        _offexchange_volume_options,
+    ),
     OwnershipFeatureDataset.dataset_id: (OwnershipFeatureDataset, _ownership_feature_options),
     InsiderOwnershipDataset.dataset_id: (InsiderOwnershipDataset, _insider_ownership_options),
     BlockholderOwnershipDataset.dataset_id: (BlockholderOwnershipDataset, _blockholder_ownership_options),
@@ -903,6 +926,20 @@ class JobManager:
             job_name="filer_13f_cik_alias",
             dataset_id="filer_13f_cik_alias",
             dependencies=["sec_13f"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="offexchange_volume",
+            dataset_id="offexchange_volume",
+            params={"period_type": "weekly"},
+            dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="offexchange_security_period",
+            dataset_id="offexchange_security_period",
+            params={"period_type": "weekly"},
+            dependencies=["offexchange_volume"],
             **retry_policy,
         )
         self.register_job(

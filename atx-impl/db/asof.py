@@ -2449,3 +2449,102 @@ def filer_aliases_asof(
     path = store_or_path if store_or_path is not None else db_path
     with connect(path, read_only=True) as store:
         return _run(store)
+
+
+OFFEXCHANGE_VOLUME_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT v.*
+FROM offexchange_volume v
+{symbol_join}
+CROSS JOIN params p
+WHERE v.available_at <= p.as_of_ts
+  AND v.is_latest
+ORDER BY v.symbol, v.period_type, v.summary_start_date, v.venue_class, v.mpid
+"""
+
+
+OFFEXCHANGE_SECURITY_PERIOD_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT sp.*
+FROM offexchange_security_period sp
+{symbol_join}
+CROSS JOIN params p
+WHERE sp.available_at <= p.as_of_ts
+ORDER BY sp.symbol, sp.period_type, sp.summary_start_date
+"""
+
+
+def offexchange_volume_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest-visible FINRA off-exchange volume rows as of a point in time."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+
+    def _run(store):
+        registered = []
+        try:
+            symbol_join = ""
+            if _register_filter(store, "asof_offx_volume_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_offx_volume_symbol_filter")
+                symbol_join = "JOIN asof_offx_volume_symbol_filter sf ON sf.symbol = v.symbol"
+            sql = OFFEXCHANGE_VOLUME_ASOF_SQL.format(symbol_join=symbol_join)
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def offexchange_security_period_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest-visible off-exchange ATS-share rollup rows as of a point in time."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+
+    def _run(store):
+        registered = []
+        try:
+            symbol_join = ""
+            if _register_filter(store, "asof_offx_secperiod_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_offx_secperiod_symbol_filter")
+                symbol_join = "JOIN asof_offx_secperiod_symbol_filter sf ON sf.symbol = sp.symbol"
+            sql = OFFEXCHANGE_SECURITY_PERIOD_ASOF_SQL.format(symbol_join=symbol_join)
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)

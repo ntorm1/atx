@@ -4648,6 +4648,65 @@ def _check_specs(
             comparator="eq",
             required_tables=("filer_13f_cik_alias",),
         ),
+        SqlQualityCheck(
+            dataset_id="offexchange_volume",
+            table_name="offexchange_volume",
+            check_name="offexchange_volume_multiple_latest_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT symbol, mpid, venue_class, period_type, summary_start_date,
+                           count(*) FILTER (WHERE is_latest) AS latest_rows
+                    FROM offexchange_volume
+                    GROUP BY symbol, mpid, venue_class, period_type, summary_start_date
+                    HAVING count(*) FILTER (WHERE is_latest) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("offexchange_volume",),
+        ),
+        SqlQualityCheck(
+            dataset_id="offexchange_volume",
+            table_name="offexchange_volume",
+            check_name="offexchange_volume_bad_venue_class",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM offexchange_volume
+                WHERE venue_class NOT IN ('ATS', 'non_ATS')
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("offexchange_volume",),
+        ),
+        SqlQualityCheck(
+            dataset_id="offexchange_security_period",
+            table_name="offexchange_security_period",
+            check_name="offexchange_security_period_pct_out_of_range",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM offexchange_security_period
+                WHERE ats_share_pct IS NOT NULL
+                  AND (ats_share_pct < 0.0 OR ats_share_pct > 100.0)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("offexchange_security_period",),
+        ),
+        SqlQualityCheck(
+            dataset_id="offexchange_security_period",
+            table_name="offexchange_security_period",
+            check_name="offexchange_security_period_total_inconsistent",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM offexchange_security_period
+                WHERE abs(coalesce(total_share_quantity, 0)
+                          - (coalesce(ats_share_quantity, 0) + coalesce(non_ats_share_quantity, 0))) > 1.0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("offexchange_security_period",),
+        ),
     )
 
 

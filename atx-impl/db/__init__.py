@@ -28,6 +28,8 @@ from .asof import (
     insider_transactions_asof,
     listing_status_asof,
     macro_asof,
+    offexchange_security_period_asof,
+    offexchange_volume_asof,
     ownership_asof,
     security_master_asof,
     shares_outstanding_asof,
@@ -101,6 +103,14 @@ from .jobs import JobManager
 from .lake import LakeValidationProblem, LakeValidationSummary, validate_lake_export
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions, build_listing_status_intervals
 from .macro import FredMacroDataset, FredMacroOptions
+from .offexchange import (
+    FinraOffExchangeDataset,
+    FinraOffExchangeOptions,
+    OffExchangeSecurityPeriodDataset,
+    load_offexchange_volume,
+    normalize_offexchange_rows,
+    refresh_offexchange_security_period,
+)
 from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
 from .quality import QualityResult, run_warehouse_quality_checks
 from .queries import SHORT_INTEREST_WITH_13F_SQL, short_interest_with_13f_positioning
@@ -198,6 +208,14 @@ __all__ = [
     "FinraShortInterestOptions",
     "FredMacroDataset",
     "FredMacroOptions",
+    "FinraOffExchangeDataset",
+    "FinraOffExchangeOptions",
+    "OffExchangeSecurityPeriodDataset",
+    "load_offexchange_volume",
+    "normalize_offexchange_rows",
+    "refresh_offexchange_security_period",
+    "offexchange_volume_asof",
+    "offexchange_security_period_asof",
     "FundamentalFeatureBuildOptions",
     "FundamentalFeatureDataset",
     "fundamental_statements_asof",

@@ -21,7 +21,7 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 | 6 | Pricing / market data | 6 | equity_daily_bars (9.8k rows), shares_outstanding_history (342 rows), adjustment_factor_history, daily_adjustment_factors, delisting_events, delisting_return_observations | OHLCV plus PIT SEC XBRL share counts; event-level/daily split-total-return factors; public delisting proxy rows; injectable observed-return table | quote_eod, bar_intraday, 3-close semantics, populated observed dlret, float/treasury shares, full spinoff/merger factor policy | ticker_history.py, shares_outstanding.py, adjustment_factors.py, daily_adjustments.py, delisting.py | 5 |
 | 7 | ESG / sustainability | 5 | — | — | **ALL**: esg_metric_dim, esg_metric, esg_score, esg_controversy, ghg_emission | none | 7 |
 | 8 | Reference classifications | ~8 | — | sec_company_tickers carries CIK↔ticker only | **ALL**: taxonomy, taxonomy_node, entity_classification, taxonomy_mapping, sic_code_dim, naics_code_dim, isic_code_dim, nace_code_dim | none (SIC sits unused in XBRL filings) | **2** |
-| 9 | Off-exchange / short-interest | ~6 | finra_short_interest (66k rows) | short interest only; bi-monthly | offexchange_volume (ATS), offexchange_venue, offexchange_security_period, quote/borrow-fee | finra.py, short_interest_features.py | 6 |
+| 9 | Off-exchange / short-interest | ~6 | finra_short_interest (66k rows), offexchange_venue, offexchange_volume, offexchange_security_period | short interest populated; S7a ATS/OTC transparency built as injectable surface (default empty) | live FINRA OTC API connector, daily short-volume flow, borrow-fee | finra.py, short_interest_features.py, offexchange.py | 6 |
 | 10 | Supply-chain + Macro | sc_node/sc_edge + macro (~5) | macro_series, macro_observations (40k rows) | macro built; supply-chain absent | sc_node, sc_edge, sc_node_observation, customs/CBP-AMS, Exhibit-21 subsidiary graph, GLEIF/LEI loader | macro.py | 9 (last) |
 
 **One-line read:** Fundamentals, 13F, FINRA short interest, macro, reference classifications, insider/blockholder landing tables, and the estimates schema are real. Corp-actions/pricing now include adjustment and delisting evidence surfaces. Remaining large gaps are populated licensed/public estimate feeds, ESG, deeper off-exchange data, and the strategic supply-chain wedge.
@@ -179,13 +179,13 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 
 **Target tables** (`datasets/off_exchange_transparency.md` + pricing `short_interest`): `offexchange_volume`, `offexchange_venue`, `offexchange_security_period`, `offexchange_quality_report`, `offexchange_security_period_v`; plus `short_interest`.
 
-**Current state — PARTIAL (short-interest only):**
+**Current state — PARTIAL (short-interest + injectable ATS/OTC transparency):**
 - `finra_short_interest` (66,266 rows) + `finra_short_interest_backfill_manifests` (2). Loaders `finra.py`, `short_interest_features.py`. Strong: bi-monthly settle-date short interest with feature pipeline.
+- **S7a FINRA OTC Transparency BUILT (injectable):** `offexchange_venue` (MPID dim, ATS vs non-ATS), `offexchange_volume` (per security×venue×period fact with bitemporal availability + FINRA restatement handling via `is_latest`/`restatement_seq`), and `offexchange_security_period` (derived ATS-share rollup with `ats_share_pct`, `ats_venue_count`, `restatement_detected`) plus `v_offexchange_security_period`. Loader `db/offexchange.py` ingests a FINRA `weeklySummary`-shaped or normalized CSV; materializer computes the rollup. End-to-end smoke reproduces the blueprint AAPL fixture exactly (total 66,925,813; ATS 21,246,912; non-ATS 45,678,901; ats_share_pct 31.7470%; 2 ATS venues). Default DB tables are empty until a FINRA file is injected.
 
 **Gap:**
-- **No FINRA ATS / OTC transparency** at all — `offexchange_volume` (per security×venue×period, `venue_class` ATS/non-ATS, share quantity, trade count), `offexchange_venue` (MPID dim), `offexchange_security_period` (ATS % of volume rollup).
-- **Connectors:** FINRA OTC Transparency API (`POST /data/group/otcMarket/name/{weeklySummary|monthlySummary|blockSummary|weeklySummaryHistoric}`, OAuth2 client-credentials, 10 GB/mo cap, Tier-1 ~14d / Tier-2 ~28d delay). Daily short-volume flow (FINRA) for high-freq proxy. Borrow-fee/utilization is commercial (S3/Markit) — skip.
-- **Gotcha:** restatement semantics (NEW vs AMEND vs METADATA_AMEND); manager-level shorts (Form SHO 13f-2) not until 2028-02-14.
+- **Live FINRA connector not yet wired** — the FINRA OTC Transparency API (`POST /data/group/otcMarket/name/{weeklySummary|monthlySummary|blockSummary|weeklySummaryHistoric}`, OAuth2 client-credentials, 10 GB/mo cap, Tier-1 ~14d / Tier-2 ~28d delay) is the production source; ingestion is currently injectable-CSV only (no network in tests). Daily short-volume flow (FINRA) for high-freq proxy and a dedicated `offexchange_quality_report` table remain; per-run QA currently rides `data_quality_checks`. Borrow-fee/utilization is commercial (S3/Markit) — skip.
+- **Gotcha:** restatement semantics (NEW vs AMEND vs METADATA_AMEND) — handled via `is_latest`/`restatement_seq`/`finra_last_update_date`; manager-level shorts (Form SHO 13f-2) not until 2028-02-14.
 
 ### Domain 10 — Supply-chain + Macro  ·  Status: MACRO BUILT / SUPPLY-CHAIN MISSING
 

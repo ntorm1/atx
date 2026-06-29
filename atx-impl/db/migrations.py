@@ -2122,6 +2122,220 @@ def _filer_13f_cik_alias(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _offexchange_transparency(conn: duckdb.DuckDBPyConnection) -> None:
+    """S7a: FINRA OTC Transparency off-exchange ATS / non-ATS volume surfaces.
+
+    Three PIT tables plus a security-joined view:
+      * offexchange_venue            -- MPID venue dimension (ATS vs non-ATS)
+      * offexchange_volume           -- per (security, venue, period) volume fact
+      * offexchange_security_period  -- derived per (security, period) ATS-share rollup
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offexchange_venue (
+            mpid VARCHAR PRIMARY KEY,
+            venue_name VARCHAR,
+            venue_class VARCHAR NOT NULL,
+            firm_crd VARCHAR,
+            first_seen_date DATE,
+            last_seen_date DATE,
+            source VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offexchange_volume (
+            volume_id VARCHAR PRIMARY KEY,
+            security_id VARCHAR,
+            symbol VARCHAR NOT NULL,
+            mpid VARCHAR,
+            venue_class VARCHAR NOT NULL,
+            summary_type_code VARCHAR,
+            period_type VARCHAR NOT NULL,
+            tier VARCHAR,
+            summary_start_date DATE NOT NULL,
+            summary_end_date DATE,
+            total_share_quantity DOUBLE,
+            total_trade_count BIGINT,
+            finra_last_update_date DATE,
+            restatement_seq INTEGER NOT NULL DEFAULT 0,
+            is_latest BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            source VARCHAR NOT NULL,
+            source_file VARCHAR,
+            source_file_sha256 VARCHAR,
+            raw_payload_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offexchange_security_period (
+            security_period_id VARCHAR PRIMARY KEY,
+            security_id VARCHAR,
+            symbol VARCHAR NOT NULL,
+            period_type VARCHAR NOT NULL,
+            summary_start_date DATE NOT NULL,
+            summary_end_date DATE,
+            ats_share_quantity DOUBLE,
+            non_ats_share_quantity DOUBLE,
+            total_share_quantity DOUBLE,
+            ats_share_pct DOUBLE,
+            ats_venue_count INTEGER,
+            restatement_detected BOOLEAN NOT NULL DEFAULT false,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_volume_key ON offexchange_volume(symbol, period_type, summary_start_date, venue_class)",
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_volume_security ON offexchange_volume(security_id, summary_start_date)",
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_volume_asof ON offexchange_volume(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_volume_latest ON offexchange_volume(is_latest, period_type, summary_start_date)",
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_secperiod_key ON offexchange_security_period(symbol, period_type, summary_start_date)",
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_secperiod_asof ON offexchange_security_period(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_offexchange_security_period AS
+        SELECT
+            sp.security_period_id,
+            sp.security_id,
+            coalesce(s.primary_symbol, sp.symbol) AS symbol,
+            s.name AS security_name,
+            sp.period_type,
+            sp.summary_start_date,
+            sp.summary_end_date,
+            sp.ats_share_quantity,
+            sp.non_ats_share_quantity,
+            sp.total_share_quantity,
+            sp.ats_share_pct,
+            sp.ats_venue_count,
+            sp.restatement_detected,
+            sp.as_of_date,
+            sp.available_at,
+            sp.source
+        FROM offexchange_security_period sp
+        LEFT JOIN securities s ON s.security_id = sp.security_id
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'offexchange_volume',
+            'finra',
+            'FINRA off-exchange ATS/OTC transparency volume',
+            'FINRA OTC Transparency weekly/monthly/block off-exchange ATS and non-ATS volume per security and venue, with a derived per-security ATS-share rollup.',
+            'symbol,period_type,summary_start_date,venue_class,mpid',
+            'offexchange_volume', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    for table_name, entity, grain, description, natural_key, pit_notes in (
+        (
+            "offexchange_venue", "offexchange_venue", "mpid",
+            "FINRA off-exchange venue (MPID) dimension distinguishing registered ATS dark pools from non-ATS member firms.",
+            '["mpid"]',
+            "venue_class is the authoritative ATS vs non_ATS discriminator; non-ATS mpid is a firm-CRD-derived identifier, not a registered MPID.",
+        ),
+        (
+            "offexchange_volume", "offexchange_transparency", "symbol,period_type,summary_start_date,venue_class,mpid",
+            "FINRA OTC Transparency per (security, venue, period) off-exchange volume fact.",
+            '["volume_id"]',
+            "Resolve with available_at <= query ts and is_latest to honour FINRA restatements; FINRA publishes on a tiered delay (Tier1 ~14d, Tier2/OTCE ~28d).",
+        ),
+        (
+            "offexchange_security_period", "offexchange_transparency", "symbol,period_type,summary_start_date",
+            "Derived per (security, period) ATS vs non-ATS off-exchange share rollup.",
+            '["security_period_id"]',
+            "Materialized from the latest visible offexchange_volume rows; ats_share_pct is ats_share_quantity / total_share_quantity * 100.",
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO table_catalog (
+                table_name, layer, entity, grain, description,
+                natural_key_json, pit_notes, updated_at
+            )
+            VALUES (?, 'silver', ?, ?, ?, ?, ?, now())
+            """,
+            [table_name, entity, grain, description, natural_key, pit_notes],
+        )
+
+    for table_name in (
+        "offexchange_venue",
+        "offexchange_volume",
+        "offexchange_security_period",
+        "v_offexchange_security_period",
+    ):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO field_catalog (
+                table_name, field_name, semantic_type, description,
+                nullable, unit, source_field, updated_at
+            )
+            SELECT
+                c.table_name,
+                c.column_name,
+                CASE
+                    WHEN lower(c.column_name) IN ('volume_id', 'security_period_id', 'security_id', 'mpid', 'run_id', 'source_file_sha256') THEN 'identifier'
+                    WHEN lower(c.column_name) LIKE '%_date' OR upper(c.data_type) = 'DATE' THEN 'date'
+                    WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                    WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                    WHEN lower(c.column_name) IN ('is_latest', 'restatement_detected') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                    WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                    ELSE 'text'
+                END AS semantic_type,
+                CASE c.column_name
+                    WHEN 'venue_class' THEN 'ATS or non_ATS off-exchange venue class.'
+                    WHEN 'summary_type_code' THEN 'FINRA summaryTypeCode: ATS_W_SMBL (ATS) or OTC_W_SMBL (non-ATS).'
+                    WHEN 'period_type' THEN 'weekly, monthly, or block FINRA summary period.'
+                    WHEN 'tier' THEN 'NMS tier T1/T2 or OTCE driving the publication delay.'
+                    WHEN 'ats_share_pct' THEN 'ATS share of total off-exchange volume in percent (0..100).'
+                    WHEN 'total_share_quantity' THEN 'Total reported off-exchange share volume for the row grain.'
+                    WHEN 'finra_last_update_date' THEN 'FINRA lastUpdateDate used to detect metadata-only amends.'
+                    WHEN 'is_latest' THEN 'True for the most recent restatement of this (security, venue, period).'
+                    ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+                END AS description,
+                coalesce(c.is_nullable, true) AS nullable,
+                CASE
+                    WHEN c.column_name = 'ats_share_pct' THEN 'percent'
+                    WHEN lower(c.column_name) LIKE '%share_quantity' THEN 'shares'
+                    WHEN lower(c.column_name) LIKE '%_date' THEN 'date'
+                    WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                    ELSE NULL
+                END AS unit,
+                NULL AS source_field,
+                now() AS updated_at
+            FROM duckdb_columns() c
+            WHERE c.schema_name = 'main'
+              AND coalesce(c.internal, false) = false
+              AND c.table_name = ?
+            """,
+            [table_name],
+        )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -2268,6 +2482,11 @@ MIGRATIONS: list[Migration] = [
         version=29,
         name="filer_13f_cik_alias",
         up=_filer_13f_cik_alias,
+    ),
+    Migration(
+        version=30,
+        name="offexchange_transparency",
+        up=_offexchange_transparency,
     ),
 ]
 
