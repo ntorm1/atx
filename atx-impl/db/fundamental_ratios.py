@@ -188,10 +188,26 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
     RatioDef("assets_growth_yoy", "growth", "growth", "ratio",
              "assets", "assets_prior_year", ("assets", "assets_prior"),
              lambda r: (r["assets"], r["assets_prior"]), require_positive_denominator=True),
+    RatioDef("equity_growth_yoy", "growth", "growth", "ratio",
+             "stockholders_equity", "stockholders_equity_prior_year", ("equity", "equity_prior"),
+             lambda r: (r["equity"], r["equity_prior"]), require_positive_denominator=True),
+    # --- average-balance returns (S9d) ------------------------------------
+    # Denominator is the mean of the ending and prior-year balance, matching the
+    # Compustat/FactSet convention for return-on-capital ratios.
+    RatioDef("average_return_on_assets", "profitability", "ratio", "ratio",
+             "net_income", "average_assets", ("ni", "assets", "assets_prior"),
+             lambda r: (r["ni"], (r["assets"] + r["assets_prior"]) / 2), require_positive_denominator=True),
+    RatioDef("average_return_on_equity", "profitability", "ratio", "ratio",
+             "net_income", "average_stockholders_equity", ("ni", "equity", "equity_prior"),
+             lambda r: (r["ni"], (r["equity"] + r["equity_prior"]) / 2), require_positive_denominator=True),
+    RatioDef("operating_cash_flow_to_average_assets", "cash_flow", "ratio", "ratio",
+             "operating_cash_flow", "average_assets", ("ocf", "assets", "assets_prior"),
+             lambda r: (r["ocf"], (r["assets"] + r["assets_prior"]) / 2), require_positive_denominator=True),
 )
 
-# Metrics for which a prior-year value is paired in (for YoY growth ratios).
-GROWTH_PRIOR_KEYS = ("rev", "ni", "oi", "ocf", "assets")
+# Metrics for which a prior-year value is paired in (for YoY growth and
+# average-balance ratios).
+GROWTH_PRIOR_KEYS = ("rev", "ni", "oi", "ocf", "assets", "equity")
 
 
 @dataclass(frozen=True)
@@ -315,7 +331,8 @@ def _attach_prior_year(wide: pd.DataFrame) -> pd.DataFrame:
     365); rows with no such match get NA, so dependent growth ratios are skipped.
     """
     out = wide.copy()
-    for key in GROWTH_PRIOR_KEYS:
+    keys = [k for k in GROWTH_PRIOR_KEYS if k in out.columns and f"{k}_av" in out.columns]
+    for key in keys:
         out[f"{key}_prior"] = pd.NA
         out[f"{key}_prior_av"] = pd.NaT
     if out.empty or "period_end" not in out.columns or "security_id" not in out.columns:
@@ -339,7 +356,7 @@ def _attach_prior_year(wide: pd.DataFrame) -> pd.DataFrame:
                     if best_diff is None or diff < best_diff:
                         best, best_diff = j, diff
             if best is not None:
-                for key in GROWTH_PRIOR_KEYS:
+                for key in keys:
                     out.at[i, f"{key}_prior"] = out.at[best, key]
                     out.at[i, f"{key}_prior_av"] = out.at[best, f"{key}_av"]
     return out

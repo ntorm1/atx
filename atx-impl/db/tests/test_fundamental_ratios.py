@@ -55,12 +55,13 @@ def _wide_row(**overrides) -> dict:
         "liabilities": 290.0, "liabilities_av": _ts("2026-05-01"),
         "equity": 60.0, "equity_av": _ts("2026-05-01"),
         "shares": 15.0, "shares_av": _ts("2026-05-01"),
-        # prior-year (YoY) inputs for growth ratios (S9c)
+        # prior-year (YoY) inputs for growth + average-balance ratios (S9c/S9d)
         "rev_prior": 320.0, "rev_prior_av": _ts("2025-05-01"),
         "ni_prior": 80.0, "ni_prior_av": _ts("2025-05-02"),
         "oi_prior": 100.0, "oi_prior_av": _ts("2025-05-01"),
         "ocf_prior": 104.0, "ocf_prior_av": _ts("2025-05-01"),
         "assets_prior": 300.0, "assets_prior_av": _ts("2025-05-03"),
+        "equity_prior": 50.0, "equity_prior_av": _ts("2025-05-01"),
     }
     base.update(overrides)
     return base
@@ -110,6 +111,11 @@ class TestComputeRatioRows:
             ("operating_income_growth_yoy", (120.0 - 100.0) / 100.0),
             ("operating_cash_flow_growth_yoy", (130.0 - 104.0) / 104.0),
             ("assets_growth_yoy", (350.0 - 300.0) / 300.0),
+            # S9d: average-balance returns + book-equity growth
+            ("average_return_on_assets", 100.0 / ((350.0 + 300.0) / 2)),
+            ("average_return_on_equity", 100.0 / ((60.0 + 50.0) / 2)),
+            ("operating_cash_flow_to_average_assets", 130.0 / ((350.0 + 300.0) / 2)),
+            ("equity_growth_yoy", (60.0 - 50.0) / 50.0),
         ],
     )
     def test_ratio_values(self, code, expected):
@@ -146,6 +152,15 @@ class TestComputeRatioRows:
         rows = _by_code(compute_ratio_rows(pd.DataFrame([row])))
         g = rows["net_income_growth_yoy"]
         assert g.is_meaningful is False  # sign of % change is ambiguous off a negative base
+
+    def test_average_balance_returns_need_both_balances(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+        # denominator is the mean of ending and prior-year balance
+        assert rows["average_return_on_equity"].denominator_value == pytest.approx(55.0)
+        # drop when the prior-year balance is unavailable
+        gone = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(assets_prior=None, assets_prior_av=None)])))
+        assert "average_return_on_assets" not in gone
+        assert "operating_cash_flow_to_average_assets" not in gone
 
     def test_free_cash_flow_is_level_kind_in_currency(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
