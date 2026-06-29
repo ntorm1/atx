@@ -40,6 +40,7 @@ CONCEPT_MAP = {
     "LiabilitiesCurrent": "current_liabilities",
     "CashAndCashEquivalentsAtCarryingValue": "cash_and_equivalents",
     "InventoryNet": "inventory",
+    "LongTermDebt": "long_term_debt",  # total long-term debt incl. current portion (S10b)
 }
 
 XBRL_METRIC_COLUMNS = [

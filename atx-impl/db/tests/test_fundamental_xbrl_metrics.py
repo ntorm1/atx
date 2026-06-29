@@ -102,3 +102,6 @@ class TestNormalizeXbrlMetrics:
         assert CONCEPT_MAP["LiabilitiesCurrent"] == "current_liabilities"
         assert CONCEPT_MAP["CashAndCashEquivalentsAtCarryingValue"] == "cash_and_equivalents"
         assert CONCEPT_MAP["InventoryNet"] == "inventory"
+
+    def test_concept_map_covers_debt_input(self):
+        assert CONCEPT_MAP["LongTermDebt"] == "long_term_debt"

@@ -67,6 +67,7 @@ def _wide_row(**overrides) -> dict:
         "current_liabilities": 100.0, "current_liabilities_av": _ts("2026-05-01"),
         "cash_and_equivalents": 40.0, "cash_and_equivalents_av": _ts("2026-05-01"),
         "inventory": 30.0, "inventory_av": _ts("2026-05-01"),
+        "long_term_debt": 90.0, "long_term_debt_av": _ts("2026-05-01"),
     }
     base.update(overrides)
     return base
@@ -127,6 +128,11 @@ class TestComputeRatioRows:
             ("cash_ratio", 40.0 / 100.0),
             ("working_capital", 100.0),
             ("working_capital_to_assets", (200.0 - 100.0) / 350.0),
+            # S10b: debt / solvency ratios (long-term debt vs equity/assets, net of cash)
+            ("long_term_debt_to_equity", 90.0 / 60.0),
+            ("long_term_debt_to_assets", 90.0 / 350.0),
+            ("net_debt", 90.0 - 40.0),
+            ("net_debt_to_assets", (90.0 - 40.0) / 350.0),
         ],
     )
     def test_ratio_values(self, code, expected):

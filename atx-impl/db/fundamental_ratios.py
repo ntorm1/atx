@@ -229,6 +229,20 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
              "working_capital", "assets", ("current_assets", "current_liabilities", "assets"),
              lambda r: (r["current_assets"] - r["current_liabilities"], r["assets"]),
              require_positive_denominator=True),
+    # --- debt / solvency (S10b; long-term debt from consolidated XBRL instants) ---
+    RatioDef("long_term_debt_to_equity", "leverage", "ratio", "ratio",
+             "long_term_debt", "stockholders_equity", ("long_term_debt", "equity"),
+             lambda r: (r["long_term_debt"], r["equity"]), require_positive_denominator=True),
+    RatioDef("long_term_debt_to_assets", "leverage", "ratio", "ratio",
+             "long_term_debt", "assets", ("long_term_debt", "assets"),
+             lambda r: (r["long_term_debt"], r["assets"]), require_positive_denominator=True),
+    RatioDef("net_debt", "leverage", "difference", "currency",
+             "long_term_debt", "cash_and_equivalents", ("long_term_debt", "cash_and_equivalents"),
+             lambda r: (r["long_term_debt"], r["cash_and_equivalents"])),
+    RatioDef("net_debt_to_assets", "leverage", "ratio", "ratio",
+             "net_debt", "assets", ("long_term_debt", "cash_and_equivalents", "assets"),
+             lambda r: (r["long_term_debt"] - r["cash_and_equivalents"], r["assets"]),
+             require_positive_denominator=True),
 )
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
@@ -238,6 +252,7 @@ XBRL_BALANCE_INPUTS = {
     "current_liabilities": "current_liabilities",
     "cash_and_equivalents": "cash_and_equivalents",
     "inventory": "inventory",
+    "long_term_debt": "long_term_debt",
 }
 
 # Metrics for which a prior-year value is paired in (for YoY growth and
@@ -476,7 +491,8 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             balx.current_assets, balx.current_assets_av,
             balx.current_liabilities, balx.current_liabilities_av,
             balx.cash_and_equivalents, balx.cash_and_equivalents_av,
-            balx.inventory, balx.inventory_av
+            balx.inventory, balx.inventory_av,
+            balx.long_term_debt, balx.long_term_debt_av
         FROM ttm
         LEFT JOIN bal
           ON bal.security_id = ttm.security_id
