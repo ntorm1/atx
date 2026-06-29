@@ -2491,8 +2491,8 @@ def _fundamental_ratios(conn: duckdb.DuckDBPyConnection) -> None:
             END AS semantic_type,
             CASE c.column_name
                 WHEN 'ratio_code' THEN 'Stable ratio identifier (e.g. net_profit_margin, return_on_equity, free_cash_flow).'
-                WHEN 'ratio_category' THEN 'Ratio family: profitability, leverage, efficiency, liquidity, cash_flow, payout, per_share, or growth.'
-                WHEN 'ratio_kind' THEN 'ratio (dimensionless), level (currency sum), difference (currency net), per_share, or growth (year-over-year fractional change).'
+                WHEN 'ratio_category' THEN 'Ratio family: profitability, leverage, efficiency, liquidity, cash_flow, payout, per_share, growth, or health.'
+                WHEN 'ratio_kind' THEN 'ratio (dimensionless), level (currency sum), difference (currency net), per_share, growth (YoY fractional change), or score (weighted composite, e.g. Altman Z'''').'
                 WHEN 'basis' THEN 'Input basis for the ratio (ttm = trailing-twelve-month flows over the instant balance at period_end).'
                 WHEN 'value' THEN 'Computed ratio value; numerator_value / denominator_value for ratio/per_share kinds, numerator_value + denominator_value for level kinds.'
                 WHEN 'numerator_value' THEN 'Effective numerator operand used to compute value (post sign/abs transform).'

@@ -73,6 +73,7 @@ def _wide_row(**overrides) -> dict:
         "cost_of_revenue": 220.0, "cost_of_revenue_av": _ts("2026-05-01"),
         "interest_expense": 10.0, "interest_expense_av": _ts("2026-05-01"),
         "depreciation_amortization": 25.0, "depreciation_amortization_av": _ts("2026-05-01"),
+        "retained_earnings": 200.0, "retained_earnings_av": _ts("2026-05-01"),
     }
     base.update(overrides)
     return base
@@ -144,6 +145,9 @@ class TestComputeRatioRows:
             ("interest_coverage", 120.0 / 10.0),
             ("ebitda", 120.0 + 25.0),
             ("ebitda_margin", (120.0 + 25.0) / 400.0),
+            # S10d: Altman Z'' components
+            ("retained_earnings_to_assets", 200.0 / 350.0),
+            ("equity_to_liabilities", 60.0 / 290.0),
         ],
     )
     def test_ratio_values(self, code, expected):
@@ -200,6 +204,24 @@ class TestComputeRatioRows:
         gone = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(assets_prior=None, assets_prior_av=None)])))
         assert "average_return_on_assets" not in gone
         assert "operating_cash_flow_to_average_assets" not in gone
+
+    def test_altman_z_double_prime_composite_score(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+        z = rows["altman_z_double_prime"]
+        expected = (
+            6.56 * (200.0 - 100.0) / 350.0   # working_capital / assets
+            + 3.26 * 200.0 / 350.0           # retained_earnings / assets
+            + 6.72 * 120.0 / 350.0           # operating_income (EBIT proxy) / assets
+            + 1.05 * 60.0 / 290.0            # book equity / total liabilities
+        )
+        assert z.value == pytest.approx(expected)
+        assert z.ratio_kind == "score"
+        assert z.ratio_category == "health"
+        assert z.is_meaningful is True
+
+    def test_altman_z_dropped_when_component_missing(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(retained_earnings=None, retained_earnings_av=None)])))
+        assert "altman_z_double_prime" not in rows
 
     def test_free_cash_flow_is_level_kind_in_currency(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))

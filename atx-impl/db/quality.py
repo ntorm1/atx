@@ -4735,9 +4735,9 @@ def _check_specs(
                    OR source IS NULL OR source = ''
                    OR security_id IS NULL OR security_id = ''
                    OR ratio_code IS NULL OR ratio_code = ''
-                   OR ratio_category NOT IN ('profitability', 'leverage', 'cash_flow', 'payout', 'per_share', 'efficiency', 'growth', 'liquidity')
-                   OR ratio_kind NOT IN ('ratio', 'level', 'per_share', 'growth', 'difference')
-                   OR unit NOT IN ('ratio', 'currency', 'currency_per_share')
+                   OR ratio_category NOT IN ('profitability', 'leverage', 'cash_flow', 'payout', 'per_share', 'efficiency', 'growth', 'liquidity', 'health')
+                   OR ratio_kind NOT IN ('ratio', 'level', 'per_share', 'growth', 'difference', 'score')
+                   OR unit NOT IN ('ratio', 'currency', 'currency_per_share', 'score')
                    OR period_end IS NULL
                    OR as_of_date IS NULL
                    OR available_at IS NULL

@@ -76,14 +76,17 @@ RATIO_COLUMNS = [
 @dataclass(frozen=True)
 class RatioDef:
     code: str
-    category: str          # profitability | leverage | cash_flow | payout | per_share
-    kind: str              # ratio | level | per_share
-    unit: str              # ratio | currency | currency_per_share
+    category: str          # profitability | leverage | efficiency | liquidity | cash_flow | payout | per_share | growth | health
+    kind: str              # ratio | level | difference | per_share | growth | score
+    unit: str              # ratio | currency | currency_per_share | score
     numerator_code: str
     denominator_code: str
     inputs: tuple[str, ...]            # raw input keys that gate availability
     operands: Callable[[dict], tuple]  # (numerator_value, denominator_value)
     require_positive_denominator: bool = False
+    # For kind='score': a weighted-composite value function over the wide row
+    # (bypasses operands; numerator/denominator are not stored).
+    composite: Callable[[dict], float | None] | None = None
 
 
 def _abs(x: float) -> float:
@@ -96,6 +99,26 @@ def _z(x: Any) -> float:
         return 0.0 if pd.isna(x) else float(x)
     except (TypeError, ValueError):
         return 0.0 if x is None else float(x)
+
+
+def _altman_z_double_prime(r: dict) -> float | None:
+    """Altman Z''-score (1995 emerging-markets / non-manufacturer variant).
+
+    Z'' = 6.56·(WC/TA) + 3.26·(RE/TA) + 6.72·(EBIT/TA) + 1.05·(book equity / TL).
+    Uses book equity (not market) so it is computable without price data. Operating
+    income is the EBIT proxy. Distress zones: <1.1 distress, 1.1–2.6 grey, >2.6 safe.
+    """
+    ta = float(r["assets"])
+    tl = float(r["liabilities"])
+    if ta <= 0 or tl <= 0:
+        return None
+    wc = float(r["current_assets"]) - float(r["current_liabilities"])
+    return (
+        6.56 * wc / ta
+        + 3.26 * float(r["retained_earnings"]) / ta
+        + 6.72 * float(r["oi"]) / ta
+        + 1.05 * float(r["equity"]) / tl
+    )
 
 
 RATIO_DEFS: tuple[RatioDef, ...] = (
@@ -262,6 +285,18 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
              "ebitda", "revenue", ("oi", "depreciation_amortization", "rev"),
              lambda r: (r["oi"] + r["depreciation_amortization"], r["rev"]),
              require_positive_denominator=True),
+    # --- Altman Z'' components + composite distress score (S10d; 'health' family) ---
+    RatioDef("retained_earnings_to_assets", "profitability", "ratio", "ratio",
+             "retained_earnings", "assets", ("retained_earnings", "assets"),
+             lambda r: (r["retained_earnings"], r["assets"]), require_positive_denominator=True),
+    RatioDef("equity_to_liabilities", "leverage", "ratio", "ratio",
+             "stockholders_equity", "liabilities", ("equity", "liabilities"),
+             lambda r: (r["equity"], r["liabilities"]), require_positive_denominator=True),
+    RatioDef("altman_z_double_prime", "health", "score", "score",
+             "altman_z_double_prime_components", "n/a",
+             ("current_assets", "current_liabilities", "assets", "retained_earnings", "oi", "liabilities", "equity"),
+             lambda r: (None, None),
+             composite=lambda r: _altman_z_double_prime(r)),
 )
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
@@ -272,6 +307,7 @@ XBRL_BALANCE_INPUTS = {
     "cash_and_equivalents": "cash_and_equivalents",
     "inventory": "inventory",
     "long_term_debt": "long_term_debt",
+    "retained_earnings": "retained_earnings",
 }
 
 # Annual (duration) flow metrics from the consolidated inline-XBRL extraction,
@@ -309,6 +345,38 @@ def _ratio_id(source: str, security_id: str, ratio_code: str, basis: str,
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _ratio_record(d, rec, source, basis, run_id, value, num, den, is_meaningful, available_at) -> dict:
+    period_end = rec.get("period_end")
+    return {
+        "ratio_id": _ratio_id(source, rec.get("security_id"), d.code, basis, period_end, available_at),
+        "source": source,
+        "upstream_source": rec.get("upstream_source"),
+        "security_id": rec.get("security_id"),
+        "symbol": rec.get("symbol"),
+        "cik": rec.get("cik"),
+        "ratio_code": d.code,
+        "ratio_category": d.category,
+        "ratio_kind": d.kind,
+        "basis": basis,
+        "unit": d.unit,
+        "period_start": rec.get("period_start"),
+        "period_end": period_end,
+        "fiscal_year": rec.get("fiscal_year"),
+        "fiscal_period": rec.get("fiscal_period"),
+        "value": value,
+        "numerator_code": d.numerator_code,
+        "numerator_value": num,
+        "denominator_code": None if d.composite is not None else d.denominator_code,
+        "denominator_value": den,
+        "is_meaningful": is_meaningful,
+        "is_latest_revision": True,
+        "as_of_date": period_end,
+        "available_at": available_at,
+        "input_codes_json": json_dumps(list(d.inputs)),
+        "run_id": run_id,
+    }
+
+
 def compute_ratio_rows(
     inputs: pd.DataFrame,
     *,
@@ -335,6 +403,15 @@ def compute_ratio_rows(
             avs = [rec.get(f"{k}_av") for k in d.inputs]
             if not all(_present(a) for a in avs):
                 continue
+            available_at = max(avs)
+            if d.composite is not None:
+                value = d.composite(rec)
+                if not _present(value):
+                    continue
+                records.append(_ratio_record(
+                    d, rec, source, basis, run_id, float(value), None, None, True, available_at
+                ))
+                continue
             num, den = d.operands(rec)
             if not _present(num) or not _present(den):
                 continue
@@ -356,37 +433,9 @@ def compute_ratio_rows(
                     continue
                 value = num / den
                 is_meaningful = (not d.require_positive_denominator) or den > 0
-            available_at = max(avs)
-            records.append(
-                {
-                    "ratio_id": _ratio_id(source, rec.get("security_id"), d.code, basis, period_end, available_at),
-                    "source": source,
-                    "upstream_source": rec.get("upstream_source"),
-                    "security_id": rec.get("security_id"),
-                    "symbol": rec.get("symbol"),
-                    "cik": rec.get("cik"),
-                    "ratio_code": d.code,
-                    "ratio_category": d.category,
-                    "ratio_kind": d.kind,
-                    "basis": basis,
-                    "unit": d.unit,
-                    "period_start": rec.get("period_start"),
-                    "period_end": period_end,
-                    "fiscal_year": rec.get("fiscal_year"),
-                    "fiscal_period": rec.get("fiscal_period"),
-                    "value": value,
-                    "numerator_code": d.numerator_code,
-                    "numerator_value": num,
-                    "denominator_code": d.denominator_code,
-                    "denominator_value": den,
-                    "is_meaningful": is_meaningful,
-                    "is_latest_revision": True,
-                    "as_of_date": period_end,
-                    "available_at": available_at,
-                    "input_codes_json": json_dumps(list(d.inputs)),
-                    "run_id": run_id,
-                }
-            )
+            records.append(_ratio_record(
+                d, rec, source, basis, run_id, value, num, den, is_meaningful, available_at
+            ))
 
     if not records:
         return pd.DataFrame(columns=RATIO_COLUMNS)
@@ -531,6 +580,7 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             balx.cash_and_equivalents, balx.cash_and_equivalents_av,
             balx.inventory, balx.inventory_av,
             balx.long_term_debt, balx.long_term_debt_av,
+            balx.retained_earnings, balx.retained_earnings_av,
             flowx.gross_profit, flowx.gross_profit_av,
             flowx.cost_of_revenue, flowx.cost_of_revenue_av,
             flowx.interest_expense, flowx.interest_expense_av,

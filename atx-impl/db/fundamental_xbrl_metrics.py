@@ -42,6 +42,7 @@ INSTANT_CONCEPT_MAP = {
     "CashAndCashEquivalentsAtCarryingValue": "cash_and_equivalents",
     "InventoryNet": "inventory",
     "LongTermDebt": "long_term_debt",  # total long-term debt incl. current portion (S10b)
+    "RetainedEarningsAccumulatedDeficit": "retained_earnings",  # Altman Z'' component (S10d)
 }
 
 # Duration (flow) concepts — picked from ~annual (350-380 day) duration contexts only,

@@ -106,6 +106,9 @@ class TestNormalizeXbrlMetrics:
     def test_concept_map_covers_debt_input(self):
         assert CONCEPT_MAP["LongTermDebt"] == "long_term_debt"
 
+    def test_concept_map_covers_retained_earnings(self):
+        assert CONCEPT_MAP["RetainedEarningsAccumulatedDeficit"] == "retained_earnings"
+
     def test_concept_map_covers_flow_inputs(self):
         assert CONCEPT_MAP["GrossProfit"] == "gross_profit"
         assert CONCEPT_MAP["CostOfGoodsAndServicesSold"] == "cost_of_revenue"
