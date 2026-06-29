@@ -133,7 +133,7 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 - `short_interest` need served by `finra_short_interest` (Domain 9).
 
 **Gap:**
-- **Single source `adjusted_close` remains on `equity_daily_bars`** — split-only and split+dividend total-return close now live in `daily_adjustment_factors`, but downstream return/panel views have not yet been switched to those explicit semantics.
+- **Single source `adjusted_close` remains on `equity_daily_bars`** — split-only and split+dividend total-return close now live in `daily_adjustment_factors`, and `daily_panel_asof` exposes those explicit adjusted-close and adjusted-return semantics. The base `v_equity_daily_returns` view remains raw-close-only for backward compatibility.
 - No **`quote_eod`** (bid/ask/spread, close_type A/T/B), no three-close model (official auction vs consolidated tape vs composite).
 - **Share-count limits:** `shares_outstanding_history` now covers public XBRL current/basic/diluted share counts, but it is not yet a CRSP daily `SHROUT` equivalent and does not cover float, treasury shares, exchange-sourced daily shares, or split-factor-integrated daily market-cap restatements.
 - No **`bar_intraday`**; corporate-action factors are still local/public-evidence derived and do not yet include full spinoff, merger, or delisting-return policies.

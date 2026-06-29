@@ -236,6 +236,35 @@ def test_daily_adjustment_factors_asof_uses_latest_visible_snapshot(tmp_store):
     assert jan9_after["total_return_adjusted_close"] == pytest.approx(49.5)
 
 
+def test_daily_panel_asof_includes_explicit_adjusted_return_semantics(tmp_store):
+    from db.asof import daily_panel_asof
+    from db.daily_adjustments import DailyAdjustmentFactorOptions, refresh_daily_adjustment_factors
+
+    _seed_price_and_actions(tmp_store)
+    refresh_daily_adjustment_factors(
+        tmp_store,
+        DailyAdjustmentFactorOptions(as_of_date=dt.date(2024, 1, 20)),
+    )
+    db_path = tmp_store.path
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    panel = daily_panel_asof(
+        dt.date(2024, 1, 20),
+        db_path=db_path,
+        symbols=("TEST",),
+    )
+
+    panel_dates = panel["trade_date"].map(_date_value)
+    split_day = panel.loc[panel_dates == dt.date(2024, 1, 10)].iloc[0]
+    assert split_day["close"] == pytest.approx(50.0)
+    assert split_day["split_adjusted_close"] == pytest.approx(50.0)
+    assert split_day["total_return_adjusted_close"] == pytest.approx(49.5)
+    assert split_day["simple_return"] == pytest.approx(-0.5)
+    assert split_day["split_adjusted_return"] == pytest.approx(0.0)
+    assert split_day["total_return_adjusted_return"] == pytest.approx(0.0)
+
+
 def test_daily_adjustment_dataset_records_run_quality_and_watermarks(tmp_store):
     from db.daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
     from db.quality import run_warehouse_quality_checks

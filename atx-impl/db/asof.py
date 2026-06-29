@@ -294,6 +294,51 @@ WITH params AS (
     SELECT
         CAST(? AS DATE) AS as_of_date,
         CAST(? AS TIMESTAMP) AS as_of_ts
+),
+bars AS (
+    SELECT
+        b.*
+    FROM equity_daily_bars b
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE b.trade_date <= p.as_of_date
+      AND (b.available_at IS NULL OR b.available_at <= p.as_of_ts)
+),
+adjustment_ranked AS (
+    SELECT
+        d.*,
+        row_number() OVER (
+            PARTITION BY d.bar_source, d.security_id, d.trade_date
+            ORDER BY d.as_of_date DESC,
+                     d.available_at DESC NULLS LAST,
+                     d.source_loaded_at DESC NULLS LAST,
+                     d.factor_source DESC,
+                     d.source DESC,
+                     d.daily_adjustment_id DESC
+        ) AS rn
+    FROM daily_adjustment_factors d
+    CROSS JOIN params p
+    WHERE d.trade_date <= p.as_of_date
+      AND d.as_of_date <= p.as_of_date
+      AND (d.available_at IS NULL OR d.available_at <= p.as_of_ts)
+),
+adjustments AS (
+    SELECT *
+    FROM adjustment_ranked
+    WHERE rn = 1
+),
+adjustment_returns AS (
+    SELECT
+        a.*,
+        lag(a.split_adjusted_close) OVER (
+            PARTITION BY a.bar_source, a.security_id
+            ORDER BY a.trade_date
+        ) AS prev_split_adjusted_close,
+        lag(a.total_return_adjusted_close) OVER (
+            PARTITION BY a.bar_source, a.security_id
+            ORDER BY a.trade_date
+        ) AS prev_total_return_adjusted_close
+    FROM adjustments a
 )
 SELECT
     b.security_id,
@@ -304,18 +349,45 @@ SELECT
     b.low,
     b.close,
     b.adjusted_close,
+    ar.split_adjusted_close,
+    ar.total_return_adjusted_close,
+    ar.split_price_factor,
+    ar.split_share_factor,
+    ar.dividend_total_return_factor,
+    ar.total_return_price_factor,
     b.volume,
+    ar.split_adjusted_volume,
     r.simple_return,
-    r.log_return
-FROM equity_daily_bars b
+    r.log_return,
+    CASE
+        WHEN ar.prev_split_adjusted_close IS NOT NULL AND ar.prev_split_adjusted_close > 0
+            THEN ar.split_adjusted_close / ar.prev_split_adjusted_close - 1.0
+        ELSE NULL
+    END AS split_adjusted_return,
+    CASE
+        WHEN ar.prev_split_adjusted_close IS NOT NULL AND ar.prev_split_adjusted_close > 0
+            THEN ln(ar.split_adjusted_close / ar.prev_split_adjusted_close)
+        ELSE NULL
+    END AS split_adjusted_log_return,
+    CASE
+        WHEN ar.prev_total_return_adjusted_close IS NOT NULL AND ar.prev_total_return_adjusted_close > 0
+            THEN ar.total_return_adjusted_close / ar.prev_total_return_adjusted_close - 1.0
+        ELSE NULL
+    END AS total_return_adjusted_return,
+    CASE
+        WHEN ar.prev_total_return_adjusted_close IS NOT NULL AND ar.prev_total_return_adjusted_close > 0
+            THEN ln(ar.total_return_adjusted_close / ar.prev_total_return_adjusted_close)
+        ELSE NULL
+    END AS total_return_adjusted_log_return
+FROM bars b
 LEFT JOIN v_equity_daily_returns r
   ON r.source = b.source
  AND r.security_id = b.security_id
  AND r.trade_date = b.trade_date
-{symbol_join}
-CROSS JOIN params p
-WHERE b.trade_date <= p.as_of_date
-  AND (b.available_at IS NULL OR b.available_at <= p.as_of_ts)
+LEFT JOIN adjustment_returns ar
+  ON ar.bar_source = b.source
+ AND ar.security_id = b.security_id
+ AND ar.trade_date = b.trade_date
 ORDER BY b.security_id, b.trade_date
 """
 
