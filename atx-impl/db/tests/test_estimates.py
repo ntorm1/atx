@@ -35,10 +35,19 @@ from db.estimates import (
     EstimateMeasureSeedOptions,
     EstimateRecommendationDataset,
     EstimateRecommendationOptions,
+    EstimateRecommendationSummaryDataset,
+    EstimateRecommendationSummaryOptions,
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
-from db.asof import est_actual_asof, est_consensus_asof, est_detail_asof, est_recommendation_asof, est_surprise_asof
+from db.asof import (
+    est_actual_asof,
+    est_consensus_asof,
+    est_detail_asof,
+    est_recommendation_asof,
+    est_recommendation_summary_asof,
+    est_surprise_asof,
+)
 from db.quality import run_warehouse_quality_checks
 
 
@@ -137,11 +146,11 @@ class TestMigration:
         ).fetchall()
         assert len(rows) == 1, "Migration version 18 not recorded in schema_migrations"
 
-    def test_schema_migrations_version_22(self, tmp_store):
+    def test_schema_migrations_version_24(self, tmp_store):
         rows = tmp_store.con.execute(
-            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) IN (19, 20, 21, 22)"
+            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) IN (19, 20, 21, 22, 23, 24)"
         ).fetchall()
-        assert len(rows) == 4, "Migration versions 19/20/21/22 not recorded in schema_migrations"
+        assert len(rows) == 6, "Migration versions 19/20/21/22/23/24 not recorded in schema_migrations"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -897,6 +906,149 @@ class TestInjectableLoaders:
         by_type = {row["event_type"]: row for _, row in feb.iterrows()}
         assert by_type["RECOMMENDATION"]["recommendation_code"] == 3
         assert by_type["PRICE_TARGET"]["price_target"] == pytest.approx(205.0)
+
+    def test_recommendation_summary_file_loader_normalizes_ptgsum_and_recdsum_rows(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_recommendation_summary.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,cusip,statpers,meanrec,num_strong_buy,num_buy,num_hold,num_underperform,num_sell,meanptg,medptg,highptg,lowptg,numptg,estcur,horizon",
+                    "AAPL,AAPL,03783310,2024-01-31,2.4,3,5,4,1,0,210.5,208.0,225.0,190.0,13,USD,12",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = EstimateRecommendationSummaryDataset().run(
+            tmp_store,
+            EstimateRecommendationSummaryOptions(
+                source_file=source,
+                provider_name="IBES",
+                vendor_security_id_type="IBES_TICKER",
+                source_vendor_table="recdsum_ptgsum_fixture",
+            ),
+        )
+
+        assert result.rows_loaded == 1
+        row = tmp_store.con.execute(
+            """
+            SELECT
+                provider, security_id, symbol, vendor_security_id, source_vendor_table,
+                snapshot_date, available_at, mean_recommendation, strong_buy_count,
+                buy_count, hold_count, underperform_count, sell_count,
+                buy_equivalent_count, sell_equivalent_count, total_recommendations,
+                mean_price_target, median_price_target, high_price_target, low_price_target,
+                price_target_count, target_currency, target_horizon_months
+            FROM est_recommendation_summary
+            """
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "IBES"
+        assert row[1] == "US-TICKER-AAPL"
+        assert row[2] == "AAPL"
+        assert row[3] == "AAPL"
+        assert row[4] == "RECDSUM_PTGSUM_FIXTURE"
+        assert row[5] == dt.date(2024, 1, 31)
+        assert row[6] == dt.datetime(2024, 1, 31, 23, 59, 59)
+        assert row[7] == pytest.approx(2.4)
+        assert row[8:16] == (3, 5, 4, 1, 0, 8, 1, 13)
+        assert row[16] == pytest.approx(210.5)
+        assert row[17] == pytest.approx(208.0)
+        assert row[18] == pytest.approx(225.0)
+        assert row[19] == pytest.approx(190.0)
+        assert row[20:] == (13, "USD", 12)
+
+    def test_recommendation_summary_loader_converts_higher_is_bullish_rating_scale(self, tmp_store, tmp_path):
+        source = tmp_path / "bloomberg_recommendation_summary.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,statpers,best_analyst_rating,best_analyst_recs,best_recs_buys,best_recs_holds,best_recs_sells,best_target_price",
+                    "AAPL,2024-02-29,4.2,20,12,6,2,215.0",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = EstimateRecommendationSummaryDataset().run(
+            tmp_store,
+            EstimateRecommendationSummaryOptions(
+                source_file=source,
+                provider_name="BLOOMBERG",
+                vendor_security_id_type="BLOOMBERG_TICKER",
+                source_vendor_table="BEST",
+                rating_scale="BLOOMBERG_BEST_1_SELL_5_BUY",
+                scale_direction="HIGHER_IS_BULLISH",
+            ),
+        )
+
+        assert result.rows_loaded == 1
+        row = tmp_store.con.execute(
+            """
+            SELECT
+                mean_recommendation, scale_direction, buy_equivalent_count,
+                hold_count, sell_equivalent_count, total_recommendations,
+                mean_price_target, target_horizon_months
+            FROM est_recommendation_summary
+            """
+        ).fetchone()
+        assert row == (pytest.approx(1.8), "HIGHER_IS_BULLISH", 12, 6, 2, 20, pytest.approx(215.0), 12)
+
+    def test_recommendation_summary_file_loader_is_idempotent_per_source_file(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_recommendation_summary.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,statpers,meanrec,numrec",
+                    "AAPL,2024-01-31,2.4,13",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        options = EstimateRecommendationSummaryOptions(source_file=source, provider_name="IBES")
+        r1 = EstimateRecommendationSummaryDataset().run(tmp_store, options)
+        r2 = EstimateRecommendationSummaryDataset().run(tmp_store, options)
+        count = tmp_store.con.execute("SELECT count(*) FROM est_recommendation_summary").fetchone()[0]
+        assert r1.rows_loaded == 1
+        assert r2.rows_loaded == 1
+        assert count == 1
+
+    def test_recommendation_summary_asof_returns_latest_visible_snapshot(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_recommendation_summary.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,statpers,available_at,meanrec,numrec,meanptg,numptg",
+                    "AAPL,AAPL,2024-01-31,2024-02-01 10:00:00,2.5,10,200,8",
+                    "AAPL,AAPL,2024-02-29,2024-03-01 10:00:00,2.1,12,215,9",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        EstimateRecommendationSummaryDataset().run(
+            tmp_store,
+            EstimateRecommendationSummaryOptions(source_file=source, provider_name="IBES"),
+        )
+
+        feb = est_recommendation_summary_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 15),
+            as_of_ts=dt.datetime(2024, 2, 15, 23, 59, 59),
+            symbols=("AAPL",),
+        )
+        mar = est_recommendation_summary_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 3, 2),
+            as_of_ts=dt.datetime(2024, 3, 2, 23, 59, 59),
+            symbols=("AAPL",),
+        )
+
+        assert len(feb) == 1
+        assert feb.iloc[0]["snapshot_date"].date() == dt.date(2024, 1, 31)
+        assert feb.iloc[0]["mean_price_target"] == pytest.approx(200.0)
+        assert len(mar) == 1
+        assert mar.iloc[0]["snapshot_date"].date() == dt.date(2024, 2, 29)
+        assert mar.iloc[0]["mean_recommendation"] == pytest.approx(2.1)
 
     def test_detail_file_loader_normalizes_ibes_style_rows(self, tmp_store, tmp_path):
         source = tmp_path / "ibes_detail.csv"

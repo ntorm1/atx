@@ -25,6 +25,8 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 20 in versions, f"Migration 0020 not recorded; found: {versions}"
     assert 21 in versions, f"Migration 0021 not recorded; found: {versions}"
     assert 22 in versions, f"Migration 0022 not recorded; found: {versions}"
+    assert 23 in versions, f"Migration 0023 not recorded; found: {versions}"
+    assert 24 in versions, f"Migration 0024 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -198,6 +200,41 @@ def test_migration_0022_catalogs_est_recommendation_identifiers(tmp_store):
         """
     ).fetchall()
     assert rows == [("source_file_sha256", "identifier"), ("symbol", "identifier")]
+
+
+def test_migration_0024_catalogs_est_recommendation_summary(tmp_store):
+    """Migration 0024 indexes and catalogs aggregate recommendation snapshots."""
+
+    table_exists = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'est_recommendation_summary'
+        """
+    ).fetchone()[0]
+    assert table_exists == 1
+
+    catalog_rows = tmp_store.con.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'est_recommendation_summary'),
+            (SELECT count(*) FROM table_catalog WHERE table_name = 'est_recommendation_summary'),
+            (
+                SELECT count(*)
+                FROM duckdb_columns() c
+                WHERE c.schema_name = 'main'
+                  AND c.table_name = 'est_recommendation_summary'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM field_catalog f
+                      WHERE f.table_name = c.table_name
+                        AND f.field_name = c.column_name
+                  )
+            )
+        """
+    ).fetchone()
+    assert catalog_rows == (1, 1, 0)
 
 
 def test_migration_0013_daily_adjustment_factors_exist(tmp_store):

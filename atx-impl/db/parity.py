@@ -209,6 +209,7 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "est_consensus",
             "est_guidance",
             "est_recommendation",
+            "est_recommendation_summary",
             "feature_values",
         ),
         parity_status="partial",
@@ -646,14 +647,24 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "est_detail CSV injector normalizes IBES-like detail files and normalized files into "
             "est_detail with est_broker/est_analyst alias dimensions, est_period_dim, source-file hashes, "
             "and est_detail_asof PIT queries; est_recommendation CSV injector normalizes IBES recddet/ptgdet-style "
-            "recommendation and price-target events with canonical IBES 1=Strong Buy..5=Sell scale and active-window as-of queries."
+            "recommendation and price-target events with canonical IBES 1=Strong Buy..5=Sell scale and active-window as-of queries; "
+            "est_recommendation_summary normalizes recdsum/ptgsum-style aggregate recommendation distributions and price-target summaries."
         ),
-        warehouse_tables=("est_detail", "est_broker", "est_broker_alias", "est_analyst", "est_analyst_alias", "est_period_dim", "est_recommendation"),
+        warehouse_tables=(
+            "est_detail",
+            "est_broker",
+            "est_broker_alias",
+            "est_analyst",
+            "est_analyst_alias",
+            "est_period_dim",
+            "est_recommendation",
+            "est_recommendation_summary",
+        ),
         parity_status="partial",
         limitations=(
             "detail broker estimates remain licensed or manually injectable; no public source can reconstruct full broker/analyst grain"
         ),
-        next_gap="Load a real licensed IBES/FactSet Estimates file, add recommendation/price-target summary normalization, and reconcile vendor identifiers.",
+        next_gap="Load real licensed/manual IBES/FactSet estimate files, reconcile vendor identifiers, and add SEC 8-K guidance extraction.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-estimates-api",
         ),

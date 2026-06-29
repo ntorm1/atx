@@ -105,6 +105,7 @@ PUBLIC_ROW_COUNT_TABLES = (
     "est_surprise",
     "est_guidance",
     "est_recommendation",
+    "est_recommendation_summary",
     "sec_submissions",
     "thirteenf_submissions",
     "thirteenf_cover_pages",
@@ -224,6 +225,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "est_surprise": job_name(args.job_prefix, "est_surprise"),
         "est_detail": job_name(args.job_prefix, "est_detail"),
         "est_recommendation": job_name(args.job_prefix, "est_recommendation"),
+        "est_recommendation_summary": job_name(args.job_prefix, "est_recommendation_summary"),
         "finra_short_interest": job_name(args.job_prefix, "finra_short_interest"),
         "finra_short_interest_features": job_name(args.job_prefix, "finra_short_interest_features"),
         "sec_13f": job_name(args.job_prefix, "sec_13f"),
@@ -461,6 +463,24 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
                 **retry_policy,
             )
             ordered.append(names["est_recommendation"])
+        if args.estimate_recommendation_summary_file:
+            manager.register_job(
+                job_name=names["est_recommendation_summary"],
+                dataset_id="est_recommendation_summary",
+                params=clean_params(
+                    {
+                        "source_file": str(args.estimate_recommendation_summary_file),
+                        "provider_name": args.estimate_recommendation_summary_provider,
+                        "vendor_security_id_type": args.estimate_recommendation_summary_vendor_id_type,
+                        "source_vendor_table": args.estimate_recommendation_summary_source_table,
+                        "rating_scale": args.estimate_recommendation_summary_rating_scale,
+                        "scale_direction": args.estimate_recommendation_summary_scale_direction,
+                    }
+                ),
+                dependencies=[],
+                **retry_policy,
+            )
+            ordered.append(names["est_recommendation_summary"])
 
     if not args.skip_submissions:
         manager.register_job(
@@ -1137,6 +1157,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--estimate-recommendation-provider", default="INJECTED")
     parser.add_argument("--estimate-recommendation-vendor-id-type", default="IBES_TICKER")
     parser.add_argument("--estimate-recommendation-source-table")
+    parser.add_argument("--estimate-recommendation-summary-file", type=Path)
+    parser.add_argument("--estimate-recommendation-summary-provider", default="INJECTED")
+    parser.add_argument("--estimate-recommendation-summary-vendor-id-type", default="IBES_TICKER")
+    parser.add_argument("--estimate-recommendation-summary-source-table")
+    parser.add_argument("--estimate-recommendation-summary-rating-scale", default="IBES_1_STRONG_BUY_5_SELL")
+    parser.add_argument(
+        "--estimate-recommendation-summary-scale-direction",
+        default="LOWER_IS_BULLISH",
+        choices=("LOWER_IS_BULLISH", "HIGHER_IS_BULLISH"),
+    )
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-xbrl-filing-contexts", action="store_true")
     parser.add_argument("--skip-finra", action="store_true")

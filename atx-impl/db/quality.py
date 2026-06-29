@@ -4218,6 +4218,114 @@ def _check_specs(
             warn_if_missing=True,
         ),
         SqlQualityCheck(
+            dataset_id="est_recommendation_summary",
+            table_name="est_recommendation_summary",
+            check_name="est_recommendation_summary_missing_available_at",
+            sql="SELECT count(*)::DOUBLE FROM est_recommendation_summary WHERE available_at IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation_summary",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation_summary",
+            table_name="est_recommendation_summary",
+            check_name="est_recommendation_summary_duplicate_id",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT est_recommendation_summary_id, count(*) AS row_count
+                    FROM est_recommendation_summary
+                    WHERE est_recommendation_summary_id IS NOT NULL
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation_summary",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation_summary",
+            table_name="est_recommendation_summary",
+            check_name="est_recommendation_summary_invalid_rating_mean",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_recommendation_summary
+                WHERE (mean_recommendation IS NOT NULL AND (mean_recommendation < 1 OR mean_recommendation > 5))
+                   OR (median_recommendation IS NOT NULL AND (median_recommendation < 1 OR median_recommendation > 5))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation_summary",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation_summary",
+            table_name="est_recommendation_summary",
+            check_name="est_recommendation_summary_negative_counts",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_recommendation_summary
+                WHERE coalesce(strong_buy_count, 0) < 0
+                   OR coalesce(buy_count, 0) < 0
+                   OR coalesce(hold_count, 0) < 0
+                   OR coalesce(underperform_count, 0) < 0
+                   OR coalesce(sell_count, 0) < 0
+                   OR coalesce(buy_equivalent_count, 0) < 0
+                   OR coalesce(sell_equivalent_count, 0) < 0
+                   OR coalesce(total_recommendations, 0) < 0
+                   OR coalesce(price_target_count, 0) < 0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation_summary",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation_summary",
+            table_name="est_recommendation_summary",
+            check_name="est_recommendation_summary_bad_total_count",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_recommendation_summary
+                WHERE total_recommendations IS NOT NULL
+                  AND (
+                    coalesce(strong_buy_count, 0)
+                    + coalesce(buy_count, 0)
+                    + coalesce(hold_count, 0)
+                    + coalesce(underperform_count, 0)
+                    + coalesce(sell_count, 0)
+                  ) > total_recommendations
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation_summary",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_recommendation_summary",
+            table_name="est_recommendation_summary",
+            check_name="est_recommendation_summary_invalid_price_target_stats",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_recommendation_summary
+                WHERE coalesce(mean_price_target, 1) <= 0
+                   OR coalesce(median_price_target, 1) <= 0
+                   OR coalesce(high_price_target, 1) <= 0
+                   OR coalesce(low_price_target, 1) <= 0
+                   OR (high_price_target IS NOT NULL AND low_price_target IS NOT NULL AND high_price_target < low_price_target)
+                   OR (mean_price_target IS NOT NULL AND high_price_target IS NOT NULL AND mean_price_target > high_price_target)
+                   OR (mean_price_target IS NOT NULL AND low_price_target IS NOT NULL AND mean_price_target < low_price_target)
+                   OR (target_horizon_months IS NOT NULL AND target_horizon_months <= 0)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_recommendation_summary",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
             dataset_id="est_detail",
             table_name="est_detail",
             check_name="est_detail_missing_available_at",

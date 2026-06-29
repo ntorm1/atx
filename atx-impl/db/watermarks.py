@@ -397,6 +397,24 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'est_recommendation_summary', 'max_snapshot_date', max(snapshot_date)::VARCHAR
+    FROM est_recommendation_summary
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_recommendation_summary', 'max_price_target_snapshot_date', max(snapshot_date)::VARCHAR
+    FROM est_recommendation_summary
+    WHERE mean_price_target IS NOT NULL
+       OR median_price_target IS NOT NULL
+       OR price_target_count IS NOT NULL
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_recommendation_summary', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_recommendation_summary
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'fred_macro', 'max_observation_date', max(observation_date)::VARCHAR
     FROM macro_observations
     HAVING count(*) > 0

@@ -84,6 +84,8 @@ from .estimates import (
     EstimateGuidanceOptions,
     EstimateRecommendationDataset,
     EstimateRecommendationOptions,
+    EstimateRecommendationSummaryDataset,
+    EstimateRecommendationSummaryOptions,
 )
 from .xbrl_taxonomy import XbrlTaxonomyDataset, XbrlTaxonomyOptions
 
@@ -288,6 +290,21 @@ def _estimate_recommendation_options(params: dict[str, Any]) -> EstimateRecommen
         provider_name=params.get("provider_name") or default.provider_name,
         vendor_security_id_type=params.get("vendor_security_id_type") or default.vendor_security_id_type,
         source_vendor_table=params.get("source_vendor_table") or default.source_vendor_table,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _estimate_recommendation_summary_options(params: dict[str, Any]) -> EstimateRecommendationSummaryOptions:
+    default = EstimateRecommendationSummaryOptions()
+    return EstimateRecommendationSummaryOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source=params.get("source") or default.source,
+        provider_name=params.get("provider_name") or default.provider_name,
+        vendor_security_id_type=params.get("vendor_security_id_type") or default.vendor_security_id_type,
+        source_vendor_table=params.get("source_vendor_table") or default.source_vendor_table,
+        rating_scale=params.get("rating_scale") or default.rating_scale,
+        scale_direction=params.get("scale_direction") or default.scale_direction,
         replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
         run_id=params.get("run_id") or default.run_id,
     )
@@ -671,6 +688,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         EstimateRecommendationDataset,
         _estimate_recommendation_options,
     ),
+    EstimateRecommendationSummaryDataset.dataset_id: (
+        EstimateRecommendationSummaryDataset,
+        _estimate_recommendation_summary_options,
+    ),
 }
 
 
@@ -970,6 +991,11 @@ class JobManager:
         self.register_job(job_name="est_guidance", dataset_id="est_guidance", **retry_policy)
         self.register_job(
             job_name="est_recommendation", dataset_id="est_recommendation", **retry_policy
+        )
+        self.register_job(
+            job_name="est_recommendation_summary",
+            dataset_id="est_recommendation_summary",
+            **retry_policy,
         )
 
     def run_job(

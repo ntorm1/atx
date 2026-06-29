@@ -1493,6 +1493,180 @@ def _estimate_recommendation_catalog_semantics(conn: duckdb.DuckDBPyConnection) 
     )
 
 
+def _estimate_recommendation_summary_snapshots(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5i: aggregate recommendation and price-target snapshot table."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS est_recommendation_summary (
+            est_recommendation_summary_id VARCHAR PRIMARY KEY,
+            security_id VARCHAR,
+            symbol VARCHAR,
+            vendor_security_id VARCHAR,
+            vendor_security_id_type VARCHAR,
+            cusip VARCHAR,
+            provider VARCHAR NOT NULL,
+            source_vendor_table VARCHAR,
+            snapshot_date DATE NOT NULL,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            mean_recommendation DOUBLE,
+            median_recommendation DOUBLE,
+            rating_scale VARCHAR,
+            scale_direction VARCHAR,
+            strong_buy_count INTEGER,
+            buy_count INTEGER,
+            hold_count INTEGER,
+            underperform_count INTEGER,
+            sell_count INTEGER,
+            buy_equivalent_count INTEGER,
+            sell_equivalent_count INTEGER,
+            total_recommendations INTEGER,
+            mean_price_target DOUBLE,
+            median_price_target DOUBLE,
+            high_price_target DOUBLE,
+            low_price_target DOUBLE,
+            price_target_count INTEGER,
+            target_currency VARCHAR,
+            target_horizon_months INTEGER,
+            provider_scale_notes VARCHAR,
+            source_file VARCHAR,
+            source_file_sha256 VARCHAR,
+            raw_payload_json VARCHAR,
+            run_id VARCHAR,
+            source VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+
+def _estimate_recommendation_summary_indexes_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5i: index and catalog aggregate recommendation snapshots."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_summary_id ON est_recommendation_summary(est_recommendation_summary_id)",
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_summary_security ON est_recommendation_summary(security_id, snapshot_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_summary_symbol ON est_recommendation_summary(symbol, snapshot_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_recommendation_summary_vendor ON est_recommendation_summary(provider, vendor_security_id_type, vendor_security_id, source_vendor_table, snapshot_date)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id,
+            source_system_id,
+            name,
+            description,
+            grain,
+            primary_table,
+            pit_column,
+            available_at_column,
+            updated_at
+        )
+        VALUES (
+            'est_recommendation_summary',
+            'injected_estimates',
+            'Recommendation and price-target summary snapshots',
+            'Injectable aggregate recommendation distributions and monthly price-target summaries from IBES recdsum/ptgsum-style or normalized provider files.',
+            'security_or_vendor_id,snapshot_date,source_vendor_table',
+            'est_recommendation_summary',
+            'snapshot_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name,
+            layer,
+            entity,
+            grain,
+            description,
+            natural_key_json,
+            pit_notes,
+            updated_at
+        )
+        VALUES (
+            'est_recommendation_summary',
+            'silver',
+            'estimate_recommendation_summary',
+            'security_or_vendor_id,provider,source_vendor_table,snapshot_date',
+            'Aggregate recommendation distributions and price-target summary snapshots with canonical IBES-direction rating means.',
+            '["est_recommendation_summary_id"]',
+            'Use available_at and snapshot_date for PIT visibility; scale_direction records provider numeric rating polarity before canonical conversion.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name,
+            field_name,
+            semantic_type,
+            description,
+            nullable,
+            unit,
+            source_field,
+            updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'est_recommendation_summary_id', 'security_id', 'symbol',
+                    'vendor_security_id', 'cusip', 'source_file_sha256', 'run_id'
+                ) THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%_date' OR upper(c.data_type) = 'DATE' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN lower(c.column_name) LIKE '%price%' OR lower(c.column_name) LIKE '%target%' THEN 'price'
+                WHEN lower(c.column_name) LIKE '%count%'
+                  OR lower(c.column_name) LIKE '%mean%'
+                  OR lower(c.column_name) LIKE '%median%'
+                  OR lower(c.column_name) LIKE '%high%'
+                  OR lower(c.column_name) LIKE '%low%'
+                  OR upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL')
+                THEN 'measure'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'est_recommendation_summary_id' THEN 'Deterministic recommendation-summary snapshot identifier.'
+                WHEN 'snapshot_date' THEN 'Provider summary snapshot date, such as IBES statpers/month-end.'
+                WHEN 'available_at' THEN 'Timestamp when the summary snapshot is treated as visible for PIT research.'
+                WHEN 'mean_recommendation' THEN 'Canonical mean recommendation on the IBES 1=Strong Buy to 5=Sell direction.'
+                WHEN 'scale_direction' THEN 'Original provider numeric rating polarity before canonical conversion.'
+                WHEN 'buy_equivalent_count' THEN 'Aggregate bullish recommendation count when source combines Strong Buy and Buy.'
+                WHEN 'sell_equivalent_count' THEN 'Aggregate bearish recommendation count when source combines Underperform and Sell.'
+                WHEN 'mean_price_target' THEN 'Mean provider price target for the snapshot.'
+                WHEN 'price_target_count' THEN 'Number of price-target observations in the aggregate snapshot.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on est_recommendation_summary.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN c.column_name IN ('mean_price_target', 'median_price_target', 'high_price_target', 'low_price_target') THEN 'target_currency'
+                WHEN c.column_name = 'target_horizon_months' THEN 'months'
+                WHEN lower(c.column_name) LIKE '%_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'est_recommendation_summary'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -1604,6 +1778,16 @@ MIGRATIONS: list[Migration] = [
         version=22,
         name="estimate_recommendation_catalog_semantics",
         up=_estimate_recommendation_catalog_semantics,
+    ),
+    Migration(
+        version=23,
+        name="estimate_recommendation_summary_snapshots",
+        up=_estimate_recommendation_summary_snapshots,
+    ),
+    Migration(
+        version=24,
+        name="estimate_recommendation_summary_indexes_catalog",
+        up=_estimate_recommendation_summary_indexes_catalog,
     ),
 ]
 

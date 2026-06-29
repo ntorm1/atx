@@ -2092,6 +2092,92 @@ def est_recommendation_asof(
         return _run(store)
 
 
+def est_recommendation_summary_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    providers: tuple[str, ...] | list[str] | None = None,
+    source_vendor_tables: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest visible aggregate recommendation/target snapshots as-of PIT."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            joins = []
+            sid_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_symbols(symbols)
+            provider_values = _normalize_strings(providers)
+            table_values = _normalize_strings(source_vendor_tables)
+            if _register_filter(store, "asof_est_rec_summary_sid_filter", "security_id", sid_values):
+                registered.append("asof_est_rec_summary_sid_filter")
+                joins.append("JOIN asof_est_rec_summary_sid_filter sf ON sf.security_id = s.security_id")
+            if _register_filter(store, "asof_est_rec_summary_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_est_rec_summary_symbol_filter")
+                joins.append("JOIN asof_est_rec_summary_symbol_filter syf ON syf.symbol = s.symbol")
+            if _register_filter(store, "asof_est_rec_summary_provider_filter", "provider", provider_values):
+                registered.append("asof_est_rec_summary_provider_filter")
+                joins.append("JOIN asof_est_rec_summary_provider_filter pf ON pf.provider = s.provider")
+            if _register_filter(store, "asof_est_rec_summary_table_filter", "source_vendor_table", table_values):
+                registered.append("asof_est_rec_summary_table_filter")
+                joins.append(
+                    "JOIN asof_est_rec_summary_table_filter tf "
+                    "ON tf.source_vendor_table = upper(s.source_vendor_table)"
+                )
+            sql = f"""
+            WITH params AS (
+                SELECT
+                    CAST(? AS DATE) AS as_of_date,
+                    CAST(? AS TIMESTAMP) AS as_of_ts
+            ),
+            ranked AS (
+                SELECT
+                    s.*,
+                    row_number() OVER (
+                        PARTITION BY
+                            coalesce(s.security_id, ''),
+                            coalesce(s.symbol, ''),
+                            coalesce(s.vendor_security_id_type, ''),
+                            coalesce(s.vendor_security_id, ''),
+                            coalesce(s.provider, ''),
+                            coalesce(s.source_vendor_table, '')
+                        ORDER BY
+                            s.snapshot_date DESC,
+                            s.available_at DESC,
+                            s.source_loaded_at DESC,
+                            s.est_recommendation_summary_id DESC
+                    ) AS rn
+                FROM est_recommendation_summary s
+                {' '.join(joins)}
+                CROSS JOIN params p
+                WHERE s.available_at <= p.as_of_ts
+                  AND s.as_of_date <= p.as_of_date
+                  AND s.snapshot_date <= p.as_of_date
+            )
+            SELECT * EXCLUDE (rn)
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY provider, symbol, security_id, source_vendor_table, snapshot_date
+            """
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
 def identifier_decisions_asof(
     as_of_date: dt.date,
     as_of_ts: dt.datetime | None = None,

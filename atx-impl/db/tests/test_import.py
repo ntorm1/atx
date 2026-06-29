@@ -18,6 +18,7 @@ def test_key_dataset_classes_importable():
         EquityDailyFeatureDataset,
         FinraShortInterestDataset,
         FredMacroDataset,
+        EstimateRecommendationSummaryDataset,
         SecCompanyFactsDataset,
         SecSubmissionsDataset,
         SecurityMasterDataset,
@@ -35,6 +36,7 @@ def test_key_dataset_classes_importable():
     assert EquityDailyFeatureDataset is not None
     assert FinraShortInterestDataset is not None
     assert FredMacroDataset is not None
+    assert EstimateRecommendationSummaryDataset is not None
     assert SecCompanyFactsDataset is not None
     assert SecSubmissionsDataset is not None
     assert SecurityMasterDataset is not None

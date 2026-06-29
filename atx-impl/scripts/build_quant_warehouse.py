@@ -36,6 +36,8 @@ from db.estimates import (
     EstimateMeasureSeedOptions,
     EstimateRecommendationDataset,
     EstimateRecommendationOptions,
+    EstimateRecommendationSummaryDataset,
+    EstimateRecommendationSummaryOptions,
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
@@ -97,6 +99,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--estimate-recommendation-source-table",
         default=EstimateRecommendationOptions().source_vendor_table,
+    )
+    parser.add_argument("--estimate-recommendation-summary-file", type=Path)
+    parser.add_argument(
+        "--estimate-recommendation-summary-provider",
+        default=EstimateRecommendationSummaryOptions().provider_name,
+    )
+    parser.add_argument(
+        "--estimate-recommendation-summary-vendor-id-type",
+        default=EstimateRecommendationSummaryOptions().vendor_security_id_type,
+    )
+    parser.add_argument(
+        "--estimate-recommendation-summary-source-table",
+        default=EstimateRecommendationSummaryOptions().source_vendor_table,
+    )
+    parser.add_argument(
+        "--estimate-recommendation-summary-rating-scale",
+        default=EstimateRecommendationSummaryOptions().rating_scale,
+    )
+    parser.add_argument(
+        "--estimate-recommendation-summary-scale-direction",
+        default=EstimateRecommendationSummaryOptions().scale_direction,
+        choices=("LOWER_IS_BULLISH", "HIGHER_IS_BULLISH"),
     )
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-13f", action="store_true")
@@ -288,6 +312,20 @@ def main() -> int:
                                 provider_name=args.estimate_recommendation_provider,
                                 vendor_security_id_type=args.estimate_recommendation_vendor_id_type,
                                 source_vendor_table=args.estimate_recommendation_source_table,
+                            ),
+                        )
+                    )
+                if args.estimate_recommendation_summary_file:
+                    results.append(
+                        EstimateRecommendationSummaryDataset().run(
+                            store,
+                            EstimateRecommendationSummaryOptions(
+                                source_file=args.estimate_recommendation_summary_file,
+                                provider_name=args.estimate_recommendation_summary_provider,
+                                vendor_security_id_type=args.estimate_recommendation_summary_vendor_id_type,
+                                source_vendor_table=args.estimate_recommendation_summary_source_table,
+                                rating_scale=args.estimate_recommendation_summary_rating_scale,
+                                scale_direction=args.estimate_recommendation_summary_scale_direction,
                             ),
                         )
                     )
