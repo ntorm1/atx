@@ -220,6 +220,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "xbrl_filing_contexts": job_name(args.job_prefix, "xbrl_filing_contexts"),
         "est_measure": job_name(args.job_prefix, "est_measure"),
         "est_actual": job_name(args.job_prefix, "est_actual"),
+        "est_consensus": job_name(args.job_prefix, "est_consensus"),
         "est_surprise": job_name(args.job_prefix, "est_surprise"),
         "est_detail": job_name(args.job_prefix, "est_detail"),
         "finra_short_interest": job_name(args.job_prefix, "finra_short_interest"),
@@ -406,10 +407,25 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         )
         ordered.append(names["est_actual"])
         manager.register_job(
+            job_name=names["est_consensus"],
+            dataset_id="est_consensus",
+            params=clean_params(
+                {
+                    "source_file": str(args.estimate_consensus_file) if args.estimate_consensus_file else None,
+                    "provider_name": args.estimate_consensus_provider,
+                    "vendor_security_id_type": args.estimate_consensus_vendor_id_type,
+                    "stale_after_days": args.estimate_consensus_stale_days,
+                }
+            ),
+            dependencies=[],
+            **retry_policy,
+        )
+        ordered.append(names["est_consensus"])
+        manager.register_job(
             job_name=names["est_surprise"],
             dataset_id="est_surprise",
             params={},
-            dependencies=[names["est_actual"]],
+            dependencies=[names["est_actual"], names["est_consensus"]],
             **retry_policy,
         )
         ordered.append(names["est_surprise"])
@@ -1093,6 +1109,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-xbrl-taxonomy", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")
     parser.add_argument("--skip-estimates", action="store_true")
+    parser.add_argument("--estimate-consensus-file", type=Path)
+    parser.add_argument("--estimate-consensus-provider", default="INJECTED")
+    parser.add_argument("--estimate-consensus-vendor-id-type", default="IBES_TICKER")
+    parser.add_argument("--estimate-consensus-stale-days", type=int, default=105)
     parser.add_argument("--estimate-detail-file", type=Path)
     parser.add_argument("--estimate-detail-provider", default="INJECTED")
     parser.add_argument("--estimate-detail-vendor-id-type", default="IBES_TICKER")

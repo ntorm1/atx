@@ -18,6 +18,9 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 13 in versions, f"Migration 0013 not recorded; found: {versions}"
     assert 14 in versions, f"Migration 0014 not recorded; found: {versions}"
     assert 15 in versions, f"Migration 0015 not recorded; found: {versions}"
+    assert 16 in versions, f"Migration 0016 not recorded; found: {versions}"
+    assert 17 in versions, f"Migration 0017 not recorded; found: {versions}"
+    assert 18 in versions, f"Migration 0018 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):

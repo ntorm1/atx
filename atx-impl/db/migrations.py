@@ -1284,6 +1284,46 @@ def _insider_ownership(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _estimate_consensus_snapshots(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5g: vendor-injectable consensus snapshots with stable ids and PIT lineage."""
+
+    conn.execute("DROP INDEX IF EXISTS idx_est_consensus_key")
+    for statement in (
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS est_consensus_id VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS provider VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS symbol VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS vendor_security_id VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS vendor_security_id_type VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS source_vendor_table VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS fpi VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS period_type VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS expected_report_date DATE",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS pdf VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS basis VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS is_gaap BOOLEAN",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS unit VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS stale_after_date DATE",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS source_file VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS source_file_sha256 VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS raw_payload_json VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+    ):
+        conn.execute(statement)
+
+
+def _estimate_consensus_snapshot_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5g: index consensus snapshots after the additive schema migration commits."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_est_consensus_key ON est_consensus(security_id, measure_code, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_est_consensus_id ON est_consensus(est_consensus_id)",
+        "CREATE INDEX IF NOT EXISTS idx_est_consensus_pit ON est_consensus(security_id, measure_code, period_end, consensus_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_consensus_symbol ON est_consensus(symbol, measure_code, period_end, consensus_date)",
+        "CREATE INDEX IF NOT EXISTS idx_est_consensus_vendor ON est_consensus(provider, vendor_security_id_type, vendor_security_id, measure_code, period_end)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -1365,6 +1405,16 @@ MIGRATIONS: list[Migration] = [
         version=16,
         name="estimate_detail_panel",
         up=_estimate_detail_panel,
+    ),
+    Migration(
+        version=17,
+        name="estimate_consensus_snapshots",
+        up=_estimate_consensus_snapshots,
+    ),
+    Migration(
+        version=18,
+        name="estimate_consensus_snapshot_indexes",
+        up=_estimate_consensus_snapshot_indexes,
     ),
 ]
 

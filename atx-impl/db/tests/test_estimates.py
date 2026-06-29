@@ -38,7 +38,7 @@ from db.estimates import (
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
-from db.asof import est_actual_asof, est_detail_asof, est_surprise_asof
+from db.asof import est_actual_asof, est_consensus_asof, est_detail_asof, est_surprise_asof
 from db.quality import run_warehouse_quality_checks
 
 
@@ -124,6 +124,18 @@ class TestMigration:
             "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) = 16"
         ).fetchall()
         assert len(rows) == 1, "Migration version 16 not recorded in schema_migrations"
+
+    def test_schema_migrations_version_17(self, tmp_store):
+        rows = tmp_store.con.execute(
+            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) = 17"
+        ).fetchall()
+        assert len(rows) == 1, "Migration version 17 not recorded in schema_migrations"
+
+    def test_schema_migrations_version_18(self, tmp_store):
+        rows = tmp_store.con.execute(
+            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) = 18"
+        ).fetchall()
+        assert len(rows) == 1, "Migration version 18 not recorded in schema_migrations"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -548,6 +560,145 @@ class TestInjectableLoaders:
         if hasattr(avail, "to_pydatetime"):
             avail = avail.to_pydatetime().replace(tzinfo=None)
         assert before <= avail <= after
+
+    def test_consensus_file_loader_normalizes_ibes_summary_rows(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_summary.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,measure,fpi,fpedats,statpers,meanest,medest,highest,lowest,stdev,numest,numup,numdown,currency,pdf",
+                    "AAPL,AAPL,EPS,7,2024-03-31,2024-01-18,2.10,2.08,2.20,2.00,0.05,12,3,1,USD,D",
+                    "AAPL,AAPL,EPS,7,2024-03-31,2024-02-15,2.25,2.20,2.35,2.05,0.06,14,4,0,USD,D",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = EstimateConsensusDataset().run(
+            tmp_store,
+            EstimateConsensusOptions(
+                source_file=source,
+                provider_name="IBES",
+                vendor_security_id_type="IBES_TICKER",
+            ),
+        )
+
+        assert result.rows_loaded == 2
+        row = tmp_store.con.execute(
+            """
+            SELECT
+                provider, security_id, symbol, vendor_security_id,
+                vendor_security_id_type, measure_code, fiscal_period,
+                period_type, mean, median, high, low, stdev,
+                num_estimates, num_up, num_down, available_at,
+                stale_after_date, est_consensus_id
+            FROM est_consensus
+            ORDER BY consensus_date
+            LIMIT 1
+            """
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "IBES"
+        assert row[1] == "US-TICKER-AAPL"
+        assert row[2] == "AAPL"
+        assert row[3] == "AAPL"
+        assert row[4] == "IBES_TICKER"
+        assert row[5] == "EPS_DILUTED"
+        assert row[6] == "Q1"
+        assert row[7] == "FQ"
+        assert row[8] == pytest.approx(2.10)
+        assert row[9] == pytest.approx(2.08)
+        assert row[10] == pytest.approx(2.20)
+        assert row[11] == pytest.approx(2.00)
+        assert row[12] == pytest.approx(0.05)
+        assert row[13:16] == (12, 3, 1)
+        assert row[16] == dt.datetime(2024, 1, 18, 23, 59, 59)
+        assert row[17] == dt.date(2024, 5, 2)
+        assert row[18].startswith("EST-CONSENSUS-")
+
+        counts = tmp_store.con.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM est_consensus),
+                (SELECT count(*) FROM est_period_dim),
+                (SELECT count(*) FROM raw_source_files WHERE dataset_id = 'est_consensus')
+            """
+        ).fetchone()
+        assert counts == (2, 1, 1)
+
+    def test_consensus_file_loader_is_idempotent_per_source_file(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_summary.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,measure,fpi,fpedats,statpers,meanest,numest",
+                    "AAPL,AAPL,EPS,7,2024-03-31,2024-01-18,2.10,12",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        options = EstimateConsensusOptions(source_file=source, provider_name="IBES")
+        r1 = EstimateConsensusDataset().run(tmp_store, options)
+        r2 = EstimateConsensusDataset().run(tmp_store, options)
+        count = tmp_store.con.execute("SELECT count(*) FROM est_consensus").fetchone()[0]
+        assert r1.rows_loaded == 1
+        assert r2.rows_loaded == 1
+        assert count == 1
+
+    def test_consensus_asof_returns_latest_visible_nonstale_snapshot(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_summary.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,measure,fpi,fpedats,statpers,meanest,numest",
+                    "AAPL,AAPL,EPS,7,2024-03-31,2024-01-18,2.10,12",
+                    "AAPL,AAPL,EPS,7,2024-03-31,2024-02-15,2.25,14",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        EstimateConsensusDataset().run(
+            tmp_store,
+            EstimateConsensusOptions(source_file=source, provider_name="IBES"),
+        )
+
+        jan = est_consensus_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 1, 20),
+            as_of_ts=dt.datetime(2024, 1, 20, 23, 59, 59),
+            symbols=("AAPL",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        feb = est_consensus_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 20),
+            as_of_ts=dt.datetime(2024, 2, 20, 23, 59, 59),
+            symbols=("AAPL",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        stale = est_consensus_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 6, 1),
+            as_of_ts=dt.datetime(2024, 6, 1, 23, 59, 59),
+            symbols=("AAPL",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        stale_included = est_consensus_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 6, 1),
+            as_of_ts=dt.datetime(2024, 6, 1, 23, 59, 59),
+            symbols=("AAPL",),
+            measure_codes=("EPS_DILUTED",),
+            include_stale=True,
+        )
+
+        assert len(jan) == 1
+        assert jan.iloc[0]["mean"] == pytest.approx(2.10)
+        assert len(feb) == 1
+        assert feb.iloc[0]["mean"] == pytest.approx(2.25)
+        assert len(stale) == 0
+        assert len(stale_included) == 1
+        assert stale_included.iloc[0]["mean"] == pytest.approx(2.25)
 
     def test_guidance_no_provider_zero_rows(self, tmp_store):
         result = EstimateGuidanceDataset().run(tmp_store, EstimateGuidanceOptions())

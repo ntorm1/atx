@@ -361,6 +361,11 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'est_consensus', 'max_period_end', max(period_end)::VARCHAR
+    FROM est_consensus
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'est_consensus', 'max_available_at', max(available_at)::VARCHAR
     FROM est_consensus
     HAVING count(*) > 0

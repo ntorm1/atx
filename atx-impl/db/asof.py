@@ -1734,44 +1734,92 @@ def est_consensus_asof(
     as_of_date: dt.date,
     as_of_ts: dt.datetime | None = None,
     security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
     measure_codes: tuple[str, ...] | list[str] | None = None,
+    providers: tuple[str, ...] | list[str] | None = None,
+    include_stale: bool = False,
+    stale_after_days: int = 105,
     db_path: Path | str = DEFAULT_DB_PATH,
 ) -> pd.DataFrame:
-    """Return est_consensus rows visible as-of a PIT timestamp."""
+    """Return latest est_consensus snapshots visible as-of a PIT timestamp."""
     from .connection import DuckDBStore as _DuckDBStore
 
     as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    stale_min_date = as_of_date - dt.timedelta(days=max(int(stale_after_days), 0))
 
     def _run(store):
         registered = []
         try:
-            sid_join = ""
-            mc_join = ""
+            joins: list[str] = []
             sid_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_symbols(symbols)
             mc_values = _normalize_strings(measure_codes)
+            provider_values = _normalize_strings(providers)
             if sid_values:
-                store.con.register(
-                    "asof_est_consensus_sid_filter",
-                    pd.DataFrame({"security_id": sid_values}),
-                )
+                store.con.register("asof_est_consensus_sid_filter", pd.DataFrame({"security_id": sid_values}))
                 registered.append("asof_est_consensus_sid_filter")
-                sid_join = "JOIN asof_est_consensus_sid_filter sf ON sf.security_id = c.security_id"
+                joins.append("JOIN asof_est_consensus_sid_filter sf ON sf.security_id = c.security_id")
+            if symbol_values:
+                store.con.register("asof_est_consensus_symbol_filter", pd.DataFrame({"symbol": symbol_values}))
+                registered.append("asof_est_consensus_symbol_filter")
+                joins.append("JOIN asof_est_consensus_symbol_filter syf ON syf.symbol = c.symbol")
             if mc_values:
-                store.con.register(
-                    "asof_est_consensus_mc_filter",
-                    pd.DataFrame({"measure_code": mc_values}),
-                )
+                store.con.register("asof_est_consensus_mc_filter", pd.DataFrame({"measure_code": mc_values}))
                 registered.append("asof_est_consensus_mc_filter")
-                mc_join = "JOIN asof_est_consensus_mc_filter mf ON mf.measure_code = c.measure_code"
+                joins.append("JOIN asof_est_consensus_mc_filter mf ON mf.measure_code = c.measure_code")
+            if provider_values:
+                store.con.register("asof_est_consensus_provider_filter", pd.DataFrame({"provider": provider_values}))
+                registered.append("asof_est_consensus_provider_filter")
+                joins.append("JOIN asof_est_consensus_provider_filter pf ON pf.provider = c.provider")
+            stale_filter = ""
+            params: list[object] = [as_of_ts, as_of_date, as_of_date]
+            if not include_stale:
+                stale_filter = """
+                  AND (
+                        (c.stale_after_date IS NOT NULL AND c.stale_after_date >= CAST(? AS DATE))
+                     OR (c.stale_after_date IS NULL AND c.consensus_date >= CAST(? AS DATE))
+                  )
+                """
+                params.extend([as_of_date, stale_min_date])
             sql = f"""
-            SELECT c.*
-            FROM est_consensus c
-            {sid_join}
-            {mc_join}
-            WHERE (c.available_at IS NULL OR c.available_at <= CAST(? AS TIMESTAMP))
-            ORDER BY c.security_id, c.measure_code, c.period_end
+            WITH visible AS (
+                SELECT c.*
+                FROM est_consensus c
+                {' '.join(joins)}
+                WHERE (c.available_at IS NULL OR c.available_at <= CAST(? AS TIMESTAMP))
+                  AND (c.consensus_date IS NULL OR c.consensus_date <= CAST(? AS DATE))
+                  AND (c.as_of_date IS NULL OR c.as_of_date <= CAST(? AS DATE))
+                  {stale_filter}
+            ),
+            ranked AS (
+                SELECT
+                    visible.*,
+                    row_number() OVER (
+                        PARTITION BY
+                            coalesce(visible.security_id, ''),
+                            coalesce(visible.symbol, ''),
+                            coalesce(visible.vendor_security_id_type, ''),
+                            coalesce(visible.vendor_security_id, ''),
+                            visible.measure_code,
+                            visible.period_end,
+                            coalesce(visible.fpi, ''),
+                            coalesce(visible.currency, ''),
+                            coalesce(visible.pdf, ''),
+                            coalesce(visible.basis, '')
+                        ORDER BY
+                            coalesce(visible.available_at, visible.source_loaded_at) DESC,
+                            visible.consensus_date DESC NULLS LAST,
+                            visible.source_loaded_at DESC,
+                            coalesce(visible.est_consensus_id, '') DESC
+                    ) AS rn
+                FROM visible
+            )
+            SELECT * EXCLUDE (rn)
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY provider, symbol, security_id, measure_code, period_end
             """
-            return store.con.execute(sql, [as_of_ts]).df()
+            return store.con.execute(sql, params).df()
         finally:
             for relation in registered:
                 store.con.unregister(relation)

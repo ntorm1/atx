@@ -28,6 +28,8 @@ from db.features import (
 from db.estimates import (
     EstimateActualsDataset,
     EstimateActualsOptions,
+    EstimateConsensusDataset,
+    EstimateConsensusOptions,
     EstimateDetailDataset,
     EstimateDetailOptions,
     EstimateMeasureSeedDataset,
@@ -67,6 +69,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-shares-outstanding", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")
     parser.add_argument("--skip-estimates", action="store_true")
+    parser.add_argument("--estimate-consensus-file", type=Path)
+    parser.add_argument("--estimate-consensus-provider", default=EstimateConsensusOptions().provider_name)
+    parser.add_argument(
+        "--estimate-consensus-vendor-id-type",
+        default=EstimateConsensusOptions().vendor_security_id_type,
+    )
+    parser.add_argument(
+        "--estimate-consensus-stale-days",
+        type=int,
+        default=EstimateConsensusOptions().stale_after_days,
+    )
     parser.add_argument("--estimate-detail-file", type=Path)
     parser.add_argument("--estimate-detail-provider", default=EstimateDetailOptions().provider)
     parser.add_argument(
@@ -230,6 +243,18 @@ def main() -> int:
                         EstimateActualsOptions(security_ids=None),
                     )
                 )
+                if args.estimate_consensus_file:
+                    results.append(
+                        EstimateConsensusDataset().run(
+                            store,
+                            EstimateConsensusOptions(
+                                source_file=args.estimate_consensus_file,
+                                provider_name=args.estimate_consensus_provider,
+                                vendor_security_id_type=args.estimate_consensus_vendor_id_type,
+                                stale_after_days=args.estimate_consensus_stale_days,
+                            ),
+                        )
+                    )
                 results.append(EstimateSurpriseDataset().run(store, EstimateSurpriseOptions()))
                 if args.estimate_detail_file:
                     results.append(

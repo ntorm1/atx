@@ -4,10 +4,11 @@
 Runs datasets in dependency order:
   1. est_measure   — static measure dimension seed (5 rows)
   2. est_actual    — REAL: maps sec_company_facts XBRL facts to measure codes
-  3. est_surprise  — REAL derived: SUE via seasonal-random-walk-with-drift (Foster-Olsen-Shevlin 1984)
-  4. est_consensus — injectable; default-empty (skip unless --run-injectable)
-  5. est_guidance  — injectable; default-empty (skip unless --run-injectable)
-  6. est_recommendation — injectable; default-empty (skip unless --run-injectable)
+  3. est_consensus — injectable; default-empty unless a source file/provider is supplied
+  4. est_surprise  — REAL derived: SUE via seasonal-random-walk-with-drift (Foster-Olsen-Shevlin 1984)
+  5. est_detail    — injectable broker/analyst detail file
+  6. est_guidance  — injectable; default-empty (skip unless --run-injectable)
+  7. est_recommendation — injectable; default-empty (skip unless --run-injectable)
 
 Usage
 -----
@@ -80,6 +81,17 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Also run injectable loaders (consensus/guidance/recommendation) — no-ops without providers.",
     )
+    parser.add_argument("--estimate-consensus-file", type=Path)
+    parser.add_argument("--estimate-consensus-provider", default=EstimateConsensusOptions().provider_name)
+    parser.add_argument(
+        "--estimate-consensus-vendor-id-type",
+        default=EstimateConsensusOptions().vendor_security_id_type,
+    )
+    parser.add_argument(
+        "--estimate-consensus-stale-days",
+        type=int,
+        default=EstimateConsensusOptions().stale_after_days,
+    )
     parser.add_argument("--estimate-detail-file", type=Path)
     parser.add_argument("--estimate-detail-provider", default=EstimateDetailOptions().provider)
     parser.add_argument(
@@ -119,7 +131,29 @@ def main() -> int:
             )
         )
 
-        # 3. SUE surprise (derived from est_actual)
+        if args.estimate_consensus_file or args.run_injectable:
+            r_consensus = EstimateConsensusDataset().run(
+                store,
+                EstimateConsensusOptions(
+                    source_file=args.estimate_consensus_file,
+                    provider_name=args.estimate_consensus_provider,
+                    vendor_security_id_type=args.estimate_consensus_vendor_id_type,
+                    stale_after_days=args.estimate_consensus_stale_days,
+                ),
+            )
+            print(
+                json.dumps(
+                    {
+                        "step": "est_consensus",
+                        "rows_loaded": r_consensus.rows_loaded,
+                        "details": r_consensus.details,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+
+        # 4. SUE surprise (derived from est_actual, optionally enriched by est_consensus)
         r3 = EstimateSurpriseDataset().run(
             store,
             EstimateSurpriseOptions(
@@ -162,10 +196,6 @@ def main() -> int:
             )
 
         if args.run_injectable:
-            # 4-6. Injectable loaders (default-empty without providers)
-            r4 = EstimateConsensusDataset().run(store, EstimateConsensusOptions())
-            print(json.dumps({"step": "est_consensus", "rows_loaded": r4.rows_loaded}, indent=2, default=str))
-
             r5 = EstimateGuidanceDataset().run(store, EstimateGuidanceOptions())
             print(json.dumps({"step": "est_guidance", "rows_loaded": r5.rows_loaded}, indent=2, default=str))
 

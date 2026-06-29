@@ -4064,6 +4064,83 @@ def _check_specs(
             warn_if_missing=True,
         ),
         SqlQualityCheck(
+            dataset_id="est_consensus",
+            table_name="est_consensus",
+            check_name="est_consensus_missing_available_at",
+            sql="SELECT count(*)::DOUBLE FROM est_consensus WHERE available_at IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_consensus",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_consensus",
+            table_name="est_consensus",
+            check_name="est_consensus_duplicate_id",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT est_consensus_id, count(*) AS row_count
+                    FROM est_consensus
+                    WHERE est_consensus_id IS NOT NULL
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_consensus",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_consensus",
+            table_name="est_consensus",
+            check_name="est_consensus_invalid_stat_range",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_consensus
+                WHERE (high IS NOT NULL AND low IS NOT NULL AND high < low)
+                   OR (mean IS NOT NULL AND high IS NOT NULL AND mean > high)
+                   OR (mean IS NOT NULL AND low IS NOT NULL AND mean < low)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_consensus",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_consensus",
+            table_name="est_consensus",
+            check_name="est_consensus_negative_counts",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_consensus
+                WHERE coalesce(num_estimates, 0) < 0
+                   OR coalesce(num_up, 0) < 0
+                   OR coalesce(num_down, 0) < 0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_consensus",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_consensus",
+            table_name="est_consensus",
+            check_name="est_consensus_invalid_stale_window",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_consensus
+                WHERE stale_after_date IS NOT NULL
+                  AND consensus_date IS NOT NULL
+                  AND stale_after_date < consensus_date
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_consensus",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
             dataset_id="est_detail",
             table_name="est_detail",
             check_name="est_detail_missing_available_at",

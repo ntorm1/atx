@@ -617,13 +617,13 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         institutional_keys=("security_id", "measure_code", "fiscal_year", "fiscal_period", "consensus_date"),
         pit_fields=("consensus_date", "available_at", "source_loaded_at"),
         factors_or_fields=("mean estimate", "median estimate", "high/low estimate", "stdev", "num_estimates", "revisions"),
-        open_substitute="est_consensus table with injectable provider connector; default-empty.",
+        open_substitute="est_consensus table with IBES-style/normalized CSV injection, stable snapshot ids, source-file hashes, stale-after windows, period-dim updates, and latest-as-of APIs; default DB remains empty without licensed/manual files.",
         warehouse_tables=("est_consensus", "est_detail", "est_broker", "est_broker_alias", "est_analyst", "est_analyst_alias", "est_period_dim"),
         parity_status="partial",
         limitations=(
-            "licensed: IBES/FactSet Estimates/Zacks; consensus is injectable/default-empty; no open-data consensus source"
+            "licensed: IBES/FactSet Estimates/Zacks; consensus loader is schema-ready but default DB has no open-data consensus source"
         ),
-        next_gap="Wire licensed IBES/FactSet/Zacks consensus snapshot feed or public aggregator file into est_consensus.",
+        next_gap="Load a real licensed IBES/FactSet/Zacks consensus snapshot feed or approved public aggregator file and reconcile vendor identifiers.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-estimates-api",
             "https://www.lseg.com/en/data-analytics/financial-data/estimates",

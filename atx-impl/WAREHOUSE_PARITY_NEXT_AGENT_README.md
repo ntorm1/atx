@@ -5,51 +5,49 @@ This handoff covers the US-equity fundamentals/public-alt-data warehouse parity 
 ## Current State
 
 - S4 fundamentals depth is complete in code: canonical statement map coverage, bank/insurance/REIT overlays, four-date period model (`datadate`, `rdq`, `pdate`, `fdate`, `ldate`), and SQL XBRL calculation-linkbase validation.
-- S5a is complete in code: `shares_outstanding_history` derives PIT share counts from normalized SEC XBRL statement points and is exposed through jobs, lake export, watermarks, quality checks, scripts, and `shares_outstanding_asof`.
-- S5b is partially complete in code: `corp_action_type_dim` and `adjustment_factor_history` create an event-level factor spine over existing `corporate_actions`. The default live DB has only inferred cash-dividend rows from local ticker history right now.
-- Full DB test suite passed after S5b: `python -m pytest atx-impl\db\tests -q`.
-- Live default DB was migrated through `0011`; live counts at handoff were: `shares_outstanding_history=342`, `corporate_actions=142`, `corp_action_type_dim=5`, `adjustment_factor_history=142`.
+- S5a-S5c pricing/corporate-action spine is complete in code: PIT shares outstanding, action-type dimensions, event-level adjustment factors, daily cumulative adjustment factors, and adjusted daily-panel return columns.
+- S5d-S5e delisting spine is complete in code for public evidence and injectable observed terminal returns: `delist_code_dim`, `delisting_events`, and `delisting_return_observations`. Default returns remain null unless a licensed/manual file is loaded or an explicit imputation option is used.
+- S5f-S5g estimates injection surfaces are complete in code for detail and consensus snapshots: `est_detail` loads IBES-like broker/analyst detail rows; `est_consensus` loads IBES `statsumu`-style or normalized summary snapshots with stable ids, source-file hashes, stale windows, period dimensions, quality checks, watermarks, lake exports, and as-of APIs.
+- Full DB test suite passed after S5g: `python -m pytest db\tests -q`.
+- Live default DB is migrated through `0018`; live estimate counts after S5g smoke are `est_actual=1,240`, `est_surprise=1,222`, `est_consensus=0` by design until a licensed/manual consensus file is injected.
 
 ## Important Caveat
 
-Right before the stop request, a live CLI smoke exposed a data issue in S5b: one KO row with `factor_price=0.5` and a huge inferred `cash_div_amount` is currently classified as `CASH_DIV` because the source `corporate_actions` row was inferred as `cash_dividend_inferred`. Next agent should add a conservative split-artifact heuristic before building on adjustment factors:
+Default DB estimate detail/consensus rows remain empty unless a licensed/manual file is injected. The schema, loader, as-of API, watermarks, lake export, and quality checks are ready, but no real IBES/FactSet/CIQ/Zacks files have been loaded into the shared DB.
 
-- If `adjustment_factor` is close to a common split price factor (`0.5`, `0.333333`, `0.25`, `2.0`, etc.) and inferred `cash_amount` is implausibly large relative to price/evidence, classify as `SPLIT` or quarantine as `OTHER`.
-- Ideally preserve both the raw source action and normalized event classification with a reason field.
-- Add a regression test using the KO-like `0.5` factor case.
+During S5g live smoke, an initial DuckDB migration shape triggered a DuckDB internal error while adding indexes in the same transaction as `ALTER TABLE`. The corrected implementation splits schema migration `0017` and index migration `0018`. The failed WAL was preserved as `db/atx_impl.duckdb.wal.failed-s5g-migration.20260629-074343.bak`, and the DB checkpoint was backed up as `db/atx_impl.duckdb.pre-s5g-wal-recovery.20260629-074343.bak` before moving the WAL aside.
 
 ## Key Files
 
 - Schema/migrations/catalog: `db/schema.py`, `db/migrations.py`, `db/parity.py`, `db/PARITY_GAP.md`
 - S4 fundamentals: `db/fundamental_statements.py`, `db/xbrl_validation.py`
-- S5 share counts: `db/shares_outstanding.py`, `db/asof.py`, `db/jobs.py`, `db/watermarks.py`, `db/quality.py`
-- S5 adjustment factors: `db/adjustment_factors.py`, plus the same as-of/jobs/watermark/quality/lake/script surfaces
+- S5 share counts / adjustment factors / delistings / estimates: `db/shares_outstanding.py`, `db/adjustment_factors.py`, `db/delisting.py`, `db/estimates.py`, plus `db/asof.py`, `db/jobs.py`, `db/watermarks.py`, `db/quality.py`
 - Scripts: `scripts/build_quant_warehouse.py`, `scripts/query_asof.py`
-- Tests added/updated: `db/tests/test_shares_outstanding_history.py`, `db/tests/test_adjustment_factors.py`, `db/tests/test_xbrl_validation.py`, `db/tests/test_fundamental_period_dates.py`, import/migration/job/quality tests
+- Tests added/updated across recent tranches: `db/tests/test_shares_outstanding_history.py`, `db/tests/test_adjustment_factors.py`, `db/tests/test_daily_adjustments.py`, `db/tests/test_delisting.py`, `db/tests/test_estimates.py`, `db/tests/test_xbrl_validation.py`, `db/tests/test_fundamental_period_dates.py`, import/migration/job/quality tests
 
 ## Recommended Next Slice
 
-1. Fix S5b classification for split-like artifacts in `adjustment_factors.py`.
-2. Add `adjustment_factor_history_asof` smoke coverage for split/quarantine cases.
-3. Add daily cumulative factor materialization only after event classification is trustworthy. Target fields: split-only price factor, share factor, and total-return dividend factor; keep raw close, split-adjusted close, and total-return adjusted close separate.
-4. Then move to delisting proxy tables from `listing_status_intervals`, but do not claim CRSP-quality `DLRET` until Form 25/15, OTC, merger consideration, or a defensible imputation policy exists.
+1. Load a small approved licensed/manual estimates sample through `--estimate-detail-file` and `--estimate-consensus-file`, then reconcile vendor identifiers (`IBES ticker`, CUSIP, FactSet fsym, CIQ trading item) to `security_id`.
+2. Add price-target and detailed recommendation normalization from IBES `ptgdet`/`ptgsum` and `recddet`/`recdsum`-style files, including rating-scale direction checks.
+3. Start SEC 8-K Item 2.02/7.01 guidance extraction into `est_guidance` with a tiny offline fixture corpus and no public API calls in tests.
+4. Separately, clean up existing non-estimate quality failures: duplicate identifier history keys, overlapping identifier intervals, catalog gaps, and XBRL validation rows.
 
 ## Verification Commands
 
 Run from `C:\atx`:
 
 ```powershell
-python -m pytest atx-impl\db\tests -q
+cd C:\atx\atx-impl
+python -m pytest db\tests -q
 ```
 
 Live smoke examples from `C:\atx\atx-impl`:
 
 ```powershell
-python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2026-06-28 --view shares-outstanding --symbols AAPL --share-count-types shares_outstanding --limit 5
-python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2013-03-15 --view adjustment-factors --symbols KO --event-types CASH_DIV --limit 3
+python scripts\build_estimates.py --db-path db\atx_impl.duckdb
+python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2026-06-29 --view estimate-consensus --limit 5
+python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2026-06-29 --view estimate-actuals --measure-codes EPS_DILUTED --limit 5
 ```
-
-The second smoke currently demonstrates the split-artifact caveat above.
 
 ## Tranche Tracking
 
@@ -68,4 +66,4 @@ Use `C:\atx\archive\research`, `C:\atx\atx-impl\db`, and `C:\atx\atx-impl\script
 
 The north star is full end-to-end replication quality for US equity fundamentals, ownership, corporate actions, pricing adjustments, reference data, estimates where public or injectable licensed feeds allow it, off-exchange/short-interest, macro, and other public alt-data surfaces. Prioritize production-quality infrastructure, explicit point-in-time semantics, versioned migrations, bitemporal availability fields, lineage, watermarks, lake exports, quality checks, as-of APIs, tests, and clear DB design over thin demos.
 
-Work autonomously for hours when needed. Avoid stopping to ask questions unless continuing would risk destructive or clearly mis-scoped work. Prefer making conservative, well-documented assumptions, implementing complete vertical slices, validating with tests and live smoke checks, and recording progress in markdown tranche ledgers with commit SHAs. Use subagents when useful to preserve main-agent context, but keep write scopes clear. Do not touch C++ code unless the user explicitly redirects.
+Work autonomously for hours when needed. Avoid stopping to ask questions unless continuing would risk destructive or clearly mis-scoped work. Prefer making conservative, well-documented assumptions, implementing complete vertical slices, validating with tests and live smoke checks, and recording progress in markdown tranche ledgers with commit SHAs. Use subagents when useful to preserve main-agent context, but keep write scopes clear. Do not touch C++ code unless the user explicitly redirects. Ensure testing suite stays light, fast, and avoids hitting public apis.

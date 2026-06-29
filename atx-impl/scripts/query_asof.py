@@ -93,6 +93,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measure-codes", help="Comma-separated estimate measure-code filter.")
     parser.add_argument("--brokers", help="Comma-separated estimate broker_id filter.")
     parser.add_argument("--analysts", help="Comma-separated estimate analyst_id filter.")
+    parser.add_argument(
+        "--include-stale-estimates",
+        action="store_true",
+        help="Include stale consensus estimate snapshots in estimate-consensus.",
+    )
+    parser.add_argument(
+        "--estimate-stale-days",
+        type=int,
+        default=105,
+        help="Consensus stale window in days for estimate-consensus (default: 105).",
+    )
     parser.add_argument("--statement-types", help="Comma-separated statement type filter.")
     parser.add_argument("--period-types", help="Comma-separated normalized fundamental period type filter.")
     parser.add_argument("--share-count-types", help="Comma-separated share-count type filter.")
@@ -214,7 +225,11 @@ def main() -> int:
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,
             security_ids=parse_id_csv(args.security_ids),
+            symbols=parse_csv(args.symbols),
             measure_codes=parse_csv(args.measure_codes),
+            providers=parse_csv(args.providers),
+            include_stale=args.include_stale_estimates,
+            stale_after_days=args.estimate_stale_days,
         )
     elif args.view == "estimate-guidance":
         frame = est_guidance_asof(

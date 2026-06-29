@@ -267,6 +267,19 @@ def _estimate_detail_options(params: dict[str, Any]) -> EstimateDetailOptions:
     )
 
 
+def _estimate_consensus_options(params: dict[str, Any]) -> EstimateConsensusOptions:
+    default = EstimateConsensusOptions()
+    return EstimateConsensusOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source=params.get("source") or default.source,
+        provider_name=params.get("provider_name") or default.provider_name,
+        vendor_security_id_type=params.get("vendor_security_id_type") or default.vendor_security_id_type,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        stale_after_days=int(params.get("stale_after_days", default.stale_after_days)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _finra_options(params: dict[str, Any]) -> FinraShortInterestOptions:
     default = FinraShortInterestOptions()
     return FinraShortInterestOptions(
@@ -635,7 +648,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ),
     EstimateConsensusDataset.dataset_id: (
         EstimateConsensusDataset,
-        lambda p: EstimateConsensusOptions(),
+        _estimate_consensus_options,
     ),
     EstimateGuidanceDataset.dataset_id: (
         EstimateGuidanceDataset,
@@ -928,14 +941,19 @@ class JobManager:
             **retry_policy,
         )
         self.register_job(
+            job_name="est_consensus",
+            dataset_id="est_consensus",
+            dependencies=[],
+            **retry_policy,
+        )
+        self.register_job(
             job_name="est_surprise",
             dataset_id="est_surprise",
-            # depends on est_actual; est_consensus is optional (soft-dep, not wired as hard dep)
-            dependencies=["est_actual"],
+            # est_consensus is default-empty but runs first when configured so surprise can use it.
+            dependencies=["est_actual", "est_consensus"],
             **retry_policy,
         )
         self.register_job(job_name="est_detail", dataset_id="est_detail", **retry_policy)
-        self.register_job(job_name="est_consensus", dataset_id="est_consensus", **retry_policy)
         self.register_job(job_name="est_guidance", dataset_id="est_guidance", **retry_policy)
         self.register_job(
             job_name="est_recommendation", dataset_id="est_recommendation", **retry_policy
