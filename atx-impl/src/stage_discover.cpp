@@ -8,6 +8,7 @@
 #include <limits>    // std::numeric_limits (W2 NaN vwap stub)
 #include <fstream>
 #include <iomanip>
+#include <locale>    // std::locale::classic (S6 fix: pin config_json formatting locale)
 #include <optional>
 #include <sstream>
 #include <string>
@@ -128,12 +129,22 @@ namespace {
     if (std::isnan(v))      return "\"nan\"";
     if (std::isinf(v))      return v < 0.0 ? "\"-inf\"" : "\"inf\"";
     std::ostringstream os;
+    // Pin the classic ("C") locale so the decimal separator is always '.' and no
+    // digit grouping is applied, regardless of the process/global locale. The
+    // determinism contract requires byte-identical config_json across runs/hosts;
+    // a future std::locale::global(...) or a host whose default imbues a comma
+    // separator / thousands grouping would otherwise corrupt the JSON + round-trip.
+    os.imbue(std::locale::classic());
     os << std::setprecision(17) << v;
     return os.str();
 }
 
 [[nodiscard]] std::string build_config_json(const RunConfig& cfg) {
     std::ostringstream os;
+    // Pin the classic ("C") locale so integer fields are emitted without digit
+    // grouping (and any stream-formatted text uses the C locale), regardless of the
+    // process/global locale — keeps config_json locale-independent (see json_num).
+    os.imbue(std::locale::classic());
     const char* sep = "";
     auto kv_s = [&](const char* k, const std::string& v) {
         os << sep << '"' << k << "\":\"" << json_escape(v) << '"';

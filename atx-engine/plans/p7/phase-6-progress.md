@@ -106,3 +106,16 @@ Actual locations at base `e1c421f`:
   with a prefix self-check; a zero-re-read in-memory splice is deferred because `alpha::Panel` carries no
   symbol/date axis (documented in the header). This is honest incremental ergonomics, not a perf win on
   the historical re-read.
+
+## Post-review fixes (whole-branch review M2,M3)
+
+- **Fix (M2,M3)**: complete — (1) pinned `config_json` formatting to the classic ("C") locale by imbuing
+  `std::locale::classic()` on the `std::ostringstream` in BOTH `json_num` (floats) and `build_config_json`
+  (integers/text) in `stage_discover.cpp` (+`#include <locale>`), so the JSON + round-trip stay
+  byte-identical regardless of a future `std::locale::global(...)` or a comma/grouping host locale;
+  (2) added a non-vacuous discover-digest tripwire `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`
+  in `provenance_digest_test.cpp` — two gated discover runs differing ONLY in `field_cardinality_max`
+  (serialized into config_json but NOT folded into `compute_discover_fingerprint`, and only read when
+  `--typed-fields`, which is OFF here) assert identical discover digest + `_manifest.txt` while the two
+  persisted `config_json` strings DIFFER (non-vacuous). provenance 5/5 green; provenance_digest 4/4 green
+  (incl. the new test); oracle/golden/digest slice 18/18 green.
