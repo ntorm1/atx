@@ -62,6 +62,14 @@ def _wide_row(**overrides) -> dict:
         "ocf_prior": 104.0, "ocf_prior_av": _ts("2025-05-01"),
         "assets_prior": 300.0, "assets_prior_av": _ts("2025-05-03"),
         "equity_prior": 50.0, "equity_prior_av": _ts("2025-05-01"),
+        # period-end common shares outstanding (XBRL instant) for the issuance signal (S10e)
+        "common_shares_outstanding": 15.0, "common_shares_outstanding_av": _ts("2026-05-01"),
+        # prior-year inputs for the Piotroski F-score year-over-year deltas (S10e)
+        "long_term_debt_prior": 100.0, "long_term_debt_prior_av": _ts("2025-05-01"),
+        "current_assets_prior": 150.0, "current_assets_prior_av": _ts("2025-05-01"),
+        "current_liabilities_prior": 90.0, "current_liabilities_prior_av": _ts("2025-05-01"),
+        "common_shares_outstanding_prior": 16.0, "common_shares_outstanding_prior_av": _ts("2025-05-01"),
+        "gross_profit_prior": 140.0, "gross_profit_prior_av": _ts("2025-05-01"),
         # consolidated inline-XBRL instant metrics for liquidity ratios (S10a)
         "current_assets": 200.0, "current_assets_av": _ts("2026-05-01"),
         "current_liabilities": 100.0, "current_liabilities_av": _ts("2026-05-01"),
@@ -148,6 +156,8 @@ class TestComputeRatioRows:
             # S10d: Altman Z'' components
             ("retained_earnings_to_assets", 200.0 / 350.0),
             ("equity_to_liabilities", 60.0 / 290.0),
+            # S10e: Piotroski F-score (all 9 signals pass on the canonical full row)
+            ("piotroski_f_score", 9.0),
         ],
     )
     def test_ratio_values(self, code, expected):
@@ -222,6 +232,42 @@ class TestComputeRatioRows:
     def test_altman_z_dropped_when_component_missing(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(retained_earnings=None, retained_earnings_av=None)])))
         assert "altman_z_double_prime" not in rows
+
+    def test_piotroski_f_score_all_signals_pass(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+        f = rows["piotroski_f_score"]
+        assert f.value == pytest.approx(9.0)
+        assert f.ratio_kind == "score"
+        assert f.ratio_category == "health"
+        assert f.unit == "score"
+        assert f.is_meaningful is True
+        # availability watermark is the max over all 17 (current + prior) inputs
+        assert f.available_at == _ts("2026-05-03")  # assets_av is the latest
+
+    def test_piotroski_share_issuance_drops_one_signal(self):
+        # shares rose vs prior year -> "no new shares" signal fails -> F = 8
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(common_shares_outstanding_prior=14.0)])))
+        assert rows["piotroski_f_score"].value == pytest.approx(8.0)
+
+    def test_piotroski_weak_firm_low_score(self):
+        # loss-making, cash-burning, levering-up, diluting, margin-shrinking firm
+        weak = _wide_row(
+            ni=-20.0, ocf=-30.0,                     # ROA<0, CFO<0, accruals CFO<NI
+            ni_prior=10.0,                           # ROA fell
+            long_term_debt=120.0, long_term_debt_prior=80.0,   # leverage rose
+            current_assets=120.0, current_liabilities=100.0,   # current ratio 1.2
+            current_assets_prior=180.0, current_liabilities_prior=90.0,  # was 2.0 -> fell
+            common_shares_outstanding=20.0, common_shares_outstanding_prior=15.0,  # diluted
+            gross_profit=120.0, gross_profit_prior=160.0,  # gross margin fell
+            rev=400.0, rev_prior=320.0,              # asset turnover: 1.14 vs 1.07 -> rose (1 pt)
+        )
+        # only asset-turnover-up survives -> F = 1
+        assert _by_code(compute_ratio_rows(pd.DataFrame([weak])))["piotroski_f_score"].value == pytest.approx(1.0)
+
+    def test_piotroski_dropped_when_prior_input_missing(self):
+        # no prior-year gross profit -> the delta-gross-margin signal is uncomputable -> drop
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(gross_profit_prior=None, gross_profit_prior_av=None)])))
+        assert "piotroski_f_score" not in rows
 
     def test_free_cash_flow_is_level_kind_in_currency(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
@@ -368,6 +414,21 @@ def _insert_stmt(store, *, security_id, symbol, metric, value, end, av,
     )
 
 
+def _insert_xbrl_metric(store, *, security_id, symbol, metric, value, end, av,
+                        period_type="instant", period_start=None, source="sec_inline_xbrl_v1"):
+    store.con.execute(
+        """
+        INSERT INTO fundamental_xbrl_metric (
+            metric_id, source, security_id, symbol, cik, canonical_metric, concept,
+            taxonomy, period_type, period_start, period_end, value,
+            is_latest_revision, as_of_date, available_at
+        ) VALUES (?, ?, ?, ?, '012927', ?, ?, 'us-gaap', ?, ?, ?, ?, true, ?, ?)
+        """,
+        [f"{metric}|{period_type}|{end}", source, security_id, symbol, metric, metric,
+         period_type, period_start, end, value, end, av],
+    )
+
+
 def _seed_minimal(store):
     sid, sym, end = "SEC-CIK-0000320193", "AAPL", dt.date(2026, 3, 28)
     av = dt.datetime(2026, 5, 1, 22, 0)
@@ -430,6 +491,42 @@ class TestRefreshIntegration:
         assert codes["current_ratio"] == pytest.approx(2.0)
         assert codes["quick_ratio"] == pytest.approx(1.7)
         assert codes["cash_ratio"] == pytest.approx(0.4)
+
+    def test_piotroski_emits_at_consecutive_fiscal_years(self, tmp_store):
+        # Two fiscal years of every input -> the F-score emits only at the later year
+        # (the earlier year has no prior to delta against). Proves the full chain:
+        # TTM flows + statement balances + XBRL instants/annual-flows -> prior-year
+        # pairing -> composite score.
+        sid, sym = "SEC-CIK-0000012927", "BA"
+        years = {
+            2024: (dt.date(2024, 12, 31), dt.datetime(2025, 2, 1, 22, 0)),
+            2025: (dt.date(2025, 12, 31), dt.datetime(2026, 2, 1, 22, 0)),
+        }
+        flows = {2024: dict(revenue=360.0, net_income=80.0, operating_cash_flow=110.0),
+                 2025: dict(revenue=400.0, net_income=100.0, operating_cash_flow=130.0)}
+        assets = {2024: 320.0, 2025: 350.0}
+        instants = {
+            2024: dict(current_assets=180.0, current_liabilities=95.0, long_term_debt=100.0, common_shares_outstanding=16.0),
+            2025: dict(current_assets=200.0, current_liabilities=100.0, long_term_debt=90.0, common_shares_outstanding=15.0),
+        }
+        gross_profit = {2024: 150.0, 2025: 180.0}
+        for y, (end, av) in years.items():
+            start = end - dt.timedelta(days=365)
+            for metric, val in flows[y].items():
+                _insert_ttm(tmp_store, security_id=sid, symbol=sym, metric=metric, value=val, end=end, av=av, start=start)
+            _insert_stmt(tmp_store, security_id=sid, symbol=sym, metric="assets", value=assets[y], end=end, av=av)
+            for metric, val in instants[y].items():
+                _insert_xbrl_metric(tmp_store, security_id=sid, symbol=sym, metric=metric, value=val, end=end, av=av)
+            _insert_xbrl_metric(tmp_store, security_id=sid, symbol=sym, metric="gross_profit", value=gross_profit[y],
+                                end=end, av=av, period_type="duration", period_start=start)
+
+        FundamentalRatiosDataset().run(tmp_store, FundamentalRatiosOptions())
+        df = tmp_store.con.execute(
+            "SELECT period_end, value FROM fundamental_ratios WHERE ratio_code='piotroski_f_score' ORDER BY period_end"
+        ).df()
+        assert len(df) == 1  # only the later fiscal year has a prior to compare against
+        assert pd.Timestamp(df.iloc[0]["period_end"]) == pd.Timestamp("2025-12-31")
+        assert df.iloc[0]["value"] == pytest.approx(9.0)
 
     def test_no_duplicate_natural_keys(self, tmp_store):
         _seed_minimal(tmp_store)

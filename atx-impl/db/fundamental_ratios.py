@@ -121,6 +121,45 @@ def _altman_z_double_prime(r: dict) -> float | None:
     )
 
 
+def _piotroski_f_score(r: dict) -> float | None:
+    """Piotroski (2000) F-score: nine binary fundamental-strength signals summed 0-9.
+
+    Profitability (4): ROA>0, CFO>0, ΔROA>0, accruals (CFO>net income).
+    Funding / liquidity (3): ΔLong-term leverage<0, ΔCurrent ratio>0, no share issuance.
+    Operating efficiency (2): ΔGross margin>0, ΔAsset turnover>0.
+
+    Computed year-over-year, so it only emits where the ~1y-prior value of every input
+    is paired in (and, like all flow ratios sourced from annual XBRL, where the prior row
+    also reported the annual flows). Higher is stronger: 8-9 is the classic long screen,
+    0-1 the short. Returns None when a balance/flow denominator is non-positive (the deltas
+    would be sign-ambiguous), so the row is skipped rather than emitting a garbage score.
+    """
+    ta, ta0 = float(r["assets"]), float(r["assets_prior"])
+    cl, cl0 = float(r["current_liabilities"]), float(r["current_liabilities_prior"])
+    rev, rev0 = float(r["rev"]), float(r["rev_prior"])
+    if ta <= 0 or ta0 <= 0 or cl <= 0 or cl0 <= 0 or rev <= 0 or rev0 <= 0:
+        return None
+    ni, ni0 = float(r["ni"]), float(r["ni_prior"])
+    cfo = float(r["ocf"])
+    roa, roa0 = ni / ta, ni0 / ta0
+    lev, lev0 = float(r["long_term_debt"]) / ta, float(r["long_term_debt_prior"]) / ta0
+    cur, cur0 = float(r["current_assets"]) / cl, float(r["current_assets_prior"]) / cl0
+    gm, gm0 = float(r["gross_profit"]) / rev, float(r["gross_profit_prior"]) / rev0
+    turn, turn0 = rev / ta, rev0 / ta0
+    signals = (
+        roa > 0,            # 1. positive return on assets
+        cfo > 0,            # 2. positive operating cash flow
+        roa > roa0,         # 3. rising return on assets
+        cfo > ni,           # 4. accruals: cash flow exceeds reported earnings
+        lev < lev0,         # 5. falling long-term leverage
+        cur > cur0,         # 6. rising current ratio
+        float(r["common_shares_outstanding"]) <= float(r["common_shares_outstanding_prior"]),  # 7. no net share issuance
+        gm > gm0,           # 8. rising gross margin
+        turn > turn0,       # 9. rising asset turnover
+    )
+    return float(sum(1 for s in signals if s))
+
+
 RATIO_DEFS: tuple[RatioDef, ...] = (
     # --- profitability -----------------------------------------------------
     RatioDef("net_profit_margin", "profitability", "ratio", "ratio",
@@ -297,6 +336,17 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
              ("current_assets", "current_liabilities", "assets", "retained_earnings", "oi", "liabilities", "equity"),
              lambda r: (None, None),
              composite=lambda r: _altman_z_double_prime(r)),
+    # Piotroski F-score (S10e): nine YoY binary signals summed 0-9. Gates on the current
+    # AND ~1y-prior value of every input it scores, so it emits at fiscal-year period_ends
+    # where the prior year's annual flows (gross profit) and balances are also present.
+    RatioDef("piotroski_f_score", "health", "score", "score",
+             "piotroski_signals", "n/a",
+             ("ni", "assets", "ocf", "long_term_debt", "current_assets", "current_liabilities",
+              "common_shares_outstanding", "gross_profit", "rev",
+              "ni_prior", "assets_prior", "long_term_debt_prior", "current_assets_prior",
+              "current_liabilities_prior", "common_shares_outstanding_prior", "gross_profit_prior", "rev_prior"),
+             lambda r: (None, None),
+             composite=lambda r: _piotroski_f_score(r)),
 )
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
@@ -308,6 +358,7 @@ XBRL_BALANCE_INPUTS = {
     "inventory": "inventory",
     "long_term_debt": "long_term_debt",
     "retained_earnings": "retained_earnings",
+    "common_shares_outstanding": "common_shares_outstanding",  # period-end shares for Piotroski (S10e)
 }
 
 # Annual (duration) flow metrics from the consolidated inline-XBRL extraction,
@@ -319,9 +370,15 @@ XBRL_FLOW_INPUTS = {
     "depreciation_amortization": "depreciation_amortization",
 }
 
-# Metrics for which a prior-year value is paired in (for YoY growth and
-# average-balance ratios).
-GROWTH_PRIOR_KEYS = ("rev", "ni", "oi", "ocf", "assets", "equity")
+# Metrics for which a prior-year value is paired in (for YoY growth, average-balance
+# ratios, and the Piotroski F-score YoY deltas). The S10e additions (long-term debt,
+# current assets/liabilities, shares, gross profit) are paired by the same ~365-day
+# window mechanism in _attach_prior_year.
+GROWTH_PRIOR_KEYS = (
+    "rev", "ni", "oi", "ocf", "assets", "equity",
+    "long_term_debt", "current_assets", "current_liabilities",
+    "common_shares_outstanding", "gross_profit",
+)
 
 
 @dataclass(frozen=True)
@@ -581,6 +638,7 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             balx.inventory, balx.inventory_av,
             balx.long_term_debt, balx.long_term_debt_av,
             balx.retained_earnings, balx.retained_earnings_av,
+            balx.common_shares_outstanding, balx.common_shares_outstanding_av,
             flowx.gross_profit, flowx.gross_profit_av,
             flowx.cost_of_revenue, flowx.cost_of_revenue_av,
             flowx.interest_expense, flowx.interest_expense_av,

@@ -43,6 +43,11 @@ INSTANT_CONCEPT_MAP = {
     "InventoryNet": "inventory",
     "LongTermDebt": "long_term_debt",  # total long-term debt incl. current portion (S10b)
     "RetainedEarningsAccumulatedDeficit": "retained_earnings",  # Altman Z'' component (S10d)
+    # Period-end common shares outstanding (balance-sheet instant). Unlike the dei
+    # cover-page count in fundamental_statement_points (dated at the filing, not the
+    # period close), this aligns to the fiscal period_end so it pairs year-over-year —
+    # the share-issuance input the Piotroski F-score needs (S10e).
+    "CommonStockSharesOutstanding": "common_shares_outstanding",
 }
 
 # Duration (flow) concepts — picked from ~annual (350-380 day) duration contexts only,

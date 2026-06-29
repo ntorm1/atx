@@ -109,6 +109,20 @@ class TestNormalizeXbrlMetrics:
     def test_concept_map_covers_retained_earnings(self):
         assert CONCEPT_MAP["RetainedEarningsAccumulatedDeficit"] == "retained_earnings"
 
+    def test_concept_map_covers_period_end_shares(self):
+        # period-end common shares outstanding (S10e Piotroski issuance signal)
+        assert CONCEPT_MAP["CommonStockSharesOutstanding"] == "common_shares_outstanding"
+
+    def test_normalizes_period_end_shares_as_instant(self):
+        out = normalize_xbrl_metric_rows(
+            pd.DataFrame([_cand("CommonStockSharesOutstanding", 15.0e9, dt.date(2025, 9, 27), _ts("2025-10-31"), "acc1")]),
+            source="x",
+        )
+        r = out.iloc[0]
+        assert r["canonical_metric"] == "common_shares_outstanding"
+        assert r["period_type"] == "instant"
+        assert r["value"] == 15.0e9
+
     def test_concept_map_covers_flow_inputs(self):
         assert CONCEPT_MAP["GrossProfit"] == "gross_profit"
         assert CONCEPT_MAP["CostOfGoodsAndServicesSold"] == "cost_of_revenue"
