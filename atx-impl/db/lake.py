@@ -47,6 +47,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "fundamental_periods",
     "fundamental_ratios",
     "fundamental_xbrl_metric",
+    "short_interest_metrics",
     "feature_build_manifests",
     "feature_definitions",
     "feature_set_catalog",

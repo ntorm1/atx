@@ -4833,6 +4833,42 @@ def _check_specs(
             comparator="eq",
             required_tables=("fundamental_ratios",),
         ),
+        SqlQualityCheck(
+            dataset_id="short_interest_metrics",
+            table_name="short_interest_metrics",
+            check_name="duplicate_short_interest_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT source, security_id, settlement_date
+                    FROM short_interest_metrics
+                    GROUP BY 1, 2, 3 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("short_interest_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="short_interest_metrics",
+            table_name="short_interest_metrics",
+            check_name="bad_short_interest_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM short_interest_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR settlement_date IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR (days_to_cover_percentile IS NOT NULL
+                       AND (days_to_cover_percentile < 0 OR days_to_cover_percentile > 1))
+                   OR (short_interest_change_pct_percentile IS NOT NULL
+                       AND (short_interest_change_pct_percentile < 0 OR short_interest_change_pct_percentile > 1))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("short_interest_metrics",),
+        ),
     )
 
 

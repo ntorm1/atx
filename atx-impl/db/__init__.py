@@ -25,6 +25,7 @@ from .asof import (
     fundamental_ttm_asof,
     fundamental_xbrl_metric_asof,
     fundamentals_asof,
+    short_interest_metrics_asof,
     identifier_decisions_asof,
     insider_relationships_asof,
     insider_transactions_asof,
@@ -91,6 +92,12 @@ from .fundamental_xbrl_metrics import (
     FundamentalXbrlMetricOptions,
     normalize_xbrl_metric_rows,
     refresh_fundamental_xbrl_metrics,
+)
+from .short_interest_metrics import (
+    ShortInterestMetricsDataset,
+    ShortInterestMetricsOptions,
+    compute_short_interest_metrics,
+    refresh_short_interest_metrics,
 )
 from .fundamental_statements import (
     refresh_fundamental_periods,
@@ -245,6 +252,11 @@ __all__ = [
     "normalize_xbrl_metric_rows",
     "refresh_fundamental_xbrl_metrics",
     "fundamental_xbrl_metric_asof",
+    "ShortInterestMetricsDataset",
+    "ShortInterestMetricsOptions",
+    "compute_short_interest_metrics",
+    "refresh_short_interest_metrics",
+    "short_interest_metrics_asof",
     "fundamental_statements_asof",
     "fundamental_ttm_asof",
     "IdentifierResolutionDecisionDataset",

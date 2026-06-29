@@ -32,6 +32,7 @@ from .filer_alias import FilerAliasDataset, FilerAliasOptions
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
+from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
 from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
@@ -670,6 +671,15 @@ def _fundamental_ratios_options(params: dict[str, Any]) -> FundamentalRatiosOpti
     )
 
 
+def _short_interest_metrics_options(params: dict[str, Any]) -> ShortInterestMetricsOptions:
+    default = ShortInterestMetricsOptions()
+    return ShortInterestMetricsOptions(
+        source=params.get("source") or default.source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     default = FredMacroOptions()
     return FredMacroOptions(
@@ -735,6 +745,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     FundamentalFeatureDataset.dataset_id: (FundamentalFeatureDataset, _fundamental_features_options),
     FundamentalRatiosDataset.dataset_id: (FundamentalRatiosDataset, _fundamental_ratios_options),
     FundamentalXbrlMetricDataset.dataset_id: (FundamentalXbrlMetricDataset, _fundamental_xbrl_metric_options),
+    ShortInterestMetricsDataset.dataset_id: (ShortInterestMetricsDataset, _short_interest_metrics_options),
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
@@ -1040,6 +1051,12 @@ class JobManager:
             job_name="fundamental_ratios",
             dataset_id="fundamental_ratios",
             dependencies=["sec_company_facts", "fundamental_xbrl_metric"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="short_interest_metrics",
+            dataset_id="short_interest_metrics",
+            dependencies=["finra_short_interest", "shares_outstanding_history"],
             **retry_policy,
         )
         self.register_job(

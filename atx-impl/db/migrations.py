@@ -2644,6 +2644,138 @@ def _fundamental_xbrl_metric(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _short_interest_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S11: derived FINRA short-interest analytics surface.
+
+    One row per (security_id, settlement_date) computed from the cached
+    ``finra_short_interest`` feed: per-security derived metrics (short-interest
+    change, recomputed days-to-cover, short % of shares outstanding) plus the
+    genuinely value-additive piece the raw feed lacks — the **cross-sectional
+    percentile** of days-to-cover / short-interest change within each settlement
+    cohort (the short-interest anomaly signal). Bitemporal: ``as_of_date`` is the
+    settlement date, ``available_at`` the FINRA publication time; the latest filing
+    vintage per key is flagged ``is_latest_revision``. PIT-safe — percentiles are
+    computed within a single settlement cohort, all published together.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS short_interest_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            issue_name VARCHAR,
+            settlement_date DATE NOT NULL,
+            current_short_position BIGINT,
+            previous_short_position BIGINT,
+            average_daily_volume BIGINT,
+            short_interest_change BIGINT,
+            short_interest_change_pct DOUBLE,
+            days_to_cover DOUBLE,
+            days_to_cover_source DOUBLE,
+            short_pct_shares_outstanding DOUBLE,
+            days_to_cover_percentile DOUBLE,
+            short_interest_change_pct_percentile DOUBLE,
+            universe_count INTEGER,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_short_interest_metrics_key ON short_interest_metrics(security_id, settlement_date)",
+        "CREATE INDEX IF NOT EXISTS idx_short_interest_metrics_settle ON short_interest_metrics(settlement_date)",
+        "CREATE INDEX IF NOT EXISTS idx_short_interest_metrics_asof ON short_interest_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_short_interest_metrics_latest ON short_interest_metrics(is_latest_revision)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'short_interest_metrics',
+            'finra',
+            'Derived FINRA short-interest analytics',
+            'Per-security short-interest analytics derived from the cached FINRA consolidated short-interest feed: short-interest change, recomputed days-to-cover, short percent of shares outstanding, and cross-sectional percentile ranks within each settlement cohort. Bitemporal with publication-time availability.',
+            'security_id,settlement_date',
+            'short_interest_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'short_interest_metrics', 'silver', 'short_interest_metrics',
+            'security_id,settlement_date',
+            'Derived short-interest metrics (one row per security, settlement date, filing vintage).',
+            '["metric_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision; available_at is the FINRA publication time. Cross-sectional percentiles are within a single settlement cohort (all published together), so they are point-in-time safe.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('metric_id', 'security_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('settlement_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'current_short_position' THEN 'FINRA current short position quantity at the settlement date.'
+                WHEN 'short_interest_change' THEN 'Current minus previous short position (share change over the settlement period).'
+                WHEN 'short_interest_change_pct' THEN 'Short-interest change as a fraction of the previous position (NULL when previous <= 0).'
+                WHEN 'days_to_cover' THEN 'Recomputed short interest / average daily volume (NULL when ADV <= 0).'
+                WHEN 'days_to_cover_source' THEN 'FINRA-reported days-to-cover, retained for reconciliation.'
+                WHEN 'short_pct_shares_outstanding' THEN 'Current short position / point-in-time shares outstanding (NULL when no share count is known as of the settlement).'
+                WHEN 'days_to_cover_percentile' THEN 'Cross-sectional percentile (0-1) of days-to-cover within the settlement cohort; higher = more crowded short.'
+                WHEN 'short_interest_change_pct_percentile' THEN 'Cross-sectional percentile (0-1) of short-interest change within the settlement cohort.'
+                WHEN 'universe_count' THEN 'Number of securities in the settlement cohort the percentiles were ranked over.'
+                WHEN 'is_latest_revision' THEN 'True for the most recent FINRA vintage of this (security, settlement).'
+                WHEN 'available_at' THEN 'FINRA publication timestamp; the metric is knowable only at/after this instant.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) IN ('settlement_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%_pct%' OR lower(c.column_name) LIKE '%percentile%' THEN 'ratio'
+                WHEN lower(c.column_name) = 'days_to_cover' OR lower(c.column_name) = 'days_to_cover_source' THEN 'days'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'short_interest_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -2810,6 +2942,11 @@ MIGRATIONS: list[Migration] = [
         version=33,
         name="fundamental_xbrl_metric",
         up=_fundamental_xbrl_metric,
+    ),
+    Migration(
+        version=34,
+        name="short_interest_metrics",
+        up=_short_interest_metrics,
     ),
 ]
 
