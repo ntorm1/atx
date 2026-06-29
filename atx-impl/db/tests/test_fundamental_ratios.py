@@ -68,6 +68,11 @@ def _wide_row(**overrides) -> dict:
         "cash_and_equivalents": 40.0, "cash_and_equivalents_av": _ts("2026-05-01"),
         "inventory": 30.0, "inventory_av": _ts("2026-05-01"),
         "long_term_debt": 90.0, "long_term_debt_av": _ts("2026-05-01"),
+        # consolidated inline-XBRL annual (duration) flow metrics for margin/coverage (S10c)
+        "gross_profit": 180.0, "gross_profit_av": _ts("2026-05-01"),
+        "cost_of_revenue": 220.0, "cost_of_revenue_av": _ts("2026-05-01"),
+        "interest_expense": 10.0, "interest_expense_av": _ts("2026-05-01"),
+        "depreciation_amortization": 25.0, "depreciation_amortization_av": _ts("2026-05-01"),
     }
     base.update(overrides)
     return base
@@ -133,6 +138,12 @@ class TestComputeRatioRows:
             ("long_term_debt_to_assets", 90.0 / 350.0),
             ("net_debt", 90.0 - 40.0),
             ("net_debt_to_assets", (90.0 - 40.0) / 350.0),
+            # S10c: margin / coverage / EBITDA (annual XBRL flows over TTM revenue)
+            ("gross_margin", 180.0 / 400.0),
+            ("cost_of_revenue_to_revenue", 220.0 / 400.0),
+            ("interest_coverage", 120.0 / 10.0),
+            ("ebitda", 120.0 + 25.0),
+            ("ebitda_margin", (120.0 + 25.0) / 400.0),
         ],
     )
     def test_ratio_values(self, code, expected):

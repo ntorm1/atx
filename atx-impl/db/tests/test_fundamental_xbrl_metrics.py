@@ -105,3 +105,21 @@ class TestNormalizeXbrlMetrics:
 
     def test_concept_map_covers_debt_input(self):
         assert CONCEPT_MAP["LongTermDebt"] == "long_term_debt"
+
+    def test_concept_map_covers_flow_inputs(self):
+        assert CONCEPT_MAP["GrossProfit"] == "gross_profit"
+        assert CONCEPT_MAP["CostOfGoodsAndServicesSold"] == "cost_of_revenue"
+        assert CONCEPT_MAP["InterestExpense"] == "interest_expense"
+        assert CONCEPT_MAP["DepreciationDepletionAndAmortization"] == "depreciation_amortization"
+
+    def test_duration_flow_preserves_period_start_and_type(self):
+        cand = _cand(
+            "GrossProfit", 180.0, dt.date(2025, 9, 27), _ts("2025-10-31"), "acc1",
+            period_type="duration", period_start=dt.date(2024, 9, 29),
+        )
+        out = normalize_xbrl_metric_rows(pd.DataFrame([cand]), source="x")
+        r = out.iloc[0]
+        assert r["canonical_metric"] == "gross_profit"
+        assert r["period_type"] == "duration"
+        assert r["period_start"] == dt.date(2024, 9, 29)
+        assert r["period_end"] == dt.date(2025, 9, 27)

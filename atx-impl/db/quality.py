@@ -4784,10 +4784,11 @@ def _check_specs(
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM (
-                    SELECT security_id, canonical_metric, period_end, count(*) AS n
+                    SELECT security_id, canonical_metric, period_type,
+                           coalesce(CAST(period_start AS VARCHAR), ''), period_end, count(*) AS n
                     FROM fundamental_xbrl_metric
                     WHERE is_latest_revision
-                    GROUP BY 1, 2, 3
+                    GROUP BY 1, 2, 3, 4, 5
                     HAVING count(*) > 1
                 )
             """,

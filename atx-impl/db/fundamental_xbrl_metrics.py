@@ -35,13 +35,31 @@ DEFAULT_SOURCE = "sec_inline_xbrl_v1"
 # us-gaap concept local name -> warehouse canonical metric. S10a covers the instant
 # (balance) concepts that unlock liquidity/solvency ratios; flow concepts (COGS, etc.)
 # follow in a later tranche once trailing-twelve-month stitching is added.
-CONCEPT_MAP = {
+# Instant (balance-date) concepts — picked from instant contexts.
+INSTANT_CONCEPT_MAP = {
     "AssetsCurrent": "current_assets",
     "LiabilitiesCurrent": "current_liabilities",
     "CashAndCashEquivalentsAtCarryingValue": "cash_and_equivalents",
     "InventoryNet": "inventory",
     "LongTermDebt": "long_term_debt",  # total long-term debt incl. current portion (S10b)
 }
+
+# Duration (flow) concepts — picked from ~annual (350-380 day) duration contexts only,
+# so the value is the fiscal-year flow (avoids the Q-vs-YTD-vs-FY window ambiguity). (S10c)
+DURATION_CONCEPT_MAP = {
+    "GrossProfit": "gross_profit",
+    "CostOfGoodsAndServicesSold": "cost_of_revenue",
+    "CostOfRevenue": "cost_of_revenue",
+    "InterestExpense": "interest_expense",
+    "DepreciationDepletionAndAmortization": "depreciation_amortization",
+}
+
+# Flat lookup used by normalize and callers.
+CONCEPT_MAP = {**INSTANT_CONCEPT_MAP, **DURATION_CONCEPT_MAP}
+
+# Min/max day-length defining an "annual" duration window.
+ANNUAL_MIN_DAYS = 350
+ANNUAL_MAX_DAYS = 380
 
 XBRL_METRIC_COLUMNS = [
     "metric_id", "source", "security_id", "symbol", "cik", "canonical_metric",
@@ -58,10 +76,10 @@ class FundamentalXbrlMetricOptions:
     run_id: str | None = None
 
 
-def _metric_id(source: str, security_id, canonical_metric: str, period_end, accession_number) -> str:
+def _metric_id(source: str, security_id, canonical_metric: str, period_start, period_end, accession_number) -> str:
     payload = "|".join(
-        "" if p is None else str(p)
-        for p in (source, security_id, canonical_metric, period_end, accession_number)
+        "" if (p is None or (not isinstance(p, str) and pd.isna(p))) else str(p)
+        for p in (source, security_id, canonical_metric, period_start, period_end, accession_number)
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -97,71 +115,125 @@ def normalize_xbrl_metric_rows(
         if optional not in out.columns:
             out[optional] = pd.NA
 
-    # One value per filing per key: a single 10-K/10-Q can tag the same (concept,
-    # period_end) in several undimensioned contexts (current + prior-year comparative);
-    # collapse those to one row so the natural key (and metric_id) is unique.
-    natkey = ["security_id", "canonical_metric", "period_end", "accession_number"]
+    # One value per filing per key: a single 10-K/10-Q can tag the same concept for the
+    # same window in several undimensioned contexts (current + prior-year comparative);
+    # collapse those to one row so the natural key (and metric_id) is unique. period_start
+    # is part of the key so instants (start NULL) and distinct duration windows stay apart.
+    out["__ps"] = out["period_start"].astype("string").fillna("")
+    natkey = ["security_id", "canonical_metric", "__ps", "period_end", "accession_number"]
     out = out.sort_values(natkey + ["available_at", "value"]).drop_duplicates(natkey, keep="last")
 
     # Vintages across filings.
-    key = ["security_id", "canonical_metric", "period_end"]
+    key = ["security_id", "canonical_metric", "__ps", "period_end"]
     out = out.sort_values(key + ["available_at", "accession_number"]).reset_index(drop=True)
     out["revision_seq"] = out.groupby(key).cumcount()
     out["is_latest_revision"] = ~out.duplicated(key, keep="last")
     out["metric_id"] = [
-        _metric_id(source, sid, cm, pe, acc)
-        for sid, cm, pe, acc in zip(
-            out["security_id"], out["canonical_metric"], out["period_end"], out["accession_number"]
+        _metric_id(source, sid, cm, ps, pe, acc)
+        for sid, cm, ps, pe, acc in zip(
+            out["security_id"], out["canonical_metric"], out["period_start"],
+            out["period_end"], out["accession_number"]
         )
     ]
     return out[XBRL_METRIC_COLUMNS]
 
 
+_INSTANT_SQL = """
+    SELECT
+        f.security_id,
+        s.primary_symbol AS symbol,
+        f.cik,
+        f.concept,
+        f.taxonomy,
+        f.unit_ref AS unit,
+        f.numeric_value AS value,
+        ctx.period_type,
+        CAST(NULL AS DATE) AS period_start,
+        coalesce(ctx.instant_date, ctx.period_end) AS period_end,
+        f.accession_number,
+        coalesce(ctx.acceptance_datetime, f.acceptance_datetime, ctx.filing_date::TIMESTAMP) AS available_at,
+        CAST(NULL AS INTEGER) AS fiscal_year,
+        CAST(NULL AS VARCHAR) AS fiscal_period
+    FROM xbrl_filing_facts f
+    JOIN xbrl_filing_contexts ctx ON ctx.filing_context_id = f.filing_context_id
+    LEFT JOIN securities s ON s.security_id = f.security_id
+    WHERE f.taxonomy = 'us-gaap'
+      AND f.is_numeric
+      AND ctx.period_type = 'instant'
+      AND coalesce(ctx.dimension_count, 0) = 0
+      AND coalesce(ctx.explicit_member_count, 0) = 0
+      AND coalesce(ctx.instant_date, ctx.period_end) IS NOT NULL
+      AND f.concept IN ({placeholders})
+      {symbol_pred}
+"""
+
+_DURATION_SQL = """
+    SELECT
+        f.security_id,
+        s.primary_symbol AS symbol,
+        f.cik,
+        f.concept,
+        f.taxonomy,
+        f.unit_ref AS unit,
+        f.numeric_value AS value,
+        ctx.period_type,
+        ctx.period_start,
+        ctx.period_end,
+        f.accession_number,
+        coalesce(ctx.acceptance_datetime, f.acceptance_datetime, ctx.filing_date::TIMESTAMP) AS available_at,
+        CAST(NULL AS INTEGER) AS fiscal_year,
+        CAST(NULL AS VARCHAR) AS fiscal_period
+    FROM xbrl_filing_facts f
+    JOIN xbrl_filing_contexts ctx ON ctx.filing_context_id = f.filing_context_id
+    LEFT JOIN securities s ON s.security_id = f.security_id
+    WHERE f.taxonomy = 'us-gaap'
+      AND f.is_numeric
+      AND ctx.period_type = 'duration'
+      AND coalesce(ctx.dimension_count, 0) = 0
+      AND coalesce(ctx.explicit_member_count, 0) = 0
+      AND ctx.period_start IS NOT NULL AND ctx.period_end IS NOT NULL
+      AND date_diff('day', ctx.period_start, ctx.period_end) BETWEEN {amin} AND {amax}
+      AND f.concept IN ({placeholders})
+      {symbol_pred}
+"""
+
+
+def _symbol_clause(symbols: tuple[str, ...] | None) -> tuple[str, list]:
+    if not symbols:
+        return "", []
+    sym_ph = ", ".join(["?"] * len(symbols))
+    return f"AND s.primary_symbol IN ({sym_ph})", [s.strip().upper() for s in symbols]
+
+
 def _fetch_consolidated_candidates(
-    store: DuckDBStore, concepts: tuple[str, ...], symbols: tuple[str, ...] | None
+    store: DuckDBStore, symbols: tuple[str, ...] | None
 ) -> pd.DataFrame:
-    placeholders = ", ".join(["?"] * len(concepts))
-    params: list = list(concepts)
-    symbol_pred = ""
-    if symbols:
-        sym_ph = ", ".join(["?"] * len(symbols))
-        symbol_pred = f"AND s.primary_symbol IN ({sym_ph})"
-        params.extend(s.strip().upper() for s in symbols)
-    sql = f"""
-        SELECT
-            f.security_id,
-            s.primary_symbol AS symbol,
-            f.cik,
-            f.concept,
-            f.taxonomy,
-            f.unit_ref AS unit,
-            f.numeric_value AS value,
-            ctx.period_type,
-            ctx.period_start,
-            coalesce(ctx.instant_date, ctx.period_end) AS period_end,
-            f.accession_number,
-            coalesce(ctx.acceptance_datetime, f.acceptance_datetime, ctx.filing_date::TIMESTAMP) AS available_at,
-            CAST(NULL AS INTEGER) AS fiscal_year,
-            CAST(NULL AS VARCHAR) AS fiscal_period
-        FROM xbrl_filing_facts f
-        JOIN xbrl_filing_contexts ctx ON ctx.filing_context_id = f.filing_context_id
-        LEFT JOIN securities s ON s.security_id = f.security_id
-        WHERE f.taxonomy = 'us-gaap'
-          AND f.is_numeric
-          AND ctx.period_type = 'instant'
-          AND coalesce(ctx.dimension_count, 0) = 0
-          AND coalesce(ctx.explicit_member_count, 0) = 0
-          AND coalesce(ctx.instant_date, ctx.period_end) IS NOT NULL
-          AND f.concept IN ({placeholders})
-          {symbol_pred}
-    """
-    return store.con.execute(sql, params).df()
+    symbol_pred, sym_params = _symbol_clause(symbols)
+    frames = []
+    if INSTANT_CONCEPT_MAP:
+        concepts = tuple(INSTANT_CONCEPT_MAP)
+        sql = _INSTANT_SQL.format(
+            placeholders=", ".join(["?"] * len(concepts)), symbol_pred=symbol_pred
+        )
+        frames.append(store.con.execute(sql, list(concepts) + sym_params).df())
+    if DURATION_CONCEPT_MAP:
+        concepts = tuple(DURATION_CONCEPT_MAP)
+        sql = _DURATION_SQL.format(
+            placeholders=", ".join(["?"] * len(concepts)),
+            symbol_pred=symbol_pred,
+            amin=ANNUAL_MIN_DAYS,
+            amax=ANNUAL_MAX_DAYS,
+        )
+        frames.append(store.con.execute(sql, list(concepts) + sym_params).df())
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def refresh_fundamental_xbrl_metrics(store: DuckDBStore, options: FundamentalXbrlMetricOptions) -> int:
     """Extract consolidated inline-XBRL canonical metrics and replace the source's rows."""
     store.initialize()
-    candidates = _fetch_consolidated_candidates(store, tuple(CONCEPT_MAP), options.symbols)
+    candidates = _fetch_consolidated_candidates(store, options.symbols)
     rows = normalize_xbrl_metric_rows(candidates, source=options.source, run_id=options.run_id)
     with store.transaction():
         store.con.execute("DELETE FROM fundamental_xbrl_metric WHERE source = ?", [options.source])

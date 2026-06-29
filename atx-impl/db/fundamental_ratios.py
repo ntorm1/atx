@@ -243,6 +243,25 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
              "net_debt", "assets", ("long_term_debt", "cash_and_equivalents", "assets"),
              lambda r: (r["long_term_debt"] - r["cash_and_equivalents"], r["assets"]),
              require_positive_denominator=True),
+    # --- margin / coverage / EBITDA (S10c; annual XBRL flows over TTM revenue) ---
+    # The flow inputs are fiscal-year (~365d) durations, so these emit at fiscal-year
+    # period_ends where the annual flow aligns with the TTM revenue/operating_income.
+    RatioDef("gross_margin", "profitability", "ratio", "ratio",
+             "gross_profit", "revenue", ("gross_profit", "rev"),
+             lambda r: (r["gross_profit"], r["rev"]), require_positive_denominator=True),
+    RatioDef("cost_of_revenue_to_revenue", "profitability", "ratio", "ratio",
+             "cost_of_revenue", "revenue", ("cost_of_revenue", "rev"),
+             lambda r: (r["cost_of_revenue"], r["rev"]), require_positive_denominator=True),
+    RatioDef("interest_coverage", "leverage", "ratio", "ratio",
+             "operating_income", "interest_expense", ("oi", "interest_expense"),
+             lambda r: (r["oi"], r["interest_expense"]), require_positive_denominator=True),
+    RatioDef("ebitda", "profitability", "level", "currency",
+             "operating_income", "depreciation_amortization", ("oi", "depreciation_amortization"),
+             lambda r: (r["oi"], r["depreciation_amortization"])),
+    RatioDef("ebitda_margin", "profitability", "ratio", "ratio",
+             "ebitda", "revenue", ("oi", "depreciation_amortization", "rev"),
+             lambda r: (r["oi"] + r["depreciation_amortization"], r["rev"]),
+             require_positive_denominator=True),
 )
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
@@ -253,6 +272,15 @@ XBRL_BALANCE_INPUTS = {
     "cash_and_equivalents": "cash_and_equivalents",
     "inventory": "inventory",
     "long_term_debt": "long_term_debt",
+}
+
+# Annual (duration) flow metrics from the consolidated inline-XBRL extraction,
+# pivoted into the wide frame and joined on the fiscal-year period_end.
+XBRL_FLOW_INPUTS = {
+    "gross_profit": "gross_profit",
+    "cost_of_revenue": "cost_of_revenue",
+    "interest_expense": "interest_expense",
+    "depreciation_amortization": "depreciation_amortization",
 }
 
 # Metrics for which a prior-year value is paired in (for YoY growth and
@@ -481,6 +509,16 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             {sym_join_x}
             WHERE x.is_latest_revision AND x.period_type = 'instant'
             GROUP BY x.security_id, x.period_end
+        ),
+        flowx AS (
+            SELECT
+                x.security_id,
+                x.period_end,
+                {_pivot_case('x', 'value', XBRL_FLOW_INPUTS)}
+            FROM fundamental_xbrl_metric x
+            {sym_join_x}
+            WHERE x.is_latest_revision AND x.period_type = 'duration'
+            GROUP BY x.security_id, x.period_end
         )
         SELECT
             ttm.*,
@@ -492,7 +530,11 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             balx.current_liabilities, balx.current_liabilities_av,
             balx.cash_and_equivalents, balx.cash_and_equivalents_av,
             balx.inventory, balx.inventory_av,
-            balx.long_term_debt, balx.long_term_debt_av
+            balx.long_term_debt, balx.long_term_debt_av,
+            flowx.gross_profit, flowx.gross_profit_av,
+            flowx.cost_of_revenue, flowx.cost_of_revenue_av,
+            flowx.interest_expense, flowx.interest_expense_av,
+            flowx.depreciation_amortization, flowx.depreciation_amortization_av
         FROM ttm
         LEFT JOIN bal
           ON bal.security_id = ttm.security_id
@@ -500,6 +542,9 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
         LEFT JOIN balx
           ON balx.security_id = ttm.security_id
          AND balx.period_end = ttm.period_end
+        LEFT JOIN flowx
+          ON flowx.security_id = ttm.security_id
+         AND flowx.period_end = ttm.period_end
     """
     try:
         wide = store.con.execute(sql).df()
