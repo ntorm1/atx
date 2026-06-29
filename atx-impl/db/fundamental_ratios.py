@@ -29,6 +29,7 @@ columns are already present).
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -168,7 +169,29 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
     RatioDef("retention_ratio", "payout", "ratio", "ratio",
              "net_income_minus_dividends", "net_income", ("ni", "div"),
              lambda r: (r["ni"] - _abs(r["div"]), r["ni"]), require_positive_denominator=True),
+    # --- year-over-year growth (S9c) --------------------------------------
+    # kind='growth': value = (current - prior) / abs(prior); the prior-year value is
+    # paired into the wide frame by _attach_prior_year. is_meaningful is false off a
+    # non-positive base (sign of a % change is ambiguous when the prior is negative).
+    RatioDef("revenue_growth_yoy", "growth", "growth", "ratio",
+             "revenue", "revenue_prior_year", ("rev", "rev_prior"),
+             lambda r: (r["rev"], r["rev_prior"]), require_positive_denominator=True),
+    RatioDef("net_income_growth_yoy", "growth", "growth", "ratio",
+             "net_income", "net_income_prior_year", ("ni", "ni_prior"),
+             lambda r: (r["ni"], r["ni_prior"]), require_positive_denominator=True),
+    RatioDef("operating_income_growth_yoy", "growth", "growth", "ratio",
+             "operating_income", "operating_income_prior_year", ("oi", "oi_prior"),
+             lambda r: (r["oi"], r["oi_prior"]), require_positive_denominator=True),
+    RatioDef("operating_cash_flow_growth_yoy", "growth", "growth", "ratio",
+             "operating_cash_flow", "operating_cash_flow_prior_year", ("ocf", "ocf_prior"),
+             lambda r: (r["ocf"], r["ocf_prior"]), require_positive_denominator=True),
+    RatioDef("assets_growth_yoy", "growth", "growth", "ratio",
+             "assets", "assets_prior_year", ("assets", "assets_prior"),
+             lambda r: (r["assets"], r["assets_prior"]), require_positive_denominator=True),
 )
+
+# Metrics for which a prior-year value is paired in (for YoY growth ratios).
+GROWTH_PRIOR_KEYS = ("rev", "ni", "oi", "ocf", "assets")
 
 
 @dataclass(frozen=True)
@@ -226,6 +249,11 @@ def compute_ratio_rows(
             if d.kind == "level":
                 value = num + den
                 is_meaningful = True
+            elif d.kind == "growth":
+                if den == 0:
+                    continue
+                value = (num - den) / abs(den)
+                is_meaningful = (not d.require_positive_denominator) or den > 0
             else:
                 if den == 0:
                     continue
@@ -266,6 +294,55 @@ def compute_ratio_rows(
     if not records:
         return pd.DataFrame(columns=RATIO_COLUMNS)
     return pd.DataFrame(records, columns=RATIO_COLUMNS)
+
+
+def _as_date(value: Any) -> dt.date | None:
+    if value is None or (not isinstance(value, dt.date) and pd.isna(value)):
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    return pd.Timestamp(value).date()
+
+
+def _attach_prior_year(wide: pd.DataFrame) -> pd.DataFrame:
+    """Pair each (security, period_end) row with its ~1-year-earlier row.
+
+    For each `GROWTH_PRIOR_KEYS` metric, copies the prior period's value and its
+    availability into `<key>_prior` / `<key>_prior_av`. The prior row is the one
+    whose period_end falls 350-380 days before the current period_end (closest to
+    365); rows with no such match get NA, so dependent growth ratios are skipped.
+    """
+    out = wide.copy()
+    for key in GROWTH_PRIOR_KEYS:
+        out[f"{key}_prior"] = pd.NA
+        out[f"{key}_prior_av"] = pd.NaT
+    if out.empty or "period_end" not in out.columns or "security_id" not in out.columns:
+        return out
+
+    ends = {idx: _as_date(pe) for idx, pe in out["period_end"].items()}
+    for _, grp in out.groupby("security_id", sort=False):
+        idxs = list(grp.index)
+        for i in idxs:
+            cur = ends.get(i)
+            if cur is None:
+                continue
+            best, best_diff = None, None
+            for j in idxs:
+                prev = ends.get(j)
+                if prev is None or prev >= cur:
+                    continue
+                gap = (cur - prev).days
+                if 350 <= gap <= 380:
+                    diff = abs(gap - 365)
+                    if best_diff is None or diff < best_diff:
+                        best, best_diff = j, diff
+            if best is not None:
+                for key in GROWTH_PRIOR_KEYS:
+                    out.at[i, f"{key}_prior"] = out.at[best, key]
+                    out.at[i, f"{key}_prior_av"] = out.at[best, f"{key}_av"]
+    return out
 
 
 def _pivot_case(prefix: str, value_col: str, metric_map: dict[str, str]) -> str:
@@ -334,10 +411,11 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
          AND bal.period_end = ttm.period_end
     """
     try:
-        return store.con.execute(sql).df()
+        wide = store.con.execute(sql).df()
     finally:
         if registered:
             store.con.unregister("ratio_symbol_filter")
+    return _attach_prior_year(wide)
 
 
 def refresh_fundamental_ratios(store: DuckDBStore, options: FundamentalRatiosOptions) -> int:

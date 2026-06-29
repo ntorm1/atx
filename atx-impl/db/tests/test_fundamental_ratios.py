@@ -20,6 +20,7 @@ from db.fundamental_ratios import (
     FundamentalRatiosDataset,
     FundamentalRatiosOptions,
     RATIO_DEFS,
+    _attach_prior_year,
     compute_ratio_rows,
     fundamental_ratios_asof,
     refresh_fundamental_ratios,
@@ -54,6 +55,12 @@ def _wide_row(**overrides) -> dict:
         "liabilities": 290.0, "liabilities_av": _ts("2026-05-01"),
         "equity": 60.0, "equity_av": _ts("2026-05-01"),
         "shares": 15.0, "shares_av": _ts("2026-05-01"),
+        # prior-year (YoY) inputs for growth ratios (S9c)
+        "rev_prior": 320.0, "rev_prior_av": _ts("2025-05-01"),
+        "ni_prior": 80.0, "ni_prior_av": _ts("2025-05-02"),
+        "oi_prior": 100.0, "oi_prior_av": _ts("2025-05-01"),
+        "ocf_prior": 104.0, "ocf_prior_av": _ts("2025-05-01"),
+        "assets_prior": 300.0, "assets_prior_av": _ts("2025-05-03"),
     }
     base.update(overrides)
     return base
@@ -97,6 +104,12 @@ class TestComputeRatioRows:
             ("operating_cash_flow_to_liabilities", 130.0 / 290.0),
             ("capex_to_operating_cash_flow", 30.0 / 130.0),
             ("retention_ratio", (100.0 - 15.0) / 100.0),
+            # S9c: year-over-year growth ratios
+            ("revenue_growth_yoy", (400.0 - 320.0) / 320.0),
+            ("net_income_growth_yoy", (100.0 - 80.0) / 80.0),
+            ("operating_income_growth_yoy", (120.0 - 100.0) / 100.0),
+            ("operating_cash_flow_growth_yoy", (130.0 - 104.0) / 104.0),
+            ("assets_growth_yoy", (350.0 - 300.0) / 300.0),
         ],
     )
     def test_ratio_values(self, code, expected):
@@ -110,6 +123,29 @@ class TestComputeRatioRows:
         # equity_turnover denominator is equity -> not meaningful when negative
         neg = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(equity=-10.0)])))
         assert neg["equity_turnover"].is_meaningful is False
+
+    def test_growth_ratio_kind_and_lineage(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+        g = rows["revenue_growth_yoy"]
+        assert g.ratio_kind == "growth"
+        assert g.ratio_category == "growth"
+        assert g.numerator_value == 400.0   # current TTM
+        assert g.denominator_value == 320.0  # prior-year TTM
+        # available_at = max(current_av 2026-05-01, prior_av 2025-05-01)
+        assert g.available_at == _ts("2026-05-01")
+
+    def test_growth_dropped_when_prior_missing(self):
+        row = _wide_row(rev_prior=None, rev_prior_av=None)
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([row])))
+        assert "revenue_growth_yoy" not in rows
+        # other growth ratios with priors present still emit
+        assert rows["net_income_growth_yoy"].value == pytest.approx(0.25)
+
+    def test_growth_negative_prior_not_meaningful(self):
+        row = _wide_row(ni_prior=-40.0)  # swung from loss to profit
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([row])))
+        g = rows["net_income_growth_yoy"]
+        assert g.is_meaningful is False  # sign of % change is ambiguous off a negative base
 
     def test_free_cash_flow_is_level_kind_in_currency(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
@@ -167,6 +203,34 @@ class TestComputeRatioRows:
         out = compute_ratio_rows(pd.DataFrame())
         assert out.empty
         assert "ratio_code" in out.columns
+
+
+class TestAttachPriorYear:
+    def _base(self, period_end, rev, av):
+        return {
+            "security_id": "S1", "symbol": "AAPL", "period_end": period_end,
+            "rev": rev, "rev_av": av,
+            "ni": rev / 4, "ni_av": av, "oi": rev / 3, "oi_av": av,
+            "ocf": rev / 3, "ocf_av": av, "assets": rev * 2, "assets_av": av,
+        }
+
+    def test_pairs_row_to_prior_year(self):
+        cur = self._base(dt.date(2026, 3, 28), 400.0, _ts("2026-05-01"))
+        prior = self._base(dt.date(2025, 3, 29), 320.0, _ts("2025-05-01"))
+        out = _attach_prior_year(pd.DataFrame([prior, cur]))
+        by_end = {r.period_end: r for r in out.itertuples(index=False)}
+        # 2026 row gets the 2025 values as *_prior
+        assert by_end[dt.date(2026, 3, 28)].rev_prior == 320.0
+        assert by_end[dt.date(2026, 3, 28)].rev_prior_av == _ts("2025-05-01")
+        # 2025 row has no prior in the frame
+        assert pd.isna(by_end[dt.date(2025, 3, 29)].rev_prior)
+
+    def test_no_match_outside_one_year_window(self):
+        cur = self._base(dt.date(2026, 3, 28), 400.0, _ts("2026-05-01"))
+        far = self._base(dt.date(2024, 1, 1), 200.0, _ts("2024-02-01"))  # ~2yr prior
+        out = _attach_prior_year(pd.DataFrame([far, cur]))
+        by_end = {r.period_end: r for r in out.itertuples(index=False)}
+        assert pd.isna(by_end[dt.date(2026, 3, 28)].rev_prior)
 
 
 # --------------------------------------------------------------------------- #
