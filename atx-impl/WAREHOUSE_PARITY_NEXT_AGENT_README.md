@@ -50,3 +50,22 @@ python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2013-03-1
 ```
 
 The second smoke currently demonstrates the split-artifact caveat above.
+
+## Tranche Tracking
+
+Use `WAREHOUSE_PARITY_TRANCHES.md` as the append-only implementation ledger. At the end of every coherent tranche, add a row with:
+
+- start commit and end commit SHA
+- files or domains touched
+- tests and live DB smoke checks run
+- known caveats and the next recommended tranche
+
+Do not rewrite older rows except to fix factual mistakes. The point is to make long-running unattended work resumable without archaeology.
+
+## North-Star Goal Prompt
+
+Use `C:\atx\archive\research`, `C:\atx\atx-impl\db`, and `C:\atx\atx-impl\scripts` to build a feature-parity rival to FactSet and S&P Compustat for all US equity fundamental and public alternative data. Design it as a robust schema-based warehouse for quant equity long/short shops like Renaissance Technologies and WorldQuant.
+
+The north star is full end-to-end replication quality for US equity fundamentals, ownership, corporate actions, pricing adjustments, reference data, estimates where public or injectable licensed feeds allow it, off-exchange/short-interest, macro, and other public alt-data surfaces. Prioritize production-quality infrastructure, explicit point-in-time semantics, versioned migrations, bitemporal availability fields, lineage, watermarks, lake exports, quality checks, as-of APIs, tests, and clear DB design over thin demos.
+
+Work autonomously for hours when needed. Avoid stopping to ask questions unless continuing would risk destructive or clearly mis-scoped work. Prefer making conservative, well-documented assumptions, implementing complete vertical slices, validating with tests and live smoke checks, and recording progress in markdown tranche ledgers with commit SHAs. Use subagents when useful to preserve main-agent context, but keep write scopes clear. Do not touch C++ code unless the user explicitly redirects.
