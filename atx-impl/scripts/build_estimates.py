@@ -84,6 +84,13 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Also run injectable loaders (consensus/guidance/recommendation) — no-ops without providers.",
     )
+    parser.add_argument("--estimate-guidance-file", type=Path)
+    parser.add_argument("--estimate-guidance-source", default="sec_8k_guidance_regex_v1")
+    parser.add_argument(
+        "--estimate-guidance-min-confidence",
+        type=float,
+        default=EstimateGuidanceOptions().min_confidence,
+    )
     parser.add_argument("--estimate-consensus-file", type=Path)
     parser.add_argument("--estimate-consensus-provider", default=EstimateConsensusOptions().provider_name)
     parser.add_argument(
@@ -245,9 +252,26 @@ def main() -> int:
                 )
             )
 
-        if args.run_injectable:
-            r5 = EstimateGuidanceDataset().run(store, EstimateGuidanceOptions())
-            print(json.dumps({"step": "est_guidance", "rows_loaded": r5.rows_loaded}, indent=2, default=str))
+        if args.estimate_guidance_file or args.run_injectable:
+            r5 = EstimateGuidanceDataset().run(
+                store,
+                EstimateGuidanceOptions(
+                    source_file=args.estimate_guidance_file,
+                    source=args.estimate_guidance_source,
+                    min_confidence=args.estimate_guidance_min_confidence,
+                ),
+            )
+            print(
+                json.dumps(
+                    {
+                        "step": "est_guidance",
+                        "rows_loaded": r5.rows_loaded,
+                        "details": r5.details,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
 
         if args.estimate_recommendation_file or args.run_injectable:
             r6 = EstimateRecommendationDataset().run(

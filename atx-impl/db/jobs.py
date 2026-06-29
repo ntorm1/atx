@@ -283,6 +283,17 @@ def _estimate_consensus_options(params: dict[str, Any]) -> EstimateConsensusOpti
     )
 
 
+def _estimate_guidance_options(params: dict[str, Any]) -> EstimateGuidanceOptions:
+    default = EstimateGuidanceOptions()
+    return EstimateGuidanceOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source=params.get("source") or default.source,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        min_confidence=float(params.get("min_confidence", default.min_confidence)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _estimate_recommendation_options(params: dict[str, Any]) -> EstimateRecommendationOptions:
     default = EstimateRecommendationOptions()
     return EstimateRecommendationOptions(
@@ -700,7 +711,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ),
     EstimateGuidanceDataset.dataset_id: (
         EstimateGuidanceDataset,
-        lambda p: EstimateGuidanceOptions(),
+        _estimate_guidance_options,
     ),
     EstimateRecommendationDataset.dataset_id: (
         EstimateRecommendationDataset,

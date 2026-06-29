@@ -2006,9 +2006,11 @@ def est_guidance_asof(
             {sid_join}
             {mc_join}
             WHERE (g.available_at IS NULL OR g.available_at <= CAST(? AS TIMESTAMP))
+              AND (g.as_of_date IS NULL OR g.as_of_date <= CAST(? AS DATE))
+              AND (g.guidance_date IS NULL OR g.guidance_date <= CAST(? AS DATE))
             ORDER BY g.security_id, g.measure_code, g.period_end
             """
-            return store.con.execute(sql, [as_of_ts]).df()
+            return store.con.execute(sql, [as_of_ts, as_of_date, as_of_date]).df()
         finally:
             for relation in registered:
                 store.con.unregister(relation)

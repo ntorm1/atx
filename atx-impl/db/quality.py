@@ -4064,6 +4064,61 @@ def _check_specs(
             warn_if_missing=True,
         ),
         SqlQualityCheck(
+            dataset_id="est_guidance",
+            table_name="est_guidance",
+            check_name="est_guidance_missing_available_at",
+            sql="SELECT count(*)::DOUBLE FROM est_guidance WHERE available_at IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_guidance",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_guidance",
+            table_name="est_guidance",
+            check_name="est_guidance_duplicate_id",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT est_guidance_id, count(*) AS row_count
+                    FROM est_guidance
+                    WHERE est_guidance_id IS NOT NULL
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_guidance",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_guidance",
+            table_name="est_guidance",
+            check_name="est_guidance_invalid_values",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_guidance
+                WHERE period_end IS NULL
+                   OR security_id IS NULL
+                   OR measure_code IS NULL
+                   OR (low IS NULL AND high IS NULL AND mid IS NULL)
+                   OR (low IS NOT NULL AND high IS NOT NULL AND high < low)
+                   OR (
+                       extraction_confidence IS NOT NULL
+                       AND (extraction_confidence < 0 OR extraction_confidence > 1)
+                   )
+                   OR (
+                       guidance_type IS NOT NULL
+                       AND guidance_type NOT IN ('POINT', 'RANGE', 'OPEN_LOW', 'OPEN_HIGH', 'QUAL')
+                   )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_guidance",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
             dataset_id="est_consensus",
             table_name="est_consensus",
             check_name="est_consensus_missing_available_at",

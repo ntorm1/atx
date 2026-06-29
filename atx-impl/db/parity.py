@@ -667,7 +667,7 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         limitations=(
             "detail broker estimates remain licensed or manually injectable; no public source can reconstruct full broker/analyst grain"
         ),
-        next_gap="Load real licensed/manual IBES/FactSet estimate files with accepted crosswalk rows, add broker-name alias joins, and add SEC 8-K guidance extraction.",
+        next_gap="Load real licensed/manual IBES/FactSet estimate files with accepted crosswalk rows, add broker-name alias joins, and scale SEC 8-K guidance extraction across a local exhibit corpus.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-estimates-api",
         ),
@@ -684,11 +684,11 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         institutional_keys=("security_id", "measure_code", "fiscal_year", "fiscal_period", "guidance_date"),
         pit_fields=("guidance_date", "available_at", "source_loaded_at"),
         factors_or_fields=("guidance low/high/mid", "GAAP vs non-GAAP basis", "form", "accession_number"),
-        open_substitute="est_guidance table with injectable connector; default-empty. Real extraction requires SEC 8-K Item 2.02/7.01 free-text NER (documented TODO).",
+        open_substitute="est_guidance table with injectable connector and local SEC 8-K Item 2.02/7.01 text-corpus extraction via --estimate-guidance-file; extracted rows retain guidance_type, unit/currency scale, source_item, extraction_confidence, evidence_text, source-file hash, as_of_date, and available_at.",
         warehouse_tables=("est_guidance",),
         parity_status="partial",
-        limitations="SEC 8-K Item 2.02/7.01 free-text extraction; injectable connector",
-        next_gap="Implement SEC 8-K NER pipeline to extract guidance ranges from Item 2.02/7.01 text.",
+        limitations="Deterministic local text extraction covers conservative revenue/EPS/operating-income/net-income point/range phrasing only; default DB remains empty until a local SEC exhibit corpus or licensed guidance file is supplied.",
+        next_gap="Backfill approved local 8-K exhibit text, add open-ended guidance and fiscal-calendar handling, and broaden measure coverage with precision/recall QA.",
         source_urls=(
             "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=8-K&dateb=&owner=include&count=40",
             "https://developer.factset.com/api-catalog/factset-estimates-api",

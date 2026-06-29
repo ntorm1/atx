@@ -32,6 +32,8 @@ from db.estimates import (
     EstimateConsensusOptions,
     EstimateDetailDataset,
     EstimateDetailOptions,
+    EstimateGuidanceDataset,
+    EstimateGuidanceOptions,
     EstimateMeasureSeedDataset,
     EstimateMeasureSeedOptions,
     EstimateRecommendationDataset,
@@ -74,6 +76,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-shares-outstanding", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")
     parser.add_argument("--skip-estimates", action="store_true")
+    parser.add_argument("--estimate-guidance-file", type=Path)
+    parser.add_argument("--estimate-guidance-source", default="sec_8k_guidance_regex_v1")
+    parser.add_argument(
+        "--estimate-guidance-min-confidence",
+        type=float,
+        default=EstimateGuidanceOptions().min_confidence,
+    )
     parser.add_argument("--estimate-consensus-file", type=Path)
     parser.add_argument("--estimate-consensus-provider", default=EstimateConsensusOptions().provider_name)
     parser.add_argument(
@@ -312,6 +321,17 @@ def main() -> int:
                                 source_file=args.estimate_detail_file,
                                 provider=args.estimate_detail_provider,
                                 vendor_security_id_type=args.estimate_detail_vendor_id_type,
+                            ),
+                        )
+                    )
+                if args.estimate_guidance_file:
+                    results.append(
+                        EstimateGuidanceDataset().run(
+                            store,
+                            EstimateGuidanceOptions(
+                                source_file=args.estimate_guidance_file,
+                                source=args.estimate_guidance_source,
+                                min_confidence=args.estimate_guidance_min_confidence,
                             ),
                         )
                     )

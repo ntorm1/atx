@@ -45,6 +45,7 @@ from db.asof import (
     est_actual_asof,
     est_consensus_asof,
     est_detail_asof,
+    est_guidance_asof,
     est_recommendation_asof,
     est_recommendation_summary_asof,
     est_security_links_asof,
@@ -852,6 +853,105 @@ class TestInjectableLoaders:
         assert result.rows_loaded == 1
         count = tmp_store.con.execute("SELECT count(*) FROM est_guidance").fetchone()[0]
         assert count == 1
+
+    def test_guidance_source_file_extracts_sec_8k_ranges_pit_safely(self, tmp_store, tmp_path):
+        source = tmp_path / "sec_8k_guidance.csv"
+        pd.DataFrame(
+            [
+                {
+                    "security_id": "sec_guidance",
+                    "accession_number": "0000320193-24-000001",
+                    "form": "8-K",
+                    "items": "Item 2.02; Item 7.01",
+                    "filing_date": "2024-02-01",
+                    "acceptance_datetime": "2024-02-01 16:05:00",
+                    "document_text": (
+                        "Item 2.02 Results of Operations and Financial Condition. "
+                        "The Company expects full year 2025 revenue of $10.2 billion to $10.4 billion. "
+                        "The Company also expects full year 2025 non-GAAP diluted EPS of $2.10 to $2.30."
+                    ),
+                }
+            ]
+        ).to_csv(source, index=False)
+
+        options = EstimateGuidanceOptions(
+            source_file=source,
+            source="sec_8k_guidance_regex_v1",
+        )
+        result = EstimateGuidanceDataset().run(tmp_store, options)
+        assert result.rows_loaded == 2
+        assert result.details["parsed_rows"] == 2
+
+        # File-backed loads are idempotent per source hash.
+        result2 = EstimateGuidanceDataset().run(tmp_store, options)
+        assert result2.rows_loaded == 2
+        count = tmp_store.con.execute("SELECT count(*) FROM est_guidance").fetchone()[0]
+        assert count == 2
+
+        rows = tmp_store.con.execute(
+            """
+            SELECT
+                est_guidance_id,
+                measure_code,
+                low,
+                high,
+                mid,
+                guidance_type,
+                basis,
+                currency,
+                unit,
+                units_scale,
+                source_item,
+                extraction_confidence,
+                source_file_sha256
+            FROM est_guidance
+            ORDER BY measure_code
+            """
+        ).df()
+        assert set(rows["measure_code"]) == {"EPS_DILUTED", "REVENUE"}
+        revenue = rows[rows["measure_code"].eq("REVENUE")].iloc[0]
+        assert revenue["est_guidance_id"].startswith("EST-GUIDANCE-")
+        assert revenue["low"] == pytest.approx(10.2)
+        assert revenue["high"] == pytest.approx(10.4)
+        assert revenue["mid"] == pytest.approx(10.3)
+        assert revenue["guidance_type"] == "RANGE"
+        assert revenue["currency"] == "USD"
+        assert revenue["unit"] == "USD"
+        assert int(revenue["units_scale"]) == 1_000_000_000
+        assert revenue["source_item"] == "8-K_2.02_7.01"
+        assert revenue["extraction_confidence"] >= 0.90
+        assert isinstance(revenue["source_file_sha256"], str)
+
+        eps = rows[rows["measure_code"].eq("EPS_DILUTED")].iloc[0]
+        assert eps["basis"] == "NON_GAAP"
+        assert eps["unit"] == "USD_PER_SHARE"
+        assert eps["low"] == pytest.approx(2.10)
+        assert eps["high"] == pytest.approx(2.30)
+
+        before = est_guidance_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 1),
+            as_of_ts=dt.datetime(2024, 2, 1, 16, 4, 59),
+            security_ids=("sec_guidance",),
+        )
+        after = est_guidance_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 2),
+            as_of_ts=dt.datetime(2024, 2, 1, 16, 5, 1),
+            security_ids=("sec_guidance",),
+        )
+        assert len(before) == 0
+        assert len(after) == 2
+
+        quality = run_warehouse_quality_checks(tmp_store, record=False)
+        for check_name in (
+            "est_guidance_missing_available_at",
+            "est_guidance_duplicate_id",
+            "est_guidance_invalid_values",
+        ):
+            check = next((result for result in quality if result.check_name == check_name), None)
+            assert check is not None
+            assert check.status == "passed"
 
     def test_recommendation_no_provider_zero_rows(self, tmp_store):
         result = EstimateRecommendationDataset().run(

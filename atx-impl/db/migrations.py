@@ -826,6 +826,7 @@ def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS est_guidance (
+            est_guidance_id VARCHAR,
             security_id VARCHAR,
             measure_code VARCHAR,
             fiscal_year INTEGER,
@@ -834,15 +835,26 @@ def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
             low DOUBLE,
             high DOUBLE,
             mid DOUBLE,
+            guidance_type VARCHAR,
             basis VARCHAR,
+            currency VARCHAR,
+            unit VARCHAR,
+            units_scale BIGINT,
+            source_item VARCHAR,
             guidance_date DATE,
             form VARCHAR,
             accession_number VARCHAR,
             as_of_date DATE,
             available_at TIMESTAMP,
+            extraction_confidence DOUBLE,
+            evidence_text VARCHAR,
+            source_file VARCHAR,
+            source_file_sha256 VARCHAR,
+            raw_payload_json VARCHAR,
             source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
             run_id VARCHAR,
-            source VARCHAR
+            source VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_est_guidance_key ON est_guidance(security_id, measure_code, period_end)",
@@ -1826,6 +1838,144 @@ def _estimate_security_link_indexes_catalog(conn: duckdb.DuckDBPyConnection) -> 
     )
 
 
+def _estimate_guidance_extraction_columns_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5k: SEC 8-K guidance extraction lineage columns and catalog refresh."""
+
+    for statement in (
+        "DROP INDEX IF EXISTS idx_est_guidance_key",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS est_guidance_id VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS guidance_type VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS currency VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS unit VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS units_scale BIGINT",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS source_item VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS extraction_confidence DOUBLE",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS evidence_text VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS source_file VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS source_file_sha256 VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS raw_payload_json VARCHAR",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id,
+            source_system_id,
+            name,
+            description,
+            grain,
+            primary_table,
+            pit_column,
+            available_at_column,
+            updated_at
+        )
+        VALUES (
+            'est_guidance',
+            'sec_edgar',
+            'Management guidance observations',
+            'Company-issued guidance from local SEC 8-K Item 2.02/7.01 text extraction or licensed/injectable guidance feeds.',
+            'security_id,measure,period_end,guidance_date,source',
+            'est_guidance',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name,
+            layer,
+            entity,
+            grain,
+            description,
+            natural_key_json,
+            pit_notes,
+            updated_at
+        )
+        VALUES (
+            'est_guidance',
+            'silver',
+            'estimate_guidance',
+            'security_id,measure_code,period_end,guidance_date,source',
+            'Management guidance observations from SEC 8-K text extraction and injectable providers.',
+            '["est_guidance_id"]',
+            'Use available_at and as_of_date to model when extracted or vendor guidance became visible; extraction_confidence and evidence_text must be retained for public-data QA.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name,
+            field_name,
+            semantic_type,
+            description,
+            nullable,
+            unit,
+            source_field,
+            updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'est_guidance_id', 'security_id', 'accession_number',
+                    'source_file_sha256', 'run_id'
+                ) THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%_date' OR upper(c.data_type) = 'DATE' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('low', 'high', 'mid', 'extraction_confidence', 'units_scale')
+                  OR upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL')
+                THEN 'measure'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'est_guidance_id' THEN 'Deterministic management-guidance observation identifier.'
+                WHEN 'guidance_type' THEN 'POINT, RANGE, OPEN_LOW, OPEN_HIGH, or QUAL guidance shape.'
+                WHEN 'source_item' THEN 'Public guidance source such as 8-K_2.02 or 8-K_7.01.'
+                WHEN 'extraction_confidence' THEN 'Parser confidence for public SEC text-extracted guidance, from 0 to 1.'
+                WHEN 'evidence_text' THEN 'Short source text span supporting the extracted guidance row.'
+                WHEN 'units_scale' THEN 'Scale factor applied to low/high/mid values, such as 1000000 for millions.'
+                WHEN 'source_file_sha256' THEN 'SHA-256 of the local SEC guidance corpus or injected source file.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on est_guidance.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN c.column_name IN ('low', 'high', 'mid') THEN 'unit * units_scale'
+                WHEN c.column_name = 'extraction_confidence' THEN '0..1'
+                WHEN lower(c.column_name) LIKE '%_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'est_guidance'
+        """
+    )
+
+
+def _estimate_guidance_extraction_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5k: indexes for SEC 8-K guidance extraction columns."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_est_guidance_key ON est_guidance(security_id, measure_code, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_est_guidance_id ON est_guidance(est_guidance_id)",
+        "CREATE INDEX IF NOT EXISTS idx_est_guidance_accession ON est_guidance(accession_number, source_item, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_guidance_source_file ON est_guidance(source, source_file_sha256)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -1957,6 +2107,16 @@ MIGRATIONS: list[Migration] = [
         version=26,
         name="estimate_security_link_indexes_catalog",
         up=_estimate_security_link_indexes_catalog,
+    ),
+    Migration(
+        version=27,
+        name="estimate_guidance_extraction_columns_catalog",
+        up=_estimate_guidance_extraction_columns_catalog,
+    ),
+    Migration(
+        version=28,
+        name="estimate_guidance_extraction_indexes",
+        up=_estimate_guidance_extraction_indexes,
     ),
 ]
 

@@ -225,6 +225,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "est_consensus": job_name(args.job_prefix, "est_consensus"),
         "est_surprise": job_name(args.job_prefix, "est_surprise"),
         "est_detail": job_name(args.job_prefix, "est_detail"),
+        "est_guidance": job_name(args.job_prefix, "est_guidance"),
         "est_recommendation": job_name(args.job_prefix, "est_recommendation"),
         "est_recommendation_summary": job_name(args.job_prefix, "est_recommendation_summary"),
         "est_security_link": job_name(args.job_prefix, "est_security_link"),
@@ -449,6 +450,21 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
                 **retry_policy,
             )
             ordered.append(names["est_detail"])
+        if args.estimate_guidance_file:
+            manager.register_job(
+                job_name=names["est_guidance"],
+                dataset_id="est_guidance",
+                params=clean_params(
+                    {
+                        "source_file": str(args.estimate_guidance_file),
+                        "source": args.estimate_guidance_source,
+                        "min_confidence": args.estimate_guidance_min_confidence,
+                    }
+                ),
+                dependencies=[],
+                **retry_policy,
+            )
+            ordered.append(names["est_guidance"])
         if args.estimate_recommendation_file:
             manager.register_job(
                 job_name=names["est_recommendation"],
@@ -1173,6 +1189,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-xbrl-taxonomy", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")
     parser.add_argument("--skip-estimates", action="store_true")
+    parser.add_argument("--estimate-guidance-file", type=Path)
+    parser.add_argument("--estimate-guidance-source", default="sec_8k_guidance_regex_v1")
+    parser.add_argument("--estimate-guidance-min-confidence", type=float, default=0.70)
     parser.add_argument("--estimate-consensus-file", type=Path)
     parser.add_argument("--estimate-consensus-provider", default="INJECTED")
     parser.add_argument("--estimate-consensus-vendor-id-type", default="IBES_TICKER")
@@ -1343,6 +1362,8 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be in [0, 1]")
     if args.identifier_min_review_confidence > args.identifier_min_accept_confidence:
         raise ValueError("--identifier-min-review-confidence cannot exceed --identifier-min-accept-confidence")
+    if args.estimate_guidance_min_confidence < 0 or args.estimate_guidance_min_confidence > 1:
+        raise ValueError("--estimate-guidance-min-confidence must be in [0, 1]")
     if args.estimate_security_link_min_confidence < 0 or args.estimate_security_link_min_confidence > 1:
         raise ValueError("--estimate-security-link-min-confidence must be in [0, 1]")
     if args.macro_start_date and args.macro_end_date and args.macro_start_date > args.macro_end_date:
