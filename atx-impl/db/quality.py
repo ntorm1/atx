@@ -4064,6 +4064,85 @@ def _check_specs(
             warn_if_missing=True,
         ),
         SqlQualityCheck(
+            dataset_id="est_detail",
+            table_name="est_detail",
+            check_name="est_detail_missing_available_at",
+            sql="SELECT count(*)::DOUBLE FROM est_detail WHERE available_at IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_detail",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_detail",
+            table_name="est_detail",
+            check_name="est_detail_duplicate_id",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT est_detail_id, count(*) AS row_count
+                    FROM est_detail
+                    WHERE est_detail_id IS NOT NULL
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_detail",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_detail",
+            table_name="est_detail",
+            check_name="est_detail_invalid_revision_window",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_detail
+                WHERE announce_date IS NOT NULL
+                  AND revision_date IS NOT NULL
+                  AND revision_date < announce_date
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_detail",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_detail",
+            table_name="est_detail",
+            check_name="est_detail_invalid_stop_window",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_detail
+                WHERE announce_date IS NOT NULL
+                  AND stop_date IS NOT NULL
+                  AND stop_date < announce_date
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_detail",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_period_dim",
+            table_name="est_period_dim",
+            check_name="est_period_dim_duplicate_id",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT est_period_id, count(*) AS row_count
+                    FROM est_period_dim
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_period_dim",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
             dataset_id="est_surprise",
             table_name="est_surprise",
             check_name="est_surprise_nonfinite_sue",

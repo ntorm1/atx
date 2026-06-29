@@ -93,6 +93,18 @@ PUBLIC_ROW_COUNT_TABLES = (
     "fundamental_statement_points",
     "fundamental_ttm_points",
     "fundamental_periods",
+    "est_measure",
+    "est_broker",
+    "est_broker_alias",
+    "est_analyst",
+    "est_analyst_alias",
+    "est_period_dim",
+    "est_detail",
+    "est_consensus",
+    "est_actual",
+    "est_surprise",
+    "est_guidance",
+    "est_recommendation",
     "sec_submissions",
     "thirteenf_submissions",
     "thirteenf_cover_pages",
@@ -206,6 +218,10 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "sec_fundamental_features": job_name(args.job_prefix, "sec_fundamental_features"),
         "sec_submissions": job_name(args.job_prefix, "sec_submissions"),
         "xbrl_filing_contexts": job_name(args.job_prefix, "xbrl_filing_contexts"),
+        "est_measure": job_name(args.job_prefix, "est_measure"),
+        "est_actual": job_name(args.job_prefix, "est_actual"),
+        "est_surprise": job_name(args.job_prefix, "est_surprise"),
+        "est_detail": job_name(args.job_prefix, "est_detail"),
         "finra_short_interest": job_name(args.job_prefix, "finra_short_interest"),
         "finra_short_interest_features": job_name(args.job_prefix, "finra_short_interest_features"),
         "sec_13f": job_name(args.job_prefix, "sec_13f"),
@@ -368,6 +384,50 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
             **retry_policy,
         )
         ordered.append(names["sec_fundamental_features"])
+
+    if not args.skip_estimates:
+        manager.register_job(
+            job_name=names["est_measure"],
+            dataset_id="est_measure",
+            params={},
+            **retry_policy,
+        )
+        ordered.append(names["est_measure"])
+        manager.register_job(
+            job_name=names["est_actual"],
+            dataset_id="est_actual",
+            params={},
+            dependencies=(
+                [names["est_measure"]]
+                if args.skip_company_facts
+                else [names["sec_company_facts"], names["est_measure"]]
+            ),
+            **retry_policy,
+        )
+        ordered.append(names["est_actual"])
+        manager.register_job(
+            job_name=names["est_surprise"],
+            dataset_id="est_surprise",
+            params={},
+            dependencies=[names["est_actual"]],
+            **retry_policy,
+        )
+        ordered.append(names["est_surprise"])
+        if args.estimate_detail_file:
+            manager.register_job(
+                job_name=names["est_detail"],
+                dataset_id="est_detail",
+                params=clean_params(
+                    {
+                        "source_file": str(args.estimate_detail_file),
+                        "provider": args.estimate_detail_provider,
+                        "vendor_security_id_type": args.estimate_detail_vendor_id_type,
+                    }
+                ),
+                dependencies=[],
+                **retry_policy,
+            )
+            ordered.append(names["est_detail"])
 
     if not args.skip_submissions:
         manager.register_job(
@@ -966,6 +1026,13 @@ def refresh_watermarks(db_path: Path) -> dict[str, Any]:
         "xbrl_filing_contexts.",
         "xbrl_filing_facts.",
         "sec_fundamental_features.",
+        "est_measure.",
+        "est_detail.",
+        "est_consensus.",
+        "est_actual.",
+        "est_surprise.",
+        "est_guidance.",
+        "est_recommendation.",
         "sec_submissions.",
         "alpha_research.",
         "warehouse_lake_exports.",
@@ -1025,6 +1092,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-company-facts", action="store_true")
     parser.add_argument("--skip-xbrl-taxonomy", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")
+    parser.add_argument("--skip-estimates", action="store_true")
+    parser.add_argument("--estimate-detail-file", type=Path)
+    parser.add_argument("--estimate-detail-provider", default="INJECTED")
+    parser.add_argument("--estimate-detail-vendor-id-type", default="IBES_TICKER")
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-xbrl-filing-contexts", action="store_true")
     parser.add_argument("--skip-finra", action="store_true")

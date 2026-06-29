@@ -27,6 +27,8 @@ from db.estimates import (
     EstimateActualsOptions,
     EstimateConsensusDataset,
     EstimateConsensusOptions,
+    EstimateDetailDataset,
+    EstimateDetailOptions,
     EstimateGuidanceDataset,
     EstimateGuidanceOptions,
     EstimateMeasureSeedDataset,
@@ -36,7 +38,7 @@ from db.estimates import (
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
-from db.asof import est_actual_asof, est_surprise_asof
+from db.asof import est_actual_asof, est_detail_asof, est_surprise_asof
 from db.quality import run_warehouse_quality_checks
 
 
@@ -100,7 +102,8 @@ class TestMigration:
     def test_all_est_tables_exist(self, tmp_store):
         expected_tables = {
             "est_measure", "est_actual", "est_consensus", "est_detail",
-            "est_broker", "est_analyst", "est_guidance", "est_recommendation", "est_surprise",
+            "est_broker", "est_broker_alias", "est_analyst", "est_analyst_alias",
+            "est_period_dim", "est_guidance", "est_recommendation", "est_surprise",
         }
         existing = {
             row[0]
@@ -115,6 +118,12 @@ class TestMigration:
             "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) = 4"
         ).fetchall()
         assert len(rows) == 1, "Migration version 4 not recorded in schema_migrations"
+
+    def test_schema_migrations_version_16(self, tmp_store):
+        rows = tmp_store.con.execute(
+            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE CAST(version AS INTEGER) = 16"
+        ).fetchall()
+        assert len(rows) == 1, "Migration version 16 not recorded in schema_migrations"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -602,6 +611,131 @@ class TestInjectableLoaders:
         assert result.rows_loaded == 1
         count = tmp_store.con.execute("SELECT count(*) FROM est_recommendation").fetchone()[0]
         assert count == 1
+
+    def test_detail_file_loader_normalizes_ibes_style_rows(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_detail.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,measure,fpi,fpedats,fiscal_year,pdf,estimator,analys,emaskcd,amaskcd,broker,analyst,value,currency,anndats,anntims,actdats,acttims,revdats,revtims,estimate_type",
+                    "AAPL,AAPL,EPS,7,2024-03-31,2024,D,101,9001,501,7001,Goldman Sachs,Jane Doe,2.10,USD,2024-01-15,09:30:00,2024-01-16,10:00:00,2024-02-09,16:00:00,A",
+                    "AAPL,AAPL,EPS,7,2024-03-31,2024,D,101,9001,501,7001,Goldman Sachs,Jane Doe,2.30,USD,2024-02-10,09:00:00,2024-02-10,10:00:00,2024-03-15,16:00:00,A",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = EstimateDetailDataset().run(
+            tmp_store,
+            EstimateDetailOptions(
+                source_file=source,
+                provider="IBES",
+                vendor_security_id_type="IBES_TICKER",
+            ),
+        )
+
+        assert result.rows_loaded == 2
+        row = tmp_store.con.execute(
+            """
+            SELECT
+                provider, security_id, symbol, vendor_security_id,
+                vendor_security_id_type, measure_code, fiscal_period,
+                period_type, value, announce_date, activation_date, available_at,
+                broker_id, analyst_id
+            FROM est_detail
+            ORDER BY value
+            LIMIT 1
+            """
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "IBES"
+        assert row[1] == "US-TICKER-AAPL"
+        assert row[2] == "AAPL"
+        assert row[3] == "AAPL"
+        assert row[4] == "IBES_TICKER"
+        assert row[5] == "EPS_DILUTED"
+        assert row[6] == "Q1"
+        assert row[7] == "FQ"
+        assert row[8] == pytest.approx(2.10)
+        assert row[9] == dt.date(2024, 1, 15)
+        assert row[10] == dt.date(2024, 1, 16)
+        assert row[11] == dt.datetime(2024, 1, 16, 10, 0, 0)
+        assert row[12].startswith("EST-BROKER-")
+        assert row[13].startswith("EST-ANALYST-")
+
+        counts = tmp_store.con.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM est_broker),
+                (SELECT count(*) FROM est_analyst),
+                (SELECT count(*) FROM est_period_dim),
+                (SELECT count(*) FROM est_broker_alias),
+                (SELECT count(*) FROM est_analyst_alias),
+                (SELECT count(*) FROM raw_source_files WHERE dataset_id = 'est_detail')
+            """
+        ).fetchone()
+        assert counts == (2, 2, 1, 6, 6, 1)
+
+    def test_detail_file_loader_is_idempotent_per_source_file(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_detail.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,measure,fpi,fpedats,pdf,estimator,analys,value,anndats,actdats,revdats",
+                    "AAPL,AAPL,EPS,7,2024-03-31,D,101,9001,2.10,2024-01-15,2024-01-16,2024-02-09",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        options = EstimateDetailOptions(source_file=source, provider="IBES")
+        r1 = EstimateDetailDataset().run(tmp_store, options)
+        r2 = EstimateDetailDataset().run(tmp_store, options)
+        count = tmp_store.con.execute("SELECT count(*) FROM est_detail").fetchone()[0]
+        assert r1.rows_loaded == 1
+        assert r2.rows_loaded == 1
+        assert count == 1
+
+    def test_detail_asof_respects_available_at_and_revision_window(self, tmp_store, tmp_path):
+        source = tmp_path / "ibes_detail.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,measure,fpi,fpedats,pdf,estimator,analys,value,anndats,actdats,acttims,revdats",
+                    "AAPL,AAPL,EPS,7,2024-03-31,D,101,9001,2.10,2024-01-15,2024-01-16,10:00:00,2024-02-09",
+                    "AAPL,AAPL,EPS,7,2024-03-31,D,101,9001,2.30,2024-02-10,2024-02-10,10:00:00,2024-03-15",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        EstimateDetailDataset().run(tmp_store, EstimateDetailOptions(source_file=source, provider="IBES"))
+
+        before_revision = est_detail_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 1, 20),
+            as_of_ts=dt.datetime(2024, 1, 20, 23, 59, 59),
+            symbols=("AAPL",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        after_revision = est_detail_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 12),
+            as_of_ts=dt.datetime(2024, 2, 12, 23, 59, 59),
+            symbols=("AAPL",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        after_valid_window = est_detail_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 3, 16),
+            as_of_ts=dt.datetime(2024, 3, 16, 23, 59, 59),
+            symbols=("AAPL",),
+            measure_codes=("EPS_DILUTED",),
+        )
+
+        assert len(before_revision) == 1
+        assert before_revision.iloc[0]["value"] == pytest.approx(2.10)
+        assert len(after_revision) == 1
+        assert after_revision.iloc[0]["value"] == pytest.approx(2.30)
+        assert len(after_valid_window) == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -25,6 +25,16 @@ from db.features import (
     FundamentalFeatureBuildOptions,
     FundamentalFeatureDataset,
 )
+from db.estimates import (
+    EstimateActualsDataset,
+    EstimateActualsOptions,
+    EstimateDetailDataset,
+    EstimateDetailOptions,
+    EstimateMeasureSeedDataset,
+    EstimateMeasureSeedOptions,
+    EstimateSurpriseDataset,
+    EstimateSurpriseOptions,
+)
 from db.finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from db.fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from db.identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
@@ -56,6 +66,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-fundamentals", action="store_true")
     parser.add_argument("--skip-shares-outstanding", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")
+    parser.add_argument("--skip-estimates", action="store_true")
+    parser.add_argument("--estimate-detail-file", type=Path)
+    parser.add_argument("--estimate-detail-provider", default=EstimateDetailOptions().provider)
+    parser.add_argument(
+        "--estimate-detail-vendor-id-type",
+        default=EstimateDetailOptions().vendor_security_id_type,
+    )
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-13f", action="store_true")
     parser.add_argument("--skip-identifier-resolution", action="store_true")
@@ -205,6 +222,26 @@ def main() -> int:
                         FundamentalFeatureBuildOptions(symbols=symbols),
                     )
                 )
+            if not args.skip_estimates:
+                results.append(EstimateMeasureSeedDataset().run(store, EstimateMeasureSeedOptions()))
+                results.append(
+                    EstimateActualsDataset().run(
+                        store,
+                        EstimateActualsOptions(security_ids=None),
+                    )
+                )
+                results.append(EstimateSurpriseDataset().run(store, EstimateSurpriseOptions()))
+                if args.estimate_detail_file:
+                    results.append(
+                        EstimateDetailDataset().run(
+                            store,
+                            EstimateDetailOptions(
+                                source_file=args.estimate_detail_file,
+                                provider=args.estimate_detail_provider,
+                                vendor_security_id_type=args.estimate_detail_vendor_id_type,
+                            ),
+                        )
+                    )
         if not args.skip_submissions:
             results.append(
                 SecSubmissionsDataset().run(

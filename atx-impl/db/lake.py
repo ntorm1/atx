@@ -88,8 +88,17 @@ DEFAULT_EXPORT_OBJECTS = (
     "entity_classification",
     "taxonomy_mapping",
     "est_measure",
+    "est_broker",
+    "est_broker_alias",
+    "est_analyst",
+    "est_analyst_alias",
+    "est_period_dim",
+    "est_detail",
+    "est_consensus",
     "est_actual",
     "est_surprise",
+    "est_guidance",
+    "est_recommendation",
 )
 
 

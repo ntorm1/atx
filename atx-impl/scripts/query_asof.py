@@ -16,6 +16,12 @@ from db.asof import (
     daily_panel_asof,
     delisting_events_asof,
     delisting_return_observations_asof,
+    est_actual_asof,
+    est_consensus_asof,
+    est_detail_asof,
+    est_guidance_asof,
+    est_recommendation_asof,
+    est_surprise_asof,
     features_asof,
     fundamental_periods_asof,
     fundamental_statements_asof,
@@ -38,6 +44,13 @@ def parse_csv(value: str | None) -> tuple[str, ...] | None:
     return parsed or None
 
 
+def parse_id_csv(value: str | None) -> tuple[str, ...] | None:
+    if not value:
+        return None
+    parsed = tuple(part.strip() for part in value.split(",") if part.strip())
+    return parsed or None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run common point-in-time warehouse queries.")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
@@ -57,6 +70,12 @@ def parse_args() -> argparse.Namespace:
             "daily-panel",
             "delistings",
             "delisting-returns",
+            "estimate-actuals",
+            "estimate-surprises",
+            "estimate-consensus",
+            "estimate-guidance",
+            "estimate-details",
+            "estimate-recommendations",
             "features",
             "short-interest",
             "macro",
@@ -69,7 +88,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--symbols", help="Comma-separated ticker filter where supported.")
+    parser.add_argument("--security-ids", help="Comma-separated warehouse security_id filter where supported.")
     parser.add_argument("--metrics", help="Comma-separated fundamental metric filter.")
+    parser.add_argument("--measure-codes", help="Comma-separated estimate measure-code filter.")
+    parser.add_argument("--brokers", help="Comma-separated estimate broker_id filter.")
+    parser.add_argument("--analysts", help="Comma-separated estimate analyst_id filter.")
     parser.add_argument("--statement-types", help="Comma-separated statement type filter.")
     parser.add_argument("--period-types", help="Comma-separated normalized fundamental period type filter.")
     parser.add_argument("--share-count-types", help="Comma-separated share-count type filter.")
@@ -168,6 +191,59 @@ def main() -> int:
             db_path=args.db_path,
             symbols=parse_csv(args.symbols),
             providers=parse_csv(args.providers),
+        )
+    elif args.view == "estimate-actuals":
+        frame = est_actual_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            measure_codes=parse_csv(args.measure_codes),
+        )
+    elif args.view == "estimate-surprises":
+        frame = est_surprise_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            measure_codes=parse_csv(args.measure_codes),
+        )
+    elif args.view == "estimate-consensus":
+        frame = est_consensus_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            measure_codes=parse_csv(args.measure_codes),
+        )
+    elif args.view == "estimate-guidance":
+        frame = est_guidance_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            measure_codes=parse_csv(args.measure_codes),
+        )
+    elif args.view == "estimate-details":
+        frame = est_detail_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            symbols=parse_csv(args.symbols),
+            measure_codes=parse_csv(args.measure_codes),
+            providers=parse_csv(args.providers),
+            broker_ids=parse_id_csv(args.brokers),
+            analyst_ids=parse_id_csv(args.analysts),
+        )
+    elif args.view == "estimate-recommendations":
+        frame = est_recommendation_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            broker_ids=parse_id_csv(args.brokers),
+            analyst_ids=parse_id_csv(args.analysts),
         )
     elif args.view == "features":
         frame = features_asof(

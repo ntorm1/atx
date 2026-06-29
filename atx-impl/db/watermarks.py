@@ -321,6 +321,71 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'est_detail', 'max_period_end', max(period_end)::VARCHAR
+    FROM est_detail
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_detail', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM est_detail
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_detail', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_detail
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_actual', 'max_period_end', max(period_end)::VARCHAR
+    FROM est_actual
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_actual', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_actual
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_surprise', 'max_period_end', max(period_end)::VARCHAR
+    FROM est_surprise
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_surprise', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_surprise
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_consensus', 'max_consensus_date', max(consensus_date)::VARCHAR
+    FROM est_consensus
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_consensus', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_consensus
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_guidance', 'max_guidance_date', max(guidance_date)::VARCHAR
+    FROM est_guidance
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_guidance', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_guidance
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_recommendation', 'max_rating_date', max(rating_date)::VARCHAR
+    FROM est_recommendation
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_recommendation', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_recommendation
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'fred_macro', 'max_observation_date', max(observation_date)::VARCHAR
     FROM macro_observations
     HAVING count(*) > 0

@@ -32,6 +32,8 @@ from db.estimates import (
     EstimateActualsOptions,
     EstimateConsensusDataset,
     EstimateConsensusOptions,
+    EstimateDetailDataset,
+    EstimateDetailOptions,
     EstimateGuidanceDataset,
     EstimateGuidanceOptions,
     EstimateMeasureSeedDataset,
@@ -77,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Also run injectable loaders (consensus/guidance/recommendation) — no-ops without providers.",
+    )
+    parser.add_argument("--estimate-detail-file", type=Path)
+    parser.add_argument("--estimate-detail-provider", default=EstimateDetailOptions().provider)
+    parser.add_argument(
+        "--estimate-detail-vendor-id-type",
+        default=EstimateDetailOptions().vendor_security_id_type,
     )
     return parser.parse_args()
 
@@ -131,6 +139,27 @@ def main() -> int:
                 default=str,
             )
         )
+
+        if args.estimate_detail_file:
+            r_detail = EstimateDetailDataset().run(
+                store,
+                EstimateDetailOptions(
+                    source_file=args.estimate_detail_file,
+                    provider=args.estimate_detail_provider,
+                    vendor_security_id_type=args.estimate_detail_vendor_id_type,
+                ),
+            )
+            print(
+                json.dumps(
+                    {
+                        "step": "est_detail",
+                        "rows_loaded": r_detail.rows_loaded,
+                        "details": r_detail.details,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
 
         if args.run_injectable:
             # 4-6. Injectable loaders (default-empty without providers)

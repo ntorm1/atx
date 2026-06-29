@@ -1838,6 +1838,182 @@ def est_guidance_asof(
         return _run(store)
 
 
+def est_detail_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    measure_codes: tuple[str, ...] | list[str] | None = None,
+    providers: tuple[str, ...] | list[str] | None = None,
+    broker_ids: tuple[str, ...] | list[str] | None = None,
+    analyst_ids: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return active detail-estimate rows visible as-of a PIT timestamp.
+
+    The query is strict about bitemporal visibility:
+    available_at gates feed availability, announce/estimate/as_of dates gate event
+    time, revision_date acts as an inclusive valid-through date when present, and
+    stopped estimates are hidden after stop_date.
+    """
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            joins = []
+            sid_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_symbols(symbols)
+            mc_values = _normalize_strings(measure_codes)
+            provider_values = _normalize_strings(providers)
+            broker_values = _normalize_ids(broker_ids)
+            analyst_values = _normalize_ids(analyst_ids)
+            if _register_filter(store, "asof_est_detail_sid_filter", "security_id", sid_values):
+                registered.append("asof_est_detail_sid_filter")
+                joins.append("JOIN asof_est_detail_sid_filter sf ON sf.security_id = d.security_id")
+            if _register_filter(store, "asof_est_detail_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_est_detail_symbol_filter")
+                joins.append("JOIN asof_est_detail_symbol_filter syf ON syf.symbol = d.symbol")
+            if _register_filter(store, "asof_est_detail_mc_filter", "measure_code", mc_values):
+                registered.append("asof_est_detail_mc_filter")
+                joins.append("JOIN asof_est_detail_mc_filter mf ON mf.measure_code = d.measure_code")
+            if _register_filter(store, "asof_est_detail_provider_filter", "provider", provider_values):
+                registered.append("asof_est_detail_provider_filter")
+                joins.append("JOIN asof_est_detail_provider_filter pf ON pf.provider = d.provider")
+            if _register_filter(store, "asof_est_detail_broker_filter", "broker_id", broker_values):
+                registered.append("asof_est_detail_broker_filter")
+                joins.append("JOIN asof_est_detail_broker_filter bf ON bf.broker_id = d.broker_id")
+            if _register_filter(store, "asof_est_detail_analyst_filter", "analyst_id", analyst_values):
+                registered.append("asof_est_detail_analyst_filter")
+                joins.append("JOIN asof_est_detail_analyst_filter af ON af.analyst_id = d.analyst_id")
+            sql = f"""
+            WITH params AS (
+                SELECT
+                    CAST(? AS DATE) AS as_of_date,
+                    CAST(? AS TIMESTAMP) AS as_of_ts
+            ),
+            ranked AS (
+                SELECT
+                    d.*,
+                    row_number() OVER (
+                        PARTITION BY
+                            coalesce(d.security_id, ''),
+                            coalesce(d.symbol, ''),
+                            coalesce(d.vendor_security_id, ''),
+                            coalesce(d.measure_code, ''),
+                            d.period_end,
+                            coalesce(d.broker_id, ''),
+                            coalesce(d.analyst_id, ''),
+                            coalesce(d.pdf, ''),
+                            coalesce(d.basis, '')
+                        ORDER BY
+                            d.available_at DESC NULLS LAST,
+                            d.revision_date DESC NULLS LAST,
+                            d.activation_date DESC NULLS LAST,
+                            d.announce_date DESC NULLS LAST,
+                            d.source_loaded_at DESC NULLS LAST,
+                            d.est_detail_id DESC NULLS LAST
+                    ) AS rn
+                FROM est_detail d
+                {' '.join(joins)}
+                CROSS JOIN params p
+                WHERE (d.available_at IS NULL OR d.available_at <= p.as_of_ts)
+                  AND (d.as_of_date IS NULL OR d.as_of_date <= p.as_of_date)
+                  AND (d.estimate_date IS NULL OR d.estimate_date <= p.as_of_date)
+                  AND (d.announce_date IS NULL OR d.announce_date <= p.as_of_date)
+                  AND (d.revision_date IS NULL OR d.revision_date >= p.as_of_date)
+                  AND (d.stop_date IS NULL OR d.stop_date > p.as_of_date)
+                  AND coalesce(d.estimate_type, '') <> 'S'
+            )
+            SELECT * EXCLUDE (rn)
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY provider, symbol, security_id, measure_code, period_end, broker_id, analyst_id
+            """
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def est_recommendation_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    broker_ids: tuple[str, ...] | list[str] | None = None,
+    analyst_ids: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest visible broker recommendation rows as-of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            joins = []
+            sid_values = _normalize_ids(security_ids)
+            broker_values = _normalize_ids(broker_ids)
+            analyst_values = _normalize_ids(analyst_ids)
+            if _register_filter(store, "asof_est_rec_sid_filter", "security_id", sid_values):
+                registered.append("asof_est_rec_sid_filter")
+                joins.append("JOIN asof_est_rec_sid_filter sf ON sf.security_id = r.security_id")
+            if _register_filter(store, "asof_est_rec_broker_filter", "broker_id", broker_values):
+                registered.append("asof_est_rec_broker_filter")
+                joins.append("JOIN asof_est_rec_broker_filter bf ON bf.broker_id = r.broker_id")
+            if _register_filter(store, "asof_est_rec_analyst_filter", "analyst_id", analyst_values):
+                registered.append("asof_est_rec_analyst_filter")
+                joins.append("JOIN asof_est_rec_analyst_filter af ON af.analyst_id = r.analyst_id")
+            sql = f"""
+            WITH params AS (
+                SELECT
+                    CAST(? AS DATE) AS as_of_date,
+                    CAST(? AS TIMESTAMP) AS as_of_ts
+            ),
+            ranked AS (
+                SELECT
+                    r.*,
+                    row_number() OVER (
+                        PARTITION BY r.security_id, coalesce(r.broker_id, ''), coalesce(r.analyst_id, '')
+                        ORDER BY r.available_at DESC NULLS LAST, r.rating_date DESC NULLS LAST, r.source_loaded_at DESC NULLS LAST
+                    ) AS rn
+                FROM est_recommendation r
+                {' '.join(joins)}
+                CROSS JOIN params p
+                WHERE (r.available_at IS NULL OR r.available_at <= p.as_of_ts)
+                  AND (r.as_of_date IS NULL OR r.as_of_date <= p.as_of_date)
+                  AND (r.rating_date IS NULL OR r.rating_date <= p.as_of_date)
+            )
+            SELECT * EXCLUDE (rn)
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY security_id, broker_id, analyst_id, rating_date
+            """
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
 def identifier_decisions_asof(
     as_of_date: dt.date,
     as_of_ts: dt.datetime | None = None,

@@ -76,6 +76,8 @@ from .estimates import (
     EstimateActualsOptions,
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
+    EstimateDetailDataset,
+    EstimateDetailOptions,
     EstimateConsensusDataset,
     EstimateConsensusOptions,
     EstimateGuidanceDataset,
@@ -244,6 +246,18 @@ def _delisting_event_options(params: dict[str, Any]) -> DelistingEventOptions:
 def _delisting_return_observation_options(params: dict[str, Any]) -> DelistingReturnObservationOptions:
     default = DelistingReturnObservationOptions()
     return DelistingReturnObservationOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source=params.get("source") or default.source,
+        provider=params.get("provider") or default.provider,
+        vendor_security_id_type=params.get("vendor_security_id_type") or default.vendor_security_id_type,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _estimate_detail_options(params: dict[str, Any]) -> EstimateDetailOptions:
+    default = EstimateDetailOptions()
+    return EstimateDetailOptions(
         source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
         source=params.get("source") or default.source,
         provider=params.get("provider") or default.provider,
@@ -615,6 +629,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
             model=p.get("model", "srw_drift"),
         ),
     ),
+    EstimateDetailDataset.dataset_id: (
+        EstimateDetailDataset,
+        _estimate_detail_options,
+    ),
     EstimateConsensusDataset.dataset_id: (
         EstimateConsensusDataset,
         lambda p: EstimateConsensusOptions(),
@@ -916,6 +934,7 @@ class JobManager:
             dependencies=["est_actual"],
             **retry_policy,
         )
+        self.register_job(job_name="est_detail", dataset_id="est_detail", **retry_policy)
         self.register_job(job_name="est_consensus", dataset_id="est_consensus", **retry_policy)
         self.register_job(job_name="est_guidance", dataset_id="est_guidance", **retry_policy)
         self.register_job(

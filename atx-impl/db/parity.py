@@ -182,7 +182,7 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         institutional_keys=("company identifier", "fiscal period", "data item", "currency/unit", "revision timestamp"),
         pit_fields=("filing date", "availability timestamp", "estimate snapshot timestamp", "source_loaded_at"),
         factors_or_fields=("as-reported statements", "standardized values", "ratios", "valuation multiples", "estimates"),
-        open_substitute="SEC companyfacts/submissions for as-reported fundamentals with explicit-symbol, universe, or SEC ticker-map coverage controls; public XBRL taxonomy relationships, filing-instance fact/context/dimension extraction, revision chains, normalized statement/period/TTM points, and feature_values for derived ratios, growth, and revision signals.",
+        open_substitute="SEC companyfacts/submissions for as-reported fundamentals with explicit-symbol, universe, or SEC ticker-map coverage controls; public XBRL taxonomy relationships, filing-instance fact/context/dimension extraction, revision chains, normalized statement/period/TTM points, feature_values for derived ratios/growth/revision signals, and injectable estimate actual/detail/consensus/guidance tables for licensed or manually supplied estimate feeds.",
         warehouse_tables=(
             "sec_submissions",
             "sec_company_facts",
@@ -197,11 +197,23 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "fundamental_periods",
             "fundamental_ttm_points",
             "fundamental_points",
+            "est_measure",
+            "est_actual",
+            "est_surprise",
+            "est_detail",
+            "est_broker",
+            "est_broker_alias",
+            "est_analyst",
+            "est_analyst_alias",
+            "est_period_dim",
+            "est_consensus",
+            "est_guidance",
+            "est_recommendation",
             "feature_values",
         ),
         parity_status="partial",
-        limitations="Capital IQ estimates, proprietary standardization, and linkages are not open data.",
-        next_gap="Add estimates placeholders/catalog entries, scale filing-instance segment history beyond the current five-issuer batch, and enrich inline-XBRL transforms.",
+        limitations="Capital IQ estimates, proprietary standardization, and linkages are not open data; licensed/manually injected files are required for full estimates coverage.",
+        next_gap="Load licensed CIQ/Visible Alpha estimate files into the injectable estimate surfaces and map CIQ dataItemIds to canonical estimate measures.",
         source_urls=(
             "https://www.spglobal.com/market-intelligence/en/solutions/products/fundamental-data",
             "https://www.marketplace.spglobal.com/en/solutions/xpressfeed-%28b73250d6-a15c-4243-9016-3e5bf6300e43%29",
@@ -606,12 +618,12 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         pit_fields=("consensus_date", "available_at", "source_loaded_at"),
         factors_or_fields=("mean estimate", "median estimate", "high/low estimate", "stdev", "num_estimates", "revisions"),
         open_substitute="est_consensus table with injectable provider connector; default-empty.",
-        warehouse_tables=("est_consensus", "est_detail", "est_broker", "est_analyst"),
+        warehouse_tables=("est_consensus", "est_detail", "est_broker", "est_broker_alias", "est_analyst", "est_analyst_alias", "est_period_dim"),
         parity_status="partial",
         limitations=(
-            "licensed: IBES/FactSet Estimates/Zacks; schema + injectable loader; no open-data source"
+            "licensed: IBES/FactSet Estimates/Zacks; consensus is injectable/default-empty; no open-data consensus source"
         ),
-        next_gap="Wire licensed IBES/FactSet Estimates feed via injectable provider.",
+        next_gap="Wire licensed IBES/FactSet/Zacks consensus snapshot feed or public aggregator file into est_consensus.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-estimates-api",
             "https://www.lseg.com/en/data-analytics/financial-data/estimates",
@@ -627,16 +639,20 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "Zacks detail feed",
         ),
         institutional_grain="Broker-analyst-measure-period estimate rows and recommendation change events.",
-        institutional_keys=("security_id", "broker_id", "analyst_id", "measure_code", "fiscal_year", "fiscal_period", "estimate_date"),
-        pit_fields=("estimate_date", "rating_date", "available_at", "source_loaded_at"),
+        institutional_keys=("security_or_vendor_id", "broker_id", "analyst_id", "measure_code", "period_end", "announce_date", "activation_date"),
+        pit_fields=("announce_date", "activation_date", "revision_date", "stop_date", "available_at", "source_loaded_at"),
         factors_or_fields=("individual estimate", "broker rating", "rating direction", "price target"),
-        open_substitute="est_detail, est_recommendation, est_broker, est_analyst tables with injectable provider connectors; default-empty.",
-        warehouse_tables=("est_detail", "est_broker", "est_analyst", "est_recommendation"),
+        open_substitute=(
+            "est_detail CSV injector normalizes IBES-like detail files and normalized files into "
+            "est_detail with est_broker/est_analyst alias dimensions, est_period_dim, source-file hashes, "
+            "and est_detail_asof PIT queries; est_recommendation remains injectable/default-empty."
+        ),
+        warehouse_tables=("est_detail", "est_broker", "est_broker_alias", "est_analyst", "est_analyst_alias", "est_period_dim", "est_recommendation"),
         parity_status="partial",
         limitations=(
-            "licensed: IBES/FactSet Estimates/Zacks; schema + injectable loader; no open-data source"
+            "detail broker estimates remain licensed or manually injectable; no public source can reconstruct full broker/analyst grain"
         ),
-        next_gap="Wire licensed IBES/FactSet Estimates detail feed via injectable provider.",
+        next_gap="Load a real licensed IBES/FactSet Estimates file, then add price-target and recommendation detail normalization.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-estimates-api",
         ),

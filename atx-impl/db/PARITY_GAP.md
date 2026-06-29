@@ -14,7 +14,7 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 | # | Domain | Target tables (n) | Built | Partial | Missing | Current loader(s) | Sprint |
 |---|--------|------:|-------|---------|---------|-------------------|:------:|
 | 1 | Fundamentals (XBRL/us-gaap) | ~14 | sec_company_facts, fundamental_points, fundamental_statement_points, fundamental_ttm_points, fundamental_periods, fundamental_fact_revisions, xbrl_* + xbrl_validation_results | S4a/S4b statement map, rdq/four-date period fields, and SQL calc-linkbase validation are built; full Arelle/DQC sidecar and vendor reconciliation remain | full DQC 150+ execution, cross-vendor `fact_disagreement`, richer as-reported press-release extraction | fundamentals.py, fundamental_statements.py, xbrl_taxonomy.py, xbrl_filing_contexts.py, xbrl_validation.py | 8 (polish) |
-| 2 | Estimates (IBES/consensus) | ~11 | — | — | **ALL**: est_broker, est_analyst, est_measure_dim, est_period_dim, est_detail/est_fact, est_consensus, est_actual, est_recommendation, est_guidance | none | **1** |
+| 2 | Estimates (IBES/consensus) | ~11 | est_measure, est_actual, est_surprise, est_broker, est_broker_alias, est_analyst, est_analyst_alias, est_period_dim, est_detail, est_consensus, est_guidance, est_recommendation | SEC-derived actuals/SUE plus injectable detail/consensus/guidance/recommendation landing surfaces with PIT fields | public guidance NER not built; default DB has no licensed broker-detail/consensus rows | build_estimates.py, estimates.py | 2 (extend) |
 | 3 | Ownership-13F | 4 | thirteenf_managers, thirteenf_manager_reports, thirteenf_security_positions, thirteenf_security_ownership | filer CIK-alias / entity-resolution layer thin; FIGI mostly null | `filer_13f_cik_alias` (subadvisor rollup), N-PORT cross-link | thirteenf.py, ownership.py | 6 (extend) |
 | 4 | Insider ownership (3/4/5, 13D/G) | ~15 | — | — | **ALL**: insider, insider_relationship, insider_transaction, filing_form4, blockholder_filing, blockholder_reporting_person, fund, fund_class, filing_nport, fund_holding, form144_intent, tradingplan_10b5_1, proxy_vote, congressional_disclosure | none | **3** |
 | 5 | Corporate actions | ~10 | corporate_actions (142 rows), corp_action_type_dim, adjustment_factor_history, delist_code_dim, delisting_events, delisting_return_observations | div/split factors plus public delisting evidence; injectable DLRET-like surface exists but default DB has no observed terminal returns | populated observed terminal returns, CRSP DLSTCD reconciliation, name_history, ticker_history, spinoff_basis_allocation, offering, trading_halt | corporate_actions.py, adjustment_factors.py, delisting.py | 5 |
@@ -24,7 +24,7 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 | 9 | Off-exchange / short-interest | ~6 | finra_short_interest (66k rows) | short interest only; bi-monthly | offexchange_volume (ATS), offexchange_venue, offexchange_security_period, quote/borrow-fee | finra.py, short_interest_features.py | 6 |
 | 10 | Supply-chain + Macro | sc_node/sc_edge + macro (~5) | macro_series, macro_observations (40k rows) | macro built; supply-chain absent | sc_node, sc_edge, sc_node_observation, customs/CBP-AMS, Exhibit-21 subsidiary graph, GLEIF/LEI loader | macro.py | 9 (last) |
 
-**One-line read:** Fundamentals, 13F, FINRA short interest, and macro are real and loaded. Corp-actions and pricing exist as thin single tables. Four entire domains are absent — **Estimates, Insider ownership, ESG, Reference classifications** — and the strategic **Supply-chain** wedge is not started.
+**One-line read:** Fundamentals, 13F, FINRA short interest, macro, reference classifications, insider/blockholder landing tables, and the estimates schema are real. Corp-actions/pricing now include adjustment and delisting evidence surfaces. Remaining large gaps are populated licensed/public estimate feeds, ESG, deeper off-exchange data, and the strategic supply-chain wedge.
 
 ---
 
@@ -54,7 +54,7 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 
 **S4 implementation update:** S4a/S4b/S4c/S4d now cover exact 137 cross-industry item_ids, 37 bank/insurance/REIT overlays, `fundamental_periods.datadate/rdq/pdate/fdate/ldate`, and SQL calculation-linkbase validation rows in `xbrl_validation_results`. Remaining fundamentals gaps are full Arelle/DQC 150+ rule execution, cross-vendor `fact_disagreement`, and richer EX-99 press-release actual extraction.
 
-### Domain 2 — Estimates (analyst / IBES / consensus)  ·  Status: MISSING
+### Domain 2 — Estimates (analyst / IBES / consensus)  ·  Status: PARTIAL
 
 **Target tables** (`datasets/estimates.md` §9, `data_models_and_methodology.md` Part B):
 - `est_broker` + `est_broker_alias` — estimator registry with vendor-ID vintage tracking (IBES reshuffle).
@@ -67,10 +67,13 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 - `est_recommendation` — 1=StrongBuy..5=Sell (canonical IBES scale) + price target.
 - `est_guidance` — 8-K Item 2.02/7.01 NER-extracted company guidance (no us-gaap XBRL element exists).
 
-**Current state:** No `est_*` table exists in `schema.py`. No loader. Parity ledger row "S&P Capital IQ — As-reported fundamentals, estimates, and ratios" maps estimates to `fundamentals_features` (the feature store) — i.e. **claimed but not backed by an estimates store**.
+**Current state — PARTIAL BUILT:**
+- `est_measure`, `est_actual`, and `est_surprise` are real: SEC companyfacts actuals map into canonical estimate measures and SUE is computed PIT-safely from originally reported actuals.
+- `est_detail` now has an injectable CSV loader for IBES-like or normalized detail rows, with `anndats`/`actdats`/`revdats`/`stop_date`, source-file hashes, broker/analyst alias dimensions, `est_period_dim`, watermarks, lake exports, quality checks, and `est_detail_asof`.
+- `est_consensus`, `est_guidance`, and `est_recommendation` remain injectable/default-empty surfaces.
 
-**Gap (entire domain):**
-- All 9–11 tables above.
+**Gap:**
+- Populated licensed/public estimate feeds are not in the default DB. Full parity still needs a real IBES/FactSet/CIQ/Zacks detail and summary load, recommendation/price-target normalization, and SEC 8-K Item 2.02/7.01 guidance NER.
 - **Connectors:** primary public path is SEC EDGAR 8-K Item 2.02 (results) + 7.01 (Reg-FD guidance) prose extraction; secondary public aggregators (Zacks/Yahoo/Nasdaq — license-murky, sourced from IBES). Vendor truth (IBES via WRDS `ibes.detu_epsus`/`statsumu_epsus`/`recddet`, FactSet Estimates API, Bloomberg BEst, CIQ `ciqEstimateNumericData`) is licensed.
 - **Quality gotchas to encode:** IBES broker-ID reshuffle (2018: 13.8% brokers / 30.7% analysts reassigned — never join on numeric broker_id across vintages); `revdats`-bumped FPI gotcha (filter `anndats ≤ D ≤ revdats`, join on `fpedats` not `fpi`); **Bloomberg recommendation scale inverts IBES** (5=Buy vs 1=Buy); P-vs-D EPS mixing (~5–8% silent error); stopped-estimate filter (`estimate_type != 'S'`); 105-day stale scrub on consensus.
 
@@ -202,7 +205,7 @@ Ordering rationale: maximize (parity impact × inverse effort). Estimates and re
 
 | Sprint | Domain | Headline gap | One-line acceptance criterion |
 |:------:|--------|--------------|-------------------------------|
-| **1** | Estimates | Entire `est_*` store absent | `est_detail` + `est_consensus` + `est_recommendation` + `est_guidance` tables exist; 8-K Item 2.02/7.01 NER loader populates guidance for ≥500 issuers; consensus uses canonical IBES 1–5 rec scale; row counts in `lake/est_*/_manifest.json`. |
+| **1** | Estimates | Populate and extend injectable estimates store | Real licensed/manual estimate detail and consensus files load into `est_detail`/`est_consensus`; recommendation/price-target normalization is covered; 8-K Item 2.02/7.01 NER populates `est_guidance` for >=500 issuers; row counts appear in `lake/est_*/_manifest.json`. |
 | **2** | Reference classifications | No taxonomy tables; SIC/NAICS unextracted | `taxonomy`/`taxonomy_node`/`entity_classification`/`sic_code_dim`(authority-keyed)/`naics_code_dim` exist; SEC-assigned SIC + NAICS + Fama-French + TRBC-via-PermID loaded for the full security universe with bitemporal `valid_from`. |
 | **3** | Insider ownership | No Form 3/4/5 or 13D/G parsing | `insider`/`insider_transaction`/`filing_form4` populated from EDGAR Ownership XML with full 28-letter `transaction_code` + `rule_10b5_1_indicator`; `blockholder_filing` handles post-2024-12-18 XML; ≥1 quarter of Form-4 backfill loaded. |
 | **4** | Fundamentals (concept coverage) | S4a cross-industry dictionary corrected to 137 item_ids; S4b overlays seeded | `fundamental_statement_map` covers exactly the 137 authorized cross-industry item_ids from sections 2.1-2.4 plus 37 bank/insurance/REIT-FFO overlay item_ids from sections 2.5-2.7; `rdq` (8-K 2.02 date) captured; calc-linkbase + DQC validation writes to `data_quality_checks`. |

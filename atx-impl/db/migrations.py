@@ -602,6 +602,130 @@ def _delisting_return_observations(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _estimate_detail_panel(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5f: vendor-injectable detail estimate panel with PIT lineage dimensions."""
+
+    for statement in (
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS est_detail_id VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS provider VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS symbol VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS vendor_security_id VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS vendor_security_id_type VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS source_vendor_table VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS vendor_broker_id VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS vendor_analyst_id VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS broker_mask_code VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS analyst_mask_code VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS broker_name VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS analyst_name VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS fpi VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS period_type VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS expected_report_date DATE",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS announce_date DATE",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS announce_time TIME",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS activation_date DATE",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS activation_time TIME",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS revision_date DATE",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS revision_time TIME",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS stop_date DATE",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS pdf VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS basis VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS is_gaap BOOLEAN",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS estimate_type VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS currency VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS unit VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS source_file VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS source_file_sha256 VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS raw_payload_json VARCHAR",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS provider VARCHAR",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS vendor_broker_id VARCHAR",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS broker_mask_code VARCHAR",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS valid_from DATE",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS valid_to DATE",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS available_at TIMESTAMP",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS run_id VARCHAR",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS source_file_sha256 VARCHAR",
+        "ALTER TABLE est_broker ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS provider VARCHAR",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS vendor_analyst_id VARCHAR",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS analyst_mask_code VARCHAR",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS valid_from DATE",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS valid_to DATE",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS available_at TIMESTAMP",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS run_id VARCHAR",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS source_file_sha256 VARCHAR",
+        "ALTER TABLE est_analyst ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+    ):
+        conn.execute(statement)
+    for statement in (
+        """
+        CREATE TABLE IF NOT EXISTS est_period_dim (
+            est_period_id VARCHAR PRIMARY KEY,
+            provider VARCHAR,
+            measure_code VARCHAR,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            period_end DATE,
+            fpi VARCHAR,
+            period_type VARCHAR,
+            expected_report_date DATE,
+            valid_from DATE,
+            valid_to DATE,
+            as_of_date DATE,
+            available_at TIMESTAMP,
+            source VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS est_broker_alias (
+            broker_alias_id VARCHAR PRIMARY KEY,
+            broker_id VARCHAR NOT NULL,
+            provider VARCHAR,
+            alias_type VARCHAR NOT NULL,
+            alias_value VARCHAR NOT NULL,
+            valid_from DATE,
+            valid_to DATE,
+            available_at TIMESTAMP,
+            source VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS est_analyst_alias (
+            analyst_alias_id VARCHAR PRIMARY KEY,
+            analyst_id VARCHAR NOT NULL,
+            provider VARCHAR,
+            alias_type VARCHAR NOT NULL,
+            alias_value VARCHAR NOT NULL,
+            valid_from DATE,
+            valid_to DATE,
+            available_at TIMESTAMP,
+            source VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_est_detail_id ON est_detail(est_detail_id)",
+        "CREATE INDEX IF NOT EXISTS idx_est_detail_security ON est_detail(security_id, measure_code, period_end, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_detail_symbol ON est_detail(symbol, measure_code, period_end, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_detail_vendor ON est_detail(provider, vendor_security_id_type, vendor_security_id, measure_code, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_est_detail_broker ON est_detail(broker_id, analyst_id, announce_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_period_dim_key ON est_period_dim(provider, measure_code, period_end, fpi)",
+        "CREATE INDEX IF NOT EXISTS idx_est_broker_vendor ON est_broker(provider, vendor_broker_id, valid_from)",
+        "CREATE INDEX IF NOT EXISTS idx_est_analyst_vendor ON est_analyst(provider, vendor_analyst_id, valid_from)",
+        "CREATE INDEX IF NOT EXISTS idx_est_broker_alias_value ON est_broker_alias(provider, alias_type, alias_value, valid_from)",
+        "CREATE INDEX IF NOT EXISTS idx_est_analyst_alias_value ON est_analyst_alias(provider, alias_type, alias_value, valid_from)",
+    ):
+        conn.execute(statement)
+
+
 def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
     """Create S2 estimates tables: est_measure, est_actual, est_consensus, est_detail,
     est_broker, est_analyst, est_guidance, est_recommendation, est_surprise."""
@@ -1236,6 +1360,11 @@ MIGRATIONS: list[Migration] = [
         version=15,
         name="delisting_return_observations",
         up=_delisting_return_observations,
+    ),
+    Migration(
+        version=16,
+        name="estimate_detail_panel",
+        up=_estimate_detail_panel,
     ),
 ]
 
