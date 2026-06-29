@@ -130,6 +130,39 @@ class TestComputeShortInterestMetrics:
         assert by[dt.date(2026, 5, 15)].days_to_cover_prev == pytest.approx(1.0)
         assert by[dt.date(2026, 5, 15)].days_to_cover_change == pytest.approx(1.5)
 
+    def test_multi_settlement_momentum_and_change(self):
+        # four settlements for one security; 3-settlement momentum/change lag back 3 rows
+        dates = [dt.date(2026, 3, 15), dt.date(2026, 3, 31), dt.date(2026, 4, 15), dt.date(2026, 4, 30)]
+        avs = ["2026-03-25", "2026-04-10", "2026-04-25", "2026-05-10"]
+        shorts = [1000, 1100, 1200, 1500]  # adv=100 -> days_to_cover 10,11,12,15
+        rows = [_row("S1", "AAA", s, s - 50, 100, d, _ts(a)) for s, d, a in zip(shorts, dates, avs)]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        last = {r.settlement_date: r for r in out.itertuples(index=False)}[dt.date(2026, 4, 30)]
+        assert last.short_interest_momentum_3 == pytest.approx((1500 - 1000) / 1000)
+        assert last.days_to_cover_change_3 == pytest.approx(15.0 - 10.0)
+        # earliest settlement has no 3-back history
+        first = {r.settlement_date: r for r in out.itertuples(index=False)}[dt.date(2026, 3, 15)]
+        assert pd.isna(first.short_interest_momentum_3)
+
+    def test_squeeze_candidate_flag(self):
+        # single-security cohort -> days_to_cover_percentile = 1.0 (>= 0.9); a rising
+        # days-to-cover (positive lag-1 change) then flags a squeeze candidate.
+        rising = [_row("S1", "AAA", s, s - 50, 100, d, _ts(a)) for s, d, a in [
+            (1000, dt.date(2026, 4, 15), "2026-04-25"),
+            (1500, dt.date(2026, 4, 30), "2026-05-10"),
+        ]]
+        out = compute_short_interest_metrics(pd.DataFrame(rising))
+        by = {r.settlement_date: r for r in out.itertuples(index=False)}
+        assert bool(by[dt.date(2026, 4, 30)].is_squeeze_candidate) is True
+        # a falling days-to-cover is not a squeeze candidate
+        falling = [_row("S1", "AAA", s, s + 50, 100, d, _ts(a)) for s, d, a in [
+            (1500, dt.date(2026, 4, 15), "2026-04-25"),
+            (1000, dt.date(2026, 4, 30), "2026-05-10"),
+        ]]
+        out2 = compute_short_interest_metrics(pd.DataFrame(falling))
+        by2 = {r.settlement_date: r for r in out2.itertuples(index=False)}
+        assert bool(by2[dt.date(2026, 4, 30)].is_squeeze_candidate) is False
+
     def test_metric_id_deterministic_and_unique(self):
         rows = pd.DataFrame([
             _row("S1", "AAA", 100, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),

@@ -46,8 +46,14 @@ SHORT_INTEREST_METRIC_COLUMNS = [
     "days_to_cover_source", "short_pct_shares_outstanding",
     "days_to_cover_percentile", "short_interest_change_pct_percentile",
     "days_to_cover_zscore", "days_to_cover_prev", "days_to_cover_change",
+    "short_interest_momentum_3", "days_to_cover_change_3", "is_squeeze_candidate",
     "universe_count", "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
+
+# Settlements to look back for multi-period momentum, and the crowding percentile that,
+# together with a rising days-to-cover, flags a short-squeeze candidate.
+MOMENTUM_LAG = 3
+SQUEEZE_PERCENTILE = 0.90
 
 
 @dataclass(frozen=True)
@@ -123,8 +129,22 @@ def compute_short_interest_metrics(
     # Time-series trend: days-to-cover vs the prior settlement for the same security
     # (rising days-to-cover = building short pressure). The prior settlement was
     # published earlier, so the change is knowable at the current publication instant.
-    out["days_to_cover_prev"] = out.groupby("security_id")["days_to_cover"].shift(1)
+    sec = out.groupby("security_id")
+    out["days_to_cover_prev"] = sec["days_to_cover"].shift(1)
     out["days_to_cover_change"] = out["days_to_cover"] - out["days_to_cover_prev"]
+
+    # Multi-settlement momentum: short-interest growth and days-to-cover change over the
+    # trailing MOMENTUM_LAG settlements for the same security (all earlier publications).
+    cur_3 = sec["current_short_position"].shift(MOMENTUM_LAG)
+    out["short_interest_momentum_3"] = (out["current_short_position"] - cur_3) / cur_3.where(cur_3 > 0)
+    out["days_to_cover_change_3"] = out["days_to_cover"] - sec["days_to_cover"].shift(MOMENTUM_LAG)
+
+    # Squeeze candidate: heavily crowded (top-decile days-to-cover within the cohort) AND
+    # the short is still building (positive most-recent days-to-cover change).
+    out["is_squeeze_candidate"] = (
+        out["days_to_cover_percentile"].ge(SQUEEZE_PERCENTILE)
+        & out["days_to_cover_change"].gt(0)
+    ).fillna(False)
 
     out["source"] = source
     out["run_id"] = run_id

@@ -3066,6 +3066,48 @@ def _equity_price_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _short_interest_metrics_momentum(conn: duckdb.DuckDBPyConnection) -> None:
+    """S15: multi-settlement short-interest momentum + squeeze-candidate flag.
+
+    ``short_interest_momentum_3`` / ``days_to_cover_change_3`` are the short-interest
+    growth and days-to-cover change over the trailing 3 settlements for the same
+    security; ``is_squeeze_candidate`` flags a top-decile-crowded name whose
+    days-to-cover is still rising. All recomputed wholesale by the loader.
+    """
+    for column in (
+        "short_interest_momentum_3 DOUBLE",
+        "days_to_cover_change_3 DOUBLE",
+        "is_squeeze_candidate BOOLEAN",
+    ):
+        conn.execute(f"ALTER TABLE short_interest_metrics ADD COLUMN IF NOT EXISTS {column}")
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE WHEN c.column_name = 'is_squeeze_candidate' THEN 'flag' ELSE 'measure' END,
+            CASE c.column_name
+                WHEN 'short_interest_momentum_3' THEN 'Short-interest growth over the trailing 3 settlements ((current - 3-settlements-ago) / 3-settlements-ago).'
+                WHEN 'days_to_cover_change_3' THEN 'Change in days-to-cover over the trailing 3 settlements for the same security.'
+                WHEN 'is_squeeze_candidate' THEN 'True when days-to-cover is top-decile in the cohort (percentile >= 0.90) and the most-recent days-to-cover change is positive.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            true,
+            CASE WHEN c.column_name = 'short_interest_momentum_3' THEN 'ratio'
+                 WHEN c.column_name = 'days_to_cover_change_3' THEN 'days' ELSE NULL END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND c.table_name = 'short_interest_metrics'
+          AND c.column_name IN ('short_interest_momentum_3', 'days_to_cover_change_3', 'is_squeeze_candidate')
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -3252,6 +3294,11 @@ MIGRATIONS: list[Migration] = [
         version=37,
         name="equity_price_metrics",
         up=_equity_price_metrics,
+    ),
+    Migration(
+        version=38,
+        name="short_interest_metrics_momentum",
+        up=_short_interest_metrics_momentum,
     ),
 ]
 
