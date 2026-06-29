@@ -32,6 +32,7 @@ from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_d
 from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
+from .estimate_security_links import EstimateSecurityLinkDataset, EstimateSecurityLinkOptions
 from .insider_ownership import (
     DEFAULT_BLOCKHOLDER_FORMS,
     DEFAULT_FORMS,
@@ -306,6 +307,23 @@ def _estimate_recommendation_summary_options(params: dict[str, Any]) -> Estimate
         rating_scale=params.get("rating_scale") or default.rating_scale,
         scale_direction=params.get("scale_direction") or default.scale_direction,
         replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _estimate_security_link_options(params: dict[str, Any]) -> EstimateSecurityLinkOptions:
+    default = EstimateSecurityLinkOptions()
+    return EstimateSecurityLinkOptions(
+        provider_names=_tuple_or_none(params.get("provider_names", default.provider_names)),
+        vendor_security_id_types=_tuple_or_none(
+            params.get("vendor_security_id_types", default.vendor_security_id_types)
+        ),
+        min_confidence=float(params.get("min_confidence", default.min_confidence)),
+        apply_to_security_identifier_history=_bool_param(
+            params.get("apply_to_security_identifier_history"),
+            default.apply_to_security_identifier_history,
+        ),
+        source=params.get("source") or default.source,
         run_id=params.get("run_id") or default.run_id,
     )
 
@@ -692,6 +710,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         EstimateRecommendationSummaryDataset,
         _estimate_recommendation_summary_options,
     ),
+    EstimateSecurityLinkDataset.dataset_id: (
+        EstimateSecurityLinkDataset,
+        _estimate_security_link_options,
+    ),
 }
 
 
@@ -995,6 +1017,18 @@ class JobManager:
         self.register_job(
             job_name="est_recommendation_summary",
             dataset_id="est_recommendation_summary",
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="est_security_link",
+            dataset_id="est_security_link",
+            dependencies=[
+                "identifier_resolution_decisions",
+                "est_detail",
+                "est_consensus",
+                "est_recommendation",
+                "est_recommendation_summary",
+            ],
             **retry_policy,
         )
 

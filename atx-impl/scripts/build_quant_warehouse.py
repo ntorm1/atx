@@ -41,6 +41,7 @@ from db.estimates import (
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
+from db.estimate_security_links import EstimateSecurityLinkDataset, EstimateSecurityLinkOptions
 from db.finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from db.fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 from db.identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
@@ -121,6 +122,17 @@ def parse_args() -> argparse.Namespace:
         "--estimate-recommendation-summary-scale-direction",
         default=EstimateRecommendationSummaryOptions().scale_direction,
         choices=("LOWER_IS_BULLISH", "HIGHER_IS_BULLISH"),
+    )
+    parser.add_argument("--skip-estimate-security-links", action="store_true")
+    parser.add_argument(
+        "--estimate-security-link-min-confidence",
+        type=float,
+        default=EstimateSecurityLinkOptions().min_confidence,
+    )
+    parser.add_argument(
+        "--skip-estimate-security-link-identifier-history",
+        action="store_true",
+        help="Do not promote accepted estimate vendor-id links into security_identifier_history.",
     )
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-13f", action="store_true")
@@ -326,6 +338,18 @@ def main() -> int:
                                 source_vendor_table=args.estimate_recommendation_summary_source_table,
                                 rating_scale=args.estimate_recommendation_summary_rating_scale,
                                 scale_direction=args.estimate_recommendation_summary_scale_direction,
+                            ),
+                        )
+                    )
+                if not args.skip_estimate_security_links:
+                    results.append(
+                        EstimateSecurityLinkDataset().run(
+                            store,
+                            EstimateSecurityLinkOptions(
+                                min_confidence=args.estimate_security_link_min_confidence,
+                                apply_to_security_identifier_history=(
+                                    not args.skip_estimate_security_link_identifier_history
+                                ),
                             ),
                         )
                     )

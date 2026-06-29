@@ -99,6 +99,8 @@ DEFAULT_EXPORT_OBJECTS = (
     "est_surprise",
     "est_guidance",
     "est_recommendation",
+    "est_recommendation_summary",
+    "est_security_link",
 )
 
 

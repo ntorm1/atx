@@ -4326,6 +4326,89 @@ def _check_specs(
             warn_if_missing=True,
         ),
         SqlQualityCheck(
+            dataset_id="est_security_link",
+            table_name="est_security_link",
+            check_name="est_security_link_missing_available_at",
+            sql="SELECT count(*)::DOUBLE FROM est_security_link WHERE available_at IS NULL",
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_security_link",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_security_link",
+            table_name="est_security_link",
+            check_name="est_security_link_duplicate_id",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT est_security_link_id, count(*) AS row_count
+                    FROM est_security_link
+                    WHERE est_security_link_id IS NOT NULL
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_security_link",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_security_link",
+            table_name="est_security_link",
+            check_name="est_security_link_invalid_status_confidence",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_security_link
+                WHERE link_status NOT IN ('accepted', 'conflict')
+                   OR confidence < 0
+                   OR confidence > 1
+                   OR valid_from IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_security_link",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_security_link",
+            table_name="est_security_link",
+            check_name="est_security_link_conflicting_accepted_targets",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT provider, vendor_security_id_type, vendor_security_id
+                    FROM est_security_link
+                    WHERE link_status = 'accepted'
+                    GROUP BY 1, 2, 3
+                    HAVING count(DISTINCT target_security_id) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_security_link",),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_security_link",
+            table_name="est_security_link",
+            check_name="est_security_link_orphan_target_security",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_security_link l
+                LEFT JOIN securities s ON s.security_id = l.target_security_id
+                WHERE l.link_status = 'accepted'
+                  AND s.security_id IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_security_link", "securities"),
+            warn_if_missing=True,
+        ),
+        SqlQualityCheck(
             dataset_id="est_detail",
             table_name="est_detail",
             check_name="est_detail_missing_available_at",

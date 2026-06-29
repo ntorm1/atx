@@ -1667,6 +1667,165 @@ def _estimate_recommendation_summary_indexes_catalog(conn: duckdb.DuckDBPyConnec
     )
 
 
+def _estimate_security_link(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5j: PIT-safe estimate vendor identifier to warehouse security links."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS est_security_link (
+            est_security_link_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            provider VARCHAR NOT NULL,
+            vendor_security_id_type VARCHAR NOT NULL,
+            vendor_security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cusip VARCHAR,
+            target_security_id VARCHAR NOT NULL,
+            target_id_type VARCHAR,
+            target_id_value VARCHAR,
+            link_method VARCHAR NOT NULL,
+            link_status VARCHAR NOT NULL,
+            confidence DOUBLE NOT NULL,
+            decision_id VARCHAR,
+            candidate_id VARCHAR,
+            source_dataset_id VARCHAR,
+            evidence_table VARCHAR,
+            evidence_source VARCHAR,
+            valid_from DATE NOT NULL,
+            valid_to DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            first_observed_date DATE NOT NULL,
+            last_observed_date DATE NOT NULL,
+            first_observed_available_at TIMESTAMP NOT NULL,
+            observed_row_count BIGINT NOT NULL,
+            observed_tables_json VARCHAR NOT NULL,
+            details_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+
+def _estimate_security_link_indexes_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5j: index and catalog estimate security identifier links."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_est_security_link_vendor ON est_security_link(provider, vendor_security_id_type, vendor_security_id, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_security_link_target ON est_security_link(target_security_id, valid_from, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_est_security_link_status ON est_security_link(link_status, confidence)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id,
+            source_system_id,
+            name,
+            description,
+            grain,
+            primary_table,
+            pit_column,
+            available_at_column,
+            updated_at
+        )
+        VALUES (
+            'est_security_link',
+            'atx_warehouse',
+            'Estimate security identifier links',
+            'PIT-safe links from estimate vendor identifiers such as IBES tickers, FactSet fsym IDs, CIQ trading items, and CUSIPs to warehouse security_id values.',
+            'provider,vendor_security_id_type,vendor_security_id,target_security_id',
+            'est_security_link',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name,
+            layer,
+            entity,
+            grain,
+            description,
+            natural_key_json,
+            pit_notes,
+            updated_at
+        )
+        VALUES (
+            'est_security_link',
+            'core',
+            'estimate_security_identifier',
+            'provider,vendor_security_id_type,vendor_security_id,target_security_id',
+            'Auditable PIT mapping from estimate feed security identifiers to warehouse security_id values.',
+            '["est_security_link_id"]',
+            'Use available_at and valid_from/valid_to before resolving vendor-keyed estimate rows; mappings accepted after a research date must not leak into earlier as-of queries.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name,
+            field_name,
+            semantic_type,
+            description,
+            nullable,
+            unit,
+            source_field,
+            updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'est_security_link_id', 'security_id', 'target_security_id',
+                    'vendor_security_id', 'symbol', 'cusip', 'decision_id',
+                    'candidate_id', 'source_dataset_id', 'run_id'
+                ) THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%_date' OR upper(c.data_type) = 'DATE' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN lower(c.column_name) LIKE '%confidence%'
+                  OR lower(c.column_name) LIKE '%count%'
+                  OR upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL')
+                THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'est_security_link_id' THEN 'Deterministic estimate security-link identifier.'
+                WHEN 'provider' THEN 'Estimate provider namespace, such as IBES, FACTSET, BLOOMBERG, or CIQ.'
+                WHEN 'vendor_security_id_type' THEN 'Provider identifier type, such as IBES_TICKER, FACTSET_FSYM_ID, CIQ_TRADING_ITEM_ID, or CUSIP.'
+                WHEN 'vendor_security_id' THEN 'Provider security identifier as reported in the estimate feed.'
+                WHEN 'target_security_id' THEN 'Warehouse security_id selected by the link evidence.'
+                WHEN 'link_method' THEN 'Resolution method used to derive the link.'
+                WHEN 'link_status' THEN 'accepted or conflict; only accepted links should be used by as-of estimate APIs.'
+                WHEN 'available_at' THEN 'Timestamp when the mapping itself became usable for PIT research.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on est_security_link.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) LIKE '%_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'est_security_link'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -1788,6 +1947,16 @@ MIGRATIONS: list[Migration] = [
         version=24,
         name="estimate_recommendation_summary_indexes_catalog",
         up=_estimate_recommendation_summary_indexes_catalog,
+    ),
+    Migration(
+        version=25,
+        name="estimate_security_link",
+        up=_estimate_security_link,
+    ),
+    Migration(
+        version=26,
+        name="estimate_security_link_indexes_catalog",
+        up=_estimate_security_link_indexes_catalog,
     ),
 ]
 

@@ -22,6 +22,7 @@ from db.asof import (
     est_guidance_asof,
     est_recommendation_asof,
     est_recommendation_summary_asof,
+    est_security_links_asof,
     est_surprise_asof,
     features_asof,
     fundamental_periods_asof,
@@ -78,6 +79,7 @@ def parse_args() -> argparse.Namespace:
             "estimate-details",
             "estimate-recommendations",
             "estimate-recommendation-summary",
+            "estimate-security-links",
             "features",
             "short-interest",
             "macro",
@@ -97,6 +99,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--analysts", help="Comma-separated estimate analyst_id filter.")
     parser.add_argument("--recommendation-event-types", help="Comma-separated recommendation event-type filter.")
     parser.add_argument("--recommendation-summary-source-tables", help="Comma-separated recommendation summary source-table filter.")
+    parser.add_argument("--estimate-vendor-id-types", help="Comma-separated estimate vendor security-id types.")
+    parser.add_argument("--estimate-link-statuses", default="accepted", help="Comma-separated estimate security-link statuses.")
     parser.add_argument(
         "--include-stale-estimates",
         action="store_true",
@@ -276,6 +280,16 @@ def main() -> int:
             symbols=parse_csv(args.symbols),
             providers=parse_csv(args.providers),
             source_vendor_tables=parse_csv(args.recommendation_summary_source_tables),
+        )
+    elif args.view == "estimate-security-links":
+        frame = est_security_links_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            providers=parse_csv(args.providers),
+            vendor_security_id_types=parse_csv(args.estimate_vendor_id_types),
+            link_statuses=parse_csv(args.estimate_link_statuses),
         )
     elif args.view == "features":
         frame = features_asof(

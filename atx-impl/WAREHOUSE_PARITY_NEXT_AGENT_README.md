@@ -7,13 +7,13 @@ This handoff covers the US-equity fundamentals/public-alt-data warehouse parity 
 - S4 fundamentals depth is complete in code: canonical statement map coverage, bank/insurance/REIT overlays, four-date period model (`datadate`, `rdq`, `pdate`, `fdate`, `ldate`), and SQL XBRL calculation-linkbase validation.
 - S5a-S5c pricing/corporate-action spine is complete in code: PIT shares outstanding, action-type dimensions, event-level adjustment factors, daily cumulative adjustment factors, and adjusted daily-panel return columns.
 - S5d-S5e delisting spine is complete in code for public evidence and injectable observed terminal returns: `delist_code_dim`, `delisting_events`, and `delisting_return_observations`. Default returns remain null unless a licensed/manual file is loaded or an explicit imputation option is used.
-- S5f-S5i estimates injection surfaces are complete in code for detail, consensus snapshots, recommendation/price-target events, and aggregate recommendation/price-target summary snapshots: `est_detail` loads IBES-like broker/analyst detail rows; `est_consensus` loads IBES `statsumu`-style or normalized summary snapshots; `est_recommendation` loads IBES `recddet`/`ptgdet`-style events; `est_recommendation_summary` loads IBES `recdsum`/`ptgsum`-style or normalized aggregate recommendation distributions and price-target summaries with stable ids, source-file hashes, provider scale-direction metadata, quality checks, watermarks, lake exports, and as-of APIs.
-- Full DB test suite passed after S5i: `python -m pytest db\tests -q`.
-- Live default DB is migrated through `0024`; live estimate counts after S5i smoke are `est_actual=1,240`, `est_surprise=1,222`, and `est_detail`/`est_consensus`/`est_recommendation`/`est_recommendation_summary=0` by design until licensed/manual files are injected.
+- S5f-S5j estimates injection and reconciliation surfaces are complete in code for detail, consensus snapshots, recommendation/price-target events, aggregate recommendation/price-target summary snapshots, and PIT-safe estimate vendor-security-id links: `est_detail` loads IBES-like broker/analyst detail rows; `est_consensus` loads IBES `statsumu`-style or normalized summary snapshots; `est_recommendation` loads IBES `recddet`/`ptgdet`-style events; `est_recommendation_summary` loads IBES `recdsum`/`ptgsum`-style or normalized aggregate recommendation distributions and price-target summaries; `est_security_link` reconciles estimate vendor identifiers (`IBES_TICKER`, CUSIP, FactSet fsym, CIQ trading item, etc.) to `security_id` using only PIT-visible evidence.
+- Full DB test suite passed after S5j: `python -m pytest db\tests -q`.
+- Live default DB is migrated through `0026`; live estimate counts after S5j smoke are `est_actual=1,240`, `est_surprise=1,222`, and `est_detail`/`est_consensus`/`est_recommendation`/`est_recommendation_summary`/`est_security_link=0` by design until licensed/manual files or accepted crosswalk evidence are injected.
 
 ## Important Caveat
 
-Default DB estimate detail/consensus/recommendation/summary rows remain empty unless a licensed/manual file is injected. The schema, loaders, as-of APIs, watermarks, lake export, and quality checks are ready, but no real IBES/FactSet/CIQ/Zacks files have been loaded into the shared DB.
+Default DB estimate detail/consensus/recommendation/summary/security-link rows remain empty unless a licensed/manual file or accepted estimate crosswalk is injected. The schema, loaders, as-of APIs, watermarks, lake export, and quality checks are ready, but no real IBES/FactSet/CIQ/Zacks files have been loaded into the shared DB. Estimate as-of APIs resolve vendor-keyed rows through `est_security_link` only when the link's own `available_at`, `as_of_date`, and validity window are visible to the query.
 
 During S5g live smoke, an initial DuckDB migration shape triggered a DuckDB internal error while adding indexes in the same transaction as `ALTER TABLE`. The corrected implementation splits schema migration `0017` and index migration `0018`. The failed WAL was preserved as `db/atx_impl.duckdb.wal.failed-s5g-migration.20260629-074343.bak`, and the DB checkpoint was backed up as `db/atx_impl.duckdb.pre-s5g-wal-recovery.20260629-074343.bak` before moving the WAL aside.
 
@@ -21,14 +21,14 @@ During S5g live smoke, an initial DuckDB migration shape triggered a DuckDB inte
 
 - Schema/migrations/catalog: `db/schema.py`, `db/migrations.py`, `db/parity.py`, `db/PARITY_GAP.md`
 - S4 fundamentals: `db/fundamental_statements.py`, `db/xbrl_validation.py`
-- S5 share counts / adjustment factors / delistings / estimates: `db/shares_outstanding.py`, `db/adjustment_factors.py`, `db/delisting.py`, `db/estimates.py`, plus `db/asof.py`, `db/jobs.py`, `db/watermarks.py`, `db/quality.py`
+- S5 share counts / adjustment factors / delistings / estimates: `db/shares_outstanding.py`, `db/adjustment_factors.py`, `db/delisting.py`, `db/estimates.py`, `db/estimate_security_links.py`, plus `db/asof.py`, `db/jobs.py`, `db/watermarks.py`, `db/quality.py`
 - Scripts: `scripts/build_quant_warehouse.py`, `scripts/query_asof.py`
 - Tests added/updated across recent tranches: `db/tests/test_shares_outstanding_history.py`, `db/tests/test_adjustment_factors.py`, `db/tests/test_daily_adjustments.py`, `db/tests/test_delisting.py`, `db/tests/test_estimates.py`, `db/tests/test_xbrl_validation.py`, `db/tests/test_fundamental_period_dates.py`, import/migration/job/quality tests
 
 ## Recommended Next Slice
 
-1. Load a small approved licensed/manual estimates sample through `--estimate-detail-file`, `--estimate-consensus-file`, `--estimate-recommendation-file`, and `--estimate-recommendation-summary-file`, then reconcile vendor identifiers (`IBES ticker`, CUSIP, FactSet fsym, CIQ trading item) to `security_id`.
-2. Add explicit vendor identifier reconciliation for estimates (`IBES ticker`/CUSIP/FactSet fsym/CIQ trading item to `security_id`) and broker-name alias joins where recommendation IDs do not match detail estimate IDs.
+1. Load a small approved licensed/manual estimates sample through `--estimate-detail-file`, `--estimate-consensus-file`, `--estimate-recommendation-file`, and `--estimate-recommendation-summary-file`, plus accepted `identifier_resolution_decisions`, then verify `est_security_link` resolves vendor identifiers (`IBES ticker`, CUSIP, FactSet fsym, CIQ trading item) without leaking future links into earlier as-of queries.
+2. Add broker-name alias joins where recommendation IDs do not match detail estimate IDs.
 3. Start SEC 8-K Item 2.02/7.01 guidance extraction into `est_guidance` with a tiny offline fixture corpus and no public API calls in tests.
 4. Separately, clean up existing non-estimate quality failures: duplicate identifier history keys, overlapping identifier intervals, XBRL validation rows, fundamental statement-map gaps, provider-parity rows without open tables, and four table-catalog gaps.
 
@@ -44,7 +44,8 @@ python -m pytest db\tests -q
 Live smoke examples from `C:\atx\atx-impl`:
 
 ```powershell
-python scripts\build_estimates.py --db-path db\atx_impl.duckdb
+python scripts\build_estimates.py --db-path db\atx_impl.duckdb --run-estimate-security-links
+python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2026-06-29 --view estimate-security-links --limit 5
 python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2026-06-29 --view estimate-consensus --limit 5
 python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2026-06-29 --view estimate-recommendations --limit 5
 python scripts\query_asof.py --db-path db\atx_impl.duckdb --as-of-date 2026-06-29 --view estimate-recommendation-summary --limit 5

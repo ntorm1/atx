@@ -415,6 +415,22 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'est_security_link', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM est_security_link
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_security_link', 'max_available_at', max(available_at)::VARCHAR
+    FROM est_security_link
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'est_security_link', 'accepted_links', count(*)::VARCHAR
+    FROM est_security_link
+    WHERE link_status = 'accepted'
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'fred_macro', 'max_observation_date', max(observation_date)::VARCHAR
     FROM macro_observations
     HAVING count(*) > 0

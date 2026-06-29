@@ -106,6 +106,7 @@ PUBLIC_ROW_COUNT_TABLES = (
     "est_guidance",
     "est_recommendation",
     "est_recommendation_summary",
+    "est_security_link",
     "sec_submissions",
     "thirteenf_submissions",
     "thirteenf_cover_pages",
@@ -226,6 +227,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "est_detail": job_name(args.job_prefix, "est_detail"),
         "est_recommendation": job_name(args.job_prefix, "est_recommendation"),
         "est_recommendation_summary": job_name(args.job_prefix, "est_recommendation_summary"),
+        "est_security_link": job_name(args.job_prefix, "est_security_link"),
         "finra_short_interest": job_name(args.job_prefix, "finra_short_interest"),
         "finra_short_interest_features": job_name(args.job_prefix, "finra_short_interest_features"),
         "sec_13f": job_name(args.job_prefix, "sec_13f"),
@@ -481,6 +483,31 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
                 **retry_policy,
             )
             ordered.append(names["est_recommendation_summary"])
+        if not args.skip_estimate_security_links:
+            estimate_link_dependencies = [names["est_consensus"]]
+            if not args.skip_identifier_decisions:
+                estimate_link_dependencies.append(names["identifier_resolution_decisions"])
+            if args.estimate_detail_file:
+                estimate_link_dependencies.append(names["est_detail"])
+            if args.estimate_recommendation_file:
+                estimate_link_dependencies.append(names["est_recommendation"])
+            if args.estimate_recommendation_summary_file:
+                estimate_link_dependencies.append(names["est_recommendation_summary"])
+            manager.register_job(
+                job_name=names["est_security_link"],
+                dataset_id="est_security_link",
+                params=clean_params(
+                    {
+                        "min_confidence": args.estimate_security_link_min_confidence,
+                        "apply_to_security_identifier_history": (
+                            not args.skip_estimate_security_link_identifier_history
+                        ),
+                    }
+                ),
+                dependencies=estimate_link_dependencies,
+                **retry_policy,
+            )
+            ordered.append(names["est_security_link"])
 
     if not args.skip_submissions:
         manager.register_job(
@@ -1167,6 +1194,13 @@ def parse_args() -> argparse.Namespace:
         default="LOWER_IS_BULLISH",
         choices=("LOWER_IS_BULLISH", "HIGHER_IS_BULLISH"),
     )
+    parser.add_argument("--skip-estimate-security-links", action="store_true")
+    parser.add_argument("--estimate-security-link-min-confidence", type=float, default=0.98)
+    parser.add_argument(
+        "--skip-estimate-security-link-identifier-history",
+        action="store_true",
+        help="Do not promote accepted estimate vendor-id links into security_identifier_history.",
+    )
     parser.add_argument("--skip-submissions", action="store_true")
     parser.add_argument("--skip-xbrl-filing-contexts", action="store_true")
     parser.add_argument("--skip-finra", action="store_true")
@@ -1309,6 +1343,8 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be in [0, 1]")
     if args.identifier_min_review_confidence > args.identifier_min_accept_confidence:
         raise ValueError("--identifier-min-review-confidence cannot exceed --identifier-min-accept-confidence")
+    if args.estimate_security_link_min_confidence < 0 or args.estimate_security_link_min_confidence > 1:
+        raise ValueError("--estimate-security-link-min-confidence must be in [0, 1]")
     if args.macro_start_date and args.macro_end_date and args.macro_start_date > args.macro_end_date:
         raise ValueError("--macro-start-date cannot be after --macro-end-date")
     if args.fundamental_feature_start_date and args.fundamental_feature_end_date and args.fundamental_feature_start_date > args.fundamental_feature_end_date:

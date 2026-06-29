@@ -16,6 +16,7 @@ def test_key_dataset_classes_importable():
         DelistingReturnObservationDataset,
         DuckDBStore,
         EquityDailyFeatureDataset,
+        EstimateSecurityLinkDataset,
         FinraShortInterestDataset,
         FredMacroDataset,
         EstimateRecommendationSummaryDataset,
@@ -34,6 +35,7 @@ def test_key_dataset_classes_importable():
     assert DelistingReturnObservationDataset is not None
     assert DuckDBStore is not None
     assert EquityDailyFeatureDataset is not None
+    assert EstimateSecurityLinkDataset is not None
     assert FinraShortInterestDataset is not None
     assert FredMacroDataset is not None
     assert EstimateRecommendationSummaryDataset is not None

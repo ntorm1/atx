@@ -27,6 +27,8 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 22 in versions, f"Migration 0022 not recorded; found: {versions}"
     assert 23 in versions, f"Migration 0023 not recorded; found: {versions}"
     assert 24 in versions, f"Migration 0024 not recorded; found: {versions}"
+    assert 25 in versions, f"Migration 0025 not recorded; found: {versions}"
+    assert 26 in versions, f"Migration 0026 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -225,6 +227,41 @@ def test_migration_0024_catalogs_est_recommendation_summary(tmp_store):
                 FROM duckdb_columns() c
                 WHERE c.schema_name = 'main'
                   AND c.table_name = 'est_recommendation_summary'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM field_catalog f
+                      WHERE f.table_name = c.table_name
+                        AND f.field_name = c.column_name
+                  )
+            )
+        """
+    ).fetchone()
+    assert catalog_rows == (1, 1, 0)
+
+
+def test_migration_0026_catalogs_est_security_link(tmp_store):
+    """Migration 0026 indexes and catalogs estimate security links."""
+
+    table_exists = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'est_security_link'
+        """
+    ).fetchone()[0]
+    assert table_exists == 1
+
+    catalog_rows = tmp_store.con.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'est_security_link'),
+            (SELECT count(*) FROM table_catalog WHERE table_name = 'est_security_link'),
+            (
+                SELECT count(*)
+                FROM duckdb_columns() c
+                WHERE c.schema_name = 'main'
+                  AND c.table_name = 'est_security_link'
                   AND NOT EXISTS (
                       SELECT 1
                       FROM field_catalog f

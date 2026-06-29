@@ -46,6 +46,7 @@ from db.estimates import (
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
+from db.estimate_security_links import EstimateSecurityLinkDataset, EstimateSecurityLinkOptions
 
 
 def parse_args() -> argparse.Namespace:
@@ -131,6 +132,21 @@ def parse_args() -> argparse.Namespace:
         "--estimate-recommendation-summary-scale-direction",
         default=EstimateRecommendationSummaryOptions().scale_direction,
         choices=("LOWER_IS_BULLISH", "HIGHER_IS_BULLISH"),
+    )
+    parser.add_argument(
+        "--run-estimate-security-links",
+        action="store_true",
+        help="Run PIT-safe vendor security-id reconciliation after injectable estimate loads.",
+    )
+    parser.add_argument(
+        "--estimate-security-link-min-confidence",
+        type=float,
+        default=EstimateSecurityLinkOptions().min_confidence,
+    )
+    parser.add_argument(
+        "--skip-estimate-security-link-identifier-history",
+        action="store_true",
+        help="Do not promote accepted estimate vendor-id links into security_identifier_history.",
     )
     return parser.parse_args()
 
@@ -273,6 +289,28 @@ def main() -> int:
                         "step": "est_recommendation_summary",
                         "rows_loaded": r7.rows_loaded,
                         "details": r7.details,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+
+        if args.run_estimate_security_links:
+            r8 = EstimateSecurityLinkDataset().run(
+                store,
+                EstimateSecurityLinkOptions(
+                    min_confidence=args.estimate_security_link_min_confidence,
+                    apply_to_security_identifier_history=(
+                        not args.skip_estimate_security_link_identifier_history
+                    ),
+                ),
+            )
+            print(
+                json.dumps(
+                    {
+                        "step": "est_security_link",
+                        "rows_loaded": r8.rows_loaded,
+                        "details": r8.details,
                     },
                     indent=2,
                     default=str,

@@ -40,12 +40,14 @@ from db.estimates import (
     EstimateSurpriseDataset,
     EstimateSurpriseOptions,
 )
+from db.estimate_security_links import EstimateSecurityLinkDataset, EstimateSecurityLinkOptions
 from db.asof import (
     est_actual_asof,
     est_consensus_asof,
     est_detail_asof,
     est_recommendation_asof,
     est_recommendation_summary_asof,
+    est_security_links_asof,
     est_surprise_asof,
 )
 from db.quality import run_warehouse_quality_checks
@@ -714,6 +716,109 @@ class TestInjectableLoaders:
         assert len(stale) == 0
         assert len(stale_included) == 1
         assert stale_included.iloc[0]["mean"] == pytest.approx(2.25)
+
+    def test_estimate_security_link_resolves_vendor_id_pit_safely(self, tmp_store, tmp_path):
+        _seed_security(tmp_store, "SEC-CIK-0000320193")
+        source = tmp_path / "ibes_summary_vendor_id.csv"
+        source.write_text(
+            "\n".join(
+                [
+                    "ticker,oftic,measure,fpi,fpedats,statpers,available_at,meanest,numest",
+                    "IBAPPL,AAPL,EPS,7,2024-03-31,2024-01-18,2024-01-18 23:59:59,2.10,12",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        EstimateConsensusDataset().run(
+            tmp_store,
+            EstimateConsensusOptions(
+                source_file=source,
+                provider_name="IBES",
+                vendor_security_id_type="IBES_TICKER",
+            ),
+        )
+        tmp_store.con.execute(
+            """
+            INSERT INTO identifier_resolution_decisions (
+                decision_id, candidate_id, source_dataset_id, source_table,
+                source_period, source_key_type, source_key_value,
+                source_security_id, target_security_id, target_id_type,
+                target_id_value, match_method, confidence, candidate_status,
+                decision_status, decision_method, decided_by, decided_at,
+                effective_from, as_of_date, available_at, notes_json
+            )
+            VALUES (
+                'decision_ibes_aapl', 'candidate_ibes_aapl', 'estimates_manual',
+                'manual_estimate_security_map', NULL, 'IBES_TICKER', 'IBAPPL',
+                NULL, 'SEC-CIK-0000320193', 'CIK', '0000320193',
+                'manual_vendor_id_crosswalk_fixture', 0.99, 'proposed',
+                'accepted', 'manual_fixture', 'test', TIMESTAMP '2024-02-15 09:00:00',
+                DATE '2024-01-01', DATE '2024-02-15',
+                TIMESTAMP '2024-02-15 09:00:00', '{}'
+            )
+            """
+        )
+
+        result = EstimateSecurityLinkDataset().run(
+            tmp_store,
+            EstimateSecurityLinkOptions(min_confidence=0.98),
+        )
+        assert result.rows_loaded == 1
+        assert result.details["accepted_rows"] == 1
+
+        before_links = est_security_links_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 20),
+            as_of_ts=dt.datetime(2024, 2, 14, 23, 59, 59),
+            providers=("IBES",),
+        )
+        after_links = est_security_links_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 20),
+            as_of_ts=dt.datetime(2024, 2, 16, 0, 0, 0),
+            providers=("IBES",),
+        )
+        assert len(before_links) == 0
+        assert len(after_links) == 1
+        assert after_links.iloc[0]["target_security_id"] == "SEC-CIK-0000320193"
+
+        unresolved = est_consensus_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 20),
+            as_of_ts=dt.datetime(2024, 2, 14, 23, 59, 59),
+            security_ids=("SEC-CIK-0000320193",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        resolved = est_consensus_asof(
+            tmp_store,
+            as_of_date=dt.date(2024, 2, 20),
+            as_of_ts=dt.datetime(2024, 2, 16, 0, 0, 0),
+            security_ids=("SEC-CIK-0000320193",),
+            measure_codes=("EPS_DILUTED",),
+        )
+        assert len(unresolved) == 0
+        assert len(resolved) == 1
+        assert resolved.iloc[0]["security_id"] == "SEC-CIK-0000320193"
+        assert resolved.iloc[0]["source_security_id"] == "US-TICKER-AAPL"
+        assert resolved.iloc[0]["security_link_id"].startswith("EST-SEC-LINK-")
+        assert resolved.iloc[0]["security_link_method"] == "identifier_resolution_decision_vendor_id"
+
+        promoted = tmp_store.con.execute(
+            """
+            SELECT security_id, id_type, id_value, valid_from, available_at
+            FROM security_identifier_history
+            WHERE source = 'atx-impl estimate security linker'
+              AND id_type = 'IBES_TICKER'
+              AND id_value = 'IBAPPL'
+            """
+        ).fetchone()
+        assert promoted == (
+            "SEC-CIK-0000320193",
+            "IBES_TICKER",
+            "IBAPPL",
+            dt.date(2024, 1, 18),
+            dt.datetime(2024, 2, 15, 9, 0, 0),
+        )
 
     def test_guidance_no_provider_zero_rows(self, tmp_store):
         result = EstimateGuidanceDataset().run(tmp_store, EstimateGuidanceOptions())

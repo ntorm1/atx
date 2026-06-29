@@ -15,6 +15,7 @@ from .asof import (
     est_guidance_asof,
     est_recommendation_asof,
     est_recommendation_summary_asof,
+    est_security_links_asof,
     est_surprise_asof,
     features_asof,
     fundamental_periods_asof,
@@ -81,6 +82,7 @@ from .fundamentals import (
 )
 from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
 from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
+from .estimate_security_links import EstimateSecurityLinkDataset, EstimateSecurityLinkOptions
 from .insider_ownership import (
     BlockholderOwnershipDataset,
     BlockholderOwnershipOptions,
@@ -253,6 +255,7 @@ __all__ = [
     "est_guidance_asof",
     "est_recommendation_asof",
     "est_recommendation_summary_asof",
+    "est_security_links_asof",
     "est_surprise_asof",
     "EstimateMeasureSeedDataset",
     "EstimateMeasureSeedOptions",
@@ -270,6 +273,8 @@ __all__ = [
     "EstimateRecommendationOptions",
     "EstimateRecommendationSummaryDataset",
     "EstimateRecommendationSummaryOptions",
+    "EstimateSecurityLinkDataset",
+    "EstimateSecurityLinkOptions",
     "load_estimate_detail_rows",
     "normalize_estimate_detail_rows",
     "fama_french_12_for_sic",
