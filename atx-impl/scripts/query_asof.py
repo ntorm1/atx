@@ -14,6 +14,7 @@ from db.asof import (
     corporate_actions_asof,
     daily_adjustment_factors_asof,
     daily_panel_asof,
+    delisting_events_asof,
     features_asof,
     fundamental_periods_asof,
     fundamental_statements_asof,
@@ -53,6 +54,7 @@ def parse_args() -> argparse.Namespace:
             "adjustment-factors",
             "daily-adjustments",
             "daily-panel",
+            "delistings",
             "features",
             "short-interest",
             "macro",
@@ -70,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--period-types", help="Comma-separated normalized fundamental period type filter.")
     parser.add_argument("--share-count-types", help="Comma-separated share-count type filter.")
     parser.add_argument("--event-types", help="Comma-separated corporate-action adjustment event type filter.")
+    parser.add_argument("--delist-codes", help="Comma-separated public delisting proxy code filter.")
     parser.add_argument("--feature-set", default="equity_daily_v1")
     parser.add_argument("--features", help="Comma-separated feature-name filter.")
     parser.add_argument("--series-ids", help="Comma-separated macro/FRED series filter.")
@@ -146,6 +149,14 @@ def main() -> int:
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,
             symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "delistings":
+        frame = delisting_events_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+            delist_codes=parse_csv(args.delist_codes),
         )
     elif args.view == "features":
         frame = features_asof(

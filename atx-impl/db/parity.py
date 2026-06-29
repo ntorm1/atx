@@ -73,19 +73,23 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         pit_fields=("trade_date", "event/ex_date", "pricing availability timestamp", "source_loaded_at"),
         factors_or_fields=("OHLCV", "returns", "shares", "splits", "dividends", "event-based corporate actions"),
         open_substitute=(
-            "Local tbltickerhistory daily bars plus inferred split/dividend corporate actions and "
-            "SEC XBRL-derived PIT share-count history."
+            "Local tbltickerhistory daily bars plus inferred split/dividend corporate actions, event-level/daily "
+            "adjustment factors, SEC XBRL-derived PIT share-count history, and public delisting evidence."
         ),
         warehouse_tables=(
             "tbltickerhistory_daily",
             "equity_daily_bars",
             "corporate_actions",
+            "adjustment_factor_history",
+            "daily_adjustment_factors",
             "shares_outstanding_history",
+            "delist_code_dim",
+            "delisting_events",
             "v_equity_daily_returns",
         ),
         parity_status="partial",
-        limitations="Local archive does not provide the full licensed FactSet adjustment chain or global coverage.",
-        next_gap="Add delisting-return proxies plus split/dividend adjustment audit trails with separate price/share factors.",
+        limitations="Local archive does not provide the full licensed FactSet adjustment chain, official terminal returns, or global coverage.",
+        next_gap="Add quote/close-type depth, Form 25/15 terminal event evidence, and richer spinoff/merger adjustment policies.",
         source_urls=(
             "https://developer.factset.com/api-catalog/factset-prices-api",
             "https://developer.factset.com/api-catalog/factset-global-prices-api",
@@ -239,7 +243,8 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
         factors_or_fields=("returns", "prices", "volume", "shares", "distributions", "delisting returns"),
         open_substitute=(
             "equity_daily_bars, v_equity_daily_returns, corporate_actions, event-level and daily adjustment "
-            "factors, SEC XBRL share-count history, Nasdaq add/delete events, and listing-status intervals "
+            "factors, SEC XBRL share-count history, Nasdaq add/delete events, listing-status intervals, and "
+            "delisting_events public proxy rows "
             "from local/public evidence."
         ),
         warehouse_tables=(
@@ -250,11 +255,13 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "shares_outstanding_history",
             "nasdaq_listing_events",
             "listing_status_intervals",
+            "delist_code_dim",
+            "delisting_events",
             "v_equity_daily_returns",
         ),
         parity_status="partial",
-        limitations="Open substitute lacks official CRSP delisting returns and survivorship-bias-free full history.",
-        next_gap="Add delisting-return estimates, quote/close-type depth, and return-adjustment diagnostics.",
+        limitations="Open substitute has public delisting evidence but still lacks official CRSP DLSTCD/DLRET and survivorship-bias-free full history.",
+        next_gap="Add observed terminal-return evidence, optional imputation policy backtests, quote/close-type depth, and return-adjustment diagnostics.",
         source_urls=(
             "https://www.crsp.org/research/crsp-us-stock-databases/",
             "https://www.crsp.org/crsp_pdf/crsp-us-stock-indexes-databases-guide-flat-file-format-1-0/",

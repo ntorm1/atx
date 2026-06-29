@@ -286,6 +286,26 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'delist_code_dim', 'max_updated_at', max(updated_at)::VARCHAR
+    FROM delist_code_dim
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'delisting_events', 'max_delist_date', max(delist_date)::VARCHAR
+    FROM delisting_events
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'delisting_events', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM delisting_events
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'delisting_events', 'max_available_at', max(available_at)::VARCHAR
+    FROM delisting_events
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'fred_macro', 'max_observation_date', max(observation_date)::VARCHAR
     FROM macro_observations
     HAVING count(*) > 0

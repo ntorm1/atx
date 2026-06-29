@@ -367,6 +367,62 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
     )
     con.execute(
         """
+        CREATE TABLE IF NOT EXISTS delist_code_dim (
+            delist_code VARCHAR PRIMARY KEY,
+            code_system VARCHAR NOT NULL,
+            vendor_code VARCHAR,
+            crsp_dlstcd INTEGER,
+            crsp_dlstcd_family VARCHAR,
+            reason_category VARCHAR NOT NULL,
+            description VARCHAR NOT NULL,
+            terminal_trading_status VARCHAR,
+            imputation_allowed BOOLEAN NOT NULL DEFAULT false,
+            default_imputed_return DOUBLE,
+            imputation_policy VARCHAR NOT NULL DEFAULT 'none',
+            source VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS delisting_events (
+            delisting_event_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            listing_status_source VARCHAR NOT NULL,
+            source_listing_status_id VARCHAR NOT NULL,
+            security_id VARCHAR,
+            symbol VARCHAR NOT NULL,
+            listing_venue_code VARCHAR,
+            listing_venue_name VARCHAR,
+            listing_exchange_code VARCHAR,
+            delist_date DATE NOT NULL,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            delist_code VARCHAR NOT NULL,
+            delist_reason VARCHAR NOT NULL,
+            delisting_return DOUBLE,
+            delisting_return_type VARCHAR NOT NULL,
+            is_return_imputed BOOLEAN NOT NULL DEFAULT false,
+            return_policy VARCHAR NOT NULL,
+            return_confidence VARCHAR NOT NULL,
+            evidence_source VARCHAR NOT NULL,
+            evidence_source_table VARCHAR NOT NULL,
+            source_event_id VARCHAR,
+            source_url VARCHAR,
+            method VARCHAR NOT NULL,
+            evidence_confidence VARCHAR NOT NULL,
+            inferred_from_absence BOOLEAN NOT NULL DEFAULT false,
+            details_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS sec_company_tickers (
             cik VARCHAR NOT NULL,
             ticker VARCHAR NOT NULL,
@@ -1662,6 +1718,10 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_listing_status_intervals_symbol ON listing_status_intervals(symbol, listing_venue_code, valid_from)",
         "CREATE INDEX IF NOT EXISTS idx_listing_status_intervals_security ON listing_status_intervals(security_id, valid_from)",
         "CREATE INDEX IF NOT EXISTS idx_listing_status_intervals_asof ON listing_status_intervals(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_security ON delisting_events(security_id, delist_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_symbol ON delisting_events(symbol, delist_date, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_asof ON delisting_events(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_code ON delisting_events(delist_code, delist_date)",
         "CREATE INDEX IF NOT EXISTS idx_lake_export_files_run ON lake_export_files(export_run_id, object_name)",
         "CREATE INDEX IF NOT EXISTS idx_lake_export_files_object ON lake_export_files(object_name, exported_at)",
         "CREATE INDEX IF NOT EXISTS idx_sec_submissions_security_date ON sec_submissions(security_id, filing_date)",
@@ -1934,6 +1994,8 @@ def _seed_catalog(store: DuckDBStore) -> None:
         ("nasdaq_symbol_directory", "nasdaq_trader", "Nasdaq symbol directory", "NASDAQ and other-listed symbol directory snapshots.", "symbol,as_of_date", "nasdaq_symbol_directory", "as_of_date", "source_loaded_at"),
         ("nasdaq_listing_events", "nasdaq_trader", "Nasdaq listing add/delete events", "Trading system add/delete action rows from Nasdaq Trader.", "symbol,effective_date,source_file_created_at", "nasdaq_listing_events", "effective_date", "source_loaded_at"),
         ("listing_status_intervals", "atx_warehouse", "Listing status intervals", "PIT listing-status intervals derived from Nasdaq directory snapshots and add/delete event checkpoints.", "symbol,listing_venue_code,valid_from", "listing_status_intervals", "valid_from", "available_at"),
+        ("delist_code_dim", "atx_warehouse", "Delisting code dimension", "Public delisting proxy code dimension with explicit non-CRSP caveats and optional imputation policy metadata.", "delist_code", "delist_code_dim", "updated_at", "updated_at"),
+        ("delisting_events", "atx_warehouse", "Delisting events", "PIT public delisting evidence derived from listing-status intervals, with nullable delisting-return proxy fields and lineage back to source events.", "symbol,listing_venue_code,delist_date", "delisting_events", "delist_date", "available_at"),
         ("fred_macro", "fred", "Macro observations", "Macro series observations from public FRED CSV downloads.", "series_id,observation_date", "macro_observations", "observation_date", "available_at"),
         ("trading_calendar", "atx_warehouse", "Trading calendar", "Open trading dates inferred from loaded daily bars.", "calendar_id,trade_date", "trading_calendar", "trade_date", "source_loaded_at"),
         ("universe_memberships", "atx_warehouse", "Research universes", "Point-in-time universe membership snapshots.", "universe_id,security_id,effective_date", "universe_memberships", "as_of_date", "available_at"),
@@ -1981,6 +2043,8 @@ def _seed_catalog(store: DuckDBStore) -> None:
         ("security_identifier_history", "core", "security_identifier", "security_id,id_type,id_value,valid_from", "PIT identifier bridge.", '["security_id","id_type","id_value","valid_from"]', "Use valid_from/valid_to and available_at for as-of joins."),
         ("exchange_listings", "core", "listing", "security_id,ticker,valid_from", "PIT exchange listing and ticker history.", '["security_id","ticker","valid_from"]', "Use valid_from/valid_to and available_at for as-of joins."),
         ("listing_status_intervals", "silver", "listing_status", "symbol,listing_venue_code,valid_from", "PIT listing status intervals derived from Nasdaq snapshot presence and add/delete event checkpoints.", '["listing_status_id"]', "Use valid_from/valid_to plus available_at for as-of-safe survivorship joins; source/evidence fields distinguish snapshot-derived and event-derived intervals."),
+        ("delist_code_dim", "dimension", "delist_code", "delist_code", "Public delisting proxy code dimension; CRSP DLSTCD fields remain null unless licensed or reconciled evidence supplies them.", '["delist_code"]', "Imputation fields describe optional research policy and are not applied unless loader options request it."),
+        ("delisting_events", "silver", "delisting_event", "source,source_listing_status_id,delist_code", "PIT public delisting evidence derived from listing-status intervals, with nullable delisting return and explicit imputation flags.", '["delisting_event_id"]', "Use delist_date/as_of_date/available_at for survivorship-safe joins; delisting_return is null unless a documented policy is explicitly applied."),
         ("sec_company_tickers", "bronze", "sec_ticker_map", "cik,ticker", "SEC company_tickers mapping snapshot.", '["cik","ticker"]', "SEC map is current-snapshot oriented; bridge into PIT identifier history before as-of use."),
         ("identifier_resolution_candidates", "core", "identifier_resolution", "source_dataset_id,source_key_type,source_key_value,target_security_id,source_period", "Auditable non-destructive identifier mapping candidates.", '["source_dataset_id","source_key_type","source_key_value","target_security_id","source_period"]', "Candidates are evidence, not automatic merges; use confidence/status before accepting."),
         ("identifier_resolution_decisions", "core", "identifier_resolution", "candidate_id,decision_method", "Auditable identifier mapping decisions and promotion evidence.", '["candidate_id","decision_method"]', "Accepted rows may promote PIT identifiers and source holdings; use available_at for as-of-safe consumption."),

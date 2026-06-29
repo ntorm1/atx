@@ -13,6 +13,7 @@ from db.adjustment_factors import AdjustmentFactorHistoryDataset, AdjustmentFact
 from db.calendar import TradingCalendarDataset, TradingCalendarOptions
 from db.corporate_actions import CorporateActionsDataset, CorporateActionsOptions
 from db.daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
+from db.delisting import DelistingEventDataset, DelistingEventOptions
 from db.features import (
     EquityDailyFeatureDataset,
     FeatureBuildOptions,
@@ -28,6 +29,8 @@ from db.sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from db.security_master import SecurityMasterDataset, SecurityMasterOptions
 from db.shares_outstanding import SharesOutstandingHistoryDataset, SharesOutstandingHistoryOptions
 from db.symbol_directory import NasdaqSymbolDirectoryDataset, NasdaqSymbolDirectoryOptions
+from db.symbol_directory import NasdaqListingEventsDataset, NasdaqListingEventsOptions
+from db.listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
 from db.thirteenf import ThirteenFDataSet, ThirteenFOptions
 from db.ticker_history import DEFAULT_TICKER_HISTORY_ZIP, TickerHistoryDataset, TickerHistoryOptions
 from db.universes import UniverseBuildOptions, UniverseMembershipDataset
@@ -56,6 +59,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-adjustment-factors", action="store_true")
     parser.add_argument("--skip-daily-adjustments", action="store_true")
     parser.add_argument("--skip-symbol-directory", action="store_true")
+    parser.add_argument("--skip-listing-events", action="store_true")
+    parser.add_argument("--skip-listing-status", action="store_true")
+    parser.add_argument("--skip-delistings", action="store_true")
+    parser.add_argument("--impute-delist-returns", action="store_true")
     parser.add_argument("--skip-macro", action="store_true")
     parser.add_argument("--skip-universe", action="store_true")
     parser.add_argument("--macro-series", default="DGS10,DGS2,FEDFUNDS,UNRATE,CPIAUCSL,VIXCLS")
@@ -81,6 +88,19 @@ def main() -> int:
         results.append(SecurityMasterDataset().run(store, SecurityMasterOptions()))
         if not args.skip_symbol_directory:
             results.append(NasdaqSymbolDirectoryDataset().run(store, NasdaqSymbolDirectoryOptions()))
+        if not args.skip_listing_events:
+            results.append(NasdaqListingEventsDataset().run(store, NasdaqListingEventsOptions()))
+        if not args.skip_listing_status:
+            results.append(ListingStatusIntervalDataset().run(store, ListingStatusIntervalOptions()))
+            if not args.skip_delistings:
+                results.append(
+                    DelistingEventDataset().run(
+                        store,
+                        DelistingEventOptions(
+                            apply_shumway_warther_imputation=args.impute_delist_returns,
+                        ),
+                    )
+                )
         results.append(
             TickerHistoryDataset().run(
                 store,

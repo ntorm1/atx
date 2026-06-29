@@ -671,6 +671,143 @@ def _check_specs(
             required_tables=("listing_status_intervals",),
         ),
         SqlQualityCheck(
+            dataset_id="delist_code_dim",
+            table_name="delist_code_dim",
+            check_name="bad_delist_code_dim_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delist_code_dim
+                WHERE delist_code IS NULL
+                   OR delist_code = ''
+                   OR code_system IS NULL
+                   OR code_system = ''
+                   OR reason_category IS NULL
+                   OR reason_category = ''
+                   OR description IS NULL
+                   OR description = ''
+                   OR imputation_policy IS NULL
+                   OR imputation_policy = ''
+                   OR source IS NULL
+                   OR source = ''
+                   OR (
+                       default_imputed_return IS NOT NULL
+                       AND (default_imputed_return < -1.0 OR default_imputed_return > 10.0)
+                   )
+            """,
+            threshold=0.0,
+            required_tables=("delist_code_dim",),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_events",
+            table_name="delisting_events",
+            check_name="duplicate_delisting_events",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        source,
+                        listing_status_source,
+                        source_listing_status_id,
+                        delist_code,
+                        count(*) AS row_count
+                    FROM delisting_events
+                    GROUP BY 1, 2, 3, 4
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("delisting_events",),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_events",
+            table_name="delisting_events",
+            check_name="bad_delisting_event_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delisting_events d
+                WHERE d.delisting_event_id IS NULL
+                   OR d.delisting_event_id = ''
+                   OR d.source IS NULL
+                   OR d.source = ''
+                   OR d.listing_status_source IS NULL
+                   OR d.listing_status_source = ''
+                   OR d.source_listing_status_id IS NULL
+                   OR d.source_listing_status_id = ''
+                   OR d.symbol IS NULL
+                   OR d.symbol = ''
+                   OR d.delist_date IS NULL
+                   OR d.as_of_date IS NULL
+                   OR d.available_at IS NULL
+                   OR d.delist_code IS NULL
+                   OR d.delist_code = ''
+                   OR d.delist_reason IS NULL
+                   OR d.delist_reason = ''
+                   OR d.delisting_return_type IS NULL
+                   OR d.delisting_return_type = ''
+                   OR d.return_policy IS NULL
+                   OR d.return_policy = ''
+                   OR d.return_confidence NOT IN ('none', 'low', 'medium', 'high')
+                   OR d.evidence_confidence NOT IN ('low', 'medium', 'high')
+                   OR d.evidence_source IS NULL
+                   OR d.evidence_source = ''
+                   OR d.evidence_source_table IS NULL
+                   OR d.evidence_source_table = ''
+                   OR d.method IS NULL
+                   OR d.method = ''
+                   OR (
+                       d.delisting_return IS NOT NULL
+                       AND (d.delisting_return < -1.0 OR d.delisting_return > 10.0)
+                   )
+                   OR (d.delisting_return IS NOT NULL AND d.return_confidence = 'none')
+                   OR (d.is_return_imputed = true AND d.return_policy = 'none')
+            """,
+            threshold=0.0,
+            required_tables=("delisting_events",),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_events",
+            table_name="delisting_events",
+            check_name="orphan_delisting_event_codes",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delisting_events d
+                LEFT JOIN delist_code_dim c
+                  ON c.delist_code = d.delist_code
+                WHERE c.delist_code IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("delisting_events", "delist_code_dim"),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_events",
+            table_name="delisting_events",
+            check_name="orphan_delisting_event_security_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delisting_events d
+                LEFT JOIN securities s
+                  ON s.security_id = d.security_id
+                WHERE d.security_id IS NOT NULL
+                  AND s.security_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("delisting_events", "securities"),
+        ),
+        SqlQualityCheck(
+            dataset_id="delisting_events",
+            table_name="delisting_events",
+            check_name="orphan_delisting_event_listing_status_ids",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM delisting_events d
+                LEFT JOIN listing_status_intervals l
+                  ON l.listing_status_id = d.source_listing_status_id
+                WHERE l.listing_status_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("delisting_events", "listing_status_intervals"),
+        ),
+        SqlQualityCheck(
             dataset_id="sec_company_facts",
             table_name="fundamental_points",
             check_name="fundamental_period_after_asof",
@@ -3510,6 +3647,14 @@ def _check_specs(
                     UNION ALL
                     SELECT 'listing_status_intervals', 'max_last_evidence_as_of_date', count(*) FROM listing_status_intervals
                     UNION ALL
+                    SELECT 'delist_code_dim', 'max_updated_at', count(*) FROM delist_code_dim
+                    UNION ALL
+                    SELECT 'delisting_events', 'max_delist_date', count(*) FROM delisting_events
+                    UNION ALL
+                    SELECT 'delisting_events', 'max_as_of_date', count(*) FROM delisting_events
+                    UNION ALL
+                    SELECT 'delisting_events', 'max_available_at', count(*) FROM delisting_events
+                    UNION ALL
                     SELECT 'fred_macro', 'max_observation_date', count(*) FROM macro_observations
                     UNION ALL
                     SELECT 'trading_calendar', 'max_trade_date', count(*) FROM trading_calendar
@@ -3569,6 +3714,8 @@ def _check_specs(
                 "nasdaq_symbol_directory",
                 "nasdaq_listing_events",
                 "listing_status_intervals",
+                "delist_code_dim",
+                "delisting_events",
                 "macro_observations",
                 "trading_calendar",
                 "universe_memberships",

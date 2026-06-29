@@ -19,6 +19,8 @@ DEFAULT_EXPORT_OBJECTS = (
     "nasdaq_symbol_directory",
     "nasdaq_listing_events",
     "listing_status_intervals",
+    "delist_code_dim",
+    "delisting_events",
     "equity_daily_bars",
     "corporate_actions",
     "corp_action_type_dim",

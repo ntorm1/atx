@@ -482,6 +482,74 @@ def _daily_adjustment_factors(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _delisting_events(conn: duckdb.DuckDBPyConnection) -> None:
+    """S5d: public delisting evidence and explicit return-proxy policy fields."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS delist_code_dim (
+            delist_code VARCHAR PRIMARY KEY,
+            code_system VARCHAR NOT NULL,
+            vendor_code VARCHAR,
+            crsp_dlstcd INTEGER,
+            crsp_dlstcd_family VARCHAR,
+            reason_category VARCHAR NOT NULL,
+            description VARCHAR NOT NULL,
+            terminal_trading_status VARCHAR,
+            imputation_allowed BOOLEAN NOT NULL DEFAULT false,
+            default_imputed_return DOUBLE,
+            imputation_policy VARCHAR NOT NULL DEFAULT 'none',
+            source VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS delisting_events (
+            delisting_event_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            listing_status_source VARCHAR NOT NULL,
+            source_listing_status_id VARCHAR NOT NULL,
+            security_id VARCHAR,
+            symbol VARCHAR NOT NULL,
+            listing_venue_code VARCHAR,
+            listing_venue_name VARCHAR,
+            listing_exchange_code VARCHAR,
+            delist_date DATE NOT NULL,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            delist_code VARCHAR NOT NULL,
+            delist_reason VARCHAR NOT NULL,
+            delisting_return DOUBLE,
+            delisting_return_type VARCHAR NOT NULL,
+            is_return_imputed BOOLEAN NOT NULL DEFAULT false,
+            return_policy VARCHAR NOT NULL,
+            return_confidence VARCHAR NOT NULL,
+            evidence_source VARCHAR NOT NULL,
+            evidence_source_table VARCHAR NOT NULL,
+            source_event_id VARCHAR,
+            source_url VARCHAR,
+            method VARCHAR NOT NULL,
+            evidence_confidence VARCHAR NOT NULL,
+            inferred_from_absence BOOLEAN NOT NULL DEFAULT false,
+            details_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_security ON delisting_events(security_id, delist_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_symbol ON delisting_events(symbol, delist_date, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_asof ON delisting_events(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_delisting_events_code ON delisting_events(delist_code, delist_date)",
+    ):
+        conn.execute(statement)
+
+
 def _estimates(conn: duckdb.DuckDBPyConnection) -> None:
     """Create S2 estimates tables: est_measure, est_actual, est_consensus, est_detail,
     est_broker, est_analyst, est_guidance, est_recommendation, est_surprise."""
@@ -1106,6 +1174,11 @@ MIGRATIONS: list[Migration] = [
         version=13,
         name="daily_adjustment_factors",
         up=_daily_adjustment_factors,
+    ),
+    Migration(
+        version=14,
+        name="delisting_events",
+        up=_delisting_events,
     ),
 ]
 

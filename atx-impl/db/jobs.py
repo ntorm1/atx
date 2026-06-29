@@ -15,6 +15,7 @@ from .calendar import TradingCalendarDataset, TradingCalendarOptions
 from .connection import DuckDBStore
 from .corporate_actions import CorporateActionsDataset, CorporateActionsOptions
 from .daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
+from .delisting import DelistingEventDataset, DelistingEventOptions
 from .dataset import Dataset, DatasetLoadResult
 from .features import (
     EquityDailyFeatureDataset,
@@ -214,6 +215,23 @@ def _daily_adjustment_factor_options(params: dict[str, Any]) -> DailyAdjustmentF
         bar_source=params.get("bar_source") or default.bar_source,
         as_of_date=_date_or_none(params.get("as_of_date")),
         as_of_ts=_datetime_or_none(params.get("as_of_ts")),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _delisting_event_options(params: dict[str, Any]) -> DelistingEventOptions:
+    default = DelistingEventOptions()
+    return DelistingEventOptions(
+        source=params.get("source") or default.source,
+        listing_status_source=params.get("listing_status_source") or default.listing_status_source,
+        include_snapshot_absence=_bool_param(
+            params.get("include_snapshot_absence"),
+            default.include_snapshot_absence,
+        ),
+        apply_shumway_warther_imputation=_bool_param(
+            params.get("apply_shumway_warther_imputation"),
+            default.apply_shumway_warther_imputation,
+        ),
         run_id=params.get("run_id") or default.run_id,
     )
 
@@ -516,6 +534,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         DailyAdjustmentFactorDataset,
         _daily_adjustment_factor_options,
     ),
+    DelistingEventDataset.dataset_id: (DelistingEventDataset, _delisting_event_options),
     FinraShortInterestDataset.dataset_id: (FinraShortInterestDataset, _finra_options),
     ShortInterestFeatureDataset.dataset_id: (ShortInterestFeatureDataset, _short_interest_feature_options),
     ThirteenFDataSet.dataset_id: (ThirteenFDataSet, _thirteenf_options),
@@ -680,6 +699,24 @@ class JobManager:
         }
         self.register_job(job_name="security_master", dataset_id="sec_security_master", **retry_policy)
         self.register_job(job_name="nasdaq_symbol_directory", dataset_id="nasdaq_symbol_directory", **retry_policy)
+        self.register_job(
+            job_name="nasdaq_listing_events",
+            dataset_id="nasdaq_listing_events",
+            dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="listing_status_intervals",
+            dataset_id="listing_status_intervals",
+            dependencies=["security_master", "nasdaq_symbol_directory", "nasdaq_listing_events"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="delisting_events",
+            dataset_id="delisting_events",
+            dependencies=["listing_status_intervals"],
+            **retry_policy,
+        )
         self.register_job(
             job_name="daily_bars",
             dataset_id="tbltickerhistory_daily",

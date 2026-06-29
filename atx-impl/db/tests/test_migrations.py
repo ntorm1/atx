@@ -16,6 +16,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 11 in versions, f"Migration 0011 not recorded; found: {versions}"
     assert 12 in versions, f"Migration 0012 not recorded; found: {versions}"
     assert 13 in versions, f"Migration 0013 not recorded; found: {versions}"
+    assert 14 in versions, f"Migration 0014 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -179,4 +180,42 @@ def test_migration_0013_daily_adjustment_factors_exist(tmp_store):
         "split_adjusted_close",
         "total_return_adjusted_close",
         "available_at",
+    }.issubset(columns)
+
+
+def test_migration_0014_delisting_events_exist(tmp_store):
+    """Migration 0014 adds public delisting evidence and code dimension tables."""
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+            """
+        ).fetchall()
+    }
+    assert {"delist_code_dim", "delisting_events"}.issubset(tables)
+
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'delisting_events'
+            """
+        ).fetchall()
+    }
+    assert {
+        "delisting_event_id",
+        "source_listing_status_id",
+        "delist_date",
+        "available_at",
+        "delist_code",
+        "delisting_return",
+        "is_return_imputed",
+        "return_policy",
+        "evidence_confidence",
     }.issubset(columns)

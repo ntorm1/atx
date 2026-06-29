@@ -75,6 +75,8 @@ PUBLIC_ROW_COUNT_TABLES = (
     "nasdaq_symbol_directory",
     "nasdaq_listing_events",
     "listing_status_intervals",
+    "delist_code_dim",
+    "delisting_events",
     "sec_company_facts",
     "fundamental_points",
     "xbrl_taxonomy_packages",
@@ -196,6 +198,7 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
         "nasdaq_symbol_directory": job_name(args.job_prefix, "nasdaq_symbol_directory"),
         "nasdaq_listing_events": job_name(args.job_prefix, "nasdaq_listing_events"),
         "listing_status_intervals": job_name(args.job_prefix, "listing_status_intervals"),
+        "delisting_events": job_name(args.job_prefix, "delisting_events"),
         "sec_company_facts": job_name(args.job_prefix, "sec_company_facts"),
         "xbrl_taxonomy": job_name(args.job_prefix, "xbrl_taxonomy"),
         "sec_fundamental_features": job_name(args.job_prefix, "sec_fundamental_features"),
@@ -277,6 +280,20 @@ def register_public_jobs(manager: JobManager, args: argparse.Namespace, symbols:
             **retry_policy,
         )
         ordered.append(names["listing_status_intervals"])
+
+    if not args.skip_delistings:
+        manager.register_job(
+            job_name=names["delisting_events"],
+            dataset_id="delisting_events",
+            params=clean_params(
+                {
+                    "apply_shumway_warther_imputation": args.impute_delist_returns,
+                }
+            ),
+            dependencies=[] if args.skip_listing_status else [names["listing_status_intervals"]],
+            **retry_policy,
+        )
+        ordered.append(names["delisting_events"])
 
     if not args.skip_company_facts:
         manager.register_job(
@@ -640,6 +657,29 @@ def collect_public_summaries(store: DuckDBStore) -> dict[str, Any]:
             "max_valid_from": row[6],
             "max_available_at": row[7],
         }
+    if table_or_view_exists(store, "delisting_events"):
+        row = store.con.execute(
+            """
+            SELECT
+                count(*) AS rows,
+                count(DISTINCT symbol) AS symbols,
+                count(security_id) AS resolved_security_rows,
+                sum(CASE WHEN is_return_imputed THEN 1 ELSE 0 END) AS imputed_return_rows,
+                min(delist_date) AS min_delist_date,
+                max(delist_date) AS max_delist_date,
+                max(available_at) AS max_available_at
+            FROM delisting_events
+            """
+        ).fetchone()
+        summaries["delisting_events"] = {
+            "rows": int(row[0]),
+            "symbols": int(row[1]),
+            "resolved_security_rows": int(row[2]),
+            "imputed_return_rows": int(row[3] or 0),
+            "min_delist_date": row[4],
+            "max_delist_date": row[5],
+            "max_available_at": row[6],
+        }
     if table_or_view_exists(store, "fundamental_points"):
         rows = store.con.execute(
             """
@@ -864,6 +904,8 @@ def refresh_watermarks(db_path: Path) -> dict[str, Any]:
         "fred_macro.",
         "identifier_resolution_candidates.",
         "identifier_resolution_decisions.",
+        "delist_code_dim.",
+        "delisting_events.",
         "listing_status_intervals.",
         "nasdaq_listing_events.",
         "nasdaq_symbol_directory.",
@@ -928,6 +970,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-symbol-directory", action="store_true")
     parser.add_argument("--skip-listing-events", action="store_true")
     parser.add_argument("--skip-listing-status", action="store_true")
+    parser.add_argument("--skip-delistings", action="store_true")
+    parser.add_argument("--impute-delist-returns", action="store_true")
     parser.add_argument("--skip-company-facts", action="store_true")
     parser.add_argument("--skip-xbrl-taxonomy", action="store_true")
     parser.add_argument("--skip-fundamental-features", action="store_true")

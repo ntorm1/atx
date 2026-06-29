@@ -17,8 +17,8 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 | 2 | Estimates (IBES/consensus) | ~11 | — | — | **ALL**: est_broker, est_analyst, est_measure_dim, est_period_dim, est_detail/est_fact, est_consensus, est_actual, est_recommendation, est_guidance | none | **1** |
 | 3 | Ownership-13F | 4 | thirteenf_managers, thirteenf_manager_reports, thirteenf_security_positions, thirteenf_security_ownership | filer CIK-alias / entity-resolution layer thin; FIGI mostly null | `filer_13f_cik_alias` (subadvisor rollup), N-PORT cross-link | thirteenf.py, ownership.py | 6 (extend) |
 | 4 | Insider ownership (3/4/5, 13D/G) | ~15 | — | — | **ALL**: insider, insider_relationship, insider_transaction, filing_form4, blockholder_filing, blockholder_reporting_person, fund, fund_class, filing_nport, fund_holding, form144_intent, tradingplan_10b5_1, proxy_vote, congressional_disclosure | none | **3** |
-| 5 | Corporate actions | ~10 | corporate_actions (142 rows, single flat table) | flat table covers div/split only | corp_action_type_dim (DISTCD/CAEV), adjustment_factor, delisting+delist_code_dim (DLRET), name_history, ticker_history, spinoff_basis_allocation, offering, trading_halt | corporate_actions.py | 5 |
-| 6 | Pricing / market data | 6 | equity_daily_bars (9.8k rows), shares_outstanding_history (342 rows), adjustment_factor_history, daily_adjustment_factors | OHLCV plus PIT SEC XBRL share counts; event-level and daily split/total-return factors from local public evidence | quote_eod, bar_intraday, 3-close semantics, dlret, float/treasury shares, full spinoff/merger factor policy | ticker_history.py, shares_outstanding.py, adjustment_factors.py, daily_adjustments.py | 5 |
+| 5 | Corporate actions | ~10 | corporate_actions (142 rows), corp_action_type_dim, adjustment_factor_history, delist_code_dim, delisting_events | div/split factors plus public delisting evidence; official DLSTCD/DLRET absent | observed terminal returns, CRSP DLSTCD reconciliation, name_history, ticker_history, spinoff_basis_allocation, offering, trading_halt | corporate_actions.py, adjustment_factors.py, delisting.py | 5 |
+| 6 | Pricing / market data | 6 | equity_daily_bars (9.8k rows), shares_outstanding_history (342 rows), adjustment_factor_history, daily_adjustment_factors, delisting_events | OHLCV plus PIT SEC XBRL share counts; event-level/daily split-total-return factors; public delisting proxy rows | quote_eod, bar_intraday, 3-close semantics, observed dlret, float/treasury shares, full spinoff/merger factor policy | ticker_history.py, shares_outstanding.py, adjustment_factors.py, daily_adjustments.py, delisting.py | 5 |
 | 7 | ESG / sustainability | 5 | — | — | **ALL**: esg_metric_dim, esg_metric, esg_score, esg_controversy, ghg_emission | none | 7 |
 | 8 | Reference classifications | ~8 | — | sec_company_tickers carries CIK↔ticker only | **ALL**: taxonomy, taxonomy_node, entity_classification, taxonomy_mapping, sic_code_dim, naics_code_dim, isic_code_dim, nace_code_dim | none (SIC sits unused in XBRL filings) | **2** |
 | 9 | Off-exchange / short-interest | ~6 | finra_short_interest (66k rows) | short interest only; bi-monthly | offexchange_volume (ATS), offexchange_venue, offexchange_security_period, quote/borrow-fee | finra.py, short_interest_features.py | 6 |
@@ -106,19 +106,18 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 - **Connectors:** SEC EDGAR Ownership XML (Form 3/4/5 mandatory XML since 2003, ~250k/yr; spec v5.1); Schedule 13D/G **structured XML mandate 2024-12-18** (pre-date needs HTML/ASCII parser — two pipelines); N-PORT CSV bulk (`sec.gov/data-research/.../form-n-port-data-sets`); Form 144 XML (mandatory 2023-04-13); N-PX XML (2024-08-31); STOCK Act via House Clerk / Senate Ethics + Senate/House Stock Watcher JSON. Reuse: `edgartools`.
 - **Quality gotchas:** transaction_code enumeration is the load-bearing field; 13D deadline compressed to 5 business days (2024-02-05); 10b5-1 cover-page indicator from 2023-04-01 + 90/120-day cooling-off; N-PORT monthly-public timing is a moving target (delayed to 2027-11-17 / 2028-05-18, Feb-2026 proposal may scale back); CUSIP→FIGI on 13D/G.
 
-### Domain 5 — Corporate actions  ·  Status: PARTIAL (single flat table)
+### Domain 5 — Corporate actions  ·  Status: PARTIAL
 
 **Target tables** (`datasets/corporate_actions.md`): `corp_action`, `corp_action_type_dim`, `adjustment_factor`, `delisting`, `delist_code_dim`, `name_history`, `ticker_history`, `spinoff_basis_allocation`, `offering`, `trading_halt`.
 
 **Current state — PARTIAL:**
 - `corporate_actions` (142 rows) — single flat table: `action_type`, `ex_date`, `declaration_date`, `record_date`, `payable_date`, `cash_amount`, `split_from`/`split_to`, `adjustment_factor`. Loader `corporate_actions.py` (also writes `tbltickerhistory_daily`).
 - `security_identifier_history` + `exchange_listings` partially serve `name_history`/`ticker_history` (bitemporal `valid_from`/`valid_to`).
-- `listing_status_intervals` (12,944) serves part of `delisting`.
+- `delist_code_dim` + `delisting_events` materialize PIT public delisting evidence from `listing_status_intervals`, with nullable `delisting_return`, explicit `is_return_imputed`, `return_policy`, and source-status lineage.
 
 **Gap:**
-- No **`corp_action_type_dim`** mirroring CRSP DISTCD (1xxx cash div, 3xxx stock div, 5xxx splits, 7xxx spinoffs, 8xxx reorg) or DTCC CAEV ISO-20022 codes (DVCA/SPLF/SOFF/MRGR...). `action_type` is free-text.
-- No **`delisting` + `delist_code_dim`** with CRSP DLSTCD and **`dlret`** (delisting return) — Shumway-Warther −30% impute for 5xx codes. Survivorship/delisting-return is the CRSP moat and is absent.
-- No **`adjustment_factor`** table with split price-factor vs share-factor split (CFACPR ≠ CFACSHR); current single `adjustment_factor` column conflates.
+- `delist_code_dim` is a public proxy dimension, not a licensed CRSP DLSTCD map; `delisting_events.delisting_return` is null by default unless an explicit imputation policy is requested.
+- No observed **`dlret`** terminal-return evidence; Shumway-Warther-style -30% unresolved-delete imputation exists only as an opt-in research policy, not as a claimed source value.
 - No **`spinoff_basis_allocation`** (Form 8937 / IRC §358), no `offering` (IPO/secondary), no `trading_halt`.
 - **Connectors:** present — inferred from local archive. Missing: CRSP `dsedist`/`dsedelist` enumerations (academic gold), DTCC CA 20022, EDGAR Form 8937 (only public spinoff-basis path), Form 25/15 for delistings.
 
@@ -130,13 +129,14 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 - `equity_daily_bars` (9,834) ← `bar_daily`: `open/high/low/close/adjusted_close/volume/vwap`, `dividend_amount`, `split_factor`, `is_adjusted`, `available_at`. Loader `ticker_history.py`. View `v_equity_daily_returns`.
 - `shares_outstanding_history` (342) ← public SEC XBRL `fundamental_statement_points`: `shares_outstanding`, `shares_basic_avg`, `shares_diluted_avg` with `effective_date`, `as_of_date`, `available_at`, accession, revision metadata, as-of reader, watermarks, and quality checks. Loader `shares_outstanding.py`.
 - `adjustment_factor_history` + `daily_adjustment_factors` derive event-level and daily PIT split/total-return factors from normalized `corporate_actions`, with classifier reasons, as-of readers, watermarks, quality checks, and lake export coverage.
+- `delisting_events` carries public delisting evidence and optional imputation-policy metadata, but not observed CRSP-quality terminal returns.
 - `short_interest` need served by `finra_short_interest` (Domain 9).
 
 **Gap:**
 - **Single source `adjusted_close` remains on `equity_daily_bars`** — split-only and split+dividend total-return close now live in `daily_adjustment_factors`, and `daily_panel_asof` exposes those explicit adjusted-close and adjusted-return semantics. The base `v_equity_daily_returns` view remains raw-close-only for backward compatibility.
 - No **`quote_eod`** (bid/ask/spread, close_type A/T/B), no three-close model (official auction vs consolidated tape vs composite).
 - **Share-count limits:** `shares_outstanding_history` now covers public XBRL current/basic/diluted share counts, but it is not yet a CRSP daily `SHROUT` equivalent and does not cover float, treasury shares, exchange-sourced daily shares, or split-factor-integrated daily market-cap restatements.
-- No **`bar_intraday`**; corporate-action factors are still local/public-evidence derived and do not yet include full spinoff, merger, or delisting-return policies.
+- No **`bar_intraday`**; corporate-action factors are still local/public-evidence derived and do not yet include full spinoff, merger, or observed delisting-return policies.
 - **Connectors:** present — local archive only. Missing: CRSP DSF/MSF (delisting-correct), Polygon/Tiingo/Alpaca (modern forward bars), Compustat `co_secd`. PIT integrity: free APIs restate adj_close without snapshot retention — must compute own from raw events.
 
 ### Domain 7 — ESG / sustainability  ·  Status: MISSING
@@ -205,7 +205,7 @@ Ordering rationale: maximize (parity impact × inverse effort). Estimates and re
 | **2** | Reference classifications | No taxonomy tables; SIC/NAICS unextracted | `taxonomy`/`taxonomy_node`/`entity_classification`/`sic_code_dim`(authority-keyed)/`naics_code_dim` exist; SEC-assigned SIC + NAICS + Fama-French + TRBC-via-PermID loaded for the full security universe with bitemporal `valid_from`. |
 | **3** | Insider ownership | No Form 3/4/5 or 13D/G parsing | `insider`/`insider_transaction`/`filing_form4` populated from EDGAR Ownership XML with full 28-letter `transaction_code` + `rule_10b5_1_indicator`; `blockholder_filing` handles post-2024-12-18 XML; ≥1 quarter of Form-4 backfill loaded. |
 | **4** | Fundamentals (concept coverage) | S4a cross-industry dictionary corrected to 137 item_ids; S4b overlays seeded | `fundamental_statement_map` covers exactly the 137 authorized cross-industry item_ids from sections 2.1-2.4 plus 37 bank/insurance/REIT-FFO overlay item_ids from sections 2.5-2.7; `rdq` (8-K 2.02 date) captured; calc-linkbase + DQC validation writes to `data_quality_checks`. |
-| **5** | Corp actions + Pricing depth | Flat corp_action; single adj_close | `corp_action_type_dim` (DISTCD/CAEV) + `delisting`(+`dlret`) + `adjustment_factor`(CFACPR/CFACSHR split) exist; `equity_daily_bars` gains `adj_close_split`/`adj_close_total` + `shares_outstanding_history`; spinoff `Form 8937` loader stub. |
+| **5** | Corp actions + Pricing depth | Public delisting proxy exists; no observed DLRET | `delisting_events` gains observed terminal returns/Form 25/15 evidence and CRSP DLSTCD reconciliation; quote/close-type depth and spinoff `Form 8937` loader stub follow. |
 | **6** | 13F extension + Off-exchange ATS | No filer entity-resolution; no ATS volume | `filer_13f_cik_alias` (subadvisor/M&A rollup) populated; 2023-01-03 ×1000 cutover verified; `offexchange_volume`/`offexchange_venue` loaded from FINRA weeklySummary API with ATS % rollup. |
 | **7** | ESG / sustainability | No ESG store | `esg_metric_dim`/`esg_metric`/`ghg_emission`/`esg_score`(redistributable=FALSE)/`esg_controversy` exist; 10-K Item 1/1A + Form SD + CA SB 253 + CDP loaders populate raw disclosed metrics with bitemporal evidence trail. |
 | **8** | Fundamentals PIT/QA hardening | No cross-vendor reconciliation | `fact_disagreement` audit table compares XBRL vs Sharadar/SimFin; DERA bulk backfill (SUB/NUM/TAG/PRE) extends pre-API history; >99% agreement target tracked in `data_quality_checks`. |

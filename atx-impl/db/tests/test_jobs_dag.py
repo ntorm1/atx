@@ -91,3 +91,18 @@ def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_sto
     assert order.index("daily_bars") < order.index("corporate_actions")
     assert order.index("corporate_actions") < order.index("adjustment_factor_history")
     assert order.index("adjustment_factor_history") < order.index("daily_adjustment_factors")
+
+
+def test_default_jobs_include_delistings_after_listing_status(tmp_store):
+    """Delisting proxy events are derived from listing-status intervals."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "nasdaq_listing_events" in order
+    assert "listing_status_intervals" in order
+    assert "delisting_events" in order
+    assert order.index("nasdaq_listing_events") < order.index("listing_status_intervals")
+    assert order.index("listing_status_intervals") < order.index("delisting_events")
