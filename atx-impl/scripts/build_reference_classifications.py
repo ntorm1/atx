@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         help="Restrict entity classification to these primary symbols (default: all securities).",
     )
     parser.add_argument(
+        "--sic-file",
+        type=Path,
+        default=None,
+        help="Offline CIK->SIC CSV (cols: cik, sic[, sic_description]); skips SEC network calls.",
+    )
+    parser.add_argument(
         "--user-agent",
         default=EntityClassificationOptions().user_agent,
         help="HTTP User-Agent sent to SEC EDGAR (format: 'AppName email@example.com').",
@@ -81,6 +87,7 @@ def main() -> int:
             store,
             EntityClassificationOptions(
                 symbols=symbols,
+                sic_file=args.sic_file,
                 user_agent=args.user_agent,
                 request_timeout=args.request_timeout,
             ),

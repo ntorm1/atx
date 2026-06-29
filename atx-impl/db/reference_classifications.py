@@ -22,6 +22,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
@@ -902,6 +903,47 @@ def _make_real_fetcher(
     return fetch
 
 
+def _make_csv_fetcher(path: str | Path) -> Callable[[str | int], dict | None]:
+    """Return an OFFLINE fetcher backed by a local CIK->SIC CSV.
+
+    The CSV needs a ``cik`` column and one of ``sic`` / ``sic_code`` /
+    ``assigned_sic``; an optional ``sic_description`` is passed through. CIKs are
+    normalized by integer value so zero-padded and unpadded forms both resolve.
+    This lets reference classification be populated without any SEC network call
+    (e.g. from a vendor or SEC bulk-submissions extract), mirroring the warehouse's
+    injectable-source convention.
+    """
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    lower = {str(c).strip().lower(): c for c in frame.columns}
+    cik_col = lower.get("cik")
+    sic_col = lower.get("sic") or lower.get("sic_code") or lower.get("assigned_sic")
+    desc_col = lower.get("sic_description") or lower.get("sicdescription")
+    if cik_col is None or sic_col is None:
+        raise ValueError("SIC CSV requires a 'cik' column and a 'sic'/'sic_code'/'assigned_sic' column")
+
+    lookup: dict[str, dict] = {}
+    for _, row in frame.iterrows():
+        cik_raw = str(row[cik_col]).strip()
+        sic_raw = str(row[sic_col]).strip()
+        if not cik_raw or not sic_raw:
+            continue
+        try:
+            key = str(int(cik_raw))
+        except ValueError:
+            key = cik_raw
+        payload = {"sic": sic_raw}
+        if desc_col is not None:
+            payload["sicDescription"] = str(row[desc_col]).strip()
+        lookup[key] = payload
+
+    def fetch(cik: str | int) -> dict | None:
+        raw = str(cik).strip()
+        key = str(int(raw)) if raw.isdigit() else raw
+        return lookup.get(key)
+
+    return fetch
+
+
 # ---------------------------------------------------------------------------
 # Dataset 4: EntityClassificationDataset
 # ---------------------------------------------------------------------------
@@ -920,6 +962,7 @@ class EntityClassificationOptions:
     run_id: optional run tracking id.
     """
     fetcher: Callable[[str | int], dict | None] | None = None
+    sic_file: Path | None = None
     symbols: tuple[str, ...] | None = None
     user_agent: str = _DEFAULT_USER_AGENT
     request_timeout: int = 30
@@ -949,10 +992,15 @@ class EntityClassificationDataset(Dataset):
         store: DuckDBStore,
         options: EntityClassificationOptions,
     ) -> DatasetLoadResult:
-        fetcher = options.fetcher or _make_real_fetcher(
-            user_agent=options.user_agent,
-            request_timeout=options.request_timeout,
-        )
+        if options.fetcher is not None:
+            fetcher = options.fetcher
+        elif options.sic_file is not None:
+            fetcher = _make_csv_fetcher(options.sic_file)
+        else:
+            fetcher = _make_real_fetcher(
+                user_agent=options.user_agent,
+                request_timeout=options.request_timeout,
+            )
 
         # Resolve taxonomy IDs (must already be seeded)
         sic_taxonomy_id = _taxonomy_id_for(store, "SIC")

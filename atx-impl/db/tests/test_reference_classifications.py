@@ -545,3 +545,47 @@ class TestBitemporalReclassification:
             """
         ).fetchone()[0]
         assert open_naics_code == "31-33", f"Expected open NAICS = 31-33, got {open_naics_code}"
+
+
+class TestOfflineSicCsvFetcher:
+    """Offline CIK->SIC CSV injection so reference classification needs no network."""
+
+    def test_make_csv_fetcher_handles_padded_and_int_cik(self, tmp_path):
+        from db.reference_classifications import _make_csv_fetcher
+        csv = tmp_path / "sic.csv"
+        csv.write_text("cik,sic\n0000789019,7372\n", encoding="utf-8")
+        fetch = _make_csv_fetcher(csv)
+        assert fetch("789019")["sic"] == "7372"
+        assert fetch(789019)["sic"] == "7372"
+        assert fetch("999999") is None
+
+    def test_sic_file_populates_entity_classification_offline(self, tmp_store, tmp_path):
+        from db.reference_classifications import EntityClassificationDataset, EntityClassificationOptions
+        _seed_all_taxonomies(tmp_store)
+        _insert_security(tmp_store, "SEC-CIK-0000789019", "789019", "MSFT")
+
+        csv = tmp_path / "cik_sic.csv"
+        csv.write_text("cik,sic\n789019,7372\n", encoding="utf-8")
+
+        EntityClassificationDataset().run(
+            tmp_store,
+            EntityClassificationOptions(sic_file=csv),
+        )
+
+        primary = tmp_store.con.execute(
+            """
+            SELECT node_code FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            WHERE ec.security_id = 'SEC-CIK-0000789019' AND t.code = 'SIC' AND ec.is_primary
+            """
+        ).fetchone()
+        assert primary is not None and primary[0] == "7372"
+
+        ff = tmp_store.con.execute(
+            """
+            SELECT node_code FROM entity_classification ec
+            JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
+            WHERE ec.security_id = 'SEC-CIK-0000789019' AND t.code = 'FAMA_FRENCH_12'
+            """
+        ).fetchone()
+        assert ff is not None and ff[0] == "BusEq"
