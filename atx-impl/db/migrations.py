@@ -3386,6 +3386,26 @@ def _macro_metrics_regime_percentile(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _macro_metrics_real_rates_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """S25: catalog the real-fed-funds synthetic macro series."""
+    conn.execute(
+        """
+        UPDATE dataset_catalog
+        SET description = 'Per-series macro analytics derived from the cached FRED observation feed (level, change, year-over-year change/growth, expanding z-score) plus synthetic T10Y2Y Treasury term spread and REAL_FEDFUNDS real-rate series; bitemporal, latest-revision FRED (not ALFRED vintages).',
+            updated_at = now()
+        WHERE dataset_id = 'macro_metrics'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE table_catalog
+        SET pit_notes = 'Resolve with available_at <= query ts and is_latest_revision. Latest-revision FRED (not ALFRED), so macro-revision PIT is approximate; derived values use only current+earlier observations. Synthetic cross-series values use the later available_at of their input observations.',
+            updated_at = now()
+        WHERE table_name = 'macro_metrics'
+        """
+    )
+
+
 def _corporate_action_dividend_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S18: derived cash-dividend analytics (corporate actions x pricing).
 
@@ -4337,6 +4357,11 @@ MIGRATIONS: list[Migration] = [
         version=47,
         name="short_interest_metrics_liquidity_pressure",
         up=_short_interest_metrics_liquidity_pressure,
+    ),
+    Migration(
+        version=48,
+        name="macro_metrics_real_rates_catalog",
+        up=_macro_metrics_real_rates_catalog,
     ),
 ]
 

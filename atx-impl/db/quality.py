@@ -4947,6 +4947,29 @@ def _check_specs(
             required_tables=("macro_metrics",),
         ),
         SqlQualityCheck(
+            dataset_id="macro_metrics",
+            table_name="macro_metrics",
+            check_name="missing_real_fedfunds_when_inputs_available",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM macro_metrics fed
+                JOIN macro_metrics cpi
+                  ON cpi.source = fed.source
+                 AND cpi.series_id = 'CPIAUCSL'
+                 AND cpi.observation_date = fed.observation_date
+                 AND cpi.yoy_growth IS NOT NULL
+                LEFT JOIN macro_metrics real
+                  ON real.source = fed.source
+                 AND real.series_id = 'REAL_FEDFUNDS'
+                 AND real.observation_date = fed.observation_date
+                WHERE fed.series_id = 'FEDFUNDS'
+                  AND real.metric_id IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("macro_metrics",),
+        ),
+        SqlQualityCheck(
             dataset_id="equity_price_metrics",
             table_name="equity_price_metrics",
             check_name="duplicate_equity_price_metric_keys",

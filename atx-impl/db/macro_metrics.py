@@ -6,8 +6,8 @@ VIX. This module turns them into a typed, point-in-time analytics surface — on
 ``(series_id, observation_date)`` — adding the transforms quant strategies actually
 condition on: change vs the prior observation, year-over-year change/growth (CPI's YoY
 growth *is* the inflation rate), an expanding z-score (where does today sit vs the
-series' own history), plus a synthetic ``T10Y2Y`` term-spread series (DGS10 - DGS2, the
-canonical yield-curve recession signal).
+series' own history), plus synthetic ``T10Y2Y`` (DGS10 - DGS2) and ``REAL_FEDFUNDS``
+(FEDFUNDS minus CPI YoY inflation) series.
 
 Point-in-time discipline: ``as_of_date`` is the observation date and ``available_at`` is
 carried from the source observation. Every derived value uses only the current and
@@ -37,8 +37,8 @@ from .warehouse import insert_frame, quality_check
 SOURCE_NAME = "Derived macro analytics"
 DEFAULT_SOURCE = "derived_macro_metrics_v1"
 
-# Synthetic cross-series definitions: (output series_id, minuend, subtrahend, units).
 TERM_SPREAD_SERIES = "T10Y2Y"
+REAL_FED_FUNDS_SERIES = "REAL_FEDFUNDS"
 YOY_TOLERANCE_DAYS = 20  # how far from exactly 1 year a YoY base observation may sit
 ZSCORE_MIN_PERIODS = 24  # need this many history points before a z-score is defined
 
@@ -118,6 +118,80 @@ def _derive_one_series(g: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+def _append_term_spread(obs: pd.DataFrame, source: str) -> pd.DataFrame:
+    """Append the synthetic 10Y-2Y Treasury term spread when both legs exist."""
+    legs = obs[obs["series_id"].isin(["DGS10", "DGS2"])]
+    if not {"DGS10", "DGS2"}.issubset(set(legs["series_id"])):
+        return obs
+    wide = legs.pivot_table(index="observation_date", values="value", columns="series_id", aggfunc="last")
+    avail = legs.pivot_table(index="observation_date", values="available_at", columns="series_id", aggfunc="last")
+    spread = (wide["DGS10"] - wide["DGS2"]).dropna()
+    if spread.empty:
+        return obs
+    syn = pd.DataFrame({
+        "source": source,
+        "series_id": TERM_SPREAD_SERIES,
+        "observation_date": spread.index,
+        "frequency": "daily",
+        "units": "percentage_points",
+        "value": spread.to_numpy(),
+        "available_at": avail.reindex(spread.index).max(axis=1).to_numpy(),
+        "is_synthetic": True,
+    })
+    return pd.concat([obs, syn], ignore_index=True)
+
+
+def _append_real_fed_funds(obs: pd.DataFrame, source: str) -> pd.DataFrame:
+    """Append FEDFUNDS minus CPI YoY inflation, both in percentage points."""
+    if not {"FEDFUNDS", "CPIAUCSL"}.issubset(set(obs["series_id"])):
+        return obs
+    fed = (
+        obs[obs["series_id"] == "FEDFUNDS"]
+        .sort_values(["observation_date", "available_at"])
+        .drop_duplicates("observation_date", keep="last")
+        [["observation_date", "value", "available_at"]]
+        .rename(columns={"value": "fed_funds", "available_at": "fed_available_at"})
+    )
+    cpi = (
+        obs[obs["series_id"] == "CPIAUCSL"]
+        .sort_values(["observation_date", "available_at"])
+        .drop_duplicates("observation_date", keep="last")
+        [["observation_date", "value", "available_at"]]
+        .rename(columns={"available_at": "cpi_available_at"})
+    )
+    if fed.empty or cpi.empty:
+        return obs
+
+    cpi_for_base = cpi.rename(columns={"cpi_available_at": "available_at"})
+    base_arr = _yoy_base(cpi_for_base).reindex(cpi["observation_date"]).to_numpy()
+    cpi_arr = pd.to_numeric(cpi["value"], errors="coerce").to_numpy(dtype="float64")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        inflation = cpi_arr / base_arr - 1.0
+    inflation = np.where(np.isnan(base_arr) | (base_arr <= 0), np.nan, inflation)
+    cpi_inflation = pd.DataFrame({
+        "observation_date": cpi["observation_date"].to_numpy(),
+        "cpi_yoy_inflation": inflation,
+        "cpi_available_at": cpi["cpi_available_at"].to_numpy(),
+    }).dropna(subset=["cpi_yoy_inflation"])
+    real = fed.merge(cpi_inflation, on="observation_date", how="inner")
+    if real.empty:
+        return obs
+
+    syn = pd.DataFrame({
+        "source": source,
+        "series_id": REAL_FED_FUNDS_SERIES,
+        "observation_date": real["observation_date"],
+        "frequency": "monthly",
+        "units": "percentage_points",
+        "value": pd.to_numeric(real["fed_funds"], errors="coerce") - 100.0 * real["cpi_yoy_inflation"],
+        "available_at": real[["fed_available_at", "cpi_available_at"]].max(axis=1),
+        "is_synthetic": True,
+    }).dropna(subset=["value"])
+    if syn.empty:
+        return obs
+    return pd.concat([obs, syn], ignore_index=True)
+
+
 def compute_macro_metrics(
     observations: pd.DataFrame,
     *,
@@ -127,9 +201,8 @@ def compute_macro_metrics(
     """Pure transform: raw FRED observations -> typed macro metric rows.
 
     Input carries one row per ``(series_id, observation_date)`` with ``value``,
-    ``available_at``, and per-series ``frequency`` / ``units``. A synthetic
-    ``T10Y2Y`` series (DGS10 - DGS2, inner-joined on observation_date) is appended
-    before the per-series transforms run.
+    ``available_at``, and per-series ``frequency`` / ``units``. Synthetic ``T10Y2Y``
+    and ``REAL_FEDFUNDS`` rows are appended before the per-series transforms run.
     """
     if observations is None or observations.empty:
         return pd.DataFrame(columns=MACRO_METRIC_COLUMNS)
@@ -146,25 +219,10 @@ def compute_macro_metrics(
             obs[col] = pd.NA
     obs["is_synthetic"] = False
 
-    # Synthetic 10Y-2Y term spread (both daily; inner join on date; availability is the
-    # later of the two legs so the spread is knowable only once both yields are out).
-    legs = obs[obs["series_id"].isin(["DGS10", "DGS2"])]
-    if {"DGS10", "DGS2"}.issubset(set(legs["series_id"])):
-        wide = legs.pivot_table(index="observation_date", values="value", columns="series_id", aggfunc="last")
-        avail = legs.pivot_table(index="observation_date", values="available_at", columns="series_id", aggfunc="last")
-        spread = (wide["DGS10"] - wide["DGS2"]).dropna()
-        if not spread.empty:
-            syn = pd.DataFrame({
-                "source": source,
-                "series_id": TERM_SPREAD_SERIES,
-                "observation_date": spread.index,
-                "frequency": "daily",
-                "units": "percentage_points",
-                "value": spread.to_numpy(),
-                "available_at": avail.reindex(spread.index).max(axis=1).to_numpy(),
-                "is_synthetic": True,
-            })
-            obs = pd.concat([obs, syn], ignore_index=True)
+    # Synthetic cross-series rows are PIT-safe: availability is the later of the inputs,
+    # and every input observation is same-date or earlier.
+    obs = _append_term_spread(obs, source)
+    obs = _append_real_fed_funds(obs, source)
 
     derived = (
         obs.groupby("series_id", group_keys=False)[obs.columns.tolist()]

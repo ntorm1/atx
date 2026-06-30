@@ -33,6 +33,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 28 in versions, f"Migration 0028 not recorded; found: {versions}"
     assert 46 in versions, f"Migration 0046 not recorded; found: {versions}"
     assert 47 in versions, f"Migration 0047 not recorded; found: {versions}"
+    assert 48 in versions, f"Migration 0048 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -154,6 +155,22 @@ def test_migration_0047_catalogs_short_interest_liquidity_pressure_fields(tmp_st
     }
     assert expected.issubset(columns)
     assert expected.issubset(fields)
+
+
+def test_migration_0048_catalogs_macro_real_rates(tmp_store):
+    """Migration 0048 updates macro_metrics catalog text for real-rate series."""
+
+    row = tmp_store.con.execute(
+        """
+        SELECT d.description, t.pit_notes
+        FROM dataset_catalog d
+        JOIN table_catalog t ON t.table_name = d.primary_table
+        WHERE d.dataset_id = 'macro_metrics'
+        """
+    ).fetchone()
+    assert row is not None
+    assert "REAL_FEDFUNDS" in row[0]
+    assert "Synthetic cross-series" in row[1]
 
 
 def test_migration_0042_catalogs_corporate_action_split_metrics(tmp_store):

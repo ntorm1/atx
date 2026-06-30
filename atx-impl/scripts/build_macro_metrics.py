@@ -2,7 +2,7 @@
 """Materialize the derived ``macro_metrics`` surface from cached FRED observations.
 
 Computes per-series macro analytics (level, change vs prior observation, year-over-year
-change/growth, expanding z-score) plus a synthetic 10Y-2Y Treasury term-spread series
+change/growth, expanding z-score) plus synthetic 10Y-2Y Treasury term-spread and real fed funds
 from the cached ``macro_observations`` feed. Pure derivation — no network access.
 
 Usage

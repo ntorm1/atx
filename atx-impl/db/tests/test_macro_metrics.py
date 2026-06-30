@@ -106,6 +106,32 @@ class TestComputeMacroMetrics:
         assert by[dt.date(2024, 1, 2)].value == pytest.approx(-0.5)  # inverted curve
         assert by[dt.date(2024, 1, 3)].value == pytest.approx(-0.3)
 
+    def test_synthetic_real_fed_funds(self):
+        rows = [
+            _obs("CPIAUCSL", "2024-01-01", 100.0, av="2024-01-15"),
+            _obs("CPIAUCSL", "2024-02-01", 101.0, av="2024-02-15"),
+            _obs("CPIAUCSL", "2025-01-01", 110.0, av="2025-01-15"),
+            _obs("FEDFUNDS", "2025-01-01", 5.0, av="2025-02-01", units="percent"),
+        ]
+        out = compute_macro_metrics(pd.DataFrame(rows))
+        real = out[out["series_id"] == "REAL_FEDFUNDS"]
+        assert len(real) == 1
+        row = real.iloc[0]
+        assert bool(row["is_synthetic"]) is True
+        assert row["frequency"] == "monthly"
+        assert row["units"] == "percentage_points"
+        assert row["observation_date"] == dt.date(2025, 1, 1)
+        assert row["value"] == pytest.approx(5.0 - 10.0)
+        assert row["available_at"] == pd.Timestamp("2025-02-01")
+
+    def test_synthetic_real_fed_funds_requires_cpi_yoy_base(self):
+        rows = [
+            _obs("CPIAUCSL", "2025-01-01", 110.0, av="2025-01-15"),
+            _obs("FEDFUNDS", "2025-01-01", 5.0, av="2025-02-01", units="percent"),
+        ]
+        out = compute_macro_metrics(pd.DataFrame(rows))
+        assert "REAL_FEDFUNDS" not in set(out["series_id"])
+
     def test_metric_id_deterministic_and_unique(self):
         rows = pd.DataFrame([
             _obs("UNRATE", "2025-01-01", 4.0),
@@ -167,6 +193,26 @@ class TestRefreshIntegration:
             "SELECT change_abs FROM macro_metrics WHERE series_id='DGS10' AND observation_date = DATE '2024-01-03'"
         ).fetchone()[0]
         assert chg == pytest.approx(0.1)
+
+    def test_materializes_real_fed_funds(self, tmp_store):
+        _insert_series(tmp_store, "CPIAUCSL", "monthly", "index")
+        _insert_series(tmp_store, "FEDFUNDS", "monthly", "percent")
+        _insert_obs(tmp_store, "CPIAUCSL", dt.date(2024, 1, 1), 100.0, dt.datetime(2024, 1, 15))
+        _insert_obs(tmp_store, "CPIAUCSL", dt.date(2025, 1, 1), 106.0, dt.datetime(2025, 1, 15))
+        _insert_obs(tmp_store, "FEDFUNDS", dt.date(2025, 1, 1), 5.25, dt.datetime(2025, 2, 1))
+
+        n = refresh_macro_metrics(tmp_store, MacroMetricsOptions())
+        assert n == 4  # CPI x2 + FEDFUNDS + synthetic REAL_FEDFUNDS
+        row = tmp_store.con.execute(
+            """
+            SELECT value, available_at, is_synthetic
+            FROM macro_metrics
+            WHERE series_id = 'REAL_FEDFUNDS'
+            """
+        ).fetchone()
+        assert row[0] == pytest.approx(5.25 - 6.0)
+        assert row[1] == dt.datetime(2025, 2, 1)
+        assert row[2] is True
 
     def test_dataset_run_is_idempotent(self, tmp_store):
         _insert_series(tmp_store, "UNRATE", "monthly", "percent")
