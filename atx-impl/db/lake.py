@@ -71,6 +71,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "offexchange_venue",
     "offexchange_volume",
     "offexchange_security_period",
+    "offexchange_quality_report",
     "thirteenf_managers",
     "thirteenf_manager_reports",
     "thirteenf_security_positions",

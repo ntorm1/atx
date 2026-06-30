@@ -3577,6 +3577,145 @@ def _finra_daily_short_volume(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _offexchange_quality_report(conn: duckdb.DuckDBPyConnection) -> None:
+    """S27: materialized off-exchange / short-flow quality report."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offexchange_quality_report (
+            report_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            surface VARCHAR NOT NULL,
+            input_source VARCHAR,
+            period_type VARCHAR NOT NULL,
+            period_start_date DATE NOT NULL,
+            period_end_date DATE,
+            row_count BIGINT,
+            security_count BIGINT,
+            venue_or_market_count BIGINT,
+            total_volume DOUBLE,
+            ats_volume DOUBLE,
+            non_ats_volume DOUBLE,
+            short_volume DOUBLE,
+            short_exempt_volume DOUBLE,
+            short_volume_ratio DOUBLE,
+            ats_share_pct DOUBLE,
+            high_short_flow_count BIGINT,
+            restated_key_count BIGINT,
+            multiple_latest_key_count BIGINT,
+            bad_row_count BIGINT,
+            missing_available_at_count BIGINT,
+            max_publication_lag_days DOUBLE,
+            restatement_seq INTEGER NOT NULL DEFAULT 0,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            source_inputs_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_quality_report_key ON offexchange_quality_report(surface, input_source, period_type, period_start_date)",
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_quality_report_asof ON offexchange_quality_report(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_offexchange_quality_report_latest ON offexchange_quality_report(source, is_latest_revision, surface)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'offexchange_quality_report',
+            'finra',
+            'Off-exchange and short-flow quality report',
+            'Materialized quality/control report over public FINRA off-exchange transparency and daily short-volume flow surfaces: period coverage, row/security/venue counts, volume totals, restatement counts, bad-row counts, publication-lag diagnostics, and PIT availability.',
+            'surface,input_source,period_type,period_start_date',
+            'offexchange_quality_report', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'offexchange_quality_report', 'control', 'offexchange_quality_report',
+            'surface,input_source,period_type,period_start_date,available_at',
+            'Period-level quality report over offexchange_volume and finra_short_volume/short_volume_metrics inputs.',
+            '["report_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision. Report revisions preserve changed input vintages; restatement_seq orders successive quality reports for the same surface/source/period.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('source', 'surface', 'input_source', 'period_type', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%date' OR lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'surface' THEN 'Input surface summarized by the report: offexchange_volume or finra_short_volume.'
+                WHEN 'input_source' THEN 'Source value of the summarized input rows.'
+                WHEN 'period_start_date' THEN 'Report period start date (week/month/block start for OTC transparency, trade date for daily short volume).'
+                WHEN 'row_count' THEN 'Latest visible input rows summarized for the surface/source/period.'
+                WHEN 'security_count' THEN 'Distinct symbols summarized for the surface/source/period.'
+                WHEN 'venue_or_market_count' THEN 'Distinct ATS/non-ATS MPIDs or FINRA daily short-volume market codes in the period.'
+                WHEN 'total_volume' THEN 'Total share volume summarized for the period.'
+                WHEN 'ats_volume' THEN 'ATS share volume for OTC transparency periods.'
+                WHEN 'non_ats_volume' THEN 'Non-ATS share volume for OTC transparency periods.'
+                WHEN 'short_volume' THEN 'FINRA daily short-sale volume summarized for the period.'
+                WHEN 'short_exempt_volume' THEN 'FINRA daily short-exempt volume summarized for the period.'
+                WHEN 'short_volume_ratio' THEN 'Short volume divided by total volume for daily short-volume periods.'
+                WHEN 'ats_share_pct' THEN 'ATS volume divided by total off-exchange volume, in percent.'
+                WHEN 'high_short_flow_count' THEN 'Count of symbols flagged as high short-flow in short_volume_metrics for the period.'
+                WHEN 'restated_key_count' THEN 'Number of natural keys with more than one source vintage for the period.'
+                WHEN 'multiple_latest_key_count' THEN 'Number of natural keys with more than one row marked latest; should be zero.'
+                WHEN 'bad_row_count' THEN 'Input rows in the period violating basic validity checks.'
+                WHEN 'missing_available_at_count' THEN 'Input rows in the period missing availability timestamps.'
+                WHEN 'max_publication_lag_days' THEN 'Maximum days between period end/trade date and input availability date.'
+                WHEN 'source_inputs_json' THEN 'JSON description of source tables and input source values used for the report.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) LIKE '%date' OR lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%pct%' THEN 'percent'
+                WHEN lower(c.column_name) LIKE '%ratio%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%lag_days%' THEN 'days'
+                WHEN lower(c.column_name) LIKE '%volume%' OR lower(c.column_name) LIKE '%count%' THEN 'count'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'offexchange_quality_report'
+        """
+    )
+
+
 def _corporate_action_dividend_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S18: derived cash-dividend analytics (corporate actions x pricing).
 
@@ -4538,6 +4677,11 @@ MIGRATIONS: list[Migration] = [
         version=49,
         name="finra_daily_short_volume",
         up=_finra_daily_short_volume,
+    ),
+    Migration(
+        version=50,
+        name="offexchange_quality_report",
+        up=_offexchange_quality_report,
     ),
 ]
 

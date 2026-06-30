@@ -126,6 +126,21 @@ def test_default_jobs_include_short_volume_metrics_after_raw_flow(tmp_store):
     assert order.index("finra_short_volume") < order.index("short_volume_metrics")
 
 
+def test_default_jobs_include_offexchange_quality_report_after_public_flow_inputs(tmp_store):
+    """The off-exchange quality report waits for both OTC and short-flow surfaces."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "offexchange_security_period" in order
+    assert "short_volume_metrics" in order
+    assert "offexchange_quality_report" in order
+    assert order.index("offexchange_security_period") < order.index("offexchange_quality_report")
+    assert order.index("short_volume_metrics") < order.index("offexchange_quality_report")
+
+
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):
     """Delisting proxy events are derived from listing-status intervals."""
     from db.jobs import JobManager

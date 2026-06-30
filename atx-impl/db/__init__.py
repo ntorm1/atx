@@ -39,6 +39,7 @@ from .asof import (
     insider_transactions_asof,
     listing_status_asof,
     macro_asof,
+    offexchange_quality_report_asof,
     offexchange_security_period_asof,
     offexchange_volume_asof,
     ownership_asof,
@@ -188,6 +189,12 @@ from .offexchange import (
     normalize_offexchange_rows,
     refresh_offexchange_security_period,
 )
+from .offexchange_quality import (
+    OffExchangeQualityReportDataset,
+    OffExchangeQualityReportOptions,
+    compute_offexchange_quality_reports,
+    refresh_offexchange_quality_report,
+)
 from .short_volume import (
     FinraShortVolumeDataset,
     FinraShortVolumeOptions,
@@ -302,6 +309,11 @@ __all__ = [
     "refresh_offexchange_security_period",
     "offexchange_volume_asof",
     "offexchange_security_period_asof",
+    "OffExchangeQualityReportDataset",
+    "OffExchangeQualityReportOptions",
+    "compute_offexchange_quality_reports",
+    "refresh_offexchange_quality_report",
+    "offexchange_quality_report_asof",
     "FinraShortVolumeDataset",
     "FinraShortVolumeOptions",
     "ShortVolumeMetricsDataset",

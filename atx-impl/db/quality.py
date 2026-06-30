@@ -4815,6 +4815,72 @@ def _check_specs(
             required_tables=("short_volume_metrics",),
         ),
         SqlQualityCheck(
+            dataset_id="offexchange_quality_report",
+            table_name="offexchange_quality_report",
+            check_name="offexchange_quality_report_multiple_latest_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, surface, input_source, period_type, period_start_date,
+                           count(*) FILTER (WHERE is_latest_revision) AS latest_rows
+                    FROM offexchange_quality_report
+                    GROUP BY 1, 2, 3, 4, 5
+                    HAVING count(*) FILTER (WHERE is_latest_revision) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("offexchange_quality_report",),
+        ),
+        SqlQualityCheck(
+            dataset_id="offexchange_quality_report",
+            table_name="offexchange_quality_report",
+            check_name="offexchange_quality_report_bad_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM offexchange_quality_report
+                WHERE source IS NULL OR source = ''
+                   OR surface NOT IN ('offexchange_volume', 'finra_short_volume')
+                   OR period_type IS NULL OR period_type = ''
+                   OR period_start_date IS NULL
+                   OR available_at IS NULL
+                   OR as_of_date IS NULL
+                   OR period_end_date < period_start_date
+                   OR coalesce(row_count, -1) < 0
+                   OR coalesce(security_count, -1) < 0
+                   OR coalesce(venue_or_market_count, -1) < 0
+                   OR coalesce(restated_key_count, -1) < 0
+                   OR coalesce(multiple_latest_key_count, -1) < 0
+                   OR coalesce(bad_row_count, -1) < 0
+                   OR coalesce(missing_available_at_count, -1) < 0
+                   OR coalesce(high_short_flow_count, 0) < 0
+                   OR coalesce(high_short_flow_count, 0) > coalesce(security_count, 0)
+                   OR (short_volume_ratio IS NOT NULL AND (short_volume_ratio < 0 OR short_volume_ratio > 1))
+                   OR (ats_share_pct IS NOT NULL AND (ats_share_pct < 0 OR ats_share_pct > 100))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("offexchange_quality_report",),
+        ),
+        SqlQualityCheck(
+            dataset_id="offexchange_quality_report",
+            table_name="offexchange_quality_report",
+            check_name="offexchange_quality_report_volume_consistent",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM offexchange_quality_report
+                WHERE (surface = 'offexchange_volume'
+                       AND abs(coalesce(total_volume, 0)
+                               - (coalesce(ats_volume, 0) + coalesce(non_ats_volume, 0))) > 1.0)
+                   OR (surface = 'finra_short_volume'
+                       AND (coalesce(short_volume, 0) > coalesce(total_volume, 0)
+                            OR coalesce(short_exempt_volume, 0) > coalesce(total_volume, 0)))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("offexchange_quality_report",),
+        ),
+        SqlQualityCheck(
             dataset_id="fundamental_ratios",
             table_name="fundamental_ratios",
             check_name="duplicate_fundamental_ratio_natural_keys",

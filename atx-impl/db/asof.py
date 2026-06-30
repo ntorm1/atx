@@ -2681,6 +2681,74 @@ def short_volume_metrics_asof(
         return _run(store)
 
 
+OFFEXCHANGE_QUALITY_REPORT_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible AS (
+    SELECT
+        r.*,
+        row_number() OVER (
+            PARTITION BY r.source, r.surface, r.input_source, r.period_type, r.period_start_date
+            ORDER BY r.available_at DESC, r.report_id
+        ) AS rn
+    FROM offexchange_quality_report r
+    {surface_join}
+    CROSS JOIN params p
+    WHERE r.available_at <= p.as_of_ts
+)
+SELECT
+    report_id, source, surface, input_source, period_type,
+    period_start_date, period_end_date, row_count, security_count,
+    venue_or_market_count, total_volume, ats_volume, non_ats_volume,
+    short_volume, short_exempt_volume, short_volume_ratio,
+    ats_share_pct, high_short_flow_count, restated_key_count,
+    multiple_latest_key_count, bad_row_count, missing_available_at_count,
+    max_publication_lag_days, restatement_seq, is_latest_revision,
+    as_of_date, available_at, source_inputs_json, run_id,
+    source_loaded_at, updated_at
+FROM visible
+WHERE rn = 1
+ORDER BY surface, input_source, period_type, period_start_date
+"""
+
+
+def offexchange_quality_report_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    surfaces: tuple[str, ...] | list[str] | None = None,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest-visible off-exchange quality reports as of a point in time."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    surface_values = tuple(str(value) for value in surfaces) if surfaces else ()
+
+    def _run(store):
+        registered = []
+        try:
+            surface_join = ""
+            if _register_filter(store, "asof_offx_quality_surface_filter", "surface", surface_values):
+                registered.append("asof_offx_quality_surface_filter")
+                surface_join = "JOIN asof_offx_quality_surface_filter sf ON sf.surface = r.surface"
+            sql = OFFEXCHANGE_QUALITY_REPORT_ASOF_SQL.format(surface_join=surface_join)
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
 FUNDAMENTAL_XBRL_METRIC_ASOF_SQL = """
 WITH params AS (
     SELECT

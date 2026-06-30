@@ -39,6 +39,7 @@ from db.asof import (
     corporate_action_factor_reconciliation_asof,
     corporate_action_split_metrics_asof,
     finra_short_volume_asof,
+    offexchange_quality_report_asof,
     offexchange_security_period_asof,
     offexchange_volume_asof,
     short_volume_metrics_asof,
@@ -117,6 +118,7 @@ def parse_args() -> argparse.Namespace:
             "finra-short-volume",
             "offexchange-volume",
             "offexchange-security-period",
+            "offexchange-quality-report",
             "short-volume-metrics",
             "identifier-decisions",
         ],
@@ -485,6 +487,13 @@ def main() -> int:
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,
             symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "offexchange-quality-report":
+        frame = offexchange_quality_report_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            surfaces=parse_id_csv(args.metrics),
         )
     elif args.view == "short-volume-metrics":
         frame = short_volume_metrics_asof(

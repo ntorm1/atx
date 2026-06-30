@@ -220,6 +220,52 @@ def test_migration_0049_catalogs_finra_daily_short_volume(tmp_store):
     }.issubset(fields)
 
 
+def test_migration_0050_catalogs_offexchange_quality_report(tmp_store):
+    """Migration 0050 adds the off-exchange control-quality report table."""
+
+    table_exists = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'offexchange_quality_report'
+        """
+    ).fetchone()[0]
+    assert table_exists == 1
+
+    catalog_row = tmp_store.con.execute(
+        """
+        SELECT d.dataset_id, d.grain, t.layer, t.pit_notes
+        FROM dataset_catalog d
+        JOIN table_catalog t ON t.table_name = d.primary_table
+        WHERE d.dataset_id = 'offexchange_quality_report'
+        """
+    ).fetchone()
+    assert catalog_row is not None
+    assert catalog_row[1] == "surface,input_source,period_type,period_start_date"
+    assert catalog_row[2] == "control"
+    assert "available_at" in catalog_row[3]
+
+    fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name = 'offexchange_quality_report'
+            """
+        ).fetchall()
+    }
+    assert {
+        "surface",
+        "row_count",
+        "short_volume_ratio",
+        "ats_share_pct",
+        "restated_key_count",
+        "multiple_latest_key_count",
+    }.issubset(fields)
+
+
 def test_migration_0042_catalogs_corporate_action_split_metrics(tmp_store):
     """Migration 0042 adds and catalogs split-event reconciliation metrics."""
 
