@@ -3578,7 +3578,7 @@ def _finra_daily_short_volume(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _offexchange_quality_report(conn: duckdb.DuckDBPyConnection) -> None:
-    """S27: materialized off-exchange / short-flow quality report."""
+    """S28: materialized off-exchange / short-flow quality report."""
 
     conn.execute(
         """
