@@ -29,6 +29,7 @@ from .asof import (
     macro_metrics_asof,
     equity_price_metrics_asof,
     thirteenf_position_metrics_asof,
+    thirteenf_option_metrics_asof,
     corporate_action_dividend_metrics_asof,
     corporate_action_split_metrics_asof,
     identifier_decisions_asof,
@@ -121,6 +122,12 @@ from .thirteenf_position_metrics import (
     ThirteenFPositionMetricsOptions,
     compute_position_metrics,
     refresh_position_metrics,
+)
+from .thirteenf_option_metrics import (
+    ThirteenFOptionMetricsDataset,
+    ThirteenFOptionMetricsOptions,
+    compute_option_metrics,
+    refresh_option_metrics,
 )
 from .corporate_action_metrics import (
     CorporateActionDividendMetricsDataset,
@@ -305,6 +312,11 @@ __all__ = [
     "compute_position_metrics",
     "refresh_position_metrics",
     "thirteenf_position_metrics_asof",
+    "ThirteenFOptionMetricsDataset",
+    "ThirteenFOptionMetricsOptions",
+    "compute_option_metrics",
+    "refresh_option_metrics",
+    "thirteenf_option_metrics_asof",
     "CorporateActionDividendMetricsDataset",
     "CorporateActionDividendMetricsOptions",
     "CorporateActionSplitMetricsDataset",

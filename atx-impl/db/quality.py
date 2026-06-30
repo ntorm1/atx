@@ -4971,6 +4971,93 @@ def _check_specs(
             required_tables=("thirteenf_position_metrics",),
         ),
         SqlQualityCheck(
+            dataset_id="thirteenf_option_metrics",
+            table_name="thirteenf_option_metrics",
+            check_name="duplicate_thirteenf_option_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT
+                        source,
+                        coalesce(security_id, ''),
+                        coalesce(cusip, ''),
+                        report_period,
+                        coalesce(source_period, '')
+                    FROM thirteenf_option_metrics
+                    GROUP BY 1, 2, 3, 4, 5 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_option_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_option_metrics",
+            table_name="thirteenf_option_metrics",
+            check_name="bad_thirteenf_option_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM thirteenf_option_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR source IS NULL OR source = ''
+                   OR (coalesce(security_id, '') = '' AND coalesce(cusip, '') = '')
+                   OR report_period IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR option_bias NOT IN ('CALL_HEAVY', 'PUT_HEAVY', 'BALANCED', 'NO_OPTIONS')
+                   OR option_manager_count < 0
+                   OR call_manager_count < 0
+                   OR put_manager_count < 0
+                   OR option_position_count < 1
+                   OR call_position_count < 0
+                   OR put_position_count < 0
+                   OR option_position_count <> call_position_count + put_position_count
+                   OR call_share_quantity < 0
+                   OR put_share_quantity < 0
+                   OR call_value_usd < 0
+                   OR put_value_usd < 0
+                   OR common_share_quantity < 0
+                   OR common_value_usd < 0
+                   OR put_call_share_ratio < 0
+                   OR put_call_value_ratio < 0
+                   OR call_to_common_share_pct < 0
+                   OR put_to_common_share_pct < 0
+                   OR option_to_common_value_pct < 0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_option_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_option_metrics",
+            table_name="thirteenf_option_metrics",
+            check_name="mismatched_thirteenf_option_bias",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM thirteenf_option_metrics
+                WHERE (
+                        coalesce(call_share_quantity, 0) > coalesce(put_share_quantity, 0)
+                        AND option_bias <> 'CALL_HEAVY'
+                    )
+                   OR (
+                        coalesce(put_share_quantity, 0) > coalesce(call_share_quantity, 0)
+                        AND option_bias <> 'PUT_HEAVY'
+                    )
+                   OR (
+                        coalesce(call_share_quantity, 0) = coalesce(put_share_quantity, 0)
+                        AND coalesce(call_share_quantity, 0) > 0
+                        AND option_bias <> 'BALANCED'
+                    )
+                   OR (
+                        coalesce(call_share_quantity, 0) = 0
+                        AND coalesce(put_share_quantity, 0) = 0
+                        AND option_bias <> 'NO_OPTIONS'
+                    )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_option_metrics",),
+        ),
+        SqlQualityCheck(
             dataset_id="corporate_action_dividend_metrics",
             table_name="corporate_action_dividend_metrics",
             check_name="duplicate_corporate_action_dividend_metric_keys",
@@ -4984,6 +5071,93 @@ def _check_specs(
             threshold=0.0,
             comparator="eq",
             required_tables=("corporate_action_dividend_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_option_metrics",
+            table_name="thirteenf_option_metrics",
+            check_name="duplicate_thirteenf_option_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT
+                        source,
+                        coalesce(security_id, ''),
+                        coalesce(cusip, ''),
+                        report_period,
+                        coalesce(source_period, '')
+                    FROM thirteenf_option_metrics
+                    GROUP BY 1, 2, 3, 4, 5 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_option_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_option_metrics",
+            table_name="thirteenf_option_metrics",
+            check_name="bad_thirteenf_option_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM thirteenf_option_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR source IS NULL OR source = ''
+                   OR (coalesce(security_id, '') = '' AND coalesce(cusip, '') = '')
+                   OR report_period IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR option_bias NOT IN ('CALL_HEAVY', 'PUT_HEAVY', 'BALANCED', 'NO_OPTIONS')
+                   OR option_manager_count < 0
+                   OR call_manager_count < 0
+                   OR put_manager_count < 0
+                   OR option_position_count < 1
+                   OR call_position_count < 0
+                   OR put_position_count < 0
+                   OR option_position_count <> call_position_count + put_position_count
+                   OR call_share_quantity < 0
+                   OR put_share_quantity < 0
+                   OR call_value_usd < 0
+                   OR put_value_usd < 0
+                   OR common_share_quantity < 0
+                   OR common_value_usd < 0
+                   OR put_call_share_ratio < 0
+                   OR put_call_value_ratio < 0
+                   OR call_to_common_share_pct < 0
+                   OR put_to_common_share_pct < 0
+                   OR option_to_common_value_pct < 0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_option_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_option_metrics",
+            table_name="thirteenf_option_metrics",
+            check_name="mismatched_thirteenf_option_bias",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM thirteenf_option_metrics
+                WHERE (
+                        coalesce(call_share_quantity, 0) > coalesce(put_share_quantity, 0)
+                        AND option_bias <> 'CALL_HEAVY'
+                    )
+                   OR (
+                        coalesce(put_share_quantity, 0) > coalesce(call_share_quantity, 0)
+                        AND option_bias <> 'PUT_HEAVY'
+                    )
+                   OR (
+                        coalesce(call_share_quantity, 0) = coalesce(put_share_quantity, 0)
+                        AND coalesce(call_share_quantity, 0) > 0
+                        AND option_bias <> 'BALANCED'
+                    )
+                   OR (
+                        coalesce(call_share_quantity, 0) = 0
+                        AND coalesce(put_share_quantity, 0) = 0
+                        AND option_bias <> 'NO_OPTIONS'
+                    )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_option_metrics",),
         ),
         SqlQualityCheck(
             dataset_id="corporate_action_dividend_metrics",

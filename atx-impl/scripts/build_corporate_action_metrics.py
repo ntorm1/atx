@@ -2,13 +2,14 @@
 """Materialize derived corporate-action analytics surfaces.
 
 Computes cash-dividend analytics from ``corporate_actions`` joined to ex-date bars,
-and split-event reconciliation metrics from ``adjustment_factor_history`` joined to
-``daily_adjustment_factors``. Pure derivation; no network.
+split-event reconciliation metrics, and event-level factor reconciliation controls
+from ``adjustment_factor_history`` joined to ``daily_adjustment_factors``. Pure
+derivation; no network.
 
 Usage
 -----
   python scripts/build_corporate_action_metrics.py [--db-path PATH]
-         [--surface all|dividends|splits] [--symbols AAPL MSFT ...]
+         [--surface all|dividends|splits|factors] [--symbols AAPL MSFT ...]
 """
 from __future__ import annotations
 
@@ -21,10 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from db import DEFAULT_DB_PATH, DuckDBStore
 from db.corporate_action_metrics import (
+    DEFAULT_FACTOR_RECONCILIATION_SOURCE,
     DEFAULT_SOURCE,
     DEFAULT_SPLIT_SOURCE,
     CorporateActionDividendMetricsDataset,
     CorporateActionDividendMetricsOptions,
+    CorporateActionFactorReconciliationDataset,
+    CorporateActionFactorReconciliationOptions,
     CorporateActionSplitMetricsDataset,
     CorporateActionSplitMetricsOptions,
 )
@@ -35,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
         "--surface",
-        choices=("all", "dividends", "splits"),
+        choices=("all", "dividends", "splits", "factors"),
         default="all",
         help="Metric surface to build (default: all).",
     )
@@ -51,9 +55,14 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SPLIT_SOURCE,
         help="Output source tag for split metric rows.",
     )
-    parser.add_argument("--factor-source", default=None, help="Adjustment-factor source for split metrics.")
-    parser.add_argument("--daily-adjustment-source", default=None, help="Daily-adjustment source for split metrics.")
-    parser.add_argument("--bar-source", default=None, help="Optional bar source for split metric reconciliation.")
+    parser.add_argument(
+        "--factor-reconciliation-source",
+        default=DEFAULT_FACTOR_RECONCILIATION_SOURCE,
+        help="Output source tag for event-level factor reconciliation rows.",
+    )
+    parser.add_argument("--factor-source", default=None, help="Adjustment-factor source for reconciliation metrics.")
+    parser.add_argument("--daily-adjustment-source", default=None, help="Daily-adjustment source for reconciliation metrics.")
+    parser.add_argument("--bar-source", default=None, help="Optional bar source for adjustment-factor reconciliation.")
     return parser.parse_args()
 
 
@@ -87,6 +96,17 @@ def main() -> int:
             )
             result = CorporateActionSplitMetricsDataset().run(store, split_options)
             outputs.append(_result_payload("corporate_action_split_metrics", result))
+        if args.surface in ("all", "factors"):
+            default_factor_options = CorporateActionFactorReconciliationOptions()
+            factor_options = CorporateActionFactorReconciliationOptions(
+                source=args.factor_reconciliation_source,
+                factor_source=args.factor_source or default_factor_options.factor_source,
+                daily_adjustment_source=args.daily_adjustment_source or default_factor_options.daily_adjustment_source,
+                bar_source=args.bar_source,
+                symbols=symbols,
+            )
+            result = CorporateActionFactorReconciliationDataset().run(store, factor_options)
+            outputs.append(_result_payload("corporate_action_factor_reconciliation", result))
     print(json.dumps({"steps": outputs}, indent=2, default=str))
     return 0
 

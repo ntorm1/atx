@@ -10,6 +10,10 @@ S19 adds the same split for ``compute_split_metrics`` / ``CorporateActionSplitMe
 one row per normalized split event, reconciled against adjacent rows in
 ``daily_adjustment_factors``.
 
+S21 broadens that into ``corporate_action_factor_reconciliation``: one event-level
+control row per adjustment-factor event and bar source, including cash-dividend
+total-return factor steps and explicit compound/missing/unsupported statuses.
+
 No network: metrics derive purely from already-cached warehouse tables.
 """
 from __future__ import annotations
@@ -22,13 +26,18 @@ import pytest
 from db.corporate_action_metrics import (
     CorporateActionDividendMetricsDataset,
     CorporateActionDividendMetricsOptions,
+    CorporateActionFactorReconciliationDataset,
+    CorporateActionFactorReconciliationOptions,
     CorporateActionSplitMetricsDataset,
     CorporateActionSplitMetricsOptions,
     compute_dividend_metrics,
+    compute_factor_reconciliation,
     compute_split_metrics,
     corporate_action_dividend_metrics_asof,
+    corporate_action_factor_reconciliation_asof,
     corporate_action_split_metrics_asof,
     refresh_dividend_metrics,
+    refresh_factor_reconciliation,
     refresh_split_metrics,
 )
 
@@ -85,6 +94,66 @@ def _split_event(security_id="S1", symbol="AAA", *, post_close=50.0):
         "event_available_at": _ts("2024-01-10 22:00:00"),
         "pre_available_at": _ts("2024-01-11 22:00:00"),
         "post_available_at": _ts("2024-01-11 22:00:00"),
+    }
+
+
+def _factor_split_event(security_id="S1", symbol="AAA", *, post_close=50.0):
+    row = _split_event(security_id=security_id, symbol=symbol, post_close=post_close)
+    row.update(
+        {
+            "event_type": "SPLIT",
+            "type_code": 500000,
+            "factor_volume": 2.0,
+            "cash_div_amount": None,
+            "same_day_event_count": 1,
+            "pre_total_return_adjusted_close": 50.0,
+            "post_total_return_adjusted_close": post_close,
+            "pre_dividend_total_return_factor": 1.0,
+            "post_dividend_total_return_factor": 1.0,
+            "pre_total_return_price_factor": 0.5,
+            "post_total_return_price_factor": 1.0,
+        }
+    )
+    return row
+
+
+def _factor_cash_div_event():
+    return {
+        "security_id": "S1",
+        "symbol": "AAA",
+        "ex_date": pd.Timestamp("2024-01-15"),
+        "event_type": "CASH_DIV",
+        "type_code": 120000,
+        "event_ref_id": "cash-div-event-1",
+        "source_action_source": "test corporate actions",
+        "classification_reason": "cash_amount_or_dividend_action_type",
+        "factor_price": 0.99,
+        "factor_shares": 1.0,
+        "factor_volume": 1.0,
+        "cash_div_amount": 1.0,
+        "ratio_numerator": None,
+        "ratio_denominator": None,
+        "same_day_event_count": 1,
+        "bar_source": "test",
+        "pre_trade_date": pd.Timestamp("2024-01-14"),
+        "post_trade_date": pd.Timestamp("2024-01-15"),
+        "pre_raw_close": 52.0,
+        "post_raw_close": 51.5,
+        "pre_split_adjusted_close": 52.0,
+        "post_split_adjusted_close": 51.5,
+        "pre_total_return_adjusted_close": 51.48,
+        "post_total_return_adjusted_close": 51.5,
+        "pre_split_price_factor": 1.0,
+        "post_split_price_factor": 1.0,
+        "pre_split_share_factor": 1.0,
+        "post_split_share_factor": 1.0,
+        "pre_dividend_total_return_factor": 0.99,
+        "post_dividend_total_return_factor": 1.0,
+        "pre_total_return_price_factor": 0.99,
+        "post_total_return_price_factor": 1.0,
+        "event_available_at": _ts("2024-01-15 22:00:00"),
+        "pre_available_at": _ts("2024-01-20 22:00:00"),
+        "post_available_at": _ts("2024-01-20 22:00:00"),
     }
 
 
@@ -183,19 +252,76 @@ class TestComputeSplitMetrics:
         assert "reconciliation_status" in out.columns
 
 
+class TestComputeFactorReconciliation:
+    def test_reconciles_split_factor_steps(self):
+        out = compute_factor_reconciliation(pd.DataFrame([_factor_split_event()]))
+        r = out.iloc[0]
+        assert r["event_type"] == "SPLIT"
+        assert r["observed_split_price_step"] == pytest.approx(0.5)
+        assert r["observed_split_share_step"] == pytest.approx(2.0)
+        assert r["observed_total_return_step"] == pytest.approx(0.5)
+        assert r["split_price_error"] == pytest.approx(0.0)
+        assert r["split_share_error"] == pytest.approx(0.0)
+        assert r["total_return_error"] == pytest.approx(0.0)
+        assert r["reconciliation_status"] == "RECONCILED"
+        assert bool(r["is_reconciled"]) is True
+
+    def test_reconciles_cash_dividend_total_return_step(self):
+        out = compute_factor_reconciliation(pd.DataFrame([_factor_cash_div_event()]))
+        r = out.iloc[0]
+        assert r["event_type"] == "CASH_DIV"
+        assert r["observed_dividend_return_step"] == pytest.approx(0.99)
+        assert r["observed_total_return_step"] == pytest.approx(0.99)
+        assert r["expected_split_price_step"] == pytest.approx(1.0)
+        assert r["dividend_return_error"] == pytest.approx(0.0)
+        assert r["total_return_error"] == pytest.approx(0.0)
+        assert r["reconciliation_status"] == "RECONCILED"
+
+    def test_flags_cash_dividend_factor_mismatch(self):
+        row = _factor_cash_div_event()
+        row["pre_total_return_price_factor"] = 0.98
+        out = compute_factor_reconciliation(pd.DataFrame([row]))
+        assert out.iloc[0]["reconciliation_status"] == "MISMATCH"
+
+    def test_preserves_missing_factor_status(self):
+        row = _factor_cash_div_event()
+        row["pre_dividend_total_return_factor"] = None
+        out = compute_factor_reconciliation(pd.DataFrame([row]))
+        assert out.iloc[0]["reconciliation_status"] == "MISSING_DAILY_FACTOR"
+
+    def test_preserves_compound_status_before_mismatch(self):
+        row = _factor_cash_div_event()
+        row["same_day_event_count"] = 2
+        row["pre_total_return_price_factor"] = 0.98
+        out = compute_factor_reconciliation(pd.DataFrame([row]))
+        assert out.iloc[0]["reconciliation_status"] == "COMPOUND_EVENT"
+
+    def test_flags_unsupported_event_type(self):
+        row = _factor_cash_div_event()
+        row["event_type"] = "SPINOFF"
+        out = compute_factor_reconciliation(pd.DataFrame([row]))
+        assert out.iloc[0]["reconciliation_status"] == "UNSUPPORTED_EVENT_TYPE"
+
+    def test_factor_reconciliation_empty_returns_typed_empty(self):
+        out = compute_factor_reconciliation(pd.DataFrame())
+        assert out.empty
+        assert "observed_total_return_step" in out.columns
+
+
 # --------------------------------------------------------------------------- #
 # Integration: corporate_actions x equity_daily_bars -> dividend metrics
 # --------------------------------------------------------------------------- #
 
 
-def _insert_corp_div(store, *, security_id, symbol, ex_date, cash, av):
+def _insert_corp_div(store, *, security_id, symbol, ex_date, cash, av, adjustment_factor=None):
     store.con.execute(
         """
         INSERT INTO corporate_actions (
-            source, security_id, symbol, action_type, ex_date, cash_amount, available_at, source_loaded_at
-        ) VALUES ('test', ?, ?, 'cash_dividend_inferred', ?, ?, ?, ?)
+            source, security_id, symbol, action_type, ex_date, cash_amount,
+            adjustment_factor, available_at, source_loaded_at
+        ) VALUES ('test', ?, ?, 'cash_dividend_inferred', ?, ?, ?, ?, ?)
         """,
-        [security_id, symbol, ex_date, cash, av, av],
+        [security_id, symbol, ex_date, cash, adjustment_factor, av, av],
     )
 
 
@@ -254,6 +380,50 @@ def _seed_split_inputs(store):
     refresh_daily_adjustment_factors(
         store,
         DailyAdjustmentFactorOptions(as_of_date=dt.date(2024, 1, 11)),
+    )
+
+
+def _seed_factor_reconciliation_inputs(store):
+    from db.adjustment_factors import refresh_adjustment_factor_history
+    from db.daily_adjustments import DailyAdjustmentFactorOptions, refresh_daily_adjustment_factors
+
+    for trade_date, close in (
+        (dt.date(2024, 1, 9), 100.0),
+        (dt.date(2024, 1, 10), 50.0),
+        (dt.date(2024, 1, 14), 52.0),
+        (dt.date(2024, 1, 15), 51.5),
+        (dt.date(2024, 1, 16), 52.0),
+    ):
+        _insert_bar(
+            store,
+            security_id="S1",
+            symbol="AAA",
+            trade_date=trade_date,
+            close=close,
+            av=dt.datetime.combine(trade_date, dt.time(22, 0)),
+        )
+    _insert_corp_split(
+        store,
+        security_id="S1",
+        symbol="AAA",
+        ex_date=dt.date(2024, 1, 10),
+        split_from=1.0,
+        split_to=2.0,
+        av=dt.datetime(2024, 1, 10, 22, 0),
+    )
+    _insert_corp_div(
+        store,
+        security_id="S1",
+        symbol="AAA",
+        ex_date=dt.date(2024, 1, 15),
+        cash=1.0,
+        adjustment_factor=0.99,
+        av=dt.datetime(2024, 1, 15, 22, 0),
+    )
+    refresh_adjustment_factor_history(store)
+    refresh_daily_adjustment_factors(
+        store,
+        DailyAdjustmentFactorOptions(as_of_date=dt.date(2024, 1, 20)),
     )
 
 
@@ -334,6 +504,42 @@ class TestRefreshIntegration:
         assert r1.rows_loaded == r2.rows_loaded
         assert n1 == n2 == 1
 
+    def test_materializes_factor_reconciliation_for_split_and_cash_dividend(self, tmp_store):
+        _seed_factor_reconciliation_inputs(tmp_store)
+        n = refresh_factor_reconciliation(tmp_store, CorporateActionFactorReconciliationOptions())
+        assert n == 2
+        rows = tmp_store.con.execute(
+            """
+            SELECT
+                event_type,
+                observed_split_price_step,
+                observed_dividend_return_step,
+                observed_total_return_step,
+                reconciliation_status,
+                is_reconciled
+            FROM corporate_action_factor_reconciliation
+            ORDER BY ex_date, event_type
+            """
+        ).df()
+        by_type = {r.event_type: r for r in rows.itertuples(index=False)}
+        assert by_type["SPLIT"].observed_split_price_step == pytest.approx(0.5)
+        assert by_type["SPLIT"].observed_total_return_step == pytest.approx(0.5)
+        assert by_type["SPLIT"].reconciliation_status == "RECONCILED"
+        assert bool(by_type["SPLIT"].is_reconciled) is True
+        assert by_type["CASH_DIV"].observed_dividend_return_step == pytest.approx(0.99)
+        assert by_type["CASH_DIV"].observed_total_return_step == pytest.approx(0.99)
+        assert by_type["CASH_DIV"].reconciliation_status == "RECONCILED"
+
+    def test_factor_reconciliation_dataset_run_is_idempotent(self, tmp_store):
+        _seed_factor_reconciliation_inputs(tmp_store)
+        ds = CorporateActionFactorReconciliationDataset()
+        r1 = ds.run(tmp_store, CorporateActionFactorReconciliationOptions())
+        n1 = tmp_store.con.execute("SELECT count(*) FROM corporate_action_factor_reconciliation").fetchone()[0]
+        r2 = ds.run(tmp_store, CorporateActionFactorReconciliationOptions())
+        n2 = tmp_store.con.execute("SELECT count(*) FROM corporate_action_factor_reconciliation").fetchone()[0]
+        assert r1.rows_loaded == r2.rows_loaded
+        assert n1 == n2 == 2
+
 
 class TestAsofReader:
     def test_filters_by_available_at(self, tmp_store):
@@ -355,3 +561,20 @@ class TestAsofReader:
         late = corporate_action_split_metrics_asof(dt.date(2024, 1, 12), store=tmp_store, symbols=["AAA"])
         assert not late.empty
         assert set(late["symbol"]) == {"AAA"}
+
+    def test_factor_reconciliation_filters_by_available_at_and_event_type(self, tmp_store):
+        _seed_factor_reconciliation_inputs(tmp_store)
+        CorporateActionFactorReconciliationDataset().run(tmp_store, CorporateActionFactorReconciliationOptions())
+        early = corporate_action_factor_reconciliation_asof(
+            dt.date(2024, 1, 19),
+            store=tmp_store,
+            symbols=["AAA"],
+        )
+        assert early.empty
+        late = corporate_action_factor_reconciliation_asof(
+            dt.date(2024, 1, 21),
+            store=tmp_store,
+            symbols=["AAA"],
+            event_types=["cash_div"],
+        )
+        assert set(late["event_type"]) == {"CASH_DIV"}

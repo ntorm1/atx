@@ -3540,6 +3540,153 @@ def _corporate_action_split_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _thirteenf_option_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S20: issuer-level 13F option-positioning analytics."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS thirteenf_option_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR,
+            symbol VARCHAR,
+            cusip VARCHAR,
+            name_of_issuer VARCHAR,
+            report_period DATE NOT NULL,
+            source_period VARCHAR,
+            filing_date DATE,
+            filing_count BIGINT NOT NULL,
+            option_manager_count BIGINT NOT NULL,
+            call_manager_count BIGINT NOT NULL,
+            put_manager_count BIGINT NOT NULL,
+            option_position_count BIGINT NOT NULL,
+            call_position_count BIGINT NOT NULL,
+            put_position_count BIGINT NOT NULL,
+            call_share_quantity DOUBLE,
+            put_share_quantity DOUBLE,
+            net_call_share_quantity DOUBLE,
+            put_call_share_ratio DOUBLE,
+            call_value_usd DOUBLE,
+            put_value_usd DOUBLE,
+            net_call_value_usd DOUBLE,
+            put_call_value_ratio DOUBLE,
+            option_value_usd DOUBLE,
+            common_share_quantity DOUBLE,
+            common_value_usd DOUBLE,
+            call_to_common_share_pct DOUBLE,
+            put_to_common_share_pct DOUBLE,
+            option_to_common_value_pct DOUBLE,
+            avg_option_portfolio_weight DOUBLE,
+            max_option_portfolio_weight DOUBLE,
+            top_call_manager_id VARCHAR,
+            top_call_manager_value_usd DOUBLE,
+            top_put_manager_id VARCHAR,
+            top_put_manager_value_usd DOUBLE,
+            option_bias VARCHAR NOT NULL,
+            prior_report_period DATE,
+            prior_net_call_share_quantity DOUBLE,
+            net_call_share_change DOUBLE,
+            net_call_share_change_pct DOUBLE,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_option_metrics_key ON thirteenf_option_metrics(security_id, cusip, report_period)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_option_metrics_asof ON thirteenf_option_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_option_metrics_bias ON thirteenf_option_metrics(option_bias)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'thirteenf_option_metrics',
+            'sec_edgar',
+            'Derived 13F issuer-level option positioning',
+            'Issuer/report-period aggregate call and put option positioning from cached SEC Form 13F holdings, including put/call ratios, common-share denominators, top managers, and QoQ net-call flow.',
+            'security_id,cusip,report_period,source_period',
+            'thirteenf_option_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'thirteenf_option_metrics', 'gold', '13f_option_positioning',
+            'security_id,cusip,report_period,source_period',
+            'Derived issuer-level 13F call/put option-positioning metrics.',
+            '["metric_id"]',
+            'Use report_period/as_of_date plus available_at for PIT-safe ownership-option signals; rows reflect currently loaded 13F holdings coverage.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('cusip', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('report_period', 'filing_date', 'prior_report_period', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'option_manager_count' THEN 'Distinct 13F managers reporting call or put option rows for the issuer/report period.'
+                WHEN 'call_share_quantity' THEN 'Aggregate reported call-option share-equivalent quantity.'
+                WHEN 'put_share_quantity' THEN 'Aggregate reported put-option share-equivalent quantity.'
+                WHEN 'net_call_share_quantity' THEN 'Call share-equivalent quantity minus put share-equivalent quantity.'
+                WHEN 'put_call_share_ratio' THEN 'Put/call ratio by share-equivalent quantity.'
+                WHEN 'call_value_usd' THEN 'Aggregate reported value of 13F call-option rows.'
+                WHEN 'put_value_usd' THEN 'Aggregate reported value of 13F put-option rows.'
+                WHEN 'net_call_value_usd' THEN 'Call reported value minus put reported value.'
+                WHEN 'put_call_value_ratio' THEN 'Put/call ratio by reported value.'
+                WHEN 'call_to_common_share_pct' THEN 'Call share-equivalent quantity divided by aggregate common shares reported by 13F managers.'
+                WHEN 'put_to_common_share_pct' THEN 'Put share-equivalent quantity divided by aggregate common shares reported by 13F managers.'
+                WHEN 'option_to_common_value_pct' THEN 'Call plus put reported value divided by aggregate common-share value.'
+                WHEN 'option_bias' THEN 'CALL_HEAVY, PUT_HEAVY, BALANCED, or NO_OPTIONS based on share-equivalent call versus put totals.'
+                WHEN 'net_call_share_change' THEN 'Quarter-over-quarter change in net call share-equivalent quantity.'
+                WHEN 'available_at' THEN 'Latest filing availability among the visible 13F rows used for the aggregate.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('report_period', 'filing_date', 'prior_report_period', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%ratio%' OR lower(c.column_name) LIKE '%pct%' OR lower(c.column_name) LIKE '%change_pct%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%value_usd%' THEN 'usd'
+                WHEN lower(c.column_name) LIKE '%share%' OR lower(c.column_name) LIKE '%count%' THEN 'count'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'thirteenf_option_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -3751,6 +3898,11 @@ MIGRATIONS: list[Migration] = [
         version=42,
         name="corporate_action_split_metrics",
         up=_corporate_action_split_metrics,
+    ),
+    Migration(
+        version=43,
+        name="thirteenf_option_metrics",
+        up=_thirteenf_option_metrics,
     ),
 ]
 

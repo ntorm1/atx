@@ -30,6 +30,7 @@ import pandas as pd
 from .adjustment_factors import SOURCE_NAME as ADJUSTMENT_FACTOR_SOURCE
 from .asof import (  # noqa: F401  (re-exported)
     corporate_action_dividend_metrics_asof,
+    corporate_action_factor_reconciliation_asof,
     corporate_action_split_metrics_asof,
 )
 from .connection import DuckDBStore
@@ -41,10 +42,14 @@ from .warehouse import insert_frame, quality_check
 SOURCE_NAME = "Derived cash-dividend analytics"
 DEFAULT_SOURCE = "derived_corporate_action_dividend_metrics_v1"
 SPLIT_SOURCE_NAME = "Derived split adjustment reconciliation"
+FACTOR_RECONCILIATION_SOURCE_NAME = "Derived corporate-action factor reconciliation"
 DEFAULT_SPLIT_SOURCE = "derived_corporate_action_split_metrics_v1"
+DEFAULT_FACTOR_RECONCILIATION_SOURCE = "derived_corporate_action_factor_reconciliation_v1"
 YOY_TOLERANCE_DAYS = 45  # nearest dividend ~1 year prior (quarterly payers => +/- a quarter edge)
 DIVIDEND_ACTION_TYPES = ("cash_dividend_inferred", "cash_dividend")
 SPLIT_RECONCILIATION_TOLERANCE = 1e-8
+FACTOR_RECONCILIATION_TOLERANCE = 1e-8
+SUPPORTED_FACTOR_EVENT_TYPES = ("SPLIT", "CASH_DIV")
 # A single cash dividend never exceeds this fraction of the share price. The upstream
 # `cash_dividend_inferred` rows are inferred from the ex-date price drop, which cannot
 # distinguish a stock split from a dividend — a 2:1 split reads as a ~50%-of-price
@@ -72,6 +77,26 @@ SPLIT_METRIC_COLUMNS = [
     "is_reconciled", "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
 
+FACTOR_RECONCILIATION_COLUMNS = [
+    "reconciliation_id", "source", "factor_source", "daily_adjustment_source",
+    "bar_source", "security_id", "symbol", "ex_date", "event_type", "type_code",
+    "event_ref_id", "source_action_source", "classification_reason", "factor_price",
+    "factor_shares", "factor_volume", "cash_div_amount", "ratio_numerator",
+    "ratio_denominator", "same_day_event_count", "pre_trade_date", "post_trade_date",
+    "pre_raw_close", "post_raw_close", "raw_close_return",
+    "pre_split_adjusted_close", "post_split_adjusted_close", "split_adjusted_return",
+    "pre_total_return_adjusted_close", "post_total_return_adjusted_close",
+    "total_return_adjusted_return", "pre_split_price_factor", "post_split_price_factor",
+    "observed_split_price_step", "expected_split_price_step", "split_price_error",
+    "pre_split_share_factor", "post_split_share_factor", "observed_split_share_step",
+    "expected_split_share_step", "split_share_error", "pre_dividend_total_return_factor",
+    "post_dividend_total_return_factor", "observed_dividend_return_step",
+    "expected_dividend_return_step", "dividend_return_error", "pre_total_return_price_factor",
+    "post_total_return_price_factor", "observed_total_return_step",
+    "expected_total_return_step", "total_return_error", "reconciliation_status",
+    "is_reconciled", "is_latest_revision", "as_of_date", "available_at", "run_id",
+]
+
 
 @dataclass(frozen=True)
 class CorporateActionDividendMetricsOptions:
@@ -90,9 +115,23 @@ class CorporateActionSplitMetricsOptions:
     run_id: str | None = None
 
 
+@dataclass(frozen=True)
+class CorporateActionFactorReconciliationOptions:
+    source: str = DEFAULT_FACTOR_RECONCILIATION_SOURCE
+    factor_source: str = ADJUSTMENT_FACTOR_SOURCE
+    daily_adjustment_source: str = DAILY_ADJUSTMENT_SOURCE
+    bar_source: str | None = None
+    symbols: tuple[str, ...] | None = None
+    run_id: str | None = None
+
+
 def _metric_id(source: str, security_id: str, ex_date) -> str:
     payload = "|".join(str(p) for p in (source, security_id, ex_date))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _key_part(value) -> str:
+    return "" if pd.isna(value) else str(value)
 
 
 def _split_metric_id(
@@ -105,7 +144,7 @@ def _split_metric_id(
     ex_date,
 ) -> str:
     payload = "|".join(
-        str(p)
+        _key_part(p)
         for p in (
             source,
             factor_source,
@@ -113,6 +152,32 @@ def _split_metric_id(
             bar_source or "",
             security_id,
             event_ref_id,
+            ex_date,
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _factor_reconciliation_id(
+    source: str,
+    factor_source: str,
+    daily_adjustment_source: str,
+    bar_source: str | None,
+    security_id: str,
+    event_ref_id: str,
+    event_type: str,
+    ex_date,
+) -> str:
+    payload = "|".join(
+        _key_part(p)
+        for p in (
+            source,
+            factor_source,
+            daily_adjustment_source,
+            bar_source,
+            security_id,
+            event_ref_id,
+            event_type,
             ex_date,
         )
     )
@@ -290,6 +355,161 @@ def compute_split_metrics(
     for col in ("ex_date", "pre_trade_date", "post_trade_date", "as_of_date"):
         out[col] = out[col].dt.date
     return out[SPLIT_METRIC_COLUMNS]
+
+
+def compute_factor_reconciliation(
+    events: pd.DataFrame,
+    *,
+    source: str = DEFAULT_FACTOR_RECONCILIATION_SOURCE,
+    factor_source: str = ADJUSTMENT_FACTOR_SOURCE,
+    daily_adjustment_source: str = DAILY_ADJUSTMENT_SOURCE,
+    run_id: str | None = None,
+    tolerance: float = FACTOR_RECONCILIATION_TOLERANCE,
+) -> pd.DataFrame:
+    """Pure transform: event-level adjustment factors -> daily chain control rows."""
+    if events is None or events.empty:
+        return pd.DataFrame(columns=FACTOR_RECONCILIATION_COLUMNS)
+
+    out = events.copy()
+    for col in ("ex_date", "pre_trade_date", "post_trade_date"):
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], errors="coerce")
+        else:
+            out[col] = pd.NaT
+    for col in ("event_available_at", "pre_available_at", "post_available_at"):
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], errors="coerce")
+        else:
+            out[col] = pd.NaT
+    for col in (
+        "type_code", "factor_price", "factor_shares", "factor_volume",
+        "cash_div_amount", "ratio_numerator", "ratio_denominator",
+        "same_day_event_count", "pre_raw_close", "post_raw_close",
+        "pre_split_adjusted_close", "post_split_adjusted_close",
+        "pre_total_return_adjusted_close", "post_total_return_adjusted_close",
+        "pre_split_price_factor", "post_split_price_factor",
+        "pre_split_share_factor", "post_split_share_factor",
+        "pre_dividend_total_return_factor", "post_dividend_total_return_factor",
+        "pre_total_return_price_factor", "post_total_return_price_factor",
+    ):
+        if col not in out.columns:
+            out[col] = np.nan
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out["same_day_event_count"] = out["same_day_event_count"].fillna(1).astype("int64")
+    for col in (
+        "bar_source", "symbol", "event_type", "event_ref_id",
+        "source_action_source", "classification_reason",
+    ):
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    event_type = out["event_type"].astype("string").str.upper()
+    split_event = event_type.eq("SPLIT")
+    cash_div_event = event_type.eq("CASH_DIV")
+    supported_event = event_type.isin(SUPPORTED_FACTOR_EVENT_TYPES)
+
+    out["source"] = source
+    out["factor_source"] = factor_source
+    out["daily_adjustment_source"] = daily_adjustment_source
+    out["event_type"] = event_type
+    out["observed_split_price_step"] = _safe_divide(
+        out["pre_split_price_factor"],
+        out["post_split_price_factor"],
+    )
+    out["observed_split_share_step"] = _safe_divide(
+        out["pre_split_share_factor"],
+        out["post_split_share_factor"],
+    )
+    out["observed_dividend_return_step"] = _safe_divide(
+        out["pre_dividend_total_return_factor"],
+        out["post_dividend_total_return_factor"],
+    )
+    out["observed_total_return_step"] = _safe_divide(
+        out["pre_total_return_price_factor"],
+        out["post_total_return_price_factor"],
+    )
+    out["expected_split_price_step"] = np.where(split_event, out["factor_price"], 1.0)
+    out["expected_split_share_step"] = np.where(split_event, out["factor_shares"], 1.0)
+    out["expected_dividend_return_step"] = np.where(cash_div_event, out["factor_price"], 1.0)
+    out["expected_total_return_step"] = np.where(split_event | cash_div_event, out["factor_price"], 1.0)
+    out["split_price_error"] = out["observed_split_price_step"] - out["expected_split_price_step"]
+    out["split_share_error"] = out["observed_split_share_step"] - out["expected_split_share_step"]
+    out["dividend_return_error"] = out["observed_dividend_return_step"] - out["expected_dividend_return_step"]
+    out["total_return_error"] = out["observed_total_return_step"] - out["expected_total_return_step"]
+    out["raw_close_return"] = _safe_divide(out["post_raw_close"], out["pre_raw_close"]) - 1.0
+    out["split_adjusted_return"] = (
+        _safe_divide(out["post_split_adjusted_close"], out["pre_split_adjusted_close"]) - 1.0
+    )
+    out["total_return_adjusted_return"] = (
+        _safe_divide(
+            out["post_total_return_adjusted_close"],
+            out["pre_total_return_adjusted_close"],
+        ) - 1.0
+    )
+
+    missing_split = split_event & (
+        out["observed_split_price_step"].isna()
+        | out["observed_split_share_step"].isna()
+        | out["observed_total_return_step"].isna()
+    )
+    missing_cash_div = cash_div_event & (
+        out["observed_dividend_return_step"].isna()
+        | out["observed_total_return_step"].isna()
+    )
+    missing_daily = supported_event & (missing_split | missing_cash_div)
+    compound_event = supported_event & ~missing_daily & out["same_day_event_count"].gt(1)
+    mismatch_split = split_event & ~missing_daily & ~compound_event & (
+        out["split_price_error"].abs().gt(tolerance)
+        | out["split_share_error"].abs().gt(tolerance)
+        | out["total_return_error"].abs().gt(tolerance)
+    ).fillna(False)
+    mismatch_cash_div = cash_div_event & ~missing_daily & ~compound_event & (
+        out["dividend_return_error"].abs().gt(tolerance)
+        | out["total_return_error"].abs().gt(tolerance)
+    ).fillna(False)
+    out["reconciliation_status"] = np.select(
+        [
+            ~supported_event,
+            missing_daily,
+            compound_event,
+            mismatch_split | mismatch_cash_div,
+        ],
+        [
+            "UNSUPPORTED_EVENT_TYPE",
+            "MISSING_DAILY_FACTOR",
+            "COMPOUND_EVENT",
+            "MISMATCH",
+        ],
+        default="RECONCILED",
+    )
+    out["is_reconciled"] = out["reconciliation_status"].eq("RECONCILED")
+    out["is_latest_revision"] = True
+    out["as_of_date"] = out["ex_date"]
+    out["available_at"] = out[["event_available_at", "pre_available_at", "post_available_at"]].max(axis=1)
+    out["run_id"] = run_id
+    out["reconciliation_id"] = [
+        _factor_reconciliation_id(
+            source,
+            factor_source,
+            daily_adjustment_source,
+            bar,
+            sid,
+            ref,
+            et,
+            ed.date() if hasattr(ed, "date") else ed,
+        )
+        for bar, sid, ref, et, ed in zip(
+            out["bar_source"],
+            out["security_id"],
+            out["event_ref_id"],
+            out["event_type"],
+            out["ex_date"],
+        )
+    ]
+
+    for col in ("ex_date", "pre_trade_date", "post_trade_date", "as_of_date"):
+        out[col] = out[col].dt.date
+    return out[FACTOR_RECONCILIATION_COLUMNS]
 
 
 def _load_sql(action_types: tuple[str, ...]) -> str:
@@ -531,6 +751,214 @@ def refresh_split_metrics(store: DuckDBStore, options: CorporateActionSplitMetri
     return int(len(rows))
 
 
+def _load_factor_reconciliation_sql() -> str:
+    return """
+        WITH params AS (
+            SELECT
+                ? AS factor_source,
+                ? AS daily_adjustment_source,
+                ? AS bar_source_filter
+        ),
+        events AS (
+            SELECT
+                a.security_id,
+                a.symbol,
+                a.ex_date,
+                a.event_type,
+                a.type_code,
+                a.event_ref_id,
+                a.source_action_source,
+                a.classification_reason,
+                a.factor_price,
+                a.factor_shares,
+                a.factor_volume,
+                a.cash_div_amount,
+                a.ratio_numerator,
+                a.ratio_denominator,
+                count(*) OVER (PARTITION BY a.security_id, a.ex_date) AS same_day_event_count,
+                a.available_at AS event_available_at
+            FROM adjustment_factor_history a
+            CROSS JOIN params p
+            WHERE a.source = p.factor_source
+              AND a.factor_price > 0
+              AND a.factor_shares > 0
+              AND a.available_at IS NOT NULL
+              {symbol_pred}
+        ),
+        latest_daily AS (
+            SELECT d.*
+            FROM daily_adjustment_factors d
+            CROSS JOIN params p
+            JOIN (
+                SELECT
+                    d2.source,
+                    d2.factor_source,
+                    d2.bar_source,
+                    max(d2.as_of_date) AS max_as_of_date
+                FROM daily_adjustment_factors d2
+                CROSS JOIN params p2
+                WHERE d2.source = p2.daily_adjustment_source
+                  AND d2.factor_source = p2.factor_source
+                  AND (p2.bar_source_filter IS NULL OR d2.bar_source = p2.bar_source_filter)
+                GROUP BY 1, 2, 3
+            ) snap
+              ON snap.source = d.source
+             AND snap.factor_source = d.factor_source
+             AND snap.bar_source = d.bar_source
+             AND snap.max_as_of_date = d.as_of_date
+            WHERE d.source = p.daily_adjustment_source
+              AND d.factor_source = p.factor_source
+              AND (p.bar_source_filter IS NULL OR d.bar_source = p.bar_source_filter)
+        ),
+        event_bar_sources AS (
+            SELECT e.event_ref_id, d.bar_source
+            FROM events e
+            JOIN latest_daily d ON d.security_id = e.security_id
+            GROUP BY 1, 2
+            UNION ALL
+            SELECT e.event_ref_id, NULL AS bar_source
+            FROM events e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM latest_daily d WHERE d.security_id = e.security_id
+            )
+        ),
+        pre_ranked AS (
+            SELECT
+                e.event_ref_id,
+                bs.bar_source,
+                d.trade_date,
+                d.raw_close,
+                d.split_adjusted_close,
+                d.total_return_adjusted_close,
+                d.split_price_factor,
+                d.split_share_factor,
+                d.dividend_total_return_factor,
+                d.total_return_price_factor,
+                d.available_at,
+                row_number() OVER (
+                    PARTITION BY e.event_ref_id, bs.bar_source
+                    ORDER BY d.trade_date DESC NULLS LAST
+                ) AS rn
+            FROM events e
+            JOIN event_bar_sources bs ON bs.event_ref_id = e.event_ref_id
+            LEFT JOIN latest_daily d
+              ON d.security_id = e.security_id
+             AND d.bar_source = bs.bar_source
+             AND d.trade_date < e.ex_date
+        ),
+        post_ranked AS (
+            SELECT
+                e.event_ref_id,
+                bs.bar_source,
+                d.trade_date,
+                d.raw_close,
+                d.split_adjusted_close,
+                d.total_return_adjusted_close,
+                d.split_price_factor,
+                d.split_share_factor,
+                d.dividend_total_return_factor,
+                d.total_return_price_factor,
+                d.available_at,
+                row_number() OVER (
+                    PARTITION BY e.event_ref_id, bs.bar_source
+                    ORDER BY d.trade_date ASC NULLS LAST
+                ) AS rn
+            FROM events e
+            JOIN event_bar_sources bs ON bs.event_ref_id = e.event_ref_id
+            LEFT JOIN latest_daily d
+              ON d.security_id = e.security_id
+             AND d.bar_source = bs.bar_source
+             AND d.trade_date >= e.ex_date
+        ),
+        pre AS (
+            SELECT * FROM pre_ranked WHERE rn = 1
+        ),
+        post AS (
+            SELECT * FROM post_ranked WHERE rn = 1
+        )
+        SELECT
+            e.*,
+            bs.bar_source,
+            pre.trade_date AS pre_trade_date,
+            post.trade_date AS post_trade_date,
+            pre.raw_close AS pre_raw_close,
+            post.raw_close AS post_raw_close,
+            pre.split_adjusted_close AS pre_split_adjusted_close,
+            post.split_adjusted_close AS post_split_adjusted_close,
+            pre.total_return_adjusted_close AS pre_total_return_adjusted_close,
+            post.total_return_adjusted_close AS post_total_return_adjusted_close,
+            pre.split_price_factor AS pre_split_price_factor,
+            post.split_price_factor AS post_split_price_factor,
+            pre.split_share_factor AS pre_split_share_factor,
+            post.split_share_factor AS post_split_share_factor,
+            pre.dividend_total_return_factor AS pre_dividend_total_return_factor,
+            post.dividend_total_return_factor AS post_dividend_total_return_factor,
+            pre.total_return_price_factor AS pre_total_return_price_factor,
+            post.total_return_price_factor AS post_total_return_price_factor,
+            pre.available_at AS pre_available_at,
+            post.available_at AS post_available_at
+        FROM events e
+        JOIN event_bar_sources bs ON bs.event_ref_id = e.event_ref_id
+        LEFT JOIN pre
+          ON pre.event_ref_id = e.event_ref_id
+         AND coalesce(pre.bar_source, '') = coalesce(bs.bar_source, '')
+        LEFT JOIN post
+          ON post.event_ref_id = e.event_ref_id
+         AND coalesce(post.bar_source, '') = coalesce(bs.bar_source, '')
+    """
+
+
+def load_factor_reconciliation_inputs(
+    store: DuckDBStore,
+    options: CorporateActionFactorReconciliationOptions,
+) -> pd.DataFrame:
+    symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
+    registered = False
+    symbol_pred = ""
+    if symbols:
+        store.con.register(
+            "cafactor_symbol_filter",
+            pd.DataFrame({"symbol": sorted({str(s).strip().upper() for s in symbols})}),
+        )
+        registered = True
+        symbol_pred = "AND a.symbol IN (SELECT symbol FROM cafactor_symbol_filter)"
+    sql = _load_factor_reconciliation_sql().format(symbol_pred=symbol_pred)
+    try:
+        return store.con.execute(
+            sql,
+            [options.factor_source, options.daily_adjustment_source, options.bar_source],
+        ).df()
+    finally:
+        if registered:
+            store.con.unregister("cafactor_symbol_filter")
+
+
+def refresh_factor_reconciliation(
+    store: DuckDBStore,
+    options: CorporateActionFactorReconciliationOptions,
+) -> int:
+    """Recompute and replace event-level factor reconciliation rows for ``options.source``."""
+    store.initialize()
+    inputs = load_factor_reconciliation_inputs(store, options)
+    rows = compute_factor_reconciliation(
+        inputs,
+        source=options.source,
+        factor_source=options.factor_source,
+        daily_adjustment_source=options.daily_adjustment_source,
+        run_id=options.run_id,
+    )
+    with store.transaction():
+        store.con.execute("DELETE FROM corporate_action_factor_reconciliation WHERE source = ?", [options.source])
+        if not rows.empty:
+            insert_frame(
+                store,
+                rows,
+                "corporate_action_factor_reconciliation",
+                "corporate_action_factor_reconciliation_insert",
+            )
+    return int(len(rows))
+
+
 class CorporateActionDividendMetricsDataset(Dataset):
     dataset_id = "corporate_action_dividend_metrics"
     source_name = SOURCE_NAME
@@ -587,4 +1015,36 @@ class CorporateActionSplitMetricsDataset(Dataset):
             rows_loaded=rows,
             source=options.source,
             details={"grain": "security_id,ex_date,event_ref_id,bar_source"},
+        )
+
+
+class CorporateActionFactorReconciliationDataset(Dataset):
+    dataset_id = "corporate_action_factor_reconciliation"
+    source_name = FACTOR_RECONCILIATION_SOURCE_NAME
+
+    def ensure_schema(self, store: DuckDBStore) -> None:
+        store.initialize()
+
+    def load(self, store: DuckDBStore, options: CorporateActionFactorReconciliationOptions) -> DatasetLoadResult:
+        rows = refresh_factor_reconciliation(store, options)
+        quality_check(
+            store,
+            dataset_id=self.dataset_id,
+            table_name="corporate_action_factor_reconciliation",
+            check_name="rows_materialized",
+            status="passed" if rows > 0 else "warning",
+            observed_value=float(rows),
+            threshold_value=1.0,
+            details={
+                "source": options.source,
+                "factor_source": options.factor_source,
+                "daily_adjustment_source": options.daily_adjustment_source,
+                "bar_source": options.bar_source,
+            },
+        )
+        return DatasetLoadResult(
+            dataset_id=self.dataset_id,
+            rows_loaded=rows,
+            source=options.source,
+            details={"grain": "security_id,ex_date,event_ref_id,event_type,bar_source"},
         )

@@ -118,6 +118,41 @@ def test_migration_0042_catalogs_corporate_action_split_metrics(tmp_store):
     assert catalog_rows == (1, 1, 0)
 
 
+def test_migration_0043_catalogs_thirteenf_option_metrics(tmp_store):
+    """Migration 0043 adds and catalogs issuer-level 13F option metrics."""
+
+    table_exists = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'thirteenf_option_metrics'
+        """
+    ).fetchone()[0]
+    assert table_exists == 1
+
+    catalog_rows = tmp_store.con.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'thirteenf_option_metrics'),
+            (SELECT count(*) FROM table_catalog WHERE table_name = 'thirteenf_option_metrics'),
+            (
+                SELECT count(*)
+                FROM duckdb_columns() c
+                WHERE c.schema_name = 'main'
+                  AND c.table_name = 'thirteenf_option_metrics'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM field_catalog f
+                      WHERE f.table_name = c.table_name
+                        AND f.field_name = c.column_name
+                  )
+            )
+        """
+    ).fetchone()
+    assert catalog_rows == (1, 1, 0)
+
+
 def test_migration_description_recorded(tmp_store):
     """The description (name) column should be stored alongside the version."""
     rows = tmp_store.con.execute(

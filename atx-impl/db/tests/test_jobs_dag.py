@@ -95,6 +95,19 @@ def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_sto
     assert order.index("daily_adjustment_factors") < order.index("corporate_action_split_metrics")
 
 
+def test_default_jobs_include_thirteenf_option_metrics_after_ownership(tmp_store):
+    """13F option metrics are derived from cached security-position rows."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "sec_13f_ownership_features" in order
+    assert "thirteenf_option_metrics" in order
+    assert order.index("sec_13f_ownership_features") < order.index("thirteenf_option_metrics")
+
+
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):
     """Delisting proxy events are derived from listing-status intervals."""
     from db.jobs import JobManager

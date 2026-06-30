@@ -51,6 +51,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "macro_metrics",
     "equity_price_metrics",
     "thirteenf_position_metrics",
+    "thirteenf_option_metrics",
     "corporate_action_dividend_metrics",
     "corporate_action_split_metrics",
     "feature_build_manifests",
