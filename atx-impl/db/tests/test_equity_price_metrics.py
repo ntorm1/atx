@@ -50,6 +50,13 @@ def _series(security_id, symbol, closes, *, start=dt.date(2013, 1, 2), splits=No
     return rows
 
 
+def _prices_from_returns(returns, *, start=100.0):
+    prices = [float(start)]
+    for ret in returns:
+        prices.append(prices[-1] * (1.0 + float(ret)))
+    return prices
+
+
 class TestComputeEquityPriceMetrics:
     def test_daily_and_log_return(self):
         out = compute_equity_price_metrics(pd.DataFrame(_series("S1", "AAA", [100.0, 110.0, 99.0])))
@@ -242,3 +249,40 @@ class TestRiskFactors:
         expected = float(np.sqrt((downside**2).rolling(60, min_periods=60).mean().iloc[-1]) * np.sqrt(252))
         assert out["downside_deviation_60d"].iloc[-1] == pytest.approx(expected, rel=1e-9)
         assert (out["downside_deviation_60d"].dropna() >= 0).all()
+
+
+class TestMarketRelativeFactors:
+    def _market_rows(self):
+        market_returns = [0.001 if i % 2 else -0.0015 for i in range(70)]
+        s1 = _prices_from_returns([2.0 * r for r in market_returns], start=100.0)
+        s2 = _prices_from_returns([0.0 for _ in market_returns], start=50.0)
+        return (
+            _series("M1", "MKT1", s1, start=dt.date(2013, 1, 2))
+            + _series("M2", "MKT2", s2, start=dt.date(2013, 1, 2))
+        )
+
+    def test_equal_weight_market_proxy_and_beta(self):
+        out = compute_equity_price_metrics(pd.DataFrame(self._market_rows()))
+        one = out[out["security_id"] == "M1"].sort_values("trade_date").reset_index(drop=True)
+        two = out[out["security_id"] == "M2"].sort_values("trade_date").reset_index(drop=True)
+
+        assert one["market_return_ew"].iloc[1] == pytest.approx(-0.0015)
+        assert one["beta_60d"].iloc[:60].isna().all()
+        assert one["beta_60d"].iloc[-1] == pytest.approx(2.0, rel=1e-9)
+        assert one["market_correlation_60d"].iloc[-1] == pytest.approx(1.0, rel=1e-9)
+        assert abs(one["idiosyncratic_vol_60d"].iloc[-1]) < 1e-8
+
+        assert two["beta_60d"].iloc[-1] == pytest.approx(0.0, abs=1e-12)
+        assert pd.isna(two["market_correlation_60d"].iloc[-1])
+        assert two["idiosyncratic_vol_60d"].iloc[-1] == pytest.approx(0.0, abs=1e-12)
+
+    def test_market_proxy_delays_available_at_to_latest_same_day_bar(self):
+        rows = [
+            _bar("M1", "MKT1", dt.date(2013, 1, 2), 100.0, av="2013-01-02 22:00:00"),
+            _bar("M2", "MKT2", dt.date(2013, 1, 2), 50.0, av="2013-01-02 23:30:00"),
+            _bar("M1", "MKT1", dt.date(2013, 1, 3), 102.0, av="2013-01-03 22:00:00"),
+            _bar("M2", "MKT2", dt.date(2013, 1, 3), 49.0, av="2013-01-03 23:30:00"),
+        ]
+        out = compute_equity_price_metrics(pd.DataFrame(rows))
+        row = out[(out["security_id"] == "M1") & (out["trade_date"] == dt.date(2013, 1, 3))].iloc[0]
+        assert row["available_at"] == pd.Timestamp("2013-01-03 23:30:00")

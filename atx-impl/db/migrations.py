@@ -4937,6 +4937,37 @@ def _equity_price_metrics_risk(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _equity_price_metrics_market_relative(conn: duckdb.DuckDBPyConnection) -> None:
+    """S37: market-relative one-factor risk diagnostics on equity_price_metrics."""
+    for statement in (
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS market_return_ew DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS beta_60d DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS market_correlation_60d DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS idiosyncratic_vol_60d DOUBLE",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('equity_price_metrics', 'market_return_ew', 'measure',
+             'Same-day equal-weight market proxy return computed from the loaded daily-bar universe; used for market-relative risk factors.',
+             true, 'ratio', NULL, now()),
+            ('equity_price_metrics', 'beta_60d', 'measure',
+             'Trailing 60-trading-day beta of the security daily return versus the equal-weight market proxy; NULL when the proxy variance is zero or missing.',
+             true, 'ratio', NULL, now()),
+            ('equity_price_metrics', 'market_correlation_60d', 'measure',
+             'Trailing 60-trading-day correlation of the security daily return versus the equal-weight market proxy, bounded to [-1, 1].',
+             true, 'ratio', NULL, now()),
+            ('equity_price_metrics', 'idiosyncratic_vol_60d', 'measure',
+             'Trailing 60-trading-day annualized residual volatility from a one-factor market model against the equal-weight market proxy.',
+             true, 'ratio', NULL, now())
+        """
+    )
+
+
 def _macro_metrics_sahm_rule_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     """S34: catalog the Sahm Rule recession-indicator synthetic macro series."""
     conn.execute(
@@ -5251,6 +5282,11 @@ MIGRATIONS: list[Migration] = [
         version=57,
         name="equity_price_metrics_risk",
         up=_equity_price_metrics_risk,
+    ),
+    Migration(
+        version=58,
+        name="equity_price_metrics_market_relative",
+        up=_equity_price_metrics_market_relative,
     ),
 ]
 

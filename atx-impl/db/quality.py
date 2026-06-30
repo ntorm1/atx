@@ -5443,6 +5443,12 @@ def _check_specs(
                    OR (amihud_illiquidity_21d IS NOT NULL AND amihud_illiquidity_21d < 0)
                    OR (max_drawdown_126d IS NOT NULL AND max_drawdown_126d > 1e-9)
                    OR (downside_deviation_60d IS NOT NULL AND downside_deviation_60d < 0)
+                   OR (market_return_ew IS NOT NULL AND NOT isfinite(market_return_ew))
+                   OR (beta_60d IS NOT NULL AND NOT isfinite(beta_60d))
+                   OR (market_correlation_60d IS NOT NULL AND NOT isfinite(market_correlation_60d))
+                   OR (market_correlation_60d IS NOT NULL AND (market_correlation_60d < -1.0000001 OR market_correlation_60d > 1.0000001))
+                   OR (idiosyncratic_vol_60d IS NOT NULL AND NOT isfinite(idiosyncratic_vol_60d))
+                   OR (idiosyncratic_vol_60d IS NOT NULL AND idiosyncratic_vol_60d < 0)
             """,
             threshold=0.0,
             comparator="eq",

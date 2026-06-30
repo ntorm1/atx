@@ -6,13 +6,15 @@ module turns it into a typed, point-in-time analytics surface — one row per
 condition on: adjusted daily and log returns, the overnight gap, trailing realized
 volatility (20d/60d, annualized), trailing-return momentum (21d/126d), distance from the
 trailing 252-day high, dollar volume, trailing average dollar volume (ADV), Amihud
-(2002) illiquidity, trailing maximum drawdown, and downside deviation.
+(2002) illiquidity, trailing maximum drawdown, downside deviation, and market-relative
+risk factors.
 
 Point-in-time discipline: ``as_of_date`` is the trade date and ``available_at`` is
-carried from the bar. Every rolling/lag feature uses only the current and earlier bars
-(returns look back, volatility/high are trailing windows), so there is no forward
-leakage. Returns are computed on the adjusted close so corporate actions don't create
-spurious jumps; momentum and volatility are reported in fractions / annualized fractions.
+carried from the bar, or delayed to the latest same-day bar used in the equal-weight
+market proxy. Every rolling/lag feature uses only the current and earlier bars (returns
+look back, volatility/high are trailing windows), so there is no forward leakage. Returns
+are computed on the adjusted close so corporate actions don't create spurious jumps;
+momentum and volatility are reported in fractions / annualized fractions.
 
 The math lives in :func:`compute_equity_price_metrics`, a pure DataFrame->DataFrame
 transform unit-tested without DuckDB; :class:`EquityPriceMetricsDataset` /
@@ -45,6 +47,7 @@ HIGH_WINDOW = 252
 LIQUIDITY_WINDOW = 21
 DRAWDOWN_WINDOW = 126
 DOWNSIDE_WINDOW = 60
+MARKET_RISK_WINDOW = 60
 # Amihud (2002) ILLIQ is averaged |return| per dollar of volume; dollar_volume here is
 # in raw dollars, so the ratio is tiny. Scale by 1e9 to express price impact per $1B
 # traded, keeping values in a human-readable range.
@@ -58,6 +61,7 @@ EQUITY_PRICE_METRIC_COLUMNS = [
     "momentum_21d", "momentum_126d", "pct_from_high_252d",
     "avg_dollar_volume_21d", "amihud_illiquidity_21d",
     "max_drawdown_126d", "downside_deviation_60d",
+    "market_return_ew", "beta_60d", "market_correlation_60d", "idiosyncratic_vol_60d",
     "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
 
@@ -137,6 +141,61 @@ def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+def _derive_market_relative_one_security(g: pd.DataFrame) -> pd.DataFrame:
+    """Rolling one-factor risk features against the loaded equal-weight market proxy."""
+    g = g.sort_values("trade_date").reset_index(drop=True)
+    ret = pd.to_numeric(g["daily_return"], errors="coerce")
+    market = pd.to_numeric(g["market_return_ew"], errors="coerce")
+
+    cov = ret.rolling(MARKET_RISK_WINDOW, min_periods=MARKET_RISK_WINDOW).cov(market)
+    market_var = market.rolling(MARKET_RISK_WINDOW, min_periods=MARKET_RISK_WINDOW).var(ddof=1)
+    ret_var = ret.rolling(MARKET_RISK_WINDOW, min_periods=MARKET_RISK_WINDOW).var(ddof=1)
+    market_std = market.rolling(MARKET_RISK_WINDOW, min_periods=MARKET_RISK_WINDOW).std(ddof=1)
+    ret_std = ret.rolling(MARKET_RISK_WINDOW, min_periods=MARKET_RISK_WINDOW).std(ddof=1)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        beta = cov / market_var.where(market_var > 0)
+        corr = cov / (market_std * ret_std).where((market_std > 0) & (ret_std > 0))
+        residual_var = ret_var - (cov ** 2 / market_var.where(market_var > 0))
+
+    g["beta_60d"] = beta.replace([np.inf, -np.inf], np.nan)
+    g["market_correlation_60d"] = corr.clip(-1.0, 1.0).replace([np.inf, -np.inf], np.nan)
+    g["idiosyncratic_vol_60d"] = (
+        np.sqrt(residual_var.clip(lower=0.0)) * np.sqrt(TRADING_DAYS)
+    ).replace([np.inf, -np.inf], np.nan)
+    return g
+
+
+def _attach_market_relative_features(derived: pd.DataFrame) -> pd.DataFrame:
+    """Add equal-weight market proxy and rolling risk features.
+
+    The proxy is built from the rows present in ``derived``. Production full-universe
+    runs therefore use the loaded bar universe; symbol-filtered runs intentionally scope
+    the proxy to the filtered calculation universe.
+    """
+    if derived.empty:
+        return derived
+
+    market = (
+        derived.groupby("trade_date", as_index=False)
+        .agg(
+            market_return_ew=("daily_return", "mean"),
+            market_available_at=("available_at", "max"),
+        )
+    )
+    out = derived.merge(market, on="trade_date", how="left")
+    out["available_at"] = pd.concat(
+        [out["available_at"], out["market_available_at"]],
+        axis=1,
+    ).max(axis=1)
+    out = out.drop(columns=["market_available_at"])
+    return (
+        out.groupby("security_id", group_keys=False)[out.columns.tolist()]
+        .apply(_derive_market_relative_one_security)
+        .reset_index(drop=True)
+    )
+
+
 def compute_equity_price_metrics(
     bars: pd.DataFrame,
     *,
@@ -164,6 +223,7 @@ def compute_equity_price_metrics(
         .apply(_derive_one_security)
         .reset_index(drop=True)
     )
+    derived = _attach_market_relative_features(derived)
 
     derived["source"] = source
     derived["run_id"] = run_id

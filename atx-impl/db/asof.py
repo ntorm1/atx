@@ -3436,9 +3436,10 @@ def equity_price_metrics_asof(
 ) -> pd.DataFrame:
     """Return latest-visible derived daily price metrics as of a point in time.
 
-    ``available_at`` is carried from the source bar, so a trade date appears only
-    once its bar was knowable. Pass an open ``store`` to read through an existing
-    connection (DuckDB forbids a second connection to the same file).
+    ``available_at`` is carried from the source bar and, for market-relative fields,
+    delayed to the latest same-day bar used in the equal-weight proxy. Pass an open
+    ``store`` to read through an existing connection (DuckDB forbids a second
+    connection to the same file).
     """
     as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
     symbol_values = _normalize_symbols(symbols)
