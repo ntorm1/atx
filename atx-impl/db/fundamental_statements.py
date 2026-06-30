@@ -1212,6 +1212,12 @@ def refresh_fundamental_ttm_points(store: DuckDBStore) -> int:
                  AND q.canonical_metric = a.canonical_metric
                  AND q.unit = a.unit
                  AND q.period_end <= a.period_end
+                 -- Only the trailing ~12 months can contribute to a TTM (the four
+                 -- quarters ending at the anchor span <365 days). Without this lower
+                 -- bound the self-join is triangular over a security's entire quarter
+                 -- history (O(N^2)), which is fine for a handful of securities but
+                 -- spilled tens of GiB once the universe widened to ~1,600 issuers.
+                 AND q.period_end > a.period_end - INTERVAL 400 DAY
                  AND q.as_of_date <= a.as_of_date
                  AND q.availability_ts <= a.availability_ts
             ),

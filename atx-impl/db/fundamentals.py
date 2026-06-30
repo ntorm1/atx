@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +39,12 @@ DEFAULT_CONCEPTS = (
     "CommonStocksIncludingAdditionalPaidInCapital",
     "EntityCommonStockSharesOutstanding",
 )
+# Only taxonomies the statement map understands are loaded. The fundamentals pipeline
+# is us-gaap (+ dei cover-page) based; IFRS foreign private issuers report under
+# ``ifrs-full`` with no us-gaap map, which both leaves catalog concepts unmapped and
+# collides on canonical metric names (e.g. ifrs-full Assets vs us-gaap Assets) — so
+# non-supported taxonomies are dropped at load.
+SUPPORTED_FACT_TAXONOMIES = ("us-gaap", "dei")
 COMPANY_FACT_SYMBOL_SOURCES = ("symbols", "universe", "sec_company_tickers")
 
 
@@ -51,6 +58,12 @@ class SecCompanyFactsOptions:
     as_of_date: dt.date | None = None
     request_timeout: int = 120
     user_agent: str = SEC_USER_AGENT
+    # Resilience knobs for large backfills (defaults preserve single-shot behavior):
+    # skip_failed_targets keeps going past a CIK that 404s/times out; request_delay_seconds
+    # throttles to stay polite under SEC's ~10 req/s; max_attempts retries transient errors.
+    skip_failed_targets: bool = False
+    request_delay_seconds: float = 0.0
+    max_attempts: int = 1
     run_id: str | None = None
 
 
@@ -266,6 +279,8 @@ def normalize_companyfacts(
     rows: list[dict[str, Any]] = []
     points: list[dict[str, Any]] = []
     for taxonomy, taxonomy_facts in facts.items():
+        if taxonomy not in SUPPORTED_FACT_TAXONOMIES:
+            continue
         for concept, concept_payload in taxonomy_facts.items():
             if concepts and concept not in concepts:
                 continue
@@ -648,10 +663,37 @@ class SecCompanyFactsDataset(Dataset):
 
         rows_loaded = 0
         point_rows = 0
-        for symbol, cik, security_id in targets:
+        loaded_targets = 0
+        failed_targets: list[dict[str, str]] = []
+        attempts = max(1, options.max_attempts)
+        for index, (symbol, cik, security_id) in enumerate(targets):
+            if options.request_delay_seconds > 0 and index > 0:
+                time.sleep(options.request_delay_seconds)
             source_url = SEC_COMPANY_FACTS_URL.format(cik=cik)
-            response = session.get(source_url, timeout=options.request_timeout)
-            response.raise_for_status()
+            payload = None
+            last_error: Exception | None = None
+            for attempt in range(attempts):
+                try:
+                    response = session.get(source_url, timeout=options.request_timeout)
+                    response.raise_for_status()
+                    payload = response.json()
+                    break
+                except Exception as exc:  # network / HTTP / decode errors
+                    last_error = exc
+                    if attempt + 1 < attempts:
+                        time.sleep(min(2.0 * (attempt + 1), 10.0))
+            if payload is None:
+                if not options.skip_failed_targets:
+                    raise RuntimeError(f"SEC companyfacts fetch failed for {symbol} (CIK {cik}): {last_error}")
+                failed_targets.append({"symbol": symbol, "cik": cik, "error": str(last_error)[:200]})
+                record_source_file(
+                    store,
+                    dataset_id=self.dataset_id,
+                    source_url=source_url,
+                    status="error",
+                    metadata={"symbol": symbol, "cik": cik, "error": str(last_error)[:200]},
+                )
+                continue
             record_source_file(
                 store,
                 dataset_id=self.dataset_id,
@@ -660,7 +702,7 @@ class SecCompanyFactsDataset(Dataset):
                 metadata={"symbol": symbol, "cik": cik},
             )
             facts, points = normalize_companyfacts(
-                response.json(),
+                payload,
                 symbol=symbol,
                 security_id=security_id,
                 cik=cik,
@@ -670,6 +712,7 @@ class SecCompanyFactsDataset(Dataset):
             )
             rows_loaded += self._replace_facts(store, facts, points, security_id)
             point_rows += len(points)
+            loaded_targets += 1
         concept_rows = refresh_xbrl_concept_catalog(store)
         revision_rows = refresh_fundamental_fact_revisions(store)
         statement_rows = refresh_fundamental_statement_points(store)
@@ -710,6 +753,9 @@ class SecCompanyFactsDataset(Dataset):
                 "universe_id": options.universe_id,
                 "as_of_date": options.as_of_date.isoformat() if options.as_of_date else None,
                 "target_count": len(targets),
+                "loaded_targets": loaded_targets,
+                "failed_target_count": len(failed_targets),
+                "failed_targets": failed_targets[:50],
                 "facts": rows_loaded,
                 "fundamental_points": point_rows,
                 "xbrl_concept_catalog": concept_rows,

@@ -22,9 +22,27 @@ class DuckDBStore:
     def __enter__(self) -> "DuckDBStore":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = duckdb.connect(str(self.path), read_only=self.read_only)
+        self._configure_session(self.connection)
         if not self.read_only:
             self.initialize()
         return self
+
+    def _configure_session(self, con: duckdb.DuckDBPyConnection) -> None:
+        """Point DuckDB's spill directory at an absolute path beside the DB file.
+
+        DuckDB's default temp_directory is derived from the (possibly relative) DB
+        path and resolves to an invalid location on Windows (e.g. ``\\.tmp``), so any
+        query large enough to spill to disk fails with an IO error. Heavy refreshes
+        over the widened universe (millions of rows) hit this; an explicit absolute
+        temp directory keeps them robust. Best-effort: never fail open over a setting.
+        """
+        if str(self.path) == ":memory:":
+            return
+        temp_dir = (self.path.resolve().parent / f".{self.path.name}.duckdb_tmp").as_posix()
+        try:
+            con.execute("SET temp_directory = ?", [temp_dir])
+        except Exception:
+            pass
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self.connection is not None:
