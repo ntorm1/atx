@@ -90,6 +90,49 @@ def test_default_raises_on_first_failure(tmp_store, monkeypatch):
         )
 
 
+def _seed_loaded_facts(store):
+    store.con.execute(
+        "INSERT INTO sec_company_facts "
+        "(source, security_id, cik, taxonomy, concept, unit, period_end, filed_date, value, available_at, source_url) "
+        "VALUES "
+        "('cf','SEC-CIK-0000000001','0000000001','us-gaap','Assets','USD',DATE '2023-12-31',DATE '2024-02-15',100.0,TIMESTAMP '2024-02-15',?),"
+        "('cf','SEC-CIK-0000000002','0000000002','us-gaap','Assets','USD',DATE '2023-12-31',DATE '2024-02-15',200.0,TIMESTAMP '2024-02-15',?)",
+        ["https://data.sec.gov/x", "https://data.sec.gov/y"],
+    )
+    store.con.execute(
+        "INSERT INTO sec_company_tickers (cik, ticker, title, security_id) VALUES "
+        "('0000000001','AAA','Alpha Inc','SEC-CIK-0000000001'),"
+        "('0000000002','BBB','Beta Inc','SEC-CIK-0000000002')"
+    )
+
+
+def test_ciks_from_loaded_facts_returns_loaded_universe(tmp_store):
+    """loaded_facts resolver re-targets exactly the securities already in sec_company_facts."""
+    from db.fundamentals import ciks_from_loaded_facts
+
+    _seed_loaded_facts(tmp_store)
+    targets = ciks_from_loaded_facts(tmp_store)
+    assert {(cik, sid) for _, cik, sid in targets} == {
+        ("0000000001", "SEC-CIK-0000000001"),
+        ("0000000002", "SEC-CIK-0000000002"),
+    }
+    # representative ticker resolved from sec_company_tickers
+    by_cik = {cik: ticker for ticker, cik, _ in targets}
+    assert by_cik["0000000001"] == "AAA"
+
+
+def test_loaded_facts_dispatch_and_limit(tmp_store):
+    from db.fundamentals import resolve_companyfacts_targets
+
+    _seed_loaded_facts(tmp_store)
+    full = resolve_companyfacts_targets(tmp_store, SecCompanyFactsOptions(symbol_source="loaded_facts"))
+    assert len(full) == 2
+    limited = resolve_companyfacts_targets(
+        tmp_store, SecCompanyFactsOptions(symbol_source="loaded_facts", symbol_limit=1)
+    )
+    assert len(limited) == 1
+
+
 def test_normalize_drops_non_us_gaap_taxonomies():
     """IFRS (ifrs-full) facts are dropped at load — only us-gaap/dei are kept — so
     they neither leave catalog concepts unmapped nor collide on canonical metric names."""

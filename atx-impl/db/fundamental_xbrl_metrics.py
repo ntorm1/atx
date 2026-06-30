@@ -42,6 +42,11 @@ INSTANT_CONCEPT_MAP = {
     "CashAndCashEquivalentsAtCarryingValue": "cash_and_equivalents",
     "InventoryNet": "inventory",
     "LongTermDebt": "long_term_debt",  # total long-term debt incl. current portion (S10b)
+    # The broad SEC companyfacts feed (S44) tags noncurrent long-term debt under
+    # LongTermDebtNoncurrent rather than the total LongTermDebt; accept it so the
+    # leverage family lifts to the full companyfacts universe (excludes current
+    # maturities — a documented, defensible leverage input).
+    "LongTermDebtNoncurrent": "long_term_debt",
     "RetainedEarningsAccumulatedDeficit": "retained_earnings",  # Altman Z'' component (S10d)
     # Period-end common shares outstanding (balance-sheet instant). Unlike the dei
     # cover-page count in fundamental_statement_points (dated at the filing, not the
@@ -210,6 +215,66 @@ _DURATION_SQL = """
 """
 
 
+# S44: the broad SEC companyfacts feed (sec_company_facts) carries the same balance/flow
+# concepts for the ~1,400-security fundamentals universe — far wider than the handful of
+# securities with cached inline-XBRL filing facts. companyfacts values are already the
+# consolidated (entity-level) totals, so no dimension filtering is needed; instants carry
+# a NULL period_start and an end date, durations carry both. We pull the same CONCEPT_MAP
+# concepts and feed them through the identical normalize path under one source, so the
+# vintage logic dedupes any overlap with the inline-XBRL facts.
+_COMPANYFACTS_INSTANT_SQL = """
+    SELECT
+        f.security_id,
+        s.primary_symbol AS symbol,
+        f.cik,
+        f.concept,
+        f.taxonomy,
+        f.unit,
+        f.value,
+        'instant' AS period_type,
+        CAST(NULL AS DATE) AS period_start,
+        f.period_end,
+        f.accession_number,
+        coalesce(f.available_at, f.filed_date::TIMESTAMP) AS available_at,
+        f.fiscal_year,
+        f.fiscal_period
+    FROM sec_company_facts f
+    LEFT JOIN securities s ON s.security_id = f.security_id
+    WHERE f.taxonomy = 'us-gaap'
+      AND f.value IS NOT NULL
+      AND f.period_start IS NULL
+      AND f.period_end IS NOT NULL
+      AND f.concept IN ({placeholders})
+      {symbol_pred}
+"""
+
+_COMPANYFACTS_DURATION_SQL = """
+    SELECT
+        f.security_id,
+        s.primary_symbol AS symbol,
+        f.cik,
+        f.concept,
+        f.taxonomy,
+        f.unit,
+        f.value,
+        'duration' AS period_type,
+        f.period_start,
+        f.period_end,
+        f.accession_number,
+        coalesce(f.available_at, f.filed_date::TIMESTAMP) AS available_at,
+        f.fiscal_year,
+        f.fiscal_period
+    FROM sec_company_facts f
+    LEFT JOIN securities s ON s.security_id = f.security_id
+    WHERE f.taxonomy = 'us-gaap'
+      AND f.value IS NOT NULL
+      AND f.period_start IS NOT NULL AND f.period_end IS NOT NULL
+      AND date_diff('day', f.period_start, f.period_end) BETWEEN {amin} AND {amax}
+      AND f.concept IN ({placeholders})
+      {symbol_pred}
+"""
+
+
 def _symbol_clause(symbols: tuple[str, ...] | None) -> tuple[str, list]:
     if not symbols:
         return "", []
@@ -231,6 +296,35 @@ def _fetch_consolidated_candidates(
     if DURATION_CONCEPT_MAP:
         concepts = tuple(DURATION_CONCEPT_MAP)
         sql = _DURATION_SQL.format(
+            placeholders=", ".join(["?"] * len(concepts)),
+            symbol_pred=symbol_pred,
+            amin=ANNUAL_MIN_DAYS,
+            amax=ANNUAL_MAX_DAYS,
+        )
+        frames.append(store.con.execute(sql, list(concepts) + sym_params).df())
+    cf = _fetch_companyfacts_candidates(store, symbols)
+    if not cf.empty:
+        frames.append(cf)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _fetch_companyfacts_candidates(
+    store: DuckDBStore, symbols: tuple[str, ...] | None
+) -> pd.DataFrame:
+    """Pull the same canonical concepts from the broad SEC companyfacts feed (S44)."""
+    symbol_pred, sym_params = _symbol_clause(symbols)
+    frames = []
+    if INSTANT_CONCEPT_MAP:
+        concepts = tuple(INSTANT_CONCEPT_MAP)
+        sql = _COMPANYFACTS_INSTANT_SQL.format(
+            placeholders=", ".join(["?"] * len(concepts)), symbol_pred=symbol_pred
+        )
+        frames.append(store.con.execute(sql, list(concepts) + sym_params).df())
+    if DURATION_CONCEPT_MAP:
+        concepts = tuple(DURATION_CONCEPT_MAP)
+        sql = _COMPANYFACTS_DURATION_SQL.format(
             placeholders=", ".join(["?"] * len(concepts)),
             symbol_pred=symbol_pred,
             amin=ANNUAL_MIN_DAYS,

@@ -16,7 +16,9 @@ import pytest
 from db.fundamental_xbrl_metrics import (
     CONCEPT_MAP,
     XBRL_METRIC_COLUMNS,
+    FundamentalXbrlMetricOptions,
     normalize_xbrl_metric_rows,
+    refresh_fundamental_xbrl_metrics,
 )
 
 
@@ -149,3 +151,104 @@ class TestNormalizeXbrlMetrics:
         assert r["period_type"] == "duration"
         assert r["period_start"] == dt.date(2024, 9, 29)
         assert r["period_end"] == dt.date(2025, 9, 27)
+
+    def test_companyfacts_feed_carries_noncurrent_lt_debt(self):
+        # S44: the broad companyfacts feed tags noncurrent LT debt; it maps to the
+        # same canonical long_term_debt as the inline-XBRL total LongTermDebt.
+        assert CONCEPT_MAP["LongTermDebtNoncurrent"] == "long_term_debt"
+
+
+def _insert_companyfacts(store, rows: list[dict]) -> None:
+    frame = pd.DataFrame(rows)
+    store.con.register("cf_seed", frame)
+    store.con.execute("INSERT INTO sec_company_facts BY NAME SELECT * FROM cf_seed")
+    store.con.unregister("cf_seed")
+
+
+def _cf_row(concept, value, period_end, *, period_start=None, accession="acc-2024"):
+    return {
+        "source": "sec_companyfacts",
+        "security_id": "SEC-CIK-0000320193",
+        "cik": "320193",
+        "taxonomy": "us-gaap",
+        "concept": concept,
+        "unit": "USD",
+        "period_start": period_start,
+        "period_end": period_end,
+        "filed_date": dt.date(2024, 11, 1),
+        "form": "10-K",
+        "accession_number": accession,
+        "value": value,
+        "available_at": pd.Timestamp("2024-11-01"),
+        "source_url": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json",
+    }
+
+
+class TestCompanyFactsCandidatePath:
+    """S44: refresh_fundamental_xbrl_metrics also sources the broad companyfacts feed."""
+
+    def _seed_security(self, store):
+        store.con.execute(
+            "INSERT INTO securities (security_id, primary_symbol, source) VALUES (?, ?, ?)",
+            ["SEC-CIK-0000320193", "AAPL", "test"],
+        )
+
+    def test_companyfacts_rows_become_canonical_metrics(self, tmp_store):
+        store = tmp_store
+        self._seed_security(store)
+        _insert_companyfacts(store, [
+            _cf_row("AssetsCurrent", 152_987e6, dt.date(2024, 9, 28)),
+            _cf_row("LiabilitiesCurrent", 176_392e6, dt.date(2024, 9, 28)),
+            _cf_row("LongTermDebtNoncurrent", 85_750e6, dt.date(2024, 9, 28)),
+            _cf_row("GrossProfit", 180_683e6, dt.date(2024, 9, 28),
+                    period_start=dt.date(2023, 10, 1)),
+        ])
+        n = refresh_fundamental_xbrl_metrics(
+            store, FundamentalXbrlMetricOptions(source="test_cf")
+        )
+        assert n == 4
+        got = store.con.execute(
+            "SELECT canonical_metric, period_type, value, symbol "
+            "FROM fundamental_xbrl_metric WHERE source = 'test_cf'"
+        ).df()
+        metrics = set(got["canonical_metric"])
+        assert {"current_assets", "current_liabilities", "long_term_debt", "gross_profit"} <= metrics
+        assert set(got["symbol"]) == {"AAPL"}  # resolved via securities join
+
+    def test_non_annual_duration_excluded(self, tmp_store):
+        store = tmp_store
+        self._seed_security(store)
+        _insert_companyfacts(store, [
+            # annual window (363 days) — kept
+            _cf_row("GrossProfit", 180_683e6, dt.date(2024, 9, 28),
+                    period_start=dt.date(2023, 10, 1), accession="fy"),
+            # quarterly window (~91 days) — dropped (avoids Q-vs-FY ambiguity)
+            _cf_row("GrossProfit", 43_000e6, dt.date(2024, 9, 28),
+                    period_start=dt.date(2024, 6, 29), accession="q"),
+        ])
+        refresh_fundamental_xbrl_metrics(
+            store, FundamentalXbrlMetricOptions(source="test_cf")
+        )
+        gp = store.con.execute(
+            "SELECT value FROM fundamental_xbrl_metric "
+            "WHERE source = 'test_cf' AND canonical_metric = 'gross_profit'"
+        ).df()
+        assert len(gp) == 1
+        assert gp.iloc[0]["value"] == 180_683e6
+
+    def test_instant_concept_in_duration_window_not_double_counted(self, tmp_store):
+        # An instant balance fact (period_start NULL) must produce exactly one instant
+        # metric row, never leak into the duration branch.
+        store = tmp_store
+        self._seed_security(store)
+        _insert_companyfacts(store, [
+            _cf_row("InventoryNet", 7_286e6, dt.date(2024, 9, 28)),
+        ])
+        refresh_fundamental_xbrl_metrics(
+            store, FundamentalXbrlMetricOptions(source="test_cf")
+        )
+        rows = store.con.execute(
+            "SELECT period_type FROM fundamental_xbrl_metric "
+            "WHERE source = 'test_cf' AND canonical_metric = 'inventory'"
+        ).df()
+        assert list(rows["period_type"]) == ["instant"]

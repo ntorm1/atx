@@ -38,6 +38,26 @@ DEFAULT_CONCEPTS = (
     "EarningsPerShareDiluted",
     "CommonStocksIncludingAdditionalPaidInCapital",
     "EntityCommonStockSharesOutstanding",
+    # S44: balance-sheet/income-statement detail that unlocks the liquidity, leverage,
+    # margin, and activity ratio families (S10 codes) across the full companyfacts
+    # universe. Every concept below already has an active fundamental_statement_map
+    # entry, so it flows cleanly into statement points AND, via the consolidated
+    # canonical-metric extractor, into the ratio engine's balx/flowx pivots.
+    "AssetsCurrent",
+    "LiabilitiesCurrent",
+    "CashAndCashEquivalentsAtCarryingValue",
+    "InventoryNet",
+    "AccountsReceivableNetCurrent",
+    "PropertyPlantAndEquipmentNet",
+    "RetainedEarningsAccumulatedDeficit",
+    "LongTermDebtNoncurrent",
+    "CommonStockSharesOutstanding",
+    "GrossProfit",
+    "CostOfGoodsAndServicesSold",
+    "CostOfRevenue",
+    "InterestExpense",
+    "DepreciationDepletionAndAmortization",
+    "SellingGeneralAndAdministrativeExpense",
 )
 # Only taxonomies the statement map understands are loaded. The fundamentals pipeline
 # is us-gaap (+ dei cover-page) based; IFRS foreign private issuers report under
@@ -45,7 +65,7 @@ DEFAULT_CONCEPTS = (
 # collides on canonical metric names (e.g. ifrs-full Assets vs us-gaap Assets) — so
 # non-supported taxonomies are dropped at load.
 SUPPORTED_FACT_TAXONOMIES = ("us-gaap", "dei")
-COMPANY_FACT_SYMBOL_SOURCES = ("symbols", "universe", "sec_company_tickers")
+COMPANY_FACT_SYMBOL_SOURCES = ("symbols", "universe", "sec_company_tickers", "loaded_facts")
 
 
 @dataclass(frozen=True)
@@ -237,6 +257,58 @@ def ciks_from_sec_company_tickers(store: DuckDBStore, *, limit: int | None = Non
     return [(ticker, cik, security_id) for ticker, cik, security_id in rows]
 
 
+def ciks_from_loaded_facts(store: DuckDBStore, *, limit: int | None = None) -> list[tuple[str, str, str]]:
+    """Resolve targets for every security already present in ``sec_company_facts``.
+
+    Use to re-fetch the loaded fundamentals universe verbatim — e.g. after widening
+    the concept set — without re-deriving it from tickers/universe screens. The set is
+    taken exactly from what was previously loaded, so the refresh is deterministic and
+    scope-stable across runs even as the universe/ticker tables drift.
+    """
+    params: list[Any] = []
+    limit_clause = "LIMIT ?" if limit is not None else ""
+    if limit is not None:
+        if limit < 1:
+            raise ValueError("symbol_limit must be positive when provided")
+        params.append(limit)
+    rows = store.con.execute(
+        f"""
+        WITH loaded AS (
+            SELECT DISTINCT security_id, cik
+            FROM sec_company_facts
+            WHERE security_id IS NOT NULL AND security_id <> ''
+              AND cik IS NOT NULL AND cik <> ''
+        ),
+        ranked AS (
+            SELECT
+                coalesce(nullif(t.ticker, ''), nullif(s.primary_symbol, ''), l.cik) AS ticker,
+                l.cik,
+                l.security_id,
+                row_number() OVER (
+                    PARTITION BY l.security_id
+                    ORDER BY
+                        CASE WHEN t.ticker IS NOT NULL AND t.ticker <> '' THEN 0 ELSE 1 END,
+                        CASE WHEN strpos(coalesce(t.ticker, ''), '-') = 0 THEN 0 ELSE 1 END,
+                        length(coalesce(t.ticker, '')),
+                        t.ticker
+                ) AS rn
+            FROM loaded l
+            LEFT JOIN sec_company_tickers t
+              ON t.security_id = l.security_id AND t.cik = l.cik
+            LEFT JOIN v_security_master_current s
+              ON s.security_id = l.security_id
+        )
+        SELECT ticker, cik, security_id
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY ticker, cik, security_id
+        {limit_clause}
+        """,
+        params,
+    ).fetchall()
+    return [(ticker, cik, security_id) for ticker, cik, security_id in rows]
+
+
 def resolve_companyfacts_targets(
     store: DuckDBStore,
     options: SecCompanyFactsOptions,
@@ -253,6 +325,8 @@ def resolve_companyfacts_targets(
         )
     if source == "sec_company_tickers":
         return ciks_from_sec_company_tickers(store, limit=options.symbol_limit)
+    if source == "loaded_facts":
+        return ciks_from_loaded_facts(store, limit=options.symbol_limit)
     raise ValueError(
         f"Unsupported SEC companyfacts symbol_source {options.symbol_source!r}; "
         f"expected one of {', '.join(COMPANY_FACT_SYMBOL_SOURCES)}"
