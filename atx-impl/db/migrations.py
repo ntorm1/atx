@@ -4891,6 +4891,18 @@ def _security_listing_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _macro_metrics_sahm_rule_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """S34: catalog the Sahm Rule recession-indicator synthetic macro series."""
+    conn.execute(
+        """
+        UPDATE dataset_catalog
+        SET description = 'Per-series macro analytics derived from the cached FRED observation feed (level, change, year-over-year change/growth, expanding z-score, expanding percentile rank) plus synthetic T10Y2Y Treasury term spread, REAL_FEDFUNDS real-rate, and SAHM_RULE recession-indicator series; bitemporal, latest-revision FRED (not ALFRED vintages).',
+            updated_at = now()
+        WHERE dataset_id = 'macro_metrics'
+        """
+    )
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -5178,6 +5190,11 @@ MIGRATIONS: list[Migration] = [
         version=54,
         name="repair_identifier_history_overlaps",
         up=_repair_identifier_history_overlaps,
+    ),
+    Migration(
+        version=55,
+        name="macro_metrics_sahm_rule_catalog",
+        up=_macro_metrics_sahm_rule_catalog,
     ),
 ]
 

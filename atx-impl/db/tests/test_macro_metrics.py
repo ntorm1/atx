@@ -236,3 +236,39 @@ class TestAsofReader:
         late = macro_metrics_asof(dt.date(2025, 3, 1), store=tmp_store, series_ids=["UNRATE"])
         assert not late.empty
         assert set(late["series_id"]) == {"UNRATE"}
+
+
+class TestSahmRule:
+    def _unrate_obs(self):
+        # 14 stable months at 3.5%, then a rising spike.
+        dates = pd.date_range("2024-01-01", periods=17, freq="MS")
+        values = [3.5] * 14 + [4.0, 4.2, 4.5]
+        return [
+            _obs("UNRATE", d, v, av=(d + pd.Timedelta(days=35)).strftime("%Y-%m-%d"))
+            for d, v in zip(dates, values)
+        ]
+
+    def test_sahm_rule_series_emitted_with_recession_signal(self):
+        out = compute_macro_metrics(pd.DataFrame(self._unrate_obs()), source="fixture")
+        sahm = out[out["series_id"] == "SAHM_RULE"].sort_values("observation_date")
+        assert not sahm.empty
+        # 3mo MA at last month = (4.0+4.2+4.5)/3 = 4.23333; trailing-12mo min of the
+        # 3mo MA = 3.5; Sahm = 0.73333 -> above the 0.5 recession-onset threshold.
+        last = sahm.iloc[-1]
+        assert last["value"] == pytest.approx(0.733333, abs=1e-4)
+        assert last["value"] >= 0.5
+        assert bool(last["is_synthetic"]) is True
+
+    def test_sahm_rule_skips_warmup_months(self):
+        out = compute_macro_metrics(pd.DataFrame(self._unrate_obs()), source="fixture")
+        sahm = out[out["series_id"] == "SAHM_RULE"].sort_values("observation_date")
+        # First valid value needs a full 3mo MA plus a 12mo trailing window -> the
+        # 14th UNRATE month is the earliest Sahm row.
+        assert sahm.iloc[0]["observation_date"] == dt.date(2025, 2, 1)
+
+    def test_sahm_rule_available_at_tracks_unrate(self):
+        out = compute_macro_metrics(pd.DataFrame(self._unrate_obs()), source="fixture")
+        sahm = out[out["series_id"] == "SAHM_RULE"]
+        unrate = out[out["series_id"] == "UNRATE"]
+        merged = sahm.merge(unrate, on="observation_date", suffixes=("_s", "_u"))
+        assert (merged["available_at_s"] == merged["available_at_u"]).all()

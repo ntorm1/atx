@@ -5387,6 +5387,30 @@ def _check_specs(
             required_tables=("macro_metrics",),
         ),
         SqlQualityCheck(
+            dataset_id="macro_metrics",
+            table_name="macro_metrics",
+            check_name="missing_sahm_rule_when_unrate_available",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM macro_metrics u
+                LEFT JOIN macro_metrics sahm
+                  ON sahm.source = u.source
+                 AND sahm.series_id = 'SAHM_RULE'
+                 AND sahm.observation_date = u.observation_date
+                WHERE u.series_id = 'UNRATE'
+                  AND sahm.metric_id IS NULL
+                  AND (
+                      SELECT count(*) FROM macro_metrics u2
+                      WHERE u2.source = u.source
+                        AND u2.series_id = 'UNRATE'
+                        AND u2.observation_date <= u.observation_date
+                  ) >= 14
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("macro_metrics",),
+        ),
+        SqlQualityCheck(
             dataset_id="equity_price_metrics",
             table_name="equity_price_metrics",
             check_name="duplicate_equity_price_metric_keys",

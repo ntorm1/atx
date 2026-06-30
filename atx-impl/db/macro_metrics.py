@@ -39,6 +39,7 @@ DEFAULT_SOURCE = "derived_macro_metrics_v1"
 
 TERM_SPREAD_SERIES = "T10Y2Y"
 REAL_FED_FUNDS_SERIES = "REAL_FEDFUNDS"
+SAHM_RULE_SERIES = "SAHM_RULE"
 YOY_TOLERANCE_DAYS = 20  # how far from exactly 1 year a YoY base observation may sit
 ZSCORE_MIN_PERIODS = 24  # need this many history points before a z-score is defined
 
@@ -192,6 +193,48 @@ def _append_real_fed_funds(obs: pd.DataFrame, source: str) -> pd.DataFrame:
     return pd.concat([obs, syn], ignore_index=True)
 
 
+def _append_sahm_rule(obs: pd.DataFrame, source: str) -> pd.DataFrame:
+    """Append the Sahm Rule recession indicator derived from UNRATE.
+
+    Sahm = (3-month moving average of the unemployment rate) minus (the minimum
+    of that 3-month moving average over the trailing 12 months, current month
+    included). A reading of 0.50 percentage points or more marks the onset of a
+    recession (Sahm, 2019; FRED ``SAHMREALTIME``). PIT-safe: the 3-month average
+    and the 12-month trailing minimum use only same-month-or-earlier
+    observations, so availability is the current UNRATE observation's
+    ``available_at``.
+    """
+    if "UNRATE" not in set(obs["series_id"]):
+        return obs
+    unrate = (
+        obs[obs["series_id"] == "UNRATE"]
+        .sort_values(["observation_date", "available_at"])
+        .drop_duplicates("observation_date", keep="last")
+        [["observation_date", "value", "available_at"]]
+        .copy()
+    )
+    unrate["value"] = pd.to_numeric(unrate["value"], errors="coerce")
+    unrate = unrate.dropna(subset=["value"]).sort_values("observation_date")
+    if len(unrate) < 14:  # 3-month average + 12-month trailing window
+        return obs
+    ma3 = unrate["value"].rolling(window=3, min_periods=3).mean()
+    trailing_min = ma3.rolling(window=12, min_periods=12).min()
+    sahm = ma3 - trailing_min
+    syn = pd.DataFrame({
+        "source": source,
+        "series_id": SAHM_RULE_SERIES,
+        "observation_date": unrate["observation_date"].to_numpy(),
+        "frequency": "monthly",
+        "units": "percentage_points",
+        "value": sahm.to_numpy(),
+        "available_at": unrate["available_at"].to_numpy(),
+        "is_synthetic": True,
+    }).dropna(subset=["value"])
+    if syn.empty:
+        return obs
+    return pd.concat([obs, syn], ignore_index=True)
+
+
 def compute_macro_metrics(
     observations: pd.DataFrame,
     *,
@@ -201,8 +244,9 @@ def compute_macro_metrics(
     """Pure transform: raw FRED observations -> typed macro metric rows.
 
     Input carries one row per ``(series_id, observation_date)`` with ``value``,
-    ``available_at``, and per-series ``frequency`` / ``units``. Synthetic ``T10Y2Y``
-    and ``REAL_FEDFUNDS`` rows are appended before the per-series transforms run.
+    ``available_at``, and per-series ``frequency`` / ``units``. Synthetic ``T10Y2Y``,
+    ``REAL_FEDFUNDS``, and ``SAHM_RULE`` rows are appended before the per-series
+    transforms run.
     """
     if observations is None or observations.empty:
         return pd.DataFrame(columns=MACRO_METRIC_COLUMNS)
@@ -223,6 +267,7 @@ def compute_macro_metrics(
     # and every input observation is same-date or earlier.
     obs = _append_term_spread(obs, source)
     obs = _append_real_fed_funds(obs, source)
+    obs = _append_sahm_rule(obs, source)
 
     derived = (
         obs.groupby("series_id", group_keys=False)[obs.columns.tolist()]
