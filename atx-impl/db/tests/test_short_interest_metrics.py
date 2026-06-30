@@ -219,6 +219,48 @@ class TestComputeShortInterestMetrics:
         assert bool(last.is_squeeze_candidate) is True
         assert bool(last.is_persistent_short_pressure) is True
 
+    def test_winsorized_days_to_cover_and_liquidity_rank(self):
+        rows = [
+            _row("S1", "AAA", 10, 9, 10, dt.date(2026, 4, 30), _ts("2026-05-10")),
+            _row("S2", "BBB", 40, 30, 20, dt.date(2026, 4, 30), _ts("2026-05-10")),
+            _row("S3", "CCC", 120, 100, 30, dt.date(2026, 4, 30), _ts("2026-05-10")),
+            _row("S4", "DDD", 40000, 100, 40, dt.date(2026, 4, 30), _ts("2026-05-10")),
+        ]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        by = {r.security_id: r for r in out.itertuples(index=False)}
+        cap = pd.Series([1.0, 2.0, 4.0, 1000.0]).quantile(0.99)
+        win = pd.Series([1.0, 2.0, 4.0, cap])
+        mean = win.mean()
+        std = (((win - mean) ** 2).mean()) ** 0.5
+        assert by["S1"].average_daily_volume_percentile == pytest.approx(0.25)
+        assert by["S4"].average_daily_volume_percentile == pytest.approx(1.0)
+        assert by["S4"].days_to_cover == pytest.approx(1000.0)
+        assert by["S4"].days_to_cover_winsorized == pytest.approx(cap)
+        assert by["S4"].days_to_cover_winsorized_zscore == pytest.approx((cap - mean) / std)
+
+    def test_liquid_short_pressure_requires_tradeability_floor(self):
+        rows = [
+            _row("S1", "LIQ", 100000, 90000, 50000, dt.date(2026, 4, 15), _ts("2026-04-25")),
+            _row("S2", "ILL", 100000, 90000, 100, dt.date(2026, 4, 15), _ts("2026-04-25")),
+            _row("S3", "LOW", 10000, 9000, 10000, dt.date(2026, 4, 15), _ts("2026-04-25")),
+            _row("S1", "LIQ", 150000000, 100000000, 50000, dt.date(2026, 4, 30), _ts("2026-05-10")),
+            _row("S2", "ILL", 200000, 100000, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),
+            _row("S3", "LOW", 10000, 10000, 10000, dt.date(2026, 4, 30), _ts("2026-05-10")),
+        ]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        latest = {
+            r.security_id: r
+            for r in out.itertuples(index=False)
+            if r.settlement_date == dt.date(2026, 4, 30)
+        }
+        assert bool(latest["S1"].is_squeeze_candidate) is True
+        assert latest["S1"].short_pressure_score >= 70.0
+        assert latest["S1"].liquid_short_pressure_score == pytest.approx(latest["S1"].short_pressure_score)
+        assert bool(latest["S1"].is_liquid_short_pressure) is True
+        assert bool(latest["S2"].is_liquid_short_pressure) is False
+        assert pd.isna(latest["S2"].liquid_short_pressure_score)
+        assert bool(latest["S3"].is_liquid_short_pressure) is False
+
     def test_metric_id_deterministic_and_unique(self):
         rows = pd.DataFrame([
             _row("S1", "AAA", 100, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),
@@ -235,6 +277,8 @@ class TestComputeShortInterestMetrics:
         assert "days_to_cover_percentile" in out.columns
         assert "short_pressure_score" in out.columns
         assert "is_persistent_short_pressure" in out.columns
+        assert "liquid_short_pressure_score" in out.columns
+        assert "is_liquid_short_pressure" in out.columns
 
 
 # --------------------------------------------------------------------------- #

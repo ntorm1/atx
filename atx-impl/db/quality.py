@@ -4871,6 +4871,10 @@ def _check_specs(
                        AND (short_interest_change_pct_percentile < 0 OR short_interest_change_pct_percentile > 1))
                    OR (short_pressure_score IS NOT NULL
                        AND (short_pressure_score < 0 OR short_pressure_score > 100))
+                   OR (average_daily_volume_percentile IS NOT NULL
+                       AND (average_daily_volume_percentile < 0 OR average_daily_volume_percentile > 1))
+                   OR (liquid_short_pressure_score IS NOT NULL
+                       AND (liquid_short_pressure_score < 0 OR liquid_short_pressure_score > 100))
             """,
             threshold=0.0,
             comparator="eq",
@@ -4885,6 +4889,26 @@ def _check_specs(
                 FROM short_interest_metrics
                 WHERE coalesce(is_persistent_short_pressure, false)
                   AND NOT coalesce(is_squeeze_candidate, false)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("short_interest_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="short_interest_metrics",
+            table_name="short_interest_metrics",
+            check_name="liquid_short_pressure_without_tradeability",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM short_interest_metrics
+                WHERE coalesce(is_liquid_short_pressure, false)
+                  AND (
+                      NOT coalesce(is_squeeze_candidate, false)
+                      OR coalesce(average_daily_volume, 0) < 50000
+                      OR coalesce(current_short_position, 0) < 100000
+                      OR coalesce(short_pressure_score, 0) < 70
+                      OR liquid_short_pressure_score IS NULL
+                  )
             """,
             threshold=0.0,
             comparator="eq",

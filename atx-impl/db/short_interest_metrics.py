@@ -50,6 +50,9 @@ SHORT_INTEREST_METRIC_COLUMNS = [
     "short_interest_momentum_6", "days_to_cover_change_6",
     "short_interest_change_pct_accel", "days_to_cover_change_accel",
     "short_pressure_score", "is_persistent_short_pressure",
+    "average_daily_volume_percentile", "days_to_cover_winsorized",
+    "days_to_cover_winsorized_zscore", "liquid_short_pressure_score",
+    "is_liquid_short_pressure",
     "universe_count", "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
 
@@ -58,6 +61,10 @@ SHORT_INTEREST_METRIC_COLUMNS = [
 MOMENTUM_LAG = 3
 LONG_MOMENTUM_LAG = 6
 SQUEEZE_PERCENTILE = 0.90
+DAYS_TO_COVER_WINSOR_Q = 0.99
+LIQUID_ADV_MIN = 50_000.0
+LIQUID_SHORT_POSITION_MIN = 100_000.0
+LIQUID_PRESSURE_SCORE_MIN = 70.0
 
 
 @dataclass(frozen=True)
@@ -125,10 +132,25 @@ def compute_short_interest_metrics(
     grp = out.groupby("settlement_date")
     out["days_to_cover_percentile"] = grp["days_to_cover"].rank(pct=True)
     out["short_interest_change_pct_percentile"] = grp["short_interest_change_pct"].rank(pct=True)
+    out["average_daily_volume_percentile"] = grp["average_daily_volume"].rank(pct=True)
     cohort_mean = grp["days_to_cover"].transform("mean")
     cohort_std = grp["days_to_cover"].transform(lambda s: s.std(ddof=0))
     out["days_to_cover_zscore"] = (out["days_to_cover"] - cohort_mean) / cohort_std.where(cohort_std > 0)
     out["universe_count"] = grp["days_to_cover"].transform("count").astype("Int64")
+
+    # Winsorized crowding diagnostics keep the raw days-to-cover intact while exposing
+    # a tail-resistant z-score for thin-liquidity cohorts.
+    dtc_cap = grp["days_to_cover"].transform(lambda s: s.quantile(DAYS_TO_COVER_WINSOR_Q))
+    out["days_to_cover_winsorized"] = out["days_to_cover"].where(
+        out["days_to_cover"].isna() | out["days_to_cover"].le(dtc_cap),
+        dtc_cap,
+    )
+    win_grp = out.groupby("settlement_date")
+    win_mean = win_grp["days_to_cover_winsorized"].transform("mean")
+    win_std = win_grp["days_to_cover_winsorized"].transform(lambda s: s.std(ddof=0))
+    out["days_to_cover_winsorized_zscore"] = (
+        (out["days_to_cover_winsorized"] - win_mean) / win_std.where(win_std > 0)
+    )
 
     # Time-series trend: days-to-cover vs the prior settlement for the same security
     # (rising days-to-cover = building short pressure). The prior settlement was
@@ -175,6 +197,16 @@ def compute_short_interest_metrics(
             + 0.10 * out["days_to_cover_change_3"].gt(0).astype(float)
         )
     ).clip(lower=0.0, upper=100.0)
+    liquid_eligible = (
+        out["average_daily_volume"].ge(LIQUID_ADV_MIN)
+        & out["current_short_position"].ge(LIQUID_SHORT_POSITION_MIN)
+    )
+    out["liquid_short_pressure_score"] = out["short_pressure_score"].where(liquid_eligible)
+    out["is_liquid_short_pressure"] = (
+        liquid_eligible
+        & out["is_squeeze_candidate"]
+        & out["short_pressure_score"].ge(LIQUID_PRESSURE_SCORE_MIN)
+    ).fillna(False)
 
     out["source"] = source
     out["run_id"] = run_id

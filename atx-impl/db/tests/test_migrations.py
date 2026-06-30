@@ -32,6 +32,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 27 in versions, f"Migration 0027 not recorded; found: {versions}"
     assert 28 in versions, f"Migration 0028 not recorded; found: {versions}"
     assert 46 in versions, f"Migration 0046 not recorded; found: {versions}"
+    assert 47 in versions, f"Migration 0047 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -94,6 +95,41 @@ def test_migration_0046_catalogs_short_interest_acceleration_fields(tmp_store):
         "days_to_cover_change_accel",
         "short_pressure_score",
         "is_persistent_short_pressure",
+    }
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'short_interest_metrics'
+            """
+        ).fetchall()
+    }
+    fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name = 'short_interest_metrics'
+            """
+        ).fetchall()
+    }
+    assert expected.issubset(columns)
+    assert expected.issubset(fields)
+
+
+def test_migration_0047_catalogs_short_interest_liquidity_pressure_fields(tmp_store):
+    """Migration 0047 adds and catalogs tradeable short-pressure diagnostics."""
+
+    expected = {
+        "average_daily_volume_percentile",
+        "days_to_cover_winsorized",
+        "days_to_cover_winsorized_zscore",
+        "liquid_short_pressure_score",
+        "is_liquid_short_pressure",
     }
     columns = {
         row[0]

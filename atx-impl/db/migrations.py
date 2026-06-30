@@ -3166,6 +3166,62 @@ def _short_interest_metrics_acceleration(conn: duckdb.DuckDBPyConnection) -> Non
     )
 
 
+def _short_interest_metrics_liquidity_pressure(conn: duckdb.DuckDBPyConnection) -> None:
+    """S24: liquidity-aware and winsorized short-pressure diagnostics.
+
+    These ALTER-only columns keep the raw short-pressure score intact while exposing
+    a tail-resistant days-to-cover diagnostic and an explicit tradeability gate for
+    names with at least 50k average daily volume and 100k reported short interest.
+    """
+    for column in (
+        "average_daily_volume_percentile DOUBLE",
+        "days_to_cover_winsorized DOUBLE",
+        "days_to_cover_winsorized_zscore DOUBLE",
+        "liquid_short_pressure_score DOUBLE",
+        "is_liquid_short_pressure BOOLEAN",
+    ):
+        conn.execute(f"ALTER TABLE short_interest_metrics ADD COLUMN IF NOT EXISTS {column}")
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE WHEN c.column_name = 'is_liquid_short_pressure' THEN 'flag' ELSE 'measure' END,
+            CASE c.column_name
+                WHEN 'average_daily_volume_percentile' THEN 'Average-daily-volume percentile within the settlement cohort; a PIT liquidity rank published with the cohort.'
+                WHEN 'days_to_cover_winsorized' THEN 'Days-to-cover capped at the settlement cohort 99th percentile, preserving the raw days_to_cover while reducing tiny-ADV tail leverage.'
+                WHEN 'days_to_cover_winsorized_zscore' THEN 'Within-cohort z-score of 99th-percentile-winsorized days-to-cover, using population standard deviation.'
+                WHEN 'liquid_short_pressure_score' THEN 'Short-pressure score retained only for rows meeting the tradeability floor (average_daily_volume >= 50,000 and current_short_position >= 100,000); NULL otherwise.'
+                WHEN 'is_liquid_short_pressure' THEN 'True when the row is a squeeze candidate, passes the 50k ADV / 100k short-position floor, and has short_pressure_score >= 70.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            true,
+            CASE
+                WHEN c.column_name = 'average_daily_volume_percentile' THEN 'percentile'
+                WHEN c.column_name = 'days_to_cover_winsorized' THEN 'days'
+                WHEN c.column_name = 'days_to_cover_winsorized_zscore' THEN 'zscore'
+                WHEN c.column_name = 'liquid_short_pressure_score' THEN 'score'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND c.table_name = 'short_interest_metrics'
+          AND c.column_name IN (
+              'average_daily_volume_percentile',
+              'days_to_cover_winsorized',
+              'days_to_cover_winsorized_zscore',
+              'liquid_short_pressure_score',
+              'is_liquid_short_pressure'
+          )
+        """
+    )
+
+
 def _thirteenf_position_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S16: derived 13F manager-level position-flow analytics surface.
 
@@ -4276,6 +4332,11 @@ MIGRATIONS: list[Migration] = [
         version=46,
         name="short_interest_metrics_acceleration",
         up=_short_interest_metrics_acceleration,
+    ),
+    Migration(
+        version=47,
+        name="short_interest_metrics_liquidity_pressure",
+        up=_short_interest_metrics_liquidity_pressure,
     ),
 ]
 
