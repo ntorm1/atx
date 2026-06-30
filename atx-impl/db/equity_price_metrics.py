@@ -6,8 +6,8 @@ module turns it into a typed, point-in-time analytics surface — one row per
 condition on: adjusted daily and log returns, the overnight gap, trailing realized
 volatility (20d/60d, annualized), trailing-return momentum (21d/126d), distance from the
 trailing 252-day high, dollar volume, trailing average dollar volume (ADV), Amihud
-(2002) illiquidity, trailing maximum drawdown, downside deviation, and market-relative
-risk factors.
+(2002) illiquidity, trailing maximum drawdown, downside deviation, market-relative
+risk factors, and daily cross-sectional percentile ranks.
 
 Point-in-time discipline: ``as_of_date`` is the trade date and ``available_at`` is
 carried from the bar, or delayed to the latest same-day bar used in the equal-weight
@@ -62,8 +62,19 @@ EQUITY_PRICE_METRIC_COLUMNS = [
     "avg_dollar_volume_21d", "amihud_illiquidity_21d",
     "max_drawdown_126d", "downside_deviation_60d",
     "market_return_ew", "beta_60d", "market_correlation_60d", "idiosyncratic_vol_60d",
+    "daily_return_cs_pct_rank", "momentum_21d_cs_pct_rank",
+    "realized_vol_20d_cs_pct_rank", "dollar_volume_cs_pct_rank",
+    "amihud_illiquidity_21d_cs_pct_rank",
     "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
+
+CROSS_SECTIONAL_RANK_SPECS = (
+    ("daily_return", "daily_return_cs_pct_rank"),
+    ("momentum_21d", "momentum_21d_cs_pct_rank"),
+    ("realized_vol_20d", "realized_vol_20d_cs_pct_rank"),
+    ("dollar_volume", "dollar_volume_cs_pct_rank"),
+    ("amihud_illiquidity_21d", "amihud_illiquidity_21d_cs_pct_rank"),
+)
 
 
 @dataclass(frozen=True)
@@ -196,6 +207,17 @@ def _attach_market_relative_features(derived: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _attach_cross_sectional_ranks(derived: pd.DataFrame) -> pd.DataFrame:
+    """Same-day percentile ranks over the loaded calculation universe."""
+    if derived.empty:
+        return derived
+    out = derived.copy()
+    by_date = out.groupby("trade_date", sort=False)
+    for value_col, rank_col in CROSS_SECTIONAL_RANK_SPECS:
+        out[rank_col] = by_date[value_col].rank(method="average", pct=True)
+    return out
+
+
 def compute_equity_price_metrics(
     bars: pd.DataFrame,
     *,
@@ -224,6 +246,7 @@ def compute_equity_price_metrics(
         .reset_index(drop=True)
     )
     derived = _attach_market_relative_features(derived)
+    derived = _attach_cross_sectional_ranks(derived)
 
     derived["source"] = source
     derived["run_id"] = run_id

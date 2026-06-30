@@ -5449,6 +5449,11 @@ def _check_specs(
                    OR (market_correlation_60d IS NOT NULL AND (market_correlation_60d < -1.0000001 OR market_correlation_60d > 1.0000001))
                    OR (idiosyncratic_vol_60d IS NOT NULL AND NOT isfinite(idiosyncratic_vol_60d))
                    OR (idiosyncratic_vol_60d IS NOT NULL AND idiosyncratic_vol_60d < 0)
+                   OR (daily_return_cs_pct_rank IS NOT NULL AND (NOT isfinite(daily_return_cs_pct_rank) OR daily_return_cs_pct_rank < 0 OR daily_return_cs_pct_rank > 1.0000001))
+                   OR (momentum_21d_cs_pct_rank IS NOT NULL AND (NOT isfinite(momentum_21d_cs_pct_rank) OR momentum_21d_cs_pct_rank < 0 OR momentum_21d_cs_pct_rank > 1.0000001))
+                   OR (realized_vol_20d_cs_pct_rank IS NOT NULL AND (NOT isfinite(realized_vol_20d_cs_pct_rank) OR realized_vol_20d_cs_pct_rank < 0 OR realized_vol_20d_cs_pct_rank > 1.0000001))
+                   OR (dollar_volume_cs_pct_rank IS NOT NULL AND (NOT isfinite(dollar_volume_cs_pct_rank) OR dollar_volume_cs_pct_rank < 0 OR dollar_volume_cs_pct_rank > 1.0000001))
+                   OR (amihud_illiquidity_21d_cs_pct_rank IS NOT NULL AND (NOT isfinite(amihud_illiquidity_21d_cs_pct_rank) OR amihud_illiquidity_21d_cs_pct_rank < 0 OR amihud_illiquidity_21d_cs_pct_rank > 1.0000001))
             """,
             threshold=0.0,
             comparator="eq",

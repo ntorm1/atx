@@ -4968,6 +4968,41 @@ def _equity_price_metrics_market_relative(conn: duckdb.DuckDBPyConnection) -> No
     )
 
 
+def _equity_price_metrics_cross_sectional_ranks(conn: duckdb.DuckDBPyConnection) -> None:
+    """S38: same-day cross-sectional percentile ranks on equity_price_metrics."""
+    for statement in (
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS daily_return_cs_pct_rank DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS momentum_21d_cs_pct_rank DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS realized_vol_20d_cs_pct_rank DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS dollar_volume_cs_pct_rank DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS amihud_illiquidity_21d_cs_pct_rank DOUBLE",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('equity_price_metrics', 'daily_return_cs_pct_rank', 'measure',
+             'Same-trade-date percentile rank of daily_return across the loaded bar universe; higher = stronger same-day return.',
+             true, 'percentile', NULL, now()),
+            ('equity_price_metrics', 'momentum_21d_cs_pct_rank', 'measure',
+             'Same-trade-date percentile rank of trailing 21-day momentum across the loaded bar universe; higher = stronger short-term momentum.',
+             true, 'percentile', NULL, now()),
+            ('equity_price_metrics', 'realized_vol_20d_cs_pct_rank', 'measure',
+             'Same-trade-date percentile rank of 20-day realized volatility across the loaded bar universe; higher = more volatile.',
+             true, 'percentile', NULL, now()),
+            ('equity_price_metrics', 'dollar_volume_cs_pct_rank', 'measure',
+             'Same-trade-date percentile rank of dollar volume across the loaded bar universe; higher = more liquid/capacity.',
+             true, 'percentile', NULL, now()),
+            ('equity_price_metrics', 'amihud_illiquidity_21d_cs_pct_rank', 'measure',
+             'Same-trade-date percentile rank of trailing Amihud illiquidity across the loaded bar universe; higher = more illiquid.',
+             true, 'percentile', NULL, now())
+        """
+    )
+
+
 def _macro_metrics_sahm_rule_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     """S34: catalog the Sahm Rule recession-indicator synthetic macro series."""
     conn.execute(
@@ -5287,6 +5322,11 @@ MIGRATIONS: list[Migration] = [
         version=58,
         name="equity_price_metrics_market_relative",
         up=_equity_price_metrics_market_relative,
+    ),
+    Migration(
+        version=59,
+        name="equity_price_metrics_cross_sectional_ranks",
+        up=_equity_price_metrics_cross_sectional_ranks,
     ),
 ]
 

@@ -286,3 +286,39 @@ class TestMarketRelativeFactors:
         out = compute_equity_price_metrics(pd.DataFrame(rows))
         row = out[(out["security_id"] == "M1") & (out["trade_date"] == dt.date(2013, 1, 3))].iloc[0]
         assert row["available_at"] == pd.Timestamp("2013-01-03 23:30:00")
+
+
+class TestCrossSectionalRanks:
+    def test_daily_return_and_dollar_volume_pct_ranks(self):
+        rows = [
+            _bar("R1", "LOW", dt.date(2013, 1, 2), 100.0, volume=1000),
+            _bar("R2", "MID", dt.date(2013, 1, 2), 100.0, volume=1000),
+            _bar("R3", "HIGH", dt.date(2013, 1, 2), 100.0, volume=1000),
+            _bar("R1", "LOW", dt.date(2013, 1, 3), 90.0, volume=1000),
+            _bar("R2", "MID", dt.date(2013, 1, 3), 100.0, volume=2000),
+            _bar("R3", "HIGH", dt.date(2013, 1, 3), 110.0, volume=3000),
+        ]
+        out = compute_equity_price_metrics(pd.DataFrame(rows))
+        day2 = out[out["trade_date"] == dt.date(2013, 1, 3)].set_index("symbol")
+
+        assert day2.loc["LOW", "daily_return_cs_pct_rank"] == pytest.approx(1.0 / 3.0)
+        assert day2.loc["MID", "daily_return_cs_pct_rank"] == pytest.approx(2.0 / 3.0)
+        assert day2.loc["HIGH", "daily_return_cs_pct_rank"] == pytest.approx(1.0)
+        assert day2.loc["LOW", "dollar_volume_cs_pct_rank"] == pytest.approx(1.0 / 3.0)
+        assert day2.loc["MID", "dollar_volume_cs_pct_rank"] == pytest.approx(2.0 / 3.0)
+        assert day2.loc["HIGH", "dollar_volume_cs_pct_rank"] == pytest.approx(1.0)
+        assert out[out["trade_date"] == dt.date(2013, 1, 2)]["daily_return_cs_pct_rank"].isna().all()
+
+    def test_momentum_pct_rank_after_warmup(self):
+        rows = (
+            _series("R1", "UP", [100.0 + i for i in range(25)])
+            + _series("R2", "FLAT", [100.0] * 25)
+            + _series("R3", "DOWN", [100.0 - i for i in range(25)])
+        )
+        out = compute_equity_price_metrics(pd.DataFrame(rows))
+        last_date = out["trade_date"].max()
+        last = out[out["trade_date"] == last_date].set_index("symbol")
+
+        assert last.loc["DOWN", "momentum_21d_cs_pct_rank"] == pytest.approx(1.0 / 3.0)
+        assert last.loc["FLAT", "momentum_21d_cs_pct_rank"] == pytest.approx(2.0 / 3.0)
+        assert last.loc["UP", "momentum_21d_cs_pct_rank"] == pytest.approx(1.0)
