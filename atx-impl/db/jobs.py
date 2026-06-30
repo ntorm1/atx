@@ -63,6 +63,7 @@ from .insider_ownership import (
     InsiderOwnershipOptions,
 )
 from .insider_metrics import InsiderTransactionMetricsDataset, InsiderTransactionMetricsOptions
+from .listing_metrics import SecurityListingMetricsDataset, SecurityListingMetricsOptions
 from .form144 import Form144IntentDataset, Form144Options, Form144ReconciliationDataset
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
 from .macro import FredMacroDataset, FredMacroOptions
@@ -648,6 +649,17 @@ def _insider_transaction_metrics_options(params: dict[str, Any]) -> InsiderTrans
     )
 
 
+def _security_listing_metrics_options(params: dict[str, Any]) -> SecurityListingMetricsOptions:
+    default = SecurityListingMetricsOptions()
+    return SecurityListingMetricsOptions(
+        source=params.get("source", default.source),
+        input_listing_source=params.get("input_listing_source", default.input_listing_source),
+        security_ids=_string_tuple_or_none(params.get("security_ids")),
+        symbols=_tuple_or_none(params.get("symbols")),
+        run_id=params.get("run_id", default.run_id),
+    )
+
+
 def _form144_options(params: dict[str, Any]) -> Form144Options:
     default = Form144Options()
     source_files = _path_tuple_or_none(params.get("source_files"))
@@ -883,6 +895,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         InsiderTransactionMetricsDataset,
         _insider_transaction_metrics_options,
     ),
+    SecurityListingMetricsDataset.dataset_id: (
+        SecurityListingMetricsDataset,
+        _security_listing_metrics_options,
+    ),
     Form144IntentDataset.dataset_id: (Form144IntentDataset, _form144_options),
     Form144ReconciliationDataset.dataset_id: (Form144ReconciliationDataset, _form144_options),
     BlockholderOwnershipDataset.dataset_id: (BlockholderOwnershipDataset, _blockholder_ownership_options),
@@ -1083,6 +1099,12 @@ class JobManager:
             job_name="listing_status_intervals",
             dataset_id="listing_status_intervals",
             dependencies=["security_master", "nasdaq_symbol_directory", "nasdaq_listing_events"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="security_listing_metrics",
+            dataset_id="security_listing_metrics",
+            dependencies=["listing_status_intervals"],
             **retry_policy,
         )
         self.register_job(

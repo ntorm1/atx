@@ -2824,6 +2824,59 @@ def _check_specs(
             required_tables=("insider_transaction_metrics",),
         ),
         SqlQualityCheck(
+            dataset_id="security_listing_metrics",
+            table_name="security_listing_metrics",
+            check_name="security_listing_metrics_multiple_latest_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, security_id, as_of_date,
+                           count(*) FILTER (WHERE is_latest_revision) AS latest_rows
+                    FROM security_listing_metrics
+                    GROUP BY 1, 2, 3
+                    HAVING count(*) FILTER (WHERE is_latest_revision) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("security_listing_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="security_listing_metrics",
+            table_name="security_listing_metrics",
+            check_name="bad_security_listing_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM security_listing_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR source IS NULL OR source = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR symbol IS NULL OR symbol = ''
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR coalesce(round_lot_size, 0) < 0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("security_listing_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="security_listing_metrics",
+            table_name="security_listing_metrics",
+            check_name="security_listing_metric_flags_consistent",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM security_listing_metrics
+                WHERE (is_listing_compliant AND financial_status_code IS DISTINCT FROM 'N')
+                   OR (is_noncompliant AND (NOT has_financial_status OR financial_status_code = 'N'))
+                   OR (NOT has_financial_status AND (is_deficient OR is_delinquent OR is_bankrupt OR is_noncompliant OR is_listing_compliant))
+                   OR (has_financial_status AND financial_status_code IS NULL)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("security_listing_metrics",),
+        ),
+        SqlQualityCheck(
             dataset_id="form144_intent",
             table_name="form144_intent",
             check_name="duplicate_form144_intent_accessions",

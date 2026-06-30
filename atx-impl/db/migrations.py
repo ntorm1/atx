@@ -4760,6 +4760,137 @@ def _thirteenf_concentration_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _security_listing_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S31: derived security listing / reference-compliance metrics."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS security_listing_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            input_listing_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR NOT NULL,
+            as_of_date DATE NOT NULL,
+            directory VARCHAR,
+            listing_status VARCHAR,
+            listing_venue_code VARCHAR,
+            listing_venue_name VARCHAR,
+            listing_exchange_code VARCHAR,
+            listing_exchange_name VARCHAR,
+            market_category VARCHAR,
+            market_tier VARCHAR,
+            security_name VARCHAR,
+            round_lot_size INTEGER,
+            is_etf BOOLEAN,
+            is_test_issue BOOLEAN,
+            is_next_shares BOOLEAN,
+            financial_status_code VARCHAR,
+            financial_status_label VARCHAR,
+            has_financial_status BOOLEAN NOT NULL DEFAULT false,
+            is_listing_compliant BOOLEAN NOT NULL DEFAULT false,
+            is_deficient BOOLEAN NOT NULL DEFAULT false,
+            is_delinquent BOOLEAN NOT NULL DEFAULT false,
+            is_bankrupt BOOLEAN NOT NULL DEFAULT false,
+            is_noncompliant BOOLEAN NOT NULL DEFAULT false,
+            restatement_seq INTEGER NOT NULL DEFAULT 0,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_security_listing_metrics_key ON security_listing_metrics(source, security_id, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_security_listing_metrics_symbol ON security_listing_metrics(symbol, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_security_listing_metrics_asof ON security_listing_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_security_listing_metrics_latest ON security_listing_metrics(source, is_latest_revision, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_security_listing_metrics_noncompliant ON security_listing_metrics(is_noncompliant, as_of_date)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'security_listing_metrics',
+            'nasdaq_trader',
+            'Security listing reference metrics',
+            'Derived per-security listing reference surface joining listing_status_intervals (CIK-resolved venue/exchange/status) to the Nasdaq Trader symbol directory; decodes the Nasdaq financial_status listing-compliance code into deficiency/delinquency/bankruptcy flags plus ETF/test-issue/market-tier classification.',
+            'source,security_id,as_of_date',
+            'security_listing_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'security_listing_metrics', 'gold', 'security',
+            'source,security_id,as_of_date,available_at',
+            'Per-snapshot security listing / reference-compliance surface derived from listing_status_intervals and nasdaq_symbol_directory.',
+            '["metric_id"]',
+            'Resolve with available_at <= query timestamp and is_latest_revision, then pick the latest as_of_date snapshot at/under the query date. financial_status flips between snapshots create new later-dated rows rather than mutating history.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('source', 'input_listing_source', 'symbol', 'directory', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%date' OR lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR lower(c.column_name) LIKE 'has_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'as_of_date' THEN 'Nasdaq symbol-directory snapshot date the reference row was observed on.'
+                WHEN 'directory' THEN 'Nasdaq directory file the symbol was sourced from (nasdaqlisted or otherlisted).'
+                WHEN 'listing_status' THEN 'Listing spine status (active or inactive) for the security.'
+                WHEN 'market_tier' THEN 'Decoded Nasdaq market tier (Global Select / Global Market / Capital Market).'
+                WHEN 'financial_status_code' THEN 'Raw Nasdaq financial_status letter (N/D/E/Q and combined G/H/J/K).'
+                WHEN 'financial_status_label' THEN 'Human-readable expansion of the financial_status code.'
+                WHEN 'has_financial_status' THEN 'True when a Nasdaq financial_status code is present (nasdaqlisted securities).'
+                WHEN 'is_listing_compliant' THEN 'True when financial_status is N (Normal / compliant).'
+                WHEN 'is_deficient' THEN 'True when financial_status indicates a continued-listing deficiency (D/G/H/K).'
+                WHEN 'is_delinquent' THEN 'True when financial_status indicates a filing delinquency (E/H/J/K).'
+                WHEN 'is_bankrupt' THEN 'True when financial_status indicates bankruptcy (Q/G/J/K).'
+                WHEN 'is_noncompliant' THEN 'True when a financial_status code is present and is not Normal.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) LIKE '%date' OR lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%lot_size%' THEN 'shares'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'security_listing_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -5021,6 +5152,11 @@ MIGRATIONS: list[Migration] = [
         version=52,
         name="form144_reconciliation",
         up=_form144_reconciliation,
+    ),
+    Migration(
+        version=53,
+        name="security_listing_metrics",
+        up=_security_listing_metrics,
     ),
 ]
 

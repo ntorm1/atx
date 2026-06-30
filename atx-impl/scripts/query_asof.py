@@ -51,6 +51,7 @@ from db.asof import (
     identifier_decisions_asof,
     insider_transaction_metrics_asof,
     macro_asof,
+    security_listing_metrics_asof,
     security_master_asof,
     shares_outstanding_asof,
     short_interest_asof,
@@ -119,6 +120,7 @@ def parse_args() -> argparse.Namespace:
             "13f-positioning",
             "filer-aliases",
             "insider-transaction-metrics",
+            "security-listing-metrics",
             "form144-intents",
             "form144-reconciliation",
             "finra-short-volume",
@@ -475,6 +477,14 @@ def main() -> int:
         )
     elif args.view == "insider-transaction-metrics":
         frame = insider_transaction_metrics_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "security-listing-metrics":
+        frame = security_listing_metrics_asof(
             as_of_date=args.as_of_date,
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,

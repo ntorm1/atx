@@ -191,6 +191,16 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'security_listing_metrics', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM security_listing_metrics
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'security_listing_metrics', 'max_available_at', max(available_at)::VARCHAR
+    FROM security_listing_metrics
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'form144_intent', 'max_filing_date', max(filing_date)::VARCHAR
     FROM form144_intent
     HAVING count(*) > 0

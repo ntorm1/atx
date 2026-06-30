@@ -802,6 +802,40 @@ ORDER BY signal_date, security_id
 """
 
 
+SECURITY_LISTING_METRICS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible AS (
+    SELECT
+        m.*,
+        row_number() OVER (
+            PARTITION BY m.source, m.security_id
+            ORDER BY m.as_of_date DESC, m.available_at DESC, m.metric_id
+        ) AS rn
+    FROM security_listing_metrics m
+    {security_join}
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE m.as_of_date <= p.as_of_date
+      AND m.available_at <= p.as_of_ts
+)
+SELECT
+    metric_id, source, input_listing_source, security_id, symbol, as_of_date,
+    directory, listing_status, listing_venue_code, listing_venue_name,
+    listing_exchange_code, listing_exchange_name, market_category, market_tier,
+    security_name, round_lot_size, is_etf, is_test_issue, is_next_shares,
+    financial_status_code, financial_status_label, has_financial_status,
+    is_listing_compliant, is_deficient, is_delinquent, is_bankrupt, is_noncompliant,
+    restatement_seq, is_latest_revision, available_at, run_id, source_loaded_at
+FROM visible
+WHERE rn = 1
+ORDER BY security_id
+"""
+
+
 FORM144_INTENTS_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -1726,6 +1760,49 @@ def insider_transaction_metrics_asof(
                 registered.append("asof_insider_metric_symbol_filter")
                 symbol_join = "JOIN asof_insider_metric_symbol_filter symf ON symf.symbol = upper(m.issuer_trading_symbol)"
             sql = INSIDER_TRANSACTION_METRICS_ASOF_SQL.format(
+                security_join=security_join,
+                symbol_join=symbol_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def security_listing_metrics_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return the latest-visible security listing reference row per security as of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            security_join = ""
+            symbol_join = ""
+            security_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_strings(symbols)
+            if _register_filter(store, "asof_listing_metric_security_filter", "security_id", security_values):
+                registered.append("asof_listing_metric_security_filter")
+                security_join = "JOIN asof_listing_metric_security_filter sf ON sf.security_id = m.security_id"
+            if _register_filter(store, "asof_listing_metric_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_listing_metric_symbol_filter")
+                symbol_join = "JOIN asof_listing_metric_symbol_filter symf ON symf.symbol = upper(m.symbol)"
+            sql = SECURITY_LISTING_METRICS_ASOF_SQL.format(
                 security_join=security_join,
                 symbol_join=symbol_join,
             )
