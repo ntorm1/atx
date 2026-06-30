@@ -33,6 +33,7 @@ from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_d
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
+from .short_volume import FinraShortVolumeDataset, FinraShortVolumeOptions, ShortVolumeMetricsDataset
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
 from .equity_price_metrics import EquityPriceMetricsDataset, EquityPriceMetricsOptions
 from .thirteenf_concentration_metrics import (
@@ -656,6 +657,17 @@ def _offexchange_volume_options(params: dict[str, Any]) -> FinraOffExchangeOptio
     )
 
 
+def _finra_short_volume_options(params: dict[str, Any]) -> FinraShortVolumeOptions:
+    default = FinraShortVolumeOptions()
+    source_file = params.get("source_file")
+    return FinraShortVolumeOptions(
+        source_file=Path(source_file) if source_file else default.source_file,
+        source=params.get("source") or default.source,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _filer_alias_options(params: dict[str, Any]) -> FilerAliasOptions:
     default = FilerAliasOptions()
     seed_file = params.get("seed_file")
@@ -813,6 +825,8 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         OffExchangeSecurityPeriodDataset,
         _offexchange_volume_options,
     ),
+    FinraShortVolumeDataset.dataset_id: (FinraShortVolumeDataset, _finra_short_volume_options),
+    ShortVolumeMetricsDataset.dataset_id: (ShortVolumeMetricsDataset, _finra_short_volume_options),
     OwnershipFeatureDataset.dataset_id: (OwnershipFeatureDataset, _ownership_feature_options),
     InsiderOwnershipDataset.dataset_id: (InsiderOwnershipDataset, _insider_ownership_options),
     BlockholderOwnershipDataset.dataset_id: (BlockholderOwnershipDataset, _blockholder_ownership_options),
@@ -1088,6 +1102,18 @@ class JobManager:
             dataset_id="offexchange_security_period",
             params={"period_type": "weekly"},
             dependencies=["offexchange_volume"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="finra_short_volume",
+            dataset_id="finra_short_volume",
+            dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="short_volume_metrics",
+            dataset_id="short_volume_metrics",
+            dependencies=["finra_short_volume"],
             **retry_policy,
         )
         self.register_job(

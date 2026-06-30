@@ -112,6 +112,20 @@ def test_default_jobs_include_thirteenf_option_metrics_after_ownership(tmp_store
     assert order.index("sec_13f_ownership_features") < order.index("thirteenf_concentration_metrics")
 
 
+def test_default_jobs_include_short_volume_metrics_after_raw_flow(tmp_store):
+    """Daily short-volume metrics are derived from injected FINRA short-flow rows."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "finra_short_volume" in order
+    assert "short_volume_metrics" in order
+    assert order.index("security_master") < order.index("finra_short_volume")
+    assert order.index("finra_short_volume") < order.index("short_volume_metrics")
+
+
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):
     """Delisting proxy events are derived from listing-status intervals."""
     from db.jobs import JobManager

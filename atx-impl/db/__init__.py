@@ -44,6 +44,8 @@ from .asof import (
     ownership_asof,
     security_master_asof,
     shares_outstanding_asof,
+    finra_short_volume_asof,
+    short_volume_metrics_asof,
     short_interest_asof,
     thirteenf_positioning_asof,
     universe_asof,
@@ -186,6 +188,15 @@ from .offexchange import (
     normalize_offexchange_rows,
     refresh_offexchange_security_period,
 )
+from .short_volume import (
+    FinraShortVolumeDataset,
+    FinraShortVolumeOptions,
+    ShortVolumeMetricsDataset,
+    compute_short_volume_metrics,
+    load_finra_short_volume,
+    normalize_short_volume_rows,
+    refresh_short_volume_metrics,
+)
 from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
 from .quality import QualityResult, run_warehouse_quality_checks
 from .queries import SHORT_INTEREST_WITH_13F_SQL, short_interest_with_13f_positioning
@@ -291,6 +302,15 @@ __all__ = [
     "refresh_offexchange_security_period",
     "offexchange_volume_asof",
     "offexchange_security_period_asof",
+    "FinraShortVolumeDataset",
+    "FinraShortVolumeOptions",
+    "ShortVolumeMetricsDataset",
+    "load_finra_short_volume",
+    "normalize_short_volume_rows",
+    "compute_short_volume_metrics",
+    "refresh_short_volume_metrics",
+    "finra_short_volume_asof",
+    "short_volume_metrics_asof",
     "FundamentalFeatureBuildOptions",
     "FundamentalFeatureDataset",
     "FundamentalRatiosDataset",

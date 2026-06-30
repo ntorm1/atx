@@ -3406,6 +3406,177 @@ def _macro_metrics_real_rates_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _finra_daily_short_volume(conn: duckdb.DuckDBPyConnection) -> None:
+    """S26: FINRA daily short-volume flow surfaces."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS finra_short_volume (
+            volume_id VARCHAR PRIMARY KEY,
+            security_id VARCHAR,
+            symbol VARCHAR NOT NULL,
+            trade_date DATE NOT NULL,
+            market_code VARCHAR NOT NULL,
+            short_volume DOUBLE,
+            short_exempt_volume DOUBLE,
+            total_volume DOUBLE,
+            restatement_seq INTEGER NOT NULL DEFAULT 0,
+            is_latest BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            source VARCHAR NOT NULL,
+            source_file VARCHAR,
+            source_file_sha256 VARCHAR,
+            raw_payload_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS short_volume_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            security_id VARCHAR,
+            symbol VARCHAR NOT NULL,
+            trade_date DATE NOT NULL,
+            short_volume DOUBLE,
+            short_exempt_volume DOUBLE,
+            total_volume DOUBLE,
+            short_volume_ratio DOUBLE,
+            short_exempt_ratio DOUBLE,
+            short_volume_ratio_percentile DOUBLE,
+            short_exempt_ratio_percentile DOUBLE,
+            market_count INTEGER,
+            dominant_market_code VARCHAR,
+            dominant_market_total_volume DOUBLE,
+            dominant_market_share_pct DOUBLE,
+            is_high_short_flow BOOLEAN,
+            restatement_seq INTEGER NOT NULL DEFAULT 0,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_finra_short_volume_key ON finra_short_volume(symbol, trade_date, market_code)",
+        "CREATE INDEX IF NOT EXISTS idx_finra_short_volume_asof ON finra_short_volume(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_finra_short_volume_latest ON finra_short_volume(source, is_latest, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_short_volume_metrics_key ON short_volume_metrics(symbol, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_short_volume_metrics_asof ON short_volume_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_short_volume_metrics_latest ON short_volume_metrics(source, is_latest_revision, trade_date)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES
+        (
+            'finra_short_volume',
+            'finra',
+            'FINRA daily short-volume flow',
+            'Raw FINRA daily short-sale volume rows by symbol, trade date, and reporting market code. This is a public high-frequency short-flow proxy, not a substitute for settle-date short interest. Bitemporal with source-file lineage and restatement vintages.',
+            'symbol,trade_date,market_code',
+            'finra_short_volume', 'as_of_date', 'available_at', now()
+        ),
+        (
+            'short_volume_metrics',
+            'finra',
+            'Derived FINRA daily short-volume metrics',
+            'Per-symbol/trade-date short-volume flow metrics derived from FINRA daily short-volume rows: short-volume ratio, short-exempt ratio, dominant market code, and same-day cross-sectional percentiles.',
+            'symbol,trade_date',
+            'short_volume_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+        (
+            'finra_short_volume', 'bronze', 'short_volume',
+            'symbol,trade_date,market_code,available_at',
+            'Raw FINRA daily short-volume rows by reporting market code and publication vintage.',
+            '["volume_id"]',
+            'Resolve visible rows with available_at <= query ts, then choose the latest vintage per source/symbol/trade_date/market_code. FINRA daily short volume is a flow proxy; it is not outstanding short interest.',
+            now()
+        ),
+        (
+            'short_volume_metrics', 'silver', 'short_volume_metrics',
+            'symbol,trade_date,available_at',
+            'Derived per-symbol daily short-volume flow metrics and cross-sectional percentiles.',
+            '["metric_id"]',
+            'Resolve visible rows with available_at <= query ts, then choose the latest metric revision per source/symbol/trade_date. Percentiles are ranked within a single trade-date cohort, so they are point-in-time safe once the daily file is available.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('symbol', 'market_code', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'short_volume' THEN 'FINRA-reported daily short-sale volume for the symbol/date (summed across market codes in short_volume_metrics).'
+                WHEN 'short_exempt_volume' THEN 'FINRA-reported daily short-exempt volume for the symbol/date.'
+                WHEN 'total_volume' THEN 'FINRA-reported total volume denominator for the symbol/date.'
+                WHEN 'market_code' THEN 'FINRA reporting market code: N=NYSE TRF, Q=NASDAQ TRF Carteret, B=NASDAQ TRF Chicago, D=ADF; ALL is accepted for pre-aggregated injectable files.'
+                WHEN 'short_volume_ratio' THEN 'Short volume divided by total volume for the symbol/date.'
+                WHEN 'short_exempt_ratio' THEN 'Short-exempt volume divided by total volume for the symbol/date.'
+                WHEN 'short_volume_ratio_percentile' THEN 'Cross-sectional percentile of short_volume_ratio within the same trade date.'
+                WHEN 'short_exempt_ratio_percentile' THEN 'Cross-sectional percentile of short_exempt_ratio within the same trade date.'
+                WHEN 'market_count' THEN 'Number of FINRA reporting market codes represented for the symbol/date.'
+                WHEN 'dominant_market_code' THEN 'Market code contributing the largest total volume for the symbol/date.'
+                WHEN 'dominant_market_total_volume' THEN 'Total volume from the dominant FINRA market code.'
+                WHEN 'dominant_market_share_pct' THEN 'Dominant market total volume divided by symbol/date total volume, in percent.'
+                WHEN 'is_high_short_flow' THEN 'True when short_volume_ratio is in the top decile of its same-day cohort and total_volume is positive.'
+                WHEN 'available_at' THEN 'Publication/knowledge timestamp for the raw daily file or derived metric revision.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%ratio%' OR lower(c.column_name) LIKE '%percentile%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%share_pct%' THEN 'percent'
+                WHEN lower(c.column_name) LIKE '%volume%' OR lower(c.column_name) LIKE '%count%' THEN 'count'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name IN ('finra_short_volume', 'short_volume_metrics')
+        """
+    )
+
+
 def _corporate_action_dividend_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S18: derived cash-dividend analytics (corporate actions x pricing).
 
@@ -4362,6 +4533,11 @@ MIGRATIONS: list[Migration] = [
         version=48,
         name="macro_metrics_real_rates_catalog",
         up=_macro_metrics_real_rates_catalog,
+    ),
+    Migration(
+        version=49,
+        name="finra_daily_short_volume",
+        up=_finra_daily_short_volume,
     ),
 ]
 

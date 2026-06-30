@@ -4713,6 +4713,108 @@ def _check_specs(
             required_tables=("offexchange_security_period",),
         ),
         SqlQualityCheck(
+            dataset_id="finra_short_volume",
+            table_name="finra_short_volume",
+            check_name="finra_short_volume_multiple_latest_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, symbol, trade_date, market_code,
+                           count(*) FILTER (WHERE is_latest) AS latest_rows
+                    FROM finra_short_volume
+                    GROUP BY 1, 2, 3, 4
+                    HAVING count(*) FILTER (WHERE is_latest) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("finra_short_volume",),
+        ),
+        SqlQualityCheck(
+            dataset_id="finra_short_volume",
+            table_name="finra_short_volume",
+            check_name="finra_short_volume_bad_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM finra_short_volume
+                WHERE symbol IS NULL
+                   OR symbol = ''
+                   OR trade_date IS NULL
+                   OR market_code IS NULL
+                   OR market_code = ''
+                   OR available_at IS NULL
+                   OR coalesce(short_volume, -1) < 0
+                   OR coalesce(short_exempt_volume, -1) < 0
+                   OR coalesce(total_volume, -1) < 0
+                   OR short_volume > total_volume
+                   OR short_exempt_volume > total_volume
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("finra_short_volume",),
+        ),
+        SqlQualityCheck(
+            dataset_id="short_volume_metrics",
+            table_name="short_volume_metrics",
+            check_name="short_volume_metrics_multiple_latest_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, symbol, trade_date,
+                           count(*) FILTER (WHERE is_latest_revision) AS latest_rows
+                    FROM short_volume_metrics
+                    GROUP BY 1, 2, 3
+                    HAVING count(*) FILTER (WHERE is_latest_revision) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("short_volume_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="short_volume_metrics",
+            table_name="short_volume_metrics",
+            check_name="short_volume_metrics_bad_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM short_volume_metrics
+                WHERE symbol IS NULL
+                   OR symbol = ''
+                   OR trade_date IS NULL
+                   OR available_at IS NULL
+                   OR coalesce(short_volume, -1) < 0
+                   OR coalesce(short_exempt_volume, -1) < 0
+                   OR coalesce(total_volume, -1) < 0
+                   OR short_volume > total_volume
+                   OR short_exempt_volume > total_volume
+                   OR short_volume_ratio < 0 OR short_volume_ratio > 1
+                   OR short_exempt_ratio < 0 OR short_exempt_ratio > 1
+                   OR short_volume_ratio_percentile < 0 OR short_volume_ratio_percentile > 1
+                   OR short_exempt_ratio_percentile < 0 OR short_exempt_ratio_percentile > 1
+                   OR dominant_market_share_pct < 0 OR dominant_market_share_pct > 100
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("short_volume_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="short_volume_metrics",
+            table_name="short_volume_metrics",
+            check_name="short_volume_high_flow_flag_consistent",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM short_volume_metrics
+                WHERE is_high_short_flow
+                  AND (
+                      coalesce(short_volume_ratio_percentile, 0) < 0.90
+                      OR coalesce(total_volume, 0) <= 0
+                  )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("short_volume_metrics",),
+        ),
+        SqlQualityCheck(
             dataset_id="fundamental_ratios",
             table_name="fundamental_ratios",
             check_name="duplicate_fundamental_ratio_natural_keys",

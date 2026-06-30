@@ -34,6 +34,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 46 in versions, f"Migration 0046 not recorded; found: {versions}"
     assert 47 in versions, f"Migration 0047 not recorded; found: {versions}"
     assert 48 in versions, f"Migration 0048 not recorded; found: {versions}"
+    assert 49 in versions, f"Migration 0049 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -171,6 +172,52 @@ def test_migration_0048_catalogs_macro_real_rates(tmp_store):
     assert row is not None
     assert "REAL_FEDFUNDS" in row[0]
     assert "Synthetic cross-series" in row[1]
+
+
+def test_migration_0049_catalogs_finra_daily_short_volume(tmp_store):
+    """Migration 0049 adds FINRA daily short-volume raw and metric tables."""
+
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE schema_name = 'main'
+              AND table_name IN ('finra_short_volume', 'short_volume_metrics')
+            """
+        ).fetchall()
+    }
+    assert tables == {"finra_short_volume", "short_volume_metrics"}
+
+    datasets = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT dataset_id
+            FROM dataset_catalog
+            WHERE dataset_id IN ('finra_short_volume', 'short_volume_metrics')
+            """
+        ).fetchall()
+    }
+    assert datasets == {"finra_short_volume", "short_volume_metrics"}
+
+    fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name = 'short_volume_metrics'
+            """
+        ).fetchall()
+    }
+    assert {
+        "short_volume_ratio",
+        "short_volume_ratio_percentile",
+        "dominant_market_share_pct",
+        "is_high_short_flow",
+    }.issubset(fields)
 
 
 def test_migration_0042_catalogs_corporate_action_split_metrics(tmp_store):

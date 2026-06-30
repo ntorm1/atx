@@ -38,8 +38,10 @@ from db.asof import (
     corporate_action_dividend_metrics_asof,
     corporate_action_factor_reconciliation_asof,
     corporate_action_split_metrics_asof,
+    finra_short_volume_asof,
     offexchange_security_period_asof,
     offexchange_volume_asof,
+    short_volume_metrics_asof,
     fundamental_statements_asof,
     fundamental_ttm_asof,
     fundamentals_asof,
@@ -112,8 +114,10 @@ def parse_args() -> argparse.Namespace:
             "corporate-actions",
             "13f-positioning",
             "filer-aliases",
+            "finra-short-volume",
             "offexchange-volume",
             "offexchange-security-period",
+            "short-volume-metrics",
             "identifier-decisions",
         ],
         default="securities",
@@ -461,6 +465,13 @@ def main() -> int:
             alias_types=parse_csv(args.alias_types),
             min_confidence=args.min_confidence,
         )
+    elif args.view == "finra-short-volume":
+        frame = finra_short_volume_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+        )
     elif args.view == "offexchange-volume":
         frame = offexchange_volume_asof(
             as_of_date=args.as_of_date,
@@ -470,6 +481,13 @@ def main() -> int:
         )
     elif args.view == "offexchange-security-period":
         frame = offexchange_security_period_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "short-volume-metrics":
+        frame = short_volume_metrics_asof(
             as_of_date=args.as_of_date,
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,

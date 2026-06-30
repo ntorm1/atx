@@ -2550,6 +2550,137 @@ def offexchange_security_period_asof(
         return _run(store)
 
 
+FINRA_SHORT_VOLUME_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible AS (
+    SELECT
+        v.*,
+        row_number() OVER (
+            PARTITION BY v.source, v.symbol, v.trade_date, v.market_code
+            ORDER BY v.available_at DESC, v.volume_id
+        ) AS rn
+    FROM finra_short_volume v
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE v.available_at <= p.as_of_ts
+)
+SELECT
+    volume_id, security_id, symbol, trade_date, market_code,
+    short_volume, short_exempt_volume, total_volume,
+    restatement_seq, is_latest, as_of_date, available_at,
+    source, source_file, source_file_sha256, raw_payload_json,
+    run_id, source_loaded_at, updated_at
+FROM visible
+WHERE rn = 1
+ORDER BY symbol, trade_date, market_code
+"""
+
+
+SHORT_VOLUME_METRICS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible AS (
+    SELECT
+        m.*,
+        row_number() OVER (
+            PARTITION BY m.source, m.symbol, m.trade_date
+            ORDER BY m.available_at DESC, m.metric_id
+        ) AS rn
+    FROM short_volume_metrics m
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE m.available_at <= p.as_of_ts
+)
+SELECT
+    metric_id, security_id, symbol, trade_date,
+    short_volume, short_exempt_volume, total_volume,
+    short_volume_ratio, short_exempt_ratio,
+    short_volume_ratio_percentile, short_exempt_ratio_percentile,
+    market_count, dominant_market_code, dominant_market_total_volume,
+    dominant_market_share_pct, is_high_short_flow,
+    restatement_seq, is_latest_revision, as_of_date, available_at,
+    source, run_id, source_loaded_at, updated_at
+FROM visible
+WHERE rn = 1
+ORDER BY symbol, trade_date
+"""
+
+
+def finra_short_volume_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest-visible FINRA daily short-volume rows as of a point in time."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+
+    def _run(store):
+        registered = []
+        try:
+            symbol_join = ""
+            if _register_filter(store, "asof_short_volume_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_short_volume_symbol_filter")
+                symbol_join = "JOIN asof_short_volume_symbol_filter sf ON sf.symbol = v.symbol"
+            sql = FINRA_SHORT_VOLUME_ASOF_SQL.format(symbol_join=symbol_join)
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def short_volume_metrics_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest-visible daily short-volume metric rows as of a point in time."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+
+    def _run(store):
+        registered = []
+        try:
+            symbol_join = ""
+            if _register_filter(store, "asof_short_volume_metrics_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_short_volume_metrics_symbol_filter")
+                symbol_join = "JOIN asof_short_volume_metrics_symbol_filter sf ON sf.symbol = m.symbol"
+            sql = SHORT_VOLUME_METRICS_ASOF_SQL.format(symbol_join=symbol_join)
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
 FUNDAMENTAL_XBRL_METRIC_ASOF_SQL = """
 WITH params AS (
     SELECT

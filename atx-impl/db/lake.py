@@ -66,6 +66,8 @@ DEFAULT_EXPORT_OBJECTS = (
     "alpha_backtest_manifests",
     "finra_short_interest",
     "finra_short_interest_backfill_manifests",
+    "finra_short_volume",
+    "short_volume_metrics",
     "offexchange_venue",
     "offexchange_volume",
     "offexchange_security_period",

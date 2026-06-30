@@ -85,6 +85,26 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'finra_short_volume', 'max_trade_date', max(trade_date)::VARCHAR
+    FROM finra_short_volume
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'finra_short_volume', 'max_available_at', max(available_at)::VARCHAR
+    FROM finra_short_volume
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'short_volume_metrics', 'max_trade_date', max(trade_date)::VARCHAR
+    FROM short_volume_metrics
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'short_volume_metrics', 'max_available_at', max(available_at)::VARCHAR
+    FROM short_volume_metrics
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'finra_short_interest_backfills', 'last_finished_at', max(finished_at)::VARCHAR
     FROM finra_short_interest_backfill_manifests
     HAVING count(*) > 0
