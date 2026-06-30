@@ -5441,6 +5441,8 @@ def _check_specs(
                    OR (realized_vol_20d IS NOT NULL AND realized_vol_20d < 0)
                    OR (avg_dollar_volume_21d IS NOT NULL AND avg_dollar_volume_21d < 0)
                    OR (amihud_illiquidity_21d IS NOT NULL AND amihud_illiquidity_21d < 0)
+                   OR (max_drawdown_126d IS NOT NULL AND max_drawdown_126d > 1e-9)
+                   OR (downside_deviation_60d IS NOT NULL AND downside_deviation_60d < 0)
             """,
             threshold=0.0,
             comparator="eq",

@@ -4914,6 +4914,29 @@ def _equity_price_metrics_liquidity(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _equity_price_metrics_risk(conn: duckdb.DuckDBPyConnection) -> None:
+    """S36: trailing max drawdown and downside deviation on equity_price_metrics."""
+    for statement in (
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS max_drawdown_126d DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS downside_deviation_60d DOUBLE",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('equity_price_metrics', 'max_drawdown_126d', 'measure',
+             'Trailing 126-trading-day maximum drawdown: the most negative (price / running expanding peak - 1) observed in the window. <= 0.',
+             true, 'ratio', NULL, now()),
+            ('equity_price_metrics', 'downside_deviation_60d', 'measure',
+             'Trailing 60-day annualized downside deviation (Sortino denominator, MAR=0): sqrt(mean(min(daily_return,0)^2)) x sqrt(252).',
+             true, 'ratio', NULL, now())
+        """
+    )
+
+
 def _macro_metrics_sahm_rule_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     """S34: catalog the Sahm Rule recession-indicator synthetic macro series."""
     conn.execute(
@@ -5223,6 +5246,11 @@ MIGRATIONS: list[Migration] = [
         version=56,
         name="equity_price_metrics_liquidity",
         up=_equity_price_metrics_liquidity,
+    ),
+    Migration(
+        version=57,
+        name="equity_price_metrics_risk",
+        up=_equity_price_metrics_risk,
     ),
 ]
 

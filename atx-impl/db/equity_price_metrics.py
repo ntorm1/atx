@@ -5,8 +5,8 @@ module turns it into a typed, point-in-time analytics surface — one row per
 ``(security_id, trade_date)`` — with the canonical price features quant strategies
 condition on: adjusted daily and log returns, the overnight gap, trailing realized
 volatility (20d/60d, annualized), trailing-return momentum (21d/126d), distance from the
-trailing 252-day high, dollar volume, trailing average dollar volume (ADV), and Amihud
-(2002) illiquidity.
+trailing 252-day high, dollar volume, trailing average dollar volume (ADV), Amihud
+(2002) illiquidity, trailing maximum drawdown, and downside deviation.
 
 Point-in-time discipline: ``as_of_date`` is the trade date and ``available_at`` is
 carried from the bar. Every rolling/lag feature uses only the current and earlier bars
@@ -43,6 +43,8 @@ MOMENTUM_SHORT = 21
 MOMENTUM_LONG = 126
 HIGH_WINDOW = 252
 LIQUIDITY_WINDOW = 21
+DRAWDOWN_WINDOW = 126
+DOWNSIDE_WINDOW = 60
 # Amihud (2002) ILLIQ is averaged |return| per dollar of volume; dollar_volume here is
 # in raw dollars, so the ratio is tiny. Scale by 1e9 to express price impact per $1B
 # traded, keeping values in a human-readable range.
@@ -55,6 +57,7 @@ EQUITY_PRICE_METRIC_COLUMNS = [
     "realized_vol_20d", "realized_vol_60d",
     "momentum_21d", "momentum_126d", "pct_from_high_252d",
     "avg_dollar_volume_21d", "amihud_illiquidity_21d",
+    "max_drawdown_126d", "downside_deviation_60d",
     "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
 
@@ -118,6 +121,18 @@ def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
         daily_illiq = (ret.abs() / dollar_volume.where(dollar_volume > 0)).replace([np.inf, -np.inf], np.nan)
     g["amihud_illiquidity_21d"] = (
         daily_illiq.rolling(LIQUIDITY_WINDOW, min_periods=LIQUIDITY_WINDOW).mean() * AMIHUD_SCALE
+    )
+    # Risk features: trailing-126d maximum drawdown from the running (expanding)
+    # peak, and trailing-60d annualized downside deviation (Sortino denominator,
+    # MAR=0). Both are backward-looking -> point-in-time safe. The 126-day
+    # drawdown window fits the cached ~245-bar price sample (a 252-day window
+    # never fills); it widens naturally once longer price history is loaded.
+    running_peak = adj.cummax()
+    drawdown = adj / running_peak.where(running_peak > 0) - 1.0
+    g["max_drawdown_126d"] = drawdown.rolling(DRAWDOWN_WINDOW, min_periods=DRAWDOWN_WINDOW).min()
+    downside = ret.clip(upper=0.0)
+    g["downside_deviation_60d"] = (
+        np.sqrt((downside ** 2).rolling(DOWNSIDE_WINDOW, min_periods=DOWNSIDE_WINDOW).mean()) * np.sqrt(TRADING_DAYS)
     )
     return g
 

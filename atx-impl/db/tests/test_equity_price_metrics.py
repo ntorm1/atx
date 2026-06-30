@@ -220,3 +220,25 @@ class TestLiquidityFactors:
         daily = (ret / dvol).replace([np.inf, -np.inf], np.nan)
         expected = daily.rolling(21, min_periods=21).mean().iloc[-1] * 1e9
         assert last["amihud_illiquidity_21d"] == pytest.approx(expected, rel=1e-6)
+
+
+class TestRiskFactors:
+    def _ramp_series(self):
+        # 200 flat bars at 100, then a linear decline to 80 over 60 bars.
+        closes = [100.0] * 200 + list(np.linspace(99.5, 80.0, 60))
+        return _series("R1", "RISK", closes)
+
+    def test_max_drawdown_126d(self):
+        out = compute_equity_price_metrics(pd.DataFrame(self._ramp_series())).sort_values("trade_date").reset_index(drop=True)
+        # Expanding peak stays 100; deepest trailing-126 drawdown at the end = 80/100 - 1.
+        assert out["max_drawdown_126d"].iloc[:125].isna().all()
+        assert out["max_drawdown_126d"].iloc[-1] == pytest.approx(-0.20, abs=1e-6)
+
+    def test_downside_deviation_60d_matches_independent_calc(self):
+        out = compute_equity_price_metrics(pd.DataFrame(self._ramp_series())).sort_values("trade_date").reset_index(drop=True)
+        assert out["downside_deviation_60d"].iloc[:59].isna().all()
+        ret = out["close"].astype(float).pct_change()
+        downside = ret.clip(upper=0.0)
+        expected = float(np.sqrt((downside**2).rolling(60, min_periods=60).mean().iloc[-1]) * np.sqrt(252))
+        assert out["downside_deviation_60d"].iloc[-1] == pytest.approx(expected, rel=1e-9)
+        assert (out["downside_deviation_60d"].dropna() >= 0).all()
