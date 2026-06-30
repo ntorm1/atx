@@ -802,6 +802,117 @@ ORDER BY signal_date, security_id
 """
 
 
+FORM144_INTENTS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible_intents AS (
+    SELECT f.*
+    FROM form144_intent f
+    {security_join}
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE coalesce(f.as_of_date, f.notice_date, f.filing_date, f.approx_sale_date) <= p.as_of_date
+      AND coalesce(f.is_latest, true)
+      AND (f.available_at IS NULL OR f.available_at <= p.as_of_ts)
+),
+visible_links AS (
+    SELECT
+        l.form144_filing_id,
+        count(*) AS matched_transaction_count,
+        sum(coalesce(l.shares_matched, 0)) AS matched_shares,
+        sum(coalesce(l.value_matched, 0)) AS matched_value,
+        max(l.match_confidence) AS max_match_confidence,
+        max(l.available_at) AS latest_match_available_at
+    FROM form144_to_form4_link l
+    JOIN insider_transaction t ON t.transaction_id = l.insider_transaction_id
+    CROSS JOIN params p
+    WHERE (l.available_at IS NULL OR l.available_at <= p.as_of_ts)
+      AND coalesce(t.transaction_date, t.as_of_date) <= p.as_of_date
+      AND (t.available_at IS NULL OR t.available_at <= p.as_of_ts)
+    GROUP BY l.form144_filing_id
+)
+SELECT
+    f.*,
+    coalesce(l.matched_transaction_count, 0) AS matched_transaction_count,
+    coalesce(l.matched_shares, 0) AS matched_shares,
+    coalesce(l.matched_value, 0) AS matched_value,
+    CASE
+        WHEN f.shares_proposed IS NOT NULL AND f.shares_proposed <> 0
+        THEN coalesce(l.matched_shares, 0) / f.shares_proposed
+        ELSE NULL
+    END AS completion_ratio,
+    l.max_match_confidence,
+    l.latest_match_available_at
+FROM visible_intents f
+LEFT JOIN visible_links l ON l.form144_filing_id = f.filing_id
+ORDER BY coalesce(f.filing_date, f.approx_sale_date), f.issuer_trading_symbol, f.seller_name
+"""
+
+
+FORM144_RECONCILIATION_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT
+    l.form144_filing_id,
+    l.insider_transaction_id,
+    coalesce(l.security_id, f.security_id) AS security_id,
+    coalesce(l.insider_id, t.insider_id) AS insider_id,
+    coalesce(l.issuer_cik, f.issuer_cik) AS issuer_cik,
+    l.seller_cik,
+    l.intent_notice_date,
+    l.approx_sale_date AS link_approx_sale_date,
+    l.transaction_date AS link_transaction_date,
+    l.days_between,
+    l.shares_proposed AS link_shares_proposed,
+    l.transaction_shares AS link_transaction_shares,
+    l.execution_ratio,
+    l.match_confidence,
+    l.match_method,
+    l.match_status,
+    l.shares_matched,
+    l.value_matched,
+    l.share_match_ratio,
+    l.sale_date,
+    l.as_of_date,
+    l.available_at,
+    l.details_json,
+    l.source,
+    l.run_id,
+    l.source_loaded_at,
+    f.accession_number AS form144_accession_number,
+    f.seller_name,
+    f.issuer_name,
+    f.issuer_trading_symbol,
+    f.approx_sale_date,
+    f.sale_window_end_date,
+    f.shares_proposed,
+    t.accession_number AS form4_accession_number,
+    t.insider_id,
+    t.transaction_date,
+    t.transaction_shares,
+    t.transaction_price,
+    t.available_at AS form4_available_at
+FROM form144_to_form4_link l
+JOIN form144_intent f ON f.filing_id = l.form144_filing_id
+JOIN insider_transaction t ON t.transaction_id = l.insider_transaction_id
+{security_join}
+{symbol_join}
+CROSS JOIN params p
+WHERE coalesce(l.as_of_date, f.as_of_date, f.notice_date, f.filing_date, f.approx_sale_date) <= p.as_of_date
+  AND (f.available_at IS NULL OR f.available_at <= p.as_of_ts)
+  AND coalesce(t.transaction_date, t.as_of_date) <= p.as_of_date
+  AND (t.available_at IS NULL OR t.available_at <= p.as_of_ts)
+  AND (l.available_at IS NULL OR l.available_at <= p.as_of_ts)
+ORDER BY f.approx_sale_date, f.seller_name, t.transaction_date
+"""
+
+
 BLOCKHOLDER_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -1615,6 +1726,92 @@ def insider_transaction_metrics_asof(
                 registered.append("asof_insider_metric_symbol_filter")
                 symbol_join = "JOIN asof_insider_metric_symbol_filter symf ON symf.symbol = upper(m.issuer_trading_symbol)"
             sql = INSIDER_TRANSACTION_METRICS_ASOF_SQL.format(
+                security_join=security_join,
+                symbol_join=symbol_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def form144_intents_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return Form 144 sale-intent rows visible as of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            security_join = ""
+            symbol_join = ""
+            security_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_strings(symbols)
+            if _register_filter(store, "asof_form144_security_filter", "security_id", security_values):
+                registered.append("asof_form144_security_filter")
+                security_join = "JOIN asof_form144_security_filter sf ON sf.security_id = f.security_id"
+            if _register_filter(store, "asof_form144_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_form144_symbol_filter")
+                symbol_join = "JOIN asof_form144_symbol_filter symf ON symf.symbol = upper(f.issuer_trading_symbol)"
+            sql = FORM144_INTENTS_ASOF_SQL.format(
+                security_join=security_join,
+                symbol_join=symbol_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def form144_reconciliation_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return visible Form 144 to Form 4 reconciliation links."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            security_join = ""
+            symbol_join = ""
+            security_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_strings(symbols)
+            if _register_filter(store, "asof_form144_link_security_filter", "security_id", security_values):
+                registered.append("asof_form144_link_security_filter")
+                security_join = "JOIN asof_form144_link_security_filter sf ON sf.security_id = f.security_id"
+            if _register_filter(store, "asof_form144_link_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_form144_link_symbol_filter")
+                symbol_join = "JOIN asof_form144_link_symbol_filter symf ON symf.symbol = upper(f.issuer_trading_symbol)"
+            sql = FORM144_RECONCILIATION_ASOF_SQL.format(
                 security_join=security_join,
                 symbol_join=symbol_join,
             )

@@ -26,6 +26,8 @@ from db.asof import (
     est_surprise_asof,
     features_asof,
     filer_aliases_asof,
+    form144_intents_asof,
+    form144_reconciliation_asof,
     fundamental_periods_asof,
     fundamental_ratios_asof,
     fundamental_xbrl_metric_asof,
@@ -117,6 +119,8 @@ def parse_args() -> argparse.Namespace:
             "13f-positioning",
             "filer-aliases",
             "insider-transaction-metrics",
+            "form144-intents",
+            "form144-reconciliation",
             "finra-short-volume",
             "offexchange-volume",
             "offexchange-security-period",
@@ -471,6 +475,22 @@ def main() -> int:
         )
     elif args.view == "insider-transaction-metrics":
         frame = insider_transaction_metrics_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "form144-intents":
+        frame = form144_intents_asof(
+            as_of_date=args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            security_ids=parse_id_csv(args.security_ids),
+            symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "form144-reconciliation":
+        frame = form144_reconciliation_asof(
             as_of_date=args.as_of_date,
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,

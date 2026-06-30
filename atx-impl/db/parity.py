@@ -386,12 +386,14 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "derivative rows",
             "Rule 10b5-1 indicator and adoption date",
             "issuer-day cluster-buy and plan-sale contamination metrics",
+            "Form 144 intent-to-sell notices reconciled to Form 4 sale executions",
         ),
         open_substitute=(
             "SEC ownership XML normalized into insider, filing_form4, insider_relationship, "
             "insider_transaction, insider_holding, and tradingplan_10b5_1 tables, plus S29 "
             "derived insider_transaction_metrics for open-market purchases, plan-vs-discretionary "
-            "sales, cluster buys, and late-filing revisions."
+            "sales, cluster buys, and late-filing revisions, plus S30 offline/injectable Form 144 "
+            "intent rows linked to visible Form 4 sale transactions."
         ),
         warehouse_tables=(
             "insider",
@@ -401,14 +403,17 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "insider_holding",
             "tradingplan_10b5_1",
             "insider_transaction_metrics",
+            "form144_intent",
+            "form144_to_form4_link",
         ),
         parity_status="partial",
         limitations=(
             "Open SEC XML covers Section 16 filings but lacks vendor backfilled role normalization, "
             "broad live Form 3/4/5 backfill, pre-2023 10b5-1 plan inference, and cross-person "
-            "household/entity rollups; S29 scoring is cluster/plan-sale oriented rather than a full vendor score."
+            "household/entity rollups; S29 scoring is cluster/plan-sale oriented rather than a full vendor score; "
+            "S30 Form 144 is built but remains empty until source files are injected."
         ),
-        next_gap="Backfill broad Form 3/4/5 coverage, add Form 144 reconciliation, N-PORT fund holdings, N-PX/proxy-vote and congressional disclosure surfaces, and richer household/entity role rollups.",
+        next_gap="Backfill broad Form 3/4/5 coverage, populate Form 144 source files, add N-PORT fund holdings, N-PX/proxy-vote and congressional disclosure surfaces, and richer household/entity role rollups.",
         source_urls=(
             "https://www.sec.gov/edgar/searchedgar/ownershipformcodes.html",
             "https://www.sec.gov/page/edgar-ownership-xml-tech-spec",

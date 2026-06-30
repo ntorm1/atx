@@ -2824,6 +2824,120 @@ def _check_specs(
             required_tables=("insider_transaction_metrics",),
         ),
         SqlQualityCheck(
+            dataset_id="form144_intent",
+            table_name="form144_intent",
+            check_name="duplicate_form144_intent_accessions",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT accession_number, count(*) AS row_count
+                    FROM form144_intent
+                    GROUP BY 1
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("form144_intent",),
+        ),
+        SqlQualityCheck(
+            dataset_id="form144_intent",
+            table_name="form144_intent",
+            check_name="form144_intent_multiple_latest_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        source,
+                        coalesce(seller_cik, seller_name_norm, ''),
+                        coalesce(security_id, ''),
+                        coalesce(approx_sale_date, notice_date, filing_date),
+                        coalesce(security_title, ''),
+                        count(*) FILTER (WHERE coalesce(is_latest, false)) AS latest_rows
+                    FROM form144_intent
+                    GROUP BY 1, 2, 3, 4, 5
+                    HAVING count(*) FILTER (WHERE coalesce(is_latest, false)) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("form144_intent",),
+        ),
+        SqlQualityCheck(
+            dataset_id="form144_intent",
+            table_name="form144_intent",
+            check_name="bad_form144_intent_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM form144_intent
+                WHERE filing_id IS NULL OR filing_id = ''
+                   OR accession_number IS NULL OR accession_number = ''
+                   OR seller_name IS NULL OR seller_name = ''
+                   OR seller_name_norm IS NULL OR seller_name_norm = ''
+                   OR source IS NULL OR source = ''
+                   OR source_url IS NULL OR source_url = ''
+                   OR available_at IS NULL
+                   OR coalesce(as_of_date, notice_date, filing_date, approx_sale_date) IS NULL
+                   OR (security_id IS NULL AND issuer_cik IS NULL AND issuer_trading_symbol IS NULL)
+                   OR coalesce(shares_proposed, 0) < 0
+                   OR coalesce(aggregate_market_value, 0) < 0
+                   OR coalesce(approx_price_per_share, 0) < 0
+                   OR coalesce(restatement_seq, 0) < 0
+                   OR (sale_window_end_date IS NOT NULL
+                       AND approx_sale_date IS NOT NULL
+                       AND sale_window_end_date < approx_sale_date)
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("form144_intent",),
+        ),
+        SqlQualityCheck(
+            dataset_id="form144_to_form4_link",
+            table_name="form144_to_form4_link",
+            check_name="bad_form144_to_form4_links",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM form144_to_form4_link
+                WHERE form144_filing_id IS NULL OR form144_filing_id = ''
+                   OR insider_transaction_id IS NULL OR insider_transaction_id = ''
+                   OR source IS NULL OR source = ''
+                   OR match_confidence IS NULL
+                   OR match_confidence < 0
+                   OR match_confidence > 1
+                   OR match_method IS NULL
+                   OR match_method = ''
+                   OR match_status NOT IN ('FULL', 'PARTIAL', 'EXCESS', 'UNKNOWN')
+                   OR available_at IS NULL
+                   OR as_of_date IS NULL
+                   OR coalesce(days_between, 0) < 0
+                   OR coalesce(shares_proposed, 0) < 0
+                   OR coalesce(transaction_shares, 0) < 0
+                   OR coalesce(execution_ratio, 0) < 0
+                   OR coalesce(shares_matched, 0) < 0
+                   OR coalesce(value_matched, 0) < 0
+                   OR coalesce(share_match_ratio, 0) < 0
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("form144_to_form4_link",),
+        ),
+        SqlQualityCheck(
+            dataset_id="form144_to_form4_link",
+            table_name="form144_to_form4_link",
+            check_name="orphan_form144_to_form4_links",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM form144_to_form4_link l
+                LEFT JOIN form144_intent f ON f.filing_id = l.form144_filing_id
+                LEFT JOIN insider_transaction t ON t.transaction_id = l.insider_transaction_id
+                WHERE f.filing_id IS NULL
+                   OR t.transaction_id IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("form144_to_form4_link", "form144_intent", "insider_transaction"),
+        ),
+        SqlQualityCheck(
             dataset_id="sec_blockholder_ownership",
             table_name="blockholder_filing",
             check_name="duplicate_blockholder_filings",

@@ -37,6 +37,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 49 in versions, f"Migration 0049 not recorded; found: {versions}"
     assert 50 in versions, f"Migration 0050 not recorded; found: {versions}"
     assert 51 in versions, f"Migration 0051 not recorded; found: {versions}"
+    assert 52 in versions, f"Migration 0052 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -312,6 +313,81 @@ def test_migration_0051_catalogs_insider_transaction_metrics(tmp_store):
         "is_cluster_buy",
         "is_10b5_1_heavy_sale",
     }.issubset(fields)
+
+
+def test_migration_0052_catalogs_form144_reconciliation(tmp_store):
+    """Migration 0052 adds PIT Form 144 intent and execution-reconciliation metadata."""
+
+    intent_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'form144_intent'
+            """
+        ).fetchall()
+    }
+    link_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'form144_to_form4_link'
+            """
+        ).fetchall()
+    }
+    assert {
+        "seller_name_norm",
+        "seller_cik",
+        "sale_window_end_date",
+        "approx_price_per_share",
+        "source_file_sha256",
+        "as_of_date",
+        "available_at",
+    }.issubset(intent_columns)
+    assert {
+        "match_status",
+        "shares_matched",
+        "share_match_ratio",
+        "sale_date",
+        "as_of_date",
+        "available_at",
+        "details_json",
+    }.issubset(link_columns)
+
+    datasets = {
+        row[0]: row[1:]
+        for row in tmp_store.con.execute(
+            """
+            SELECT d.dataset_id, d.grain, t.layer, t.pit_notes
+            FROM dataset_catalog d
+            JOIN table_catalog t ON t.table_name = d.primary_table
+            WHERE d.dataset_id IN ('form144_intent', 'form144_to_form4_link')
+            """
+        ).fetchall()
+    }
+    assert datasets["form144_intent"][0] == "accession_number"
+    assert datasets["form144_to_form4_link"][0] == "form144_filing_id,insider_transaction_id"
+    assert datasets["form144_intent"][1] == "bronze"
+    assert datasets["form144_to_form4_link"][1] == "silver"
+    assert "available_at" in datasets["form144_intent"][2]
+    assert "available_at" in datasets["form144_to_form4_link"][2]
+
+    fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name IN ('form144_intent', 'form144_to_form4_link')
+            """
+        ).fetchall()
+    }
+    assert {"seller_name_norm", "match_method", "match_status", "share_match_ratio"}.issubset(fields)
 
 
 def test_migration_0042_catalogs_corporate_action_split_metrics(tmp_store):

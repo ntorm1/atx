@@ -191,6 +191,41 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     HAVING count(*) > 0
     """,
     """
+    SELECT 'form144_intent', 'max_filing_date', max(filing_date)::VARCHAR
+    FROM form144_intent
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'form144_intent', 'max_approx_sale_date', max(approx_sale_date)::VARCHAR
+    FROM form144_intent
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'form144_intent', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM form144_intent
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'form144_intent', 'max_available_at', max(available_at)::VARCHAR
+    FROM form144_intent
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'form144_to_form4_link', 'max_sale_date', max(sale_date)::VARCHAR
+    FROM form144_to_form4_link
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'form144_to_form4_link', 'max_as_of_date', max(as_of_date)::VARCHAR
+    FROM form144_to_form4_link
+    HAVING count(*) > 0
+    """,
+    """
+    SELECT 'form144_to_form4_link', 'max_available_at', max(available_at)::VARCHAR
+    FROM form144_to_form4_link
+    HAVING count(*) > 0
+    """,
+    """
     SELECT 'sec_blockholder_ownership', 'max_event_date', max(event_date)::VARCHAR
     FROM blockholder_filing
     HAVING count(*) > 0

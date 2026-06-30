@@ -154,6 +154,22 @@ def test_default_jobs_include_insider_transaction_metrics_after_insider_load(tmp
     assert order.index("sec_insider_ownership") < order.index("insider_transaction_metrics")
 
 
+def test_default_jobs_include_form144_reconciliation_after_insider_load(tmp_store):
+    """Form 144 intent/execution reconciliation waits for Section 16 sale rows."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "sec_insider_ownership" in order
+    assert "form144_intent" in order
+    assert "form144_to_form4_link" in order
+    assert order.index("sec_insider_ownership") < order.index("form144_intent")
+    assert order.index("form144_intent") < order.index("form144_to_form4_link")
+    assert order.index("sec_insider_ownership") < order.index("form144_to_form4_link")
+
+
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):
     """Delisting proxy events are derived from listing-status intervals."""
     from db.jobs import JobManager

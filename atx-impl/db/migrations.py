@@ -3867,6 +3867,184 @@ def _insider_transaction_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _form144_reconciliation(conn: duckdb.DuckDBPyConnection) -> None:
+    """S30: Form 144 intent-to-sell ingestion and Form 4 reconciliation metadata."""
+
+    for statement in (
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS seller_name_norm VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS seller_cik VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS issuer_trading_symbol VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS security_title VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS notice_date DATE",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS approx_price_per_share DOUBLE",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS sale_window_end_date DATE",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS rule_10b5_1_indicator BOOLEAN",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS plan_adoption_date DATE",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS restatement_seq INTEGER",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS is_latest BOOLEAN",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS is_amendment BOOLEAN",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS remarks VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS source_file VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS source_file_sha256 VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS raw_payload_json VARCHAR",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS security_id VARCHAR",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS insider_id VARCHAR",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS issuer_cik VARCHAR",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS seller_cik VARCHAR",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS intent_notice_date DATE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS approx_sale_date DATE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS transaction_date DATE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS days_between INTEGER",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS shares_proposed DOUBLE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS transaction_shares DOUBLE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS execution_ratio DOUBLE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS match_method VARCHAR",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS match_status VARCHAR",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS shares_matched DOUBLE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS value_matched DOUBLE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS share_match_ratio DOUBLE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS sale_date DATE",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS available_at TIMESTAMP",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS details_json VARCHAR",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
+        "CREATE INDEX IF NOT EXISTS idx_form144_intent_seller_security ON form144_intent(seller_name_norm, security_id, approx_sale_date)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_intent_seller_date ON form144_intent(seller_cik, security_id, approx_sale_date)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_intent_latest ON form144_intent(source, is_latest, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_intent_asof ON form144_intent(filing_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_intent_pit ON form144_intent(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_link_intent ON form144_to_form4_link(form144_filing_id)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_link_transaction ON form144_to_form4_link(insider_transaction_id)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_link_asof ON form144_to_form4_link(available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_form144_link_pit ON form144_to_form4_link(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        UPDATE form144_intent
+        SET restatement_seq = coalesce(restatement_seq, 0),
+            is_latest = coalesce(is_latest, true),
+            is_amendment = coalesce(is_amendment, false),
+            as_of_date = coalesce(as_of_date, notice_date, filing_date, approx_sale_date),
+            updated_at = coalesce(updated_at, now())
+        """
+    )
+    conn.execute(
+        """
+        UPDATE form144_to_form4_link
+        SET as_of_date = coalesce(as_of_date, sale_date, transaction_date),
+            updated_at = coalesce(updated_at, now())
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES
+            (
+                'form144_intent',
+                'sec_edgar',
+                'SEC Form 144 intent-to-sell filings',
+                'Restricted-stock and affiliate sale intent filings, injected from Form 144 XML or normalized CSV with source-file lineage and bitemporal availability.',
+                'accession_number',
+                'form144_intent', 'filing_date', 'available_at', now()
+            ),
+            (
+                'form144_to_form4_link',
+                'sec_edgar',
+                'Form 144 to Form 4 execution reconciliation',
+                'Conservative links from Form 144 sale intentions to subsequent Section 16 Form 4 sale transactions, with share/value match diagnostics and PIT availability.',
+                'form144_filing_id,insider_transaction_id',
+                'form144_to_form4_link', 'sale_date', 'available_at', now()
+            ),
+            (
+                'sec_form144_intent',
+                'sec_edgar',
+                'SEC Form 144 sale intent',
+                'Offline/injectable Form 144 notices of proposed sale plus reconciliation links to visible Form 4 sale transactions.',
+                'accession_number; form144_filing_id,insider_transaction_id',
+                'form144_intent', 'as_of_date', 'available_at', now()
+            )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'form144_intent', 'bronze', 'form144_intent',
+                'accession_number',
+                'SEC Form 144 forward-looking restricted/control-security sale intent rows.',
+                '["filing_id"]',
+                'Use as_of_date and available_at for intent visibility; sale_window_end_date is approximate sale date plus the Rule 144 three-month window.',
+                now()
+            ),
+            (
+                'form144_to_form4_link', 'silver', 'form144_reconciliation',
+                'form144_filing_id,insider_transaction_id',
+                'Reconciliation links from Form 144 intent rows to subsequent Form 4 sale transactions.',
+                '["form144_filing_id","insider_transaction_id"]',
+                'as_of_date and available_at are the later visible source dates, preventing intent/execution matches before either filing is public.',
+                now()
+            )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('source', 'accession_number', 'issuer_cik', 'issuer_trading_symbol') THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%date' OR lower(c.column_name) = 'sale_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'seller_name_norm' THEN 'Normalized seller name used for conservative matching to Section 16 insiders.'
+                WHEN 'sale_window_end_date' THEN 'Approximate end of the Rule 144 three-month sale window.'
+                WHEN 'approx_price_per_share' THEN 'Aggregate market value divided by proposed shares when both are present.'
+                WHEN 'source_file_sha256' THEN 'SHA-256 hash of the injected Form 144 XML/CSV source file.'
+                WHEN 'match_confidence' THEN 'Deterministic confidence score for the Form 144 to Form 4 candidate link.'
+                WHEN 'match_method' THEN 'Matching basis, such as insider_id_security_window or seller_name_security_window.'
+                WHEN 'match_status' THEN 'Per-link share completion status: FULL, PARTIAL, EXCESS, or UNKNOWN.'
+                WHEN 'share_match_ratio' THEN 'Matched Form 4 sale shares divided by the Form 144 proposed-share count.'
+                WHEN 'details_json' THEN 'JSON diagnostics explaining the link, dates, and share/value comparison.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) LIKE '%date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%ratio%' OR lower(c.column_name) LIKE '%confidence%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%value%' OR lower(c.column_name) LIKE '%price%' THEN 'usd'
+                WHEN lower(c.column_name) LIKE '%shares%' OR lower(c.column_name) LIKE '%count%' THEN 'count'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name IN ('form144_intent', 'form144_to_form4_link')
+        """
+    )
+
 def _corporate_action_dividend_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S18: derived cash-dividend analytics (corporate actions x pricing).
 
@@ -4838,6 +5016,11 @@ MIGRATIONS: list[Migration] = [
         version=51,
         name="insider_transaction_metrics",
         up=_insider_transaction_metrics,
+    ),
+    Migration(
+        version=52,
+        name="form144_reconciliation",
+        up=_form144_reconciliation,
     ),
 ]
 

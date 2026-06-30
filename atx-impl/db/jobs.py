@@ -63,6 +63,7 @@ from .insider_ownership import (
     InsiderOwnershipOptions,
 )
 from .insider_metrics import InsiderTransactionMetricsDataset, InsiderTransactionMetricsOptions
+from .form144 import Form144IntentDataset, Form144Options, Form144ReconciliationDataset
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
 from .macro import FredMacroDataset, FredMacroOptions
 from .offexchange import (
@@ -647,6 +648,23 @@ def _insider_transaction_metrics_options(params: dict[str, Any]) -> InsiderTrans
     )
 
 
+def _form144_options(params: dict[str, Any]) -> Form144Options:
+    default = Form144Options()
+    source_files = _path_tuple_or_none(params.get("source_files"))
+    if not source_files and params.get("source_file") not in (None, ""):
+        source_files = (Path(params["source_file"]),)
+    metadata = params.get("metadata_by_source") or {}
+    return Form144Options(
+        source_files=source_files,
+        source=params.get("source", default.source),
+        replace_source_files=_bool_param(params.get("replace_source_files"), default.replace_source_files),
+        reconcile=_bool_param(params.get("reconcile"), default.reconcile),
+        match_window_days=int(params.get("match_window_days", default.match_window_days)),
+        run_id=params.get("run_id", default.run_id),
+        metadata_by_source=dict(metadata),
+    )
+
+
 def _entity_classification_options(params: dict[str, Any]) -> EntityClassificationOptions:
     _default = EntityClassificationOptions()
     sic_file = params.get("sic_file")
@@ -865,6 +883,8 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         InsiderTransactionMetricsDataset,
         _insider_transaction_metrics_options,
     ),
+    Form144IntentDataset.dataset_id: (Form144IntentDataset, _form144_options),
+    Form144ReconciliationDataset.dataset_id: (Form144ReconciliationDataset, _form144_options),
     BlockholderOwnershipDataset.dataset_id: (BlockholderOwnershipDataset, _blockholder_ownership_options),
     IdentifierResolutionCandidateDataset.dataset_id: (
         IdentifierResolutionCandidateDataset,
@@ -1177,6 +1197,19 @@ class JobManager:
             dataset_id="insider_transaction_metrics",
             params={"symbols": symbols},
             dependencies=["sec_insider_ownership"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="form144_intent",
+            dataset_id="form144_intent",
+            params={"source_files": None, "reconcile": True},
+            dependencies=["sec_insider_ownership"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="form144_to_form4_link",
+            dataset_id="form144_to_form4_link",
+            dependencies=["form144_intent", "sec_insider_ownership"],
             **retry_policy,
         )
         self.register_job(
