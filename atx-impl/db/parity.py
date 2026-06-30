@@ -385,10 +385,13 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "shares/price/holdings",
             "derivative rows",
             "Rule 10b5-1 indicator and adoption date",
+            "issuer-day cluster-buy and plan-sale contamination metrics",
         ),
         open_substitute=(
             "SEC ownership XML normalized into insider, filing_form4, insider_relationship, "
-            "insider_transaction, insider_holding, and tradingplan_10b5_1 tables."
+            "insider_transaction, insider_holding, and tradingplan_10b5_1 tables, plus S29 "
+            "derived insider_transaction_metrics for open-market purchases, plan-vs-discretionary "
+            "sales, cluster buys, and late-filing revisions."
         ),
         warehouse_tables=(
             "insider",
@@ -397,13 +400,15 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "insider_transaction",
             "insider_holding",
             "tradingplan_10b5_1",
+            "insider_transaction_metrics",
         ),
         parity_status="partial",
         limitations=(
             "Open SEC XML covers Section 16 filings but lacks vendor backfilled role normalization, "
-            "pre-2023 10b5-1 plan inference, insider scoring, and cross-person household/entity rollups."
+            "broad live Form 3/4/5 backfill, pre-2023 10b5-1 plan inference, and cross-person "
+            "household/entity rollups; S29 scoring is cluster/plan-sale oriented rather than a full vendor score."
         ),
-        next_gap="Add 13D/G parser, Form 144 reconciliation, N-PORT fund holdings, and richer insider role/cluster scoring.",
+        next_gap="Backfill broad Form 3/4/5 coverage, add Form 144 reconciliation, N-PORT fund holdings, N-PX/proxy-vote and congressional disclosure surfaces, and richer household/entity role rollups.",
         source_urls=(
             "https://www.sec.gov/edgar/searchedgar/ownershipformcodes.html",
             "https://www.sec.gov/page/edgar-ownership-xml-tech-spec",
