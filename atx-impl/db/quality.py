@@ -2742,6 +2742,88 @@ def _check_specs(
             required_tables=("tradingplan_10b5_1",),
         ),
         SqlQualityCheck(
+            dataset_id="insider_transaction_metrics",
+            table_name="insider_transaction_metrics",
+            check_name="insider_transaction_metrics_multiple_latest_per_key",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, security_id, signal_date, window_days,
+                           count(*) FILTER (WHERE is_latest_revision) AS latest_rows
+                    FROM insider_transaction_metrics
+                    GROUP BY 1, 2, 3, 4
+                    HAVING count(*) FILTER (WHERE is_latest_revision) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("insider_transaction_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="insider_transaction_metrics",
+            table_name="insider_transaction_metrics",
+            check_name="bad_insider_transaction_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM insider_transaction_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR source IS NULL OR source = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR signal_date IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR window_days < 1
+                   OR cluster_min_buyers < 1
+                   OR cluster_min_purchase_value < 0
+                   OR transaction_count < 1
+                   OR open_market_purchase_count < 0
+                   OR open_market_sale_count < 0
+                   OR discretionary_sale_count < 0
+                   OR plan_sale_count < 0
+                   OR unique_insider_count < 0
+                   OR buyer_count < 0
+                   OR seller_count < 0
+                   OR cluster_purchase_count < 0
+                   OR cluster_buyer_count < 0
+                   OR cluster_sale_count < 0
+                   OR cluster_seller_count < 0
+                   OR coalesce(gross_purchase_shares, 0) < 0
+                   OR coalesce(gross_sale_shares, 0) < 0
+                   OR coalesce(gross_purchase_value, 0) < 0
+                   OR coalesce(gross_sale_value, 0) < 0
+                   OR coalesce(discretionary_sale_value, 0) < 0
+                   OR coalesce(plan_sale_value, 0) < 0
+                   OR coalesce(cluster_purchase_value, 0) < 0
+                   OR coalesce(cluster_sale_value, 0) < 0
+                   OR (plan_sale_value_ratio IS NOT NULL AND (plan_sale_value_ratio < 0 OR plan_sale_value_ratio > 1))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("insider_transaction_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="insider_transaction_metrics",
+            table_name="insider_transaction_metrics",
+            check_name="insider_transaction_metric_flags_consistent",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM insider_transaction_metrics
+                WHERE (is_cluster_buy AND (
+                           cluster_buyer_count < cluster_min_buyers
+                           OR coalesce(cluster_purchase_value, 0) < cluster_min_purchase_value
+                       ))
+                   OR (is_10b5_1_heavy_sale AND (
+                           coalesce(gross_sale_value, 0) <= 0
+                           OR coalesce(plan_sale_value_ratio, 0) < 0.5
+                       ))
+                   OR plan_sale_value > gross_sale_value
+                   OR discretionary_sale_value > gross_sale_value
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("insider_transaction_metrics",),
+        ),
+        SqlQualityCheck(
             dataset_id="sec_blockholder_ownership",
             table_name="blockholder_filing",
             check_name="duplicate_blockholder_filings",

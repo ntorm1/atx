@@ -141,6 +141,19 @@ def test_default_jobs_include_offexchange_quality_report_after_public_flow_input
     assert order.index("short_volume_metrics") < order.index("offexchange_quality_report")
 
 
+def test_default_jobs_include_insider_transaction_metrics_after_insider_load(tmp_store):
+    """Derived insider signals wait for raw Section 16 ownership XML rows."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "sec_insider_ownership" in order
+    assert "insider_transaction_metrics" in order
+    assert order.index("sec_insider_ownership") < order.index("insider_transaction_metrics")
+
+
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):
     """Delisting proxy events are derived from listing-status intervals."""
     from db.jobs import JobManager

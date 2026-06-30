@@ -62,6 +62,7 @@ from .insider_ownership import (
     InsiderOwnershipDataset,
     InsiderOwnershipOptions,
 )
+from .insider_metrics import InsiderTransactionMetricsDataset, InsiderTransactionMetricsOptions
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
 from .macro import FredMacroDataset, FredMacroOptions
 from .offexchange import (
@@ -632,6 +633,20 @@ def _blockholder_ownership_options(params: dict[str, Any]) -> BlockholderOwnersh
     )
 
 
+def _insider_transaction_metrics_options(params: dict[str, Any]) -> InsiderTransactionMetricsOptions:
+    default = InsiderTransactionMetricsOptions()
+    return InsiderTransactionMetricsOptions(
+        source=params.get("source", default.source),
+        input_source=params.get("input_source", default.input_source),
+        window_days=int(params.get("window_days", default.window_days)),
+        cluster_min_buyers=int(params.get("cluster_min_buyers", default.cluster_min_buyers)),
+        cluster_min_purchase_value=float(params.get("cluster_min_purchase_value", default.cluster_min_purchase_value)),
+        security_ids=_string_tuple_or_none(params.get("security_ids")),
+        symbols=_tuple_or_none(params.get("symbols")),
+        run_id=params.get("run_id", default.run_id),
+    )
+
+
 def _entity_classification_options(params: dict[str, Any]) -> EntityClassificationOptions:
     _default = EntityClassificationOptions()
     sic_file = params.get("sic_file")
@@ -846,6 +861,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ),
     OwnershipFeatureDataset.dataset_id: (OwnershipFeatureDataset, _ownership_feature_options),
     InsiderOwnershipDataset.dataset_id: (InsiderOwnershipDataset, _insider_ownership_options),
+    InsiderTransactionMetricsDataset.dataset_id: (
+        InsiderTransactionMetricsDataset,
+        _insider_transaction_metrics_options,
+    ),
     BlockholderOwnershipDataset.dataset_id: (BlockholderOwnershipDataset, _blockholder_ownership_options),
     IdentifierResolutionCandidateDataset.dataset_id: (
         IdentifierResolutionCandidateDataset,
@@ -1151,6 +1170,13 @@ class JobManager:
             dataset_id="sec_insider_ownership",
             params={"symbols": symbols, "forms": DEFAULT_FORMS, "max_filings": 25},
             dependencies=["sec_ownership_submissions"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="insider_transaction_metrics",
+            dataset_id="insider_transaction_metrics",
+            params={"symbols": symbols},
+            dependencies=["sec_insider_ownership"],
             **retry_policy,
         )
         self.register_job(

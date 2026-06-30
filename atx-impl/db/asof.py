@@ -760,6 +760,48 @@ ORDER BY r.security_id, r.insider_id, r.valid_from
 """
 
 
+INSIDER_TRANSACTION_METRICS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible AS (
+    SELECT
+        m.*,
+        row_number() OVER (
+            PARTITION BY m.source, m.security_id, m.signal_date, m.window_days
+            ORDER BY m.available_at DESC, m.metric_id
+        ) AS rn
+    FROM insider_transaction_metrics m
+    {security_join}
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE m.signal_date <= p.as_of_date
+      AND m.as_of_date <= p.as_of_date
+      AND m.available_at <= p.as_of_ts
+)
+SELECT
+    metric_id, source, input_source, security_id, issuer_cik, issuer_name,
+    issuer_trading_symbol, signal_date, window_days, cluster_min_buyers,
+    cluster_min_purchase_value, transaction_count, open_market_purchase_count,
+    open_market_sale_count, discretionary_sale_count, plan_sale_count,
+    grant_count, exercise_count, tax_withholding_count, unique_insider_count,
+    buyer_count, seller_count, director_count, officer_count,
+    ten_percent_owner_count, gross_purchase_shares, gross_sale_shares,
+    net_purchase_shares, gross_purchase_value, gross_sale_value,
+    discretionary_sale_value, plan_sale_value, net_purchase_value,
+    cluster_purchase_count, cluster_buyer_count, cluster_purchase_value,
+    cluster_sale_count, cluster_seller_count, cluster_sale_value,
+    plan_sale_value_ratio, is_cluster_buy, is_discretionary_sell_pressure,
+    is_10b5_1_heavy_sale, source_transaction_ids_json, restatement_seq,
+    is_latest_revision, as_of_date, available_at, run_id, source_loaded_at
+FROM visible
+WHERE rn = 1
+ORDER BY signal_date, security_id
+"""
+
+
 BLOCKHOLDER_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -1532,6 +1574,49 @@ def insider_relationships_asof(
             sql = INSIDER_RELATIONSHIPS_ASOF_SQL.format(
                 security_join=security_join,
                 insider_join=insider_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+    if isinstance(store_or_path, _DuckDBStore):
+        return _run(store_or_path)
+    path = store_or_path if store_or_path is not None else db_path
+    with connect(path, read_only=True) as store:
+        return _run(store)
+
+
+def insider_transaction_metrics_asof(
+    store_or_path: "DuckDBStore | Path | str | None" = None,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return latest-visible insider transaction metrics as of a PIT timestamp."""
+    from .connection import DuckDBStore as _DuckDBStore
+
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+
+    def _run(store):
+        registered = []
+        try:
+            security_join = ""
+            symbol_join = ""
+            security_values = _normalize_ids(security_ids)
+            symbol_values = _normalize_strings(symbols)
+            if _register_filter(store, "asof_insider_metric_security_filter", "security_id", security_values):
+                registered.append("asof_insider_metric_security_filter")
+                security_join = "JOIN asof_insider_metric_security_filter sf ON sf.security_id = m.security_id"
+            if _register_filter(store, "asof_insider_metric_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_insider_metric_symbol_filter")
+                symbol_join = "JOIN asof_insider_metric_symbol_filter symf ON symf.symbol = upper(m.issuer_trading_symbol)"
+            sql = INSIDER_TRANSACTION_METRICS_ASOF_SQL.format(
+                security_join=security_join,
+                symbol_join=symbol_join,
             )
             return store.con.execute(sql, [as_of_date, as_of_ts]).df()
         finally:

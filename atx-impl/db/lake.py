@@ -82,6 +82,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "filing_form4",
     "insider_relationship",
     "insider_transaction",
+    "insider_transaction_metrics",
     "insider_holding",
     "tradingplan_10b5_1",
     "blockholder_filing",

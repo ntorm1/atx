@@ -36,6 +36,7 @@ from .asof import (
     corporate_action_split_metrics_asof,
     identifier_decisions_asof,
     insider_relationships_asof,
+    insider_transaction_metrics_asof,
     insider_transactions_asof,
     listing_status_asof,
     macro_asof,
@@ -176,6 +177,12 @@ from .insider_ownership import (
     BlockholderOwnershipOptions,
     InsiderOwnershipDataset,
     InsiderOwnershipOptions,
+)
+from .insider_metrics import (
+    InsiderTransactionMetricsDataset,
+    InsiderTransactionMetricsOptions,
+    compute_insider_transaction_metrics,
+    refresh_insider_transaction_metrics,
 )
 from .jobs import JobManager
 from .lake import LakeValidationProblem, LakeValidationSummary, validate_lake_export
@@ -391,6 +398,10 @@ __all__ = [
     "BlockholderOwnershipOptions",
     "InsiderOwnershipDataset",
     "InsiderOwnershipOptions",
+    "InsiderTransactionMetricsDataset",
+    "InsiderTransactionMetricsOptions",
+    "compute_insider_transaction_metrics",
+    "refresh_insider_transaction_metrics",
     "JobManager",
     "MIGRATIONS",
     "Migration",
@@ -482,6 +493,7 @@ __all__ = [
     "fundamentals_asof",
     "identifier_decisions_asof",
     "insider_relationships_asof",
+    "insider_transaction_metrics_asof",
     "insider_transactions_asof",
     "listing_status_asof",
     "load_delisting_return_observations",

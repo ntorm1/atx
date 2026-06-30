@@ -3716,6 +3716,157 @@ def _offexchange_quality_report(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _insider_transaction_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S29: derived Section 16 insider transaction signal metrics."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS insider_transaction_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            input_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            issuer_cik VARCHAR,
+            issuer_name VARCHAR,
+            issuer_trading_symbol VARCHAR,
+            signal_date DATE NOT NULL,
+            window_days INTEGER NOT NULL,
+            cluster_min_buyers INTEGER NOT NULL,
+            cluster_min_purchase_value DOUBLE NOT NULL,
+            transaction_count BIGINT NOT NULL,
+            open_market_purchase_count BIGINT NOT NULL,
+            open_market_sale_count BIGINT NOT NULL,
+            discretionary_sale_count BIGINT NOT NULL,
+            plan_sale_count BIGINT NOT NULL,
+            grant_count BIGINT NOT NULL,
+            exercise_count BIGINT NOT NULL,
+            tax_withholding_count BIGINT NOT NULL,
+            unique_insider_count BIGINT NOT NULL,
+            buyer_count BIGINT NOT NULL,
+            seller_count BIGINT NOT NULL,
+            director_count BIGINT NOT NULL,
+            officer_count BIGINT NOT NULL,
+            ten_percent_owner_count BIGINT NOT NULL,
+            gross_purchase_shares DOUBLE,
+            gross_sale_shares DOUBLE,
+            net_purchase_shares DOUBLE,
+            gross_purchase_value DOUBLE,
+            gross_sale_value DOUBLE,
+            discretionary_sale_value DOUBLE,
+            plan_sale_value DOUBLE,
+            net_purchase_value DOUBLE,
+            cluster_purchase_count BIGINT NOT NULL,
+            cluster_buyer_count BIGINT NOT NULL,
+            cluster_purchase_value DOUBLE,
+            cluster_sale_count BIGINT NOT NULL,
+            cluster_seller_count BIGINT NOT NULL,
+            cluster_sale_value DOUBLE,
+            plan_sale_value_ratio DOUBLE,
+            is_cluster_buy BOOLEAN NOT NULL DEFAULT false,
+            is_discretionary_sell_pressure BOOLEAN NOT NULL DEFAULT false,
+            is_10b5_1_heavy_sale BOOLEAN NOT NULL DEFAULT false,
+            source_transaction_ids_json VARCHAR,
+            restatement_seq INTEGER NOT NULL DEFAULT 0,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_insider_transaction_metrics_key ON insider_transaction_metrics(source, security_id, signal_date, window_days)",
+        "CREATE INDEX IF NOT EXISTS idx_insider_transaction_metrics_symbol ON insider_transaction_metrics(issuer_trading_symbol, signal_date)",
+        "CREATE INDEX IF NOT EXISTS idx_insider_transaction_metrics_asof ON insider_transaction_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_insider_transaction_metrics_latest ON insider_transaction_metrics(source, is_latest_revision, signal_date)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'insider_transaction_metrics',
+            'sec_edgar',
+            'Insider transaction analytics',
+            'Derived issuer-day and trailing-window signals over SEC Section 16 ownership XML: open-market purchases, 10b5-1 plan sale contamination, discretionary sale pressure, and cluster-buy diagnostics.',
+            'source,security_id,signal_date,window_days',
+            'insider_transaction_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'insider_transaction_metrics', 'gold', 'insider_transaction',
+            'source,security_id,signal_date,window_days,available_at',
+            'Issuer-day insider transaction signal surface derived from filing_form4 and insider_transaction rows.',
+            '["metric_id"]',
+            'Resolve with available_at <= query timestamp and is_latest_revision. Late filings for older transaction dates create new revisions while preserving earlier visible issuer-day signals.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('source', 'input_source', 'issuer_cik', 'issuer_trading_symbol', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%date' OR lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'signal_date' THEN 'Issuer-day signal date, usually the Form 4 transaction date.'
+                WHEN 'window_days' THEN 'Trailing calendar-day window used for cluster metrics.'
+                WHEN 'open_market_purchase_count' THEN 'Daily count of P-coded open-market/private purchase rows.'
+                WHEN 'open_market_sale_count' THEN 'Daily count of S-coded open-market/private sale rows.'
+                WHEN 'discretionary_sale_count' THEN 'Daily S-coded sale rows where rule_10b5_1_indicator is explicitly false.'
+                WHEN 'plan_sale_count' THEN 'Daily S-coded sale rows reported under a Rule 10b5-1 plan.'
+                WHEN 'cluster_buyer_count' THEN 'Distinct buyers in the trailing signal window.'
+                WHEN 'cluster_purchase_value' THEN 'Open-market purchase dollars in the trailing signal window.'
+                WHEN 'plan_sale_value_ratio' THEN 'Daily plan sale value divided by daily gross sale value.'
+                WHEN 'is_cluster_buy' THEN 'True when trailing-window buyers and purchase value meet row thresholds.'
+                WHEN 'is_discretionary_sell_pressure' THEN 'True when trailing discretionary sale value dominates purchases and meets the row threshold.'
+                WHEN 'is_10b5_1_heavy_sale' THEN 'True when at least half of daily sale value is reported under 10b5-1.'
+                WHEN 'source_transaction_ids_json' THEN 'JSON array of insider_transaction ids used by the trailing-window metrics.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) LIKE '%date' OR lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%ratio%' OR lower(c.column_name) LIKE '%pct%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%value%' THEN 'usd'
+                WHEN lower(c.column_name) LIKE '%shares%' OR lower(c.column_name) LIKE '%count%' OR lower(c.column_name) LIKE '%days%' THEN 'count'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'insider_transaction_metrics'
+        """
+    )
+
+
 def _corporate_action_dividend_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S18: derived cash-dividend analytics (corporate actions x pricing).
 
@@ -4682,6 +4833,11 @@ MIGRATIONS: list[Migration] = [
         version=50,
         name="offexchange_quality_report",
         up=_offexchange_quality_report,
+    ),
+    Migration(
+        version=51,
+        name="insider_transaction_metrics",
+        up=_insider_transaction_metrics,
     ),
 ]
 

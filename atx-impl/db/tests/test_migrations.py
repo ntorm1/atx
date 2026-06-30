@@ -35,6 +35,8 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 47 in versions, f"Migration 0047 not recorded; found: {versions}"
     assert 48 in versions, f"Migration 0048 not recorded; found: {versions}"
     assert 49 in versions, f"Migration 0049 not recorded; found: {versions}"
+    assert 50 in versions, f"Migration 0050 not recorded; found: {versions}"
+    assert 51 in versions, f"Migration 0051 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -263,6 +265,52 @@ def test_migration_0050_catalogs_offexchange_quality_report(tmp_store):
         "ats_share_pct",
         "restated_key_count",
         "multiple_latest_key_count",
+    }.issubset(fields)
+
+
+def test_migration_0051_catalogs_insider_transaction_metrics(tmp_store):
+    """Migration 0051 adds the derived insider transaction signal table."""
+
+    table_exists = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'insider_transaction_metrics'
+        """
+    ).fetchone()[0]
+    assert table_exists == 1
+
+    catalog_row = tmp_store.con.execute(
+        """
+        SELECT d.dataset_id, d.grain, t.layer, t.pit_notes
+        FROM dataset_catalog d
+        JOIN table_catalog t ON t.table_name = d.primary_table
+        WHERE d.dataset_id = 'insider_transaction_metrics'
+        """
+    ).fetchone()
+    assert catalog_row is not None
+    assert catalog_row[1] == "source,security_id,signal_date,window_days"
+    assert catalog_row[2] == "gold"
+    assert "available_at" in catalog_row[3]
+
+    fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name = 'insider_transaction_metrics'
+            """
+        ).fetchall()
+    }
+    assert {
+        "open_market_purchase_count",
+        "plan_sale_value_ratio",
+        "cluster_buyer_count",
+        "cluster_purchase_value",
+        "is_cluster_buy",
+        "is_10b5_1_heavy_sale",
     }.issubset(fields)
 
 
