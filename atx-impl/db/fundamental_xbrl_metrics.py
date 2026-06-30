@@ -62,6 +62,8 @@ DURATION_CONCEPT_MAP = {
     "CostOfRevenue": "cost_of_revenue",
     "InterestExpense": "interest_expense",
     "DepreciationDepletionAndAmortization": "depreciation_amortization",
+    "SellingGeneralAndAdministrativeExpense": "selling_general_and_administrative_expense",
+    "SellingGeneralAndAdministrativeExpenses": "selling_general_and_administrative_expense",
 }
 
 # Flat lookup used by normalize and callers.

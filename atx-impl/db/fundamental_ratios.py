@@ -202,6 +202,68 @@ def _ohlson_o_score(r: dict) -> float | None:
     )
 
 
+def _beneish_m_score(r: dict) -> float | None:
+    """Beneish (1999) eight-variable M-score for earnings-manipulation risk.
+
+    M = -4.84 + 0.920*DSRI + 0.528*GMI + 0.404*AQI + 0.892*SGI
+        + 0.115*DEPI - 0.172*SGAI + 4.679*TATA - 0.327*LVGI.
+
+    Sales, receivables, COGS, current assets, PP&E, depreciation, SG&A, liabilities,
+    net income, and operating cash flow come from the PIT warehouse inputs; prior-year
+    terms are paired by period_end in _attach_prior_year. Higher scores indicate more
+    manipulation-risk pressure; the classic screen flags scores above about -2.22.
+    """
+    sales, sales0 = float(r["rev"]), float(r["rev_prior"])
+    assets, assets0 = float(r["assets"]), float(r["assets_prior"])
+    ppe, ppe0 = float(r["property_plant_equipment_net"]), float(r["property_plant_equipment_net_prior"])
+    dep, dep0 = float(r["depreciation_amortization"]), float(r["depreciation_amortization_prior"])
+    sga, sga0 = (
+        float(r["selling_general_and_administrative_expense"]),
+        float(r["selling_general_and_administrative_expense_prior"]),
+    )
+    liabilities, liabilities0 = float(r["liabilities"]), float(r["liabilities_prior"])
+    if (
+        sales <= 0 or sales0 <= 0 or assets <= 0 or assets0 <= 0
+        or ppe < 0 or ppe0 < 0 or dep <= 0 or dep0 <= 0
+        or sga0 <= 0 or liabilities <= 0 or liabilities0 <= 0
+    ):
+        return None
+
+    receivables, receivables0 = float(r["accounts_receivable"]), float(r["accounts_receivable_prior"])
+    cogs, cogs0 = float(r["cost_of_revenue"]), float(r["cost_of_revenue_prior"])
+    gross_margin = (sales - cogs) / sales
+    gross_margin0 = (sales0 - cogs0) / sales0
+    asset_quality = 1.0 - ((float(r["current_assets"]) + ppe) / assets)
+    asset_quality0 = 1.0 - ((float(r["current_assets_prior"]) + ppe0) / assets0)
+    dep_rate = dep / (dep + ppe)
+    dep_rate0 = dep0 / (dep0 + ppe0)
+    if (
+        receivables0 <= 0 or gross_margin <= 0 or gross_margin0 <= 0
+        or asset_quality0 == 0 or dep_rate <= 0
+    ):
+        return None
+
+    dsri = (receivables / sales) / (receivables0 / sales0)
+    gmi = gross_margin0 / gross_margin
+    aqi = asset_quality / asset_quality0
+    sgi = sales / sales0
+    depi = dep_rate0 / dep_rate
+    sgai = (sga / sales) / (sga0 / sales0)
+    tata = (float(r["ni"]) - float(r["ocf"])) / assets
+    lvgi = (liabilities / assets) / (liabilities0 / assets0)
+    return (
+        -4.84
+        + 0.920 * dsri
+        + 0.528 * gmi
+        + 0.404 * aqi
+        + 0.892 * sgi
+        + 0.115 * depi
+        - 0.172 * sgai
+        + 4.679 * tata
+        - 0.327 * lvgi
+    )
+
+
 RATIO_DEFS: tuple[RatioDef, ...] = (
     # --- profitability -----------------------------------------------------
     RatioDef("net_profit_margin", "profitability", "ratio", "ratio",
@@ -407,6 +469,19 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
              ("assets", "liabilities", "current_assets", "current_liabilities", "ni", "ocf", "ni_prior"),
              lambda r: (None, None),
              composite=lambda r: _ohlson_o_score(r)),
+    # Beneish M-score (S27): eight-term manipulation-risk composite. It requires
+    # current and prior-year annual-flow/balance inputs, including combined SG&A.
+    RatioDef("beneish_m_score", "health", "score", "score",
+             "beneish_m_score_terms", "n/a",
+             ("rev", "accounts_receivable", "cost_of_revenue", "current_assets",
+              "property_plant_equipment_net", "assets", "depreciation_amortization",
+              "selling_general_and_administrative_expense", "liabilities", "ni", "ocf",
+              "rev_prior", "accounts_receivable_prior", "cost_of_revenue_prior",
+              "current_assets_prior", "property_plant_equipment_net_prior", "assets_prior",
+              "depreciation_amortization_prior", "selling_general_and_administrative_expense_prior",
+              "liabilities_prior"),
+             lambda r: (None, None),
+             composite=lambda r: _beneish_m_score(r)),
 )
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
@@ -430,6 +505,7 @@ XBRL_FLOW_INPUTS = {
     "cost_of_revenue": "cost_of_revenue",
     "interest_expense": "interest_expense",
     "depreciation_amortization": "depreciation_amortization",
+    "selling_general_and_administrative_expense": "selling_general_and_administrative_expense",
 }
 
 # Metrics for which a prior-year value is paired in (for YoY growth, average-balance
@@ -438,8 +514,10 @@ XBRL_FLOW_INPUTS = {
 # window mechanism in _attach_prior_year.
 GROWTH_PRIOR_KEYS = (
     "rev", "ni", "oi", "ocf", "assets", "equity",
-    "long_term_debt", "current_assets", "current_liabilities",
-    "common_shares_outstanding", "gross_profit",
+    "liabilities", "long_term_debt", "current_assets", "current_liabilities",
+    "common_shares_outstanding", "gross_profit", "cost_of_revenue",
+    "depreciation_amortization", "property_plant_equipment_net",
+    "accounts_receivable", "selling_general_and_administrative_expense",
 )
 
 
@@ -706,7 +784,9 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             flowx.gross_profit, flowx.gross_profit_av,
             flowx.cost_of_revenue, flowx.cost_of_revenue_av,
             flowx.interest_expense, flowx.interest_expense_av,
-            flowx.depreciation_amortization, flowx.depreciation_amortization_av
+            flowx.depreciation_amortization, flowx.depreciation_amortization_av,
+            flowx.selling_general_and_administrative_expense,
+            flowx.selling_general_and_administrative_expense_av
         FROM ttm
         LEFT JOIN bal
           ON bal.security_id = ttm.security_id

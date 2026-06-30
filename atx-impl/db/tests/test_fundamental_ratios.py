@@ -61,6 +61,7 @@ def _wide_row(**overrides) -> dict:
         "oi_prior": 100.0, "oi_prior_av": _ts("2025-05-01"),
         "ocf_prior": 104.0, "ocf_prior_av": _ts("2025-05-01"),
         "assets_prior": 300.0, "assets_prior_av": _ts("2025-05-03"),
+        "liabilities_prior": 250.0, "liabilities_prior_av": _ts("2025-05-01"),
         "equity_prior": 50.0, "equity_prior_av": _ts("2025-05-01"),
         # period-end common shares outstanding (XBRL instant) for the issuance signal (S10e)
         "common_shares_outstanding": 15.0, "common_shares_outstanding_av": _ts("2026-05-01"),
@@ -70,6 +71,12 @@ def _wide_row(**overrides) -> dict:
         "current_liabilities_prior": 90.0, "current_liabilities_prior_av": _ts("2025-05-01"),
         "common_shares_outstanding_prior": 16.0, "common_shares_outstanding_prior_av": _ts("2025-05-01"),
         "gross_profit_prior": 140.0, "gross_profit_prior_av": _ts("2025-05-01"),
+        "cost_of_revenue_prior": 180.0, "cost_of_revenue_prior_av": _ts("2025-05-01"),
+        "depreciation_amortization_prior": 20.0, "depreciation_amortization_prior_av": _ts("2025-05-01"),
+        "property_plant_equipment_net_prior": 110.0, "property_plant_equipment_net_prior_av": _ts("2025-05-01"),
+        "accounts_receivable_prior": 40.0, "accounts_receivable_prior_av": _ts("2025-05-01"),
+        "selling_general_and_administrative_expense_prior": 32.0,
+        "selling_general_and_administrative_expense_prior_av": _ts("2025-05-01"),
         # consolidated inline-XBRL instant metrics for liquidity ratios (S10a)
         "current_assets": 200.0, "current_assets_av": _ts("2026-05-01"),
         "current_liabilities": 100.0, "current_liabilities_av": _ts("2026-05-01"),
@@ -84,6 +91,8 @@ def _wide_row(**overrides) -> dict:
         "cost_of_revenue": 220.0, "cost_of_revenue_av": _ts("2026-05-01"),
         "interest_expense": 10.0, "interest_expense_av": _ts("2026-05-01"),
         "depreciation_amortization": 25.0, "depreciation_amortization_av": _ts("2026-05-01"),
+        "selling_general_and_administrative_expense": 44.0,
+        "selling_general_and_administrative_expense_av": _ts("2026-05-01"),
         "retained_earnings": 200.0, "retained_earnings_av": _ts("2026-05-01"),
     }
     base.update(overrides)
@@ -307,6 +316,41 @@ class TestComputeRatioRows:
         # also drops without the prior-year net income (INTWO / CHIN terms uncomputable)
         gone = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(ni_prior=None, ni_prior_av=None)])))
         assert "ohlson_o_score" not in gone
+
+    def test_beneish_m_score_composite(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+        m = rows["beneish_m_score"]
+        dsri = (50.0 / 400.0) / (40.0 / 320.0)
+        gmi = ((320.0 - 180.0) / 320.0) / ((400.0 - 220.0) / 400.0)
+        aqi = (1.0 - ((200.0 + 120.0) / 350.0)) / (1.0 - ((150.0 + 110.0) / 300.0))
+        sgi = 400.0 / 320.0
+        depi = (20.0 / (20.0 + 110.0)) / (25.0 / (25.0 + 120.0))
+        sgai = (44.0 / 400.0) / (32.0 / 320.0)
+        tata = (100.0 - 130.0) / 350.0
+        lvgi = (290.0 / 350.0) / (250.0 / 300.0)
+        expected = (
+            -4.84 + 0.920 * dsri + 0.528 * gmi + 0.404 * aqi + 0.892 * sgi
+            + 0.115 * depi - 0.172 * sgai + 4.679 * tata - 0.327 * lvgi
+        )
+        assert m.value == pytest.approx(expected)
+        assert m.ratio_kind == "score"
+        assert m.ratio_category == "health"
+        assert m.unit == "score"
+        assert m.is_meaningful is True
+
+    def test_beneish_dropped_when_prior_input_missing_or_margin_unusable(self):
+        missing_prior = _by_code(compute_ratio_rows(pd.DataFrame([
+            _wide_row(
+                selling_general_and_administrative_expense_prior=None,
+                selling_general_and_administrative_expense_prior_av=None,
+            )
+        ])))
+        assert "beneish_m_score" not in missing_prior
+
+        no_gross_margin = _by_code(compute_ratio_rows(pd.DataFrame([
+            _wide_row(cost_of_revenue=400.0)
+        ])))
+        assert "beneish_m_score" not in no_gross_margin
 
     def test_free_cash_flow_is_level_kind_in_currency(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))

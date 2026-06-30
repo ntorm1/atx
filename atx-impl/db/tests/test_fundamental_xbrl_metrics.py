@@ -133,6 +133,10 @@ class TestNormalizeXbrlMetrics:
         assert CONCEPT_MAP["CostOfGoodsAndServicesSold"] == "cost_of_revenue"
         assert CONCEPT_MAP["InterestExpense"] == "interest_expense"
         assert CONCEPT_MAP["DepreciationDepletionAndAmortization"] == "depreciation_amortization"
+        assert (
+            CONCEPT_MAP["SellingGeneralAndAdministrativeExpense"]
+            == "selling_general_and_administrative_expense"
+        )
 
     def test_duration_flow_preserves_period_start_and_type(self):
         cand = _cand(
