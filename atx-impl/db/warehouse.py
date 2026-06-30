@@ -28,7 +28,17 @@ def snake_case(value: str) -> str:
 
 
 def symbol_key(symbol: str | None) -> str:
-    return (symbol or "").strip().upper()
+    # NA-safe: pandas may pass pd.NA / NaN for blank ticker cells (the full
+    # tbltickerhistory archive carries rows with no ticker in either column).
+    # ``pd.NA or ""`` raises "boolean value of NA is ambiguous", so guard first.
+    if symbol is None or symbol is pd.NA:
+        return ""
+    try:
+        if pd.isna(symbol):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(symbol).strip().upper()
 
 
 def cik_security_id(cik: str | int) -> str:

@@ -332,7 +332,37 @@ def _canonical_bars(frame: pd.DataFrame, options: TickerHistoryOptions) -> pd.Da
             "run_id": options.run_id,
         }
     )
-    return bars.dropna(subset=["security_id", "symbol", "trade_date"]).reset_index(drop=True)
+    bars = bars.dropna(subset=["security_id", "symbol", "trade_date"]).reset_index(drop=True)
+    return _drop_invalid_ohlcv(bars)
+
+
+def _drop_invalid_ohlcv(bars: pd.DataFrame) -> pd.DataFrame:
+    """Drop structurally-invalid OHLCV rows from the canonical bar frame.
+
+    The broad vendor archive carries ~0.7% malformed rows (non-positive prices,
+    high < max(open, low, close), low > min(open, high, close), negative volume).
+    The raw ``tbltickerhistory_daily`` table preserves them for lineage, but the
+    canonical ``equity_daily_bars`` surface must be clean — these rows produce
+    nonsensical returns/volatility. NaN comparisons are treated as valid (kept),
+    matching the SQL ``bad_ohlcv_values`` quality check's null semantics.
+    """
+    if bars.empty:
+        return bars
+    o = pd.to_numeric(bars["open"], errors="coerce")
+    h = pd.to_numeric(bars["high"], errors="coerce")
+    low = pd.to_numeric(bars["low"], errors="coerce")
+    c = pd.to_numeric(bars["close"], errors="coerce")
+    v = pd.to_numeric(bars["volume"], errors="coerce")
+    bad = (
+        (v < 0)
+        | (o <= 0)
+        | (h <= 0)
+        | (low <= 0)
+        | (c <= 0)
+        | (h < pd.concat([o, low, c], axis=1).max(axis=1))
+        | (low > pd.concat([o, h, c], axis=1).min(axis=1))
+    ).fillna(False)
+    return bars.loc[~bad].reset_index(drop=True)
 
 
 def _security_links(frame: pd.DataFrame, options: TickerHistoryOptions) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -393,6 +423,198 @@ def _security_links(frame: pd.DataFrame, options: TickerHistoryOptions) -> tuple
         }
     )
     return securities, identifiers, listings
+
+
+def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME) -> int:
+    """Split ``security_id``s that collapse multiple distinct tradeable lines.
+
+    The symbol -> canonical-``security_id`` mapping (``security_ids_for_symbols``)
+    is many-to-one across the broad universe: a ticker recycled across issuers
+    (two unrelated companies that both traded as "ET") or split across share
+    classes (LMCA / LMCAV under one vendor) resolves several distinct lines onto
+    one ``security_id``, producing duplicate ``(security_id, trade_date)`` bars
+    that corrupt cross-sectional stats and break the ``equity_price_metrics``
+    primary key.
+
+    The natural permanent line identity in this feed is
+    ``(vendor_security_id, symbol)``. For each ``security_id`` that carries more
+    than one such line, the line with the most bars keeps the canonical id (it is
+    the surviving/primary issuer that carries any cross-surface links); every
+    other line is re-keyed to a deterministic per-line synthetic id, and
+    first-class ``securities`` / ``security_identifier_history`` /
+    ``exchange_listings`` rows are materialized for it. A final safety-net pass
+    collapses any residual exact ``(security_id, trade_date)`` duplicates (e.g.
+    the same line emitted twice in the source), keeping the higher-volume row.
+
+    Global and idempotent: once split, no ``security_id`` carries multiple lines,
+    so a re-run is a no-op. Returns the number of lines re-keyed.
+    """
+    con = store.con
+    lines = con.execute(
+        """
+        SELECT security_id,
+               vendor_security_id,
+               symbol,
+               COUNT(*) AS n,
+               MIN(trade_date) AS first_seen,
+               MAX(trade_date) AS last_seen
+        FROM equity_daily_bars
+        WHERE source = ?
+        GROUP BY security_id, vendor_security_id, symbol
+        """,
+        [source],
+    ).df()
+    rekeyed = 0
+    if not lines.empty:
+        line_counts = lines.groupby("security_id")["vendor_security_id"].transform("size")
+        multi = lines[line_counts > 1].copy()
+        # Within a multi-line security_id: most-bars line is primary (keeps id);
+        # the rest are re-keyed. Deterministic tie-break on vendor id then symbol.
+        multi = multi.sort_values(
+            ["security_id", "n", "vendor_security_id", "symbol"],
+            ascending=[True, False, True, True],
+        )
+        multi["rank"] = multi.groupby("security_id").cumcount()
+        nonprimary = multi[multi["rank"] > 0].copy()
+    else:
+        nonprimary = lines
+
+    if not nonprimary.empty:
+        nonprimary["symbol_key"] = [symbol_key(sym) for sym in nonprimary["symbol"]]
+        nonprimary["id_value"] = [
+            _vendor_identifier_value(sk, vid)
+            for sk, vid in zip(nonprimary["symbol_key"], nonprimary["vendor_security_id"])
+        ]
+        nonprimary["new_security_id"] = [
+            vendor_security_id("tbltickerhistory", f"{vid}-{sk}")
+            for vid, sk in zip(nonprimary["vendor_security_id"], nonprimary["symbol_key"])
+        ]
+        mapping = nonprimary[
+            [
+                "security_id",
+                "vendor_security_id",
+                "symbol",
+                "symbol_key",
+                "id_value",
+                "new_security_id",
+                "first_seen",
+                "last_seen",
+            ]
+        ]
+        rekeyed = int(len(mapping))
+        store.con.register("vendor_collision_map", mapping)
+        try:
+            with store.transaction():
+                con.execute(
+                    """
+                    UPDATE equity_daily_bars AS b
+                    SET security_id = m.new_security_id
+                    FROM vendor_collision_map m
+                    WHERE b.source = ?
+                      AND b.security_id = m.security_id
+                      AND b.vendor_security_id = m.vendor_security_id
+                      AND b.symbol = m.symbol
+                    """,
+                    [source],
+                )
+                raw_exists = con.execute(
+                    "SELECT COUNT(*) FROM duckdb_tables() "
+                    "WHERE schema_name = 'main' AND table_name = 'tbltickerhistory_daily'"
+                ).fetchone()[0]
+                if raw_exists:
+                    con.execute(
+                        """
+                        UPDATE tbltickerhistory_daily AS r
+                        SET security_id = m.new_security_id
+                        FROM vendor_collision_map m
+                        WHERE r.source = ?
+                          AND r.security_id = m.security_id
+                          AND r.vendor_security_id = m.vendor_security_id
+                          AND COALESCE(r.today_ticker, r.ticker_tk) = m.symbol
+                        """,
+                        [source],
+                    )
+                con.execute(
+                    """
+                    INSERT INTO securities (
+                        security_id, issuer_id, primary_symbol, name, asset_class,
+                        country, currency, active, first_seen_date, last_seen_date, source
+                    )
+                    SELECT new_security_id, NULL, any_value(symbol_key), any_value(symbol_key),
+                           'EQUITY', 'US', 'USD', TRUE, min(first_seen), max(last_seen), ?
+                    FROM vendor_collision_map m
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM securities s WHERE s.security_id = m.new_security_id
+                    )
+                    GROUP BY new_security_id
+                    """,
+                    [source],
+                )
+                con.execute(
+                    """
+                    INSERT INTO security_identifier_history (
+                        security_id, id_type, id_value, valid_from, valid_to,
+                        as_of_date, available_at, source, run_id
+                    )
+                    SELECT new_security_id, ?, any_value(id_value), min(first_seen), NULL,
+                           min(first_seen), min(first_seen) + INTERVAL 22 HOUR, ?, NULL
+                    FROM vendor_collision_map m
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM security_identifier_history h
+                        WHERE h.security_id = m.new_security_id
+                          AND h.id_type = ?
+                          AND h.source = ?
+                    )
+                    GROUP BY new_security_id
+                    """,
+                    [TBLTICKERHISTORY_ID_TYPE, source, TBLTICKERHISTORY_ID_TYPE, source],
+                )
+                con.execute(
+                    """
+                    INSERT INTO exchange_listings (
+                        security_id, ticker, exchange_code, mic, currency,
+                        valid_from, valid_to, as_of_date, available_at, source, run_id
+                    )
+                    SELECT new_security_id, any_value(symbol_key), NULL, NULL, 'USD',
+                           min(first_seen), NULL, min(first_seen),
+                           min(first_seen) + INTERVAL 22 HOUR, ?, NULL
+                    FROM vendor_collision_map m
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM exchange_listings e
+                        WHERE e.security_id = m.new_security_id AND e.source = ?
+                    )
+                    GROUP BY new_security_id
+                    """,
+                    [source, source],
+                )
+        finally:
+            store.con.unregister("vendor_collision_map")
+
+    # Safety net: drop any residual exact (security_id, trade_date) duplicates
+    # (e.g. an identical line emitted twice in the source), keeping the
+    # higher-volume row. Distinct real lines now carry distinct ids, so this only
+    # removes redundant rows, never a real security.
+    with store.transaction():
+        con.execute(
+            """
+            DELETE FROM equity_daily_bars
+            WHERE source = ?
+              AND rowid IN (
+                  SELECT rowid FROM (
+                      SELECT rowid,
+                             row_number() OVER (
+                                 PARTITION BY security_id, trade_date
+                                 ORDER BY volume DESC NULLS LAST, vendor_security_id
+                             ) AS rn
+                      FROM equity_daily_bars
+                      WHERE source = ?
+                  )
+                  WHERE rn > 1
+              )
+            """,
+            [source, source],
+        )
+    return rekeyed
 
 
 class TickerHistoryDataset(Dataset):
@@ -468,6 +690,11 @@ class TickerHistoryDataset(Dataset):
             max_trading_date = chunk_max if max_trading_date is None else max(max_trading_date, chunk_max)
             total_rows += self._load_chunk(store, normalized, effective_options)
 
+        # Recycled-ticker / share-class collisions only surface across the broad
+        # universe (the per-symbol resolver is many-to-one), so resolve them once
+        # globally after all chunks land. Idempotent.
+        rekeyed = disambiguate_vendor_collisions(store, effective_options.source)
+
         details = {
             "chunks_seen": chunks_seen,
             "chunks_with_matches": chunks_with_matches,
@@ -478,6 +705,7 @@ class TickerHistoryDataset(Dataset):
             "max_trading_date": max_trading_date,
             "max_chunks": effective_options.max_chunks,
             "chunk_size": effective_options.chunk_size,
+            "vendor_collisions_rekeyed": rekeyed,
         }
         quality_check(
             store,

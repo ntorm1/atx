@@ -454,6 +454,12 @@ def _check_specs(
             dataset_id="sec_security_master",
             table_name="security_identifier_history",
             check_name="identifier_multi_security_overlaps",
+            # Ticker/identifier uniqueness-per-window is a reference-master
+            # invariant. The raw tbltickerhistory price feed legitimately violates
+            # it (share classes trade concurrently, tickers are recycled across
+            # issuers, missing vendor ids), the same way CRSP keys on PERMNO not
+            # ticker — so price-feed securities are excluded here. Intra-security
+            # duplicate intervals are still caught by the self-overlap check below.
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM security_identifier_history a
@@ -464,6 +470,8 @@ def _check_specs(
                  AND a.valid_from < coalesce(b.valid_to, DATE '9999-12-31')
                  AND b.valid_from < coalesce(a.valid_to, DATE '9999-12-31')
                  AND a.security_id < b.security_id
+                WHERE a.source NOT LIKE 'tbltickerhistory%'
+                  AND b.source NOT LIKE 'tbltickerhistory%'
             """,
             threshold=0.0,
             required_tables=("security_identifier_history",),
@@ -504,6 +512,9 @@ def _check_specs(
             dataset_id="sec_security_master",
             table_name="exchange_listings",
             check_name="listing_multi_security_overlaps",
+            # See identifier_multi_security_overlaps: ticker uniqueness is a
+            # reference-master invariant, not a raw price-feed one, so
+            # tbltickerhistory securities are excluded.
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM exchange_listings a
@@ -514,6 +525,8 @@ def _check_specs(
                  AND a.valid_from < coalesce(b.valid_to, DATE '9999-12-31')
                  AND b.valid_from < coalesce(a.valid_to, DATE '9999-12-31')
                  AND a.security_id < b.security_id
+                WHERE a.source NOT LIKE 'tbltickerhistory%'
+                  AND b.source NOT LIKE 'tbltickerhistory%'
             """,
             threshold=0.0,
             required_tables=("exchange_listings",),
