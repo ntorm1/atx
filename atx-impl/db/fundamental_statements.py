@@ -686,6 +686,11 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
                 SELECT *
                 FROM mapped
                 WHERE canonical_rank = 1
+                  -- A duration (flow) fact with no period_start has no definable
+                  -- window; some companyfacts vintages emit such malformed facts
+                  -- (e.g. an early NetIncomeLoss with only an end date). Drop them
+                  -- so every duration statement point has a valid period_start.
+                  AND NOT (period_type = 'duration' AND period_start IS NULL)
             ),
             sequenced AS (
                 SELECT

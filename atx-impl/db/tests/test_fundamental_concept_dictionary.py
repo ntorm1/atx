@@ -441,6 +441,41 @@ def test_transcribed_concepts_present(tmp_store):
 # 7. Loader regression — original core metrics still produce statement points
 # ─────────────────────────────────────────────────────────────────────────────
 
+def test_duration_fact_without_period_start_is_excluded(tmp_store):
+    """A duration (flow) concept fact with no period_start has no definable window
+    and must be dropped from statement points (some companyfacts vintages emit
+    malformed facts with only an end date)."""
+    from db.fundamental_statements import refresh_fundamental_statement_points
+    from db.fundamentals import refresh_fundamental_fact_revisions
+
+    _seed_security(tmp_store)
+    # Valid duration fact (has a period_start) and a malformed one (no start).
+    _insert_company_fact(
+        tmp_store, concept="NetIncomeLoss", value=500_000_000.0,
+        period_start=dt.date(2023, 1, 1), period_end=dt.date(2023, 12, 31),
+        accession_number="0000012345-24-000001",
+    )
+    _insert_company_fact(
+        tmp_store, concept="NetIncomeLoss", value=400_000_000.0,
+        period_start=None, period_end=dt.date(2022, 12, 31),
+        accession_number="0000012345-23-000001", filed_date=dt.date(2023, 2, 15),
+    )
+    refresh_fundamental_fact_revisions(tmp_store)
+    refresh_fundamental_statement_points(tmp_store)
+
+    bad = tmp_store.con.execute(
+        "SELECT count(*) FROM fundamental_statement_points "
+        "WHERE period_type = 'duration' AND period_start IS NULL"
+    ).fetchone()[0]
+    assert bad == 0
+    # The valid duration fact still lands.
+    good = tmp_store.con.execute(
+        "SELECT count(*) FROM fundamental_statement_points "
+        "WHERE canonical_metric = 'net_income' AND period_start = DATE '2023-01-01'"
+    ).fetchone()[0]
+    assert good == 1
+
+
 def test_loader_still_works_for_core_metrics(tmp_store):
     """After expansion, the standardization loader must still produce points for core concepts."""
     from db.fundamental_statements import seed_fundamental_statement_map, refresh_fundamental_statement_points
