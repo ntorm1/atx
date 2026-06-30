@@ -40,6 +40,8 @@ from .thirteenf_option_metrics import ThirteenFOptionMetricsDataset, ThirteenFOp
 from .corporate_action_metrics import (
     CorporateActionDividendMetricsDataset,
     CorporateActionDividendMetricsOptions,
+    CorporateActionFactorReconciliationDataset,
+    CorporateActionFactorReconciliationOptions,
     CorporateActionSplitMetricsDataset,
     CorporateActionSplitMetricsOptions,
 )
@@ -747,6 +749,20 @@ def _corporate_action_split_metrics_options(params: dict[str, Any]) -> Corporate
     )
 
 
+def _corporate_action_factor_reconciliation_options(
+    params: dict[str, Any],
+) -> CorporateActionFactorReconciliationOptions:
+    default = CorporateActionFactorReconciliationOptions()
+    return CorporateActionFactorReconciliationOptions(
+        source=params.get("source") or default.source,
+        factor_source=params.get("factor_source") or default.factor_source,
+        daily_adjustment_source=params.get("daily_adjustment_source") or default.daily_adjustment_source,
+        bar_source=params.get("bar_source") or default.bar_source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     default = FredMacroOptions()
     return FredMacroOptions(
@@ -819,6 +835,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ThirteenFOptionMetricsDataset.dataset_id: (ThirteenFOptionMetricsDataset, _thirteenf_option_metrics_options),
     CorporateActionDividendMetricsDataset.dataset_id: (CorporateActionDividendMetricsDataset, _corporate_action_dividend_metrics_options),
     CorporateActionSplitMetricsDataset.dataset_id: (CorporateActionSplitMetricsDataset, _corporate_action_split_metrics_options),
+    CorporateActionFactorReconciliationDataset.dataset_id: (
+        CorporateActionFactorReconciliationDataset,
+        _corporate_action_factor_reconciliation_options,
+    ),
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
@@ -1186,6 +1206,12 @@ class JobManager:
         self.register_job(
             job_name="corporate_action_split_metrics",
             dataset_id="corporate_action_split_metrics",
+            dependencies=["adjustment_factor_history", "daily_adjustment_factors"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="corporate_action_factor_reconciliation",
+            dataset_id="corporate_action_factor_reconciliation",
             dependencies=["adjustment_factor_history", "daily_adjustment_factors"],
             **retry_policy,
         )

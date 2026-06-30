@@ -3540,6 +3540,162 @@ def _corporate_action_split_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _corporate_action_factor_reconciliation(conn: duckdb.DuckDBPyConnection) -> None:
+    """S21: event-level factor reconciliation across all adjustment-factor events."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corporate_action_factor_reconciliation (
+            reconciliation_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            factor_source VARCHAR NOT NULL,
+            daily_adjustment_source VARCHAR NOT NULL,
+            bar_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            ex_date DATE NOT NULL,
+            event_type VARCHAR NOT NULL,
+            type_code INTEGER,
+            event_ref_id VARCHAR NOT NULL,
+            source_action_source VARCHAR,
+            classification_reason VARCHAR,
+            factor_price DOUBLE NOT NULL,
+            factor_shares DOUBLE NOT NULL,
+            factor_volume DOUBLE,
+            cash_div_amount DOUBLE,
+            ratio_numerator DOUBLE,
+            ratio_denominator DOUBLE,
+            same_day_event_count INTEGER NOT NULL DEFAULT 1,
+            pre_trade_date DATE,
+            post_trade_date DATE,
+            pre_raw_close DOUBLE,
+            post_raw_close DOUBLE,
+            raw_close_return DOUBLE,
+            pre_split_adjusted_close DOUBLE,
+            post_split_adjusted_close DOUBLE,
+            split_adjusted_return DOUBLE,
+            pre_total_return_adjusted_close DOUBLE,
+            post_total_return_adjusted_close DOUBLE,
+            total_return_adjusted_return DOUBLE,
+            pre_split_price_factor DOUBLE,
+            post_split_price_factor DOUBLE,
+            observed_split_price_step DOUBLE,
+            expected_split_price_step DOUBLE,
+            split_price_error DOUBLE,
+            pre_split_share_factor DOUBLE,
+            post_split_share_factor DOUBLE,
+            observed_split_share_step DOUBLE,
+            expected_split_share_step DOUBLE,
+            split_share_error DOUBLE,
+            pre_dividend_total_return_factor DOUBLE,
+            post_dividend_total_return_factor DOUBLE,
+            observed_dividend_return_step DOUBLE,
+            expected_dividend_return_step DOUBLE,
+            dividend_return_error DOUBLE,
+            pre_total_return_price_factor DOUBLE,
+            post_total_return_price_factor DOUBLE,
+            observed_total_return_step DOUBLE,
+            expected_total_return_step DOUBLE,
+            total_return_error DOUBLE,
+            reconciliation_status VARCHAR NOT NULL,
+            is_reconciled BOOLEAN NOT NULL DEFAULT false,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_corp_factor_recon_key ON corporate_action_factor_reconciliation(security_id, ex_date)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_factor_recon_type_status ON corporate_action_factor_reconciliation(event_type, reconciliation_status)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_factor_recon_asof ON corporate_action_factor_reconciliation(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_corp_factor_recon_event ON corporate_action_factor_reconciliation(event_ref_id)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'corporate_action_factor_reconciliation',
+            'atx_warehouse',
+            'Derived corporate-action factor reconciliation',
+            'Per event and bar-source controls that reconcile adjustment_factor_history event factors against adjacent daily_adjustment_factors split, dividend, and total-return factor steps.',
+            'security_id,ex_date,event_ref_id,event_type,bar_source',
+            'corporate_action_factor_reconciliation', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'corporate_action_factor_reconciliation', 'silver', 'corporate_action_factor_reconciliation',
+            'security_id,ex_date,event_ref_id,event_type,bar_source',
+            'Derived event-level adjustment-factor reconciliation controls spanning splits, cash dividends, unsupported event types, missing daily-factor coverage, and compound same-day events.',
+            '["reconciliation_id"]',
+            'Resolve with available_at <= query ts and is_latest_revision. Status values distinguish reconciled events from missing daily factors, compound same-day events, unsupported event types, and true mismatches.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('event_ref_id', 'security_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('ex_date', 'pre_trade_date', 'post_trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'event_type' THEN 'Adjustment-factor event type from adjustment_factor_history.'
+                WHEN 'same_day_event_count' THEN 'Number of adjustment events sharing security_id and ex_date; values above one are compound events.'
+                WHEN 'observed_split_price_step' THEN 'Observed daily split price-factor step: pre_split_price_factor / post_split_price_factor.'
+                WHEN 'observed_split_share_step' THEN 'Observed daily split share-factor step: pre_split_share_factor / post_split_share_factor.'
+                WHEN 'observed_dividend_return_step' THEN 'Observed daily dividend total-return factor step.'
+                WHEN 'observed_total_return_step' THEN 'Observed daily total-return price-factor step across the event boundary.'
+                WHEN 'expected_split_price_step' THEN 'Expected split price-factor step from the event factor; neutral for non-split rows.'
+                WHEN 'expected_dividend_return_step' THEN 'Expected dividend total-return step from the event factor; neutral for non-cash-dividend rows.'
+                WHEN 'expected_total_return_step' THEN 'Expected total-return price-factor step for supported price-affecting event types.'
+                WHEN 'reconciliation_status' THEN 'RECONCILED, MISMATCH, MISSING_DAILY_FACTOR, COMPOUND_EVENT, or UNSUPPORTED_EVENT_TYPE.'
+                WHEN 'available_at' THEN 'Max availability of the event and adjacent daily factor rows used for reconciliation.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('ex_date', 'pre_trade_date', 'post_trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%return%' OR lower(c.column_name) LIKE '%error%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%factor%' OR lower(c.column_name) LIKE '%ratio%' OR lower(c.column_name) LIKE '%step%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%close%' OR lower(c.column_name) LIKE '%amount%' THEN 'currency'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'corporate_action_factor_reconciliation'
+        """
+    )
+
+
 def _thirteenf_option_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S20: issuer-level 13F option-positioning analytics."""
 
@@ -3903,6 +4059,11 @@ MIGRATIONS: list[Migration] = [
         version=43,
         name="thirteenf_option_metrics",
         up=_thirteenf_option_metrics,
+    ),
+    Migration(
+        version=44,
+        name="corporate_action_factor_reconciliation",
+        up=_corporate_action_factor_reconciliation,
     ),
 ]
 

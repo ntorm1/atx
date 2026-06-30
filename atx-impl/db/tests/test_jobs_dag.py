@@ -93,6 +93,8 @@ def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_sto
     assert order.index("adjustment_factor_history") < order.index("daily_adjustment_factors")
     assert "corporate_action_split_metrics" in order
     assert order.index("daily_adjustment_factors") < order.index("corporate_action_split_metrics")
+    assert "corporate_action_factor_reconciliation" in order
+    assert order.index("daily_adjustment_factors") < order.index("corporate_action_factor_reconciliation")
 
 
 def test_default_jobs_include_thirteenf_option_metrics_after_ownership(tmp_store):

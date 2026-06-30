@@ -35,6 +35,7 @@ from db.asof import (
     thirteenf_position_metrics_asof,
     thirteenf_option_metrics_asof,
     corporate_action_dividend_metrics_asof,
+    corporate_action_factor_reconciliation_asof,
     corporate_action_split_metrics_asof,
     offexchange_security_period_asof,
     offexchange_volume_asof,
@@ -85,6 +86,7 @@ def parse_args() -> argparse.Namespace:
             "thirteenf-position-metrics",
             "thirteenf-option-metrics",
             "corporate-action-dividend-metrics",
+            "corporate-action-factor-reconciliation",
             "corporate-action-split-metrics",
             "fundamental-periods",
             "shares-outstanding",
@@ -253,6 +255,14 @@ def main() -> int:
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,
             symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "corporate-action-factor-reconciliation":
+        frame = corporate_action_factor_reconciliation_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+            event_types=parse_csv(args.event_types),
         )
     elif args.view == "fundamental-periods":
         frame = fundamental_periods_asof(

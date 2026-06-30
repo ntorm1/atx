@@ -54,6 +54,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "thirteenf_option_metrics",
     "corporate_action_dividend_metrics",
     "corporate_action_split_metrics",
+    "corporate_action_factor_reconciliation",
     "feature_build_manifests",
     "feature_definitions",
     "feature_set_catalog",
