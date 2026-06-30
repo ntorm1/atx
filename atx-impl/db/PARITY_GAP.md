@@ -40,8 +40,8 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 - `entity.industry_template` — gating field (INDL vs FS) routing bank/insurance/REIT/Nareit-FFO overlays.
 
 **Current state — mostly BUILT:**
-- `sec_company_facts` (companyfacts.json facts) — `fundamentals.py`, ~12k+ facts.
-- `fundamental_points` (12,318) / `fundamental_statement_points` (12,315) / `fundamental_ttm_points` (7,377) / `fundamental_periods` (3,206) / `fundamental_fact_revisions` (12,318) — bitemporal restatement chain with `as_of_date`/`available_at`. This already implements the "as-first-reported → restated" two-tier + revision audit (`is_latest_revision`, `previous_value`, `value_delta`).
+- `sec_company_facts` (companyfacts.json facts) — `fundamentals.py`, **85,381 facts over 40 securities (liquid40 large caps) after S42** (was ~12k over 5).
+- `fundamental_points` / `fundamental_statement_points` (**84,678**) / `fundamental_ttm_points` (**51,167**) / `fundamental_periods` (20,793) / `fundamental_fact_revisions` — bitemporal restatement chain with `as_of_date`/`available_at`, now over 40 securities (S42). This already implements the "as-first-reported → restated" two-tier + revision audit (`is_latest_revision`, `previous_value`, `value_delta`). The derived `fundamental_ratios` surface spans **32,508 rows / 40 securities / 33 companyfacts-derived ratio codes**; the 21 `xbrl_filing_facts`-derived codes (liquidity/leverage/health scores) remain 5-security until that cache widens.
 - `fundamental_statement_map` S4a cross-industry seed (137 authorized item_ids; multiple rows where concepts coalesce) = the `xbrl_concept_map` equivalent — backed by `fundamental_statements.py` seed.
 - Full XBRL substrate: `xbrl_concept_catalog`, `xbrl_taxonomy_packages/roles/relationships`, `xbrl_dimension_edges`, `xbrl_fact_frames` (1,204), `xbrl_filing_contexts` (6,878), `xbrl_filing_dimensions` (14k), `xbrl_filing_facts` (25k) — `xbrl_taxonomy.py`, `xbrl_filing_contexts.py`.
 
