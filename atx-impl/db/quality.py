@@ -962,7 +962,7 @@ def _check_specs(
                    OR forms_json IS NULL
                    OR forms_json IN ('', '[]')
                    OR fiscal_periods_json IS NULL
-                   OR statement_category NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'other')
+                   OR statement_category NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'other')
                    OR fact_count <= 0
                    OR security_count <= 0
                    OR accession_count <= 0
@@ -1704,7 +1704,7 @@ def _check_specs(
                    OR taxonomy = ''
                    OR concept IS NULL
                    OR concept = ''
-                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'other')
+                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'other')
                    OR statement_section IS NULL
                    OR statement_section = ''
                    OR canonical_metric IS NULL
@@ -1713,7 +1713,7 @@ def _check_specs(
                    OR canonical_label = ''
                    OR period_type NOT IN ('instant', 'duration')
                    OR normal_balance NOT IN ('debit', 'credit', 'not_applicable')
-                   OR unit_type NOT IN ('monetary', 'shares', 'per_share', 'ratio', 'count', 'other')
+                   OR unit_type NOT IN ('monetary', 'shares', 'per_share', 'ratio', 'count', 'quantity', 'other')
                    OR value_multiplier IS NULL
                    OR concept_priority < 1
             """,
@@ -1772,7 +1772,7 @@ def _check_specs(
                    OR security_id = ''
                    OR cik IS NULL
                    OR cik = ''
-                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'other')
+                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'other')
                    OR statement_section IS NULL
                    OR statement_section = ''
                    OR canonical_metric IS NULL

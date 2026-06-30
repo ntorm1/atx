@@ -34,6 +34,20 @@ def test_quality_results_have_expected_structure(tmp_store):
         )
 
 
+def test_overlay_statement_map_rows_are_not_flagged_bad(tmp_store):
+    """Bank/insurance/REIT overlay statement types are valid, not bad rows.
+
+    The seeded fundamental_statement_map carries bank_statement /
+    insurance_statement / reit_statement overlay rows (S4) plus a `quantity`
+    unit type; the bad-row quality check allowlist must accept them.
+    """
+    from db.quality import run_warehouse_quality_checks
+
+    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    bad = results["bad_fundamental_statement_map_rows"]
+    assert bad.status == "passed", f"observed bad rows = {bad.observed_value}"
+
+
 def test_quality_checks_record_to_db(tmp_store):
     """With record=True, run_warehouse_quality_checks writes rows to data_quality_checks."""
     from db.quality import run_warehouse_quality_checks
