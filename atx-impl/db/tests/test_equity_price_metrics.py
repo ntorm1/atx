@@ -183,3 +183,40 @@ class TestAsofReader:
         late = equity_price_metrics_asof(dt.date(2013, 1, 31), store=tmp_store, symbols=["AAA"])
         assert not late.empty
         assert set(late["symbol"]) == {"AAA"}
+
+
+class TestLiquidityFactors:
+    def test_avg_dollar_volume_and_zero_amihud_on_flat_series(self):
+        # 25 flat bars: constant close=100, volume=1000 -> dollar_volume=100,000,
+        # daily_return=0 -> Amihud (|ret|/dvol) = 0.
+        bars = _series("L1", "LIQ", [100.0] * 25)
+        for b in bars:
+            b["volume"] = 1000
+        out = compute_equity_price_metrics(pd.DataFrame(bars)).sort_values("trade_date")
+        last = out.iloc[-1]
+        assert last["avg_dollar_volume_21d"] == pytest.approx(100_000.0)
+        assert last["amihud_illiquidity_21d"] == pytest.approx(0.0)
+
+    def test_amihud_warmup_and_positive_on_moving_series(self):
+        import numpy as np
+
+        rng = [100.0]
+        for i in range(1, 30):
+            rng.append(rng[-1] * (1.03 if i % 2 else 0.97))  # alternating +-3% moves
+        bars = _series("L2", "MOV", rng)
+        for b in bars:
+            b["volume"] = 2000
+        out = compute_equity_price_metrics(pd.DataFrame(bars)).sort_values("trade_date").reset_index(drop=True)
+        # Warmup: first 20 rows (need a full 21-day window) carry no value.
+        assert out["amihud_illiquidity_21d"].iloc[:20].isna().all()
+        assert out["avg_dollar_volume_21d"].iloc[:20].isna().all()
+        last = out.iloc[-1]
+        assert last["amihud_illiquidity_21d"] > 0
+        assert np.isfinite(last["amihud_illiquidity_21d"])
+        # Independent recompute of the trailing-21 Amihud average at the last bar.
+        close = out["close"].astype(float)
+        ret = close.pct_change().abs()
+        dvol = close * out["volume"].astype(float)
+        daily = (ret / dvol).replace([np.inf, -np.inf], np.nan)
+        expected = daily.rolling(21, min_periods=21).mean().iloc[-1] * 1e9
+        assert last["amihud_illiquidity_21d"] == pytest.approx(expected, rel=1e-6)

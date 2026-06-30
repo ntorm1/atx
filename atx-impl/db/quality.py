@@ -5439,6 +5439,8 @@ def _check_specs(
                    OR available_at IS NULL
                    OR (pct_from_high_252d IS NOT NULL AND pct_from_high_252d > 1e-9)
                    OR (realized_vol_20d IS NOT NULL AND realized_vol_20d < 0)
+                   OR (avg_dollar_volume_21d IS NOT NULL AND avg_dollar_volume_21d < 0)
+                   OR (amihud_illiquidity_21d IS NOT NULL AND amihud_illiquidity_21d < 0)
             """,
             threshold=0.0,
             comparator="eq",

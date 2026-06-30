@@ -5,7 +5,8 @@ module turns it into a typed, point-in-time analytics surface — one row per
 ``(security_id, trade_date)`` — with the canonical price features quant strategies
 condition on: adjusted daily and log returns, the overnight gap, trailing realized
 volatility (20d/60d, annualized), trailing-return momentum (21d/126d), distance from the
-trailing 252-day high, and dollar volume.
+trailing 252-day high, dollar volume, trailing average dollar volume (ADV), and Amihud
+(2002) illiquidity.
 
 Point-in-time discipline: ``as_of_date`` is the trade date and ``available_at`` is
 carried from the bar. Every rolling/lag feature uses only the current and earlier bars
@@ -41,6 +42,11 @@ VOL_WINDOW_LONG = 60
 MOMENTUM_SHORT = 21
 MOMENTUM_LONG = 126
 HIGH_WINDOW = 252
+LIQUIDITY_WINDOW = 21
+# Amihud (2002) ILLIQ is averaged |return| per dollar of volume; dollar_volume here is
+# in raw dollars, so the ratio is tiny. Scale by 1e9 to express price impact per $1B
+# traded, keeping values in a human-readable range.
+AMIHUD_SCALE = 1e9
 
 EQUITY_PRICE_METRIC_COLUMNS = [
     "metric_id", "source", "security_id", "symbol", "trade_date",
@@ -48,6 +54,7 @@ EQUITY_PRICE_METRIC_COLUMNS = [
     "daily_return", "log_return", "gap_return",
     "realized_vol_20d", "realized_vol_60d",
     "momentum_21d", "momentum_126d", "pct_from_high_252d",
+    "avg_dollar_volume_21d", "amihud_illiquidity_21d",
     "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
 
@@ -102,6 +109,16 @@ def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
     g["momentum_126d"] = adj / adj.shift(MOMENTUM_LONG) - 1.0
     roll_high = adj.rolling(HIGH_WINDOW, min_periods=1).max()
     g["pct_from_high_252d"] = adj / roll_high.where(roll_high > 0) - 1.0
+    # Liquidity factors: trailing average dollar volume (ADV) and Amihud (2002)
+    # illiquidity = trailing mean of |daily_return| / dollar_volume. Both are
+    # backward-looking 21-day windows, so they stay point-in-time safe.
+    dollar_volume = g["dollar_volume"]
+    g["avg_dollar_volume_21d"] = dollar_volume.rolling(LIQUIDITY_WINDOW, min_periods=LIQUIDITY_WINDOW).mean()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        daily_illiq = (ret.abs() / dollar_volume.where(dollar_volume > 0)).replace([np.inf, -np.inf], np.nan)
+    g["amihud_illiquidity_21d"] = (
+        daily_illiq.rolling(LIQUIDITY_WINDOW, min_periods=LIQUIDITY_WINDOW).mean() * AMIHUD_SCALE
+    )
     return g
 
 

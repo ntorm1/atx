@@ -4891,6 +4891,29 @@ def _security_listing_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _equity_price_metrics_liquidity(conn: duckdb.DuckDBPyConnection) -> None:
+    """S35: ADV and Amihud illiquidity liquidity factors on equity_price_metrics."""
+    for statement in (
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS avg_dollar_volume_21d DOUBLE",
+        "ALTER TABLE equity_price_metrics ADD COLUMN IF NOT EXISTS amihud_illiquidity_21d DOUBLE",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('equity_price_metrics', 'avg_dollar_volume_21d', 'measure',
+             'Trailing 21-trading-day average daily dollar volume (close x volume); a liquidity/capacity measure.',
+             true, 'usd', NULL, now()),
+            ('equity_price_metrics', 'amihud_illiquidity_21d', 'measure',
+             'Amihud (2002) illiquidity: trailing 21-day mean of abs(daily_return)/dollar_volume, scaled by 1e9 (price impact per $1B traded). Higher = more illiquid.',
+             true, 'ratio', NULL, now())
+        """
+    )
+
+
 def _macro_metrics_sahm_rule_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     """S34: catalog the Sahm Rule recession-indicator synthetic macro series."""
     conn.execute(
@@ -5195,6 +5218,11 @@ MIGRATIONS: list[Migration] = [
         version=55,
         name="macro_metrics_sahm_rule_catalog",
         up=_macro_metrics_sahm_rule_catalog,
+    ),
+    Migration(
+        version=56,
+        name="equity_price_metrics_liquidity",
+        up=_equity_price_metrics_liquidity,
     ),
 ]
 
