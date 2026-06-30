@@ -4869,6 +4869,22 @@ def _check_specs(
                        AND (days_to_cover_percentile < 0 OR days_to_cover_percentile > 1))
                    OR (short_interest_change_pct_percentile IS NOT NULL
                        AND (short_interest_change_pct_percentile < 0 OR short_interest_change_pct_percentile > 1))
+                   OR (short_pressure_score IS NOT NULL
+                       AND (short_pressure_score < 0 OR short_pressure_score > 100))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("short_interest_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="short_interest_metrics",
+            table_name="short_interest_metrics",
+            check_name="persistent_short_pressure_without_squeeze",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM short_interest_metrics
+                WHERE coalesce(is_persistent_short_pressure, false)
+                  AND NOT coalesce(is_squeeze_candidate, false)
             """,
             threshold=0.0,
             comparator="eq",

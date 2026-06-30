@@ -3108,6 +3108,64 @@ def _short_interest_metrics_momentum(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _short_interest_metrics_acceleration(conn: duckdb.DuckDBPyConnection) -> None:
+    """S23: longer-horizon short-pressure persistence and acceleration fields.
+
+    These columns extend the broad FINRA-derived ``short_interest_metrics`` surface
+    without changing its grain. They are recomputed wholesale by the loader from
+    already-published prior settlements for the same security.
+    """
+    for column in (
+        "short_interest_momentum_6 DOUBLE",
+        "days_to_cover_change_6 DOUBLE",
+        "short_interest_change_pct_accel DOUBLE",
+        "days_to_cover_change_accel DOUBLE",
+        "short_pressure_score DOUBLE",
+        "is_persistent_short_pressure BOOLEAN",
+    ):
+        conn.execute(f"ALTER TABLE short_interest_metrics ADD COLUMN IF NOT EXISTS {column}")
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE WHEN c.column_name = 'is_persistent_short_pressure' THEN 'flag' ELSE 'measure' END,
+            CASE c.column_name
+                WHEN 'short_interest_momentum_6' THEN 'Short-interest growth over the trailing 6 settlements ((current - 6-settlements-ago) / 6-settlements-ago).'
+                WHEN 'days_to_cover_change_6' THEN 'Change in days-to-cover over the trailing 6 settlements for the same security.'
+                WHEN 'short_interest_change_pct_accel' THEN 'Acceleration of short-interest change: current short-interest change percentage minus the prior-settlement short-interest change percentage.'
+                WHEN 'days_to_cover_change_accel' THEN 'Acceleration of days-to-cover: current days-to-cover change minus the prior-settlement days-to-cover change.'
+                WHEN 'short_pressure_score' THEN 'Bounded 0-100 pressure score combining days-to-cover crowding percentile, short-interest-change percentile, and positive recent/persistent days-to-cover trend flags.'
+                WHEN 'is_persistent_short_pressure' THEN 'True when the row is a squeeze candidate and both 3-settlement days-to-cover change and 3-settlement short-interest momentum are positive.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            true,
+            CASE
+                WHEN c.column_name IN ('short_interest_momentum_6', 'short_interest_change_pct_accel') THEN 'ratio'
+                WHEN c.column_name IN ('days_to_cover_change_6', 'days_to_cover_change_accel') THEN 'days'
+                WHEN c.column_name = 'short_pressure_score' THEN 'score'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND c.table_name = 'short_interest_metrics'
+          AND c.column_name IN (
+              'short_interest_momentum_6',
+              'days_to_cover_change_6',
+              'short_interest_change_pct_accel',
+              'days_to_cover_change_accel',
+              'short_pressure_score',
+              'is_persistent_short_pressure'
+          )
+        """
+    )
+
+
 def _thirteenf_position_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     """S16: derived 13F manager-level position-flow analytics surface.
 
@@ -4213,6 +4271,11 @@ MIGRATIONS: list[Migration] = [
         version=45,
         name="thirteenf_concentration_metrics",
         up=_thirteenf_concentration_metrics,
+    ),
+    Migration(
+        version=46,
+        name="short_interest_metrics_acceleration",
+        up=_short_interest_metrics_acceleration,
     ),
 ]
 

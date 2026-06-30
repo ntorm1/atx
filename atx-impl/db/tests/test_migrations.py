@@ -31,6 +31,7 @@ def test_migrations_recorded_after_bootstrap(tmp_store):
     assert 26 in versions, f"Migration 0026 not recorded; found: {versions}"
     assert 27 in versions, f"Migration 0027 not recorded; found: {versions}"
     assert 28 in versions, f"Migration 0028 not recorded; found: {versions}"
+    assert 46 in versions, f"Migration 0046 not recorded; found: {versions}"
 
 
 def test_apply_pending_idempotent(tmp_store):
@@ -81,6 +82,42 @@ def test_migrations_unique_versions():
 
     versions = [m.version for m in MIGRATIONS]
     assert len(versions) == len(set(versions)), f"Duplicate migration versions: {versions}"
+
+
+def test_migration_0046_catalogs_short_interest_acceleration_fields(tmp_store):
+    """Migration 0046 adds and catalogs short-interest acceleration metrics."""
+
+    expected = {
+        "short_interest_momentum_6",
+        "days_to_cover_change_6",
+        "short_interest_change_pct_accel",
+        "days_to_cover_change_accel",
+        "short_pressure_score",
+        "is_persistent_short_pressure",
+    }
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'short_interest_metrics'
+            """
+        ).fetchall()
+    }
+    fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name = 'short_interest_metrics'
+            """
+        ).fetchall()
+    }
+    assert expected.issubset(columns)
+    assert expected.issubset(fields)
 
 
 def test_migration_0042_catalogs_corporate_action_split_metrics(tmp_store):

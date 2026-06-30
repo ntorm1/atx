@@ -144,6 +144,45 @@ class TestComputeShortInterestMetrics:
         first = {r.settlement_date: r for r in out.itertuples(index=False)}[dt.date(2026, 3, 15)]
         assert pd.isna(first.short_interest_momentum_3)
 
+    def test_long_momentum_uses_six_settlement_lag(self):
+        dates = [
+            dt.date(2026, 1, 15),
+            dt.date(2026, 1, 31),
+            dt.date(2026, 2, 15),
+            dt.date(2026, 2, 28),
+            dt.date(2026, 3, 15),
+            dt.date(2026, 3, 31),
+            dt.date(2026, 4, 15),
+        ]
+        shorts = [1000, 1050, 1100, 1200, 1300, 1400, 1700]
+        rows = [
+            _row("S1", "AAA", s, s - 50, 100, d, _ts(f"2026-04-{i + 1:02d}"))
+            for i, (s, d) in enumerate(zip(shorts, dates))
+        ]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        by = {r.settlement_date: r for r in out.itertuples(index=False)}
+        first = by[dt.date(2026, 1, 15)]
+        last = by[dt.date(2026, 4, 15)]
+        assert pd.isna(first.short_interest_momentum_6)
+        assert pd.isna(first.days_to_cover_change_6)
+        assert last.short_interest_momentum_6 == pytest.approx((1700 - 1000) / 1000)
+        assert last.days_to_cover_change_6 == pytest.approx(17.0 - 10.0)
+
+    def test_change_acceleration_uses_prior_settlement_change(self):
+        rows = [
+            _row("S1", "AAA", 100, 100, 100, dt.date(2026, 3, 31), _ts("2026-04-10")),
+            _row("S1", "AAA", 150, 100, 100, dt.date(2026, 4, 15), _ts("2026-04-25")),
+            _row("S1", "AAA", 225, 150, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),
+        ]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        by = {r.settlement_date: r for r in out.itertuples(index=False)}
+        mid = by[dt.date(2026, 4, 15)]
+        last = by[dt.date(2026, 4, 30)]
+        assert mid.short_interest_change_pct_accel == pytest.approx(0.5)
+        assert pd.isna(mid.days_to_cover_change_accel)
+        assert last.short_interest_change_pct_accel == pytest.approx(0.0)
+        assert last.days_to_cover_change_accel == pytest.approx(0.25)
+
     def test_squeeze_candidate_flag(self):
         # single-security cohort -> days_to_cover_percentile = 1.0 (>= 0.9); a rising
         # days-to-cover (positive lag-1 change) then flags a squeeze candidate.
@@ -163,6 +202,23 @@ class TestComputeShortInterestMetrics:
         by2 = {r.settlement_date: r for r in out2.itertuples(index=False)}
         assert bool(by2[dt.date(2026, 4, 30)].is_squeeze_candidate) is False
 
+    def test_pressure_score_and_persistent_pressure_flag(self):
+        rows = [_row("S1", "AAA", s, s - 50, 100, d, _ts(a)) for s, d, a in [
+            (1000, dt.date(2026, 3, 15), "2026-03-25"),
+            (1100, dt.date(2026, 3, 31), "2026-04-10"),
+            (1200, dt.date(2026, 4, 15), "2026-04-25"),
+            (1500, dt.date(2026, 4, 30), "2026-05-10"),
+        ]]
+        out = compute_short_interest_metrics(pd.DataFrame(rows))
+        by = {r.settlement_date: r for r in out.itertuples(index=False)}
+        first = by[dt.date(2026, 3, 15)]
+        last = by[dt.date(2026, 4, 30)]
+        assert first.short_pressure_score == pytest.approx(80.0)
+        assert bool(first.is_persistent_short_pressure) is False
+        assert last.short_pressure_score == pytest.approx(100.0)
+        assert bool(last.is_squeeze_candidate) is True
+        assert bool(last.is_persistent_short_pressure) is True
+
     def test_metric_id_deterministic_and_unique(self):
         rows = pd.DataFrame([
             _row("S1", "AAA", 100, 90, 100, dt.date(2026, 4, 30), _ts("2026-05-10")),
@@ -177,6 +233,8 @@ class TestComputeShortInterestMetrics:
         out = compute_short_interest_metrics(pd.DataFrame())
         assert out.empty
         assert "days_to_cover_percentile" in out.columns
+        assert "short_pressure_score" in out.columns
+        assert "is_persistent_short_pressure" in out.columns
 
 
 # --------------------------------------------------------------------------- #

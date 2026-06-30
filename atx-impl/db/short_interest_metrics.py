@@ -47,12 +47,16 @@ SHORT_INTEREST_METRIC_COLUMNS = [
     "days_to_cover_percentile", "short_interest_change_pct_percentile",
     "days_to_cover_zscore", "days_to_cover_prev", "days_to_cover_change",
     "short_interest_momentum_3", "days_to_cover_change_3", "is_squeeze_candidate",
+    "short_interest_momentum_6", "days_to_cover_change_6",
+    "short_interest_change_pct_accel", "days_to_cover_change_accel",
+    "short_pressure_score", "is_persistent_short_pressure",
     "universe_count", "is_latest_revision", "as_of_date", "available_at", "run_id",
 ]
 
 # Settlements to look back for multi-period momentum, and the crowding percentile that,
 # together with a rising days-to-cover, flags a short-squeeze candidate.
 MOMENTUM_LAG = 3
+LONG_MOMENTUM_LAG = 6
 SQUEEZE_PERCENTILE = 0.90
 
 
@@ -138,6 +142,17 @@ def compute_short_interest_metrics(
     cur_3 = sec["current_short_position"].shift(MOMENTUM_LAG)
     out["short_interest_momentum_3"] = (out["current_short_position"] - cur_3) / cur_3.where(cur_3 > 0)
     out["days_to_cover_change_3"] = out["days_to_cover"] - sec["days_to_cover"].shift(MOMENTUM_LAG)
+    cur_6 = sec["current_short_position"].shift(LONG_MOMENTUM_LAG)
+    out["short_interest_momentum_6"] = (out["current_short_position"] - cur_6) / cur_6.where(cur_6 > 0)
+    out["days_to_cover_change_6"] = out["days_to_cover"] - sec["days_to_cover"].shift(LONG_MOMENTUM_LAG)
+
+    # Acceleration: is the most recent short-interest change / days-to-cover change
+    # itself rising versus the previous settlement's change? These are second
+    # differences over already-published observations for the same security.
+    out["short_interest_change_pct_accel"] = (
+        out["short_interest_change_pct"] - sec["short_interest_change_pct"].shift(1)
+    )
+    out["days_to_cover_change_accel"] = out["days_to_cover_change"] - sec["days_to_cover_change"].shift(1)
 
     # Squeeze candidate: heavily crowded (top-decile days-to-cover within the cohort) AND
     # the short is still building (positive most-recent days-to-cover change).
@@ -145,6 +160,21 @@ def compute_short_interest_metrics(
         out["days_to_cover_percentile"].ge(SQUEEZE_PERCENTILE)
         & out["days_to_cover_change"].gt(0)
     ).fillna(False)
+
+    out["is_persistent_short_pressure"] = (
+        out["is_squeeze_candidate"]
+        & out["days_to_cover_change_3"].gt(0)
+        & out["short_interest_momentum_3"].gt(0)
+    ).fillna(False)
+    out["short_pressure_score"] = (
+        100.0
+        * (
+            0.55 * out["days_to_cover_percentile"].fillna(0.0)
+            + 0.25 * out["short_interest_change_pct_percentile"].fillna(0.0)
+            + 0.10 * out["days_to_cover_change"].gt(0).astype(float)
+            + 0.10 * out["days_to_cover_change_3"].gt(0).astype(float)
+        )
+    ).clip(lower=0.0, upper=100.0)
 
     out["source"] = source
     out["run_id"] = run_id
