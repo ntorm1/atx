@@ -32,6 +32,7 @@ from db.asof import (
     short_interest_metrics_asof,
     macro_metrics_asof,
     equity_price_metrics_asof,
+    thirteenf_concentration_metrics_asof,
     thirteenf_position_metrics_asof,
     thirteenf_option_metrics_asof,
     corporate_action_dividend_metrics_asof,
@@ -83,6 +84,7 @@ def parse_args() -> argparse.Namespace:
             "short-interest-metrics",
             "macro-metrics",
             "equity-price-metrics",
+            "thirteenf-concentration-metrics",
             "thirteenf-position-metrics",
             "thirteenf-option-metrics",
             "corporate-action-dividend-metrics",
@@ -223,6 +225,13 @@ def main() -> int:
         )
     elif args.view == "equity-price-metrics":
         frame = equity_price_metrics_asof(
+            args.as_of_date,
+            as_of_ts=args.as_of_ts,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+        )
+    elif args.view == "thirteenf-concentration-metrics":
+        frame = thirteenf_concentration_metrics_asof(
             args.as_of_date,
             as_of_ts=args.as_of_ts,
             db_path=args.db_path,

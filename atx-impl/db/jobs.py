@@ -35,6 +35,10 @@ from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalX
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
 from .equity_price_metrics import EquityPriceMetricsDataset, EquityPriceMetricsOptions
+from .thirteenf_concentration_metrics import (
+    ThirteenFConcentrationMetricsDataset,
+    ThirteenFConcentrationMetricsOptions,
+)
 from .thirteenf_position_metrics import ThirteenFPositionMetricsDataset, ThirteenFPositionMetricsOptions
 from .thirteenf_option_metrics import ThirteenFOptionMetricsDataset, ThirteenFOptionMetricsOptions
 from .corporate_action_metrics import (
@@ -728,6 +732,15 @@ def _thirteenf_option_metrics_options(params: dict[str, Any]) -> ThirteenFOption
     )
 
 
+def _thirteenf_concentration_metrics_options(params: dict[str, Any]) -> ThirteenFConcentrationMetricsOptions:
+    default = ThirteenFConcentrationMetricsOptions()
+    return ThirteenFConcentrationMetricsOptions(
+        source=params.get("source") or default.source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _corporate_action_dividend_metrics_options(params: dict[str, Any]) -> CorporateActionDividendMetricsOptions:
     default = CorporateActionDividendMetricsOptions()
     return CorporateActionDividendMetricsOptions(
@@ -833,6 +846,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     EquityPriceMetricsDataset.dataset_id: (EquityPriceMetricsDataset, _equity_price_metrics_options),
     ThirteenFPositionMetricsDataset.dataset_id: (ThirteenFPositionMetricsDataset, _thirteenf_position_metrics_options),
     ThirteenFOptionMetricsDataset.dataset_id: (ThirteenFOptionMetricsDataset, _thirteenf_option_metrics_options),
+    ThirteenFConcentrationMetricsDataset.dataset_id: (
+        ThirteenFConcentrationMetricsDataset,
+        _thirteenf_concentration_metrics_options,
+    ),
     CorporateActionDividendMetricsDataset.dataset_id: (CorporateActionDividendMetricsDataset, _corporate_action_dividend_metrics_options),
     CorporateActionSplitMetricsDataset.dataset_id: (CorporateActionSplitMetricsDataset, _corporate_action_split_metrics_options),
     CorporateActionFactorReconciliationDataset.dataset_id: (
@@ -1194,6 +1211,12 @@ class JobManager:
         self.register_job(
             job_name="thirteenf_option_metrics",
             dataset_id="thirteenf_option_metrics",
+            dependencies=["sec_13f_ownership_features"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="thirteenf_concentration_metrics",
+            dataset_id="thirteenf_concentration_metrics",
             dependencies=["sec_13f_ownership_features"],
             **retry_policy,
         )

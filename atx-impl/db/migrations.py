@@ -3843,6 +3843,150 @@ def _thirteenf_option_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _thirteenf_concentration_metrics(conn: duckdb.DuckDBPyConnection) -> None:
+    """S22: issuer-level 13F holder-concentration analytics."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS thirteenf_concentration_metrics (
+            metric_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR,
+            symbol VARCHAR,
+            cusip VARCHAR,
+            name_of_issuer VARCHAR,
+            report_period DATE NOT NULL,
+            source_period VARCHAR,
+            filing_date DATE,
+            filing_count BIGINT NOT NULL,
+            holder_count BIGINT NOT NULL,
+            common_value_usd DOUBLE,
+            common_share_quantity DOUBLE,
+            top_holder_manager_id VARCHAR,
+            top_holder_value_usd DOUBLE,
+            top_holder_share_quantity DOUBLE,
+            top_holder_value_pct DOUBLE,
+            top_holder_share_pct DOUBLE,
+            top_holder_portfolio_weight DOUBLE,
+            top_3_holder_value_usd DOUBLE,
+            top_3_holder_value_pct DOUBLE,
+            top_5_holder_value_usd DOUBLE,
+            top_5_holder_value_pct DOUBLE,
+            top_10_holder_value_usd DOUBLE,
+            top_10_holder_value_pct DOUBLE,
+            value_hhi DOUBLE,
+            share_hhi DOUBLE,
+            effective_holder_count_value DOUBLE,
+            effective_holder_count_share DOUBLE,
+            avg_holder_value_usd DOUBLE,
+            median_holder_value_usd DOUBLE,
+            concentration_bucket VARCHAR NOT NULL,
+            prior_report_period DATE,
+            prior_value_hhi DOUBLE,
+            value_hhi_change DOUBLE,
+            prior_holder_count BIGINT,
+            holder_count_change BIGINT,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_concentration_metrics_key ON thirteenf_concentration_metrics(security_id, cusip, report_period)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_concentration_metrics_asof ON thirteenf_concentration_metrics(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_concentration_metrics_bucket ON thirteenf_concentration_metrics(concentration_bucket)",
+        "CREATE INDEX IF NOT EXISTS idx_thirteenf_concentration_metrics_top_holder ON thirteenf_concentration_metrics(top_holder_manager_id)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'thirteenf_concentration_metrics',
+            'sec_edgar',
+            'Derived 13F issuer-level holder concentration',
+            'Issuer/report-period common-share ownership concentration from cached SEC Form 13F holdings, including top-holder shares, top-3/5/10 concentration, HHI, effective holder count, and QoQ concentration changes.',
+            'security_id,cusip,report_period,source_period',
+            'thirteenf_concentration_metrics', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'thirteenf_concentration_metrics', 'gold', '13f_holder_concentration',
+            'security_id,cusip,report_period,source_period',
+            'Derived issuer-level 13F common-share holder-concentration metrics.',
+            '["metric_id"]',
+            'Use report_period/as_of_date plus available_at for PIT-safe ownership-concentration signals; rows reflect currently loaded common-share 13F holdings coverage.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name, c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%id' OR lower(c.column_name) IN ('cusip', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('report_period', 'filing_date', 'prior_report_period', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'holder_count' THEN 'Distinct 13F managers reporting common-share rows for the issuer/report period.'
+                WHEN 'common_value_usd' THEN 'Aggregate reported common-share market value in dollars.'
+                WHEN 'common_share_quantity' THEN 'Aggregate reported common-share quantity.'
+                WHEN 'top_holder_manager_id' THEN 'Manager with the largest reported common-share value for the issuer/report period.'
+                WHEN 'top_holder_value_pct' THEN 'Top holder reported common-share value divided by aggregate common-share value.'
+                WHEN 'top_3_holder_value_pct' THEN 'Top three holders reported common-share value divided by aggregate common-share value.'
+                WHEN 'top_5_holder_value_pct' THEN 'Top five holders reported common-share value divided by aggregate common-share value.'
+                WHEN 'top_10_holder_value_pct' THEN 'Top ten holders reported common-share value divided by aggregate common-share value.'
+                WHEN 'value_hhi' THEN 'Herfindahl-Hirschman index of manager common-share value weights.'
+                WHEN 'share_hhi' THEN 'Herfindahl-Hirschman index of manager common-share quantity weights.'
+                WHEN 'effective_holder_count_value' THEN 'Inverse value HHI: the equally weighted holder count implied by the value concentration.'
+                WHEN 'concentration_bucket' THEN 'DISPERSED, MODERATE, CONCENTRATED, or HIGHLY_CONCENTRATED based on value HHI and top-five value share.'
+                WHEN 'value_hhi_change' THEN 'Quarter-over-quarter change in value HHI for the issuer.'
+                WHEN 'holder_count_change' THEN 'Quarter-over-quarter change in visible common-share 13F holder count for the issuer.'
+                WHEN 'available_at' THEN 'Latest filing availability among the visible 13F common-share rows used for the aggregate.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('report_period', 'filing_date', 'prior_report_period', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%pct%' OR lower(c.column_name) LIKE '%hhi%' OR lower(c.column_name) LIKE '%change%' THEN 'ratio'
+                WHEN lower(c.column_name) LIKE '%value_usd%' THEN 'usd'
+                WHEN lower(c.column_name) LIKE '%share_quantity%' OR lower(c.column_name) LIKE '%count%' THEN 'count'
+                ELSE NULL
+            END,
+            NULL, now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'thirteenf_concentration_metrics'
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -4064,6 +4208,11 @@ MIGRATIONS: list[Migration] = [
         version=44,
         name="corporate_action_factor_reconciliation",
         up=_corporate_action_factor_reconciliation,
+    ),
+    Migration(
+        version=45,
+        name="thirteenf_concentration_metrics",
+        up=_thirteenf_concentration_metrics,
     ),
 ]
 

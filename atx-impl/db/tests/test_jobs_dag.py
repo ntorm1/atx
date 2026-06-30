@@ -107,7 +107,9 @@ def test_default_jobs_include_thirteenf_option_metrics_after_ownership(tmp_store
     order = mgr.enabled_job_order()
     assert "sec_13f_ownership_features" in order
     assert "thirteenf_option_metrics" in order
+    assert "thirteenf_concentration_metrics" in order
     assert order.index("sec_13f_ownership_features") < order.index("thirteenf_option_metrics")
+    assert order.index("sec_13f_ownership_features") < order.index("thirteenf_concentration_metrics")
 
 
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):

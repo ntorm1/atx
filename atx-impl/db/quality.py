@@ -5063,6 +5063,76 @@ def _check_specs(
             required_tables=("thirteenf_option_metrics",),
         ),
         SqlQualityCheck(
+            dataset_id="thirteenf_concentration_metrics",
+            table_name="thirteenf_concentration_metrics",
+            check_name="duplicate_thirteenf_concentration_metric_keys",
+            sql="""
+                SELECT count(*)::DOUBLE FROM (
+                    SELECT
+                        source,
+                        coalesce(security_id, ''),
+                        coalesce(cusip, ''),
+                        report_period,
+                        coalesce(source_period, '')
+                    FROM thirteenf_concentration_metrics
+                    GROUP BY 1, 2, 3, 4, 5 HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_concentration_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_concentration_metrics",
+            table_name="thirteenf_concentration_metrics",
+            check_name="bad_thirteenf_concentration_metric_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM thirteenf_concentration_metrics
+                WHERE metric_id IS NULL OR metric_id = ''
+                   OR source IS NULL OR source = ''
+                   OR (coalesce(security_id, '') = '' AND coalesce(cusip, '') = '')
+                   OR report_period IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR filing_count < 1
+                   OR holder_count < 1
+                   OR common_value_usd < 0
+                   OR common_share_quantity < 0
+                   OR top_holder_value_usd < 0
+                   OR top_holder_share_quantity < 0
+                   OR top_holder_value_pct < 0 OR top_holder_value_pct > 1.0000001
+                   OR top_holder_share_pct < 0 OR top_holder_share_pct > 1.0000001
+                   OR top_3_holder_value_pct < 0 OR top_3_holder_value_pct > 1.0000001
+                   OR top_5_holder_value_pct < 0 OR top_5_holder_value_pct > 1.0000001
+                   OR top_10_holder_value_pct < 0 OR top_10_holder_value_pct > 1.0000001
+                   OR value_hhi < 0 OR value_hhi > 1.0000001
+                   OR share_hhi < 0 OR share_hhi > 1.0000001
+                   OR effective_holder_count_value < 1
+                   OR effective_holder_count_share < 1
+                   OR concentration_bucket NOT IN ('DISPERSED', 'MODERATE', 'CONCENTRATED', 'HIGHLY_CONCENTRATED')
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_concentration_metrics",),
+        ),
+        SqlQualityCheck(
+            dataset_id="thirteenf_concentration_metrics",
+            table_name="thirteenf_concentration_metrics",
+            check_name="mismatched_thirteenf_concentration_ordering",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM thirteenf_concentration_metrics
+                WHERE top_holder_value_pct > top_3_holder_value_pct + 1e-9
+                   OR top_3_holder_value_pct > top_5_holder_value_pct + 1e-9
+                   OR top_5_holder_value_pct > top_10_holder_value_pct + 1e-9
+                   OR top_10_holder_value_pct > 1.0000001
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("thirteenf_concentration_metrics",),
+        ),
+        SqlQualityCheck(
             dataset_id="corporate_action_dividend_metrics",
             table_name="corporate_action_dividend_metrics",
             check_name="duplicate_corporate_action_dividend_metric_keys",
