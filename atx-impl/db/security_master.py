@@ -110,6 +110,67 @@ def security_ids_for_symbols(store: DuckDBStore, symbols: list[str]) -> dict[str
     return {ticker: security_id for ticker, security_id in rows if security_id}
 
 
+IDENTIFIER_KEY_COLUMNS = ["security_id", "id_type", "id_value", "source"]
+
+
+def dedupe_open_identifier_intervals(frame: pd.DataFrame) -> pd.DataFrame:
+    """Collapse repeated open-ended identifier rows to one canonical interval.
+
+    Some seeders (notably the SEC ownership issuer seed) emit one identifier row
+    per *filing*, each open-ended (``valid_to`` NULL) with that filing's date as
+    ``valid_from``. Re-observing the same ``(security_id, id_type, id_value,
+    source)`` does not start a new validity interval -- the identifier is
+    continuously valid from its earliest sighting -- so N open-ended rows are
+    redundant and produce self-overlaps. Keep exactly one row per key: the
+    earliest ``valid_from`` (tie-broken by the earliest ``available_at``, the
+    true first disclosure). Rows with a non-null ``valid_to`` describe real
+    closed intervals (e.g. a ticker change) and are left untouched.
+    """
+    if frame is None or frame.empty:
+        return frame
+    open_mask = frame["valid_to"].isna()
+    closed = frame[~open_mask]
+    open_rows = frame[open_mask]
+    if open_rows.empty:
+        return frame
+    open_rows = open_rows.sort_values(["valid_from", "available_at"], kind="stable").drop_duplicates(
+        subset=IDENTIFIER_KEY_COLUMNS, keep="first"
+    )
+    if closed.empty:
+        return open_rows.reset_index(drop=True)
+    return pd.concat([open_rows, closed], ignore_index=True)
+
+
+def collapse_identifier_history_open_duplicates(conn) -> int:
+    """One-time repair: collapse redundant open-ended identifier intervals.
+
+    For each ``(security_id, id_type, id_value, source)`` among rows with
+    ``valid_to IS NULL``, keep the earliest ``(valid_from, available_at, rowid)``
+    row and delete the rest. Closed intervals are never touched. Returns the
+    number of rows removed. Safe to run repeatedly (idempotent once collapsed).
+    """
+    before = conn.execute("SELECT count(*) FROM security_identifier_history").fetchone()[0]
+    conn.execute(
+        """
+        DELETE FROM security_identifier_history
+        WHERE rowid IN (
+            SELECT rowid FROM (
+                SELECT rowid,
+                    row_number() OVER (
+                        PARTITION BY security_id, id_type, id_value, source
+                        ORDER BY valid_from ASC, available_at ASC, rowid ASC
+                    ) AS rn
+                FROM security_identifier_history
+                WHERE valid_to IS NULL
+            )
+            WHERE rn > 1
+        )
+        """
+    )
+    after = conn.execute("SELECT count(*) FROM security_identifier_history").fetchone()[0]
+    return int(before - after)
+
+
 def upsert_security_master_from_frame(
     store: DuckDBStore,
     frame: pd.DataFrame,

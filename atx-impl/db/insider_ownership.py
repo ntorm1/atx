@@ -13,7 +13,7 @@ from lxml import etree
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .security_master import SEC_USER_AGENT, sec_session
+from .security_master import SEC_USER_AGENT, dedupe_open_identifier_intervals, sec_session
 from .warehouse import cik_security_id, insert_frame, json_dumps, now_utc_naive, quality_check
 from .xbrl_filing_contexts import archive_primary_document_url
 
@@ -1183,19 +1183,34 @@ class InsiderOwnershipDataset(Dataset):
             store.con.unregister("insider_issuer_securities")
 
         if not identifier_frame.empty:
+            # Collapse this batch's repeated open-ended sightings to one
+            # canonical interval per identifier, then insert only identifiers
+            # without an existing open-ended interval. Re-observing an issuer
+            # therefore never starts a second overlapping interval and never
+            # moves the earliest valid_from later.
+            identifier_frame = dedupe_open_identifier_intervals(identifier_frame)
             store.con.register("insider_issuer_identifiers", identifier_frame)
             try:
                 store.con.execute(
                     """
-                    DELETE FROM security_identifier_history
-                    USING insider_issuer_identifiers src
-                    WHERE security_identifier_history.security_id = src.security_id
-                      AND security_identifier_history.id_type = src.id_type
-                      AND security_identifier_history.id_value = src.id_value
-                      AND security_identifier_history.source = src.source
+                    INSERT INTO security_identifier_history (
+                        security_id, id_type, id_value, valid_from, valid_to,
+                        as_of_date, available_at, source, run_id
+                    )
+                    SELECT
+                        src.security_id, src.id_type, src.id_value, src.valid_from, src.valid_to,
+                        src.as_of_date, src.available_at, src.source, src.run_id
+                    FROM insider_issuer_identifiers src
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM security_identifier_history h
+                        WHERE h.security_id = src.security_id
+                          AND h.id_type = src.id_type
+                          AND h.id_value = src.id_value
+                          AND h.source = src.source
+                          AND h.valid_to IS NULL
+                    )
                     """
                 )
-                insert_frame(store, identifier_frame, "security_identifier_history", "insider_issuer_identifier_insert")
             finally:
                 store.con.unregister("insider_issuer_identifiers")
 

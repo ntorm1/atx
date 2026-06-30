@@ -4891,6 +4891,22 @@ def _security_listing_metrics(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
+    """S32: collapse redundant open-ended security_identifier_history intervals.
+
+    The SEC ownership issuer seed historically wrote one open-ended identifier
+    row per filing, producing many overlapping intervals for the same
+    (security_id, id_type, id_value, source). This one-time repair keeps the
+    earliest interval per key and removes the redundant duplicates, clearing the
+    standing duplicate_identifier_history_keys and
+    identifier_same_source_self_overlaps quality failures. The loader is now
+    idempotent, so the failures do not reappear.
+    """
+    from .security_master import collapse_identifier_history_open_duplicates
+
+    collapse_identifier_history_open_duplicates(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -5157,6 +5173,11 @@ MIGRATIONS: list[Migration] = [
         version=53,
         name="security_listing_metrics",
         up=_security_listing_metrics,
+    ),
+    Migration(
+        version=54,
+        name="repair_identifier_history_overlaps",
+        up=_repair_identifier_history_overlaps,
     ),
 ]
 
