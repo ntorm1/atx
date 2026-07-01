@@ -10,6 +10,7 @@ fundamental_item.item_id uniqueness constraint, not row counts.
 from __future__ import annotations
 
 import csv
+from datetime import date, datetime
 import inspect
 from pathlib import Path
 import re
@@ -367,6 +368,33 @@ def _valid_seed_values(**overrides: str) -> list[str]:
     return [values[column] for column in SEED_COLUMNS]
 
 
+def _seed_row_for_registry(**overrides):
+    from db.item_registry import FundamentalItemSeedRow
+
+    values = {
+        "item_id": 1001,
+        "canonical_code": "revenue",
+        "statement": "income",
+        "section": "income_statement",
+        "data_type": "duration",
+        "unit_type": "monetary",
+        "sign_convention": "positive",
+        "is_derived": False,
+        "definition": "Revenue",
+        "citation": "test source",
+        "alias_scheme": "us-gaap",
+        "alias_code": "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "coalesce_priority": 10,
+        "valid_from": "1900-01-01",
+        "valid_to": None,
+        "vendor": None,
+        "vendor_field": None,
+        "sign_note": None,
+    }
+    values.update(overrides)
+    return FundamentalItemSeedRow(**values)
+
+
 @pytest.mark.parametrize(
     ("row", "message"),
     [
@@ -513,6 +541,343 @@ def test_seed_fundamental_item_registry_aliases_reference_live_items(tmp_store):
     ).fetchone()[0]
 
     assert dangling == 0
+
+
+def test_registry_resolves_taxonomy_alias_to_item_id_without_duckdb():
+    """Pure registry lookup maps taxonomy aliases to canonical item ids."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_seed_rows(
+        (
+            _seed_row_for_registry(
+                item_id=1031,
+                canonical_code="net_income",
+                alias_code="NetIncomeLoss",
+                coalesce_priority=10,
+            ),
+        )
+    )
+
+    assert registry.resolve_item("us-gaap", "NetIncomeLoss") == 1031
+    assert registry.resolve_item("us-gaap", "DoesNotExist") is None
+    assert registry.resolve_item("ifrs-full", "NetIncomeLoss") is None
+
+
+def test_registry_returns_inputs_in_priority_then_alias_order_without_duckdb():
+    """Input aliases are deterministic and match COALESCE fallback order."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_seed_rows(
+        (
+            _seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),
+            _seed_row_for_registry(
+                alias_code="RevenueFromContractWithCustomerExcludingAssessedTax",
+                coalesce_priority=10,
+            ),
+            _seed_row_for_registry(alias_code="SalesRevenueNet", coalesce_priority=30),
+            _seed_row_for_registry(alias_code="RevenueFallbackB", coalesce_priority=40),
+            _seed_row_for_registry(alias_code="RevenueFallbackA", coalesce_priority=40),
+        )
+    )
+
+    assert registry.resolve_inputs("revenue") == [
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
+        "SalesRevenueNet",
+        "RevenueFallbackA",
+        "RevenueFallbackB",
+    ]
+    assert registry.resolve_inputs("unknown_metric") == []
+
+
+def test_registry_filters_aliases_by_as_of_validity_without_duckdb():
+    """Alias validity is inclusive on valid_from and exclusive on valid_to."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_seed_rows(
+        (
+            _seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),
+            _seed_row_for_registry(
+                alias_code="SalesRevenueNet",
+                coalesce_priority=30,
+                valid_to="2018-01-01",
+            ),
+        )
+    )
+
+    assert registry.resolve_inputs("revenue", as_of=date(2017, 12, 31)) == [
+        "Revenues",
+        "SalesRevenueNet",
+    ]
+    assert registry.resolve_inputs("revenue", as_of=date(2018, 1, 1)) == ["Revenues"]
+    assert registry.resolve_item("us-gaap", "SalesRevenueNet", as_of=date(2018, 1, 1)) is None
+
+
+def test_registry_accepts_string_as_of_without_duckdb():
+    """String as_of values use the same alias validity rules as date objects."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_seed_rows(
+        (
+            _seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),
+            _seed_row_for_registry(
+                alias_code="SalesRevenueNet",
+                coalesce_priority=30,
+                valid_to="2018-01-01",
+            ),
+        )
+    )
+
+    assert registry.resolve_inputs("revenue", as_of="2017-12-31") == [
+        "Revenues",
+        "SalesRevenueNet",
+    ]
+    assert registry.resolve_inputs("revenue", as_of="2018-01-01") == ["Revenues"]
+
+
+def test_registry_normalizes_datetime_as_of_without_duckdb():
+    """Datetime values are normalized to calendar dates before comparison."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_seed_rows(
+        (
+            _seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),
+            _seed_row_for_registry(
+                alias_code="SalesRevenueNet",
+                coalesce_priority=30,
+                valid_to="2018-01-01",
+            ),
+        )
+    )
+
+    assert registry.resolve_inputs("revenue", as_of=datetime(2017, 12, 31, 23, 59)) == [
+        "Revenues",
+        "SalesRevenueNet",
+    ]
+    assert registry.resolve_item("us-gaap", "SalesRevenueNet", as_of=datetime(2018, 1, 1)) is None
+
+
+def test_registry_rejects_malformed_as_of_on_hit_and_miss_paths_without_duckdb():
+    """Bad as_of values fail before alias lookup can short-circuit."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_seed_rows(
+        (_seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),)
+    )
+
+    with pytest.raises(ValueError, match="invalid as_of date"):
+        registry.resolve_item("us-gaap", "Revenues", as_of="not-a-date")
+    with pytest.raises(ValueError, match="invalid as_of date"):
+        registry.resolve_item("us-gaap", "DoesNotExist", as_of="not-a-date")
+    with pytest.raises(ValueError, match="invalid as_of date"):
+        registry.resolve_inputs("revenue", as_of="not-a-date")
+    with pytest.raises(ValueError, match="invalid as_of date"):
+        registry.resolve_inputs("unknown_metric", as_of="not-a-date")
+
+
+def test_empty_registry_rejects_malformed_as_of_without_duckdb():
+    """Empty registries still validate as_of at method entry."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_table_rows((), ())
+
+    with pytest.raises(ValueError, match="invalid as_of date"):
+        registry.resolve_item("us-gaap", "Revenues", as_of="not-a-date")
+    with pytest.raises(ValueError, match="invalid as_of date"):
+        registry.resolve_inputs("revenue", as_of="not-a-date")
+
+
+def test_registry_from_table_rows_resolves_without_duckdb():
+    """Table-row constructor accepts plain tuples and mappings without opening DuckDB."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_table_rows(
+        (
+            {"item_id": 1001, "canonical_code": "revenue"},
+            (1031, "net_income"),
+        ),
+        (
+            {
+                "item_id": 1001,
+                "alias_scheme": "us-gaap",
+                "alias_code": "Revenues",
+                "coalesce_priority": 20,
+                "valid_from": "1900-01-01",
+                "valid_to": None,
+            },
+            (1031, "us-gaap", "NetIncomeLoss", 10, "1900-01-01", None),
+        ),
+    )
+
+    assert registry.resolve_item("us-gaap", "NetIncomeLoss") == 1031
+    assert registry.resolve_inputs("revenue") == ["Revenues"]
+
+
+def test_registry_rejects_duplicate_item_id_with_conflicting_identity_without_duckdb():
+    """Constructor rejects duplicate item ids with conflicting item records."""
+    from db.item_registry import Registry
+
+    rows = (
+        _seed_row_for_registry(item_id=1001, canonical_code="revenue"),
+        _seed_row_for_registry(item_id=1001, canonical_code="total_revenue"),
+    )
+
+    with pytest.raises(ValueError, match="Conflicting fundamental_item"):
+        Registry.from_seed_rows(rows)
+
+
+def test_registry_rejects_duplicate_canonical_code_for_different_item_ids_without_duckdb():
+    """Canonical item codes must identify a single item id."""
+    from db.item_registry import Registry
+
+    rows = (
+        _seed_row_for_registry(item_id=1001, canonical_code="revenue", alias_code="Revenues"),
+        _seed_row_for_registry(item_id=1002, canonical_code="revenue", alias_code="SalesRevenueNet"),
+    )
+
+    with pytest.raises(ValueError, match="Conflicting canonical_code"):
+        Registry.from_seed_rows(rows)
+
+
+def test_registry_rejects_exact_duplicate_alias_rows_without_duckdb():
+    """Exact duplicate aliases fail before resolution can pick a duplicate row."""
+    from db.item_registry import Registry
+
+    row = _seed_row_for_registry(alias_code="Revenues", coalesce_priority=20)
+
+    with pytest.raises(ValueError, match="Duplicate fundamental_item_alias"):
+        Registry.from_seed_rows((row, row))
+
+
+def test_registry_rejects_overlapping_alias_windows_for_different_items_without_duckdb():
+    """Same alias may not resolve to two item ids over the same as-of window."""
+    from db.item_registry import Registry
+
+    rows = (
+        _seed_row_for_registry(
+            item_id=1001,
+            canonical_code="revenue",
+            alias_code="SharedConcept",
+            valid_from="2010-01-01",
+            valid_to="2020-01-01",
+        ),
+        _seed_row_for_registry(
+            item_id=1002,
+            canonical_code="sales_legacy",
+            alias_code="SharedConcept",
+            valid_from="2015-01-01",
+            valid_to=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Overlapping alias validity"):
+        Registry.from_seed_rows(rows)
+
+
+def test_registry_allows_non_overlapping_alias_windows_for_different_items_without_duckdb():
+    """A reused alias can move item ids when validity windows do not overlap."""
+    from db.item_registry import Registry
+
+    registry = Registry.from_seed_rows(
+        (
+            _seed_row_for_registry(
+                item_id=1001,
+                canonical_code="revenue",
+                alias_code="MovedConcept",
+                valid_from="2010-01-01",
+                valid_to="2020-01-01",
+            ),
+            _seed_row_for_registry(
+                item_id=1002,
+                canonical_code="sales_legacy",
+                alias_code="MovedConcept",
+                valid_from="2020-01-01",
+                valid_to=None,
+            ),
+        )
+    )
+
+    assert registry.resolve_item("us-gaap", "MovedConcept", as_of="2019-12-31") == 1001
+    assert registry.resolve_item("us-gaap", "MovedConcept", as_of="2020-01-01") == 1002
+
+
+def test_registry_from_table_rows_rejects_duplicate_item_rows_without_duckdb():
+    """Table-row constructor fails clearly instead of overwriting item identities."""
+    from db.item_registry import Registry
+
+    with pytest.raises(ValueError, match="Duplicate fundamental_item row"):
+        Registry.from_table_rows(
+            (
+                {"item_id": 1001, "canonical_code": "revenue"},
+                {"item_id": 1001, "canonical_code": "revenue"},
+            ),
+            (),
+        )
+
+
+def test_registry_from_table_rows_rejects_conflicting_item_rows_without_duckdb():
+    """Table-row constructor rejects duplicate item ids with different canonical codes."""
+    from db.item_registry import Registry
+
+    with pytest.raises(ValueError, match="Conflicting fundamental_item"):
+        Registry.from_table_rows(
+            (
+                {"item_id": 1001, "canonical_code": "revenue"},
+                {"item_id": 1001, "canonical_code": "total_revenue"},
+            ),
+            (),
+        )
+
+
+def test_registry_from_table_rows_rejects_duplicate_canonical_codes_without_duckdb():
+    """Table-row constructor enforces canonical_code uniqueness."""
+    from db.item_registry import Registry
+
+    with pytest.raises(ValueError, match="Conflicting canonical_code"):
+        Registry.from_table_rows(
+            (
+                {"item_id": 1001, "canonical_code": "revenue"},
+                {"item_id": 1002, "canonical_code": "revenue"},
+            ),
+            (),
+        )
+
+
+def test_module_level_resolvers_accept_explicit_registry_without_duckdb():
+    """Public shim functions can resolve against caller-provided in-memory rows."""
+    from db.item_registry import Registry, resolve_inputs, resolve_item
+
+    registry = Registry.from_seed_rows(
+        (
+            _seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),
+            _seed_row_for_registry(
+                alias_code="RevenueFromContractWithCustomerExcludingAssessedTax",
+                coalesce_priority=10,
+            ),
+        )
+    )
+
+    assert resolve_item("us-gaap", "Revenues", registry=registry) == 1001
+    assert resolve_inputs("revenue", registry=registry) == [
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
+    ]
+
+
+def test_committed_registry_seed_resolves_acceptance_examples_without_duckdb():
+    """The committed offline seed can back the pure resolution shim."""
+    from db.item_registry import Registry, read_fundamental_item_seed
+
+    registry = Registry.from_seed_rows(read_fundamental_item_seed())
+
+    assert registry.resolve_item("us-gaap", "NetIncomeLoss") == 1031
+    assert registry.resolve_inputs("revenue") == [
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
+        "SalesRevenueNet",
+    ]
+    assert "SalesRevenueNet" in registry.resolve_inputs("revenue", as_of=date(2017, 12, 31))
+    assert "SalesRevenueNet" not in registry.resolve_inputs("revenue", as_of=date(2018, 1, 1))
 
 
 def test_revenue_alias_priorities_match_statement_map_order(tmp_store):
