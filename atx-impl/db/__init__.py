@@ -164,6 +164,7 @@ from .fundamental_statements import (
     refresh_fundamental_ttm_points,
     seed_fundamental_statement_map,
 )
+from .item_registry import read_fundamental_item_seed, seed_fundamental_item_registry
 from .fundamentals import (
     COMPANY_FACT_SYMBOL_SOURCES,
     SecCompanyFactsDataset,
@@ -554,6 +555,8 @@ __all__ = [
     "short_interest_asof",
     "short_interest_with_13f_positioning",
     "seed_fundamental_statement_map",
+    "seed_fundamental_item_registry",
+    "read_fundamental_item_seed",
     "seed_corp_action_type_dim",
     "seed_delist_code_dim",
     "thirteenf_positioning_asof",

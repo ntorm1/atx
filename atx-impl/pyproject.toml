@@ -19,6 +19,9 @@ dev = ["pytest>=9"]
 [tool.setuptools]
 packages = ["db"]
 
+[tool.setuptools.package-data]
+db = ["seeds/*.csv"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["db/tests"]
