@@ -5015,6 +5015,202 @@ def _macro_metrics_sahm_rule_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _fundamental_item_registry_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S1 S1-0: canonical item dimension + alias + vendor cross-walk schema.
+
+    Creates fundamental_item (one row per canonical metric, item_id 1001..1440
+    fundamentals, 1501/1601/1701 industry overlays, 2001..2044 estimates),
+    fundamental_item_alias (us-gaap/dei concept -> item_id edges with
+    coalesce_priority and bitemporal valid_from/valid_to), and
+    fundamental_item_vendor_map (item_id -> vendor field cross-walk). Schema
+    only; indexes land in migration 0062, seed data lands in S1-1. No seed
+    rows are inserted here; this migration only creates structure and
+    catalogs it.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_item (
+            item_id INTEGER PRIMARY KEY,
+            canonical_code VARCHAR NOT NULL,
+            statement VARCHAR,
+            section VARCHAR,
+            data_type VARCHAR,
+            unit_type VARCHAR,
+            sign_convention VARCHAR,
+            is_derived BOOLEAN DEFAULT FALSE,
+            definition VARCHAR,
+            citation VARCHAR
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_item_alias (
+            item_id INTEGER,
+            alias_scheme VARCHAR,
+            alias_code VARCHAR,
+            coalesce_priority INTEGER,
+            valid_from DATE,
+            valid_to DATE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_item_vendor_map (
+            item_id INTEGER,
+            vendor VARCHAR,
+            vendor_field VARCHAR,
+            sign_note VARCHAR
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name,
+            layer,
+            entity,
+            grain,
+            description,
+            natural_key_json,
+            pit_notes,
+            updated_at
+        )
+        VALUES
+            (
+                'fundamental_item',
+                'gold',
+                'fundamental_item',
+                'item_id',
+                'Canonical cross-vendor fundamental item dimension: one row per governed metric (income/balance/cashflow/derived statement items, industry overlays, estimate items), mirroring the cross_vendor_field_map.md headline dictionary.',
+                '["item_id"]',
+                'Reference data with no as_of_date fact time; carries no bitemporal window itself.',
+                now()
+            ),
+            (
+                'fundamental_item_alias',
+                'gold',
+                'fundamental_item_alias',
+                'item_id,alias_scheme,alias_code,coalesce_priority,valid_from,valid_to',
+                'Concept-to-item edges mapping vendor taxonomy concepts (us-gaap/dei) onto a canonical fundamental_item, with COALESCE priority ordering and bitemporal validity.',
+                '["item_id", "alias_scheme", "alias_code", "coalesce_priority", "valid_from", "valid_to"]',
+                'Bitemporal alias validity via valid_from/valid_to; resolution shim gates alias_scheme/alias_code on valid_from <= as_of_date < coalesce(valid_to, DATE 9999-12-31).',
+                now()
+            ),
+            (
+                'fundamental_item_vendor_map',
+                'gold',
+                'fundamental_item_vendor_map',
+                'item_id,vendor,vendor_field',
+                'Cross-vendor field cross-walk mapping a canonical fundamental_item to vendor-specific field codes (compustat/factset/ibes/worldscope/bloomberg/ciq/sharadar).',
+                '["item_id", "vendor", "vendor_field"]',
+                'Reference data with no as_of_date fact time; carries no bitemporal window itself.',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('fundamental_item', 'item_id', 'identifier',
+             'Canonical fundamental item identifier (1001..1440 fundamentals, 1501/1601/1701 industry overlays, 2001..2044 estimates).',
+             false, NULL, NULL, now()),
+            ('fundamental_item', 'canonical_code', 'text',
+             'Canonical metric code (e.g. revenue, total_assets) used as the single source of truth for derived-layer inputs.',
+             false, NULL, NULL, now()),
+            ('fundamental_item', 'statement', 'text',
+             'Owning financial statement (income, balance, cashflow, derived, estimate).',
+             true, NULL, NULL, now()),
+            ('fundamental_item', 'section', 'text',
+             'Statement section/grouping (e.g. section 2.1 income, section 2.5 banks) mirroring cross_vendor_field_map.md.',
+             true, NULL, NULL, now()),
+            ('fundamental_item', 'data_type', 'text',
+             'XBRL duration semantics of the item: flow (duration) or instant.',
+             true, NULL, NULL, now()),
+            ('fundamental_item', 'unit_type', 'text',
+             'Unit family of the item value (e.g. USD, shares, per_share, ratio).',
+             true, NULL, NULL, now()),
+            ('fundamental_item', 'sign_convention', 'text',
+             'Expected sign convention for the item value (e.g. positive, negative_is_expense).',
+             true, NULL, NULL, now()),
+            ('fundamental_item', 'is_derived', 'flag',
+             'True when the item is computed from other items rather than sourced directly from a filing/vendor.',
+             true, NULL, NULL, now()),
+            ('fundamental_item', 'definition', 'text',
+             'Human-readable definition of the canonical item.',
+             true, NULL, NULL, now()),
+            ('fundamental_item', 'citation', 'text',
+             'Source citation for the item definition (e.g. cross_vendor_field_map.md section reference).',
+             true, NULL, NULL, now()),
+            ('fundamental_item_alias', 'item_id', 'identifier',
+             'Canonical fundamental_item this alias resolves to.',
+             true, NULL, NULL, now()),
+            ('fundamental_item_alias', 'alias_scheme', 'text',
+             'Vendor taxonomy scheme of the alias concept (us-gaap or dei).',
+             true, NULL, NULL, now()),
+            ('fundamental_item_alias', 'alias_code', 'text',
+             'Taxonomy concept name within alias_scheme (e.g. Revenues, SalesRevenueNet).',
+             true, NULL, NULL, now()),
+            ('fundamental_item_alias', 'coalesce_priority', 'measure',
+             'COALESCE ordering priority when multiple aliases map to the same item_id (lower resolves first), mirroring fundamental_statement_map.concept_priority.',
+             true, NULL, NULL, now()),
+            ('fundamental_item_alias', 'valid_from', 'date',
+             'Date the alias becomes valid for PIT resolution (bitemporal alias validity).',
+             true, NULL, NULL, now()),
+            ('fundamental_item_alias', 'valid_to', 'date',
+             'Date the alias stops being valid for PIT resolution; NULL means still valid (coalesce to DATE 9999-12-31).',
+             true, 'date', NULL, now()),
+            ('fundamental_item_vendor_map', 'item_id', 'identifier',
+             'Canonical fundamental_item this vendor field maps to.',
+             true, NULL, NULL, now()),
+            ('fundamental_item_vendor_map', 'vendor', 'text',
+             'Vendor identifier (compustat, factset, ibes, worldscope, bloomberg, ciq, sharadar).',
+             true, NULL, NULL, now()),
+            ('fundamental_item_vendor_map', 'vendor_field', 'text',
+             'Vendor-specific field code for the mapped item (e.g. compustat revt, factset FF_SALES).',
+             true, NULL, NULL, now()),
+            ('fundamental_item_vendor_map', 'sign_note', 'text',
+             'Free-text note on vendor sign convention differences relative to the canonical item.',
+             true, NULL, NULL, now())
+        """
+    )
+
+
+def _fundamental_item_registry_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S1 S1-0: index the item registry after the additive schema migration commits."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_item_alias_lookup ON fundamental_item_alias(alias_scheme, alias_code)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_fundamental_item_canonical ON fundamental_item(canonical_code)",
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fundamental_item_alias_unique
+        ON fundamental_item_alias (
+            (CASE WHEN item_id IS NULL THEN 'N' ELSE 'V' || CAST(item_id AS VARCHAR) END),
+            (CASE WHEN alias_scheme IS NULL THEN 'N' ELSE 'V' || alias_scheme END),
+            (CASE WHEN alias_code IS NULL THEN 'N' ELSE 'V' || alias_code END),
+            (CASE WHEN coalesce_priority IS NULL THEN 'N' ELSE 'V' || CAST(coalesce_priority AS VARCHAR) END),
+            (CASE WHEN valid_from IS NULL THEN 'N' ELSE 'V' || CAST(valid_from AS VARCHAR) END),
+            (CASE WHEN valid_to IS NULL THEN 'N' ELSE 'V' || CAST(valid_to AS VARCHAR) END)
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fundamental_item_vendor_map_unique
+        ON fundamental_item_vendor_map (
+            (CASE WHEN item_id IS NULL THEN 'N' ELSE 'V' || CAST(item_id AS VARCHAR) END),
+            (CASE WHEN vendor IS NULL THEN 'N' ELSE 'V' || vendor END),
+            (CASE WHEN vendor_field IS NULL THEN 'N' ELSE 'V' || vendor_field END)
+        )
+        """,
+    ):
+        conn.execute(statement)
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -5327,6 +5523,16 @@ MIGRATIONS: list[Migration] = [
         version=59,
         name="equity_price_metrics_cross_sectional_ranks",
         up=_equity_price_metrics_cross_sectional_ranks,
+    ),
+    Migration(
+        version=61,
+        name="fundamental_item_registry_schema",
+        up=_fundamental_item_registry_schema,
+    ),
+    Migration(
+        version=62,
+        name="fundamental_item_registry_indexes",
+        up=_fundamental_item_registry_indexes,
     ),
 ]
 
