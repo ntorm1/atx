@@ -6086,6 +6086,100 @@ def _identifier_spine_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _entity_parent_edges_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S5 S5-2: entity->entity parent-edge table for the GLEIF Level-2 rollup.
+
+    ``entity_parent_edges`` records direct/ultimate parent relationships between
+    sticky corporate entities (``entity_id``, see migration 0079) as reported by
+    GLEIF Level-2 relationship records. Each edge carries its OWN GLEIF-reported
+    bitemporal validity window (valid_from/valid_to) plus available_at/run_id for
+    warehouse provenance -- distinct from the window GLEIF assigns the relationship
+    itself. Supports the sticky-entity rollup S5-0 introduced (who-owns-whom).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS entity_parent_edges (
+            child_entity_id VARCHAR NOT NULL,
+            parent_entity_id VARCHAR NOT NULL,
+            relationship_type VARCHAR NOT NULL,
+            valid_from DATE NOT NULL,
+            valid_to DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entity_parent_edges_child "
+        "ON entity_parent_edges(child_entity_id, relationship_type, valid_from, available_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entity_parent_edges_parent "
+        "ON entity_parent_edges(parent_entity_id, relationship_type, valid_from, available_at)"
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'entity_parent_edges',
+                'core',
+                'entity_relationship',
+                'child_entity_id,parent_entity_id,relationship_type,valid_from',
+                'GLEIF Level-2 direct/ultimate parent relationships between sticky corporate entity_ids, supporting the S5-0 entity rollup.',
+                '["child_entity_id","parent_entity_id","relationship_type","valid_from"]',
+                'Each edge carries GLEIF''s own reported valid_from/valid_to window; use available_at for as-of no-lookahead reads.',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            (
+                'entity_parent_edges',
+                'child_entity_id',
+                'identifier',
+                'Sticky corporate entity_id of the subsidiary/child side of the relationship.',
+                false,
+                NULL,
+                'GLEIF Level-2 Relationship.StartNode.NodeID (LEI), resolved to entity_id',
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'parent_entity_id',
+                'identifier',
+                'Sticky corporate entity_id of the direct or ultimate parent side of the relationship.',
+                false,
+                NULL,
+                'GLEIF Level-2 Relationship.EndNode.NodeID (LEI), resolved to entity_id',
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'relationship_type',
+                'category',
+                'GLEIF relationship type, e.g. IS_DIRECTLY_CONSOLIDATED_BY or IS_ULTIMATELY_CONSOLIDATED_BY.',
+                false,
+                NULL,
+                'GLEIF Level-2 Relationship.RelationshipType',
+                now()
+            )
+        """
+    )
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -6443,6 +6537,11 @@ MIGRATIONS: list[Migration] = [
         version=80,
         name="identifier_spine_indexes",
         up=_identifier_spine_indexes,
+    ),
+    Migration(
+        version=81,
+        name="entity_parent_edges_schema_catalog",
+        up=_entity_parent_edges_schema_catalog,
     ),
 ]
 
