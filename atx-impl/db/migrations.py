@@ -5241,6 +5241,110 @@ def _fundamental_ratios_input_item_ids(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _fundamental_fact_item_links(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S1 S1-4: additive item_id links on statement and raw XBRL fact tables.
+
+    Adds nullable ``item_id`` columns to ``fundamental_statement_points`` and
+    ``fundamental_points``, catalogs both fields, then deterministically backfills
+    them from existing governed mappings. Statement points prefer the exact
+    statement-map row keyed by source/taxonomy/concept/canonical_metric, which
+    preserves industry-template overlays without altering rebuild logic. Raw
+    companyfacts points resolve taxonomy/metric through ``fundamental_item_alias``.
+    Alias duplicates are intentionally excluded from the backfill; the quality
+    path fails them explicitly so no nondeterministic item assignment is made.
+    """
+    for statement in (
+        "ALTER TABLE fundamental_statement_points ADD COLUMN IF NOT EXISTS item_id INTEGER",
+        "ALTER TABLE fundamental_points ADD COLUMN IF NOT EXISTS item_id INTEGER",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('fundamental_statement_points', 'item_id', 'identifier',
+             'Nullable canonical fundamental_item.item_id resolved from the statement map/alias registry for the fact taxonomy and concept. Additive PF-S1 reference linkage; not part of the statement point key.',
+             true, NULL, 'fundamental_statement_map.item_id', now()),
+            ('fundamental_points', 'item_id', 'identifier',
+             'Nullable canonical fundamental_item.item_id resolved from fundamental_item_alias using taxonomy and raw XBRL metric/concept. Additive PF-S1 reference linkage; not part of any fact key.',
+             true, NULL, 'fundamental_item_alias.item_id', now())
+        """
+    )
+
+    conn.execute(
+        """
+        UPDATE fundamental_statement_points AS p
+        SET item_id = resolved.item_id
+        FROM (
+            SELECT
+                source,
+                taxonomy,
+                concept,
+                canonical_metric,
+                min(item_id) AS item_id
+            FROM fundamental_statement_map
+            WHERE is_active
+              AND NOT coalesce(is_derived, false)
+              AND item_id IS NOT NULL
+            GROUP BY 1, 2, 3, 4
+            HAVING count(DISTINCT item_id) = 1
+        ) AS resolved
+        WHERE p.source = resolved.source
+          AND p.taxonomy = resolved.taxonomy
+          AND p.concept = resolved.concept
+          AND p.canonical_metric = resolved.canonical_metric
+          AND p.item_id IS DISTINCT FROM resolved.item_id
+        """
+    )
+
+    conn.execute(
+        """
+        UPDATE fundamental_statement_points AS p
+        SET item_id = resolved.item_id
+        FROM (
+            SELECT
+                alias_scheme,
+                alias_code,
+                min(item_id) AS item_id
+            FROM fundamental_item_alias
+            WHERE alias_scheme IS NOT NULL
+              AND alias_code IS NOT NULL
+              AND item_id IS NOT NULL
+            GROUP BY 1, 2
+            HAVING count(DISTINCT item_id) = 1
+        ) AS resolved
+        WHERE p.item_id IS NULL
+          AND p.taxonomy = resolved.alias_scheme
+          AND p.concept = resolved.alias_code
+        """
+    )
+
+    conn.execute(
+        """
+        UPDATE fundamental_points AS p
+        SET item_id = resolved.item_id
+        FROM (
+            SELECT
+                alias_scheme,
+                alias_code,
+                min(item_id) AS item_id
+            FROM fundamental_item_alias
+            WHERE alias_scheme IS NOT NULL
+              AND alias_code IS NOT NULL
+              AND item_id IS NOT NULL
+            GROUP BY 1, 2
+            HAVING count(DISTINCT item_id) = 1
+        ) AS resolved
+        WHERE p.taxonomy = resolved.alias_scheme
+          AND p.metric = resolved.alias_code
+          AND p.item_id IS DISTINCT FROM resolved.item_id
+        """
+    )
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -5568,6 +5672,11 @@ MIGRATIONS: list[Migration] = [
         version=63,
         name="fundamental_ratios_input_item_ids",
         up=_fundamental_ratios_input_item_ids,
+    ),
+    Migration(
+        version=64,
+        name="fundamental_fact_item_links",
+        up=_fundamental_fact_item_links,
     ),
 ]
 

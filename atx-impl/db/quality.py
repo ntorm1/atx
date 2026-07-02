@@ -9,6 +9,7 @@ from .warehouse import quality_check
 
 
 Comparator = Literal["eq", "le", "ge"]
+FailureStatus = Literal["failed", "warning"]
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,8 @@ class SqlQualityCheck:
     comparator: Comparator = "eq"
     required_tables: tuple[str, ...] = ()
     warn_if_missing: bool = True
+    failure_status: FailureStatus = "failed"
+    detail_sql: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1912,6 +1915,124 @@ def _check_specs(
             """,
             threshold=0.0,
             required_tables=("fundamental_statement_points", "fundamental_statement_map"),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_item_alias",
+            table_name="fundamental_item_alias",
+            check_name="duplicate_fundamental_item_alias_item_mappings",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT alias_scheme, alias_code
+                    FROM fundamental_item_alias
+                    WHERE alias_scheme IS NOT NULL
+                      AND alias_scheme <> ''
+                      AND alias_code IS NOT NULL
+                      AND alias_code <> ''
+                    GROUP BY 1, 2
+                    HAVING count(DISTINCT item_id) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("fundamental_item_alias",),
+            detail_sql="""
+                SELECT
+                    alias_scheme AS taxonomy,
+                    alias_code AS concept,
+                    count(DISTINCT item_id) AS item_id_count,
+                    min(item_id) AS min_item_id,
+                    max(item_id) AS max_item_id
+                FROM fundamental_item_alias
+                WHERE alias_scheme IS NOT NULL
+                  AND alias_scheme <> ''
+                  AND alias_code IS NOT NULL
+                  AND alias_code <> ''
+                GROUP BY 1, 2
+                HAVING count(DISTINCT item_id) > 1
+                ORDER BY taxonomy, concept
+                LIMIT 50
+            """,
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_item_alias",
+            table_name="fundamental_item_alias",
+            check_name="unmapped_fundamental_fact_concepts",
+            sql="""
+                WITH fact_concepts AS (
+                    SELECT 'fundamental_statement_points' AS fact_table, taxonomy, concept
+                    FROM fundamental_statement_points
+                    WHERE taxonomy IS NOT NULL
+                      AND taxonomy <> ''
+                      AND concept IS NOT NULL
+                      AND concept <> ''
+                    UNION ALL
+                    SELECT 'fundamental_points' AS fact_table, taxonomy, metric AS concept
+                    FROM fundamental_points
+                    WHERE taxonomy IS NOT NULL
+                      AND taxonomy <> ''
+                      AND metric IS NOT NULL
+                      AND metric <> ''
+                ),
+                alias_counts AS (
+                    SELECT alias_scheme, alias_code, count(DISTINCT item_id) AS item_id_count
+                    FROM fundamental_item_alias
+                    WHERE alias_scheme IS NOT NULL
+                      AND alias_scheme <> ''
+                      AND alias_code IS NOT NULL
+                      AND alias_code <> ''
+                    GROUP BY 1, 2
+                )
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT DISTINCT f.fact_table, f.taxonomy, f.concept
+                    FROM fact_concepts f
+                    LEFT JOIN alias_counts a
+                      ON a.alias_scheme = f.taxonomy
+                     AND a.alias_code = f.concept
+                    WHERE coalesce(a.item_id_count, 0) = 0
+                )
+            """,
+            threshold=0.0,
+            required_tables=(
+                "fundamental_statement_points",
+                "fundamental_points",
+                "fundamental_item_alias",
+            ),
+            failure_status="warning",
+            detail_sql="""
+                WITH fact_concepts AS (
+                    SELECT 'fundamental_statement_points' AS fact_table, taxonomy, concept
+                    FROM fundamental_statement_points
+                    WHERE taxonomy IS NOT NULL
+                      AND taxonomy <> ''
+                      AND concept IS NOT NULL
+                      AND concept <> ''
+                    UNION ALL
+                    SELECT 'fundamental_points' AS fact_table, taxonomy, metric AS concept
+                    FROM fundamental_points
+                    WHERE taxonomy IS NOT NULL
+                      AND taxonomy <> ''
+                      AND metric IS NOT NULL
+                      AND metric <> ''
+                ),
+                alias_counts AS (
+                    SELECT alias_scheme, alias_code, count(DISTINCT item_id) AS item_id_count
+                    FROM fundamental_item_alias
+                    WHERE alias_scheme IS NOT NULL
+                      AND alias_scheme <> ''
+                      AND alias_code IS NOT NULL
+                      AND alias_code <> ''
+                    GROUP BY 1, 2
+                )
+                SELECT DISTINCT f.fact_table, f.taxonomy, f.concept
+                FROM fact_concepts f
+                LEFT JOIN alias_counts a
+                  ON a.alias_scheme = f.taxonomy
+                 AND a.alias_code = f.concept
+                WHERE coalesce(a.item_id_count, 0) = 0
+                ORDER BY f.fact_table, f.taxonomy, f.concept
+                LIMIT 50
+            """,
         ),
         SqlQualityCheck(
             dataset_id="fundamental_ttm_points",
@@ -5846,18 +5967,26 @@ def run_warehouse_quality_checks(
             observed = store.con.execute(spec.sql).fetchone()[0]
             observed_value = None if observed is None else float(observed)
             passed = observed_value is not None and _passes(observed_value, spec.threshold, spec.comparator)
+            details = {
+                "comparator": spec.comparator,
+                "required_tables": spec.required_tables,
+                "checked_at": checked_at.isoformat(),
+            }
+            if not passed and spec.detail_sql:
+                detail_cursor = store.con.execute(spec.detail_sql)
+                detail_columns = [column[0] for column in detail_cursor.description or ()]
+                details["rows"] = [
+                    dict(zip(detail_columns, row, strict=True))
+                    for row in detail_cursor.fetchall()
+                ]
             result = QualityResult(
                 dataset_id=spec.dataset_id,
                 table_name=spec.table_name,
                 check_name=spec.check_name,
-                status="passed" if passed else "failed",
+                status="passed" if passed else spec.failure_status,
                 observed_value=observed_value,
                 threshold_value=spec.threshold,
-                details={
-                    "comparator": spec.comparator,
-                    "required_tables": spec.required_tables,
-                    "checked_at": checked_at.isoformat(),
-                },
+                details=details,
             )
         if record:
             quality_check(
