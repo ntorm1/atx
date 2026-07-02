@@ -364,7 +364,29 @@ def resolve_company_facts_identifiers(
     # Facts sharing the exact same available_at resolve identically, so batch
     # the spine lookup per distinct available_at instead of per fact row.
     for available_at, group in out.groupby("available_at", sort=False, dropna=False):
-        as_of_ts = pd.Timestamp(available_at).to_pydatetime() if pd.notna(available_at) else now_utc_naive()
+        if pd.isna(available_at):
+            # PF-S5 S5-3 fix: a fact with a null/NaT available_at has no known
+            # filing-availability time. Resolving it "as of now" would leak
+            # today's full identifier state into a fact whose true availability
+            # is unknown -- a lookahead violation of the warehouse's
+            # non-negotiable no-lookahead PIT invariant. Route it into the same
+            # unresolved-ledger path as an unresolvable CIK instead: the fact
+            # keeps flowing with its passthrough security_id, entity_id stays
+            # null, and the caller records it in identifier_resolution_candidates.
+            # (normalize_companyfacts always derives available_at from
+            # filed_date, so this branch should not be reached in practice --
+            # but it must be fail-safe, not fail-lookahead, if that ever changes.)
+            for idx in group.index:
+                cik = str(out.at[idx, "cik"]).strip()
+                unresolved_rows.append(
+                    {
+                        "cik": cik,
+                        "security_id": out.at[idx, "security_id"],
+                        "available_at": available_at,
+                    }
+                )
+            continue
+        as_of_ts = pd.Timestamp(available_at).to_pydatetime()
         ciks = sorted({str(c).strip() for c in group["cik"] if str(c).strip()})
         resolved = security_and_entity_ids_for_ciks_asof(store, ciks, as_of_ts=as_of_ts)
         for idx in group.index:
@@ -883,6 +905,21 @@ class SecCompanyFactsDataset(Dataset):
         effective_skip_failed = options.skip_failed_targets or zip_fetcher is not None
         concept_filter = set(options.concepts)
         targets = resolve_companyfacts_targets(store, options)
+        # PF-S5 S5-3 fix (Minor): _replace_facts deletes sec_company_facts rows
+        # keyed on cik alone (see its docstring/comment below). That is safe
+        # ONLY because every resolve_companyfacts_targets source
+        # (ciks_for_symbols / ciks_for_universe / ciks_from_sec_company_tickers /
+        # ciks_from_loaded_facts) dedupes to at most one row per CIK per load.
+        # Guard that invariant here so a future dual-class/aliasing path that
+        # returns two targets for the same CIK fails loudly instead of silently
+        # deleting the first target's just-inserted facts on the second delete.
+        target_ciks = [cik for _symbol, cik, _security_id in targets]
+        assert len(target_ciks) == len(set(target_ciks)), (
+            "resolve_companyfacts_targets returned duplicate CIKs within one load "
+            f"({len(target_ciks)} targets, {len(set(target_ciks))} distinct CIKs); "
+            "_replace_facts deletes sec_company_facts by cik alone and would drop "
+            "the earlier target's facts -- fix the target resolver to dedupe by CIK."
+        )
         if not targets:
             if options.symbol_source == "symbols":
                 missing = sorted({symbol_key(symbol) for symbol in options.symbols})
@@ -1082,6 +1119,12 @@ class SecCompanyFactsDataset(Dataset):
                 # and is no longer guaranteed identical across every row for one
                 # target -- so the replace-key for THIS table is cik (stable for
                 # the whole target loop iteration), not security_id.
+                # Deleting by cik alone is safe ONLY because every
+                # resolve_companyfacts_targets source dedupes to one row per CIK
+                # per load (asserted in load() before this loop runs) -- if a
+                # future target resolver ever returns two rows for the same CIK,
+                # the second target's delete here would silently wipe out the
+                # first target's facts inserted moments earlier in this same load.
                 # fundamental_points is untouched by S5-3 and still keys on the
                 # loader's original passthrough security_id.
                 store.con.execute(

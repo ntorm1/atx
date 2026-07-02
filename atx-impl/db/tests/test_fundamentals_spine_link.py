@@ -286,6 +286,34 @@ class TestResolveCompanyFactsIdentifiers:
         assert pd.isna(resolved.loc[0, "entity_id"])
         assert list(unresolved["cik"]) == ["0009999999"]
 
+    def test_null_available_at_never_resolves_through_todays_state(self, tmp_store):
+        """A fact with NaT available_at must NEVER be resolved via now/today's
+        identifier state -- that would be a lookahead violation relative to the
+        fact's true (unknown) filing time. It must be routed to the unresolved
+        ledger path instead, exactly like an unresolvable CIK, even though the
+        CIK itself is perfectly resolvable as-of today.
+        """
+        from db.fundamentals import resolve_company_facts_identifiers
+
+        _seed_spine(tmp_store)
+        facts = pd.DataFrame(
+            [
+                {
+                    "cik": "0000320193",
+                    "security_id": "SEC-CIK-0000320193",
+                    "available_at": pd.NaT,
+                }
+            ]
+        )
+        resolved, unresolved = resolve_company_facts_identifiers(tmp_store, facts)
+        # The fact is never dropped -- it keeps flowing with its best-effort
+        # passthrough security_id -- but it must NOT pick up today's spine
+        # state: entity_id stays null and it is flagged for ledger routing.
+        assert len(resolved) == 1
+        assert resolved.loc[0, "security_id"] == "SEC-CIK-0000320193"
+        assert pd.isna(resolved.loc[0, "entity_id"])
+        assert list(unresolved["cik"]) == ["0000320193"]
+
     def test_full_load_writes_unresolved_candidate_to_ledger(self, tmp_store, monkeypatch):
         from db.fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 
