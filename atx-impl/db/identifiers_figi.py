@@ -9,7 +9,7 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .identifier_decisions import decision_id_for, now_utc_naive
+from .identifier_decisions import UNRESOLVED_CUSIP_PREFIX, decision_id_for, now_utc_naive
 from .identifier_resolution import candidate_id_for
 from .warehouse import insert_frame, json_dumps, quality_check
 
@@ -421,7 +421,10 @@ class FigiAliasDataset(Dataset):
     ) -> dict:
         # An unmatched cusip has no target_security_id to route the FIGI onto yet;
         # a conflicting cusip already has a (wrong-to-merge-blindly) candidate target.
-        target_security_id = security_id or f"UNRESOLVED-CUSIP-{cusip}"
+        # This sentinel is acceptable here ONLY because identifier_decisions.py's
+        # _apply_accepted_identifiers guard blocks it from ever being applied as a
+        # real security_id (see UNRESOLVED_CUSIP_PREFIX).
+        target_security_id = security_id or f"{UNRESOLVED_CUSIP_PREFIX}{cusip}"
         return {
             "candidate_id": candidate_id_for(
                 source_dataset_id=DATASET_ID,

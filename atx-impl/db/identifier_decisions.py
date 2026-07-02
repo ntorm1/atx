@@ -17,6 +17,15 @@ DEFAULT_DECISION_METHOD = "auto_confidence_status_policy_v1"
 VALID_CANDIDATE_STATUSES = {"already_mapped", "proposed", "conflict"}
 VALID_DECISION_STATUSES = {"accepted", "rejected", "needs_review"}
 
+# Sentinel prefix written by identifiers_figi.py (and any other candidate
+# producer) into target_security_id when a source key (e.g. a CUSIP) has no
+# resolved security_id yet -- a placeholder to satisfy the NOT NULL
+# constraint on identifier_resolution_candidates/_decisions.target_security_id.
+# It must NEVER be treated as a real security_id: the apply path below rejects
+# it (and any other target_security_id absent from securities) rather than
+# risk writing a fake key into security_identifier_history.
+UNRESOLVED_CUSIP_PREFIX = "UNRESOLVED-CUSIP-"
+
 
 @dataclass(frozen=True)
 class IdentifierResolutionDecisionOptions:
@@ -234,6 +243,47 @@ class IdentifierResolutionDecisionDataset(Dataset):
             subset=["source_key_value", "source_period", "target_security_id", "effective_from"]
         ).reset_index(drop=True)
 
+    def _reject_unresolvable_targets(self, store: DuckDBStore, accepted: pd.DataFrame) -> None:
+        """Guard the consumption point: an accepted row's target_security_id must be
+        a real key in securities.security_id. This blocks the UNRESOLVED-CUSIP-*
+        placeholder (written by candidate producers like identifiers_figi.py for
+        unmatched source keys) -- and any other bogus target_security_id -- from
+        ever being written into security_identifier_history, regardless of how the
+        decision row came to be marked "accepted". Fails loudly rather than
+        silently corrupting the identifier spine.
+        """
+        targets = sorted(set(accepted["target_security_id"].dropna()))
+        if not targets:
+            return
+        sentinel_targets = [t for t in targets if str(t).startswith(UNRESOLVED_CUSIP_PREFIX)]
+        if sentinel_targets:
+            raise ValueError(
+                "Refusing to apply accepted identifier decision(s) with an "
+                f"UNRESOLVED-CUSIP sentinel target_security_id: {sentinel_targets!r}. "
+                "This sentinel is a placeholder for an unmatched source key, not a "
+                "real security_id, and must never be written into "
+                "security_identifier_history."
+            )
+        lookup = pd.DataFrame({"target_security_id": targets})
+        store.con.register("identifier_resolution_target_check", lookup)
+        try:
+            missing = store.con.execute(
+                """
+                SELECT l.target_security_id
+                FROM identifier_resolution_target_check l
+                LEFT JOIN securities s ON s.security_id = l.target_security_id
+                WHERE s.security_id IS NULL
+                """
+            ).fetchall()
+        finally:
+            store.con.unregister("identifier_resolution_target_check")
+        if missing:
+            missing_ids = sorted(row[0] for row in missing)
+            raise ValueError(
+                "Refusing to apply accepted identifier decision(s) whose "
+                f"target_security_id does not exist in securities: {missing_ids!r}."
+            )
+
     def _apply_accepted_identifiers(
         self,
         store: DuckDBStore,
@@ -243,6 +293,7 @@ class IdentifierResolutionDecisionDataset(Dataset):
         accepted = self._accepted_cusips(frame)
         if accepted.empty:
             return 0
+        self._reject_unresolvable_targets(store, accepted)
         identifiers = pd.DataFrame(
             {
                 "security_id": accepted["target_security_id"],
