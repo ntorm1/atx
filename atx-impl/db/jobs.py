@@ -1123,6 +1123,97 @@ def normalize_dependencies(value: Any) -> list[str]:
     return [str(item) for item in loaded if str(item)]
 
 
+_MERGED_SEQUENCE_PARAM_KEYS = frozenset(
+    {
+        "accession_numbers",
+        "concepts",
+        "cusips",
+        "forms",
+        "measure_codes",
+        "package_urls",
+        "provider_names",
+        "security_ids",
+        "series_ids",
+        "source_files",
+        "source_urls",
+        "symbols",
+        "vendor_security_id_types",
+    }
+)
+
+
+def _sequence_param_values(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        values = sorted(value, key=str) if isinstance(value, (set, frozenset)) else value
+        return [item for item in values if str(item).strip()]
+    return [value]
+
+
+def _dedupe_key(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip().upper()
+    try:
+        return json.dumps(value, default=str, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _merge_sequence_params(left: Any, right: Any) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for value in [*_sequence_param_values(left), *_sequence_param_values(right)]:
+        key = _dedupe_key(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(value)
+    return merged
+
+
+def _params_with_implicit_dataset_defaults(
+    dataset_id: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    if dataset_id != SecSubmissionsDataset.dataset_id:
+        return params
+    enriched = dict(params)
+    defaults = SecSubmissionsOptions()
+    if "symbols" not in enriched:
+        enriched["symbols"] = defaults.symbols
+    if "forms" not in enriched:
+        enriched["forms"] = defaults.forms
+    return enriched
+
+
+def _merge_orchestrator_job_params(
+    dataset_id: str,
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    merged = _params_with_implicit_dataset_defaults(dataset_id, existing)
+    incoming = _params_with_implicit_dataset_defaults(dataset_id, incoming)
+    for key, value in incoming.items():
+        if key not in merged:
+            merged[key] = value
+            continue
+        current = merged[key]
+        if key in _MERGED_SEQUENCE_PARAM_KEYS:
+            merged[key] = (
+                None
+                if current is None or value is None
+                else _merge_sequence_params(current, value)
+            )
+        elif isinstance(current, bool) and isinstance(value, bool):
+            merged[key] = current or value
+        elif current in (None, "") and value not in (None, ""):
+            merged[key] = value
+    return merged
+
+
 def current_git_sha(repo_root: Path | None = None) -> str | None:
     root = repo_root or Path(__file__).resolve().parents[2]
     try:
@@ -1875,10 +1966,14 @@ class JobManager:
         params_by_dataset: dict[str, dict[str, Any]] = {}
         for job_name, dataset_id, params_json in rows:
             dataset_id = str(dataset_id)
-            if dataset_id not in DATASET_REGISTRY or dataset_id in registry:
+            if dataset_id not in DATASET_REGISTRY:
                 continue
-            registry[dataset_id] = DATASET_REGISTRY[dataset_id]
-            params_by_dataset[dataset_id] = normalize_params(params_json)
+            registry.setdefault(dataset_id, DATASET_REGISTRY[dataset_id])
+            params_by_dataset[dataset_id] = _merge_orchestrator_job_params(
+                dataset_id,
+                params_by_dataset.get(dataset_id, {}),
+                normalize_params(params_json),
+            )
         return registry, params_by_dataset
 
     def _orchestrator_registry_for_run(

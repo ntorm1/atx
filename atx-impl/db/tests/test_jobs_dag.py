@@ -170,6 +170,56 @@ def test_default_jobs_include_form144_reconciliation_after_insider_load(tmp_stor
     assert order.index("sec_insider_ownership") < order.index("form144_to_form4_link")
 
 
+def test_run_all_enabled_preserves_seeded_sec_submission_form_variants(tmp_store, monkeypatch):
+    """run-all must not collapse same-dataset SEC submission variants to generic only."""
+    from db import jobs
+    from db.insider_ownership import DEFAULT_BLOCKHOLDER_FORMS, DEFAULT_FORMS
+    from db.sec_submissions import SecSubmissionsOptions
+
+    captured: dict[str, object] = {}
+
+    def fake_refresh_quant_warehouse(
+        store,
+        *,
+        params=None,
+        registry=None,
+        run_id=None,
+        resume=None,
+        full_rebuild=False,
+        git_sha=None,
+        actor="warehouse_jobs",
+    ):
+        captured["params"] = params
+        captured["registry"] = registry
+        return jobs.OrchestratorResult(
+            run_id=run_id or "captured-run",
+            status="succeeded",
+            dataset_order=tuple(registry or ()),
+        )
+
+    monkeypatch.setattr(jobs, "refresh_quant_warehouse", fake_refresh_quant_warehouse)
+    mgr = jobs.JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    mgr.run_all_enabled(run_id="capture-sec-submissions")
+
+    dataset_params = captured["params"][jobs.DATASET_PARAMS_KEY]
+    sec_params = dataset_params["sec_submissions"]
+    sec_forms = tuple(sec_params["forms"])
+    expected_forms = (
+        *SecSubmissionsOptions().forms,
+        *DEFAULT_FORMS,
+        *DEFAULT_BLOCKHOLDER_FORMS,
+    )
+
+    assert sec_params["symbols"] == ["AAPL"]
+    assert sec_forms == expected_forms
+    assert set(SecSubmissionsOptions().forms).issubset(sec_forms)
+    assert set(DEFAULT_FORMS).issubset(sec_forms)
+    assert set(DEFAULT_BLOCKHOLDER_FORMS).issubset(sec_forms)
+    assert sec_forms != SecSubmissionsOptions().forms
+
+
 def test_default_jobs_include_delistings_after_listing_status(tmp_store):
     """Delisting proxy events are derived from listing-status intervals."""
     from db.jobs import JobManager
