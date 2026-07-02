@@ -32,6 +32,15 @@ class FundamentalStatementMapRow:
 
 
 FUNDAMENTAL_STATEMENT_MAP_KEY = ("source", "taxonomy", "concept", "industry_template")
+CONCEPT_MAP_SEED_COLUMNS = (
+    "taxonomy",
+    "concept",
+    "canonical_metric",
+    "item_id",
+    "statement_type",
+    "industry_template",
+)
+CONCEPT_MAP_SUPPORTED_TAXONOMIES = ("us-gaap", "dei")
 
 
 def _fundamental_statement_map_pk_columns(store: DuckDBStore) -> tuple[str, ...]:
@@ -466,6 +475,57 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__capitalization_rate","reit_statement","valuation","capitalization_rate","Capitalisation rate","instant","credit","ratio",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1711,"RT",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__ffo_payout_ratio","reit_statement","valuation","ffo_payout_ratio","FFO payout ratio","duration","credit","ratio",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1712,"RT",False,None),
 )
+
+
+def concept_map_projection_rows(
+    rows: tuple[FundamentalStatementMapRow, ...] = FUNDAMENTAL_STATEMENT_MAP_ROWS,
+    *,
+    taxonomies: tuple[str, ...] = CONCEPT_MAP_SUPPORTED_TAXONOMIES,
+) -> tuple[tuple[str, str, str, int, str, str], ...]:
+    """Return active, loadable us-gaap/dei concept-map seed rows.
+
+    Derived sentinels and vendor/extension-only placeholders are map metadata, not
+    companyfacts fetch concepts. They stay in ``FUNDAMENTAL_STATEMENT_MAP_ROWS`` but
+    out of this offline projection until later PF-S3 overlay reconciliation work.
+    """
+
+    taxonomy_set = set(taxonomies)
+    projected: list[tuple[str, str, str, int, str, str]] = []
+    for row in rows:
+        if (
+            row.taxonomy not in taxonomy_set
+            or not row.is_active
+            or row.is_derived
+            or row.concept.startswith("__")
+        ):
+            continue
+        if row.item_id is None:
+            raise ValueError(
+                "active concept map row has no item_id: "
+                f"{row.taxonomy}:{row.concept} ({row.industry_template})"
+            )
+        projected.append(
+            (
+                row.taxonomy,
+                row.concept,
+                row.canonical_metric,
+                int(row.item_id),
+                row.statement_type,
+                row.industry_template,
+            )
+        )
+    return tuple(
+        sorted(
+            projected,
+            key=lambda values: (values[5], values[4], values[0], values[1], values[2], values[3]),
+        )
+    )
+
+
+def default_companyfacts_concepts() -> tuple[str, ...]:
+    """Concept names admitted by the companyfacts loader by default."""
+
+    return tuple(sorted({row[1] for row in concept_map_projection_rows()}))
 
 
 def seed_fundamental_statement_map(store: DuckDBStore) -> int:

@@ -11,6 +11,7 @@ import requests
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .fundamental_statements import (
+    default_companyfacts_concepts,
     refresh_fundamental_periods,
     refresh_fundamental_statement_points,
     refresh_fundamental_ttm_points,
@@ -21,44 +22,13 @@ from .warehouse import insert_frame, json_dumps, quality_check, record_source_fi
 
 SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SOURCE_NAME = "SEC companyfacts"
-DEFAULT_CONCEPTS = (
-    "Assets",
-    "Liabilities",
-    "StockholdersEquity",
-    "Revenues",
-    "RevenueFromContractWithCustomerExcludingAssessedTax",
-    "NetIncomeLoss",
-    "OperatingIncomeLoss",
-    "NetCashProvidedByUsedInOperatingActivities",
-    "NetCashProvidedByUsedInInvestingActivities",
-    "NetCashProvidedByUsedInFinancingActivities",
-    "PaymentsToAcquirePropertyPlantAndEquipment",
-    "PaymentsForRepurchaseOfCommonStock",
-    "PaymentsOfDividends",
-    "EarningsPerShareDiluted",
-    "CommonStocksIncludingAdditionalPaidInCapital",
-    "EntityCommonStockSharesOutstanding",
-    # S44: balance-sheet/income-statement detail that unlocks the liquidity, leverage,
-    # margin, and activity ratio families (S10 codes) across the full companyfacts
-    # universe. Every concept below already has an active fundamental_statement_map
-    # entry, so it flows cleanly into statement points AND, via the consolidated
-    # canonical-metric extractor, into the ratio engine's balx/flowx pivots.
-    "AssetsCurrent",
-    "LiabilitiesCurrent",
-    "CashAndCashEquivalentsAtCarryingValue",
-    "InventoryNet",
-    "AccountsReceivableNetCurrent",
-    "PropertyPlantAndEquipmentNet",
-    "RetainedEarningsAccumulatedDeficit",
-    "LongTermDebtNoncurrent",
-    "CommonStockSharesOutstanding",
-    "GrossProfit",
-    "CostOfGoodsAndServicesSold",
-    "CostOfRevenue",
-    "InterestExpense",
-    "DepreciationDepletionAndAmortization",
-    "SellingGeneralAndAdministrativeExpense",
-)
+CANONICAL_CONCEPTS = default_companyfacts_concepts()
+# S3-0: the default fetch filter is derived from the active, loadable statement-map
+# projection committed as db/seeds/concept_map.csv. Widening this tuple is inert until
+# an operator re-runs companyfacts over the loaded universe (for example
+# symbol_source='loaded_facts', optionally backed by a local companyfacts_zip); pytest
+# only exercises the offline projection and never performs that re-fetch.
+DEFAULT_CONCEPTS = CANONICAL_CONCEPTS
 # Only taxonomies the statement map understands are loaded. The fundamentals pipeline
 # is us-gaap (+ dei cover-page) based; IFRS foreign private issuers report under
 # ``ifrs-full`` with no us-gaap map, which both leaves catalog concepts unmapped and
