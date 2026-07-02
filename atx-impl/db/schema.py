@@ -288,6 +288,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
         """
         CREATE TABLE IF NOT EXISTS securities (
             security_id VARCHAR PRIMARY KEY,
+            entity_id VARCHAR,
             issuer_id VARCHAR,
             primary_symbol VARCHAR,
             name VARCHAR,
@@ -308,6 +309,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
                 security_id VARCHAR NOT NULL,
                 id_type VARCHAR NOT NULL,
                 id_value VARCHAR NOT NULL,
+                internal_cusip VARCHAR,
                 valid_from DATE NOT NULL,
                 valid_to DATE,
                 as_of_date DATE NOT NULL,
@@ -1780,6 +1782,7 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         CREATE OR REPLACE VIEW v_security_master_current AS
         SELECT
             s.security_id,
+            s.entity_id,
             s.issuer_id,
             s.primary_symbol,
             s.name,
@@ -1800,6 +1803,7 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
          AND cusip.valid_to IS NULL
         GROUP BY
             s.security_id,
+            s.entity_id,
             s.issuer_id,
             s.primary_symbol,
             s.name,
@@ -2090,8 +2094,8 @@ def _seed_catalog(store: DuckDBStore) -> None:
         ("etl_job_events", "control", "etl_event", "job_run_id,event_time", "ETL event log.", '["job_run_id","event_time"]', "Chronological job events, including retry attempts."),
         ("lake_export_runs", "audit", "lake_export", "export_run_id", "Lake export run audit records.", '["export_run_id"]', "One row per Parquet lake export run."),
         ("lake_export_files", "audit", "lake_export_file", "export_run_id,object_name", "Lake export file manifests recorded in DuckDB.", '["export_run_id","object_name"]', "Use sha256 and schema_sha256 to validate exported Parquet artifacts."),
-        ("securities", "core", "security", "security_id", "Stable internal security master.", '["security_id"]', "Use security_id as stable warehouse key; never ticker as primary key."),
-        ("security_identifier_history", "core", "security_identifier", "security_id,id_type,id_value,valid_from", "PIT identifier bridge.", '["security_id","id_type","id_value","valid_from"]', "Use valid_from/valid_to and available_at for as-of joins."),
+        ("securities", "core", "security", "security_id", "Stable internal security master with PF-S5 current entity/security split.", '["security_id"]', "Use security_id as stable warehouse key; entity_id is the current sticky corporate entity; never ticker as primary key."),
+        ("security_identifier_history", "core", "security_identifier", "security_id,id_type,id_value,valid_from", "PIT identifier bridge for CIK, ticker, ENTITY_ID, FIGI, LEI, ISIN, and internal matching evidence.", '["security_id","id_type","id_value","valid_from"]', "Use valid_from/valid_to and available_at for as-of joins. internal_cusip is non-redistributable support data and must not be exported."),
         ("exchange_listings", "core", "listing", "security_id,ticker,valid_from", "PIT exchange listing and ticker history.", '["security_id","ticker","valid_from"]', "Use valid_from/valid_to and available_at for as-of joins."),
         ("listing_status_intervals", "silver", "listing_status", "symbol,listing_venue_code,valid_from", "PIT listing status intervals derived from Nasdaq snapshot presence and add/delete event checkpoints.", '["listing_status_id"]', "Use valid_from/valid_to plus available_at for as-of-safe survivorship joins; source/evidence fields distinguish snapshot-derived and event-derived intervals."),
         ("delist_code_dim", "dimension", "delist_code", "delist_code", "Public delisting proxy code dimension; CRSP DLSTCD fields remain null unless licensed or reconciled evidence supplies them.", '["delist_code"]', "Imputation fields describe optional research policy and are not applied unless loader options request it."),
@@ -2212,12 +2216,14 @@ def _seed_catalog(store: DuckDBStore) -> None:
 
 COMMON_FIELD_DESCRIPTIONS = {
     "security_id": "Stable internal warehouse security identifier; do not use ticker as a primary key.",
+    "entity_id": "Sticky PF-S5 corporate entity identifier above share-class security_id.",
     "issuer_id": "Issuer-level identifier where available.",
     "primary_symbol": "Current or source-preferred display ticker.",
     "symbol": "Ticker/symbol as published by the source for the row.",
     "ticker": "Exchange listing ticker or identifier value.",
     "cik": "SEC Central Index Key, zero-padded when normalized.",
     "cusip": "CUSIP identifier as reported or normalized from source data.",
+    "internal_cusip": "Internal-only, non-redistributable CUSIP matching support; do not expose in public/lake exports.",
     "accession_number": "SEC accession number identifying a filing.",
     "run_id": "Dataset run id that loaded or computed the row.",
     "source": "Source system or loader name.",
@@ -2281,9 +2287,9 @@ COMMON_FIELD_DESCRIPTIONS = {
 def _semantic_type(column_name: str, data_type: str) -> str:
     name = column_name.lower()
     dtype = data_type.upper()
-    if name in {"security_id", "issuer_id", "source_id", "run_id", "job_run_id", "dataset_id", "source_system_id", "universe_id"}:
+    if name in {"security_id", "entity_id", "issuer_id", "source_id", "run_id", "job_run_id", "dataset_id", "source_system_id", "universe_id"}:
         return "identifier"
-    if name in {"cik", "cusip", "figi", "accession_number", "ticker", "symbol", "vendor_security_id", "series_id"}:
+    if name in {"cik", "cusip", "internal_cusip", "figi", "accession_number", "ticker", "symbol", "vendor_security_id", "series_id"}:
         return "identifier"
     if name.endswith("_date") or dtype == "DATE":
         return "date"

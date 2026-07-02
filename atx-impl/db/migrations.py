@@ -5935,6 +5935,153 @@ def _fundamental_concept_coverage_reports(conn: duckdb.DuckDBPyConnection) -> No
     )
 
 
+def _identifier_spine_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S5 S5-0: additive entity/security substrate columns and catalog.
+
+    ``securities.entity_id`` records the current sticky corporate entity above
+    share-class ``security_id``. Bitemporal ENTITY_ID rows in
+    ``security_identifier_history`` preserve PIT entity mappings; the current
+    column is a non-breaking convenience/backfill for existing joins.
+
+    ``security_identifier_history.internal_cusip`` is an internal-only matching
+    support column for later FIGI/CUSIP resolution. It is deliberately not a
+    public identifier surface.
+    """
+    for statement in (
+        "ALTER TABLE securities ADD COLUMN IF NOT EXISTS entity_id VARCHAR",
+        "ALTER TABLE security_identifier_history ADD COLUMN IF NOT EXISTS internal_cusip VARCHAR",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        UPDATE securities
+        SET entity_id = CASE
+                WHEN issuer_id IS NOT NULL AND issuer_id <> '' THEN issuer_id
+                WHEN security_id LIKE 'SEC-CIK-%' THEN 'CIK-' || substr(security_id, 9)
+                ELSE 'ENTITY-' || security_id
+            END
+        WHERE entity_id IS NULL
+           OR entity_id = ''
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO security_identifier_history (
+            security_id,
+            id_type,
+            id_value,
+            valid_from,
+            valid_to,
+            as_of_date,
+            available_at,
+            source,
+            run_id
+        )
+        WITH earliest_identifier AS (
+            SELECT
+                security_id,
+                min(valid_from) AS first_valid_from
+            FROM security_identifier_history
+            GROUP BY security_id
+        )
+        SELECT
+            s.security_id,
+            'ENTITY_ID' AS id_type,
+            s.entity_id AS id_value,
+            coalesce(e.first_valid_from, s.first_seen_date, current_date) AS valid_from,
+            NULL AS valid_to,
+            coalesce(e.first_valid_from, s.first_seen_date, current_date) AS as_of_date,
+            current_timestamp AS available_at,
+            'migration_0079_identifier_spine' AS source,
+            'migration-0079' AS run_id
+        FROM securities s
+        LEFT JOIN earliest_identifier e
+          ON e.security_id = s.security_id
+        WHERE s.entity_id IS NOT NULL
+          AND s.entity_id <> ''
+          AND NOT EXISTS (
+              SELECT 1
+              FROM security_identifier_history h
+              WHERE h.security_id = s.security_id
+                AND h.id_type = 'ENTITY_ID'
+                AND h.id_value = s.entity_id
+                AND h.source = 'migration_0079_identifier_spine'
+                AND h.valid_to IS NULL
+          )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'securities',
+                'core',
+                'security',
+                'security_id',
+                'Stable internal security master with PF-S5 current entity/security split.',
+                '["security_id"]',
+                'security_id remains the existing join key; entity_id is the current sticky corporate entity. Bitemporal ENTITY_ID rows in security_identifier_history are authoritative for as-of entity resolution.',
+                now()
+            ),
+            (
+                'security_identifier_history',
+                'core',
+                'security_identifier',
+                'security_id,id_type,id_value,valid_from',
+                'PIT identifier bridge for CIK, ticker, ENTITY_ID, FIGI, LEI, ISIN, and internal matching evidence.',
+                '["security_id","id_type","id_value","valid_from"]',
+                'Use valid_from/valid_to and available_at for as-of joins. internal_cusip is non-redistributable support data and must not be exported.',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            (
+                'securities',
+                'entity_id',
+                'identifier',
+                'Current sticky corporate entity identifier above share-class security_id. Backfilled from current CIK issuer identity for existing rows; use bitemporal ENTITY_ID history for as-of reads.',
+                true,
+                NULL,
+                'security_identifier_history.id_value where id_type=ENTITY_ID',
+                now()
+            ),
+            (
+                'security_identifier_history',
+                'internal_cusip',
+                'identifier',
+                'Internal-only, non-redistributable CUSIP matching support for later FIGI/security resolution. Do not expose in public, lake, or downstream export objects.',
+                true,
+                NULL,
+                NULL,
+                now()
+            )
+        """
+    )
+
+
+def _identifier_spine_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S5 S5-0: covering indexes split from schema migration 0079."""
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_securities_entity_id ON securities(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_security_identifier_history_entity_asof ON security_identifier_history(id_type, id_value, valid_from, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_security_identifier_history_internal_cusip ON security_identifier_history(internal_cusip, valid_from, available_at)",
+    ):
+        conn.execute(statement)
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -6282,6 +6429,16 @@ MIGRATIONS: list[Migration] = [
         version=69,
         name="fundamental_concept_coverage_reports",
         up=_fundamental_concept_coverage_reports,
+    ),
+    Migration(
+        version=79,
+        name="identifier_spine_schema_catalog",
+        up=_identifier_spine_schema_catalog,
+    ),
+    Migration(
+        version=80,
+        name="identifier_spine_indexes",
+        up=_identifier_spine_indexes,
     ),
 ]
 

@@ -15,6 +15,7 @@ from .warehouse import cik_security_id, insert_frame, quality_check, record_sour
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_USER_AGENT = "atx-impl security master nathan.tormaschy@gmail.com"
 SECURITY_MASTER_SOURCE = "SEC company_tickers"
+ENTITY_IDENTIFIER_TYPE = "ENTITY_ID"
 
 
 @dataclass(frozen=True)
@@ -49,9 +50,115 @@ def normalize_company_tickers(payload: dict[str, Any]) -> pd.DataFrame:
                 "ticker": ticker,
                 "title": title,
                 "security_id": cik_security_id(cik),
+                "entity_id": cik_entity_id(cik),
             }
         )
     return pd.DataFrame(rows).drop_duplicates(subset=["cik", "ticker"]).sort_values(["ticker", "cik"])
+
+
+def cik_entity_id(cik: str | int) -> str:
+    return f"CIK-{int(cik):010d}"
+
+
+def _entity_id_from_row(row: pd.Series) -> str:
+    if pd.notna(row.get("entity_id")) and str(row.get("entity_id")).strip():
+        return str(row.get("entity_id")).strip()
+    cik = row.get("cik")
+    if pd.notna(cik) and str(cik).strip():
+        return cik_entity_id(cik)
+    issuer_id = row.get("issuer_id")
+    if pd.notna(issuer_id) and str(issuer_id).strip():
+        return str(issuer_id).strip()
+    return f"ENTITY-{str(row['security_id']).strip()}"
+
+
+def ensure_security_frame_entity_ids(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with the additive PF-S5 entity_id populated."""
+    if frame is None or frame.empty:
+        return frame
+    out = frame.copy()
+    if "entity_id" not in out.columns:
+        out["entity_id"] = pd.NA
+    out["entity_id"] = out.apply(_entity_id_from_row, axis=1)
+    return out
+
+
+def security_entity_ids_asof(
+    store: DuckDBStore,
+    security_ids: list[str],
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+) -> dict[str, str]:
+    """Resolve security_id -> entity_id through PIT entity history.
+
+    Bitemporal ENTITY_ID rows are authoritative. The current ``securities``
+    value is used only for securities with no ENTITY_ID history at all, avoiding
+    lookahead when a future merger row exists but is not yet available.
+    """
+    normalized = sorted({str(security_id).strip() for security_id in security_ids if str(security_id).strip()})
+    if not normalized:
+        return {}
+    as_of_ts = as_of_ts or dt.datetime.combine(as_of_date, dt.time(23, 59, 59))
+    lookup = pd.DataFrame({"security_id": normalized})
+    store.con.register("security_entity_lookup", lookup)
+    try:
+        rows = store.con.execute(
+            """
+            WITH params AS (
+                SELECT CAST(? AS DATE) AS as_of_date, CAST(? AS TIMESTAMP) AS as_of_ts
+            ),
+            history_presence AS (
+                SELECT DISTINCT security_id
+                FROM security_identifier_history
+                WHERE id_type = ?
+            ),
+            candidates AS (
+                SELECT
+                    l.security_id,
+                    h.id_value AS entity_id,
+                    1 AS priority,
+                    h.valid_from,
+                    h.available_at,
+                    h.source_loaded_at
+                FROM security_entity_lookup l
+                JOIN security_identifier_history h
+                  ON h.security_id = l.security_id
+                 AND h.id_type = ?
+                CROSS JOIN params p
+                WHERE h.valid_from <= p.as_of_date
+                  AND coalesce(h.valid_to, DATE '9999-12-31') > p.as_of_date
+                  AND (h.available_at IS NULL OR h.available_at <= p.as_of_ts)
+                UNION ALL
+                SELECT
+                    l.security_id,
+                    s.entity_id,
+                    2 AS priority,
+                    coalesce(s.first_seen_date, DATE '1900-01-01') AS valid_from,
+                    CAST(NULL AS TIMESTAMP) AS available_at,
+                    s.source_loaded_at
+                FROM security_entity_lookup l
+                JOIN securities s
+                  ON s.security_id = l.security_id
+                LEFT JOIN history_presence hp
+                  ON hp.security_id = s.security_id
+                WHERE hp.security_id IS NULL
+                  AND s.entity_id IS NOT NULL
+                  AND s.entity_id <> ''
+            )
+            SELECT security_id, entity_id
+            FROM candidates
+            QUALIFY row_number() OVER (
+                PARTITION BY security_id
+                ORDER BY priority, available_at DESC NULLS LAST,
+                         valid_from DESC, source_loaded_at DESC NULLS LAST, entity_id
+            ) = 1
+            """,
+            [as_of_date, as_of_ts, ENTITY_IDENTIFIER_TYPE, ENTITY_IDENTIFIER_TYPE],
+        ).fetchall()
+    finally:
+        store.con.unregister("security_entity_lookup")
+    return {security_id: entity_id for security_id, entity_id in rows if entity_id}
 
 
 def security_ids_for_symbols(store: DuckDBStore, symbols: list[str]) -> dict[str, str]:
@@ -180,11 +287,13 @@ def upsert_security_master_from_frame(
 ) -> None:
     if frame.empty:
         return
+    frame = ensure_security_frame_entity_ids(frame)
     today = dt.date.today()
     available_at = pd.Timestamp.utcnow().tz_localize(None)
     securities = pd.DataFrame(
         {
             "security_id": frame["security_id"],
+            "entity_id": frame["entity_id"],
             "issuer_id": "CIK-" + frame["cik"].astype(str),
             "primary_symbol": frame["ticker"],
             "name": frame["title"],
@@ -205,6 +314,19 @@ def upsert_security_master_from_frame(
                     "security_id": frame["security_id"],
                     "id_type": "CIK",
                     "id_value": frame["cik"],
+                    "valid_from": today,
+                    "valid_to": pd.NaT,
+                    "as_of_date": today,
+                    "available_at": available_at,
+                    "source": source,
+                    "run_id": run_id,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "security_id": frame["security_id"],
+                    "id_type": ENTITY_IDENTIFIER_TYPE,
+                    "id_value": frame["entity_id"],
                     "valid_from": today,
                     "valid_to": pd.NaT,
                     "as_of_date": today,
