@@ -31,6 +31,16 @@ class FundamentalStatementMapRow:
     derivation_expr: str | None = None
 
 
+@dataclass(frozen=True)
+class StatementMapOverlayException:
+    taxonomy: str
+    concept: str
+    industry_template: str
+    item_id: int
+    canonical_metric: str
+    reason: str
+
+
 FUNDAMENTAL_STATEMENT_MAP_KEY = ("source", "taxonomy", "concept", "industry_template")
 CONCEPT_MAP_SEED_COLUMNS = (
     "taxonomy",
@@ -440,7 +450,7 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestAndDividendIncomeOperating","bank_statement","interest","interest_income_bank","Interest income - total","duration","credit","monetary",1.0,10,True,True,"Bank interest and dividend income operating.",1503,"BK",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","InterestExpense","bank_statement","interest","interest_expense_bank","Interest expense - bank","duration","debit","monetary",1.0,10,True,True,"Bank-template override of industrial interest expense.",1504,"BK",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ProvisionForLoanAndLeaseLosses","bank_statement","credit","loan_loss_provision","Provision for loan losses","duration","debit","monetary",1.0,10,True,True,"Provision for loan and lease losses.",1505,"BK",False,None),
-    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__allowance_loan_lease_losses","bank_statement","credit","allowance_loan_lease_losses","Allowance for loan & lease losses","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.5 lists no verified us-gaap concept.",1506,"BK",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","FinancingReceivableAllowanceForCreditLosses","bank_statement","credit","allowance_loan_lease_losses","Allowance for loan & lease losses","instant","credit","monetary",1.0,10,True,True,"US-GAAP allowance for credit losses on financing receivables; maps the bank loan/lease allowance reserve.",1506,"BK",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__nonperforming_loans","bank_statement","credit","nonperforming_loans","Non-performing loans","instant","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.5 lists no verified us-gaap concept.",1507,"BK",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__net_charge_offs","bank_statement","credit","net_charge_offs","Net charge-offs","duration","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.5 lists no verified us-gaap concept.",1508,"BK",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LoansAndLeasesReceivableNetReportedAmount","bank_statement","balance_sheet","total_loans","Total loans","instant","debit","monetary",1.0,10,True,True,"Total loans using SEC companyfacts bank concept.",1509,"BK",False,None),
@@ -452,13 +462,13 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__efficiency_ratio","bank_statement","ratio","efficiency_ratio","Efficiency ratio","duration","credit","ratio",1.0,10,False,False,"Bank operating efficiency ratio; vendor/open-data gap in §2.5.",1515,"BK",False,None),
     # -- S4b §2.6 Insurance ----------------------------------------------------------
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PremiumsEarnedNet","insurance_statement","revenue","premiums_earned","Premiums earned","duration","credit","monetary",1.0,10,True,True,"Insurance premiums earned.",1601,"IS",False,None),
-    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__premiums_written","insurance_statement","revenue","premiums_written","Premiums written","duration","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1602,"IS",False,None),
-    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__loss_reserves","insurance_statement","balance_sheet","loss_reserves","Loss reserves","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1603,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PremiumsWrittenNet","insurance_statement","revenue","premiums_written","Premiums written","duration","credit","monetary",1.0,10,False,True,"Insurance premiums written, net.",1602,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","SupplementalInformationForPropertyCasualtyInsuranceUnderwritersReservesForUnpaidClaimsAndClaimsAdjustmentExpense","insurance_statement","balance_sheet","loss_reserves","Loss reserves","instant","credit","monetary",1.0,10,False,True,"Property-casualty reserves for unpaid claims and claim-adjustment expense.",1603,"IS",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__insurance_benefits_paid","insurance_statement","claims","insurance_benefits_paid","Insurance benefits paid","duration","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1604,"IS",False,None),
-    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__unpaid_claim_liability","insurance_statement","balance_sheet","unpaid_claim_liability","Unpaid claim liability","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1605,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LiabilityForUnpaidClaimsAndClaimsAdjustmentExpenseNet","insurance_statement","balance_sheet","unpaid_claim_liability","Unpaid claim liability","instant","credit","monetary",1.0,10,False,True,"Net liability for unpaid claims and claims adjustment expense.",1605,"IS",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__loss_ratio","insurance_statement","ratio","loss_ratio","Loss ratio","duration","credit","ratio",1.0,10,False,False,"Insurance ratio from vendor feed or derived claim/premium components.",1606,"IS",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__expense_ratio","insurance_statement","ratio","expense_ratio","Expense ratio","duration","credit","ratio",1.0,10,False,False,"Insurance ratio from vendor feed or derived expense/premium components.",1607,"IS",False,None),
-    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__combined_ratio","insurance_statement","ratio","combined_ratio","Combined ratio","duration","credit","ratio",1.0,10,False,False,"Insurance ratio from vendor feed or loss_ratio + expense_ratio.",1608,"IS",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__combined_ratio","insurance_statement","ratio","combined_ratio","Combined ratio","duration","credit","ratio",1.0,10,False,True,"Derived: combined_ratio = loss_ratio + expense_ratio.",1608,"IS",True,"combined_ratio = loss_ratio + expense_ratio"),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__investment_portfolio","insurance_statement","balance_sheet","investment_portfolio","Investment portfolio","instant","debit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1609,"IS",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__insurance_float","insurance_statement","balance_sheet","insurance_float","Insurance float","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1610,"IS",False,None),
     # -- S4b §2.7 REITs ---------------------------------------------------------------
@@ -477,6 +487,104 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
 )
 
 
+STATEMENT_MAP_OVERLAY_EXCEPTION_REASONS: dict[tuple[str, str, str, int], str] = {
+    ("vendor-only", "__VENDOR_ONLY__nonperforming_loans", "BK", 1507): "No standard us-gaap total non-performing loans concept is verified in the PF-S3 source map.",
+    ("vendor-only", "__VENDOR_ONLY__net_charge_offs", "BK", 1508): "Net charge-offs remain a vendor/regulatory credit metric pending a standard us-gaap mapping.",
+    ("vendor-only", "__VENDOR_ONLY__total_deposits", "BK", 1510): "Total deposits stay vendor-only until a bank-template total-deposit tag is source-verified.",
+    ("vendor-only", "__VENDOR_ONLY__tier1_capital", "BK", 1511): "Regulatory capital line; not a SEC companyfacts us-gaap statement concept.",
+    ("vendor-only", "__VENDOR_ONLY__tier1_capital_ratio", "BK", 1512): "Regulatory capital ratio; not a SEC companyfacts us-gaap statement concept.",
+    ("vendor-only", "__VENDOR_ONLY__cet1", "BK", 1513): "Regulatory CET1 capital line; not a SEC companyfacts us-gaap statement concept.",
+    ("vendor-only", "__VENDOR_ONLY__risk_weighted_assets", "BK", 1514): "Regulatory risk-weighted-assets denominator; not a SEC companyfacts us-gaap statement concept.",
+    ("vendor-only", "__VENDOR_ONLY__efficiency_ratio", "BK", 1515): "Bank efficiency ratio remains derived/vendor-only until formula-library support.",
+    ("vendor-only", "__VENDOR_ONLY__insurance_benefits_paid", "IS", 1604): "Benefits-paid mapping is not source-verified as a single comparable us-gaap statement concept.",
+    ("vendor-only", "__VENDOR_ONLY__loss_ratio", "IS", 1606): "Loss ratio is derived/vendor-only pending mapped claims and premium components.",
+    ("vendor-only", "__VENDOR_ONLY__expense_ratio", "IS", 1607): "Expense ratio is derived/vendor-only pending mapped expense and premium components.",
+    ("vendor-only", "__VENDOR_ONLY__investment_portfolio", "IS", 1609): "Investment portfolio remains vendor-only; no single source-verified us-gaap total is mapped.",
+    ("vendor-only", "__VENDOR_ONLY__insurance_float", "IS", 1610): "Insurance float is a derived/vendor construct, not a SEC companyfacts us-gaap statement concept.",
+    ("nareit", "FundsFromOperations", "RT", 1701): "Nareit-defined FFO is intentionally non-us-gaap and excluded from companyfacts defaults.",
+    ("extension", "__EXTENSION__affo", "RT", 1703): "AFFO is company-specific extension/vendor data; no common us-gaap concept is verified.",
+    ("extension", "__EXTENSION__noi", "RT", 1705): "NOI is a Nareit/property operating definition kept as extension/derived input.",
+    ("extension", "__EXTENSION__same_store_noi", "RT", 1706): "Same-store NOI is property-level KPI/extension data, not a standard us-gaap concept.",
+    ("extension", "__EXTENSION__occupancy_rate", "RT", 1707): "Occupancy rate is a REIT operating KPI/extension, not a standard us-gaap concept.",
+    ("extension", "__EXTENSION__rent_per_square_foot", "RT", 1708): "Rent per square foot is a REIT operating KPI/extension, not a standard us-gaap concept.",
+    ("extension", "__EXTENSION__gross_leasable_area", "RT", 1709): "Gross leasable area is a REIT operating KPI/extension, not a standard us-gaap concept.",
+    ("vendor-only", "__VENDOR_ONLY__nav_per_share", "RT", 1710): "NAV per share is vendor/appraisal-derived, not a standard us-gaap concept.",
+    ("vendor-only", "__VENDOR_ONLY__capitalization_rate", "RT", 1711): "Capitalization rate is market/appraisal-derived, not a standard us-gaap concept.",
+    ("vendor-only", "__VENDOR_ONLY__ffo_payout_ratio", "RT", 1712): "FFO payout ratio is derived from FFO and dividends; no direct us-gaap concept is mapped.",
+}
+
+
+def _statement_map_overlay_exception_key(
+    row: FundamentalStatementMapRow,
+) -> tuple[str, str, str, int]:
+    return (
+        row.taxonomy,
+        row.concept,
+        row.industry_template,
+        int(row.item_id) if row.item_id is not None else -1,
+    )
+
+
+def statement_map_unloadable_overlay_rows(
+    rows: tuple[FundamentalStatementMapRow, ...] = FUNDAMENTAL_STATEMENT_MAP_ROWS,
+) -> tuple[FundamentalStatementMapRow, ...]:
+    """Return bank/insurance/REIT rows intentionally outside companyfacts loading."""
+
+    supported = set(CONCEPT_MAP_SUPPORTED_TAXONOMIES)
+    return tuple(
+        row
+        for row in rows
+        if row.industry_template != "ALL"
+        and not row.is_derived
+        and (
+            row.taxonomy not in supported
+            or not row.is_active
+            or row.concept.startswith(("__VENDOR_ONLY__", "__EXTENSION__"))
+        )
+    )
+
+
+def statement_map_overlay_exception_rows(
+    rows: tuple[FundamentalStatementMapRow, ...] = FUNDAMENTAL_STATEMENT_MAP_ROWS,
+) -> tuple[StatementMapOverlayException, ...]:
+    """Return the explicit report of non-loadable overlay rows and their reasons."""
+
+    rows_by_key = {
+        _statement_map_overlay_exception_key(row): row
+        for row in rows
+    }
+    missing = sorted(set(STATEMENT_MAP_OVERLAY_EXCEPTION_REASONS) - set(rows_by_key))
+    if missing:
+        raise ValueError(f"statement-map overlay allowlist keys missing from map: {missing}")
+    return tuple(
+        StatementMapOverlayException(
+            taxonomy=key[0],
+            concept=key[1],
+            industry_template=key[2],
+            item_id=key[3],
+            canonical_metric=rows_by_key[key].canonical_metric,
+            reason=reason,
+        )
+        for key, reason in sorted(
+            STATEMENT_MAP_OVERLAY_EXCEPTION_REASONS.items(),
+            key=lambda item: (item[0][2], item[0][3], item[0][0], item[0][1]),
+        )
+    )
+
+
+def unexplained_statement_map_overlay_rows(
+    rows: tuple[FundamentalStatementMapRow, ...] = FUNDAMENTAL_STATEMENT_MAP_ROWS,
+) -> tuple[FundamentalStatementMapRow, ...]:
+    """Return non-loadable overlay rows not covered by the explicit exception report."""
+
+    allowed = set(STATEMENT_MAP_OVERLAY_EXCEPTION_REASONS)
+    return tuple(
+        row
+        for row in statement_map_unloadable_overlay_rows(rows)
+        if _statement_map_overlay_exception_key(row) not in allowed
+    )
+
+
 def concept_map_projection_rows(
     rows: tuple[FundamentalStatementMapRow, ...] = FUNDAMENTAL_STATEMENT_MAP_ROWS,
     *,
@@ -485,8 +593,9 @@ def concept_map_projection_rows(
     """Return active, loadable us-gaap/dei concept-map seed rows.
 
     Derived sentinels and vendor/extension-only placeholders are map metadata, not
-    companyfacts fetch concepts. They stay in ``FUNDAMENTAL_STATEMENT_MAP_ROWS`` but
-    out of this offline projection until later PF-S3 overlay reconciliation work.
+    companyfacts fetch concepts. Non-loadable overlay rows stay in
+    ``FUNDAMENTAL_STATEMENT_MAP_ROWS`` and are enumerated by
+    ``statement_map_overlay_exception_rows``.
     """
 
     taxonomy_set = set(taxonomies)
