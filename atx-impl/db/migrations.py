@@ -6250,6 +6250,67 @@ def _entity_parent_edges_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None
     )
 
 
+def _sec_company_facts_entity_id_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S5 S5-3: carried entity_id column on sec_company_facts.
+
+    ``sec_company_facts.security_id`` already exists but, prior to this
+    migration, is populated as a direct passthrough of the loader's ticker/CIK
+    resolution rather than a value resolved through the S5-0 identifier spine
+    (``security_identifier_history`` CIK history joined through to ENTITY_ID
+    history). ``entity_id`` did not exist on this table at all.
+
+    This migration is additive-only: it adds the ``entity_id`` column (mirroring
+    ``securities.entity_id`` from migration 0079) and catalogs both
+    ``security_id`` and ``entity_id`` on ``sec_company_facts``. It does NOT
+    backfill values -- the loader (db/fundamentals.py, via the new
+    ``security_and_entity_ids_for_ciks_asof`` PIT reader in db/security_master.py)
+    resolves and writes security_id/entity_id per fact at load time, honoring
+    each fact's own available_at (no lookahead). Existing rows keep whatever
+    security_id they already had (their prior best-effort passthrough value)
+    and NULL entity_id until re-loaded.
+
+    fundamental_statement_points, fundamental_ttm_points, and the ratio engine
+    (fundamental_ratios.py) all read security_id by copying it forward from
+    sec_company_facts -- they are NOT touched here. Fixing the source column
+    is sufficient for security_id to carry through by inheritance.
+    """
+    conn.execute("ALTER TABLE sec_company_facts ADD COLUMN IF NOT EXISTS entity_id VARCHAR")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_entity_asof "
+        "ON sec_company_facts(entity_id, filed_date)"
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            (
+                'sec_company_facts',
+                'security_id',
+                'identifier',
+                'Warehouse security_id resolved through the S5-0 identifier spine (security_identifier_history CIK history) as of this fact''s own available_at -- not a raw passthrough. Unresolved CIKs are routed to identifier_resolution_candidates rather than dropped.',
+                false,
+                NULL,
+                'security_identifier_history.security_id where id_type=CIK, as-of fact.available_at',
+                now()
+            ),
+            (
+                'sec_company_facts',
+                'entity_id',
+                'identifier',
+                'Sticky corporate entity_id resolved through the S5-0/S5-2 entity spine as of this fact''s own available_at (no lookahead). NULL when the fact''s CIK does not yet resolve to a known entity; such facts are also routed to identifier_resolution_candidates.',
+                true,
+                NULL,
+                'security_identifier_history.id_value where id_type=ENTITY_ID, as-of fact.available_at',
+                now()
+            )
+        """
+    )
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -6612,6 +6673,11 @@ MIGRATIONS: list[Migration] = [
         version=81,
         name="entity_parent_edges_schema_catalog",
         up=_entity_parent_edges_schema_catalog,
+    ),
+    Migration(
+        version=82,
+        name="sec_company_facts_entity_id_schema_catalog",
+        up=_sec_company_facts_entity_id_schema_catalog,
     ),
 ]
 

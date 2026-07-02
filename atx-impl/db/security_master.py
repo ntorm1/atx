@@ -161,6 +161,118 @@ def security_entity_ids_asof(
     return {security_id: entity_id for security_id, entity_id in rows if entity_id}
 
 
+CIK_IDENTIFIER_TYPE = "CIK"
+
+
+def security_and_entity_ids_for_ciks_asof(
+    store: DuckDBStore,
+    ciks: list[str],
+    *,
+    as_of_ts: dt.datetime,
+) -> dict[str, tuple[str, str | None]]:
+    """PF-S5 S5-3: resolve CIK -> (security_id, entity_id) through the spine, as of ``as_of_ts``.
+
+    Mirrors ``security_ids_for_symbols``'s priority-ranked ``UNION ALL`` /
+    ``QUALIFY row_number()`` pattern and ``security_entity_ids_asof``'s bitemporal
+    interval filter, so a fact filed at time T resolves through the identifier
+    state known AT T -- ``available_at <= as_of_ts`` on every candidate, never a
+    current/latest snapshot. This is the read a PIT-correct fundamentals loader
+    needs: two callers resolving the SAME cik at two different ``as_of_ts`` may
+    legitimately get two different ``security_id``/``entity_id`` pairs (e.g.
+    around a re-parenting event), and a stale-at-filing-time CIK mapping must
+    never leak a later resolution backwards.
+
+    Priority order per cik:
+      1. Bitemporal CIK rows in ``security_identifier_history`` (id_type='CIK'),
+         interval-filtered (``valid_from <= as_of_ts::DATE < coalesce(valid_to, 9999-12-31)``)
+         and gated by ``available_at <= as_of_ts`` (NULL available_at is treated
+         as always-visible, matching ``security_entity_ids_asof``'s history rows).
+      2. Fallback to ``sec_company_tickers.cik`` (current snapshot; no bitemporal
+         history) ONLY for ciks absent from priority 1, avoiding lookahead for
+         ciks that do have real history.
+
+    For each resolved ``security_id``, ``entity_id`` is resolved the same way
+    ``security_entity_ids_asof`` does (its own priority UNION ALL over ENTITY_ID
+    history vs. the current ``securities`` row), evaluated at the SAME
+    ``as_of_ts`` -- so entity resolution never outruns the security resolution
+    it depends on.
+
+    CIKs with no match at any priority are simply absent from the returned dict
+    (never a placeholder key) -- callers are responsible for routing absent
+    ciks to the resolution ledger.
+    """
+    normalized = sorted({str(cik).strip() for cik in ciks if str(cik).strip()})
+    if not normalized:
+        return {}
+    as_of_date = as_of_ts.date()
+    lookup = pd.DataFrame({"cik": normalized})
+    store.con.register("cik_asof_lookup", lookup)
+    try:
+        security_rows = store.con.execute(
+            """
+            WITH params AS (
+                SELECT CAST(? AS DATE) AS as_of_date, CAST(? AS TIMESTAMP) AS as_of_ts
+            ),
+            candidates AS (
+                SELECT
+                    l.cik,
+                    h.security_id,
+                    1 AS priority,
+                    h.available_at,
+                    h.valid_from,
+                    h.source_loaded_at
+                FROM cik_asof_lookup l
+                JOIN security_identifier_history h
+                  ON h.id_type = ?
+                 AND h.id_value = l.cik
+                CROSS JOIN params p
+                WHERE h.valid_from <= p.as_of_date
+                  AND coalesce(h.valid_to, DATE '9999-12-31') > p.as_of_date
+                  AND (h.available_at IS NULL OR h.available_at <= p.as_of_ts)
+                UNION ALL
+                SELECT
+                    l.cik,
+                    t.security_id,
+                    2 AS priority,
+                    CAST(NULL AS TIMESTAMP) AS available_at,
+                    DATE '1900-01-01' AS valid_from,
+                    t.source_loaded_at
+                FROM cik_asof_lookup l
+                JOIN sec_company_tickers t
+                  ON t.cik = l.cik
+                LEFT JOIN security_identifier_history hp
+                  ON hp.id_type = ?
+                 AND hp.id_value = l.cik
+                WHERE hp.id_value IS NULL
+                  AND t.security_id IS NOT NULL
+                  AND t.security_id <> ''
+            )
+            SELECT cik, security_id
+            FROM candidates
+            QUALIFY row_number() OVER (
+                PARTITION BY cik
+                ORDER BY priority, available_at DESC NULLS LAST,
+                         valid_from DESC, source_loaded_at DESC NULLS LAST, security_id
+            ) = 1
+            """,
+            [as_of_date, as_of_ts, CIK_IDENTIFIER_TYPE, CIK_IDENTIFIER_TYPE],
+        ).fetchall()
+    finally:
+        store.con.unregister("cik_asof_lookup")
+
+    security_by_cik = {cik: security_id for cik, security_id in security_rows if security_id}
+    if not security_by_cik:
+        return {}
+
+    entity_by_security = security_entity_ids_asof(
+        store, list(security_by_cik.values()), as_of_date=as_of_date, as_of_ts=as_of_ts
+    )
+    return {
+        cik: (security_id, entity_by_security.get(security_id))
+        for cik, security_id in security_by_cik.items()
+    }
+
+
 def security_ids_for_symbols(store: DuckDBStore, symbols: list[str]) -> dict[str, str]:
     if not symbols:
         return {}

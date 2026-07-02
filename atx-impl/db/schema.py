@@ -696,6 +696,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
         CREATE TABLE IF NOT EXISTS sec_company_facts (
             source VARCHAR NOT NULL,
             security_id VARCHAR NOT NULL,
+            entity_id VARCHAR,
             cik VARCHAR NOT NULL,
             taxonomy VARCHAR NOT NULL,
             concept VARCHAR NOT NULL,
@@ -1768,6 +1769,7 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_shares_outstanding_history_security ON shares_outstanding_history(security_id, share_count_type, effective_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_shares_outstanding_history_latest ON shares_outstanding_history(is_latest_revision, security_id, share_count_type)",
         "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_security_asof ON sec_company_facts(security_id, filed_date)",
+        "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_entity_asof ON sec_company_facts(entity_id, filed_date)",
         "CREATE INDEX IF NOT EXISTS idx_xbrl_concept_catalog_lookup ON xbrl_concept_catalog(taxonomy, concept)",
         "CREATE INDEX IF NOT EXISTS idx_xbrl_concept_catalog_category ON xbrl_concept_catalog(statement_category, taxonomy)",
         "CREATE INDEX IF NOT EXISTS idx_xbrl_taxonomy_relationships_parent ON xbrl_taxonomy_relationships(parent_taxonomy, parent_concept, linkbase_type)",

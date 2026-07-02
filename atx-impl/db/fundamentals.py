@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
+import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -16,12 +19,26 @@ from .fundamental_statements import (
     refresh_fundamental_statement_points,
     refresh_fundamental_ttm_points,
 )
-from .security_master import SEC_USER_AGENT, sec_session, security_ids_for_symbols
-from .warehouse import insert_frame, json_dumps, quality_check, record_source_file, symbol_key
+from .identifier_resolution import candidate_id_for
+from .security_master import (
+    SEC_USER_AGENT,
+    sec_session,
+    security_and_entity_ids_for_ciks_asof,
+    security_ids_for_symbols,
+)
+from .warehouse import insert_frame, json_dumps, now_utc_naive, quality_check, record_source_file, symbol_key
 
 
 SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+SEC_COMPANY_FACTS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
 SOURCE_NAME = "SEC companyfacts"
+# PF-S5 S5-3: match_method tag for resolution-ledger candidates written when a
+# sec_company_facts CIK does not resolve to a security_id/entity_id through the
+# S5-0 spine as of the fact's own available_at. Mirrors identifiers_figi.py's
+# unmatched-cusip "proposed" routing -- the fact still loads (keeping its
+# best-effort passthrough security_id, entity_id left NULL); it is never
+# silently dropped.
+FACT_IDENTIFIER_MATCH_METHOD = "companyfacts_cik_spine_asof"
 CANONICAL_CONCEPTS = default_companyfacts_concepts()
 # S3-0: the default fetch filter is derived from the active, loadable statement-map
 # projection committed as db/seeds/concept_map.csv. Widening this tuple is inert until
@@ -54,6 +71,10 @@ class SecCompanyFactsOptions:
     skip_failed_targets: bool = False
     request_delay_seconds: float = 0.0
     max_attempts: int = 1
+    # S45: when set, backfill reads companyfacts JSON from the local SEC bulk archive
+    # (companyfacts.zip) instead of the per-CIK network endpoint — one download replaces
+    # N throttled round trips. The zip is a one-time operator download; never fetched in tests.
+    companyfacts_zip: Path | None = None
     run_id: str | None = None
 
 
@@ -307,6 +328,117 @@ def _date(value: Any) -> dt.date | None:
     if not value:
         return None
     return dt.date.fromisoformat(str(value))
+
+
+def resolve_company_facts_identifiers(
+    store: DuckDBStore, facts: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """PF-S5 S5-3: resolve security_id/entity_id per fact through the S5-0 spine.
+
+    ``facts`` must have ``cik``, ``security_id`` (the loader's existing
+    best-effort passthrough, used as a stable fallback), and ``available_at``
+    columns. Every fact is resolved independently AT ITS OWN available_at via
+    ``security_and_entity_ids_for_ciks_asof`` -- two facts for the same CIK filed
+    years apart can legitimately resolve through different identifier state, and
+    a fact must never resolve through spine knowledge the warehouse did not yet
+    have at that fact's own filing availability (no lookahead).
+
+    Returns ``(resolved, unresolved)``:
+      - ``resolved`` is ``facts`` with an ``entity_id`` column added (and
+        ``security_id`` overwritten with the spine-resolved value where the CIK
+        resolves at that row's available_at). Rows whose CIK does not resolve at
+        all keep their original passthrough ``security_id`` and get
+        ``entity_id = NaN`` -- the fact is never dropped.
+      - ``unresolved`` has one row per DISTINCT cik that failed to resolve at
+        any of its available_at buckets, for the caller to route into
+        ``identifier_resolution_candidates``.
+    """
+    if facts is None or facts.empty:
+        return facts, pd.DataFrame(columns=["cik", "security_id", "available_at"])
+
+    out = facts.copy()
+    if "entity_id" not in out.columns:
+        out["entity_id"] = pd.NA
+
+    unresolved_rows: list[dict[str, Any]] = []
+    # Facts sharing the exact same available_at resolve identically, so batch
+    # the spine lookup per distinct available_at instead of per fact row.
+    for available_at, group in out.groupby("available_at", sort=False, dropna=False):
+        as_of_ts = pd.Timestamp(available_at).to_pydatetime() if pd.notna(available_at) else now_utc_naive()
+        ciks = sorted({str(c).strip() for c in group["cik"] if str(c).strip()})
+        resolved = security_and_entity_ids_for_ciks_asof(store, ciks, as_of_ts=as_of_ts)
+        for idx in group.index:
+            cik = str(out.at[idx, "cik"]).strip()
+            match = resolved.get(cik)
+            if match is None:
+                unresolved_rows.append(
+                    {
+                        "cik": cik,
+                        "security_id": out.at[idx, "security_id"],
+                        "available_at": available_at,
+                    }
+                )
+                continue
+            resolved_security_id, resolved_entity_id = match
+            out.at[idx, "security_id"] = resolved_security_id
+            out.at[idx, "entity_id"] = resolved_entity_id
+
+    if unresolved_rows:
+        unresolved = pd.DataFrame(unresolved_rows).drop_duplicates(subset=["cik"]).reset_index(drop=True)
+    else:
+        unresolved = pd.DataFrame(columns=["cik", "security_id", "available_at"])
+    return out, unresolved
+
+
+def _unresolved_cik_candidates(unresolved: pd.DataFrame, *, run_id: str | None) -> pd.DataFrame:
+    """Build identifier_resolution_candidates rows for unresolved companyfacts CIKs.
+
+    Mirrors identifiers_figi.py's unmatched-cusip routing: status ``proposed``
+    (a no-match problem, not a conflict among known entities), with a real
+    ``source_security_id``/``target_security_id`` -- the fact's own best-effort
+    passthrough security_id -- so the candidate is still auditable even though
+    no spine entity was found for it.
+    """
+    if unresolved is None or unresolved.empty:
+        return pd.DataFrame()
+    as_of_date = dt.date.today()
+    available_at = now_utc_naive()
+    rows: list[dict[str, Any]] = []
+    for row in unresolved.itertuples(index=False):
+        security_id = str(row.security_id)
+        rows.append(
+            {
+                "candidate_id": candidate_id_for(
+                    source_dataset_id="sec_company_facts",
+                    source_period=None,
+                    source_key_type="CIK",
+                    source_key_value=row.cik,
+                    target_security_id=security_id,
+                    match_method=FACT_IDENTIFIER_MATCH_METHOD,
+                ),
+                "source_dataset_id": "sec_company_facts",
+                "source_table": "sec_company_facts",
+                "source_period": None,
+                "source_key_type": "CIK",
+                "source_key_value": row.cik,
+                "source_security_id": security_id,
+                "source_name": None,
+                "source_normalized_name": None,
+                "target_security_id": security_id,
+                "target_id_type": "CIK",
+                "target_id_value": row.cik,
+                "target_name": None,
+                "target_normalized_name": None,
+                "match_method": FACT_IDENTIFIER_MATCH_METHOD,
+                "confidence": 0.0,
+                "candidate_status": "proposed",
+                "as_of_date": as_of_date,
+                "available_at": available_at,
+                "details_json": json_dumps({"status_reason": "unresolved_cik_at_fact_available_at"}),
+                "run_id": run_id,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def normalize_companyfacts(
@@ -684,6 +816,51 @@ def refresh_fundamental_fact_revisions(store: DuckDBStore) -> int:
     return int(store.con.execute("SELECT count(*) FROM fundamental_fact_revisions").fetchone()[0])
 
 
+class _CompanyFactsZipFetcher:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._archive = zipfile.ZipFile(self.path)
+        self._names = set(self._archive.namelist())
+
+    def __call__(self, cik: str | int) -> dict | None:
+        try:
+            member = f"CIK{int(str(cik).strip()):010d}.json"
+        except (TypeError, ValueError):
+            return None
+        if member not in self._names:
+            return None
+        with self._archive.open(member) as handle:
+            return json.load(handle)
+
+    def close(self) -> None:
+        self._archive.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _make_companyfacts_zip_fetcher(path: str | Path):
+    """Return an OFFLINE fetcher backed by the SEC bulk ``companyfacts.zip``.
+
+    SEC publishes the entire XBRL company-facts universe as a single nightly archive at
+    ``https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip`` containing one
+    ``CIK##########.json`` per filer — byte-identical JSON to the per-CIK
+    ``data.sec.gov/.../companyfacts/CIK*.json`` endpoint. Lookups are lazy (one member read
+    per CIK) so the ~1.4 GB archive never loads fully into memory. Download is a one-time
+    operator step; this fetcher and all tests run purely against a local file. Returns the
+    parsed companyfacts payload (``{"cik", "entityName", "facts": {...}}``) for
+    ``normalize_companyfacts`` to consume, or ``None`` if the CIK is absent / non-numeric.
+    """
+    return _CompanyFactsZipFetcher(path)
+
+
+def _companyfacts_zip_member_url(cik: str | int) -> str:
+    return f"{SEC_COMPANY_FACTS_ZIP_URL}#CIK{int(str(cik).strip()):010d}.json"
+
+
 class SecCompanyFactsDataset(Dataset):
     dataset_id = "sec_company_facts"
     source_name = SOURCE_NAME
@@ -692,7 +869,18 @@ class SecCompanyFactsDataset(Dataset):
         store.initialize()
 
     def load(self, store: DuckDBStore, options: SecCompanyFactsOptions) -> DatasetLoadResult:
-        session = sec_session(options.user_agent)
+        # S45: an offline companyfacts.zip source replaces the per-CIK network endpoint.
+        # When it is set we never open a network session — the load is fully local.
+        zip_fetcher = (
+            _make_companyfacts_zip_fetcher(options.companyfacts_zip)
+            if options.companyfacts_zip is not None
+            else None
+        )
+        session = sec_session(options.user_agent) if zip_fetcher is None else None
+        source_mode = "bulk_zip" if zip_fetcher is not None else "api"
+        source_name = "SEC companyfacts bulk zip" if zip_fetcher is not None else "SEC companyfacts API"
+        source_cache_path = options.companyfacts_zip if zip_fetcher is not None else None
+        effective_skip_failed = options.skip_failed_targets or zip_fetcher is not None
         concept_filter = set(options.concepts)
         targets = resolve_companyfacts_targets(store, options)
         if not targets:
@@ -709,41 +897,62 @@ class SecCompanyFactsDataset(Dataset):
         point_rows = 0
         loaded_targets = 0
         failed_targets: list[dict[str, str]] = []
+        unresolved_ciks: list[pd.DataFrame] = []
         attempts = max(1, options.max_attempts)
         for index, (symbol, cik, security_id) in enumerate(targets):
-            if options.request_delay_seconds > 0 and index > 0:
+            # Local zip reads need no throttle; only the network path is rate-limited.
+            if zip_fetcher is None and options.request_delay_seconds > 0 and index > 0:
                 time.sleep(options.request_delay_seconds)
-            source_url = SEC_COMPANY_FACTS_URL.format(cik=cik)
+            source_url = (
+                _companyfacts_zip_member_url(cik)
+                if zip_fetcher is not None
+                else SEC_COMPANY_FACTS_URL.format(cik=cik)
+            )
             payload = None
             last_error: Exception | None = None
-            for attempt in range(attempts):
+            if zip_fetcher is not None:
                 try:
-                    response = session.get(source_url, timeout=options.request_timeout)
-                    response.raise_for_status()
-                    payload = response.json()
-                    break
-                except Exception as exc:  # network / HTTP / decode errors
+                    payload = zip_fetcher(cik)
+                    if payload is None:
+                        last_error = FileNotFoundError(f"CIK {cik} absent from companyfacts.zip")
+                except Exception as exc:  # corrupt member / decode errors
                     last_error = exc
-                    if attempt + 1 < attempts:
-                        time.sleep(min(2.0 * (attempt + 1), 10.0))
+            else:
+                for attempt in range(attempts):
+                    try:
+                        response = session.get(source_url, timeout=options.request_timeout)
+                        response.raise_for_status()
+                        payload = response.json()
+                        break
+                    except Exception as exc:  # network / HTTP / decode errors
+                        last_error = exc
+                        if attempt + 1 < attempts:
+                            time.sleep(min(2.0 * (attempt + 1), 10.0))
             if payload is None:
-                if not options.skip_failed_targets:
+                if not effective_skip_failed:
                     raise RuntimeError(f"SEC companyfacts fetch failed for {symbol} (CIK {cik}): {last_error}")
                 failed_targets.append({"symbol": symbol, "cik": cik, "error": str(last_error)[:200]})
                 record_source_file(
                     store,
                     dataset_id=self.dataset_id,
                     source_url=source_url,
+                    cache_path=source_cache_path,
                     status="error",
-                    metadata={"symbol": symbol, "cik": cik, "error": str(last_error)[:200]},
+                    metadata={
+                        "symbol": symbol,
+                        "cik": cik,
+                        "source_mode": source_mode,
+                        "error": str(last_error)[:200],
+                    },
                 )
                 continue
             record_source_file(
                 store,
                 dataset_id=self.dataset_id,
                 source_url=source_url,
+                cache_path=source_cache_path,
                 status="fetched",
-                metadata={"symbol": symbol, "cik": cik},
+                metadata={"symbol": symbol, "cik": cik, "source_mode": source_mode},
             )
             facts, points = normalize_companyfacts(
                 payload,
@@ -754,14 +963,51 @@ class SecCompanyFactsDataset(Dataset):
                 concepts=concept_filter,
                 run_id=options.run_id,
             )
-            rows_loaded += self._replace_facts(store, facts, points, security_id)
+            # PF-S5 S5-3: resolve security_id/entity_id through the S5-0 spine,
+            # per fact, as of that fact's own available_at (no lookahead).
+            # Unresolved CIKs are never dropped -- they keep flowing with their
+            # passthrough security_id and are collected for ledger routing below.
+            facts, unresolved = resolve_company_facts_identifiers(store, facts)
+            if not unresolved.empty:
+                unresolved_ciks.append(unresolved)
+            rows_loaded += self._replace_facts(store, facts, points, security_id, cik=cik)
             point_rows += len(points)
             loaded_targets += 1
+        unresolved_candidate_rows = 0
+        if unresolved_ciks:
+            unresolved_frame = pd.concat(unresolved_ciks, ignore_index=True).drop_duplicates(subset=["cik"])
+            candidates = _unresolved_cik_candidates(unresolved_frame, run_id=options.run_id)
+            if not candidates.empty:
+                store.con.register("sec_company_facts_unresolved_candidates", candidates)
+                try:
+                    with store.transaction():
+                        store.con.execute(
+                            """
+                            DELETE FROM identifier_resolution_candidates
+                            WHERE source_dataset_id = 'sec_company_facts'
+                              AND match_method = ?
+                              AND source_key_value IN (
+                                  SELECT source_key_value FROM sec_company_facts_unresolved_candidates
+                              )
+                            """,
+                            [FACT_IDENTIFIER_MATCH_METHOD],
+                        )
+                        insert_frame(
+                            store,
+                            candidates,
+                            "identifier_resolution_candidates",
+                            "sec_company_facts_unresolved_candidates_insert",
+                        )
+                finally:
+                    store.con.unregister("sec_company_facts_unresolved_candidates")
+                unresolved_candidate_rows = int(len(candidates))
         concept_rows = refresh_xbrl_concept_catalog(store)
         revision_rows = refresh_fundamental_fact_revisions(store)
         statement_rows = refresh_fundamental_statement_points(store)
         period_rows = refresh_fundamental_periods(store)
         ttm_rows = refresh_fundamental_ttm_points(store)
+        if zip_fetcher is not None:
+            zip_fetcher.close()
 
         quality_check(
             store,
@@ -778,18 +1024,21 @@ class SecCompanyFactsDataset(Dataset):
                 "universe_id": options.universe_id,
                 "as_of_date": options.as_of_date.isoformat() if options.as_of_date else None,
                 "target_count": len(targets),
+                "source_mode": source_mode,
+                "companyfacts_zip": str(options.companyfacts_zip) if options.companyfacts_zip else None,
                 "point_rows": point_rows,
                 "concept_catalog_rows": concept_rows,
                 "revision_rows": revision_rows,
                 "statement_rows": statement_rows,
                 "period_rows": period_rows,
                 "ttm_rows": ttm_rows,
+                "unresolved_cik_candidate_rows": unresolved_candidate_rows,
             },
         )
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
             rows_loaded=rows_loaded,
-            source="SEC companyfacts API",
+            source=source_name,
             details={
                 "symbols": options.symbols,
                 "symbol_source": options.symbol_source,
@@ -800,6 +1049,8 @@ class SecCompanyFactsDataset(Dataset):
                 "loaded_targets": loaded_targets,
                 "failed_target_count": len(failed_targets),
                 "failed_targets": failed_targets[:50],
+                "source_mode": source_mode,
+                "companyfacts_zip": str(options.companyfacts_zip) if options.companyfacts_zip else None,
                 "facts": rows_loaded,
                 "fundamental_points": point_rows,
                 "xbrl_concept_catalog": concept_rows,
@@ -807,6 +1058,7 @@ class SecCompanyFactsDataset(Dataset):
                 "fundamental_statement_points": statement_rows,
                 "fundamental_periods": period_rows,
                 "fundamental_ttm_points": ttm_rows,
+                "unresolved_cik_candidate_rows": unresolved_candidate_rows,
             },
         )
 
@@ -816,6 +1068,8 @@ class SecCompanyFactsDataset(Dataset):
         facts: pd.DataFrame,
         points: pd.DataFrame,
         security_id: str,
+        *,
+        cik: str,
     ) -> int:
         if facts.empty:
             return 0
@@ -823,13 +1077,20 @@ class SecCompanyFactsDataset(Dataset):
         store.con.register("fundamental_points_load", points)
         try:
             with store.transaction():
+                # PF-S5 S5-3: sec_company_facts.security_id is now resolved per
+                # fact row through the spine (resolve_company_facts_identifiers)
+                # and is no longer guaranteed identical across every row for one
+                # target -- so the replace-key for THIS table is cik (stable for
+                # the whole target loop iteration), not security_id.
+                # fundamental_points is untouched by S5-3 and still keys on the
+                # loader's original passthrough security_id.
                 store.con.execute(
                     """
                     DELETE FROM sec_company_facts
-                    WHERE security_id = ?
+                    WHERE cik = ?
                     """
                     ,
-                    [security_id],
+                    [cik],
                 )
                 store.con.execute(
                     """
