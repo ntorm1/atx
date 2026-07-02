@@ -998,6 +998,97 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ),
 }
 
+DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "adjustment_factor_history": ("corporate_actions",),
+    "alpha_research": ("equity_daily_features", "tbltickerhistory_daily"),
+    "corporate_action_dividend_metrics": ("corporate_actions", "tbltickerhistory_daily"),
+    "corporate_action_factor_reconciliation": (
+        "adjustment_factor_history",
+        "daily_adjustment_factors",
+    ),
+    "corporate_action_split_metrics": (
+        "adjustment_factor_history",
+        "daily_adjustment_factors",
+    ),
+    "corporate_actions": ("tbltickerhistory_daily",),
+    "daily_adjustment_factors": ("adjustment_factor_history",),
+    "delisting_events": ("listing_status_intervals",),
+    "entity_classification": (
+        "fama_french_taxonomy",
+        "naics_taxonomy",
+        "sec_security_master",
+        "sic_taxonomy",
+    ),
+    "equity_daily_features": ("tbltickerhistory_daily",),
+    "equity_price_metrics": ("tbltickerhistory_daily",),
+    "est_actual": ("est_measure", "sec_company_facts"),
+    "est_security_link": (
+        "est_consensus",
+        "est_detail",
+        "est_recommendation",
+        "est_recommendation_summary",
+        "identifier_resolution_decisions",
+    ),
+    "est_surprise": ("est_actual", "est_consensus"),
+    "finra_short_interest": ("sec_security_master",),
+    "finra_short_interest_features": ("finra_short_interest",),
+    "finra_short_volume": ("sec_security_master",),
+    "filer_13f_cik_alias": ("sec_13f",),
+    "form144_intent": ("sec_insider_ownership",),
+    "form144_to_form4_link": ("form144_intent", "sec_insider_ownership"),
+    "fundamental_ratios": ("fundamental_xbrl_metric", "sec_company_facts"),
+    "fundamental_xbrl_metric": ("xbrl_filing_contexts",),
+    "identifier_resolution_candidates": ("sec_13f",),
+    "identifier_resolution_decisions": ("identifier_resolution_candidates",),
+    "insider_transaction_metrics": ("sec_insider_ownership",),
+    "listing_status_intervals": (
+        "nasdaq_listing_events",
+        "nasdaq_symbol_directory",
+        "sec_security_master",
+    ),
+    "macro_metrics": ("fred_macro",),
+    "nasdaq_listing_events": ("sec_security_master",),
+    "offexchange_quality_report": (
+        "offexchange_security_period",
+        "short_volume_metrics",
+    ),
+    "offexchange_security_period": ("offexchange_volume",),
+    "offexchange_volume": ("sec_security_master",),
+    "sec_13f": ("sec_security_master",),
+    "sec_13f_ownership_features": ("sec_13f",),
+    "sec_blockholder_ownership": ("sec_submissions",),
+    "sec_company_facts": ("sec_security_master",),
+    "sec_fundamental_features": ("sec_company_facts", "tbltickerhistory_daily"),
+    "sec_insider_ownership": ("sec_submissions",),
+    "sec_submissions": ("sec_security_master",),
+    "security_listing_metrics": ("listing_status_intervals",),
+    "shares_outstanding_history": ("sec_company_facts",),
+    "short_interest_metrics": (
+        "finra_short_interest",
+        "shares_outstanding_history",
+    ),
+    "short_volume_metrics": ("finra_short_volume",),
+    "thirteenf_concentration_metrics": ("sec_13f_ownership_features",),
+    "thirteenf_option_metrics": ("sec_13f_ownership_features",),
+    "thirteenf_position_metrics": ("sec_13f_ownership_features",),
+    "tbltickerhistory_daily": ("sec_security_master",),
+    "trading_calendar": ("tbltickerhistory_daily",),
+    "universe_memberships": ("tbltickerhistory_daily",),
+    "xbrl_filing_contexts": ("sec_submissions",),
+    "xbrl_validation": ("xbrl_filing_contexts", "xbrl_taxonomy"),
+}
+
+
+def _apply_dataset_dependencies() -> None:
+    unknown = sorted(set(DATASET_DEPENDENCIES) - set(DATASET_REGISTRY))
+    if unknown:
+        raise RuntimeError(f"Unknown dataset dependency metadata keys: {unknown}")
+    for dataset_id, (dataset_cls, _option_factory) in DATASET_REGISTRY.items():
+        setattr(dataset_cls, "depends_on", DATASET_DEPENDENCIES.get(dataset_id, ()))
+
+
+_apply_dataset_dependencies()
+
 
 def normalize_params(params: Any) -> dict[str, Any]:
     if params is None:

@@ -51,6 +51,7 @@ def with_run_id(options: Any, run_id: str) -> Any:
 class Dataset(ABC):
     dataset_id: str
     source_name: str
+    depends_on: tuple[str, ...] = ()
 
     @abstractmethod
     def ensure_schema(self, store: DuckDBStore) -> None:

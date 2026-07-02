@@ -5345,6 +5345,186 @@ def _fundamental_fact_item_links(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _etl_job_orchestrator_manifest_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S2 S2-1: parent run manifests, steps, and audit substrate.
+
+    The legacy ``etl_job_runs`` table is one row per single-dataset job. PF-S2
+    reconciles the roadmap-mandated parent manifest name in place: parent
+    orchestrator manifests use ``run_kind = 'orchestrator'`` and
+    ``job_run_id = run_id`` with sentinel ``job_name``/``dataset_id`` values for
+    compatibility with the pre-existing NOT NULL columns. Existing single-
+    dataset rows remain ``run_kind = 'dataset'`` and may later point at a parent
+    through nullable ``parent_run_id``.
+    """
+
+    for statement in (
+        "ALTER TABLE etl_job_runs ADD COLUMN IF NOT EXISTS run_id VARCHAR",
+        "ALTER TABLE etl_job_runs ADD COLUMN IF NOT EXISTS run_kind VARCHAR DEFAULT 'dataset'",
+        "ALTER TABLE etl_job_runs ADD COLUMN IF NOT EXISTS parent_run_id VARCHAR",
+        "ALTER TABLE etl_job_runs ADD COLUMN IF NOT EXISTS git_sha VARCHAR",
+    ):
+        conn.execute(statement)
+    conn.execute("UPDATE etl_job_runs SET run_id = job_run_id WHERE run_id IS NULL")
+    conn.execute("UPDATE etl_job_runs SET run_kind = 'dataset' WHERE run_kind IS NULL")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_steps (
+            run_id VARCHAR NOT NULL,
+            dataset_id VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            rows BIGINT,
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            watermark_before VARCHAR,
+            watermark_after VARCHAR,
+            error VARCHAR,
+            PRIMARY KEY (run_id, dataset_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_audit (
+            audit_id VARCHAR PRIMARY KEY,
+            run_id VARCHAR NOT NULL,
+            dataset_id VARCHAR,
+            actor VARCHAR NOT NULL,
+            ts TIMESTAMP NOT NULL DEFAULT now(),
+            action VARCHAR NOT NULL,
+            details_json VARCHAR
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        UPDATE dataset_catalog
+        SET description = 'Warehouse ETL job definitions plus PF-S2 parent run manifests, per-dataset steps, retry policy, and append-only audit metadata.',
+            grain = 'job_name,job_run_id,run_id,dataset_id',
+            updated_at = now()
+        WHERE dataset_id = 'warehouse_jobs'
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'etl_job_runs',
+                'control',
+                'etl_job_run',
+                'job_run_id/run_id',
+                'ETL run table reconciled for PF-S2: legacy single-dataset job rows and parent orchestrator manifests share one table, distinguished by run_kind. Parent rows use job_run_id = run_id and carry params_json plus git_sha.',
+                '["job_run_id"]',
+                'Control manifest timestamps; parent orchestrator rows have run_kind=orchestrator and child dataset jobs may reference parent_run_id.'
+                , now()
+            ),
+            (
+                'etl_job_steps',
+                'control',
+                'etl_job_step',
+                'run_id,dataset_id',
+                'One row per orchestrator DAG node per parent run, holding status, row count, watermarks, and terminal error text for checkpoint/resume.',
+                '["run_id", "dataset_id"]',
+                'Control metadata only; watermarks record PIT-safe incremental planning inputs/outputs without changing dataset facts.'
+                , now()
+            ),
+            (
+                'etl_job_audit',
+                'audit',
+                'etl_job_audit',
+                'audit_id',
+                'Append-only orchestrator audit trail for run/step actions such as run_start, step_retry, step_skip_incremental, run_resume, and run_fail.',
+                '["audit_id"]',
+                'Chronological audit timestamps describe orchestration actions, not fact availability.'
+                , now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('etl_job_runs', 'run_id', 'identifier',
+             'Logical parent orchestrator run id; for PF-S2 parent manifest rows this equals job_run_id.',
+             true, NULL, NULL, now()),
+            ('etl_job_runs', 'run_kind', 'text',
+             'Run row kind: dataset for legacy single-dataset job rows, orchestrator for PF-S2 parent manifests.',
+             true, NULL, NULL, now()),
+            ('etl_job_runs', 'parent_run_id', 'identifier',
+             'Nullable parent orchestrator run id for single-dataset child job rows.',
+             true, NULL, 'etl_job_runs.run_id', now()),
+            ('etl_job_runs', 'git_sha', 'identifier',
+             'Git commit SHA captured for a parent orchestrator manifest when available.',
+             true, NULL, NULL, now()),
+            ('etl_job_steps', 'run_id', 'identifier',
+             'Parent orchestrator run id owning this DAG step.',
+             false, NULL, 'etl_job_runs.run_id', now()),
+            ('etl_job_steps', 'dataset_id', 'identifier',
+             'Dataset registry id for this DAG node.',
+             false, NULL, 'DATASET_REGISTRY.dataset_id', now()),
+            ('etl_job_steps', 'status', 'text',
+             'Step status: pending, running, succeeded, failed, or skipped.',
+             false, NULL, NULL, now()),
+            ('etl_job_steps', 'rows', 'measure',
+             'Rows loaded by the dataset step when it runs; NULL while pending or skipped before S2 incremental accounting.',
+             true, 'rows', NULL, now()),
+            ('etl_job_steps', 'started_at', 'timestamp',
+             'Timestamp when the orchestrator began this step.',
+             true, 'timestamp', NULL, now()),
+            ('etl_job_steps', 'finished_at', 'timestamp',
+             'Timestamp when the orchestrator finished this step.',
+             true, 'timestamp', NULL, now()),
+            ('etl_job_steps', 'watermark_before', 'json',
+             'Serialized input/current watermark snapshot before the step.',
+             true, NULL, 'dataset_watermarks', now()),
+            ('etl_job_steps', 'watermark_after', 'json',
+             'Serialized watermark snapshot after the step.',
+             true, NULL, 'dataset_watermarks', now()),
+            ('etl_job_steps', 'error', 'text',
+             'Terminal error text for failed steps.',
+             true, NULL, NULL, now()),
+            ('etl_job_audit', 'audit_id', 'identifier',
+             'Unique append-only audit event id.',
+             false, NULL, NULL, now()),
+            ('etl_job_audit', 'run_id', 'identifier',
+             'Parent orchestrator run id for this audit event.',
+             false, NULL, 'etl_job_runs.run_id', now()),
+            ('etl_job_audit', 'dataset_id', 'identifier',
+             'Optional dataset id context for step-level audit events.',
+             true, NULL, 'DATASET_REGISTRY.dataset_id', now()),
+            ('etl_job_audit', 'actor', 'text',
+             'Actor or subsystem that recorded the audit event.',
+             false, NULL, NULL, now()),
+            ('etl_job_audit', 'ts', 'timestamp',
+             'Audit event timestamp.',
+             false, 'timestamp', NULL, now()),
+            ('etl_job_audit', 'action', 'text',
+             'Append-only orchestration action name such as run_start, step_retry, or run_fail.',
+             false, NULL, NULL, now()),
+            ('etl_job_audit', 'details_json', 'json',
+             'Deterministic JSON details for the audit action.',
+             true, NULL, NULL, now())
+        """
+    )
+
+
+def _etl_job_orchestrator_manifest_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S2 S2-1: split resume/audit indexes from the schema migration."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_etl_job_steps_run_status ON etl_job_steps(run_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_etl_job_audit_run_ts ON etl_job_audit(run_id, ts)",
+    ):
+        conn.execute(statement)
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -5677,6 +5857,16 @@ MIGRATIONS: list[Migration] = [
         version=64,
         name="fundamental_fact_item_links",
         up=_fundamental_fact_item_links,
+    ),
+    Migration(
+        version=65,
+        name="etl_job_orchestrator_manifest_schema",
+        up=_etl_job_orchestrator_manifest_schema,
+    ),
+    Migration(
+        version=66,
+        name="etl_job_orchestrator_manifest_indexes",
+        up=_etl_job_orchestrator_manifest_indexes,
     ),
 ]
 

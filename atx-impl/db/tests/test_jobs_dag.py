@@ -183,3 +183,52 @@ def test_default_jobs_include_delistings_after_listing_status(tmp_store):
     assert "delisting_events" in order
     assert order.index("nasdaq_listing_events") < order.index("listing_status_intervals")
     assert order.index("listing_status_intervals") < order.index("delisting_events")
+
+
+def test_dataset_registry_dag_is_topologically_valid_offline():
+    """The seeded dataset registry has declared dataset_id dependencies only."""
+    from db.jobs import DATASET_REGISTRY
+    from db.orchestrator import build_dataset_dag
+
+    dag = build_dataset_dag(DATASET_REGISTRY)
+
+    assert len(dag.order) == len(DATASET_REGISTRY)
+    assert set(dag.order) == set(DATASET_REGISTRY)
+    for dataset_id, (dataset_cls, _option_factory) in DATASET_REGISTRY.items():
+        assert isinstance(dataset_cls.depends_on, tuple), dataset_id
+        assert all(dependency in DATASET_REGISTRY for dependency in dataset_cls.depends_on)
+
+    seen: set[str] = set()
+    for dataset_id in dag.order:
+        assert set(dag.dependencies_of(dataset_id)).issubset(seen), dataset_id
+        seen.add(dataset_id)
+
+
+def test_dataset_registry_dag_has_expected_foundation_edges():
+    """Representative seeded edges are declared as dataset_id metadata."""
+    from db.jobs import DATASET_REGISTRY
+    from db.orchestrator import build_dataset_dag
+
+    dag = build_dataset_dag(DATASET_REGISTRY)
+
+    assert dag.dependencies_of("fundamental_ratios") == (
+        "fundamental_xbrl_metric",
+        "sec_company_facts",
+    )
+    assert dag.dependencies_of("xbrl_filing_contexts") == ("sec_submissions",)
+    assert dag.dependencies_of("shares_outstanding_history") == ("sec_company_facts",)
+    assert dag.dependencies_of("short_interest_metrics") == (
+        "finra_short_interest",
+        "shares_outstanding_history",
+    )
+
+
+def test_dataset_registry_dag_order_is_deterministic():
+    """Repeated DAG builds over DATASET_REGISTRY return the same order."""
+    from db.jobs import DATASET_REGISTRY
+    from db.orchestrator import build_dataset_dag
+
+    first = build_dataset_dag(DATASET_REGISTRY).order
+    second = build_dataset_dag(DATASET_REGISTRY).order
+
+    assert first == second
