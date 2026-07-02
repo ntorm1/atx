@@ -36,6 +36,7 @@ WINDOW_WATERMARK_HINTS = (
 INCREMENTAL_WINDOW_PARAM_KEYS = frozenset(
     ("incremental_since", "since", "as_of_ts", "start_date")
 )
+DATASET_PARAMS_KEY = "__dataset_params__"
 
 
 class CycleError(ValueError):
@@ -512,7 +513,11 @@ class DatasetOrchestrator:
                 )
                 forced_stale.update(self.dag.children_of(dataset_id))
         except Exception as exc:
-            self._finish_run(run_id, "failed", error_message=str(exc))
+            self._finish_run(
+                run_id,
+                self._failure_status(run_id),
+                error_message=str(exc),
+            )
             record_audit(
                 self.store,
                 run_id=run_id,
@@ -539,6 +544,17 @@ class DatasetOrchestrator:
             status="succeeded",
             dataset_order=self.dag.order,
         )
+
+    def _failure_status(self, run_id: str) -> str:
+        completed = self.store.con.execute(
+            """
+            SELECT count(*)
+            FROM etl_job_steps
+            WHERE run_id = ? AND status IN ('succeeded', 'skipped')
+            """,
+            [run_id],
+        ).fetchone()[0]
+        return "partial" if int(completed or 0) > 0 else "failed"
 
     def _step_statuses(self, run_id: str) -> dict[str, str]:
         rows = self.store.con.execute(
@@ -663,7 +679,7 @@ class DatasetOrchestrator:
         retry_policy = self._retry_policy(dataset_id)
         max_attempts = retry_policy.max_retries + 1
         params = self._params_for_step(
-            base_params,
+            self._base_params_for_dataset(base_params, dataset_id),
             watermark_before=watermark_before,
             full_rebuild=full_rebuild,
             forced_by_upstream=forced_by_upstream,
@@ -784,6 +800,23 @@ class DatasetOrchestrator:
             return
 
         raise OrchestratorRunError(error_message or f"Dataset {dataset_id!r} failed")
+
+    def _base_params_for_dataset(
+        self,
+        base_params: Mapping[str, Any],
+        dataset_id: str,
+    ) -> dict[str, Any]:
+        params = {
+            key: value
+            for key, value in dict(base_params).items()
+            if key != DATASET_PARAMS_KEY
+        }
+        dataset_params_by_id = base_params.get(DATASET_PARAMS_KEY, {})
+        if isinstance(dataset_params_by_id, Mapping):
+            dataset_params = dataset_params_by_id.get(dataset_id, {})
+            if isinstance(dataset_params, Mapping):
+                params.update(dict(dataset_params))
+        return params
 
     def _params_for_step(
         self,

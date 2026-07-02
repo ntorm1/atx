@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
 import time
 import traceback
 import uuid
@@ -67,6 +68,11 @@ from .listing_metrics import SecurityListingMetricsDataset, SecurityListingMetri
 from .form144 import Form144IntentDataset, Form144Options, Form144ReconciliationDataset
 from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
 from .macro import FredMacroDataset, FredMacroOptions
+from .orchestrator import (
+    DATASET_PARAMS_KEY,
+    DatasetOrchestrator,
+    OrchestratorResult,
+)
 from .offexchange import (
     FinraOffExchangeDataset,
     FinraOffExchangeOptions,
@@ -87,6 +93,7 @@ from .symbol_directory import (
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
+from .watermarks import refresh_warehouse_watermarks
 from .warehouse import json_dumps, now_utc_naive
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
 from .xbrl_validation import XbrlValidationDataset, XbrlValidationOptions
@@ -1116,6 +1123,127 @@ def normalize_dependencies(value: Any) -> list[str]:
     return [str(item) for item in loaded if str(item)]
 
 
+def current_git_sha(repo_root: Path | None = None) -> str | None:
+    root = repo_root or Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def refresh_quant_warehouse(
+    store: DuckDBStore,
+    *,
+    params: dict[str, Any] | None = None,
+    registry: dict[str, tuple[type[Dataset], OptionFactory]] | None = None,
+    run_id: str | None = None,
+    resume: str | None = None,
+    full_rebuild: bool = False,
+    git_sha: str | None = None,
+    actor: str = "warehouse_jobs",
+) -> OrchestratorResult:
+    if run_id and resume:
+        raise ValueError("Use either run_id or resume, not both")
+    selected_registry = DATASET_REGISTRY if registry is None else registry
+    orchestrator = DatasetOrchestrator(
+        store,
+        selected_registry,
+        actor=actor,
+        watermark_refresher=refresh_warehouse_watermarks,
+    )
+    run_params = normalize_params(params)
+    if resume:
+        return orchestrator.resume(
+            resume,
+            params=run_params,
+            full_rebuild=full_rebuild,
+        )
+    return orchestrator.run(
+        run_id=run_id,
+        params=run_params,
+        git_sha=git_sha if git_sha is not None else current_git_sha(),
+        full_rebuild=full_rebuild,
+    )
+
+
+def orchestrator_step_results(
+    store: DuckDBStore,
+    run_id: str,
+    dataset_order: tuple[str, ...] | None = None,
+) -> list[DatasetLoadResult]:
+    rows = store.con.execute(
+        """
+        SELECT dataset_id, status, rows, started_at, finished_at,
+               watermark_before, watermark_after, error
+        FROM etl_job_steps
+        WHERE run_id = ?
+        """,
+        [run_id],
+    ).fetchall()
+    by_dataset = {
+        str(dataset_id): (
+            str(status),
+            rows_loaded,
+            started_at,
+            finished_at,
+            watermark_before,
+            watermark_after,
+            error,
+        )
+        for (
+            dataset_id,
+            status,
+            rows_loaded,
+            started_at,
+            finished_at,
+            watermark_before,
+            watermark_after,
+            error,
+        ) in rows
+    }
+    order = list(dataset_order or tuple(sorted(by_dataset)))
+    results: list[DatasetLoadResult] = []
+    for dataset_id in order:
+        if dataset_id not in by_dataset:
+            continue
+        (
+            status,
+            rows_loaded,
+            started_at,
+            finished_at,
+            watermark_before,
+            watermark_after,
+            error,
+        ) = by_dataset[dataset_id]
+        details = {
+            "status": status,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "watermark_before": watermark_before,
+            "watermark_after": watermark_after,
+        }
+        if error:
+            details["error"] = error
+        results.append(
+            DatasetLoadResult(
+                dataset_id=dataset_id,
+                rows_loaded=int(rows_loaded or 0),
+                source=f"orchestrator:{status}",
+                details=details,
+                run_id=run_id,
+            )
+        )
+    return results
+
+
 class JobManager:
     def __init__(self, store: DuckDBStore) -> None:
         self.store = store
@@ -1729,8 +1857,125 @@ class JobManager:
             [job_run_id, now_utc_naive(), level, message, json_dumps(details or {})],
         )
 
-    def run_all_enabled(self) -> list[DatasetLoadResult]:
-        return [self.run_job(job_name) for job_name in self.enabled_job_order()]
+    def _enabled_orchestrator_registry_and_params(
+        self,
+    ) -> tuple[dict[str, tuple[type[Dataset], OptionFactory]], dict[str, dict[str, Any]]]:
+        rows = self.store.con.execute(
+            """
+            SELECT job_name, dataset_id, params_json
+            FROM etl_job_definitions
+            WHERE enabled
+            ORDER BY
+                CASE WHEN job_name = dataset_id THEN 0 ELSE 1 END,
+                created_at,
+                job_name
+            """
+        ).fetchall()
+        registry: dict[str, tuple[type[Dataset], OptionFactory]] = {}
+        params_by_dataset: dict[str, dict[str, Any]] = {}
+        for job_name, dataset_id, params_json in rows:
+            dataset_id = str(dataset_id)
+            if dataset_id not in DATASET_REGISTRY or dataset_id in registry:
+                continue
+            registry[dataset_id] = DATASET_REGISTRY[dataset_id]
+            params_by_dataset[dataset_id] = normalize_params(params_json)
+        return registry, params_by_dataset
+
+    def _orchestrator_registry_for_run(
+        self,
+        run_id: str,
+    ) -> dict[str, tuple[type[Dataset], OptionFactory]]:
+        rows = self.store.con.execute(
+            """
+            SELECT dataset_id
+            FROM etl_job_steps
+            WHERE run_id = ?
+            ORDER BY dataset_id
+            """,
+            [run_id],
+        ).fetchall()
+        if not rows:
+            raise KeyError(f"No orchestrator steps found for run_id {run_id!r}")
+        dataset_ids = [str(row[0]) for row in rows]
+        missing = sorted(dataset_id for dataset_id in dataset_ids if dataset_id not in DATASET_REGISTRY)
+        if missing:
+            raise KeyError(
+                "Orchestrator run references unknown dataset_id(s): "
+                + ", ".join(missing)
+            )
+        return {dataset_id: DATASET_REGISTRY[dataset_id] for dataset_id in dataset_ids}
+
+    def _orchestrator_params_for_run(self, run_id: str) -> dict[str, Any]:
+        row = self.store.con.execute(
+            """
+            SELECT params_json
+            FROM etl_job_runs
+            WHERE run_id = ? AND run_kind = 'orchestrator'
+            """,
+            [run_id],
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"No orchestrator run found for run_id {run_id!r}")
+        return normalize_params(row[0])
+
+    def refresh_quant_warehouse(
+        self,
+        *,
+        params: dict[str, Any] | None = None,
+        registry: dict[str, tuple[type[Dataset], OptionFactory]] | None = None,
+        run_id: str | None = None,
+        resume: str | None = None,
+        full_rebuild: bool = False,
+        git_sha: str | None = None,
+        actor: str = "warehouse_jobs",
+    ) -> OrchestratorResult:
+        run_params = normalize_params(params)
+        selected_registry = registry
+        if selected_registry is None:
+            if resume:
+                selected_registry = self._orchestrator_registry_for_run(resume)
+                if not run_params:
+                    run_params = self._orchestrator_params_for_run(resume)
+            else:
+                selected_registry, dataset_params = self._enabled_orchestrator_registry_and_params()
+                if dataset_params:
+                    merged_dataset_params = dict(run_params.get(DATASET_PARAMS_KEY, {}))
+                    merged_dataset_params.update(dataset_params)
+                    run_params[DATASET_PARAMS_KEY] = merged_dataset_params
+        return refresh_quant_warehouse(
+            self.store,
+            params=run_params,
+            registry=selected_registry,
+            run_id=run_id,
+            resume=resume,
+            full_rebuild=full_rebuild,
+            git_sha=git_sha,
+            actor=actor,
+        )
+
+    def run_all_enabled(
+        self,
+        *,
+        full_rebuild: bool = False,
+        resume: str | None = None,
+        registry: dict[str, tuple[type[Dataset], OptionFactory]] | None = None,
+        run_id: str | None = None,
+        git_sha: str | None = None,
+    ) -> OrchestratorResult:
+        return self.refresh_quant_warehouse(
+            registry=registry,
+            run_id=run_id,
+            resume=resume,
+            full_rebuild=full_rebuild,
+            git_sha=git_sha,
+        )
+
+    def run_all_results(
+        self,
+        run_id: str,
+        dataset_order: tuple[str, ...] | None = None,
+    ) -> list[DatasetLoadResult]:
+        return orchestrator_step_results(self.store, run_id, dataset_order)
 
     def enabled_job_order(self) -> list[str]:
         rows = self.store.con.execute(

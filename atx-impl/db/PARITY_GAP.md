@@ -2,7 +2,7 @@
 
 **Purpose:** Table-by-table, domain-by-domain gap analysis driving the multi-sprint build toward FactSet / S&P-Compustat / Refinitiv parity on equity fundamentals + ownership + supply-chain.
 **Target (blueprint):** `C:\atx\archive\research\` — `schemas/data_models_and_methodology.md` (consolidated DDL), `schemas/cross_vendor_field_map.md` (137 cross-industry + 37 overlay canonical fundamentals fields), `datasets/*.md` (per-dataset DDL), `sources/public_data_sources.md` (44+ upstream sources).
-**Current (built):** `C:\atx\atx-impl\db\schema.py` (60 `CREATE TABLE`, 9 views), loader modules in `db/`, parity ledger seed `db/parity.py` (14 provider rows).
+**Current (built):** `C:\atx\atx-impl\db\schema.py` plus migrations through `0066`, loader modules in `db/`, parity ledger seed `db/parity.py` (14 provider rows), and the PF-S2 in-repo job orchestrator control plane.
 **Author:** read-only analysis, 2026-06-28. No code modified.
 
 Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Partial** = table exists but missing key columns/sub-tables or thin coverage; **Stub** = schema present, ~0 rows / no real loader; **Missing** = no table at all.
@@ -25,6 +25,8 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 | 10 | Supply-chain + Macro | sc_node/sc_edge + macro (~5) | macro_series, macro_observations (40k rows), macro_metrics (53,964 rows) | macro built incl. derived rates/regime metrics; supply-chain absent | sc_node, sc_edge, sc_node_observation, customs/CBP-AMS, Exhibit-21 subsidiary graph, GLEIF/LEI loader | macro.py, macro_metrics.py | 9 (last) |
 
 **One-line read:** Fundamentals, 13F, FINRA short interest, macro, reference classifications, insider/blockholder landing tables plus insider transaction metrics, and the estimates schema are real. Corp-actions/pricing now include adjustment and delisting evidence surfaces. Remaining large gaps are populated licensed/public estimate feeds, ESG, deeper off-exchange data, and the strategic supply-chain wedge.
+
+**PF-S2 operations update:** Rebuild orchestration is now built in-repo. `DatasetOrchestrator` builds a deterministic dataset-id DAG from `DATASET_REGISTRY` metadata, records one parent manifest in reconciled `etl_job_runs`, writes one `etl_job_steps` row per node, appends `etl_job_audit` actions, applies watermark-driven incremental skips, supports exponential retry/backoff, resumes pending/failed steps by `run_id`, and preserves partial/failed manifests with terminal `run_fail` audit rows. `scripts/warehouse_jobs.py run-all` delegates to this path and adds `--full-rebuild` / `--resume <run_id>` while keeping `run` and `run-dataset` on the single-dataset operator path. This is orchestration-only: no dataset compute/output, ratio math, PIT timestamps, `DEFAULT_CONCEPTS`, or non-fundamental-domain data surfaces changed. Verification for this PF-S2 close was offline pytest only; no live SEC/FRED/FINRA/OpenFIGI/GLEIF smoke was run.
 
 ---
 

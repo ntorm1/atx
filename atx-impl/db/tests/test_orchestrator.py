@@ -640,3 +640,109 @@ def test_orchestrator_resume_reruns_only_failed_and_pending_steps(tmp_store):
         """,
         ["resume-run-1"],
     ).fetchone()[0] == 1
+
+
+def test_job_manager_run_all_enabled_drives_orchestrator_bridge(tmp_store):
+    from db.jobs import JobManager
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+    }
+    manager = JobManager(tmp_store)
+
+    run_result = manager.run_all_enabled(
+        registry=_exec_registry(ExecA, ExecB),
+        run_id="bridge-run-1",
+        full_rebuild=True,
+        git_sha="abc123",
+    )
+
+    assert run_result.status == "succeeded"
+    assert run_result.run_id == "bridge-run-1"
+    assert run_result.dataset_order == ("a", "b")
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == ["a", "b"]
+    assert all(options["full_rebuild"] is True for _dataset_id, options in RecordingDataset.calls)
+
+    parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, job_name, dataset_id, status, git_sha
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        ["bridge-run-1"],
+    ).fetchone()
+    assert parent == (
+        "orchestrator",
+        "refresh_quant_warehouse",
+        "__orchestrator__",
+        "succeeded",
+        "abc123",
+    )
+
+    projected = manager.run_all_results(run_result.run_id, run_result.dataset_order)
+    assert [result.dataset_id for result in projected] == ["a", "b"]
+    assert [result.rows_loaded for result in projected] == [10, 10]
+    assert all(result.run_id == "bridge-run-1" for result in projected)
+    assert all(result.source == "orchestrator:succeeded" for result in projected)
+    assert all(result.details["status"] == "succeeded" for result in projected)
+
+
+def test_job_manager_run_all_failure_writes_run_fail_and_preserves_partial_manifest(tmp_store):
+    from db.jobs import JobManager
+    from db.orchestrator import OrchestratorRunError
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+        "c": "2026-01-01T10:30:00",
+    }
+    RecordingDataset.fail_remaining = {"b": 1}
+    manager = JobManager(tmp_store)
+
+    with pytest.raises(OrchestratorRunError):
+        manager.run_all_enabled(
+            registry=_exec_registry(ExecA, ExecB, ExecC),
+            run_id="bridge-failure-run-1",
+            git_sha="abc123",
+        )
+
+    parent_status = tmp_store.con.execute(
+        """
+        SELECT status
+        FROM etl_job_runs
+        WHERE run_id = ? AND run_kind = 'orchestrator'
+        """,
+        ["bridge-failure-run-1"],
+    ).fetchone()[0]
+    assert parent_status == "partial"
+
+    statuses = dict(
+        tmp_store.con.execute(
+            """
+            SELECT dataset_id, status
+            FROM etl_job_steps
+            WHERE run_id = ?
+            ORDER BY dataset_id
+            """,
+            ["bridge-failure-run-1"],
+        ).fetchall()
+    )
+    assert statuses == {"a": "succeeded", "b": "failed", "c": "pending"}
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM etl_job_audit
+        WHERE run_id = ? AND action = 'run_fail'
+        """,
+        ["bridge-failure-run-1"],
+    ).fetchone()[0] == 1
+
+    resumed = manager.run_all_enabled(
+        registry=_exec_registry(ExecA, ExecB, ExecC),
+        resume="bridge-failure-run-1",
+    )
+
+    assert resumed.status == "succeeded"
+    calls = Counter(dataset_id for dataset_id, _options in RecordingDataset.calls)
+    assert calls == Counter({"a": 1, "b": 2, "c": 1})

@@ -37,7 +37,9 @@ def parse_args() -> argparse.Namespace:
 
     sub.add_parser("list-datasets")
     sub.add_parser("list-jobs")
-    sub.add_parser("run-all")
+    run_all = sub.add_parser("run-all")
+    run_all.add_argument("--full-rebuild", action="store_true")
+    run_all.add_argument("--resume", metavar="RUN_ID")
 
     seed = sub.add_parser("seed-defaults")
     seed.add_argument("--symbols", default="AAPL")
@@ -72,6 +74,25 @@ def parse_args() -> argparse.Namespace:
     run_dataset.add_argument("--retry-delay-seconds", type=float, default=0.0)
 
     return parser.parse_args()
+
+
+def dataset_result_json(result) -> dict:
+    return {
+        "dataset_id": result.dataset_id,
+        "rows_loaded": result.rows_loaded,
+        "source": result.source,
+        "run_id": result.run_id,
+        "details": result.details,
+    }
+
+
+def run_all_json(run_result, results) -> dict:
+    return {
+        "results": [dataset_result_json(result) for result in results],
+        "run_id": run_result.run_id,
+        "status": run_result.status,
+        "dataset_order": list(run_result.dataset_order),
+    }
 
 
 def main() -> int:
@@ -160,21 +181,17 @@ def main() -> int:
                 retry_delay_seconds=args.retry_delay_seconds,
             )
         elif args.command == "run-all":
-            results = manager.run_all_enabled()
+            run_result = manager.run_all_enabled(
+                full_rebuild=args.full_rebuild,
+                resume=args.resume,
+            )
+            results = manager.run_all_results(
+                run_result.run_id,
+                run_result.dataset_order,
+            )
             print(
                 json.dumps(
-                    {
-                        "results": [
-                            {
-                                "dataset_id": result.dataset_id,
-                                "rows_loaded": result.rows_loaded,
-                                "source": result.source,
-                                "run_id": result.run_id,
-                                "details": result.details,
-                            }
-                            for result in results
-                        ]
-                    },
+                    run_all_json(run_result, results),
                     indent=2,
                     default=str,
                 )
@@ -189,13 +206,7 @@ def main() -> int:
             )
     print(
         json.dumps(
-            {
-                "dataset_id": result.dataset_id,
-                "rows_loaded": result.rows_loaded,
-                "source": result.source,
-                "run_id": result.run_id,
-                "details": result.details,
-            },
+            dataset_result_json(result),
             indent=2,
             default=str,
         )
