@@ -10,6 +10,7 @@ from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .identifier_decisions import decision_id_for, now_utc_naive
 from .identifier_resolution import candidate_id_for
+from .security_master import dedupe_open_identifier_intervals
 from .warehouse import insert_frame, json_dumps, quality_check
 
 
@@ -439,6 +440,11 @@ class LeiAliasDataset(Dataset):
             as_of_date=as_of_date,
             available_at=available_at,
         )
+        # Defense-in-depth: collapse any redundant open-ended rows for the same
+        # (security_id, id_type, id_value, source) before they ever reach the
+        # table, so this write path can never introduce a new
+        # identifier_same_source_self_overlaps violation (see S5-4/S32).
+        alias_rows = dedupe_open_identifier_intervals(alias_rows)
 
         candidates = self._build_candidates(
             store,

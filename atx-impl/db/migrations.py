@@ -6311,6 +6311,31 @@ def _sec_company_facts_entity_id_schema_catalog(conn: duckdb.DuckDBPyConnection)
     )
 
 
+def _repair_identifier_spine_self_overlaps_s5(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S5 S5-4: one-time repair, collapse open-ended identifier_history
+    duplicates that reaccumulated after the S32 (migration 0054) fix.
+
+    S32 drove ``identifier_same_source_self_overlaps`` to 0 by collapsing
+    redundant open-ended rows once. It reappeared (528 rows, per PARITY_GAP.md
+    Domain 3/S9a) because later write paths -- the PF-S5 FIGI/LEI alias
+    loaders and ``identifier_resolution_decisions._apply_accepted_identifiers``
+    -- did not all guard against re-inserting an open-ended row for a key that
+    already has one. S5-4 wires ``dedupe_open_identifier_intervals`` into the
+    seeder write paths (``upsert_security_master_from_frame``,
+    ``identifiers_figi.py``, ``identifiers_lei.py``) so new duplicates stop
+    landing; this migration is the matching one-time repair for what already
+    landed, mirroring migration 0054's ``_repair_identifier_history_overlaps``.
+
+    Only open-ended (``valid_to IS NULL``) duplicate rows are removed, keeping
+    the earliest ``(valid_from, available_at, rowid)`` per
+    ``(security_id, id_type, id_value, source)`` -- the true first disclosure.
+    Closed intervals (e.g. a real ticker change) are never touched.
+    """
+    from .security_master import collapse_identifier_history_open_duplicates
+
+    collapse_identifier_history_open_duplicates(conn)
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -6678,6 +6703,11 @@ MIGRATIONS: list[Migration] = [
         version=82,
         name="sec_company_facts_entity_id_schema_catalog",
         up=_sec_company_facts_entity_id_schema_catalog,
+    ),
+    Migration(
+        version=83,
+        name="repair_identifier_spine_self_overlaps_s5",
+        up=_repair_identifier_spine_self_overlaps_s5,
     ),
 ]
 

@@ -341,6 +341,12 @@ class IdentifierResolutionDecisionDataset(Dataset):
         ][["source_key_value", "source_period", "target_security_id"]].drop_duplicates()
         if holdings.empty:
             return 0
+        # Guard the consumption point, mirroring _apply_accepted_identifiers:
+        # target_security_id is written directly into thirteenf_holdings.security_id
+        # below, so it must be a real key in securities.security_id before the
+        # UPDATE runs -- this blocks the UNRESOLVED-CUSIP-* placeholder (and any
+        # other bogus target_security_id) from corrupting 13F holding rows.
+        self._reject_unresolvable_targets(store, holdings)
         store.con.register("identifier_resolution_accepted_holdings", holdings)
         try:
             pending = int(

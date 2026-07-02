@@ -487,6 +487,7 @@ def upsert_security_master_from_frame(
             identifiers["valid_from"],
         )
         identifiers = identifiers.drop(columns=["existing_valid_from"])
+    identifiers = dedupe_open_identifier_intervals(identifiers)
 
     listings = pd.DataFrame(
         {

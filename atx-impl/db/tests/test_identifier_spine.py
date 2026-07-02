@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 
 import duckdb
+import pandas as pd
 
 
 def _old_spine_conn(path=":memory:"):
@@ -450,3 +451,220 @@ def test_security_entity_ids_asof_merger_fixture_no_lookahead(tmp_store):
         "SEC-CIK-0000000001": "CIK-0000000001",
         "SEC-CIK-0000000002": "CIK-0000000001",
     }
+
+
+# ---------------------------------------------------------------------------
+# S5-4: export-scan quality check.
+#
+# security_identifier_history.internal_cusip is internal-only matching support
+# (see field_catalog description seeded in migration 0079) and must never
+# appear in a lake-exported / public / catalogued-public object. The boundary
+# today is enforced by OMISSION from lake.DEFAULT_EXPORT_OBJECTS (that table is
+# simply not in the allowlist). This check makes the boundary an enforced
+# invariant instead of a tribal-knowledge omission: it fails if any object in
+# DEFAULT_EXPORT_OBJECTS carries a column named internal_cusip, or if
+# security_identifier_history itself (the only table with that column) is ever
+# added to the export allowlist.
+# ---------------------------------------------------------------------------
+
+
+def test_export_scan_no_internal_cusip_check_passes_on_clean_export_allowlist(tmp_store):
+    from db.quality import run_warehouse_quality_checks
+
+    results = run_warehouse_quality_checks(tmp_store, record=False)
+    by_name = {r.check_name: r for r in results}
+    result = by_name["export_scan_internal_cusip_leak"]
+    assert result.status == "passed", result.details
+    assert result.observed_value == 0.0
+
+
+def test_export_scan_no_internal_cusip_check_fails_when_export_object_carries_internal_cusip(tmp_store):
+    from db.quality import run_warehouse_quality_checks
+
+    # Simulate the leak this check exists to catch: a view built directly on
+    # security_identifier_history (which carries internal_cusip) added to the
+    # lake export allowlist. We can't mutate DEFAULT_EXPORT_OBJECTS from a
+    # test without monkeypatching lake.py, so instead we prove the underlying
+    # detection SQL: any DEFAULT_EXPORT_OBJECTS member with an internal_cusip
+    # column is flagged. Create a decoy export-allowlisted-shaped table with
+    # that exact column name and confirm the raw scan SQL used by the check
+    # would flag it, by calling the builder function directly against an
+    # object list that includes the decoy.
+    from db.quality import _export_scan_internal_cusip_sql
+
+    tmp_store.con.execute(
+        "CREATE TABLE leaky_export_decoy (security_id VARCHAR, internal_cusip VARCHAR)"
+    )
+    sql = _export_scan_internal_cusip_sql(("leaky_export_decoy",))
+    observed = tmp_store.con.execute(sql).fetchone()[0]
+    assert observed == 1.0
+
+
+def test_export_scan_sql_scopes_to_default_export_objects():
+    from db.lake import DEFAULT_EXPORT_OBJECTS
+    from db.quality import _export_scan_internal_cusip_sql
+
+    sql = _export_scan_internal_cusip_sql(DEFAULT_EXPORT_OBJECTS)
+    for object_name in DEFAULT_EXPORT_OBJECTS:
+        assert object_name in sql
+
+
+def test_export_scan_sql_empty_object_list_is_a_safe_no_op():
+    from db.quality import _export_scan_internal_cusip_sql
+
+    sql = _export_scan_internal_cusip_sql(())
+    assert "duckdb_columns" not in sql
+
+
+def test_default_export_objects_never_include_security_identifier_history():
+    # security_identifier_history is the only table carrying internal_cusip.
+    # It must never be added to the lake export allowlist -- this is the
+    # cheapest, most direct enforcement of the 13f_holdings.md B.3 boundary.
+    from db.lake import DEFAULT_EXPORT_OBJECTS
+
+    assert "security_identifier_history" not in DEFAULT_EXPORT_OBJECTS
+
+
+# ---------------------------------------------------------------------------
+# S5-4: migration 0083 one-time self-overlap repair.
+#
+# identifier_same_source_self_overlaps was driven to 0 once (S32, migration
+# 0054) but reaccumulated (528 rows per PARITY_GAP.md) because later write
+# paths did not all guard against re-inserting an open-ended row for a key
+# that already has one. Migration 0083 is the matching one-time repair,
+# mirroring migration 0054's _repair_identifier_history_overlaps.
+# ---------------------------------------------------------------------------
+
+
+def _dup_identifier_row(*, security_id, id_type, id_value, valid_from, available_at, source):
+    return {
+        "security_id": security_id,
+        "id_type": id_type,
+        "id_value": id_value,
+        "valid_from": valid_from,
+        "valid_to": None,
+        "as_of_date": valid_from,
+        "available_at": available_at,
+        "source": source,
+        "run_id": None,
+    }
+
+
+def test_migration_0083_repairs_reaccumulated_self_overlaps(tmp_store):
+    from db.migrations import MIGRATIONS
+    from db.quality import run_warehouse_quality_checks
+
+    # Reproduce the reaccumulation this migration exists to fix: two
+    # open-ended rows for the same (security_id, id_type, id_value, source)
+    # key, as if a post-S32 write path (e.g. a resolution-decision re-apply)
+    # inserted a second row instead of updating the first.
+    rows = [
+        _dup_identifier_row(
+            security_id="SEC-CIK-0000320193",
+            id_type="FIGI",
+            id_value="BBG000B9XRY4",
+            valid_from=dt.date(2026, 5, 1),
+            available_at=dt.datetime(2026, 5, 2, 22, 0, 0),
+            source="OpenFIGI",
+        ),
+        _dup_identifier_row(
+            security_id="SEC-CIK-0000320193",
+            id_type="FIGI",
+            id_value="BBG000B9XRY4",
+            valid_from=dt.date(2026, 5, 15),
+            available_at=dt.datetime(2026, 5, 16, 22, 0, 0),
+            source="OpenFIGI",
+        ),
+    ]
+    frame_cols = ["security_id", "id_type", "id_value", "valid_from", "valid_to", "as_of_date", "available_at", "source", "run_id"]
+    frame = pd.DataFrame(rows)[frame_cols]
+    tmp_store.con.register("seed_dupes", frame)
+    tmp_store.con.execute(
+        """
+        INSERT INTO security_identifier_history
+            (security_id, id_type, id_value, valid_from, valid_to, as_of_date, available_at, source, run_id)
+        SELECT security_id, id_type, id_value, valid_from, valid_to, as_of_date, available_at, source, run_id
+        FROM seed_dupes
+        """
+    )
+    tmp_store.con.unregister("seed_dupes")
+
+    before = tmp_store.con.execute(
+        """
+        SELECT count(*) FROM security_identifier_history a JOIN security_identifier_history b
+          ON a.security_id=b.security_id AND a.id_type=b.id_type AND a.id_value=b.id_value AND a.source=b.source
+         AND a.valid_from < b.valid_from
+         AND a.valid_from < coalesce(b.valid_to, DATE '9999-12-31')
+         AND b.valid_from < coalesce(a.valid_to, DATE '9999-12-31')
+        """
+    ).fetchone()[0]
+    assert before > 0
+
+    migration_0083 = {migration.version: migration for migration in MIGRATIONS}[83]
+    migration_0083.up(tmp_store.con)
+
+    after = tmp_store.con.execute(
+        """
+        SELECT count(*) FROM security_identifier_history a JOIN security_identifier_history b
+          ON a.security_id=b.security_id AND a.id_type=b.id_type AND a.id_value=b.id_value AND a.source=b.source
+         AND a.valid_from < b.valid_from
+         AND a.valid_from < coalesce(b.valid_to, DATE '9999-12-31')
+         AND b.valid_from < coalesce(a.valid_to, DATE '9999-12-31')
+        """
+    ).fetchone()[0]
+    assert after == 0
+
+    kept = tmp_store.con.execute(
+        "SELECT valid_from FROM security_identifier_history WHERE id_type = 'FIGI' AND source = 'OpenFIGI'"
+    ).fetchall()
+    assert kept == [(dt.date(2026, 5, 1),)]
+
+    results = run_warehouse_quality_checks(tmp_store, record=False)
+    by_name = {r.check_name: r for r in results}
+    result = by_name["identifier_same_source_self_overlaps"]
+    assert result.status == "passed", result.details
+    assert result.observed_value == 0.0
+
+
+def test_migration_0083_is_idempotent(tmp_store):
+    from db.migrations import MIGRATIONS
+
+    migration_0083 = {migration.version: migration for migration in MIGRATIONS}[83]
+    # No seeded duplicates -- the migration must be a safe no-op when there is
+    # nothing to repair (e.g. on a fresh bootstrap where it runs as part of
+    # apply_pending_migrations).
+    migration_0083.up(tmp_store.con)
+    migration_0083.up(tmp_store.con)
+
+
+def test_migration_0083_preserves_closed_intervals(tmp_store):
+    from db.migrations import MIGRATIONS
+
+    # A genuine ticker change: closed old interval + open new interval for a
+    # DIFFERENT id_value under the same key prefix. Must survive the repair
+    # untouched -- the collapse only ever touches valid_to IS NULL rows.
+    tmp_store.con.execute(
+        """
+        INSERT INTO security_identifier_history
+            (security_id, id_type, id_value, valid_from, valid_to, as_of_date, available_at, source, run_id)
+        VALUES
+            ('SEC-CIK-0000320193', 'TICKER', 'OLDTICK', DATE '2015-01-01', DATE '2020-01-01', DATE '2015-01-01', TIMESTAMP '2015-01-02 12:00:00', 'fixture-tickerchange', NULL),
+            ('SEC-CIK-0000320193', 'TICKER', 'NEWTICK', DATE '2020-01-01', NULL, DATE '2020-01-01', TIMESTAMP '2020-01-02 12:00:00', 'fixture-tickerchange', NULL)
+        """
+    )
+
+    migration_0083 = {migration.version: migration for migration in MIGRATIONS}[83]
+    migration_0083.up(tmp_store.con)
+
+    rows = tmp_store.con.execute(
+        """
+        SELECT id_value, valid_from, valid_to
+        FROM security_identifier_history
+        WHERE source = 'fixture-tickerchange'
+        ORDER BY valid_from
+        """
+    ).fetchall()
+    assert rows == [
+        ("OLDTICK", dt.date(2015, 1, 1), dt.date(2020, 1, 1)),
+        ("NEWTICK", dt.date(2020, 1, 1), None),
+    ]
