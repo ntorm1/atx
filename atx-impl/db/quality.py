@@ -458,7 +458,9 @@ def _check_specs(
             table_name="security_identifier_history",
             check_name="identifier_multi_security_overlaps",
             # Ticker/identifier uniqueness-per-window is a reference-master
-            # invariant. The raw tbltickerhistory price feed legitimately violates
+            # invariant for security-level identifiers. ENTITY_ID is above
+            # security_id and may be shared after M&A. The raw tbltickerhistory
+            # price feed legitimately violates
             # it (share classes trade concurrently, tickers are recycled across
             # issuers, missing vendor ids), the same way CRSP keys on PERMNO not
             # ticker — so price-feed securities are excluded here. Intra-security
@@ -473,7 +475,8 @@ def _check_specs(
                  AND a.valid_from < coalesce(b.valid_to, DATE '9999-12-31')
                  AND b.valid_from < coalesce(a.valid_to, DATE '9999-12-31')
                  AND a.security_id < b.security_id
-                WHERE a.source NOT LIKE 'tbltickerhistory%'
+                WHERE a.id_type <> 'ENTITY_ID'
+                  AND a.source NOT LIKE 'tbltickerhistory%'
                   AND b.source NOT LIKE 'tbltickerhistory%'
             """,
             threshold=0.0,

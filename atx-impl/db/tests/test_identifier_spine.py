@@ -5,8 +5,8 @@ import datetime as dt
 import duckdb
 
 
-def _old_spine_conn():
-    conn = duckdb.connect(":memory:")
+def _old_spine_conn(path=":memory:"):
+    conn = duckdb.connect(str(path))
     conn.execute(
         """
         CREATE TABLE table_catalog (
@@ -97,6 +97,81 @@ def _old_spine_conn():
 
 def _index_names(conn) -> set[str]:
     return {row[0] for row in conn.execute("SELECT index_name FROM duckdb_indexes()").fetchall()}
+
+
+def _record_migrations_through(conn, max_version: int) -> None:
+    from db.migrations import MIGRATIONS
+
+    conn.execute(
+        """
+        CREATE TABLE schema_migrations (
+            version VARCHAR PRIMARY KEY,
+            description VARCHAR NOT NULL,
+            checksum VARCHAR,
+            applied_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    rows = [
+        (str(migration.version).zfill(4), migration.name)
+        for migration in MIGRATIONS
+        if migration.version <= max_version
+    ]
+    conn.executemany(
+        "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
+        rows,
+    )
+
+
+def test_legacy_pre_0079_initialize_applies_identifier_spine_after_safe_view_bootstrap(tmp_path):
+    from db.connection import DuckDBStore
+
+    db_path = tmp_path / "legacy_pre_0079.duckdb"
+    conn = _old_spine_conn(db_path)
+    _record_migrations_through(conn, 78)
+    conn.close()
+
+    with DuckDBStore(db_path) as store:
+        versions = {
+            int(row[0]): row[1]
+            for row in store.con.execute(
+                """
+                SELECT version, description
+                FROM schema_migrations
+                WHERE version IN ('0079', '0080')
+                """
+            ).fetchall()
+        }
+        assert versions == {
+            79: "identifier_spine_schema_catalog",
+            80: "identifier_spine_indexes",
+        }
+
+        columns = {
+            row[0]
+            for row in store.con.execute(
+                """
+                SELECT column_name
+                FROM duckdb_columns()
+                WHERE table_name = 'securities'
+                """
+            ).fetchall()
+        }
+        assert "entity_id" in columns
+
+        view_entities = dict(
+            store.con.execute(
+                """
+                SELECT security_id, entity_id
+                FROM v_security_master_current
+                ORDER BY security_id
+                """
+            ).fetchall()
+        )
+        assert view_entities == {
+            "SEC-CIK-0000320193": "CIK-0000320193",
+            "SEC-CIK-0000789019": "CIK-0000789019",
+        }
 
 
 def test_identifier_spine_migration_0079_schema_catalog_backfill_idempotent():

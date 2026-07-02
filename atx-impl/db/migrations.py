@@ -6071,6 +6071,10 @@ def _identifier_spine_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
+    from .schema import create_security_master_current_view
+
+    create_security_master_current_view(conn)
+
 
 def _identifier_spine_indexes(conn: duckdb.DuckDBPyConnection) -> None:
     """PF-S5 S5-0: covering indexes split from schema migration 0079."""

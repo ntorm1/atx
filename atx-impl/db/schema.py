@@ -1684,6 +1684,69 @@ def _ensure_schema_evolution(store: DuckDBStore) -> None:
     # This function is kept as a no-op stub so that call sites continue to compile.
     pass
 
+
+def _table_has_column(con, table_name: str, column_name: str) -> bool:
+    return bool(
+        con.execute(
+            """
+            SELECT count(*)
+            FROM duckdb_columns()
+            WHERE schema_name = 'main'
+              AND table_name = ?
+              AND column_name = ?
+            """,
+            [table_name, column_name],
+        ).fetchone()[0]
+    )
+
+
+def create_security_master_current_view(con) -> None:
+    """Create the current security-master view across fresh and legacy schemas."""
+
+    if _table_has_column(con, "securities", "entity_id"):
+        entity_select = "s.entity_id AS entity_id"
+        entity_group_by = "            s.entity_id,\n"
+    else:
+        entity_select = "CAST(NULL AS VARCHAR) AS entity_id"
+        entity_group_by = ""
+
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW v_security_master_current AS
+        SELECT
+            s.security_id,
+            {entity_select},
+            s.issuer_id,
+            s.primary_symbol,
+            s.name,
+            s.asset_class,
+            s.country,
+            s.currency,
+            s.active,
+            any_value(cik.id_value) AS cik,
+            any_value(cusip.id_value) AS cusip
+        FROM securities s
+        LEFT JOIN security_identifier_history cik
+          ON cik.security_id = s.security_id
+         AND cik.id_type = 'CIK'
+         AND cik.valid_to IS NULL
+        LEFT JOIN security_identifier_history cusip
+          ON cusip.security_id = s.security_id
+         AND cusip.id_type = 'CUSIP'
+         AND cusip.valid_to IS NULL
+        GROUP BY
+            s.security_id,
+{entity_group_by}            s.issuer_id,
+            s.primary_symbol,
+            s.name,
+            s.asset_class,
+            s.country,
+            s.currency,
+            s.active
+        """
+    )
+
+
 def _ensure_indexes_and_views(store: DuckDBStore) -> None:
     con = store.con
     for statement in (
@@ -1777,42 +1840,7 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
     ):
         con.execute(statement)
 
-    con.execute(
-        """
-        CREATE OR REPLACE VIEW v_security_master_current AS
-        SELECT
-            s.security_id,
-            s.entity_id,
-            s.issuer_id,
-            s.primary_symbol,
-            s.name,
-            s.asset_class,
-            s.country,
-            s.currency,
-            s.active,
-            any_value(cik.id_value) AS cik,
-            any_value(cusip.id_value) AS cusip
-        FROM securities s
-        LEFT JOIN security_identifier_history cik
-          ON cik.security_id = s.security_id
-         AND cik.id_type = 'CIK'
-         AND cik.valid_to IS NULL
-        LEFT JOIN security_identifier_history cusip
-          ON cusip.security_id = s.security_id
-         AND cusip.id_type = 'CUSIP'
-         AND cusip.valid_to IS NULL
-        GROUP BY
-            s.security_id,
-            s.entity_id,
-            s.issuer_id,
-            s.primary_symbol,
-            s.name,
-            s.asset_class,
-            s.country,
-            s.currency,
-            s.active
-        """
-    )
+    create_security_master_current_view(con)
     con.execute(
         """
         CREATE OR REPLACE VIEW v_equity_daily_returns AS

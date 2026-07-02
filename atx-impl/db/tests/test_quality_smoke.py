@@ -83,6 +83,57 @@ def test_price_feed_ticker_overlaps_are_not_flagged(tmp_store):
     assert results["listing_multi_security_overlaps"].status == "failed"
 
 
+def test_entity_id_multi_security_overlap_allowed_but_security_identifier_overlap_fails(tmp_store):
+    from db.quality import run_warehouse_quality_checks
+
+    con = tmp_store.con
+    con.execute(
+        """
+        INSERT INTO securities (
+            security_id, entity_id, issuer_id, primary_symbol, name, asset_class,
+            country, currency, active, first_seen_date, last_seen_date, source
+        )
+        VALUES
+            ('SEC-CIK-0000000001', 'CIK-0000000001', 'CIK-0000000001', 'ACQ', 'Acquirer Inc.', 'EQUITY', 'US', 'USD', true, DATE '2020-01-01', NULL, 'fixture'),
+            ('SEC-CIK-0000000002', 'CIK-0000000001', 'CIK-0000000002', 'TGT', 'Target Inc.', 'EQUITY', 'US', 'USD', true, DATE '2020-01-01', NULL, 'fixture')
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO security_identifier_history (
+            security_id, id_type, id_value, valid_from, valid_to,
+            as_of_date, available_at, source, run_id
+        )
+        VALUES
+            ('SEC-CIK-0000000001', 'ENTITY_ID', 'CIK-0000000001', DATE '2020-01-01', NULL, DATE '2020-01-01', TIMESTAMP '2020-01-02 09:30:00', 'fixture-merger', NULL),
+            ('SEC-CIK-0000000002', 'ENTITY_ID', 'CIK-0000000002', DATE '2020-01-01', DATE '2024-06-01', DATE '2020-01-01', TIMESTAMP '2020-01-02 09:30:00', 'fixture-merger', NULL),
+            ('SEC-CIK-0000000002', 'ENTITY_ID', 'CIK-0000000001', DATE '2024-06-01', NULL, DATE '2024-06-01', TIMESTAMP '2024-06-01 12:00:00', 'fixture-merger', NULL)
+        """
+    )
+
+    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    entity_overlap = results["identifier_multi_security_overlaps"]
+    assert entity_overlap.status == "passed"
+    assert entity_overlap.observed_value == 0.0
+
+    con.execute(
+        """
+        INSERT INTO security_identifier_history (
+            security_id, id_type, id_value, valid_from, valid_to,
+            as_of_date, available_at, source, run_id
+        )
+        VALUES
+            ('SEC-CIK-0000000001', 'CIK', '0000999999', DATE '2021-01-01', NULL, DATE '2021-01-01', TIMESTAMP '2021-01-02 09:30:00', 'fixture-reference', NULL),
+            ('SEC-CIK-0000000002', 'CIK', '0000999999', DATE '2021-01-01', NULL, DATE '2021-01-01', TIMESTAMP '2021-01-02 09:30:00', 'fixture-reference', NULL)
+        """
+    )
+
+    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    cik_overlap = results["identifier_multi_security_overlaps"]
+    assert cik_overlap.status == "failed"
+    assert cik_overlap.observed_value == 1.0
+
+
 def test_quality_checks_record_to_db(tmp_store):
     """With record=True, run_warehouse_quality_checks writes rows to data_quality_checks."""
     from db.quality import run_warehouse_quality_checks
