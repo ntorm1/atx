@@ -514,6 +514,11 @@ def test_orchestrator_full_rebuild_runs_even_when_watermarks_match(tmp_store):
         "b",
         "c",
     ]
+    incremental_window_keys = {"incremental_since", "since", "as_of_ts", "start_date"}
+    for _dataset_id, options in RecordingDataset.calls:
+        assert options["full_rebuild"] is True
+        assert incremental_window_keys.isdisjoint(options)
+
     statuses = {
         row[0]: row[1]
         for row in tmp_store.con.execute(

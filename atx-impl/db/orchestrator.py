@@ -33,6 +33,9 @@ WINDOW_WATERMARK_HINTS = (
     "source_file_created_at",
     "finished_at",
 )
+INCREMENTAL_WINDOW_PARAM_KEYS = frozenset(
+    ("incremental_since", "since", "as_of_ts", "start_date")
+)
 
 
 class CycleError(ValueError):
@@ -792,10 +795,13 @@ class DatasetOrchestrator:
     ) -> dict[str, Any]:
         params = dict(base_params)
         since = watermark_before.get("incremental_since")
+        if full_rebuild:
+            for key in INCREMENTAL_WINDOW_PARAM_KEYS:
+                params.pop(key, None)
         params["full_rebuild"] = full_rebuild
         params["forced_by_upstream"] = forced_by_upstream
         params["watermark_before"] = watermark_before
-        if since is not None:
+        if not full_rebuild and since is not None:
             since_text = str(since)
             params["incremental_since"] = since_text
             params["since"] = since_text
