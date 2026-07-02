@@ -26,6 +26,10 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .fundamental_statements import (
+    CONCEPT_MAP_SUPPORTED_TAXONOMIES,
+    FUNDAMENTAL_STATEMENT_MAP_ROWS,
+)
 from .warehouse import insert_frame, quality_check
 
 
@@ -71,8 +75,63 @@ DURATION_CONCEPT_MAP = {
     "SellingGeneralAndAdministrativeExpenses": "selling_general_and_administrative_expense",
 }
 
+# The ratio engine still consumes these exact legacy xbrl_metric canonical names. Keep
+# them byte-identical for existing concepts while using the S3 concept projection to add
+# new companyfacts-only metrics.
+_RATIO_COMPAT_METRIC_OVERRIDES = {**INSTANT_CONCEPT_MAP, **DURATION_CONCEPT_MAP}
+
+
+def _is_loadable_statement_map_row(row, period_type: str) -> bool:
+    return (
+        row.taxonomy in CONCEPT_MAP_SUPPORTED_TAXONOMIES
+        and row.period_type == period_type
+        and row.is_active
+        and not row.is_derived
+        and not row.concept.startswith("__")
+    )
+
+
+def _companyfacts_concept_map(period_type: str) -> dict[str, str]:
+    """Build the broad companyfacts concept map from the S3 statement projection."""
+
+    rows = sorted(
+        (
+            row
+            for row in FUNDAMENTAL_STATEMENT_MAP_ROWS
+            if _is_loadable_statement_map_row(row, period_type)
+        ),
+        key=lambda row: (
+            0 if row.industry_template == "ALL" else 1,
+            row.concept_priority,
+            row.statement_type,
+            row.taxonomy,
+            row.concept,
+            row.industry_template,
+        ),
+    )
+    out: dict[str, str] = {}
+    for row in rows:
+        # fundamental_xbrl_metric has no industry-template column. If a concept appears
+        # in both the ALL template and an overlay, keep the ALL metric here; overlay-only
+        # concepts still flow through when companyfacts reports them.
+        metric = _RATIO_COMPAT_METRIC_OVERRIDES.get(row.concept, row.canonical_metric)
+        out.setdefault(row.concept, metric)
+    return out
+
+
+# PF-S3 S3-2: companyfacts reaches the broad fundamentals universe, so it uses the full
+# active S3 concept projection for each period type. Inline-XBRL remains on the narrow
+# maps above and is not silently widened by this offline change.
+COMPANYFACTS_INSTANT_CONCEPT_MAP = _companyfacts_concept_map("instant")
+COMPANYFACTS_DURATION_CONCEPT_MAP = _companyfacts_concept_map("duration")
+
 # Flat lookup used by normalize and callers.
-CONCEPT_MAP = {**INSTANT_CONCEPT_MAP, **DURATION_CONCEPT_MAP}
+CONCEPT_MAP = {
+    **COMPANYFACTS_INSTANT_CONCEPT_MAP,
+    **COMPANYFACTS_DURATION_CONCEPT_MAP,
+    **INSTANT_CONCEPT_MAP,
+    **DURATION_CONCEPT_MAP,
+}
 
 # Min/max day-length defining an "annual" duration window.
 ANNUAL_MIN_DAYS = 350
@@ -215,13 +274,16 @@ _DURATION_SQL = """
 """
 
 
-# S44: the broad SEC companyfacts feed (sec_company_facts) carries the same balance/flow
+# S44/PF-S3: the broad SEC companyfacts feed (sec_company_facts) carries balance/flow
 # concepts for the ~1,400-security fundamentals universe — far wider than the handful of
 # securities with cached inline-XBRL filing facts. companyfacts values are already the
 # consolidated (entity-level) totals, so no dimension filtering is needed; instants carry
 # a NULL period_start and an end date, durations carry both. We pull the same CONCEPT_MAP
-# concepts and feed them through the identical normalize path under one source, so the
-# vintage logic dedupes any overlap with the inline-XBRL facts.
+# concepts from COMPANYFACTS_*_CONCEPT_MAP and feeds them through the identical
+# normalize path under one source, so vintage logic dedupes inline/companyfacts overlap.
+# PF-S3 S3-2 widens only this companyfacts-derived candidate set. The inline
+# xbrl_filing_facts substrate stays as wide as the operator's cached primary-document
+# downloads; growing that cache remains network-gated and out of scope for pytest.
 _COMPANYFACTS_INSTANT_SQL = """
     SELECT
         f.security_id,
@@ -240,7 +302,7 @@ _COMPANYFACTS_INSTANT_SQL = """
         f.fiscal_period
     FROM sec_company_facts f
     LEFT JOIN securities s ON s.security_id = f.security_id
-    WHERE f.taxonomy = 'us-gaap'
+    WHERE f.taxonomy IN ({taxonomy_placeholders})
       AND f.value IS NOT NULL
       AND f.period_start IS NULL
       AND f.period_end IS NOT NULL
@@ -266,7 +328,7 @@ _COMPANYFACTS_DURATION_SQL = """
         f.fiscal_period
     FROM sec_company_facts f
     LEFT JOIN securities s ON s.security_id = f.security_id
-    WHERE f.taxonomy = 'us-gaap'
+    WHERE f.taxonomy IN ({taxonomy_placeholders})
       AND f.value IS NOT NULL
       AND f.period_start IS NOT NULL AND f.period_end IS NOT NULL
       AND date_diff('day', f.period_start, f.period_end) BETWEEN {amin} AND {amax}
@@ -313,24 +375,29 @@ def _fetch_consolidated_candidates(
 def _fetch_companyfacts_candidates(
     store: DuckDBStore, symbols: tuple[str, ...] | None
 ) -> pd.DataFrame:
-    """Pull the same canonical concepts from the broad SEC companyfacts feed (S44)."""
+    """Pull broad S3 canonical concepts from the SEC companyfacts feed."""
     symbol_pred, sym_params = _symbol_clause(symbols)
     frames = []
-    if INSTANT_CONCEPT_MAP:
-        concepts = tuple(INSTANT_CONCEPT_MAP)
+    taxonomies = tuple(CONCEPT_MAP_SUPPORTED_TAXONOMIES)
+    taxonomy_pred = ", ".join(["?"] * len(taxonomies))
+    if COMPANYFACTS_INSTANT_CONCEPT_MAP:
+        concepts = tuple(COMPANYFACTS_INSTANT_CONCEPT_MAP)
         sql = _COMPANYFACTS_INSTANT_SQL.format(
-            placeholders=", ".join(["?"] * len(concepts)), symbol_pred=symbol_pred
+            taxonomy_placeholders=taxonomy_pred,
+            placeholders=", ".join(["?"] * len(concepts)),
+            symbol_pred=symbol_pred,
         )
-        frames.append(store.con.execute(sql, list(concepts) + sym_params).df())
-    if DURATION_CONCEPT_MAP:
-        concepts = tuple(DURATION_CONCEPT_MAP)
+        frames.append(store.con.execute(sql, list(taxonomies) + list(concepts) + sym_params).df())
+    if COMPANYFACTS_DURATION_CONCEPT_MAP:
+        concepts = tuple(COMPANYFACTS_DURATION_CONCEPT_MAP)
         sql = _COMPANYFACTS_DURATION_SQL.format(
+            taxonomy_placeholders=taxonomy_pred,
             placeholders=", ".join(["?"] * len(concepts)),
             symbol_pred=symbol_pred,
             amin=ANNUAL_MIN_DAYS,
             amax=ANNUAL_MAX_DAYS,
         )
-        frames.append(store.con.execute(sql, list(concepts) + sym_params).df())
+        frames.append(store.con.execute(sql, list(taxonomies) + list(concepts) + sym_params).df())
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
