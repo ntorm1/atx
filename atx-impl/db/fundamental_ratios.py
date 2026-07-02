@@ -33,6 +33,7 @@ import datetime as dt
 import hashlib
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable
 
 import pandas as pd
@@ -40,6 +41,7 @@ import pandas as pd
 from .asof import fundamental_ratios_asof  # noqa: F401  (re-exported for callers)
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .item_registry import input_item_ids_for_ratio, ratio_input_metrics
 from .warehouse import insert_frame, json_dumps, quality_check
 
 
@@ -48,21 +50,15 @@ DEFAULT_SOURCE = "derived_fundamental_ratios_v1"
 DEFAULT_BASIS = "ttm"
 
 # Raw wide-frame input key -> canonical_metric in the source tables.
-TTM_INPUTS = {
-    "rev": "revenue",
-    "ni": "net_income",
-    "oi": "operating_income",
-    "ocf": "operating_cash_flow",
-    "capex": "capital_expenditures",
-    "div": "dividends_paid",
-    "repurch": "share_repurchases",
-}
-BALANCE_INPUTS = {
-    "assets": "assets",
-    "liabilities": "liabilities",
-    "equity": "stockholders_equity",
-    "shares": "shares_outstanding",
-}
+#
+# PF-S1 S1-3: the governed db.item_registry.ratio_input_metrics() map is now the SOLE
+# authority for these strings -- no bare "key -> canonical_metric" literal dict is
+# hand-typed here anymore. The returned strings are byte-identical to the pre-S1-3
+# literals (see db/item_registry.py's _TTM_RATIO_INPUT_SPECS etc. and
+# .superpowers/sdd/s1-3-vocab-reconciliation.md); _pivot_case's SQL string-matching
+# behavior, and therefore every ratio value, is unchanged.
+TTM_INPUTS = ratio_input_metrics("ttm")
+BALANCE_INPUTS = ratio_input_metrics("balance")
 
 RATIO_COLUMNS = [
     "ratio_id", "source", "upstream_source", "security_id", "symbol", "cik",
@@ -70,7 +66,7 @@ RATIO_COLUMNS = [
     "period_start", "period_end", "fiscal_year", "fiscal_period",
     "value", "numerator_code", "numerator_value", "denominator_code",
     "denominator_value", "is_meaningful", "is_latest_revision",
-    "as_of_date", "available_at", "input_codes_json", "run_id",
+    "as_of_date", "available_at", "input_codes_json", "input_item_ids_json", "run_id",
 ]
 
 
@@ -486,27 +482,14 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
 # (fundamental_xbrl_metric), pivoted into the wide frame alongside statement-point balances.
-XBRL_BALANCE_INPUTS = {
-    "current_assets": "current_assets",
-    "current_liabilities": "current_liabilities",
-    "cash_and_equivalents": "cash_and_equivalents",
-    "inventory": "inventory",
-    "long_term_debt": "long_term_debt",
-    "retained_earnings": "retained_earnings",
-    "common_shares_outstanding": "common_shares_outstanding",  # period-end shares for Piotroski (S10e)
-    "property_plant_equipment_net": "property_plant_equipment_net",  # asset structure (S10g)
-    "accounts_receivable": "accounts_receivable",  # asset structure (S10g)
-}
+# PF-S1 S1-3: sourced from the governed db.item_registry.ratio_input_metrics() map (see
+# TTM_INPUTS/BALANCE_INPUTS above); strings are byte-identical to the pre-S1-3 literals.
+XBRL_BALANCE_INPUTS = ratio_input_metrics("xbrl_balance")
 
 # Annual (duration) flow metrics from the consolidated inline-XBRL extraction,
 # pivoted into the wide frame and joined on the fiscal-year period_end.
-XBRL_FLOW_INPUTS = {
-    "gross_profit": "gross_profit",
-    "cost_of_revenue": "cost_of_revenue",
-    "interest_expense": "interest_expense",
-    "depreciation_amortization": "depreciation_amortization",
-    "selling_general_and_administrative_expense": "selling_general_and_administrative_expense",
-}
+# PF-S1 S1-3: sourced from the governed db.item_registry.ratio_input_metrics() map.
+XBRL_FLOW_INPUTS = ratio_input_metrics("xbrl_flow")
 
 # Metrics for which a prior-year value is paired in (for YoY growth, average-balance
 # ratios, and the Piotroski F-score YoY deltas). The S10e additions (long-term debt,
@@ -542,6 +525,19 @@ def _ratio_id(source: str, security_id: str, ratio_code: str, basis: str,
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+@lru_cache(maxsize=None)
+def _input_item_ids_json_for_inputs(inputs: tuple[str, ...]) -> str | None:
+    """Memoized item-linkage JSON for a RatioDef.inputs tuple (pure, in-memory, no I/O).
+
+    PF-S1 S1-3 additive column: the sorted list of governed-registry item_ids the
+    ratio consumed, resolved via db.item_registry.input_item_ids_for_ratio. Documented
+    S1-3 gaps are simply absent from the list; an empty resolution yields
+    NULL rather than "[]" so an all-unmapped ratio's linkage reads as unknown, not empty.
+    """
+    item_ids = input_item_ids_for_ratio(inputs)
+    return json_dumps(item_ids) if item_ids else None
+
+
 def _ratio_record(d, rec, source, basis, run_id, value, num, den, is_meaningful, available_at) -> dict:
     period_end = rec.get("period_end")
     return {
@@ -570,6 +566,7 @@ def _ratio_record(d, rec, source, basis, run_id, value, num, den, is_meaningful,
         "as_of_date": period_end,
         "available_at": available_at,
         "input_codes_json": json_dumps(list(d.inputs)),
+        "input_item_ids_json": _input_item_ids_json_for_inputs(d.inputs),
         "run_id": run_id,
     }
 

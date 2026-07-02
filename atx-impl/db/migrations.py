@@ -5211,6 +5211,36 @@ def _fundamental_item_registry_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _fundamental_ratios_input_item_ids(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S1 S1-3: additive item-linkage column on fundamental_ratios.
+
+    Adds ``input_item_ids_json`` (nullable JSON text, mirroring the pre-existing
+    ``input_codes_json`` pattern) recording the sorted list of governed
+    fundamental_item item_ids a ratio row's inputs resolve to (see
+    db.item_registry.ratio_input_item_ids / input_item_ids_for_ratio). This is
+    purely additive metadata -- it is not part of ratio_id and carries no bearing
+    on any pre-existing column's value (byte-identity of ratio VALUES is
+    unaffected). Idempotent (IF NOT EXISTS); catalogs the new column in
+    field_catalog in this same migration.
+    """
+    conn.execute(
+        "ALTER TABLE fundamental_ratios ADD COLUMN IF NOT EXISTS input_item_ids_json VARCHAR"
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('fundamental_ratios', 'input_item_ids_json', 'json',
+             'Sorted JSON list of governed fundamental_item item_ids the ratio''s inputs resolve to '
+             '(db.item_registry governed ratio_input map); null/omitted for documented S1-3 '
+             'registry gaps. Additive metadata alongside input_codes_json; not part of ratio_id.',
+             true, NULL, NULL, now())
+        """
+    )
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -5533,6 +5563,11 @@ MIGRATIONS: list[Migration] = [
         version=62,
         name="fundamental_item_registry_indexes",
         up=_fundamental_item_registry_indexes,
+    ),
+    Migration(
+        version=63,
+        name="fundamental_ratios_input_item_ids",
+        up=_fundamental_ratios_input_item_ids,
     ),
 ]
 

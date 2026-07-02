@@ -16,9 +16,12 @@ import datetime as dt
 import pandas as pd
 import pytest
 
+import db.fundamental_ratios as fundamental_ratios_module
+from db.item_registry import ratio_input_metrics
 from db.fundamental_ratios import (
     FundamentalRatiosDataset,
     FundamentalRatiosOptions,
+    RATIO_COLUMNS,
     RATIO_DEFS,
     _attach_prior_year,
     compute_ratio_rows,
@@ -636,3 +639,256 @@ class TestAsofReader:
         late = fundamental_ratios_asof(dt.date(2026, 6, 1), store=tmp_store, symbols=["AAPL"])
         assert not late.empty
         assert "net_profit_margin" in set(late["ratio_code"])
+
+
+def test_migration_0063_adds_and_catalogs_input_item_ids_json(tmp_store):
+    """PF-S1 S1-3 migration is append-only, idempotent, and catalogued."""
+    from db.migrations import _fundamental_ratios_input_item_ids
+
+    columns = tmp_store.con.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'main' AND table_name = 'fundamental_ratios'
+        """
+    ).fetchall()
+    versions = tmp_store.con.execute(
+        "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+    ).fetchall()
+    catalog_count = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM field_catalog
+        WHERE table_name = 'fundamental_ratios'
+          AND field_name = 'input_item_ids_json'
+          AND semantic_type = 'json'
+        """
+    ).fetchone()[0]
+
+    assert ("input_item_ids_json",) in columns
+    assert 63 in {row[0] for row in versions}
+    assert catalog_count == 1
+
+    _fundamental_ratios_input_item_ids(tmp_store.con)
+    _fundamental_ratios_input_item_ids(tmp_store.con)
+    catalog_count_after = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM field_catalog
+        WHERE table_name = 'fundamental_ratios'
+          AND field_name = 'input_item_ids_json'
+        """
+    ).fetchone()[0]
+    assert catalog_count_after == 1
+
+
+# --------------------------------------------------------------------------- #
+# PF-S1 S1-3: byte-identity gate -- governed registry sourcing must not change
+# any pre-existing column of a fundamental_ratios rebuild.
+# --------------------------------------------------------------------------- #
+#
+# The four input dicts (TTM_INPUTS, BALANCE_INPUTS, XBRL_BALANCE_INPUTS,
+# XBRL_FLOW_INPUTS) move from hand-typed literals to a governed db.item_registry
+# map, but the canonical_metric strings they hold -- and therefore every ratio
+# VALUE -- must stay byte-identical. This fixture panel exercises every pivot
+# source table (TTM, statement, xbrl balance, xbrl flow) plus two fiscal years
+# so YoY/average-balance ratios and Piotroski/Beneish all emit, and asserts the
+# rebuilt frame equals a golden capture on every pre-existing RATIO_COLUMNS entry.
+
+def _seed_byte_identity_panel(store):
+    sid, sym = "SEC-CIK-0000320193", "AAPL"
+    years = {
+        2024: (dt.date(2024, 12, 31), dt.datetime(2025, 2, 1, 22, 0)),
+        2025: (dt.date(2025, 12, 31), dt.datetime(2026, 2, 1, 22, 0)),
+    }
+    ttm_flows = {
+        2024: dict(revenue=360.0, net_income=80.0, operating_income=95.0,
+                   operating_cash_flow=110.0, capital_expenditures=-25.0,
+                   dividends_paid=-10.0, share_repurchases=-20.0),
+        2025: dict(revenue=400.0, net_income=100.0, operating_income=120.0,
+                   operating_cash_flow=130.0, capital_expenditures=-30.0,
+                   dividends_paid=-15.0, share_repurchases=-50.0),
+    }
+    stmt_balances = {
+        2024: dict(assets=300.0, liabilities=250.0, stockholders_equity=50.0, shares_outstanding=16.0),
+        2025: dict(assets=350.0, liabilities=290.0, stockholders_equity=60.0, shares_outstanding=15.0),
+    }
+    xbrl_instants = {
+        2024: dict(current_assets=180.0, current_liabilities=95.0, cash_and_equivalents=35.0,
+                   inventory=25.0, long_term_debt=100.0, retained_earnings=170.0,
+                   common_shares_outstanding=16.0, property_plant_equipment_net=110.0,
+                   accounts_receivable=40.0),
+        2025: dict(current_assets=200.0, current_liabilities=100.0, cash_and_equivalents=40.0,
+                   inventory=30.0, long_term_debt=90.0, retained_earnings=200.0,
+                   common_shares_outstanding=15.0, property_plant_equipment_net=120.0,
+                   accounts_receivable=50.0),
+    }
+    xbrl_flows = {
+        2024: dict(gross_profit=140.0, cost_of_revenue=180.0, interest_expense=9.0,
+                   depreciation_amortization=20.0, selling_general_and_administrative_expense=32.0),
+        2025: dict(gross_profit=180.0, cost_of_revenue=220.0, interest_expense=10.0,
+                   depreciation_amortization=25.0, selling_general_and_administrative_expense=44.0),
+    }
+    for y, (end, av) in years.items():
+        start = end - dt.timedelta(days=365)
+        for metric, val in ttm_flows[y].items():
+            _insert_ttm(store, security_id=sid, symbol=sym, metric=metric, value=val, end=end, av=av, start=start)
+        for metric, val in stmt_balances[y].items():
+            _insert_stmt(store, security_id=sid, symbol=sym, metric=metric, value=val, end=end, av=av)
+        for metric, val in xbrl_instants[y].items():
+            _insert_xbrl_metric(store, security_id=sid, symbol=sym, metric=metric, value=val, end=end, av=av,
+                                period_type="instant")
+        for metric, val in xbrl_flows[y].items():
+            _insert_xbrl_metric(store, security_id=sid, symbol=sym, metric=metric, value=val, end=end, av=av,
+                                period_type="duration", period_start=start)
+    return sid, sym
+
+
+# Exactly the columns that existed before S1-3 (RATIO_COLUMNS gains input_item_ids_json
+# in this task; it must be excluded here so this list never drifts from "pre-existing").
+_PRE_EXISTING_RATIO_COLUMNS = [c for c in RATIO_COLUMNS if c != "input_item_ids_json"]
+
+_LITERAL_TTM_INPUTS = {
+    "rev": "revenue",
+    "ni": "net_income",
+    "oi": "operating_income",
+    "ocf": "operating_cash_flow",
+    "capex": "capital_expenditures",
+    "div": "dividends_paid",
+    "repurch": "share_repurchases",
+}
+_LITERAL_BALANCE_INPUTS = {
+    "assets": "assets",
+    "liabilities": "liabilities",
+    "equity": "stockholders_equity",
+    "shares": "shares_outstanding",
+}
+_LITERAL_XBRL_BALANCE_INPUTS = {
+    "current_assets": "current_assets",
+    "current_liabilities": "current_liabilities",
+    "cash_and_equivalents": "cash_and_equivalents",
+    "inventory": "inventory",
+    "long_term_debt": "long_term_debt",
+    "retained_earnings": "retained_earnings",
+    "common_shares_outstanding": "common_shares_outstanding",
+    "property_plant_equipment_net": "property_plant_equipment_net",
+    "accounts_receivable": "accounts_receivable",
+}
+_LITERAL_XBRL_FLOW_INPUTS = {
+    "gross_profit": "gross_profit",
+    "cost_of_revenue": "cost_of_revenue",
+    "interest_expense": "interest_expense",
+    "depreciation_amortization": "depreciation_amortization",
+    "selling_general_and_administrative_expense": "selling_general_and_administrative_expense",
+}
+
+
+class TestByteIdentityRegression:
+    """RED-first regression: capture ratios with today's literal dicts, then assert
+    the post-refactor (registry-sourced) rebuild is identical on every pre-existing
+    column. Any drift here is a correctness bug in the S1-3 change, never a data update.
+    """
+
+    def test_registry_sourced_rebuild_is_byte_identical_to_literal_dict_rebuild(self, tmp_store, monkeypatch):
+        sid, sym = _seed_byte_identity_panel(tmp_store)
+
+        monkeypatch.setattr(fundamental_ratios_module, "TTM_INPUTS", dict(_LITERAL_TTM_INPUTS))
+        monkeypatch.setattr(fundamental_ratios_module, "BALANCE_INPUTS", dict(_LITERAL_BALANCE_INPUTS))
+        monkeypatch.setattr(
+            fundamental_ratios_module,
+            "XBRL_BALANCE_INPUTS",
+            dict(_LITERAL_XBRL_BALANCE_INPUTS),
+        )
+        monkeypatch.setattr(
+            fundamental_ratios_module,
+            "XBRL_FLOW_INPUTS",
+            dict(_LITERAL_XBRL_FLOW_INPUTS),
+        )
+        golden = fundamental_ratios_module.refresh_fundamental_ratios(
+            tmp_store,
+            FundamentalRatiosOptions(),
+        )
+        golden_df = tmp_store.con.execute(
+            f"SELECT {', '.join(_PRE_EXISTING_RATIO_COLUMNS)} FROM fundamental_ratios "
+            "ORDER BY security_id, ratio_code, period_end"
+        ).df()
+        assert golden > 0
+        assert len(golden_df) > 0
+
+        monkeypatch.setattr(fundamental_ratios_module, "TTM_INPUTS", ratio_input_metrics("ttm"))
+        monkeypatch.setattr(fundamental_ratios_module, "BALANCE_INPUTS", ratio_input_metrics("balance"))
+        monkeypatch.setattr(
+            fundamental_ratios_module,
+            "XBRL_BALANCE_INPUTS",
+            ratio_input_metrics("xbrl_balance"),
+        )
+        monkeypatch.setattr(
+            fundamental_ratios_module,
+            "XBRL_FLOW_INPUTS",
+            ratio_input_metrics("xbrl_flow"),
+        )
+        rebuilt = fundamental_ratios_module.refresh_fundamental_ratios(
+            tmp_store,
+            FundamentalRatiosOptions(),
+        )
+        rebuilt_df = tmp_store.con.execute(
+            f"SELECT {', '.join(_PRE_EXISTING_RATIO_COLUMNS)} FROM fundamental_ratios "
+            "ORDER BY security_id, ratio_code, period_end"
+        ).df()
+
+        assert rebuilt == golden
+        pd.testing.assert_frame_equal(
+            rebuilt_df.reset_index(drop=True), golden_df.reset_index(drop=True)
+        )
+
+    def test_input_codes_json_unchanged_by_registry_sourcing(self, tmp_store):
+        """input_codes_json (pre-existing) must stay exactly the RATIO_DEFS raw-key list."""
+        _seed_byte_identity_panel(tmp_store)
+        refresh_fundamental_ratios(tmp_store, FundamentalRatiosOptions())
+        row = tmp_store.con.execute(
+            "SELECT input_codes_json FROM fundamental_ratios WHERE ratio_code = 'net_profit_margin' LIMIT 1"
+        ).fetchone()
+        import json
+        assert json.loads(row[0]) == ["ni", "rev"]
+
+
+class TestInputItemIdsJsonColumn:
+    """input_item_ids_json is additive metadata; byte-identity of VALUES is untouched."""
+
+    def test_column_present_and_populated_for_simple_ratio(self, tmp_store):
+        _seed_byte_identity_panel(tmp_store)
+        refresh_fundamental_ratios(tmp_store, FundamentalRatiosOptions())
+        row = tmp_store.con.execute(
+            "SELECT input_item_ids_json FROM fundamental_ratios WHERE ratio_code = 'net_profit_margin' LIMIT 1"
+        ).fetchone()
+        import json
+        assert row is not None
+        ids = json.loads(row[0])
+        # net_profit_margin inputs: ni (net_income -> 1031), rev (revenue -> 1001)
+        assert ids == [1001, 1031]
+
+    def test_beneish_m_score_item_ids_include_documented_gap_handling(self, tmp_store):
+        """beneish_m_score omits the controller-design SG&A gap from item linkage."""
+        _seed_byte_identity_panel(tmp_store)
+        refresh_fundamental_ratios(tmp_store, FundamentalRatiosOptions())
+        row = tmp_store.con.execute(
+            "SELECT input_item_ids_json FROM fundamental_ratios WHERE ratio_code = 'beneish_m_score' LIMIT 1"
+        ).fetchone()
+        import json
+        assert row is not None
+        ids = json.loads(row[0])
+        assert ids == sorted({1001, 1106, 1003, 1102, 1110, 1101, 1307, 1201, 1031, 1301})
+        assert 1005 not in ids
+
+    def test_piotroski_f_score_common_shares_outstanding_stays_unmapped(self, tmp_store):
+        """common_shares_outstanding is a documented S1-3 metadata gap, not item 1039."""
+        _seed_byte_identity_panel(tmp_store)
+        refresh_fundamental_ratios(tmp_store, FundamentalRatiosOptions())
+        row = tmp_store.con.execute(
+            "SELECT input_item_ids_json FROM fundamental_ratios WHERE ratio_code = 'piotroski_f_score' LIMIT 1"
+        ).fetchone()
+        import json
+        assert row is not None
+        ids = json.loads(row[0])
+        assert ids == sorted({1001, 1004, 1031, 1101, 1102, 1202, 1207, 1301})
+        assert 1039 not in ids

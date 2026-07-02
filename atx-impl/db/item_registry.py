@@ -80,6 +80,15 @@ class FundamentalItemSeedRow:
     sign_note: str | None
 
 
+@dataclass(frozen=True)
+class RatioInputSpec:
+    """Governed PF-S1 S1-3 bridge from ratio input key to source metric + item id."""
+
+    key: str
+    canonical_metric: str
+    item_id: int | None
+
+
 def _coerce_date(value: date | datetime | str | None, *, field_name: str) -> date | None:
     if value is None:
         return None
@@ -618,3 +627,112 @@ def resolve_inputs(
 
     active_registry = registry or default_registry()
     return active_registry.resolve_inputs(canonical_code, as_of=as_of)
+
+
+# PF-S1 S1-3 ratio-input authority.
+#
+# These specs deliberately preserve the exact canonical_metric strings consumed by
+# fundamental_ratios before S1-3. The item_id column is additive provenance only:
+# it records the controller-approved bridge into fundamental_item without changing
+# the pivot strings, ratio values, ratio_id inputs, or available_at computation.
+# Do not infer these ids by string-joining to fundamental_item.canonical_code: the
+# vocabularies differ and `net_income` is an estimates false friend (item 2009).
+_TTM_RATIO_INPUT_SPECS = (
+    RatioInputSpec("rev", "revenue", 1001),
+    RatioInputSpec("ni", "net_income", 1031),
+    RatioInputSpec("oi", "operating_income", 1014),
+    RatioInputSpec("ocf", "operating_cash_flow", 1301),
+    RatioInputSpec("capex", "capital_expenditures", 1305),
+    RatioInputSpec("div", "dividends_paid", 1318),
+    RatioInputSpec("repurch", "share_repurchases", 1312),
+)
+
+_BALANCE_RATIO_INPUT_SPECS = (
+    # The pre-S1-3 literals were `assets` / `liabilities`, even though the
+    # statement map's canonical metrics are total_assets / total_liabilities.
+    # Keep the old strings for byte identity; attach the agreed item ids only.
+    RatioInputSpec("assets", "assets", 1101),
+    RatioInputSpec("liabilities", "liabilities", 1201),
+    RatioInputSpec("equity", "stockholders_equity", 1221),
+    RatioInputSpec("shares", "shares_outstanding", 1039),
+)
+
+_XBRL_BALANCE_RATIO_INPUT_SPECS = (
+    RatioInputSpec("current_assets", "current_assets", 1102),
+    RatioInputSpec("current_liabilities", "current_liabilities", 1202),
+    RatioInputSpec("cash_and_equivalents", "cash_and_equivalents", 1104),
+    RatioInputSpec("inventory", "inventory", 1107),
+    RatioInputSpec("long_term_debt", "long_term_debt", 1207),
+    RatioInputSpec("retained_earnings", "retained_earnings", 1217),
+    # Controller decision: leave this XBRL-only ratio input unmapped in S1-3.
+    RatioInputSpec("common_shares_outstanding", "common_shares_outstanding", None),
+    RatioInputSpec("property_plant_equipment_net", "property_plant_equipment_net", 1110),
+    RatioInputSpec("accounts_receivable", "accounts_receivable", 1106),
+)
+
+_XBRL_FLOW_RATIO_INPUT_SPECS = (
+    RatioInputSpec("gross_profit", "gross_profit", 1004),
+    RatioInputSpec("cost_of_revenue", "cost_of_revenue", 1003),
+    RatioInputSpec("interest_expense", "interest_expense", 1018),
+    RatioInputSpec("depreciation_amortization", "depreciation_amortization", 1307),
+    # Controller decision: do not fabricate a combined-SG&A linkage in S1-3.
+    RatioInputSpec(
+        "selling_general_and_administrative_expense",
+        "selling_general_and_administrative_expense",
+        None,
+    ),
+)
+
+_RATIO_INPUT_SPECS_BY_GROUP = {
+    "ttm": _TTM_RATIO_INPUT_SPECS,
+    "balance": _BALANCE_RATIO_INPUT_SPECS,
+    "xbrl_balance": _XBRL_BALANCE_RATIO_INPUT_SPECS,
+    "xbrl_flow": _XBRL_FLOW_RATIO_INPUT_SPECS,
+}
+
+_RATIO_INPUT_SPEC_BY_KEY = {
+    spec.key: spec
+    for specs in _RATIO_INPUT_SPECS_BY_GROUP.values()
+    for spec in specs
+}
+
+
+def _ratio_specs(group: str) -> tuple[RatioInputSpec, ...]:
+    try:
+        return _RATIO_INPUT_SPECS_BY_GROUP[group]
+    except KeyError as exc:
+        groups = ", ".join(sorted(_RATIO_INPUT_SPECS_BY_GROUP))
+        raise ValueError(f"unknown ratio input group {group!r}; expected one of: {groups}") from exc
+
+
+def ratio_input_metrics(group: str) -> dict[str, str]:
+    """Return ratio input key -> exact source-table canonical_metric for a group."""
+
+    return {spec.key: spec.canonical_metric for spec in _ratio_specs(group)}
+
+
+def ratio_input_item_ids(group: str) -> dict[str, int | None]:
+    """Return ratio input key -> governed fundamental_item item_id for a group."""
+
+    return {spec.key: spec.item_id for spec in _ratio_specs(group)}
+
+
+def _ratio_input_base_key(input_key: str) -> str:
+    return input_key[:-6] if input_key.endswith("_prior") else input_key
+
+
+def input_item_ids_for_ratio(inputs: Iterable[str]) -> list[int]:
+    """Resolve a RatioDef.inputs tuple to sorted distinct governed item ids.
+
+    Missing inputs and documented S1-3 gaps are omitted. This makes the additive
+    fundamental_ratios.input_item_ids_json honest metadata while leaving
+    input_codes_json as the exact raw dependency list.
+    """
+
+    item_ids = {
+        spec.item_id
+        for input_key in inputs
+        if (spec := _RATIO_INPUT_SPEC_BY_KEY.get(_ratio_input_base_key(str(input_key)))) is not None
+        and spec.item_id is not None
+    }
+    return sorted(item_ids)

@@ -963,3 +963,74 @@ def test_item_registry_loader_uses_stdlib_csv_without_pandas():
     source = inspect.getsource(item_registry)
     assert "import csv" in source
     assert "pandas" not in source
+
+
+def test_ratio_input_metrics_are_byte_identical_to_pre_s1_3_literals():
+    """S1-3 registry map preserves the exact source-table canonical_metric strings."""
+    from db.item_registry import ratio_input_metrics
+
+    assert ratio_input_metrics("ttm") == {
+        "rev": "revenue",
+        "ni": "net_income",
+        "oi": "operating_income",
+        "ocf": "operating_cash_flow",
+        "capex": "capital_expenditures",
+        "div": "dividends_paid",
+        "repurch": "share_repurchases",
+    }
+    assert ratio_input_metrics("balance") == {
+        "assets": "assets",
+        "liabilities": "liabilities",
+        "equity": "stockholders_equity",
+        "shares": "shares_outstanding",
+    }
+    assert ratio_input_metrics("xbrl_balance") == {
+        "current_assets": "current_assets",
+        "current_liabilities": "current_liabilities",
+        "cash_and_equivalents": "cash_and_equivalents",
+        "inventory": "inventory",
+        "long_term_debt": "long_term_debt",
+        "retained_earnings": "retained_earnings",
+        "common_shares_outstanding": "common_shares_outstanding",
+        "property_plant_equipment_net": "property_plant_equipment_net",
+        "accounts_receivable": "accounts_receivable",
+    }
+    assert ratio_input_metrics("xbrl_flow") == {
+        "gross_profit": "gross_profit",
+        "cost_of_revenue": "cost_of_revenue",
+        "interest_expense": "interest_expense",
+        "depreciation_amortization": "depreciation_amortization",
+        "selling_general_and_administrative_expense": "selling_general_and_administrative_expense",
+    }
+
+
+def test_ratio_input_item_ids_encode_controller_semantic_picks_and_gaps():
+    """Ratio input item ids use the S1-3 governed bridge, not seed string matching."""
+    from db.item_registry import input_item_ids_for_ratio, ratio_input_item_ids
+
+    assert ratio_input_item_ids("ttm")["ni"] == 1031  # actual net income, not estimate item 2009
+    assert ratio_input_item_ids("xbrl_balance")["cash_and_equivalents"] == 1104
+    assert ratio_input_item_ids("xbrl_flow")["depreciation_amortization"] == 1307
+    assert ratio_input_item_ids("xbrl_balance")["common_shares_outstanding"] is None
+    assert ratio_input_item_ids("xbrl_flow")["selling_general_and_administrative_expense"] is None
+
+    assert input_item_ids_for_ratio(("rev", "ni", "rev_prior", "ni_prior")) == [1001, 1031]
+    assert input_item_ids_for_ratio(
+        (
+            "common_shares_outstanding",
+            "common_shares_outstanding_prior",
+            "selling_general_and_administrative_expense",
+        )
+    ) == []
+
+
+def test_ratio_input_registry_returns_copies_and_rejects_unknown_groups():
+    """Callers cannot mutate the governed map; unknown groups fail clearly."""
+    from db.item_registry import ratio_input_metrics
+
+    metrics = ratio_input_metrics("ttm")
+    metrics["rev"] = "wrong"
+
+    assert ratio_input_metrics("ttm")["rev"] == "revenue"
+    with pytest.raises(ValueError, match="unknown ratio input group"):
+        ratio_input_metrics("not_a_group")
