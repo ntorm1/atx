@@ -6175,6 +6175,76 @@ def _entity_parent_edges_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None
                 NULL,
                 'GLEIF Level-2 Relationship.RelationshipType',
                 now()
+            ),
+            (
+                'entity_parent_edges',
+                'valid_from',
+                'date',
+                'Start of GLEIF''s own reported validity window for this relationship (not the warehouse load time).',
+                false,
+                NULL,
+                'GLEIF Level-2 Relationship.RelationshipPeriods.StartDate',
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'valid_to',
+                'date',
+                'End of GLEIF''s own reported validity window for this relationship, NULL while still open/current.',
+                true,
+                NULL,
+                'GLEIF Level-2 Relationship.RelationshipPeriods.EndDate',
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'as_of_date',
+                'date',
+                'Warehouse as-of date this edge row was derived under (load-time, distinct from GLEIF''s own valid_from/valid_to window).',
+                false,
+                NULL,
+                NULL,
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'available_at',
+                'timestamp',
+                'Timestamp when this edge became visible for PIT research; use for as-of no-lookahead reads (see pit_notes).',
+                true,
+                NULL,
+                NULL,
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'source',
+                'identifier',
+                'Loader source name that wrote this edge (e.g. GLEIF).',
+                false,
+                NULL,
+                NULL,
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'run_id',
+                'identifier',
+                'Identifier of the ingestion run that wrote this edge, for provenance/reproducibility.',
+                true,
+                NULL,
+                NULL,
+                now()
+            ),
+            (
+                'entity_parent_edges',
+                'source_loaded_at',
+                'timestamp',
+                'Warehouse-assigned timestamp when this row was physically loaded (DEFAULT now()), distinct from available_at.',
+                false,
+                NULL,
+                NULL,
+                now()
             )
         """
     )

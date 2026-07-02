@@ -619,3 +619,128 @@ def test_lei_alias_dataset_no_network_call_offline_only(tmp_store, monkeypatch):
     dataset = LeiAliasDataset()
     result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
     assert result.rows_loaded > 0
+
+
+def test_lei_alias_dataset_duplicate_cik_routes_to_resolution_ledger_not_merge(tmp_store):
+    """GLEIF Golden Copy is NOT a safe 1:1 cik<->lei key: a lapsed-then-reissued
+    registration (or LOU duplicate/transfer artifact) can carry two distinct LEI
+    records for the same SEC EDGAR CIK. The loader must NOT fan those out into two
+    simultaneously-current LEI aliases on the same security -- it must route the
+    ambiguous cik into identifier_resolution_candidates/decisions instead, mirroring
+    identifiers_figi.py's conflict-routing for ambiguous CUSIPs."""
+    from db.identifiers_lei import SEC_REGISTRATION_AUTHORITY_ID, LeiAliasDataset, LeiLoadOptions
+
+    _seed_securities(tmp_store)
+    lei_file = _write_gleif_file(
+        tmp_store.path.parent,
+        [
+            {
+                # Same CIK, two distinct LEIs -- ambiguous, must not both be merged.
+                "LEI": "HWUPKR0MPOU8FGXBT394",
+                "Entity.LegalName": "APPLE INC",
+                "Entity.RegistrationAuthority.RegistrationAuthorityID": SEC_REGISTRATION_AUTHORITY_ID,
+                "Entity.RegistrationAuthority.RegistrationAuthorityEntityID": "0000320193",
+            },
+            {
+                "LEI": "DUPLICATELEI000000001",
+                "Entity.LegalName": "APPLE INC (REISSUED)",
+                "Entity.RegistrationAuthority.RegistrationAuthorityID": SEC_REGISTRATION_AUTHORITY_ID,
+                "Entity.RegistrationAuthority.RegistrationAuthorityEntityID": "0000320193",
+            },
+            {
+                # Unambiguous CIK -- must still be merged normally.
+                "LEI": "549300OVFHYPPCFHF059",
+                "Entity.LegalName": "MICROSOFT CORP",
+                "Entity.RegistrationAuthority.RegistrationAuthorityID": SEC_REGISTRATION_AUTHORITY_ID,
+                "Entity.RegistrationAuthority.RegistrationAuthorityEntityID": "0000789019",
+            },
+        ],
+    )
+
+    dataset = LeiAliasDataset()
+    dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
+
+    # No duplicate/ambiguous current LEI alias written for the Apple security.
+    lei_rows = tmp_store.con.execute(
+        """
+        SELECT security_id, id_value
+        FROM security_identifier_history
+        WHERE id_type = 'LEI' AND security_id = 'SEC-CIK-0000320193' AND valid_to IS NULL
+        """
+    ).fetchall()
+    assert lei_rows == []
+
+    # The unambiguous cik->lei match still merges normally.
+    msft_rows = tmp_store.con.execute(
+        "SELECT security_id, id_value FROM security_identifier_history WHERE id_type = 'LEI' AND security_id = 'SEC-CIK-0000789019'"
+    ).fetchall()
+    assert msft_rows == [("SEC-CIK-0000789019", "549300OVFHYPPCFHF059")]
+
+    candidates = tmp_store.con.execute(
+        """
+        SELECT source_key_type, source_key_value, target_id_type, target_id_value, match_method, confidence, candidate_status
+        FROM identifier_resolution_candidates
+        WHERE source_key_value = '0000320193'
+        ORDER BY target_id_value
+        """
+    ).fetchall()
+    assert len(candidates) == 2
+    for row in candidates:
+        assert row[0] == "CIK"
+        assert row[1] == "0000320193"
+        assert row[2] == "LEI"
+        assert row[3] in {"HWUPKR0MPOU8FGXBT394", "DUPLICATELEI000000001"}
+        assert row[4] == "gleif_cik_lei"
+        assert row[5] < 1.0
+        assert row[6] == "conflict"
+
+    decisions = tmp_store.con.execute(
+        """
+        SELECT decision_status, source_key_value
+        FROM identifier_resolution_decisions
+        WHERE source_key_value = '0000320193'
+        """
+    ).fetchall()
+    assert len(decisions) == 2
+    for status, _key in decisions:
+        assert status == "needs_review"
+
+
+# ---------------------------------------------------------------------------
+# Migration 0081 (entity_parent_edges_schema_catalog) field_catalog coverage.
+# entity_parent_edges is a brand-new table, not additive columns, so every one
+# of its 10 columns must be seeded -- not just the 3 "identity" columns.
+# ---------------------------------------------------------------------------
+
+
+def test_migration_0081_entity_parent_edges_field_catalog_full_coverage(tmp_store):
+    table_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM duckdb_columns()
+            WHERE table_name = 'entity_parent_edges'
+            """
+        ).fetchall()
+    }
+    assert table_columns == {
+        "child_entity_id",
+        "parent_entity_id",
+        "relationship_type",
+        "valid_from",
+        "valid_to",
+        "as_of_date",
+        "available_at",
+        "source",
+        "run_id",
+        "source_loaded_at",
+    }
+
+    cataloged_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT field_name FROM field_catalog WHERE table_name = 'entity_parent_edges'"
+        ).fetchall()
+    }
+    assert cataloged_columns == table_columns
