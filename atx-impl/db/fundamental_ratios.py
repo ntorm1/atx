@@ -84,6 +84,9 @@ class RatioDef:
     # For kind='score': a weighted-composite value function over the wide row
     # (bypasses operands; numerator/denominator are not stored).
     composite: Callable[[dict], float | None] | None = None
+    # Optional additive provenance inputs. Does not affect gating, PIT timestamps,
+    # ratio_id, or input_codes_json.
+    item_inputs: tuple[str, ...] | None = None
 
 
 def _abs(x: float) -> float:
@@ -390,7 +393,8 @@ RATIO_DEFS: tuple[RatioDef, ...] = (
     RatioDef("quick_ratio", "liquidity", "ratio", "ratio",
              "current_assets_minus_inventory", "current_liabilities", ("current_assets", "current_liabilities"),
              lambda r: (r["current_assets"] - _z(r.get("inventory")), r["current_liabilities"]),
-             require_positive_denominator=True),
+             require_positive_denominator=True,
+             item_inputs=("current_assets", "inventory", "current_liabilities")),
     RatioDef("cash_ratio", "liquidity", "ratio", "ratio",
              "cash_and_equivalents", "current_liabilities", ("cash_and_equivalents", "current_liabilities"),
              lambda r: (r["cash_and_equivalents"], r["current_liabilities"]), require_positive_denominator=True),
@@ -566,7 +570,7 @@ def _ratio_record(d, rec, source, basis, run_id, value, num, den, is_meaningful,
         "as_of_date": period_end,
         "available_at": available_at,
         "input_codes_json": json_dumps(list(d.inputs)),
-        "input_item_ids_json": _input_item_ids_json_for_inputs(d.inputs),
+        "input_item_ids_json": _input_item_ids_json_for_inputs(d.item_inputs or d.inputs),
         "run_id": run_id,
     }
 

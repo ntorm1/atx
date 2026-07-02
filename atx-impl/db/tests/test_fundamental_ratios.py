@@ -12,6 +12,7 @@ No network: ratios derive purely from already-loaded warehouse tables.
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pandas as pd
 import pytest
@@ -219,6 +220,16 @@ class TestComputeRatioRows:
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(inventory=None, inventory_av=None)])))
         assert rows["quick_ratio"].value == pytest.approx(200.0 / 100.0)
         assert rows["current_ratio"].value == pytest.approx(200.0 / 100.0)
+
+    def test_quick_ratio_item_ids_include_inventory_without_changing_existing_lineage(self):
+        row = _wide_row(inventory_av=_ts("2026-05-09"))
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([row])))
+        quick = rows["quick_ratio"]
+
+        assert quick.value == pytest.approx((200.0 - 30.0) / 100.0)
+        assert quick.available_at == _ts("2026-05-01")
+        assert json.loads(quick.input_codes_json) == ["current_assets", "current_liabilities"]
+        assert json.loads(quick.input_item_ids_json) == [1102, 1107, 1202]
 
     def test_liquidity_dropped_without_current_liabilities(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row(current_liabilities=None, current_liabilities_av=None)])))
@@ -866,6 +877,24 @@ class TestInputItemIdsJsonColumn:
         ids = json.loads(row[0])
         # net_profit_margin inputs: ni (net_income -> 1031), rev (revenue -> 1001)
         assert ids == [1001, 1031]
+
+    def test_quick_ratio_item_ids_include_inventory(self, tmp_store):
+        _seed_byte_identity_panel(tmp_store)
+        refresh_fundamental_ratios(tmp_store, FundamentalRatiosOptions())
+        row = tmp_store.con.execute(
+            """
+            SELECT input_codes_json, input_item_ids_json, available_at
+            FROM fundamental_ratios
+            WHERE ratio_code = 'quick_ratio'
+            ORDER BY period_end DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        assert row is not None
+        assert json.loads(row[0]) == ["current_assets", "current_liabilities"]
+        assert json.loads(row[1]) == [1102, 1107, 1202]
+        assert row[2] == dt.datetime(2026, 2, 1, 22, 0)
 
     def test_beneish_m_score_item_ids_include_documented_gap_handling(self, tmp_store):
         """beneish_m_score omits the controller-design SG&A gap from item linkage."""

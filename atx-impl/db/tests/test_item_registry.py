@@ -1015,6 +1015,7 @@ def test_ratio_input_item_ids_encode_controller_semantic_picks_and_gaps():
     assert ratio_input_item_ids("xbrl_flow")["selling_general_and_administrative_expense"] is None
 
     assert input_item_ids_for_ratio(("rev", "ni", "rev_prior", "ni_prior")) == [1001, 1031]
+    assert input_item_ids_for_ratio(("current_assets", "inventory", "current_liabilities")) == [1102, 1107, 1202]
     assert input_item_ids_for_ratio(
         (
             "common_shares_outstanding",
