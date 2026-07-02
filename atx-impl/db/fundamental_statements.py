@@ -193,10 +193,10 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","GeneralAndAdministrativeExpense","income_statement","costs","ga_expense","G&A expense","duration","debit","monetary",1.0,10,False,True,"General and administrative expense only.",1007,"ALL",False,None),
     # 1008 R&D
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ResearchAndDevelopmentExpense","income_statement","costs","rd_expense","R&D expense","duration","debit","monetary",1.0,10,True,True,"R&D expense (ASC 730).",1008,"ALL",False,None),
-    # 1009 Advertising — [unverified]
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AdvertisingExpense","income_statement","costs","advertising_expense","Advertising expense","duration","debit","monetary",1.0,10,False,False,"[unverified] — not confirmed against primary vendor source.",1009,"ALL",False,None),
-    # 1010 Operating Expenses total — [unverified]
-    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingExpenses","income_statement","costs","operating_expenses","Operating expenses","duration","debit","monetary",1.0,10,False,False,"[unverified] — OperatingExpenses availability varies by filer.",1010,"ALL",False,None),
+    # 1009 Advertising
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","AdvertisingExpense","income_statement","costs","advertising_expense","Advertising expense","duration","debit","monetary",1.0,10,False,True,"Advertising expense; active so the S3 canonical item map has no unexplained inactive us-gaap alias.",1009,"ALL",False,None),
+    # 1010 Operating Expenses total
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingExpenses","income_statement","costs","operating_expenses","Operating expenses","duration","debit","monetary",1.0,10,False,True,"Operating expenses total; availability varies by filer but the us-gaap concept is loadable.",1010,"ALL",False,None),
     # 1011 D&A on income statement
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DepreciationAndAmortization","income_statement","costs","da_is","D&A (income statement)","duration","debit","monetary",1.0,10,True,True,"D&A when on income statement.",1011,"ALL",False,None),
     # 1012 Depreciation only

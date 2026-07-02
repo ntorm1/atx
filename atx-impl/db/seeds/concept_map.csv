@@ -68,6 +68,7 @@ us-gaap,ProceedsFromIssuanceOfCommonStock,stock_issuance,1311,cash_flow,ALL
 us-gaap,ProceedsFromIssuanceOfLongTermDebt,lt_debt_issued,1313,cash_flow,ALL
 us-gaap,RepaymentsOfLongTermDebt,lt_debt_repaid,1314,cash_flow,ALL
 us-gaap,ShareBasedCompensation,stock_based_comp,1308,cash_flow,ALL
+us-gaap,AdvertisingExpense,advertising_expense,1009,income_statement,ALL
 us-gaap,AmortizationOfIntangibleAssets,amortization_intangibles,1013,income_statement,ALL
 us-gaap,AssetImpairmentCharges,special_items,1022,income_statement,ALL
 us-gaap,CostOfGoodsAndServicesSold,cogs,1003,income_statement,ALL
@@ -92,6 +93,7 @@ us-gaap,NetIncomeLoss,net_income,1031,income_statement,ALL
 us-gaap,NetIncomeLossAttributableToNoncontrollingInterest,minority_int_pl,1027,income_statement,ALL
 us-gaap,NetIncomeLossAvailableToCommonStockholdersBasic,ni_to_common,1032,income_statement,ALL
 us-gaap,NonoperatingIncomeExpense,nonoperating_income,1021,income_statement,ALL
+us-gaap,OperatingExpenses,operating_expenses,1010,income_statement,ALL
 us-gaap,OperatingIncomeLoss,operating_income,1014,income_statement,ALL
 us-gaap,PreferredStockDividends,pref_dividends,1033,income_statement,ALL
 us-gaap,ResearchAndDevelopmentExpense,rd_expense,1008,income_statement,ALL

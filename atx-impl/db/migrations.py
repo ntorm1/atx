@@ -5525,6 +5525,416 @@ def _etl_job_orchestrator_manifest_indexes(conn: duckdb.DuckDBPyConnection) -> N
         conn.execute(statement)
 
 
+def _sql_literal(value: object) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int | float):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _fundamental_concept_coverage_reports(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S3 S3-3: catalogued concept coverage, unmapped, and universe-gap reports."""
+
+    from .fundamental_statements import statement_map_overlay_exception_rows
+
+    allowlist_values = ",\n            ".join(
+        "("
+        + ", ".join(
+            (
+                _sql_literal(row.taxonomy),
+                _sql_literal(row.concept),
+                _sql_literal(row.industry_template),
+                _sql_literal(row.item_id),
+                _sql_literal(row.canonical_metric),
+                _sql_literal(row.reason),
+            )
+        )
+        + ")"
+        for row in statement_map_overlay_exception_rows()
+    )
+    conn.execute(
+        f"""
+        CREATE OR REPLACE VIEW fundamental_statement_overlay_allowlist AS
+        SELECT *
+        FROM (
+            VALUES
+            {allowlist_values}
+        ) AS t(
+            taxonomy,
+            concept,
+            industry_template,
+            item_id,
+            canonical_metric,
+            reason
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW fundamental_concept_coverage_report AS
+        WITH item_universe AS (
+            SELECT
+                i.item_id,
+                i.canonical_code,
+                CASE i.statement
+                    WHEN 'income' THEN 'income_statement'
+                    WHEN 'balance' THEN 'balance_sheet'
+                    WHEN 'cashflow' THEN 'cash_flow'
+                    WHEN 'bank' THEN 'bank_statement'
+                    WHEN 'insurance' THEN 'insurance_statement'
+                    WHEN 'reit' THEN 'reit_statement'
+                    ELSE i.statement
+                END AS fallback_statement_type,
+                CASE i.statement
+                    WHEN 'bank' THEN 'BK'
+                    WHEN 'insurance' THEN 'IS'
+                    WHEN 'reit' THEN 'RT'
+                    ELSE 'ALL'
+                END AS fallback_industry_template
+            FROM fundamental_item i
+            WHERE i.item_id < 2000
+              AND coalesce(i.statement, '') IN ('income', 'balance', 'cashflow', 'bank', 'insurance', 'reit')
+              AND coalesce(i.is_derived, false) = false
+        ),
+        active_loadable_map AS (
+            SELECT source, taxonomy, concept, item_id, statement_type, industry_template
+            FROM fundamental_statement_map
+            WHERE is_active
+              AND item_id IS NOT NULL
+              AND coalesce(is_derived, false) = false
+              AND taxonomy IN ('us-gaap', 'dei')
+              AND left(concept, 2) <> '__'
+        ),
+        item_groups AS (
+            SELECT DISTINCT
+                u.item_id,
+                u.canonical_code,
+                coalesce(m.statement_type, u.fallback_statement_type) AS statement_type,
+                coalesce(m.industry_template, u.fallback_industry_template) AS industry_template
+            FROM item_universe u
+            LEFT JOIN active_loadable_map m
+              ON m.item_id = u.item_id
+        ),
+        per_item AS (
+            SELECT
+                g.statement_type,
+                g.industry_template,
+                g.item_id,
+                g.canonical_code,
+                count(DISTINCT m.taxonomy || ':' || m.concept) AS active_mapped_concept_count,
+                count(DISTINCT c.taxonomy || ':' || c.concept) AS extracted_concept_count
+            FROM item_groups g
+            LEFT JOIN active_loadable_map m
+              ON m.item_id = g.item_id
+             AND m.statement_type = g.statement_type
+             AND m.industry_template = g.industry_template
+            LEFT JOIN xbrl_concept_catalog c
+              ON c.source = m.source
+             AND c.taxonomy = m.taxonomy
+             AND c.concept = m.concept
+            GROUP BY 1, 2, 3, 4
+        ),
+        breakdown AS (
+            SELECT
+                statement_type,
+                industry_template,
+                count(*) AS canonical_item_count,
+                count(*) FILTER (WHERE active_mapped_concept_count > 0) AS mapped_item_count,
+                count(*) FILTER (WHERE extracted_concept_count > 0) AS extracted_item_count,
+                sum(active_mapped_concept_count) AS active_mapped_concept_count,
+                sum(extracted_concept_count) AS extracted_concept_count
+            FROM per_item
+            GROUP BY 1, 2
+        ),
+        total AS (
+            SELECT
+                'TOTAL' AS statement_type,
+                'ALL' AS industry_template,
+                count(*) AS canonical_item_count,
+                count(*) FILTER (WHERE active_mapped_concept_count > 0) AS mapped_item_count,
+                count(*) FILTER (WHERE extracted_concept_count > 0) AS extracted_item_count,
+                coalesce(sum(active_mapped_concept_count), 0) AS active_mapped_concept_count,
+                coalesce(sum(extracted_concept_count), 0) AS extracted_concept_count
+            FROM per_item
+        )
+        SELECT
+            statement_type,
+            industry_template,
+            canonical_item_count,
+            mapped_item_count,
+            extracted_item_count,
+            active_mapped_concept_count,
+            extracted_concept_count,
+            CASE
+                WHEN canonical_item_count = 0 THEN NULL
+                ELSE round(100.0 * mapped_item_count / canonical_item_count, 6)
+            END AS mapped_item_pct,
+            CASE
+                WHEN canonical_item_count = 0 THEN NULL
+                ELSE round(100.0 * extracted_item_count / canonical_item_count, 6)
+            END AS extracted_item_pct
+        FROM breakdown
+        UNION ALL
+        SELECT
+            statement_type,
+            industry_template,
+            canonical_item_count,
+            mapped_item_count,
+            extracted_item_count,
+            active_mapped_concept_count,
+            extracted_concept_count,
+            CASE
+                WHEN canonical_item_count = 0 THEN NULL
+                ELSE round(100.0 * mapped_item_count / canonical_item_count, 6)
+            END AS mapped_item_pct,
+            CASE
+                WHEN canonical_item_count = 0 THEN NULL
+                ELSE round(100.0 * extracted_item_count / canonical_item_count, 6)
+            END AS extracted_item_pct
+        FROM total
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW fundamental_unmapped_concept_report AS
+        WITH item_universe AS (
+            SELECT
+                i.item_id,
+                i.canonical_code,
+                CASE i.statement
+                    WHEN 'income' THEN 'income_statement'
+                    WHEN 'balance' THEN 'balance_sheet'
+                    WHEN 'cashflow' THEN 'cash_flow'
+                    WHEN 'bank' THEN 'bank_statement'
+                    WHEN 'insurance' THEN 'insurance_statement'
+                    WHEN 'reit' THEN 'reit_statement'
+                    ELSE i.statement
+                END AS statement_type,
+                CASE i.statement
+                    WHEN 'bank' THEN 'BK'
+                    WHEN 'insurance' THEN 'IS'
+                    WHEN 'reit' THEN 'RT'
+                    ELSE 'ALL'
+                END AS industry_template
+            FROM fundamental_item i
+            WHERE i.item_id < 2000
+              AND coalesce(i.statement, '') IN ('income', 'balance', 'cashflow', 'bank', 'insurance', 'reit')
+              AND coalesce(i.is_derived, false) = false
+        ),
+        active_item_maps AS (
+            SELECT DISTINCT item_id
+            FROM fundamental_statement_map
+            WHERE is_active
+              AND item_id IS NOT NULL
+        ),
+        unmapped_items AS (
+            SELECT
+                'item_without_active_concept' AS gap_type,
+                CAST(NULL AS VARCHAR) AS source,
+                CAST(NULL AS VARCHAR) AS taxonomy,
+                CAST(NULL AS VARCHAR) AS concept,
+                i.item_id,
+                i.canonical_code,
+                i.statement_type,
+                i.industry_template,
+                'canonical item has zero active statement-map concept' AS reason
+            FROM item_universe i
+            LEFT JOIN active_item_maps m
+              ON m.item_id = i.item_id
+            WHERE m.item_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM fundamental_statement_overlay_allowlist a
+                  WHERE a.item_id = i.item_id
+                    AND a.industry_template = i.industry_template
+              )
+        ),
+        unmapped_fetched_concepts AS (
+            SELECT
+                'fetched_concept_without_active_map' AS gap_type,
+                c.source,
+                c.taxonomy,
+                c.concept,
+                CAST(NULL AS INTEGER) AS item_id,
+                CAST(NULL AS VARCHAR) AS canonical_code,
+                CAST(NULL AS VARCHAR) AS statement_type,
+                CAST(NULL AS VARCHAR) AS industry_template,
+                'loaded xbrl_concept_catalog concept has no active statement-map row' AS reason
+            FROM xbrl_concept_catalog c
+            LEFT JOIN fundamental_statement_map m
+              ON m.source = c.source
+             AND m.taxonomy = c.taxonomy
+             AND m.concept = c.concept
+             AND m.is_active
+            WHERE m.concept IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM fundamental_statement_overlay_allowlist a
+                  WHERE a.taxonomy = c.taxonomy
+                    AND a.concept = c.concept
+              )
+        )
+        SELECT * FROM unmapped_items
+        UNION ALL
+        SELECT * FROM unmapped_fetched_concepts
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW fundamental_xbrl_metric_ratio_universe_gap AS
+        WITH xbrl_metric_universe AS (
+            SELECT DISTINCT security_id
+            FROM fundamental_xbrl_metric
+            WHERE security_id IS NOT NULL
+              AND security_id <> ''
+        ),
+        ratio_universe AS (
+            SELECT DISTINCT security_id
+            FROM fundamental_ratios
+            WHERE security_id IS NOT NULL
+              AND security_id <> ''
+        ),
+        missing_ratio_securities AS (
+            SELECT r.security_id
+            FROM ratio_universe r
+            LEFT JOIN xbrl_metric_universe x
+              ON x.security_id = r.security_id
+            WHERE x.security_id IS NULL
+        )
+        SELECT
+            'xbrl_metric_vs_fundamental_ratios' AS report_name,
+            (SELECT count(*) FROM xbrl_metric_universe) AS xbrl_metric_security_count,
+            (SELECT count(*) FROM ratio_universe) AS ratio_security_count,
+            (SELECT count(*) FROM missing_ratio_securities) AS ratio_minus_xbrl_security_count,
+            (
+                (SELECT count(*) FROM xbrl_metric_universe)
+                >= (SELECT count(*) FROM ratio_universe)
+                AND (SELECT count(*) FROM missing_ratio_securities) = 0
+            ) AS xbrl_covers_ratio_universe,
+            (
+                SELECT string_agg(security_id, ',' ORDER BY security_id)
+                FROM (
+                    SELECT security_id
+                    FROM missing_ratio_securities
+                    ORDER BY security_id
+                    LIMIT 50
+                )
+            ) AS missing_ratio_security_ids_sample
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name,
+            layer,
+            entity,
+            grain,
+            description,
+            natural_key_json,
+            pit_notes,
+            updated_at
+        )
+        VALUES
+            (
+                'fundamental_statement_overlay_allowlist',
+                'catalog',
+                'fundamental_statement_overlay_allowlist',
+                'taxonomy,concept,industry_template,item_id',
+                'Explicit PF-S3 S3-1 allowlist of bank/insurance/REIT overlay rows that are intentionally non-loadable from SEC companyfacts.',
+                '["taxonomy","concept","industry_template","item_id"]',
+                'Reference projection only; the reasons explain why these overlay items are excluded from the S3 unmapped-concept gate.',
+                now()
+            ),
+            (
+                'fundamental_concept_coverage_report',
+                'control',
+                'fundamental_concept_coverage_report',
+                'statement_type,industry_template',
+                'PF-S3 concept coverage report: percent of canonical fundamental_item entries with active mapped concepts and with at least one loaded xbrl_concept_catalog concept, broken out by statement type and industry template.',
+                '["statement_type","industry_template"]',
+                'Pure projection over current item registry, statement map, and loaded concept catalog; it does not change fact availability or PIT semantics.',
+                now()
+            ),
+            (
+                'fundamental_unmapped_concept_report',
+                'control',
+                'fundamental_unmapped_concept_report',
+                'gap_type,item_id,taxonomy,concept',
+                'PF-S3 unmapped report combining canonical non-estimate item-dim entries with zero active statement-map concept and loaded XBRL concepts with no active map row, excluding exactly the explicit overlay allowlist.',
+                '["gap_type","item_id","taxonomy","concept"]',
+                'Pure projection used as a quality gate; overlay exceptions are explicit rows in fundamental_statement_overlay_allowlist.',
+                now()
+            ),
+            (
+                'fundamental_xbrl_metric_ratio_universe_gap',
+                'control',
+                'fundamental_xbrl_metric_ratio_universe_gap',
+                'report_name',
+                'PF-S3 universe report comparing distinct securities in fundamental_xbrl_metric with the fundamental_ratios universe; ratio securities absent from xbrl_metric are quality failures.',
+                '["report_name"]',
+                'Pure projection over derived tables; no lookahead or fact mutation.',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name,
+            field_name,
+            semantic_type,
+            description,
+            nullable,
+            unit,
+            source_field,
+            updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('item_id') THEN 'identifier'
+                WHEN lower(c.column_name) LIKE '%count' THEN 'measure'
+                WHEN lower(c.column_name) LIKE '%pct' THEN 'measure'
+                WHEN lower(c.column_name) LIKE '%covers%' THEN 'flag'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'mapped_item_pct' THEN 'Percent of canonical items in this statement/template bucket with at least one active mapped statement-map row.'
+                WHEN 'extracted_item_pct' THEN 'Percent of canonical items in this statement/template bucket with at least one mapped concept present in xbrl_concept_catalog.'
+                WHEN 'ratio_minus_xbrl_security_count' THEN 'Distinct fundamental_ratios securities absent from the fundamental_xbrl_metric universe.'
+                WHEN 'reason' THEN 'Explicit explanation for the allowlist entry or unmapped report row.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) LIKE '%pct' THEN 'percent'
+                WHEN lower(c.column_name) LIKE '%count' THEN 'rows'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name IN (
+              'fundamental_statement_overlay_allowlist',
+              'fundamental_concept_coverage_report',
+              'fundamental_unmapped_concept_report',
+              'fundamental_xbrl_metric_ratio_universe_gap'
+          )
+        """
+    )
+
+
 def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None:
     """S32: collapse redundant open-ended security_identifier_history intervals.
 
@@ -5867,6 +6277,11 @@ MIGRATIONS: list[Migration] = [
         version=66,
         name="etl_job_orchestrator_manifest_indexes",
         up=_etl_job_orchestrator_manifest_indexes,
+    ),
+    Migration(
+        version=69,
+        name="fundamental_concept_coverage_reports",
+        up=_fundamental_concept_coverage_reports,
     ),
 ]
 

@@ -1754,6 +1754,24 @@ def _check_specs(
             required_tables=("xbrl_concept_catalog", "fundamental_statement_map"),
         ),
         SqlQualityCheck(
+            dataset_id="fundamental_concept_coverage_report",
+            table_name="fundamental_unmapped_concept_report",
+            check_name="fundamental_unmapped_concept_report_empty",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fundamental_unmapped_concept_report
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_unmapped_concept_report",),
+            detail_sql="""
+                SELECT *
+                FROM fundamental_unmapped_concept_report
+                ORDER BY gap_type, coalesce(item_id, 999999999), taxonomy, concept
+                LIMIT 25
+            """,
+        ),
+        SqlQualityCheck(
             dataset_id="fundamental_statement_points",
             table_name="fundamental_statement_points",
             check_name="duplicate_fundamental_statement_point_keys",
@@ -5371,6 +5389,23 @@ def _check_specs(
             threshold=0.0,
             comparator="eq",
             required_tables=("fundamental_xbrl_metric",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_xbrl_metric",
+            table_name="fundamental_xbrl_metric_ratio_universe_gap",
+            check_name="xbrl_metric_covers_fundamental_ratio_universe",
+            sql="""
+                SELECT ratio_minus_xbrl_security_count::DOUBLE
+                FROM fundamental_xbrl_metric_ratio_universe_gap
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_xbrl_metric_ratio_universe_gap",),
+            detail_sql="""
+                SELECT *
+                FROM fundamental_xbrl_metric_ratio_universe_gap
+                WHERE ratio_minus_xbrl_security_count > 0
+            """,
         ),
         SqlQualityCheck(
             dataset_id="fundamental_ratios",

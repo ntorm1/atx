@@ -2,8 +2,8 @@
 
 **Purpose:** Table-by-table, domain-by-domain gap analysis driving the multi-sprint build toward FactSet / S&P-Compustat / Refinitiv parity on equity fundamentals + ownership + supply-chain.
 **Target (blueprint):** `C:\atx\archive\research\` — `schemas/data_models_and_methodology.md` (consolidated DDL), `schemas/cross_vendor_field_map.md` (137 cross-industry + 37 overlay canonical fundamentals fields), `datasets/*.md` (per-dataset DDL), `sources/public_data_sources.md` (44+ upstream sources).
-**Current (built):** `C:\atx\atx-impl\db\schema.py` plus migrations through `0066`, loader modules in `db/`, parity ledger seed `db/parity.py` (14 provider rows), and the PF-S2 in-repo job orchestrator control plane.
-**Author:** read-only analysis, 2026-06-28. No code modified.
+**Current (built):** `C:\atx\atx-impl\db\schema.py` plus migrations through `0069`, loader modules in `db/`, parity ledger seed `db/parity.py` (14 provider rows), and the PF-S2 in-repo job orchestrator control plane.
+**Author:** read-only analysis started 2026-06-28; implementation status updates appended through PF-S3.
 
 Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Partial** = table exists but missing key columns/sub-tables or thin coverage; **Stub** = schema present, ~0 rows / no real loader; **Missing** = no table at all.
 
@@ -28,6 +28,8 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 
 **PF-S2 operations update:** Rebuild orchestration is now built in-repo. `DatasetOrchestrator` builds a deterministic dataset-id DAG from `DATASET_REGISTRY` metadata, records one parent manifest in reconciled `etl_job_runs`, writes one `etl_job_steps` row per node, appends `etl_job_audit` actions, applies watermark-driven incremental skips, supports exponential retry/backoff, resumes pending/failed steps by `run_id`, and preserves partial/failed manifests with terminal `run_fail` audit rows. `scripts/warehouse_jobs.py run-all` delegates to this path and adds `--full-rebuild` / `--resume <run_id>` while keeping `run` and `run-dataset` on the single-dataset operator path. This is orchestration-only: no dataset compute/output, ratio math, PIT timestamps, `DEFAULT_CONCEPTS`, or non-fundamental-domain data surfaces changed. Verification for this PF-S2 close was offline pytest only; no live SEC/FRED/FINRA/OpenFIGI/GLEIF smoke was run.
 
+**PF-S3 concept-coverage update:** Concept extraction is now governed by the active S3 statement-map projection and committed `db/seeds/concept_map.csv` (us-gaap/dei only; IFRS remains excluded). Overlay gaps are explicit in `fundamental_statement_overlay_allowlist`, and migration `0069` adds catalogued reports for concept coverage, unmapped concepts/items, and the `fundamental_xbrl_metric` vs `fundamental_ratios` security-universe gap. The new quality gates fail on future unmapped non-allowlisted concepts and on any ratio security absent from the xbrl-metric universe. This PF-S3 close is offline code/test only; no operator companyfacts re-fetch, xbrl_metric rebuild, ratio rebuild, or live DB smoke was run in this step.
+
 ---
 
 ## 2. Per-Domain Detail
@@ -47,10 +49,11 @@ Fill-level legend: **Built** = table exists + loader + non-trivial rows; **Parti
 - `fundamental_statement_map` S4a cross-industry seed (137 authorized item_ids; multiple rows where concepts coalesce) = the `xbrl_concept_map` equivalent — backed by `fundamental_statements.py` seed.
 - Full XBRL substrate: `xbrl_concept_catalog`, `xbrl_taxonomy_packages/roles/relationships`, `xbrl_dimension_edges`, `xbrl_fact_frames` (1,204), `xbrl_filing_contexts` (6,878), `xbrl_filing_dimensions` (14k), `xbrl_filing_facts` (25k) — `xbrl_taxonomy.py`, `xbrl_filing_contexts.py`.
 - **PF-S1 canonical item spine:** `fundamental_item`, `fundamental_item_alias`, and `fundamental_item_vendor_map` now provide the governed item dictionary and vendor cross-walk. S1-4 migration `0064` additively links both `fundamental_statement_points.item_id` and raw `fundamental_points.item_id` to that spine where taxonomy/concept mappings are covered; unmapped concepts are surfaced as warnings, while any concept mapping to more than one item_id is a failing quality check. The link is reference metadata only and leaves PIT timestamps/value columns unchanged.
+- **PF-S3 concept-coverage controls:** `DEFAULT_CONCEPTS` derives from the active, loadable statement-map projection; `concept_map.csv` is the reviewable seed; S3-1 bank/insurance/REIT overlay exceptions are enumerated with reasons; S3-2 widened the companyfacts path for `fundamental_xbrl_metric`; S3-3 migration `0069` adds the catalogued `fundamental_concept_coverage_report`, `fundamental_unmapped_concept_report`, `fundamental_statement_overlay_allowlist`, and `fundamental_xbrl_metric_ratio_universe_gap` views plus quality gates. Verification was offline fixtures only; live coverage percentages require an operator re-fetch/rebuild.
 
 **Gap:**
 - `fundamental_statement_map` S4a scope is exactly **137** authorized cross-industry item_ids from `cross_vendor_field_map.md` sections 2.1-2.4; S4b adds 37 bank/insurance/REIT overlay item_ids from sections 2.5-2.7.
-- No **industry-template overlay**: zero bank (`tdsa`, `nim`, `pln`, `alll`), insurance (`losres`, `pncia`), or REIT/Nareit-FFO concepts. `securities.asset_class` exists but no `industry_template` routing.
+- Industry-template overlays are declared and routed, but some bank/insurance/REIT items remain intentionally non-loadable vendor/extension/Nareit entries in the explicit allowlist. The broad companyfacts re-fetch/rebuild that would populate the widened S3 concept set and update live coverage/universe counts is operator-pending.
 - Four-date PIT is implicit (`as_of_date` + `available_at`) but `rdq` (press-release date from 8-K Item 2.02) is **not separately captured** — needed for contemporaneous earnings-reaction studies.
 - **Missing quality checks:** calculation-linkbase summation validation, DQC 150+ rules, cross-vendor reconciliation table (`fact_disagreement`).
 - **Connectors present** (SEC companyfacts.json, Frames, taxonomy packages). **Missing:** DERA Financial Statement Data Sets bulk (SUB/NUM/TAG/PRE) for pre-API backfill; Sharadar SF1 / SimFin as reconciliation baselines.
