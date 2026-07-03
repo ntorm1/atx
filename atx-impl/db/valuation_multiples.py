@@ -25,6 +25,7 @@ SOURCE_NAME = "Derived market capitalization"
 VALUATION_SOURCE_NAME = "Derived point-in-time valuation multiples"
 DEFAULT_MARKET_CAP_SOURCE = "derived_market_cap_v1"
 DEFAULT_VALUATION_MULTIPLES_SOURCE = "derived_valuation_multiples_v1"
+DEFAULT_VALUATION_STALE_GAP_DAYS = 5
 SHARE_COUNT_PRIORITY = ("shares_outstanding", "shares_diluted_avg")
 
 MARKET_CAP_COLUMNS = [
@@ -234,6 +235,8 @@ class ValuationMultiplesOptions:
     start_date: dt.date | None = None
     end_date: dt.date | None = None
     run_id: str | None = None
+    coverage_as_of_ts: dt.datetime | None = None
+    stale_price_fundamental_gap_days: int = DEFAULT_VALUATION_STALE_GAP_DAYS
 
 
 def _market_cap_id(source: str, security_id: str, trade_date) -> str:
@@ -1024,6 +1027,290 @@ def _normalized_valuation_symbols(symbols: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}))
 
 
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value.isoformat()
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    return str(value)
+
+
+def _valuation_scope_predicates(
+    options: ValuationMultiplesOptions,
+    alias: str = "v",
+) -> tuple[list[str], list[object]]:
+    predicates = [f"{alias}.source = ?"]
+    params: list[object] = [options.source]
+    if options.symbols:
+        symbols = _normalized_valuation_symbols(options.symbols)
+        if not symbols:
+            predicates.append("1 = 0")
+        else:
+            placeholders = ", ".join("?" for _ in symbols)
+            predicates.append(f"upper({alias}.symbol) IN ({placeholders})")
+            params.extend(symbols)
+    if options.start_date is not None:
+        predicates.append(f"{alias}.trade_date >= ?")
+        params.append(options.start_date)
+    if options.end_date is not None:
+        predicates.append(f"{alias}.trade_date <= ?")
+        params.append(options.end_date)
+    if options.market_cap_sources:
+        placeholders = ", ".join("?" for _ in options.market_cap_sources)
+        predicates.append(f"{alias}.market_cap_source IN ({placeholders})")
+        params.extend(options.market_cap_sources)
+    return predicates, params
+
+
+def _valuation_quality_as_of_ts(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions,
+    as_of_ts: dt.datetime | pd.Timestamp | None,
+) -> pd.Timestamp | None:
+    if as_of_ts is not None:
+        return _safe_timestamp(as_of_ts)
+    predicates, params = _valuation_scope_predicates(options, "v")
+    observed = store.con.execute(
+        f"""
+        SELECT max(v.available_at)
+        FROM valuation_multiples v
+        WHERE {' AND '.join(predicates)}
+        """,
+        params,
+    ).fetchone()[0]
+    return _safe_timestamp(observed)
+
+
+def _valuation_visible_predicates(
+    options: ValuationMultiplesOptions,
+    as_of_ts: pd.Timestamp | None,
+    alias: str = "v",
+) -> tuple[list[str], list[object]]:
+    predicates, params = _valuation_scope_predicates(options, alias)
+    if as_of_ts is not None:
+        predicates.append(f"{alias}.available_at <= ?")
+        params.append(as_of_ts.to_pydatetime())
+    return predicates, params
+
+
+def _valuation_fundamental_denominator_count(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions,
+    *,
+    min_period_end: dt.date | None,
+    max_trade_date: dt.date | None,
+    as_of_ts: pd.Timestamp | None,
+) -> int:
+    if min_period_end is None or max_trade_date is None or as_of_ts is None:
+        return 0
+
+    predicates = [
+        "f.period_end >= ?",
+        "f.period_end <= ?",
+        "f.available_at <= ?",
+    ]
+    params: list[object] = [min_period_end, max_trade_date, as_of_ts.to_pydatetime()]
+    if options.symbols:
+        symbols = _normalized_valuation_symbols(options.symbols)
+        if not symbols:
+            predicates.append("1 = 0")
+        else:
+            placeholders = ", ".join("?" for _ in symbols)
+            predicates.append(f"upper(f.symbol) IN ({placeholders})")
+            params.extend(symbols)
+
+    sql = f"""
+        WITH fundamentals AS (
+            SELECT security_id, symbol, ttm_end_date AS period_end, available_at
+            FROM fundamental_ttm_points
+            WHERE is_latest_revision
+              AND canonical_metric IN (
+                  'revenue',
+                  'net_income',
+                  'operating_income',
+                  'operating_cash_flow',
+                  'capital_expenditures',
+                  'dividends_paid'
+              )
+            UNION ALL
+            SELECT security_id, symbol, period_end, available_at
+            FROM fundamental_statement_points
+            WHERE is_latest_revision
+              AND period_type = 'instant'
+              AND canonical_metric = 'stockholders_equity'
+            UNION ALL
+            SELECT security_id, symbol, period_end, available_at
+            FROM fundamental_xbrl_metric
+            WHERE is_latest_revision
+              AND canonical_metric IN (
+                  'long_term_debt',
+                  'cash_and_equivalents',
+                  'depreciation_amortization'
+              )
+        )
+        SELECT count(DISTINCT f.security_id)
+        FROM fundamentals f
+        WHERE {' AND '.join(predicates)}
+    """
+    return int(store.con.execute(sql, params).fetchone()[0] or 0)
+
+
+def valuation_multiples_overlap_coverage(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions | None = None,
+    *,
+    as_of_ts: dt.datetime | pd.Timestamp | None = None,
+    stale_gap_days: int | None = None,
+) -> dict[str, object]:
+    """Return PIT-visible valuation coverage over the current output scope.
+
+    Denominator securities are counted from latest-revision, valuation-relevant
+    fundamentals whose period_end falls between the first selected fundamental
+    period and the last visible valuation trade date. This keeps the report on
+    the true price x fundamental overlap window while still counting securities
+    that had fundamentals but no valuation multiple in that window.
+    """
+
+    options = options or ValuationMultiplesOptions()
+    stale_gap_days = int(
+        options.stale_price_fundamental_gap_days
+        if stale_gap_days is None
+        else stale_gap_days
+    )
+    resolved_as_of_ts = _valuation_quality_as_of_ts(store, options, as_of_ts)
+    predicates, params = _valuation_visible_predicates(options, resolved_as_of_ts, "v")
+    row = store.con.execute(
+        f"""
+        SELECT
+            count(*)::DOUBLE AS row_count,
+            count(DISTINCT v.security_id)::DOUBLE AS security_count,
+            min(v.trade_date) AS min_trade_date,
+            max(v.trade_date) AS max_trade_date,
+            min(v.period_end) AS min_period_end,
+            max(v.period_end) AS max_period_end,
+            max(v.available_at) AS max_visible_available_at,
+            coalesce(sum(
+                CASE
+                    WHEN date_diff('day', v.period_end, v.trade_date) > ?
+                    THEN 1 ELSE 0
+                END
+            ), 0)::DOUBLE AS stale_row_count,
+            max(date_diff('day', v.period_end, v.trade_date)) AS max_gap_days
+        FROM valuation_multiples v
+        WHERE {' AND '.join(predicates)}
+        """,
+        [stale_gap_days, *params],
+    ).fetchone()
+
+    valuation_row_count = int(row[0] or 0)
+    numerator = int(row[1] or 0)
+    min_trade_date = row[2]
+    max_trade_date = row[3]
+    min_period_end = row[4]
+    max_period_end = row[5]
+    denominator = _valuation_fundamental_denominator_count(
+        store,
+        options,
+        min_period_end=min_period_end,
+        max_trade_date=max_trade_date,
+        as_of_ts=resolved_as_of_ts,
+    )
+    coverage_ratio = (numerator / denominator) if denominator else None
+
+    return {
+        "source": options.source,
+        "market_cap_sources": list(options.market_cap_sources or ()),
+        "symbols": list(_normalized_valuation_symbols(options.symbols)) if options.symbols else [],
+        "start_date": _iso_or_none(options.start_date),
+        "end_date": _iso_or_none(options.end_date),
+        "as_of_ts": _iso_or_none(resolved_as_of_ts),
+        "max_visible_available_at": _iso_or_none(row[6]),
+        "valuation_row_count": valuation_row_count,
+        "numerator_security_count": numerator,
+        "denominator_security_count": denominator,
+        "coverage_ratio": coverage_ratio,
+        "min_valuation_trade_date": _iso_or_none(min_trade_date),
+        "max_valuation_trade_date": _iso_or_none(max_trade_date),
+        "min_valuation_period_end": _iso_or_none(min_period_end),
+        "max_valuation_period_end": _iso_or_none(max_period_end),
+        "denominator_definition": (
+            "distinct securities with latest-revision valuation-relevant fundamentals "
+            "available at as_of_ts and period_end between min valuation period_end "
+            "and max valuation trade_date"
+        ),
+        "stale_price_fundamental_gap_days": stale_gap_days,
+        "stale_valuation_row_count": int(row[7] or 0),
+        "max_price_fundamental_gap_days": None if row[8] is None else int(row[8]),
+    }
+
+
+def valuation_multiples_stale_gap_details(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions | None = None,
+    *,
+    as_of_ts: dt.datetime | pd.Timestamp | None = None,
+    stale_gap_days: int | None = None,
+) -> dict[str, object]:
+    options = options or ValuationMultiplesOptions()
+    stale_gap_days = int(
+        options.stale_price_fundamental_gap_days
+        if stale_gap_days is None
+        else stale_gap_days
+    )
+    resolved_as_of_ts = _valuation_quality_as_of_ts(store, options, as_of_ts)
+    predicates, params = _valuation_visible_predicates(options, resolved_as_of_ts, "v")
+    where_sql = " AND ".join(predicates)
+    count_row = store.con.execute(
+        f"""
+        SELECT
+            count(*)::DOUBLE,
+            max(date_diff('day', v.period_end, v.trade_date))
+        FROM valuation_multiples v
+        WHERE {where_sql}
+          AND date_diff('day', v.period_end, v.trade_date) > ?
+        """,
+        [*params, stale_gap_days],
+    ).fetchone()
+    rows_cursor = store.con.execute(
+        f"""
+        SELECT
+            v.security_id,
+            v.symbol,
+            v.trade_date,
+            v.period_end,
+            v.formula_code,
+            date_diff('day', v.period_end, v.trade_date) AS gap_days,
+            v.available_at
+        FROM valuation_multiples v
+        WHERE {where_sql}
+          AND date_diff('day', v.period_end, v.trade_date) > ?
+        ORDER BY gap_days DESC, v.security_id, v.formula_code
+        LIMIT 20
+        """,
+        [*params, stale_gap_days],
+    )
+    columns = [column[0] for column in rows_cursor.description or ()]
+    examples = [
+        {
+            key: (_iso_or_none(value) if isinstance(value, (dt.date, dt.datetime, pd.Timestamp)) else value)
+            for key, value in dict(zip(columns, row, strict=True)).items()
+        }
+        for row in rows_cursor.fetchall()
+    ]
+    return {
+        "source": options.source,
+        "market_cap_sources": list(options.market_cap_sources or ()),
+        "symbols": list(_normalized_valuation_symbols(options.symbols)) if options.symbols else [],
+        "as_of_ts": _iso_or_none(resolved_as_of_ts),
+        "stale_price_fundamental_gap_days": stale_gap_days,
+        "stale_valuation_row_count": int(count_row[0] or 0),
+        "max_price_fundamental_gap_days": None if count_row[1] is None else int(count_row[1]),
+        "rows": examples,
+    }
+
+
 def load_valuation_multiple_inputs(
     store: DuckDBStore,
     options: ValuationMultiplesOptions,
@@ -1370,6 +1657,18 @@ class ValuationMultiplesDataset(Dataset):
 
     def load(self, store: DuckDBStore, options: ValuationMultiplesOptions) -> DatasetLoadResult:
         rows = refresh_valuation_multiples(store, options)
+        coverage_details = valuation_multiples_overlap_coverage(
+            store,
+            options,
+            as_of_ts=options.coverage_as_of_ts,
+        )
+        coverage_ratio = coverage_details["coverage_ratio"]
+        stale_details = valuation_multiples_stale_gap_details(
+            store,
+            options,
+            as_of_ts=options.coverage_as_of_ts,
+        )
+        stale_count = float(stale_details["stale_valuation_row_count"])
         quality_check(
             store,
             dataset_id=self.dataset_id,
@@ -1380,9 +1679,33 @@ class ValuationMultiplesDataset(Dataset):
             threshold_value=1.0,
             details={"source": options.source},
         )
+        quality_check(
+            store,
+            dataset_id=self.dataset_id,
+            table_name="valuation_multiples",
+            check_name="overlap_coverage",
+            status="passed" if coverage_ratio == 1.0 else "warning",
+            observed_value=None if coverage_ratio is None else float(coverage_ratio),
+            threshold_value=1.0,
+            details=coverage_details,
+        )
+        quality_check(
+            store,
+            dataset_id=self.dataset_id,
+            table_name="valuation_multiples",
+            check_name="stale_price_fundamental_gap_days",
+            status="passed" if stale_count == 0.0 else "warning",
+            observed_value=stale_count,
+            threshold_value=0.0,
+            details=stale_details,
+        )
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
             rows_loaded=rows,
             source=options.source,
-            details={"formulas": [definition.code for definition in VALUATION_FORMULA_DEFS]},
+            details={
+                "formulas": [definition.code for definition in VALUATION_FORMULA_DEFS],
+                "coverage": coverage_details,
+                "stale_price_fundamental_gap_days": stale_details,
+            },
         )

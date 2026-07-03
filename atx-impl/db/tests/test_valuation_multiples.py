@@ -16,6 +16,7 @@ from db.valuation_multiples import (
     compute_valuation_multiple_rows,
     refresh_market_cap,
     refresh_valuation_multiples,
+    valuation_multiples_overlap_coverage,
 )
 from db.warehouse import insert_frame
 
@@ -909,6 +910,215 @@ def test_valuation_multiples_dataset_records_quality(tmp_store) -> None:
           AND check_name = 'rows_materialized'
         """
     ).fetchall() == [("passed", 9.0)]
+
+
+def test_valuation_multiples_dataset_records_overlap_coverage_quality(tmp_store) -> None:
+    _seed_market_cap_inputs(tmp_store)
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
+    _seed_valuation_fundamentals(tmp_store, "SEC-D", "DDD")
+
+    result = ValuationMultiplesDataset().load(tmp_store, ValuationMultiplesOptions(run_id="coverage-run"))
+
+    assert result.rows_loaded == 9
+    status, observed, details_json = tmp_store.con.execute(
+        """
+        SELECT status, observed_value, details_json
+        FROM data_quality_checks
+        WHERE dataset_id = 'valuation_multiples'
+          AND check_name = 'overlap_coverage'
+        """
+    ).fetchone()
+    details = json.loads(details_json)
+
+    assert status == "warning"
+    assert observed == pytest.approx(0.5)
+    assert details["numerator_security_count"] == 1
+    assert details["denominator_security_count"] == 2
+    assert details["coverage_ratio"] == pytest.approx(0.5)
+    assert details["min_valuation_trade_date"] == "2020-01-02"
+    assert details["max_valuation_trade_date"] == "2020-01-02"
+    assert details["min_valuation_period_end"] == "2019-12-31"
+    assert details["as_of_ts"] == "2020-02-01T10:00:00"
+    assert details["stale_price_fundamental_gap_days"] == 5
+
+
+def test_valuation_overlap_coverage_respects_available_at(tmp_store) -> None:
+    _seed_market_cap_inputs(tmp_store)
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA", av=dt.datetime(2020, 2, 1, 10))
+    _seed_valuation_fundamentals(tmp_store, "SEC-D", "DDD", av=dt.datetime(2020, 3, 1, 10))
+    refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="coverage-run"))
+
+    early = valuation_multiples_overlap_coverage(
+        tmp_store,
+        ValuationMultiplesOptions(),
+        as_of_ts=dt.datetime(2020, 2, 15, 12),
+    )
+    late = valuation_multiples_overlap_coverage(
+        tmp_store,
+        ValuationMultiplesOptions(),
+        as_of_ts=dt.datetime(2020, 3, 1, 10),
+    )
+
+    assert early["numerator_security_count"] == 1
+    assert early["denominator_security_count"] == 1
+    assert early["coverage_ratio"] == pytest.approx(1.0)
+    assert late["numerator_security_count"] == 1
+    assert late["denominator_security_count"] == 2
+    assert late["coverage_ratio"] == pytest.approx(0.5)
+
+
+def test_valuation_multiples_dataset_flags_stale_price_fundamental_gap(tmp_store) -> None:
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _price(
+                    "SEC-Z",
+                    "ZZZ",
+                    dt.date(2020, 2, 15),
+                    10.0,
+                    dt.datetime(2020, 2, 15, 22),
+                )
+            ]
+        ),
+        "equity_daily_bars",
+        "stale_price_seed",
+    )
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _share(
+                    "SEC-Z",
+                    "ZZZ",
+                    "shares_outstanding",
+                    dt.date(2019, 12, 31),
+                    dt.datetime(2020, 1, 1, 10),
+                    100.0,
+                    share_history_id="z-share",
+                )
+            ]
+        ),
+        "shares_outstanding_history",
+        "stale_share_seed",
+    )
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-Z", "ZZZ")
+
+    result = ValuationMultiplesDataset().load(
+        tmp_store,
+        ValuationMultiplesOptions(
+            run_id="stale-run",
+            stale_price_fundamental_gap_days=5,
+        ),
+    )
+
+    assert result.rows_loaded == 9
+    status, observed, details_json = tmp_store.con.execute(
+        """
+        SELECT status, observed_value, details_json
+        FROM data_quality_checks
+        WHERE dataset_id = 'valuation_multiples'
+          AND check_name = 'stale_price_fundamental_gap_days'
+        """
+    ).fetchone()
+    details = json.loads(details_json)
+
+    assert status == "warning"
+    assert observed == 9.0
+    assert details["stale_valuation_row_count"] == 9
+    assert details["max_price_fundamental_gap_days"] == 46
+    assert details["stale_price_fundamental_gap_days"] == 5
+    assert {row["formula_code"] for row in details["rows"]} == {
+        "price_to_earnings",
+        "price_to_book",
+        "price_to_sales",
+        "enterprise_value",
+        "ev_to_ebitda",
+        "ev_to_sales",
+        "fcf_yield",
+        "earnings_yield",
+        "dividend_yield",
+    }
+
+
+def test_valuation_multiples_warehouse_quality_specs_pass_clean_fixture(tmp_store) -> None:
+    from db.quality import run_warehouse_quality_checks
+
+    _seed_market_cap_inputs(tmp_store)
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
+    refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="quality-run"))
+
+    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+
+    for check_name in (
+        "duplicate_valuation_multiple_natural_keys",
+        "bad_valuation_multiple_rows",
+        "non_finite_valuation_multiple_values",
+        "valuation_multiple_arithmetic_consistency",
+        "valuation_multiple_non_positive_denominator_meaningfulness",
+        "stale_price_fundamental_gap_days",
+    ):
+        assert results[check_name].status == "passed", check_name
+
+
+def test_valuation_multiples_warehouse_quality_stale_gap_fires(tmp_store) -> None:
+    from db.quality import run_warehouse_quality_checks
+
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _price(
+                    "SEC-Z",
+                    "ZZZ",
+                    dt.date(2020, 2, 15),
+                    10.0,
+                    dt.datetime(2020, 2, 15, 22),
+                )
+            ]
+        ),
+        "equity_daily_bars",
+        "quality_stale_price_seed",
+    )
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _share(
+                    "SEC-Z",
+                    "ZZZ",
+                    "shares_outstanding",
+                    dt.date(2019, 12, 31),
+                    dt.datetime(2020, 1, 1, 10),
+                    100.0,
+                    share_history_id="quality-z-share",
+                )
+            ]
+        ),
+        "shares_outstanding_history",
+        "quality_stale_share_seed",
+    )
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-Z", "ZZZ")
+    refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="quality-run"))
+
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            valuation_stale_gap_days=5,
+        )
+    }
+    stale = results["stale_price_fundamental_gap_days"]
+
+    assert stale.status == "warning"
+    assert stale.observed_value == 9.0
+    assert stale.details["rows"][0]["gap_days"] == 46
 
 
 def test_valuation_multiples_migration_catalog_and_formula_seed_are_present(tmp_store) -> None:

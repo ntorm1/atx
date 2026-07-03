@@ -16,6 +16,7 @@ from .warehouse import quality_check
 # fails if any DEFAULT_EXPORT_OBJECTS member ever carries a column by this
 # name.
 INTERNAL_ONLY_EXPORT_FORBIDDEN_COLUMN = "internal_cusip"
+DEFAULT_VALUATION_STALE_GAP_DAYS = 5
 
 # PF-S7 S7-1: the statement-layer parent that fundamental_ratios rows resolve
 # against. TODAY this is fundamental_points (raw SEC companyfacts). Once
@@ -240,7 +241,9 @@ def _check_specs(
     *,
     daily_macro_stale_days: int,
     monthly_macro_stale_days: int,
+    valuation_stale_gap_days: int = DEFAULT_VALUATION_STALE_GAP_DAYS,
 ) -> tuple[SqlQualityCheck, ...]:
+    valuation_stale_gap_days = int(valuation_stale_gap_days)
     single_table_checks = (
         SqlQualityCheck(
             dataset_id="tbltickerhistory_daily",
@@ -5635,6 +5638,157 @@ def _check_specs(
             required_tables=("fundamental_ratios",),
         ),
         SqlQualityCheck(
+            dataset_id="valuation_multiples",
+            table_name="valuation_multiples",
+            check_name="duplicate_valuation_multiple_natural_keys",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, market_cap_source, security_id, trade_date, formula_code, count(*) AS n
+                    FROM valuation_multiples
+                    GROUP BY 1, 2, 3, 4, 5
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_multiples",),
+        ),
+        SqlQualityCheck(
+            dataset_id="valuation_multiples",
+            table_name="valuation_multiples",
+            check_name="bad_valuation_multiple_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM valuation_multiples
+                WHERE valuation_multiple_id IS NULL OR valuation_multiple_id = ''
+                   OR source IS NULL OR source = ''
+                   OR market_cap_source IS NULL OR market_cap_source = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR trade_date IS NULL
+                   OR formula_code IS NULL OR formula_code = ''
+                   OR category <> 'valuation'
+                   OR kind NOT IN ('ratio', 'difference')
+                   OR unit NOT IN ('ratio', 'currency')
+                   OR period_end IS NULL
+                   OR period_end > trade_date
+                   OR value IS NULL
+                   OR numerator_value IS NULL
+                   OR denominator_value IS NULL
+                   OR price IS NULL
+                   OR market_cap IS NULL
+                   OR is_meaningful IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR market_cap_available_at IS NULL
+                   OR price_available_at IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_multiples",),
+        ),
+        SqlQualityCheck(
+            dataset_id="valuation_multiples",
+            table_name="valuation_multiples",
+            check_name="non_finite_valuation_multiple_values",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM valuation_multiples
+                WHERE (value IS NOT NULL AND (isnan(value) OR isinf(value)))
+                   OR (numerator_value IS NOT NULL AND (isnan(numerator_value) OR isinf(numerator_value)))
+                   OR (denominator_value IS NOT NULL AND (isnan(denominator_value) OR isinf(denominator_value)))
+                   OR (price IS NOT NULL AND (isnan(price) OR isinf(price)))
+                   OR (market_cap IS NOT NULL AND (isnan(market_cap) OR isinf(market_cap)))
+                   OR (enterprise_value IS NOT NULL AND (isnan(enterprise_value) OR isinf(enterprise_value)))
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_multiples",),
+        ),
+        SqlQualityCheck(
+            dataset_id="valuation_multiples",
+            table_name="valuation_multiples",
+            check_name="valuation_multiple_arithmetic_consistency",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM valuation_multiples
+                WHERE (
+                        kind = 'ratio'
+                    AND denominator_value IS NOT NULL
+                    AND numerator_value IS NOT NULL
+                    AND denominator_value <> 0
+                    AND abs(value - (numerator_value / denominator_value)) > 1e-6 * (1 + abs(value))
+                )
+                   OR (
+                        formula_code = 'enterprise_value'
+                    AND abs(value - (numerator_value - denominator_value)) > 1e-6 * (1 + abs(value))
+                )
+                   OR (
+                        formula_code = 'enterprise_value'
+                    AND enterprise_value IS NOT NULL
+                    AND abs(enterprise_value - value) > 1e-6 * (1 + abs(enterprise_value))
+                )
+                   OR (
+                        formula_code IN ('ev_to_ebitda', 'ev_to_sales')
+                    AND enterprise_value IS NOT NULL
+                    AND numerator_value IS NOT NULL
+                    AND abs(enterprise_value - numerator_value) > 1e-6 * (1 + abs(enterprise_value))
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_multiples",),
+        ),
+        SqlQualityCheck(
+            dataset_id="valuation_multiples",
+            table_name="valuation_multiples",
+            check_name="valuation_multiple_non_positive_denominator_meaningfulness",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM valuation_multiples
+                WHERE coalesce(is_meaningful, false)
+                  AND (
+                        (kind = 'ratio' AND denominator_value <= 0)
+                     OR market_cap <= 0
+                  )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_multiples",),
+        ),
+        SqlQualityCheck(
+            dataset_id="valuation_multiples",
+            table_name="valuation_multiples",
+            check_name="stale_price_fundamental_gap_days",
+            sql=f"""
+                SELECT count(*)::DOUBLE
+                FROM valuation_multiples
+                WHERE trade_date IS NOT NULL
+                  AND period_end IS NOT NULL
+                  AND date_diff('day', period_end, trade_date) > {valuation_stale_gap_days}
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_multiples",),
+            failure_status="warning",
+            detail_sql=f"""
+                SELECT
+                    security_id,
+                    symbol,
+                    trade_date,
+                    period_end,
+                    formula_code,
+                    date_diff('day', period_end, trade_date) AS gap_days,
+                    available_at
+                FROM valuation_multiples
+                WHERE trade_date IS NOT NULL
+                  AND period_end IS NOT NULL
+                  AND date_diff('day', period_end, trade_date) > {valuation_stale_gap_days}
+                ORDER BY gap_days DESC, security_id, formula_code
+                LIMIT 20
+            """,
+        ),
+        SqlQualityCheck(
             dataset_id="short_interest_metrics",
             table_name="short_interest_metrics",
             check_name="duplicate_short_interest_metric_keys",
@@ -6189,6 +6343,7 @@ def run_warehouse_quality_checks(
     *,
     daily_macro_stale_days: int = 10,
     monthly_macro_stale_days: int = 70,
+    valuation_stale_gap_days: int = DEFAULT_VALUATION_STALE_GAP_DAYS,
     record: bool = True,
 ) -> list[QualityResult]:
     """Run production-oriented SQL checks and optionally append check outcomes."""
@@ -6198,6 +6353,7 @@ def run_warehouse_quality_checks(
     for spec in _check_specs(
         daily_macro_stale_days=daily_macro_stale_days,
         monthly_macro_stale_days=monthly_macro_stale_days,
+        valuation_stale_gap_days=valuation_stale_gap_days,
     ):
         missing_tables = [table for table in spec.required_tables if not _table_exists(store, table)]
         if missing_tables:
