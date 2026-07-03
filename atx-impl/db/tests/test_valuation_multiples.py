@@ -834,6 +834,37 @@ def test_refresh_valuation_multiples_is_idempotent_and_scoped(tmp_store) -> None
     assert counts == [("AAA", 9, "scoped", "scoped"), ("BBB", 9, "run-2", "run-2")]
 
 
+def test_refresh_valuation_multiples_blank_symbol_scope_preserves_rows(tmp_store) -> None:
+    _seed_market_cap_inputs(tmp_store)
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
+    _seed_valuation_fundamentals(tmp_store, "SEC-B", "BBB", revenue=800.0, net_income=200.0)
+
+    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="initial")) == 18
+    before = tmp_store.con.execute(
+        """
+        SELECT symbol, formula_code, value, run_id
+        FROM valuation_multiples
+        ORDER BY symbol, formula_code
+        """
+    ).fetchall()
+
+    assert refresh_valuation_multiples(
+        tmp_store,
+        ValuationMultiplesOptions(symbols=(" ",), run_id="blank-symbol"),
+    ) == 0
+    after = tmp_store.con.execute(
+        """
+        SELECT symbol, formula_code, value, run_id
+        FROM valuation_multiples
+        ORDER BY symbol, formula_code
+        """
+    ).fetchall()
+
+    assert len(before) == 18
+    assert after == before
+
+
 def test_valuation_multiples_asof_visibility(tmp_store) -> None:
     from db.asof import valuation_multiples_asof
 

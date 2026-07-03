@@ -1020,6 +1020,10 @@ def _valuation_pivot_case(prefix: str, value_col: str, id_col: str, metric_map: 
     return ",\n                ".join(parts)
 
 
+def _normalized_valuation_symbols(symbols: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}))
+
+
 def load_valuation_multiple_inputs(
     store: DuckDBStore,
     options: ValuationMultiplesOptions,
@@ -1029,6 +1033,9 @@ def load_valuation_multiple_inputs(
     registered: list[str] = []
     joins: list[str] = []
     params: list[object] = []
+    symbols = _normalized_valuation_symbols(options.symbols) if options.symbols else None
+    if options.symbols and not symbols:
+        return pd.DataFrame()
     if options.market_cap_sources:
         store.con.register(
             "valuation_market_cap_source_filter",
@@ -1036,8 +1043,7 @@ def load_valuation_multiple_inputs(
         )
         registered.append("valuation_market_cap_source_filter")
         joins.append("JOIN valuation_market_cap_source_filter mcsf ON mcsf.market_cap_source = m.source")
-    if options.symbols:
-        symbols = sorted({str(symbol).strip().upper() for symbol in options.symbols if str(symbol).strip()})
+    if symbols:
         store.con.register("valuation_symbol_filter", pd.DataFrame({"symbol": symbols}))
         registered.append("valuation_symbol_filter")
         joins.append("JOIN valuation_symbol_filter vsf ON vsf.symbol = m.symbol")
@@ -1321,11 +1327,12 @@ def _delete_valuation_multiples_scope(
     predicates = ["source = ?"]
     params: list[object] = [options.source]
     if options.symbols:
-        symbols = tuple(str(symbol).strip().upper() for symbol in options.symbols if str(symbol).strip())
-        if symbols:
-            placeholders = ", ".join("?" for _ in symbols)
-            predicates.append(f"symbol IN ({placeholders})")
-            params.extend(symbols)
+        symbols = _normalized_valuation_symbols(options.symbols)
+        if not symbols:
+            return
+        placeholders = ", ".join("?" for _ in symbols)
+        predicates.append(f"symbol IN ({placeholders})")
+        params.extend(symbols)
     if options.start_date is not None:
         predicates.append("trade_date >= ?")
         params.append(options.start_date)
