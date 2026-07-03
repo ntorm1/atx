@@ -62,7 +62,7 @@ Branch: feat/p8  Worktree: C:\atx-wt\p8
 ## Unit checklist
 - [x] S1-0  RiskModelConfig + FactorModelArtifact POD + ledger (this file)
 - [x] S1-1  stage_riskmodel producer (build_risk_model)
-- [ ] S1-2  stage_optimize covariance-source swap
+- [x] S1-2  stage_optimize covariance-source swap
 - [ ] S1-3  cleaned_alpha_cov accessor (combine seam; Sprint-3 handoff)
 - [ ] S1-4  dead-alpha crowding factors
 - [ ] S1-5  factor/industry neutralization reachable
@@ -164,3 +164,44 @@ Full gate re-run after S1-1: atx-impl-tests 206/210 pass (4 pre-existing skips,
 AtxImplOptimize/AtxImplReport/etc. suites unaffected); atx-engine-risk-tests
 256/258 pass (same 2 pre-existing RobustPipelineE2E failures, unrelated to any
 S1 file).
+
+S1-2: complete. stage_optimize.cpp:27-30 — the public zero-arg
+`run_optimize(const RunConfig&)` (declared in stages.hpp, the S5-hub-owned
+public surface, itself UNCHANGED) now forwards to a NEW overload
+`run_optimize(const RunConfig&, const risk::RiskModelConfig&)` with an inert
+default RiskModelConfig{} — byte-identical BY CONSTRUCTION (same code path,
+same input every existing caller already had, no parallel-maintained
+duplicate). The new overload's body is stage_optimize's old MVO-path code,
+minimally changed at the old line 202: `diagonal_risk_model(research)` ->
+`build_risk_model(research, risk_cfg)` + `data::artifact_to_factor_model(artifact)`
+(stage_riskmodel.hpp's S1-1 producer + the existing S6.6 adapt_factor lowering
+seam). model_at's TYPE (const risk::FactorModel&) and the mpo.run call are
+UNCHANGED -- only the model's SOURCE differs, exactly per the brief's wiring
+snippet. RiskModelConfig is deliberately NOT added to RunConfig (Sprint 5 CLI
+hub scope, per the brief's "Out of scope" + the ROADMAP's file-ownership
+matrix); the new overload IS the direct-call integration surface S1's tests
+use, and stages.hpp/config.hpp/config.cpp remain untouched. diag_risk.hpp's
+now-unused #include was dropped from stage_optimize.cpp (diagonal_risk_model
+is only called transitively, from within stage_riskmodel.cpp's Diagonal
+branch, which still calls it directly and unconditionally on that path).
+
+New suite AtxImplOptimizeRiskModel (atx-impl/tests/stage_optimize_riskmodel_test.cpp)
+3/3 green, first GREEN attempt (RED verified first: 5 "too many arguments"
+compile errors against the old 1-arg run_optimize, before the overload was
+added):
+- DiagonalByteIdentical: run_optimize(cfg, RiskModelConfig{}) produces the
+  IDENTICAL digest AND byte-identical books.bin vs the plain run_optimize(cfg)
+  call -- the off-path byte-identity gate.
+- FactorDeleversVsDiagonal: on the S1-1-style common-shock correlated panel
+  with a fixed long-half/short-half combo, the Factor-routed book has strictly
+  LOWER ex-ante risk under the factor model it was optimized against than the
+  Diagonal-routed book (same alpha, same V, different w), and gross on the
+  crowded pair is <= the diagonal book's.
+- TwiceRunFactorByteIdentical: same inputs -> identical digest + byte-identical
+  books.bin on the Factor path across two independent run_optimize calls.
+
+Full gate: atx-impl-tests 209/213 pass (4 pre-existing skips, 0 new failures —
+the ENTIRE pre-existing atx-impl-tests suite, including every AtxImplOptimize.*
+byte-identity/turnover/trade-rate test, re-ran green after the stage_optimize.cpp
+body edit); atx-engine-risk-tests 256/258 (same 2 pre-existing
+RobustPipelineE2E failures, engine files untouched this unit).

@@ -10,21 +10,33 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/data/adapt_factor.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
 #include "artifacts.hpp"
 #include "book_shape.hpp"
 #include "config.hpp"
-#include "diag_risk.hpp"
 #include "serialize_panel.hpp"
+#include "stage_riskmodel.hpp"
 
 namespace atx::impl {
 
 namespace alpha = atx::engine::alpha;
+namespace data  = atx::engine::data;
 namespace risk  = atx::engine::risk;
 
+// S1-2: the public no-flag entry point (declared in stages.hpp, the S5-CLI-hub
+// surface) forwards to the RiskModelConfig-parameterized overload below with
+// an inert default (kind==Diagonal) — same code, same input every existing
+// caller already gets, so this path is byte-identical to pre-S1 BY
+// CONSTRUCTION, not by parallel-maintained duplicate logic.
 atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
+{
+    return run_optimize(cfg, risk::RiskModelConfig{});
+}
+
+atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::RiskModelConfig& risk_cfg)
 {
     // 1. Validate required flags.
     if (cfg.panel.empty() || cfg.combo.empty() || cfg.books_out.empty()) {
@@ -197,9 +209,19 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     }
 
     // 5b. MVO path (default: position_mode=false).
-    // Build the diagonal FactorModel from per-instrument TRI-return variance — needed
-    // ONLY by the mean-variance path; position-mode returned above without it.
-    ATX_TRY(auto model, diagonal_risk_model(research));
+    // S1-2: covariance source. Diagonal (risk_cfg's inert default, reached by
+    // every existing caller via the zero-arg run_optimize forward above) =>
+    // byte-identical to pre-S1: build_risk_model's Diagonal branch lowers
+    // diagonal_risk_model's own (X, F, D) straight back into a FactorModel, so
+    // `model` here is bit-identical to calling diagonal_risk_model directly.
+    // Factor => the single artifact stage_riskmodel builds over the whole
+    // research panel (fit_end == research.dates()), applied to EVERY period —
+    // the piecewise-constant cadence matching today's single-model semantics
+    // (see stage_riskmodel.hpp's run_optimize overload doc). model_at's TYPE
+    // (const risk::FactorModel&) and the mpo.run call below are UNCHANGED;
+    // only the backing model's SOURCE differs.
+    ATX_TRY(auto artifact, build_risk_model(research, risk_cfg));
+    ATX_TRY(auto model, data::artifact_to_factor_model(artifact));
     risk::MultiPeriodConfig mc;
     mc.single.risk_aversion   = cfg.set_flags.count("risk-aversion")
                                     ? cfg.risk_aversion : 1.0;

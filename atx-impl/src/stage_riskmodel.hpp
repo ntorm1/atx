@@ -79,6 +79,9 @@
 #include "atx/engine/data/factor_model_artifact.hpp"
 #include "atx/engine/risk/factor_model.hpp" // RiskModelConfig, FactorModel, FactorModelBuilder
 
+#include "config.hpp" // RunConfig
+#include "stages.hpp" // StageResult
+
 namespace atx::impl {
 
 // Build a FactorModelArtifact from `research` as of the LAST date in the panel
@@ -103,5 +106,30 @@ namespace atx::impl {
 build_risk_model(const atx::engine::alpha::Panel& research,
                   const atx::engine::risk::RiskModelConfig& cfg,
                   std::span<const atx::u32> group_id = {});
+
+// ===========================================================================
+//  S1-2: run_optimize's covariance-source overload.
+// ===========================================================================
+//  The p8-S1-2 seam. `run_optimize(const RunConfig&)` (declared in stages.hpp,
+//  the S5-CLI-hub-owned public entry point) is UNCHANGED and forwards to this
+//  overload with a default-constructed RiskModelConfig{} (kind==Diagonal,
+//  inert) — so the no-flag / CLI path is byte-identical to pre-S1 by
+//  construction (same code, same inert input), not by parallel maintenance of
+//  two implementations. RiskModelConfig is NOT threaded onto RunConfig here:
+//  that CLI/config-file wiring is Sprint 5's hub job (sprint-1's "Out of
+//  scope"). This overload is how S1's tests exercise the Factor path directly
+//  ("a direct-call integration test, not the CLI" per the sprint brief).
+//
+//  kind == Diagonal: identical to today's stage_optimize body — builds
+//  diagonal_risk_model(research) once, applies it to every period.
+//  kind == Factor: builds ONE FactorModelArtifact via build_risk_model
+//  (fit over the whole research panel, fit_end == research.dates()) and
+//  applies THAT model to every period — the "piecewise-constant... matching
+//  the existing single-model cadence" the brief specifies (S1 fits once per
+//  run_optimize call, exactly mirroring the Diagonal path's own cadence; a
+//  true per-rebalance-window re-fit is not required by S1's accept criteria
+//  and is left to a future sprint if the cadence needs to tighten).
+[[nodiscard]] atx::core::Result<StageResult>
+run_optimize(const RunConfig& cfg, const atx::engine::risk::RiskModelConfig& risk_cfg);
 
 } // namespace atx::impl
