@@ -122,7 +122,44 @@ def _by_code(frame: pd.DataFrame) -> dict[str, pd.Series]:
     return {row.ratio_code: row for row in frame.itertuples(index=False)}
 
 
+S6_2_VALUATION_CODES = {
+    "price_to_earnings",
+    "price_to_book",
+    "price_to_sales",
+    "enterprise_value",
+    "ev_to_ebitda",
+    "ev_to_sales",
+    "fcf_yield",
+    "earnings_yield",
+    "dividend_yield",
+}
+
+
 class TestComputeRatioRows:
+    def test_ratio_defs_exclude_s6_2_valuation_codes(self):
+        assert S6_2_VALUATION_CODES.isdisjoint({d.code for d in RATIO_DEFS})
+
+    def test_compute_ratio_rows_does_not_emit_valuation_codes_when_inputs_present(self):
+        row = _wide_row(
+            market_cap=1000.0,
+            market_cap_av=_ts("2026-05-04"),
+            enterprise_value=1150.0,
+            enterprise_value_av=_ts("2026-05-05"),
+            ebitda=145.0,
+            ebitda_av=_ts("2026-05-05"),
+        )
+
+        out = compute_ratio_rows(pd.DataFrame([row]))
+
+        assert S6_2_VALUATION_CODES.isdisjoint(set(out["ratio_code"]))
+
+    def test_existing_fundamental_outputs_remain_intact_after_valuation_split(self):
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
+
+        assert rows["net_profit_margin"].value == pytest.approx(0.25)
+        assert rows["current_ratio"].value == pytest.approx(2.0)
+        assert rows["ebitda"].value == pytest.approx(145.0)
+
     def test_full_row_emits_all_ratio_codes(self):
         row = _wide_row()
         out = compute_ratio_rows(pd.DataFrame([row]))

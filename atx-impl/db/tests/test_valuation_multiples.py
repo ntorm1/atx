@@ -9,6 +9,7 @@ import pytest
 from db.valuation_multiples import (
     MarketCapDataset,
     MarketCapOptions,
+    VALUATION_FORMULA_DEFS,
     ValuationMultiplesDataset,
     ValuationMultiplesOptions,
     compute_market_cap_rows,
@@ -939,3 +940,19 @@ def test_valuation_multiples_migration_catalog_and_formula_seed_are_present(tmp_
     assert valuation_rows["enterprise_value"].kind == "difference"
     assert valuation_rows["enterprise_value"].expression == "sum:market_cap,long_term_debt|key:cash_and_equivalents"
     assert json.loads(valuation_rows["price_to_earnings"].inputs) == ["market_cap", "ni"]
+
+
+def test_valuation_formula_seed_inputs_match_implementation_defs() -> None:
+    from db.formula_library import read_formula_registry_seed
+
+    seed_inputs = {
+        row.formula_code: json.loads(row.inputs)
+        for row in read_formula_registry_seed()
+        if row.family == "valuation"
+    }
+    expected_inputs = {
+        definition.code: list(definition.input_keys)
+        for definition in VALUATION_FORMULA_DEFS
+    }
+
+    assert seed_inputs == expected_inputs

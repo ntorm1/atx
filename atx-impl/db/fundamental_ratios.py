@@ -122,6 +122,7 @@ class RatioDef:
 # column plus a fixed quick_ratio-only item_inputs override, matching the
 # pre-S4-1 literal exactly.
 _QUICK_RATIO_ITEM_INPUTS = ("current_assets", "inventory", "current_liabilities")
+_FUNDAMENTAL_RATIO_EXCLUDED_FAMILIES = frozenset({"valuation"})
 
 
 def _build_operands(numerator_term: str, denominator_term: str) -> Callable[[dict], tuple]:
@@ -134,6 +135,10 @@ def _build_operands(numerator_term: str, denominator_term: str) -> Callable[[dic
 def _build_ratio_defs() -> tuple[RatioDef, ...]:
     defs: list[RatioDef] = []
     for row in load_ratio_formula_rows():
+        # PF-S6 S6-2: valuation formulas are catalogued in formula_registry but
+        # materialize through the sibling valuation_multiples engine, not here.
+        if row.family in _FUNDAMENTAL_RATIO_EXCLUDED_FAMILIES:
+            continue
         inputs = tuple(json.loads(row.inputs))
         require_positive_denominator = row.is_meaningful_rule == REQUIRE_POSITIVE_DENOMINATOR_RULE
         item_inputs = _QUICK_RATIO_ITEM_INPUTS if row.formula_code == "quick_ratio" else None
