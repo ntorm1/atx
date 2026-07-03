@@ -60,7 +60,7 @@ intentional gap (S4-4 section below).
 - [x] S4-3b Absent-instrument volume zeroing (B4)
 - [x] S4-3c Borrow accrual in the loop (B5)
 - [x] S4-3d Permanent impact persistence (B6)
-- [ ] S4-4  Impact in ScalarRaw selection (B7)
+- [x] S4-4  Impact in ScalarRaw selection (B7)
 - [ ] S4-5a GP turnover-native step (B8)
 - [ ] S4-5b stage_report capacity curve (B9)
 
@@ -335,3 +335,59 @@ this ledger. Left untouched (not S4's file, not S4's bug) — flagged here per t
 mandate so the next agent does not mistake it for an S4 regression. All bisected files verified
 byte-identical to HEAD via `git diff --stat` before resuming (no residual changes from the
 investigation).
+
+S4-4: complete [OPT-IN — B7]. Root cause (re-confirmed at kickoff): `raw` has no cost term
+(`fitness.cpp` — `raw = core.wq * diversify * core.robust`); ScalarRaw ranks purely on `.raw`
+(`search_driver.cpp`), never touching `objectives`; `book_cost_bps` (post-S4-1, dimensionally
+correct) feeds ONLY `objectives[4]` (NSGA), gated by `target_aum>0`.
+
+**The FitnessCfg seam (why this is a standalone header, not a `finish_report` call site):**
+`finish_report` is DECLARED in `factory/fitness.hpp` — Sprint-5-owned, forbidden to edit — so its
+SIGNATURE cannot gain a `CostSelectionConfig` parameter this sprint, and `FitnessCfg` cannot gain a
+`cost_selection` field either. S4-4 therefore ships the pure, testable HALF of the fix as a
+standalone free function, `factory::apply_selection_cost(raw, cost_bps_at_selection_aum, cfg)`, in a
+NEW S4-owned header `include/atx/engine/factory/fitness_cost_selection.hpp` (header-only inline —
+zero edits to `fitness.hpp`, `fitness.cpp`, `factory.cpp`, or `search_driver.cpp`). It reuses
+`combine::cost_adjusted_fitness`/`kFitnessCostScale` verbatim (`turnover` pinned to 1.0, since
+`cost_bps_at_selection_aum` is already a book-level aggregate, not a per-unit-turnover rate) — the
+ONE fitness-cost scale, shared with the p6-S4 admission gate. Inert default:
+`impact_in_selection=false` OR `selection_aum<=0.0` ⇒ `raw` returned UNCHANGED.
+
+**SEAM (binding, for Sprint 5 — full text in the header's own doc comment):** add
+`cost::CostSelectionConfig cost_selection{};` to `FitnessCfg` and one call in `finish_report`,
+immediately after `raw` is assembled:
+```cpp
+if (cfg.cost_selection.impact_in_selection) {
+  const atx::f64 sel_cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.cost_selection.selection_aum);
+  raw = apply_selection_cost(raw, sel_cost_bps, cfg.cost_selection);
+}
+```
+(`finish_report` does not currently receive `strm`/`panel` either — also part of the S5 wire, since
+`fitness_core`'s caller already has both in scope.)
+
+**RED (`tests/factory/fitness_cost_selection_test.cpp`, new):** the header was temporarily moved
+aside (`mv .../fitness_cost_selection.hpp _s44_header.bak`) to capture a genuine RED: compile
+failure, `fatal error: 'atx/engine/factory/fitness_cost_selection.hpp' file not found`. Restored,
+then two real build errors surfaced and were fixed: `Panel::create` needs a 5th `universe` arg
+(added `{}`); an unused-lambda-capture `-Werror` on `constexpr` locals inside a `std::thread` lambda
+(dropped from the capture list — ODR-use of a `constexpr` doesn't require capture).
+
+**GREEN:** 5 tests pass. `SelectionCostOff_ByteIdenticalToRaw` / `SelectionAumZero_ByteIdenticalToRaw`
+— `raw` returned bit-exact (`EXPECT_EQ`) regardless of `cost_bps`, for both off-guards.
+`SelectionFlipsHighTurnoverRanking` — by-construction numbers (gross gap 0.05: `raw_A=1.00,
+raw_B=0.95`; penalties `0.20`/`0.02` via `cost_bps` `2.0`/`0.2` at `cost_weight=1.0`): OFF ranks
+A above B (`1.00>0.95`, the gross order); ON computes `adjusted_A=0.80`, `adjusted_B=0.93` and the
+rank FLIPS (`0.80<0.93`) — the exact ranking-flip mechanism the spec's motivating a42 observation
+describes. `SelectionUsesFixedParticipation` — two 3-date one-instrument panels at a 10x price/volume
+rescale (`close=[100,110,99]`,`vol=1000` vs `close=[1000,1100,990]`,`vol=100`; identical returns
+⇒ identical σ=0.10; identical dollar-ADV=103000) produce IDENTICAL `book_cost_bps` (`EXPECT_NEAR`,
+1e-9) despite the 10x price gap — proving S4-1's price-invariant participation fix feeds cleanly
+into S4-4's penalty (identical adjusted scalars follow). `PureFunction_TwiceRunAndConcurrentCallsByteIdentical`
+— twice-run (`EXPECT_EQ`) + 8-thread concurrent calls with identical inputs all agree bit-exactly
+(seq==parallel; the function has zero shared/mutable state so this is a structural guarantee, not a
+probabilistic one). Broader regression sweep green (59 tests): `FactoryCostAwareFitness` (6),
+`NsgaSearch` (11, incl. the pinned `ScalarRaw_ReproducesGoldenDigest` golden — UNCHANGED),
+`FactoryOos` (40, incl. the pinned `MineIntoOffPathDigestUnchanged` golden — UNCHANGED),
+`CostSelectionConfig` (1). **No golden re-baseline needed** — S4-4 has zero call sites in any
+existing execution path (it is called only from its own test file), so every pinned digest is
+untouched by construction, not merely by observation.
