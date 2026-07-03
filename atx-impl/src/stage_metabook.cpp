@@ -590,6 +590,27 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
     }
   }
 
+  // S2-3: netting telemetry -- the crossing win, aggregated over the whole schedule. The
+  // naive baseline (sleeves traded SEPARATELY, no crossing) IS turnover_gross
+  // (netting.hpp:63); turnover_net is the fund's ACTUAL traded book. Assert the R3 triangle
+  // holds in aggregate too (a wiring regression -- e.g. accidentally summing the wrong
+  // field -- would be caught here, not just inside the frozen net_fund_book). Telemetry
+  // ONLY: these sums never enter `digest` above (mirrors the combine breadth/capacity kvs
+  // convention, stage_combine.cpp:735-736).
+  atx::f64 turnover_net_total = 0.0;
+  atx::f64 turnover_gross_total = 0.0;
+  atx::f64 crossing_benefit_total = 0.0;
+  for (atx::usize s = 0; s < S; ++s) {
+    turnover_net_total += result.report.turnover_net[s];
+    turnover_gross_total += result.report.turnover_gross[s];
+    crossing_benefit_total += result.report.crossing_benefit_bps[s];
+  }
+  ATX_ASSERT(turnover_net_total <= turnover_gross_total + 1e-6); // R3, aggregate sanity net
+  const atx::f64 crossed_fraction_total =
+      (turnover_gross_total > 0.0)
+          ? (turnover_gross_total - turnover_net_total) / turnover_gross_total
+          : 0.0;
+
   StageResult sr;
   sr.digest = digest;
   sr.kvs = {
@@ -597,6 +618,11 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
       {"instruments", std::to_string(M)},
       {"sleeves", std::to_string(result.sleeve_results.size())},
       {"books", to_hex16(digest)},
+      // S2-3 netting telemetry.
+      {"fund_turnover_net", std::to_string(turnover_net_total)},
+      {"fund_turnover_gross", std::to_string(turnover_gross_total)},
+      {"crossing_benefit_bps", std::to_string(crossing_benefit_total)},
+      {"crossed_fraction", std::to_string(crossed_fraction_total)},
   };
   return atx::core::Ok(std::move(sr));
 }

@@ -108,9 +108,28 @@ correctly — `run_metabook` overwrites those three fields from `RunConfig` befo
 - [x] S2-0  ledger + `MetaBookStageConfig` + FROZEN-signature confirmation
 - [x] S2-1  `assign_sleeves` (SleeveSpec seam)
 - [x] S2-2  `stage_metabook` producer (two-pass drive) + R7 pin + PIT causality guard
-- [ ] S2-3  netting turnover telemetry
+- [x] S2-3  netting turnover telemetry
 - [ ] S2-4  Euler attribution + effective-bets telemetry
 - [ ] S2-5  allocator-method config + close determinism battery
+
+## S2-3 measured netting win (the offsetting-sleeve fixture, GUARANTEED by construction)
+
+`MetabookNetting.ReducesTurnoverOnOffsettingSleeves`: sleeve B's alpha == -sleeve A's alpha
+every period (4 instruments, 4 periods) ⇒ sleeve B's optimized book is the additive inverse of
+sleeve A's book (the optimizer's demean+gross-normalize is odd-symmetric under negation) ⇒
+`net = |c_A − c_B|·Σ|w_i| < gross = (c_A + c_B)·Σ|w_i|` STRICTLY whenever the book is nonzero
+(capital weights are always ≥ 0 by construction) — a mathematically guaranteed crossing
+benefit, not an empirically-hoped-for one. Measured: `turnover_net_total < turnover_gross_total`
+holds; `crossing_benefit_bps` sums to a strictly positive total; the R3 triangle
+(`turnover_net[s] <= turnover_gross[s]`) and non-negativity (`crossing_benefit_bps[s] >= 0`)
+hold on every period for all three allocator methods (InverseVol/ERC/HRP).
+`run_metabook`'s `StageResult::kvs` now carries `fund_turnover_net` / `fund_turnover_gross` /
+`crossing_benefit_bps` / `crossed_fraction` (aggregate sums over the schedule); verified on the
+SingleSleeve stage path (no crossing possible): `fund_turnover_net == fund_turnover_gross`,
+`crossing_benefit_bps == 0`, `crossed_fraction == 0`, parsed back from the kvs STRING surface
+(not just the internal report struct) — and the digest is UNCHANGED across two runs even
+though kvs strings are recomputed (telemetry never enters the fund-book digest, mirroring the
+combine breadth/capacity convention).
 
 ## S2-2 RESULT — the R7 pin holds EXACTLY, both claims, no divergence
 
