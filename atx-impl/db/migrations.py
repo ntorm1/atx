@@ -6598,6 +6598,127 @@ def _formula_registry_catalog_view(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _market_cap_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S6 S6-1: market cap = raw daily close x PIT-visible shares."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_cap (
+            market_cap_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            price_source VARCHAR NOT NULL,
+            share_source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            trade_date DATE NOT NULL,
+            close DOUBLE NOT NULL,
+            share_count DOUBLE NOT NULL,
+            share_count_type_used VARCHAR NOT NULL,
+            market_cap DOUBLE NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            price_available_at TIMESTAMP NOT NULL,
+            share_available_at TIMESTAMP NOT NULL,
+            price_run_id VARCHAR,
+            share_run_id VARCHAR,
+            share_history_id VARCHAR,
+            input_codes_json VARCHAR NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_market_cap_key ON market_cap(source, security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_market_cap_security_date ON market_cap(security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_market_cap_asof ON market_cap(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'market_cap',
+            'atx_warehouse',
+            'Derived market capitalization',
+            'Daily market capitalization computed as raw equity_daily_bars.close times the PIT-visible shares_outstanding_history share count; bitemporal and source-lineaged.',
+            'security_id,trade_date',
+            'market_cap', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'market_cap', 'gold', 'valuation',
+            'source,security_id,trade_date',
+            'Daily market capitalization level struck from raw daily close and the latest PIT-visible share count, preferring shares_outstanding and falling back to shares_diluted_avg.',
+            '["source","security_id","trade_date"]',
+            'No lookahead: selected share row must have effective_date/as_of_date <= trade_date and available_at <= price_available_at; available_at is max(price_available_at, share_available_at).',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'market_cap_id', 'security_id', 'run_id', 'price_run_id',
+                    'share_run_id', 'share_history_id'
+                ) THEN 'identifier'
+                WHEN lower(c.column_name) IN ('trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN lower(c.column_name) IN ('is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN lower(c.column_name) IN ('close') THEN 'price'
+                WHEN lower(c.column_name) IN ('market_cap') THEN 'currency'
+                WHEN lower(c.column_name) LIKE '%count%' OR upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'close' THEN 'Raw daily close from equity_daily_bars used deliberately for same-day market-cap levels; adjusted_close is not used.'
+                WHEN 'share_count_type_used' THEN 'PIT share-count type selected: shares_outstanding preferred; shares_diluted_avg used only when no visible instant count exists.'
+                WHEN 'market_cap' THEN 'Raw close multiplied by selected PIT-visible share_count.'
+                WHEN 'available_at' THEN 'Maximum of price_available_at and share_available_at.'
+                WHEN 'input_lineage_json' THEN 'JSON lineage for the selected price and share input rows, including source/run_id/availability.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('trade_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('close', 'market_cap') THEN 'USD'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'market_cap'
+        """
+    )
+
+
 def _xbrl_validation_dimensional_evidence(conn: duckdb.DuckDBPyConnection) -> None:
     """PF-S7 S7-0: per-row dimensional-context evidence on xbrl_validation_results.
 
@@ -7057,6 +7178,11 @@ MIGRATIONS: list[Migration] = [
         version=83,
         name="repair_identifier_spine_self_overlaps_s5",
         up=_repair_identifier_spine_self_overlaps_s5,
+    ),
+    Migration(
+        version=84,
+        name="market_cap_schema_catalog",
+        up=_market_cap_schema_catalog,
     ),
     Migration(
         version=88,

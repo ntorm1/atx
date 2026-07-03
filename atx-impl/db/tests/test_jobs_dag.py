@@ -267,6 +267,10 @@ def test_dataset_registry_dag_has_expected_foundation_edges():
     )
     assert dag.dependencies_of("xbrl_filing_contexts") == ("sec_submissions",)
     assert dag.dependencies_of("shares_outstanding_history") == ("sec_company_facts",)
+    assert dag.dependencies_of("market_cap") == (
+        "shares_outstanding_history",
+        "tbltickerhistory_daily",
+    )
     assert dag.dependencies_of("short_interest_metrics") == (
         "finra_short_interest",
         "shares_outstanding_history",

@@ -23,6 +23,7 @@ def test_key_dataset_classes_importable():
         Form144ReconciliationDataset,
         FredMacroDataset,
         EstimateRecommendationSummaryDataset,
+        MarketCapDataset,
         SecCompanyFactsDataset,
         SecSubmissionsDataset,
         SecurityMasterDataset,
@@ -45,6 +46,7 @@ def test_key_dataset_classes_importable():
     assert Form144ReconciliationDataset is not None
     assert FredMacroDataset is not None
     assert EstimateRecommendationSummaryDataset is not None
+    assert MarketCapDataset is not None
     assert SecCompanyFactsDataset is not None
     assert SecSubmissionsDataset is not None
     assert SecurityMasterDataset is not None

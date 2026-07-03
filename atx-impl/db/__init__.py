@@ -30,6 +30,7 @@ from .asof import (
     fundamentals_asof,
     short_interest_metrics_asof,
     macro_metrics_asof,
+    market_cap_asof,
     equity_price_metrics_asof,
     thirteenf_concentration_metrics_asof,
     thirteenf_position_metrics_asof,
@@ -126,6 +127,12 @@ from .equity_price_metrics import (
     EquityPriceMetricsOptions,
     compute_equity_price_metrics,
     refresh_equity_price_metrics,
+)
+from .valuation_multiples import (
+    MarketCapDataset,
+    MarketCapOptions,
+    compute_market_cap_rows,
+    refresh_market_cap,
 )
 from .thirteenf_concentration_metrics import (
     ThirteenFConcentrationMetricsDataset,
@@ -377,6 +384,11 @@ __all__ = [
     "compute_macro_metrics",
     "refresh_macro_metrics",
     "macro_metrics_asof",
+    "MarketCapDataset",
+    "MarketCapOptions",
+    "compute_market_cap_rows",
+    "refresh_market_cap",
+    "market_cap_asof",
     "EquityPriceMetricsDataset",
     "EquityPriceMetricsOptions",
     "compute_equity_price_metrics",

@@ -37,6 +37,7 @@ from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMe
 from .short_volume import FinraShortVolumeDataset, FinraShortVolumeOptions, ShortVolumeMetricsDataset
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
 from .equity_price_metrics import EquityPriceMetricsDataset, EquityPriceMetricsOptions
+from .valuation_multiples import MarketCapDataset, MarketCapOptions
 from .thirteenf_concentration_metrics import (
     ThirteenFConcentrationMetricsDataset,
     ThirteenFConcentrationMetricsOptions,
@@ -807,6 +808,18 @@ def _equity_price_metrics_options(params: dict[str, Any]) -> EquityPriceMetricsO
     )
 
 
+def _market_cap_options(params: dict[str, Any]) -> MarketCapOptions:
+    default = MarketCapOptions()
+    return MarketCapOptions(
+        source=params.get("source") or default.source,
+        price_sources=_string_tuple_or_none(params.get("price_sources")) or default.price_sources,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date")),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _thirteenf_position_metrics_options(params: dict[str, Any]) -> ThirteenFPositionMetricsOptions:
     default = ThirteenFPositionMetricsOptions()
     return ThirteenFPositionMetricsOptions(
@@ -954,6 +967,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ShortInterestMetricsDataset.dataset_id: (ShortInterestMetricsDataset, _short_interest_metrics_options),
     MacroMetricsDataset.dataset_id: (MacroMetricsDataset, _macro_metrics_options),
     EquityPriceMetricsDataset.dataset_id: (EquityPriceMetricsDataset, _equity_price_metrics_options),
+    MarketCapDataset.dataset_id: (MarketCapDataset, _market_cap_options),
     ThirteenFPositionMetricsDataset.dataset_id: (ThirteenFPositionMetricsDataset, _thirteenf_position_metrics_options),
     ThirteenFOptionMetricsDataset.dataset_id: (ThirteenFOptionMetricsDataset, _thirteenf_option_metrics_options),
     ThirteenFConcentrationMetricsDataset.dataset_id: (
@@ -1071,6 +1085,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "sec_security_master",
     ),
     "macro_metrics": ("fred_macro",),
+    "market_cap": ("tbltickerhistory_daily", "shares_outstanding_history"),
     "nasdaq_listing_events": ("sec_security_master",),
     "offexchange_quality_report": (
         "offexchange_security_period",
@@ -1598,6 +1613,13 @@ class JobManager:
             job_name="shares_outstanding_history",
             dataset_id="shares_outstanding_history",
             dependencies=["sec_company_facts"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="market_cap",
+            dataset_id="market_cap",
+            params={"symbols": symbols},
+            dependencies=["daily_bars", "shares_outstanding_history"],
             **retry_policy,
         )
         self.register_job(job_name="xbrl_taxonomy", dataset_id="xbrl_taxonomy", **retry_policy)
