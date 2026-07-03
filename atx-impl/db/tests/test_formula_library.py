@@ -471,3 +471,138 @@ def test_seed_formula_registry_loads_from_committed_seed(tmp_store):
         "SELECT count(*) FROM formula_registry"
     ).fetchone()[0]
     assert schema_rows == count
+
+
+# ---------------------------------------------------------------------------
+# PF-S4 S4-1: operand-term mini-grammar + composite dispatch (offline, no DuckDB)
+#
+# S4-1 ported 55 ratio/score codes into formula_registry rows and made
+# fundamental_ratios.py drive its RATIO_DEFS from the registry via
+# eval_operand_term (the operand-term mini-grammar interpreter) and
+# resolve_composite_evaluator (the whitelisted composite dispatch table).
+# That +409-line mechanism previously had only transitive coverage via the
+# golden byte-identity test; these tests pin its per-shape behavior and its
+# fail-closed (KeyError/ValueError) contract directly.
+# ---------------------------------------------------------------------------
+
+
+def test_eval_operand_term_key_shape():
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("key:ni", {"ni": 42.0}) == 42.0
+
+
+def test_eval_operand_term_abs_shape():
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("abs:dividends", {"dividends": -7.5}) == 7.5
+
+
+def test_eval_operand_term_sum_shape():
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("sum:a,b", {"a": 3.0, "b": 4.0}) == 7.0
+
+
+def test_eval_operand_term_abs_sum_shape():
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("abs_sum:a,b", {"a": -3.0, "b": 4.0}) == 7.0
+
+
+def test_eval_operand_term_diff_shape():
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("diff:a,b", {"a": 10.0, "b": 3.0}) == 7.0
+
+
+def test_eval_operand_term_diff_abs_shape():
+    """diff_abs: r[k1] - abs(r[k2]) -- e.g. retention_ratio's net_income - |dividends|."""
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("diff_abs:ni,dividends", {"ni": 10.0, "dividends": -4.0}) == 6.0
+
+
+def test_eval_operand_term_diff_z_shape_present_value():
+    """diff_z: r[k1] - z(r.get(k2)) -- when k2 is present, behaves like a normal diff."""
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term(
+        "diff_z:current_assets,inventory", {"current_assets": 100.0, "inventory": 30.0}
+    ) == 70.0
+
+
+def test_eval_operand_term_diff_z_shape_missing_value_coalesces_to_zero():
+    """diff_z: a missing (r.get returns None) k2 is NaN-coalesced to 0.0, not KeyError'd."""
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term(
+        "diff_z:current_assets,inventory", {"current_assets": 100.0}
+    ) == 100.0
+
+
+def test_eval_operand_term_avg_shape():
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("avg:a,b", {"a": 10.0, "b": 20.0}) == 15.0
+
+
+def test_eval_operand_term_none_shape():
+    """The 'none' shape is unused -- score composites bypass operands entirely."""
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("none:", {}) is None
+
+
+def test_eval_operand_term_unknown_shape_raises_key_error():
+    """Fail-closed: an unrecognized operand shape name raises KeyError, never eval/exec."""
+    from db.formula_library import eval_operand_term
+
+    with pytest.raises(KeyError, match="bogus"):
+        eval_operand_term("bogus:x", {})
+
+
+def test_resolve_composite_evaluator_maps_known_keys_to_named_functions():
+    from db.formula_library import (
+        altman_z_double_prime,
+        beneish_m_score,
+        ohlson_o_score,
+        piotroski_f_score,
+        resolve_composite_evaluator,
+    )
+
+    assert resolve_composite_evaluator("composite:altman_z_double_prime_v1") is altman_z_double_prime
+    assert resolve_composite_evaluator("composite:piotroski_f_score_v1") is piotroski_f_score
+    assert resolve_composite_evaluator("composite:ohlson_o_score_v1") is ohlson_o_score
+    assert resolve_composite_evaluator("composite:beneish_m_score_v1") is beneish_m_score
+
+
+def test_resolve_composite_evaluator_unknown_key_raises_key_error():
+    """Fail-closed: a composite:-prefixed but unregistered key raises KeyError."""
+    from db.formula_library import resolve_composite_evaluator
+
+    with pytest.raises(KeyError, match="unknown"):
+        resolve_composite_evaluator("composite:unknown_v1")
+
+
+def test_resolve_composite_evaluator_non_composite_prefix_raises_key_error():
+    """Fail-closed: a string not prefixed with 'composite:' is rejected outright, never
+    falls through to a dispatch lookup."""
+    from db.formula_library import resolve_composite_evaluator
+
+    with pytest.raises(KeyError, match="not a composite dispatch expression"):
+        resolve_composite_evaluator("altman_z_double_prime_v1")
+
+
+def test_parse_operand_expression_splits_numerator_and_denominator():
+    from db.formula_library import parse_operand_expression
+
+    assert parse_operand_expression("key:ni|key:rev") == ("key:ni", "key:rev")
+
+
+def test_parse_operand_expression_malformed_expression_raises_value_error():
+    """Fail-closed: an expression with no '|' separator raises ValueError."""
+    from db.formula_library import parse_operand_expression
+
+    with pytest.raises(ValueError, match="malformed operand expression"):
+        parse_operand_expression("key:ni_no_separator")
