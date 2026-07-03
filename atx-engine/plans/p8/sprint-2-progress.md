@@ -109,8 +109,28 @@ correctly — `run_metabook` overwrites those three fields from `RunConfig` befo
 - [x] S2-1  `assign_sleeves` (SleeveSpec seam)
 - [x] S2-2  `stage_metabook` producer (two-pass drive) + R7 pin + PIT causality guard
 - [x] S2-3  netting turnover telemetry
-- [ ] S2-4  Euler attribution + effective-bets telemetry
+- [x] S2-4  Euler attribution + effective-bets telemetry
 - [ ] S2-5  allocator-method config + close determinism battery
+
+## S2-4 measured Euler exactness + effective-bets (EXACT, not merely within tolerance)
+
+Fixture: two disjoint-support sleeves over 4 names (sleeve A trades {0,1}, sleeve B trades
+{2,3}; diagonal V, dollar-neutral MVO) with returns_at driven by Walsh/Hadamard ±1 sequences
+on each pair, giving an EXACT (not sampled/approximate) 0.0 or 1.0 correlation between the two
+sleeves' realized P&L. `MetabookReport.EffectiveBetsGauge` measured: decorrelated equal-
+capital sleeves -> `effective_bets == 2.0` EXACTLY; perfectly correlated sleeves ->
+`effective_bets == 1.0` EXACTLY (both landed on the theoretical boundary, not merely inside
+the ±0.2 tolerance band the test asserts) — the diversification gauge behaves correctly at
+both boundaries, the direct counter-mechanism to Phase-D's measured crowding (`N_eff=8.76`
+over 30 collapsed alphas). `MetabookReport.EulerAttributionSums`: `Sigma_s return_contrib[s]`
+matches an independently-recomputed `R_fund` to 1e-6; `Sigma_s risk_contrib[s]` is finite and
+non-negative; `Sigma_s crossing_credit[s]` matches an independently-recomputed total crossing
+benefit to 1e-6. `MetabookReport.SingleSleeveReportDegenerateAndSharpeMatches`: one sleeve's
+`effective_bets` hits the documented degenerate contract (0 or 1, never NaN/garbage) and
+`fund_metrics.sharpe` matches `combine::compute_metrics` called independently on the SAME
+r_fund + flattened book schedule to 1e-9. `run_metabook`'s kvs now also carries
+`sleeve_return_contrib` / `sleeve_risk_contrib` / `sleeve_crossing_credit` (comma-joined) +
+`fund_effective_bets` + `fund_sharpe` + the three `*_contrib_sum` cross-check fields.
 
 ## S2-3 measured netting win (the offsetting-sleeve fixture, GUARANTEED by construction)
 

@@ -611,6 +611,36 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
           ? (turnover_gross_total - turnover_net_total) / turnover_gross_total
           : 0.0;
 
+  // S2-4: Euler attribution-by-sleeve + Meucci effective-bets, surfaced as stage telemetry
+  // (comma-joined in sleeve order; never folded into `digest`). `result.report.attribution`
+  // is computed inside MetaBook::run (the FROZEN driver) with the R4 sum-identity guarantees
+  // (Sigma return_contrib == R_fund; Sigma risk_contrib == sqrt(c^T Omega c); Sigma
+  // crossing_credit == the total crossing benefit) -- summed again HERE so a wiring
+  // regression that mis-copies/mis-orders the attribution vector is caught by the
+  // *_contrib_sum kvs, independent of MetaBook's own internal guarantee.
+  const auto join_csv = [](const std::vector<atx::f64> &v) {
+    std::string s;
+    for (atx::usize i = 0; i < v.size(); ++i) {
+      if (i > 0) {
+        s += ",";
+      }
+      s += std::to_string(v[i]);
+    }
+    return s;
+  };
+  atx::f64 return_contrib_sum = 0.0;
+  atx::f64 risk_contrib_sum = 0.0;
+  atx::f64 crossing_credit_sum = 0.0;
+  for (const auto v : result.report.attribution.return_contrib) {
+    return_contrib_sum += v;
+  }
+  for (const auto v : result.report.attribution.risk_contrib) {
+    risk_contrib_sum += v;
+  }
+  for (const auto v : result.report.attribution.crossing_credit) {
+    crossing_credit_sum += v;
+  }
+
   StageResult sr;
   sr.digest = digest;
   sr.kvs = {
@@ -623,6 +653,15 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
       {"fund_turnover_gross", std::to_string(turnover_gross_total)},
       {"crossing_benefit_bps", std::to_string(crossing_benefit_total)},
       {"crossed_fraction", std::to_string(crossed_fraction_total)},
+      // S2-4 report telemetry.
+      {"sleeve_return_contrib", join_csv(result.report.attribution.return_contrib)},
+      {"sleeve_risk_contrib", join_csv(result.report.attribution.risk_contrib)},
+      {"sleeve_crossing_credit", join_csv(result.report.attribution.crossing_credit)},
+      {"fund_effective_bets", std::to_string(result.report.effective_bets)},
+      {"fund_sharpe", std::to_string(result.report.fund_metrics.sharpe)},
+      {"return_contrib_sum", std::to_string(return_contrib_sum)},
+      {"risk_contrib_sum", std::to_string(risk_contrib_sum)},
+      {"crossing_credit_sum", std::to_string(crossing_credit_sum)},
   };
   return atx::core::Ok(std::move(sr));
 }
