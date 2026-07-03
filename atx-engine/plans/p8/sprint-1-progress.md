@@ -63,7 +63,7 @@ Branch: feat/p8  Worktree: C:\atx-wt\p8
 - [x] S1-0  RiskModelConfig + FactorModelArtifact POD + ledger (this file)
 - [x] S1-1  stage_riskmodel producer (build_risk_model)
 - [x] S1-2  stage_optimize covariance-source swap
-- [ ] S1-3  cleaned_alpha_cov accessor (combine seam; Sprint-3 handoff)
+- [x] S1-3  cleaned_alpha_cov accessor (combine seam; Sprint-3 handoff)
 - [ ] S1-4  dead-alpha crowding factors
 - [ ] S1-5  factor/industry neutralization reachable
 
@@ -205,3 +205,47 @@ the ENTIRE pre-existing atx-impl-tests suite, including every AtxImplOptimize.*
 byte-identity/turnover/trade-rate test, re-ran green after the stage_optimize.cpp
 body edit); atx-engine-risk-tests 256/258 (same 2 pre-existing
 RobustPipelineE2E failures, engine files untouched this unit).
+
+## Sprint-3 seam handoff (S1-3, binding)
+
+`atx::engine::data::cleaned_alpha_cov(centered)` (data/factor_model_artifact.hpp)
+is a PURE function: T×N column-demeaned alpha-return window in, cleaned N×N
+covariance out. It reuses the existing S8.7 toolkit verbatim (no new estimator
+math): constant_correlation_shrinkage (Ledoit-Wolf constant-correlation target,
+PSD by construction) -> correlation-form Marchenko-Pastur eigen-clip (mp_clip,
+q=N/T) -> a final eigenvalue_clip strict-PD floor (psd_repair.hpp). Its
+signature is a drop-in shape match for combine::detail::mle_covariance(centered, n)
+(same `centered` contract, non-fallible MatX return).
+
+**Sprint 3's job** (owns stage_combine.cpp): at stage_combine.cpp:755, thread
+`RiskModelConfig.kind==Factor ? data::cleaned_alpha_cov(centered)
+: combine::detail::mle_covariance(centered, na)` — S1 does NOT edit that file.
+At kind==Diagonal (today's default) the seam is never called, so combine.bin
+stays byte-identical; only Sprint 3's threaded call activates the cleaned path.
+
+S1-3: complete. New accessor `atx::engine::data::cleaned_alpha_cov` added to
+data/factor_model_artifact.hpp (includes risk/shrinkage.hpp + risk/psd_repair.hpp
+-- no risk->data include edge introduced, since data already depends on risk
+one-way via adapt_factor.hpp's forward decl; shrinkage/psd_repair have no data::
+dependency themselves). New suite CleanedAlphaCov
+(atx-engine/tests/risk/risk_cleaned_alpha_cov_test.cpp) 3/3 green:
+- ShrinksSpuriousEigenvalueAndDiversifies: on an N≈T (T=20,N=18) fixture with a
+  common factor + one large-amplitude near-independent "spurious" column, the
+  cleaned covariance's min-variance weights have a strictly LOWER max|w_i| than
+  the raw sample covariance's -- more diversified, not chasing the noisy outlier
+  direction.
+- ReturnsPsd: cleaned_alpha_cov's output passes risk::FactorModel::create's own
+  SPD gate (X=Identity(N) so V=F+D exactly; create's Cholesky check is reused
+  as the SPD oracle rather than inventing an independent check).
+- PureAndDeterministic: same input -> byte-identical output across two calls.
+
+RED verified first (5 compile errors: cleaned_alpha_cov undeclared in
+atx::engine::data). One test-fixture bug fixed mid-unit (ReturnsPsd's first
+draft passed X with 0 columns against an N×N F, tripping create's K==X.cols()
+shape check unrelated to cleaned_alpha_cov itself; fixed by using
+X=Identity(N) so V=F+D exactly matches the intended SPD oracle).
+
+Full gate: atx-engine-risk-tests 259/261 pass (2 pre-existing RobustPipelineE2E
+failures, unrelated); atx-engine-data-tests 118/121 pass (3 pre-existing
+skips, 0 failures); atx-impl-tests build clean (data/factor_model_artifact.hpp
+is transitively included by stage_optimize.cpp/stage_riskmodel.cpp).

@@ -27,6 +27,7 @@
 //  same bytes -> same digest, run to run, process to process (portable only to
 //  other little-endian hosts, matching serialize_panel.hpp's documented scope).
 
+#include <cmath>   // std::sqrt (correlation<->covariance rescale)
 #include <cstring> // std::memcpy (bit-exact f64 round-trip)
 #include <vector>
 
@@ -34,6 +35,9 @@
 #include "atx/core/hash.hpp"          // hash_bytes (wyhash; the content digest)
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // usize, u64, u8
+
+#include "atx/engine/risk/psd_repair.hpp" // eigenvalue_clip (strict-PD floor)
+#include "atx/engine/risk/shrinkage.hpp"  // constant_correlation_shrinkage, mp_clip
 
 namespace atx::engine::data {
 
@@ -206,6 +210,107 @@ deserialize_artifact(const std::vector<atx::u8> &bytes) {
 [[nodiscard]] inline atx::u64 digest_artifact(const FactorModelArtifact &a) {
   const std::vector<atx::u8> bytes = serialize_artifact(a);
   return atx::core::hash_bytes(bytes.data(), bytes.size());
+}
+
+// ===========================================================================
+//  p8-S1-3: cleaned_alpha_cov — the combine-visible shrunk/denoised covariance.
+// ===========================================================================
+//  SEAM, NOT A stage_combine.cpp EDIT (binding — see the sprint-1 ledger's
+//  "Sprint-3 seam handoff" note). stage_combine.cpp:755 today fits blend
+//  weights on `combine::detail::mle_covariance(centered, na)` — an UNSHRUNK
+//  MLE covariance that is noise-dominated exactly when N ≈ T (the combiner's
+//  own regime: N alphas over a T-period fit window). cleaned_alpha_cov is the
+//  PURE accessor Sprint 3 (which owns stage_combine.cpp) calls behind
+//  RiskModelConfig.kind==Factor to replace that raw sample covariance — S1
+//  ships the accessor + its own unit tests only; the call site threading is
+//  Sprint 3's edit, keeping file ownership disjoint (S1 never touches
+//  stage_combine.cpp).
+//
+//  Pipeline (REUSES the existing S8.7 toolkit verbatim — no new estimator
+//  math, per the sprint's frozen-math contract):
+//    1. constant_correlation_shrinkage(centered) -> a Ledoit-Wolf-shrunk
+//       covariance S_shrunk (shrinkage.hpp). PSD by construction (a convex
+//       blend of the PSD sample covariance and a PD-ish constant-correlation
+//       target); positive-definite even at N>T where the raw sample
+//       covariance is rank-deficient.
+//    2. Convert S_shrunk to a correlation matrix (divide by the per-name
+//       stddevs) and Marchenko-Pastur eigen-clip it (mp_clip, q=N/T — the
+//       exact aspect ratio of `centered`) to flatten the noise-bulk
+//       eigenvalues toward their average, trace-preserving.
+//    3. Rescale the cleaned correlation back to a covariance (multiply by the
+//       ORIGINAL per-name stddevs — the shrinkage step already set the scale;
+//       only the correlation structure is MP-cleaned) and run it through
+//       eigenvalue_clip (psd_repair.hpp) as the FINAL strict-PD floor, so the
+//       result is always Cholesky-factorizable even if the two prior steps'
+//       floating-point reassembly left a borderline-singular direction.
+//
+//  Contract: `centered` is a T×N COLUMN-DEMEANED alpha-return window (each
+//  column's own time-mean already subtracted — same contract as
+//  constant_correlation_shrinkage / combine::detail::mle_covariance, so a
+//  caller migrating off mle_covariance passes the SAME centered matrix
+//  unchanged). Degenerate inputs (T<2, N<1, a degenerate stddev column) fall
+//  back gracefully exactly as constant_correlation_shrinkage / mp_clip /
+//  eigenvalue_clip already do (documented in shrinkage.hpp / psd_repair.hpp);
+//  this wrapper adds no additional fallible path, so it returns MatX directly
+//  (non-fallible), matching mle_covariance's own non-fallible signature — a
+//  drop-in replacement shape for the Sprint-3 call site.
+//
+//  Determinism: pure function of `centered`. NO RNG, no clock, no map
+//  iteration (every composed step is itself order-fixed deterministic). Same
+//  input -> byte-identical output, run to run and process to process.
+[[nodiscard]] inline atx::core::linalg::MatX
+cleaned_alpha_cov(const atx::core::linalg::MatX &centered) {
+  using atx::core::linalg::MatX;
+  using atx::core::linalg::VecX;
+
+  const Eigen::Index t = centered.rows();
+  const Eigen::Index n = centered.cols();
+
+  // Step 1: Ledoit-Wolf constant-correlation shrinkage (PSD by construction).
+  const MatX shrunk = atx::engine::risk::constant_correlation_shrinkage(centered);
+
+  if (t < 2 || n < 1) {
+    return shrunk; // degenerate window: shrinkage already returned S verbatim
+  }
+
+  // Step 2: shrunk covariance -> correlation, MP-clip, -> covariance.
+  VecX sd(n);
+  bool degenerate_scale = false;
+  for (Eigen::Index i = 0; i < n; ++i) {
+    const atx::f64 v = shrunk(i, i);
+    if (v <= 0.0) {
+      degenerate_scale = true; // a non-positive diagonal -> correlation form is undefined
+      break;
+    }
+    sd[i] = std::sqrt(v);
+  }
+  if (degenerate_scale) {
+    // Skip the correlation round-trip (would divide by a non-positive
+    // variance); still pass through the final strict-PD floor below.
+    return atx::engine::risk::eigenvalue_clip(shrunk, 1e-12);
+  }
+
+  MatX corr(n, n);
+  for (Eigen::Index i = 0; i < n; ++i) {
+    for (Eigen::Index j = 0; j < n; ++j) {
+      corr(i, j) = shrunk(i, j) / (sd[i] * sd[j]);
+    }
+  }
+
+  const atx::f64 q = static_cast<atx::f64>(n) / static_cast<atx::f64>(t);
+  const auto clipped_r = atx::engine::risk::mp_clip(corr, q);
+  const MatX clipped_corr = clipped_r.has_value() ? *clipped_r : corr; // graceful fallback
+
+  MatX cleaned_cov(n, n);
+  for (Eigen::Index i = 0; i < n; ++i) {
+    for (Eigen::Index j = 0; j < n; ++j) {
+      cleaned_cov(i, j) = clipped_corr(i, j) * sd[i] * sd[j];
+    }
+  }
+
+  // Step 3: final strict-PD floor (Cholesky-safe for FactorModel::create /
+  // any downstream min-variance solve).
+  return atx::engine::risk::eigenvalue_clip(cleaned_cov, 1e-12);
 }
 
 } // namespace atx::engine::data
