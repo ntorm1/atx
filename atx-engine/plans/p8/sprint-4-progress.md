@@ -58,7 +58,7 @@ intentional gap (S4-4 section below).
 - [x] S4-2  Cap-clip-renorm re-center (B2)
 - [x] S4-3a Limit fill clamp (B3)
 - [x] S4-3b Absent-instrument volume zeroing (B4)
-- [ ] S4-3c Borrow accrual in the loop (B5)
+- [x] S4-3c Borrow accrual in the loop (B5)
 - [ ] S4-3d Permanent impact persistence (B6)
 - [ ] S4-4  Impact in ScalarRaw selection (B7)
 - [ ] S4-5a GP turnover-native step (B8)
@@ -233,6 +233,41 @@ asserted `bar_volume(B)==0.0`, got `2000` (stale, fails). A follow-on integratio
 is untouched), `ExecSim`/`LimitFillClamp` (18), `BacktestLoop`/`BacktestIntegration` (18, incl.
 `Survivorship_DelistedTradesToFinalBar_NotRetroactivelyRemoved`). No existing test asserted a stale
 absent-instrument volume as an expected value — **no golden re-baseline needed.**
+
+S4-3c: complete [CORRECTNESS — B5]. **Ownership resolution (kickoff caveat, spec §"backtest_loop.hpp
+ownership caveat"):** `atx-engine/plans/p8/ROADMAP.md:151-152` explicitly resolves this at the
+sprint-planning level: "`loop/backtest_loop.hpp` carries S4's one-line borrow-accrual
+settle-sequence wire — added to S4's owned set above" — no per-unit ownership recon needed; the
+roadmap already settled it. `cost::borrow.hpp`'s `daily_borrow`/`accrue_borrow` were already fully
+built+tested (S6-5) with zero call sites in `src/`; no new cost-model code was needed here, only the
+wire.
+
+**Fix:** `BacktestLoop` gains a TRAILING, inert-default `cost::BorrowModel borrow` constructor
+parameter (`{annual_rate=0.0, D360}` — appends after the existing `Delay delay = Delay::Next`, so
+every pre-existing call site that omits both trailing params is untouched). `on_time_slice` calls
+`cost::accrue_borrow(borrow_, *portfolio_, *market_, universe_)` once per bar, as a new step "3.5"
+— right after step 3 (settle PRIOR orders) and before step 4 (panel seal) — so the accrual reads the
+book settle(3) just finalized for this slice. `accrue_borrow` rides `Portfolio::accrue_financing`
+(pure cash debit; never a synthetic fill — `apply_fill` asserts `qty != 0`, the documented S6-0
+finding). `annual_rate=0.0` (default) ⇒ `daily_borrow` returns an exact Decimal zero ⇒
+`cash_ - Decimal{0}` is a no-op ⇒ byte-identical to every pre-existing caller.
+
+**RED (`tests/core/backtest_borrow_test.cpp`, new):** a single-instrument, frictionless-fill,
+2-bar book (`Transform::Raw`, `dollar_neutral=false` so one name can carry a signed weight) opens a
+100%-of-equity SHORT at bar 1 (decide-t/fill-t+1), filling exactly 1000 shares @ $100 at bar 2 —
+hand-computable `short_notional=$100,000`. Pre-fix, the `BacktestLoop` constructor did not even
+accept a `BorrowModel` parameter (RED = compile failure: "requires at most 12 arguments, but 13 were
+provided" — the wire genuinely did not exist).
+
+**GREEN:** all 3 new tests pass post-fix: `ShortBook_BorrowDebitsExactCharge` (cash delta between a
+borrow-on (`0.05`, D360) and borrow-off run equals `100000·0.05/360` exactly, tol 1e-6),
+`LongOnlyBook_PaysZeroBorrow` (a long-only book's cash is unaffected by the same nonzero rate — zero
+short notional), `ZeroRate_ByteIdenticalToDefault` (an EXPLICIT `annual_rate=0.0` run's ending cash
+is `EXPECT_EQ` — bit-exact — to the omitted-parameter default). Full regression sweep green:
+`BacktestLoop`/`BacktestIntegration` (18, incl. the digest-determinism and cost-honesty suites —
+confirmed unaffected since the default path is inert) + the pre-existing `Borrow.*` suite (3). No
+existing test/golden pins a BacktestLoop digest that would encode a nonzero borrow charge (no caller
+passes a nonzero `BorrowModel`), so **no golden re-baseline needed.**
 
 **SEAM (Sprint 3, recorded per the spec's binding instruction — do NOT edit, S3-owned file):**
 `atx-impl/src/stage_combine.cpp` carries the IDENTICAL participation bug at (confirmed at kickoff)

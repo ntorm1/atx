@@ -22,6 +22,10 @@
 //    1. update_prices       refresh the Market book from this slice's closes
 //    2. mark_to_market      value the book on the new marks
 //    3. settle PRIOR orders  fill orders queued on an EARLIER slice -> Portfolio
+//    3.5 accrue_borrow (S4-3c) one bar's short-borrow financing on the book
+//                            settle (3) just finalized -- a pure cash debit,
+//                            inert (byte-identical) at the default
+//                            BorrowModel{} (annual_rate=0.0)
 //    4. append_sealed_row   write the completed bar into the PIT RollingPanel
 //    5. if schedule fires:  evaluate the signal over the panel view,
 //    6.                      turn it into target weights, then
@@ -85,6 +89,7 @@
 
 #include "atx/engine/bus/event_bus.hpp"       // EventBus<> (the spine bus)
 #include "atx/engine/clock/sim_clock.hpp"     // SimClock (the spine clock)
+#include "atx/engine/cost/borrow.hpp"         // cost::BorrowModel, cost::accrue_borrow (S4-3c)
 #include "atx/engine/data/data_handler.hpp"   // data::IDataHandler (the spine feed)
 #include "atx/engine/data/market.hpp"         // data::MarketPayload (slice decode)
 #include "atx/engine/event/event.hpp"         // event::Event, EventType
@@ -172,13 +177,19 @@ public:
   /// Registers consumer 0 on `bus` — the bus must have no prior consumer
   /// registered. `universe` is the fixed instrument set, in the SAME column order
   /// the panel / market / portfolio / signal source were built over.
+  /// S4-3c: `borrow` (trailing, inert-default `cost::BorrowModel{}` ==
+  /// `{annual_rate=0.0, D360}`) accrues short-borrow financing once per bar in
+  /// the settle sequence (see on_time_slice). `annual_rate == 0.0` ⇒
+  /// `daily_borrow` returns an exact Decimal ZERO charge ⇒ `accrue_financing`
+  /// subtracts zero from cash ⇒ byte-identical to every existing caller that
+  /// omits this parameter (the boundary-pin no-op).
   BacktestLoop(data::IDataHandler &feed, SimClock &clock, EventBus<> &bus, RollingPanel<Cap> &panel,
                ISignalSource &signal, const WeightPolicy &policy, exec::ExecutionSimulator &exec,
                Portfolio &portfolio, Market &market, Universe universe, Schedule schedule,
-               Delay delay = Delay::Next) noexcept
+               Delay delay = Delay::Next, cost::BorrowModel borrow = cost::BorrowModel{}) noexcept
       : feed_{&feed}, clock_{&clock}, bus_{&bus}, panel_{&panel}, signal_{&signal},
         policy_{&policy}, exec_{&exec}, portfolio_{&portfolio}, market_{&market},
-        universe_{universe}, schedule_{schedule}, delay_{delay} {
+        universe_{universe}, schedule_{schedule}, delay_{delay}, borrow_{borrow} {
     // One consumer drives the single-threaded drain. Reserve the slice scratch to
     // the universe size so steady-state slice assembly never allocates.
     (void)bus_->add_consumer(0);
@@ -258,6 +269,14 @@ private:
     //    AFTER queue, in rebalance(), gated entirely by Delay::Same.)
     settle_at(t);
 
+    // S4-3c [B5 fix]: accrue one bar's short-borrow financing on the JUST-
+    // SETTLED book (the holdings step 3 finalized for this slice) -- a pure
+    // cash debit via Portfolio::accrue_financing (accrue_borrow), never a
+    // synthetic fill. Placed once per bar, after settle and before the panel
+    // seal, so it reflects the same book turnover() reports for this slice.
+    // Inert (byte-identical) at the default annual_rate=0.0.
+    cost::accrue_borrow(borrow_, *portfolio_, *market_, universe_);
+
     panel_->append_sealed_row(slice); // 4. seal the completed bar into the panel
 
     if (schedule_.fires(slice_index_)) { // 5. cadence gate
@@ -334,7 +353,8 @@ private:
   Market *market_;
   Universe universe_;
   Schedule schedule_;
-  Delay delay_; // fill-timing knob (P3c-3): Same = delay-0, Next = delay-1
+  Delay delay_;              // fill-timing knob (P3c-3): Same = delay-0, Next = delay-1
+  cost::BorrowModel borrow_; // S4-3c: annual_rate==0.0 (default) => zero charge, inert
 
   // ---- run state ------------------------------------------------------------
   std::vector<SliceRow> slice_rows_; // per-slice scratch (reserved once)
