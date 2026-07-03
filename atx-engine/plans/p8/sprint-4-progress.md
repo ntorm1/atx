@@ -57,7 +57,7 @@ intentional gap (S4-4 section below).
 - [x] S4-1  Capacity participation unit fix (B1)
 - [x] S4-2  Cap-clip-renorm re-center (B2)
 - [x] S4-3a Limit fill clamp (B3)
-- [ ] S4-3b Absent-instrument volume zeroing (B4)
+- [x] S4-3b Absent-instrument volume zeroing (B4)
 - [ ] S4-3c Borrow accrual in the loop (B5)
 - [ ] S4-3d Permanent impact persistence (B6)
 - [ ] S4-4  Impact in ScalarRaw selection (B7)
@@ -212,6 +212,27 @@ existing test pinned an exact through-limit price, so **no golden re-baseline ne
 order at the identical cost profile is confirmed byte-identical to the raw (unclamped) composition
 (`100.500625`, `MarketOrder_UnaffectedByClamp`), and a non-binding limit (`limit=200`) leaves the
 fill unperturbed (`NonBindingLimit_ClampIsNoOp`) — the clamp is provably inert off its binding case.
+
+S4-3b: complete [CORRECTNESS — B4]. `loop/market.hpp` `Market::update_prices`: a new per-call
+scratch mask `present_` (a `std::vector<bool>`, sized once at construction, `std::fill`-cleared each
+call — no allocation) tracks which universe members appear in this slice; after the existing
+mark/volume assignment loop, every index NOT marked present has `volumes_[idx]` zeroed. The mark is
+deliberately left untouched for absent names (a persistent last-value MTM reference is a separate,
+legitimate concern — `Market.UpdatePrices_InstrumentAbsentFromSlice_RetainsPriorMark` still passes
+unmodified).
+
+**RED (`tests/core/market_absent_volume_test.cpp`, new):** 2-name universe; slice 1 prices both (A
+vol=1000, B vol=2000); slice 2 carries only A. `AbsentInstrument_BarVolumeZeroedNextSlice` RED:
+asserted `bar_volume(B)==0.0`, got `2000` (stale, fails). A follow-on integration test drives a REAL
+`ExecutionSimulator::settle_pending` order against B (still priced, mark unchanged) —
+`AbsentInstrument_OrderNeverFillsOnStaleVolume` RED: asserted no fill, got a phantom 100-share fill
+(the bug's real consequence — a delisted/halted name still "trades" on stale volume).
+
+**GREEN:** both new tests pass. Full regression sweep green: `Market`/`MarketDeathTest` (13, incl.
+`UpdatePrices_InstrumentAbsentFromSlice_RetainsPriorMark` — confirms the mark-persistence contract
+is untouched), `ExecSim`/`LimitFillClamp` (18), `BacktestLoop`/`BacktestIntegration` (18, incl.
+`Survivorship_DelistedTradesToFinalBar_NotRetroactivelyRemoved`). No existing test asserted a stale
+absent-instrument volume as an expected value — **no golden re-baseline needed.**
 
 **SEAM (Sprint 3, recorded per the spec's binding instruction — do NOT edit, S3-owned file):**
 `atx-impl/src/stage_combine.cpp` carries the IDENTICAL participation bug at (confirmed at kickoff)

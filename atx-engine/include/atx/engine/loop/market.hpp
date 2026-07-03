@@ -103,14 +103,28 @@ public:
     build_index();
     marks_.assign(universe.size(), kAbsentMark); // NaN until first slice sets it
     volumes_.assign(universe.size(), 0.0);
+    present_.assign(universe.size(), false); // S4-3b scratch mask, reused every call
     init_stats(stats);
   }
 
   /// Refresh mark + last bar volume from a sealed cross-section. Only the
-  /// instruments present in the slice are touched; absent universe members keep
-  /// their prior values. A row whose id is outside the universe is ignored.
-  /// O(rows · log n_inst); ZERO allocation.
+  /// instruments present in the slice have their MARK touched; absent universe
+  /// members keep their prior mark (a persistent last-value MTM reference — see
+  /// header). A row whose id is outside the universe is ignored.
+  ///
+  /// S4-3b [B4 fix]: EXECUTABLE volume is a different contract from the mark —
+  /// an instrument absent from this slice did NOT trade this bar, so it has NO
+  /// per-bar fillable budget (its stale prior volume must not feed a phantom
+  /// fill on, e.g., a delisted name via `ExecutionSimulator::volume_capped_qty`).
+  /// Every universe member NOT present in `s.rows` has its volume zeroed each
+  /// call; present members get the slice's own bar volume. The mark is
+  /// deliberately left untouched for absent names (MTM of a halted/delisted
+  /// open position is a separate concern, scoped out of this fix).
+  ///
+  /// O(rows · log n_inst + n_inst); ZERO steady-state allocation (`present_` is
+  /// sized once at construction and only re-zeroed here, per call).
   void update_prices(const MarketSlice &s) noexcept {
+    std::fill(present_.begin(), present_.end(), false);
     for (const SliceRow &r : s.rows) {
       const atx::usize idx = index_of(r.id);
       if (idx == kNoIndex) {
@@ -119,6 +133,12 @@ public:
       // Reference price is the bar's close; volume is the sealed bar's volume.
       marks_[idx] = r.bar.close.to_decimal().to_double();
       volumes_[idx] = r.bar.volume.to_decimal().to_double();
+      present_[idx] = true;
+    }
+    for (atx::usize i = 0; i < volumes_.size(); ++i) {
+      if (!present_[i]) {
+        volumes_[i] = 0.0; // absent this bar -> no executable liquidity (B4 fix)
+      }
     }
   }
 
@@ -206,6 +226,7 @@ private:
   std::vector<atx::f64> marks_{};          // last reference price (NaN = unset)
   std::vector<atx::f64> volumes_{};        // last sealed bar volume
   std::vector<InstrumentStats> stats_{};   // per-instrument cost params
+  std::vector<bool> present_{};            // S4-3b: per-call slice-presence scratch mask
 };
 
 } // namespace atx::engine
