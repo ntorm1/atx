@@ -215,6 +215,14 @@ public:
     case CombineMethod::IcWeighted:
     case CombineMethod::ShrinkageMv:
     case CombineMethod::BoundedRegression:
+    // p8-S3: Stack/RegimeStack ship a per-alpha weight vector too (the stage's
+    // order-fixed least-squares projection of the stack's position stream onto
+    // the pool's per-alpha streams, or the regime-blended equivalent — see
+    // stage_combine.cpp). Once deployed, that vector IS a linear per-alpha
+    // blend exactly like BoundedRegression's regression-derived weights, so it
+    // is applied identically here — no new apply-side math for either method.
+    case CombineMethod::Stack:
+    case CombineMethod::RegimeStack:
       blend_linear(m, n_instruments);
       break;
     case CombineMethod::RankAverage:

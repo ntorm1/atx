@@ -87,12 +87,21 @@ namespace atx::engine::combine {
 //  The fit() switch is EXHAUSTIVE (no default) so a new enumerator is a compile
 //  error, not a silent fall-through.
 // ===========================================================================
+// p8-S3-0: Stack / RegimeStack are APPENDED after BoundedRegression (frozen
+// order — EqualWeight==0 / ShrinkageMv==3 / BoundedRegression==4 never move,
+// mirrors the risk-model RiskModelKind::Diagonal==0 discipline). They are
+// STAGE-DISPATCHED: atx-impl's stage_combine.cpp routes them to
+// learn::fit_stack / combine::fit_regime_combiner, never to AlphaCombiner::fit
+// (see the Err arms below) — appending them here only reserves the enum slot +
+// keeps the exhaustive fit() switch a compile-time gate over every method.
 enum class CombineMethod : atx::u8 {
   EqualWeight,       // w_i = 1/N
   RankAverage,       // uniform 1/N here; rank-space combine is P4-5's job
   IcWeighted,        // w_i ∝ max(window-sharpe_i, 0)
   ShrinkageMv,       // Ledoit-Wolf shrunk mean-variance
   BoundedRegression, // ridge MV in top-k PC space, clipped to |w| <= bound
+  Stack,             // 5 — S3: nonlinear alpha-of-alphas (learn::fit_stack), stage-dispatched
+  RegimeStack,       // 6 — S3: PIT-HMM regime-conditional stack, stage-dispatched
 };
 
 // ===========================================================================
@@ -104,6 +113,20 @@ struct CombinerConfig {
   atx::f64 weight_bound = 0.10; // per-alpha |weight| cap (BoundedRegression)
   atx::f64 ridge_lambda = 1e-3; // regression regularization
   atx::usize n_pcs = 0;         // 0 => all PCs; else top-k SCM PCs (N >> T)
+
+  // ---------------------------------------------------------------------
+  //  p8-S3 stacking / regime knobs — inert unless method is Stack/RegimeStack.
+  //  Appended at struct end (no aggregate-init breakage for existing callers).
+  //  atx-impl's stage_combine.cpp translates these into the learn-domain
+  //  StackingCfg/HmmCfg (which stay in learn/*, not duplicated here); this is
+  //  the ONLY combine-side surface for them.
+  // ---------------------------------------------------------------------
+  atx::u64 stack_master_seed = 0;      // determinism root threaded into StackingCfg/GbtCfg/HmmCfg
+  atx::u32 stack_cpcv_groups = 6;      // eval::CpcvConfig.n_groups for the OOS-after-DSR gate
+  atx::u32 stack_cpcv_test_groups = 2; // eval::CpcvConfig.n_test_groups
+  atx::f64 stack_cpcv_embargo = 0.01;  // embargo fraction (forward-leakage guard)
+  atx::u16 stack_horizon = 1;          // forward-return label horizon (bars)
+  atx::u32 regime_n_states = 3;        // HmmCfg.n_states for RegimeStack (guarded overlay)
 };
 
 // ===========================================================================
@@ -506,6 +529,17 @@ public:
                                              cfg.ridge_lambda, cfg.n_pcs));
       return make_combination(std::move(w), fit_begin, fit_end);
     }
+    case CombineMethod::Stack:
+    case CombineMethod::RegimeStack:
+      // p8-S3: these two methods are STAGE-DISPATCHED — atx-impl's
+      // stage_combine.cpp routes them to learn::fit_stack (+ the PIT HMM
+      // regime posterior for RegimeStack), never through this fit(). They
+      // are still explicit arms (not folded into a `default:`) so the switch
+      // stays an exhaustive compile-time gate: a FUTURE appended method with
+      // no arm is still a compile error, not a silent fall-through.
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "AlphaCombiner::fit: Stack/RegimeStack are stage-dispatched, "
+                            "not fit via AlphaCombiner");
     }
     // Unreachable: the switch is exhaustive over CombineMethod.
     return atx::core::Err(atx::core::ErrorCode::Internal,
