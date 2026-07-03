@@ -6723,6 +6723,141 @@ def _market_cap_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _valuation_multiples_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S6 S6-2: valuation multiples sibling table for market_cap + fundamentals."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS valuation_multiples (
+            valuation_multiple_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            market_cap_source VARCHAR NOT NULL,
+            market_cap_id VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            trade_date DATE NOT NULL,
+            formula_code VARCHAR NOT NULL,
+            category VARCHAR NOT NULL,
+            kind VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            value DOUBLE NOT NULL,
+            numerator_code VARCHAR,
+            numerator_value DOUBLE,
+            denominator_code VARCHAR,
+            denominator_value DOUBLE,
+            price DOUBLE,
+            market_cap DOUBLE NOT NULL,
+            enterprise_value DOUBLE,
+            is_meaningful BOOLEAN NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            market_cap_available_at TIMESTAMP NOT NULL,
+            price_available_at TIMESTAMP,
+            input_codes_json VARCHAR NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'valuation_multiples',
+            'atx_warehouse',
+            'Derived valuation multiples',
+            'Daily PIT-safe valuation multiples combining market_cap with latest applicable TTM, balance-sheet, and XBRL-derived fundamentals.',
+            'security_id,trade_date,formula_code',
+            'valuation_multiples', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'valuation_multiples', 'gold', 'valuation',
+            'source,market_cap_source,security_id,trade_date,formula_code',
+            'PIT valuation multiples and enterprise value levels derived from market_cap plus latest applicable fundamentals.',
+            '["source","market_cap_source","security_id","trade_date","formula_code"]',
+            'For each market-cap row, the latest fundamental period with period_end <= trade_date is selected. Each row available_at is the maximum of the market-cap leg and that formula-specific fundamental inputs.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'valuation_multiple_id', 'market_cap_id', 'security_id', 'run_id'
+                ) THEN 'identifier'
+                WHEN lower(c.column_name) IN ('trade_date', 'period_start', 'period_end', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN lower(c.column_name) IN ('is_meaningful', 'is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN lower(c.column_name) IN ('price') THEN 'price'
+                WHEN lower(c.column_name) IN ('market_cap', 'enterprise_value') THEN 'currency'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'formula_code' THEN 'Valuation formula code registered in formula_registry.'
+                WHEN 'value' THEN 'Computed valuation multiple value, or currency level for enterprise_value.'
+                WHEN 'is_meaningful' THEN 'False when the formula is computable but economically sign-ambiguous, such as a non-positive denominator.'
+                WHEN 'available_at' THEN 'Maximum availability timestamp of the market-cap leg and formula-specific fundamental inputs.'
+                WHEN 'input_lineage_json' THEN 'JSON lineage for the selected market-cap and formula-specific fundamental input rows.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('trade_date', 'period_start', 'period_end', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('market_cap', 'enterprise_value', 'price') THEN 'USD'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'valuation_multiples'
+        """
+    )
+
+
+def _valuation_multiples_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S6 S6-2 indexes for valuation_multiples split from schema/catalog DDL."""
+
+    for statement in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_valuation_multiples_key ON valuation_multiples(source, market_cap_source, security_id, trade_date, formula_code)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_security_date ON valuation_multiples(security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_asof ON valuation_multiples(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_formula ON valuation_multiples(formula_code, category)",
+    ):
+        conn.execute(statement)
+
+
 def _xbrl_validation_dimensional_evidence(conn: duckdb.DuckDBPyConnection) -> None:
     """PF-S7 S7-0: per-row dimensional-context evidence on xbrl_validation_results.
 
@@ -7192,6 +7327,16 @@ MIGRATIONS: list[Migration] = [
         version=85,
         name="market_cap_indexes",
         up=_market_cap_indexes,
+    ),
+    Migration(
+        version=86,
+        name="valuation_multiples_schema_catalog",
+        up=_valuation_multiples_schema_catalog,
+    ),
+    Migration(
+        version=87,
+        name="valuation_multiples_indexes",
+        up=_valuation_multiples_indexes,
     ),
     Migration(
         version=88,

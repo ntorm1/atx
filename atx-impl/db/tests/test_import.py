@@ -24,6 +24,7 @@ def test_key_dataset_classes_importable():
         FredMacroDataset,
         EstimateRecommendationSummaryDataset,
         MarketCapDataset,
+        ValuationMultiplesDataset,
         SecCompanyFactsDataset,
         SecSubmissionsDataset,
         SecurityMasterDataset,
@@ -47,6 +48,7 @@ def test_key_dataset_classes_importable():
     assert FredMacroDataset is not None
     assert EstimateRecommendationSummaryDataset is not None
     assert MarketCapDataset is not None
+    assert ValuationMultiplesDataset is not None
     assert SecCompanyFactsDataset is not None
     assert SecSubmissionsDataset is not None
     assert SecurityMasterDataset is not None

@@ -723,6 +723,46 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
     )
     con.execute(
         """
+        CREATE TABLE IF NOT EXISTS valuation_multiples (
+            valuation_multiple_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            market_cap_source VARCHAR NOT NULL,
+            market_cap_id VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            trade_date DATE NOT NULL,
+            formula_code VARCHAR NOT NULL,
+            category VARCHAR NOT NULL,
+            kind VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            value DOUBLE NOT NULL,
+            numerator_code VARCHAR,
+            numerator_value DOUBLE,
+            denominator_code VARCHAR,
+            denominator_value DOUBLE,
+            price DOUBLE,
+            market_cap DOUBLE NOT NULL,
+            enterprise_value DOUBLE,
+            is_meaningful BOOLEAN NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            market_cap_available_at TIMESTAMP NOT NULL,
+            price_available_at TIMESTAMP,
+            input_codes_json VARCHAR NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS sec_company_facts (
             source VARCHAR NOT NULL,
             security_id VARCHAR NOT NULL,
@@ -1803,6 +1843,10 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_market_cap_key ON market_cap(source, security_id, trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_market_cap_security_date ON market_cap(security_id, trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_market_cap_asof ON market_cap(as_of_date, available_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_valuation_multiples_key ON valuation_multiples(source, market_cap_source, security_id, trade_date, formula_code)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_security_date ON valuation_multiples(security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_asof ON valuation_multiples(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_formula ON valuation_multiples(formula_code, category)",
         "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_security_asof ON sec_company_facts(security_id, filed_date)",
         "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_entity_asof ON sec_company_facts(entity_id, filed_date)",
         "CREATE INDEX IF NOT EXISTS idx_xbrl_concept_catalog_lookup ON xbrl_concept_catalog(taxonomy, concept)",
@@ -2086,6 +2130,7 @@ def _seed_catalog(store: DuckDBStore) -> None:
         ("sec_company_facts", "sec_edgar", "SEC company facts", "XBRL company facts normalized into PIT fundamental points.", "security_id,concept,period", "fundamental_points", "period_end", "available_at"),
         ("shares_outstanding_history", "sec_edgar", "Shares outstanding history", "PIT share-count history derived from SEC XBRL shares outstanding/basic average/diluted average facts.", "security_id,share_count_type,effective_date,accession", "shares_outstanding_history", "effective_date", "available_at"),
         ("market_cap", "atx_warehouse", "Derived market capitalization", "Daily market capitalization computed as raw equity_daily_bars.close times the PIT-visible shares_outstanding_history share count; bitemporal and source-lineaged.", "security_id,trade_date", "market_cap", "as_of_date", "available_at"),
+        ("valuation_multiples", "atx_warehouse", "Derived valuation multiples", "Daily PIT-safe valuation multiples combining market_cap with latest applicable TTM, balance-sheet, and XBRL-derived fundamentals.", "security_id,trade_date,formula_code", "valuation_multiples", "as_of_date", "available_at"),
         ("daily_adjustment_factors", "atx_warehouse", "Daily adjustment factors", "PIT daily split and total-return adjustment factors materialized from daily bars and event-level corporate actions.", "security_id,trade_date,as_of_date,source", "daily_adjustment_factors", "as_of_date", "available_at"),
         ("xbrl_concept_catalog", "sec_edgar", "XBRL concept catalog", "Concept-level SEC companyfacts metadata with observed units, forms, availability, and fact coverage.", "source,taxonomy,concept", "xbrl_concept_catalog", "updated_at", "updated_at"),
         ("xbrl_taxonomy", "sec_edgar", "XBRL taxonomy relationships", "FASB US GAAP and SEC Reporting Taxonomy package metadata, presentation/calculation/definition relationships, dimensional edges, and observed SEC companyfacts frames.", "taxonomy_package,linkbase,role,concept_relationship", "xbrl_taxonomy_relationships", "release_year", "source_loaded_at"),
@@ -2194,6 +2239,7 @@ def _seed_catalog(store: DuckDBStore) -> None:
         ("daily_adjustment_factors", "silver", "price_adjustment", "security_id,trade_date,as_of_date,source", "Daily split-only and total-return adjustment factors plus adjusted close derivatives.", '["daily_adjustment_id"]', "Use as_of_date and available_at to avoid applying future corporate actions."),
         ("shares_outstanding_history", "silver", "shares_outstanding", "source,security_id,share_count_type,effective_date,accession_number", "PIT share-count history derived from normalized SEC XBRL share-count facts.", '["share_history_id"]', "Use effective_date/as_of_date/available_at for as-of-safe market-cap and float-proxy research."),
         ("market_cap", "gold", "valuation", "source,security_id,trade_date", "Daily market capitalization level struck from raw daily close and the latest PIT-visible share count.", '["source","security_id","trade_date"]', "No lookahead on applicability: selected share row must have effective_date/as_of_date <= trade_date. Later-filed applicable share rows are allowed, and available_at is max(price_available_at, share_available_at)."),
+        ("valuation_multiples", "gold", "valuation", "source,market_cap_source,security_id,trade_date,formula_code", "PIT valuation multiples and enterprise value levels derived from market_cap plus latest applicable fundamentals.", '["source","market_cap_source","security_id","trade_date","formula_code"]', "For each market-cap row, the latest fundamental period with period_end <= trade_date is selected. Each row available_at is the maximum of the market-cap leg and that formula's specific fundamental inputs."),
         ("sec_company_facts", "bronze", "fundamental", "security_id,taxonomy,concept,unit,period_start,period_end,filed_date,accession_number", "SEC companyfacts XBRL facts.", '["security_id","taxonomy","concept","unit","period_start","period_end","filed_date","accession_number"]', "Append/revision-aware by filing date and accession."),
         ("xbrl_concept_catalog", "catalog", "xbrl_concept", "source,taxonomy,concept", "Observed SEC XBRL concept metadata, units, forms, date ranges, availability ranges, and coverage counts.", '["source","taxonomy","concept"]', "Derived from loaded facts; updated_at records catalog refresh and last_available_at records latest observed filing availability."),
         ("xbrl_taxonomy_packages", "catalog", "xbrl_taxonomy_package", "taxonomy_package_id", "Downloaded public FASB/XBRL taxonomy package metadata and checksums.", '["taxonomy_package_id"]', "source_loaded_at records package ingestion; release_year records the taxonomy vintage."),

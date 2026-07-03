@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pandas as pd
+import pytest
 
 from db.valuation_multiples import (
     MarketCapDataset,
     MarketCapOptions,
+    ValuationMultiplesDataset,
+    ValuationMultiplesOptions,
     compute_market_cap_rows,
+    compute_valuation_multiple_rows,
     refresh_market_cap,
+    refresh_valuation_multiples,
 )
 from db.warehouse import insert_frame
 
@@ -139,6 +145,270 @@ def _seed_market_cap_inputs(tmp_store) -> None:
     )
     insert_frame(tmp_store, prices, "equity_daily_bars", "market_cap_price_seed")
     insert_frame(tmp_store, shares, "shares_outstanding_history", "market_cap_share_seed")
+
+
+def _valuation_wide_row(**overrides) -> dict[str, object]:
+    base = {
+        "market_cap_id": "mc-a",
+        "market_cap_source": "derived_market_cap_v1",
+        "security_id": "SEC-A",
+        "symbol": "AAA",
+        "trade_date": dt.date(2020, 1, 2),
+        "price": 10.0,
+        "market_cap": 1000.0,
+        "market_cap_available_at": pd.Timestamp("2020-01-02 22:00:00"),
+        "price_available_at": pd.Timestamp("2020-01-02 22:00:00"),
+        "market_cap_input_lineage_json": '{"market_cap": "fixture"}',
+        "period_start": dt.date(2019, 1, 1),
+        "period_end": dt.date(2019, 12, 31),
+        "fiscal_year": 2019,
+        "fiscal_period": "FY",
+        "fundamental_available_at": pd.Timestamp("2020-02-06 10:00:00"),
+        "fundamental_sort_key": "fund-a",
+        "rev": 400.0,
+        "rev_av": pd.Timestamp("2020-02-01 10:00:00"),
+        "rev_id": "ttm-rev",
+        "rev_source": "stmt",
+        "ni": 100.0,
+        "ni_av": pd.Timestamp("2020-02-03 10:00:00"),
+        "ni_id": "ttm-ni",
+        "ni_source": "stmt",
+        "oi": 120.0,
+        "oi_av": pd.Timestamp("2020-02-04 10:00:00"),
+        "oi_id": "ttm-oi",
+        "oi_source": "stmt",
+        "ocf": 130.0,
+        "ocf_av": pd.Timestamp("2020-02-01 10:00:00"),
+        "ocf_id": "ttm-ocf",
+        "ocf_source": "stmt",
+        "capex": -30.0,
+        "capex_av": pd.Timestamp("2020-02-01 10:00:00"),
+        "capex_id": "ttm-capex",
+        "capex_source": "stmt",
+        "div": -10.0,
+        "div_av": pd.Timestamp("2020-02-02 10:00:00"),
+        "div_id": "ttm-div",
+        "div_source": "stmt",
+        "equity": 50.0,
+        "equity_av": pd.Timestamp("2020-02-02 10:00:00"),
+        "equity_id": "stmt-equity",
+        "equity_source": "stmt",
+        "long_term_debt": 200.0,
+        "long_term_debt_av": pd.Timestamp("2020-02-05 10:00:00"),
+        "long_term_debt_id": "x-debt",
+        "long_term_debt_source": "xbrl",
+        "cash_and_equivalents": 50.0,
+        "cash_and_equivalents_av": pd.Timestamp("2020-02-06 10:00:00"),
+        "cash_and_equivalents_id": "x-cash",
+        "cash_and_equivalents_source": "xbrl",
+        "depreciation_amortization": 30.0,
+        "depreciation_amortization_av": pd.Timestamp("2020-02-04 11:00:00"),
+        "depreciation_amortization_id": "x-da",
+        "depreciation_amortization_source": "xbrl",
+    }
+    base.update(overrides)
+    return base
+
+
+def _valuation_rows_by_code(frame: pd.DataFrame) -> dict[str, pd.Series]:
+    return {row.formula_code: row for row in frame.itertuples(index=False)}
+
+
+def _ttm_row(
+    security_id: str,
+    symbol: str,
+    metric: str,
+    value: float,
+    *,
+    end: dt.date = dt.date(2019, 12, 31),
+    av: dt.datetime = dt.datetime(2020, 2, 1, 10),
+) -> dict[str, object]:
+    return {
+        "ttm_point_id": f"ttm-{security_id}-{metric}",
+        "ttm_revision_group_id": f"ttm-rg-{security_id}-{metric}",
+        "anchor_statement_point_id": f"anchor-{security_id}-{metric}",
+        "source": "fixture_ttm",
+        "security_id": security_id,
+        "symbol": symbol,
+        "cik": "0000000001",
+        "statement_type": "income_statement",
+        "statement_section": metric,
+        "canonical_metric": metric,
+        "canonical_label": metric.replace("_", " ").title(),
+        "unit": "USD",
+        "unit_type": "monetary",
+        "ttm_start_date": dt.date(end.year, 1, 1),
+        "ttm_end_date": end,
+        "as_of_date": end,
+        "available_at": av,
+        "fiscal_year": end.year,
+        "fiscal_period": "FY",
+        "form": "10-K",
+        "accession_number": f"acc-{security_id}-{metric}",
+        "quarter_count": 4,
+        "coverage_days": 365,
+        "min_input_available_at": av,
+        "max_input_available_at": av,
+        "input_statement_point_ids_json": "[]",
+        "input_accessions_json": "[]",
+        "input_period_ends_json": "[]",
+        "ttm_value": value,
+        "previous_ttm_value": None,
+        "ttm_value_delta": None,
+        "ttm_value_delta_percent": None,
+        "revision_sequence": 1,
+        "revision_count": 1,
+        "is_latest_revision": True,
+        "is_value_changed": False,
+        "calculation_method": "fixture",
+        "source_loaded_at": av,
+    }
+
+
+def _stmt_row(
+    security_id: str,
+    symbol: str,
+    metric: str,
+    value: float,
+    *,
+    end: dt.date = dt.date(2019, 12, 31),
+    av: dt.datetime = dt.datetime(2020, 2, 1, 10),
+) -> dict[str, object]:
+    return {
+        "statement_point_id": f"stmt-{security_id}-{metric}",
+        "fact_revision_id": f"fact-{security_id}-{metric}",
+        "revision_group_id": f"rg-{security_id}-{metric}",
+        "source": "fixture_statement",
+        "security_id": security_id,
+        "symbol": symbol,
+        "cik": "0000000001",
+        "statement_type": "balance_sheet",
+        "statement_section": "equity",
+        "canonical_metric": metric,
+        "canonical_label": metric.replace("_", " ").title(),
+        "taxonomy": "us-gaap",
+        "concept": metric,
+        "unit": "USD",
+        "unit_type": "monetary",
+        "period_type": "instant",
+        "normal_balance": "credit",
+        "period_start": None,
+        "period_end": end,
+        "as_of_date": end,
+        "available_at": av,
+        "fiscal_year": end.year,
+        "fiscal_period": "FY",
+        "form": "10-K",
+        "accession_number": f"acc-{security_id}-{metric}",
+        "revision_sequence": 1,
+        "revision_count": 1,
+        "is_latest_revision": True,
+        "is_value_changed": False,
+        "raw_value": value,
+        "value": value,
+        "previous_raw_value": None,
+        "previous_value": None,
+        "value_delta": None,
+        "value_delta_percent": None,
+        "run_id": "stmt-run",
+        "source_url": "fixture",
+        "source_loaded_at": av,
+    }
+
+
+def _xbrl_row(
+    security_id: str,
+    symbol: str,
+    metric: str,
+    value: float,
+    *,
+    period_type: str,
+    end: dt.date = dt.date(2019, 12, 31),
+    av: dt.datetime = dt.datetime(2020, 2, 1, 10),
+) -> dict[str, object]:
+    return {
+        "metric_id": f"xbrl-{security_id}-{metric}",
+        "source": "fixture_xbrl",
+        "security_id": security_id,
+        "symbol": symbol,
+        "cik": "0000000001",
+        "canonical_metric": metric,
+        "concept": metric,
+        "taxonomy": "us-gaap",
+        "unit": "USD",
+        "period_type": period_type,
+        "period_start": dt.date(end.year, 1, 1) if period_type == "duration" else None,
+        "period_end": end,
+        "fiscal_year": end.year,
+        "fiscal_period": "FY",
+        "accession_number": f"acc-{security_id}-{metric}",
+        "value": value,
+        "raw_value": str(value),
+        "revision_seq": 1,
+        "is_latest_revision": True,
+        "as_of_date": end,
+        "available_at": av,
+        "run_id": "xbrl-run",
+    }
+
+
+def _seed_valuation_fundamentals(
+    tmp_store,
+    security_id: str,
+    symbol: str,
+    *,
+    revenue: float = 400.0,
+    net_income: float = 100.0,
+    operating_income: float = 120.0,
+    operating_cash_flow: float = 130.0,
+    capex: float = -30.0,
+    dividends: float = -10.0,
+    equity: float = 50.0,
+    debt: float = 200.0,
+    cash: float = 50.0,
+    depreciation: float = 30.0,
+    av: dt.datetime = dt.datetime(2020, 2, 1, 10),
+) -> None:
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _ttm_row(security_id, symbol, "revenue", revenue, av=av),
+                _ttm_row(security_id, symbol, "net_income", net_income, av=av),
+                _ttm_row(security_id, symbol, "operating_income", operating_income, av=av),
+                _ttm_row(security_id, symbol, "operating_cash_flow", operating_cash_flow, av=av),
+                _ttm_row(security_id, symbol, "capital_expenditures", capex, av=av),
+                _ttm_row(security_id, symbol, "dividends_paid", dividends, av=av),
+            ]
+        ),
+        "fundamental_ttm_points",
+        f"valuation_ttm_seed_{symbol}",
+    )
+    insert_frame(
+        tmp_store,
+        pd.DataFrame([_stmt_row(security_id, symbol, "stockholders_equity", equity, av=av)]),
+        "fundamental_statement_points",
+        f"valuation_stmt_seed_{symbol}",
+    )
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _xbrl_row(security_id, symbol, "long_term_debt", debt, period_type="instant", av=av),
+                _xbrl_row(security_id, symbol, "cash_and_equivalents", cash, period_type="instant", av=av),
+                _xbrl_row(
+                    security_id,
+                    symbol,
+                    "depreciation_amortization",
+                    depreciation,
+                    period_type="duration",
+                    av=av,
+                ),
+            ]
+        ),
+        "fundamental_xbrl_metric",
+        f"valuation_xbrl_seed_{symbol}",
+    )
 
 
 def test_compute_market_cap_uses_raw_close_times_pit_shares() -> None:
@@ -460,3 +730,212 @@ def test_market_cap_migration_and_catalog_are_present(tmp_store) -> None:
           AND field_name IN ('market_cap_id', 'market_cap', 'input_lineage_json')
         """
     ).fetchone()[0] == 3
+
+
+def test_compute_valuation_multiple_rows_emits_all_nine_formulas() -> None:
+    rows = compute_valuation_multiple_rows(pd.DataFrame([_valuation_wide_row()]), run_id="valuation-run")
+    by_code = _valuation_rows_by_code(rows)
+
+    assert set(by_code) == {
+        "price_to_earnings",
+        "price_to_book",
+        "price_to_sales",
+        "enterprise_value",
+        "ev_to_ebitda",
+        "ev_to_sales",
+        "fcf_yield",
+        "earnings_yield",
+        "dividend_yield",
+    }
+    expected = {
+        "price_to_earnings": 10.0,
+        "price_to_book": 20.0,
+        "price_to_sales": 2.5,
+        "enterprise_value": 1150.0,
+        "ev_to_ebitda": 1150.0 / 150.0,
+        "ev_to_sales": 1150.0 / 400.0,
+        "fcf_yield": 0.10,
+        "earnings_yield": 0.10,
+        "dividend_yield": 0.01,
+    }
+    for code, value in expected.items():
+        assert by_code[code].value == pytest.approx(value)
+        assert by_code[code].is_meaningful
+        assert by_code[code].run_id == "valuation-run"
+
+    assert by_code["enterprise_value"].numerator_value == pytest.approx(1200.0)
+    assert by_code["enterprise_value"].denominator_value == pytest.approx(50.0)
+    assert by_code["ev_to_ebitda"].enterprise_value == pytest.approx(1150.0)
+    assert by_code["ev_to_ebitda"].denominator_value == pytest.approx(150.0)
+
+
+def test_valuation_available_at_is_formula_specific_max() -> None:
+    rows = compute_valuation_multiple_rows(pd.DataFrame([_valuation_wide_row()]))
+    by_code = _valuation_rows_by_code(rows)
+
+    assert by_code["price_to_earnings"].available_at == pd.Timestamp("2020-02-03 10:00:00")
+    assert by_code["enterprise_value"].available_at == pd.Timestamp("2020-02-06 10:00:00")
+    assert by_code["dividend_yield"].available_at == pd.Timestamp("2020-02-02 10:00:00")
+
+
+def test_valuation_negative_denominator_emits_not_meaningful_row() -> None:
+    rows = compute_valuation_multiple_rows(pd.DataFrame([_valuation_wide_row(ni=-25.0)]))
+    pe = _valuation_rows_by_code(rows)["price_to_earnings"]
+
+    assert pe.value == pytest.approx(-40.0)
+    assert pe.denominator_value == -25.0
+    assert not pe.is_meaningful
+
+
+def test_compute_valuation_multiple_rows_uses_latest_applicable_fundamental_period() -> None:
+    older = _valuation_wide_row(period_end=dt.date(2019, 9, 30), ni=50.0, fundamental_sort_key="older")
+    latest = _valuation_wide_row(period_end=dt.date(2019, 12, 31), ni=100.0, fundamental_sort_key="latest")
+    future = _valuation_wide_row(period_end=dt.date(2020, 3, 31), ni=999.0, fundamental_sort_key="future")
+
+    rows = compute_valuation_multiple_rows(pd.DataFrame([older, latest, future]))
+    pe = _valuation_rows_by_code(rows)["price_to_earnings"]
+
+    assert pe.period_end == dt.date(2019, 12, 31)
+    assert pe.value == pytest.approx(10.0)
+
+
+def test_refresh_valuation_multiples_is_idempotent_and_scoped(tmp_store) -> None:
+    _seed_market_cap_inputs(tmp_store)
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
+    _seed_valuation_fundamentals(tmp_store, "SEC-B", "BBB", revenue=800.0, net_income=200.0)
+
+    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="run-1")) == 18
+    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="run-2")) == 18
+
+    counts = tmp_store.con.execute(
+        """
+        SELECT symbol, count(*), min(run_id), max(run_id)
+        FROM valuation_multiples
+        GROUP BY symbol
+        ORDER BY symbol
+        """
+    ).fetchall()
+    assert counts == [("AAA", 9, "run-2", "run-2"), ("BBB", 9, "run-2", "run-2")]
+
+    assert refresh_valuation_multiples(
+        tmp_store,
+        ValuationMultiplesOptions(symbols=("AAA",), run_id="scoped"),
+    ) == 9
+    counts = tmp_store.con.execute(
+        """
+        SELECT symbol, count(*), min(run_id), max(run_id)
+        FROM valuation_multiples
+        GROUP BY symbol
+        ORDER BY symbol
+        """
+    ).fetchall()
+    assert counts == [("AAA", 9, "scoped", "scoped"), ("BBB", 9, "run-2", "run-2")]
+
+
+def test_valuation_multiples_asof_visibility(tmp_store) -> None:
+    from db.asof import valuation_multiples_asof
+
+    _seed_market_cap_inputs(tmp_store)
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA", av=dt.datetime(2020, 2, 1, 10))
+    refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="valuation-run"))
+
+    early = valuation_multiples_asof(
+        dt.date(2020, 1, 2),
+        as_of_ts=dt.datetime(2020, 1, 31, 23, 59),
+        store=tmp_store,
+        symbols=["AAA"],
+    )
+    late = valuation_multiples_asof(
+        dt.date(2020, 1, 2),
+        as_of_ts=dt.datetime(2020, 2, 1, 10),
+        store=tmp_store,
+        symbols=["AAA"],
+        formula_codes=["price_to_earnings"],
+    )
+
+    assert early.empty
+    assert late[["symbol", "formula_code", "value"]].to_dict("records") == [
+        {"symbol": "AAA", "formula_code": "price_to_earnings", "value": 10.0}
+    ]
+
+
+def test_valuation_multiples_dataset_records_quality(tmp_store) -> None:
+    _seed_market_cap_inputs(tmp_store)
+    refresh_market_cap(tmp_store, MarketCapOptions(run_id="market-run"))
+    _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
+
+    result = ValuationMultiplesDataset().load(tmp_store, ValuationMultiplesOptions(run_id="dataset-run"))
+
+    assert result.rows_loaded == 9
+    assert tmp_store.con.execute(
+        """
+        SELECT status, observed_value
+        FROM data_quality_checks
+        WHERE dataset_id = 'valuation_multiples'
+          AND check_name = 'rows_materialized'
+        """
+    ).fetchall() == [("passed", 9.0)]
+
+
+def test_valuation_multiples_migration_catalog_and_formula_seed_are_present(tmp_store) -> None:
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'valuation_multiples'
+            """
+        ).fetchall()
+    }
+
+    assert {
+        "valuation_multiple_id",
+        "formula_code",
+        "value",
+        "market_cap",
+        "enterprise_value",
+        "input_lineage_json",
+    }.issubset(columns)
+    assert tmp_store.con.execute(
+        "SELECT description FROM schema_migrations WHERE version = '0086'"
+    ).fetchone()[0] == "valuation_multiples_schema_catalog"
+    assert tmp_store.con.execute(
+        "SELECT description FROM schema_migrations WHERE version = '0087'"
+    ).fetchone()[0] == "valuation_multiples_indexes"
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM table_catalog WHERE table_name = 'valuation_multiples'"
+    ).fetchone()[0] == 1
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM field_catalog
+        WHERE table_name = 'valuation_multiples'
+          AND field_name IN ('valuation_multiple_id', 'formula_code', 'input_lineage_json')
+        """
+    ).fetchone()[0] == 3
+
+    from db.formula_library import read_formula_registry_seed
+
+    valuation_rows = {
+        row.formula_code: row
+        for row in read_formula_registry_seed()
+        if row.family == "valuation"
+    }
+    assert set(valuation_rows) == {
+        "price_to_earnings",
+        "price_to_book",
+        "price_to_sales",
+        "enterprise_value",
+        "ev_to_ebitda",
+        "ev_to_sales",
+        "fcf_yield",
+        "earnings_yield",
+        "dividend_yield",
+    }
+    assert valuation_rows["enterprise_value"].kind == "difference"
+    assert valuation_rows["enterprise_value"].expression == "sum:market_cap,long_term_debt|key:cash_and_equivalents"
+    assert json.loads(valuation_rows["price_to_earnings"].inputs) == ["market_cap", "ni"]

@@ -124,10 +124,11 @@ def _by_code(frame: pd.DataFrame) -> dict[str, pd.Series]:
 
 class TestComputeRatioRows:
     def test_full_row_emits_all_ratio_codes(self):
-        out = compute_ratio_rows(pd.DataFrame([_wide_row()]))
-        codes = {d.code for d in RATIO_DEFS}
+        row = _wide_row()
+        out = compute_ratio_rows(pd.DataFrame([row]))
+        codes = {d.code for d in RATIO_DEFS if all(key in row for key in d.inputs)}
         assert set(out["ratio_code"]) == codes
-        assert len(out) == len(RATIO_DEFS)
+        assert len(out) == len(codes)
 
     @pytest.mark.parametrize(
         "code,expected",

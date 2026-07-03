@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import datetime as dt
+import json
 from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 
@@ -20,7 +22,9 @@ from .warehouse import insert_frame, json_dumps, quality_check, replace_by_relat
 
 
 SOURCE_NAME = "Derived market capitalization"
+VALUATION_SOURCE_NAME = "Derived point-in-time valuation multiples"
 DEFAULT_MARKET_CAP_SOURCE = "derived_market_cap_v1"
+DEFAULT_VALUATION_MULTIPLES_SOURCE = "derived_valuation_multiples_v1"
 SHARE_COUNT_PRIORITY = ("shares_outstanding", "shares_diluted_avg")
 
 MARKET_CAP_COLUMNS = [
@@ -48,6 +52,169 @@ MARKET_CAP_COLUMNS = [
     "run_id",
 ]
 
+VALUATION_MULTIPLE_COLUMNS = [
+    "valuation_multiple_id",
+    "source",
+    "market_cap_source",
+    "market_cap_id",
+    "security_id",
+    "symbol",
+    "trade_date",
+    "formula_code",
+    "category",
+    "kind",
+    "unit",
+    "period_start",
+    "period_end",
+    "fiscal_year",
+    "fiscal_period",
+    "value",
+    "numerator_code",
+    "numerator_value",
+    "denominator_code",
+    "denominator_value",
+    "price",
+    "market_cap",
+    "enterprise_value",
+    "is_meaningful",
+    "is_latest_revision",
+    "as_of_date",
+    "available_at",
+    "market_cap_available_at",
+    "price_available_at",
+    "input_codes_json",
+    "input_lineage_json",
+    "run_id",
+]
+
+VALUATION_TTM_INPUTS = {
+    "rev": "revenue",
+    "ni": "net_income",
+    "oi": "operating_income",
+    "ocf": "operating_cash_flow",
+    "capex": "capital_expenditures",
+    "div": "dividends_paid",
+}
+VALUATION_BALANCE_INPUTS = {"equity": "stockholders_equity"}
+VALUATION_XBRL_INSTANT_INPUTS = {
+    "long_term_debt": "long_term_debt",
+    "cash_and_equivalents": "cash_and_equivalents",
+}
+VALUATION_XBRL_DURATION_INPUTS = {
+    "depreciation_amortization": "depreciation_amortization",
+}
+
+VALUATION_INPUT_CODES = {
+    "price": "market_cap.close",
+    "market_cap": "market_cap.market_cap",
+    "rev": "fundamental_ttm_points.revenue",
+    "ni": "fundamental_ttm_points.net_income",
+    "oi": "fundamental_ttm_points.operating_income",
+    "ocf": "fundamental_ttm_points.operating_cash_flow",
+    "capex": "fundamental_ttm_points.capital_expenditures",
+    "div": "fundamental_ttm_points.dividends_paid",
+    "equity": "fundamental_statement_points.stockholders_equity",
+    "long_term_debt": "fundamental_xbrl_metric.long_term_debt",
+    "cash_and_equivalents": "fundamental_xbrl_metric.cash_and_equivalents",
+    "depreciation_amortization": "fundamental_xbrl_metric.depreciation_amortization",
+}
+
+
+@dataclass(frozen=True)
+class ValuationFormulaDef:
+    code: str
+    category: str
+    kind: str
+    unit: str
+    numerator_code: str
+    denominator_code: str
+    input_keys: tuple[str, ...]
+
+
+VALUATION_FORMULA_DEFS: tuple[ValuationFormulaDef, ...] = (
+    ValuationFormulaDef(
+        "price_to_earnings",
+        "valuation",
+        "ratio",
+        "ratio",
+        "market_cap",
+        "net_income_ttm",
+        ("market_cap", "ni"),
+    ),
+    ValuationFormulaDef(
+        "price_to_book",
+        "valuation",
+        "ratio",
+        "ratio",
+        "market_cap",
+        "stockholders_equity",
+        ("market_cap", "equity"),
+    ),
+    ValuationFormulaDef(
+        "price_to_sales",
+        "valuation",
+        "ratio",
+        "ratio",
+        "market_cap",
+        "revenue_ttm",
+        ("market_cap", "rev"),
+    ),
+    ValuationFormulaDef(
+        "enterprise_value",
+        "valuation",
+        "difference",
+        "currency",
+        "market_cap_plus_long_term_debt",
+        "cash_and_equivalents",
+        ("market_cap", "long_term_debt", "cash_and_equivalents"),
+    ),
+    ValuationFormulaDef(
+        "ev_to_ebitda",
+        "valuation",
+        "ratio",
+        "ratio",
+        "enterprise_value",
+        "ebitda",
+        ("market_cap", "long_term_debt", "cash_and_equivalents", "oi", "depreciation_amortization"),
+    ),
+    ValuationFormulaDef(
+        "ev_to_sales",
+        "valuation",
+        "ratio",
+        "ratio",
+        "enterprise_value",
+        "revenue_ttm",
+        ("market_cap", "long_term_debt", "cash_and_equivalents", "rev"),
+    ),
+    ValuationFormulaDef(
+        "fcf_yield",
+        "valuation",
+        "ratio",
+        "ratio",
+        "free_cash_flow_ttm",
+        "market_cap",
+        ("ocf", "capex", "market_cap"),
+    ),
+    ValuationFormulaDef(
+        "earnings_yield",
+        "valuation",
+        "ratio",
+        "ratio",
+        "net_income_ttm",
+        "market_cap",
+        ("ni", "market_cap"),
+    ),
+    ValuationFormulaDef(
+        "dividend_yield",
+        "valuation",
+        "ratio",
+        "ratio",
+        "abs_dividends_paid_ttm",
+        "market_cap",
+        ("div", "market_cap"),
+    ),
+)
+
 
 @dataclass(frozen=True)
 class MarketCapOptions:
@@ -59,8 +226,29 @@ class MarketCapOptions:
     run_id: str | None = None
 
 
+@dataclass(frozen=True)
+class ValuationMultiplesOptions:
+    source: str = DEFAULT_VALUATION_MULTIPLES_SOURCE
+    market_cap_sources: tuple[str, ...] | None = None
+    symbols: tuple[str, ...] | None = None
+    start_date: dt.date | None = None
+    end_date: dt.date | None = None
+    run_id: str | None = None
+
+
 def _market_cap_id(source: str, security_id: str, trade_date) -> str:
     payload = "|".join(str(part) for part in (source, security_id, trade_date))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _valuation_multiple_id(
+    source: str,
+    market_cap_source: str,
+    security_id: str,
+    trade_date: Any,
+    formula_code: str,
+) -> str:
+    payload = "|".join(str(part) for part in (source, market_cap_source, security_id, trade_date, formula_code))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -432,4 +620,762 @@ class MarketCapDataset(Dataset):
             rows_loaded=rows,
             source=options.source,
             details={"grain": "security_id,trade_date"},
+        )
+
+
+def _present(value: Any) -> bool:
+    try:
+        return not pd.isna(value)
+    except (TypeError, ValueError):
+        return value is not None
+
+
+def _safe_float(value: Any) -> float | None:
+    if not _present(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_timestamp(value: Any) -> pd.Timestamp | None:
+    if not _present(value):
+        return None
+    ts = pd.Timestamp(value)
+    return None if pd.isna(ts) else ts
+
+
+def _safe_json_loads(value: Any) -> Any:
+    if not _present(value):
+        return None
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _fundamental_av_columns() -> list[str]:
+    keys = (
+        *VALUATION_TTM_INPUTS,
+        *VALUATION_BALANCE_INPUTS,
+        *VALUATION_XBRL_INSTANT_INPUTS,
+        *VALUATION_XBRL_DURATION_INPUTS,
+    )
+    return [f"{key}_av" for key in keys]
+
+
+def _normalize_valuation_inputs(inputs: pd.DataFrame) -> pd.DataFrame:
+    out = inputs.copy()
+    if "market_cap_source" not in out.columns:
+        out["market_cap_source"] = out.get("source", DEFAULT_MARKET_CAP_SOURCE)
+    if "price" not in out.columns:
+        out["price"] = out.get("close")
+    if "market_cap_available_at" not in out.columns:
+        out["market_cap_available_at"] = out.get("available_at")
+    if "price_available_at" not in out.columns:
+        out["price_available_at"] = out.get("market_cap_available_at")
+    if "fundamental_period_end" in out.columns and "period_end" not in out.columns:
+        out["period_end"] = out["fundamental_period_end"]
+    if "fundamental_period_start" in out.columns and "period_start" not in out.columns:
+        out["period_start"] = out["fundamental_period_start"]
+    if "market_cap_id" not in out.columns:
+        out["market_cap_id"] = pd.NA
+    if "symbol" not in out.columns:
+        out["symbol"] = pd.NA
+    if "period_start" not in out.columns:
+        out["period_start"] = pd.NaT
+    if "fiscal_year" not in out.columns:
+        out["fiscal_year"] = pd.NA
+    if "fiscal_period" not in out.columns:
+        out["fiscal_period"] = pd.NA
+    if "fundamental_sort_key" not in out.columns:
+        out["fundamental_sort_key"] = ""
+
+    out["trade_date"] = pd.to_datetime(out["trade_date"], errors="coerce").dt.date
+    out["period_end"] = pd.to_datetime(out["period_end"], errors="coerce").dt.date
+    out["period_start"] = pd.to_datetime(out["period_start"], errors="coerce").dt.date
+    for column in ("market_cap_available_at", "price_available_at", "fundamental_available_at", *_fundamental_av_columns()):
+        if column in out.columns:
+            out[column] = pd.to_datetime(out[column], errors="coerce")
+    for column in (
+        "price",
+        "market_cap",
+        "rev",
+        "ni",
+        "oi",
+        "ocf",
+        "capex",
+        "div",
+        "equity",
+        "long_term_debt",
+        "cash_and_equivalents",
+        "depreciation_amortization",
+    ):
+        if column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce")
+
+    if "fundamental_available_at" not in out.columns:
+        av_columns = [column for column in _fundamental_av_columns() if column in out.columns]
+        out["fundamental_available_at"] = out[av_columns].max(axis=1) if av_columns else pd.NaT
+
+    out = out.dropna(
+        subset=["security_id", "market_cap_source", "trade_date", "period_end", "price", "market_cap", "market_cap_available_at"]
+    )
+    if out.empty:
+        return out
+    return out[out["period_end"] <= out["trade_date"]].copy()
+
+
+def _select_latest_valuation_inputs(inputs: pd.DataFrame) -> pd.DataFrame:
+    out = _normalize_valuation_inputs(inputs)
+    if out.empty:
+        return out
+    key_columns = ["market_cap_source", "security_id", "trade_date"]
+    out = out.sort_values(
+        key_columns + ["period_end", "fundamental_available_at", "fundamental_sort_key"],
+        ascending=[True, True, True, False, False, False],
+        kind="mergesort",
+    )
+    return out.drop_duplicates(key_columns, keep="first").reset_index(drop=True)
+
+
+def _input_available_at(rec: dict[str, Any], key: str) -> pd.Timestamp | None:
+    column = "market_cap_available_at" if key == "market_cap" else f"{key}_av"
+    return _safe_timestamp(rec.get(column))
+
+
+def _max_input_available_at(rec: dict[str, Any], keys: tuple[str, ...]) -> pd.Timestamp | None:
+    values = [_input_available_at(rec, key) for key in keys]
+    if any(value is None for value in values):
+        return None
+    return max(value for value in values if value is not None)
+
+
+def _market_cap_components(rec: dict[str, Any]) -> tuple[float, float, float] | None:
+    market_cap = _safe_float(rec.get("market_cap"))
+    debt = _safe_float(rec.get("long_term_debt"))
+    cash = _safe_float(rec.get("cash_and_equivalents"))
+    if market_cap is None or debt is None or cash is None:
+        return None
+    return market_cap, debt, cash
+
+
+def _enterprise_value(rec: dict[str, Any]) -> float | None:
+    components = _market_cap_components(rec)
+    if components is None:
+        return None
+    market_cap, debt, cash = components
+    return market_cap + debt - cash
+
+
+def _ratio_values(
+    numerator: float | None,
+    denominator: float | None,
+    *,
+    meaningful_gate: bool = True,
+) -> tuple[float, bool] | None:
+    if numerator is None or denominator is None:
+        return None
+    if denominator == 0:
+        return None
+    return numerator / denominator, bool(meaningful_gate and denominator > 0)
+
+
+def _formula_values(
+    definition: ValuationFormulaDef,
+    rec: dict[str, Any],
+) -> tuple[float, float, float, float | None, bool] | None:
+    market_cap = _safe_float(rec.get("market_cap"))
+    if definition.code == "price_to_earnings":
+        num, den = market_cap, _safe_float(rec.get("ni"))
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "price_to_book":
+        num, den = market_cap, _safe_float(rec.get("equity"))
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "price_to_sales":
+        num, den = market_cap, _safe_float(rec.get("rev"))
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "enterprise_value":
+        components = _market_cap_components(rec)
+        if components is None:
+            return None
+        market_cap_value, debt, cash = components
+        numerator = market_cap_value + debt
+        enterprise_value = numerator - cash
+        return enterprise_value, numerator, cash, enterprise_value, bool(market_cap_value > 0)
+    if definition.code == "ev_to_ebitda":
+        enterprise_value = _enterprise_value(rec)
+        ebitda = None
+        oi = _safe_float(rec.get("oi"))
+        depreciation = _safe_float(rec.get("depreciation_amortization"))
+        if oi is not None and depreciation is not None:
+            ebitda = oi + depreciation
+        ratio = _ratio_values(enterprise_value, ebitda, meaningful_gate=bool((market_cap or 0) > 0))
+        return None if ratio is None else (ratio[0], enterprise_value, ebitda, enterprise_value, ratio[1])
+    if definition.code == "ev_to_sales":
+        enterprise_value = _enterprise_value(rec)
+        den = _safe_float(rec.get("rev"))
+        ratio = _ratio_values(enterprise_value, den, meaningful_gate=bool((market_cap or 0) > 0))
+        return None if ratio is None else (ratio[0], enterprise_value, den, enterprise_value, ratio[1])
+    if definition.code == "fcf_yield":
+        ocf = _safe_float(rec.get("ocf"))
+        capex = _safe_float(rec.get("capex"))
+        denominator = market_cap
+        numerator = None if ocf is None or capex is None else ocf + capex
+        ratio = _ratio_values(numerator, denominator)
+        return None if ratio is None else (ratio[0], numerator, denominator, None, ratio[1])
+    if definition.code == "earnings_yield":
+        num, den = _safe_float(rec.get("ni")), market_cap
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "dividend_yield":
+        div = _safe_float(rec.get("div"))
+        num, den = (None if div is None else abs(div)), market_cap
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    raise KeyError(f"unknown valuation formula {definition.code!r}")
+
+
+def _input_codes_json(definition: ValuationFormulaDef) -> str:
+    keys = ("price", *definition.input_keys)
+    return json_dumps({key: VALUATION_INPUT_CODES[key] for key in keys if key in VALUATION_INPUT_CODES})
+
+
+def _input_lineage_for_key(rec: dict[str, Any], key: str) -> dict[str, Any]:
+    if key == "market_cap":
+        return {
+            "table": "market_cap",
+            "source": rec.get("market_cap_source"),
+            "market_cap_id": rec.get("market_cap_id"),
+            "security_id": rec.get("security_id"),
+            "trade_date": rec.get("trade_date"),
+            "available_at": rec.get("market_cap_available_at"),
+            "price_available_at": rec.get("price_available_at"),
+            "upstream_lineage": _safe_json_loads(rec.get("market_cap_input_lineage_json")),
+        }
+    if key in VALUATION_TTM_INPUTS:
+        return {
+            "table": "fundamental_ttm_points",
+            "ttm_point_id": rec.get(f"{key}_id"),
+            "source": rec.get(f"{key}_source"),
+            "canonical_metric": VALUATION_TTM_INPUTS[key],
+            "period_end": rec.get("period_end"),
+            "available_at": rec.get(f"{key}_av"),
+        }
+    if key in VALUATION_BALANCE_INPUTS:
+        return {
+            "table": "fundamental_statement_points",
+            "statement_point_id": rec.get(f"{key}_id"),
+            "source": rec.get(f"{key}_source"),
+            "canonical_metric": VALUATION_BALANCE_INPUTS[key],
+            "period_end": rec.get("period_end"),
+            "available_at": rec.get(f"{key}_av"),
+        }
+    if key in VALUATION_XBRL_INSTANT_INPUTS or key in VALUATION_XBRL_DURATION_INPUTS:
+        metric = {**VALUATION_XBRL_INSTANT_INPUTS, **VALUATION_XBRL_DURATION_INPUTS}[key]
+        return {
+            "table": "fundamental_xbrl_metric",
+            "metric_id": rec.get(f"{key}_id"),
+            "source": rec.get(f"{key}_source"),
+            "canonical_metric": metric,
+            "period_end": rec.get("period_end"),
+            "available_at": rec.get(f"{key}_av"),
+        }
+    return {"input_key": key}
+
+
+def _input_lineage_json(definition: ValuationFormulaDef, rec: dict[str, Any]) -> str:
+    return json_dumps(
+        {
+            "formula_code": definition.code,
+            "inputs": {
+                key: _input_lineage_for_key(rec, key)
+                for key in definition.input_keys
+            },
+        }
+    )
+
+
+def _valuation_record(
+    definition: ValuationFormulaDef,
+    rec: dict[str, Any],
+    *,
+    source: str,
+    run_id: str | None,
+    value: float,
+    numerator: float,
+    denominator: float,
+    enterprise_value: float | None,
+    is_meaningful: bool,
+    available_at: pd.Timestamp,
+) -> dict[str, Any]:
+    trade_date = rec.get("trade_date")
+    market_cap_source = rec.get("market_cap_source")
+    return {
+        "valuation_multiple_id": _valuation_multiple_id(
+            source,
+            market_cap_source,
+            rec.get("security_id"),
+            trade_date,
+            definition.code,
+        ),
+        "source": source,
+        "market_cap_source": market_cap_source,
+        "market_cap_id": rec.get("market_cap_id"),
+        "security_id": rec.get("security_id"),
+        "symbol": rec.get("symbol"),
+        "trade_date": trade_date,
+        "formula_code": definition.code,
+        "category": definition.category,
+        "kind": definition.kind,
+        "unit": definition.unit,
+        "period_start": rec.get("period_start"),
+        "period_end": rec.get("period_end"),
+        "fiscal_year": rec.get("fiscal_year"),
+        "fiscal_period": rec.get("fiscal_period"),
+        "value": value,
+        "numerator_code": definition.numerator_code,
+        "numerator_value": numerator,
+        "denominator_code": definition.denominator_code,
+        "denominator_value": denominator,
+        "price": rec.get("price"),
+        "market_cap": rec.get("market_cap"),
+        "enterprise_value": enterprise_value,
+        "is_meaningful": is_meaningful,
+        "is_latest_revision": True,
+        "as_of_date": trade_date,
+        "available_at": available_at,
+        "market_cap_available_at": rec.get("market_cap_available_at"),
+        "price_available_at": rec.get("price_available_at"),
+        "input_codes_json": _input_codes_json(definition),
+        "input_lineage_json": _input_lineage_json(definition, rec),
+        "run_id": run_id,
+    }
+
+
+def compute_valuation_multiple_rows(
+    inputs: pd.DataFrame,
+    *,
+    source: str = DEFAULT_VALUATION_MULTIPLES_SOURCE,
+    run_id: str | None = None,
+) -> pd.DataFrame:
+    """Pure transform: market-cap/fundamental wide frame -> valuation rows."""
+
+    if inputs is None or inputs.empty:
+        return pd.DataFrame(columns=VALUATION_MULTIPLE_COLUMNS)
+
+    latest = _select_latest_valuation_inputs(inputs)
+    if latest.empty:
+        return pd.DataFrame(columns=VALUATION_MULTIPLE_COLUMNS)
+
+    records: list[dict[str, Any]] = []
+    for rec in latest.to_dict("records"):
+        for definition in VALUATION_FORMULA_DEFS:
+            if not all(_safe_float(rec.get(key)) is not None for key in definition.input_keys):
+                continue
+            available_at = _max_input_available_at(rec, definition.input_keys)
+            if available_at is None:
+                continue
+            values = _formula_values(definition, rec)
+            if values is None:
+                continue
+            value, numerator, denominator, enterprise_value, is_meaningful = values
+            records.append(
+                _valuation_record(
+                    definition,
+                    rec,
+                    source=source,
+                    run_id=run_id,
+                    value=value,
+                    numerator=numerator,
+                    denominator=denominator,
+                    enterprise_value=enterprise_value,
+                    is_meaningful=is_meaningful,
+                    available_at=available_at,
+                )
+            )
+
+    if not records:
+        return pd.DataFrame(columns=VALUATION_MULTIPLE_COLUMNS)
+    return pd.DataFrame(records, columns=VALUATION_MULTIPLE_COLUMNS)
+
+
+def _valuation_pivot_case(prefix: str, value_col: str, id_col: str, metric_map: dict[str, str]) -> str:
+    parts = []
+    for key, metric in metric_map.items():
+        parts.extend(
+            [
+                f"max(CASE WHEN {prefix}.canonical_metric = '{metric}' THEN {prefix}.{value_col} END) AS {key}",
+                f"max(CASE WHEN {prefix}.canonical_metric = '{metric}' THEN {prefix}.available_at END) AS {key}_av",
+                f"max(CASE WHEN {prefix}.canonical_metric = '{metric}' THEN {prefix}.{id_col} END) AS {key}_id",
+                f"max(CASE WHEN {prefix}.canonical_metric = '{metric}' THEN {prefix}.source END) AS {key}_source",
+            ]
+        )
+    return ",\n                ".join(parts)
+
+
+def load_valuation_multiple_inputs(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions,
+) -> pd.DataFrame:
+    """Assemble one latest-fundamental wide input row per market-cap row."""
+
+    registered: list[str] = []
+    joins: list[str] = []
+    params: list[object] = []
+    if options.market_cap_sources:
+        store.con.register(
+            "valuation_market_cap_source_filter",
+            pd.DataFrame({"market_cap_source": list(options.market_cap_sources)}),
+        )
+        registered.append("valuation_market_cap_source_filter")
+        joins.append("JOIN valuation_market_cap_source_filter mcsf ON mcsf.market_cap_source = m.source")
+    if options.symbols:
+        symbols = sorted({str(symbol).strip().upper() for symbol in options.symbols if str(symbol).strip()})
+        store.con.register("valuation_symbol_filter", pd.DataFrame({"symbol": symbols}))
+        registered.append("valuation_symbol_filter")
+        joins.append("JOIN valuation_symbol_filter vsf ON vsf.symbol = m.symbol")
+
+    date_predicates = []
+    if options.start_date is not None:
+        date_predicates.append("m.trade_date >= ?")
+        params.append(options.start_date)
+    if options.end_date is not None:
+        date_predicates.append("m.trade_date <= ?")
+        params.append(options.end_date)
+    where_extra = f" AND {' AND '.join(date_predicates)}" if date_predicates else ""
+    join_extra = "\n            ".join(joins)
+
+    ttm_cases = _valuation_pivot_case("t", "ttm_value", "ttm_point_id", VALUATION_TTM_INPUTS)
+    balance_cases = _valuation_pivot_case("s", "value", "statement_point_id", VALUATION_BALANCE_INPUTS)
+    xbrl_instant_cases = _valuation_pivot_case("x", "value", "metric_id", VALUATION_XBRL_INSTANT_INPUTS)
+    xbrl_duration_cases = _valuation_pivot_case("x", "value", "metric_id", VALUATION_XBRL_DURATION_INPUTS)
+
+    av_columns = [
+        "ttm.rev_av",
+        "ttm.ni_av",
+        "ttm.oi_av",
+        "ttm.ocf_av",
+        "ttm.capex_av",
+        "ttm.div_av",
+        "bal.equity_av",
+        "balx.long_term_debt_av",
+        "balx.cash_and_equivalents_av",
+        "flowx.depreciation_amortization_av",
+    ]
+    sort_ids = [
+        "ttm.rev_id",
+        "ttm.ni_id",
+        "ttm.oi_id",
+        "ttm.ocf_id",
+        "ttm.capex_id",
+        "ttm.div_id",
+        "bal.equity_id",
+        "balx.long_term_debt_id",
+        "balx.cash_and_equivalents_id",
+        "flowx.depreciation_amortization_id",
+    ]
+    greatest_av = "greatest(" + ", ".join(f"coalesce({column}, TIMESTAMP '1900-01-01')" for column in av_columns) + ")"
+    sort_key = "concat_ws('|', " + ", ".join(f"coalesce({column}, '')" for column in sort_ids) + ")"
+
+    sql = f"""
+        WITH market_caps AS (
+            SELECT
+                m.market_cap_id,
+                m.source AS market_cap_source,
+                m.price_source,
+                m.share_source,
+                m.security_id,
+                m.symbol,
+                m.trade_date,
+                m.close AS price,
+                m.market_cap,
+                m.available_at AS market_cap_available_at,
+                m.price_available_at,
+                m.input_lineage_json AS market_cap_input_lineage_json
+            FROM market_cap m
+            {join_extra}
+            WHERE m.is_latest_revision
+              AND m.security_id IS NOT NULL
+              AND m.trade_date IS NOT NULL
+              AND m.market_cap IS NOT NULL
+              AND m.available_at IS NOT NULL
+              {where_extra}
+        ),
+        ttm_ranked AS (
+            SELECT
+                t.*,
+                row_number() OVER (
+                    PARTITION BY t.security_id, t.ttm_end_date, t.canonical_metric
+                    ORDER BY
+                        t.available_at DESC NULLS LAST,
+                        t.revision_sequence DESC,
+                        t.source DESC,
+                        t.ttm_point_id DESC
+                ) AS rn
+            FROM fundamental_ttm_points t
+            WHERE t.is_latest_revision
+              AND t.canonical_metric IN ('revenue', 'net_income', 'operating_income',
+                                         'operating_cash_flow', 'capital_expenditures',
+                                         'dividends_paid')
+        ),
+        ttm AS (
+            SELECT
+                t.security_id,
+                any_value(t.symbol) AS fundamental_symbol,
+                any_value(t.cik) AS cik,
+                t.ttm_end_date AS period_end,
+                min(t.ttm_start_date) AS period_start,
+                any_value(t.fiscal_year) AS fiscal_year,
+                any_value(t.fiscal_period) AS fiscal_period,
+                {ttm_cases}
+            FROM ttm_ranked t
+            WHERE t.rn = 1
+            GROUP BY t.security_id, t.ttm_end_date
+        ),
+        bal_ranked AS (
+            SELECT
+                s.*,
+                row_number() OVER (
+                    PARTITION BY s.security_id, s.period_end, s.canonical_metric
+                    ORDER BY
+                        s.available_at DESC NULLS LAST,
+                        s.revision_sequence DESC,
+                        s.source DESC,
+                        s.statement_point_id DESC
+                ) AS rn
+            FROM fundamental_statement_points s
+            WHERE s.is_latest_revision
+              AND s.period_type = 'instant'
+              AND s.canonical_metric = 'stockholders_equity'
+        ),
+        bal AS (
+            SELECT
+                s.security_id,
+                any_value(s.symbol) AS fundamental_symbol,
+                any_value(s.cik) AS cik,
+                s.period_end,
+                any_value(s.fiscal_year) AS fiscal_year,
+                any_value(s.fiscal_period) AS fiscal_period,
+                {balance_cases}
+            FROM bal_ranked s
+            WHERE s.rn = 1
+            GROUP BY s.security_id, s.period_end
+        ),
+        balx_ranked AS (
+            SELECT
+                x.*,
+                row_number() OVER (
+                    PARTITION BY x.security_id, x.period_end, x.canonical_metric
+                    ORDER BY
+                        x.available_at DESC NULLS LAST,
+                        x.revision_seq DESC,
+                        x.source DESC,
+                        x.metric_id DESC
+                ) AS rn
+            FROM fundamental_xbrl_metric x
+            WHERE x.is_latest_revision
+              AND x.period_type = 'instant'
+              AND x.canonical_metric IN ('long_term_debt', 'cash_and_equivalents')
+        ),
+        balx AS (
+            SELECT
+                x.security_id,
+                any_value(x.symbol) AS fundamental_symbol,
+                any_value(x.cik) AS cik,
+                x.period_end,
+                any_value(x.fiscal_year) AS fiscal_year,
+                any_value(x.fiscal_period) AS fiscal_period,
+                {xbrl_instant_cases}
+            FROM balx_ranked x
+            WHERE x.rn = 1
+            GROUP BY x.security_id, x.period_end
+        ),
+        flowx_ranked AS (
+            SELECT
+                x.*,
+                row_number() OVER (
+                    PARTITION BY x.security_id, x.period_end, x.canonical_metric
+                    ORDER BY
+                        x.period_start DESC NULLS LAST,
+                        x.available_at DESC NULLS LAST,
+                        x.revision_seq DESC,
+                        x.source DESC,
+                        x.metric_id DESC
+                ) AS rn
+            FROM fundamental_xbrl_metric x
+            WHERE x.is_latest_revision
+              AND x.period_type = 'duration'
+              AND x.canonical_metric = 'depreciation_amortization'
+        ),
+        flowx AS (
+            SELECT
+                x.security_id,
+                any_value(x.symbol) AS fundamental_symbol,
+                any_value(x.cik) AS cik,
+                x.period_end,
+                min(x.period_start) AS period_start,
+                any_value(x.fiscal_year) AS fiscal_year,
+                any_value(x.fiscal_period) AS fiscal_period,
+                {xbrl_duration_cases}
+            FROM flowx_ranked x
+            WHERE x.rn = 1
+            GROUP BY x.security_id, x.period_end
+        ),
+        periods AS (
+            SELECT security_id, period_end FROM ttm
+            UNION
+            SELECT security_id, period_end FROM bal
+            UNION
+            SELECT security_id, period_end FROM balx
+            UNION
+            SELECT security_id, period_end FROM flowx
+        ),
+        fundamentals AS (
+            SELECT
+                p.security_id,
+                coalesce(ttm.fundamental_symbol, bal.fundamental_symbol, balx.fundamental_symbol, flowx.fundamental_symbol) AS fundamental_symbol,
+                coalesce(ttm.cik, bal.cik, balx.cik, flowx.cik) AS cik,
+                coalesce(ttm.period_start, flowx.period_start) AS period_start,
+                p.period_end,
+                coalesce(ttm.fiscal_year, bal.fiscal_year, balx.fiscal_year, flowx.fiscal_year) AS fiscal_year,
+                coalesce(ttm.fiscal_period, bal.fiscal_period, balx.fiscal_period, flowx.fiscal_period) AS fiscal_period,
+                ttm.rev, ttm.rev_av, ttm.rev_id, ttm.rev_source,
+                ttm.ni, ttm.ni_av, ttm.ni_id, ttm.ni_source,
+                ttm.oi, ttm.oi_av, ttm.oi_id, ttm.oi_source,
+                ttm.ocf, ttm.ocf_av, ttm.ocf_id, ttm.ocf_source,
+                ttm.capex, ttm.capex_av, ttm.capex_id, ttm.capex_source,
+                ttm.div, ttm.div_av, ttm.div_id, ttm.div_source,
+                bal.equity, bal.equity_av, bal.equity_id, bal.equity_source,
+                balx.long_term_debt, balx.long_term_debt_av, balx.long_term_debt_id, balx.long_term_debt_source,
+                balx.cash_and_equivalents, balx.cash_and_equivalents_av, balx.cash_and_equivalents_id, balx.cash_and_equivalents_source,
+                flowx.depreciation_amortization, flowx.depreciation_amortization_av,
+                flowx.depreciation_amortization_id, flowx.depreciation_amortization_source,
+                {greatest_av} AS fundamental_available_at,
+                {sort_key} AS fundamental_sort_key
+            FROM periods p
+            LEFT JOIN ttm
+              ON ttm.security_id = p.security_id
+             AND ttm.period_end = p.period_end
+            LEFT JOIN bal
+              ON bal.security_id = p.security_id
+             AND bal.period_end = p.period_end
+            LEFT JOIN balx
+              ON balx.security_id = p.security_id
+             AND balx.period_end = p.period_end
+            LEFT JOIN flowx
+              ON flowx.security_id = p.security_id
+             AND flowx.period_end = p.period_end
+        ),
+        matched AS (
+            SELECT
+                mc.*,
+                f.period_start,
+                f.period_end,
+                f.fiscal_year,
+                f.fiscal_period,
+                f.rev, f.rev_av, f.rev_id, f.rev_source,
+                f.ni, f.ni_av, f.ni_id, f.ni_source,
+                f.oi, f.oi_av, f.oi_id, f.oi_source,
+                f.ocf, f.ocf_av, f.ocf_id, f.ocf_source,
+                f.capex, f.capex_av, f.capex_id, f.capex_source,
+                f.div, f.div_av, f.div_id, f.div_source,
+                f.equity, f.equity_av, f.equity_id, f.equity_source,
+                f.long_term_debt, f.long_term_debt_av, f.long_term_debt_id, f.long_term_debt_source,
+                f.cash_and_equivalents, f.cash_and_equivalents_av,
+                f.cash_and_equivalents_id, f.cash_and_equivalents_source,
+                f.depreciation_amortization, f.depreciation_amortization_av,
+                f.depreciation_amortization_id, f.depreciation_amortization_source,
+                f.fundamental_available_at,
+                f.fundamental_sort_key,
+                row_number() OVER (
+                    PARTITION BY mc.market_cap_source, mc.security_id, mc.trade_date
+                    ORDER BY f.period_end DESC, f.fundamental_available_at DESC, f.fundamental_sort_key DESC
+                ) AS valuation_period_rn
+            FROM market_caps mc
+            JOIN fundamentals f
+              ON f.security_id = mc.security_id
+             AND f.period_end <= mc.trade_date
+        )
+        SELECT * EXCLUDE (valuation_period_rn)
+        FROM matched
+        WHERE valuation_period_rn = 1
+    """
+    try:
+        return store.con.execute(sql, params).df()
+    finally:
+        for relation in registered:
+            store.con.unregister(relation)
+
+
+def _delete_valuation_multiples_scope(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions,
+) -> None:
+    predicates = ["source = ?"]
+    params: list[object] = [options.source]
+    if options.symbols:
+        symbols = tuple(str(symbol).strip().upper() for symbol in options.symbols if str(symbol).strip())
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            predicates.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+    if options.start_date is not None:
+        predicates.append("trade_date >= ?")
+        params.append(options.start_date)
+    if options.end_date is not None:
+        predicates.append("trade_date <= ?")
+        params.append(options.end_date)
+    if options.market_cap_sources:
+        placeholders = ", ".join("?" for _ in options.market_cap_sources)
+        predicates.append(f"market_cap_source IN ({placeholders})")
+        params.extend(options.market_cap_sources)
+    store.con.execute(f"DELETE FROM valuation_multiples WHERE {' AND '.join(predicates)}", params)
+
+
+def refresh_valuation_multiples(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions | None = None,
+) -> int:
+    options = options or ValuationMultiplesOptions()
+    store.initialize()
+    inputs = load_valuation_multiple_inputs(store, options)
+    rows = compute_valuation_multiple_rows(inputs, source=options.source, run_id=options.run_id)
+    with store.transaction():
+        _delete_valuation_multiples_scope(store, options)
+        if not rows.empty:
+            insert_frame(store, rows, "valuation_multiples", "valuation_multiples_insert")
+    return int(len(rows))
+
+
+class ValuationMultiplesDataset(Dataset):
+    dataset_id = "valuation_multiples"
+    source_name = VALUATION_SOURCE_NAME
+
+    def ensure_schema(self, store: DuckDBStore) -> None:
+        store.initialize()
+
+    def load(self, store: DuckDBStore, options: ValuationMultiplesOptions) -> DatasetLoadResult:
+        rows = refresh_valuation_multiples(store, options)
+        quality_check(
+            store,
+            dataset_id=self.dataset_id,
+            table_name="valuation_multiples",
+            check_name="rows_materialized",
+            status="passed" if rows > 0 else "warning",
+            observed_value=float(rows),
+            threshold_value=1.0,
+            details={"source": options.source},
+        )
+        return DatasetLoadResult(
+            dataset_id=self.dataset_id,
+            rows_loaded=rows,
+            source=options.source,
+            details={"formulas": [definition.code for definition in VALUATION_FORMULA_DEFS]},
         )

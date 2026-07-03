@@ -281,7 +281,7 @@ class TestFormulaRegistryAsofReader:
 
 
 class TestFormulaRegistryAsofOverCommittedSeed:
-    """End-to-end: the real 72-row committed seed is fully catalog-queryable."""
+    """End-to-end: the real committed seed is fully catalog-queryable."""
 
     def test_every_committed_formula_is_queryable_as_of_today(self, tmp_store):
         from db.asof import formula_registry_asof

@@ -3443,6 +3443,25 @@ ORDER BY m.symbol, m.trade_date
 """
 
 
+VALUATION_MULTIPLES_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)
+SELECT v.*
+FROM valuation_multiples v
+{symbol_join}
+{formula_join}
+{category_join}
+CROSS JOIN params p
+WHERE v.available_at <= p.as_of_ts
+  AND v.as_of_date <= p.as_of_date
+  AND v.is_latest_revision
+ORDER BY v.symbol, v.formula_code, v.trade_date
+"""
+
+
 def market_cap_asof(
     as_of_date: dt.date,
     as_of_ts: dt.datetime | None = None,
@@ -3463,6 +3482,53 @@ def market_cap_asof(
                 registered.append("asof_market_cap_symbol_filter")
                 symbol_join = "JOIN asof_market_cap_symbol_filter sf ON sf.symbol = m.symbol"
             sql = MARKET_CAP_ASOF_SQL.format(symbol_join=symbol_join)
+            return active.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)
+
+
+def valuation_multiples_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: "DuckDBStore | None" = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    formula_codes: tuple[str, ...] | list[str] | None = None,
+    categories: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Return latest-visible valuation multiples as of a point in time."""
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    formula_values = _normalize_strings(formula_codes)
+    category_values = _normalize_strings(categories)
+
+    def _run(active):
+        registered = []
+        try:
+            symbol_join = ""
+            formula_join = ""
+            category_join = ""
+            if _register_filter(active, "asof_valuation_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_valuation_symbol_filter")
+                symbol_join = "JOIN asof_valuation_symbol_filter sf ON sf.symbol = v.symbol"
+            if _register_filter(active, "asof_valuation_formula_filter", "formula_code", formula_values):
+                registered.append("asof_valuation_formula_filter")
+                formula_join = "JOIN asof_valuation_formula_filter ff ON ff.formula_code = upper(v.formula_code)"
+            if _register_filter(active, "asof_valuation_category_filter", "category", category_values):
+                registered.append("asof_valuation_category_filter")
+                category_join = "JOIN asof_valuation_category_filter cf ON cf.category = upper(v.category)"
+            sql = VALUATION_MULTIPLES_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                formula_join=formula_join,
+                category_join=category_join,
+            )
             return active.con.execute(sql, [as_of_date, as_of_ts]).df()
         finally:
             for relation in registered:
