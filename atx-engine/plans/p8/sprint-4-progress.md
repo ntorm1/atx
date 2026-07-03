@@ -54,7 +54,7 @@ intentional gap (S4-4 section below).
 
 ## Unit checklist
 - [x] S4-0  Ledger + bug-verification table + `CostSelectionConfig`
-- [ ] S4-1  Capacity participation unit fix (B1)
+- [x] S4-1  Capacity participation unit fix (B1)
 - [ ] S4-2  Cap-clip-renorm re-center (B2)
 - [ ] S4-3a Limit fill clamp (B3)
 - [ ] S4-3b Absent-instrument volume zeroing (B4)
@@ -76,3 +76,79 @@ S4-0: complete. Ledger + bug-verification table written; `CostSelectionConfig` a
 (`cost/cost_selection_config.hpp`, new file); `cost_selection_config_test.cpp` (`tests/core/`) pins
 the inert defaults `{false, 0.0, 1.0}`. Pure addition — no existing call site changed, no golden
 touched.
+
+S4-1: complete [CORRECTNESS — B1]. Fixed the participation UNIT bug at its two S4-owned sites:
+- `risk/capacity.hpp` `detail::impact_cost_bps` (was `shares = notional/price; part = shares/adv`,
+  now `part = notional/adv`, dropping the price division). Header contract comment (the "capacity
+  model" block) updated to match.
+- `factory/fitness.cpp` `book_cost_bps` (was `part = (target_aum·|w|/price)/adv`, now
+  `part = (target_aum·|w|)/adv`). `price` is still read to gate out unpriced names (no book value)
+  but no longer enters the participation ratio.
+
+**RED (by-construction fixture, `tests/risk/capacity_participation_test.cpp`, new):** single-name
+book, `aum=$1e6`, `|w|=1.0`, `price=$100`, dollar-ADV=`$1e6`, sim `Y=1,delta=1` (isolates `part`
+linearly), alternating ±1% returns (`sigma=0.01` exactly, `gross_edge_bps=0` exactly so
+`net_edge_bps = -cost_bps`). Correct `part = notional/adv = 1.0` ⇒ `cost_bps=100.0` ⇒
+`net_edge_bps=-100.0`. Buggy `part = shares/adv = 0.01` (off by exactly `1/price`) ⇒ `cost_bps=1.0`
+⇒ `net_edge_bps=-1.0`. `CapacityParticipation.ParticipationIsNotionalOverDollarAdv` RED: asserted
+`-100.0`, got `-1.0000000000000198` (diff 99.0, fails). A second name at `price=$10` (same
+notional/ADV/sigma) proves price-scaling: buggy `net_edge_bps=-10.0` (10x A, matching the 10x price
+ratio) vs A's `-1.0` — `CapacityParticipation.CostIsPriceInvariantForEqualNotional` RED: asserted
+equal, got `-1.0` vs `-10.0` (fails). **Deviation note:** the sprint plan's own worked arithmetic
+("`(1e6/100)/1e6 = 1e-4`") has a slip — the correct value is `0.01` (`1e4/1e6`), matching its own
+prose ("off by exactly 1/price", `1/100=0.01`). This ledger's fixture uses the arithmetically
+correct `0.01`; the FORMULA/conclusion (participation inflated capacity by ~`price`, understated by
+`1/price`) is unchanged and is what both accept tests prove.
+
+**GREEN:** both new tests pass after the fix (`atx-engine-risk-tests`: 15/15 incl.
+`RiskCapacity.*`/`CapacityScorecard.*` unaffected). `atx-engine-core-tests`
+(`CapacityScorecard.MonotoneCrossesNearAnalytic`, updated below) green.
+`atx-engine-factory-tests` (`FactoryCostAwareFitness.*`, updated below) green, full-suite digest
+check pending (see below).
+
+**Existing tests that ENCODED the bug — updated in this commit (not a golden digest, but a
+hand-computed "expected" pinned to the old formula; contract-B re-baseline):**
+- `tests/factory/factory_cost_aware_fitness_test.cpp`
+  `FactoryCostAwareFitness.HandCheck_BookCostMatchesRoundTrip`: hand-computation changed
+  `part = shares/adv` (`shares = target_aum/price`) → `part = notional/adv`
+  (`notional = target_aum·|w|`), matching the fixed `book_cost_bps`. Old/new VALUE at this
+  fixture's inputs (`target_aum=5e5, price=99, adv=103000`): old `part = (5e5/99)/103000 ≈
+  0.049023`; new `part = 5e5/103000 ≈ 4.854369`. `round_trip_cost_bps` scales with the new
+  (100x-ish larger, price≈99x) part — the test re-derives `expected` from the SAME (now-corrected)
+  formula the production code uses, so it stays a tautological/self-consistent hand-check, not a
+  frozen golden; no separate digest to record.
+- `tests/core/capacity_scorecard_test.cpp` `CapacityScorecard.MonotoneCrossesNearAnalytic`: analytic
+  closed-form `analytic_aum = part_star * adv * price / 0.25` → `part_star * adv / 0.25` (drop the
+  `* price` factor, `price=100` in this fixture — the old analytic capacity AUM was 100x the
+  corrected one). Self-consistent re-derivation (not a frozen digest); test re-passes because the
+  formula now matches the fixed production code exactly.
+- `tests/core/capacity_vector_test.cpp` `CapacityVector.HighParticipationIsCapacityConstrained`:
+  the fixed (larger, price-inclusive) participation makes the true capacity zero-crossing of the
+  concentrated books ~100x SMALLER (crossing_new = crossing_old / price, price=100 in this
+  fixture's panel) — both concentrated alphas' true crossings fell below the internal
+  `compute_capacity_vector` grid's floor (`0.01*target_aum`), clamping both to the SAME grid-floor
+  value (`999999.99999999953`) and breaking the `cap[3] < cap[1]` ordering assertion. Fix:
+  `target_aum` 1e8 → 1e6 (empirically verified: re-centers the internal 0.01x-10x grid on the
+  ~100x-smaller true crossings so both remain bracketed and distinguishable). The qualitative claim
+  under test (concentrated-thin-ADV books are more capacity-constrained than diffuse ones) is
+  unchanged; only the grid needed to be re-centered on the now-honest (smaller) numbers.
+
+**No pinned golden digest moved.** No existing test in `tests/risk`, `tests/core`, or
+`tests/factory` pins a byte-for-byte SHA/digest that reads `book_cost_bps`/`capacity_curve` output
+at a nonzero AUM through the participation path (verified by full-suite run of
+`atx-engine-risk-tests`, `atx-engine-core-tests`, `atx-engine-factory-tests` post-fix — all green).
+If a downstream digest test is later found to have moved, it will be re-baselined here with this
+unit's commit SHA as authority.
+
+**SEAM (Sprint 3, recorded per the spec's binding instruction — do NOT edit, S3-owned file):**
+`atx-impl/src/stage_combine.cpp` carries the IDENTICAL participation bug at (confirmed at kickoff)
+line 315: `const atx::f64 part_per_aum = abs_w / (price * adv);` inside the per-alpha capacity-bracket
+loop (function computing the `C` cost-bracket constant, `cost_bps(aum) = C·aum^delta`). Exact fix
+Sprint 3 should apply: `part_per_aum = abs_w / adv;` (drop `price` from the denominator) — dimensionally
+identical to the `risk/capacity.hpp`/`factory/fitness.cpp` fix. Shared proof fixture: this ledger's
+`capacity_participation_test.cpp` (single-name book, `aum=$1e6,|w|=1,price=$100,dollar-ADV=$1e6` ⇒
+correct `part=1.0`, buggy `part=0.01`). **Note:** the spec's dependency map cited this bug at
+`stage_combine.cpp:289,301` — at kickoff those exact lines are `gross_edge_bps` assembly and an
+`n = min(insts, w.size())` clamp respectively (unrelated code shifted by prior p6/p7 commits); the
+bug itself is real and unchanged in shape, just at line 315 in the current tree. This is an OPEN
+dependency for Sprint 3 until landed.

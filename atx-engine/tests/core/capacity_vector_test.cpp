@@ -175,7 +175,15 @@ private:
 // ===========================================================================
 TEST(CapacityVector, HighParticipationIsCapacityConstrained) {
   const usize rows = 80U, inst = 50U;
-  const f64 target_aum = 1.0e8; // $100M
+  // S4-1 [B1 fix]: participation is now notional/dollar-ADV (was shares/dollar-ADV,
+  // off by a factor of price=100 in this fixture's panel) -- the corrected
+  // (larger) participation charges more impact at any AUM, so the true
+  // zero-crossing AUM of the concentrated books is ~100x SMALLER than before.
+  // target_aum (and so the 0.01x-10x grid compute_capacity_vector sweeps) is
+  // scaled down by the same ~100x to keep both crossings bracketed and
+  // distinguishable on the grid; the qualitative claim under test (concentrated
+  // < diffuse, constrained below target) is unchanged by the fix.
+  const f64 target_aum = 1.0e6; // $1M (was $100M pre-S4-1; see comment above)
 
   // Per-name ADV: every name liquid EXCEPT name 0, which is illiquid (tiny volume).
   std::vector<f64> vol(inst, 1.0e6); // 1M shares/row -> ample dollar ADV

@@ -136,14 +136,16 @@ private:
 //      the per-name cost arithmetic collapses to a single representative term and
 //      the capacity AUM is analytically solvable. Uniform book w=0.25 each.
 //
-//  Model (capacity.hpp): for identical names with Σ|w|=1,
-//    cost_bps(aum) = 1e4 * Y * sigma * part^delta, part = (aum*0.25/price)/adv.
+//  Model (capacity.hpp, post-S4-1 [B1 fix]): for identical names with Σ|w|=1,
+//    cost_bps(aum) = 1e4 * Y * sigma * part^delta, part = (aum*0.25)/adv (notional
+//    over dollar-ADV -- dollars/dollars, unitless; NOT (aum*0.25/price)/adv, the
+//    pre-S4-1 shares/adv formula that was off by a factor of price).
 //    Capacity is where gross_bps == cost_bps:
 //      part* = (gross_bps / (1e4*Y*sigma))^(1/delta)
-//      aum*  = part* * adv * price / 0.25
+//      aum*  = part* * adv / 0.25
 //  We compute sigma (popstd of the model's per-step returns over the vol window),
-//  adv (mean close*volume over the adv window), price (newest close), and gross
-//  from the fixture exactly as the model does, then solve the closed form.
+//  adv (mean close*volume over the adv window), and gross from the fixture
+//  exactly as the model does, then solve the closed form.
 // ===========================================================================
 TEST(CapacityScorecard, MonotoneCrossesNearAnalytic) {
   const usize rows = 60U, inst = 4U;
@@ -206,9 +208,8 @@ TEST(CapacityScorecard, MonotoneCrossesNearAnalytic) {
   }
   adv /= static_cast<f64>(w_adv);
 
-  const f64 price = close[0][0]; // newest mark
   const f64 part_star = std::pow(gross_bps / (1.0e4 * Y * sigma), 1.0 / delta);
-  const f64 analytic_aum = part_star * adv * price / 0.25;
+  const f64 analytic_aum = part_star * adv / 0.25; // S4-1: notional/adv, no price factor
 
   // --- a grid that brackets the analytic crossing (two decades each side) --------
   std::vector<f64> grid;

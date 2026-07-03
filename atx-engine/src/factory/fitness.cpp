@@ -520,7 +520,13 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     if (adv <= 0.0) {
       continue;
     }
-    const atx::f64 part = (target_aum * abs_w / price) / adv; // (AUM·|w|/price)/ADV
+    // S4-1 [B1 fix]: participation is notional/dollar-ADV, NOT
+    // (notional/price)/dollar-ADV -- the prior formula was off by a factor of
+    // price_i (identical bug to risk/capacity.hpp's impact_cost_bps; see
+    // capacity_participation_test.cpp for the by-construction proof). `price`
+    // is still read above to gate out unpriced names (an unpriced name has no
+    // book value), it just no longer enters the participation ratio.
+    const atx::f64 part = (target_aum * abs_w) / adv; // notional / dollar-ADV
     const atx::f64 sigma =
         detail::dm_return_volatility(close, dates, insts, i, detail::kCostVolWindow);
     if (part <= 0.0 || sigma <= 0.0) {
