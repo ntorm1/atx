@@ -154,6 +154,20 @@ void finalize_run_pbo(FactoryReport &rep,
   rep.pbo_gate_passed = (max_pbo >= 1.0) ? true : !(rep.pbo > max_pbo);
 }
 
+// S5-2 — see the factory.hpp declaration for the full contract.
+[[nodiscard]] atx::core::Status check_blocking_pbo(const FactoryConfig &cfg,
+                                                   const FactoryReport &rep) {
+  if (cfg.blocking_pbo && !rep.pbo_gate_passed) {
+    return atx::core::Err(
+        atx::core::ErrorCode::InvalidArgument,
+        "mine_into: blocking PBO breach (pbo=" + std::to_string(rep.pbo) +
+            " > max_pbo threshold) -- run failed CLOSED (--blocking-pbo); the "
+            "library/manifest for this run's admits may already be persisted "
+            "(same caveat as --pbo-hard-block)");
+  }
+  return atx::core::Ok();
+}
+
 } // namespace detail
 
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
@@ -324,7 +338,18 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchDriver driver{lib_,           panel_,           policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
+  // R1: read the cross-run cumulative trial count BEFORE the search runs (a pure
+  // property of the already-existing library — no ordering hazard). S5-2: thread it
+  // into SearchConfig::prior_trial_count so the search's OWN per-generation NSGA
+  // `dsr` selection column (active only when cfg.search.deflate_selection is set) is
+  // deflated by the ACTUAL cross-run N, not just this run's local canon.size() —
+  // otherwise a multi-run --library-dir sweep's LATER runs under-deflate their own
+  // selection signal (they see only their own small in-run N). Inert at prior==0
+  // (fresh library) or deflate_selection==false (SearchConfig ignores the field).
+  const atx::u64 prior_r1 = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1);
+  const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
 
   // The persistent library is the ADMISSION pool: the deflated-fitness ranking and
   // the per-candidate re-score below score marginal corr against it (O(neighbors)).
@@ -344,7 +369,6 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // prior == 0 (fresh library / single run) this equals res.trial_count — byte-
   // identical to the pre-R1 path.
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1 = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
     admit_fit.trial_count = static_cast<atx::usize>(prior_r1) + res.trial_count;
   }
@@ -472,6 +496,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 
@@ -605,7 +630,12 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchDriver driver{lib_,           panel_,           policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool);
+  // S5-2: same cross-run prior_trial_count wire as the serial mine_into (read
+  // BEFORE the search runs; see that site's comment for the full reasoning).
+  const atx::u64 prior_r1_par = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par);
+  const SearchResult res = driver.run(search_cfg, search_pool);
 
   rep.evaluated = res.trial_count;
   fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
@@ -619,7 +649,6 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // F4 / R1 — identical to the sequential path: prior + this run's N (see serial
   // mine_into above for the full reasoning). When prior == 0 this is res.trial_count.
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1_par = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
     admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par) + res.trial_count;
   }
@@ -745,6 +774,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 
@@ -1194,7 +1224,12 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchDriver driver{lib_,           train,            policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
+  // S5-2: cross-run prior_trial_count wire (read BEFORE the search runs; see the
+  // non-OOS serial mine_into's comment for the full reasoning).
+  const atx::u64 prior_r1_oos_pre = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_oos_pre);
+  const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
 
   // (8.C) OOS train-ranking corr length safety: rank the OOS candidates against an
   // EMPTY pool for the corr/diversify term. The candidate's ranking pnl here is
@@ -1225,10 +1260,10 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — prior cumulative N + this run's N (same reasoning as serial mine_into).
+  // Reuses prior_r1_oos_pre (read once, before the search, for S5-2's prior_trial_count).
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_oos) + res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_oos_pre) + res.trial_count;
   }
 
   // (2) rank the distinct scored candidates by deflated fitness against an EMPTY pool
@@ -1492,6 +1527,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
 
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 
@@ -1584,7 +1620,14 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   SearchDriver driver{lib_,           train,            policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool);
+  // S5-2: cross-run prior_trial_count wire, read BEFORE the search runs — captured
+  // in the SEQUENTIAL parent before any parallel_for (the search's own internal
+  // parallelism, unaffected by this task), so seq==parallel holds trivially: this
+  // is a single scalar read of the already-existing library, not a per-worker value.
+  const atx::u64 prior_r1_par_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par_oos);
+  const SearchResult res = driver.run(search_cfg, search_pool);
 
   rep.evaluated = res.trial_count;
   fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
@@ -1597,7 +1640,6 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
 
   // F4 / R1 — prior + this run's N, IDENTICAL to serial mine_into_oos.
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1_par_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
     admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par_oos) + res.trial_count;
   }
@@ -1874,6 +1916,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
 
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 

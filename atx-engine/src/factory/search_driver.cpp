@@ -693,9 +693,16 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   //
   // When deflate_selection is OFF: gen_fit == cfg.fitness exactly (trial_count
   // stays at its cfg.fitness default) -> zero new computation -> byte-identical.
+  //
+  // S5-2: cfg.prior_trial_count folds in the CROSS-RUN cumulative N from a
+  // persistent library (0 for a fresh library / the non-library mine() path, so
+  // this collapses to the exact pre-S5-2 expression). Both terms were already
+  // captured/known before this point (canon.size() here; prior_trial_count by the
+  // Factory caller before driver.run() even started) -> still a single serial
+  // scalar, so the seq==parallel invariant is unaffected.
   FitnessCfg gen_fit = cfg.fitness;
   if (cfg.deflate_selection) {
-    gen_fit.trial_count = std::max<atx::usize>(1U, canon.size());
+    gen_fit.trial_count = cfg.prior_trial_count + std::max<atx::usize>(1U, canon.size());
   }
 
   // S3-1 PERF: create a shared CpcvCache for this generation.  All workers in the

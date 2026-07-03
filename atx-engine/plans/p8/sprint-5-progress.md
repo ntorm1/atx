@@ -150,10 +150,64 @@ all green. Pinned goldens re-confirmed: `FactoryOos.*` (all), `NsgaSearch.Scalar
 ReproducesGoldenDigest`. `atx-impl`/`atx-impl-tests` rebuild clean (engine header change
 propagates through `library.hpp`/`factory.hpp` includes).
 
+## S5-2 — cumulative-N selection column + blocking PBO
+
+Two DISTINCT sub-seams (kept separate per the architecture note):
+
+**(1) Selection column.** `factory/search_driver.hpp`'s `SearchConfig` gets an appended
+`atx::usize prior_trial_count{0}` field: the CROSS-RUN cumulative trial count from a
+persistent library opened before this search. `search_driver.cpp`'s `evaluate_generation`
+changes `gen_fit.trial_count = std::max<usize>(1U, canon.size())` to
+`cfg.prior_trial_count + std::max<usize>(1U, canon.size())` (only inside the existing
+`if (cfg.deflate_selection)` guard — untouched off-path). `factory.cpp`'s four persistent-
+library admit paths (`mine_into` serial/MultiProcess, `mine_into_oos` serial/parallel) now read
+`lib_lib.cumulative_trials()` BEFORE calling `driver.run()` (moved up from its previous
+post-search read site, reused for both the search-time wire and the existing admission-time
+`admit_fit.trial_count` computation) and thread it into a local `SearchConfig` copy's
+`prior_trial_count`. The cascade skip-bound (`cascade_gate_passes`) is UNCHANGED — confirmed
+still the byte-safe LOOSENING fold from `main`, per the kickoff note; this is a genuinely
+separate mechanism from the NSGA `dsr` selection column.
+
+**(2) Blocking PBO.** `FactoryConfig.blocking_pbo` (new field, default false) + a new
+`detail::check_blocking_pbo(cfg, rep)` helper (factory.hpp/.cpp, alongside `finalize_run_pbo`):
+returns `Err` iff `cfg.blocking_pbo` is set AND `rep.pbo_gate_passed` is false (a real breach);
+`Ok()` otherwise (byte-identical control flow at `blocking_pbo=false` or `max_pbo>=1.0`, since
+`pbo_gate_passed` fail-opens by `finalize_run_pbo`'s own pre-existing contract in both cases).
+Called via `ATX_TRY_VOID` right before each of the four persistent-library admit paths' final
+`return Ok(rep)` — a FAIL-CLOSED escalation of the Factory call itself, distinct from
+`--pbo-hard-block` (which only flips the STAGE's exit code in `stage_discover.cpp`, never
+touching `Factory::mine_into`'s return value). `stage_discover.cpp` threads
+`cfg.blocking_pbo -> fcfg.blocking_pbo`.
+
+Accept evidence (new `atx-engine/tests/factory/deflate_selection_running_n_test.cpp` +
+`blocking_pbo_test.cpp`): `DeflateSelection.PriorTrialCountDeflatesSearchSelection` (gen-0's
+best fitness — the ONE apples-to-apples comparable generation, since gen 0's population is
+seed/grammar-determined independent of fitness — is strictly lower at `prior_trial_count=100000`
+vs `=0`, same seed), `DeflateSelection.OffPathByteIdenticalWhenDeflateSelectionOff`,
+`DeflateSelection.SeqEqualsParallel`, `BlockingPbo.UnadmitsOnBreach` (hand-built i.i.d.-noise
+`admitted_pnls` via `finalize_run_pbo`'s own sanctioned hand-built-fixture test doorway — pure
+noise reliably yields `pbo>0`, unlike the `real_signal_panel` fixture's deliberately-stationary
+edge which empirically gives `pbo==0`; advisory-only stays Ok, `blocking_pbo=true` on the
+identical breach returns Err), `BlockingPbo.InertAtMaxPboOffDefault` (real end-to-end
+`Factory::mine_into` call, `blocking_pbo=true` + the `max_pbo=1.0` default -> still Ok). All
+GREEN. Pinned goldens + full `factory`/`library`/`cascade`/`nsga` groups: 187/187 green (2
+pre-existing unrelated `RobustPipelineE2E` engine-risk-group failures, predate this session —
+confirmed present before any S5 edit). `AtxImplDiscover`/`AtxImplSweep` impl suites: 42/42 +
+prior counts green; `atx-impl`/`atx-impl-tests` rebuild clean.
+
+**Deviation note (why `DeflateSelection.PriorTrialCountDeflatesSearchSelection` only compares
+generation 0):** an earlier draft asserted "no generation regresses" across the WHOLE run, which
+is unsound — from generation 1 onward the two configs' tournament/elitism selection reads
+different `raw` values (the dsr haircut), so the two runs' populations genuinely DIVERGE into
+different genome trajectories; nothing orders "best of population A" vs "best of population B"
+once they differ. Generation 0's population is identical between both configs (grammar/seed-
+determined, computed BEFORE any fitness is known), so it is the one rigorous apples-to-apples
+comparison point, and it is what the test asserts.
+
 ## Unit checklist
 - [x] S5-0 CLI flag surface
 - [x] S5-1 library::verdict_for deflation screens
-- [ ] S5-2 cumulative-N selection column + blocking PBO
+- [x] S5-2 cumulative-N selection column + blocking PBO
 - [ ] S5-3 eval/robustness_battery
 - [ ] S5-4 stage graph + build-megaalpha-book.ps1
 - [ ] S5-5 V1 scorecard template

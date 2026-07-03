@@ -217,6 +217,20 @@ struct FactoryConfig {
   //  strictly safer). INACTIVE (<= 0.0, the default): the pre-gate is NEVER consulted, so the
   //  path is byte-identical to pre-S2-1. Active when > 0.0.
   atx::f64 cascade_gate_factor = 0.0; // --cascade-gate (S2-1); 0.0 == OFF, byte-identical
+  // --- S5-2 blocking PBO (OPTIONAL; default DISABLED = false). ---
+  //  W4b's run-level CSCV-PBO verdict (`rep.pbo_gate_passed`) is ADVISORY-but-
+  //  RECORDED: a breach never un-admits or fails the run. `blocking_pbo` escalates
+  //  a breach to a FAIL-CLOSED run: `mine_into`/`mine_into_oos`(_parallel) return
+  //  Err instead of Ok(rep) when `pbo_gate_passed` is false (checked AFTER the
+  //  admit loop + finalize_run_pbo, so the verdict is already computed). Distinct
+  //  from `--pbo-hard-block` (RunConfig), which only escalates the STAGE's exit
+  //  code while `mine_into` itself still returns Ok — blocking_pbo fails the
+  //  FACTORY call itself, a strictly stronger escalation. Inert at max_pbo>=1.0
+  //  (finalize_run_pbo never computes a verdict, pbo_gate_passed stays true) OR
+  //  blocking_pbo==false (the default) — byte-identical to today either way (the
+  //  admitted set / digest are UNCHANGED; only whether the run reports Ok or Err
+  //  differs, and only when both this AND max_pbo<1.0 are explicitly set).
+  bool blocking_pbo = false; // --blocking-pbo (S5-2); false == advisory-only, as today
 };
 
 // =========================================================================
@@ -357,6 +371,17 @@ void finalize_run_pbo(FactoryReport &rep,
                       const std::vector<std::vector<atx::f64>> &admitted_pnls,
                       atx::f64 max_pbo,
                       bool always_compute = false);
+
+// check_blocking_pbo — S5-2: the blocking-PBO fail-closed escalation. Called AFTER
+// finalize_run_pbo (so rep.pbo_gate_passed reflects the just-computed verdict) and
+// AFTER the admit loop (the library already persisted this run's admits — same
+// documented caveat as --pbo-hard-block). Returns Err iff cfg.blocking_pbo is set
+// AND the run-level PBO gate is ACTIVE and breached (rep.pbo_gate_passed == false);
+// Ok() otherwise. At blocking_pbo==false (default) or max_pbo>=1.0 (pbo_gate_passed
+// stays true, fail-open by finalize_run_pbo's own contract) this is always Ok() —
+// byte-identical to the pre-S5-2 path (a run's control flow is unchanged).
+[[nodiscard]] atx::core::Status check_blocking_pbo(const FactoryConfig &cfg,
+                                                   const FactoryReport &rep);
 
 } // namespace detail
 

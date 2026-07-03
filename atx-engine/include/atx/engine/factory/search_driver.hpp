@@ -201,6 +201,16 @@ struct SearchConfig {
   // reuse keeps that first-evaluation deflation. Fully deterministic (cache order
   // is serial) — the accepted semantic.
   bool deflate_selection{false};  // R4: deflated-Sharpe enters search selection
+  // S5-2: the CROSS-RUN cumulative trial count from a persistent library opened
+  // BEFORE this search (library::Library::cumulative_trials(), read once by the
+  // Factory caller before driver.run() — a pure scalar, no ordering hazard). Added
+  // to canon.size() at each generation (ONLY when deflate_selection is set) so a
+  // later run in a multi-run --library-dir sweep deflates its NSGA `dsr` selection
+  // column by the TRUE cumulative N, not just this run's own local canon.size().
+  // 0 (the default, and always 0 for a fresh library / the non-library mine() path)
+  // makes the per-generation N identical to the pre-S5-2 canon.size()-only value —
+  // byte-identical off-path. Ignored entirely when deflate_selection is false.
+  atx::usize prior_trial_count{0};
   // W1b: the wrap_in_op mutation — wrap a subtree in a conditioning op (zscore/
   // signedpower/rank/winsorize/group_neutralize) so the GA can CREATE in-expression
   // conditioning structure (the manual-alpha lift signedpower(zscore(raw), p)).
