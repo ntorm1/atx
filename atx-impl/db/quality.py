@@ -17,6 +17,14 @@ from .warehouse import quality_check
 # name.
 INTERNAL_ONLY_EXPORT_FORBIDDEN_COLUMN = "internal_cusip"
 
+# PF-S7 S7-1: the statement-layer parent that fundamental_ratios rows resolve
+# against. TODAY this is fundamental_points (raw SEC companyfacts). Once
+# PF-S3/PF-S8 promote fundamental_statement_points to the ratio engine's
+# primary statement-layer input, repoint this constant (or add a second
+# ReferentialQualityCheck alongside the one that uses it in
+# _referential_check_specs) -- a one-line upgrade.
+PARENT_TABLE_FOR_FUNDAMENTAL_RATIOS = "fundamental_points"
+
 
 def _export_scan_internal_cusip_sql(export_objects: tuple[str, ...]) -> str:
     """Build the export-scan SQL: count DEFAULT_EXPORT_OBJECTS columns named
@@ -98,12 +106,113 @@ def _passes(observed_value: float, threshold: float, comparator: Comparator) -> 
     raise ValueError(f"Unknown comparator {comparator!r}")
 
 
+@dataclass(frozen=True)
+class ReferentialQualityCheck:
+    """Declarative "every row in ``child_table`` resolves to a parent row in
+    ``parent_table``" orphan check.
+
+    First-class replacement for the hand-written ``LEFT JOIN ... WHERE
+    parent.key IS NULL`` strings duplicated across ``_check_specs`` (see e.g.
+    ``orphan_equity_daily_bars``, ``xbrl_filing_facts_without_context``,
+    ``xbrl_filing_dimensions_without_context``,
+    ``xbrl_filing_contexts_without_sec_submission``). ``compile()`` produces
+    the vetted anti-join shape::
+
+        SELECT count(*) FROM child c
+        LEFT JOIN parent p ON p.<parent_key> = c.<child_key>
+        WHERE c.<child_key> IS NOT NULL AND p.<parent_key> IS NULL
+
+    A NULL ``child_key`` value has nothing to resolve and is excluded from
+    both sides of the count -- it is NOT an orphan, matching the existing
+    ``security_id IS NOT NULL``-guarded hand-rolled checks.
+
+    ``compile()`` returns a plain ``SqlQualityCheck``, so
+    ``run_warehouse_quality_checks`` needs no changes to execute a
+    referential check: the existing ``required_tables``/``warn_if_missing``
+    machinery already no-ops the check (status ``"warning"``, not
+    ``"failed"``) when ``parent_table`` (or ``child_table``) does not yet
+    exist -- e.g. a forward-looking parent table a later sprint hasn't
+    landed.
+    """
+
+    dataset_id: str
+    check_name: str
+    child_table: str
+    child_key: str
+    parent_table: str
+    parent_key: str
+    table_name: str | None = None
+    warn_if_missing: bool = True
+    failure_status: FailureStatus = "failed"
+
+    def compile(self) -> SqlQualityCheck:
+        sql = f"""
+            SELECT count(*)::DOUBLE
+            FROM {self.child_table} c
+            LEFT JOIN {self.parent_table} p
+              ON p.{self.parent_key} = c.{self.child_key}
+            WHERE c.{self.child_key} IS NOT NULL
+              AND p.{self.parent_key} IS NULL
+        """
+        return SqlQualityCheck(
+            dataset_id=self.dataset_id,
+            table_name=self.table_name or self.child_table,
+            check_name=self.check_name,
+            sql=sql,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=(self.child_table, self.parent_table),
+            warn_if_missing=self.warn_if_missing,
+            failure_status=self.failure_status,
+        )
+
+
+def _referential_check_specs() -> tuple[ReferentialQualityCheck, ...]:
+    """Orphan checks over the fundamentals DAG the ratio engine consumes.
+
+    (a) Every ``fundamental_ratios`` row's security must resolve to backing
+        raw fundamental facts -- see ``PARENT_TABLE_FOR_FUNDAMENTAL_RATIOS``
+        for the parameterized parent (``fundamental_points`` today).
+    (b) Every fact's ``item_id`` (``fundamental_points``,
+        ``fundamental_statement_points``) must resolve in the canonical item
+        dimension (``fundamental_item``, PF-S1). ``item_id`` is nullable
+        (many facts are not yet mapped to a governed item) -- a NULL
+        ``item_id`` is skipped, not counted as an orphan.
+    """
+    return (
+        ReferentialQualityCheck(
+            dataset_id="fundamental_ratios",
+            check_name="fundamental_ratios_without_fundamental_points",
+            child_table="fundamental_ratios",
+            child_key="security_id",
+            parent_table=PARENT_TABLE_FOR_FUNDAMENTAL_RATIOS,
+            parent_key="security_id",
+        ),
+        ReferentialQualityCheck(
+            dataset_id="sec_company_facts",
+            check_name="fundamental_points_item_without_fundamental_item",
+            child_table="fundamental_points",
+            child_key="item_id",
+            parent_table="fundamental_item",
+            parent_key="item_id",
+        ),
+        ReferentialQualityCheck(
+            dataset_id="fundamental_statement_points",
+            check_name="fundamental_statement_points_item_without_fundamental_item",
+            child_table="fundamental_statement_points",
+            child_key="item_id",
+            parent_table="fundamental_item",
+            parent_key="item_id",
+        ),
+    )
+
+
 def _check_specs(
     *,
     daily_macro_stale_days: int,
     monthly_macro_stale_days: int,
 ) -> tuple[SqlQualityCheck, ...]:
-    return (
+    single_table_checks = (
         SqlQualityCheck(
             dataset_id="tbltickerhistory_daily",
             table_name="equity_daily_bars",
@@ -6015,6 +6124,9 @@ def _check_specs(
             required_tables=("corporate_action_factor_reconciliation",),
         ),
     )
+
+    referential_checks = tuple(spec.compile() for spec in _referential_check_specs())
+    return single_table_checks + referential_checks
 
 
 def run_warehouse_quality_checks(
