@@ -606,3 +606,238 @@ def test_parse_operand_expression_malformed_expression_raises_value_error():
 
     with pytest.raises(ValueError, match="malformed operand expression"):
         parse_operand_expression("key:ni_no_separator")
+
+
+# ---------------------------------------------------------------------------
+# PF-S4 S4-2: the new `sum3` operand shape (cash_interest_coverage's
+# OCF + interest + tax numerator -- the one genuinely new shape this task adds)
+# and the new composite evaluators (DuPont decomposition, Sloan accruals,
+# cash-conversion-cycle day-counts, per-share suite, Montier C-score).
+# ---------------------------------------------------------------------------
+
+
+def test_eval_operand_term_sum3_shape():
+    from db.formula_library import eval_operand_term
+
+    assert eval_operand_term("sum3:a,b,c", {"a": 3.0, "b": 4.0, "c": 5.0}) == 12.0
+
+
+def test_resolve_composite_evaluator_maps_s4_2_keys_to_named_functions():
+    from db.formula_library import (
+        cash_conversion_cycle,
+        days_inventory_outstanding,
+        days_payables_outstanding,
+        days_sales_outstanding,
+        eps_basic,
+        eps_diluted,
+        montier_c_score,
+        resolve_composite_evaluator,
+        roe_dupont_3way,
+        roe_dupont_5way,
+        tangible_book_value_per_share,
+        total_accruals,
+        working_capital_accruals,
+    )
+
+    assert resolve_composite_evaluator("composite:roe_dupont_3way_v1") is roe_dupont_3way
+    assert resolve_composite_evaluator("composite:roe_dupont_5way_v1") is roe_dupont_5way
+    assert resolve_composite_evaluator("composite:total_accruals_v1") is total_accruals
+    assert resolve_composite_evaluator("composite:working_capital_accruals_v1") is working_capital_accruals
+    assert resolve_composite_evaluator("composite:days_sales_outstanding_v1") is days_sales_outstanding
+    assert resolve_composite_evaluator("composite:days_inventory_outstanding_v1") is days_inventory_outstanding
+    assert resolve_composite_evaluator("composite:days_payables_outstanding_v1") is days_payables_outstanding
+    assert resolve_composite_evaluator("composite:cash_conversion_cycle_v1") is cash_conversion_cycle
+    assert resolve_composite_evaluator("composite:eps_basic_v1") is eps_basic
+    assert resolve_composite_evaluator("composite:eps_diluted_v1") is eps_diluted
+    assert (
+        resolve_composite_evaluator("composite:tangible_book_value_per_share_v1")
+        is tangible_book_value_per_share
+    )
+    assert resolve_composite_evaluator("composite:montier_c_score_v1") is montier_c_score
+
+
+class TestRoeDupont3Way:
+    def test_known_value_telescopes_to_roe(self):
+        from db.formula_library import roe_dupont_3way
+
+        row = {"ni": 100.0, "rev": 400.0, "assets": 350.0, "equity": 60.0}
+        # (100/400) x (400/350) x (350/60) == 100/60
+        assert roe_dupont_3way(row) == pytest.approx(100.0 / 60.0)
+
+    def test_non_positive_equity_returns_none(self):
+        from db.formula_library import roe_dupont_3way
+
+        row = {"ni": 100.0, "rev": 400.0, "assets": 350.0, "equity": -10.0}
+        assert roe_dupont_3way(row) is None
+
+
+class TestRoeDupont5Way:
+    def test_known_value_telescopes_to_roe(self):
+        from db.formula_library import roe_dupont_5way
+
+        row = {"ni": 100.0, "pretax_income": 115.0, "oi": 120.0, "rev": 400.0, "assets": 350.0, "equity": 60.0}
+        # (100/115) x (115/120) x (120/400) x (400/350) x (350/60) == 100/60
+        assert roe_dupont_5way(row) == pytest.approx(100.0 / 60.0)
+
+    def test_zero_pretax_income_returns_none(self):
+        from db.formula_library import roe_dupont_5way
+
+        row = {"ni": 100.0, "pretax_income": 0.0, "oi": 120.0, "rev": 400.0, "assets": 350.0, "equity": 60.0}
+        assert roe_dupont_5way(row) is None
+
+
+class TestTotalAccruals:
+    def test_known_value(self):
+        from db.formula_library import total_accruals
+
+        row = {"ni": 100.0, "ocf": 130.0, "assets": 350.0, "assets_prior": 300.0}
+        # (100 - 130) / ((350 + 300) / 2) == -30 / 325
+        assert total_accruals(row) == pytest.approx(-30.0 / 325.0)
+
+    def test_non_positive_average_assets_returns_none(self):
+        from db.formula_library import total_accruals
+
+        row = {"ni": 100.0, "ocf": 130.0, "assets": 0.0, "assets_prior": 0.0}
+        assert total_accruals(row) is None
+
+
+class TestWorkingCapitalAccruals:
+    def test_known_value(self):
+        from db.formula_library import working_capital_accruals
+
+        row = {
+            "current_assets": 200.0, "current_assets_prior": 150.0,
+            "cash_and_equivalents": 40.0, "cash_and_equivalents_prior": 35.0,
+            "current_liabilities": 100.0, "current_liabilities_prior": 90.0,
+            "assets": 350.0, "assets_prior": 300.0,
+        }
+        # [((200-150) - (40-35)) - (100-90)] / ((350+300)/2) == 35 / 325
+        assert working_capital_accruals(row) == pytest.approx(35.0 / 325.0)
+
+    def test_non_positive_average_assets_returns_none(self):
+        from db.formula_library import working_capital_accruals
+
+        row = {
+            "current_assets": 200.0, "current_assets_prior": 150.0,
+            "cash_and_equivalents": 40.0, "cash_and_equivalents_prior": 35.0,
+            "current_liabilities": 100.0, "current_liabilities_prior": 90.0,
+            "assets": 0.0, "assets_prior": 0.0,
+        }
+        assert working_capital_accruals(row) is None
+
+
+class TestCashConversionCycleComponents:
+    def test_days_sales_outstanding_known_value(self):
+        from db.formula_library import days_sales_outstanding
+
+        row = {"accounts_receivable": 50.0, "accounts_receivable_prior": 40.0, "rev": 400.0}
+        assert days_sales_outstanding(row) == pytest.approx((50.0 + 40.0) / 2 / 400.0 * 365.0)
+
+    def test_days_inventory_outstanding_known_value(self):
+        from db.formula_library import days_inventory_outstanding
+
+        row = {"inventory": 30.0, "inventory_prior": 25.0, "cost_of_revenue": 220.0}
+        assert days_inventory_outstanding(row) == pytest.approx((30.0 + 25.0) / 2 / 220.0 * 365.0)
+
+    def test_days_payables_outstanding_known_value(self):
+        from db.formula_library import days_payables_outstanding
+
+        row = {"accounts_payable": 35.0, "accounts_payable_prior": 28.0, "cost_of_revenue": 220.0}
+        assert days_payables_outstanding(row) == pytest.approx((35.0 + 28.0) / 2 / 220.0 * 365.0)
+
+    def test_cash_conversion_cycle_known_value_sums_components(self):
+        from db.formula_library import (
+            cash_conversion_cycle,
+            days_inventory_outstanding,
+            days_payables_outstanding,
+            days_sales_outstanding,
+        )
+
+        row = {
+            "accounts_receivable": 50.0, "accounts_receivable_prior": 40.0,
+            "inventory": 30.0, "inventory_prior": 25.0,
+            "accounts_payable": 35.0, "accounts_payable_prior": 28.0,
+            "rev": 400.0, "cost_of_revenue": 220.0,
+        }
+        expected = (
+            days_sales_outstanding(row) + days_inventory_outstanding(row) - days_payables_outstanding(row)
+        )
+        assert cash_conversion_cycle(row) == pytest.approx(expected)
+
+    def test_cash_conversion_cycle_none_when_component_unusable(self):
+        from db.formula_library import cash_conversion_cycle
+
+        row = {
+            "accounts_receivable": 50.0, "accounts_receivable_prior": 40.0,
+            "inventory": 30.0, "inventory_prior": 25.0,
+            "accounts_payable": 35.0, "accounts_payable_prior": 28.0,
+            "rev": 0.0, "cost_of_revenue": 220.0,
+        }
+        assert cash_conversion_cycle(row) is None
+
+
+class TestPerShareComposites:
+    def test_eps_basic_known_value(self):
+        from db.formula_library import eps_basic
+
+        assert eps_basic({"ni": 100.0, "shares_basic_avg": 14.5}) == pytest.approx(100.0 / 14.5)
+
+    def test_eps_basic_non_positive_shares_returns_none(self):
+        from db.formula_library import eps_basic
+
+        assert eps_basic({"ni": 100.0, "shares_basic_avg": 0.0}) is None
+
+    def test_eps_diluted_known_value(self):
+        from db.formula_library import eps_diluted
+
+        assert eps_diluted({"ni": 100.0, "shares_diluted_avg": 15.2}) == pytest.approx(100.0 / 15.2)
+
+    def test_tangible_book_value_per_share_known_value(self):
+        from db.formula_library import tangible_book_value_per_share
+
+        row = {"equity": 60.0, "goodwill": 20.0, "intangibles_other": 5.0, "shares": 15.0}
+        assert tangible_book_value_per_share(row) == pytest.approx((60.0 - 20.0 - 5.0) / 15.0)
+
+    def test_tangible_book_value_per_share_non_positive_shares_returns_none(self):
+        from db.formula_library import tangible_book_value_per_share
+
+        row = {"equity": 60.0, "goodwill": 20.0, "intangibles_other": 5.0, "shares": 0.0}
+        assert tangible_book_value_per_share(row) is None
+
+
+class TestMontierCScore:
+    def test_known_value_two_flags_trigger(self):
+        from db.formula_library import montier_c_score
+
+        row = {
+            "ni": 100.0, "ocf": 130.0, "ni_prior": 80.0, "ocf_prior": 104.0,
+            "rev": 400.0, "rev_prior": 320.0,
+            "accounts_receivable": 50.0, "accounts_receivable_prior": 40.0,
+            "inventory": 30.0, "inventory_prior": 25.0,
+            "current_assets": 200.0, "current_assets_prior": 150.0,
+            "cash_and_equivalents": 40.0, "cash_and_equivalents_prior": 35.0,
+            "assets": 350.0, "assets_prior": 300.0,
+            "depreciation_amortization": 25.0, "depreciation_amortization_prior": 20.0,
+            "property_plant_equipment_net": 120.0, "property_plant_equipment_net_prior": 110.0,
+        }
+        # hand-checked: NI-OCF gap narrows (flag1 false), DSO flat (flag2 false),
+        # DIO falls (flag3 false), other-current-assets share rises 0.167->0.229 (flag4
+        # true), depreciation rate RISES 0.154->0.172 (flag5 false, needs a decline),
+        # asset growth 16.7% > 10% (flag6 true) -> score 2
+        assert montier_c_score(row) == pytest.approx(2.0)
+
+    def test_none_when_revenue_zero(self):
+        from db.formula_library import montier_c_score
+
+        row = {
+            "ni": 100.0, "ocf": 130.0, "ni_prior": 80.0, "ocf_prior": 104.0,
+            "rev": 0.0, "rev_prior": 320.0,
+            "accounts_receivable": 50.0, "accounts_receivable_prior": 40.0,
+            "inventory": 30.0, "inventory_prior": 25.0,
+            "current_assets": 200.0, "current_assets_prior": 150.0,
+            "cash_and_equivalents": 40.0, "cash_and_equivalents_prior": 35.0,
+            "assets": 350.0, "assets_prior": 300.0,
+            "depreciation_amortization": 25.0, "depreciation_amortization_prior": 20.0,
+            "property_plant_equipment_net": 120.0, "property_plant_equipment_net_prior": 110.0,
+        }
+        assert montier_c_score(row) is None

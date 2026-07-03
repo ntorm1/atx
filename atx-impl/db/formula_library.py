@@ -142,6 +142,18 @@ def _op_sum(r: dict, keys: list[str]) -> float:
     return r[k1] + r[k2]
 
 
+def _op_sum3(r: dict, keys: list[str]) -> float:
+    """r[k1] + r[k2] + r[k3] -- e.g. cash_interest_coverage's OCF + interest + tax.
+
+    PF-S4 S4-2: the one genuinely new operand shape this task adds (the brief's
+    "extend the closed dispatch table if a new shape is genuinely needed" clause).
+    A fixed 3-key sum, dispatched the same closed way as every other shape here --
+    no eval/exec.
+    """
+    k1, k2, k3 = keys
+    return r[k1] + r[k2] + r[k3]
+
+
 def _op_abs_sum(r: dict, keys: list[str]) -> float:
     k1, k2 = keys
     return _term_abs(r[k1]) + _term_abs(r[k2])
@@ -183,6 +195,7 @@ _OPERAND_TERM_EVALUATORS: dict[str, Callable[[dict, list[str]], float | None]] =
     "key": _op_key,
     "abs": _op_abs,
     "sum": _op_sum,
+    "sum3": _op_sum3,
     "abs_sum": _op_abs_sum,
     "diff": _op_diff,
     "diff_abs": _op_diff_abs,
@@ -408,6 +421,317 @@ def beneish_m_score(r: dict) -> float | None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# PF-S4 S4-2 composite evaluators -- DuPont decomposition, Sloan accruals, and
+# Montier's C-score. Like the 4 S4-1 distress/quality scores above, these mix
+# multi-term products or several independent balance-sheet deltas in ways not
+# representable as a single numerator/denominator operand-term pair, so they
+# are vetted, unit-tested Python functions dispatched via COMPOSITE_EVALUATORS
+# -- never eval/exec.
+# --------------------------------------------------------------------------- #
+
+
+def roe_dupont_3way(r: dict) -> float | None:
+    """3-way DuPont ROE decomposition: net margin x asset turnover x equity multiplier.
+
+    ROE = (NI/Revenue) x (Revenue/Assets) x (Assets/Equity) -- an algebraic identity
+    that telescopes to NI/Equity (== ``return_on_equity``). Returns None when equity
+    is non-positive (the multiplier and ROE both become sign-ambiguous).
+
+    Citation: Brealey, R.A., Myers, S.C. & Allen, F., "Principles of Corporate
+    Finance" (standard DuPont identity presentation, financial-ratio-analysis chapter).
+    """
+    rev = float(r["rev"])
+    assets = float(r["assets"])
+    equity = float(r["equity"])
+    if rev == 0 or assets == 0 or equity <= 0:
+        return None
+    ni = float(r["ni"])
+    net_margin = ni / rev
+    asset_turnover = rev / assets
+    equity_multiplier = assets / equity
+    return net_margin * asset_turnover * equity_multiplier
+
+
+def roe_dupont_5way(r: dict) -> float | None:
+    """5-way extended DuPont ROE decomposition: tax burden x interest burden x
+    operating margin x asset turnover x leverage.
+
+    ROE = (NI/Pretax Income) x (Pretax Income/EBIT) x (EBIT/Revenue) x
+          (Revenue/Assets) x (Assets/Equity)
+    using operating income as the EBIT proxy (consistent with every other EBIT
+    usage in this module, e.g. ``interest_coverage``). Telescopes to the same
+    NI/Equity identity as the 3-way form. Returns None when revenue, assets,
+    equity, or pretax income are non-positive/zero (a burden ratio would be
+    undefined or sign-ambiguous).
+
+    Citation: Brealey, R.A., Myers, S.C. & Allen, F., "Principles of Corporate
+    Finance" (extended/5-way DuPont decomposition, financial-ratio-analysis chapter).
+    """
+    rev = float(r["rev"])
+    assets = float(r["assets"])
+    equity = float(r["equity"])
+    pretax = float(r["pretax_income"])
+    oi = float(r["oi"])
+    if rev == 0 or assets == 0 or equity <= 0 or pretax == 0 or oi == 0:
+        return None
+    ni = float(r["ni"])
+    tax_burden = ni / pretax
+    interest_burden = pretax / oi
+    operating_margin = oi / rev
+    asset_turnover = rev / assets
+    leverage = assets / equity
+    return tax_burden * interest_burden * operating_margin * asset_turnover * leverage
+
+
+def total_accruals(r: dict) -> float | None:
+    """Sloan (1996) total accruals, cash-flow-statement operationalization.
+
+    ACC = (Net Income - Operating Cash Flow) / average total assets. This is the
+    standard post-Sloan simplified measure (equivalent under the paper's own
+    accounting identity to the balance-sheet working-capital measure when there
+    are no non-operating/discontinued items) used by most later accruals-anomaly
+    replications; see :func:`working_capital_accruals` for the balance-sheet form.
+    Higher (more positive) accruals indicate a larger gap between reported earnings
+    and cash generation -- the earnings-quality signal Sloan's paper documents.
+    Returns None when average assets is non-positive.
+
+    Citation: Sloan, R.G. (1996), "Do Stock Prices Fully Reflect Information in
+    Accruals and Cash Flows About Future Earnings?", The Accounting Review, 71(3),
+    pp. 289-315; operationalization per Hribar, P. & Collins, D.W. (2002), "Errors
+    in Estimating Accruals: Implications for Empirical Research", Journal of
+    Accounting Research, 40(1), pp. 105-134.
+    """
+    assets, assets0 = float(r["assets"]), float(r["assets_prior"])
+    avg_assets = (assets + assets0) / 2
+    if avg_assets <= 0:
+        return None
+    ni = float(r["ni"])
+    ocf = float(r["ocf"])
+    return (ni - ocf) / avg_assets
+
+
+def working_capital_accruals(r: dict) -> float | None:
+    """Sloan (1996) working-capital accruals, balance-sheet operationalization.
+
+    ACC = [(delta Current Assets - delta Cash) - (delta Current Liabilities)] /
+          average total assets.
+
+    This is Sloan's balance-sheet ACC = (dCA - dCASH) - (dCL - dSTD - dTP), with
+    the dSTD (change in short-term/current-portion debt) and dTP (change in income
+    taxes payable) carve-outs OMITTED: this warehouse has no short-term-debt or
+    taxes-payable item registered (a genuine, documented S4-2 input gap -- see
+    S4-2 report), so delta Current Liabilities is used in full rather than
+    fabricating either carve-out. This is a conservative deviation (it treats
+    financing-related and tax-related current-liability movements as part of the
+    accrual, when Sloan's original measure nets them out); see :func:`total_accruals`
+    for the unaffected cash-flow-statement measure. Returns None when average
+    assets is non-positive.
+
+    Citation: Sloan, R.G. (1996), "Do Stock Prices Fully Reflect Information in
+    Accruals and Cash Flows About Future Earnings?", The Accounting Review, 71(3),
+    pp. 289-315 (equation 1's balance-sheet approach; dSTD/dTP terms omitted per
+    the S4-2 input-gap note above).
+    """
+    assets, assets0 = float(r["assets"]), float(r["assets_prior"])
+    avg_assets = (assets + assets0) / 2
+    if avg_assets <= 0:
+        return None
+    ca, ca0 = float(r["current_assets"]), float(r["current_assets_prior"])
+    cash, cash0 = float(r["cash_and_equivalents"]), float(r["cash_and_equivalents_prior"])
+    cl, cl0 = float(r["current_liabilities"]), float(r["current_liabilities_prior"])
+    d_wc_ex_cash = (ca - ca0) - (cash - cash0)
+    d_cl = cl - cl0
+    return (d_wc_ex_cash - d_cl) / avg_assets
+
+
+def montier_c_score(r: dict) -> float | None:
+    """Montier (2008) C-score: six binary earnings-quality/manipulation red flags, summed 0-6.
+
+    Each flag scores 1 if triggered, 0 otherwise:
+      1. Growing divergence between net income and operating cash flow (NI - OCF rising).
+      2. Rising accounts-receivable days (DSO increasing YoY).
+      3. Rising inventory days (DIO increasing YoY).
+      4. Rising "other" (non-receivable, non-inventory, non-cash) current assets as a
+         share of total assets YoY -- proxied here from current_assets net of cash,
+         receivables, and inventory (no dedicated "other current assets" item is
+         registered; this is the documented S4-2 proxy for flag 4).
+      5. Declining depreciation rate relative to gross PP&E (depreciation / (depreciation
+         + net PP&E) falling YoY -- same depreciation-rate construction Beneish's DEPI uses).
+      6. Total asset growth exceeding 10% YoY.
+
+    Score interpretation: 0 = no red flags, 6 = all six triggered; scores of 4-6 are
+    Montier's flagged "cook the books" zone. Returns None when a YoY input needed for
+    any flag is unusable (e.g. a zero prior-year denominator for the day-count or rate
+    ratios), so the row is skipped rather than emitting a partial/undercounted score.
+
+    Citation: Montier, J. (2008), "Cooking the Books, or, More Sailing Under the Black
+    Flag", Societe Generale Cross Asset Research (Global Equity Strategy), 6 June 2008.
+    """
+    ni, ocf = float(r["ni"]), float(r["ocf"])
+    ni0, ocf0 = float(r["ni_prior"]), float(r["ocf_prior"])
+    rev, rev0 = float(r["rev"]), float(r["rev_prior"])
+    ar, ar0 = float(r["accounts_receivable"]), float(r["accounts_receivable_prior"])
+    inv, inv0 = float(r["inventory"]), float(r["inventory_prior"])
+    ca, ca0 = float(r["current_assets"]), float(r["current_assets_prior"])
+    cash, cash0 = float(r["cash_and_equivalents"]), float(r["cash_and_equivalents_prior"])
+    assets, assets0 = float(r["assets"]), float(r["assets_prior"])
+    dep, dep0 = float(r["depreciation_amortization"]), float(r["depreciation_amortization_prior"])
+    ppe, ppe0 = float(r["property_plant_equipment_net"]), float(r["property_plant_equipment_net_prior"])
+    if rev == 0 or rev0 == 0 or assets <= 0 or assets0 <= 0 or (dep + ppe) == 0 or (dep0 + ppe0) == 0:
+        return None
+
+    accruals_gap = (ni - ocf) - (ni0 - ocf0)
+    dso = ar / rev * 365.0
+    dso0 = ar0 / rev0 * 365.0
+    dio = inv / rev * 365.0
+    dio0 = inv0 / rev0 * 365.0
+    other_ca = ca - cash - ar - inv
+    other_ca0 = ca0 - cash0 - ar0 - inv0
+    other_ca_ratio = other_ca / assets
+    other_ca_ratio0 = other_ca0 / assets0
+    dep_rate = dep / (dep + ppe)
+    dep_rate0 = dep0 / (dep0 + ppe0)
+    asset_growth = (assets - assets0) / assets0
+
+    flags = (
+        accruals_gap > 0,          # 1. widening NI-over-OCF gap
+        dso > dso0,                 # 2. rising receivable days
+        dio > dio0,                 # 3. rising inventory days
+        other_ca_ratio > other_ca_ratio0,  # 4. rising other-current-assets share
+        dep_rate < dep_rate0,       # 5. declining depreciation rate
+        asset_growth > 0.10,        # 6. total asset growth > 10%
+    )
+    return float(sum(1 for f in flags if f))
+
+
+def days_sales_outstanding(r: dict) -> float | None:
+    """DSO = (average accounts receivable / revenue) x 365.
+
+    Standard working-capital-management definition (average balance, TTM revenue
+    as the annualized denominator). Returns None when revenue is non-positive.
+
+    Citation: Brigham, E.F. & Ehrhardt, M.C., "Financial Management: Theory &
+    Practice" (cash-conversion-cycle chapter, standard DSO/DIO/DPO definitions).
+    """
+    rev = float(r["rev"])
+    if rev <= 0:
+        return None
+    ar, ar0 = float(r["accounts_receivable"]), float(r["accounts_receivable_prior"])
+    avg_ar = (ar + ar0) / 2
+    return avg_ar / rev * 365.0
+
+
+def days_inventory_outstanding(r: dict) -> float | None:
+    """DIO = (average inventory / cost of revenue) x 365.
+
+    Standard working-capital-management definition (average balance, TTM cost of
+    revenue as the annualized denominator). Returns None when cost of revenue is
+    non-positive.
+
+    Citation: Brigham, E.F. & Ehrhardt, M.C., "Financial Management: Theory &
+    Practice" (cash-conversion-cycle chapter, standard DSO/DIO/DPO definitions).
+    """
+    cogs = float(r["cost_of_revenue"])
+    if cogs <= 0:
+        return None
+    inv, inv0 = float(r["inventory"]), float(r["inventory_prior"])
+    avg_inv = (inv + inv0) / 2
+    return avg_inv / cogs * 365.0
+
+
+def days_payables_outstanding(r: dict) -> float | None:
+    """DPO = (average accounts payable / cost of revenue) x 365.
+
+    Standard working-capital-management definition (average balance, TTM cost of
+    revenue as the annualized denominator). Returns None when cost of revenue is
+    non-positive.
+
+    Citation: Brigham, E.F. & Ehrhardt, M.C., "Financial Management: Theory &
+    Practice" (cash-conversion-cycle chapter, standard DSO/DIO/DPO definitions).
+    """
+    cogs = float(r["cost_of_revenue"])
+    if cogs <= 0:
+        return None
+    ap, ap0 = float(r["accounts_payable"]), float(r["accounts_payable_prior"])
+    avg_ap = (ap + ap0) / 2
+    return avg_ap / cogs * 365.0
+
+
+def cash_conversion_cycle(r: dict) -> float | None:
+    """CCC = DSO + DIO - DPO (days cash is tied up in the operating cycle).
+
+    Composes the three day-count measures above rather than re-deriving them, so
+    a change to any one definition automatically flows through. Returns None when
+    any of the three components is unusable (revenue or cost of revenue non-positive).
+
+    Citation: Brigham, E.F. & Ehrhardt, M.C., "Financial Management: Theory &
+    Practice" (cash-conversion-cycle chapter).
+    """
+    dso = days_sales_outstanding(r)
+    dio = days_inventory_outstanding(r)
+    dpo = days_payables_outstanding(r)
+    if dso is None or dio is None or dpo is None:
+        return None
+    return dso + dio - dpo
+
+
+def eps_basic(r: dict) -> float | None:
+    """Trailing basic EPS = TTM net income / weighted-average basic shares outstanding.
+
+    Uses the TTM net income basis already computed for every other ratio in this
+    module (consistent PIT/availability treatment) divided by the filed weighted-
+    average basic share count -- the standard EPS denominator (NOT period-end
+    shares outstanding, which would overstate/understate EPS versus the filed
+    figure). Returns None when the share count is non-positive.
+
+    Citation: FASB ASC 260, Earnings Per Share (basic EPS = income available to
+    common shareholders / weighted-average common shares outstanding).
+    """
+    shares = float(r["shares_basic_avg"])
+    if shares <= 0:
+        return None
+    return float(r["ni"]) / shares
+
+
+def eps_diluted(r: dict) -> float | None:
+    """Trailing diluted EPS = TTM net income / weighted-average diluted shares outstanding.
+
+    Same construction as :func:`eps_basic` using the filed weighted-average DILUTED
+    share count (includes the dilutive effect of options/convertibles as already
+    computed by the filer -- this warehouse does not re-derive dilution). Returns
+    None when the share count is non-positive.
+
+    Citation: FASB ASC 260, Earnings Per Share (diluted EPS = income available to
+    common shareholders / weighted-average diluted common shares outstanding).
+    """
+    shares = float(r["shares_diluted_avg"])
+    if shares <= 0:
+        return None
+    return float(r["ni"]) / shares
+
+
+def tangible_book_value_per_share(r: dict) -> float | None:
+    """Tangible book value per share = (equity - goodwill - other intangibles) / shares.
+
+    Standard "tangible common equity" per-share measure: strips goodwill and
+    other (non-goodwill) intangible assets from stockholders' equity before
+    dividing by period-end shares outstanding, since neither is realizable in
+    a liquidation/distress scenario. Returns None when shares outstanding is
+    non-positive.
+
+    Citation: Fridson, M.S. & Alvarez, F., "Financial Statement Analysis: A
+    Practitioner's Guide" (tangible book value construction).
+    """
+    shares = float(r["shares"])
+    if shares <= 0:
+        return None
+    equity = float(r["equity"])
+    goodwill = float(r["goodwill"])
+    intangibles_other = float(r["intangibles_other"])
+    return (equity - goodwill - intangibles_other) / shares
+
+
 # Whitelisted formula_code -> composite evaluator. This IS the "registered
 # named-callable dispatch" fallback flagged as acceptable in the S4-1 brief's
 # CRITICAL design note: the registry row's `expression` column stores the
@@ -419,6 +743,18 @@ COMPOSITE_EVALUATORS: dict[str, Callable[[dict], float | None]] = {
     "piotroski_f_score_v1": piotroski_f_score,
     "ohlson_o_score_v1": ohlson_o_score,
     "beneish_m_score_v1": beneish_m_score,
+    "roe_dupont_3way_v1": roe_dupont_3way,
+    "roe_dupont_5way_v1": roe_dupont_5way,
+    "total_accruals_v1": total_accruals,
+    "working_capital_accruals_v1": working_capital_accruals,
+    "montier_c_score_v1": montier_c_score,
+    "days_sales_outstanding_v1": days_sales_outstanding,
+    "days_inventory_outstanding_v1": days_inventory_outstanding,
+    "days_payables_outstanding_v1": days_payables_outstanding,
+    "cash_conversion_cycle_v1": cash_conversion_cycle,
+    "eps_basic_v1": eps_basic,
+    "eps_diluted_v1": eps_diluted,
+    "tangible_book_value_per_share_v1": tangible_book_value_per_share,
 }
 
 _COMPOSITE_EXPRESSION_PREFIX = "composite:"

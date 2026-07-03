@@ -668,6 +668,16 @@ _XBRL_BALANCE_RATIO_INPUT_SPECS = (
     RatioInputSpec("common_shares_outstanding", "common_shares_outstanding", None),
     RatioInputSpec("property_plant_equipment_net", "property_plant_equipment_net", 1110),
     RatioInputSpec("accounts_receivable", "accounts_receivable", 1106),
+    # PF-S4 S4-2: accounts payable, wired the same way as the other XBRL-balance
+    # inputs above -- `ap` is a genuine companyfacts canonical_metric (concept_map.csv
+    # AccountsPayableCurrent -> ap, item_id 1203), needed for days-payables-outstanding
+    # / the cash-conversion cycle.
+    RatioInputSpec("accounts_payable", "ap", 1203),
+    # PF-S4 S4-2: goodwill and other (non-goodwill) intangibles, needed for
+    # tangible_book_value_per_share (concept_map.csv Goodwill -> goodwill item 1114,
+    # IntangibleAssetsNetExcludingGoodwill -> intangibles_other item 1115).
+    RatioInputSpec("goodwill", "goodwill", 1114),
+    RatioInputSpec("intangibles_other", "intangibles_other", 1115),
 )
 
 _XBRL_FLOW_RATIO_INPUT_SPECS = (
@@ -681,6 +691,20 @@ _XBRL_FLOW_RATIO_INPUT_SPECS = (
         "selling_general_and_administrative_expense",
         None,
     ),
+    # PF-S4 S4-2: pretax income and income tax expense, wired the same way as the
+    # other XBRL-flow inputs above (concept_map.csv IncomeLossFromContinuing...
+    # BeforeIncomeTaxes... -> pretax_income item 1023; IncomeTaxExpenseBenefit ->
+    # income_tax item 1024). Needed for the 5-way extended DuPont tax/interest
+    # burden terms and the cash-interest-coverage ratio.
+    RatioInputSpec("pretax_income", "pretax_income", 1023),
+    RatioInputSpec("income_tax", "income_tax", 1024),
+    # PF-S4 S4-2: weighted-average basic/diluted share counts (a DURATION concept,
+    # distinct from the period-end `shares`/`common_shares_outstanding` balance
+    # inputs above), needed for eps_basic/eps_diluted (concept_map.csv
+    # WeightedAverageNumberOfSharesOutstandingBasic -> shares_basic_avg item 1040,
+    # WeightedAverageNumberOfDilutedSharesOutstanding -> shares_diluted_avg item 1041).
+    RatioInputSpec("shares_basic_avg", "shares_basic_avg", 1040),
+    RatioInputSpec("shares_diluted_avg", "shares_diluted_avg", 1041),
 )
 
 _RATIO_INPUT_SPECS_BY_GROUP = {

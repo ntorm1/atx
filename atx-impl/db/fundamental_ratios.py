@@ -137,7 +137,12 @@ def _build_ratio_defs() -> tuple[RatioDef, ...]:
         inputs = tuple(json.loads(row.inputs))
         require_positive_denominator = row.is_meaningful_rule == REQUIRE_POSITIVE_DENOMINATOR_RULE
         item_inputs = _QUICK_RATIO_ITEM_INPUTS if row.formula_code == "quick_ratio" else None
-        if row.kind == "score":
+        # PF-S4 S4-2: route on the `expression` dispatch-key prefix, not `kind == "score"`,
+        # so a composite-driven formula can carry ANY kind (e.g. DuPont decomposition is
+        # kind="ratio", not "score", but is still a multi-term product not representable
+        # by a single numerator/denominator operand-term pair). All 4 pre-S4-2 composites
+        # (kind="score") still route here too -- this is a strict superset of the old check.
+        if row.expression is not None and row.expression.startswith("composite:"):
             evaluator = resolve_composite_evaluator(row.expression)
             defs.append(RatioDef(
                 row.formula_code, row.family, row.kind, row.unit,
@@ -182,6 +187,10 @@ GROWTH_PRIOR_KEYS = (
     "common_shares_outstanding", "gross_profit", "cost_of_revenue",
     "depreciation_amortization", "property_plant_equipment_net",
     "accounts_receivable", "selling_general_and_administrative_expense",
+    # PF-S4 S4-2: cash, inventory, and accounts payable priors for the Sloan
+    # working-capital-accruals composite (ΔWC needs Δcash; the accruals need
+    # Δcurrent-debt proxy) and for the average-payables leg of days_payables_outstanding.
+    "cash_and_equivalents", "inventory", "accounts_payable",
 )
 
 
@@ -459,12 +468,19 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             balx.common_shares_outstanding, balx.common_shares_outstanding_av,
             balx.property_plant_equipment_net, balx.property_plant_equipment_net_av,
             balx.accounts_receivable, balx.accounts_receivable_av,
+            balx.accounts_payable, balx.accounts_payable_av,
+            balx.goodwill, balx.goodwill_av,
+            balx.intangibles_other, balx.intangibles_other_av,
             flowx.gross_profit, flowx.gross_profit_av,
             flowx.cost_of_revenue, flowx.cost_of_revenue_av,
             flowx.interest_expense, flowx.interest_expense_av,
             flowx.depreciation_amortization, flowx.depreciation_amortization_av,
             flowx.selling_general_and_administrative_expense,
-            flowx.selling_general_and_administrative_expense_av
+            flowx.selling_general_and_administrative_expense_av,
+            flowx.pretax_income, flowx.pretax_income_av,
+            flowx.income_tax, flowx.income_tax_av,
+            flowx.shares_basic_avg, flowx.shares_basic_avg_av,
+            flowx.shares_diluted_avg, flowx.shares_diluted_avg_av
         FROM ttm
         LEFT JOIN bal
           ON bal.security_id = ttm.security_id

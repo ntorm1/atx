@@ -98,6 +98,21 @@ def _wide_row(**overrides) -> dict:
         "selling_general_and_administrative_expense": 44.0,
         "selling_general_and_administrative_expense_av": _ts("2026-05-01"),
         "retained_earnings": 200.0, "retained_earnings_av": _ts("2026-05-01"),
+        # PF-S4 S4-2: accounts payable (DPO / cash-conversion cycle), goodwill +
+        # other intangibles (tangible book value), pretax income + income tax
+        # (extended DuPont, cash-interest-coverage), weighted-average basic/diluted
+        # share counts (EPS), and the cash/inventory priors the Sloan accruals and
+        # Montier C-score composites need.
+        "accounts_payable": 35.0, "accounts_payable_av": _ts("2026-05-01"),
+        "accounts_payable_prior": 28.0, "accounts_payable_prior_av": _ts("2025-05-01"),
+        "goodwill": 20.0, "goodwill_av": _ts("2026-05-01"),
+        "intangibles_other": 5.0, "intangibles_other_av": _ts("2026-05-01"),
+        "pretax_income": 115.0, "pretax_income_av": _ts("2026-05-01"),
+        "income_tax": 15.0, "income_tax_av": _ts("2026-05-01"),
+        "shares_basic_avg": 14.5, "shares_basic_avg_av": _ts("2026-05-01"),
+        "shares_diluted_avg": 15.2, "shares_diluted_avg_av": _ts("2026-05-01"),
+        "inventory_prior": 25.0, "inventory_prior_av": _ts("2025-05-01"),
+        "cash_and_equivalents_prior": 35.0, "cash_and_equivalents_prior_av": _ts("2025-05-01"),
     }
     base.update(overrides)
     return base
@@ -178,6 +193,35 @@ class TestComputeRatioRows:
             ("fixed_asset_turnover", 400.0 / 120.0),
             ("receivables_turnover", 400.0 / 50.0),
             ("ppe_to_assets", 120.0 / 350.0),
+            # PF-S4 S4-2: DuPont decomposition (both telescope to NI/Equity == return_on_equity)
+            ("roe_dupont_3way", 100.0 / 60.0),
+            ("roe_dupont_5way", 100.0 / 60.0),
+            # PF-S4 S4-2: coverage ratios
+            ("ebitda_interest_coverage", (120.0 + 25.0) / 10.0),
+            ("cash_interest_coverage", (130.0 + 10.0 + 15.0) / 10.0),
+            # PF-S4 S4-2: Sloan accruals
+            ("total_accruals", (100.0 - 130.0) / ((350.0 + 300.0) / 2)),
+            ("working_capital_accruals", (((200.0 - 150.0) - (40.0 - 35.0)) - (100.0 - 90.0)) / ((350.0 + 300.0) / 2)),
+            # PF-S4 S4-2: cash conversion cycle
+            ("days_sales_outstanding", (50.0 + 40.0) / 2 / 400.0 * 365.0),
+            ("days_inventory_outstanding", (30.0 + 25.0) / 2 / 220.0 * 365.0),
+            ("days_payables_outstanding", (35.0 + 28.0) / 2 / 220.0 * 365.0),
+            (
+                "cash_conversion_cycle",
+                (50.0 + 40.0) / 2 / 400.0 * 365.0
+                + (30.0 + 25.0) / 2 / 220.0 * 365.0
+                - (35.0 + 28.0) / 2 / 220.0 * 365.0,
+            ),
+            # PF-S4 S4-2: per-share suite
+            ("eps_basic", 100.0 / 14.5),
+            ("eps_diluted", 100.0 / 15.2),
+            ("sales_per_share", 400.0 / 15.0),
+            ("cash_flow_per_share", 130.0 / 15.0),
+            ("fcf_per_share", (130.0 - 30.0) / 15.0),
+            ("tangible_book_value_per_share", (60.0 - 20.0 - 5.0) / 15.0),
+            # PF-S4 S4-2: Montier C-score (hand-checked: flag 4 other-current-assets-share
+            # rising, flag 6 asset growth 16.7% > 10% trigger; the rest do not -> score 2)
+            ("montier_c_score", 2.0),
         ],
     )
     def test_ratio_values(self, code, expected):
@@ -784,6 +828,10 @@ _LITERAL_XBRL_BALANCE_INPUTS = {
     "common_shares_outstanding": "common_shares_outstanding",
     "property_plant_equipment_net": "property_plant_equipment_net",
     "accounts_receivable": "accounts_receivable",
+    # PF-S4 S4-2 additions (accounts_payable, goodwill, intangibles_other)
+    "accounts_payable": "ap",
+    "goodwill": "goodwill",
+    "intangibles_other": "intangibles_other",
 }
 _LITERAL_XBRL_FLOW_INPUTS = {
     "gross_profit": "gross_profit",
@@ -791,6 +839,11 @@ _LITERAL_XBRL_FLOW_INPUTS = {
     "interest_expense": "interest_expense",
     "depreciation_amortization": "depreciation_amortization",
     "selling_general_and_administrative_expense": "selling_general_and_administrative_expense",
+    # PF-S4 S4-2 additions (pretax_income, income_tax, shares_basic_avg, shares_diluted_avg)
+    "pretax_income": "pretax_income",
+    "income_tax": "income_tax",
+    "shares_basic_avg": "shares_basic_avg",
+    "shares_diluted_avg": "shares_diluted_avg",
 }
 
 

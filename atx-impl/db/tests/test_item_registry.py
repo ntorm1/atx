@@ -994,6 +994,9 @@ def test_ratio_input_metrics_are_byte_identical_to_pre_s1_3_literals():
         "common_shares_outstanding": "common_shares_outstanding",
         "property_plant_equipment_net": "property_plant_equipment_net",
         "accounts_receivable": "accounts_receivable",
+        "accounts_payable": "ap",
+        "goodwill": "goodwill",
+        "intangibles_other": "intangibles_other",
     }
     assert ratio_input_metrics("xbrl_flow") == {
         "gross_profit": "gross_profit",
@@ -1001,6 +1004,10 @@ def test_ratio_input_metrics_are_byte_identical_to_pre_s1_3_literals():
         "interest_expense": "interest_expense",
         "depreciation_amortization": "depreciation_amortization",
         "selling_general_and_administrative_expense": "selling_general_and_administrative_expense",
+        "pretax_income": "pretax_income",
+        "income_tax": "income_tax",
+        "shares_basic_avg": "shares_basic_avg",
+        "shares_diluted_avg": "shares_diluted_avg",
     }
 
 
@@ -1013,6 +1020,13 @@ def test_ratio_input_item_ids_encode_controller_semantic_picks_and_gaps():
     assert ratio_input_item_ids("xbrl_flow")["depreciation_amortization"] == 1307
     assert ratio_input_item_ids("xbrl_balance")["common_shares_outstanding"] is None
     assert ratio_input_item_ids("xbrl_flow")["selling_general_and_administrative_expense"] is None
+    assert ratio_input_item_ids("xbrl_balance")["accounts_payable"] == 1203
+    assert ratio_input_item_ids("xbrl_flow")["pretax_income"] == 1023
+    assert ratio_input_item_ids("xbrl_flow")["income_tax"] == 1024
+    assert ratio_input_item_ids("xbrl_balance")["goodwill"] == 1114
+    assert ratio_input_item_ids("xbrl_balance")["intangibles_other"] == 1115
+    assert ratio_input_item_ids("xbrl_flow")["shares_basic_avg"] == 1040
+    assert ratio_input_item_ids("xbrl_flow")["shares_diluted_avg"] == 1041
 
     assert input_item_ids_for_ratio(("rev", "ni", "rev_prior", "ni_prior")) == [1001, 1031]
     assert input_item_ids_for_ratio(("current_assets", "inventory", "current_liabilities")) == [1102, 1107, 1202]
