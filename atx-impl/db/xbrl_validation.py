@@ -9,6 +9,44 @@ from .warehouse import quality_check
 
 
 SOURCE_NAME = "XBRL validation"
+DQC_RULES_GUIDANCE_URL = "https://xbrl.us/home/priorities/data-quality/rules-guidance/"
+DQC_0015_URL = "https://xbrl.us/data-rule/dqc_0015/"
+DQC_0053_URL = "https://xbrl.us/data-rule/dqc_0053/"
+
+# PF-S7 S7-2 ports a deliberately small SQL-native subset of XBRL US DQC_0015.
+# The full rule includes a much larger element catalog plus member exclusions;
+# this constant is only the sign-constrained concept slice that is common in our
+# fixtures/live cached facts and can be checked safely without Arelle.
+DQC_0015_NON_NEGATIVE_CONCEPTS: tuple[tuple[str, str], ...] = (
+    ("us-gaap", "Assets"),
+    ("us-gaap", "AssetsCurrent"),
+    ("us-gaap", "CashAndCashEquivalentsAtCarryingValue"),
+    ("us-gaap", "AccountsReceivableNetCurrent"),
+    ("us-gaap", "InventoryNet"),
+    ("us-gaap", "PropertyPlantAndEquipmentNet"),
+    ("us-gaap", "Liabilities"),
+    ("us-gaap", "LiabilitiesCurrent"),
+    ("us-gaap", "Revenues"),
+    ("us-gaap", "SalesRevenueNet"),
+    ("us-gaap", "CommonStockSharesOutstanding"),
+)
+
+# PF-S7 S7-2 fallback for DQC_0053. If xbrl_dimension_edges exposes an explicit
+# unusable axis-member edge, SQL flags that first; these curated pairs cover a
+# tiny, documented subset when the local normalized dimension graph is not rich
+# enough to compute full dimension-domain-member closure.
+DQC_0053_EXCLUDED_MEMBER_AXIS_PAIRS: tuple[tuple[str, str, str], ...] = (
+    (
+        "us-gaap:BusinessSegmentsAxis",
+        "us-gaap:LandMember",
+        "LandMember belongs to property, plant and equipment breakdowns, not BusinessSegmentsAxis.",
+    ),
+    (
+        "us-gaap:ProductOrServiceAxis",
+        "us-gaap:BuildingMember",
+        "BuildingMember belongs to property, plant and equipment breakdowns, not ProductOrServiceAxis.",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -37,7 +75,9 @@ def refresh_xbrl_validation_results(
     dimensional artifact (``passed``); an incomplete set with a child absent from
     every context stays ``failed``. ``absolute_tolerance`` is never widened to make
     a check pass. A future Arelle/DQC sidecar can append additional rule families
-    to the same table.
+    to the same table. PF-S7 S7-2 appends a small SQL-native DQC subset under
+    ``rule_family = 'dqc'``: DQC_0015 non-negative concept facts and DQC_0053
+    excluded/unusable member-axis pairs. It is a subset, not a full DQC plugin.
     """
 
     options = options or XbrlValidationOptions()
@@ -47,6 +87,7 @@ def refresh_xbrl_validation_results(
 
     with store.transaction():
         store.con.execute("DELETE FROM xbrl_validation_results WHERE rule_family = 'calculation_linkbase'")
+        store.con.execute("DELETE FROM xbrl_validation_results WHERE rule_family = 'dqc'")
         store.con.execute(
             """
             INSERT INTO xbrl_validation_results (
@@ -392,12 +433,267 @@ def refresh_xbrl_validation_results(
             """,
             [tolerance, validation_run_id, validation_run_id, tolerance, run_id],
         )
+        _insert_dqc_subset_results(store, validation_run_id=validation_run_id, run_id=run_id)
 
     return int(
         store.con.execute(
             "SELECT count(*) FROM xbrl_validation_results WHERE validation_run_id = ?",
             [validation_run_id],
         ).fetchone()[0]
+    )
+
+
+def _sql_values(rows: tuple[tuple[str, ...], ...]) -> str:
+    return ",\n                    ".join(
+        "(" + ", ".join("'" + value.replace("'", "''") + "'" for value in row) + ")" for row in rows
+    )
+
+
+def _insert_dqc_subset_results(store: DuckDBStore, *, validation_run_id: str, run_id: str) -> None:
+    """Append the PF-S7 S7-2 SQL-native DQC subset.
+
+    DQC_0015 is limited to the curated non-negative us-gaap concept list above.
+    DQC member exclusions and broader sign exceptions require the full official
+    rule catalog / Arelle plugin and are deliberately skipped.
+
+    DQC_0053 uses local ``xbrl_dimension_edges`` only when they directly express
+    an unusable axis-member relation; otherwise it checks the tiny curated
+    disallowed pair list above. It does not claim full transitive
+    dimension-domain-member validation.
+    """
+
+    non_negative_values = _sql_values(DQC_0015_NON_NEGATIVE_CONCEPTS)
+    excluded_pair_values = _sql_values(DQC_0053_EXCLUDED_MEMBER_AXIS_PAIRS)
+    store.con.execute(
+        f"""
+        INSERT INTO xbrl_validation_results (
+            validation_id,
+            validation_run_id,
+            rule_family,
+            rule_code,
+            severity,
+            status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            role_uri,
+            parent_taxonomy,
+            parent_concept,
+            context_ref,
+            unit_ref,
+            parent_fact_id,
+            parent_value,
+            child_weighted_sum,
+            absolute_difference,
+            tolerance,
+            child_count,
+            child_facts_json,
+            message,
+            dimensional_evidence_json,
+            source_url,
+            run_id,
+            source_loaded_at
+        )
+        WITH dqc_0015_concepts(taxonomy, concept) AS (
+            VALUES
+                    {non_negative_values}
+        ),
+        dqc_0053_curated_pairs(axis_qname, member_qname, reason) AS (
+            VALUES
+                    {excluded_pair_values}
+        ),
+        dqc_0015_violations AS (
+            SELECT
+                sha256(
+                    concat_ws(
+                        '|',
+                        ?,
+                        'dqc',
+                        'DQC_0015',
+                        f.security_id,
+                        f.accession_number,
+                        f.primary_document,
+                        f.context_ref,
+                        f.filing_fact_id
+                    )
+                ) AS validation_id,
+                f.*
+            FROM xbrl_filing_facts f
+            JOIN dqc_0015_concepts c
+              ON coalesce(f.taxonomy, '') = c.taxonomy
+             AND f.concept = c.concept
+            WHERE f.is_numeric
+              AND f.numeric_value < 0
+        ),
+        dqc_0053_edge_violations AS (
+            SELECT
+                d.*,
+                'xbrl_dimension_edges direct usable=false axis-member relation' AS reason
+            FROM xbrl_filing_dimensions d
+            WHERE d.member_kind = 'explicit'
+              AND d.dimension_concept IS NOT NULL
+              AND d.member_concept IS NOT NULL
+              AND EXISTS (
+                    SELECT 1
+                    FROM xbrl_dimension_edges e
+                    WHERE e.source_concept = d.dimension_concept
+                      AND e.target_concept = d.member_concept
+                      AND coalesce(e.source_taxonomy, d.dimension_taxonomy, '') = coalesce(d.dimension_taxonomy, '')
+                      AND coalesce(e.target_taxonomy, d.member_taxonomy, '') = coalesce(d.member_taxonomy, '')
+                      AND e.usable = false
+              )
+        ),
+        dqc_0053_curated_violations AS (
+            SELECT
+                d.*,
+                p.reason
+            FROM xbrl_filing_dimensions d
+            JOIN dqc_0053_curated_pairs p
+              ON d.dimension_qname = p.axis_qname
+             AND d.member_qname = p.member_qname
+            WHERE d.member_kind = 'explicit'
+        ),
+        dqc_0053_violations AS (
+            SELECT *
+            FROM (
+                SELECT * FROM dqc_0053_edge_violations
+                UNION ALL
+                SELECT * FROM dqc_0053_curated_violations
+            )
+            QUALIFY row_number() OVER (
+                PARTITION BY filing_dimension_id
+                ORDER BY reason
+            ) = 1
+        )
+        SELECT
+            validation_id,
+            ? AS validation_run_id,
+            'dqc' AS rule_family,
+            'DQC_0015' AS rule_code,
+            'error' AS severity,
+            'failed' AS status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            NULL AS role_uri,
+            taxonomy AS parent_taxonomy,
+            concept AS parent_concept,
+            context_ref,
+            unit_ref,
+            filing_fact_id AS parent_fact_id,
+            numeric_value AS parent_value,
+            0.0 AS child_weighted_sum,
+            abs(numeric_value) AS absolute_difference,
+            0.0 AS tolerance,
+            0 AS child_count,
+            CAST(
+                to_json([
+                    struct_pack(
+                        filing_fact_id := filing_fact_id,
+                        taxonomy := taxonomy,
+                        concept := concept,
+                        numeric_value := numeric_value
+                    )
+                ]) AS VARCHAR
+            ) AS child_facts_json,
+            'DQC_0015 subset: sign-constrained us-gaap concept reported with a negative numeric value. Full DQC member exclusions are not implemented in this SQL subset.' AS message,
+            CAST(
+                to_json(
+                    struct_pack(
+                        dqc_rule := 'DQC_0015',
+                        official_rule_url := '{DQC_0015_URL}',
+                        guidance_url := '{DQC_RULES_GUIDANCE_URL}',
+                        subset := 'curated non-negative concept list only; no full DQC member exclusions',
+                        observed_value := numeric_value
+                    )
+                ) AS VARCHAR
+            ) AS dimensional_evidence_json,
+            source_url,
+            ? AS run_id,
+            coalesce(source_loaded_at, now()) AS source_loaded_at
+        FROM dqc_0015_violations
+        UNION ALL
+        SELECT
+            sha256(
+                concat_ws(
+                    '|',
+                    ?,
+                    'dqc',
+                    'DQC_0053',
+                    security_id,
+                    accession_number,
+                    primary_document,
+                    context_id,
+                    filing_dimension_id
+                )
+            ) AS validation_id,
+            ? AS validation_run_id,
+            'dqc' AS rule_family,
+            'DQC_0053' AS rule_code,
+            'error' AS severity,
+            'failed' AS status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            NULL AS role_uri,
+            dimension_taxonomy AS parent_taxonomy,
+            dimension_concept AS parent_concept,
+            context_id AS context_ref,
+            NULL AS unit_ref,
+            NULL AS parent_fact_id,
+            NULL AS parent_value,
+            NULL AS child_weighted_sum,
+            NULL AS absolute_difference,
+            0.0 AS tolerance,
+            1 AS child_count,
+            CAST(
+                to_json([
+                    struct_pack(
+                        filing_dimension_id := filing_dimension_id,
+                        axis := dimension_qname,
+                        member := member_qname
+                    )
+                ]) AS VARCHAR
+            ) AS child_facts_json,
+            'DQC_0053 subset: explicit member appears on an excluded axis-member pair or on a direct local dimension edge marked usable=false. Full transitive dimension-domain-member validation is skipped.' AS message,
+            CAST(
+                to_json(
+                    struct_pack(
+                        dqc_rule := 'DQC_0053',
+                        official_rule_url := '{DQC_0053_URL}',
+                        guidance_url := '{DQC_RULES_GUIDANCE_URL}',
+                        subset := 'direct usable=false xbrl_dimension_edges plus curated excluded pairs only',
+                        axis := dimension_qname,
+                        member := member_qname,
+                        reason := reason
+                    )
+                ) AS VARCHAR
+            ) AS dimensional_evidence_json,
+            source_url,
+            ? AS run_id,
+            coalesce(source_loaded_at, now()) AS source_loaded_at
+        FROM dqc_0053_violations
+        """,
+        [
+            run_id,
+            validation_run_id,
+            run_id,
+            run_id,
+            validation_run_id,
+            run_id,
+        ],
     )
 
 

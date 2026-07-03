@@ -643,3 +643,116 @@ def test_xbrl_dimensional_evidence_json_records_verdict(tmp_store):
     liabilities = json.loads(evidence_by_parent["Liabilities"])
     assert liabilities["verdict"] == "genuine_footing_error"
     assert liabilities["missing_children"] == []
+
+
+def test_dqc_0015_negative_concept_subset_flags_negative_fact(tmp_store):
+    """DQC_0015 subset: curated non-negative us-gaap concepts cannot be negative."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_context(tmp_store)
+    _insert_fact(tmp_store, "fact-negative-assets", 1, "Assets", -1.0)
+
+    assert refresh_xbrl_validation_results(tmp_store) == 1
+    row = tmp_store.con.execute(
+        """
+        SELECT rule_family, rule_code, status, severity, parent_concept, parent_value, message
+        FROM xbrl_validation_results
+        """
+    ).fetchone()
+
+    assert row[0:6] == ("dqc", "DQC_0015", "failed", "error", "Assets", -1.0)
+    assert "DQC_0015 subset" in row[6]
+    assert "negative numeric value" in row[6]
+
+
+def test_dqc_0015_positive_curated_concept_does_not_emit_false_positive(tmp_store):
+    """DQC_0015 subset passing fixture: positive sign-constrained fact is quiet."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_context(tmp_store)
+    _insert_fact(tmp_store, "fact-positive-assets", 1, "Assets", 1.0)
+
+    assert refresh_xbrl_validation_results(tmp_store) == 0
+    dqc_rows = tmp_store.con.execute(
+        "SELECT count(*) FROM xbrl_validation_results WHERE rule_family = 'dqc'"
+    ).fetchone()[0]
+    assert dqc_rows == 0
+
+
+def test_dqc_0053_excluded_member_axis_subset_flags_wrong_pair(tmp_store):
+    """DQC_0053 subset: curated wrong member-axis pair emits a failed DQC row."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_dimensional_context(
+        tmp_store,
+        filing_context_id="ctx-wrong-axis",
+        context_id="c-wrong-axis",
+        axis_qname="us-gaap:BusinessSegmentsAxis",
+        member_qname="us-gaap:LandMember",
+    )
+
+    assert refresh_xbrl_validation_results(tmp_store) == 1
+    row = tmp_store.con.execute(
+        """
+        SELECT rule_family, rule_code, status, severity, parent_concept, context_ref, message
+        FROM xbrl_validation_results
+        """
+    ).fetchone()
+
+    assert row[0:6] == ("dqc", "DQC_0053", "failed", "error", "BusinessSegmentsAxis", "c-wrong-axis")
+    assert "DQC_0053 subset" in row[6]
+    assert "excluded axis-member pair" in row[6]
+
+
+def test_dqc_0053_allowed_member_axis_does_not_emit_false_positive(tmp_store):
+    """DQC_0053 subset passing fixture: PPE member on PPE axis is quiet."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_dimensional_context(
+        tmp_store,
+        filing_context_id="ctx-allowed-axis",
+        context_id="c-allowed-axis",
+        axis_qname="us-gaap:PropertyPlantAndEquipmentByTypeAxis",
+        member_qname="us-gaap:LandMember",
+    )
+
+    assert refresh_xbrl_validation_results(tmp_store) == 0
+    dqc_rows = tmp_store.con.execute(
+        "SELECT count(*) FROM xbrl_validation_results WHERE rule_family = 'dqc'"
+    ).fetchone()[0]
+    assert dqc_rows == 0
+
+
+def test_dqc_subset_refresh_is_idempotent_for_dqc_family(tmp_store):
+    """DQC refresh deletes/reinserts only the DQC family and does not accumulate rows."""
+
+    from db.xbrl_validation import XbrlValidationOptions, refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_context(tmp_store)
+    _insert_fact(tmp_store, "fact-negative-assets", 1, "Assets", -1.0)
+
+    options = XbrlValidationOptions(run_id="dqc-idempotent-test")
+    assert refresh_xbrl_validation_results(tmp_store, options) == 1
+    first_id = tmp_store.con.execute(
+        "SELECT validation_id FROM xbrl_validation_results WHERE rule_family = 'dqc'"
+    ).fetchone()[0]
+
+    assert refresh_xbrl_validation_results(tmp_store, options) == 1
+    rows = tmp_store.con.execute(
+        """
+        SELECT count(*), min(validation_id), max(run_id)
+        FROM xbrl_validation_results
+        WHERE rule_family = 'dqc'
+        """
+    ).fetchone()
+
+    assert rows == (1, first_id, "dqc-idempotent-test")
