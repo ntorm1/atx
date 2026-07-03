@@ -6631,13 +6631,6 @@ def _market_cap_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
-    for statement in (
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_market_cap_key ON market_cap(source, security_id, trade_date)",
-        "CREATE INDEX IF NOT EXISTS idx_market_cap_security_date ON market_cap(security_id, trade_date)",
-        "CREATE INDEX IF NOT EXISTS idx_market_cap_asof ON market_cap(as_of_date, available_at)",
-    ):
-        conn.execute(statement)
-
     conn.execute(
         """
         INSERT OR REPLACE INTO dataset_catalog (
@@ -6665,7 +6658,7 @@ def _market_cap_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
             'source,security_id,trade_date',
             'Daily market capitalization level struck from raw daily close and the latest PIT-visible share count, preferring shares_outstanding and falling back to shares_diluted_avg.',
             '["source","security_id","trade_date"]',
-            'No lookahead: selected share row must have effective_date/as_of_date <= trade_date and available_at <= price_available_at; available_at is max(price_available_at, share_available_at).',
+            'No lookahead on applicability: selected share row must have effective_date/as_of_date <= trade_date. Later-filed applicable share rows are allowed, and available_at is max(price_available_at, share_available_at).',
             now()
         )
         """
@@ -6717,6 +6710,17 @@ def _market_cap_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
           AND c.table_name = 'market_cap'
         """
     )
+
+
+def _market_cap_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S6 S6-1 indexes for market_cap split from schema/catalog DDL."""
+
+    for statement in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_market_cap_key ON market_cap(source, security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_market_cap_security_date ON market_cap(security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_market_cap_asof ON market_cap(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
 
 
 def _xbrl_validation_dimensional_evidence(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7183,6 +7187,11 @@ MIGRATIONS: list[Migration] = [
         version=84,
         name="market_cap_schema_catalog",
         up=_market_cap_schema_catalog,
+    ),
+    Migration(
+        version=85,
+        name="market_cap_indexes",
+        up=_market_cap_indexes,
     ),
     Migration(
         version=88,

@@ -1,8 +1,9 @@
 """PF-S6 S6-1: PIT-safe market capitalization.
 
-Market cap is struck as the raw daily close times the latest share count that
-was knowable at the price timestamp. This deliberately uses ``equity_daily_bars.close``
-rather than ``adjusted_close``: market capitalization is a same-day level, not a
+Market cap is struck as the raw daily close times the latest applicable share
+count, then made visible when both the price and selected share vintage are
+available. This deliberately uses ``equity_daily_bars.close`` rather than
+``adjusted_close``: market capitalization is a same-day level, not a
 back-adjusted return series.
 """
 from __future__ import annotations
@@ -15,7 +16,7 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .warehouse import insert_frame, json_dumps, quality_check
+from .warehouse import insert_frame, json_dumps, quality_check, replace_by_relation
 
 
 SOURCE_NAME = "Derived market capitalization"
@@ -92,8 +93,9 @@ def _normalize_share_inputs(shares: pd.DataFrame) -> pd.DataFrame:
     out["share_count_type"] = out["share_count_type"].astype("string")
     if "share_history_id" not in out.columns:
         out["share_history_id"] = pd.NA
-    if "is_latest_revision" in out.columns:
-        out = out[out["is_latest_revision"].fillna(False).astype(bool)]
+    if "revision_sequence" not in out.columns:
+        out["revision_sequence"] = 0
+    out["revision_sequence"] = pd.to_numeric(out["revision_sequence"], errors="coerce").fillna(0)
     return out.dropna(
         subset=[
             "security_id",
@@ -124,7 +126,6 @@ def _select_pit_share_rows(prices: pd.DataFrame, shares: pd.DataFrame) -> pd.Dat
         visible = candidates[
             (candidates["effective_date"] <= price["trade_date"])
             & (candidates["share_as_of_date"] <= price["trade_date"])
-            & (candidates["share_available_at"] <= price["price_available_at"])
         ]
         if visible.empty:
             continue
@@ -134,8 +135,14 @@ def _select_pit_share_rows(prices: pd.DataFrame, shares: pd.DataFrame) -> pd.Dat
             if typed.empty:
                 continue
             chosen = typed.sort_values(
-                ["effective_date", "share_as_of_date", "share_available_at", "share_history_id"],
-                ascending=[False, False, False, False],
+                [
+                    "effective_date",
+                    "share_as_of_date",
+                    "share_available_at",
+                    "revision_sequence",
+                    "share_history_id",
+                ],
+                ascending=[False, False, False, False, False],
             ).iloc[0]
             break
         if chosen is None:
@@ -320,10 +327,8 @@ def load_market_cap_inputs(store: DuckDBStore, options: MarketCapOptions) -> pd.
             JOIN shares_outstanding_history s
               ON s.security_id = p.security_id
              AND s.share_count_type IN ('shares_outstanding', 'shares_diluted_avg')
-             AND s.is_latest_revision
              AND s.effective_date <= p.trade_date
              AND s.as_of_date <= p.trade_date
-             AND s.available_at <= p.price_available_at
              AND s.share_count IS NOT NULL
              AND s.share_count >= 0
         )
@@ -338,13 +343,66 @@ def load_market_cap_inputs(store: DuckDBStore, options: MarketCapOptions) -> pd.
             store.con.unregister(relation)
 
 
+def _delete_market_cap_scope(
+    store: DuckDBStore,
+    options: MarketCapOptions,
+    rows: pd.DataFrame,
+) -> None:
+    """Delete only the output keys/scope that this refresh is allowed to replace."""
+
+    has_scope_filter = any(
+        (
+            options.price_sources,
+            options.symbols,
+            options.start_date is not None,
+            options.end_date is not None,
+        )
+    )
+
+    if has_scope_filter:
+        predicates = ["source = ?"]
+        params: list[object] = [options.source]
+        if options.symbols:
+            placeholders = ", ".join("?" for _ in options.symbols)
+            predicates.append(f"symbol IN ({placeholders})")
+            params.extend(options.symbols)
+        if options.start_date is not None:
+            predicates.append("trade_date >= ?")
+            params.append(options.start_date)
+        if options.end_date is not None:
+            predicates.append("trade_date <= ?")
+            params.append(options.end_date)
+        if options.price_sources:
+            placeholders = ", ".join("?" for _ in options.price_sources)
+            predicates.append(f"price_source IN ({placeholders})")
+            params.extend(options.price_sources)
+        store.con.execute(f"DELETE FROM market_cap WHERE {' AND '.join(predicates)}", params)
+    else:
+        store.con.execute("DELETE FROM market_cap WHERE source = ?", [options.source])
+
+    if rows.empty:
+        return
+
+    relation_name = "market_cap_replace_keys"
+    store.con.register(relation_name, rows[["source", "security_id", "trade_date"]])
+    try:
+        replace_by_relation(
+            store,
+            table="market_cap",
+            relation=relation_name,
+            key_columns=("source", "security_id", "trade_date"),
+        )
+    finally:
+        store.con.unregister(relation_name)
+
+
 def refresh_market_cap(store: DuckDBStore, options: MarketCapOptions | None = None) -> int:
     options = options or MarketCapOptions()
     store.initialize()
     inputs = load_market_cap_inputs(store, options)
     rows = compute_market_cap_rows(inputs, source=options.source, run_id=options.run_id)
     with store.transaction():
-        store.con.execute("DELETE FROM market_cap WHERE source = ?", [options.source])
+        _delete_market_cap_scope(store, options, rows)
         if not rows.empty:
             insert_frame(store, rows, "market_cap", "market_cap_insert")
     return int(len(rows))

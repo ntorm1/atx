@@ -47,6 +47,7 @@ def _share(
     source: str = "SEC XBRL share counts",
     run_id: str = "share-run",
     revision_sequence: int = 1,
+    is_latest_revision: bool = True,
 ) -> dict[str, object]:
     as_of_date = as_of_date or effective_date
     return {
@@ -71,7 +72,7 @@ def _share(
         "accession_number": f"acc-{share_history_id}",
         "revision_sequence": revision_sequence,
         "revision_count": 1,
-        "is_latest_revision": True,
+        "is_latest_revision": is_latest_revision,
         "share_count": share_count,
         "source_url": "fixture",
         "run_id": run_id,
@@ -230,7 +231,7 @@ def test_compute_market_cap_falls_back_to_diluted_when_instant_absent() -> None:
     assert row["market_cap"] == 4000.0
 
 
-def test_compute_market_cap_excludes_share_revisions_unavailable_at_price_time() -> None:
+def test_compute_market_cap_allows_later_filed_applicable_share_count() -> None:
     prices = pd.DataFrame(
         [_price("SEC-C", "CCC", dt.date(2020, 1, 2), 30.0, dt.datetime(2020, 1, 2, 22))]
     )
@@ -260,8 +261,45 @@ def test_compute_market_cap_excludes_share_revisions_unavailable_at_price_time()
 
     row = compute_market_cap_rows(prices, shares).iloc[0]
 
-    assert row["share_history_id"] == "visible"
-    assert row["market_cap"] == 9000.0
+    assert row["share_history_id"] == "lookahead"
+    assert row["market_cap"] == 299970.0
+    assert row["available_at"] == pd.Timestamp(dt.datetime(2020, 1, 3, 9))
+
+
+def test_compute_market_cap_keeps_superseded_applicable_share_revision() -> None:
+    prices = pd.DataFrame(
+        [_price("SEC-D", "DDD", dt.date(2020, 1, 2), 40.0, dt.datetime(2020, 1, 2, 22))]
+    )
+    shares = pd.DataFrame(
+        [
+            _share(
+                "SEC-D",
+                "DDD",
+                "shares_outstanding",
+                dt.date(2019, 12, 31),
+                dt.datetime(2020, 1, 2, 10),
+                400.0,
+                share_history_id="older-visible",
+                is_latest_revision=False,
+            ),
+            _share(
+                "SEC-D",
+                "DDD",
+                "shares_outstanding",
+                dt.date(2020, 3, 31),
+                dt.datetime(2020, 4, 1, 10),
+                9999.0,
+                share_history_id="future-current",
+                revision_sequence=2,
+                is_latest_revision=True,
+            ),
+        ]
+    )
+
+    row = compute_market_cap_rows(prices, shares).iloc[0]
+
+    assert row["share_history_id"] == "older-visible"
+    assert row["market_cap"] == 16000.0
 
 
 def test_refresh_market_cap_is_idempotent_and_asof_visible(tmp_store) -> None:
@@ -282,7 +320,7 @@ def test_refresh_market_cap_is_idempotent_and_asof_visible(tmp_store) -> None:
     assert rows == [
         ("AAA", "shares_outstanding", 1000.0, dt.datetime(2020, 1, 2, 22), "run-2"),
         ("BBB", "shares_diluted_avg", 4000.0, dt.datetime(2020, 1, 2, 22), "run-2"),
-        ("CCC", "shares_outstanding", 9000.0, dt.datetime(2020, 1, 2, 22), "run-2"),
+        ("CCC", "shares_outstanding", 299970.0, dt.datetime(2020, 1, 3, 9), "run-2"),
     ]
 
     early = market_cap_asof(
@@ -298,6 +336,71 @@ def test_refresh_market_cap_is_idempotent_and_asof_visible(tmp_store) -> None:
     )
     assert early.empty
     assert late[["symbol", "market_cap"]].to_dict("records") == [{"symbol": "AAA", "market_cap": 1000.0}]
+
+
+def test_refresh_market_cap_scoped_symbol_preserves_other_rows(tmp_store) -> None:
+    _seed_market_cap_inputs(tmp_store)
+
+    assert refresh_market_cap(tmp_store, MarketCapOptions(run_id="initial")) == 3
+    assert refresh_market_cap(tmp_store, MarketCapOptions(symbols=("AAA",), run_id="scoped")) == 1
+
+    rows = tmp_store.con.execute(
+        """
+        SELECT symbol, market_cap, run_id
+        FROM market_cap
+        ORDER BY symbol
+        """
+    ).fetchall()
+
+    assert rows == [
+        ("AAA", 1000.0, "scoped"),
+        ("BBB", 4000.0, "initial"),
+        ("CCC", 299970.0, "initial"),
+    ]
+
+
+def test_refresh_market_cap_keeps_superseded_applicable_share_revision(tmp_store) -> None:
+    prices = pd.DataFrame(
+        [_price("SEC-D", "DDD", dt.date(2020, 1, 2), 40.0, dt.datetime(2020, 1, 2, 22))]
+    )
+    shares = pd.DataFrame(
+        [
+            _share(
+                "SEC-D",
+                "DDD",
+                "shares_outstanding",
+                dt.date(2019, 12, 31),
+                dt.datetime(2020, 1, 2, 10),
+                400.0,
+                share_history_id="older-visible",
+                is_latest_revision=False,
+            ),
+            _share(
+                "SEC-D",
+                "DDD",
+                "shares_outstanding",
+                dt.date(2020, 3, 31),
+                dt.datetime(2020, 4, 1, 10),
+                9999.0,
+                share_history_id="future-current",
+                revision_sequence=2,
+                is_latest_revision=True,
+            ),
+        ]
+    )
+    insert_frame(tmp_store, prices, "equity_daily_bars", "market_cap_superseded_price_seed")
+    insert_frame(tmp_store, shares, "shares_outstanding_history", "market_cap_superseded_share_seed")
+
+    assert refresh_market_cap(tmp_store, MarketCapOptions(run_id="sql-path")) == 1
+
+    row = tmp_store.con.execute(
+        """
+        SELECT share_history_id, market_cap, available_at
+        FROM market_cap
+        WHERE symbol = 'DDD'
+        """
+    ).fetchone()
+    assert row == ("older-visible", 16000.0, dt.datetime(2020, 1, 2, 22))
 
 
 def test_market_cap_dataset_records_quality(tmp_store) -> None:
@@ -343,6 +446,9 @@ def test_market_cap_migration_and_catalog_are_present(tmp_store) -> None:
     assert tmp_store.con.execute(
         "SELECT description FROM schema_migrations WHERE version = '0084'"
     ).fetchone()[0] == "market_cap_schema_catalog"
+    assert tmp_store.con.execute(
+        "SELECT description FROM schema_migrations WHERE version = '0085'"
+    ).fetchone()[0] == "market_cap_indexes"
     assert tmp_store.con.execute(
         "SELECT count(*) FROM table_catalog WHERE table_name = 'market_cap'"
     ).fetchone()[0] == 1
