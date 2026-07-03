@@ -450,3 +450,40 @@ re-implemented):**
 Full regression sweep green (264 tests, expanded regex adding `CombineDeterminismBattery` +
 `FactoryOos`): every suite from S3-0 through S3-4 unchanged, plus the 3 new
 `CombineDeterminismBattery` tests and the full `FactoryOos` suite (39 tests) all passing.
+
+## Sprint close — bench / acceptance (against the sprint doc's own checklist)
+
+- **Default byte-identity:** `CombineDeterminismBattery.DefaultByteIdenticalAcrossAllFiveLegacy
+  MethodsAndDefaultString` (S3-5) + `StageCombineCleanedCov.DiagonalKindByteIdenticalToLegacyPath`
+  (S3-4) + `FactoryOos.MineIntoOffPathDigestUnchanged` (re-confirmed, factory-owned) — all green.
+- **Per-task RED->GREEN:** S3-1 (`StageCombineStack.ProducesWellFormedWeightsAndStableVerdictHash`),
+  S3-2 (`StageCombineStackGate.AdmitsOnInteractionFixture` /
+  `RejectsOnLinearFixtureAndFallsBackByteIdenticalToShrinkageMv`), S3-3
+  (`StageCombineRegime.SingleStateByteIdenticalOnAdmitPath`/`OnFallbackPath`,
+  `RegimeStackWire.PitPosteriorBlendBeatsFlatFitOutOfSample`), S3-4
+  (`StageCombineCleanedCov.FactorKindWiringIsLiveAndReportsMeasuredDiversification`) — all recorded
+  above with measured numbers, not just pass/fail.
+- **Stacking win, measured** (`StageCombineStackGate` fixtures, `stack_cpcv_groups=5`,
+  `stack_cpcv_test_groups=1`, `stack_cpcv_embargo=0.0`, `stack_horizon=1`):
+  - Interaction fixture (`AdmitsOnInteractionFixture`): `oos_ic_linear=0.0113702`,
+    `oos_ic_nonlinear=0.263743`, `oos_dsr_linear=0.183528`, `oos_dsr_nonlinear=1`, `admitted=true`.
+  - Linear fixture (`RejectsOnLinearFixtureAndFallsBackByteIdenticalToShrinkageMv`):
+    `oos_ic_linear=0.99754`, `oos_ic_nonlinear=0.977052`, `oos_dsr_linear=1`, `oos_dsr_nonlinear=1`,
+    `admitted=false` (the IC-improvement leg of the admit test fails even though both DSRs saturate
+    to 1 — the honest null).
+- **Regime win, measured** (`RegimeStackWire.PitPosteriorBlendBeatsFlatFitOutOfSample`):
+  `oos_mean_regime=0.005` vs `oos_mean_flat=0.0025` (exactly 2x); `oos_sharpe_regime=5.0` vs
+  `oos_sharpe_flat=2.499`.
+- **Twice-run + seq==parallel:** `StageCombineStack.TwiceRunByteIdenticalComboAndVerdictHash` (S3-1),
+  `StageCombineRegime.TwiceRunByteIdentical` (S3-3), `CombineDeterminismBattery.StackSeqEqParallel` /
+  `RegimeStackSeqEqParallel` (S3-5, `atx::engine::parallel::DetPool`-dispatched vs sequential).
+- **Dev-panel smoke ≤5 min with `--method stack`/`--method regime-stack`:** NOT applicable this
+  sprint — CLI flag threading is explicitly Sprint 5's job (the S5 hub files are on this sprint's
+  hard do-not-touch list); S3 proves the engine path exclusively via the direct-call
+  `run_combine(cfg, combiner_cfg[, risk_cfg])`/`fit_stack_combo` overloads declared in
+  `stage_combine.hpp`, exercised end-to-end by `StageCombineStack`/`StageCombineRegime`/
+  `StageCombineCleanedCov`/`CombineDeterminismBattery`.
+
+All 7 sprint commits (`5adfe76..HEAD`): `f662474` (S3-0), `3eacbd9` (S3-SEAM), `0be22d4` (S3-1),
+`7299212` (S3-2), `d9ba1d6` (S3-3), `defb0b7` (S3-4), `94547d7` (S3-5). Sprint 3 is COMPLETE —
+all 7 units + the S4 handoff seam landed, tested, and committed.
