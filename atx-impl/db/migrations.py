@@ -6503,6 +6503,101 @@ def _formula_registry_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _formula_registry_catalog_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S4 S4-3: v_formula_registry -- the queryable/as-of formula catalog surface.
+
+    "What is EV/EBITDA?" is answerable today only by reading Python. This
+    view is a plain pass-through SELECT over ``formula_registry`` (schema:
+    migration 0075; indexes: 0076) exposing every catalog column --
+    ``formula_code -> family, kind, unit, numerator/denominator item ids,
+    expression, citation, is_meaningful_rule, valid_from/valid_to`` -- as one
+    ``SELECT``-able surface, so a formula's full definition (with citation)
+    is data, not a closure.
+
+    Per (B)/S7a, views are catalogued like tables: this view gets its own
+    table_catalog + field_catalog rows (mirroring the
+    ``v_offexchange_security_period`` precedent -- migration_2 /
+    ``_catalog_backfill_reference_and_views``, migrations.py:2213-2386 --
+    which is the only prior catalogued-view example in this warehouse;
+    table_catalog/field_catalog have no table-vs-view discriminator column,
+    so a view row looks exactly like a table row).
+
+    PIT note: ``formula_registry`` carries no ``available_at`` column (only
+    ``valid_from``/``valid_to`` bitemporal DEFINITION validity -- see the
+    migration-0075 docstring). The as-of PYTHON reader that filters this
+    view by ``valid_from <= as_of_date < coalesce(valid_to, 9999-12-31)`` is
+    ``formula_registry_asof`` in ``db/asof.py``; this view itself is the
+    always-current (unfiltered) catalog surface a plain ``SELECT`` sees.
+    """
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_formula_registry AS
+        SELECT
+            formula_code,
+            family,
+            kind,
+            unit,
+            numerator_code,
+            denominator_code,
+            numerator_item_ids_json,
+            denominator_item_ids_json,
+            inputs_json,
+            transform,
+            expression,
+            is_meaningful_rule,
+            definition,
+            citation,
+            valid_from,
+            valid_to
+        FROM formula_registry
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'v_formula_registry',
+                'gold',
+                'formula',
+                'formula_code',
+                'Queryable formula catalog surface: every formula_registry column (definition, citation, numerator/denominator item ids, transform/expression, meaningfulness gate) as one SELECT-able view, so a formula''s full definition is data, not a Python closure.',
+                '["formula_code"]',
+                'View over formula_registry (no additional filtering). For a point-in-time read honoring the formula DEFINITION''s own bitemporal validity, use formula_registry_asof(as_of_date, ...) in db/asof.py, which applies valid_from <= as_of_date < coalesce(valid_to, DATE 9999-12-31) over this same column set.',
+                now()
+            )
+        """
+    )
+
+    # Field descriptions are pulled straight from formula_registry's own
+    # field_catalog rows (migration 0075), just re-parented onto the view
+    # name, so the view's documentation never drifts from the base table's --
+    # self-contained (no dependency on duckdb_columns() column ordering) and
+    # single-sourced.
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        SELECT
+            'v_formula_registry',
+            field_name,
+            semantic_type,
+            description,
+            nullable,
+            unit,
+            source_field,
+            now()
+        FROM field_catalog
+        WHERE table_name = 'formula_registry'
+          AND field_name NOT IN ('run_id', 'source_loaded_at')
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -6844,6 +6939,11 @@ MIGRATIONS: list[Migration] = [
         version=76,
         name="formula_registry_indexes",
         up=_formula_registry_indexes,
+    ),
+    Migration(
+        version=77,
+        name="formula_registry_catalog_view",
+        up=_formula_registry_catalog_view,
     ),
     Migration(
         version=79,

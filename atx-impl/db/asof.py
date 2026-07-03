@@ -3722,3 +3722,76 @@ def short_interest_metrics_asof(
         return _run(store)
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
+
+
+FORMULA_REGISTRY_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date
+)
+SELECT v.*
+FROM v_formula_registry v
+{code_join}
+{family_join}
+CROSS JOIN params p
+WHERE v.valid_from <= p.as_of_date
+  AND coalesce(v.valid_to, DATE '9999-12-31') > p.as_of_date
+ORDER BY v.family, v.formula_code
+"""
+
+
+def formula_registry_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: "DuckDBStore | None" = None,
+    formula_codes: tuple[str, ...] | list[str] | None = None,
+    families: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Return the formula catalog (definition + citation + inputs) as of a point in time.
+
+    PF-S4 S4-3: a queryable/as-of surface over ``formula_registry`` (via the
+    catalogued ``v_formula_registry`` view -- migration 0077) so "what is
+    EV/EBITDA?" is answerable with a query instead of reading Python.
+
+    Filters by the formula DEFINITION's own bitemporal validity --
+    ``valid_from <= as_of_date < coalesce(valid_to, 9999-12-31)`` -- so a
+    formula's definition HISTORY is queryable (a coefficient or citation
+    revision does not erase the prior definition). ``formula_registry`` has
+    no ``available_at``/knowledge-time column (only ``valid_from``/
+    ``valid_to`` DEFINITION validity, unlike every fact-table ``*_asof``
+    reader in this module), so unlike those readers this one takes no
+    effective ``as_of_ts`` filter; the ``as_of_ts`` parameter is accepted
+    only for call-site symmetry with the rest of this module and is
+    otherwise unused.
+
+    Pass an open ``store`` to read through an existing connection (DuckDB
+    forbids a second connection to the same file); otherwise a read-only
+    connection to ``db_path`` is opened.
+    """
+    del as_of_ts  # accepted for call-site symmetry; formula_registry has no available_at axis
+    code_values = _normalize_strings(formula_codes)
+    family_values = _normalize_strings(families)
+
+    def _run(active):
+        registered = []
+        try:
+            code_join = ""
+            family_join = ""
+            if _register_filter(active, "asof_formula_code_filter", "formula_code", code_values):
+                registered.append("asof_formula_code_filter")
+                code_join = "JOIN asof_formula_code_filter cf ON cf.formula_code = upper(v.formula_code)"
+            if _register_filter(active, "asof_formula_family_filter", "family", family_values):
+                registered.append("asof_formula_family_filter")
+                family_join = "JOIN asof_formula_family_filter ff ON ff.family = upper(v.family)"
+            sql = FORMULA_REGISTRY_ASOF_SQL.format(code_join=code_join, family_join=family_join)
+            return active.con.execute(sql, [as_of_date]).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)
