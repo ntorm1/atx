@@ -6973,37 +6973,345 @@ def _fundamental_ratio_provenance_schema_catalog(conn: duckdb.DuckDBPyConnection
           AND as_of_date IS NOT NULL
         """
     )
-    conn.execute(
+    ratio_backfill_needed = bool(conn.execute(
         """
-        WITH ranked_ttm AS (
+        SELECT EXISTS (
+            SELECT 1
+            FROM fundamental_ratios
+            WHERE source_accession IS NULL
+               OR filed_date IS NULL
+            LIMIT 1
+        )
+        """
+    ).fetchone()[0])
+    table_names = {
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE schema_name = 'main'
+            """
+        ).fetchall()
+    }
+    formula_registry_exists = "formula_registry" in table_names
+    ttm_source = (
+        "fundamental_ttm_points"
+        if "fundamental_ttm_points" in table_names else
+        """
+        (
             SELECT
-                security_id,
-                ttm_end_date AS period_end,
-                accession_number AS source_accession,
-                as_of_date AS filed_date,
+                CAST(NULL AS VARCHAR) AS ttm_point_id,
+                CAST(NULL AS VARCHAR) AS security_id,
+                CAST(NULL AS VARCHAR) AS canonical_metric,
+                CAST(NULL AS DATE) AS ttm_end_date,
+                CAST(NULL AS DATE) AS as_of_date,
+                CAST(NULL AS TIMESTAMP) AS available_at,
+                CAST(NULL AS VARCHAR) AS accession_number,
+                CAST(NULL AS BOOLEAN) AS is_latest_revision
+            WHERE false
+        )
+        """
+    )
+    xbrl_source = (
+        "fundamental_xbrl_metric"
+        if "fundamental_xbrl_metric" in table_names else
+        """
+        (
+            SELECT
+                CAST(NULL AS VARCHAR) AS metric_id,
+                CAST(NULL AS VARCHAR) AS security_id,
+                CAST(NULL AS VARCHAR) AS canonical_metric,
+                CAST(NULL AS VARCHAR) AS period_type,
+                CAST(NULL AS DATE) AS period_end,
+                CAST(NULL AS DATE) AS as_of_date,
+                CAST(NULL AS TIMESTAMP) AS available_at,
+                CAST(NULL AS VARCHAR) AS accession_number,
+                CAST(NULL AS BOOLEAN) AS is_latest_revision
+            WHERE false
+        )
+        """
+    )
+    formula_join = (
+        """
+            LEFT JOIN formula_registry f
+              ON f.formula_code = r.ratio_code
+             AND f.valid_to IS NULL
+        """
+        if formula_registry_exists else ""
+    )
+    inputs_json_expr = "coalesce(r.input_codes_json, f.inputs_json)" if formula_registry_exists else "r.input_codes_json"
+
+    if ratio_backfill_needed: conn.execute(
+        f"""
+        WITH base_input_map(input_key, source_group, canonical_metric) AS (
+            VALUES
+                ('rev', 'ttm', 'revenue'),
+                ('ni', 'ttm', 'net_income'),
+                ('oi', 'ttm', 'operating_income'),
+                ('ocf', 'ttm', 'operating_cash_flow'),
+                ('capex', 'ttm', 'capital_expenditures'),
+                ('div', 'ttm', 'dividends_paid'),
+                ('repurch', 'ttm', 'share_repurchases'),
+                ('assets', 'balance', 'assets'),
+                ('liabilities', 'balance', 'liabilities'),
+                ('equity', 'balance', 'stockholders_equity'),
+                ('shares', 'balance', 'shares_outstanding'),
+                ('current_assets', 'xbrl_balance', 'current_assets'),
+                ('current_liabilities', 'xbrl_balance', 'current_liabilities'),
+                ('cash_and_equivalents', 'xbrl_balance', 'cash_and_equivalents'),
+                ('inventory', 'xbrl_balance', 'inventory'),
+                ('long_term_debt', 'xbrl_balance', 'long_term_debt'),
+                ('retained_earnings', 'xbrl_balance', 'retained_earnings'),
+                ('common_shares_outstanding', 'xbrl_balance', 'common_shares_outstanding'),
+                ('property_plant_equipment_net', 'xbrl_balance', 'property_plant_equipment_net'),
+                ('accounts_receivable', 'xbrl_balance', 'accounts_receivable'),
+                ('accounts_payable', 'xbrl_balance', 'ap'),
+                ('goodwill', 'xbrl_balance', 'goodwill'),
+                ('intangibles_other', 'xbrl_balance', 'intangibles_other'),
+                ('gross_profit', 'xbrl_flow', 'gross_profit'),
+                ('cost_of_revenue', 'xbrl_flow', 'cost_of_revenue'),
+                ('interest_expense', 'xbrl_flow', 'interest_expense'),
+                ('depreciation_amortization', 'xbrl_flow', 'depreciation_amortization'),
+                ('selling_general_and_administrative_expense', 'xbrl_flow', 'selling_general_and_administrative_expense'),
+                ('pretax_income', 'xbrl_flow', 'pretax_income'),
+                ('income_tax', 'xbrl_flow', 'income_tax'),
+                ('shares_basic_avg', 'xbrl_flow', 'shares_basic_avg'),
+                ('shares_diluted_avg', 'xbrl_flow', 'shares_diluted_avg')
+        ),
+        input_map AS (
+            SELECT input_key, source_group, canonical_metric, false AS is_prior
+            FROM base_input_map
+            UNION ALL
+            SELECT input_key || '_prior', source_group, canonical_metric, true AS is_prior
+            FROM base_input_map
+            WHERE input_key IN (
+                'rev', 'ni', 'oi', 'ocf', 'assets', 'equity',
+                'liabilities', 'long_term_debt', 'current_assets', 'current_liabilities',
+                'common_shares_outstanding', 'gross_profit', 'cost_of_revenue',
+                'depreciation_amortization', 'property_plant_equipment_net',
+                'accounts_receivable', 'selling_general_and_administrative_expense',
+                'cash_and_equivalents', 'inventory', 'accounts_payable'
+            )
+        ),
+        ratio_seed AS (
+            SELECT
+                r.ratio_id,
+                r.ratio_code,
+                r.security_id,
+                r.period_end,
+                r.available_at,
+                {inputs_json_expr} AS inputs_json
+            FROM fundamental_ratios r
+            {formula_join}
+            WHERE {inputs_json_expr} IS NOT NULL
+        ),
+        ratio_inputs AS (
+            SELECT
+                rs.ratio_id,
+                rs.security_id,
+                rs.period_end,
+                rs.available_at,
+                u.input_key,
+                u.ordinal
+            FROM ratio_seed rs
+            CROSS JOIN LATERAL unnest(json_extract(rs.inputs_json, '$')::VARCHAR[])
+                WITH ORDINALITY AS u(input_key, ordinal)
+        ),
+        known_inputs AS (
+            SELECT
+                ri.ratio_id,
+                ri.security_id,
+                ri.period_end,
+                ri.available_at,
+                ri.input_key,
+                ri.ordinal,
+                im.source_group,
+                im.canonical_metric,
+                im.is_prior
+            FROM ratio_inputs ri
+            JOIN input_map im ON im.input_key = ri.input_key
+        ),
+        ttm_candidates AS (
+            SELECT
+                ki.ratio_id,
+                ki.input_key,
+                ki.ordinal,
+                coalesce(t.available_at, CAST(t.as_of_date AS TIMESTAMP)) AS candidate_available_at,
+                t.accession_number AS source_accession,
+                t.as_of_date AS filed_date
+            FROM known_inputs ki
+            JOIN {ttm_source} t
+              ON t.security_id = ki.security_id
+             AND t.canonical_metric = ki.canonical_metric
+             AND t.is_latest_revision
+             AND (
+                    (NOT ki.is_prior AND t.ttm_end_date = ki.period_end)
+                 OR (ki.is_prior
+                     AND t.ttm_end_date < ki.period_end
+                     AND date_diff('day', t.ttm_end_date, ki.period_end) BETWEEN 350 AND 380)
+             )
+            WHERE ki.source_group = 'ttm'
+            QUALIFY row_number() OVER (
+                PARTITION BY ki.ratio_id, ki.input_key
+                ORDER BY
+                    CASE
+                        WHEN ki.is_prior THEN abs(date_diff('day', t.ttm_end_date, ki.period_end) - 365)
+                        ELSE 0
+                    END,
+                    candidate_available_at DESC NULLS LAST,
+                    t.as_of_date DESC NULLS LAST,
+                    t.accession_number DESC NULLS LAST,
+                    t.ttm_point_id DESC NULLS LAST
+            ) = 1
+        ),
+        balance_candidates AS (
+            SELECT
+                ki.ratio_id,
+                ki.input_key,
+                ki.ordinal,
+                coalesce(
+                    s.available_at,
+                    CAST(coalesce(s.filed_date, s.as_of_date) AS TIMESTAMP)
+                ) AS candidate_available_at,
+                coalesce(s.source_accession, s.accession_number) AS source_accession,
+                coalesce(s.filed_date, s.as_of_date) AS filed_date
+            FROM known_inputs ki
+            JOIN fundamental_statement_points s
+              ON s.security_id = ki.security_id
+             AND s.canonical_metric = ki.canonical_metric
+             AND s.is_latest_revision
+             AND s.period_type = 'instant'
+             AND (
+                    (NOT ki.is_prior AND s.period_end = ki.period_end)
+                 OR (ki.is_prior
+                     AND s.period_end < ki.period_end
+                     AND date_diff('day', s.period_end, ki.period_end) BETWEEN 350 AND 380)
+             )
+            WHERE ki.source_group = 'balance'
+            QUALIFY row_number() OVER (
+                PARTITION BY ki.ratio_id, ki.input_key
+                ORDER BY
+                    CASE
+                        WHEN ki.is_prior THEN abs(date_diff('day', s.period_end, ki.period_end) - 365)
+                        ELSE 0
+                    END,
+                    candidate_available_at DESC NULLS LAST,
+                    filed_date DESC NULLS LAST,
+                    source_accession DESC NULLS LAST,
+                    s.statement_point_id DESC NULLS LAST
+            ) = 1
+        ),
+        xbrl_balance_candidates AS (
+            SELECT
+                ki.ratio_id,
+                ki.input_key,
+                ki.ordinal,
+                x.available_at AS candidate_available_at,
+                x.accession_number AS source_accession,
+                x.as_of_date AS filed_date
+            FROM known_inputs ki
+            JOIN {xbrl_source} x
+              ON x.security_id = ki.security_id
+             AND x.canonical_metric = ki.canonical_metric
+             AND x.is_latest_revision
+             AND x.period_type = 'instant'
+             AND (
+                    (NOT ki.is_prior AND x.period_end = ki.period_end)
+                 OR (ki.is_prior
+                     AND x.period_end < ki.period_end
+                     AND date_diff('day', x.period_end, ki.period_end) BETWEEN 350 AND 380)
+             )
+            WHERE ki.source_group = 'xbrl_balance'
+            QUALIFY row_number() OVER (
+                PARTITION BY ki.ratio_id, ki.input_key
+                ORDER BY
+                    CASE
+                        WHEN ki.is_prior THEN abs(date_diff('day', x.period_end, ki.period_end) - 365)
+                        ELSE 0
+                    END,
+                    candidate_available_at DESC NULLS LAST,
+                    x.as_of_date DESC NULLS LAST,
+                    x.accession_number DESC NULLS LAST,
+                    x.metric_id DESC NULLS LAST
+            ) = 1
+        ),
+        xbrl_flow_candidates AS (
+            SELECT
+                ki.ratio_id,
+                ki.input_key,
+                ki.ordinal,
+                x.available_at AS candidate_available_at,
+                x.accession_number AS source_accession,
+                x.as_of_date AS filed_date
+            FROM known_inputs ki
+            JOIN {xbrl_source} x
+              ON x.security_id = ki.security_id
+             AND x.canonical_metric = ki.canonical_metric
+             AND x.is_latest_revision
+             AND x.period_type = 'duration'
+             AND (
+                    (NOT ki.is_prior AND x.period_end = ki.period_end)
+                 OR (ki.is_prior
+                     AND x.period_end < ki.period_end
+                     AND date_diff('day', x.period_end, ki.period_end) BETWEEN 350 AND 380)
+             )
+            WHERE ki.source_group = 'xbrl_flow'
+            QUALIFY row_number() OVER (
+                PARTITION BY ki.ratio_id, ki.input_key
+                ORDER BY
+                    CASE
+                        WHEN ki.is_prior THEN abs(date_diff('day', x.period_end, ki.period_end) - 365)
+                        ELSE 0
+                    END,
+                    candidate_available_at DESC NULLS LAST,
+                    x.as_of_date DESC NULLS LAST,
+                    x.accession_number DESC NULLS LAST,
+                    x.metric_id DESC NULLS LAST
+            ) = 1
+        ),
+        source_candidates AS (
+            SELECT * FROM ttm_candidates
+            UNION ALL
+            SELECT * FROM balance_candidates
+            UNION ALL
+            SELECT * FROM xbrl_balance_candidates
+            UNION ALL
+            SELECT * FROM xbrl_flow_candidates
+        ),
+        ranked_provenance AS (
+            SELECT
+                sc.*,
+                rs.available_at AS ratio_available_at,
                 row_number() OVER (
-                    PARTITION BY security_id, ttm_end_date
+                    PARTITION BY sc.ratio_id
                     ORDER BY
-                        coalesce(available_at, CAST(as_of_date AS TIMESTAMP)) DESC,
-                        as_of_date DESC,
-                        accession_number DESC,
-                        ttm_point_id DESC
+                        CASE
+                            WHEN sc.candidate_available_at = rs.available_at
+                             AND (sc.source_accession IS NOT NULL OR sc.filed_date IS NOT NULL)
+                                THEN 0
+                            WHEN sc.source_accession IS NOT NULL OR sc.filed_date IS NOT NULL
+                                THEN 1
+                            WHEN sc.candidate_available_at = rs.available_at
+                                THEN 2
+                            ELSE 3
+                        END,
+                        sc.candidate_available_at DESC NULLS LAST,
+                        sc.ordinal ASC,
+                        sc.source_accession DESC NULLS LAST,
+                        sc.filed_date DESC NULLS LAST
                 ) AS provenance_rank
-            FROM fundamental_ttm_points
-            WHERE is_latest_revision
+            FROM source_candidates sc
+            JOIN ratio_seed rs ON rs.ratio_id = sc.ratio_id
         )
         UPDATE fundamental_ratios AS r
         SET
-            source_accession = p.source_accession,
-            filed_date = p.filed_date
-        FROM (
-            SELECT security_id, period_end, source_accession, filed_date
-            FROM ranked_ttm
-            WHERE provenance_rank = 1
-        ) AS p
-        WHERE r.security_id = p.security_id
-          AND r.period_end = p.period_end
-          AND (r.source_accession IS NULL OR r.filed_date IS NULL)
+            source_accession = coalesce(p.source_accession, r.source_accession),
+            filed_date = coalesce(p.filed_date, r.filed_date)
+        FROM ranked_provenance p
+        WHERE r.ratio_id = p.ratio_id
+          AND p.provenance_rank = 1
+          AND (p.source_accession IS NOT NULL OR p.filed_date IS NOT NULL)
         """
     )
     conn.execute(
@@ -7037,20 +7345,20 @@ def _fundamental_ratio_provenance_schema_catalog(conn: duckdb.DuckDBPyConnection
                 'fundamental_ratios',
                 'source_accession',
                 'identifier',
-                'SEC accession number for the latest-revision TTM anchor row used to provenance this derived ratio vintage.',
+                'SEC accession number for the consumed input row whose availability drives this derived ratio vintage; if the driver lacks provenance, the latest consumed input with provenance is used deterministically.',
                 true,
                 NULL,
-                'fundamental_ttm_points.accession_number',
+                'consumed ratio input source accession',
                 now()
             ),
             (
                 'fundamental_ratios',
                 'filed_date',
                 'date',
-                'SEC filing date for the latest-revision TTM anchor row used to provenance this derived ratio vintage.',
+                'SEC filing date for the consumed input row whose availability drives this derived ratio vintage; if the driver lacks provenance, the latest consumed input with provenance is used deterministically.',
                 true,
                 'date',
-                'fundamental_ttm_points.as_of_date',
+                'consumed ratio input source filed date',
                 now()
             )
         """

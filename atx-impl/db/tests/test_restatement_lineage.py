@@ -135,7 +135,7 @@ def test_refresh_statement_points_populates_source_accession_and_filed_date(tmp_
     assert row[4] == pytest.approx(123.45)
 
 
-def test_compute_ratio_rows_passes_provenance_without_changing_value() -> None:
+def test_compute_ratio_rows_uses_consumed_input_provenance_without_changing_value() -> None:
     wide = pd.DataFrame(
         [
             {
@@ -147,12 +147,18 @@ def test_compute_ratio_rows_passes_provenance_without_changing_value() -> None:
                 "period_end": dt.date(2025, 12, 31),
                 "fiscal_year": 2025,
                 "fiscal_period": "FY",
-                "source_accession": "0000000002-26-000011",
-                "filed_date": dt.date(2026, 2, 20),
                 "rev": 400.0,
                 "rev_av": _ts("2026-02-20 22:00"),
+                "rev_accession": "REV-ACC",
+                "rev_filed_date": dt.date(2026, 2, 20),
                 "ni": 100.0,
                 "ni_av": _ts("2026-02-21 22:00"),
+                "ni_accession": "NI-ACC",
+                "ni_filed_date": dt.date(2026, 2, 21),
+                "oi": 120.0,
+                "oi_av": _ts("2026-03-01 22:00"),
+                "oi_accession": "OI-UNRELATED-LATER",
+                "oi_filed_date": dt.date(2026, 3, 1),
             }
         ]
     )
@@ -160,8 +166,10 @@ def test_compute_ratio_rows_passes_provenance_without_changing_value() -> None:
     row = compute_ratio_rows(wide).query("ratio_code == 'net_profit_margin'").iloc[0]
 
     assert row["value"] == pytest.approx(0.25)
-    assert row["source_accession"] == "0000000002-26-000011"
-    assert row["filed_date"] == dt.date(2026, 2, 20)
+    assert row["available_at"] == _ts("2026-02-21 22:00")
+    assert row["source_accession"] == "NI-ACC"
+    assert row["source_accession"] != "OI-UNRELATED-LATER"
+    assert row["filed_date"] == dt.date(2026, 2, 21)
 
 
 def _insert_ttm(
@@ -212,12 +220,9 @@ def _insert_ttm(
     )
 
 
-def test_refresh_fundamental_ratios_emits_provenance_and_preserves_values(tmp_store) -> None:
+def test_migration_backfills_ratio_provenance_from_consumed_input(tmp_store) -> None:
     sid = "SEC-CIK-0000000002"
     symbol = "RATIO"
-    accession = "0000000002-26-000011"
-    filed_date = dt.date(2026, 2, 20)
-    available_at = dt.datetime(2026, 2, 20, 22, 0)
     period_end = dt.date(2025, 12, 31)
     _insert_ttm(
         tmp_store,
@@ -225,10 +230,10 @@ def test_refresh_fundamental_ratios_emits_provenance_and_preserves_values(tmp_st
         symbol=symbol,
         metric="revenue",
         value=400.0,
-        accession=accession,
-        filed_date=filed_date,
+        accession="REV-ACC",
+        filed_date=dt.date(2026, 2, 20),
         end=period_end,
-        available_at=available_at,
+        available_at=dt.datetime(2026, 2, 20, 22, 0),
     )
     _insert_ttm(
         tmp_store,
@@ -236,22 +241,109 @@ def test_refresh_fundamental_ratios_emits_provenance_and_preserves_values(tmp_st
         symbol=symbol,
         metric="net_income",
         value=100.0,
-        accession=accession,
-        filed_date=filed_date,
+        accession="NI-ACC",
+        filed_date=dt.date(2026, 2, 21),
         end=period_end,
-        available_at=available_at,
+        available_at=dt.datetime(2026, 2, 21, 22, 0),
+    )
+    _insert_ttm(
+        tmp_store,
+        security_id=sid,
+        symbol=symbol,
+        metric="operating_income",
+        value=120.0,
+        accession="OI-UNRELATED-LATER",
+        filed_date=dt.date(2026, 3, 1),
+        end=period_end,
+        available_at=dt.datetime(2026, 3, 1, 22, 0),
+    )
+    tmp_store.con.execute(
+        """
+        INSERT INTO fundamental_ratios (
+            ratio_id, source, upstream_source, security_id, symbol, cik,
+            ratio_code, ratio_category, ratio_kind, basis, unit,
+            period_start, period_end, fiscal_year, fiscal_period,
+            value, numerator_code, numerator_value, denominator_code,
+            denominator_value, is_meaningful, is_latest_revision,
+            as_of_date, available_at, input_codes_json
+        )
+        VALUES (
+            'ratio-mixed', 'derived_fundamental_ratios_v1', 'sec_companyfacts',
+            ?, ?, '0000000002', 'net_profit_margin', 'profitability',
+            'ratio', 'ttm', 'ratio', DATE '2025-01-01', ?, 2025, 'FY',
+            0.25, 'net_income', 100.0, 'revenue', 400.0, true, true,
+            ?, TIMESTAMP '2026-02-21 22:00:00', '["ni", "rev"]'
+        )
+        """,
+        [sid, symbol, period_end, period_end],
+    )
+
+    _fundamental_ratio_provenance_schema_catalog(tmp_store.con)
+
+    row = tmp_store.con.execute(
+        """
+        SELECT source_accession, filed_date
+        FROM fundamental_ratios
+        WHERE ratio_id = 'ratio-mixed'
+        """
+    ).fetchone()
+    assert row[0] == "NI-ACC"
+    assert row[0] != "OI-UNRELATED-LATER"
+    assert row[1] == dt.date(2026, 2, 21)
+
+
+def test_refresh_fundamental_ratios_emits_provenance_and_preserves_values(tmp_store) -> None:
+    sid = "SEC-CIK-0000000002"
+    symbol = "RATIO"
+    period_end = dt.date(2025, 12, 31)
+    _insert_ttm(
+        tmp_store,
+        security_id=sid,
+        symbol=symbol,
+        metric="revenue",
+        value=400.0,
+        accession="REV-ACC",
+        filed_date=dt.date(2026, 2, 20),
+        end=period_end,
+        available_at=dt.datetime(2026, 2, 20, 22, 0),
+    )
+    _insert_ttm(
+        tmp_store,
+        security_id=sid,
+        symbol=symbol,
+        metric="net_income",
+        value=100.0,
+        accession="NI-ACC",
+        filed_date=dt.date(2026, 2, 21),
+        end=period_end,
+        available_at=dt.datetime(2026, 2, 21, 22, 0),
+    )
+    _insert_ttm(
+        tmp_store,
+        security_id=sid,
+        symbol=symbol,
+        metric="operating_income",
+        value=120.0,
+        accession="OI-UNRELATED-LATER",
+        filed_date=dt.date(2026, 3, 1),
+        end=period_end,
+        available_at=dt.datetime(2026, 3, 1, 22, 0),
     )
 
     assert refresh_fundamental_ratios(tmp_store, FundamentalRatiosOptions()) > 0
     rows = tmp_store.con.execute(
         """
-        SELECT ratio_code, value, source_accession, filed_date
+        SELECT ratio_code, value, available_at, source_accession, filed_date
         FROM fundamental_ratios
         ORDER BY ratio_code
         """
     ).df()
     margin = rows.loc[rows["ratio_code"] == "net_profit_margin"].iloc[0]
+    operating = rows.loc[rows["ratio_code"] == "operating_margin"].iloc[0]
 
     assert margin["value"] == pytest.approx(0.25)
-    assert set(rows["source_accession"]) == {accession}
-    assert {pd.Timestamp(v).date() for v in rows["filed_date"]} == {filed_date}
+    assert pd.Timestamp(margin["available_at"]) == _ts("2026-02-21 22:00")
+    assert margin["source_accession"] == "NI-ACC"
+    assert margin["source_accession"] != "OI-UNRELATED-LATER"
+    assert pd.Timestamp(margin["filed_date"]).date() == dt.date(2026, 2, 21)
+    assert operating["source_accession"] == "OI-UNRELATED-LATER"

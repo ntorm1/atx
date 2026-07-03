@@ -463,6 +463,29 @@ class TestComputeRatioRows:
         # return_on_assets gated by ni_av(05-02), assets_av(05-03) -> 05-03
         assert rows["return_on_assets"].available_at == _ts("2026-05-03")
 
+    def test_provenance_follows_balance_and_xbrl_availability_driver(self):
+        row = _wide_row(
+            ni_accession="NI-ACC",
+            ni_filed_date=dt.date(2026, 5, 2),
+            equity_av=_ts("2026-05-04"),
+            equity_accession="EQUITY-ACC",
+            equity_filed_date=dt.date(2026, 5, 4),
+            current_assets_accession="CA-XBRL-ACC",
+            current_assets_filed_date=dt.date(2026, 5, 1),
+            current_liabilities_av=_ts("2026-05-05"),
+            current_liabilities_accession="CL-XBRL-ACC",
+            current_liabilities_filed_date=dt.date(2026, 5, 5),
+        )
+
+        rows = _by_code(compute_ratio_rows(pd.DataFrame([row])))
+
+        assert rows["return_on_equity"].available_at == _ts("2026-05-04")
+        assert rows["return_on_equity"].source_accession == "EQUITY-ACC"
+        assert rows["return_on_equity"].filed_date == dt.date(2026, 5, 4)
+        assert rows["current_ratio"].available_at == _ts("2026-05-05")
+        assert rows["current_ratio"].source_accession == "CL-XBRL-ACC"
+        assert rows["current_ratio"].filed_date == dt.date(2026, 5, 5)
+
     def test_as_of_date_is_period_end(self):
         rows = _by_code(compute_ratio_rows(pd.DataFrame([_wide_row()])))
         assert rows["net_profit_margin"].as_of_date == dt.date(2026, 3, 28)
@@ -647,29 +670,42 @@ class TestRefreshIntegration:
         sid, sym, end = _seed_minimal(tmp_store)
         av = dt.datetime(2026, 5, 1, 22, 0)
 
-        def _xm(metric, value):
+        def _xm(metric, value, accession, metric_av=av):
             tmp_store.con.execute(
                 """
                 INSERT INTO fundamental_xbrl_metric (
                     metric_id, source, security_id, symbol, cik, canonical_metric, concept,
-                    taxonomy, period_type, period_end, value, is_latest_revision, as_of_date, available_at
-                ) VALUES (?, 'x', ?, ?, '320193', ?, ?, 'us-gaap', 'instant', ?, ?, true, ?, ?)
+                    taxonomy, period_type, period_end, accession_number, value,
+                    is_latest_revision, as_of_date, available_at
+                ) VALUES (?, 'x', ?, ?, '320193', ?, ?, 'us-gaap', 'instant', ?, ?, ?, true, ?, ?)
                 """,
-                [f"{metric}|{end}", sid, sym, metric, metric, end, value, end, av],
+                [f"{metric}|{end}", sid, sym, metric, metric, end, accession, value, end, metric_av],
             )
 
-        _xm("current_assets", 200.0)
-        _xm("current_liabilities", 100.0)
-        _xm("cash_and_equivalents", 40.0)
-        _xm("inventory", 30.0)
+        _xm("current_assets", 200.0, "CA-XBRL-ACC")
+        _xm(
+            "current_liabilities",
+            100.0,
+            "CL-XBRL-ACC",
+            dt.datetime(2026, 5, 2, 22, 0),
+        )
+        _xm("cash_and_equivalents", 40.0, "CASH-XBRL-ACC")
+        _xm("inventory", 30.0, "INV-XBRL-ACC")
         FundamentalRatiosDataset().run(tmp_store, FundamentalRatiosOptions())
         df = tmp_store.con.execute(
-            "SELECT ratio_code, value FROM fundamental_ratios WHERE ratio_category='liquidity'"
+            """
+            SELECT ratio_code, value, available_at, source_accession
+            FROM fundamental_ratios
+            WHERE ratio_category='liquidity'
+            """
         ).df()
         codes = dict(zip(df["ratio_code"], df["value"]))
         assert codes["current_ratio"] == pytest.approx(2.0)
         assert codes["quick_ratio"] == pytest.approx(1.7)
         assert codes["cash_ratio"] == pytest.approx(0.4)
+        current = df.loc[df["ratio_code"] == "current_ratio"].iloc[0]
+        assert pd.Timestamp(current["available_at"]) == _ts("2026-05-02 22:00")
+        assert current["source_accession"] == "CL-XBRL-ACC"
 
     def test_piotroski_emits_at_consecutive_fiscal_years(self, tmp_store):
         # Two fiscal years of every input -> the F-score emits only at the later year

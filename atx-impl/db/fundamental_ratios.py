@@ -234,7 +234,71 @@ def _input_item_ids_json_for_inputs(inputs: tuple[str, ...]) -> str | None:
     return json_dumps(item_ids) if item_ids else None
 
 
-def _ratio_record(d, rec, source, basis, run_id, value, num, den, is_meaningful, available_at) -> dict:
+def _optional(value: Any) -> Any | None:
+    return value if _present(value) else None
+
+
+def _availability_sort_value(value: Any) -> int:
+    try:
+        ts = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return 0
+    if pd.isna(ts):
+        return 0
+    return int(ts.value)
+
+
+def _same_availability(left: Any, right: Any) -> bool:
+    try:
+        return pd.Timestamp(left) == pd.Timestamp(right)
+    except (TypeError, ValueError):
+        return left == right
+
+
+def _ratio_provenance(input_keys: tuple[str, ...], rec: dict, available_at: Any) -> tuple[Any | None, Any | None]:
+    candidates = []
+    for ordinal, key in enumerate(input_keys):
+        av = rec.get(f"{key}_av")
+        if not _present(av):
+            continue
+        accession = _optional(rec.get(f"{key}_accession"))
+        filed_date = _optional(rec.get(f"{key}_filed_date"))
+        candidates.append({
+            "ordinal": ordinal,
+            "availability": _availability_sort_value(av),
+            "is_driver": _same_availability(av, available_at),
+            "has_provenance": accession is not None or filed_date is not None,
+            "accession": accession,
+            "filed_date": filed_date,
+        })
+
+    drivers = [c for c in candidates if c["is_driver"]]
+    if drivers:
+        chosen = sorted(drivers, key=lambda c: (not c["has_provenance"], c["ordinal"]))[0]
+        if chosen["has_provenance"]:
+            return chosen["accession"], chosen["filed_date"]
+
+    with_provenance = [c for c in candidates if c["has_provenance"]]
+    if with_provenance:
+        chosen = sorted(with_provenance, key=lambda c: (-c["availability"], c["ordinal"]))[0]
+        return chosen["accession"], chosen["filed_date"]
+    return None, None
+
+
+def _ratio_record(
+    d,
+    rec,
+    source,
+    basis,
+    run_id,
+    value,
+    num,
+    den,
+    is_meaningful,
+    available_at,
+    source_accession,
+    filed_date,
+) -> dict:
     period_end = rec.get("period_end")
     return {
         "ratio_id": _ratio_id(source, rec.get("security_id"), d.code, basis, period_end, available_at),
@@ -259,8 +323,8 @@ def _ratio_record(d, rec, source, basis, run_id, value, num, den, is_meaningful,
         "denominator_value": den,
         "is_meaningful": is_meaningful,
         "is_latest_revision": True,
-        "source_accession": rec.get("source_accession"),
-        "filed_date": rec.get("filed_date"),
+        "source_accession": source_accession,
+        "filed_date": filed_date,
         "as_of_date": period_end,
         "available_at": available_at,
         "input_codes_json": json_dumps(list(d.inputs)),
@@ -281,8 +345,9 @@ def compute_ratio_rows(
     Each input column ``<key>`` carries a sibling ``<key>_av`` availability timestamp.
     A ratio is emitted only when every input it depends on (value AND availability) is
     present and the denominator is usable; its ``available_at`` is the max input
-    availability and its ``as_of_date`` is the period close. ``source_accession`` and
-    ``filed_date`` are provenance passthroughs supplied by the caller's wide frame.
+    availability and its ``as_of_date`` is the period close. Input-level
+    ``<key>_accession`` and ``<key>_filed_date`` siblings identify the filing whose
+    availability drives the emitted ratio.
     """
     if inputs is None or inputs.empty:
         return pd.DataFrame(columns=RATIO_COLUMNS)
@@ -297,12 +362,14 @@ def compute_ratio_rows(
             if not all(_present(a) for a in avs):
                 continue
             available_at = max(avs)
+            source_accession, filed_date = _ratio_provenance(d.inputs, rec, available_at)
             if d.composite is not None:
                 value = d.composite(rec)
                 if not _present(value):
                     continue
                 records.append(_ratio_record(
-                    d, rec, source, basis, run_id, float(value), None, None, True, available_at
+                    d, rec, source, basis, run_id, float(value), None, None, True,
+                    available_at, source_accession, filed_date
                 ))
                 continue
             num, den = d.operands(rec)
@@ -327,7 +394,8 @@ def compute_ratio_rows(
                 value = num / den
                 is_meaningful = (not d.require_positive_denominator) or den > 0
             records.append(_ratio_record(
-                d, rec, source, basis, run_id, value, num, den, is_meaningful, available_at
+                d, rec, source, basis, run_id, value, num, den, is_meaningful,
+                available_at, source_accession, filed_date
             ))
 
     if not records:
@@ -348,16 +416,18 @@ def _as_date(value: Any) -> dt.date | None:
 def _attach_prior_year(wide: pd.DataFrame) -> pd.DataFrame:
     """Pair each (security, period_end) row with its ~1-year-earlier row.
 
-    For each `GROWTH_PRIOR_KEYS` metric, copies the prior period's value and its
-    availability into `<key>_prior` / `<key>_prior_av`. The prior row is the one
-    whose period_end falls 350-380 days before the current period_end (closest to
-    365); rows with no such match get NA, so dependent growth ratios are skipped.
+    For each `GROWTH_PRIOR_KEYS` metric, copies the prior period's value,
+    availability, and provenance into `<key>_prior*`. The prior row is the one whose
+    period_end falls 350-380 days before the current period_end (closest to 365);
+    rows with no such match get NA, so dependent growth ratios are skipped.
     """
     out = wide.copy()
     keys = [k for k in GROWTH_PRIOR_KEYS if k in out.columns and f"{k}_av" in out.columns]
     for key in keys:
         out[f"{key}_prior"] = pd.NA
         out[f"{key}_prior_av"] = pd.NaT
+        out[f"{key}_prior_accession"] = pd.NA
+        out[f"{key}_prior_filed_date"] = pd.NaT
     if out.empty or "period_end" not in out.columns or "security_id" not in out.columns:
         return out
 
@@ -382,10 +452,20 @@ def _attach_prior_year(wide: pd.DataFrame) -> pd.DataFrame:
                 for key in keys:
                     out.at[i, f"{key}_prior"] = out.at[best, key]
                     out.at[i, f"{key}_prior_av"] = out.at[best, f"{key}_av"]
+                    if f"{key}_accession" in out.columns:
+                        out.at[i, f"{key}_prior_accession"] = out.at[best, f"{key}_accession"]
+                    if f"{key}_filed_date" in out.columns:
+                        out.at[i, f"{key}_prior_filed_date"] = out.at[best, f"{key}_filed_date"]
     return out
 
 
-def _pivot_case(prefix: str, value_col: str, metric_map: dict[str, str]) -> str:
+def _pivot_case(
+    prefix: str,
+    value_col: str,
+    metric_map: dict[str, str],
+    accession_expr: str,
+    filed_date_expr: str,
+) -> str:
     parts = []
     for key, metric in metric_map.items():
         parts.append(
@@ -394,6 +474,24 @@ def _pivot_case(prefix: str, value_col: str, metric_map: dict[str, str]) -> str:
         parts.append(
             f"max(CASE WHEN {prefix}.canonical_metric = '{metric}' THEN {prefix}.available_at END) AS {key}_av"
         )
+        parts.append(
+            f"max(CASE WHEN {prefix}.canonical_metric = '{metric}' THEN {accession_expr} END) AS {key}_accession"
+        )
+        parts.append(
+            f"max(CASE WHEN {prefix}.canonical_metric = '{metric}' THEN {filed_date_expr} END) AS {key}_filed_date"
+        )
+    return ",\n            ".join(parts)
+
+
+def _wide_select(prefix: str, metric_map: dict[str, str]) -> str:
+    parts = []
+    for key in metric_map:
+        parts.extend([
+            f"{prefix}.{key}",
+            f"{prefix}.{key}_av",
+            f"{prefix}.{key}_accession",
+            f"{prefix}.{key}_filed_date",
+        ])
     return ",\n            ".join(parts)
 
 
@@ -416,22 +514,7 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
         sym_join_x = ""
 
     sql = f"""
-        WITH ttm_base AS (
-            SELECT
-                t.*,
-                row_number() OVER (
-                    PARTITION BY t.security_id, t.ttm_end_date
-                    ORDER BY
-                        coalesce(t.available_at, CAST(t.as_of_date AS TIMESTAMP)) DESC,
-                        t.as_of_date DESC,
-                        t.accession_number DESC,
-                        t.ttm_point_id DESC
-                ) AS provenance_rank
-            FROM fundamental_ttm_points t
-            {sym_join_t}
-            WHERE t.is_latest_revision
-        ),
-        ttm AS (
+        WITH ttm AS (
             SELECT
                 t.security_id,
                 any_value(t.symbol) AS symbol,
@@ -441,17 +524,17 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
                 any_value(t.ttm_start_date) AS period_start,
                 any_value(t.fiscal_year) AS fiscal_year,
                 any_value(t.fiscal_period) AS fiscal_period,
-                max(CASE WHEN t.provenance_rank = 1 THEN t.accession_number END) AS source_accession,
-                max(CASE WHEN t.provenance_rank = 1 THEN t.as_of_date END) AS filed_date,
-                {_pivot_case('t', 'ttm_value', TTM_INPUTS)}
-            FROM ttm_base t
+                {_pivot_case('t', 'ttm_value', TTM_INPUTS, 't.accession_number', 't.as_of_date')}
+            FROM fundamental_ttm_points t
+            {sym_join_t}
+            WHERE t.is_latest_revision
             GROUP BY t.security_id, t.ttm_end_date
         ),
         bal AS (
             SELECT
                 s.security_id,
                 s.period_end,
-                {_pivot_case('s', 'value', BALANCE_INPUTS)}
+                {_pivot_case('s', 'value', BALANCE_INPUTS, 'coalesce(s.source_accession, s.accession_number)', 'coalesce(s.filed_date, s.as_of_date)')}
             FROM fundamental_statement_points s
             {sym_join_b}
             WHERE s.is_latest_revision AND s.period_type = 'instant'
@@ -461,7 +544,7 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             SELECT
                 x.security_id,
                 x.period_end,
-                {_pivot_case('x', 'value', XBRL_BALANCE_INPUTS)}
+                {_pivot_case('x', 'value', XBRL_BALANCE_INPUTS, 'x.accession_number', 'x.as_of_date')}
             FROM fundamental_xbrl_metric x
             {sym_join_x}
             WHERE x.is_latest_revision AND x.period_type = 'instant'
@@ -471,7 +554,7 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             SELECT
                 x.security_id,
                 x.period_end,
-                {_pivot_case('x', 'value', XBRL_FLOW_INPUTS)}
+                {_pivot_case('x', 'value', XBRL_FLOW_INPUTS, 'x.accession_number', 'x.as_of_date')}
             FROM fundamental_xbrl_metric x
             {sym_join_x}
             WHERE x.is_latest_revision AND x.period_type = 'duration'
@@ -479,32 +562,9 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
         )
         SELECT
             ttm.*,
-            bal.assets, bal.assets_av,
-            bal.liabilities, bal.liabilities_av,
-            bal.equity, bal.equity_av,
-            bal.shares, bal.shares_av,
-            balx.current_assets, balx.current_assets_av,
-            balx.current_liabilities, balx.current_liabilities_av,
-            balx.cash_and_equivalents, balx.cash_and_equivalents_av,
-            balx.inventory, balx.inventory_av,
-            balx.long_term_debt, balx.long_term_debt_av,
-            balx.retained_earnings, balx.retained_earnings_av,
-            balx.common_shares_outstanding, balx.common_shares_outstanding_av,
-            balx.property_plant_equipment_net, balx.property_plant_equipment_net_av,
-            balx.accounts_receivable, balx.accounts_receivable_av,
-            balx.accounts_payable, balx.accounts_payable_av,
-            balx.goodwill, balx.goodwill_av,
-            balx.intangibles_other, balx.intangibles_other_av,
-            flowx.gross_profit, flowx.gross_profit_av,
-            flowx.cost_of_revenue, flowx.cost_of_revenue_av,
-            flowx.interest_expense, flowx.interest_expense_av,
-            flowx.depreciation_amortization, flowx.depreciation_amortization_av,
-            flowx.selling_general_and_administrative_expense,
-            flowx.selling_general_and_administrative_expense_av,
-            flowx.pretax_income, flowx.pretax_income_av,
-            flowx.income_tax, flowx.income_tax_av,
-            flowx.shares_basic_avg, flowx.shares_basic_avg_av,
-            flowx.shares_diluted_avg, flowx.shares_diluted_avg_av
+            {_wide_select('bal', BALANCE_INPUTS)},
+            {_wide_select('balx', XBRL_BALANCE_INPUTS)},
+            {_wide_select('flowx', XBRL_FLOW_INPUTS)}
         FROM ttm
         LEFT JOIN bal
           ON bal.security_id = ttm.security_id
