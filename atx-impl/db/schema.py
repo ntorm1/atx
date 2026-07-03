@@ -763,6 +763,43 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
     )
     con.execute(
         """
+        CREATE TABLE IF NOT EXISTS fundamental_ratios (
+            ratio_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            upstream_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            ratio_code VARCHAR NOT NULL,
+            ratio_category VARCHAR NOT NULL,
+            ratio_kind VARCHAR NOT NULL,
+            basis VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            value DOUBLE,
+            numerator_code VARCHAR,
+            numerator_value DOUBLE,
+            denominator_code VARCHAR,
+            denominator_value DOUBLE,
+            is_meaningful BOOLEAN NOT NULL DEFAULT true,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            source_accession VARCHAR,
+            filed_date DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            input_codes_json VARCHAR,
+            input_item_ids_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS sec_company_facts (
             source VARCHAR NOT NULL,
             security_id VARCHAR NOT NULL,
@@ -1190,6 +1227,8 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             fiscal_period VARCHAR,
             form VARCHAR,
             accession_number VARCHAR NOT NULL,
+            source_accession VARCHAR,
+            filed_date DATE,
             revision_sequence INTEGER NOT NULL,
             revision_count INTEGER NOT NULL,
             is_latest_revision BOOLEAN NOT NULL,
@@ -1847,6 +1886,7 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_security_date ON valuation_multiples(security_id, trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_asof ON valuation_multiples(as_of_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_formula ON valuation_multiples(formula_code, category)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_source_accession ON fundamental_ratios(security_id, period_end, source_accession)",
         "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_security_asof ON sec_company_facts(security_id, filed_date)",
         "CREATE INDEX IF NOT EXISTS idx_sec_company_facts_entity_asof ON sec_company_facts(entity_id, filed_date)",
         "CREATE INDEX IF NOT EXISTS idx_xbrl_concept_catalog_lookup ON xbrl_concept_catalog(taxonomy, concept)",
@@ -1873,6 +1913,7 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_points_metric_asof ON fundamental_statement_points(canonical_metric, as_of_date)",
         "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_points_security ON fundamental_statement_points(security_id, statement_type, period_end, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_points_revision ON fundamental_statement_points(revision_group_id, revision_sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_points_source_accession ON fundamental_statement_points(security_id, period_end, source_accession)",
         "CREATE INDEX IF NOT EXISTS idx_fundamental_ttm_points_metric_asof ON fundamental_ttm_points(canonical_metric, as_of_date)",
         "CREATE INDEX IF NOT EXISTS idx_fundamental_ttm_points_security ON fundamental_ttm_points(security_id, statement_type, ttm_end_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_fundamental_ttm_points_revision ON fundamental_ttm_points(ttm_revision_group_id, revision_sequence)",
@@ -2338,6 +2379,7 @@ COMMON_FIELD_DESCRIPTIONS = {
     "cusip": "CUSIP identifier as reported or normalized from source data.",
     "internal_cusip": "Internal-only, non-redistributable CUSIP matching support; do not expose in public/lake exports.",
     "accession_number": "SEC accession number identifying a filing.",
+    "source_accession": "SEC accession number for the source filing that supplied or anchored the derived row.",
     "run_id": "Dataset run id that loaded or computed the row.",
     "source": "Source system or loader name.",
     "source_url": "Source URL used for the row or artifact.",
@@ -2402,7 +2444,7 @@ def _semantic_type(column_name: str, data_type: str) -> str:
     dtype = data_type.upper()
     if name in {"security_id", "entity_id", "issuer_id", "source_id", "run_id", "job_run_id", "dataset_id", "source_system_id", "universe_id"}:
         return "identifier"
-    if name in {"cik", "cusip", "internal_cusip", "figi", "accession_number", "ticker", "symbol", "vendor_security_id", "series_id"}:
+    if name in {"cik", "cusip", "internal_cusip", "figi", "accession_number", "source_accession", "ticker", "symbol", "vendor_security_id", "series_id"}:
         return "identifier"
     if name.endswith("_date") or dtype == "DATE":
         return "date"

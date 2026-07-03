@@ -837,9 +837,12 @@ def _seed_byte_identity_panel(store):
     return sid, sym
 
 
-# Exactly the columns that existed before S1-3 (RATIO_COLUMNS gains input_item_ids_json
-# in this task; it must be excluded here so this list never drifts from "pre-existing").
-_PRE_EXISTING_RATIO_COLUMNS = [c for c in RATIO_COLUMNS if c != "input_item_ids_json"]
+# Exactly the columns that existed before additive lineage/linkage work; exclude
+# later metadata columns so this list never drifts from "pre-existing values".
+_PRE_EXISTING_RATIO_COLUMNS = [
+    c for c in RATIO_COLUMNS
+    if c not in {"input_item_ids_json", "source_accession", "filed_date"}
+]
 
 _LITERAL_TTM_INPUTS = {
     "rev": "revenue",

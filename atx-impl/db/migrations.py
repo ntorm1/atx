@@ -6946,6 +6946,127 @@ def _xbrl_validation_resolution_status(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _fundamental_ratio_provenance_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S8 S8-0: accession/filed-date provenance on statement points and ratios."""
+
+    for statement in (
+        "ALTER TABLE fundamental_statement_points ADD COLUMN IF NOT EXISTS source_accession VARCHAR",
+        "ALTER TABLE fundamental_statement_points ADD COLUMN IF NOT EXISTS filed_date DATE",
+        "ALTER TABLE fundamental_ratios ADD COLUMN IF NOT EXISTS source_accession VARCHAR",
+        "ALTER TABLE fundamental_ratios ADD COLUMN IF NOT EXISTS filed_date DATE",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        UPDATE fundamental_statement_points
+        SET source_accession = accession_number
+        WHERE source_accession IS NULL
+          AND accession_number IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE fundamental_statement_points
+        SET filed_date = as_of_date
+        WHERE filed_date IS NULL
+          AND as_of_date IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        WITH ranked_ttm AS (
+            SELECT
+                security_id,
+                ttm_end_date AS period_end,
+                accession_number AS source_accession,
+                as_of_date AS filed_date,
+                row_number() OVER (
+                    PARTITION BY security_id, ttm_end_date
+                    ORDER BY
+                        coalesce(available_at, CAST(as_of_date AS TIMESTAMP)) DESC,
+                        as_of_date DESC,
+                        accession_number DESC,
+                        ttm_point_id DESC
+                ) AS provenance_rank
+            FROM fundamental_ttm_points
+            WHERE is_latest_revision
+        )
+        UPDATE fundamental_ratios AS r
+        SET
+            source_accession = p.source_accession,
+            filed_date = p.filed_date
+        FROM (
+            SELECT security_id, period_end, source_accession, filed_date
+            FROM ranked_ttm
+            WHERE provenance_rank = 1
+        ) AS p
+        WHERE r.security_id = p.security_id
+          AND r.period_end = p.period_end
+          AND (r.source_accession IS NULL OR r.filed_date IS NULL)
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            (
+                'fundamental_statement_points',
+                'source_accession',
+                'identifier',
+                'SEC accession number copied from accession_number for statement-point provenance. This is the source filing for the normalized fact revision.',
+                true,
+                NULL,
+                'fundamental_fact_revisions.accession_number',
+                now()
+            ),
+            (
+                'fundamental_statement_points',
+                'filed_date',
+                'date',
+                'SEC filing date for the normalized statement-point source fact; mirrors as_of_date in the current companyfacts revision path.',
+                true,
+                'date',
+                'fundamental_fact_revisions.filed_date',
+                now()
+            ),
+            (
+                'fundamental_ratios',
+                'source_accession',
+                'identifier',
+                'SEC accession number for the latest-revision TTM anchor row used to provenance this derived ratio vintage.',
+                true,
+                NULL,
+                'fundamental_ttm_points.accession_number',
+                now()
+            ),
+            (
+                'fundamental_ratios',
+                'filed_date',
+                'date',
+                'SEC filing date for the latest-revision TTM anchor row used to provenance this derived ratio vintage.',
+                true,
+                'date',
+                'fundamental_ttm_points.as_of_date',
+                now()
+            )
+        """
+    )
+
+
+def _fundamental_ratio_provenance_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S8 S8-0 lookup indexes for accession-level statement/ratio lineage."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_source_accession ON fundamental_ratios(security_id, period_end, source_accession)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_points_source_accession ON fundamental_statement_points(security_id, period_end, source_accession)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -7347,6 +7468,16 @@ MIGRATIONS: list[Migration] = [
         version=89,
         name="xbrl_validation_resolution_status",
         up=_xbrl_validation_resolution_status,
+    ),
+    Migration(
+        version=92,
+        name="fundamental_ratio_provenance_schema_catalog",
+        up=_fundamental_ratio_provenance_schema_catalog,
+    ),
+    Migration(
+        version=93,
+        name="fundamental_ratio_provenance_indexes",
+        up=_fundamental_ratio_provenance_indexes,
     ),
 ]
 

@@ -73,7 +73,8 @@ RATIO_COLUMNS = [
     "period_start", "period_end", "fiscal_year", "fiscal_period",
     "value", "numerator_code", "numerator_value", "denominator_code",
     "denominator_value", "is_meaningful", "is_latest_revision",
-    "as_of_date", "available_at", "input_codes_json", "input_item_ids_json", "run_id",
+    "source_accession", "filed_date", "as_of_date", "available_at",
+    "input_codes_json", "input_item_ids_json", "run_id",
 ]
 
 
@@ -258,6 +259,8 @@ def _ratio_record(d, rec, source, basis, run_id, value, num, den, is_meaningful,
         "denominator_value": den,
         "is_meaningful": is_meaningful,
         "is_latest_revision": True,
+        "source_accession": rec.get("source_accession"),
+        "filed_date": rec.get("filed_date"),
         "as_of_date": period_end,
         "available_at": available_at,
         "input_codes_json": json_dumps(list(d.inputs)),
@@ -278,7 +281,8 @@ def compute_ratio_rows(
     Each input column ``<key>`` carries a sibling ``<key>_av`` availability timestamp.
     A ratio is emitted only when every input it depends on (value AND availability) is
     present and the denominator is usable; its ``available_at`` is the max input
-    availability and its ``as_of_date`` is the period close.
+    availability and its ``as_of_date`` is the period close. ``source_accession`` and
+    ``filed_date`` are provenance passthroughs supplied by the caller's wide frame.
     """
     if inputs is None or inputs.empty:
         return pd.DataFrame(columns=RATIO_COLUMNS)
@@ -412,7 +416,22 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
         sym_join_x = ""
 
     sql = f"""
-        WITH ttm AS (
+        WITH ttm_base AS (
+            SELECT
+                t.*,
+                row_number() OVER (
+                    PARTITION BY t.security_id, t.ttm_end_date
+                    ORDER BY
+                        coalesce(t.available_at, CAST(t.as_of_date AS TIMESTAMP)) DESC,
+                        t.as_of_date DESC,
+                        t.accession_number DESC,
+                        t.ttm_point_id DESC
+                ) AS provenance_rank
+            FROM fundamental_ttm_points t
+            {sym_join_t}
+            WHERE t.is_latest_revision
+        ),
+        ttm AS (
             SELECT
                 t.security_id,
                 any_value(t.symbol) AS symbol,
@@ -422,10 +441,10 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
                 any_value(t.ttm_start_date) AS period_start,
                 any_value(t.fiscal_year) AS fiscal_year,
                 any_value(t.fiscal_period) AS fiscal_period,
+                max(CASE WHEN t.provenance_rank = 1 THEN t.accession_number END) AS source_accession,
+                max(CASE WHEN t.provenance_rank = 1 THEN t.as_of_date END) AS filed_date,
                 {_pivot_case('t', 'ttm_value', TTM_INPUTS)}
-            FROM fundamental_ttm_points t
-            {sym_join_t}
-            WHERE t.is_latest_revision
+            FROM ttm_base t
             GROUP BY t.security_id, t.ttm_end_date
         ),
         bal AS (
