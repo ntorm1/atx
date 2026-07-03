@@ -211,7 +211,18 @@ build_base_components(const alpha::Panel& research, const risk::RiskModelConfig&
   // from cfg (not a fixed worst-case) so a Vol-only / sectors-only config
   // does not force a multi-thousand-row buffer just because Beta COULD have
   // been enabled.
-  atx::usize deepest_lookback = 0U; // sectors-only / all-style-off -> 0 extra rows needed
+  //
+  // FLOOR OF 1 (not 0), regardless of style_mask: EVERY estimation date's
+  // cross-sectional return (detail::date_returns -> step_return, called by
+  // accumulate_ols/accumulate_wls independent of which style columns are
+  // emitted) reads panel.close(row+1, ·), so even a sectors-only /
+  // all-style-off config needs row (estimation_window-1)+1 to exist in the
+  // view. Missing this floor is a genuine bug an earlier draft carried
+  // (masked by every prior test fixture happening to enable style_vol,
+  // whose 60-row lookback dwarfs the missing +1) -- caught by the S1-5
+  // sectors-only fixture, which crashed on PanelView's row_from_newest <
+  // valid_rows_ assertion before this floor was added.
+  atx::usize deepest_lookback = 1U; // the return-computation's own +1, always needed
   if (cfg.style_mom) deepest_lookback = std::max(deepest_lookback, atx::usize{252});
   if (cfg.style_beta) deepest_lookback = std::max(deepest_lookback, atx::usize{253});
   if (cfg.style_vol) deepest_lookback = std::max(deepest_lookback, atx::usize{60});

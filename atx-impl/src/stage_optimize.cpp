@@ -1,5 +1,6 @@
 #include "stages.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -239,9 +240,34 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     // 6. Callbacks + run.
     ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
 
-    auto alpha_at = [&combo, alpha_fid](atx::usize period)
+    // S1-5: factor/industry neutralization (opt-in via risk_cfg.group_neutralize).
+    // FactorModel::neutralize residualizes a signal against `model`'s exposure
+    // columns IN PLACE (s <- s - X(XtX)^-1 Xt s); it needs a MUTABLE span, so
+    // when the flag is on we precompute one neutralized copy of the WHOLE combo
+    // signal (every period) upfront and have alpha_at read from that buffer
+    // instead of combo directly. group_neutralize==false (inert default) skips
+    // this block entirely -- alpha_at reads combo verbatim, byte-identical to
+    // pre-S1. The neutralize itself is a deterministic linear residualization
+    // (no RNG); NaN cells propagate per FactorModel::neutralize's documented
+    // policy (a WeightPolicy downstream maps a NaN weight to 0 -- unchanged
+    // from today's contract).
+    std::vector<atx::f64> neutralized_flat;
+    if (risk_cfg.group_neutralize) {
+        neutralized_flat.resize(D * M);
+        for (atx::usize d = 0; d < D; ++d) {
+            const auto cs = combo.field_cross_section(alpha_fid, d);
+            std::copy(cs.begin(), cs.end(), neutralized_flat.begin() + static_cast<std::ptrdiff_t>(d * M));
+            std::span<atx::f64> row{neutralized_flat.data() + d * M, M};
+            model.neutralize(row);
+        }
+    }
+
+    auto alpha_at = [&combo, alpha_fid, &neutralized_flat, &risk_cfg, M](atx::usize period)
         -> std::span<const atx::f64>
     {
+        if (risk_cfg.group_neutralize) {
+            return std::span<const atx::f64>{neutralized_flat.data() + period * M, M};
+        }
         return combo.field_cross_section(alpha_fid, period);
     };
     auto model_at = [&model](atx::usize) -> const risk::FactorModel& {

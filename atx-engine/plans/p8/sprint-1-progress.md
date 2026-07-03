@@ -65,7 +65,7 @@ Branch: feat/p8  Worktree: C:\atx-wt\p8
 - [x] S1-2  stage_optimize covariance-source swap
 - [x] S1-3  cleaned_alpha_cov accessor (combine seam; Sprint-3 handoff)
 - [x] S1-4  dead-alpha crowding factors
-- [ ] S1-5  factor/industry neutralization reachable
+- [x] S1-5  factor/industry neutralization reachable
 
 ## Determinism contract (every unit)
 - `RiskModelKind::Diagonal == 0` (frozen enum index); inert default routes to the
@@ -285,3 +285,104 @@ compile errors against the old 3-arg build_risk_model):
 Full gate: atx-impl-tests 212/216 pass (4 pre-existing skips, 0 new failures);
 atx-engine-risk-tests 259/261 (same 2 pre-existing RobustPipelineE2E failures,
 no engine files touched this unit).
+
+S1-5: complete. stage_optimize.cpp's MVO path gained a group_neutralize block
+(opt-in via risk_cfg.group_neutralize): when set, the WHOLE combo alpha signal
+(every period) is copied into an owned buffer and FactorModel::neutralize
+(s <- s - X(XtX)^-1 Xt s) is applied row-by-row against `model`'s exposure
+columns (the SAME model model_at already returns -- augmented with dead
+factors when S1-4 is also active, per FactorModel::neutralize's own
+rank-K-agnostic contract); alpha_at reads from the neutralized buffer instead
+of combo directly. group_neutralize==false (inert default) skips the block
+entirely -- alpha_at reads combo verbatim, same as every prior unit.
+
+Anchor correction (documented, not a scope violation): the brief's cited
+"NotImplemented guard at multi_horizon.hpp:154-157" does not exist on S1's
+call path. MultiHorizonOptimizer/multi_horizon.hpp is a SEPARATE optimizer
+class stage_optimize.cpp never uses (it drives MultiPeriodOptimizer from
+multi_period.hpp); the only `NotImplemented` for stat/dead rungs lives in the
+FROZEN src/risk/factor_model.cpp's build()/build_components() (confirmed at
+kickoff, S1-0's ledger entry) and is never reached because stage_riskmodel
+calls build_components + augment_factor_model directly, never build(). No
+guard needed resolving; S1-5's real job -- making the ALREADY-CALLABLE
+FactorModel::neutralize reachable from the runnable optimize path -- is done.
+
+LATENT BUG FOUND + FIXED (pre-existing since S1-1, exposed by this unit's
+sectors-only/no-style fixture): build_risk_model's `deepest_lookback`
+computation could be 0 when every style factor is disabled, but
+detail::date_returns (called by accumulate_ols/accumulate_wls for EVERY
+estimation date, regardless of which style columns are emitted) always reads
+panel.close(row+1, ·) for the return calc -- so a sectors-only config with
+tight fit_lookback_days crashed with PanelView's `row_from_newest <
+valid_rows_` assertion (an out-of-bounds read one row past the view). Every
+prior S1-1..S1-4 test fixture happened to enable style_vol (60-row lookback),
+which dwarfed the missing +1 and masked the bug. Fixed by flooring
+deepest_lookback at 1 unconditionally (stage_riskmodel.cpp). Re-verified the
+full atx-impl-tests + atx-engine-risk-tests suites green after the fix (no
+existing test's behavior changed -- the floor only ADDS rows to the buffer,
+never removes any).
+
+New suite AtxImplNeutralize (atx-impl/tests/stage_optimize_neutralize_test.cpp)
+4/4 green:
+- GroupNeutralizeRemovesFactorBet: a pure industry tilt (+1/-1 across 2
+  groups) neutralizes to ~0 under a sectors-only FactorModel (direct call,
+  proving FactorModel::neutralize + the exposure columns are correct).
+- GroupNeutralizeReachableFromRunOptimize: group_neutralize=true produces a
+  DIFFERENT run_optimize digest than false on a Volatility-driven risk model
+  (K=1, always a real column) -- proves the stage_optimize.cpp wiring is
+  live end-to-end, not just the underlying primitive.
+- GroupNeutralizeInertOff: group_neutralize=false byte-identical to a plain
+  run_optimize(cfg) call.
+- DeadFactorNeutralizeComposesWithoutErr: dead_alpha_factors=true AND
+  group_neutralize=true together return Ok (X gains K_base+K_dead > K_base
+  columns) and neutralize genuinely moves a signal aligned with the dead
+  direction -- the augmented block participates in residualization, not
+  silently skipped.
+
+RED verified first for the wiring itself (git-stashed the stage_optimize.cpp
+edit, rebuilt, confirmed GroupNeutralizeReachableFromRunOptimize failed with
+digest equality — group_neutralize had no effect — then git-stash-popped the
+real implementation and re-verified GREEN). Test 1 (GroupNeutralizeRemovesFactorBet)
+was RED for a DIFFERENT reason on the first attempt (the latent bug above,
+an SEH crash) — fixed as a build_risk_model correctness fix, not a test change.
+
+Full gate: atx-impl-tests 216/220 pass (4 pre-existing skips, 0 new failures —
+every AtxImplOptimize/AtxImplRiskModel/AtxImplDeadFactor/AtxImplOptimizeRiskModel
+suite re-ran green after the deepest_lookback fix); atx-engine-risk-tests
+259/261 (same 2 pre-existing RobustPipelineE2E failures, no engine files
+touched).
+
+## Sprint close (all 6 units landed)
+
+Off-path byte-identity (the hard gate): AtxImplOptimizeRiskModel.DiagonalByteIdentical
+and AtxImplOptimize.* (the full pre-S1 suite) both confirm run_optimize's
+default/no-flag path is byte-identical, digest-for-digest and file-for-file,
+across every S1 unit landed. RiskModelKind::Diagonal is pinned at enum 0
+(static_assert, S1-0). No golden was re-baselined.
+
+Factor-model win, quantified (S1-1's correlated-group fixture, common shock +
+idiosyncratic noise, long-half/short-half hedge book):
+  factor risk(w) = 1.494e-6   vs   diagonal risk(w) = 4.0e-5   (ratio 0.037,
+  a ~26.8x reduction) -- the factor model recovers the shared exposure the
+  hedge cancels; the diagonal model (X=0) cannot see it and prices the SAME
+  book as if unhedged.
+S1-2's book-level echo of the same claim (AtxImplOptimizeRiskModel.
+FactorDeleversVsDiagonal): the Factor-routed BOOK has strictly lower ex-ante
+risk under the factor model AND lower-or-equal gross on the crowded pair than
+the Diagonal-routed book, same alpha, same optimizer.
+S1-4 (dead-alpha, on top of a Diagonal or Factor base): risk(w) for a book
+aligned with 2 synthetic dead alphas' shared holdings direction is STRICTLY
+higher with dead_alpha_factors=true than without -- the optimizer is steered
+off the crowded direction (a "factor+dead" book, per the sprint's bench ask).
+
+Twice-run + seq==parallel: every Factor-path artifact/book test in S1-1/S1-2/
+S1-4 asserts byte-identical bytes across two independent calls (no test
+exercises a parallel dispatch path in atx-impl's synchronous stage functions,
+so "seq==parallel" reduces to "the per-date cross-sectional fit has no shared
+mutable state" -- true by construction: build_components's per-date loop only
+ever reads its own window, never another date's intermediate state, matching
+the frozen estimator's own documented contract).
+
+Total new tests landed this sprint: 5 (RiskModelConfigSpine) + 4
+(AtxImplRiskModel) + 3 (AtxImplOptimizeRiskModel) + 3 (CleanedAlphaCov) + 3
+(AtxImplDeadFactor) + 4 (AtxImplNeutralize) = 22, all green, 0 skipped.
