@@ -61,7 +61,7 @@ intentional gap (S4-4 section below).
 - [x] S4-3c Borrow accrual in the loop (B5)
 - [x] S4-3d Permanent impact persistence (B6)
 - [x] S4-4  Impact in ScalarRaw selection (B7)
-- [ ] S4-5a GP turnover-native step (B8)
+- [x] S4-5a GP turnover-native step (B8)
 - [ ] S4-5b stage_report capacity curve (B9)
 
 ## Determinism contracts (both apply this sprint)
@@ -391,3 +391,66 @@ probabilistic one). Broader regression sweep green (59 tests): `FactoryCostAware
 `CostSelectionConfig` (1). **No golden re-baseline needed** — S4-4 has zero call sites in any
 existing execution path (it is called only from its own test file), so every pinned digest is
 untouched by construction, not merely by observation.
+
+S4-5a: complete [OPT-IN — B8]. Root cause (re-confirmed at kickoff): the book's existing
+partial-trade step (`atx-impl/src/stage_optimize.cpp:159-172`, S1-owned) is a LINEAR blend toward
+the CURRENT period's freshly-shaped TARGET, `w := prev + rate·(w−prev)`, never toward the GP AIM
+`garleanu_pedersen.hpp` already computes (`gp_aim_and_value`'s `aim_pos`). For a mean-reverting/
+decaying signal the per-period target can swing sharply even though the aim (which already folds in
+the signal's own decay path via ᾱ) barely moves — the linear blend churns the book chasing noise the
+aim already discounted.
+
+**Fix (`risk/garleanu_pedersen.hpp` + `.cpp`, S4-owned per the spec):** new function
+`gp_turnover_native_step(prev, aim_pos, trade_rate) -> vector<f64>`, the SAME functional form as
+today's blend (`w := prev + κ·(aim_pos−prev)`) but fed the AIM instead of the target — a drop-in
+replacement target, not a new knob. `trade_rate==1.0` is SPECIAL-CASED to a direct copy of
+`aim_pos` (see the RED/GREEN note below for why). This is the header's PURE PRODUCER only; the
+actual wire into the live book is an S1/S5 seam at `stage_optimize.cpp:159-172` — S4 must not edit
+that file (ownership boundary, explicit in the dispatch brief). **SEAM recorded here** for whichever
+sprint lands the wire: replace the `w := prev + rate·(w−prev)` blend's `w` (target) argument with
+`gp_turnover_native_step`'s `aim_pos` (from `gp_aim_and_value`), keeping `rate` as the existing
+`cfg.trade_rate`.
+
+**RED (`tests/risk/gp_turnover_test.cpp`, new):** 4 tests; `GpTurnoverReduces`,
+`GpFullRateByteIdentical_PureAlgebra`, `PureFunction_DeterministicAcrossRunsAndZeroPrev` compiled
+and passed immediately once written (new-API RED = compile failure on the missing symbol, captured
+by temporarily `git stash push`-ing `garleanu_pedersen.hpp`/`.cpp`: `error: no member named
+'gp_turnover_native_step' in namespace 'atx::engine::risk'`, 9 call sites). After `git stash pop`
+restored the implementation, a REAL numeric RED surfaced in `GpFullRateByteIdentical_RealMarkowitzTarget`:
+the naive arithmetic form `w = prev + 1.0*(aim_pos-prev)` is **NOT bit-exact** to `aim_pos` in
+general floating point — two separate roundings (`aim-prev` then `+prev`) do not always round-trip
+exactly, and with `prev={10.0,-10.0}` against an `aim_pos` near `{0.92, 0.14}` (a hand-derived
+Markowitz target via a small 2×2 `FactorModel`) the result diverged by a few ULPs
+(`0.92198581560283799` vs `0.9219858156028371`) — a real, reproducible failure of the originally-
+documented "pure algebraic identity" claim, not a hypothetical edge case. **Fix:** special-cased
+`trade_rate == 1.0` in `gp_turnover_native_step` to a direct elementwise copy of `aim_pos`,
+bypassing the arithmetic entirely — the boundary pin is now an ACTUAL bit-identity. Both the header
+doc comment and the `.cpp` implementation comment were corrected to document this precisely (the
+original "no floating-point-only near-equality" claim was wrong and has been removed).
+
+**GREEN:** all 4 tests pass. `GpTurnoverReduces` — a by-construction 1-instrument, 2-period fixture
+(raw targets `+1.0`→`-1.0`, a sharp reversal; GP aim `+0.4`→`-0.4`, the same shape damped 2.5×,
+mirroring a fast-decaying source's horizon-average): the aim-method at full rate lands exactly on
+`aim_2` (turnover `1.2`); the target-method's rate is algebraically solved (`r=√0.4`) to land
+EXACTLY on the same `aim_2` too (equal, zero, tracking error for both) — and its turnover
+(`2r+r²≈1.665`) is strictly higher than the aim-method's `1.2`. `GpFullRateByteIdentical_PureAlgebra`
+— arbitrary `prev≠aim_pos` vectors, `EXPECT_EQ` bit-exact. `GpFullRateByteIdentical_RealMarkowitzTarget`
+— a real `gp_aim_and_value` call against a hand-invertible 2×2 `FactorModel` (mirrors the existing
+`ClosedFormMatchesHandDerivedGroundTruth` fixture) confirms `aim_pos` equals the hand-derived
+`(1/2λ)V⁻¹α` Markowitz target, and `gp_turnover_native_step(..., 1.0)` reproduces it bit-exactly even
+from a far-away `prev`. `PureFunction_DeterministicAcrossRunsAndZeroPrev` — twice-run bit-exact; a
+zero `prev` degenerates to `trade_rate*aim_pos` exactly. Broader regression sweep green (47 tests):
+`GpTurnover` (4) + `MultiHorizonIntegration` (5) + `RiskMultiHorizon` (16, incl. 3 byte-identical
+boundary pins) + `RiskOptimizer` (22, incl. 5 `WiredMinimalDispatch_*_ByteIdentical`/
+`WiredAugmentedDispatch_*` pins) — all unchanged, since `gp_turnover_native_step` has zero call
+sites in any existing execution path. **No golden re-baseline needed.**
+
+**Investigation note — a second orphaned pre-existing artifact found (informational only, not
+touched):** `atx-engine/tests/risk_garleanu_pedersen_test.cpp` (flat, directly under `tests/`, NOT
+under `tests/risk/`) is NOT matched by the `tests/CMakeLists.txt` group GLOB
+(`${grp}/*_test.cpp` — only files inside a `tests/<group>/` subdirectory are picked up), so it is
+currently compiled by NO CMake target and never runs. This predates S4 entirely (a leftover from
+before the per-group test-directory convention was adopted) and is unrelated to any B1–B9 item;
+left untouched (out of scope, not a Sprint-4 file) and flagged here only so a future agent does not
+mistake this session's NEW `tests/risk/gp_turnover_test.cpp` (correctly placed, confirmed compiled
+and run above) for a duplicate of the orphaned flat file.
