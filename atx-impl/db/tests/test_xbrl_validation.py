@@ -195,6 +195,73 @@ def _insert_calc_relationships(store) -> None:
         _insert_calc_edge(store, relationship_id, parent, child, weight, order_value)
 
 
+def _insert_dimension_edge(
+    store,
+    *,
+    edge_id: str,
+    source_concept: str,
+    target_concept: str,
+    usable: bool,
+) -> None:
+    store.con.execute(
+        """
+        INSERT INTO xbrl_dimension_edges (
+            dimension_edge_id,
+            relationship_id,
+            taxonomy_package_id,
+            taxonomy,
+            release_year,
+            role_uri,
+            role_name,
+            source_file,
+            relationship_kind,
+            arcrole,
+            source_taxonomy,
+            source_concept,
+            source_concept_kind,
+            target_taxonomy,
+            target_concept,
+            target_concept_kind,
+            order_value,
+            context_element,
+            closed,
+            usable,
+            target_role,
+            touches_observed_concept,
+            source_url,
+            source_loaded_at
+        )
+        VALUES (
+            ?,
+            ?,
+            'pkg-2026',
+            'us-gaap',
+            2026,
+            'http://fasb.org/us-gaap/role/TestDimensions',
+            'Test Dimensions',
+            'us-gaap-def.xml',
+            'dimension-domain',
+            'http://xbrl.org/int/dim/arcrole/dimension-domain',
+            'us-gaap',
+            ?,
+            'axis',
+            'us-gaap',
+            ?,
+            'member',
+            1.0,
+            'segment',
+            false,
+            ?,
+            NULL,
+            true,
+            'https://xbrl.fasb.org/us-gaap/2026/us-gaap-2026.zip',
+            TIMESTAMP '2024-01-01 00:00:00'
+        )
+        """,
+        [edge_id, "rel-" + edge_id, source_concept, target_concept, usable],
+    )
+
+
 def _insert_dimensional_context(
     store,
     *,
@@ -708,6 +775,50 @@ def test_dqc_0053_excluded_member_axis_subset_flags_wrong_pair(tmp_store):
     assert row[0:6] == ("dqc", "DQC_0053", "failed", "error", "BusinessSegmentsAxis", "c-wrong-axis")
     assert "DQC_0053 subset" in row[6]
     assert "excluded axis-member pair" in row[6]
+
+
+def test_dqc_0053_direct_unusable_dimension_edge_flags_pair(tmp_store):
+    """DQC_0053 subset: direct usable=false dimension edge emits a failed DQC row."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_dimension_edge(
+        tmp_store,
+        edge_id="test-axis-member-unusable",
+        source_concept="TestOnlyAxis",
+        target_concept="TestOnlyMember",
+        usable=False,
+    )
+    _insert_dimensional_context(
+        tmp_store,
+        filing_context_id="ctx-direct-unusable",
+        context_id="c-direct-unusable",
+        axis_qname="us-gaap:TestOnlyAxis",
+        member_qname="us-gaap:TestOnlyMember",
+    )
+
+    assert refresh_xbrl_validation_results(tmp_store) == 1
+    rows = tmp_store.con.execute(
+        """
+        SELECT rule_family, rule_code, status, severity, parent_concept, context_ref, message
+        FROM xbrl_validation_results
+        WHERE rule_family = 'dqc'
+          AND rule_code = 'DQC_0053'
+        """
+    ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0][0:6] == (
+        "dqc",
+        "DQC_0053",
+        "failed",
+        "error",
+        "TestOnlyAxis",
+        "c-direct-unusable",
+    )
+    assert "DQC_0053 subset" in rows[0][6]
+    assert "usable=false" in rows[0][6]
 
 
 def test_dqc_0053_allowed_member_axis_does_not_emit_false_positive(tmp_store):
