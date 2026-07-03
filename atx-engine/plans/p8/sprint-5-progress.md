@@ -204,10 +204,74 @@ once they differ. Generation 0's population is identical between both configs (g
 determined, computed BEFORE any fitness is known), so it is the one rigorous apples-to-apples
 comparison point, and it is what the test asserts.
 
+## S5-3 — NEW `eval/robustness_battery`: the admission-time robustness subsystem
+
+Greenfield: NEW `atx-engine/include/atx/engine/eval/robustness_battery.hpp` + `src/eval/
+robustness_battery.cpp` (registered in `atx-engine/CMakeLists.txt`'s eval source list, needing a
+reconfigure — done). Design choice: the battery is ENGINE-AGNOSTIC — it never touches a
+Genome/Panel/VM. It takes a caller-supplied `Reevaluator` (`std::function<Result<f64>(const
+RobustnessScenario&)>`) and only (a) builds each check's perturbed `RobustnessScenario`
+(a sub-universe instrument mask, a seeded-PERMUTED alternate group map, a seeded-PERMUTED
+"noise" input, or a jittered param scale) and (b) asks `Reevaluator` for the resulting edge. A
+real caller (a future factory/discover integration) wraps its own compile+eval+extract_streams
+path; the unit tests here use hand-built synthetic `Reevaluator` lambdas — the correct,
+DIRECT way to test the battery's own orchestration/threshold logic in isolation, exactly as
+`finalize_run_pbo`'s own doc pattern (hand-built fixtures) does for PBO.
+
+Four checks, `BatteryConfig{sub_universe, alt_neutralization, noise_control, param_perturbation,
+min_survival_ratio, seed}` (all-false = no-op, `Reevaluator` never called):
+- `sub_universe` / `alt_neutralization`: SURVIVAL checks (`PASS iff scenario_edge >=
+  min_survival_ratio * base_edge`). `alt_neutralization`'s "alternate group_map" is a SEEDED
+  PERMUTATION of the candidate's own `group_id` (same label multiset, shuffled assignment) —
+  self-contained, no second caller-supplied map needed.
+- `noise_control`: the NEGATIVE control, INVERTED polarity (`PASS iff scenario_edge <
+  min_survival_ratio * base_edge` — the edge must COLLAPSE). The "seeded random draw of matched
+  marginal" is a Fisher-Yates PERMUTATION of the candidate's own input values — a permutation
+  trivially preserves the exact empirical marginal while destroying genuine structure, so no
+  distribution-fitting machinery is needed.
+- `param_perturbation`: `param_perturbation_draws` seeded multiplicative jitters of the
+  candidate's param scale; PASS iff the coefficient of variation of the resulting edges is
+  `<= param_perturbation_max_cv`.
+
+Each of the three randomized checks seeds an INDEPENDENT `atx::core::Xoshiro256pp` from
+`cfg.seed XOR <check-specific salt>` — never thread/time, and never shared across checks (so no
+check's result depends on which OTHER checks are enabled). No internal `parallel_for` exists
+anywhere in the battery (every check is a small, fixed, sequential reduction), so seq==parallel
+holds trivially by construction; `Deterministic_TwiceRun` is the load-bearing reproducibility
+proof (using a `Reevaluator` that reads the RNG-derived scenario contents, not a constant mock).
+
+**Collateral fix (unrelated to the battery's own logic, needed to build):** `ATX_UNITY_BUILD`
+(the `dev` preset's batched-TU test build) newly co-batched `eval_regime_slice_test.cpp` and
+`eval_lockbox_test.cpp` once this file was added to the `eval` test group (unity batch
+boundaries shift when a group gains a file). Both pre-existing files independently define a
+`struct Lcg` inside an anonymous namespace — safe across ordinary TUs, but an ODR redefinition
+WITHIN one unity TU (unnamed namespaces merge per-TU). Renamed `eval_regime_slice_test.cpp`'s to
+`RegimeSliceLcg` (2-line, behavior-preserving rename) to unblock the build; this is a latent,
+pre-existing defect the S5-3 file merely exposed, not something S5-3's own logic caused.
+
+Accept evidence (new `atx-engine/tests/eval/robustness_battery_test.cpp`, 8 tests):
+`AllChecksOff_NoOp` (Reevaluator never called), `NoiseControlRejectsArtifact` (a constructed
+dimensional-artifact edge that survives noise is REJECTED; a genuine edge that collapses PASSES
+— the central S5-3 claim), `NoiseControlInapplicableWithoutInputValues`,
+`SubUniverseCollapseRejected`, `AltNeutralizationRemovesTilt` +
+`AltNeutralizationPermutesGroupIdPreservingMultiset`, `ParamPerturbationStable`,
+`Deterministic_TwiceRun`. All GREEN. Full `eval` engine test group: 99/99 green. `atx-impl`/
+`atx-impl-tests` rebuild clean (no consumer wired yet — see the deferred-integration note below).
+
+**Deferred (recorded, not fabricated):** S5-3 ships the battery itself; wiring it into the LIVE
+admission path (a `--robustness-battery` CLI flag + a real `Reevaluator` built from
+`factory::Genome` + `alpha::Engine` + `extract_streams`, called from `Factory::mine_into`/
+`mine_into_oos`) is NOT part of this unit — the spec's S5-3 task scope is "an automated battery
+that rejects..." as a standalone eval/ subsystem with its own tests, and S5-4's stage-graph
+wiring is where a real caller would eventually invoke it. Given the remaining sprint scope
+(S5-4/S5-5) and time budget, this integration is left as an explicit gap for a future unit
+(the `Reevaluator` seam was designed specifically so that integration is a thin adapter, not a
+redesign).
+
 ## Unit checklist
 - [x] S5-0 CLI flag surface
 - [x] S5-1 library::verdict_for deflation screens
 - [x] S5-2 cumulative-N selection column + blocking PBO
-- [ ] S5-3 eval/robustness_battery
+- [x] S5-3 eval/robustness_battery
 - [ ] S5-4 stage graph + build-megaalpha-book.ps1
 - [ ] S5-5 V1 scorecard template

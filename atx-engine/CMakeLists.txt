@@ -16,6 +16,9 @@ add_library(atx-engine STATIC
     src/eval/perf_metrics.cpp
     # breadth / effective-N instrumentation (S10-5)
     src/eval/breadth.cpp
+    # p8-S5-3: the robustness battery (admission-time noise/sub-universe/
+    # alt-neutralization/param-perturbation screening)
+    src/eval/robustness_battery.cpp
     src/alpha/bytecode.cpp
     src/alpha/dag.cpp
     src/alpha/lexer.cpp
