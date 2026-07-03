@@ -6352,6 +6352,157 @@ def _repair_identifier_history_overlaps(conn: duckdb.DuckDBPyConnection) -> None
     collapse_identifier_history_open_duplicates(conn)
 
 
+def _formula_registry_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S4 S4-0: formula_registry table (definition-as-data formula catalog).
+
+    Turns the ratio/score engine's formulas from Python closures into
+    declarative rows: one row per ``formula_code`` (matches today's
+    ``fundamental_ratios.ratio_code``), carrying the reducer selector
+    (``transform``: divide/sum/difference/pct_change/identity) plus a
+    declarative ``expression`` mini-grammar string for multi-term formulas
+    (DuPont, the coverage/accrual composites, the 4 distress scores),
+    ``is_meaningful_rule`` (data-encoded gate, e.g. Beneish's
+    ``sales>0 and receivables0>0``, replacing a Python ``if``), and a
+    ``citation`` (free text; empty for plain accounting ratios, required for
+    scores and named academic formulas per PF-S4 review discipline -- not a
+    DB-level NOT NULL).
+
+    ``numerator_item_ids_json`` / ``denominator_item_ids_json`` are
+    JSON-array-encoded lists of PF-S1 ``fundamental_item.item_id`` values
+    (the warehouse's existing ``*_json`` VARCHAR convention -- see
+    ``fundamental_ratios.input_item_ids_json`` -- there is no existing
+    native-array column precedent in this schema). ``inputs_json`` is the
+    JSON-array-encoded raw input-key gating list, mirroring
+    ``RatioDef.inputs``.
+
+    ``valid_from``/``valid_to`` make the formula DEFINITION itself
+    bitemporal (a formula's coefficients or citation can be revised without
+    losing the prior definition), feeding S4-3's catalog reader and PF-S8
+    vintage history.
+
+    Schema only; the index lands in migration 0076 (split per the S5g/S5k
+    WAL-replay precedent -- schema and index in separate migration numbers).
+    S4-0 seeds NO formula rows (the committed seed CSV is header-only); S4-1
+    ports the 53 existing codes under a byte-identity gate, S4-2 adds new
+    families.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS formula_registry (
+            formula_code VARCHAR PRIMARY KEY,
+            family VARCHAR NOT NULL,
+            kind VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            numerator_code VARCHAR,
+            denominator_code VARCHAR,
+            numerator_item_ids_json VARCHAR,
+            denominator_item_ids_json VARCHAR,
+            inputs_json VARCHAR NOT NULL,
+            transform VARCHAR NOT NULL,
+            expression VARCHAR,
+            is_meaningful_rule VARCHAR,
+            definition VARCHAR NOT NULL,
+            citation VARCHAR,
+            valid_from DATE NOT NULL,
+            valid_to DATE,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'formula_registry',
+                'gold',
+                'formula',
+                'formula_code',
+                'Definition-as-data catalog of ratio/score formulas: reducer transform, multi-term expression mini-grammar, item-id-linked numerator/denominator, meaningfulness gate, and citation -- replacing the fundamental_ratios.py RatioDef Python closures.',
+                '["formula_code"]',
+                'valid_from/valid_to make the formula DEFINITION itself bitemporal (as-of-able); this is independent of the bitemporal validity of any VALUE computed from the formula (see fundamental_ratios.available_at/as_of_date).',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('formula_registry', 'formula_code', 'identifier',
+             'Formula identifier; matches fundamental_ratios.ratio_code for ported formulas.',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'family', 'category',
+             'Governed formula family (e.g. profitability, leverage, cash_flow, payout, per_share, efficiency, growth, liquidity, health), a superset of fundamental_ratios.ratio_category.',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'kind', 'category',
+             'Formula shape: ratio | level | difference | growth | per_share | score, mirroring fundamental_ratios.RatioDef.kind.',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'unit', 'category',
+             'Output unit family (e.g. ratio, currency, currency_per_share, score).',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'numerator_code', 'text',
+             'Human-readable numerator canonical code; NULL for score formulas whose terms live in expression.',
+             true, NULL, NULL, now()),
+            ('formula_registry', 'denominator_code', 'text',
+             'Human-readable denominator canonical code; NULL for score formulas whose terms live in expression.',
+             true, NULL, NULL, now()),
+            ('formula_registry', 'numerator_item_ids_json', 'json',
+             'JSON array of PF-S1 fundamental_item.item_id values feeding the numerator; NULL for score formulas.',
+             true, NULL, 'fundamental_item.item_id', now()),
+            ('formula_registry', 'denominator_item_ids_json', 'json',
+             'JSON array of PF-S1 fundamental_item.item_id values feeding the denominator; NULL for score formulas.',
+             true, NULL, 'fundamental_item.item_id', now()),
+            ('formula_registry', 'inputs_json', 'json',
+             'JSON array of raw input keys gating formula availability, mirroring RatioDef.inputs.',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'transform', 'category',
+             'Reducer selector: divide | sum | difference | pct_change | identity. identity defers to expression for multi-term formulas.',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'expression', 'text',
+             'Declarative mini-grammar expression over named item ids + literals for multi-term formulas (DuPont, coverage/accrual composites, the 4 distress scores). Evaluated by a fixed, unit-tested dispatch table -- no arbitrary eval. NULL when transform alone suffices.',
+             true, NULL, NULL, now()),
+            ('formula_registry', 'is_meaningful_rule', 'text',
+             'Data-encoded meaningfulness gate (e.g. require_positive_denominator, or a named per-formula gate such as Beneish''s sales>0 and receivables0>0), replacing a Python if. NULL means always meaningful when inputs are present.',
+             true, NULL, NULL, now()),
+            ('formula_registry', 'definition', 'text',
+             'Human-readable definition of the formula.',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'citation', 'text',
+             'Academic or vendor citation. Empty for plain accounting ratios; required for scores and named academic formulas by PF-S4 review discipline.',
+             true, NULL, NULL, now()),
+            ('formula_registry', 'valid_from', 'date',
+             'Date this formula definition becomes valid (bitemporal definition validity, independent of any computed value''s own as_of_date/available_at).',
+             false, NULL, NULL, now()),
+            ('formula_registry', 'valid_to', 'date',
+             'Date this formula definition stops being valid; NULL means still current (coalesce to DATE 9999-12-31).',
+             true, NULL, NULL, now()),
+            ('formula_registry', 'run_id', 'identifier',
+             'Identifier of the ingestion/seed run that wrote this row, for provenance/reproducibility.',
+             true, NULL, NULL, now()),
+            ('formula_registry', 'source_loaded_at', 'timestamp',
+             'Warehouse-assigned timestamp when this row was physically loaded (DEFAULT now()).',
+             false, NULL, NULL, now())
+        """
+    )
+
+
+def _formula_registry_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S4 S4-0: lookup indexes split from schema migration 0075."""
+    for statement in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_formula_registry_formula_code ON formula_registry(formula_code)",
+        "CREATE INDEX IF NOT EXISTS idx_formula_registry_family ON formula_registry(family)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -6683,6 +6834,16 @@ MIGRATIONS: list[Migration] = [
         version=69,
         name="fundamental_concept_coverage_reports",
         up=_fundamental_concept_coverage_reports,
+    ),
+    Migration(
+        version=75,
+        name="formula_registry_schema_catalog",
+        up=_formula_registry_schema_catalog,
+    ),
+    Migration(
+        version=76,
+        name="formula_registry_indexes",
+        up=_formula_registry_indexes,
     ),
     Migration(
         version=79,
