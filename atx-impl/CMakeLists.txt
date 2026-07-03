@@ -1,7 +1,7 @@
 # atx-impl: end-to-end equity alpha pipeline reference binary.
 # Split: a STATIC lib holds all logic so the test exe can link it (you cannot link
 # an executable target). The atx-impl exe is just main.cpp over the lib.
-add_library(atx-impl-core STATIC
+add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/config.cpp
     src/dispatch.cpp
     src/artifacts.cpp

@@ -9,6 +9,7 @@ cmake-build-*/
 
 # Git worktrees (isolated workspaces)
 .worktrees/
+/.claire/
 
 # Downloaded market data (DBN/parquet dumps from examples) — root-level only,
 # so it never shadows source dirs like atx-engine/{include/atx/engine,src}/data/.
@@ -62,12 +63,18 @@ _deps/
 
 # Scratch / experiment dirs (notebooks, throwaway scripts) — not versioned
 scratch/
+/work/
+/scratch_wc_out.txt
 
 # Subagent-driven-dev scratch (ledger, briefs, reports) — not versioned
 .superpowers/
 
 
 *.duckdb
+*.duckdb*.bak
+*.duckdb.wal*
+*.duckdb_tmp/
+.*.duckdb_tmp/
 
 # Python warehouse (atx-impl/db) — code is tracked; data artifacts are not
 __pycache__/

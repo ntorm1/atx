@@ -28,5 +28,20 @@
 
   // ---- Misc ----
   "files.associations": { "*.hpp": "cpp", "*.ipp": "cpp", "*.inl": "cpp" },
-  "files.exclude": { "**/.cache": true }
+  "files.exclude": {
+    "**/.cache": true,
+    "**/.worktrees": true,
+    "**/worktrees": true,
+    "**/.claude/worktrees": true
+  },
+  "search.exclude": {
+    "**/.worktrees": true,
+    "**/worktrees": true,
+    "**/.claude/worktrees": true
+  },
+  "files.watcherExclude": {
+    "**/.worktrees/**": true,
+    "**/worktrees/**": true,
+    "**/.claude/worktrees/**": true
+  }
 }

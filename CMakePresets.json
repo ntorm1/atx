@@ -3,9 +3,9 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
   "configurePresets": [
     {
-      "name": "ninja",
-      "displayName": "Ninja + clang-cl (clangd)",
-      "description": "Ninja generator with clang-cl; emits compile_commands.json for clangd. PCH ON by default: heavy/stable headers (Eigen, gtest, atx-core vocab) are parsed once, not once per TU — this is the fast cold/fresh-build path. Include-hygiene enforcement (strict per-TU includes) moved to the `hygiene` preset for CI/nightly. Run from a VS Developer shell or via the VSCode CMake Tools extension so the MSVC environment is present.",
+      "name": "_base",
+      "hidden": true,
+      "description": "Shared Ninja + clang-cl settings. Embedded debug info (/Z7 via CMP0141=NEW) keeps debug objects content-cacheable by sccache (separate /Zi PDBs are not). SCCACHE_BASEDIR=${sourceDir} + the root CMakeLists -ffile-prefix-map normalize each worktree's paths so the SAME source compiles to byte-identical objects in every worktree = cross-worktree sccache HITS. sccache itself is auto-detected by the root CMakeLists when on PATH.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
@@ -15,32 +15,51 @@
         "CMAKE_CXX_COMPILER": "clang-cl",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
-        "ATX_USE_PCH": "ON"
+        "ATX_USE_PCH": "ON",
+        "ATX_SHARED_LIBS": "OFF",
+        "CMAKE_POLICY_DEFAULT_CMP0141": "NEW",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded"
+      },
+      "environment": {
+        "SCCACHE_BASEDIR": "${sourceDir}"
+      }
+    },
+    {
+      "name": "ninja",
+      "inherits": "_base",
+      "displayName": "Ninja + clang-cl (default, cached)",
+      "description": "Default build. PCH ON (heavy/stable headers parsed once), LLD linker, module-scan off, and sccache (auto-detected) — a self-contained static build. Run from a VS Developer shell or the VSCode CMake Tools extension so the MSVC environment is present."
+    },
+    {
+      "name": "dev",
+      "inherits": "_base",
+      "displayName": "dev: sccache + shared deps + unity (fast iterate)",
+      "description": "Fast iterative preset for worktrees: explicit sccache launcher, a shared FetchContent clone/build cache via $env{ATX_DEPS_DIR} (deps cloned once, reused by every worktree), and unity test builds for fast cold compiles. Static libs (self-contained exes). Prereqs: VS Developer shell, sccache on PATH, ATX_DEPS_DIR set (scripts/dev-setup.ps1).",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER_LAUNCHER": "sccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "sccache",
+        "FETCHCONTENT_BASE_DIR": "$env{ATX_DEPS_DIR}",
+        "ATX_UNITY_BUILD": "ON"
+      }
+    },
+    {
+      "name": "dev-shared",
+      "inherits": "dev",
+      "displayName": "dev-shared: dev + atx libraries as DLLs (smallest artifacts, fastest relinks)",
+      "description": "Everything in `dev`, plus ATX_SHARED_LIBS=ON: atx-core/tsdb/engine/impl build as DLLs so each test exe links a thin import lib instead of embedding the whole engine — fastest incremental relinks and far smaller per-worktree build dirs (one engine DLL, not ~14 static copies). EXPERIMENTAL: validate a full build the first time (WINDOWS_EXPORT_ALL_SYMBOLS auto-exports). Unity OFF here so a one-file edit relinks just the engine DLL, not a whole unity batch.",
+      "cacheVariables": {
+        "ATX_SHARED_LIBS": "ON",
+        "ATX_UNITY_BUILD": "OFF"
       }
     },
     {
       "name": "hygiene",
-      "inherits": "ninja",
+      "inherits": "_base",
       "displayName": "Ninja + clang-cl, PCH OFF (include hygiene / CI nightly)",
       "description": "Strict build: PCH OFF so every TU compiles with its own includes, catching any missing/unused include the PCH would otherwise mask. Slower (full per-TU header re-parse) — run on CI/nightly, not for local iteration.",
       "binaryDir": "${sourceDir}/build-hygiene",
       "cacheVariables": {
         "ATX_USE_PCH": "OFF"
-      }
-    },
-    {
-      "name": "dev",
-      "inherits": "ninja",
-      "displayName": "Ninja + clang-cl + sccache + shared deps (fast iterate)",
-      "description": "Fast iterative preset for worktrees: sccache compiler cache (cross-worktree object-cache hits for third-party AND first-party) + a shared FetchContent clone/build cache via $env{ATX_DEPS_DIR} (deps cloned once, reused by every worktree). CMP0141=NEW forces embedded debug info (/Z7) so debug objects are sccache-cacheable (the repo's top-level cmake_minimum_required is 3.20, which would otherwise leave CMP0141 OLD and /Zi PDBs uncacheable). Prereqs: run from a VS Developer shell, sccache on PATH, ATX_DEPS_DIR set (see scripts/dev-setup.md).",
-      "cacheVariables": {
-        "CMAKE_C_COMPILER_LAUNCHER": "sccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "sccache",
-        "CMAKE_POLICY_DEFAULT_CMP0141": "NEW",
-        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded",
-        "FETCHCONTENT_BASE_DIR": "$env{ATX_DEPS_DIR}",
-        "ATX_USE_PCH": "ON",
-        "ATX_UNITY_BUILD": "ON"
       }
     },
     {
@@ -56,8 +75,9 @@
   ],
   "buildPresets": [
     { "name": "ninja", "configurePreset": "ninja" },
-    { "name": "hygiene", "configurePreset": "hygiene" },
     { "name": "dev", "configurePreset": "dev" },
+    { "name": "dev-shared", "configurePreset": "dev-shared" },
+    { "name": "hygiene", "configurePreset": "hygiene" },
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],
   "testPresets": [
@@ -67,13 +87,18 @@
       "output": { "outputOnFailure": true }
     },
     {
-      "name": "hygiene",
-      "configurePreset": "hygiene",
+      "name": "dev",
+      "configurePreset": "dev",
       "output": { "outputOnFailure": true }
     },
     {
-      "name": "dev",
-      "configurePreset": "dev",
+      "name": "dev-shared",
+      "configurePreset": "dev-shared",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "hygiene",
+      "configurePreset": "hygiene",
       "output": { "outputOnFailure": true }
     },
     {

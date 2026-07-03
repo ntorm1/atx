@@ -16,6 +16,78 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# ============================================================================
+#  Build-speed & caching  (fast cold + incremental, worktree-friendly)
+#  Every knob is an option so the canonical/CI path can pin the strict/static
+#  build; the `ninja` + `dev` presets flip the fast ones on. See scripts/dev-setup.md.
+# ============================================================================
+
+# C++20 + Ninja otherwise runs a C++-module dependency scan on every TU. atx uses
+# no modules, so disable it — one fewer step per compile (cold AND incremental).
+# (CMAKE_CXX_SCAN_FOR_MODULES is 3.28+; older CMake silently ignores it.)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
+# Skip linking/recompiling deps a target does not actually reference (3.19+).
+set(CMAKE_OPTIMIZE_DEPENDENCIES ON)
+
+# ---- Compiler cache (sccache) ----------------------------------------------
+# Auto-wire sccache as the compiler launcher whenever it is on PATH and a preset
+# has not already set one (the `dev` preset sets it explicitly). No-op when sccache
+# is absent so a bare `cmake` still configures. Cross-worktree object reuse also
+# needs SCCACHE_BASEDIR=<this worktree root> (set per-preset) + the prefix-map below.
+option(ATX_USE_SCCACHE "Use the sccache compiler launcher when available" ON)
+if(ATX_USE_SCCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(ATX_SCCACHE_EXE sccache)
+    if(ATX_SCCACHE_EXE)
+        set(CMAKE_C_COMPILER_LAUNCHER   "${ATX_SCCACHE_EXE}" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${ATX_SCCACHE_EXE}" CACHE STRING "" FORCE)
+        message(STATUS "atx: sccache compiler cache enabled (${ATX_SCCACHE_EXE})")
+    endif()
+endif()
+
+# Strip the build-root prefix from __FILE__, debug info, and diagnostics so a TU
+# compiled in ANY worktree yields byte-identical output -> sccache cache HITS across
+# worktrees (and reproducible builds). clang/clang-cl accept -ffile-prefix-map.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
+endif()
+
+# ---- Fast linker: LLD ------------------------------------------------------
+# lld-link ships with the clang-cl toolchain and links far faster than MSVC
+# link.exe (the dev loop relinks ~16 first-party exes). CMAKE_LINKER_TYPE is the
+# clean knob on 3.29+; older CMake falls back to the clang driver flag.
+option(ATX_USE_LLD "Link with LLD (lld-link) instead of MSVC link.exe" ON)
+if(ATX_USE_LLD AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+        set(CMAKE_LINKER_TYPE LLD)
+    else()
+        add_link_options(-fuse-ld=lld)
+    endif()
+endif()
+
+# ---- Throttle concurrent links ---------------------------------------------
+# Compiles are CPU-bound and parallelize freely; links (each pulling Arrow + the
+# engine) are RAM/IO-bound. A dedicated Ninja job pool keeps a "build all tests"
+# from launching 14 heavy links at once and thrashing memory. (Ninja-only; ignored
+# by other generators.)
+set_property(GLOBAL PROPERTY JOB_POOLS atx_link=4)
+set(CMAKE_JOB_POOL_LINK atx_link)
+
+# ---- First-party library linkage ------------------------------------------
+# STATIC by default (canonical/CI, self-contained exes). ATX_SHARED_LIBS=ON (set by
+# the `dev` preset) builds the atx libraries as DLLs: each test exe then links a thin
+# import lib instead of embedding a full copy of the engine -> much faster relinks and
+# far smaller per-worktree build dirs (one engine DLL vs ~14 static copies). clang-cl +
+# WINDOWS_EXPORT_ALL_SYMBOLS auto-exports; the DLLs land in bin/ beside the exes that
+# load them, so ctest/applocal need no extra wiring.
+option(ATX_SHARED_LIBS "Build atx libraries as shared DLLs (dev: faster links, smaller artifacts)" OFF)
+if(ATX_SHARED_LIBS)
+    set(ATX_LIB_TYPE SHARED)
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+else()
+    set(ATX_LIB_TYPE STATIC)
+endif()
+
 # ---- Dependencies ----
 include(FetchContent)
 

@@ -1,4 +1,4 @@
-add_library(atx-engine STATIC
+add_library(atx-engine ${ATX_LIB_TYPE}
     src/engine.cpp
     src/factory/canonical.cpp
     src/factory/crossover.cpp

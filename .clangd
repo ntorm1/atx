@@ -17,3 +17,18 @@ InlayHints:
   Enabled: true
   ParameterNames: true
   DeducedTypes: true
+
+---
+# Keep nested agent/git worktrees out of clangd. If a file from one of these
+# paths is opened anyway, avoid compile DB lookup and suppress diagnostics.
+If:
+  PathMatch:
+    - '\.worktrees/.*'
+    - 'worktrees/.*'
+    - '\.claude/worktrees/.*'
+CompileFlags:
+  CompilationDatabase: None
+Diagnostics:
+  Suppress: '*'
+Index:
+  Background: Skip

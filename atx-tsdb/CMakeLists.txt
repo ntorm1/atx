@@ -2,7 +2,7 @@
 # new unit only drops a src/*.cpp; CONFIGURE_DEPENDS re-globs on change.
 file(GLOB ATX_TSDB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
-add_library(atx-tsdb STATIC ${ATX_TSDB_SOURCES})
+add_library(atx-tsdb ${ATX_LIB_TYPE} ${ATX_TSDB_SOURCES})
 add_library(atx::tsdb ALIAS atx-tsdb)
 
 target_include_directories(atx-tsdb

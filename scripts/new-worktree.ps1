@@ -18,7 +18,8 @@ param(
   [Parameter(Mandatory = $true)][string]$Name,
   [string]$Branch = $Name,
   [string]$Base = 'main',
-  [switch]$NoConfigure
+  [switch]$NoConfigure,
+  [switch]$Shared   # configure the `dev-shared` preset (atx libs as DLLs: smaller artifacts, faster relinks)
 )
 $ErrorActionPreference = 'Stop'
 
@@ -35,21 +36,25 @@ if (-not $env:ATX_DEPS_DIR) {
   Write-Warning 'ATX_DEPS_DIR is not set in this shell - the dev preset falls back to a per-worktree _deps. Run scripts\dev-setup.ps1 and open a new shell.'
 }
 
+$preset = if ($Shared) { 'dev-shared' } else { 'dev' }
+
 if ($NoConfigure) {
-  Write-Host ('skipped configure (-NoConfigure). Run: cd ' + $wt + '; cmake --preset dev') -ForegroundColor Yellow
+  Write-Host ('skipped configure (-NoConfigure). Run: cd ' + $wt + '; cmake --preset ' + $preset) -ForegroundColor Yellow
   return
 }
 
 Push-Location $wt
 try {
-  Write-Host 'cmake --preset dev  (sccache + shared deps)' -ForegroundColor Cyan
-  cmake --preset dev
+  $note = if ($Shared) { 'sccache + shared deps + atx DLLs' } else { 'sccache + shared deps' }
+  Write-Host ('cmake --preset ' + $preset + '  (' + $note + ')') -ForegroundColor Cyan
+  cmake --preset $preset
   Write-Host ''
   Write-Host ('ready: ' + $wt) -ForegroundColor Green
-  Write-Host '  build : cmake --build --preset dev --target atx-engine-<group>-tests   (groups: alpha risk data factory parallel learn eval library combine fund book core)'
-  Write-Host '  partial suite (faster worktree builds): reconfigure with  cmake --preset dev -DATX_TEST_GROUPS="risk;data"  to drop the groups you are not touching'
-  Write-Host '  test  : ctest --preset dev -R <Suite>'
+  Write-Host ('  build : cmake --build --preset ' + $preset + ' --target atx-engine-<group>-tests   (groups: alpha risk data factory parallel learn eval library combine fund book core regime store)')
+  Write-Host ('  partial suite (faster worktree builds): reconfigure with  cmake --preset ' + $preset + ' -DATX_TEST_GROUPS="risk;data"  to drop the groups you are not touching')
+  Write-Host ('  test  : ctest --preset ' + $preset + ' -R <Suite>')
   Write-Host '  clangd: auto-loads build/compile_commands.json (no setup)'
+  if (-not $Shared) { Write-Host '  smaller artifacts / faster relinks: re-run with -Shared (or cmake --preset dev-shared) to build atx libs as DLLs' }
   if (Get-Command sccache -ErrorAction SilentlyContinue) { sccache --show-stats | Select-Object -First 12 }
 }
 finally { Pop-Location }

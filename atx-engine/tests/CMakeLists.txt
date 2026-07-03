@@ -91,8 +91,16 @@ foreach(grp IN LISTS _atx_groups)
     endif()
 
     # data group only: the miniz/zstd link line for the databento e2e fixture.
+    # Shared build: atx-core.dll already re-exports mz_*, so link only the include
+    # dir (re-linking static atx_miniz would duplicate-symbol). See atx-core/tests.
     if(grp STREQUAL "data")
-        target_link_libraries(${_tgt} PRIVATE atx_miniz zstd::libzstd)
+        if(ATX_SHARED_LIBS)
+            target_include_directories(${_tgt} PRIVATE
+                $<TARGET_PROPERTY:atx_miniz,INTERFACE_INCLUDE_DIRECTORIES>)
+            target_link_libraries(${_tgt} PRIVATE zstd::libzstd)
+        else()
+            target_link_libraries(${_tgt} PRIVATE atx_miniz zstd::libzstd)
+        endif()
     endif()
 
     gtest_discover_tests(${_tgt})

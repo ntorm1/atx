@@ -66,7 +66,7 @@ if(_dbn_incs)
         INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_dbn_incs}")
 endif()
 
-add_library(atx-core STATIC
+add_library(atx-core ${ATX_LIB_TYPE}
     src/core.cpp
     src/decimal.cpp
     src/datetime.cpp

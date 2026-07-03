@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9"]
+dev = ["pytest>=9", "pytest-xdist>=3", "filelock>=3"]
 
 [tool.setuptools]
 packages = ["db"]
@@ -25,4 +25,7 @@ db = ["seeds/*.csv"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["db/tests"]
-addopts = "-q"
+# -n auto: run across all cores via pytest-xdist. Each test uses an isolated
+# per-test file DB and the schema template is shared behind a file lock, so the
+# suite is process-safe. Override locally with `-n0` to force serial execution.
+addopts = "-q -n auto"
