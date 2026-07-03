@@ -124,13 +124,32 @@ namespace atx::impl {
 // and a caller without a library should not have its entire risk-model build
 // fail. `dead_ids` empty is likewise a no-op (extract_dead_factors' own
 // documented boundary: k_dead == 0 -> augment_factor_model is a passthrough).
+//
+// `fit_end` (S1 fix-loop, trailing so every pre-existing call site is
+// untouched): the PIT knob. Sentinel 0 (the default) means "whole panel" ->
+// resolves to research.dates(), reproducing every existing caller's behavior
+// byte-identically. A caller that passes an EXPLICIT fit_end asks for the
+// covariance to be estimated ONLY from panel rows in [0, fit_end) — rows at or
+// after fit_end are never read (see stage_riskmodel.cpp's PanelWindowView doc:
+// this is the ONLY place global PIT anchoring happens). This is how
+// run_optimize (stage_optimize.cpp) fits a SEPARATE Factor model per
+// rebalance step at fit_end == period + 1 (data through `period` inclusive,
+// nothing after) instead of one whole-panel model applied to every period —
+// see stage_riskmodel.hpp's run_optimize overload doc below for the per-step
+// cadence this enables. Applies to BOTH kinds: kind==Diagonal with an explicit
+// fit_end < research.dates() routes to diag_risk.hpp's diagonal_risk_model(research,
+// fit_end) overload (the Factor path's warm-up fallback for a step too early
+// for a genuine Factor fit — see stage_optimize.cpp); kind==Diagonal with the
+// fit_end==0 sentinel keeps calling the whole-panel diagonal_risk_model(research)
+// (byte-identical to pre-S1).
 [[nodiscard]] atx::core::Result<atx::engine::data::FactorModelArtifact>
 build_risk_model(const atx::engine::alpha::Panel& research,
                   const atx::engine::risk::RiskModelConfig& cfg,
                   std::span<const atx::u32> group_id = {},
                   const atx::engine::library::Library* dead_lib = nullptr,
                   std::span<const atx::engine::combine::AlphaId> dead_ids = {},
-                  atx::usize dead_as_of = 0);
+                  atx::usize dead_as_of = 0,
+                  atx::usize fit_end = 0);
 
 // ===========================================================================
 //  S1-2: run_optimize's covariance-source overload.
@@ -147,13 +166,28 @@ build_risk_model(const atx::engine::alpha::Panel& research,
 //
 //  kind == Diagonal: identical to today's stage_optimize body — builds
 //  diagonal_risk_model(research) once, applies it to every period.
-//  kind == Factor: builds ONE FactorModelArtifact via build_risk_model
-//  (fit over the whole research panel, fit_end == research.dates()) and
-//  applies THAT model to every period — the "piecewise-constant... matching
-//  the existing single-model cadence" the brief specifies (S1 fits once per
-//  run_optimize call, exactly mirroring the Diagonal path's own cadence; a
-//  true per-rebalance-window re-fit is not required by S1's accept criteria
-//  and is left to a future sprint if the cadence needs to tighten).
+//
+//  kind == Factor (S1 fix-loop: per-fit-window PIT, corrected from the
+//  original S1-2 landing): a per-rebalance-window re-fit IS required — a
+//  single whole-panel fit (fit_end == research.dates()) applied to every
+//  period is look-ahead: an EARLY rebalance decision would be informed by
+//  covariance estimated from LATER dates. So stage_optimize.cpp instead calls
+//  `model_for_period(period)` semantics via build_risk_model's threaded
+//  fit_end parameter: for each rebalance step s covering date
+//  `period = sched.periods[s]`, it fits a SEPARATE FactorModelArtifact at
+//  fit_end == period + 1 (data through `period` inclusive, nothing after —
+//  see build_risk_model's fit_end doc above). model_at(period) then selects
+//  the fit-window COVERING period (piecewise-constant between rebalance
+//  dates, forward-filled — the S1-5 neutralize block reads the same in-force
+//  step model this way for a non-schedule date). A rebalance step too early
+//  to support a genuine Factor fit (fit_end < 2, or an under-determined
+//  cross-section — build_risk_model returns Err) falls back to a PIT diagonal
+//  over [0, fit_end) for THAT STEP ONLY (diag_risk.hpp's fit_end overload) —
+//  never the whole-panel diagonal, which would reintroduce look-ahead; this
+//  is honest, not a workaround: a factor covariance cannot be estimated
+//  before there is history to estimate it from. The Diagonal kind is
+//  UNAFFECTED by any of this (its own model_for_period returns the same
+//  single whole-panel model for every period, exactly as before).
 [[nodiscard]] atx::core::Result<StageResult>
 run_optimize(const RunConfig& cfg, const atx::engine::risk::RiskModelConfig& risk_cfg);
 

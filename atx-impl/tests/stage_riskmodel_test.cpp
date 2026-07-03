@@ -219,6 +219,17 @@ TEST(AtxImplRiskModel, FactorNondegenerateDelevers) {
 
 // ---------------------------------------------------------------------------
 // Test 3: PIT guard — perturbing rows >= fit_end must not change the artifact.
+//
+// S1 fix-loop rework: build_risk_model now takes an EXPLICIT fit_end
+// parameter, so this no longer needs the in-test truncation crutch (the
+// original version handed build_risk_model a panel PRE-TRUNCATED to
+// [0, fit_end) -- exercising build_risk_model's implicit "fit_end ==
+// research.dates()" contract, not the real production call pattern, where
+// stage_optimize.cpp hands build_risk_model the FULL untruncated research
+// panel plus an explicit fit_end). This version calls build_risk_model on the
+// FULL D-row panel with fit_end passed explicitly and proves the real
+// contract directly: two panels identical on [0, fit_end) but perturbed
+// DIFFERENTLY on [fit_end, D) must yield byte-identical artifacts.
 // ---------------------------------------------------------------------------
 TEST(AtxImplRiskModel, PitGuardIgnoresFutureRows) {
   constexpr usize M = 8, D = 200;
@@ -230,69 +241,46 @@ TEST(AtxImplRiskModel, PitGuardIgnoresFutureRows) {
   const atx::u32 lookback = 100U;
   const usize fit_end = D - 10; // 10 held-out future rows
 
-  // Build a truncated panel view: only rows [0, fit_end) — this is the
-  // baseline the FULL panel (with untouched future rows) must reproduce.
-  auto full_r = alpha::Panel::create(
-      fit_end, M,
-      {"close", "volume"},
-      {std::vector<f64>(panel_r->field_all(0).begin(), panel_r->field_all(0).begin() + fit_end * M),
-       std::vector<f64>(panel_r->field_all(1).begin(), panel_r->field_all(1).begin() + fit_end * M)},
-      std::vector<std::uint8_t>(fit_end * M, 1u));
-  ASSERT_TRUE(full_r.has_value()) << full_r.error().message();
-
   risk::RiskModelConfig cfg = factor_cfg(lookback);
-  auto baseline_r = atx::impl::build_risk_model(*full_r, cfg);
-  ASSERT_TRUE(baseline_r.has_value()) << baseline_r.error().message();
 
-  // Now perturb the FULL D-row panel's rows >= fit_end (append 10 wild rows
-  // after the fit window) and rebuild over the SAME fit_end by re-deriving a
-  // fit_end-only view is not directly expressible via build_risk_model's
-  // implicit fit_end==dates() contract, so instead we perturb a COPY of the
-  // full-D panel's tail (rows fit_end..D) with extreme values and confirm the
-  // artifact -- computed by a caller that only ever passes the truncated
-  // [0, fit_end) sub-panel, mirroring the stage's real call pattern -- is
-  // identical to a differently-perturbed tail. This proves build_risk_model's
-  // internal window arithmetic never reads past `research.dates()` it is
-  // given: two panels identical on [0, fit_end) but different after it must
-  // yield the SAME artifact when each is truncated to fit_end before the call
-  // (the guard the PIT contract actually makes -- see header doc: fit_end ==
-  // research.dates()).
-  std::vector<f64> close_full(panel_r->field_all(0).begin(), panel_r->field_all(0).end());
-  std::vector<f64> volume_full(panel_r->field_all(1).begin(), panel_r->field_all(1).end());
+  // Panel A: the shared [0, fit_end) prefix, rows >= fit_end perturbed one way.
+  std::vector<f64> close_a(panel_r->field_all(0).begin(), panel_r->field_all(0).end());
+  std::vector<f64> volume_a(panel_r->field_all(1).begin(), panel_r->field_all(1).end());
   for (usize t = fit_end; t < D; ++t) {
     for (usize i = 0; i < M; ++i) {
-      close_full[t * M + i] = 999999.0; // wild perturbation
-      volume_full[t * M + i] = 1.0;
+      close_a[t * M + i] = 111.0 + static_cast<f64>(i);
+      volume_a[t * M + i] = 1.0;
     }
   }
-  auto perturbed_full_r = alpha::Panel::create(D, M, {"close", "volume"},
-                                               {close_full, volume_full},
-                                               std::vector<std::uint8_t>(D * M, 1u));
-  ASSERT_TRUE(perturbed_full_r.has_value()) << perturbed_full_r.error().message();
+  auto panel_a_r = alpha::Panel::create(D, M, {"close", "volume"}, {close_a, volume_a},
+                                        std::vector<std::uint8_t>(D * M, 1u));
+  ASSERT_TRUE(panel_a_r.has_value()) << panel_a_r.error().message();
 
-  // Truncate the perturbed panel to [0, fit_end) exactly like the baseline
-  // (the caller's real usage: it hands build_risk_model a panel whose LAST
-  // row IS fit_end -- future rows never even reach this call). Since the
-  // perturbation only touched rows >= fit_end, the truncated view is
-  // BIT-IDENTICAL to the baseline's input, so the artifacts must match --
-  // this proves build_risk_model has no hidden dependency on data beyond what
-  // its caller passes (the PIT contract is enforced by the CALLER slicing to
-  // fit_end, and build_risk_model itself never reads past its own
-  // research.dates()).
-  auto perturbed_truncated_r = alpha::Panel::create(
-      fit_end, M, {"close", "volume"},
-      {std::vector<f64>(close_full.begin(), close_full.begin() + fit_end * M),
-       std::vector<f64>(volume_full.begin(), volume_full.begin() + fit_end * M)},
-      std::vector<std::uint8_t>(fit_end * M, 1u));
-  ASSERT_TRUE(perturbed_truncated_r.has_value()) << perturbed_truncated_r.error().message();
+  // Panel B: BYTE-IDENTICAL to A on [0, fit_end); rows >= fit_end perturbed a
+  // DIFFERENT way (a different, much wilder value).
+  std::vector<f64> close_b = close_a;
+  std::vector<f64> volume_b = volume_a;
+  for (usize t = fit_end; t < D; ++t) {
+    for (usize i = 0; i < M; ++i) {
+      close_b[t * M + i] = 999999.0 * (1.0 + 0.001 * static_cast<f64>(i));
+      volume_b[t * M + i] = 42.0;
+    }
+  }
+  auto panel_b_r = alpha::Panel::create(D, M, {"close", "volume"}, {close_b, volume_b},
+                                        std::vector<std::uint8_t>(D * M, 1u));
+  ASSERT_TRUE(panel_b_r.has_value()) << panel_b_r.error().message();
 
-  auto perturbed_artifact_r = atx::impl::build_risk_model(*perturbed_truncated_r, cfg);
-  ASSERT_TRUE(perturbed_artifact_r.has_value()) << perturbed_artifact_r.error().message();
+  // Real production call pattern: the FULL untruncated D-row panel + an
+  // EXPLICIT fit_end (never a pre-truncated sub-panel).
+  auto artifact_a_r = atx::impl::build_risk_model(*panel_a_r, cfg, {}, nullptr, {}, 0, fit_end);
+  ASSERT_TRUE(artifact_a_r.has_value()) << artifact_a_r.error().message();
+  auto artifact_b_r = atx::impl::build_risk_model(*panel_b_r, cfg, {}, nullptr, {}, 0, fit_end);
+  ASSERT_TRUE(artifact_b_r.has_value()) << artifact_b_r.error().message();
 
-  const auto baseline_bytes = data::serialize_artifact(*baseline_r);
-  const auto perturbed_bytes = data::serialize_artifact(*perturbed_artifact_r);
-  EXPECT_EQ(baseline_bytes, perturbed_bytes)
-      << "artifact changed when only rows >= fit_end were perturbed -- look-ahead leak";
+  const auto bytes_a = data::serialize_artifact(*artifact_a_r);
+  const auto bytes_b = data::serialize_artifact(*artifact_b_r);
+  EXPECT_EQ(bytes_a, bytes_b)
+      << "artifact changed when only rows >= fit_end were perturbed differently -- look-ahead leak";
 }
 
 // ---------------------------------------------------------------------------

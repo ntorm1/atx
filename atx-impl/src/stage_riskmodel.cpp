@@ -173,11 +173,32 @@ namespace {
 // cfg.kind. Diagonal delegates to diagonal_risk_model unchanged (its
 // (X, F, D, fit_end) reassembled as FactorComponents so the S1-4 augmentation
 // step composes with EITHER kind uniformly); Factor runs the real estimator.
+//
+// `fit_end_arg` (S1 fix-loop): the PIT knob threaded in from build_risk_model.
+// Sentinel 0 -> resolves to research.dates() (whole panel, byte-identical to
+// pre-S1). A caller-supplied explicit fit_end < research.dates() PIT-anchors
+// BOTH kinds: Diagonal routes to diag_risk.hpp's diagonal_risk_model(research,
+// fit_end) overload (the Factor path's warm-up fallback in stage_optimize.cpp
+// when a rebalance step is too early for a genuine Factor fit -- never the
+// whole-panel diagonal_risk_model(research) below, which would reintroduce
+// look-ahead for that step); Factor fits the estimation window ending at
+// fit_end (see the total_rows/PanelWindowView construction below -- this is
+// the ONLY place global PIT anchoring happens; the frozen estimator itself
+// only ever sees VIEW-LOCAL coordinates).
 [[nodiscard]] atx::core::Result<risk::FactorComponents>
 build_base_components(const alpha::Panel& research, const risk::RiskModelConfig& cfg,
-                      std::span<const atx::u32> group_id) {
+                      std::span<const atx::u32> group_id, atx::usize fit_end_arg) {
+  const atx::usize dates = research.dates();
+  const atx::usize fit_end = (fit_end_arg == 0U) ? dates : fit_end_arg;
+  if (fit_end > dates) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "build_risk_model: fit_end exceeds research.dates()");
+  }
+
   if (cfg.kind == risk::RiskModelKind::Diagonal) {
-    ATX_TRY(auto model, diagonal_risk_model(research));
+    auto model_r = (fit_end == dates) ? diagonal_risk_model(research)
+                                      : diagonal_risk_model(research, fit_end);
+    ATX_TRY(auto model, model_r);
     return atx::core::Ok(risk::FactorComponents{
         model.exposures(), model.factor_cov(), model.specific_var(), model.fit_end()});
   }
@@ -193,7 +214,6 @@ build_base_components(const alpha::Panel& research, const risk::RiskModelConfig&
                           "build_risk_model: group_id span length must equal research.instruments()");
   }
 
-  const atx::usize fit_end = research.dates();
   if (fit_end < 2U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "build_risk_model: research panel needs >= 2 dates for the Factor path");
@@ -249,8 +269,9 @@ build_base_components(const alpha::Panel& research, const risk::RiskModelConfig&
 atx::core::Result<data::FactorModelArtifact>
 build_risk_model(const alpha::Panel& research, const risk::RiskModelConfig& cfg,
                   std::span<const atx::u32> group_id, const library::Library* dead_lib,
-                  std::span<const combine::AlphaId> dead_ids, atx::usize dead_as_of) {
-  ATX_TRY(risk::FactorComponents comp, build_base_components(research, cfg, group_id));
+                  std::span<const combine::AlphaId> dead_ids, atx::usize dead_as_of,
+                  atx::usize fit_end) {
+  ATX_TRY(risk::FactorComponents comp, build_base_components(research, cfg, group_id, fit_end));
 
   // S1-4: dead-alpha crowding-factor augmentation (opt-in, composes with
   // EITHER kind). FAIL-OPEN: no library / no dead ids -> the base model

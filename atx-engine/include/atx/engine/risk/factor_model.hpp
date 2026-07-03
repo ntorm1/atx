@@ -128,7 +128,19 @@ struct RiskModelConfig {
   RiskModelKind kind = RiskModelKind::Diagonal; // inert => today's per-name variance
   bool dead_alpha_factors = false;              // inert => no crowding augmentation
   bool group_neutralize = false;                // inert => no factor/industry neutralize
-  atx::u32 fit_lookback_days = 252U;            // exposure/estimation window (Factor only)
+  // fit_lookback_days (Factor only; ignored when kind==Diagonal, which always
+  // reads the whole panel): the number of TRAILING per-date cross-sections the
+  // estimator regresses over to build (X, F, D) -- atx-impl's
+  // stage_riskmodel.cpp clamps this to `min(fit_lookback_days, fit_end - 1)`
+  // (estimation_window) and reads panel rows [fit_end - estimation_window -
+  // deepest_lookback, fit_end); rows at/after fit_end are NEVER read (the PIT
+  // anchor -- see stage_riskmodel.cpp's PanelWindowView doc). Larger =>
+  // smoother / more stable factor-return estimates over a longer trailing
+  // history; smaller => more reactive to recent regime shifts but a noisier
+  // per-date WLS fit. DEFAULT 252 = one trailing trading year, the same
+  // convention Barra-style commercial risk models use for their monthly/daily
+  // factor-return history window.
+  atx::u32 fit_lookback_days = 252U;
   // Style-block toggles: all ON by default (the full Barra style block when
   // kind==Factor); IGNORED entirely when kind==Diagonal (no exposures are built).
   bool style_size = true;

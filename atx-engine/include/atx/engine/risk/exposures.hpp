@@ -212,6 +212,20 @@ namespace detail {
   return n;
 }
 
+// CROSS-REFERENCE (atx-impl/src/stage_riskmodel.cpp's `deepest_lookback`): a
+// PanelView-backing buffer must carry `estimation_window + deepest_lookback`
+// rows so build_components's OLDEST estimation date still has a FULL trailing
+// lookback for every style column it emits (an estimation date at row
+// `estimation_window - 1` reads forward from that row, so it needs
+// `deepest_lookback` more rows to exist beyond the estimation window's own
+// span). `deepest_lookback` is `max` over the style columns actually emitted
+// (cfg.style_mask) of THESE per-factor constants -- Beta needs the deepest
+// (kBetaWindow, +1 row for its own trailing return), Momentum next
+// (kMomLong), Volatility shallowest of the three (kVolWindow); Liquidity uses
+// kAdvWindow. A sectors-only / all-style-off config still needs a floor of 1
+// (the per-date return computation itself always reads one row past the
+// estimation date, independent of which style columns are emitted -- see
+// stage_riskmodel.cpp's own comment on that floor).
 inline constexpr atx::usize kMomLong = 252U;    // 12-month return band
 inline constexpr atx::usize kMomShort = 21U;    // 1-month return band
 inline constexpr atx::usize kVolWindow = 60U;   // volatility lookback
