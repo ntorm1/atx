@@ -477,9 +477,13 @@ build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in) 
   // Per-sleeve per-period signal, flat D*M ascending date then instrument (the RAW DATE
   // index convention every fund/risk callback in this codebase uses -- confirmed at
   // src/fund/meta_book.cpp: `returns_at(sched.periods[p])`, `model_at(sched.periods[n-1])`).
-  ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
+  // NOTE (S2-5 wiring fix): the combo panel's "alpha" field is read ONLY on the single_no_lib
+  // path -- the multi-sleeve / library path never touches combo's field contents (it
+  // re-evaluates each sleeve's own members from the library instead), so looking up
+  // "alpha" unconditionally would spuriously require a field the library path never needs.
   std::vector<std::vector<atx::f64>> sleeve_signal(n_sleeves);
   if (single_no_lib) {
+    ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
     sleeve_signal[0].assign(D * M, 0.0);
     for (atx::usize t = 0; t < D; ++t) {
       const auto cs = combo.field_cross_section(alpha_fid, t);

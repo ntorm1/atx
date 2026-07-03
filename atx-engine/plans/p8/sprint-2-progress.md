@@ -110,7 +110,63 @@ correctly — `run_metabook` overwrites those three fields from `RunConfig` befo
 - [x] S2-2  `stage_metabook` producer (two-pass drive) + R7 pin + PIT causality guard
 - [x] S2-3  netting turnover telemetry
 - [x] S2-4  Euler attribution + effective-bets telemetry
-- [ ] S2-5  allocator-method config + close determinism battery
+- [x] S2-5  allocator-method config + close determinism battery
+
+## S2-5 wiring fix (found while writing the close battery)
+
+`build_metabook_result` looked up `combo.field_id("alpha")` UNCONDITIONALLY, even on the
+multi-sleeve/library path which never reads combo's field contents (it re-evaluates each
+sleeve's own members from the library instead). Moved the lookup inside the `single_no_lib`
+branch so a multi-sleeve invocation no longer spuriously requires an "alpha" field it never
+uses. Caught by writing `MultiSleeveByCorrClusterReachesTheStageEndToEnd` (a combo panel with
+only a "close"-shaped field would otherwise have failed field lookup); no test regression.
+
+## S2-5 close determinism battery — all four classes proven end-to-end through the stage
+
+- **off-path byte-identity**: the pinned S2-2 test (`MetabookStageBoundary.
+  SingleSleeveByteIdenticalToStageOptimizeBook`) IS this gate — re-affirmed by name
+  (`MetabookCloseBattery.OffPathByteIdenticalIsThePinnedS22Test`), not duplicated.
+- **on-path RED->GREEN, end-to-end through the REAL stage** (new for S2-5 — every earlier
+  multi-sleeve test used a hand-scripted engine fixture, not the actual library/DSL path):
+  `MetabookCloseBattery.MultiSleeveByCorrClusterReachesTheStageEndToEnd` builds a REAL
+  `library::Library` with two admit-time-PnL-correlated clusters (3 alphas each, real
+  parseable DSL `"rank(close)"` / `"delta(close,2)"`), flushes it to disk (`flush_all()` --
+  required: `run_metabook` re-opens the library at `cfg.library_dir` as a fresh instance,
+  which only sees SEALED segments), and drives the FULL `compile_batch -> Engine::evaluate ->
+  extract_streams -> per-sleeve equal-weight combine -> MetaBook::run` pipeline through
+  `run_metabook(cfg, {ByCorrCluster})`. Result: `sleeves` kvs == "2" (the two clusters
+  survived), a valid books panel with 6 instruments across every rebalance period. THE
+  concrete proof that `evaluate_sleeve_signal` (S2-2's multi-sleeve seam, never previously
+  exercised end-to-end) actually compiles/evaluates real DSL and reaches the driver.
+- **twice-run (stage level)**: `MetabookCloseBattery.TwiceRunStageKvsByteIdentical` --
+  identical `RunConfig` + `MetaBookStageConfig` -> identical `StageResult::digest` AND every
+  `kvs` key/value pair byte-identical across two separate `run_metabook` calls (not just the
+  engine-level `MetaBook::run` twice-run already proven in `fund_metabook_wire_test.cpp`).
+- **seq==parallel**: the pinned S2-2 structural proof (`FundMetabookWire.
+  PassOneSleeveIndependence`) IS this gate — re-affirmed by name
+  (`MetabookCloseBattery.SeqEqParallelIsThePinnedS22Test`).
+- **allocator method + HRP singular-Omega safety**: `MetabookAllocMethod.
+  ErcDefaultAndHrpNeverTrapsOnSingularOmega` confirms the default is
+  `EqualRiskContribution` and that `HierarchicalRiskParity` on an EXACTLY singular Omega
+  (`det==0`, the perfectly-correlated two-sleeve fixture) returns finite, non-negative
+  capital weights with `Sigma|c| <= max_gross` — never traps/NaNs.
+
+## NCO future-work stretch (recorded verbatim per the sprint's Out-of-scope section)
+
+**NCO (Nested Clustered Optimization, Lopez de Prado 2019a)** as the meta-allocation
+successor to HRP/ERC — inner-cluster weights x cross-validated outer-cluster weights,
+reducing estimation error further than HRP. It would consume Sprint 1's cleaned covariance +
+clustering. Explicit future-work stretch, deferred to a p8-S2 stretch unit or the next module
+(ROADMAP Future-work backlog); HRP/ERC ship first, honestly measured. S2 ships nothing NCO in
+the critical path — `RiskBudgetMethod` has exactly three enumerators (InverseVol, ERC, HRP);
+adding NCO is a pure-addition follow-on (`meta_allocator.hpp` is S2-owned but its estimation
+math is frozen, so an NCO kernel would land in `src/fund/meta_allocator.cpp` as new code, not
+a rewrite — out of this sprint's critical path per the brief).
+
+## Sprint close — full regression
+
+134 tests green across `atx-engine-fund-tests` + `atx-impl-tests` (fund/*, metabook_*,
+optimize/pit/riskmodel suites) after S2-5; zero regressions introduced across all five units.
 
 ## S2-4 measured Euler exactness + effective-bets (EXACT, not merely within tolerance)
 

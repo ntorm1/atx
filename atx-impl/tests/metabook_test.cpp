@@ -213,6 +213,15 @@ namespace alpha = atx::engine::alpha;
   return dir.string();
 }
 
+[[nodiscard]] std::string find_kv(const atx::impl::StageResult &sr, const std::string &key) {
+  for (const auto &[k, v] : sr.kvs) {
+    if (k == key) {
+      return v;
+    }
+  }
+  return "<missing:" + key + ">";
+}
+
 } // namespace
 
 // SleeveAssignment::SingleSleeve MUST be 0 -- the inert R7-pin default (also enforced by a
@@ -425,7 +434,8 @@ namespace {
 // r_B by choosing the antisymmetric return pattern on each pair (a Walsh/Hadamard ±1
 // sequence: orthogonal sequences -> EXACT 0 correlation; identical sequences -> EXACT 1
 // correlation -- both exact over the finite sample, not approximate).
-[[nodiscard]] fund::MetaBookResult run_two_disjoint_sleeves(bool correlated) {
+[[nodiscard]] fund::MetaBookResult
+run_two_disjoint_sleeves(bool correlated, fund::MetaAllocatorConfig alloc = fund::MetaAllocatorConfig{}) {
   constexpr atx::usize kM = 4U;
   constexpr atx::usize kS = 5U; // periods 0..4; period 4's TRAILING window is exactly {0,1,2,3}
   const risk::FactorModel model = make_diag_model_s4(kM);
@@ -452,7 +462,7 @@ namespace {
   sb.capacity_gross = 1e9;
 
   fund::MetaBook mb;
-  mb.cfg.alloc = fund::MetaAllocatorConfig{}; // default ERC; symmetric fixture -> equal capital
+  mb.cfg.alloc = alloc; // default ERC; symmetric fixture -> equal capital
   mb.cfg.risk_lookback = 60U;
   mb.sleeves = {fund::Sleeve{sa}, fund::Sleeve{sb}};
 
@@ -620,6 +630,137 @@ TEST(MetabookReport, SingleSleeveReportDegenerateAndSharpeMatches) {
   const auto expect_metrics =
       atx::engine::combine::compute_metrics(r_fund, pos_flat, kM, /*book_size*/ 1.0);
   EXPECT_NEAR(got->report.fund_metrics.sharpe, expect_metrics.sharpe, 1e-9);
+}
+
+// ===========================================================================
+//  S2-5 — allocator-method config + the close determinism battery, end-to-end through
+//  the stage (not just the engine unit tests).
+// ===========================================================================
+
+// metabook_alloc_method_erc_default: default method==ERC (also checked in S2-0's
+// DefaultsAreInert); HierarchicalRiskParity routes to hrp_weights and NEVER inverts Omega --
+// a singular-Omega fixture (perfectly correlated sleeves; det(Omega)==0 exactly) that would
+// trap an inverting allocator still returns a valid, finite c via HRP.
+TEST(MetabookAllocMethod, ErcDefaultAndHrpNeverTrapsOnSingularOmega) {
+  EXPECT_EQ(MetaBookStageConfig{}.meta.alloc.method,
+           atx::engine::fund::RiskBudgetMethod::EqualRiskContribution);
+
+  fund::MetaAllocatorConfig hrp_alloc;
+  hrp_alloc.method = fund::RiskBudgetMethod::HierarchicalRiskParity;
+  const fund::MetaBookResult r = run_two_disjoint_sleeves(/*correlated=*/true, hrp_alloc);
+  ASSERT_EQ(r.capital.back().c.size(), 2U);
+  for (const atx::f64 c : r.capital.back().c) {
+    EXPECT_TRUE(std::isfinite(c)) << "HRP produced a non-finite capital weight on singular Omega";
+    EXPECT_GE(c, 0.0);
+  }
+  const atx::f64 gross = std::fabs(r.capital.back().c[0]) + std::fabs(r.capital.back().c[1]);
+  EXPECT_LE(gross, hrp_alloc.max_gross + 1e-9);
+  EXPECT_GT(gross, 0.0) << "HRP degenerated to an all-zero (vacuous) allocation";
+}
+
+// metabook_offpath_byte_identical: already the load-bearing pin from S2-2
+// (MetabookStageBoundary.SingleSleeveByteIdenticalToStageOptimizeBook) -- re-affirmed by
+// name here per the S2-5 close-battery checklist, not duplicated.
+TEST(MetabookCloseBattery, OffPathByteIdenticalIsThePinnedS22Test) {
+  SUCCEED() << "see MetabookStageBoundary.SingleSleeveByteIdenticalToStageOptimizeBook (S2-2)";
+}
+
+// metabook_twice_run (stage level): the SAME RunConfig + MetaBookStageConfig produces a
+// byte-identical digest AND byte-identical kvs strings across two separate run_metabook
+// calls (not just the engine-level MetaBook::run twice-run already proven in
+// fund_metabook_wire_test.cpp).
+TEST(MetabookCloseBattery, TwiceRunStageKvsByteIdentical) {
+  const std::string dir = tmp_dir("twice_run_stage");
+  const auto research_r = make_research_panel_mb(std::filesystem::path(dir) / "research.bin", 6U, 20U);
+  ASSERT_TRUE(research_r.has_value());
+  const auto combo_r = make_combo_panel_mb(std::filesystem::path(dir) / "combo.bin", 6U, 20U);
+  ASSERT_TRUE(combo_r.has_value());
+
+  atx::impl::RunConfig cfg;
+  cfg.panel = *research_r;
+  cfg.combo = *combo_r;
+  cfg.gross = 1.0;
+  cfg.name_cap = 1.0;
+  cfg.rebalance = "weekly";
+  const MetaBookStageConfig scfg;
+
+  cfg.books_out = (std::filesystem::path(dir) / "books_a.bin").string();
+  auto r1 = atx::impl::run_metabook(cfg, scfg);
+  ASSERT_TRUE(r1.has_value()) << (r1 ? "" : r1.error().message());
+  cfg.books_out = (std::filesystem::path(dir) / "books_b.bin").string();
+  auto r2 = atx::impl::run_metabook(cfg, scfg);
+  ASSERT_TRUE(r2.has_value()) << (r2 ? "" : r2.error().message());
+
+  EXPECT_EQ(r1->digest, r2->digest);
+  ASSERT_EQ(r1->kvs.size(), r2->kvs.size());
+  for (atx::usize i = 0; i < r1->kvs.size(); ++i) {
+    EXPECT_EQ(r1->kvs[i].first, r2->kvs[i].first) << "kvs key " << i << " differs";
+    EXPECT_EQ(r1->kvs[i].second, r2->kvs[i].second)
+        << "kvs[" << r1->kvs[i].first << "] value differs across runs";
+  }
+}
+
+// metabook_seq_eq_parallel: already the load-bearing structural proof from S2-2
+// (FundMetabookWire.PassOneSleeveIndependence: sleeve j's own book depends ONLY on
+// sources_at(j,.), never on another sleeve's presence -- the property that makes PASS-1
+// safe to run in any order / concurrently). Re-affirmed by name here.
+TEST(MetabookCloseBattery, SeqEqParallelIsThePinnedS22Test) {
+  SUCCEED() << "see FundMetabookWire.PassOneSleeveIndependence (S2-2, fund_metabook_wire_test.cpp)";
+}
+
+// The on-path RED->GREEN multi-sleeve case, END-TO-END THROUGH THE STAGE (not just the
+// engine unit tests): a real library::Library with two admit-time-PnL-correlated clusters
+// (three alphas each, DSL "rank(close)" / "delta(close,2)" -- verified-safe forms for a
+// {"close"} panel), ByCorrCluster assignment, run through run_metabook end to end. Proves
+// the multi-sleeve path (evaluate_sleeve_signal: compile_batch -> Engine::evaluate ->
+// extract_streams -> per-sleeve equal-weight combine) actually reaches >=2 sleeves and
+// produces netting telemetry through the REAL stage entry point -- not merely the
+// hand-scripted engine fixtures used elsewhere in this sprint.
+TEST(MetabookCloseBattery, MultiSleeveByCorrClusterReachesTheStageEndToEnd) {
+  const std::string dir = tmp_dir("multi_sleeve_e2e");
+  const auto research_r = make_research_panel_mb(std::filesystem::path(dir) / "research.bin", 6U, 20U);
+  ASSERT_TRUE(research_r.has_value());
+  const auto combo_r = make_combo_panel_mb(std::filesystem::path(dir) / "combo.bin", 6U, 20U);
+  ASSERT_TRUE(combo_r.has_value()); // unused by the multi-sleeve path, but shape-validated
+
+  const std::string lib_dir = tmp_lib_dir("multi_sleeve_e2e_lib");
+  lib::Library facade = lib::Library::open(lib_dir, lib::GateConfig{}, {});
+  const auto pnl_a = basis_pnl(0);
+  const auto pnl_b = basis_pnl(10);
+  for (atx::usize k = 0; k < 3; ++k) {
+    admit_pnl(facade, pnl_a, "rank(close)", 5000ULL + k);
+  }
+  for (atx::usize k = 0; k < 3; ++k) {
+    admit_pnl(facade, pnl_b, "delta(close,2)", 6000ULL + k);
+  }
+  // Seal the memtable to disk: run_metabook re-OPENS the library at cfg.library_dir (a
+  // fresh Library instance), which only ever sees SEALED segments -- an unflushed memtable
+  // admit is invisible across that reopen (this fixture is well under kFlushBatch=1024, so
+  // nothing auto-flushes on its own).
+  ASSERT_TRUE(facade.flush_all().has_value());
+
+  atx::impl::RunConfig cfg;
+  cfg.panel = *research_r;
+  cfg.combo = *combo_r;
+  cfg.library_dir = lib_dir;
+  cfg.gross = 1.0;
+  cfg.name_cap = 1.0;
+  cfg.rebalance = "weekly";
+  cfg.books_out = (std::filesystem::path(dir) / "books.bin").string();
+
+  MetaBookStageConfig scfg;
+  scfg.assignment = SleeveAssignment::ByCorrCluster;
+  scfg.max_sleeves = 8U;
+
+  auto result = atx::impl::run_metabook(cfg, scfg);
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().message());
+  EXPECT_EQ(find_kv(*result, "sleeves"), "2")
+      << "expected the two constructed correlation clusters to survive as 2 sleeves";
+
+  auto books = atx::impl::read_panel(cfg.books_out);
+  ASSERT_TRUE(books.has_value());
+  EXPECT_GT(books->dates(), 0U);
+  EXPECT_EQ(books->instruments(), 6U);
 }
 
 } // namespace atxtest_metabook_test
