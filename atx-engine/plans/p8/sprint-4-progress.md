@@ -59,7 +59,7 @@ intentional gap (S4-4 section below).
 - [x] S4-3a Limit fill clamp (B3)
 - [x] S4-3b Absent-instrument volume zeroing (B4)
 - [x] S4-3c Borrow accrual in the loop (B5)
-- [ ] S4-3d Permanent impact persistence (B6)
+- [x] S4-3d Permanent impact persistence (B6)
 - [ ] S4-4  Impact in ScalarRaw selection (B7)
 - [ ] S4-5a GP turnover-native step (B8)
 - [ ] S4-5b stage_report capacity curve (B9)
@@ -281,3 +281,57 @@ correct `part=1.0`, buggy `part=0.01`). **Note:** the spec's dependency map cite
 `n = min(insts, w.size())` clamp respectively (unrelated code shifted by prior p6/p7 commits); the
 bug itself is real and unchanged in shape, just at line 315 in the current tree. This is an OPEN
 dependency for Sprint 3 until landed.
+
+S4-3d: complete [CORRECTNESS — B6]. `apply_permanent_impact` (`execution_sim.hpp`) shifts
+`marks_[idx]` via `Market::shift_mark` after a fill, but the very next `update_prices` overwrote
+`marks_[idx] = r.bar.close` for any name present in that slice — the "permanent" shift lived only
+until the next close, i.e. it was effectively temporary (the sim's close feed is the unimpacted
+historical close, so nothing else re-embeds the shift).
+
+**Fix (`loop/market.hpp`):** Market gains a new per-instrument accumulator `perm_offset_`
+(zero-initialized, sized once at construction, parallel to `marks_`/`volumes_`). `shift_mark` keeps
+its existing immediate in-place shift (`marks_[idx] += delta`, unchanged same-bar valuation
+semantics) and ADDITIONALLY accumulates `perm_offset_[idx] += delta`. `update_prices` now sets
+`marks_[idx] = r.bar.close.to_decimal().to_double() + perm_offset_[idx]` for every slice-present
+name, instead of a bare overwrite — the persisted offset rides every subsequent fresh close. An
+instrument never shifted carries `perm_offset_[idx] == 0.0` forever, and `x + 0.0 == x` exactly in
+IEEE754, so every unconfigured/no-impact path (`gamma == 0`, the overwhelming default across the
+existing suite) is byte-identical to pre-fix — confirmed by the `ZeroFillRun_ByteIdenticalMarks`
+test using `EXPECT_EQ` (bit-exact, not `_NEAR`).
+
+**RED (`tests/core/permanent_impact_persist_test.cpp`, new):** 5 tests; 4 RED pre-fix
+(`ShiftPersistsAcrossNextBarUpdate` — asserted `mark==105.0` after a `shift_mark(+5.0)` and a
+next-bar `update_prices` at the pre-impact close `100.0`; got `100.0`, the shift discarded;
+`NoFillBarLeavesOffsetUnchanged`, `OffsetAccumulatesAcrossMultipleFills`,
+`EndToEnd_RealFillPersistsThroughExecutionSimulator` — same shape). `ZeroFillRun_ByteIdenticalMarks`
+passed even pre-fix (a no-shift run was already a no-op) — the expected 1-of-5-green split,
+confirming the fixture isolates exactly the persistence contract.
+
+**GREEN:** all 5 pass post-fix, incl. `EndToEnd_RealFillPersistsThroughExecutionSimulator` — a real
+100-share buy through `ExecutionSimulator::settle_pending` with `gamma=2.0, sigma=1.0, adv=1000`
+(Y=0 isolates the permanent term) computes the documented `delta = ref·0.5·gamma·sigma·part =
+100·0.5·2.0·1.0·0.1 = 10.0` and confirms `mark==110.0` both immediately AND after the next bar's
+`update_prices` at the unimpacted close `100.0`. Full regression sweep green (52 tests): every S4-0
+through S4-3d unit test (`CapacityParticipation`, `OptimizerRecenter`, `WeightPolicyRecenter`,
+`LimitFillClamp`, `MarketAbsentVolume`, `BacktestBorrow`, `PermanentImpactPersist`,
+`FactoryCostAwareFitness`, `CapacityScorecard`, `CapacityVector`, `BacktestLoop`/`BacktestIntegration`,
+`CombinedSignalSource`, `AtxImplS6Downstream`) — no existing test/golden pins a digest that would
+encode the pre-fix clobber (no caller reads a mark on the bar immediately after a nonzero-`gamma`
+fill), so **no golden re-baseline needed.**
+
+**Investigation note — a PRE-EXISTING failure found and bisected OUT of S4's scope:** a broad,
+accidental 3-concurrent-process full-repo `ctest -R "."` regression sweep (a self-inflicted
+methodology error — three simultaneous `ctest` invocations against the same build tree/tmp-dir
+fixtures) surfaced `RobustPipelineE2E.NoiseGrowsRobustLibraryByZero` and
+`.SyntheticPanelAdmitsRobustSurvivors` (`tests/risk/robust_pipeline_e2e_test.cpp`, an S4.5-numbered
+capstone suite from an EARLIER, already-merged phase — unrelated numbering to this "Sprint 4")
+failing consistently, even reproduced serially (no concurrency). Bisected by temporarily reverting
+each S4 unit's files in turn (`git show <parent-sha>:<path> > path`, rebuild, retest, restore):
+identical failure at S4-3d's own uncommitted `market.hpp` reverted, at S4-2 reverted
+(`optimizer.hpp`/`weight_policy.hpp`), and at S4-1 reverted (`capacity.hpp`/`fitness.cpp`) — i.e.
+**identical failure at the true pre-Sprint-4 base commit `a7838c6`**, before any S4 work existed.
+Confirmed PRE-EXISTING and out of S4's B1–B9 scope; not caused by, and not fixed by, any unit in
+this ledger. Left untouched (not S4's file, not S4's bug) — flagged here per the "no silent drift"
+mandate so the next agent does not mistake it for an S4 regression. All bisected files verified
+byte-identical to HEAD via `git diff --stat` before resuming (no residual changes from the
+investigation).
