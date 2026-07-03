@@ -348,10 +348,55 @@ synthetic 10x100 ORATS-zip fixture (genuinely exercises load->panel->discover->c
 metabook/optimize->report end to end, including the metabook branch), (b) 28/28 Pester argv
 coverage, and (c) a clean `atx-impl` binary rebuild.
 
+## S5-5 — V1 operator scorecard template (commit TBD)
+
+**`atx-impl/research/2026-07-03-megaalpha-book-results.md`** (new): a TEMPLATE, not a placeholder
+— all 10 spec-required sections present (run provenance; book-level net-of-10bps OOS Sharpe; DSR
+under cumulative-N; PBO/CSCV; CPCV; walk-forward OOS Sharpe; capacity curve; N_eff/IR breadth; the
+robustness-battery pass/fail matrix; the reject-histogram/battery-failure dominant bucket), every
+numeric row marked `<TBD — filled at V1>`. V1 (the full-panel prod run) is explicitly NOT executed
+this sprint — it is the single out-of-loop operator milestone, per the ROADMAP's validation
+discipline ("no hour-long run is a sprint gate").
+
+**V1 command, adapted + verified composable (deviation recorded again here for visibility):** the
+spec's literal V1 command uses `-Stage augment,discover` then
+`-Stage riskmodel,combine,metabook,optimize,report` — this harness's `-Stage` vocabulary (S5-4's
+documented deviation) has no `augment`/`riskmodel` stage, so the equivalent two-command form is:
+```powershell
+.\atx-impl\scripts\build-megaalpha-book.ps1 -Profile prod -Stage discover -WorkDir work\megaalpha
+.\atx-impl\scripts\build-megaalpha-book.ps1 -Profile prod -Stage pipeline -WorkDir work\megaalpha
+```
+Both verified via a REAL (non-Pester, non-dot-sourced) `-DryRun` invocation — confirmed correct
+argv and, in the second command, that `optimize` is auto-excluded (metabook substitutes it in the
+prod profile) so `books.bin` is written exactly once:
+```
+=== V1 cmd 1: -Stage discover ===
+[profile=prod] population=300 generations=15 panel=work\accept\panel.bin workdir=work\megaalpha
+=== [DryRun] discover ===
+  ...\atx-impl.exe discover --panel work\accept\panel.bin --seed-file atx-impl\tests\fixtures\alpha101.txt --gated --library-dir ...\_library --max-pbo 0.5 --min-dsr 0.5 --min-sharpe 0.25 --min-fitness 1.0 --max-turnover 0.50 --oos-fraction 0.25 --alpha-out ...\alphas --population 300 --generations 15 --impact-in-selection --require-split-stable --blocking-pbo
+
+=== V1 cmd 2: -Stage pipeline ===
+=== [DryRun] combine ===   ...--method stack
+=== [DryRun] metabook ===  ...--sleeve-method hrp
+=== [DryRun] report ===    ...--capacity-curve
+(optimize absent - metabook substituted it, as designed)
+```
+
+**Accept evidence:** the existing 28/28 GREEN Pester suite already covers `-DryRun -Profile prod`
+composability (the default `-Stage all` test path resolves to exactly this same
+discover/combine/metabook/report sequence); the two-command form above was additionally spot-run
+directly to confirm the split invocation composes identically. No binary was invoked in either
+case — V1 remains DryRun-verified only, never executed.
+
+**Deferred (recorded, not fabricated):** every numeric row in the template is unmeasured. The
+robustness battery has no live `Reevaluator` wired into `Factory::mine_into`/`mine_into_oos` (S5-3's
+own deferred-integration note) — row 9 of the template can only be filled once that adapter exists
+or via an out-of-band battery pass over the V1 book's admitted candidates.
+
 ## Unit checklist
 - [x] S5-0 CLI flag surface
 - [x] S5-1 library::verdict_for deflation screens
 - [x] S5-2 cumulative-N selection column + blocking PBO
 - [x] S5-3 eval/robustness_battery
 - [x] S5-4 stage graph + build-megaalpha-book.ps1
-- [ ] S5-5 V1 scorecard template
+- [x] S5-5 V1 scorecard template
