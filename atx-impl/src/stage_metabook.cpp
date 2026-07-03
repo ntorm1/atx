@@ -4,19 +4,39 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <fstream>
+#include <limits>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/bytecode.hpp" // alpha::compile_batch, alpha::Program
+#include "atx/engine/alpha/panel.hpp"    // alpha::Panel
+#include "atx/engine/alpha/parser.hpp"   // alpha::Library (DSL registry)
+#include "atx/engine/alpha/streams.hpp"  // alpha::extract_streams, alpha::AlphaStreams
+#include "atx/engine/alpha/vm.hpp"       // alpha::Engine
+#include "atx/engine/combine/gate.hpp"   // combine::GateConfig (read-only library open)
 #include "atx/engine/library/library.hpp"
+#include "atx/engine/loop/weight_policy.hpp" // atx::engine::WeightPolicy
 #include "atx/engine/risk/constraints.hpp"
 #include "atx/engine/risk/multi_horizon.hpp"
 
+#include "artifacts.hpp"      // to_hex16
+#include "diag_risk.hpp"      // diagonal_risk_model (the shared S5/S6 diagonal model)
+#include "research_sim.hpp"   // frictionless_sim (shared atx-impl helper)
+#include "serialize_panel.hpp" // read_panel / write_panel
+
 namespace atx::impl {
 
+namespace alpha = atx::engine::alpha;
+namespace combine = atx::engine::combine;
 namespace risk = atx::engine::risk;
+using atx::engine::WeightPolicy;
 using library::AlphaId;
 
 namespace {
@@ -283,6 +303,63 @@ std::vector<fund::SleeveConfig> sleeves_from_groups(std::vector<std::vector<Alph
   return out;
 }
 
+// ===========================================================================
+//  S2-2 — the two-pass drive producer.
+// ===========================================================================
+
+// Evaluate one sleeve's member alphas over `research` and locally combine them into
+// ONE per-period signal (D*M flat, ascending period then instrument) via an
+// UNWEIGHTED, NaN-skipping cross-sectional mean of each member's position
+// (target-weight) stream -- the SAME per-alpha representation stage_combine.cpp
+// blends (streams.positions(a,t), stage_combine.cpp:753-765), but combined LOCALLY
+// per sleeve with EQUAL weights (documented: NOT the calibrated
+// stage_combine::AlphaCombiner fit -- Sprint-3-owned, not re-derived by S2). Used
+// ONLY by multi-sleeve assignment modes; SingleSleeve-with-no-library instead reads
+// the pre-existing combo panel directly (build_metabook_result).
+atx::core::Result<std::vector<atx::f64>>
+evaluate_sleeve_signal(const library::Library &lib, const std::vector<AlphaId> &members,
+                       const alpha::Panel &research) {
+  if (members.empty()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "evaluate_sleeve_signal: sleeve has no members");
+  }
+  std::vector<std::string> dsl;
+  dsl.reserve(members.size());
+  for (const AlphaId id : members) {
+    dsl.push_back(lib.get(id).provenance.expr_source);
+  }
+  alpha::Library dsl_lib{};
+  const std::vector<std::string_view> views(dsl.begin(), dsl.end());
+  ATX_TRY(auto program, alpha::compile_batch(std::span<const std::string_view>{views}, dsl_lib));
+  alpha::Engine engine{research};
+  ATX_TRY(auto signals, engine.evaluate(program));
+  const WeightPolicy policy{};
+  const auto sim = frictionless_sim();
+  ATX_TRY(auto streams,
+         alpha::extract_streams(signals, policy, research, sim, std::span<const atx::u32>{}));
+
+  const atx::usize D = streams.n_periods();
+  const atx::usize M = streams.n_instruments();
+  const atx::usize na = streams.n_alphas();
+  std::vector<atx::f64> out(D * M, std::numeric_limits<atx::f64>::quiet_NaN());
+  for (atx::usize t = 0; t < D; ++t) {
+    for (atx::usize i = 0; i < M; ++i) {
+      atx::f64 sum = 0.0;
+      atx::usize n = 0;
+      for (atx::usize a = 0; a < na; ++a) {
+        const atx::f64 v = streams.positions(a, t)[i];
+        if (!std::isnan(v)) {
+          sum += v;
+          ++n;
+        }
+      }
+      out[t * M + i] =
+          (n == 0) ? std::numeric_limits<atx::f64>::quiet_NaN() : sum / static_cast<atx::f64>(n);
+    }
+  }
+  return atx::core::Ok(std::move(out));
+}
+
 } // namespace
 
 atx::core::Result<std::vector<fund::SleeveConfig>>
@@ -322,6 +399,206 @@ assign_sleeves(const library::Library &lib, const MetaBookStageConfig &cfg) {
   // -Wreturn-type (no real code path reaches this).
   return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                         "assign_sleeves: unknown SleeveAssignment");
+}
+
+atx::core::Result<fund::MetaBookResult>
+build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in) {
+  if (cfg.panel.empty() || cfg.combo.empty()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: --panel and --combo required");
+  }
+  ATX_TRY(auto research, read_panel(cfg.panel));
+  ATX_TRY(auto combo, read_panel(cfg.combo));
+  if (combo.num_fields() < 1) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: combo panel must have at least one field");
+  }
+  if (combo.instruments() != research.instruments()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: combo and research instrument counts differ");
+  }
+  if (combo.dates() != research.dates()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: combo and research date counts differ");
+  }
+
+  const atx::usize M = research.instruments();
+  const atx::usize D = research.dates();
+
+  // Schedule: EXACTLY stage_optimize.cpp's construction (same --rebalance validation, same
+  // step derivation) -- load-bearing for the R7 stage-boundary pin (SingleSleeve, no library).
+  if (!cfg.rebalance.empty() && cfg.rebalance != "daily" && cfg.rebalance != "weekly") {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: --rebalance must be 'daily' or 'weekly' (got: " +
+                              cfg.rebalance + ")");
+  }
+  const atx::usize step = (cfg.rebalance == "daily") ? 1U : 5U; // default weekly
+  risk::RebalanceSchedule sched;
+  for (atx::usize d = 0; d < D; d += step) {
+    sched.periods.push_back(d);
+  }
+
+  // Resolve gross/name_cap/risk_aversion EXACTLY as stage_optimize.cpp resolves
+  // gross_val/name_cap_val/risk_aversion, so a SingleSleeve sleeve's mh matches the
+  // deployed MVO's OptimizerConfig field-for-field (the R7 pin).
+  MetaBookStageConfig scfg = scfg_in;
+  scfg.gross = cfg.gross > 0.0 ? cfg.gross : 1.0;
+  scfg.name_cap = cfg.name_cap > 0.0 ? cfg.name_cap : 1.0;
+  scfg.risk_aversion = cfg.set_flags.count("risk-aversion") ? cfg.risk_aversion : 1.0;
+
+  // Resolve sleeves + their per-period signal. SingleSleeve with NO --library-dir (the true
+  // inert default) needs no library: one sleeve, sourced directly from the combo panel's
+  // "alpha" field (the SAME slice stage_optimize.cpp's alpha_at reads). Any other invocation
+  // requires a library (multi-sleeve assignment must partition an admitted pool; SingleSleeve
+  // WITH an explicit library re-evaluates that whole pool locally instead of reading combo --
+  // see the header doc for why that variant does not claim byte-identity to stage_optimize).
+  const bool single_no_lib =
+      (scfg.assignment == SleeveAssignment::SingleSleeve) && cfg.library_dir.empty();
+
+  std::vector<fund::SleeveConfig> sleeve_cfgs;
+  std::optional<library::Library> lib_holder;
+  if (single_no_lib) {
+    fund::SleeveConfig sc;
+    sc.mh = sleeve_mh_config(scfg);
+    sc.tag = fund::SleeveTag{"US", "all"};
+    sc.capacity_gross = 1e9;
+    sleeve_cfgs.push_back(std::move(sc)); // members left empty: sourced from combo, not re-evaluated
+  } else {
+    if (cfg.library_dir.empty()) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "metabook: --library-dir required for this SleeveAssignment");
+    }
+    lib_holder.emplace(library::Library::open(cfg.library_dir, combine::GateConfig{}, {}));
+    ATX_TRY(auto assigned, assign_sleeves(*lib_holder, scfg));
+    sleeve_cfgs = std::move(assigned);
+  }
+  const atx::usize n_sleeves = sleeve_cfgs.size();
+
+  // Per-sleeve per-period signal, flat D*M ascending date then instrument (the RAW DATE
+  // index convention every fund/risk callback in this codebase uses -- confirmed at
+  // src/fund/meta_book.cpp: `returns_at(sched.periods[p])`, `model_at(sched.periods[n-1])`).
+  ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
+  std::vector<std::vector<atx::f64>> sleeve_signal(n_sleeves);
+  if (single_no_lib) {
+    sleeve_signal[0].assign(D * M, 0.0);
+    for (atx::usize t = 0; t < D; ++t) {
+      const auto cs = combo.field_cross_section(alpha_fid, t);
+      std::copy(cs.begin(), cs.end(),
+               sleeve_signal[0].begin() + static_cast<std::ptrdiff_t>(t * M));
+    }
+  } else {
+    for (atx::usize j = 0; j < n_sleeves; ++j) {
+      ATX_TRY(auto sig, evaluate_sleeve_signal(*lib_holder, sleeve_cfgs[j].members, research));
+      sleeve_signal[j] = std::move(sig);
+    }
+  }
+
+  // model_at: diag_risk.hpp's diagonal_risk_model(research) -- the SAME model
+  // stage_optimize's Diagonal path uses (stage_optimize.cpp:202/243-245). No Factor-model
+  // variant is wired here (S1/S5 seam; recorded in the ledger).
+  ATX_TRY(auto model, diagonal_risk_model(research));
+
+  // returns_at: realized per-instrument simple return from research's "close" field, the
+  // SAME TRI-return convention diag_risk.hpp computes. Drives Ω + the report, NOT the books
+  // (meta_book.hpp:35-40). Period 0 has no prior close -> stays the structural zero.
+  ATX_TRY(const auto close_fid, research.field_id("close"));
+  const auto close = research.field_all(close_fid);
+  std::vector<std::vector<atx::f64>> returns(D, std::vector<atx::f64>(M, 0.0));
+  for (atx::usize t = 1; t < D; ++t) {
+    for (atx::usize i = 0; i < M; ++i) {
+      const atx::f64 p0 = close[(t - 1) * M + i];
+      const atx::f64 p1 = close[t * M + i];
+      returns[t][i] =
+          (!std::isnan(p0) && !std::isnan(p1) && p0 != 0.0) ? (p1 / p0 - 1.0) : 0.0;
+    }
+  }
+
+  atx::engine::book::CostInputs cost;
+  cost.kappa = cfg.turnover_penalty;
+  cost.round_trip_cost_bps = cfg.set_flags.count("cost-bps") ? cfg.cost_bps : 0.0;
+
+  // The R7 boundary override: whenever the resolved partition is EXACTLY one sleeve (whether
+  // by an explicit SingleSleeve assignment or a multi-sleeve mode's documented degenerate
+  // fallback -- assign_sleeves' own "a one-sleeve partition IS the inert path" contract),
+  // fractional_kelly=1.0 yields c==[1.0] every period (target_vol=0 and max_gross=4 are
+  // already the engine defaults and never bind at S=1) -- the boundary config
+  // fund_meta_book_integration_test.cpp's R7 test pins. Combined with Sleeve::run's pure
+  // delegation and one-sleeve netting (net==gross, no crossing, structural), the fund book
+  // then equals that ONE sleeve's own MultiHorizonResult.books byte-for-byte.
+  fund::MetaBookConfig meta = scfg.meta;
+  if (n_sleeves == 1) {
+    meta.alloc.fractional_kelly = 1.0;
+  }
+
+  fund::MetaBook mb;
+  mb.cfg = meta;
+  mb.sleeves.reserve(n_sleeves);
+  for (auto &sc : sleeve_cfgs) {
+    mb.sleeves.push_back(fund::Sleeve{std::move(sc)});
+  }
+
+  const auto sources_at = [&](atx::usize sleeve, atx::usize period) -> risk::HorizonSources {
+    risk::HorizonSources hs;
+    const std::span<const atx::f64> row{sleeve_signal[sleeve].data() + period * M, M};
+    hs.pairs.emplace_back(row, risk::SignalHorizon::identity());
+    return hs;
+  };
+  const auto model_at = [&](atx::usize) -> const risk::FactorModel & { return model; };
+  const auto returns_at = [&](atx::usize period) -> std::span<const atx::f64> {
+    return std::span<const atx::f64>{returns[period]};
+  };
+
+  return mb.run(sched, sources_at, model_at, returns_at, cost);
+}
+
+atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBookStageConfig &scfg) {
+  if (cfg.panel.empty() || cfg.combo.empty() || cfg.books_out.empty()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: --panel, --combo, and --out required");
+  }
+  ATX_TRY(auto result, build_metabook_result(cfg, scfg));
+
+  const atx::usize S = result.fund_books.size();
+  const atx::usize M = (S > 0) ? result.fund_books[0].size() : 0U;
+  std::vector<atx::f64> flat;
+  flat.reserve(S * M);
+  for (const auto &book : result.fund_books) {
+    flat.insert(flat.end(), book.begin(), book.end());
+  }
+
+  std::vector<std::uint8_t> uni(S * M, 1U);
+  ATX_TRY(auto cpanel, alpha::Panel::create(S, M, {"weight"}, {flat}, uni));
+  ATX_TRY(auto digest, write_panel(cpanel, cfg.books_out));
+
+  // Sidecar .meta.txt: a drop-in for stage_report per the sprint's run_all seam note, plus
+  // the S2-3 netting telemetry per period (surfaced here too for offline inspection; the
+  // authoritative telemetry surface is StageResult::kvs below).
+  {
+    const std::string sidecar = cfg.books_out + ".meta.txt";
+    std::ofstream mf{sidecar};
+    if (!mf.is_open()) {
+      return atx::core::Err(atx::core::ErrorCode::IoError,
+                            "metabook: cannot write sidecar: " + sidecar);
+    }
+    mf << "periods=" << S << '\n';
+    mf << "instruments=" << M << '\n';
+    mf << "sleeves=" << result.sleeve_results.size() << '\n';
+    for (atx::usize s = 0; s < S; ++s) {
+      mf << "s=" << s << " turnover_net=" << result.report.turnover_net[s]
+         << " turnover_gross=" << result.report.turnover_gross[s]
+         << " crossing_benefit_bps=" << result.report.crossing_benefit_bps[s] << '\n';
+    }
+  }
+
+  StageResult sr;
+  sr.digest = digest;
+  sr.kvs = {
+      {"periods", std::to_string(S)},
+      {"instruments", std::to_string(M)},
+      {"sleeves", std::to_string(result.sleeve_results.size())},
+      {"books", to_hex16(digest)},
+  };
+  return atx::core::Ok(std::move(sr));
 }
 
 } // namespace atx::impl

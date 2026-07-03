@@ -116,4 +116,46 @@ struct MetaBookStageConfig {
 [[nodiscard]] atx::core::Result<std::vector<fund::SleeveConfig>>
 assign_sleeves(const library::Library &lib, const MetaBookStageConfig &cfg);
 
+// ===========================================================================
+//  build_metabook_result / run_metabook — the S2-2 producer (two-pass drive).
+// ===========================================================================
+//  Consumes the research panel (`cfg.panel`) + combo panel (`cfg.combo`) + (for
+//  multi-sleeve assignment) the admitted-alpha library (`cfg.library_dir`), assembles
+//  the four MetaBook::run callbacks, and calls the FROZEN fund::MetaBook driver.
+//
+//  SingleSleeve with NO `cfg.library_dir` (RunConfig's own default -- the TRUE inert
+//  path) needs no library at all: sources_at(0, ·) reads the combo panel's "alpha"
+//  field cross-section directly, ONE identity-horizon source -- the SAME slice
+//  stage_optimize.cpp's alpha_at reads. Combined with the fractional_kelly=1 override
+//  applied whenever the resolved partition is exactly one sleeve (the c==[1] boundary
+//  config, R7), this path's fund book is byte-identical to today's deployed book (see
+//  the ledger for the composed proof + the empirical stage-boundary test).
+//
+//  Any other invocation (multi-sleeve assignment, OR SingleSleeve WITH an explicit
+//  `--library-dir`) requires `cfg.library_dir`: each resolved sleeve's own member
+//  subset is re-evaluated from its DSL (compile_batch -> Engine::evaluate ->
+//  extract_streams, restricted to the sleeve's members) and locally combined via an
+//  UNWEIGHTED cross-sectional mean of the members' position streams -- a documented,
+//  distinct "mega-alpha per sleeve" seam, NOT the calibrated stage_combine::AlphaCombiner
+//  fit (Sprint-3-owned; not re-derived). This path does NOT claim byte-identity to
+//  stage_optimize's book (a different, undocumented-elsewhere alpha input) -- it is the
+//  on-path RED->GREEN multi-sleeve case (measured netting/diversification win).
+//
+//  model_at defaults to diag_risk.hpp's diagonal_risk_model (the SAME model
+//  stage_optimize's Diagonal path uses) -- no Factor-model variant is wired by S2
+//  (recorded as an S1/S5 seam in the ledger). returns_at is the realized per-instrument
+//  simple return from research's "close" field (diag_risk.hpp's TRI-return convention).
+//
+//  build_metabook_result is the direct-call engine-facing entry point (what tests
+//  call); run_metabook wraps it into the StageResult shape (digest + kvs) and writes
+//  the netted fund book to `cfg.books_out` via the SAME write_panel + .meta.txt
+//  sidecar shape stage_optimize.cpp uses (a drop-in for stage_report). Netting /
+//  attribution / effective-bets telemetry (S2-3/S2-4) surface into StageResult::kvs
+//  ONLY -- never folded into the digest.
+[[nodiscard]] atx::core::Result<fund::MetaBookResult>
+build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg);
+
+[[nodiscard]] atx::core::Result<StageResult>
+run_metabook(const RunConfig &cfg, const MetaBookStageConfig &scfg);
+
 } // namespace atx::impl

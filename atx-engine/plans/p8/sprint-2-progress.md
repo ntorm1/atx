@@ -107,10 +107,56 @@ correctly — `run_metabook` overwrites those three fields from `RunConfig` befo
 ## Unit checklist
 - [x] S2-0  ledger + `MetaBookStageConfig` + FROZEN-signature confirmation
 - [x] S2-1  `assign_sleeves` (SleeveSpec seam)
-- [ ] S2-2  `stage_metabook` producer (two-pass drive) + R7 pin + PIT causality guard
+- [x] S2-2  `stage_metabook` producer (two-pass drive) + R7 pin + PIT causality guard
 - [ ] S2-3  netting turnover telemetry
 - [ ] S2-4  Euler attribution + effective-bets telemetry
 - [ ] S2-5  allocator-method config + close determinism battery
+
+## S2-2 RESULT — the R7 pin holds EXACTLY, both claims, no divergence
+
+The pre-flight composed-proof (above) predicted stage-level byte-identity IF the plumbing
+matched exactly. Built it (SingleSleeve reads the combo panel's "alpha" field directly as ONE
+identity-horizon source when `cfg.library_dir` is empty; schedule/gross/name_cap/risk_aversion/
+cost resolved with the IDENTICAL formulas `stage_optimize.cpp` uses; `model_at` =
+`diagonal_risk_model(research)`, the same call `stage_optimize`'s Diagonal path makes) and it
+holds EXACTLY on the first real attempt:
+- Engine level (`fund_metabook_wire_test.cpp`,
+  `FundMetabookWire.SingleSleeveByteIdenticalToMultiPeriodOptimizer`): one-sleeve `MetaBook`
+  (c==[1] boundary config) == a standalone `risk::MultiPeriodOptimizer::run` over the SAME raw
+  alpha/model/cost, `std::bit_cast<u64>` element-wise, EVERY period, EVERY name. PASS.
+- Stage level (`atx-impl/tests/metabook_test.cpp`,
+  `MetabookStageBoundary.SingleSleeveByteIdenticalToStageOptimizeBook`): `run_metabook`
+  (`MetaBookStageConfig{}` default, no `--library-dir`) on a 6-instrument/20-date fixture ==
+  `run_optimize`'s book, byte-for-byte, AND the two `StageResult::digest` values are EQUAL.
+  PASS. Both claim (a) (== standalone MultiHorizonOptimizer, already proven by the frozen
+  fund/ test) and claim (b) (== stage_optimize's actual deployed book) hold WITHOUT
+  weakening, WITHOUT a documented divergence — the risk flagged in the dispatch brief did not
+  materialize once the stage-level plumbing was assembled identically.
+
+Design choice that made this possible (see "Design decision" above): SingleSleeve-with-no-
+library reads the PRE-EXISTING combo panel directly rather than re-evaluating per-member
+alphas and re-blending them locally. Had S2 instead fed the whole admitted set as N raw
+per-member `HorizonSource` pairs into one sleeve (an UNWEIGHTED gp_aim average), claim (b)
+would NOT have held (stage_combine's calibrated blend weights differ from an unweighted mean)
+— this was the actual failure mode the risk was warning about, sidestepped by construction,
+not discovered-and-patched after the fact.
+
+## S2-2 PIT causality guard (mandatory, verified GREEN)
+
+`FundMetabookWire.PitCausalityGuard`: (1) truncating a 6-period schedule after t=3 leaves
+every fund book AND every capital-weight vector at p<=3 byte-identical to the untruncated run
+(6/6 periods, 2 sleeves each). (2) perturbing sleeve returns at p>=4 by +5.0 (a large,
+unmistakable perturbation) leaves c[0..3] COMPLETELY unchanged — no look-ahead leak. Both
+assertions pass.
+
+## S2-2 measured netting + diversification (preview; full S2-3/S2-4 telemetry lands next)
+
+`FundMetabookWire.TwoSleeveComposesWithMeasuredCrossingWin` (momentum vs anti-correlated
+reversal sleeve, 6-period schedule): `turnover_net < turnover_gross` strictly on at least one
+period (the crossing bites), `turnover_net <= turnover_gross` holds on EVERY period (R3
+triangle inequality), and the running totals show `net_total < gross_total` overall.
+`AllocatorMethodDispatch`: InverseVol / EqualRiskContribution / HierarchicalRiskParity each
+route correctly and `Sigma|c| <= max_gross` holds for all three.
 
 ## S2-1 deviation (recorded — ownership-driven, not a design change)
 

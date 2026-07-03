@@ -4,8 +4,12 @@
 //
 // S2-0: config-surface + FROZEN-signature confirmation only (no stage behavior yet).
 // S2-1: assign_sleeves -- the admitted-alpha -> N-sleeve partition seam.
+// S2-2: build_metabook_result / run_metabook -- the two-pass drive producer + the R7
+// stage-boundary pin (SingleSleeve, no --library-dir, == stage_optimize's book).
 
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <numbers>
 #include <span>
@@ -17,11 +21,13 @@
 
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/combine/gate.hpp"
 #include "atx/engine/combine/metrics.hpp"
 #include "atx/engine/fund/meta_allocator.hpp"
 #include "atx/engine/library/library.hpp"
 
+#include "serialize_panel.hpp"
 #include "stage_metabook.hpp"
 
 namespace atxtest_metabook_test {
@@ -143,6 +149,59 @@ void admit_pnl(lib::Library &facade, std::span<const atx::f64> pnl, const std::s
   return false;
 }
 
+// ===========================================================================
+//  S2-2 fixture helpers — small research/combo panels (mirrors optimize_test.cpp's
+//  make_research_panel / make_combo_panel exactly, so the R7 stage-boundary comparison is
+//  apples-to-apples with run_optimize's own fixture shape).
+// ===========================================================================
+
+namespace alpha = atx::engine::alpha;
+
+[[nodiscard]] atx::core::Result<std::string> make_research_panel_mb(const std::filesystem::path &out,
+                                                                    atx::usize M, atx::usize D) {
+  std::vector<atx::f64> close_data;
+  close_data.reserve(D * M);
+  for (atx::usize t = 0; t < D; ++t) {
+    for (atx::usize i = 0; i < M; ++i) {
+      const atx::f64 drift = 0.0002 * (1.0 + static_cast<atx::f64>(i) * 0.1);
+      close_data.push_back(100.0 * std::exp(drift * static_cast<atx::f64>(t)));
+    }
+  }
+  std::vector<std::uint8_t> uni(D * M, 1U);
+  ATX_TRY(auto panel, alpha::Panel::create(D, M, {"close"}, {close_data}, uni));
+  ATX_TRY(auto digest, atx::impl::write_panel(panel, out.string()));
+  (void)digest;
+  return atx::core::Ok(out.string());
+}
+
+[[nodiscard]] atx::core::Result<std::string> make_combo_panel_mb(const std::filesystem::path &out,
+                                                                 atx::usize M, atx::usize D) {
+  std::vector<atx::f64> alpha_data;
+  alpha_data.reserve(D * M);
+  for (atx::usize t = 0; t < D; ++t) {
+    const atx::f64 wobble = 0.01 * static_cast<atx::f64>(t % 5);
+    for (atx::usize i = 0; i < M; ++i) {
+      alpha_data.push_back((static_cast<atx::f64>(i) - static_cast<atx::f64>(M) / 2.0) + wobble);
+    }
+  }
+  std::vector<std::uint8_t> uni(D * M, 1U);
+  ATX_TRY(auto panel, alpha::Panel::create(D, M, {"alpha"}, {alpha_data}, uni));
+  ATX_TRY(auto digest, atx::impl::write_panel(panel, out.string()));
+  (void)digest;
+  return atx::core::Ok(out.string());
+}
+
+[[nodiscard]] std::string tmp_dir(const std::string &tag) {
+  const ::testing::TestInfo *info = ::testing::UnitTest::GetInstance()->current_test_info();
+  const std::string base = std::string(info != nullptr ? info->test_suite_name() : "S2") + "_" +
+                           std::string(info != nullptr ? info->name() : "t") + "_" + tag;
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "atx_s2_metabook_stage" / base;
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  return dir.string();
+}
+
 } // namespace
 
 // SleeveAssignment::SingleSleeve MUST be 0 -- the inert R7-pin default (also enforced by a
@@ -251,6 +310,68 @@ TEST(MetabookAssignSleeves, EmptyLibraryIsErr) {
   const MetaBookStageConfig cfg;
   auto got = atx::impl::assign_sleeves(facade, cfg);
   ASSERT_FALSE(got.has_value());
+}
+
+// ===========================================================================
+//  S2-2 — the R7 STAGE-BOUNDARY pin: run_metabook(SingleSleeve, no --library-dir) produces
+//  the byte-identical book run_optimize produces on the SAME research+combo panel. This is
+//  the empirical half of the R7 claim (b) the ledger's composed-proof argues for; the engine
+//  half (MetaBook one-sleeve == MultiPeriodOptimizer) is pinned in
+//  atx-engine/tests/fund/fund_metabook_wire_test.cpp's SingleSleeveByteIdenticalTo
+//  MultiPeriodOptimizer.
+// ===========================================================================
+TEST(MetabookStageBoundary, SingleSleeveByteIdenticalToStageOptimizeBook) {
+  const std::string dir = tmp_dir("boundary");
+  constexpr atx::usize kMi = 6;
+  constexpr atx::usize kDi = 20;
+
+  const auto research_r = make_research_panel_mb(std::filesystem::path(dir) / "research.bin", kMi, kDi);
+  ASSERT_TRUE(research_r.has_value()) << (research_r ? "" : research_r.error().message());
+  const auto combo_r = make_combo_panel_mb(std::filesystem::path(dir) / "combo.bin", kMi, kDi);
+  ASSERT_TRUE(combo_r.has_value()) << (combo_r ? "" : combo_r.error().message());
+
+  atx::impl::RunConfig cfg;
+  cfg.panel = *research_r;
+  cfg.combo = *combo_r;
+  cfg.gross = 1.0;
+  cfg.name_cap = 1.0;
+  cfg.rebalance = "weekly";
+  cfg.books_out = (std::filesystem::path(dir) / "optimize_books.bin").string();
+
+  auto opt_result = atx::impl::run_optimize(cfg);
+  ASSERT_TRUE(opt_result.has_value()) << (opt_result ? "" : opt_result.error().message());
+  auto opt_books = atx::impl::read_panel(cfg.books_out);
+  ASSERT_TRUE(opt_books.has_value()) << (opt_books ? "" : opt_books.error().message());
+
+  const MetaBookStageConfig scfg; // default: SingleSleeve, cfg.library_dir left empty
+  cfg.books_out = (std::filesystem::path(dir) / "metabook_books.bin").string();
+  auto mb_result = atx::impl::run_metabook(cfg, scfg);
+  ASSERT_TRUE(mb_result.has_value()) << (mb_result ? "" : mb_result.error().message());
+  auto mb_books = atx::impl::read_panel(cfg.books_out);
+  ASSERT_TRUE(mb_books.has_value()) << (mb_books ? "" : mb_books.error().message());
+
+  ASSERT_EQ(opt_books->dates(), mb_books->dates());
+  ASSERT_EQ(opt_books->instruments(), mb_books->instruments());
+  const auto opt_wid = opt_books->field_id("weight");
+  const auto mb_wid = mb_books->field_id("weight");
+  ASSERT_TRUE(opt_wid.has_value());
+  ASSERT_TRUE(mb_wid.has_value());
+
+  bool some_nonzero = false;
+  for (atx::usize s = 0; s < opt_books->dates(); ++s) {
+    const auto ows = opt_books->field_cross_section(*opt_wid, s);
+    const auto mws = mb_books->field_cross_section(*mb_wid, s);
+    ASSERT_EQ(ows.size(), mws.size());
+    for (atx::usize i = 0; i < ows.size(); ++i) {
+      if (ows[i] != 0.0) {
+        some_nonzero = true;
+      }
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(ows[i]), std::bit_cast<std::uint64_t>(mws[i]))
+          << "R7 stage-boundary BYTE DIVERGENCE period " << s << " name " << i;
+    }
+  }
+  EXPECT_TRUE(some_nonzero) << "R7 vacuous: the pinned books are all zero";
+  EXPECT_EQ(opt_result->digest, mb_result->digest) << "R7 stage-boundary digest diverged";
 }
 
 } // namespace atxtest_metabook_test
