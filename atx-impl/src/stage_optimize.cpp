@@ -28,14 +28,23 @@ namespace alpha = atx::engine::alpha;
 namespace data  = atx::engine::data;
 namespace risk  = atx::engine::risk;
 
-// S1-2: the public no-flag entry point (declared in stages.hpp, the S5-CLI-hub
-// surface) forwards to the RiskModelConfig-parameterized overload below with
-// an inert default (kind==Diagonal) — same code, same input every existing
-// caller already gets, so this path is byte-identical to pre-S1 BY
-// CONSTRUCTION, not by parallel-maintained duplicate logic.
+// S1-2 / S5-0: the public no-flag entry point (declared in stages.hpp, the
+// S5-CLI-hub surface) builds a RiskModelConfig from the S5-0 CLI fields
+// (--risk-model / --dead-alpha-factors / --group-neutralize) and forwards to
+// the parameterized overload below. At the field defaults
+// (risk_model=="diagonal", dead_alpha_factors=false, group_neutralize=false)
+// the constructed RiskModelConfig is IDENTICAL to RiskModelConfig{} — same
+// code, same input every existing caller already gets — so the no-flag path
+// is byte-identical to pre-S1/pre-S5 BY CONSTRUCTION, not by parallel-
+// maintained duplicate logic.
 atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
 {
-    return run_optimize(cfg, risk::RiskModelConfig{});
+    risk::RiskModelConfig risk_cfg{};
+    risk_cfg.kind = (cfg.risk_model == "factor") ? risk::RiskModelKind::Factor
+                                                  : risk::RiskModelKind::Diagonal;
+    risk_cfg.dead_alpha_factors = cfg.dead_alpha_factors;
+    risk_cfg.group_neutralize   = cfg.group_neutralize;
+    return run_optimize(cfg, risk_cfg);
 }
 
 atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::RiskModelConfig& risk_cfg)

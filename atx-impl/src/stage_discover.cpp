@@ -565,6 +565,15 @@ atx::core::Result<StageResult> run_discover_gated(
     gc.rt_cost_bps      = cfg.cost_bps_admit;
     gc.min_holding_days = cfg.min_holding_days;
     if (cfg.cost_max_turnover > 0.0) gc.max_turnover = cfg.cost_max_turnover;
+    // S5-0: --require-split-stable -> gc.require_split_stable (the AlphaGate S1-3
+    // screen). NOTE: gc.min_dsr / gc.max_pbo are DELIBERATELY left at their
+    // GateConfig{} inert defaults (0.0 / 1.0) here — cfg.min_dsr/cfg.max_pbo already
+    // gate admission FACTORY-side (fcfg.min_dsr/fcfg.max_pbo below), and the S5-1
+    // library::verdict_for screens are proven (LibraryVerdict tests) against a
+    // directly-constructed GateConfig, not this CLI-driven one; wiring cfg.min_dsr
+    // into gc.min_dsr here would be redundant with the factory-side pre-check (see
+    // the S5 ledger) and is out of the S5-0 wiring sketch's literal scope.
+    gc.require_split_stable = cfg.require_split_stable;
     const combine::AlphaGate gate{gc};
 
     // Factory config: search budget + grammar + capacity (target_aum) + the S1

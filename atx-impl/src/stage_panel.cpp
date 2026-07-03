@@ -21,25 +21,27 @@ namespace atx::impl {
 namespace {
 
 // Acquire the history panel for run_panel: a full rebuild on the default path, or
-// the opt-in incremental append when built with ATX_PANEL_INCREMENTAL (OFF in all
-// default/CI builds, so the default path is byte-identical to pre-S6).
+// the opt-in incremental append when --incremental-panel is set (false in every
+// default/CI invocation, so the default path is byte-identical to pre-S5).
 //
-// Incremental path (guarded): when an existing panel.bin is present at
+// Incremental path (S5-0; runtime opt-in, formerly gated behind the
+// ATX_PANEL_INCREMENTAL compile macro — unreachable from any registered build):
+// when cfg.incremental_panel is set AND an existing panel.bin is present at
 // cfg.panel_out AND a new-seg directory is supplied (cfg.out is repurposed as that
-// directory until Sprint 7 declares a dedicated config field), load the existing
-// panel and append only the strictly-later dates via append_history_panel — whose
-// output is byte-identical to a full rebuild over the combined range (proven by the
-// S6-1 byte-identity test). On any miss (no existing panel.bin / no new-seg dir) it
-// falls back to the full rebuild, never a silent partial panel.
+// directory — the panel subcommand does not otherwise use cfg.out, which is the
+// load subcommand's own output field), load the existing panel and append only the
+// strictly-later dates via append_history_panel — whose output is byte-identical to
+// a full rebuild over the combined range (proven by the S6-1 byte-identity test). On
+// any miss (flag off / no existing panel.bin / no new-seg dir) it falls back to the
+// full rebuild, never a silent partial panel.
 [[nodiscard]] atx::core::Result<atx::engine::data::HistoryPanel>
-acquire_history_panel([[maybe_unused]] const RunConfig& cfg,
+acquire_history_panel(const RunConfig& cfg,
                       const atx::engine::data::HistoryDataConfig& hc) {
-#if defined(ATX_PANEL_INCREMENTAL)
-    if (!cfg.panel_out.empty() && !cfg.out.empty() && std::filesystem::exists(cfg.panel_out)) {
+    if (cfg.incremental_panel && !cfg.panel_out.empty() && !cfg.out.empty() &&
+        std::filesystem::exists(cfg.panel_out)) {
         ATX_TRY(auto existing, read_panel(cfg.panel_out));
         return atx::engine::data::append_history_panel(existing, cfg.out, hc);
     }
-#endif // ATX_PANEL_INCREMENTAL
     return atx::engine::data::build_history_panel(hc);
 }
 
@@ -80,11 +82,8 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
     u.require_sector = cfg.require_sector;  // single-stock (GICS) screen
     // adv_window=21 and min_mktcap_usd=0 remain at their defaults.
 
-    // 4. Build history panel.
-    // S7-WIRES: cfg.incremental_panel: bool — Sprint 7 declares the opt-in flag (and
-    // a new-seg directory field) in config.hpp and threads them through the CLI. Until
-    // then the incremental path is compiled out (ATX_PANEL_INCREMENTAL is undefined in
-    // every default/CI build), so this stage is byte-identical to pre-S6.
+    // 4. Build history panel. S5-0: cfg.incremental_panel opts into the append path
+    // in acquire_history_panel above (default false ⇒ full rebuild, byte-identical).
     atx::engine::data::HistoryDataConfig hc{cfg.segs, w, u};
     hc.compact_to_universe = cfg.compact_universe; // drop never-in-universe columns
     ATX_TRY(auto hp, acquire_history_panel(cfg, hc));
