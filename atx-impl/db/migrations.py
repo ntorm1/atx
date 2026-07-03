@@ -6598,6 +6598,60 @@ def _formula_registry_catalog_view(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _xbrl_validation_dimensional_evidence(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S7 S7-0: per-row dimensional-context evidence on xbrl_validation_results.
+
+    The v1 calc-linkbase validator joined a parent fact to its children on
+    ``context_ref`` as an opaque string and never consulted
+    ``xbrl_filing_contexts`` / ``xbrl_filing_dimensions``. When an issuer reports
+    a parent total in the default (no-dimension) context but breaks a child out
+    across explicit members of a ``*Axis``, the default-context parent has an
+    INCOMPLETE comparable child set and the row false-failed -- the entire
+    mechanism behind the 1,364 standing calculation-linkbase failures.
+
+    S7-0 makes ``refresh_xbrl_validation_results`` dimension-aware (it groups a
+    parent only against children sharing the SAME period/unit/dimensional
+    signature, never summing across signatures) and attaches, per validation
+    row, the evidence used to triage the outcome. This migration is additive-only:
+    it adds the ``dimensional_evidence_json`` column and catalogs it. The column
+    holds a JSON object with the parent's dimensional signature, the comparability
+    ``verdict`` (``complete_footing_ok`` / ``genuine_footing_error`` /
+    ``resolved_dimensional_artifact`` / ``genuine_missing_child``), the expected
+    vs matched child counts, and any linkbase children absent from the parent's
+    signature together with whether each was found under a DIFFERENT dimensional
+    context in the same filing (the positive proof required to resolve an
+    artifact rather than absorb a real error).
+
+    S7-3 (migration 0089) adds the distinct, coarser ``resolution_status`` column;
+    this migration deliberately does NOT pre-empt it. ``ADD COLUMN IF NOT EXISTS``
+    keeps it idempotent on databases where schema.py already created the column.
+    """
+
+    conn.execute(
+        "ALTER TABLE xbrl_validation_results "
+        "ADD COLUMN IF NOT EXISTS dimensional_evidence_json VARCHAR"
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            (
+                'xbrl_validation_results',
+                'dimensional_evidence_json',
+                'json',
+                'Per-row dimensional-context triage evidence for calculation_linkbase results (PF-S7 S7-0). JSON object: parent_signature (the parent fact''s ordered axis->member signature, "DEFAULT" when dimensionless), verdict (complete_footing_ok / genuine_footing_error / resolved_dimensional_artifact / genuine_missing_child), total_edge_count, matched_child_count, and missing_children (linkbase child concepts absent from the parent''s dimensional signature, each flagged present_in_other_context = reported under a different dimensional context in the same period/unit). A parent is only resolved as a dimensional artifact when every missing child is positively found under another context; otherwise it stays failed.',
+                true,
+                NULL,
+                'derived from xbrl_filing_contexts + xbrl_filing_dimensions during validation',
+                now()
+            )
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -6969,6 +7023,11 @@ MIGRATIONS: list[Migration] = [
         version=83,
         name="repair_identifier_spine_self_overlaps_s5",
         up=_repair_identifier_spine_self_overlaps_s5,
+    ),
+    Migration(
+        version=88,
+        name="xbrl_validation_dimensional_evidence",
+        up=_xbrl_validation_dimensional_evidence,
     ),
 ]
 

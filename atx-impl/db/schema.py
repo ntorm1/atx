@@ -1013,6 +1013,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             child_count INTEGER NOT NULL,
             child_facts_json VARCHAR NOT NULL,
             message VARCHAR,
+            dimensional_evidence_json VARCHAR,
             source_url VARCHAR NOT NULL,
             run_id VARCHAR,
             source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),

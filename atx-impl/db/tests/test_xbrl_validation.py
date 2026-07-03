@@ -111,13 +111,8 @@ def _insert_context(store) -> None:
     )
 
 
-def _insert_calc_relationships(store) -> None:
-    rows = [
-        ("rel-cash", "Assets", "CashAndCashEquivalentsAtCarryingValue", 1.0, 1.0),
-        ("rel-ar", "Assets", "AccountsReceivableNetCurrent", 1.0, 2.0),
-    ]
-    for relationship_id, parent, child, weight, order_value in rows:
-        store.con.execute(
+def _insert_calc_edge(store, relationship_id, parent, child, weight, order_value) -> None:
+    store.con.execute(
             """
             INSERT INTO xbrl_taxonomy_relationships (
                 relationship_id,
@@ -192,7 +187,165 @@ def _insert_calc_relationships(store) -> None:
         )
 
 
-def _insert_fact(store, fact_id: str, ordinal: int, concept: str, value: float) -> None:
+def _insert_calc_relationships(store) -> None:
+    for relationship_id, parent, child, weight, order_value in (
+        ("rel-cash", "Assets", "CashAndCashEquivalentsAtCarryingValue", 1.0, 1.0),
+        ("rel-ar", "Assets", "AccountsReceivableNetCurrent", 1.0, 2.0),
+    ):
+        _insert_calc_edge(store, relationship_id, parent, child, weight, order_value)
+
+
+def _insert_dimensional_context(
+    store,
+    *,
+    filing_context_id: str,
+    context_id: str,
+    axis_qname: str,
+    member_qname: str,
+) -> None:
+    """Insert an instant context carrying one explicit segment dimension
+    (a single ``*Axis`` -> member) plus its ``xbrl_filing_dimensions`` row.
+
+    Same period (2024-03-31 instant) as the default ``_insert_context`` context
+    so the only thing that differs is the dimensional signature.
+    """
+
+    store.con.execute(
+        """
+        INSERT INTO xbrl_filing_contexts (
+            filing_context_id,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            report_date,
+            acceptance_datetime,
+            primary_document,
+            context_id,
+            entity_identifier_scheme,
+            entity_identifier,
+            period_type,
+            period_start,
+            period_end,
+            instant_date,
+            has_segment,
+            has_scenario,
+            explicit_member_count,
+            typed_member_count,
+            dimension_count,
+            context_hash,
+            source_url,
+            run_id,
+            source_loaded_at
+        )
+        VALUES (
+            ?,
+            'SEC-CIK-0000000002',
+            '0000000002',
+            '0000000002-24-000010',
+            '10-Q',
+            DATE '2024-05-03',
+            DATE '2024-03-31',
+            TIMESTAMP '2024-05-03 18:00:00',
+            'form10q.htm',
+            ?,
+            'http://www.sec.gov/CIK',
+            '0000000002',
+            'instant',
+            NULL,
+            NULL,
+            DATE '2024-03-31',
+            true,
+            false,
+            1,
+            0,
+            1,
+            ?,
+            'https://www.sec.gov/Archives/edgar/data/2/000000000224000010/form10q.htm',
+            'test',
+            TIMESTAMP '2024-05-03 18:05:00'
+        )
+        """,
+        [filing_context_id, context_id, "ctxhash-" + context_id],
+    )
+    store.con.execute(
+        """
+        INSERT INTO xbrl_filing_dimensions (
+            filing_dimension_id,
+            filing_context_id,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            context_id,
+            context_element,
+            member_kind,
+            dimension_qname,
+            dimension_taxonomy,
+            dimension_concept,
+            member_qname,
+            member_taxonomy,
+            member_concept,
+            typed_member_value,
+            member_text,
+            ordinal,
+            source_url,
+            run_id,
+            source_loaded_at
+        )
+        VALUES (
+            ?,
+            ?,
+            'SEC-CIK-0000000002',
+            '0000000002',
+            '0000000002-24-000010',
+            '10-Q',
+            DATE '2024-05-03',
+            TIMESTAMP '2024-05-03 18:00:00',
+            'form10q.htm',
+            ?,
+            'segment',
+            'explicit',
+            ?,
+            'us-gaap',
+            ?,
+            ?,
+            'us-gaap',
+            ?,
+            NULL,
+            NULL,
+            0,
+            'https://www.sec.gov/Archives/edgar/data/2/000000000224000010/form10q.htm',
+            'test',
+            TIMESTAMP '2024-05-03 18:05:00'
+        )
+        """,
+        [
+            "dim-" + filing_context_id,
+            filing_context_id,
+            context_id,
+            axis_qname,
+            axis_qname.split(":")[-1],
+            member_qname,
+            member_qname.split(":")[-1],
+        ],
+    )
+
+
+def _insert_fact(
+    store,
+    fact_id: str,
+    ordinal: int,
+    concept: str,
+    value: float,
+    *,
+    filing_context_id: str = "ctx-1",
+    context_ref: str = "c1",
+) -> None:
     store.con.execute(
         """
         INSERT INTO xbrl_filing_facts (
@@ -234,7 +387,7 @@ def _insert_fact(store, fact_id: str, ordinal: int, concept: str, value: float) 
         )
         VALUES (
             ?,
-            'ctx-1',
+            ?,
             'SEC-CIK-0000000002',
             '0000000002',
             '0000000002-24-000010',
@@ -248,7 +401,7 @@ def _insert_fact(store, fact_id: str, ordinal: int, concept: str, value: float) 
             'us-gaap:' || ?,
             'us-gaap',
             ?,
-            'c1',
+            ?,
             'usd',
             '["iso4217:USD"]',
             '[]',
@@ -270,7 +423,18 @@ def _insert_fact(store, fact_id: str, ordinal: int, concept: str, value: float) 
             TIMESTAMP '2024-05-03 18:05:00'
         )
         """,
-        [fact_id, ordinal, concept, concept, value, value, value, ordinal],
+        [
+            fact_id,
+            filing_context_id,
+            ordinal,
+            concept,
+            concept,
+            context_ref,
+            value,
+            value,
+            value,
+            ordinal,
+        ],
     )
 
 
@@ -281,6 +445,77 @@ def _seed_validation_fixture(store, *, parent_value: float) -> None:
     _insert_fact(store, "fact-assets", 1, "Assets", parent_value)
     _insert_fact(store, "fact-cash", 2, "CashAndCashEquivalentsAtCarryingValue", 400.0)
     _insert_fact(store, "fact-ar", 3, "AccountsReceivableNetCurrent", 600.0)
+
+
+def _seed_dimensional_fixture(store) -> None:
+    """One filing carrying BOTH a dimensional artifact and a genuine footing error.
+
+    Artifact group (parent ``Assets`` in the default/no-dimension context):
+      Assets(default) = 1000, its calc children are Cash + PropertyPlantAndEquipmentNet.
+      Cash is reported in the default context (400) but PPE is reported ONLY broken out
+      across ``PropertyPlantAndEquipmentByTypeAxis`` members (Land 250 + Building 350).
+      So the default-context parent has an INCOMPLETE comparable child set: PPE is
+      absent from the default signature yet present under other signatures. The
+      dimension-aware check must recognise this as a dimensional artifact and resolve
+      it (``passed``) rather than reporting a $600 footing failure. Note 400 + 250 + 350
+      = 1000 foots at the consolidated level, but the consolidated PPE total is never
+      reported in the default context.
+
+    Genuine group (parent ``Liabilities`` in the default context):
+      Liabilities(default) = 900, children AccountsPayable(300) + LongTermDebt(500) are
+      BOTH present in the same default context. 300 + 500 = 800 != 900. A complete,
+      fully comparable child set that still does not foot -> genuine footing error that
+      the dimension-aware check must STILL catch (``failed``).
+    """
+
+    _insert_sec_submission(store)
+    _insert_context(store)  # default (no-dimension) context ctx-1 / c1
+    _insert_dimensional_context(
+        store,
+        filing_context_id="ctx-ppe-land",
+        context_id="c-ppe-land",
+        axis_qname="us-gaap:PropertyPlantAndEquipmentByTypeAxis",
+        member_qname="us-gaap:LandMember",
+    )
+    _insert_dimensional_context(
+        store,
+        filing_context_id="ctx-ppe-bldg",
+        context_id="c-ppe-bldg",
+        axis_qname="us-gaap:PropertyPlantAndEquipmentByTypeAxis",
+        member_qname="us-gaap:BuildingMember",
+    )
+
+    _insert_calc_edge(store, "rel-assets-cash", "Assets", "CashAndCashEquivalentsAtCarryingValue", 1.0, 1.0)
+    _insert_calc_edge(store, "rel-assets-ppe", "Assets", "PropertyPlantAndEquipmentNet", 1.0, 2.0)
+    _insert_calc_edge(store, "rel-liab-ap", "Liabilities", "AccountsPayableCurrent", 1.0, 1.0)
+    _insert_calc_edge(store, "rel-liab-ltd", "Liabilities", "LongTermDebtNoncurrent", 1.0, 2.0)
+
+    # Artifact: parent + one child in default; the other child only dimensional.
+    _insert_fact(store, "fact-assets", 1, "Assets", 1000.0)
+    _insert_fact(store, "fact-cash", 2, "CashAndCashEquivalentsAtCarryingValue", 400.0)
+    _insert_fact(
+        store,
+        "fact-ppe-land",
+        3,
+        "PropertyPlantAndEquipmentNet",
+        250.0,
+        filing_context_id="ctx-ppe-land",
+        context_ref="c-ppe-land",
+    )
+    _insert_fact(
+        store,
+        "fact-ppe-bldg",
+        4,
+        "PropertyPlantAndEquipmentNet",
+        350.0,
+        filing_context_id="ctx-ppe-bldg",
+        context_ref="c-ppe-bldg",
+    )
+
+    # Genuine footing error: complete comparable child set in the default context.
+    _insert_fact(store, "fact-liab", 5, "Liabilities", 900.0)
+    _insert_fact(store, "fact-ap", 6, "AccountsPayableCurrent", 300.0)
+    _insert_fact(store, "fact-ltd", 7, "LongTermDebtNoncurrent", 500.0)
 
 
 def test_migration_0009_xbrl_validation_table_exists(tmp_store):
@@ -343,3 +578,68 @@ def test_xbrl_validation_quality_surfaces_failures(tmp_store):
     assert failures
     assert failures[0].status == "failed"
     assert failures[0].observed_value == 1.0
+
+
+def test_xbrl_dimensional_artifact_resolves_and_genuine_error_persists(tmp_store):
+    """Dimension-aware grouping resolves the artifact but keeps the real error.
+
+    The OLD (opaque-context) check fails BOTH parents: Assets sums to only 400
+    (Cash) against a 1000 total, and Liabilities sums to 800 against 900. The NEW
+    dimension-aware check must positively explain the Assets shortfall as a
+    dimensional artifact (PPE reported only under a *Axis) and flip it to passed,
+    while STILL catching the Liabilities footing error.
+    """
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _seed_dimensional_fixture(tmp_store)
+    refresh_xbrl_validation_results(tmp_store)
+
+    status_by_parent = dict(
+        tmp_store.con.execute(
+            """
+            SELECT parent_concept, status
+            FROM xbrl_validation_results
+            WHERE rule_family = 'calculation_linkbase'
+            """
+        ).fetchall()
+    )
+
+    # Dimensional artifact: parent total in default context, PPE child only broken
+    # out across the *ByTypeAxis members -> incomplete comparable set -> resolved.
+    assert status_by_parent.get("Assets") == "passed"
+    # Genuine footing error: complete child set in the same default context that
+    # simply does not foot (300 + 500 = 800 != 900) -> still caught.
+    assert status_by_parent.get("Liabilities") == "failed"
+
+
+def test_xbrl_dimensional_evidence_json_records_verdict(tmp_store):
+    """Every triaged failure carries per-row dimensional evidence + comparability verdict."""
+
+    import json
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _seed_dimensional_fixture(tmp_store)
+    refresh_xbrl_validation_results(tmp_store)
+
+    evidence_by_parent = dict(
+        tmp_store.con.execute(
+            """
+            SELECT parent_concept, dimensional_evidence_json
+            FROM xbrl_validation_results
+            WHERE rule_family = 'calculation_linkbase'
+            """
+        ).fetchall()
+    )
+
+    assets = json.loads(evidence_by_parent["Assets"])
+    assert assets["verdict"] == "resolved_dimensional_artifact"
+    assert assets["parent_signature"] == "DEFAULT"
+    missing_concepts = {m["concept"]: m for m in assets["missing_children"]}
+    assert "PropertyPlantAndEquipmentNet" in missing_concepts
+    assert missing_concepts["PropertyPlantAndEquipmentNet"]["present_in_other_context"] is True
+
+    liabilities = json.loads(evidence_by_parent["Liabilities"])
+    assert liabilities["verdict"] == "genuine_footing_error"
+    assert liabilities["missing_children"] == []
