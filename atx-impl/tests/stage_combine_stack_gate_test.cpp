@@ -142,7 +142,7 @@ TEST(StageCombineStackGate, AdmitsOnInteractionFixture) {
 
   const auto r = atx::impl::fit_stack_combo(pool, std::span<const f64>{close}, pool.n_instruments(),
                                             /*fit_begin=*/0U, /*fit_end=*/pool.n_periods(), cfg,
-                                            /*regime=*/nullptr);
+                                            /*with_regime=*/false);
   ASSERT_TRUE(r.has_value()) << r.error().message();
 
   EXPECT_TRUE(r->verdict.admitted)
@@ -175,7 +175,7 @@ TEST(StageCombineStackGate, RejectsOnLinearFixtureAndFallsBackByteIdenticalToShr
 
   const auto r = atx::impl::fit_stack_combo(pool, std::span<const f64>{close}, pool.n_instruments(),
                                             /*fit_begin=*/0U, /*fit_end=*/pool.n_periods(), cfg,
-                                            /*regime=*/nullptr);
+                                            /*with_regime=*/false);
   ASSERT_TRUE(r.has_value()) << r.error().message();
 
   EXPECT_FALSE(r->verdict.admitted)
@@ -221,9 +221,9 @@ TEST(StageCombineStackGate, StackCpcvConfigIsThreadedFromCombinerConfig) {
   high_embargo.stack_cpcv_embargo = 0.9; // purges nearly the whole train set
 
   const auto r_low = atx::impl::fit_stack_combo(pool, std::span<const f64>{close}, pool.n_instruments(),
-                                                0U, pool.n_periods(), low_embargo, nullptr);
+                                                0U, pool.n_periods(), low_embargo, /*with_regime=*/false);
   const auto r_high = atx::impl::fit_stack_combo(pool, std::span<const f64>{close}, pool.n_instruments(),
-                                                 0U, pool.n_periods(), high_embargo, nullptr);
+                                                 0U, pool.n_periods(), high_embargo, /*with_regime=*/false);
   ASSERT_TRUE(r_low.has_value()) << r_low.error().message();
   ASSERT_TRUE(r_high.has_value()) << r_high.error().message();
 

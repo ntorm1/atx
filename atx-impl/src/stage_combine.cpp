@@ -1,5 +1,6 @@
 #include "stages.hpp"
 #include "stage_combine.hpp"
+#include "stage_regime.hpp" // atx::impl::fit_regime_hmm (S3-3)
 
 #include <algorithm>   // std::sort
 #include <array>       // std::array (single-horizon span for meta_features_from_pool)
@@ -568,36 +569,62 @@ weights_from_stack_projection(const combine::AlphaStore& windowed,
 }
 
 // ---------------------------------------------------------------------------
-// fit_stack_combo (S3-1 producer / S3-2 the honest-gate) — declared in
-// stage_combine.hpp so S3-2's decisive admit/reject fixtures can drive it
-// directly against a HAND-BUILT pool (bypassing the DSL/VM entirely, the same
-// technique ensemble_test.cpp uses for fit_stack itself), independent of
-// whether a real alpha DSL expression happens to produce interaction/linear
-// structure in its positions.
+// fit_stack_combo (S3-1 producer / S3-2 the honest-gate / S3-3 the regime
+// overlay) — declared in stage_combine.hpp so the decisive admit/reject/
+// single-state fixtures can drive it directly against a HAND-BUILT pool
+// (bypassing the DSL/VM entirely, the same technique ensemble_test.cpp uses
+// for fit_stack itself), independent of whether a real alpha DSL expression
+// happens to produce interaction/linear structure in its positions.
 //
 // Builds the meta over [fit_begin, fit_end) (windowed_pool + the PIT-causal
-// forward-return label), fits the SAME purged-CPCV-scored linear-vs-nonlinear
-// gate fit_stack always computes (eval/cpcv.hpp — López de Prado AFML Ch. 7,
-// purge+embargo cited at fit_stack's own call site in ensemble.cpp), and
-// decides admit vs fallback:
+// forward-return label), then when `with_regime` is true (RegimeStack) fits a
+// PIT HMM (via stage_regime.hpp's fit_regime_hmm) on
+// learn::ensemble_detail::regime_observable(meta) — NOT a panel-close or
+// macro-series proxy (see stage_regime.hpp's header note): fit_stack's
+// regime-conditional arm RE-DERIVES that exact observable internally from
+// `meta`, so the Hmm passed to it must have been fit on the SAME series or
+// the composition is statistically meaningless. Then decides admit vs
+// fallback — the SAME purged-CPCV-scored linear-vs-nonlinear gate fit_stack
+// always computes (eval/cpcv.hpp — López de Prado AFML Ch. 7, purge+embargo
+// cited at fit_stack's own call site in ensemble.cpp):
 //
-//   S3-2 the honest-gate (MANDATORY, not advisory). Phase-D measured
-//   oos_pbo=0.79 (textbook overfit) and a GBT is the highest-variance learner
-//   in the codebase — an UNGATED stacking step would make the overfit WORSE,
-//   not better. ADMIT the stack as the shipped combiner ONLY if
-//   verdict.admitted (the nonlinear base beat linear OOS-after-deflation on
-//   the SAME folds/metric); ELSE fall back to the LINEAR AlphaCombiner fit
-//   with a FRESH DEFAULT CombinerConfig (method==ShrinkageMv) — byte-identical
-//   to today's `--method shrinkage-mv` book, never combiner_cfg (whose
-//   .method is Stack/RegimeStack and would hit AlphaCombiner::fit's S3-0 Err
-//   arm). `stack_rejects_on_linear_fixture` (stage_combine_stack_gate_test.cpp)
-//   proves this fallback fires and is byte-identical to the plain
-//   ShrinkageMv fit; `stack_admits_on_interaction_fixture` proves the reverse.
+//   S3-2 the honest-gate (MANDATORY, not advisory, applies identically to
+//   BOTH Stack and RegimeStack). Phase-D measured oos_pbo=0.79 (textbook
+//   overfit) and a GBT is the highest-variance learner in the codebase — an
+//   UNGATED stacking step would make the overfit WORSE, not better. ADMIT the
+//   stack as the shipped combiner ONLY if verdict.admitted (the nonlinear
+//   base beat linear OOS-after-deflation on the SAME folds/metric); ELSE fall
+//   back to a LINEAR combiner with a FRESH DEFAULT CombinerConfig
+//   (method==ShrinkageMv) — never combiner_cfg (whose .method is
+//   Stack/RegimeStack and would hit AlphaCombiner::fit's S3-0 Err arm):
+//     * Stack (with_regime==false): the flat AlphaCombiner{}.fit(pool,
+//       fit_begin, fit_end) — byte-identical to today's `--method
+//       shrinkage-mv` book (stack_rejects_on_linear_fixture proves this).
+//     * RegimeStack (with_regime==true): the REGIME-CONDITIONAL linear blend
+//       — combine::fit_regime_combiner(pool, labels, hmm.n_states, fit_begin,
+//       fit_end, {}) partitioned by the SAME Hmm's PIT-argmax regime per
+//       date (learn::ensemble_detail::date_regimes), blended at the
+//       fit-boundary date by learn::regime_posterior_at(hmm, obs, wlen-1)
+//       via RegimeCombiner::blend — so a pool whose optimal combination
+//       DIFFERS by regime (mirrors BAB flipping sign) tracks the
+//       regime-appropriate linear combo even when the nonlinear arm itself
+//       does not admit.
+//
+//   n_regimes==1 (HmmCfg.n_states==1, combiner_cfg.regime_n_states) makes
+//   BOTH arms above reduce to their Stack (with_regime==false) counterpart
+//   EXACTLY: fit_regime_nonlinear's single-partition union equals
+//   fit_flat_nonlinear (identical verdict); deploy_nonlinear never reads
+//   regime at all (identical admit-path weights); and
+//   fit_regime_combiner/blend with one all-zero-labeled regime is regime_
+//   combiner.hpp's OWN documented byte-identical reduction to
+//   AlphaCombiner{}.fit (identical fallback-path weights) — this composition
+//   is the RegimeStack single-state fallback guard
+//   (regime_stack_single_state_byte_identical), not a special case coded here.
 // ---------------------------------------------------------------------------
 atx::core::Result<StackFitResult>
 fit_stack_combo(const combine::AlphaStore& pool, std::span<const atx::f64> close_all, atx::usize ni,
                 atx::usize fit_begin, atx::usize fit_end, const combine::CombinerConfig& combiner_cfg,
-                const learn::Hmm* regime) {
+                bool with_regime) {
     ATX_TRY(auto windowed, windowed_pool(pool, fit_begin, fit_end));
     const std::vector<atx::f64> fwd = build_forward_returns_window(
         close_all, ni, fit_begin, fit_end, combiner_cfg.stack_horizon);
@@ -612,16 +639,60 @@ fit_stack_combo(const combine::AlphaStore& pool, std::span<const atx::f64> close
     scfg.cpcv.n_test_groups = combiner_cfg.stack_cpcv_test_groups;
     scfg.cpcv.embargo = combiner_cfg.stack_cpcv_embargo;
 
+    // S3-3: fit the PIT regime HMM on the meta's OWN regime marker (the
+    // frozen fit_stack's binding observable choice — see the doc block
+    // above). `obs`/`hmm` stay default/unused when with_regime is false.
+    atx::core::linalg::MatX obs;
+    learn::Hmm hmm;
+    const learn::Hmm* regime_ptr = nullptr;
+    if (with_regime) {
+        obs = learn::ensemble_detail::regime_observable(meta);
+        learn::HmmCfg hcfg;
+        hcfg.n_states = combiner_cfg.regime_n_states;
+        hcfg.master_seed = combiner_cfg.stack_master_seed;
+        hmm = fit_regime_hmm(obs, hcfg);
+        regime_ptr = &hmm;
+    }
+
     StackFitResult out;
-    out.verdict = learn::fit_stack(meta, regime, scfg);
+    out.verdict = learn::fit_stack(meta, regime_ptr, scfg);
     if (out.verdict.admitted) {
+        // deploy_nonlinear (inside stack_to_candidate) is ALWAYS the flat
+        // refit regardless of regime_ptr (ensemble.hpp's own documented
+        // contract) -- the admit-path weights are identical for Stack and a
+        // (still-admitted) RegimeStack.
         const learn::StackCandidate sc = learn::stack_to_candidate(out.verdict, meta, scfg);
         ATX_TRY(auto w, weights_from_stack_projection(
                             windowed, std::span<const atx::f64>{sc.pos_flat}, combiner_cfg.ridge_lambda));
         out.combo.weights = std::move(w);
-    } else {
+    } else if (!with_regime) {
         combine::AlphaCombiner linear_fallback; // default-constructed cfg: method == ShrinkageMv
         ATX_TRY(out.combo, linear_fallback.fit(pool, fit_begin, fit_end));
+    } else {
+        // RegimeStack fallback: the regime-conditional LINEAR blend. Labels
+        // are WINDOW-LOCAL dates (length == windowed.n_periods()); place them
+        // into a GLOBAL-length vector at offset fit_begin (fit_regime_combiner
+        // requires length == pool.n_periods() but only reads [fit_begin,
+        // fit_end) — positions outside the window are never consulted).
+        const std::vector<atx::u32> window_labels = learn::ensemble_detail::date_regimes(hmm, obs);
+        std::vector<atx::u32> global_labels(pool.n_periods(), 0U);
+        for (atx::usize t = 0; t < window_labels.size(); ++t) {
+            global_labels[fit_begin + t] = window_labels[t];
+        }
+        const combine::CombinerConfig lin_cfg{}; // default-constructed: method == ShrinkageMv
+        ATX_TRY(auto rc, combine::fit_regime_combiner(pool, std::span<const atx::u32>{global_labels},
+                                                       hmm.n_states, fit_begin, fit_end, lin_cfg));
+        // The ship-time (PIT) posterior: "as of" the last in-window date,
+        // mirroring every other method's [fit_begin, fit_end) convention.
+        const atx::usize wlen_minus_1 =
+            (window_labels.empty()) ? 0U : (window_labels.size() - 1U);
+        const atx::core::linalg::VecX posterior =
+            learn::regime_posterior_at(hmm, obs, wlen_minus_1);
+        std::vector<atx::f64> posterior_vec(static_cast<atx::usize>(posterior.size()));
+        for (Eigen::Index s = 0; s < posterior.size(); ++s) {
+            posterior_vec[static_cast<atx::usize>(s)] = posterior(s);
+        }
+        out.combo.weights = rc.blend(std::span<const atx::f64>{posterior_vec});
     }
     out.combo.fit_begin = fit_begin;
     out.combo.fit_end = fit_end;
@@ -831,10 +902,9 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
     if (cm == combine::CombineMethod::Stack || cm == combine::CombineMethod::RegimeStack) {
         ATX_TRY(const auto close_id, panel.field_id("close"));
         const std::span<const atx::f64> close_all = panel.field_all(close_id);
-        // S3-3 supplies the regime pointer for RegimeStack; nullptr here (flat
-        // stack) is correct for BOTH Stack and (until S3-3 lands) RegimeStack.
+        const bool with_regime = (cm == combine::CombineMethod::RegimeStack);
         ATX_TRY(auto sfr, fit_stack_combo(pool, close_all, ni, fit_begin, fit_end, combiner_cfg,
-                                          /*regime=*/nullptr));
+                                          with_regime));
         combo = std::move(sfr.combo);
         stack_verdict = sfr.verdict;
         stack_telemetry_on = true;

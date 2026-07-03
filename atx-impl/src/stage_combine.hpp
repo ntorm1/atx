@@ -33,7 +33,6 @@
 #include "atx/engine/combine/combiner.hpp"
 #include "atx/engine/combine/store.hpp"
 #include "atx/engine/learn/ensemble.hpp"
-#include "atx/engine/learn/hmm.hpp"
 #include "atx/engine/risk/factor_model.hpp"
 
 #include "config.hpp"
@@ -54,18 +53,25 @@ run_combine(const RunConfig& cfg, const atx::engine::combine::CombinerConfig& co
             const atx::engine::risk::RiskModelConfig& risk_cfg);
 
 // ===========================================================================
-//  fit_stack_combo (S3-1/S3-2) — the Stack/RegimeStack producer + honest-gate,
-//  exposed for direct-call testing against a HAND-BUILT pool (bypassing the
-//  DSL/VM entirely — the same technique ensemble_test.cpp uses for fit_stack
-//  itself), so the admit/reject fixtures can construct an exact
+//  fit_stack_combo (S3-1/S3-2/S3-3) — the Stack/RegimeStack producer + honest-
+//  gate, exposed for direct-call testing against a HAND-BUILT pool (bypassing
+//  the DSL/VM entirely — the same technique ensemble_test.cpp uses for
+//  fit_stack itself), so the admit/reject fixtures can construct an exact
 //  interaction/linear meta without depending on a real alpha DSL expression
 //  happening to produce that structure. See the definition in
 //  stage_combine.cpp for the full admit-vs-fallback contract.
 //
 //  `close_all` is the research panel's date-major close field (length
 //  n_dates*ni); `pool` must already share that same n_periods()/n_instruments()
-//  shape. `regime` is nullptr for Stack (S3-1/S3-2); S3-3 passes a fitted Hmm*
-//  for RegimeStack's per-regime nonlinear arm.
+//  shape. `with_regime` selects Stack (false — S3-1/S3-2, flat nonlinear arm +
+//  flat linear fallback) vs RegimeStack (true — S3-3: fits a PIT HMM on
+//  learn::ensemble_detail::regime_observable(meta) internally, so the
+//  nonlinear arm is regime-conditional and the fallback is the regime-
+//  conditional linear combine::fit_regime_combiner blend). n_regimes==1
+//  (HmmCfg.n_states==1, combiner_cfg.regime_n_states) makes the RegimeStack
+//  path byte-identical to the corresponding Stack call — the critical
+//  single-state fallback guard (regime_combiner.hpp's own documented
+//  contract, composed with fit_stack's identical flat-vs-1-regime reduction).
 // ===========================================================================
 struct StackFitResult {
   atx::engine::combine::Combination combo;
@@ -76,6 +82,6 @@ struct StackFitResult {
 fit_stack_combo(const atx::engine::combine::AlphaStore& pool, std::span<const atx::f64> close_all,
                 atx::usize ni, atx::usize fit_begin, atx::usize fit_end,
                 const atx::engine::combine::CombinerConfig& combiner_cfg,
-                const atx::engine::learn::Hmm* regime);
+                bool with_regime);
 
 } // namespace atx::impl

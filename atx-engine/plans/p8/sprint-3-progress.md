@@ -76,7 +76,7 @@ only the `method_from_string`/dispatch `if` chain S3-1 extends next).
 - [x] S3-SEAM  S4-handoff participation unit fix (stage_combine.cpp:315,360)
 - [x] S3-1  `fit_stack` wiring (forward-return label + meta + stack->weight bridge)
 - [x] S3-2  admit-vs-fallback gate (mandatory)
-- [ ] S3-3  PIT HMM regime posterior -> `RegimeStack`
+- [x] S3-3  PIT HMM regime posterior -> `RegimeStack`
 - [ ] S3-4  `cleaned_alpha_cov` consumption behind `kind==Factor`
 - [ ] S3-5  determinism battery (consolidated)
 
@@ -244,3 +244,83 @@ actually reaches `StackingCfg.cpcv` rather than being silently ignored): `embarg
 `embargo=0.9` on the SAME interaction fixture produce DIFFERENT `verdict_hash`es, proving the
 config genuinely threads through. Full regression sweep green (210 tests, incl. all three new
 `StageCombineStackGate` tests + the untouched S3-0/S3-1/S3-SEAM suites).
+
+S3-3: complete. Extended `fit_stack_combo`'s signature from a caller-supplied `const learn::Hmm*`
+to a `bool with_regime` flag (Stack=false, RegimeStack=true) — see the reasoning below for why a
+pre-fit external Hmm parameter was the WRONG shape for this unit.
+
+**Architecture finding (binding, deviates from the sprint doc's literal wiring pseudocode):**
+`learn::fit_stack`'s regime-conditional arm (`ensemble_detail::fit_regime_nonlinear`) does NOT take
+the caller's regime observable as an input — it RE-DERIVES `ensemble_detail::regime_observable(meta)`
+internally (the cross-sectional mean of the meta's LAST feature column) and calls
+`ensemble_detail::date_regimes(*regime, obs)` on THAT. This means the `Hmm*` passed to `fit_stack`
+MUST have been fit on that exact same series, or the composition is statistically meaningless
+(a fitted emission model applied to an unrelated series). The sprint doc's wiring pseudocode
+("fit baum_welch on the regime observable — the panel's cross-sectional regime marker series, or
+the loaded macro series when present") would have produced an INCOMPATIBLE Hmm for the nonlinear
+arm. Resolution: `fit_stack_combo` builds `meta` first (S3-1's own windowed_pool +
+build_forward_returns_window + meta_features_from_pool), THEN — only when `with_regime` — derives
+`obs = learn::ensemble_detail::regime_observable(meta)` and fits `stage_regime.hpp`'s
+`fit_regime_hmm(obs, hcfg)` (hcfg.n_states = `combiner_cfg.regime_n_states`, seed =
+`combiner_cfg.stack_master_seed`) on THAT. The SAME `(hmm, obs)` pair then serves: (a) the
+nonlinear arm (`fit_stack(meta, &hmm, scfg)` — self-consistent by construction), and (b) the
+NEW regime-conditional LINEAR fallback (below).
+
+**`stage_regime.cpp` extension (append-only, `run_regime` completely untouched):** added
+`atx::impl::fit_regime_hmm(obs, cfg) -> Hmm` (new `stage_regime.hpp`), a thin, directly-testable
+wrapper around `learn::baum_welch`, deliberately OBSERVABLE-AGNOSTIC — the header's doc block
+records exactly why RegimeStack's specific observable is not a free parameter (see above) and
+notes a future sprint could reuse this SAME function on a loaded-macro-series observable without
+touching this file again.
+
+**RegimeStack's fallback is regime-conditional linear, not flat linear (a new design decision, not
+in the spec's literal text):** on non-admit, Stack falls back to the flat `AlphaCombiner{}.fit`
+(S3-2, unchanged); RegimeStack instead falls back to `combine::fit_regime_combiner` +
+`RegimeCombiner::blend`: `learn::ensemble_detail::date_regimes(hmm, obs)` gives WINDOW-LOCAL PIT-
+argmax labels (length == the fit window), placed into a GLOBAL length-`pool.n_periods()` vector at
+offset `fit_begin` (positions outside the window are never read — `fit_regime_combiner`'s own
+contract); the SHIP-TIME blend posterior is `regime_posterior_at(hmm, obs, wlen-1)` — "as of" the
+last in-window date, mirroring every other method's `[fit_begin, fit_end)` convention. Rationale:
+"RegimeStack = stack + regime" per the sprint's architecture note — the regime overlay should
+condition BOTH arms, not just the ones that admit; a pool whose optimal combination differs by
+regime should track that even when the nonlinear base does not clear the S3-2 gate.
+
+**The single-state fallback guard composes from three ALREADY-frozen guarantees, not a special
+case coded in S3-3:** (1) `fit_stack`'s `fit_regime_nonlinear` with `n_states==1` puts every row in
+ONE partition, so its unioned `oos_score_series`/`trial_count` equal `fit_flat_nonlinear`'s exactly
+— same verdict. (2) `stack_to_candidate`'s `deploy_nonlinear` NEVER reads regime at all (documented
+in `ensemble.hpp`) — admit-path weights are bit-identical regardless. (3)
+`combine::fit_regime_combiner`+`RegimeCombiner::blend` with `n_regimes==1` is `regime_combiner.hpp`'s
+OWN documented byte-identical reduction to `AlphaCombiner{}.fit`. Composing (1)+(2)+(3): RegimeStack
+with `regime_n_states==1` is byte-identical to the corresponding Stack call on EITHER the admit or
+the fallback branch — verified empirically, not merely argued (see GREEN below).
+
+**RED->GREEN:** all four new atx-impl tests (`stage_combine_regime_test.cpp`) and the engine-level
+`regime_stack_wire_test.cpp` passed on the FIRST run (the theoretical composition argument above held
+exactly) — no numeric surprises this unit. `SingleStateByteIdenticalOnAdmitPath` /
+`...OnFallbackPath`: `fit_stack_combo(..., with_regime=false)` vs `(..., with_regime=true, regime_n_states=1)`
+on the SAME interaction / linear pool produce `EXPECT_EQ` bit-exact weights + identical verdict on
+BOTH the admit and the fallback path. `TwiceRunByteIdentical`: a genuine 2-state RegimeStack fit is
+twice-run bit-exact (verdict_hash + weights). `regime_posterior_pit_guard`: ALREADY COVERED by the
+pre-existing, unchanged `Hmm.Posterior_FitOnTrailing_Causal_TruncationInvariant`
+(`atx-engine/tests/learn/hmm_test.cpp:233`) and `RegimeCombine.PosteriorPath_TruncationInvariant`
+(`combine_regime_combiner_test.cpp:208`) — both frozen, both cited rather than duplicated.
+
+**`regime_combine_partitions_by_posterior` (new `atx-engine/tests/combine/regime_stack_wire_test.cpp`,
+the "regime win, measured" deliverable):** a genuinely NEW composition
+`combine_regime_combiner_test.cpp` did not cover — a REAL `baum_welch` fit (not hand-supplied
+labels) on a 2-regime marker series (120 dates, 20-period runs, TRAIN=[0,80) HMM-fit + fit_regime_combiner,
+TEST=[80,120) one run of each regime) scored PER-DATE via `regime_posterior_at` + `RegimeCombiner::blend`
+against a single flat `AlphaCombiner` fit on the identical data. **Measured:** OOS mean return
+regime=0.005 vs flat=0.0025 (exactly 2x — the flat 50/50-ish blend dilutes each regime's true
+winner by roughly half); OOS Sharpe regime=5.0 vs flat=2.499. The regime-conditional book beats the
+flat fit on both metrics, as required.
+
+Full regression sweep green (219 tests): `StageCombineRegime` (3, new), `RegimeStackWire` (1, new),
+plus every S3-0..S3-2/S3-SEAM suite unchanged.
+
+**Deferred (documented, out of critical path):** genuine `seq==parallel` proof for the regime
+partition / OOF walk (each fold/partition IS independent by construction — `fit_regime_nonlinear`
+loops regimes independently accumulating into one series; `cpcv_folds` folds are independent — but
+an actual DetPool-driven parallel-vs-sequential run was not built for this unit; folded into S3-5's
+determinism battery, which is the sprint's designated home for this proof.
