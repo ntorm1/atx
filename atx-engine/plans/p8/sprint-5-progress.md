@@ -99,9 +99,60 @@ GREEN. Full `atx-impl-tests` suite: 254/255 green (1 unrelated pre-existing engi
 `RobustPipelineE2E.SyntheticPanelAdmitsRobustSurvivors` in `atx-engine-risk-tests`, predates this
 session — no file S5 touched is in that test's dependency graph).
 
+## S5-1 — `GateDeflation` -> `library::verdict_for` (close the p7-S1 dead-code carry-forward)
+
+`library.hpp`: `AlphaCandidate` gets an APPENDED `combine::GateDeflation defl =
+combine::kInertDeflation;` field (8th member; every existing 6/7-arg brace-init call site keeps
+constructing it from the default member initializer — proven by
+`LibraryVerdict.InertDeflation_ByteIdentical`, which explicitly constructs the LEGACY 6-argument
+`AlphaCandidate` brace-init and asserts `.defl == kInertDeflation`). `AdmitKind` gets
+`RejectDsr(8)`, `RejectPbo(9)`, `RejectSplitUnstable(10)` APPENDED (pinned by
+`LibraryVerdict.AdmitKindEnumFrozenPrefix`, a `static_assert` over indices 0..10).
+`verdict_for` gets the three screens inserted AFTER the existing corr check (an intentional
+ordering choice — see the in-code comment — distinct from `AlphaGate::admit`'s cheap-first
+order, to avoid perturbing the pre-S5-1 lazy-corr evaluation position any goldens might pin).
+
+`factory/factory.hpp`: `FactoryReport::reject_histogram` grown from `std::array<usize,8>` to
+`std::array<usize,11>` (AdmitKind now has 11 values) — a latent OOB-write landmine closed
+preemptively; harmless today since no factory call site's `GateConfig` ever sets
+`min_dsr>0`/`max_pbo<1`/`require_split_stable` (see below), so `kind` never actually reaches
+8..10 in this sprint. Fixed two pre-existing test call sites that hardcoded the old size-8 array
+(`factory_oos_test.cpp:712`) and an exhaustive `switch(AdmitKind)` with no `default`
+(`library_integration_test.cpp`'s `map_kind`, extended with the new `RejectDsr/RejectPbo/
+RejectSplitUnstable -> GateVerdict::RejectDsr/RejectPbo/RejectSplitUnstable` arms).
+
+`factory/factory.cpp`: the three `library::AlphaCandidate` construction sites (`mine_into`
+serial ~line 419, `mine_into` MultiProcess-gathered ~line 690, the shared `admit_on_holdout`
+ladder ~line 1054) now populate `.defl.dsr` from the SAME per-candidate `dsr`/`hold_dsr` value
+that call site's own factory-side pre-check already uses (`dsr >= cfg.min_dsr` / `hold_dsr >=
+min_dsr`), and `.defl.split_stable` from the already-computed `split_ok`. `.defl.pbo` is left at
+the inert default (0.0) — PBO is a RUN-level statistic (`finalize_run_pbo`, computed AFTER the
+whole admit loop over the admitted SET), so no per-candidate value exists to populate; that is
+the DISTINCT blocking-PBO seam (S5-2), never conflated with this one.
+
+**Why this is safe today (and honestly, currently redundant) at the factory call sites:** none
+of the three call sites' `GateConfig` (`gc` in `stage_discover.cpp`) ever sets `min_dsr>0.0` or
+`max_pbo<1.0` — S5-0 deliberately left `gc.min_dsr`/`gc.max_pbo` at their `GateConfig{}` inert
+defaults (see the S5-0 section: wiring the CLI's `--min-dsr`/`--max-pbo` into `gc` would be
+redundant with the factory's OWN existing `dsr >= cfg.min_dsr` pre-check and was out of the
+S5-0 wiring sketch's literal scope). So today, `verdict_for`'s new S5-1 screens are inert on
+every REAL invocation via the factory/CLI pipeline; they are load-bearing for (a) any OTHER
+direct caller of `Library::admit`/`try_admit` that constructs a non-inert `GateConfig` without
+its own pre-check, and (b) the dedicated `LibraryVerdict.*` engine unit tests, which construct
+`GateConfig{.min_dsr=0.5}` etc. directly and prove the screens fire correctly in isolation.
+
+Accept evidence (new `atx-engine/tests/library/library_verdict_deflation_test.cpp`):
+`LibraryVerdict.LowDsrRejectedWhenMinDsrSet`, `HighDsrAdmittedWhenMinDsrSet`,
+`InertDeflation_ByteIdentical`, `PboRejectAndSplitReject`, `AdmitKindEnumFrozenPrefix`,
+`MatchesAlphaGateAdmitAcrossDeflationBranches` — all GREEN. Full `library` + `factory` engine
+test groups: 180/180 (2 pre-existing disabled tests, unrelated) + `cascade_trial_count_test.cpp`
+all green. Pinned goldens re-confirmed: `FactoryOos.*` (all), `NsgaSearch.ScalarRaw_
+ReproducesGoldenDigest`. `atx-impl`/`atx-impl-tests` rebuild clean (engine header change
+propagates through `library.hpp`/`factory.hpp` includes).
+
 ## Unit checklist
 - [x] S5-0 CLI flag surface
-- [ ] S5-1 library::verdict_for deflation screens
+- [x] S5-1 library::verdict_for deflation screens
 - [ ] S5-2 cumulative-N selection column + blocking PBO
 - [ ] S5-3 eval/robustness_battery
 - [ ] S5-4 stage graph + build-megaalpha-book.ps1

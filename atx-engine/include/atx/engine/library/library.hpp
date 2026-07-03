@@ -26,6 +26,13 @@
 //         worst_corr           >  cfg.max_pool_corr    => RejectCorrelated
 //      (replicated verbatim so admit_verdict_only matches AlphaGate::admit over
 //      the whole pool — the o(N) corr screen replaces the gate's O(N) scan).
+//   3b. (S5-1) the deflation / selection-bias screens, AFTER the corr screen (an
+//       intentional ordering choice — see verdict_for's own comment):
+//         c.defl.dsr          <  cfg.min_dsr           => RejectDsr    (inert at min_dsr=0)
+//         c.defl.pbo           >  cfg.max_pbo            => RejectPbo    (inert at max_pbo=1)
+//         !c.defl.split_stable (when require_split_stable) => RejectSplitUnstable
+//      closes the p7-S1 dead-code carry-forward: AlphaGate::admit already screens
+//      these (gate.hpp:201-215); this facade did not until S5-1.
 //   4. admit: stage -> corr_.add -> dedup_.insert -> journal_.transition
 //      (Candidate -> Admitted), ALL in AlphaId order (L7). A flush is triggered
 //      when the memtable reaches flush_batch_.
@@ -103,6 +110,15 @@ struct AlphaCandidate {
   Provenance prov;
   atx::usize as_of;                   // as-of period for the Candidate->Admitted transition
   ISignalSource *source = nullptr;    // may be null in tests
+  // S5-1: the per-candidate deflation / selection-bias scalars verdict_for screens
+  // against (DSR floor, PBO ceiling, split-half stability) — the SAME GateDeflation
+  // AlphaGate::admit already takes (combine/gate.hpp). APPENDED at struct END (never
+  // inserted mid-struct) so every existing 6/7-argument brace-init call site (which
+  // never mentions .defl) keeps constructing this field from its OWN default member
+  // initializer, kInertDeflation — byte-identical to pre-S5-1. The factory admit call
+  // sites (factory.cpp) populate this from the per-candidate dsr/split_stable they
+  // already compute; a caller that omits it never trips the S5-1 screens.
+  combine::GateDeflation defl = combine::kInertDeflation;
 };
 
 // ===========================================================================
@@ -122,6 +138,12 @@ enum class AdmitKind : atx::u8 {
   RejectCorrelated,
   RejectPriceScale,    // R2: holdout book is a trivial 1/price (price-scale) tilt
   RejectDsrSubwindow, // R3: holdout fails intra-holdout DSR sub-window check
+  // S5-1: deflation / selection-bias rejects on the LIVE library path (the p7-S1
+  // dead-code carry-forward). APPENDED at the END — the reject-histogram index is
+  // FROZEN (pinned by AdmitKindEnumFrozenPrefix); never insert mid-enum.
+  RejectDsr,           // holdout DSR below gate.cfg.min_dsr (mirrors GateVerdict::RejectDsr)
+  RejectPbo,           // run-level PBO above gate.cfg.max_pbo
+  RejectSplitUnstable, // holdout halves disagree in sign when require_split_stable
 };
 
 struct AdmitVerdict {
@@ -442,6 +464,22 @@ private:
     const atx::f64 worst_corr = worst_corr_to_pool(c.pnl);
     if (worst_corr > cfg.max_pool_corr) {
       return AdmitKind::RejectCorrelated;
+    }
+    // S5-1: deflation / selection-bias screens — the p7-S1 carry-forward. Mirrors
+    // AlphaGate::admit's operators EXACTLY (gate.hpp:201,207,215), guarded by the
+    // SAME inert conditions, so at min_dsr=0.0 / max_pbo=1.0 / require_split_stable
+    // =false every branch is skipped and the verdict is byte-identical to pre-S5-1.
+    // Placed AFTER the corr screen (not before, unlike AlphaGate::admit's cheap-first
+    // order) to preserve the lazy-corr evaluation position the pre-S5-1 histogram /
+    // digest goldens already pin — an intentional, documented ordering choice.
+    if (cfg.min_dsr > 0.0 && c.defl.dsr < cfg.min_dsr) {
+      return AdmitKind::RejectDsr;
+    }
+    if (cfg.max_pbo < 1.0 && c.defl.pbo > cfg.max_pbo) {
+      return AdmitKind::RejectPbo;
+    }
+    if (cfg.require_split_stable && !c.defl.split_stable) {
+      return AdmitKind::RejectSplitUnstable;
     }
     return AdmitKind::Accept;
   }

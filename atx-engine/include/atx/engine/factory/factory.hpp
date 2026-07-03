@@ -262,7 +262,16 @@ struct FactoryReport {
   atx::usize duplicates{0};                     // library-wide F6 dedup hits (AdmitKind::Duplicate)
   atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
   atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
-  std::array<atx::usize, 8> reject_histogram{}; // count per library::AdmitKind (0..7)
+  // S5-1: sized to 11 (library::AdmitKind now has 11 enumerators, 0..10, after the
+  // S5-1 RejectDsr/RejectPbo/RejectSplitUnstable append). Growing a fixed-size,
+  // zero-initialized std::array does not change any existing index's value or
+  // meaning — indices 0..7 are untouched, so every pre-S5-1 histogram comparison
+  // (EXPECT_EQ on the whole array) stays byte-identical; this only removes a
+  // latent out-of-bounds write for a FUTURE caller whose GateConfig activates the
+  // S5-1 screens (today's factory call sites keep gc.min_dsr/max_pbo at their
+  // GateConfig{} inert defaults, so kind never actually reaches 8..10 yet — see
+  // the S5 ledger).
+  std::array<atx::usize, 11> reject_histogram{}; // count per library::AdmitKind (0..10)
 
   // --- S2-1 cascade pre-gate telemetry (additive; REPORT-ONLY, never folded into digest).
   //  Number of candidates the train->holdout cascade pre-gate skipped (the expensive

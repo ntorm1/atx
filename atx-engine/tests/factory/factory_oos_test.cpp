@@ -709,7 +709,7 @@ TEST(FactoryOos, WalkForwardSeqParallel) {
   u64 want_digest  = 0;
   u64 want_version = 0;
   usize want_admitted = 0;
-  std::array<usize, 8> want_histogram{};
+  std::array<usize, 11> want_histogram{}; // S5-1: AdmitKind grew to 11 enumerators (0..10)
   {
     Fixture fxS{real_signal_panel()};
     lib::Library libS = lib::Library::open(tmpdir("wfw_seq"), default_gate_cfg(), {0xC0FFEEu});

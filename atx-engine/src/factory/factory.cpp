@@ -416,13 +416,28 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     library::AdmitKind kind =
         library::AdmitKind::RejectFitness; // non-accept sentinel for the histogram
     if (dsr >= cfg.min_dsr && split_ok) {
+      // S5-1: populate the candidate's GateDeflation from the SAME dsr/split_ok this
+      // loop already computed (the running-N-deflated dsr; split_ok folds in the
+      // W4a stability check). pbo is left at kInertDeflation's default (0.0, never
+      // fires) — PBO is a RUN-level statistic (finalize_run_pbo, computed AFTER the
+      // whole admit loop over the admitted SET), so no per-candidate value exists
+      // here; that seam is the DISTINCT blocking-PBO mechanism (S5-2), not this one.
+      // Because this call site already gates dsr >= cfg.min_dsr / split_ok above,
+      // library::verdict_for's mirrored S5-1 screens can only confirm what this
+      // factory-side pre-check already proved — a redundant, harmless double-check
+      // for THIS caller, but the wire that makes verdict_for's screens load-bearing
+      // for any OTHER caller of Library::admit that does not pre-check.
+      combine::GateDeflation defl;
+      defl.dsr = dsr;
+      defl.split_stable = split_ok;
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{cand_pnl},
                                          std::span<const atx::f64>{cand_pos},
                                          metrics,
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
+                                         /*source=*/nullptr,
+                                         defl};
       // Cross-run accumulation guard (Task 8 footgun): route the persistent-library
       // admit through the geometry-checked seam. On a matching/fresh geometry this
       // delegates to admit() VERBATIM (same verdict, same state mutation, digest-
@@ -687,13 +702,20 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
         split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{cand_pnl}, metrics);
     library::AdmitKind kind = library::AdmitKind::RejectFitness;
     if (dsr >= cfg.min_dsr && split_ok) {
+      // S5-1: same defl population as the serial mine_into (dsr/split_ok already
+      // computed above); pbo stays inert (run-level, not per-candidate — see the
+      // serial site's comment).
+      combine::GateDeflation defl;
+      defl.dsr = dsr;
+      defl.split_stable = split_ok;
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{cand_pnl},
                                          std::span<const atx::f64>{cand_pos},
                                          metrics,
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
+                                         /*source=*/nullptr,
+                                         defl};
       // Cross-run accumulation guard (Task 8): route the persistent-library admit
       // through the geometry-checked seam (try_admit delegates to admit() VERBATIM on
       // a matching/fresh geometry — digest-identical — and returns a CLEAN propagated
@@ -1051,10 +1073,17 @@ namespace {
   } else if (!subwindows_ok) {
     kind = library::AdmitKind::RejectDsrSubwindow;
   } else if (hold_dsr >= min_dsr && split_ok) {
+    // S5-1: populate defl from the holdout dsr/split_ok this ladder already gates
+    // on (same rationale as the non-OOS mine_into sites: pbo stays inert, a
+    // run-level statistic with no per-candidate analog here).
+    combine::GateDeflation defl;
+    defl.dsr = hold_dsr;
+    defl.split_stable = split_ok;
     const library::AlphaCandidate cand{canon_hash,           hold_pnl,        hold_pos_flat,
                                        hold_metrics,         std::move(prov),
                                        /*as_of=*/kAdmitAsOf,
-                                       /*source=*/nullptr};
+                                       /*source=*/nullptr,
+                                       defl};
     // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
     // reopened-library footgun names. try_admit delegates to admit() VERBATIM on a
     // matching/fresh geometry (digest-identical) and propagates a CLEAN error when

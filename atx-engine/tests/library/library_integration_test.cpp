@@ -269,7 +269,12 @@ void admit_fixture(lib::Library &facade, usize n) {
 
 // Map a facade AdmitKind to the combine GateVerdict (for the exit#3 differential).
 // Duplicate and the holdout-only rejects (RejectPriceScale / RejectDsrSubwindow)
-// have no GateVerdict analog; the probe set contains none of them.
+// have no GateVerdict analog; the probe set contains none of them. S5-1: the new
+// RejectDsr/RejectPbo/RejectSplitUnstable DO have a GateVerdict analog (mirrored
+// 1:1, per verdict_for's S5-1 screens) — mapped, though the probe set's candidates
+// all carry kInertDeflation (the pre-S5-1 construction), so these arms are
+// unreached here too (this file's differential predates S5-1's own dedicated
+// differential test, LibraryVerdict.MatchesAlphaGateAdmitAcrossDeflationBranches).
 [[nodiscard]] GateVerdict map_kind(AdmitKind k) {
   switch (k) {
   case AdmitKind::Accept:
@@ -282,6 +287,12 @@ void admit_fixture(lib::Library &facade, usize n) {
     return GateVerdict::RejectTurnover;
   case AdmitKind::RejectCorrelated:
     return GateVerdict::RejectCorrelated;
+  case AdmitKind::RejectDsr:
+    return GateVerdict::RejectDsr;
+  case AdmitKind::RejectPbo:
+    return GateVerdict::RejectPbo;
+  case AdmitKind::RejectSplitUnstable:
+    return GateVerdict::RejectSplitUnstable;
   case AdmitKind::Duplicate:
   case AdmitKind::RejectPriceScale:
   case AdmitKind::RejectDsrSubwindow:
