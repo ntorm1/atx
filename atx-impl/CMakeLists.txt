@@ -21,7 +21,9 @@ add_library(atx-impl-core STATIC
     src/stage_riskmodel.cpp
     src/stage_optimize.cpp
     src/stage_report.cpp
-    src/stage_run.cpp)
+    src/stage_run.cpp
+    # p8 S2: the fund:: mega-alpha meta-book seam (opt-in; never called from stage_run.cpp)
+    src/stage_metabook.cpp)
 target_include_directories(atx-impl-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(atx-impl-core PUBLIC cxx_std_20)
 target_link_libraries(atx-impl-core

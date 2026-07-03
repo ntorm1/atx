@@ -67,7 +67,7 @@ namespace library = atx::engine::library;
 // ===========================================================================
 enum class SleeveAssignment : atx::u8 {
   SingleSleeve = 0,  // inert => byte-identical to the single-blend optimize book (R7 pin)
-  ByLibraryGroup,    // one sleeve per library segment (segment_crc_per_alpha grouping)
+  ByLibraryGroup,    // one sleeve per library flush-batch (Library::kFlushBatch grouping)
   ByCorrCluster,     // data-driven single-linkage clusters of the alpha-PnL corr matrix
   BySignalFamily,    // one sleeve per canonical DSL-family label (outermost op token)
 };
@@ -93,5 +93,27 @@ struct MetaBookStageConfig {
   atx::f64 name_cap = 1.0;      // --name-cap       (per-name position cap)
   atx::f64 risk_aversion = 1.0; // --risk-aversion  (lambda; MultiHorizonConfig::risk_aversion)
 };
+
+// ===========================================================================
+//  assign_sleeves — the SleeveSpec seam (S2-1): admitted AlphaIds -> N SleeveConfigs.
+// ===========================================================================
+//  Deterministic sleeve assignment. `SingleSleeve` => the WHOLE admitted set as ONE
+//  sleeve, members ascending AlphaId (mirrors stage_combine.cpp's library-enumeration
+//  order, :401-405) — the R7 boundary pin. Every non-single mode partitions the
+//  admitted pool by a documented rule (library segment / correlation cluster / DSL
+//  family), capped at `cfg.max_sleeves`, and falls back to `SingleSleeve` when it
+//  cannot form >= 2 non-empty sleeves (documented `Ok`, not an error — a one-sleeve
+//  partition IS the inert path). AlphaId order is ascending within each sleeve. Every
+//  sleeve's `SleeveConfig::mh` is the SAME H=1/identity/minimal-constraint shape
+//  (derived from `cfg.gross`/`cfg.name_cap`/`cfg.risk_aversion`) so a SingleSleeve
+//  partition reduces byte-identically to the deployed book.
+//
+//  Pure function of (lib, cfg): order-fixed enumeration, stable cluster tie-break, no
+//  RNG, no clock. Same library + same cfg => same std::vector<SleeveConfig> (member
+//  lists, tags, capacities identical) — verified by a twice-run test.
+//
+//  Err(InvalidArgument): `lib.n_alphas() == 0` (nothing to partition).
+[[nodiscard]] atx::core::Result<std::vector<fund::SleeveConfig>>
+assign_sleeves(const library::Library &lib, const MetaBookStageConfig &cfg);
 
 } // namespace atx::impl

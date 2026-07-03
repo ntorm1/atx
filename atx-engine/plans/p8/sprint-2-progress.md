@@ -106,11 +106,24 @@ correctly — `run_metabook` overwrites those three fields from `RunConfig` befo
 
 ## Unit checklist
 - [x] S2-0  ledger + `MetaBookStageConfig` + FROZEN-signature confirmation
-- [ ] S2-1  `assign_sleeves` (SleeveSpec seam)
+- [x] S2-1  `assign_sleeves` (SleeveSpec seam)
 - [ ] S2-2  `stage_metabook` producer (two-pass drive) + R7 pin + PIT causality guard
 - [ ] S2-3  netting turnover telemetry
 - [ ] S2-4  Euler attribution + effective-bets telemetry
 - [ ] S2-5  allocator-method config + close determinism battery
+
+## S2-1 deviation (recorded — ownership-driven, not a design change)
+
+The spec's wiring note cites `library.hpp:461-475` (`Library::segment_crc_per_alpha`) for
+`ByLibraryGroup`'s per-alpha segment key. That accessor is **private** on `Library`, and
+`library/library.hpp` is not an S2-owned file (S2 owns `fund/*.hpp`, not `library/*.hpp`) —
+S2 cannot make it public. Substituted the public `Library::kFlushBatch` (1024) as the grouping
+key (`AlphaId.value / kFlushBatch`): constant within a sealed segment and steps at the same
+admit-count boundaries a real per-alpha segment CRC would, so it is a faithful (if coarser —
+it cannot distinguish two segments that happen to collide on CRC, an unmodeled edge case)
+public substitute. A library smaller than `kFlushBatch` (every test fixture in this sprint)
+collapses to one group either way, so `ByLibraryGroup`'s only currently-tested behavior (the
+degenerate SingleSleeve fallback) is identical under either key.
 
 ## S1 seam (recorded per the cross-sprint contract)
 
