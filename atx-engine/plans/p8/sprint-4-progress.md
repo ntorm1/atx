@@ -55,7 +55,7 @@ intentional gap (S4-4 section below).
 ## Unit checklist
 - [x] S4-0  Ledger + bug-verification table + `CostSelectionConfig`
 - [x] S4-1  Capacity participation unit fix (B1)
-- [ ] S4-2  Cap-clip-renorm re-center (B2)
+- [x] S4-2  Cap-clip-renorm re-center (B2)
 - [ ] S4-3a Limit fill clamp (B3)
 - [ ] S4-3b Absent-instrument volume zeroing (B4)
 - [ ] S4-3c Borrow accrual in the loop (B5)
@@ -139,6 +139,60 @@ at a nonzero AUM through the participation path (verified by full-suite run of
 `atx-engine-risk-tests`, `atx-engine-core-tests`, `atx-engine-factory-tests` post-fix — all green).
 If a downstream digest test is later found to have moved, it will be re-baselined here with this
 unit's commit SHA as authority.
+
+S4-2: complete [CORRECTNESS — B2]. Both S4-owned cap-clip-renorm sites now re-center after the
+clip settles:
+- `risk/optimizer.hpp` `PortfolioOptimizer::project`: after `cap_clip_renorm`, calls the new
+  `recenter_after_clip(v, s, cap)` (gated: only when `cap < gross_leverage`, i.e. the SAME guard
+  that gates `cap_clip_renorm` itself). `recenter_after_clip` alternates `demean_live` (a uniform
+  shift over ALL live cells, driving `Σw` to exactly 0 each pass) with a full `cap_clip_renorm`
+  re-settle (reclips any name the shift pushed back over the cap, restores `Σ|w|=L` via the
+  unbound-only deficit-renorm), for a new fixed `kRecenterIters=32` passes (no early exit, §3.2).
+  No-op when `dollar_neutral` is off (an explicit early return, in addition to `demean_live`'s own
+  internal no-op).
+- `loop/weight_policy.hpp` `to_target_weights`: after `truncate_renorm(dense_out)`, when
+  `dollar_neutral` is true, calls the new `recenter_after_truncate(dense_out)` — the identical
+  alternating-demean-then-resettle mechanism (`atx::core::stats::demean` + `truncate_renorm`,
+  `kRecenterIters=32`). `dense_out` holds only LIVE cells already (no per-universe live mask needed,
+  unlike the optimizer's `Scratch`).
+
+**Why 32 iterations (not `kCapIters`/`kTruncateIters`=8):** each recenter pass is a CONTRACTION
+(verified numerically — see below), converging geometrically at ~0.36x residual per pass on the
+by-construction adversarial fixture; 8 passes only reaches ~2.2e-5 residual, 16 reaches ~5.9e-9, 24
+reaches ~1.6e-12, 32 reaches float noise (~1e-16 — 3.6e-16 on the fixture below). Gated behind a
+BINDING per-name cap (`name_cap < gross_leverage` / `truncation > 0.0`), which is opt-in
+configuration, not the default (`OptimizerConfig::name_cap == gross_leverage == 1.0` by default —
+the whole cap/recenter path never runs on the no-cap default path); cost is O(n) per pass, a bounded
+cold-path multiple at rebalance cadence, not a hot-loop concern.
+
+**RED (by-construction fixture, found by a small numeric search then hand-verified via a Python
+transliteration of the exact algorithm):** 4-name book, `cap=0.30`, `L=1.0`, `dollar_neutral=true`,
+raw targets `[0.40, 0.10, -0.35, -0.15]` (already `Σ=0`, `Σ|.|=1.0`, so demean+gross_normalize are
+no-ops and the vector enters cap-clip-renorm unchanged). `0.40`/`-0.35` pin to `±0.30`; `0.10`/`-0.15`
+stay unbound.
+- `tests/risk/optimizer_recenter_test.cpp` `OptimizerRecenter.NeutralAfterClip` (drives the fixture
+  through `PortfolioOptimizer::solve` at `risk_aversion=0`, the λ=0 pure-alpha path, so the smooth
+  target is `demean(alpha)` exactly — `solve` calls `project()` 66 times total, so the buggy code's
+  residual partially self-corrects across the 64-iteration outer loop, converging from a raw-fixture
+  −0.08 to a smaller but still nonzero −0.0178): RED asserted `Σw≈0` (tol 1e-9), got
+  `sum=-0.017768968192617307` (fails).
+- `tests/core/weight_policy_recenter_test.cpp` `WeightPolicyRecenter.NeutralAfterTruncate` (a SINGLE
+  `to_target_weights` call — one `truncate_renorm`, no outer loop): RED asserted `Σw≈0`, got
+  `sum=-0.080000000000000043` exactly (matches the hand-derived single-pass value).
+
+**GREEN:** both new suites pass after the fix. Full regression sweep, all green: `RiskOptimizer` (22
+tests, incl. `NameCapNeverExceeded`/`CapBelowEqualWeightAllPinned`), `RiskConstraints` (35),
+`RiskMultiHorizon` (16), `WeightPolicy` (22), `WeightPolicyNeutralize` (9, incl. the `Truncate_*`
+cap tests), `WeightPolicyDecay` (4), `BacktestLoop`/`BacktestIntegration` (18). No existing test
+encoded a specific post-clip net-exposure NUMBER as a pinned expectation (all pre-existing cap tests
+assert cap/gross invariants, not net==0, since a bias requires the specific asymmetric-clip shape
+this fix's fixture was constructed to hit) — **no golden re-baseline needed for S4-2.**
+
+**Documented before/after (the spec's headline claim):** on the `weight_policy_recenter_test.cpp`
+single-pass fixture, net exposure `−0.08 → 0.0` (well within the 1e-9 tolerance; float noise on the
+`optimizer_recenter_test.cpp` full-solve fixture is `~1e-16`), while `max|w|=0.30` (== cap) and
+`Σ|w|=1.0` (== L) hold throughout, matching the spec's "0.234 → 0.000" headline shape (this sprint's
+own by-construction fixture, not literally the spec's illustrative number).
 
 **SEAM (Sprint 3, recorded per the spec's binding instruction — do NOT edit, S3-owned file):**
 `atx-impl/src/stage_combine.cpp` carries the IDENTICAL participation bug at (confirmed at kickoff)

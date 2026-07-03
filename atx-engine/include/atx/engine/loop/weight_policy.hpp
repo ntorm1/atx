@@ -324,6 +324,18 @@ struct WeightPolicy {
     // would rescale the pinned weights and breach the cap.
     if (truncation > 0.0) {
       truncate_renorm(dense_out);
+      // S4-2 [B2 fix]: truncate_renorm's finalize pass scales ONLY the
+      // sub-cap (unbinding) names to hit gross_leverage, holding binding
+      // names exactly at +/-truncation -- an asymmetric bind (the cap
+      // clipping the long side harder than the short, or vice-versa) leaves
+      // Sigma(dense) != 0 on a book that was perfectly centered going in.
+      // Re-center AFTER truncation settles (mirrors
+      // risk::PortfolioOptimizer::project's recenter_after_clip). No-op when
+      // dollar_neutral is off (a book that wants net exposure keeps exactly
+      // what truncate_renorm produced).
+      if (dollar_neutral) {
+        recenter_after_truncate(dense_out);
+      }
     }
 
     // --- scatter the dense weights back to universe positions --------------
@@ -525,6 +537,37 @@ private:
       if ((x < 0.0 ? -x : x) < cap) {
         x *= scale; // only the sub-cap names absorb the deficit
       }
+    }
+  }
+
+  /// S4-2 [B2 fix] — re-center the truncated book: finalize_truncation's deficit
+  /// pass scales ONLY the unbinding (sub-cap) names to hit gross_leverage,
+  /// holding binding names exactly at +/-truncation. When the cap binds an
+  /// unequal count/magnitude of longs vs shorts, the binding mass alone is
+  /// generally != 0, so `dense` exits truncate_renorm with Sigma(dense) != 0
+  /// even though it entered demean+gross_normalize perfectly centered -- a
+  /// spurious net exposure on a book the caller declared dollar-neutral.
+  ///
+  /// FIX: alternate {a uniform demean over ALL entries (dense holds ONLY live
+  /// cells -- no live mask needed here, unlike PortfolioOptimizer::Scratch --
+  /// so atx::core::stats::demean drives Sigma(dense) to EXACTLY 0 each pass),
+  /// truncate_renorm (a full re-settle: the shift can push a binding name back
+  /// over the cap on the OPPOSITE side; the re-settle reclips and restores
+  /// Sigma|dense|==gross_leverage via the unbinding-only deficit-renorm)}.
+  /// Each pass is a CONTRACTION (same mechanism as
+  /// risk::PortfolioOptimizer::recenter_after_clip, verified numerically on the
+  /// mirror fixture in weight_policy_recenter_test.cpp): kRecenterIters=32
+  /// clears float EPSILON-level residual even on an adversarial fixture. NO
+  /// convergence-dependent early exit (determinism §3.2). Caller gates this on
+  /// `dollar_neutral` (a book that wants net exposure is left exactly as
+  /// truncate_renorm produced it -- see clip_renorm_non_neutral_unchanged in
+  /// weight_policy_recenter_test.cpp).
+  static constexpr atx::usize kRecenterIters = 32;
+
+  void recenter_after_truncate(std::vector<atx::f64> &dense) const noexcept {
+    for (atx::usize iter = 0; iter < kRecenterIters; ++iter) {
+      atx::core::stats::demean(std::span<atx::f64>{dense}); // Sigma(dense) -> 0 exactly
+      truncate_renorm(dense); // re-settle: reclip + restore Sigma|dense| == gross_leverage (reads `truncation`)
     }
   }
 
