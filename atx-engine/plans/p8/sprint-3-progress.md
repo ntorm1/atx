@@ -74,7 +74,7 @@ only the `method_from_string`/dispatch `if` chain S3-1 extends next).
 ## Unit checklist
 - [x] S3-0  Ledger + `CombineMethod::Stack`/`RegimeStack` + `CombinerConfig` fields + enum pin
 - [x] S3-SEAM  S4-handoff participation unit fix (stage_combine.cpp:315,360)
-- [ ] S3-1  `fit_stack` wiring (forward-return label + meta + stack->weight bridge)
+- [x] S3-1  `fit_stack` wiring (forward-return label + meta + stack->weight bridge)
 - [ ] S3-2  admit-vs-fallback gate (mandatory)
 - [ ] S3-3  PIT HMM regime posterior -> `RegimeStack`
 - [ ] S3-4  `cleaned_alpha_cov` consumption behind `kind==Factor`
@@ -130,3 +130,73 @@ a frozen expectation, only sign/determinism/activation, so **no golden re-baseli
 full `atx-impl-tests` suite (157/157 matched by the `AtxImpl` filter + the 30 `AtxImplCombine`
 above + the new suite — 1 pre-existing environment-gated skip, `AtxImplDiscover.
 W6_RediscoverLowVolCapacityAlpha`, unrelated to this fix).
+
+S3-1: complete. `atx-impl/src/stage_combine.cpp` wires `CombineMethod::Stack` end-to-end;
+`atx-impl/src/stage_combine.hpp` (new) declares the S3 direct-call overloads
+`run_combine(cfg, combiner_cfg)` / `run_combine(cfg, combiner_cfg, risk_cfg)`, mirroring the
+p8-S1-2 `run_optimize(cfg, risk_cfg)` seam exactly (RunConfig is untouched — config.hpp/.cpp are
+Sprint-5-owned; the direct-call overload is how S3 threads `CombinerConfig`'s new stacking/regime
+knobs + `RiskModelConfig` without a new RunConfig field). `method_from_string` gains `"stack"`/
+`"regime-stack"` string arms (Sprint 5 wires the actual `--method` CLI values later — these arms
+just make the string reachable at all). A new `method_to_string` reverse-map replaces the old
+`cfg.method.empty() ? "shrinkage-mv" : cfg.method` label derivation (both the weights-sidecar
+"method=" line and the kvs "method" field) — a direct-call test can set `combiner_cfg.method`
+without ever populating `cfg.method`'s raw string, so the label must come from the RESOLVED enum;
+verified byte-identical for the 5 legacy strings via the full regression sweep below.
+
+**PIT design decision (load-bearing, not in the spec's literal pseudocode):**
+`meta_features_from_pool` has NO fit-window parameter — it always emits over the WHOLE pool it is
+given. To give Stack the SAME `[fit_begin, fit_end)` firewall `AlphaCombiner::fit` enforces, the
+meta is built from a NEW `windowed_pool(pool, fit_begin, fit_end)` helper (a pure re-slice of the
+already-PIT-correct pool's pnl/positions into a fresh `AlphaStore` re-indexed at 0 == fit_begin —
+no recomputation) and a new `build_forward_returns_window(...)` helper that reads panel `close`
+ONLY at window-local dates (`d+h >= fit_end` -> NaN, never `d >= fit_end` at all). Without this,
+the stack's meta would span the WHOLE panel (including the report-stage OOS region past
+`fit_end`), a genuine look-ahead the linear path's own firewall does not have. This seam is not in
+the sprint doc's own wiring pseudocode (which passes `pool`/`streams` directly) — recorded here as
+a necessary elaboration, pinned by `ForwardReturnLabelIsPitCausal` below.
+
+**Stack -> weight bridge (documented choice, per the sprint's explicit either/or):** ships the
+CONSERVATIVE order-fixed least-squares projection (new `weights_from_stack_projection`), NOT
+`sc.pos_flat` directly. Rationale: every downstream consumer of `combo.weights` (the combined
+mega-alpha blend, `--conviction`, `--kelly-fraction`, `--corr-penalty`/`--capacity-floor`, the
+breadth telemetry) is built around "one weight per pool alpha"; shipping a raw position stream
+would silently bypass ALL of them for Stack/RegimeStack — a much larger behavior change than a
+wiring sprint should introduce. The projection solves the normal equations `G w = rhs` (`G` = the
+pool's own per-alpha position Gram matrix over the fit window, `rhs` = each alpha's inner product
+with the stack's position stream) via `solve_spd` on `G + ridge_lambda*I` (reusing `cfg.ridge_lambda`,
+already an existing BoundedRegression knob — no new estimator math), then the SAME
+`renorm_abs_sum` (Σ|w|=1) every other method's `Combination` carries. Pinned by
+`TwiceRunByteIdenticalComboAndVerdictHash`.
+
+**Telemetry:** `stack_verdict_hash`/`stack_admitted`/`stack_oos_dsr_nonlinear`/
+`stack_oos_dsr_linear`/`stack_oos_ic_nonlinear`/`stack_oos_ic_linear` kvs, present ONLY on the
+Stack/RegimeStack path (absent otherwise — every legacy method's kvs set is unperturbed). The
+full telemetry set (not just `verdict_hash`) landed in this commit rather than S3-2's, since it is
+a trivial addition once `stack_verdict` is in scope — a documented sequencing deviation; S3-2's
+own commit is the GATE (`if (v.admitted) ... else fallback`) + its two decisive fixtures.
+
+**RED:** `stage_combine_stack_test.cpp` (new) and `stack_meta_from_positions_test.cpp` (new,
+`atx-engine/tests/learn/`) were written and run against the just-landed S3-0 tree (Stack already
+routed to `combiner.fit()`'s new Err arm, since the branch didn't exist yet) — compiling only
+after `stage_combine.hpp`/the dispatch branch were added. Two real numeric REDs surfaced on first
+run against the FRESH wiring: (1) `ProducesWellFormedWeightsAndStableVerdictHash`'s `Σ|w|`
+assertion at `EXPECT_NEAR(gross, 1.0, 1e-6)` failed by `1.4e-6` — the weights SIDECAR round-trips
+through `operator<<`'s default (6-sig-fig) text precision before the test re-parses it via
+`std::stod`, so the in-memory `renorm_abs_sum` bit-exactness does not survive the text round-trip;
+loosened to `1e-4` (a test-fixture tolerance fix, not a production bug). (2) `ForwardReturnLabelIsPitCausal`
+originally compared the STAGE's whole-panel `digest` — this genuinely FAILED
+(`16988449166131861428` vs `17962650443509673934`) because step 9 applies the fitted weights to
+EVERY panel date including the OOS region past `fit_end`, and the alpha DSL's OWN causal window
+legitimately produces different positions there once those prices are perturbed — expected
+behavior, not a leak, but the WRONG invariant for a PIT guard on the FIT step. Fixed by comparing
+only the weights-sidecar's `w[a]=value` lines (the fitted output) instead of the whole-panel
+digest — the narrower, correct PIT claim.
+
+**GREEN:** all 3 `StageCombineStack` tests pass + `StackMetaFromPositions` (1/1). Full regression
+sweep green (207 tests): `AtxImplCombine`/`StageCombineParticipation` (30, unaffected — the 5
+legacy methods still resolve through the unchanged `combiner.fit()` else-branch),
+`AlphaCombiner`/`CombineMethodEnumLayout`/`RegimeCombine`/`Phase4Integration` (22),
+`StageCombineStack` (3, new), `StackMetaFromPositions` (1, new), plus the broader `AtxImpl*` suite
+(171). No golden re-baseline needed (Stack/RegimeStack have zero call sites in any pre-existing
+test).
