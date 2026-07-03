@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import math
+import json
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable
@@ -41,6 +41,13 @@ import pandas as pd
 from .asof import fundamental_ratios_asof  # noqa: F401  (re-exported for callers)
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .formula_library import (
+    REQUIRE_POSITIVE_DENOMINATOR_RULE,
+    eval_operand_term,
+    load_ratio_formula_rows,
+    parse_operand_expression,
+    resolve_composite_evaluator,
+)
 from .item_registry import input_item_ids_for_ratio, ratio_input_metrics
 from .warehouse import insert_frame, json_dumps, quality_check
 
@@ -89,400 +96,70 @@ class RatioDef:
     item_inputs: tuple[str, ...] | None = None
 
 
-def _abs(x: float) -> float:
-    return abs(float(x))
+# PF-S4 S4-1: RATIO_DEFS is now DERIVED from formula_registry (via
+# db/formula_library.py's offline CSV loader) instead of a hand-written
+# literal tuple. Each seed row is mechanically translated into a RatioDef:
+#
+# * ``transform``/``kind`` reproduce the pre-S4-1 kind exactly (the seed's
+#   `kind` column IS the RatioDef.kind).
+# * ``expression`` ("numerator_term|denominator_term") is interpreted by
+#   formula_library.eval_operand_term -- a small closed dispatch over named
+#   operand shapes (key/abs/sum/abs_sum/diff/diff_abs/diff_z/avg), never
+#   eval/exec -- to reconstruct an operands callable bit-for-bit identical
+#   to the original lambda's arithmetic.
+# * ``is_meaningful_rule`` ("require_positive_denominator" or blank) drives
+#   RatioDef.require_positive_denominator.
+# * The 4 distress/quality scores carry an ``expression`` of the form
+#   "composite:<code>_v1", a whitelisted dispatch key resolved by
+#   formula_library.resolve_composite_evaluator to one of the 4 vetted,
+#   unit-tested composite functions (still Python, but registry-driven --
+#   not a free-floating lambda in a literal tuple). See the S4-0 review's
+#   CRITICAL design flag and formula_library.py's module docstring.
+#
+# quick_ratio is the one pre-existing `item_inputs` special case (its
+# provenance list includes "inventory", an optional NaN-coalesced input not
+# in its gating `inputs` tuple); reproduced here from the same seed `inputs`
+# column plus a fixed quick_ratio-only item_inputs override, matching the
+# pre-S4-1 literal exactly.
+_QUICK_RATIO_ITEM_INPUTS = ("current_assets", "inventory", "current_liabilities")
 
 
-def _z(x: Any) -> float:
-    """Coalesce a missing/NaN optional input to 0.0 (e.g. unreported inventory)."""
-    try:
-        return 0.0 if pd.isna(x) else float(x)
-    except (TypeError, ValueError):
-        return 0.0 if x is None else float(x)
+def _build_operands(numerator_term: str, denominator_term: str) -> Callable[[dict], tuple]:
+    def _operands(r: dict) -> tuple:
+        return eval_operand_term(numerator_term, r), eval_operand_term(denominator_term, r)
+
+    return _operands
 
 
-def _altman_z_double_prime(r: dict) -> float | None:
-    """Altman Z''-score (1995 emerging-markets / non-manufacturer variant).
-
-    Z'' = 6.56·(WC/TA) + 3.26·(RE/TA) + 6.72·(EBIT/TA) + 1.05·(book equity / TL).
-    Uses book equity (not market) so it is computable without price data. Operating
-    income is the EBIT proxy. Distress zones: <1.1 distress, 1.1–2.6 grey, >2.6 safe.
-    """
-    ta = float(r["assets"])
-    tl = float(r["liabilities"])
-    if ta <= 0 or tl <= 0:
-        return None
-    wc = float(r["current_assets"]) - float(r["current_liabilities"])
-    return (
-        6.56 * wc / ta
-        + 3.26 * float(r["retained_earnings"]) / ta
-        + 6.72 * float(r["oi"]) / ta
-        + 1.05 * float(r["equity"]) / tl
-    )
-
-
-def _piotroski_f_score(r: dict) -> float | None:
-    """Piotroski (2000) F-score: nine binary fundamental-strength signals summed 0-9.
-
-    Profitability (4): ROA>0, CFO>0, ΔROA>0, accruals (CFO>net income).
-    Funding / liquidity (3): ΔLong-term leverage<0, ΔCurrent ratio>0, no share issuance.
-    Operating efficiency (2): ΔGross margin>0, ΔAsset turnover>0.
-
-    Computed year-over-year, so it only emits where the ~1y-prior value of every input
-    is paired in (and, like all flow ratios sourced from annual XBRL, where the prior row
-    also reported the annual flows). Higher is stronger: 8-9 is the classic long screen,
-    0-1 the short. Returns None when a balance/flow denominator is non-positive (the deltas
-    would be sign-ambiguous), so the row is skipped rather than emitting a garbage score.
-    """
-    ta, ta0 = float(r["assets"]), float(r["assets_prior"])
-    cl, cl0 = float(r["current_liabilities"]), float(r["current_liabilities_prior"])
-    rev, rev0 = float(r["rev"]), float(r["rev_prior"])
-    if ta <= 0 or ta0 <= 0 or cl <= 0 or cl0 <= 0 or rev <= 0 or rev0 <= 0:
-        return None
-    ni, ni0 = float(r["ni"]), float(r["ni_prior"])
-    cfo = float(r["ocf"])
-    roa, roa0 = ni / ta, ni0 / ta0
-    lev, lev0 = float(r["long_term_debt"]) / ta, float(r["long_term_debt_prior"]) / ta0
-    cur, cur0 = float(r["current_assets"]) / cl, float(r["current_assets_prior"]) / cl0
-    gm, gm0 = float(r["gross_profit"]) / rev, float(r["gross_profit_prior"]) / rev0
-    turn, turn0 = rev / ta, rev0 / ta0
-    signals = (
-        roa > 0,            # 1. positive return on assets
-        cfo > 0,            # 2. positive operating cash flow
-        roa > roa0,         # 3. rising return on assets
-        cfo > ni,           # 4. accruals: cash flow exceeds reported earnings
-        lev < lev0,         # 5. falling long-term leverage
-        cur > cur0,         # 6. rising current ratio
-        float(r["common_shares_outstanding"]) <= float(r["common_shares_outstanding_prior"]),  # 7. no net share issuance
-        gm > gm0,           # 8. rising gross margin
-        turn > turn0,       # 9. rising asset turnover
-    )
-    return float(sum(1 for s in signals if s))
+def _build_ratio_defs() -> tuple[RatioDef, ...]:
+    defs: list[RatioDef] = []
+    for row in load_ratio_formula_rows():
+        inputs = tuple(json.loads(row.inputs))
+        require_positive_denominator = row.is_meaningful_rule == REQUIRE_POSITIVE_DENOMINATOR_RULE
+        item_inputs = _QUICK_RATIO_ITEM_INPUTS if row.formula_code == "quick_ratio" else None
+        if row.kind == "score":
+            evaluator = resolve_composite_evaluator(row.expression)
+            defs.append(RatioDef(
+                row.formula_code, row.family, row.kind, row.unit,
+                row.numerator_code, row.denominator_code, inputs,
+                lambda r: (None, None),
+                require_positive_denominator=require_positive_denominator,
+                composite=evaluator,
+                item_inputs=item_inputs,
+            ))
+            continue
+        numerator_term, denominator_term = parse_operand_expression(row.expression)
+        defs.append(RatioDef(
+            row.formula_code, row.family, row.kind, row.unit,
+            row.numerator_code, row.denominator_code, inputs,
+            _build_operands(numerator_term, denominator_term),
+            require_positive_denominator=require_positive_denominator,
+            item_inputs=item_inputs,
+        ))
+    return tuple(defs)
 
 
-def _ohlson_o_score(r: dict) -> float | None:
-    """Ohlson (1980) O-score: a nine-term logit of bankruptcy probability.
-
-    O = -1.32 - 0.407·SIZE + 6.03·TLTA - 1.43·WCTA + 0.0757·CLCA
-        - 1.72·OENEG - 2.37·NITA - 1.83·FUTL + 0.285·INTWO - 0.521·CHIN
-    where SIZE=ln(total assets), TLTA=liabilities/assets, WCTA=working capital/assets,
-    CLCA=current liabilities/current assets, OENEG=1 if liabilities>assets (book
-    insolvency), NITA=net income/assets, FUTL=operating cash flow/liabilities (funds-
-    from-operations proxy), INTWO=1 if net loss in both this and the prior year, and
-    CHIN=(NI_t-NI_{t-1})/(|NI_t|+|NI_{t-1}|). Higher O => higher modeled default
-    probability (P = 1/(1+e^-O); the paper's cutoff is O>0.5 i.e. ~0.038 on the logit).
-
-    SIZE's original GNP-price-level deflator is omitted (assets in USD): a constant
-    additive shift that preserves the cross-sectional ranking the score is used for.
-    Returns None when assets, liabilities, or current assets are non-positive (the
-    ratios/log would be undefined), so the row is skipped rather than emitting garbage.
-    """
-    ta = float(r["assets"])
-    tl = float(r["liabilities"])
-    ca = float(r["current_assets"])
-    cl = float(r["current_liabilities"])
-    if ta <= 0 or tl <= 0 or ca <= 0:
-        return None
-    ni = float(r["ni"])
-    ni0 = float(r["ni_prior"])
-    ocf = float(r["ocf"])
-    chin_den = abs(ni) + abs(ni0)
-    return (
-        -1.32
-        - 0.407 * math.log(ta)
-        + 6.03 * (tl / ta)
-        - 1.43 * ((ca - cl) / ta)
-        + 0.0757 * (cl / ca)
-        - 1.72 * (1.0 if tl > ta else 0.0)
-        - 2.37 * (ni / ta)
-        - 1.83 * (ocf / tl)
-        + 0.285 * (1.0 if (ni < 0 and ni0 < 0) else 0.0)
-        - 0.521 * ((ni - ni0) / chin_den if chin_den != 0 else 0.0)
-    )
-
-
-def _beneish_m_score(r: dict) -> float | None:
-    """Beneish (1999) eight-variable M-score for earnings-manipulation risk.
-
-    M = -4.84 + 0.920*DSRI + 0.528*GMI + 0.404*AQI + 0.892*SGI
-        + 0.115*DEPI - 0.172*SGAI + 4.679*TATA - 0.327*LVGI.
-
-    Sales, receivables, COGS, current assets, PP&E, depreciation, SG&A, liabilities,
-    net income, and operating cash flow come from the PIT warehouse inputs; prior-year
-    terms are paired by period_end in _attach_prior_year. Higher scores indicate more
-    manipulation-risk pressure; the classic screen flags scores above about -2.22.
-    """
-    sales, sales0 = float(r["rev"]), float(r["rev_prior"])
-    assets, assets0 = float(r["assets"]), float(r["assets_prior"])
-    ppe, ppe0 = float(r["property_plant_equipment_net"]), float(r["property_plant_equipment_net_prior"])
-    dep, dep0 = float(r["depreciation_amortization"]), float(r["depreciation_amortization_prior"])
-    sga, sga0 = (
-        float(r["selling_general_and_administrative_expense"]),
-        float(r["selling_general_and_administrative_expense_prior"]),
-    )
-    liabilities, liabilities0 = float(r["liabilities"]), float(r["liabilities_prior"])
-    if (
-        sales <= 0 or sales0 <= 0 or assets <= 0 or assets0 <= 0
-        or ppe < 0 or ppe0 < 0 or dep <= 0 or dep0 <= 0
-        or sga0 <= 0 or liabilities <= 0 or liabilities0 <= 0
-    ):
-        return None
-
-    receivables, receivables0 = float(r["accounts_receivable"]), float(r["accounts_receivable_prior"])
-    cogs, cogs0 = float(r["cost_of_revenue"]), float(r["cost_of_revenue_prior"])
-    gross_margin = (sales - cogs) / sales
-    gross_margin0 = (sales0 - cogs0) / sales0
-    asset_quality = 1.0 - ((float(r["current_assets"]) + ppe) / assets)
-    asset_quality0 = 1.0 - ((float(r["current_assets_prior"]) + ppe0) / assets0)
-    dep_rate = dep / (dep + ppe)
-    dep_rate0 = dep0 / (dep0 + ppe0)
-    if (
-        receivables0 <= 0 or gross_margin <= 0 or gross_margin0 <= 0
-        or asset_quality0 == 0 or dep_rate <= 0
-    ):
-        return None
-
-    dsri = (receivables / sales) / (receivables0 / sales0)
-    gmi = gross_margin0 / gross_margin
-    aqi = asset_quality / asset_quality0
-    sgi = sales / sales0
-    depi = dep_rate0 / dep_rate
-    sgai = (sga / sales) / (sga0 / sales0)
-    tata = (float(r["ni"]) - float(r["ocf"])) / assets
-    lvgi = (liabilities / assets) / (liabilities0 / assets0)
-    return (
-        -4.84
-        + 0.920 * dsri
-        + 0.528 * gmi
-        + 0.404 * aqi
-        + 0.892 * sgi
-        + 0.115 * depi
-        - 0.172 * sgai
-        + 4.679 * tata
-        - 0.327 * lvgi
-    )
-
-
-RATIO_DEFS: tuple[RatioDef, ...] = (
-    # --- profitability -----------------------------------------------------
-    RatioDef("net_profit_margin", "profitability", "ratio", "ratio",
-             "net_income", "revenue", ("ni", "rev"),
-             lambda r: (r["ni"], r["rev"])),
-    RatioDef("operating_margin", "profitability", "ratio", "ratio",
-             "operating_income", "revenue", ("oi", "rev"),
-             lambda r: (r["oi"], r["rev"])),
-    RatioDef("return_on_assets", "profitability", "ratio", "ratio",
-             "net_income", "assets", ("ni", "assets"),
-             lambda r: (r["ni"], r["assets"])),
-    RatioDef("return_on_equity", "profitability", "ratio", "ratio",
-             "net_income", "stockholders_equity", ("ni", "equity"),
-             lambda r: (r["ni"], r["equity"]), require_positive_denominator=True),
-    # --- leverage ----------------------------------------------------------
-    RatioDef("assets_to_equity", "leverage", "ratio", "ratio",
-             "assets", "stockholders_equity", ("assets", "equity"),
-             lambda r: (r["assets"], r["equity"]), require_positive_denominator=True),
-    RatioDef("liabilities_to_assets", "leverage", "ratio", "ratio",
-             "liabilities", "assets", ("liabilities", "assets"),
-             lambda r: (r["liabilities"], r["assets"])),
-    RatioDef("liabilities_to_equity", "leverage", "ratio", "ratio",
-             "liabilities", "stockholders_equity", ("liabilities", "equity"),
-             lambda r: (r["liabilities"], r["equity"]), require_positive_denominator=True),
-    # --- cash flow ---------------------------------------------------------
-    RatioDef("free_cash_flow", "cash_flow", "level", "currency",
-             "operating_cash_flow", "capital_expenditures", ("ocf", "capex"),
-             lambda r: (r["ocf"], r["capex"])),
-    RatioDef("fcf_margin", "cash_flow", "ratio", "ratio",
-             "free_cash_flow", "revenue", ("ocf", "capex", "rev"),
-             lambda r: (r["ocf"] + r["capex"], r["rev"])),
-    RatioDef("operating_cash_flow_to_net_income", "cash_flow", "ratio", "ratio",
-             "operating_cash_flow", "net_income", ("ocf", "ni"),
-             lambda r: (r["ocf"], r["ni"]), require_positive_denominator=True),
-    RatioDef("capex_to_revenue", "cash_flow", "ratio", "ratio",
-             "abs_capital_expenditures", "revenue", ("capex", "rev"),
-             lambda r: (_abs(r["capex"]), r["rev"])),
-    # --- payout ------------------------------------------------------------
-    RatioDef("dividend_payout_ratio", "payout", "ratio", "ratio",
-             "abs_dividends_paid", "net_income", ("div", "ni"),
-             lambda r: (_abs(r["div"]), r["ni"]), require_positive_denominator=True),
-    RatioDef("buyback_to_net_income", "payout", "ratio", "ratio",
-             "abs_share_repurchases", "net_income", ("repurch", "ni"),
-             lambda r: (_abs(r["repurch"]), r["ni"]), require_positive_denominator=True),
-    RatioDef("total_payout_ratio", "payout", "ratio", "ratio",
-             "abs_dividends_plus_repurchases", "net_income", ("div", "repurch", "ni"),
-             lambda r: (_abs(r["div"]) + _abs(r["repurch"]), r["ni"]),
-             require_positive_denominator=True),
-    # --- per share ---------------------------------------------------------
-    RatioDef("book_value_per_share", "per_share", "per_share", "currency_per_share",
-             "stockholders_equity", "shares_outstanding", ("equity", "shares"),
-             lambda r: (r["equity"], r["shares"])),
-    # --- efficiency / activity (S9b) --------------------------------------
-    RatioDef("asset_turnover", "efficiency", "ratio", "ratio",
-             "revenue", "assets", ("rev", "assets"),
-             lambda r: (r["rev"], r["assets"])),
-    RatioDef("equity_turnover", "efficiency", "ratio", "ratio",
-             "revenue", "stockholders_equity", ("rev", "equity"),
-             lambda r: (r["rev"], r["equity"]), require_positive_denominator=True),
-    # --- asset-structure / activity (S10g; consolidated inline-XBRL instants) ---
-    RatioDef("fixed_asset_turnover", "efficiency", "ratio", "ratio",
-             "revenue", "property_plant_equipment_net", ("rev", "property_plant_equipment_net"),
-             lambda r: (r["rev"], r["property_plant_equipment_net"]), require_positive_denominator=True),
-    RatioDef("receivables_turnover", "efficiency", "ratio", "ratio",
-             "revenue", "accounts_receivable", ("rev", "accounts_receivable"),
-             lambda r: (r["rev"], r["accounts_receivable"]), require_positive_denominator=True),
-    RatioDef("ppe_to_assets", "efficiency", "ratio", "ratio",
-             "property_plant_equipment_net", "assets", ("property_plant_equipment_net", "assets"),
-             lambda r: (r["property_plant_equipment_net"], r["assets"]), require_positive_denominator=True),
-    # --- additional profitability / cash-flow coverage (S9b) --------------
-    RatioDef("operating_return_on_assets", "profitability", "ratio", "ratio",
-             "operating_income", "assets", ("oi", "assets"),
-             lambda r: (r["oi"], r["assets"])),
-    RatioDef("operating_cash_flow_margin", "cash_flow", "ratio", "ratio",
-             "operating_cash_flow", "revenue", ("ocf", "rev"),
-             lambda r: (r["ocf"], r["rev"])),
-    RatioDef("operating_cash_flow_to_assets", "cash_flow", "ratio", "ratio",
-             "operating_cash_flow", "assets", ("ocf", "assets"),
-             lambda r: (r["ocf"], r["assets"])),
-    RatioDef("operating_cash_flow_to_liabilities", "cash_flow", "ratio", "ratio",
-             "operating_cash_flow", "liabilities", ("ocf", "liabilities"),
-             lambda r: (r["ocf"], r["liabilities"]), require_positive_denominator=True),
-    RatioDef("capex_to_operating_cash_flow", "cash_flow", "ratio", "ratio",
-             "abs_capital_expenditures", "operating_cash_flow", ("capex", "ocf"),
-             lambda r: (_abs(r["capex"]), r["ocf"]), require_positive_denominator=True),
-    # --- payout / reinvestment (S9b) --------------------------------------
-    RatioDef("retention_ratio", "payout", "ratio", "ratio",
-             "net_income_minus_dividends", "net_income", ("ni", "div"),
-             lambda r: (r["ni"] - _abs(r["div"]), r["ni"]), require_positive_denominator=True),
-    # --- year-over-year growth (S9c) --------------------------------------
-    # kind='growth': value = (current - prior) / abs(prior); the prior-year value is
-    # paired into the wide frame by _attach_prior_year. is_meaningful is false off a
-    # non-positive base (sign of a % change is ambiguous when the prior is negative).
-    RatioDef("revenue_growth_yoy", "growth", "growth", "ratio",
-             "revenue", "revenue_prior_year", ("rev", "rev_prior"),
-             lambda r: (r["rev"], r["rev_prior"]), require_positive_denominator=True),
-    RatioDef("net_income_growth_yoy", "growth", "growth", "ratio",
-             "net_income", "net_income_prior_year", ("ni", "ni_prior"),
-             lambda r: (r["ni"], r["ni_prior"]), require_positive_denominator=True),
-    RatioDef("operating_income_growth_yoy", "growth", "growth", "ratio",
-             "operating_income", "operating_income_prior_year", ("oi", "oi_prior"),
-             lambda r: (r["oi"], r["oi_prior"]), require_positive_denominator=True),
-    RatioDef("operating_cash_flow_growth_yoy", "growth", "growth", "ratio",
-             "operating_cash_flow", "operating_cash_flow_prior_year", ("ocf", "ocf_prior"),
-             lambda r: (r["ocf"], r["ocf_prior"]), require_positive_denominator=True),
-    RatioDef("assets_growth_yoy", "growth", "growth", "ratio",
-             "assets", "assets_prior_year", ("assets", "assets_prior"),
-             lambda r: (r["assets"], r["assets_prior"]), require_positive_denominator=True),
-    RatioDef("equity_growth_yoy", "growth", "growth", "ratio",
-             "stockholders_equity", "stockholders_equity_prior_year", ("equity", "equity_prior"),
-             lambda r: (r["equity"], r["equity_prior"]), require_positive_denominator=True),
-    # --- average-balance returns (S9d) ------------------------------------
-    # Denominator is the mean of the ending and prior-year balance, matching the
-    # Compustat/FactSet convention for return-on-capital ratios.
-    RatioDef("average_return_on_assets", "profitability", "ratio", "ratio",
-             "net_income", "average_assets", ("ni", "assets", "assets_prior"),
-             lambda r: (r["ni"], (r["assets"] + r["assets_prior"]) / 2), require_positive_denominator=True),
-    RatioDef("average_return_on_equity", "profitability", "ratio", "ratio",
-             "net_income", "average_stockholders_equity", ("ni", "equity", "equity_prior"),
-             lambda r: (r["ni"], (r["equity"] + r["equity_prior"]) / 2), require_positive_denominator=True),
-    RatioDef("operating_cash_flow_to_average_assets", "cash_flow", "ratio", "ratio",
-             "operating_cash_flow", "average_assets", ("ocf", "assets", "assets_prior"),
-             lambda r: (r["ocf"], (r["assets"] + r["assets_prior"]) / 2), require_positive_denominator=True),
-    # --- liquidity / working capital (S10a; consolidated inline-XBRL instants) ---
-    RatioDef("current_ratio", "liquidity", "ratio", "ratio",
-             "current_assets", "current_liabilities", ("current_assets", "current_liabilities"),
-             lambda r: (r["current_assets"], r["current_liabilities"]), require_positive_denominator=True),
-    RatioDef("quick_ratio", "liquidity", "ratio", "ratio",
-             "current_assets_minus_inventory", "current_liabilities", ("current_assets", "current_liabilities"),
-             lambda r: (r["current_assets"] - _z(r.get("inventory")), r["current_liabilities"]),
-             require_positive_denominator=True,
-             item_inputs=("current_assets", "inventory", "current_liabilities")),
-    RatioDef("cash_ratio", "liquidity", "ratio", "ratio",
-             "cash_and_equivalents", "current_liabilities", ("cash_and_equivalents", "current_liabilities"),
-             lambda r: (r["cash_and_equivalents"], r["current_liabilities"]), require_positive_denominator=True),
-    RatioDef("working_capital", "liquidity", "difference", "currency",
-             "current_assets", "current_liabilities", ("current_assets", "current_liabilities"),
-             lambda r: (r["current_assets"], r["current_liabilities"])),
-    RatioDef("working_capital_to_assets", "liquidity", "ratio", "ratio",
-             "working_capital", "assets", ("current_assets", "current_liabilities", "assets"),
-             lambda r: (r["current_assets"] - r["current_liabilities"], r["assets"]),
-             require_positive_denominator=True),
-    # --- debt / solvency (S10b; long-term debt from consolidated XBRL instants) ---
-    RatioDef("long_term_debt_to_equity", "leverage", "ratio", "ratio",
-             "long_term_debt", "stockholders_equity", ("long_term_debt", "equity"),
-             lambda r: (r["long_term_debt"], r["equity"]), require_positive_denominator=True),
-    RatioDef("long_term_debt_to_assets", "leverage", "ratio", "ratio",
-             "long_term_debt", "assets", ("long_term_debt", "assets"),
-             lambda r: (r["long_term_debt"], r["assets"]), require_positive_denominator=True),
-    RatioDef("net_debt", "leverage", "difference", "currency",
-             "long_term_debt", "cash_and_equivalents", ("long_term_debt", "cash_and_equivalents"),
-             lambda r: (r["long_term_debt"], r["cash_and_equivalents"])),
-    RatioDef("net_debt_to_assets", "leverage", "ratio", "ratio",
-             "net_debt", "assets", ("long_term_debt", "cash_and_equivalents", "assets"),
-             lambda r: (r["long_term_debt"] - r["cash_and_equivalents"], r["assets"]),
-             require_positive_denominator=True),
-    # --- margin / coverage / EBITDA (S10c; annual XBRL flows over TTM revenue) ---
-    # The flow inputs are fiscal-year (~365d) durations, so these emit at fiscal-year
-    # period_ends where the annual flow aligns with the TTM revenue/operating_income.
-    RatioDef("gross_margin", "profitability", "ratio", "ratio",
-             "gross_profit", "revenue", ("gross_profit", "rev"),
-             lambda r: (r["gross_profit"], r["rev"]), require_positive_denominator=True),
-    RatioDef("cost_of_revenue_to_revenue", "profitability", "ratio", "ratio",
-             "cost_of_revenue", "revenue", ("cost_of_revenue", "rev"),
-             lambda r: (r["cost_of_revenue"], r["rev"]), require_positive_denominator=True),
-    RatioDef("interest_coverage", "leverage", "ratio", "ratio",
-             "operating_income", "interest_expense", ("oi", "interest_expense"),
-             lambda r: (r["oi"], r["interest_expense"]), require_positive_denominator=True),
-    RatioDef("ebitda", "profitability", "level", "currency",
-             "operating_income", "depreciation_amortization", ("oi", "depreciation_amortization"),
-             lambda r: (r["oi"], r["depreciation_amortization"])),
-    RatioDef("ebitda_margin", "profitability", "ratio", "ratio",
-             "ebitda", "revenue", ("oi", "depreciation_amortization", "rev"),
-             lambda r: (r["oi"] + r["depreciation_amortization"], r["rev"]),
-             require_positive_denominator=True),
-    # --- Altman Z'' components + composite distress score (S10d; 'health' family) ---
-    RatioDef("retained_earnings_to_assets", "profitability", "ratio", "ratio",
-             "retained_earnings", "assets", ("retained_earnings", "assets"),
-             lambda r: (r["retained_earnings"], r["assets"]), require_positive_denominator=True),
-    RatioDef("equity_to_liabilities", "leverage", "ratio", "ratio",
-             "stockholders_equity", "liabilities", ("equity", "liabilities"),
-             lambda r: (r["equity"], r["liabilities"]), require_positive_denominator=True),
-    RatioDef("altman_z_double_prime", "health", "score", "score",
-             "altman_z_double_prime_components", "n/a",
-             ("current_assets", "current_liabilities", "assets", "retained_earnings", "oi", "liabilities", "equity"),
-             lambda r: (None, None),
-             composite=lambda r: _altman_z_double_prime(r)),
-    # Piotroski F-score (S10e): nine YoY binary signals summed 0-9. Gates on the current
-    # AND ~1y-prior value of every input it scores, so it emits at fiscal-year period_ends
-    # where the prior year's annual flows (gross profit) and balances are also present.
-    RatioDef("piotroski_f_score", "health", "score", "score",
-             "piotroski_signals", "n/a",
-             ("ni", "assets", "ocf", "long_term_debt", "current_assets", "current_liabilities",
-              "common_shares_outstanding", "gross_profit", "rev",
-              "ni_prior", "assets_prior", "long_term_debt_prior", "current_assets_prior",
-              "current_liabilities_prior", "common_shares_outstanding_prior", "gross_profit_prior", "rev_prior"),
-             lambda r: (None, None),
-             composite=lambda r: _piotroski_f_score(r)),
-    # Ohlson O-score (S10f): nine-term bankruptcy-probability logit. Needs only the
-    # current balances/flows + prior-year net income (already paired) — no new XBRL
-    # concept — so it emits wherever current assets/liabilities and a prior year exist.
-    RatioDef("ohlson_o_score", "health", "score", "score",
-             "ohlson_o_score_terms", "n/a",
-             ("assets", "liabilities", "current_assets", "current_liabilities", "ni", "ocf", "ni_prior"),
-             lambda r: (None, None),
-             composite=lambda r: _ohlson_o_score(r)),
-    # Beneish M-score (S27): eight-term manipulation-risk composite. It requires
-    # current and prior-year annual-flow/balance inputs, including combined SG&A.
-    RatioDef("beneish_m_score", "health", "score", "score",
-             "beneish_m_score_terms", "n/a",
-             ("rev", "accounts_receivable", "cost_of_revenue", "current_assets",
-              "property_plant_equipment_net", "assets", "depreciation_amortization",
-              "selling_general_and_administrative_expense", "liabilities", "ni", "ocf",
-              "rev_prior", "accounts_receivable_prior", "cost_of_revenue_prior",
-              "current_assets_prior", "property_plant_equipment_net_prior", "assets_prior",
-              "depreciation_amortization_prior", "selling_general_and_administrative_expense_prior",
-              "liabilities_prior"),
-             lambda r: (None, None),
-             composite=lambda r: _beneish_m_score(r)),
-)
+RATIO_DEFS: tuple[RatioDef, ...] = _build_ratio_defs()
 
 # Instant (balance) metrics sourced from the consolidated inline-XBRL extraction
 # (fundamental_xbrl_metric), pivoted into the wide frame alongside statement-point balances.
