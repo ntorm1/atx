@@ -118,6 +118,12 @@ def _vendor_identifier_value(symbol: str, value: object) -> str:
     return raw
 
 
+def _collision_security_id_namespace(source: str) -> str:
+    if source == SOURCE_NAME:
+        return "tbltickerhistory"
+    return source
+
+
 @dataclass(frozen=True)
 class TickerHistoryOptions:
     zip_path: Path = DEFAULT_TICKER_HISTORY_ZIP
@@ -486,7 +492,7 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
             for sk, vid in zip(nonprimary["symbol_key"], nonprimary["vendor_security_id"])
         ]
         nonprimary["new_security_id"] = [
-            vendor_security_id("tbltickerhistory", f"{vid}-{sk}")
+            vendor_security_id(_collision_security_id_namespace(source), f"{vid}-{sk}")
             for vid, sk in zip(nonprimary["vendor_security_id"], nonprimary["symbol_key"])
         ]
         mapping = nonprimary[

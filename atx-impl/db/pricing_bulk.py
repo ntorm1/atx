@@ -116,7 +116,7 @@ def _iter_csv_chunks(options: BulkBarsOptions) -> Iterator[tuple[str, pd.DataFra
 def _availability(series: pd.Series, trade_dates: pd.Series) -> pd.Series:
     provided = pd.to_datetime(series.replace("", pd.NA), errors="coerce")
     default = pd.to_datetime(trade_dates, errors="coerce") + pd.Timedelta(hours=22)
-    return provided.where(provided.notna(), default)
+    return pd.concat([provided, default], axis=1).max(axis=1)
 
 
 def _normalize_chunk(chunk: pd.DataFrame, options: BulkBarsOptions) -> pd.DataFrame:
@@ -172,6 +172,32 @@ def _apply_security_ids(store: DuckDBStore, frame: pd.DataFrame, options: BulkBa
         return frame
     symbols = sorted({symbol for symbol in frame["symbol"].dropna().map(symbol_key) if symbol})
     resolved = security_ids_for_symbols(store, symbols)
+    input_ids = sorted(
+        {
+            str(value).strip()
+            for value in frame.get("input_security_id", pd.Series(dtype="string")).dropna()
+            if str(value).strip()
+        }
+    )
+    existing_ids: set[str] = set()
+    if input_ids:
+        candidates = pd.DataFrame({"security_id": input_ids})
+        store.con.register("bulk_input_security_id_candidates", candidates)
+        try:
+            existing_ids = set(
+                store.con.execute(
+                    """
+                    SELECT s.security_id
+                    FROM securities s
+                    JOIN bulk_input_security_id_candidates c
+                      ON c.security_id = s.security_id
+                    """
+                )
+                .df()["security_id"]
+                .tolist()
+            )
+        finally:
+            store.con.unregister("bulk_input_security_id_candidates")
     out = frame.copy()
 
     def resolve(row: pd.Series) -> str:
@@ -179,8 +205,11 @@ def _apply_security_ids(store: DuckDBStore, frame: pd.DataFrame, options: BulkBa
         if symbol in resolved:
             return resolved[symbol]
         input_security_id = row.get("input_security_id")
-        if pd.notna(input_security_id) and str(input_security_id).strip():
-            return str(input_security_id).strip()
+        input_value = str(input_security_id).strip() if pd.notna(input_security_id) else ""
+        if input_value:
+            if input_value in existing_ids:
+                return input_value
+            return _fallback_security_id(options.source, symbol, input_value)
         return _fallback_security_id(options.source, symbol, row.get("vendor_security_id"))
 
     out["security_id"] = out.apply(resolve, axis=1)
@@ -428,7 +457,7 @@ class BulkBarsDataset(Dataset):
         normalized: pd.DataFrame,
         options: BulkBarsOptions,
     ) -> int:
-        securities, identifiers, listings = _security_links(normalized, options)
+        securities, identifiers, listings = _security_links(bars, options)
         store.con.register("bulk_equity_daily_bars_load", bars)
         try:
             with store.transaction():

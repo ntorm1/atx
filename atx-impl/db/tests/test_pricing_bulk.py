@@ -146,6 +146,82 @@ def test_bulk_bars_zip_loads_csv_members(tmp_store, tmp_path) -> None:
     ).fetchall() == [("IBM", dt.date(2017, 2, 3), dt.datetime(2017, 2, 3, 22))]
 
 
+def test_bulk_bars_namespaces_unresolved_input_security_id(tmp_store, tmp_path) -> None:
+    source = tmp_path / "raw-security-id.csv"
+    _write_csv(
+        source,
+        [
+            {
+                "symbol": "RAWID",
+                "trade_date": "2019-04-05",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10,
+                "volume": 100,
+                "security_id": "12345",
+            }
+        ],
+    )
+
+    BulkBarsDataset().load(tmp_store, BulkBarsOptions(source_file=source))
+
+    assert tmp_store.con.execute(
+        "SELECT security_id FROM equity_daily_bars WHERE symbol = 'RAWID'"
+    ).fetchone()[0] == "BULK-BARS-2015PLUS-12345"
+
+
+def test_bulk_bars_accepts_existing_input_security_id(tmp_store, tmp_path) -> None:
+    source = tmp_path / "existing-security-id.csv"
+    _seed_symbol(tmp_store, "OTHER", "SEC-EXISTING")
+    _write_csv(
+        source,
+        [
+            {
+                "symbol": "UNKNOWN",
+                "trade_date": "2019-04-05",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10,
+                "volume": 100,
+                "security_id": "SEC-EXISTING",
+            }
+        ],
+    )
+
+    BulkBarsDataset().load(tmp_store, BulkBarsOptions(source_file=source))
+
+    assert tmp_store.con.execute(
+        "SELECT security_id FROM equity_daily_bars WHERE symbol = 'UNKNOWN'"
+    ).fetchone()[0] == "SEC-EXISTING"
+
+
+def test_bulk_bars_clamps_early_available_at_to_close_knowledge_time(tmp_store, tmp_path) -> None:
+    source = tmp_path / "early-available.csv"
+    _write_csv(
+        source,
+        [
+            {
+                "symbol": "PIT",
+                "trade_date": "2021-03-04",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10,
+                "volume": 100,
+                "available_at": "2021-03-04 09:30:00",
+            }
+        ],
+    )
+
+    BulkBarsDataset().load(tmp_store, BulkBarsOptions(source_file=source))
+
+    assert tmp_store.con.execute(
+        "SELECT available_at FROM equity_daily_bars WHERE symbol = 'PIT'"
+    ).fetchone()[0] == dt.datetime(2021, 3, 4, 22)
+
+
 def test_bulk_bars_reuses_vendor_collision_repair(tmp_store, tmp_path) -> None:
     _seed_symbol(tmp_store, "ET", "SEC-ET")
     source = tmp_path / "et.csv"
@@ -175,7 +251,57 @@ def test_bulk_bars_reuses_vendor_collision_repair(tmp_store, tmp_path) -> None:
     ).fetchone()[0] == 0
     assert tmp_store.con.execute(
         "SELECT security_id FROM equity_daily_bars WHERE vendor_security_id = '222'"
-    ).fetchone()[0] == "TBLTICKERHISTORY-222-ET"
+    ).fetchone()[0] == "BULK-BARS-2015PLUS-222-ET"
+
+
+def test_bulk_bars_links_only_surviving_ohlcv_rows(tmp_store, tmp_path) -> None:
+    source = tmp_path / "invalid-links.csv"
+    _write_csv(
+        source,
+        [
+            {
+                "symbol": "GOOD",
+                "trade_date": "2020-01-02",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10,
+                "volume": 100,
+            },
+            {
+                "symbol": "BAD",
+                "trade_date": "2020-01-02",
+                "open": 0,
+                "high": 11,
+                "low": 9,
+                "close": 10,
+                "volume": 100,
+            },
+        ],
+    )
+
+    result = BulkBarsDataset().load(tmp_store, BulkBarsOptions(source_file=source))
+
+    assert result.rows_loaded == 1
+    assert tmp_store.con.execute(
+        "SELECT symbol FROM equity_daily_bars WHERE source = 'bulk_bars_2015plus'"
+    ).fetchall() == [("GOOD",)]
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM securities
+        WHERE source = 'bulk_bars_2015plus'
+          AND (primary_symbol = 'BAD' OR security_id = 'BULK-BARS-2015PLUS-SYMBOL-BAD')
+        """
+    ).fetchone()[0] == 0
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM exchange_listings
+        WHERE source = 'bulk_bars_2015plus'
+          AND ticker = 'BAD'
+        """
+    ).fetchone()[0] == 0
 
 
 def test_bulk_bars_supports_common_aliases_and_never_uses_network(tmp_store, tmp_path, monkeypatch) -> None:
