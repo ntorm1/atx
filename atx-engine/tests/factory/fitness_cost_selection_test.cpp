@@ -27,8 +27,40 @@
 //   (d) PureFunction_TwiceRunAndConcurrentCallsByteIdentical — no allocation,
 //       no state, no RNG: repeated/concurrent calls with identical inputs
 //       produce bit-identical outputs (twice-run + seq==parallel).
+//
+// ===========================================================================
+//  Final-integration wave (p8, whole-branch) — closing the B7 seam for real
+// ===========================================================================
+//  The checks above exercise ONLY apply_selection_cost in isolation (hand-built
+//  raw/cost_bps numbers), per this file's own SEAM note: FitnessCfg/finish_report
+//  could not gain the wire during S4 (Sprint-5-owned). That wire is now landed
+//  (fitness.hpp: FitnessCfg::cost_selection, FitnessCore::selection_cost_bps;
+//  fitness.cpp: fitness_core precomputes selection_cost_bps via book_cost_bps at
+//  cfg.cost_selection.selection_aum, finish_report nets it into `raw`). The
+//  three checks below drive the SAME B7 contract through the REAL production
+//  path instead of calling apply_selection_cost directly:
+//   (e) FinishReportAppliesSelectionCostAndFlipsRanking — detail::finish_report
+//       (not apply_selection_cost) reproduces the EXACT SelectionFlipsHigh-
+//       TurnoverRanking numbers (0.80 / 0.93) from a hand-built FitnessCore pair,
+//       and the ScalarRaw ordering FLIPS: OFF ranks the gross winner (A) above
+//       B; ON ranks A STRICTLY BELOW B once netted of its larger selection cost.
+//   (f) FinishReportOffPath_IgnoresCoreSelectionCostBps — the inert-default
+//       safety net: cfg_off leaves `raw` untouched even if core.selection_cost_bps
+//       happens to be huge (finish_report's own call site adds no extra guard
+//       beyond apply_selection_cost's, so this pins that contract at the
+//       finish_report call site specifically).
+//   (g) PoolAwareFitnessThreadsRealBookCostIntoSelectionScalar — the END-TO-END
+//       wire: a real genome/panel/pool_aware_fitness call with
+//       cost_selection.impact_in_selection=true computes a REAL, nonzero
+//       book_cost_bps at cfg.cost_selection.selection_aum inside fitness_core
+//       and it reaches finish_report's `raw` (raw_on strictly < raw_off); the
+//       default (cost_selection{}) path stays byte-identical to a totally
+//       default FitnessCfg{} call (the boundary-pin holds).
 
 #include <array>
+#include <cmath>
+#include <cstdint>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -37,24 +69,48 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/parser.hpp"
+#include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/streams.hpp"
+#include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/combine/cost_util.hpp"
+#include "atx/engine/combine/store.hpp"
 #include "atx/engine/cost/calibration.hpp"
 #include "atx/engine/cost/cost_selection_config.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/fitness.hpp"
 #include "atx/engine/factory/fitness_cost_selection.hpp"
+#include "atx/engine/factory/genome.hpp"
+#include "atx/engine/loop/weight_policy.hpp"
 
 namespace atxtest_fitness_cost_selection_test {
 
 using atx::f64;
 using atx::usize;
 using atx::engine::alpha::AlphaStreams;
+using atx::engine::alpha::analyze;
+using atx::engine::alpha::Library;
 using atx::engine::alpha::Panel;
+using atx::engine::alpha::parse_expr;
+using atx::engine::combine::AlphaStore;
+using atx::engine::exec::CommissionCfg;
+using atx::engine::exec::CommissionMode;
+using atx::engine::exec::ExecutionSimulator;
+using atx::engine::exec::FillCfg;
 using atx::engine::exec::ImpactCfg;
+using atx::engine::exec::LatencyCfg;
 using atx::engine::exec::SlippageCfg;
+using atx::engine::exec::SlippageMode;
+using atx::engine::exec::VolumeCapCfg;
 using atx::engine::factory::apply_selection_cost;
 using atx::engine::factory::book_cost_bps;
+using atx::engine::factory::FitnessCfg;
+using atx::engine::factory::FitnessReport;
+using atx::engine::factory::Genome;
+using atx::engine::factory::pool_aware_fitness;
+using atx::engine::factory::detail::finish_report;
+using atx::engine::factory::detail::FitnessCore;
+using atx::engine::WeightPolicy;
 namespace cost = atx::engine::cost;
 
 [[nodiscard]] Panel make_panel(usize dates, usize insts, std::vector<std::string> fields,
@@ -62,6 +118,61 @@ namespace cost = atx::engine::cost;
   auto r = Panel::create(dates, insts, std::move(fields), std::move(cols), {});
   EXPECT_TRUE(r.has_value()) << "panel fixture must build";
   return std::move(r.value());
+}
+
+// ---- (g)-only builders: a real genome/panel/frictionless-sim fixture --------
+// Named distinctly from other factory test files' same-purpose helpers
+// (frictionless_sim/make_genome/Lcg) and confined to THIS file's uniquely-named
+// namespace so no Unity-batch ODR collision is possible (see the p8 Item-1
+// ledger note on unnamed-namespace merging across Unity-concatenated TUs).
+[[nodiscard]] ExecutionSimulator selection_wire_frictionless_sim() {
+  return ExecutionSimulator{FillCfg{},
+                            SlippageCfg{SlippageMode::VolumeShare, 0.0, 0.0, 0.0, 0.0},
+                            ImpactCfg{0.0, 0.5, 0.0},
+                            CommissionCfg{CommissionMode::PerShare, 0.0, 0.0, 1.0, 0.0},
+                            LatencyCfg{},
+                            VolumeCapCfg{1.0}};
+}
+
+[[nodiscard]] Genome selection_wire_make_genome(std::string_view src, Library &lib) {
+  auto parsed = parse_expr(src, lib);
+  EXPECT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().message());
+  if (!parsed) {
+    return Genome{};
+  }
+  auto info = analyze(*parsed);
+  EXPECT_TRUE(info.has_value()) << (info ? "" : info.error().message());
+  if (!info) {
+    return Genome{};
+  }
+  return Genome{std::move(*parsed), std::move(*info), 0};
+}
+
+// A small deterministic (no RNG) trending panel with "close" + "volume": a
+// per-instrument momentum drift plus a DETERMINISTIC alternating oscillation
+// (+/-1% every other bar) so per-instrument returns have genuine nonzero
+// variance (dm_return_volatility needs sigma > 0 for book_cost_bps to charge
+// anything -- a noiseless monotone path would give sigma == 0 and cost == 0).
+// "volume" is a small CONSTANT so dollar-ADV is modest and the last-period
+// book carries a meaningfully large, reliably-nonzero participation/cost.
+[[nodiscard]] Panel selection_wire_panel() {
+  constexpr usize kDates = 60;
+  constexpr usize kInsts = 4;
+  std::vector<f64> drift(kInsts);
+  for (usize j = 0; j < kInsts; ++j) {
+    drift[j] = 0.006 - 0.002 * static_cast<f64>(j); // +0.6% .. -0.6% momentum gradient
+  }
+  std::vector<f64> close(kDates * kInsts);
+  std::vector<f64> volume(kDates * kInsts, 1.0e3); // small constant ADV
+  std::vector<f64> px(kInsts, 100.0);
+  for (usize t = 0; t < kDates; ++t) {
+    const f64 osc = (t % 2U == 0U) ? 0.01 : -0.01; // deterministic alternation -> sigma > 0
+    for (usize j = 0; j < kInsts; ++j) {
+      px[j] *= (1.0 + drift[j] + osc);
+      close[t * kInsts + j] = px[j];
+    }
+  }
+  return make_panel(kDates, kInsts, {"close", "volume"}, {close, volume});
 }
 
 [[nodiscard]] cost::CalibratedCost calibrated_cost(f64 Y, f64 delta, f64 gamma,
@@ -207,6 +318,116 @@ TEST(FitnessCostSelection, PureFunction_TwiceRunAndConcurrentCallsByteIdentical)
     EXPECT_EQ(results[i], first) << "seq==parallel: concurrent calls must all agree with the "
                                     "single-threaded result (no hidden shared state)";
   }
+}
+
+// =============================================================================
+//  (e) FinishReportAppliesSelectionCostAndFlipsRanking — the B7 wire, driven
+//  through detail::finish_report (the REAL production call site) rather than
+//  apply_selection_cost directly. Reuses the EXACT (b) numbers by construction
+//  (raw=1.00/0.95, cost_bps=2.0/0.2 -> onA=0.80, onB=0.93) via a hand-built
+//  FitnessCore pair, proving finish_report reproduces the identical contract.
+// =============================================================================
+TEST(FitnessCostSelection, FinishReportAppliesSelectionCostAndFlipsRanking) {
+  FitnessCore core_a{};
+  core_a.wq = 1.00;
+  core_a.robust = 1.0;
+  core_a.selection_cost_bps = 2.0; // "A": the gross winner, but EXPENSIVE to trade
+
+  FitnessCore core_b{};
+  core_b.wq = 0.95;
+  core_b.robust = 1.0;
+  core_b.selection_cost_bps = 0.2; // "B": the gross runner-up, but CHEAP to trade
+
+  const FitnessCfg cfg_off{}; // cost_selection default off
+  const FitnessReport rep_a_off =
+      finish_report(core_a, /*redundancy=*/0.0, /*cost_active=*/false, cfg_off);
+  const FitnessReport rep_b_off =
+      finish_report(core_b, /*redundancy=*/0.0, /*cost_active=*/false, cfg_off);
+  EXPECT_NEAR(rep_a_off.raw, 1.00, 1e-12);
+  EXPECT_NEAR(rep_b_off.raw, 0.95, 1e-12);
+  EXPECT_GT(rep_a_off.raw, rep_b_off.raw) << "OFF (gross ranking): the gross winner A ranks above B";
+
+  FitnessCfg cfg_on{};
+  cfg_on.cost_selection.impact_in_selection = true;
+  cfg_on.cost_selection.selection_aum = 1.0; // any positive value -- only the off-guard reads it here
+  cfg_on.cost_selection.cost_weight = 1.0;
+  const FitnessReport rep_a_on =
+      finish_report(core_a, /*redundancy=*/0.0, /*cost_active=*/false, cfg_on);
+  const FitnessReport rep_b_on =
+      finish_report(core_b, /*redundancy=*/0.0, /*cost_active=*/false, cfg_on);
+  EXPECT_NEAR(rep_a_on.raw, 0.80, 1e-12)
+      << "finish_report must reproduce apply_selection_cost's exact numbers for A";
+  EXPECT_NEAR(rep_b_on.raw, 0.93, 1e-12)
+      << "finish_report must reproduce apply_selection_cost's exact numbers for B";
+  EXPECT_LT(rep_a_on.raw, rep_b_on.raw)
+      << "ON (net-of-cost): the ScalarRaw ordering FLIPS -- A (expensive) now ranks "
+         "STRICTLY BELOW B (cheap), even though A was the gross winner";
+}
+
+// =============================================================================
+//  (f) FinishReportOffPath_IgnoresCoreSelectionCostBps — the inert-default
+//  safety net AT THE finish_report CALL SITE specifically: even a (hypothetical)
+//  huge core.selection_cost_bps must be ignored when cost_selection is off.
+// =============================================================================
+TEST(FitnessCostSelection, FinishReportOffPath_IgnoresCoreSelectionCostBps) {
+  FitnessCore core{};
+  core.wq = 0.6;
+  core.robust = 1.0;
+  core.selection_cost_bps = 999.0; // deliberately huge -- must still be ignored OFF
+
+  const FitnessCfg cfg_off{};
+  const FitnessReport rep = finish_report(core, /*redundancy=*/0.0, /*cost_active=*/false, cfg_off);
+  EXPECT_NEAR(rep.raw, 0.6, 1e-12)
+      << "impact_in_selection=false must ignore selection_cost_bps entirely";
+}
+
+// =============================================================================
+//  (g) PoolAwareFitnessThreadsRealBookCostIntoSelectionScalar — the END-TO-END
+//  wire: a real genome/panel/pool_aware_fitness call with
+//  cost_selection.impact_in_selection=true must compute a REAL, nonzero
+//  book_cost_bps at cfg.cost_selection.selection_aum INSIDE fitness_core and
+//  have it reach finish_report's `raw` (raw_on strictly < raw_off); the default
+//  (cost_selection{}) path stays byte-identical to a totally default
+//  FitnessCfg{} call (the boundary-pin holds).
+// =============================================================================
+TEST(FitnessCostSelection, PoolAwareFitnessThreadsRealBookCostIntoSelectionScalar) {
+  Library lib;
+  const WeightPolicy policy{};
+  const ExecutionSimulator sim = selection_wire_frictionless_sim();
+  const AlphaStore empty; // no pool -> diversify == robust == 1
+  const Panel panel = selection_wire_panel();
+  Genome cand = selection_wire_make_genome("rank(close)", lib);
+
+  FitnessCfg cfg_off{}; // cost_selection default off; target_aum stays 0 too
+  const auto f_off = pool_aware_fitness(cand, empty, panel, policy, sim, cfg_off);
+  ASSERT_TRUE(f_off.has_value()) << (f_off ? "" : f_off.error().message());
+
+  // An explicitly-default cost_selection must be byte-identical to a totally
+  // default FitnessCfg{} -- the boundary-pin.
+  const auto f_default = pool_aware_fitness(cand, empty, panel, policy, sim, FitnessCfg{});
+  ASSERT_TRUE(f_default.has_value());
+  EXPECT_EQ(f_off->raw, f_default->raw)
+      << "an explicitly-default cost_selection must be byte-identical to FitnessCfg{}";
+
+  FitnessCfg cfg_on{};
+  cfg_on.cost = calibrated_cost(/*Y*/ 5.0, /*delta*/ 0.5, /*gamma*/ 3.0, /*slip*/ 5.0);
+  cfg_on.cost_selection.impact_in_selection = true;
+  cfg_on.cost_selection.selection_aum = 5.0e6; // large AUM against the fixture's small ADV
+  cfg_on.cost_selection.cost_weight = 1.0;
+  const auto f_on = pool_aware_fitness(cand, empty, panel, policy, sim, cfg_on);
+  ASSERT_TRUE(f_on.has_value()) << (f_on ? "" : f_on.error().message());
+
+  ASSERT_TRUE(std::isfinite(f_off->raw) && std::isfinite(f_on->raw));
+  ASSERT_GT(f_off->raw, 0.0) << "fixture must give a positive, non-degenerate gross raw";
+  EXPECT_LT(f_on->raw, f_off->raw)
+      << "fitness_core must compute a REAL, nonzero book_cost_bps at "
+         "cfg.cost_selection.selection_aum and finish_report must net it into raw "
+         "(raw_on=" << f_on->raw << " must be < raw_off=" << f_off->raw << ")";
+
+  // Determinism: re-run cfg_on -> identical raw (no RNG in this path).
+  const auto f_on2 = pool_aware_fitness(cand, empty, panel, policy, sim, cfg_on);
+  ASSERT_TRUE(f_on2.has_value());
+  EXPECT_EQ(f_on->raw, f_on2->raw) << "determinism: same inputs -> identical raw (cost_selection on)";
 }
 
 } // namespace atxtest_fitness_cost_selection_test

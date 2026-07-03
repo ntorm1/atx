@@ -70,6 +70,7 @@
 #include "atx/engine/alpha/streams.hpp"      // alpha::AlphaStreams (cost book aggregate input)
 #include "atx/engine/combine/store.hpp"      // combine::AlphaStore, AlphaId
 #include "atx/engine/cost/calibration.hpp"   // cost::CalibratedCost (the calibrated coeffs, S4.3)
+#include "atx/engine/cost/cost_selection_config.hpp" // cost::CostSelectionConfig (B7 selection-cost wire)
 #include "atx/engine/eval/cpcv.hpp"          // eval::cpcv_folds, CpcvFold, LabelSpan
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
@@ -348,6 +349,15 @@ struct FitnessReport {
 //                           even when slope > 0 (the formula reduces to mult=1
 //                           because excess==0 and slack==+inf). Set a finite
 //                           positive value to activate the bite.
+//  cost_selection         : B7 (S4-4/S5 wire) — charges the sqrt-law impact
+//                           cost in the SEARCH SELECTION scalar (ScalarRaw
+//                           `raw`), not only the target_aum-gated NSGA cost
+//                           objective above. Inert default (impact_in_selection
+//                           = false, selection_aum = 0) ⇒ finish_report's
+//                           apply_selection_cost call is a documented no-op —
+//                           byte-identical to pre-B7. See
+//                           cost/cost_selection_config.hpp and
+//                           factory/fitness_cost_selection.hpp.
 // =========================================================================
 struct FitnessCfg {
   atx::usize trial_count = 1;
@@ -358,6 +368,7 @@ struct FitnessCfg {
   atx::f64 turnover_penalty_slope = 0.0;                        // S3-0: 0 ⇒ no penalty (default)
   atx::f64 max_turnover_target =                                 // S3-0: +inf ⇒ no excess ever
       std::numeric_limits<atx::f64>::infinity();
+  cost::CostSelectionConfig cost_selection{};                    // B7: off by default (see above)
 };
 
 namespace detail {
@@ -447,6 +458,16 @@ struct FitnessCore {
   atx::f64 sharpe_h1{0.0};
   atx::f64 sharpe_h2{0.0};
   bool split_stable{false};
+  // B7 (S4-4/S5 wire): the SELECTION-scalar impact cost (bps) — book_cost_bps
+  // priced at cfg.cost_selection.selection_aum (which may differ from
+  // cfg.target_aum's cost-OBJECTIVE figure above). Computed in fitness_core
+  // ONLY when cfg.cost_selection.impact_in_selection &&
+  // cfg.cost_selection.selection_aum > 0 (else stays the default 0.0 — the
+  // inert-default no-op); finish_report feeds it through
+  // factory::apply_selection_cost to net `raw`. Pre-computed HERE (not in
+  // finish_report) because finish_report has no strm/panel in scope — see
+  // fitness_cost_selection.hpp's documented SEAM.
+  atx::f64 selection_cost_bps{0.0};
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:
@@ -484,6 +505,15 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 // cfg.max_turnover_target.  Default slope == 0.0 -> the if-branch is never entered
 // -> byte-identical to pre-S3-0 (the boundary-pin holds).  The cfg reference is
 // borrowed for the duration of the call only (no ownership).
+//
+// B7 (S4-4/S5 wire): immediately after `raw` is assembled (wq*diversify*robust,
+// BEFORE the S3-0 turnover-penalty multiplier), `raw` is netted of
+// `core.selection_cost_bps` via `apply_selection_cost(raw, core.selection_cost_bps,
+// cfg.cost_selection)`. That function's OWN inert-default guard
+// (impact_in_selection==false or selection_aum<=0 -> return raw unchanged) is the
+// sole gate — cfg.cost_selection{} default keeps this call byte-identical to
+// pre-B7 on every existing path (core.selection_cost_bps is also 0.0 by default,
+// so even without the guard the subtraction would be a no-op).
 [[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy,
                                           bool cost_active, const FitnessCfg &cfg);
 

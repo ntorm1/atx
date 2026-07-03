@@ -581,6 +581,13 @@ atx::core::Result<StageResult> run_discover_gated(
     factory::FactoryConfig fcfg;
     fcfg.search                    = sc;
     fcfg.search.fitness.target_aum = cfg.target_aum; // >0 => ADV-aware cost objective (capacity)
+    // B7 (p8 final-wave wire): --impact-in-selection / --selection-aum net the
+    // sqrt-law impact cost into the SEARCH SELECTION scalar (ScalarRaw `raw`),
+    // not only the target_aum cost OBJECTIVE above. Off by default (RunConfig's
+    // impact_in_selection=false) -> fitness.hpp's cost_selection{} stays inert
+    // -> byte-identical to pre-wire.
+    fcfg.search.fitness.cost_selection.impact_in_selection = cfg.impact_in_selection;
+    fcfg.search.fitness.cost_selection.selection_aum       = cfg.selection_aum;
     fcfg.seed_exprs                = cfg.seed_exprs;
     fcfg.panel_fields              = fields;
     fcfg.min_dsr                   = cfg.min_dsr;

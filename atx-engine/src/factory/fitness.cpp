@@ -15,6 +15,7 @@
 #include "atx/engine/cost/cost_aware.hpp"      // cost::round_trip_cost_bps (S4.3 ONE cost model)
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis
+#include "atx/engine/factory/fitness_cost_selection.hpp" // factory::apply_selection_cost (B7)
 
 namespace atx::engine::factory {
 
@@ -372,14 +373,29 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.target_aum);
   }
 
+  // (6b) B7 (S4-4/S5 wire): the SELECTION-scalar cost (see
+  // FitnessCore::selection_cost_bps and fitness_cost_selection.hpp's SEAM).
+  // Pre-computed HERE (strm/panel are in scope) so finish_report -- which has
+  // neither -- can net it into `raw` via apply_selection_cost. GUARDED
+  // identically to CostSelectionConfig's own inert-default contract: off
+  // (impact_in_selection==false) or selection_aum<=0 -> selection_cost_bps stays
+  // 0.0 (apply_selection_cost's OWN guard would no-op regardless -- computing it
+  // only when active also avoids a redundant book_cost_bps call on the common
+  // off path).
+  atx::f64 selection_cost_bps = 0.0;
+  if (cfg.cost_selection.impact_in_selection && cfg.cost_selection.selection_aum > 0.0) {
+    selection_cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.cost_selection.selection_aum);
+  }
+
   // S3-0: thread the OOS mean turnover (already computed in aggregate_oos with
   // no additional eval) into FitnessCore so finish_report can apply the opt-in
   // penalty.  The FitnessCore field order (matched by this aggregate init) is:
   //   oos_pnl, wq, robust, dsr, haircut_sharpe, cost_bps, turnover,
-  //   sharpe_h1, sharpe_h2, split_stable
+  //   sharpe_h1, sharpe_h2, split_stable, selection_cost_bps
   return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
                                    dsr.haircut_sharpe, cost_bps, agg.turnover,
-                                   split.sharpe_h1, split.sharpe_h2, split.stable});
+                                   split.sharpe_h1, split.sharpe_h2, split.stable,
+                                   selection_cost_bps});
 }
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
@@ -414,6 +430,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 
   const atx::f64 diversify = std::clamp(1.0 - redundancy, 0.0, 1.0);
   atx::f64 raw = core.wq * diversify * core.robust;
+
+  // B7 (S4-4/S5 wire): net `raw` of the SELECTION-scalar impact cost.
+  // apply_selection_cost's OWN inert-default guard (impact_in_selection==false
+  // or selection_aum<=0 -> return raw unchanged) makes this byte-identical to
+  // pre-B7 on every existing path — core.selection_cost_bps is also 0.0 by
+  // default (fitness_core only computes it under the same guard), so the call
+  // is a documented no-op even before its internal guard is checked.
+  raw = apply_selection_cost(raw, core.selection_cost_bps, cfg.cost_selection);
 
   // S3-0 opt-in turnover penalty — entered ONLY when slope > 0 (default 0.0 ->
   // branch never reached -> byte-identical to pre-S3-0, no NaN risk, no RNG).
