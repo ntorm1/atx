@@ -80,6 +80,7 @@ from .offexchange import (
 )
 from .offexchange_quality import OffExchangeQualityReportDataset, OffExchangeQualityReportOptions
 from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
+from .pricing_bulk import BulkBarsDataset, BulkBarsOptions
 from .sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from .security_master import SecurityMasterDataset, SecurityMasterOptions
 from .shares_outstanding import SharesOutstandingHistoryDataset, SharesOutstandingHistoryOptions
@@ -229,6 +230,21 @@ def _ticker_history_options(params: dict[str, Any]) -> TickerHistoryOptions:
         zip_path=_path(params.get("zip_path"), default.zip_path),
         symbols=_tuple_or_none(params.get("symbols", default.symbols)),
         start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date")),
+        chunk_size=int(params.get("chunk_size", default.chunk_size)),
+        max_chunks=None if params.get("max_chunks") in (None, "") else int(params["max_chunks"]),
+        source=params.get("source", default.source),
+        compute_source_hash=_bool_param(params.get("compute_source_hash"), default.compute_source_hash),
+    )
+
+
+def _bulk_bars_options(params: dict[str, Any]) -> BulkBarsOptions:
+    default = BulkBarsOptions()
+    return BulkBarsOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source_zip=None if params.get("source_zip") in (None, "") else Path(params["source_zip"]),
+        symbols=_tuple_or_none(params.get("symbols")),
+        start_date=_date_or_none(params.get("start_date", default.start_date)),
         end_date=_date_or_none(params.get("end_date")),
         chunk_size=int(params.get("chunk_size", default.chunk_size)),
         max_chunks=None if params.get("max_chunks") in (None, "") else int(params["max_chunks"]),
@@ -867,6 +883,7 @@ def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
 DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     SecurityMasterDataset.dataset_id: (SecurityMasterDataset, _security_master_options),
     TickerHistoryDataset.dataset_id: (TickerHistoryDataset, _ticker_history_options),
+    BulkBarsDataset.dataset_id: (BulkBarsDataset, _bulk_bars_options),
     CorporateActionsDataset.dataset_id: (CorporateActionsDataset, _corporate_actions_options),
     AdjustmentFactorHistoryDataset.dataset_id: (
         AdjustmentFactorHistoryDataset,

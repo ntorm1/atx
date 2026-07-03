@@ -11,6 +11,7 @@ def test_key_dataset_classes_importable():
     from db import (
         AdjustmentFactorHistoryDataset,
         AlphaResearchDataset,
+        BulkBarsDataset,
         CorporateActionsDataset,
         DelistingEventDataset,
         DelistingReturnObservationDataset,
@@ -32,6 +33,7 @@ def test_key_dataset_classes_importable():
     )
     assert AdjustmentFactorHistoryDataset is not None
     assert AlphaResearchDataset is not None
+    assert BulkBarsDataset is not None
     assert CorporateActionsDataset is not None
     assert DelistingEventDataset is not None
     assert DelistingReturnObservationDataset is not None

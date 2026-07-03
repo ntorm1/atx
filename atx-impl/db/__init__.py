@@ -249,6 +249,7 @@ from .symbol_directory import (
     NasdaqSymbolDirectoryDataset,
     NasdaqSymbolDirectoryOptions,
 )
+from .pricing_bulk import BulkBarsDataset, BulkBarsOptions
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
@@ -304,6 +305,8 @@ __all__ = [
     "AdjustmentFactorHistoryOptions",
     "AlphaResearchDataset",
     "AlphaResearchOptions",
+    "BulkBarsDataset",
+    "BulkBarsOptions",
     "blockholder_asof",
     "CorporateActionsDataset",
     "CorporateActionsOptions",
