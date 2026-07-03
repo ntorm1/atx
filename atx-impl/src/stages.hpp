@@ -25,5 +25,10 @@ struct StageResult {
 [[nodiscard]] atx::core::Result<StageResult> run_report(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_all(const RunConfig&);
 [[nodiscard]] atx::core::Result<StageResult> run_regime(const RunConfig&);
+// S5-4: standalone "metabook" subcommand entry point (a thin wrapper over
+// stage_metabook.hpp's 2-arg run_metabook, building its MetaBookStageConfig from
+// cfg.sleeve_method — implemented in stage_run.cpp, the S5-owned hub; the 2-arg
+// overload itself lives in stage_metabook.hpp/.cpp, S2-owned, untouched).
+[[nodiscard]] atx::core::Result<StageResult> run_metabook(const RunConfig&);
 
 } // namespace atx::impl

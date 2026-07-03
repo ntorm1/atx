@@ -58,6 +58,7 @@ static void print_usage(std::ostream& out) {
            "  run        Run the full pipeline from a config file\n"
            "  regime     Build a regime/macro .seg from staged CSVs\n"
            "  sweep      Sweep K seeds into one --library-dir accumulating library\n"
+           "  metabook   Sleeve-aware meta-book (S2 fund::MetaBook), standalone\n"
            "\n"
            "Global flags: --help, --quiet, --digest-only\n";
 }
@@ -104,6 +105,7 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
         if (sub == "run")      return run_all(cfg);
         if (sub == "regime")   return run_regime(cfg);
         if (sub == "sweep")    return run_sweep(cfg);
+        if (sub == "metabook") return run_metabook(cfg);
         // Unreachable: parse_args already validated the subcommand.
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
             "unknown subcommand: '" + sub + "'");

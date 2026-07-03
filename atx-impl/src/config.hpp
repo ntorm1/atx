@@ -14,8 +14,9 @@ namespace atx::impl {
 
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
-inline constexpr std::array<std::string_view, 9> kSubcommands = {
-    "load", "panel", "discover", "combine", "optimize", "report", "run", "regime", "sweep"};
+inline constexpr std::array<std::string_view, 10> kSubcommands = {
+    "load", "panel", "discover", "combine", "optimize", "report", "run", "regime", "sweep",
+    "metabook"}; // S5-4: standalone meta-book stage (S2's fund::MetaBook, hub-routed)
 
 // ----------------------------------------------------------------------------
 // RunConfig â€” all CLI flags / config-file keys for every subcommand.

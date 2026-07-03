@@ -268,10 +268,90 @@ wiring is where a real caller would eventually invoke it. Given the remaining sp
 (the `Reevaluator` seam was designed specifically so that integration is a thin adapter, not a
 redesign).
 
+## S5-4 — stage graph + build-megaalpha-book.ps1 (commit TBD)
+
+**Stage graph (metabook is the new node; everything else was already wired pre-S5):**
+- `atx-impl/src/config.hpp`: `kSubcommands` grown 9->10, appending `"metabook"`.
+- `atx-impl/src/stages.hpp`: declared the 1-arg `run_metabook(const RunConfig&)` overload
+  (co-exists with `stage_metabook.hpp`'s 2-arg `run_metabook(cfg, scfg)`; both in `atx::impl`).
+- `atx-impl/src/dispatch.cpp`: usage line + `if (sub == "metabook") return run_metabook(cfg);`.
+- `atx-impl/src/stage_run.cpp`: `sleeve_method_from_string` (erc/hrp/invvol -> S2
+  `fund::RiskBudgetMethod`, invvol/default -> InverseVol); the 1-arg `run_metabook(cfg)` wrapper
+  delegating to the S2-owned 2-arg body; and, in `run_all`'s stage 5, `cfg.metabook` SUBSTITUTES
+  metabook for optimize (both write `books.bin` in the same shape `stage_report.cpp` reads) —
+  the kv key becomes `cfg.metabook ? "metabook" : "optimize"` (byte-identical key text at the
+  off-path default).
+
+Accept evidence: new `atx-impl/tests/stage_run_megabook_test.cpp` — `MegaBookGraph_InertByteIdentical`
+(every new S5-0..S5-4 field explicitly asserted at its inert value vs. untouched defaults ->
+identical digest, identical 6-entry kvs, in order load/panel/discover/combine/optimize/report) and
+`MetabookStage_SkippedAtDefault` (kvs[4].first == "optimize" at default, == "metabook" with
+`--metabook`, digests differ). Both GREEN (1.27s, 1.45s). Broader regression:
+`AtxImplE2E|AtxImplCli|Config` 60/60 GREEN; full `atx-impl-tests` suite rebuilt clean, 0 NEW
+failures — the only FAILED lines are the two pre-existing (confirmed present before this session
+touched any file) `RobustPipelineE2E.NoiseGrowsRobustLibraryByZero` /
+`SyntheticPanelAdmitsRobustSurvivors`, plus the expected `_NOT_BUILT` groups
+(`atx-core-tests`, `atx-tsdb-tests`, `atx-engine-parallel-tests`, `atx-engine-book-tests`,
+`atx-engine-regime-tests`, `atx-engine-store-tests`) never built in this tree. `atx-impl` binary
+target rebuilt explicitly (`cmake --build --preset dev --target atx-impl`, exit=0, relink only).
+
+**Deviation (recorded): stage vocabulary.** The spec's literal `-Stage` list is
+`augment|discover|riskmodel|combine|metabook|optimize|report|pipeline|all`. This codebase has NO
+standalone `augment` or `riskmodel` CLI subcommand: FINRA short-interest augment
+(`stage_augment.hpp`) is explicitly documented as deferred pending ORATS-seg/symbology
+infrastructure (pre-existing, not S5 scope); `--risk-model`/`--dead-alpha-factors`/
+`--group-neutralize` reach the engine through the EXISTING zero-arg `run_optimize(cfg)` (S5-0),
+not a separate stage. `build-megaalpha-book.ps1`'s `-Stage` `ValidateSet` is therefore
+`discover|combine|metabook|optimize|report|pipeline|all` — riskmodel knobs are folded into
+`New-OptimizeArgv`, augment is out of scope. Likewise `--combine-method` does not exist; S3's
+existing `--method` already accepts `stack`/`regime-stack` end to end, so the prod profile passes
+`--method stack`. Both substitutions are commented in the script header and covered by dedicated
+Pester `It`s (`New-CombineArgv - --method deviation`, `New-OptimizeArgv - --risk-model deviation`).
+
+**`atx-impl/scripts/build-megaalpha-book.ps1`** (new): modeled on `scripts/build-tradeable-alphas.ps1`
+— `New-DiscoverArgv`/`New-CombineArgv`/`New-MetabookArgv`/`New-OptimizeArgv`/`New-ReportArgv`
+testable argv functions, `-DryRun`, `if ($MyInvocation.InvocationName -ne '.')` guard,
+`-Profile prod|smoke` resolving population/generations (300/15 vs 40/4) and the opt-in set
+(prod: `--risk-model factor --dead-alpha-factors --group-neutralize --metabook --sleeve-method hrp
+--method stack --impact-in-selection --require-split-stable --blocking-pbo --min-dsr 0.5
+--max-pbo 0.5`, all via `--capacity-curve` on report; smoke: every new VALUE flag passed
+explicitly at its inert default, every new BOOLEAN flag OMITTED since absence is its inert value).
+`-Stage all|pipeline` expansion auto-excludes metabook/optimize's non-selected alternative so a
+run never writes `books.bin` twice. `AtxExe` defaults to the p8 WORKTREE's own build
+(`C:\atx-wt\p8\build\bin\atx-impl.exe`) — deliberately NOT copying
+`build-tradeable-alphas.ps1`'s `C:\atx\...` default, so an operator who omits `-AtxExe` never
+silently invokes the main repo's (pre-S5) binary.
+
+**`atx-impl/scripts/tests/build-megaalpha-book.Tests.ps1`** (new, Pester 3.4.0): 28 `It`s across
+9 `Describe` blocks (core-flags, inert-value smoke, prod opt-in, `--workers` conditional,
+population/generations tiers, `--method` deviation, the new metabook stage, `--risk-model`
+deviation, `--capacity-curve` opt-in). 28/28 GREEN (`Invoke-Pester ... -PassThru`:
+`TotalCount=28 PassedCount=28 FailedCount=0`). Real (non-dot-sourced) `-DryRun` invocation of both
+profiles also exercised directly (not just via Pester's dot-source) — confirmed correct 4-stage
+(smoke: discover/combine/optimize/report) and 4-stage (prod: discover/combine/metabook/report,
+optimize excluded) argv sequences, no PowerShell errors.
+
+**Dev-panel live smoke — OUTCOME (honest, not fabricated):** `dev-panel.bin` is confirmed ABSENT
+from this worktree and no panel generator exists in it. Best-effort attempt made: ran the real
+built `atx-impl.exe` (not DryRun) with the exact smoke-profile discover argv against
+`work/dev/dev-panel.bin` —
+```
+$ ./build/bin/atx-impl.exe discover --panel work/dev/dev-panel.bin --seed-file atx-impl/tests/fixtures/alpha101.txt --gated ...
+read_panel: cannot open 'work/dev/dev-panel.bin'
+exit=1
+```
+— the expected, real failure (no fabricated wall time or admit count). DEFERRED: a genuine
+dev-panel live smoke is an operator step (build a real panel via `load`+`panel` on production
+ORATS data, or a synthetic one) alongside V1; it is not blocking S5-4, which is proven instead via
+(a) the C++ `stage_run_megabook_test.cpp`'s two real, passing `run_all` invocations against a
+synthetic 10x100 ORATS-zip fixture (genuinely exercises load->panel->discover->combine->
+metabook/optimize->report end to end, including the metabook branch), (b) 28/28 Pester argv
+coverage, and (c) a clean `atx-impl` binary rebuild.
+
 ## Unit checklist
 - [x] S5-0 CLI flag surface
 - [x] S5-1 library::verdict_for deflation screens
 - [x] S5-2 cumulative-N selection column + blocking PBO
 - [x] S5-3 eval/robustness_battery
-- [ ] S5-4 stage graph + build-megaalpha-book.ps1
+- [x] S5-4 stage graph + build-megaalpha-book.ps1
 - [ ] S5-5 V1 scorecard template
