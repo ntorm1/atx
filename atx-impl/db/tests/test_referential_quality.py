@@ -25,7 +25,9 @@ from __future__ import annotations
 import datetime as dt
 
 
-def _insert_fundamental_ratio(con, *, ratio_id: str, security_id: str) -> None:
+def _insert_fundamental_ratio(
+    con, *, ratio_id: str, security_id: str, period_end: str = "2023-12-31"
+) -> None:
     con.execute(
         """
         INSERT INTO fundamental_ratios (
@@ -34,23 +36,41 @@ def _insert_fundamental_ratio(con, *, ratio_id: str, security_id: str) -> None:
         )
         VALUES (
             ?, 'fixture', ?, 'gross_margin', 'profitability', 'ratio',
-            'ttm', 'ratio', DATE '2023-12-31', DATE '2023-12-31',
+            'ttm', 'ratio', ?, ?,
             TIMESTAMP '2024-02-15 22:00:00'
         )
         """,
-        [ratio_id, security_id],
+        [
+            ratio_id,
+            security_id,
+            dt.date.fromisoformat(period_end),
+            dt.date.fromisoformat(period_end),
+        ],
     )
 
 
 def _insert_fundamental_point(
-    con, *, security_id: str, metric: str = "revenue", item_id: int | None = None
+    con,
+    *,
+    security_id: str,
+    metric: str = "revenue",
+    item_id: int | None = None,
+    period_end: str = "2023-12-31",
 ) -> None:
     con.execute(
         """
-        INSERT INTO fundamental_points (source, security_id, metric, item_id, as_of_date)
-        VALUES ('fixture', ?, ?, ?, DATE '2023-12-31')
+        INSERT INTO fundamental_points (
+            source, security_id, metric, item_id, period_end, as_of_date
+        )
+        VALUES ('fixture', ?, ?, ?, ?, ?)
         """,
-        [security_id, metric, item_id],
+        [
+            security_id,
+            metric,
+            item_id,
+            dt.date.fromisoformat(period_end),
+            dt.date.fromisoformat(period_end),
+        ],
     )
 
 
@@ -139,6 +159,24 @@ def test_referential_quality_check_compiles_to_sql_quality_check():
     assert "p.maker_id IS NULL" in compiled.sql
 
 
+def test_referential_quality_check_compiles_composite_join_keys():
+    from db.quality import ReferentialQualityCheck
+
+    spec = ReferentialQualityCheck(
+        dataset_id="widgets",
+        check_name="widgets_without_makers",
+        child_table="widgets",
+        parent_table="makers",
+        child_keys=("maker_id", "period_end"),
+        parent_keys=("maker_id", "period_end"),
+    )
+    compiled = spec.compile()
+
+    assert "ON p.maker_id = c.maker_id AND p.period_end = c.period_end" in compiled.sql
+    assert "c.maker_id IS NOT NULL AND c.period_end IS NOT NULL" in compiled.sql
+    assert "p.maker_id IS NULL" in compiled.sql
+
+
 def test_referential_quality_check_table_name_override():
     from db.quality import ReferentialQualityCheck
 
@@ -200,6 +238,24 @@ def test_clean_fundamental_ratio_with_backing_points_is_green(tmp_store):
 
     assert check.status == "passed"
     assert check.observed_value == 0.0
+
+
+def test_fundamental_ratio_same_security_wrong_period_is_red(tmp_store):
+    """A security-only parent row is not enough: ratios resolve to points on
+    at least (security_id, period_end)."""
+    from db.quality import run_warehouse_quality_checks
+
+    con = tmp_store.con
+    _insert_fundamental_ratio(
+        con, ratio_id="ratio-wrong-period", security_id="SEC-A", period_end="2023-12-31"
+    )
+    _insert_fundamental_point(con, security_id="SEC-A", period_end="2022-12-31")
+
+    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    check = results["fundamental_ratios_without_fundamental_points"]
+
+    assert check.status == "failed"
+    assert check.observed_value == 1.0
 
 
 # ---------------------------------------------------------------------------

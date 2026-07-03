@@ -115,16 +115,19 @@ class ReferentialQualityCheck:
     parent.key IS NULL`` strings duplicated across ``_check_specs`` (see e.g.
     ``orphan_equity_daily_bars``, ``xbrl_filing_facts_without_context``,
     ``xbrl_filing_dimensions_without_context``,
-    ``xbrl_filing_contexts_without_sec_submission``). ``compile()`` produces
-    the vetted anti-join shape::
+    ``xbrl_filing_contexts_without_sec_submission``). ``compile()`` accepts
+    either the single-key convenience fields (``child_key``/``parent_key``) or
+    composite key tuples (``child_keys``/``parent_keys``), then produces the
+    vetted anti-join shape::
 
         SELECT count(*) FROM child c
         LEFT JOIN parent p ON p.<parent_key> = c.<child_key>
         WHERE c.<child_key> IS NOT NULL AND p.<parent_key> IS NULL
 
-    A NULL ``child_key`` value has nothing to resolve and is excluded from
-    both sides of the count -- it is NOT an orphan, matching the existing
-    ``security_id IS NOT NULL``-guarded hand-rolled checks.
+    A NULL child join key has nothing to resolve and is excluded from both
+    sides of the count -- it is NOT an orphan, matching the existing
+    ``security_id IS NOT NULL``-guarded hand-rolled checks. For composite
+    joins, if any child join key is NULL, that child row is skipped.
 
     ``compile()`` returns a plain ``SqlQualityCheck``, so
     ``run_warehouse_quality_checks`` needs no changes to execute a
@@ -138,21 +141,46 @@ class ReferentialQualityCheck:
     dataset_id: str
     check_name: str
     child_table: str
-    child_key: str
     parent_table: str
-    parent_key: str
+    child_key: str | None = None
+    parent_key: str | None = None
+    child_keys: tuple[str, ...] | None = None
+    parent_keys: tuple[str, ...] | None = None
     table_name: str | None = None
     warn_if_missing: bool = True
     failure_status: FailureStatus = "failed"
 
+    def _join_keys(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        child_keys = self.child_keys
+        parent_keys = self.parent_keys
+        if child_keys is None and self.child_key is not None:
+            child_keys = (self.child_key,)
+        if parent_keys is None and self.parent_key is not None:
+            parent_keys = (self.parent_key,)
+        if child_keys is None or parent_keys is None:
+            raise ValueError("ReferentialQualityCheck requires child and parent join keys")
+        if not child_keys or not parent_keys:
+            raise ValueError("ReferentialQualityCheck join key tuples cannot be empty")
+        if len(child_keys) != len(parent_keys):
+            raise ValueError(
+                "ReferentialQualityCheck child and parent join key tuples must be the same length"
+            )
+        return child_keys, parent_keys
+
     def compile(self) -> SqlQualityCheck:
+        child_keys, parent_keys = self._join_keys()
+        join_predicate = " AND ".join(
+            f"p.{parent_key} = c.{child_key}"
+            for child_key, parent_key in zip(child_keys, parent_keys, strict=True)
+        )
+        child_not_null = " AND ".join(f"c.{child_key} IS NOT NULL" for child_key in child_keys)
         sql = f"""
             SELECT count(*)::DOUBLE
             FROM {self.child_table} c
             LEFT JOIN {self.parent_table} p
-              ON p.{self.parent_key} = c.{self.child_key}
-            WHERE c.{self.child_key} IS NOT NULL
-              AND p.{self.parent_key} IS NULL
+              ON {join_predicate}
+            WHERE {child_not_null}
+              AND p.{parent_keys[0]} IS NULL
         """
         return SqlQualityCheck(
             dataset_id=self.dataset_id,
@@ -170,9 +198,10 @@ class ReferentialQualityCheck:
 def _referential_check_specs() -> tuple[ReferentialQualityCheck, ...]:
     """Orphan checks over the fundamentals DAG the ratio engine consumes.
 
-    (a) Every ``fundamental_ratios`` row's security must resolve to backing
-        raw fundamental facts -- see ``PARENT_TABLE_FOR_FUNDAMENTAL_RATIOS``
-        for the parameterized parent (``fundamental_points`` today).
+    (a) Every ``fundamental_ratios`` row's security/period must resolve to
+        backing raw fundamental facts -- see
+        ``PARENT_TABLE_FOR_FUNDAMENTAL_RATIOS`` for the parameterized parent
+        (``fundamental_points`` today).
     (b) Every fact's ``item_id`` (``fundamental_points``,
         ``fundamental_statement_points``) must resolve in the canonical item
         dimension (``fundamental_item``, PF-S1). ``item_id`` is nullable
@@ -184,9 +213,9 @@ def _referential_check_specs() -> tuple[ReferentialQualityCheck, ...]:
             dataset_id="fundamental_ratios",
             check_name="fundamental_ratios_without_fundamental_points",
             child_table="fundamental_ratios",
-            child_key="security_id",
             parent_table=PARENT_TABLE_FOR_FUNDAMENTAL_RATIOS,
-            parent_key="security_id",
+            child_keys=("security_id", "period_end"),
+            parent_keys=("security_id", "period_end"),
         ),
         ReferentialQualityCheck(
             dataset_id="sec_company_facts",
