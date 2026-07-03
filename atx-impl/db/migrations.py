@@ -7375,6 +7375,113 @@ def _fundamental_ratio_provenance_indexes(conn: duckdb.DuckDBPyConnection) -> No
         conn.execute(statement)
 
 
+def _schema_contract_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S1 S1-0: schema_contract table -- the declarative manifest persisted as data.
+
+    Persists db/schema_contract.py::CONTRACT (one row per declared (table, column) pair,
+    each tagged declared_in in {schema_py, migration}) into a queryable schema_contract
+    table, plus its own table_catalog/field_catalog rows per (B). Indexes land in migration
+    0098 (schema-vs-index split per the S5g/S5k WAL-replay precedent -- see
+    _formula_registry_schema_catalog/_formula_registry_indexes for the same split).
+
+    detect_schema_drift() reads the in-Python CONTRACT dict directly (a pure diff against
+    duckdb_tables()/duckdb_columns()); this table is the durable, plain-SQL-queryable
+    mirror of that same manifest for downstream consumers (e.g. PF2-S2's post-migration
+    verify). manifest_sha256 (schema_contract_sha256() over the sorted manifest) is
+    denormalized onto every row so a single `SELECT DISTINCT manifest_sha256` gives the
+    stable baseline to compare across bootstraps/versions.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_contract (
+            table_name VARCHAR NOT NULL,
+            column_name VARCHAR NOT NULL,
+            data_type VARCHAR NOT NULL,
+            nullable BOOLEAN NOT NULL,
+            is_natural_key BOOLEAN NOT NULL DEFAULT false,
+            is_pit_column BOOLEAN NOT NULL DEFAULT false,
+            declared_in VARCHAR NOT NULL,
+            manifest_sha256 VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (table_name, column_name)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'schema_contract',
+            'control',
+            'schema_contract_row',
+            'table_name,column_name',
+            'Declarative warehouse schema contract: one row per manifest (table, column) pair persisted from db/schema_contract.py::CONTRACT, tagged declared_in (schema_py|migration). The queryable/durable mirror of the manifest detect_schema_drift diffs live duckdb_tables()/duckdb_columns() against.',
+            '["table_name","column_name"]',
+            'manifest_sha256 is the stable hash (schema_contract.py::schema_contract_sha256) over the sorted manifest at seed time; compare across bootstraps to detect manifest drift itself. This table documents the CONTRACT, not fact rows, so it carries no as_of_date/available_at PIT columns of its own.',
+            now()
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('schema_contract', 'table_name', 'identifier', 'Contracted table name.', false, NULL, NULL, now()),
+            ('schema_contract', 'column_name', 'identifier', 'Contracted column name within table_name.', false, NULL, NULL, now()),
+            ('schema_contract', 'data_type', 'category', 'Declared DuckDB data type (matches duckdb_columns().data_type spelling, e.g. VARCHAR, TIMESTAMP).', false, NULL, NULL, now()),
+            ('schema_contract', 'nullable', 'flag', 'Declared nullability for the column.', false, NULL, NULL, now()),
+            ('schema_contract', 'is_natural_key', 'flag', 'True when the column participates in the table''s natural/business key (per table_catalog.natural_key_json), independent of its surrogate PRIMARY KEY if any.', false, NULL, NULL, now()),
+            ('schema_contract', 'is_pit_column', 'flag', 'True for the canonical bitemporal PIT columns (as_of_date, available_at, source_loaded_at, run_id, is_latest_revision) where the fact/derived-row mandate applies to this table.', false, NULL, NULL, now()),
+            ('schema_contract', 'declared_in', 'category', 'Which imperative code path declares this column: schema_py (schema.py::ensure_quant_schema) or migration (migrations.py::MIGRATIONS). Column-level, not table-level: a schema.py table can gain later columns via a migration ALTER TABLE.', false, NULL, NULL, now()),
+            ('schema_contract', 'manifest_sha256', 'identifier', 'schema_contract_sha256() over the sorted manifest at seed time; a stable baseline for detecting manifest changes across re-bootstraps.', false, NULL, NULL, now()),
+            ('schema_contract', 'source_loaded_at', 'timestamp', 'Warehouse-assigned timestamp when this manifest row was seeded (DEFAULT now()).', false, NULL, NULL, now())
+        """
+    )
+
+    from .schema_contract import CONTRACT, schema_contract_sha256
+
+    manifest_sha256 = schema_contract_sha256(CONTRACT)
+    rows = [
+        (
+            table_name,
+            spec.name,
+            spec.data_type,
+            spec.nullable,
+            spec.is_natural_key,
+            spec.is_pit_column,
+            spec.declared_in,
+            manifest_sha256,
+        )
+        for table_name, specs in CONTRACT.items()
+        for spec in specs
+    ]
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO schema_contract (
+            table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
+            declared_in, manifest_sha256, source_loaded_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
+        """,
+        rows,
+    )
+
+
+def _schema_contract_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S1 S1-0: lookup indexes split from schema migration 0097."""
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_schema_contract_table_name ON schema_contract(table_name)",
+        "CREATE INDEX IF NOT EXISTS idx_schema_contract_declared_in ON schema_contract(declared_in)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -7786,6 +7893,16 @@ MIGRATIONS: list[Migration] = [
         version=93,
         name="fundamental_ratio_provenance_indexes",
         up=_fundamental_ratio_provenance_indexes,
+    ),
+    Migration(
+        version=97,
+        name="schema_contract_schema_catalog",
+        up=_schema_contract_schema_catalog,
+    ),
+    Migration(
+        version=98,
+        name="schema_contract_indexes",
+        up=_schema_contract_indexes,
     ),
 ]
 
