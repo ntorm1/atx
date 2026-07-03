@@ -84,4 +84,17 @@ fit_stack_combo(const atx::engine::combine::AlphaStore& pool, std::span<const at
                 const atx::engine::combine::CombinerConfig& combiner_cfg,
                 bool with_regime);
 
+// ===========================================================================
+//  fit_shrinkage_mv_cleaned_cov (S3-4) — the ShrinkageMv weight fit gated on
+//  risk_cfg.kind==Factor, exposed for direct-call testing against a HAND-BUILT
+//  pool (the same rationale as fit_stack_combo above: precise control over an
+//  N>=T fixture where the raw complete-case MLE covariance is singular/near-
+//  singular and cleaned_alpha_cov's shrink+eigen-clip pipeline is expected to
+//  produce a materially more diversified weight fit). See the definition in
+//  stage_combine.cpp for the full "why not edit combiner.hpp" rationale.
+// ===========================================================================
+[[nodiscard]] atx::core::Result<atx::engine::combine::Combination>
+fit_shrinkage_mv_cleaned_cov(const atx::engine::combine::AlphaStore& pool,
+                             atx::usize fit_begin, atx::usize fit_end);
+
 } // namespace atx::impl

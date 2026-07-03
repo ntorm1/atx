@@ -77,7 +77,7 @@ only the `method_from_string`/dispatch `if` chain S3-1 extends next).
 - [x] S3-1  `fit_stack` wiring (forward-return label + meta + stack->weight bridge)
 - [x] S3-2  admit-vs-fallback gate (mandatory)
 - [x] S3-3  PIT HMM regime posterior -> `RegimeStack`
-- [ ] S3-4  `cleaned_alpha_cov` consumption behind `kind==Factor`
+- [x] S3-4  `cleaned_alpha_cov` consumption behind `kind==Factor`
 - [ ] S3-5  determinism battery (consolidated)
 
 ## Determinism contracts (both apply this sprint, per the p8 contract)
@@ -324,3 +324,76 @@ partition / OOF walk (each fold/partition IS independent by construction — `fi
 loops regimes independently accumulating into one series; `cpcv_folds` folds are independent — but
 an actual DetPool-driven parallel-vs-sequential run was not built for this unit; folded into S3-5's
 determinism battery, which is the sprint's designated home for this proof.
+
+S3-4: complete. `run_combine`'s three-arg overload (`stage_combine.hpp`, already declared with the
+S3-4 doc block in place from the S3-1/S3-3 header work) threads `risk::RiskModelConfig` through two
+call sites, both gated on `risk_cfg.kind == risk::RiskModelKind::Factor` (default `Diagonal`,
+inert):
+
+  1. **Step 8a dispatch (the shipped weight fit):** a NEW parallel function
+     `fit_shrinkage_mv_cleaned_cov(pool, fit_begin, fit_end)` (declared in `stage_combine.hpp`,
+     defined in `stage_combine.cpp`), reached only when `cm == ShrinkageMv && risk_cfg.kind ==
+     Factor`. It reuses the EXACT same public inputs `combine::detail::fit_shrinkage_mv` itself
+     reads — `combine::detail::window_means` + `combine::detail::complete_case_centered` over the
+     SAME `[fit_begin, fit_end)` window — but swaps the covariance source for
+     `atx::engine::data::cleaned_alpha_cov(centered)` (the S1-shipped LW constant-correlation
+     shrink + Marchenko-Pastur eigen-clip + strict-PD floor pipeline) in place of the raw
+     complete-case MLE `mle_covariance`, then solves `Σ̂w = μ` via the same `solve_spd` +
+     `renorm_abs_sum` (Σ|w|=1) convention every method uses.
+  2. **Step 12 breadth instrumentation:** the effective-breadth covariance is now `(risk_cfg.kind
+     == Factor) ? data::cleaned_alpha_cov(centered) : combine::detail::mle_covariance(centered,
+     na)` — so the telemetry stays coherent with whichever covariance actually shipped the weights,
+     rather than always reporting the raw-MLE breadth even when the Factor-cleaned covariance was
+     what was actually solved against.
+
+**Deliberately NOT a `combiner.hpp` edit (ownership boundary + anti-double-shrink rationale):**
+`combine/combiner.hpp` is append-only under this sprint's ownership boundaries, and
+`AlphaCombiner::fit`'s internal `fit_shrinkage_mv`/Ledoit-Wolf pipeline is frozen-ish, reused
+verbatim by every other method's covariance need. Editing it in place to swap in
+`cleaned_alpha_cov` would either (a) double-shrink — LW-to-scaled-identity THEN MP-eigen-clipping
+the SAME matrix, an uncontrolled, undocumented estimator composition never validated together — or
+(b) require a new conditional branch inside frozen combiner internals, an ownership violation. A
+separate, parallel function in `stage_combine.cpp` (S3's own file) keeps the two covariance
+pipelines cleanly disjoint: `risk_cfg.kind==Diagonal` (default) reaches `AlphaCombiner::fit`
+untouched; `risk_cfg.kind==Factor` reaches `fit_shrinkage_mv_cleaned_cov` instead, never both.
+
+**`factor_model_artifact.hpp` untouched (read-only accessor, per the hard constraint):** only
+`data::cleaned_alpha_cov(const MatX&) -> MatX` is called, exactly as S1 shipped it (a pure,
+non-fallible free function of the column-demeaned `centered` matrix — NOT a
+`FactorModelArtifact::cleaned_alpha_cov(fit_begin,fit_end)` method, correcting the sprint doc's
+pseudocode, as already noted at kickoff).
+
+**Determinism classes, evidence (`atx-impl/tests/stage_combine_cleaned_cov_test.cpp`, suite
+`StageCombineCleanedCov`):**
+
+  * **(a) off-path byte-identity** — `DiagonalKindByteIdenticalToLegacyPath`: a real DSL/panel
+    fixture (mirrors `stage_combine_stack_test.cpp`'s technique) run through the pre-S3-4 zero-arg
+    `run_combine(cfg)` legacy entry point vs the new three-arg overload called with an EXPLICIT
+    `risk::RiskModelConfig{}` (`kind==Diagonal`, the enum's own default): `combo.bin` digest AND the
+    full weights-sidecar BYTES are identical between the two calls.
+  * **(b) on-path RED->GREEN** — `FactorKindWiringIsLiveAndReportsMeasuredDiversification`: a
+    hand-built `combine::AlphaStore` pool reproducing `risk_cleaned_alpha_cov_test.cpp`'s OWN N~T
+    "spurious large eigenvalue" fixture (T=20, N=18: a common sinusoid + small idiosyncratic noise
+    + one large near-independent outlier column — the noise-dominated regime the S1 accessor was
+    built to tame) proves `fit_shrinkage_mv_cleaned_cov`'s weights genuinely differ from
+    `combine::AlphaCombiner{}.fit`'s (the `kind==Diagonal` path) on the SAME pool/window — a
+    no-op wire would leave them identical. **Measured** (printed via the test's own
+    `std::cout`): `max|w|_diagonal=0.164248` vs `max|w|_factor=0.142554` — the cleaned-covariance
+    ShrinkageMv fit is MORE diversified (lower max weight) than the plain LW-shrunk-to-identity
+    fit on this fixture, the same direction `risk_cleaned_alpha_cov_test.cpp`'s own
+    `ShrinksSpuriousEigenvalueAndDiversifies` proves against the raw (unshrunk) sample covariance —
+    here demonstrated against the ALTERNATIVE a caller actually gets by not opting in (the
+    already-LW-shrunk `Diagonal` path), a strictly harder bar. `EXPECT_LT` passed on the FIRST run
+    (no fixture retuning needed).
+  * **(c) twice-run** — `TwiceRunByteIdentical`: `fit_shrinkage_mv_cleaned_cov` called twice on the
+    identical pool/window produces bit-exact weights and `fit_begin`/`fit_end`.
+  * **(d) seq==parallel** — N/A for this unit, documented rather than vacuously tested:
+    `cleaned_alpha_cov` introduces no new parallel dimension (it is a single fixed-order pure
+    function of `centered`, already proven deterministic by S1's own
+    `CleanedAlphaCov.PureAndDeterministic`, `risk_cleaned_alpha_cov_test.cpp`), and the weight solve
+    (`solve_spd` + `renorm_abs_sum`) is the SAME already-frozen sequential helper every other method
+    uses. Folded into S3-5's determinism battery for a final blanket re-confirmation alongside the
+    other four opt-in methods, per that unit's stated scope.
+
+Full regression sweep green (225 tests): `StageCombineCleanedCov` (3, new) + `CleanedAlphaCov` (3,
+S1's own, now in-scope by suite-name regex) + every S3-0..S3-3/S3-SEAM suite unchanged.

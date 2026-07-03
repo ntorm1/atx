@@ -569,6 +569,61 @@ weights_from_stack_projection(const combine::AlphaStore& windowed,
 }
 
 // ---------------------------------------------------------------------------
+// fit_shrinkage_mv_cleaned_cov (S3-4) — the opt-in ShrinkageMv weight fit that
+// consumes atx::engine::data::cleaned_alpha_cov (the S1-shipped LW constant-
+// correlation shrink + Marchenko-Pastur eigen-clip + strict-PD floor pipeline,
+// factor_model_artifact.hpp's "combine-visible shrunk/denoised covariance")
+// IN PLACE OF the raw complete-case MLE sample covariance, gated on
+// `risk_cfg.kind == risk::RiskModelKind::Factor` at this function's ONE call
+// site in run_combine (step 8a). Default `risk_cfg.kind == Diagonal` never
+// calls this function at all -> combine::AlphaCombiner::fit's ShrinkageMv path
+// (Ledoit-Wolf shrunk-to-scaled-identity, `fit_shrinkage_mv` in combiner.hpp)
+// is untouched and the digest stays byte-identical to pre-S3-4.
+//
+// Deliberately NOT a modification of AlphaCombiner::fit's internal ShrinkageMv/
+// Ledoit-Wolf pipeline (combiner.hpp is append-only under this sprint's
+// ownership boundaries, and double-shrinking — LW-to-identity THEN MP-eigen-
+// clipping the same matrix — would be an uncontrolled, undocumented estimator
+// change). Instead this is a SEPARATE, PARALLEL weight fit reusing the exact
+// same public inputs combiner.hpp's own fit_shrinkage_mv reads
+// (`combine::detail::window_means` + `combine::detail::complete_case_centered`
+// over the SAME [fit_begin, fit_end) window), swapping only the covariance
+// source for the risk-model-cleaned one, then solving Σ̂w = μ via the SAME
+// `solve_spd` + `renorm_abs_sum(Σ|w|=1)` convention every other method uses.
+//
+// PIT/firewall: identical to fit_shrinkage_mv — window_means/complete_case_
+// centered read ONLY pool.pnl(id).subspan(fit_begin, t); cleaned_alpha_cov is a
+// PURE function of that same `centered` matrix (data/factor_model_artifact.hpp
+// — no RNG, no clock). Determinism: same inputs -> byte-identical weights,
+// every run.
+// ---------------------------------------------------------------------------
+atx::core::Result<combine::Combination>
+fit_shrinkage_mv_cleaned_cov(const combine::AlphaStore& pool, atx::usize fit_begin, atx::usize fit_end) {
+    using atx::core::linalg::MatX;
+    using atx::core::linalg::VecX;
+    namespace data = atx::engine::data;
+
+    const atx::usize n = pool.n_alphas();
+    const atx::usize t = fit_end - fit_begin;
+    const VecX mu = combine::detail::window_means(pool, n, fit_begin, t);
+    const MatX centered = combine::detail::complete_case_centered(pool, n, fit_begin, t, mu);
+    const MatX cov = data::cleaned_alpha_cov(centered); // S1's shrunk/denoised covariance (non-fallible)
+
+    ATX_TRY(VecX raw, atx::core::linalg::solve_spd(cov, mu));
+    std::vector<atx::f64> w(n);
+    for (atx::usize i = 0; i < n; ++i) {
+        w[i] = raw[static_cast<Eigen::Index>(i)];
+    }
+    combine::detail::renorm_abs_sum(w); // Sum|w| = 1, the shared gross convention
+
+    combine::Combination combo;
+    combo.weights = std::move(w);
+    combo.fit_begin = fit_begin;
+    combo.fit_end = fit_end;
+    return atx::core::Ok(std::move(combo));
+}
+
+// ---------------------------------------------------------------------------
 // fit_stack_combo (S3-1 producer / S3-2 the honest-gate / S3-3 the regime
 // overlay) — declared in stage_combine.hpp so the decisive admit/reject/
 // single-state fixtures can drive it directly against a HAND-BUILT pool
@@ -720,7 +775,10 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
                                            const combine::CombinerConfig& combiner_cfg,
                                            const risk::RiskModelConfig& risk_cfg)
 {
-    (void)risk_cfg; // S3-4 (not yet landed in this commit) wires kind==Factor here.
+    // S3-4: risk_cfg.kind==Factor (opt-in, default Diagonal) is consumed at two
+    // sites below — the ShrinkageMv cleaned-covariance weight fit (step 8a) and
+    // the breadth-instrumentation covariance (step 12). See fit_shrinkage_mv_
+    // cleaned_cov's doc block for the full rationale.
 
     // 1. Validate required flags. The alpha SOURCE is either the loose .dsl directory
     //    (--alphas) or, when --library-dir is set (8.B), the accumulated persistent
@@ -896,6 +954,11 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
     //     SAME [fit_begin, fit_end) window every other method fits on, gated
     //     by fit_stack_combo's admit-vs-fallback contract (S3-2 — see its doc
     //     comment above the definition below for the honest-gate rationale).
+    //     (S3-4) ShrinkageMv + risk_cfg.kind==Factor: an opt-in PARALLEL weight
+    //     fit that swaps the raw complete-case MLE covariance for
+    //     data::cleaned_alpha_cov (see fit_shrinkage_mv_cleaned_cov's doc block).
+    //     Default risk_cfg.kind==Diagonal never enters this branch, so the
+    //     no-flag ShrinkageMv path stays byte-identical to pre-S3-4.
     combine::Combination combo;
     bool stack_telemetry_on = false;
     learn::StackingVerdict stack_verdict{}; // populated only on the Stack/RegimeStack path
@@ -908,6 +971,9 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
         combo = std::move(sfr.combo);
         stack_verdict = sfr.verdict;
         stack_telemetry_on = true;
+    } else if (cm == combine::CombineMethod::ShrinkageMv &&
+               risk_cfg.kind == risk::RiskModelKind::Factor) {
+        ATX_TRY(combo, fit_shrinkage_mv_cleaned_cov(pool, fit_begin, fit_end));
     } else {
         ATX_TRY(combo, combiner.fit(pool, fit_begin, fit_end));
     }
@@ -1243,9 +1309,15 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
             //   window_means  -> per-alpha window means mu (VecX, length na)
             //   complete_case_centered -> T_cc x na demeaned matrix (listwise NaN drop)
             //   mle_covariance -> N x N MLE covariance S (divisor T_cc)
+            // (S3-4) risk_cfg.kind==Factor: breadth is measured against the SAME
+            // cleaned_alpha_cov the ShrinkageMv weight fit above uses, so the
+            // telemetry stays coherent with whichever covariance actually shipped.
+            // Default risk_cfg.kind==Diagonal keeps mle_covariance -> byte-identical.
             const VecX mu = combine::detail::window_means(pool, na, fit_begin, t);
             const MatX centered = combine::detail::complete_case_centered(pool, na, fit_begin, t, mu);
-            const MatX cov = combine::detail::mle_covariance(centered, na);
+            const MatX cov = (risk_cfg.kind == risk::RiskModelKind::Factor)
+                                 ? atx::engine::data::cleaned_alpha_cov(centered)
+                                 : combine::detail::mle_covariance(centered, na);
             effective_n = ev::effective_breadth(cov);
 
             // Step 2 — realized IR: annualized Sharpe of the weighted-blend PnL stream
