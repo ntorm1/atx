@@ -26,8 +26,14 @@
 //  (the default, reached by every existing caller via the zero/one-arg
 //  forwards) is byte-identical to pre-S3.
 
+#include <span>
+
 #include "atx/core/error.hpp"
+#include "atx/core/types.hpp"
 #include "atx/engine/combine/combiner.hpp"
+#include "atx/engine/combine/store.hpp"
+#include "atx/engine/learn/ensemble.hpp"
+#include "atx/engine/learn/hmm.hpp"
 #include "atx/engine/risk/factor_model.hpp"
 
 #include "config.hpp"
@@ -46,5 +52,30 @@ run_combine(const RunConfig& cfg, const atx::engine::combine::CombinerConfig& co
 [[nodiscard]] atx::core::Result<StageResult>
 run_combine(const RunConfig& cfg, const atx::engine::combine::CombinerConfig& combiner_cfg,
             const atx::engine::risk::RiskModelConfig& risk_cfg);
+
+// ===========================================================================
+//  fit_stack_combo (S3-1/S3-2) — the Stack/RegimeStack producer + honest-gate,
+//  exposed for direct-call testing against a HAND-BUILT pool (bypassing the
+//  DSL/VM entirely — the same technique ensemble_test.cpp uses for fit_stack
+//  itself), so the admit/reject fixtures can construct an exact
+//  interaction/linear meta without depending on a real alpha DSL expression
+//  happening to produce that structure. See the definition in
+//  stage_combine.cpp for the full admit-vs-fallback contract.
+//
+//  `close_all` is the research panel's date-major close field (length
+//  n_dates*ni); `pool` must already share that same n_periods()/n_instruments()
+//  shape. `regime` is nullptr for Stack (S3-1/S3-2); S3-3 passes a fitted Hmm*
+//  for RegimeStack's per-regime nonlinear arm.
+// ===========================================================================
+struct StackFitResult {
+  atx::engine::combine::Combination combo;
+  atx::engine::learn::StackingVerdict verdict;
+};
+
+[[nodiscard]] atx::core::Result<StackFitResult>
+fit_stack_combo(const atx::engine::combine::AlphaStore& pool, std::span<const atx::f64> close_all,
+                atx::usize ni, atx::usize fit_begin, atx::usize fit_end,
+                const atx::engine::combine::CombinerConfig& combiner_cfg,
+                const atx::engine::learn::Hmm* regime);
 
 } // namespace atx::impl

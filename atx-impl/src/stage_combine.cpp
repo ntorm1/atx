@@ -568,6 +568,67 @@ weights_from_stack_projection(const combine::AlphaStore& windowed,
 }
 
 // ---------------------------------------------------------------------------
+// fit_stack_combo (S3-1 producer / S3-2 the honest-gate) — declared in
+// stage_combine.hpp so S3-2's decisive admit/reject fixtures can drive it
+// directly against a HAND-BUILT pool (bypassing the DSL/VM entirely, the same
+// technique ensemble_test.cpp uses for fit_stack itself), independent of
+// whether a real alpha DSL expression happens to produce interaction/linear
+// structure in its positions.
+//
+// Builds the meta over [fit_begin, fit_end) (windowed_pool + the PIT-causal
+// forward-return label), fits the SAME purged-CPCV-scored linear-vs-nonlinear
+// gate fit_stack always computes (eval/cpcv.hpp — López de Prado AFML Ch. 7,
+// purge+embargo cited at fit_stack's own call site in ensemble.cpp), and
+// decides admit vs fallback:
+//
+//   S3-2 the honest-gate (MANDATORY, not advisory). Phase-D measured
+//   oos_pbo=0.79 (textbook overfit) and a GBT is the highest-variance learner
+//   in the codebase — an UNGATED stacking step would make the overfit WORSE,
+//   not better. ADMIT the stack as the shipped combiner ONLY if
+//   verdict.admitted (the nonlinear base beat linear OOS-after-deflation on
+//   the SAME folds/metric); ELSE fall back to the LINEAR AlphaCombiner fit
+//   with a FRESH DEFAULT CombinerConfig (method==ShrinkageMv) — byte-identical
+//   to today's `--method shrinkage-mv` book, never combiner_cfg (whose
+//   .method is Stack/RegimeStack and would hit AlphaCombiner::fit's S3-0 Err
+//   arm). `stack_rejects_on_linear_fixture` (stage_combine_stack_gate_test.cpp)
+//   proves this fallback fires and is byte-identical to the plain
+//   ShrinkageMv fit; `stack_admits_on_interaction_fixture` proves the reverse.
+// ---------------------------------------------------------------------------
+atx::core::Result<StackFitResult>
+fit_stack_combo(const combine::AlphaStore& pool, std::span<const atx::f64> close_all, atx::usize ni,
+                atx::usize fit_begin, atx::usize fit_end, const combine::CombinerConfig& combiner_cfg,
+                const learn::Hmm* regime) {
+    ATX_TRY(auto windowed, windowed_pool(pool, fit_begin, fit_end));
+    const std::vector<atx::f64> fwd = build_forward_returns_window(
+        close_all, ni, fit_begin, fit_end, combiner_cfg.stack_horizon);
+    const std::array<atx::u16, 1> horizons{combiner_cfg.stack_horizon};
+    const learn::FeatureMatrix meta = learn::meta_features_from_pool(
+        windowed, std::span<const atx::f64>{fwd}, std::span<const atx::u16>{horizons});
+
+    learn::StackingCfg scfg;
+    scfg.master_seed = combiner_cfg.stack_master_seed;
+    scfg.horizons = {combiner_cfg.stack_horizon};
+    scfg.cpcv.n_groups = combiner_cfg.stack_cpcv_groups;
+    scfg.cpcv.n_test_groups = combiner_cfg.stack_cpcv_test_groups;
+    scfg.cpcv.embargo = combiner_cfg.stack_cpcv_embargo;
+
+    StackFitResult out;
+    out.verdict = learn::fit_stack(meta, regime, scfg);
+    if (out.verdict.admitted) {
+        const learn::StackCandidate sc = learn::stack_to_candidate(out.verdict, meta, scfg);
+        ATX_TRY(auto w, weights_from_stack_projection(
+                            windowed, std::span<const atx::f64>{sc.pos_flat}, combiner_cfg.ridge_lambda));
+        out.combo.weights = std::move(w);
+    } else {
+        combine::AlphaCombiner linear_fallback; // default-constructed cfg: method == ShrinkageMv
+        ATX_TRY(out.combo, linear_fallback.fit(pool, fit_begin, fit_end));
+    }
+    out.combo.fit_begin = fit_begin;
+    out.combo.fit_end = fit_end;
+    return atx::core::Ok(std::move(out));
+}
+
+// ---------------------------------------------------------------------------
 // run_combine
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
@@ -760,47 +821,23 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
     // Existing guard: fit_end never exceeds np (all branches above already respect it).
     if (fit_end > np) fit_end = np;
 
-    // 8a. (S3-1) Stack / RegimeStack: nonlinear alpha-of-alphas over the SAME
-    //     [fit_begin, fit_end) window every other method fits on. Meta features
-    //     = per-alpha positions (windowed_pool); label = the instrument forward
-    //     return over cfg.stack_horizon, computed from the research panel
-    //     reading ONLY rows inside the fit window (build_forward_returns_window,
-    //     PIT). The frozen fit_stack fits a GBT + elastic-net on the SAME meta /
-    //     SAME purged-CPCV folds (eval/cpcv.hpp — López de Prado AFML Ch. 7,
-    //     purge+embargo cited at fit_stack's own call site in ensemble.cpp) and
-    //     returns a deflation-gated verdict (S3-2 decides admit vs fallback; this
-    //     unit ALWAYS ships the stack's projected weights — the mandatory gate
-    //     lands in the very next commit, wrapping this branch).
+    // 8a. (S3-1/S3-2) Stack / RegimeStack: nonlinear alpha-of-alphas over the
+    //     SAME [fit_begin, fit_end) window every other method fits on, gated
+    //     by fit_stack_combo's admit-vs-fallback contract (S3-2 — see its doc
+    //     comment above the definition below for the honest-gate rationale).
     combine::Combination combo;
     bool stack_telemetry_on = false;
     learn::StackingVerdict stack_verdict{}; // populated only on the Stack/RegimeStack path
     if (cm == combine::CombineMethod::Stack || cm == combine::CombineMethod::RegimeStack) {
-        ATX_TRY(auto windowed, windowed_pool(pool, fit_begin, fit_end));
         ATX_TRY(const auto close_id, panel.field_id("close"));
         const std::span<const atx::f64> close_all = panel.field_all(close_id);
-        const std::vector<atx::f64> fwd = build_forward_returns_window(
-            close_all, ni, fit_begin, fit_end, combiner_cfg.stack_horizon);
-        const std::array<atx::u16, 1> horizons{combiner_cfg.stack_horizon};
-        const learn::FeatureMatrix meta = learn::meta_features_from_pool(
-            windowed, std::span<const atx::f64>{fwd}, std::span<const atx::u16>{horizons});
-
-        learn::StackingCfg scfg;
-        scfg.master_seed = combiner_cfg.stack_master_seed;
-        scfg.horizons = {combiner_cfg.stack_horizon};
-        scfg.cpcv.n_groups = combiner_cfg.stack_cpcv_groups;
-        scfg.cpcv.n_test_groups = combiner_cfg.stack_cpcv_test_groups;
-        scfg.cpcv.embargo = combiner_cfg.stack_cpcv_embargo;
-
         // S3-3 supplies the regime pointer for RegimeStack; nullptr here (flat
         // stack) is correct for BOTH Stack and (until S3-3 lands) RegimeStack.
-        stack_verdict = learn::fit_stack(meta, /*regime=*/nullptr, scfg);
+        ATX_TRY(auto sfr, fit_stack_combo(pool, close_all, ni, fit_begin, fit_end, combiner_cfg,
+                                          /*regime=*/nullptr));
+        combo = std::move(sfr.combo);
+        stack_verdict = sfr.verdict;
         stack_telemetry_on = true;
-        const learn::StackCandidate sc = learn::stack_to_candidate(stack_verdict, meta, scfg);
-        ATX_TRY(auto w, weights_from_stack_projection(
-                            windowed, std::span<const atx::f64>{sc.pos_flat}, combiner_cfg.ridge_lambda));
-        combo.weights = std::move(w);
-        combo.fit_begin = fit_begin;
-        combo.fit_end = fit_end;
     } else {
         ATX_TRY(combo, combiner.fit(pool, fit_begin, fit_end));
     }

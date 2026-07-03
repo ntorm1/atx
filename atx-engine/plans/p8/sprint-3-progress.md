@@ -75,7 +75,7 @@ only the `method_from_string`/dispatch `if` chain S3-1 extends next).
 - [x] S3-0  Ledger + `CombineMethod::Stack`/`RegimeStack` + `CombinerConfig` fields + enum pin
 - [x] S3-SEAM  S4-handoff participation unit fix (stage_combine.cpp:315,360)
 - [x] S3-1  `fit_stack` wiring (forward-return label + meta + stack->weight bridge)
-- [ ] S3-2  admit-vs-fallback gate (mandatory)
+- [x] S3-2  admit-vs-fallback gate (mandatory)
 - [ ] S3-3  PIT HMM regime posterior -> `RegimeStack`
 - [ ] S3-4  `cleaned_alpha_cov` consumption behind `kind==Factor`
 - [ ] S3-5  determinism battery (consolidated)
@@ -200,3 +200,47 @@ legacy methods still resolve through the unchanged `combiner.fit()` else-branch)
 `StageCombineStack` (3, new), `StackMetaFromPositions` (1, new), plus the broader `AtxImpl*` suite
 (171). No golden re-baseline needed (Stack/RegimeStack have zero call sites in any pre-existing
 test).
+
+S3-2: complete [MANDATORY]. Refactored the S3-1 branch's inline body into a standalone
+`atx::impl::fit_stack_combo(pool, close_all, ni, fit_begin, fit_end, combiner_cfg, regime)`
+(declared in `stage_combine.hpp`, defined in `stage_combine.cpp`) so the decisive admit/reject
+fixtures can drive it directly against a HAND-BUILT `combine::AlphaStore` pool — bypassing the DSL/
+VM entirely, the same technique `ensemble_test.cpp` uses for `fit_stack` itself — independent of
+whether a real alpha DSL expression happens to produce interaction/linear structure. Wrapped the
+S3-1 body in the honest-gate: `if (verdict.admitted) { ship the stack's projected weights } else {
+combine::AlphaCombiner{} /* default cfg: method==ShrinkageMv */ .fit(pool, fit_begin, fit_end) }` —
+the fallback deliberately uses a FRESH default `CombinerConfig`, never `combiner_cfg` (whose
+`.method` is Stack/RegimeStack and would hit `AlphaCombiner::fit`'s S3-0 Err arm).
+
+**RED (`atx-impl/tests/stage_combine_stack_gate_test.cpp`, new):** `build_gate_fixture` mirrors
+`ensemble_test.cpp`'s `linearly_combinable_meta`/`nonlinear_interaction_meta` fixtures (identical
+Lcg, identical `Y = 0.6·c0+0.4·c1+0.05·noise` / `Y = sign(c0)·sign(c1)+0.10·noise` label functions,
+identical 48-date/14-instrument/4-feature/seed shape) but encodes the label into a SYNTHETIC
+close-price series (`close[d+1] = close[d]·(1+Y)`, horizon=1) instead of a hand-built
+`FeatureMatrix`, so `fit_stack_combo`'s REAL wiring (`windowed_pool` +
+`build_forward_returns_window` + the gate + the projection) is exercised end-to-end, not merely
+`fit_stack` in isolation. First run of `RejectsOnLinearFixtureAndFallsBackByteIdenticalToShrinkageMv`
+was a genuine RED: `fit_stack_combo` itself returned
+`Err("solve_spd: matrix is not positive-definite")` — the fixture's per-alpha PnL stream (needed
+only by the FALLBACK's `AlphaCombiner::fit`, which reads PnL, never positions) was left all-zero
+(`AlphaStore` is position/label-agnostic; PnL is irrelevant to the stack path proper), so
+Ledoit-Wolf shrinkage had nothing to shrink — a degenerate all-zero sample covariance stays exactly
+zero regardless of shrinkage intensity, and Cholesky fails. Fixed by giving each fixture alpha a
+small-amplitude, non-degenerate PnL proxy (`0.001 * <its own instrument-0 column value>` per date)
+— irrelevant to the stack's own admit/reject math, but enough variance for ShrinkageMv's Cholesky
+to succeed.
+
+**GREEN:** all 3 new tests pass. `AdmitsOnInteractionFixture`: `v.admitted==true`,
+`oos_ic_nonlinear > oos_ic_linear`, `oos_dsr_nonlinear > 0`, and the shipped combo is a well-formed
+`Σ|w|=1` projection (not the fallback). `RejectsOnLinearFixtureAndFallsBackByteIdenticalToShrinkageMv`:
+`v.admitted==false`, `reason==RejectFitness`, and the shipped combo is `EXPECT_EQ` (bit-exact) to a
+SEPARATE plain `AlphaCombiner{}.fit(pool, 0, n_periods)` call on the identical pool/window — the
+fallback fires and matches `--method shrinkage-mv` exactly, not an approximation.
+`StackCpcvConfigIsThreadedFromCombinerConfig` (the wiring half of "stack_gate_purges_cpcv" — CPCV's
+own purge/embargo CORRECTNESS is `eval::cpcv_folds`'s frozen-math contract, already covered by
+`atx-engine/tests/eval/eval_cpcv_test.cpp` and exercised for real by every existing `fit_stack`
+call in `ensemble_test.cpp`; what S3 additionally owns is that `CombinerConfig.stack_cpcv_embargo`
+actually reaches `StackingCfg.cpcv` rather than being silently ignored): `embargo=0.0` vs
+`embargo=0.9` on the SAME interaction fixture produce DIFFERENT `verdict_hash`es, proving the
+config genuinely threads through. Full regression sweep green (210 tests, incl. all three new
+`StageCombineStackGate` tests + the untouched S3-0/S3-1/S3-SEAM suites).
