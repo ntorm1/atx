@@ -61,7 +61,7 @@ Branch: feat/p8  Worktree: C:\atx-wt\p8
 
 ## Unit checklist
 - [x] S1-0  RiskModelConfig + FactorModelArtifact POD + ledger (this file)
-- [ ] S1-1  stage_riskmodel producer (build_risk_model)
+- [x] S1-1  stage_riskmodel producer (build_risk_model)
 - [ ] S1-2  stage_optimize covariance-source swap
 - [ ] S1-3  cleaned_alpha_cov accessor (combine seam; Sprint-3 handoff)
 - [ ] S1-4  dead-alpha crowding factors
@@ -97,3 +97,70 @@ risk_model_config_test.cpp removed from the build; documented in p8 ROADMAP.md a
 a pre-p8 backlog item); atx-engine-data-tests 118/121 pass (3 skipped, real-data/
 operator-only tests, pre-existing); atx-impl-tests 202/206 pass (4 skipped,
 pre-existing). Zero new failures, zero touched files outside the owned set.
+
+S1-1: complete. NEW atx-impl/src/stage_riskmodel.{hpp,cpp} (registered in
+atx-impl/CMakeLists.txt's explicit stage_*.cpp list, which is NOT globbed —
+confirmed by reading the file before editing) implements
+build_risk_model(research, cfg, group_id={}) -> Result<FactorModelArtifact>.
+Diagonal path delegates to diag_risk.hpp's diagonal_risk_model and lowers its
+(X,F,D) into the artifact (byte-identical drop-in). Factor path: a NEW
+PanelWindowView bridge owns a small (fields_, mask_) buffer and exposes an
+atx::engine::PanelView over it for FactorModelBuilder::build_components — no
+existing Panel(atx-impl's flat, date-major, file-backed research panel)
+->PanelView(engine's non-owning ring-buffer accessor, PanelView ctor confirmed
+public but consumer-built-only; RollingPanel confirmed a live-loop construct
+unrelated to this batch pipeline) adapter existed; this is a genuine new seam,
+documented in the header/impl and the ledger anchor-reconfirmation section above.
+style_size maps to StyleFactor::Liquidity (log dollar-ADV), NOT StyleFactor::Size
+(the research panel carries no market_cap field at all -- confirmed via
+risk/exposures.hpp's own header note -- so true Size is structurally unreachable
+regardless of the mask; Liquidity is the panel-derivable proxy the brief's own
+architecture note names ("log(dollar-ADV) or log-cap proxy")).
+
+Sizing bug found + fixed mid-unit (documented for transparency): the PanelView
+buffer must carry MORE rows than the estimation window passed to
+build_components, because build_components regresses one cross-section PER
+DATE in [0, window) and each date's own style lookback (Beta needs row+253,
+Momentum row+252, Volatility row+60) reads forward from that date -- so the
+OLDEST estimation date needs `window + deepest_lookback` total rows available,
+not just `window`. Missing this (RED failure: "too few usable dates (M_s < K
+everywhere)") was the first GREEN attempt's failure; fixed by computing
+`total_rows = estimation_window + deepest_lookback(cfg)` for the buffer while
+still passing `estimation_window` (not the buffer's row count) to
+build_components. A second bug (X.rows()==0 despite a correctly-sized buffer)
+was PanelView's physical-row addressing: physical rows must be filled
+OLDEST-first ascending (phys = n_rows_-1-r for newest-first r), matching
+PanelView::physical_row's own `(head_+cap_-row_from_newest)&(cap_-1)` formula
+with head_ = n_rows_-1 -- NOT phys=r, which silently wrapped every row past the
+first to the far end of the ring (uninitialized NaN). Both bugs were caught by
+the RED->GREEN loop itself (test 2's own acceptance criteria), not discovered
+after the fact.
+
+New suite AtxImplRiskModel (atx-impl/tests/stage_riskmodel_test.cpp) 4/4 green:
+- DiagonalEquivalentToDiagonalRiskModel: cfg.kind==Diagonal's artifact lowers to
+  a FactorModel with byte-identical risk(w) vs diagonal_risk_model directly, and
+  X=Mx1 zeros / F=[[1]] exactly.
+- FactorNondegenerateDelevers: a fixture where every instrument shares a common
+  shock (market factor) plus small idiosyncratic noise, with 2 industry groups +
+  Volatility style column (K=3, confirmed non-diagonal F). A long-first-half /
+  short-second-half hedge book: factor_risk=1.494e-6 vs diag_risk=4.0e-5 -- the
+  factor model prices the SAME hedged book at ~3.7% of the diagonal model's risk
+  (a ~26.8x reduction) because it recovers the shared exposure the long/short
+  legs cancel; the diagonal model (X=0) is structurally blind to any shared
+  structure and just sums per-name variances regardless of the offsetting
+  position.
+- PitGuardIgnoresFutureRows: perturbing rows >= fit_end (with the SAME fit_end
+  truncation the caller applies) yields a byte-identical serialized artifact —
+  no look-ahead.
+- TwiceRunByteIdenticalArtifact: same (panel, cfg) -> identical serialized bytes
+  + identical digest across two independent calls.
+
+RED verified first (linker error: undefined symbol
+atx::impl::build_risk_model(...), confirmed via a full build+link before any
+.cpp was written).
+
+Full gate re-run after S1-1: atx-impl-tests 206/210 pass (4 pre-existing skips,
+0 new failures — 4 new AtxImplRiskModel tests + the full pre-existing
+AtxImplOptimize/AtxImplReport/etc. suites unaffected); atx-engine-risk-tests
+256/258 pass (same 2 pre-existing RobustPipelineE2E failures, unrelated to any
+S1 file).

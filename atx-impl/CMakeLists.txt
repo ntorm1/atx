@@ -18,6 +18,7 @@ add_library(atx-impl-core STATIC
     src/stage_sweep.cpp
     src/store_progress_sink.cpp
     src/stage_combine.cpp
+    src/stage_riskmodel.cpp
     src/stage_optimize.cpp
     src/stage_report.cpp
     src/stage_run.cpp)
