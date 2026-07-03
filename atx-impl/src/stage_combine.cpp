@@ -300,7 +300,13 @@ static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usiz
     const atx::usize n = (insts < w.size()) ? insts : w.size();
 
     // The AUM-independent cost bracket C: cost_bps(aum) = C·aum^delta, with
-    //   C = 1e4 · Σ_i |w_i| · Y · σ_i · (|w_i|/(price_i·ADV_i))^delta.
+    //   C = 1e4 · Σ_i |w_i| · Y · σ_i · (|w_i|/ADV_i)^delta.
+    // S3-SEAM (p8, fix handed off by S4-1): participation is NOTIONAL/DOLLAR-ADV
+    // (unitless) — `abs_w` is already a FRACTION of book (not a share count), so
+    // dividing by `price` on top of `adv` (itself a DOLLAR-ADV, Σ close·volume)
+    // was off by a factor of `price` (identical shape to the S4-1 bug fixed in
+    // risk/capacity.hpp and factory/fitness.cpp). `price` is still READ below to
+    // gate out unpriced names (no book value) but no longer enters the ratio.
     atx::f64 C = 0.0;
     for (atx::usize i = 0U; i < n; ++i) {
         const atx::f64 wi = w[i];
@@ -312,7 +318,7 @@ static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usiz
         if (adv <= 0.0) continue;
         const atx::f64 sigma = return_vol(i);
         if (sigma <= 0.0) continue;
-        const atx::f64 part_per_aum = abs_w / (price * adv); // part_i = part_per_aum·aum
+        const atx::f64 part_per_aum = abs_w / adv; // part_i = part_per_aum·aum (S3-SEAM fix)
         if (part_per_aum <= 0.0) continue;
         C += abs_w * impact.Y * sigma * std::pow(part_per_aum, impact.delta);
     }
@@ -325,10 +331,13 @@ static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usiz
 }
 
 // ---------------------------------------------------------------------------
-// alpha_max_participation — the max per-name participation part_i = (target_aum·
-// |w_i|/price_i)/ADV_i over alpha `a`'s LAST-period book at `target_aum`. A pure
-// liquidity-footprint telemetry figure (the single most liquidity-stressed name in
-// the book): 0 when no name has finite price+ADV. Mirrors book_cost_bps's guards.
+// alpha_max_participation — the max per-name participation part_i =
+// (target_aum·|w_i|)/ADV_i over alpha `a`'s LAST-period book at `target_aum`. A
+// pure liquidity-footprint telemetry figure (the single most liquidity-stressed
+// name in the book): 0 when no name has finite price+ADV. Mirrors
+// book_cost_bps's guards. S3-SEAM (p8, fix handed off by S4-1): participation
+// is notional/dollar-ADV (unitless) — `price` no longer enters the ratio (see
+// alpha_capacity_aum's identical fix above for the full rationale).
 // ---------------------------------------------------------------------------
 static atx::f64 alpha_max_participation(const alpha::AlphaStreams& streams, atx::usize a,
                                         std::span<const atx::f64> close,
@@ -357,7 +366,7 @@ static atx::f64 alpha_max_participation(const alpha::AlphaStreams& streams, atx:
         if (std::isnan(price) || price <= 0.0) continue;
         const atx::f64 adv = dollar_adv(i);
         if (adv <= 0.0) continue;
-        const atx::f64 part = (target_aum * abs_w / price) / adv;
+        const atx::f64 part = (target_aum * abs_w) / adv; // S3-SEAM fix (drop /price)
         if (part > max_part) max_part = part;
     }
     return max_part;

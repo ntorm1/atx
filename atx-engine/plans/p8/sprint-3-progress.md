@@ -73,7 +73,7 @@ only the `method_from_string`/dispatch `if` chain S3-1 extends next).
 
 ## Unit checklist
 - [x] S3-0  Ledger + `CombineMethod::Stack`/`RegimeStack` + `CombinerConfig` fields + enum pin
-- [ ] S3-SEAM  S4-handoff participation unit fix (stage_combine.cpp:315,360)
+- [x] S3-SEAM  S4-handoff participation unit fix (stage_combine.cpp:315,360)
 - [ ] S3-1  `fit_stack` wiring (forward-return label + meta + stack->weight bridge)
 - [ ] S3-2  admit-vs-fallback gate (mandatory)
 - [ ] S3-3  PIT HMM regime posterior -> `RegimeStack`
@@ -88,3 +88,45 @@ only the `method_from_string`/dispatch `if` chain S3-1 extends next).
   never enters `combo.bin`/the hash) — recorded when landed.
 
 ## Log
+
+S3-SEAM: complete [CORRECTNESS — the S4-1 handoff]. Fixed the identical participation
+unit bug at its two S3-owned `stage_combine.cpp` sites (S4-1's ledger recorded these as an
+open Sprint-3 dependency, confirmed still present at kickoff at the SAME lines the S4-1
+ledger cited):
+- `alpha_capacity_aum`: `part_per_aum = abs_w / (price * adv)` → `abs_w / adv` (drop `/price`).
+  `price` is still read (gates out unpriced names) but no longer enters the ratio. Header
+  comment above the loop corrected (`C = ... (|w_i|/ADV_i)^delta`, price term removed).
+- `alpha_max_participation`: `part = (target_aum * abs_w / price) / adv` →
+  `(target_aum * abs_w) / adv`. Doc comment above the function corrected.
+
+**Contract-B correctness fix** (Sprint-4-progress.md's taxonomy): the corrected numbers
+differ from today's (participation was inflated by a factor of `price`), but participation
+feeds ONLY the capacity kvs telemetry (`capacity_alpha_aum`/`capacity_min_alpha_aum`/
+`capacity_max_participation`, `stage_combine.cpp:737-768`ish) — never `combo.bin`/the hashed
+panel digest — so the combine DIGEST is byte-identical before/after; only the capacity kvs
+VALUES change.
+
+**RED (`atx-impl/tests/stage_combine_participation_test.cpp`, new):** the S4-1
+price-invariance method — two reversal-fixture panels (S6-1's `make_reversal_panel`,
+proven to give `alpha_capacity_aum` a genuine positive edge, i.e. it reaches the
+`part_per_aum` arithmetic rather than short-circuiting to 0/+inf) differing ONLY by a
+uniform 8x price rescale (`close *= 8`, `volume /= 8` — an EXACT power-of-two rescale
+chosen so returns/positions/PnL/dollar-ADV are floating-point IDENTICAL between the two
+panels and only the raw share price differs). Pre-fix: `CapacityAumIsPriceInvariantForEqualNotional`
+RED — `cap1=81600943927.20` (scale=1) vs `cap2=652807551417.58` (scale=8), ratio exactly 8.0
+(fails the 1e-6 relative tolerance). `MaxParticipationIsPriceInvariantForEqualNotional` RED —
+`part1=0.006252` vs `part2=0.000782`, ratio exactly 8.0 (fails).
+
+**GREEN:** both price-invariance tests pass post-fix (capacity/participation now equal to
+float-noise tolerance across the 8x price rescale — the buggy price-dependence is gone).
+A third test, `CapacityKvsKeysAreEmittedButNotFoldedIntoDigest`, confirms a capacity-floor-on
+run and a capacity-floor-off run of the SAME fixture produce the IDENTICAL combine digest
+(the structural half of "no golden re-baseline needed" — participation never enters
+`combo.bin`). Full regression sweep green: `StageCombineParticipation` (3/3, new),
+`AtxImplCombine.*` (30/30, incl. `S61_RealizedEdgeCapacityNonZeroForPositivePnlAlpha`/
+`S61_CapacityOffPathByteIdentical`/`CapacityRunIsDeterministic`/
+`CapacityActivatesAndIsNonDegenerate` — none pins an exact price-dependent capacity NUMBER as
+a frozen expectation, only sign/determinism/activation, so **no golden re-baseline needed**),
+full `atx-impl-tests` suite (157/157 matched by the `AtxImpl` filter + the 30 `AtxImplCombine`
+above + the new suite — 1 pre-existing environment-gated skip, `AtxImplDiscover.
+W6_RediscoverLowVolCapacityAlpha`, unrelated to this fix).
