@@ -56,7 +56,7 @@ intentional gap (S4-4 section below).
 - [x] S4-0  Ledger + bug-verification table + `CostSelectionConfig`
 - [x] S4-1  Capacity participation unit fix (B1)
 - [x] S4-2  Cap-clip-renorm re-center (B2)
-- [ ] S4-3a Limit fill clamp (B3)
+- [x] S4-3a Limit fill clamp (B3)
 - [ ] S4-3b Absent-instrument volume zeroing (B4)
 - [ ] S4-3c Borrow accrual in the loop (B5)
 - [ ] S4-3d Permanent impact persistence (B6)
@@ -193,6 +193,25 @@ single-pass fixture, net exposure `−0.08 → 0.0` (well within the 1e-9 tolera
 `optimizer_recenter_test.cpp` full-solve fixture is `~1e-16`), while `max|w|=0.30` (== cap) and
 `Σ|w|=1.0` (== L) hold throughout, matching the spec's "0.234 → 0.000" headline shape (this sprint's
 own by-construction fixture, not literally the spec's illustrative number).
+
+S4-3a: complete [CORRECTNESS — B3]. `exec/execution_sim.hpp` `emit_fill`: after composing
+`fill_px = ref·(1+dir·slip)·(1+dir·temp)`, a `Limit` order now clamps `fill_px` to the order's
+limit — buy `min(fill_px, limit)`, sell `max(fill_px, limit)` — before permanent impact / commission
+/ the FillPayload are built. `Market` orders take no clamp path. Partial marketability (filling less
+than the full requested size when the limit binds) remains the documented deferred LOB residual;
+this fix only guarantees the fill PRICE never crosses the limit.
+
+**RED (`tests/core/limit_fill_clamp_test.cpp`, new):** ref=limit=100.0 (boundary-marketable),
+FixedBps slippage (25bps) + linear temp impact (Y=25, delta=1, sigma=1.0, part=1e-4) so the composed
+cost is hand-computable and isolated from VolumeShare's nonlinearity: buy `fill_px=100.500625`
+(RED: asserted `<=100.0`, fails), sell `fill_px=99.500625` (RED: asserted `>=100.0`, fails).
+
+**GREEN:** both clamp to exactly 100.0. `ExecSim` (24 pre-existing tests, incl. the three
+`LimitBuy_*`/`LimitSell_*` marketability tests) + all 4 new `LimitFillClamp` tests green — no
+existing test pinned an exact through-limit price, so **no golden re-baseline needed.** A Market
+order at the identical cost profile is confirmed byte-identical to the raw (unclamped) composition
+(`100.500625`, `MarketOrder_UnaffectedByClamp`), and a non-binding limit (`limit=200`) leaves the
+fill unperturbed (`NonBindingLimit_ClampIsNoOp`) — the clamp is provably inert off its binding case.
 
 **SEAM (Sprint 3, recorded per the spec's binding instruction — do NOT edit, S3-owned file):**
 `atx-impl/src/stage_combine.cpp` carries the IDENTICAL participation bug at (confirmed at kickoff)

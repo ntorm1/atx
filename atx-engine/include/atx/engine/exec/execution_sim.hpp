@@ -371,8 +371,26 @@ private:
 
     // Both are fractional adverse moves on ref: a buy (dir +1) pays more, a sell
     // (dir -1) receives less. Compose multiplicatively in fraction-of-ref units.
-    const atx::f64 fill_px =
+    atx::f64 fill_px =
         ref * (1.0 + static_cast<atx::f64>(dir) * slip) * (1.0 + static_cast<atx::f64>(dir) * temp);
+
+    // S4-3a [B3 fix]: limit_marketable (settle_one) only gates on the RAW ref
+    // vs the limit -- a buy that passed at ref<=limit can still fill at
+    // fill_px>limit once slippage+temp are folded in (a sell mirrors this on
+    // the other side). Never pay worse than the limit: clamp the priced fill
+    // back to the limit for a Limit order (the conservative research
+    // convention -- a real venue would fill at the limit or not at all).
+    // Market orders take no clamp path (order.limit is meaningless for them).
+    // Partial marketability (filling LESS than the requested size when the
+    // limit binds) is the deferred LOB residual; this unit only guarantees the
+    // fill PRICE never crosses the limit. Inert when costs keep fill_px on the
+    // favorable side of the limit already (a buy filling below its limit, a
+    // sell filling above it) -- the clamp is then a no-op.
+    if (order.type == OrderType::Limit) {
+      const atx::f64 limit = order.limit.to_double();
+      fill_px = (dir > 0) ? (fill_px < limit ? fill_px : limit)   // buy: never pay > limit
+                          : (fill_px > limit ? fill_px : limit); // sell: never receive < limit
+    }
 
     apply_permanent_impact(order.id, part, ref, dir, st, market);
 
