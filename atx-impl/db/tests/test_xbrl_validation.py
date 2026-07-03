@@ -599,6 +599,40 @@ def test_migration_0009_xbrl_validation_table_exists(tmp_store):
     assert "xbrl_validation_results" in tables
 
 
+def test_migration_0089_xbrl_validation_resolution_status_column_and_catalog(tmp_store):
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'xbrl_validation_results'
+            """
+        ).fetchall()
+    }
+    fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name = 'xbrl_validation_results'
+            """
+        ).fetchall()
+    }
+    versions = {
+        int(row[0])
+        for row in tmp_store.con.execute(
+            "SELECT version FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+        ).fetchall()
+    }
+
+    assert "resolution_status" in columns
+    assert "resolution_status" in fields
+    assert 89 in versions
+
+
 def test_xbrl_calculation_validation_passes_balanced_sum(tmp_store):
     from db.xbrl_validation import refresh_xbrl_validation_results
 
@@ -607,11 +641,11 @@ def test_xbrl_calculation_validation_passes_balanced_sum(tmp_store):
     assert refresh_xbrl_validation_results(tmp_store) == 1
     row = tmp_store.con.execute(
         """
-        SELECT status, parent_value, child_weighted_sum, absolute_difference, child_count
+        SELECT status, resolution_status, parent_value, child_weighted_sum, absolute_difference, child_count
         FROM xbrl_validation_results
         """
     ).fetchone()
-    assert row == ("passed", 1000.0, 1000.0, 0.0, 2)
+    assert row == ("passed", "resolved_ok", 1000.0, 1000.0, 0.0, 2)
 
 
 def test_xbrl_calculation_validation_fails_unbalanced_sum(tmp_store):
@@ -622,11 +656,12 @@ def test_xbrl_calculation_validation_fails_unbalanced_sum(tmp_store):
     assert refresh_xbrl_validation_results(tmp_store) == 1
     row = tmp_store.con.execute(
         """
-        SELECT status, parent_value, child_weighted_sum, absolute_difference
+        SELECT status, resolution_status, parent_value, child_weighted_sum, absolute_difference, message
         FROM xbrl_validation_results
         """
     ).fetchone()
-    assert row == ("failed", 950.0, 1000.0, 50.0)
+    assert row[:5] == ("failed", "genuine_error", 950.0, 1000.0, 50.0)
+    assert "genuine footing error" in row[5]
 
 
 def test_xbrl_validation_quality_surfaces_failures(tmp_store):
@@ -662,22 +697,23 @@ def test_xbrl_dimensional_artifact_resolves_and_genuine_error_persists(tmp_store
     _seed_dimensional_fixture(tmp_store)
     refresh_xbrl_validation_results(tmp_store)
 
-    status_by_parent = dict(
-        tmp_store.con.execute(
+    status_by_parent = {
+        parent: (status, resolution_status)
+        for parent, status, resolution_status in tmp_store.con.execute(
             """
-            SELECT parent_concept, status
+            SELECT parent_concept, status, resolution_status
             FROM xbrl_validation_results
             WHERE rule_family = 'calculation_linkbase'
             """
         ).fetchall()
-    )
+    }
 
     # Dimensional artifact: parent total in default context, PPE child only broken
     # out across the *ByTypeAxis members -> incomplete comparable set -> resolved.
-    assert status_by_parent.get("Assets") == "passed"
+    assert status_by_parent.get("Assets") == ("passed", "resolved_dimensional_artifact")
     # Genuine footing error: complete child set in the same default context that
     # simply does not foot (300 + 500 = 800 != 900) -> still caught.
-    assert status_by_parent.get("Liabilities") == "failed"
+    assert status_by_parent.get("Liabilities") == ("failed", "genuine_error")
 
 
 def test_xbrl_dimensional_evidence_json_records_verdict(tmp_store):
@@ -712,6 +748,59 @@ def test_xbrl_dimensional_evidence_json_records_verdict(tmp_store):
     assert liabilities["missing_children"] == []
 
 
+def test_xbrl_quality_checks_use_genuine_error_residual(tmp_store):
+    from db.quality import run_warehouse_quality_checks
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _seed_dimensional_fixture(tmp_store)
+    refresh_xbrl_validation_results(tmp_store)
+
+    results = {result.check_name: result for result in run_warehouse_quality_checks(tmp_store, record=False)}
+
+    assert results["failed_xbrl_calculation_linkbase_checks"].status == "failed"
+    assert results["failed_xbrl_calculation_linkbase_checks"].observed_value == 1.0
+    # The resolved artifact is allowed to be status=passed with an over-tolerance
+    # raw difference because resolution_status carries the explanation.
+    assert results["bad_xbrl_validation_result_rows"].status == "passed"
+    assert results["bad_xbrl_validation_result_rows"].observed_value == 0.0
+
+
+def test_xbrl_dataset_load_reports_split_counts_and_genuine_residual(tmp_store):
+    from db.xbrl_validation import XbrlValidationDataset, XbrlValidationOptions
+
+    _seed_dimensional_fixture(tmp_store)
+    _insert_fact(tmp_store, "fact-negative-assets-current", 8, "AssetsCurrent", -1.0)
+
+    result = XbrlValidationDataset().load(
+        tmp_store,
+        XbrlValidationOptions(run_id="s7-3-split-test"),
+    )
+
+    assert result.rows_loaded == 3
+    assert result.details["calculation_rows"] == 2
+    assert result.details["resolved_dimensional_artifacts"] == 1
+    assert result.details["genuine_calculation_errors"] == 1
+    assert result.details["dqc_rows"] == 1
+    assert result.details["dqc_failures"] == 1
+
+    quality_row = tmp_store.con.execute(
+        """
+        SELECT status, observed_value, details_json
+        FROM data_quality_checks
+        WHERE dataset_id = 'xbrl_validation'
+          AND check_name = 'xbrl_calculation_linkbase_failures'
+        ORDER BY checked_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+
+    assert quality_row[0] == "failed"
+    assert quality_row[1] == 1.0
+    assert '"resolved_dimensional_artifacts": 1' in quality_row[2]
+    assert '"genuine_calculation_errors": 1' in quality_row[2]
+    assert '"dqc_failures": 1' in quality_row[2]
+
+
 def test_dqc_0015_negative_concept_subset_flags_negative_fact(tmp_store):
     """DQC_0015 subset: curated non-negative us-gaap concepts cannot be negative."""
 
@@ -724,14 +813,15 @@ def test_dqc_0015_negative_concept_subset_flags_negative_fact(tmp_store):
     assert refresh_xbrl_validation_results(tmp_store) == 1
     row = tmp_store.con.execute(
         """
-        SELECT rule_family, rule_code, status, severity, parent_concept, parent_value, message
+        SELECT rule_family, rule_code, status, severity, parent_concept, parent_value, resolution_status, message
         FROM xbrl_validation_results
         """
     ).fetchone()
 
     assert row[0:6] == ("dqc", "DQC_0015", "failed", "error", "Assets", -1.0)
-    assert "DQC_0015 subset" in row[6]
-    assert "negative numeric value" in row[6]
+    assert row[6] == "genuine_error"
+    assert "DQC_0015 subset" in row[7]
+    assert "negative numeric value" in row[7]
 
 
 def test_dqc_0015_positive_curated_concept_does_not_emit_false_positive(tmp_store):
@@ -767,14 +857,15 @@ def test_dqc_0053_excluded_member_axis_subset_flags_wrong_pair(tmp_store):
     assert refresh_xbrl_validation_results(tmp_store) == 1
     row = tmp_store.con.execute(
         """
-        SELECT rule_family, rule_code, status, severity, parent_concept, context_ref, message
+        SELECT rule_family, rule_code, status, severity, parent_concept, context_ref, resolution_status, message
         FROM xbrl_validation_results
         """
     ).fetchone()
 
     assert row[0:6] == ("dqc", "DQC_0053", "failed", "error", "BusinessSegmentsAxis", "c-wrong-axis")
-    assert "DQC_0053 subset" in row[6]
-    assert "excluded axis-member pair" in row[6]
+    assert row[6] == "genuine_error"
+    assert "DQC_0053 subset" in row[7]
+    assert "excluded axis-member pair" in row[7]
 
 
 def test_dqc_0053_direct_unusable_dimension_edge_flags_pair(tmp_store):
@@ -801,7 +892,7 @@ def test_dqc_0053_direct_unusable_dimension_edge_flags_pair(tmp_store):
     assert refresh_xbrl_validation_results(tmp_store) == 1
     rows = tmp_store.con.execute(
         """
-        SELECT rule_family, rule_code, status, severity, parent_concept, context_ref, message
+        SELECT rule_family, rule_code, status, severity, parent_concept, context_ref, resolution_status, message
         FROM xbrl_validation_results
         WHERE rule_family = 'dqc'
           AND rule_code = 'DQC_0053'
@@ -817,8 +908,9 @@ def test_dqc_0053_direct_unusable_dimension_edge_flags_pair(tmp_store):
         "TestOnlyAxis",
         "c-direct-unusable",
     )
-    assert "DQC_0053 subset" in rows[0][6]
-    assert "usable=false" in rows[0][6]
+    assert rows[0][6] == "genuine_error"
+    assert "DQC_0053 subset" in rows[0][7]
+    assert "usable=false" in rows[0][7]
 
 
 def test_dqc_0053_allowed_member_axis_does_not_emit_false_positive(tmp_store):

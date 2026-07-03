@@ -70,14 +70,18 @@ def refresh_xbrl_validation_results(
 
     Each emitted row is triaged and carries ``dimensional_evidence_json``:
     a complete child set that foots is ``passed``; a complete set that does not is
-    a genuine footing error (``failed``); an incomplete set whose missing children
-    are all reported under a DIFFERENT dimensional context is a resolved
-    dimensional artifact (``passed``); an incomplete set with a child absent from
-    every context stays ``failed``. ``absolute_tolerance`` is never widened to make
-    a check pass. A future Arelle/DQC sidecar can append additional rule families
-    to the same table. PF-S7 S7-2 appends a small SQL-native DQC subset under
-    ``rule_family = 'dqc'``: DQC_0015 non-negative concept facts and DQC_0053
-    excluded/unusable member-axis pairs. It is a subset, not a full DQC plugin.
+    a genuine footing error (``failed`` / ``resolution_status='genuine_error'``);
+    an incomplete set whose missing children are all reported under a DIFFERENT
+    dimensional context is a resolved dimensional artifact
+    (``passed`` / ``resolution_status='resolved_dimensional_artifact'``); an
+    incomplete set with a child absent from every context stays failed as
+    ``genuine_error``. Complete footings use ``resolved_ok``. ``absolute_tolerance``
+    is never widened to make a check pass. A future Arelle/DQC sidecar can append
+    additional rule families to the same table. PF-S7 S7-2 appends a small
+    SQL-native DQC subset under ``rule_family = 'dqc'``: DQC_0015 non-negative
+    concept facts and DQC_0053 excluded/unusable member-axis pairs. It is a
+    subset, not a full DQC plugin. DQC rows emitted here are violations only, so
+    failed DQC rows use ``resolution_status='genuine_error'``.
     """
 
     options = options or XbrlValidationOptions()
@@ -118,6 +122,7 @@ def refresh_xbrl_validation_results(
                 child_facts_json,
                 message,
                 dimensional_evidence_json,
+                resolution_status,
                 source_url,
                 run_id,
                 source_loaded_at
@@ -426,6 +431,11 @@ def refresh_xbrl_validation_results(
                         )
                     ) AS VARCHAR
                 ) AS dimensional_evidence_json,
+                CASE verdict
+                    WHEN 'complete_footing_ok' THEN 'resolved_ok'
+                    WHEN 'resolved_dimensional_artifact' THEN 'resolved_dimensional_artifact'
+                    ELSE 'genuine_error'
+                END AS resolution_status,
                 parent_source_url AS source_url,
                 ? AS run_id,
                 coalesce(source_loaded_at, now()) AS source_loaded_at
@@ -494,6 +504,7 @@ def _insert_dqc_subset_results(store: DuckDBStore, *, validation_run_id: str, ru
             child_facts_json,
             message,
             dimensional_evidence_json,
+            resolution_status,
             source_url,
             run_id,
             source_loaded_at
@@ -616,6 +627,7 @@ def _insert_dqc_subset_results(store: DuckDBStore, *, validation_run_id: str, ru
                     )
                 ) AS VARCHAR
             ) AS dimensional_evidence_json,
+            'genuine_error' AS resolution_status,
             source_url,
             ? AS run_id,
             coalesce(source_loaded_at, now()) AS source_loaded_at
@@ -681,6 +693,7 @@ def _insert_dqc_subset_results(store: DuckDBStore, *, validation_run_id: str, ru
                     )
                 ) AS VARCHAR
             ) AS dimensional_evidence_json,
+            'genuine_error' AS resolution_status,
             source_url,
             ? AS run_id,
             coalesce(source_loaded_at, now()) AS source_loaded_at
@@ -706,16 +719,38 @@ class XbrlValidationDataset(Dataset):
 
     def load(self, store: DuckDBStore, options: XbrlValidationOptions) -> DatasetLoadResult:
         rows = refresh_xbrl_validation_results(store, options)
-        failed = int(
-            store.con.execute(
-                """
-                SELECT count(*)
-                FROM xbrl_validation_results
-                WHERE rule_family = 'calculation_linkbase'
-                  AND status = 'failed'
-                """
-            ).fetchone()[0]
-        )
+        split = store.con.execute(
+            """
+            SELECT
+                count(*) FILTER (WHERE rule_family = 'calculation_linkbase')::INTEGER
+                    AS calculation_rows,
+                count(*) FILTER (
+                    WHERE rule_family = 'calculation_linkbase'
+                      AND resolution_status = 'resolved_dimensional_artifact'
+                )::INTEGER AS resolved_dimensional_artifacts,
+                count(*) FILTER (
+                    WHERE rule_family = 'calculation_linkbase'
+                      AND resolution_status = 'genuine_error'
+                )::INTEGER AS genuine_calculation_errors,
+                count(*) FILTER (WHERE rule_family = 'dqc')::INTEGER AS dqc_rows,
+                count(*) FILTER (
+                    WHERE rule_family = 'dqc'
+                      AND status = 'failed'
+                )::INTEGER AS dqc_failures
+            FROM xbrl_validation_results
+            """
+        ).fetchone()
+        details = {
+            "rows_loaded": rows,
+            "absolute_tolerance": options.absolute_tolerance,
+            "calculation_rows": int(split[0]),
+            "resolved_dimensional_artifacts": int(split[1]),
+            "genuine_calculation_errors": int(split[2]),
+            "dqc_rows": int(split[3]),
+            "dqc_failures": int(split[4]),
+            "dqc_resolution_status": "failed DQC subset rows are emitted only for violations and use genuine_error",
+        }
+        failed = details["genuine_calculation_errors"]
         quality_check(
             store,
             dataset_id=self.dataset_id,
@@ -724,11 +759,11 @@ class XbrlValidationDataset(Dataset):
             status="passed" if failed == 0 else "failed",
             observed_value=float(failed),
             threshold_value=0.0,
-            details={"rows_loaded": rows, "absolute_tolerance": options.absolute_tolerance},
+            details=details,
         )
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
             rows_loaded=rows,
             source=SOURCE_NAME,
-            details={"failed_calculation_rows": failed, "absolute_tolerance": options.absolute_tolerance},
+            details=details,
         )

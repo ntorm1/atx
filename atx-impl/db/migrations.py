@@ -6652,6 +6652,40 @@ def _xbrl_validation_dimensional_evidence(conn: duckdb.DuckDBPyConnection) -> No
     )
 
 
+def _xbrl_validation_resolution_status(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF-S7 S7-3: coarse validation-resolution status for reporting.
+
+    ``dimensional_evidence_json`` records the detailed S7-0 verdict/evidence.
+    This column is the reportable status used by dataset loads and quality checks
+    to separate resolved artifacts from genuine residual errors without hiding
+    the row-level audit trail.
+    """
+
+    conn.execute(
+        "ALTER TABLE xbrl_validation_results "
+        "ADD COLUMN IF NOT EXISTS resolution_status VARCHAR"
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            (
+                'xbrl_validation_results',
+                'resolution_status',
+                'status',
+                'PF-S7 S7-3 reportable resolution status for validation rows. Calculation-linkbase rows use resolved_ok for complete footings, resolved_dimensional_artifact for positively explained dimensional artifacts, and genuine_error for residual footing or missing-child errors. DQC rows emitted by the SQL subset are violations only, so failed DQC rows use genuine_error; future warning/skipped rules may use unresolved.',
+                true,
+                NULL,
+                'derived by refresh_xbrl_validation_results from the dimensional verdict or DQC violation status',
+                now()
+            )
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -7028,6 +7062,11 @@ MIGRATIONS: list[Migration] = [
         version=88,
         name="xbrl_validation_dimensional_evidence",
         up=_xbrl_validation_dimensional_evidence,
+    ),
+    Migration(
+        version=89,
+        name="xbrl_validation_resolution_status",
+        up=_xbrl_validation_resolution_status,
     ),
 ]
 

@@ -1691,11 +1691,37 @@ def _check_specs(
                    OR source_url IS NULL
                    OR source_url = ''
                    OR source_loaded_at IS NULL
+                   OR resolution_status IS NULL
+                   OR resolution_status NOT IN (
+                        'resolved_ok',
+                        'resolved_dimensional_artifact',
+                        'genuine_error',
+                        'unresolved'
+                   )
                    OR (rule_family = 'calculation_linkbase' AND parent_value IS NULL)
                    OR (rule_family = 'calculation_linkbase' AND child_weighted_sum IS NULL)
                    OR (rule_family = 'calculation_linkbase' AND absolute_difference IS NULL)
-                   OR (status = 'passed' AND absolute_difference > tolerance)
+                   OR (
+                        status = 'passed'
+                        AND absolute_difference > tolerance
+                        AND resolution_status <> 'resolved_dimensional_artifact'
+                   )
                    OR (status = 'failed' AND absolute_difference <= tolerance)
+                   OR (
+                        rule_family = 'calculation_linkbase'
+                        AND status = 'passed'
+                        AND resolution_status NOT IN ('resolved_ok', 'resolved_dimensional_artifact')
+                   )
+                   OR (
+                        rule_family = 'calculation_linkbase'
+                        AND status = 'failed'
+                        AND resolution_status <> 'genuine_error'
+                   )
+                   OR (
+                        rule_family = 'dqc'
+                        AND status = 'failed'
+                        AND resolution_status <> 'genuine_error'
+                   )
             """,
             threshold=0.0,
             required_tables=("xbrl_validation_results",),
@@ -1708,7 +1734,7 @@ def _check_specs(
                 SELECT count(*)::DOUBLE
                 FROM xbrl_validation_results
                 WHERE rule_family = 'calculation_linkbase'
-                  AND status = 'failed'
+                  AND resolution_status = 'genuine_error'
             """,
             threshold=0.0,
             required_tables=("xbrl_validation_results",),
