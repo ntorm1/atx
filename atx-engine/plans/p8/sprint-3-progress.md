@@ -78,7 +78,7 @@ only the `method_from_string`/dispatch `if` chain S3-1 extends next).
 - [x] S3-2  admit-vs-fallback gate (mandatory)
 - [x] S3-3  PIT HMM regime posterior -> `RegimeStack`
 - [x] S3-4  `cleaned_alpha_cov` consumption behind `kind==Factor`
-- [ ] S3-5  determinism battery (consolidated)
+- [x] S3-5  determinism battery (consolidated)
 
 ## Determinism contracts (both apply this sprint, per the p8 contract)
 - **(A) Opt-in** (S3-1..S3-4, all four): inert default (`method` stays `ShrinkageMv`;
@@ -397,3 +397,56 @@ pseudocode, as already noted at kickoff).
 
 Full regression sweep green (225 tests): `StageCombineCleanedCov` (3, new) + `CleanedAlphaCov` (3,
 S1's own, now in-scope by suite-name regex) + every S3-0..S3-3/S3-SEAM suite unchanged.
+
+S3-5: complete. No new engine code (per the sprint doc's own scope for this unit) — tests +
+this ledger row, consolidating the whole sprint's determinism contract. New suite
+`CombineDeterminismBattery` (`atx-impl/tests/stage_combine_determinism_battery_test.cpp`) covers
+the two accept-criteria bullets NOT already discharged by an earlier unit's own RED->GREEN test;
+the remaining three bullets are RE-CONFIRMED (not re-implemented) via this unit's regression sweep.
+
+**New this unit:**
+
+  * **`combine_default_byte_identical`** —
+    `DefaultByteIdenticalAcrossAllFiveLegacyMethodsAndDefaultString`: loops over all six
+    `--method` strings the CLI accepts (`""`, `shrinkage-mv`, `equal`, `rank`, `ic`, `bounded`) on
+    the SAME DSL/panel fixture, comparing the pre-S3 zero-arg `run_combine(cfg)` legacy entry point
+    against the new three-arg overload called with explicit default `CombinerConfig`/
+    `RiskModelConfig{}` (`kind==Diagonal`): `combo.bin` digest AND the full weights-sidecar bytes
+    are identical for EVERY method, on the FIRST run. This is the sprint-wide generalization of
+    S3-4's own `DiagonalKindByteIdenticalToLegacyPath` (which covered only `shrinkage-mv`) to all
+    five legacy methods + the empty-string default, proving the S3-0 enum append and the S3-4 new
+    dispatch branch left every pre-existing method byte-for-byte untouched.
+  * **`stack_seq_eq_parallel` / `regime_seq_eq_parallel`** — `StackSeqEqParallel` /
+    `RegimeStackSeqEqParallel`: four independently-seeded hand-built pools (the "each
+    fold/partition is independent" premise), each fit via `fit_stack_combo`, once in a plain
+    sequential loop and once dispatched across `atx::engine::parallel::DetPool::parallel_for`
+    (4 workers). Per-index `verdict_hash`, `admitted`, and `combo.weights` are bit-exact between
+    the two execution substrates, for BOTH `with_regime=false` (Stack) and `with_regime=true`
+    (RegimeStack, `regime_n_states=2`) — both passed on the FIRST run. **Scope note (an honest
+    reading of the spec's literal wording, recorded rather than glossed over):** `learn::fit_stack`
+    (frozen, `ensemble.cpp`) contains NO internal `DetPool`/thread dispatch of its own — its CPCV
+    fold loop and (for RegimeStack) its per-regime partition loop are both single-threaded
+    sequential reductions over a fixed-order collection, so there is no INTERNAL parallel
+    execution substrate inside the frozen stacking math to compare against a sequential one. What
+    IS genuinely testable, and what these two tests prove, is the practically load-bearing claim:
+    dispatching multiple INDEPENDENT `fit_stack_combo` invocations concurrently via the engine's
+    own `DetPool` (each call sharing nothing but const-ref inputs — no global RNG, no static/shared
+    mutable state) cannot cross-contaminate results — the same guarantee a future sprint's
+    fold-level-parallel `fit_stack` would need to uphold, verified here at the call-site level the
+    engine actually exposes today.
+
+**Re-confirmed (already proven by an earlier unit's own RED->GREEN test; re-run here, not
+re-implemented):**
+
+  * `stack_twice_run` — `StageCombineStack.TwiceRunByteIdenticalComboAndVerdictHash` (S3-1).
+  * `regime_stack_twice_run` — `StageCombineRegime.TwiceRunByteIdentical` (S3-3).
+  * `combine_method_enum_layout_pin` — `CombineMethodEnumLayoutPin` (S3-0,
+    `combine_method_enum_layout_pin_test.cpp`): `Stack==5`, `RegimeStack==6`, `sizeof==1` still
+    hold.
+  * `FactoryOos.MineIntoOffPathDigestUnchanged` (factory/S4-owned, read-only here) — the
+    combine-adjacent off-path golden this sprint must not perturb — re-run individually and
+    confirmed green (`atx-engine/tests/factory/factory_oos_test.cpp`).
+
+Full regression sweep green (264 tests, expanded regex adding `CombineDeterminismBattery` +
+`FactoryOos`): every suite from S3-0 through S3-4 unchanged, plus the 3 new
+`CombineDeterminismBattery` tests and the full `FactoryOos` suite (39 tests) all passing.
