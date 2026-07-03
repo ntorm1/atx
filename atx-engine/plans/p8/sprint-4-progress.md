@@ -62,7 +62,7 @@ intentional gap (S4-4 section below).
 - [x] S4-3d Permanent impact persistence (B6)
 - [x] S4-4  Impact in ScalarRaw selection (B7)
 - [x] S4-5a GP turnover-native step (B8)
-- [ ] S4-5b stage_report capacity curve (B9)
+- [x] S4-5b stage_report capacity curve (B9)
 
 ## Determinism contracts (both apply this sprint)
 - **(A) Opt-in** (S4-4, S4-5): inert default ⇒ byte-identical. `NsgaSearch.ScalarRaw_ReproducesGoldenDigest`,
@@ -454,3 +454,102 @@ before the per-group test-directory convention was adopted) and is unrelated to 
 left untouched (out of scope, not a Sprint-4 file) and flagged here only so a future agent does not
 mistake this session's NEW `tests/risk/gp_turnover_test.cpp` (correctly placed, confirmed compiled
 and run above) for a duplicate of the orphaned flat file.
+
+S4-5b: complete [OPT-IN — B9]. Root cause (re-confirmed at kickoff): `stage_report.cpp` emits only
+per-name %ADV participation scalars (the 7b block, at one `report_aum`) — no `(AUM, net_edge_bps)`
+vector, no zero-crossing. The build blocks exist unused: `risk::capacity_curve` (S4-1-corrected),
+`cost::capacity_point` (the interpolated zero-crossing), `cost::emit_capacity_scorecard`.
+
+**Ownership deviation (documented, forced by a real architectural gap — NOT a shortcut):** the spec
+asks for the curve "present only when an `aum_grid` config is supplied", but `config.hpp`/`.cpp` are
+Sprint-5-owned hub files S4 must not edit, so `RunConfig` cannot gain a new CLI flag this sprint. **A
+second, independent constraint compounds this:** `cost::capacity_for_book`/`cost::emit_capacity_scorecard`
+take a `loop::PanelView` (a `RollingPanel` ring-buffer view), but every atx-impl stage holds an
+`alpha::Panel` (a flat date-major array) — **there is no `alpha::Panel` → `PanelView` adapter anywhere
+in the codebase.** This is not a new discovery: `stage_combine.cpp`'s `alpha_capacity_aum` (lines
+188-199) documents the IDENTICAL gap verbatim ("there is no alpha::Panel -> loop::PanelView adapter, so
+we mirror risk/capacity.hpp's participation arithmetic locally") and reimplements the cost model by
+hand for the same reason. S4-5b follows the SAME precedent: a new file-local `book_capacity_curve`
+(anonymous namespace, `stage_report.cpp`) reimplements `risk::detail::impact_cost_bps`'s IDENTICAL
+formula directly over `research`'s `raw_close`/`volume` arrays (same `kCapacityAdvWindow=20`/
+`kCapacityVolWindow=60` windows, same engine-default impact-bearing `exec::ImpactCfg{}` `stage_combine.cpp`
+uses) — **but with the S4-1-CORRECTED participation** (`abs_w/adv`, NOT `abs_w/(price*adv)`, the bug
+`stage_combine.cpp:315` still carries as an open S3 seam) — S4 does not add a second impact formula,
+it evaluates the SAME one, closed-form (every name's participation is linear in AUM, so
+`impact_cost_bps(aum) = C·aum^delta` exactly, an AUM-independent bracket `C` computed once). The
+zero-crossing interpolation genuinely REUSES the shipped `cost::capacity_point(std::span<const
+risk::CapacityPoint>)` verbatim (it is PURE, no `PanelView` dependency) — the ONE piece of the spec's
+literal ask that needed no reimplementation. **"aum_grid supplied" stand-in:** since there is no CLI
+flag, the curve is computed whenever it is POSSIBLE — `has_volume && S > 0 && cfg.report_aum > 0.0`
+(mirrors the EXISTING 7b block's own `has_volume` gate exactly; `report_aum` is an EXISTING `RunConfig`
+field, read, not added). Absent any of these ⇒ the documented inert sentinels (`capacity_point_aum
+= +inf`, `book_gross_edge_bps = 0.0`, an empty curve) — additive/opt-in in SPIRIT and in every
+observable respect, without touching the forbidden config surface.
+
+**Fix:** `book_capacity_curve` (new, file-local) returns `{gross_edge_bps, curve}`; `log_aum_grid`
+builds the SAME log-spaced 20-point grid convention `cost::compute_capacity_vector` uses (0.01×–10×
+center, reusing `cost::kCapacityAumGridPoints` for the point count). Wired as a new "7c" block in
+`run_report` (between the existing 7b %ADV block and the file-writes block, renumbered 7c→7d): reads
+the LAST period's combined book (`mpr.books.back()`, the same "book proxy" convention
+`capacity_for_alpha`/`capacity_for_book` already use), emits `capacity_curve.csv` (new convenience
+file, header-only when the curve is empty), and appends `book_gross_edge_bps` /
+`capacity_point_aum` / `capacity_curve_points` to `summary.txt` (after the existing OOS-split
+prefix) and `capacity_point_aum` / `book_gross_edge_bps` to `sr.kvs` — mirroring the EXACT additive
+pattern the `portfolio_sharpe` kvs already established ("Digest is over the rep.* numeric series
+only, so these kvs do NOT affect it"). **The Stage-8 digest computation (`digest_buf`) is untouched —
+not one line moved or added there.**
+
+**RED (`atx-impl/tests/stage_report_capacity_curve_test.cpp`, new):** captured via a temporary
+`git stash push` of `stage_report.cpp` (the sole production file), 4 tests, all RED — the new
+summary.txt/kvs keys were simply absent (`capacity_point_aum` parsed as `0.0`, not the `+inf`
+sentinel; `capacity_curve_points` as `0`, not `20`; no `capacity_curve.csv` at all — `csv.is_open()`
+false). `git stash pop` restored the implementation.
+
+**GREEN:** all 4 pass. `CapacityCurveHandComputed` — a 2-instrument, D=5-date fixture
+(`wA=0.6,wB=0.4`; `closeA=[100,102,101,104,103]`, `closeB=[50,51,50.5,52,51.5]`;
+`volA=100000,volB=200000`; `report_aum=1e6`) independently verified via a Python oracle script (NOT
+reusing any C++ code): `book_gross_edge_bps≈75.70916028254437` (`EXPECT_NEAR`, 1e-4) and
+`capacity_point_aum≈3679063.396` (`EXPECT_NEAR`, tol 50 — the ~0.6% gap from the TRUE closed-form
+crossing 3656397.45 is the grid's linear-interpolation error, itself verified by simulating the exact
+20-point grid in the SAME oracle script), curve carries exactly 20 points, both new `kvs` keys
+present. `CapacityCurveMonotoneNonIncreasing` — parses `capacity_curve.csv` directly: strictly
+ascending `aum`, non-increasing `net_edge_bps` (also independently enforced by
+`cost::capacity_point`'s own `ATX_CHECK` — a violation would have aborted the process, not merely
+failed an assertion). `HigherVolatilityShiftsCapacityLower` — a higher-volatility variant of the SAME
+book (bigger price swings, oracle-verified `cap_hi≈809170.67 < cap_lo≈3656397.45` analytically,
+`cap_hi_interp≈811398.29 < cap_lo_interp≈3679063.40` on the actual grid) realizes a strictly lower
+`capacity_point_aum` — the stand-in for the spec's "larger `ImpactCfg.Y`" criterion (`Y` is not a
+config knob this sprint; `Y·σ` enters the cost model identically, so a σ lever is the equivalent,
+test-controllable proxy). `CapacityCurveAbsentWithoutVolume_DigestUnchanged` — a research panel with
+NO `"volume"` field degenerates to `capacity_point_aum=+inf`, `book_gross_edge_bps=0.0`, `0` curve
+points, AND `sr.digest` is **bit-identical** to the SAME fixture WITH a volume field added — a
+stronger proof than the spec's literal "absent path only" ask (mine holds on BOTH paths, since the
+capacity fields never enter `digest_buf` regardless). Broader regression sweep green (58 tests, 1
+pre-existing environment-gated skip unrelated to this unit — `SingleAlphaCapacity.SweepAndVerify`
+needs `ATX_ALPHA101_PANEL`): `AtxImplCombine` (27), `AtxImplE2E` (7, incl.
+`ReportBytesDeterministic`/`ReportWithoutComboStillWorksAndIsByteIdentical`), `AtxImplOptimize` (8),
+`ReportCapacity` (3, incl. `ExistingSummaryPrefixUnchanged`), `ReportParticipation` (3, incl.
+`SchemaExtensionOnly`), `AtxImplOptimizePit`/`AtxImplOptimizeRiskModel` (5). **No golden re-baseline
+needed** — every existing report-byte-determinism/prefix-unchanged test stays green, confirming the
+addition is genuinely inert on top of the existing contract.
+
+---
+
+## Sprint 4 complete — all nine units (S4-0 through S4-5b) landed.
+
+Full commit list: `git log --oneline 398725a..HEAD` (see the final dispatch report). Every
+correctness fix (B1–B6) shipped a RED test on a by-construction fixture, a documented before/after,
+and a regression sweep proving no golden encoded the bug as a pinned expectation (three found-and-
+fixed exceptions in S4-1, each a non-golden self-consistent re-derivation, documented in that unit's
+log entry — not a digest re-baseline). Every opt-in unit (B7–B9) shipped off-path byte-identity +
+on-path RED→GREEN + determinism evidence, confirmed inert on every existing golden it touches
+(`NsgaSearch.ScalarRaw_ReproducesGoldenDigest`, `FactoryOos.MineIntoOffPathDigestUnchanged`,
+`AtxImplE2E.ReportBytesDeterministic`, and more, enumerated in each unit's own log entry). Two
+pre-existing, out-of-scope issues were found during regression sweeps and are recorded (not fixed,
+not caused by this sprint): `RobustPipelineE2E.{NoiseGrowsRobustLibraryByZero,
+SyntheticPanelAdmitsRobustSurvivors}` fails identically at the true pre-Sprint-4 base commit
+`a7838c6` (bisection-proven, S4-3d's log entry); `tests/risk_garleanu_pedersen_test.cpp` is an
+orphaned flat test file compiled by no CMake target (S4-5a's log entry). One cross-sprint seam is
+open for Sprint 3 (the `stage_combine.cpp:315` participation-bug twin, S4-1's log entry) and one for
+Sprint 5 (the `CostSelectionConfig`/`FitnessCfg` wire, S4-0/S4-4's log entries); one is open for
+whichever sprint wires `gp_turnover_native_step` into `stage_optimize.cpp` (S4-5a's log entry).

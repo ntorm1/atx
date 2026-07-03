@@ -15,6 +15,8 @@
 
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/book/report.hpp"
+#include "atx/engine/cost/capacity.hpp"
+#include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/library/library.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 
@@ -29,7 +31,171 @@ namespace fs    = std::filesystem;
 namespace alpha = atx::engine::alpha;
 namespace book  = atx::engine::book;
 namespace risk  = atx::engine::risk;
+namespace cost  = atx::engine::cost;
+namespace exec  = atx::engine::exec;
 namespace lib_ns = atx::engine::library;
+
+// ===========================================================================
+//  book_capacity_curve (S4-5b [B9]) — the book-level (AUM, net-edge) capacity
+//  curve, in CLOSED FORM.
+//
+//  No atx-impl stage holds a loop::PanelView (there is no alpha::Panel ->
+//  PanelView adapter -- stage_combine.cpp's alpha_capacity_aum mirrors the
+//  SAME risk/capacity.hpp arithmetic locally for the identical reason), so
+//  this function reimplements risk::detail::impact_cost_bps's IDENTICAL
+//  formula directly over raw close/volume arrays, reading the engine DEFAULT
+//  (Appendix-A) impact-bearing `exec::ImpactCfg{}` (Y=1.0, delta=0.5,
+//  mirroring stage_combine.cpp's documented choice -- a frictionless sim
+//  would zero every impact term and make capacity infinite everywhere, the
+//  D3c no-op stage_combine's own comment warns against).
+//
+//  S4-1 [B1 fix]: participation is `notional/dollar-ADV` (NOT
+//  `notional/(price*dollar-ADV)`, the bug stage_combine.cpp:315 still carries
+//  as an open S3 seam -- see sprint-4-progress.md) -- this function uses the
+//  CORRECTED formula, not a copy of the still-buggy one.
+//
+//  Closed form: every name's participation part_i = aum*|w_i|/adv_i is LINEAR
+//  in aum, so impact_cost_bps(aum) = aum^delta * C exactly, where
+//    C = 1e4 * Sum_i |w_i| * Y * sigma_i * (|w_i|/adv_i)^delta
+//  is an AUM-INDEPENDENT bracket (computed once). This is the SAME cost model
+//  risk::capacity_curve evaluates per grid point -- S4 does not add a second
+//  impact formula, it evaluates the identical one analytically.
+//
+//  `raw_close` (as-traded price, not the TRI-adjusted `close` used for
+//  return-continuity elsewhere in this file) backs BOTH the ADV weighting and
+//  the return/sigma computation -- the live engine's PanelView.close() is
+//  never TRI-adjusted, so this is the faithful choice for the SAME model.
+//
+//  Returns a `BookCapacityResult{gross_edge_bps, curve}`: `curve` is empty
+//  when `book` is empty, `dates<2`, `insts==0`, or `aum_grid` is empty
+//  (nothing to sweep -- `gross_edge_bps` stays 0.0 too in that case);
+//  otherwise `curve` holds one CapacityPoint per `aum_grid` entry, in grid
+//  order, and `gross_edge_bps` is the single AUM-independent gross term
+//  every point shares (returned once rather than re-derived per point). PURE;
+//  NO RNG; deterministic given (book, raw_close, volume, dates, insts,
+//  aum_grid, impact).
+// ===========================================================================
+namespace {
+
+constexpr atx::usize kBookCapAdvWindow = 20U; // mirrors risk::detail::kCapacityAdvWindow
+constexpr atx::usize kBookCapVolWindow = 60U; // mirrors risk::detail::kCapacityVolWindow
+
+// Result of one book_capacity_curve call: the AUM-independent gross edge
+// (bps) plus the swept curve (empty when there is nothing to sweep).
+struct BookCapacityResult {
+    atx::f64 gross_edge_bps = 0.0;
+    std::vector<risk::CapacityPoint> curve{};
+};
+
+[[nodiscard]] BookCapacityResult
+book_capacity_curve(std::span<const atx::f64> book, std::span<const atx::f64> raw_close,
+                    std::span<const atx::f64> volume, atx::usize dates, atx::usize insts,
+                    std::span<const atx::f64> aum_grid, const exec::ImpactCfg& impact) {
+    BookCapacityResult out;
+    if (book.empty() || dates < 2U || insts == 0U || aum_grid.empty()) {
+        return out; // nothing to sweep -- empty curve (capacity_point -> +inf)
+    }
+    const atx::usize n = (insts < book.size()) ? insts : book.size();
+    const atx::usize vol_start = (dates > kBookCapVolWindow + 1U) ? (dates - 1U - kBookCapVolWindow)
+                                                                  : 0U;
+    const atx::usize adv_start = (dates > kBookCapAdvWindow) ? (dates - kBookCapAdvWindow) : 0U;
+
+    // Gross frictionless edge (AUM-independent): 1e4 * mean over ALL usable
+    // per-step returns of the cross-sectional book return Sum_i w_i*ret_i(t).
+    atx::f64 gross_sum = 0.0;
+    atx::usize gross_n = 0U;
+    for (atx::usize t = 0U; t + 1U < dates; ++t) {
+        atx::f64 row_ret = 0.0;
+        bool any = false;
+        for (atx::usize i = 0U; i < n; ++i) {
+            const atx::f64 wi = book[i];
+            if (std::isnan(wi) || wi == 0.0) { continue; }
+            const atx::f64 p0 = raw_close[t * insts + i];
+            const atx::f64 p1 = raw_close[(t + 1U) * insts + i];
+            if (std::isnan(p0) || std::isnan(p1) || p0 <= 0.0) { continue; }
+            row_ret += wi * (p1 / p0 - 1.0);
+            any = true;
+        }
+        if (any) { gross_sum += row_ret; ++gross_n; }
+    }
+    out.gross_edge_bps = (gross_n == 0U) ? 0.0 : 1.0e4 * (gross_sum / static_cast<atx::f64>(gross_n));
+
+    // The AUM-independent cost bracket C.
+    atx::f64 C = 0.0;
+    for (atx::usize i = 0U; i < n; ++i) {
+        const atx::f64 wi = book[i];
+        if (std::isnan(wi) || wi == 0.0) { continue; }
+        const atx::f64 abs_w = (wi < 0.0) ? -wi : wi;
+
+        // Dollar-ADV: mean raw_close*volume over the newest kBookCapAdvWindow rows.
+        atx::f64 adv_sum = 0.0; atx::usize adv_n = 0U;
+        for (atx::usize t = adv_start; t < dates; ++t) {
+            const atx::f64 c = raw_close[t * insts + i];
+            const atx::f64 v = volume[t * insts + i];
+            if (!std::isnan(c) && !std::isnan(v)) { adv_sum += c * v; ++adv_n; }
+        }
+        if (adv_n == 0U) { continue; }
+        const atx::f64 adv = adv_sum / static_cast<atx::f64>(adv_n);
+        if (adv <= 0.0) { continue; }
+
+        // Population stddev of the newest kBookCapVolWindow per-step returns.
+        atx::f64 vol_sum = 0.0; atx::usize vol_n = 0U;
+        for (atx::usize t = vol_start; t + 1U < dates; ++t) {
+            const atx::f64 p0 = raw_close[t * insts + i];
+            const atx::f64 p1 = raw_close[(t + 1U) * insts + i];
+            if (std::isnan(p0) || std::isnan(p1) || p0 <= 0.0) { continue; }
+            vol_sum += p1 / p0 - 1.0; ++vol_n;
+        }
+        if (vol_n < 2U) { continue; }
+        const atx::f64 vol_mean = vol_sum / static_cast<atx::f64>(vol_n);
+        atx::f64 ss = 0.0; atx::usize ss_n = 0U;
+        for (atx::usize t = vol_start; t + 1U < dates; ++t) {
+            const atx::f64 p0 = raw_close[t * insts + i];
+            const atx::f64 p1 = raw_close[(t + 1U) * insts + i];
+            if (std::isnan(p0) || std::isnan(p1) || p0 <= 0.0) { continue; }
+            const atx::f64 d = (p1 / p0 - 1.0) - vol_mean;
+            ss += d * d; ++ss_n;
+        }
+        const atx::f64 sigma = std::sqrt(ss / static_cast<atx::f64>(ss_n));
+        if (sigma <= 0.0) { continue; }
+
+        // S4-1 [B1 fix]: participation is notional/dollar-ADV (per-unit-aum bracket).
+        const atx::f64 part_per_aum = abs_w / adv;
+        if (part_per_aum <= 0.0) { continue; }
+        C += abs_w * impact.Y * sigma * std::pow(part_per_aum, impact.delta);
+    }
+    C *= 1.0e4;
+
+    out.curve.reserve(aum_grid.size());
+    for (const atx::f64 aum : aum_grid) {
+        const atx::f64 impact_bps = (C <= 0.0) ? 0.0 : C * std::pow(aum, impact.delta);
+        out.curve.push_back(risk::CapacityPoint{aum, out.gross_edge_bps - impact_bps});
+    }
+    return out;
+}
+
+// Log-spaced AUM grid from 0.01*center to 10*center, kCapacityAumGridPoints
+// points (mirrors cost::compute_capacity_vector's own grid convention -- see
+// cost/capacity.hpp). `center` MUST be strictly positive.
+[[nodiscard]] std::vector<atx::f64> log_aum_grid(atx::f64 center) {
+    std::vector<atx::f64> grid;
+    if (!(center > 0.0)) {
+        return grid; // degenerate -- caller treats an empty grid as "no curve"
+    }
+    grid.reserve(cost::kCapacityAumGridPoints);
+    const atx::f64 lo = 0.01 * center;
+    const atx::f64 hi = 10.0 * center;
+    const atx::f64 log_lo = std::log(lo);
+    const atx::f64 log_hi = std::log(hi);
+    const atx::f64 denom = static_cast<atx::f64>(cost::kCapacityAumGridPoints - 1U);
+    for (atx::usize k = 0U; k < cost::kCapacityAumGridPoints; ++k) {
+        const atx::f64 frac = static_cast<atx::f64>(k) / denom;
+        grid.push_back(std::exp(log_lo + frac * (log_hi - log_lo)));
+    }
+    return grid;
+}
+
+} // namespace
 
 atx::core::Result<StageResult> run_report(const RunConfig& cfg)
 {
@@ -468,7 +634,27 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
             }
         }
 
-        // 7c. Write convenience files (not R8-pinned).
+        // 7c. (S4-5b [B9]) Book-level capacity curve -- the first-class
+        // (AUM, net-edge) capacity statement, replacing the scalar %ADV
+        // footprint (7b) as the honest capacity claim. Gated on the SAME
+        // `has_volume && S > 0` precondition 7b uses (no volume field -> no
+        // ADV -> no capacity model input at all); additive, never touches
+        // the digest (the Stage-8 digest below reads only rep.* series).
+        atx::f64 book_gross_edge_bps = 0.0;
+        atx::f64 capacity_point_aum  = std::numeric_limits<atx::f64>::infinity();
+        std::vector<risk::CapacityPoint> capacity_curve_pts;
+        if (has_volume && S > 0 && cfg.report_aum > 0.0) {
+            const std::vector<atx::f64> aum_grid = log_aum_grid(cfg.report_aum);
+            const BookCapacityResult cap = book_capacity_curve(
+                std::span<const atx::f64>{mpr.books.back()}, raw_close, volume_span, D, M,
+                std::span<const atx::f64>{aum_grid}, exec::ImpactCfg{});
+            book_gross_edge_bps = cap.gross_edge_bps;
+            capacity_curve_pts  = cap.curve;
+            capacity_point_aum  = cost::capacity_point(
+                std::span<const risk::CapacityPoint>{capacity_curve_pts});
+        }
+
+        // 7d. Write convenience files (not R8-pinned).
         {
             const fs::path rdir{cfg.report_out};
             // equity_curve.csv
@@ -488,6 +674,21 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                     ec_file << std::to_string(s) << ","
                             << std::to_string(rep.equity_curve[s]) << ","
                             << seg << "\n";
+                }
+            }
+            // capacity_curve.csv (S4-5b [B9], additive; not R8-pinned): the full
+            // (aum, net_edge_bps) sweep. Header-only when the curve is empty
+            // (no volume field, no periods, or a non-positive report_aum).
+            {
+                std::ofstream cc_file{rdir / "capacity_curve.csv"};
+                if (!cc_file.is_open()) {
+                    return atx::core::Err(atx::core::ErrorCode::IoError,
+                                          "report: cannot write capacity_curve.csv");
+                }
+                cc_file << "aum,net_edge_bps\n";
+                for (const auto& pt : capacity_curve_pts) {
+                    cc_file << std::to_string(pt.aum) << ","
+                            << std::to_string(pt.net_edge_bps) << "\n";
                 }
             }
             // summary.txt — first 6 lines are the existing prefix (byte-identical
@@ -529,6 +730,15 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 sm_file << "oos_turnover=" << std::to_string(oos_turnover) << "\n";
                 sm_file << "oos_max_drawdown=" << std::to_string(oos_max_drawdown) << "\n";
                 sm_file << "oos_pnl_net=" << std::to_string(oos_pnl_net) << "\n";
+                // (S4-5b [B9]) Book-level capacity curve summary (additive; after
+                // the OOS-split prefix; existing lines stay byte-identical).
+                // capacity_point_aum == +inf when the curve never crosses zero
+                // (or is empty/absent) -- std::to_string renders this as "inf",
+                // a stable, grep-able sentinel (matches the engine-layer
+                // cost::capacity_point contract's own +inf sentinel).
+                sm_file << "book_gross_edge_bps=" << std::to_string(book_gross_edge_bps) << "\n";
+                sm_file << "capacity_point_aum=" << std::to_string(capacity_point_aum) << "\n";
+                sm_file << "capacity_curve_points=" << std::to_string(capacity_curve_pts.size()) << "\n";
             }
         }
 
@@ -562,6 +772,10 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
             // rep.* numeric series only, so these kvs do NOT affect it.
             {"portfolio_sharpe",      std::to_string(portfolio_sharpe)},
             {"portfolio_oos_sharpe",  std::to_string(portfolio_oos_sharpe)},
+            // (S4-5b [B9]) Book-level capacity curve -- additive, same digest
+            // exemption as portfolio_sharpe above (rep.* series only).
+            {"capacity_point_aum",    std::to_string(capacity_point_aum)},
+            {"book_gross_edge_bps",   std::to_string(book_gross_edge_bps)},
         };
         return atx::core::Ok(std::move(sr));
     }
