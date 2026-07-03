@@ -1,4 +1,4 @@
-"""PF2-S1 S1-0: declarative schema contract + live-vs-contract drift detector.
+"""PF2-S1 S1-0/S1-2: declarative schema contract + live-vs-contract drift detector.
 
 Today the warehouse's "true" shape is emergent: whatever ``schema.py::ensure_quant_schema``
 plus ``migrations.py::MIGRATIONS`` happen to leave behind after running against a live
@@ -14,13 +14,20 @@ This module is the first piece of clause (E) (schema-as-contract):
   COLUMN`` (see ``migrations.py::_schema_evolution_alters``), so ``declared_in`` is a
   column-level fact, not a table-level one.
 
-  S1-0 seeds the manifest *machinery* and a representative subset of tables (a mix of
+  S1-0 seeded the manifest *machinery* and a representative subset of tables (a mix of
   schema.py-declared catalog/control tables and migration-declared fact/catalog tables,
   covering both PIT and non-PIT columns) -- not an exhaustive enumeration of the ~60+ live
-  tables. Reconciling the manifest to *full* coverage over both code paths is PF2-S1 S1-2's
-  job; a partial manifest here is fine because the detector is used against fixtures (this
-  module's tests) and, later, against explicit table subsets -- not asserted `== []` against
-  the live warehouse until S1-2 lands.
+  tables.
+
+- ``build_contract_manifest(con) -> dict[str, list[ColumnSpec]]``: PF2-S1 S1-2's full
+  reconciliation. Reuses CONTRACT verbatim wherever it already declares a table (so the
+  two never disagree) and derives every other live table from a freshly bootstrapped
+  connection's ``duckdb_tables()``/``duckdb_columns()``, attributing ``declared_in`` by
+  text-scanning the imperative schema sources (schema.py + connection.py for the
+  unversioned bootstrap path, migrations.py for the versioned one -- see the module-level
+  design note above ``build_contract_manifest``'s definition). This is the manifest
+  migration 0097 now persists into ``schema_contract``, and the one a coverage test
+  asserts has zero residual against ``duckdb_tables()`` in either direction.
 
 - ``detect_schema_drift(store, contract=None) -> list[DriftRow]``: a PURE read over
   ``duckdb_tables()``/``duckdb_columns()`` (the live warehouse) diffed against the manifest.
@@ -41,7 +48,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Sequence
 
 from .connection import DuckDBStore
@@ -359,3 +368,176 @@ def schema_contract_sha256(contract: Mapping[str, Sequence[ColumnSpec]] | None =
     manifest: Mapping[str, Sequence[ColumnSpec]] = CONTRACT if contract is None else contract
     payload = json.dumps(_manifest_payload(manifest), sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# PF2-S1 S1-2: reconcile BOTH imperative schema paths into one COMPLETE manifest.
+#
+# CONTRACT (above) is a hand-curated, representative 6-table subset -- deliberately
+# partial per S1-0's brief. build_contract_manifest() below is the full reconciliation:
+# every live table, sourced from a freshly bootstrapped DuckDBStore's
+# duckdb_tables()/duckdb_columns() (the ground truth for shape), with declared_in
+# attributed by detecting which imperative source(s) actually declare each table/column.
+#
+# There are, in practice, THREE source files that create tables imperatively, not two:
+#   - db/schema.py::ensure_quant_schema -- the core "always run, CREATE IF NOT EXISTS"
+#     bootstrap tables.
+#   - db/connection.py::DuckDBStore.initialize() -- creates dataset_runs/
+#     dataset_watermarks/security_identifiers directly, with the exact same unversioned
+#     bootstrap semantics as schema.py, just physically colocated in connection.py for
+#     historical reasons (it sandwiches the ensure_quant_schema/apply_pending_migrations
+#     calls). Both feed the `schema_py` declared_in bucket.
+#   - db/migrations.py::MIGRATIONS -- versioned migrations; the `migration` bucket.
+#
+# A handful of legacy tables (e.g. xbrl_validation_results, taxonomy, market_cap) were
+# later "rebaselined" directly into schema.py's CREATE TABLE list for fresh-bootstrap
+# speed, so they are now declared in BOTH schema.py and their original migration. On that
+# overlap, `migration` wins -- the migration is the versioned record of when the table
+# was introduced (see _reference_classifications' own docstring), matching the precedent
+# S1-0 already set by hand-tagging market_cap `migration` even though schema.py also
+# creates it. The same precedence applies at column granularity: a column added to an
+# already-schema_py table via a migration's `ALTER TABLE ... ADD COLUMN` (e.g.
+# _schema_evolution_alters adding `available_at`/`run_id` to security_identifier_history)
+# is tagged `migration` even where schema.py has since inlined that same column directly.
+#
+# This scan is best-effort text introspection over the two/three source files, not a SQL
+# parser -- it only needs table/column NAMES (duckdb_columns() is the source of truth for
+# types/nullability), so simple regexes over the literal "CREATE TABLE IF NOT EXISTS x"
+# and "ALTER TABLE x ADD COLUMN [IF NOT EXISTS] y" statements are sufficient and avoid a
+# hand-maintained table-by-table literal that would rot exactly like the manifest itself
+# used to.
+# ---------------------------------------------------------------------------
+
+_DB_DIR = Path(__file__).resolve().parent
+
+# Unversioned "always run" bootstrap sources -> declared_in="schema_py".
+_SCHEMA_PY_SOURCE_FILES = ("schema.py", "connection.py")
+# Versioned migration source -> declared_in="migration".
+_MIGRATION_SOURCE_FILES = ("migrations.py",)
+
+_CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
+_ALTER_ADD_COLUMN_RE = re.compile(r"ALTER TABLE (\w+) ADD COLUMN(?: IF NOT EXISTS)? (\w+)")
+
+
+def _read_db_source(filename: str) -> str:
+    return (_DB_DIR / filename).read_text(encoding="utf-8")
+
+
+def _scan_declared_in_sources() -> tuple[set[str], set[str], set[tuple[str, str]]]:
+    """Best-effort table/column provenance via text introspection of the schema sources.
+
+    Returns (schema_py_tables, migration_tables, migration_added_columns):
+      - schema_py_tables: table names created via ``CREATE TABLE IF NOT EXISTS`` in
+        schema.py or connection.py.
+      - migration_tables: table names created via ``CREATE TABLE IF NOT EXISTS``
+        anywhere in migrations.py (every such statement lives inside some MIGRATIONS
+        entry's ``up()``).
+      - migration_added_columns: (table, column) pairs added via an ``ALTER TABLE ...
+        ADD COLUMN`` in migrations.py.
+    """
+    schema_py_text = "\n".join(_read_db_source(name) for name in _SCHEMA_PY_SOURCE_FILES)
+    migration_text = "\n".join(_read_db_source(name) for name in _MIGRATION_SOURCE_FILES)
+
+    schema_py_tables = set(_CREATE_TABLE_RE.findall(schema_py_text))
+    migration_tables = set(_CREATE_TABLE_RE.findall(migration_text))
+    migration_added_columns = set(_ALTER_ADD_COLUMN_RE.findall(migration_text))
+
+    return schema_py_tables, migration_tables, migration_added_columns
+
+
+def _fetch_natural_keys(con) -> dict[str, set[str]]:
+    """table_name -> declared natural-key column names.
+
+    Prefers ``table_catalog.natural_key_json`` (the curated business key, which can
+    differ from a surrogate PRIMARY KEY); falls back to the live PRIMARY KEY
+    constraint's columns for a table with no (or no parseable) natural_key_json.
+    """
+    natural_keys: dict[str, set[str]] = {}
+    try:
+        rows = con.execute("SELECT table_name, natural_key_json FROM table_catalog").fetchall()
+    except Exception:
+        rows = []
+    for table_name, natural_key_json in rows:
+        if not natural_key_json:
+            continue
+        try:
+            columns = json.loads(natural_key_json)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(columns, list):
+            natural_keys[table_name] = {str(c) for c in columns}
+
+    try:
+        pk_rows = con.execute(
+            """
+            SELECT table_name, constraint_column_names
+            FROM duckdb_constraints()
+            WHERE constraint_type = 'PRIMARY KEY'
+            """
+        ).fetchall()
+    except Exception:
+        pk_rows = []
+    for table_name, columns in pk_rows:
+        if table_name not in natural_keys and columns:
+            natural_keys[table_name] = {str(c) for c in columns}
+
+    return natural_keys
+
+
+def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
+    """Reconcile BOTH imperative schema paths into one COMPLETE manifest.
+
+    ``con`` must be a connection to a fully bootstrapped warehouse (``ensure_quant_schema``
+    + all ``MIGRATIONS`` applied) -- duckdb_tables()/duckdb_columns() are the ground truth
+    this derives types/nullability from (per the S1-2 design guidance: derive
+    programmatically rather than hand-maintain a second giant literal).
+
+    Wherever CONTRACT (the S1-0 hand-curated 6-table subset) already declares a table,
+    its ColumnSpec list is reused verbatim -- the hand-curated subset and the full
+    manifest must never disagree (see test_schema_contract.py's consistency test). Every
+    other live table is derived fresh: column shape from duckdb_columns(), is_natural_key
+    from table_catalog.natural_key_json (or a PRIMARY KEY fallback), is_pit_column from
+    the canonical PIT_COLUMN_NAMES, and declared_in from _scan_declared_in_sources()
+    (``migration`` wins on any schema_py/migration overlap, at both table and column
+    granularity -- see the module-level design note above).
+
+    Deterministic given a bootstrapped DB: same live schema + same source tree -> same
+    manifest, every time.
+    """
+    live_tables = _fetch_live_tables(con)
+    live_columns = _fetch_live_columns(con, sorted(live_tables))
+    natural_keys = _fetch_natural_keys(con)
+    schema_py_tables, migration_tables, migration_added_columns = _scan_declared_in_sources()
+
+    manifest: dict[str, list[ColumnSpec]] = {}
+    for table_name in sorted(live_tables):
+        if table_name in CONTRACT:
+            manifest[table_name] = list(CONTRACT[table_name])
+            continue
+
+        # migration wins on overlap; a table absent from BOTH regex scans (e.g. created
+        # by some other mechanism entirely) defaults to schema_py rather than silently
+        # being dropped -- every live table must land in the manifest (zero residual).
+        if table_name in migration_tables:
+            table_is_migration = True
+        elif table_name in schema_py_tables:
+            table_is_migration = False
+        else:
+            table_is_migration = False
+        natural_key_columns = natural_keys.get(table_name, set())
+        columns: list[ColumnSpec] = []
+        for column_name, (data_type, nullable) in sorted(live_columns.get(table_name, {}).items()):
+            column_is_migration = table_is_migration or (table_name, column_name) in migration_added_columns
+            columns.append(
+                ColumnSpec(
+                    name=column_name,
+                    data_type=data_type,
+                    nullable=nullable,
+                    is_natural_key=column_name in natural_key_columns,
+                    is_pit_column=column_name in PIT_COLUMN_NAMES,
+                    declared_in="migration" if column_is_migration else "schema_py",
+                )
+            )
+        manifest[table_name] = columns
+
+    return manifest

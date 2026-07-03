@@ -87,6 +87,14 @@ class DuckDBStore:
         if self._schema_is_current(con):
             self._initialized = True
             return
+        # PF2-S1 S1-2: these three tables are created directly here (not via schema.py or
+        # a migration), so they must all exist BEFORE apply_pending_migrations() runs --
+        # migration 0097 reconciles the live schema into a complete manifest
+        # (schema_contract.py::build_contract_manifest), and a table created only AFTER
+        # migrations apply would be invisible to that reconciliation. dataset_watermarks/
+        # security_identifiers used to be created after apply_pending_migrations(); moved
+        # up here for that reason. Neither depends on anything ensure_quant_schema or the
+        # migrations create.
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS dataset_runs (
@@ -102,14 +110,6 @@ class DuckDBStore:
             )
             """
         )
-        from .schema import ensure_quant_schema
-
-        ensure_quant_schema(self)
-
-        # Apply any pending versioned migrations (idempotent; no-op if up to date).
-        from .migrations import apply_pending_migrations
-
-        apply_pending_migrations(self.con)
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS dataset_watermarks (
@@ -133,6 +133,14 @@ class DuckDBStore:
             )
             """
         )
+        from .schema import ensure_quant_schema
+
+        ensure_quant_schema(self)
+
+        # Apply any pending versioned migrations (idempotent; no-op if up to date).
+        from .migrations import apply_pending_migrations
+
+        apply_pending_migrations(self.con)
         self._initialized = True
 
     @contextlib.contextmanager

@@ -10,10 +10,15 @@ Covers:
 
 The fixture-only tests below build tiny, self-contained in-memory manifests/DBs (NOT the
 real committed CONTRACT) so drift-type coverage is precise and independent of CONTRACT's
-future growth (PF2-S1 S1-2 completes CONTRACT's coverage over the full live warehouse;
-that is explicitly out of scope here -- see the module docstring). A separate integration
-test near the bottom checks the real committed CONTRACT against a fully bootstrapped
-warehouse.
+future growth. A separate integration test near the bottom checks the real committed
+CONTRACT against a fully bootstrapped warehouse.
+
+PF2-S1 S1-2 (schema_contract.py::build_contract_manifest) completes CONTRACT's coverage
+over both imperative schema paths -- its coverage/declared_in/consistency tests live in
+their own section near the bottom of this file. Migration 0097 now seeds schema_contract
+from build_contract_manifest() (the full reconciled manifest) rather than the bare
+CONTRACT subset, so the row-count/hash assertions below reference build_contract_manifest()
+as the single source of truth for what gets persisted.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from db.schema_contract import (
     CONTRACT,
     ColumnSpec,
     DriftRow,
+    build_contract_manifest,
     detect_schema_drift,
     schema_contract_sha256,
 )
@@ -374,11 +380,13 @@ class TestSchemaContractSha256:
         warehouses -- the fast template-copy tmp_store and the fully independent
         fresh_store bootstrap path (conftest.py's _build_template vs a real
         DuckDBStore.__enter__ run) -- must agree on the manifest_sha256 persisted by
-        migration 0097, and both must match the in-Python schema_contract_sha256(CONTRACT).
+        migration 0097, and both must match schema_contract_sha256(build_contract_manifest(...))
+        computed fresh against either store (PF2-S1 S1-2: migration 0097 now seeds from the
+        full reconciled manifest, not the bare 6-table CONTRACT).
         """
         tmp_sha = tmp_store.con.execute("SELECT DISTINCT manifest_sha256 FROM schema_contract").fetchone()[0]
         fresh_sha = fresh_store.con.execute("SELECT DISTINCT manifest_sha256 FROM schema_contract").fetchone()[0]
-        assert tmp_sha == fresh_sha == schema_contract_sha256(CONTRACT)
+        assert tmp_sha == fresh_sha == schema_contract_sha256(build_contract_manifest(tmp_store.con))
 
 
 class TestMigration0097SchemaContractTable:
@@ -389,14 +397,18 @@ class TestMigration0097SchemaContractTable:
         assert count == 1
 
     def test_seeded_with_one_row_per_manifest_column(self, tmp_store):
-        expected = sum(len(specs) for specs in CONTRACT.values())
+        # PF2-S1 S1-2: migration 0097 seeds from build_contract_manifest() (every live
+        # table, both schema paths reconciled), not the bare 6-table CONTRACT subset.
+        expected = sum(len(specs) for specs in build_contract_manifest(tmp_store.con).values())
         actual = tmp_store.con.execute("SELECT count(*) FROM schema_contract").fetchone()[0]
         assert actual == expected
+        # Sanity: the full manifest is a strict superset of CONTRACT's representative subset.
+        assert expected > sum(len(specs) for specs in CONTRACT.values())
 
     def test_manifest_sha256_column_matches_schema_contract_sha256(self, tmp_store):
         rows = tmp_store.con.execute("SELECT DISTINCT manifest_sha256 FROM schema_contract").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == schema_contract_sha256(CONTRACT)
+        assert rows[0][0] == schema_contract_sha256(build_contract_manifest(tmp_store.con))
 
     def test_declared_in_values_are_well_formed(self, tmp_store):
         rows = tmp_store.con.execute("SELECT DISTINCT declared_in FROM schema_contract").fetchall()
@@ -429,7 +441,7 @@ class TestMigration0097SchemaContractTable:
         _schema_contract_schema_catalog(tmp_store.con)
         _schema_contract_schema_catalog(tmp_store.con)
 
-        expected = sum(len(specs) for specs in CONTRACT.values())
+        expected = sum(len(specs) for specs in build_contract_manifest(tmp_store.con).values())
         actual = tmp_store.con.execute("SELECT count(*) FROM schema_contract").fetchone()[0]
         assert actual == expected
 
@@ -499,3 +511,165 @@ class TestDetectSchemaDriftOverRealContractAndFullWarehouse:
         rows = detect_schema_drift(tmp_store, CONTRACT)
         offending = [row for row in rows if row.drift_type in column_level_drift_types]
         assert offending == [], f"CONTRACT disagrees with the live warehouse: {offending}"
+
+
+def _live_tables(store: DuckDBStore) -> set[str]:
+    rows = store.con.execute(
+        """
+        SELECT table_name
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name NOT LIKE 'duckdb_%'
+          AND table_name NOT LIKE 'sqlite_%'
+          AND table_name NOT LIKE 'pragma_%'
+        """
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+class TestBuildContractManifestCoverage:
+    """PF2-S1 S1-2's headline acceptance: on a freshly bootstrapped DB (both
+    ensure_quant_schema and every MIGRATIONS entry applied), build_contract_manifest()
+    must cover EVERY live table -- zero residual in both directions. An incomplete
+    manifest makes detect_schema_drift cry wolf on legitimate tables (see the sprint
+    plan's risk note), which is exactly what S1-2 exists to close out.
+    """
+
+    def test_manifest_tables_exactly_match_live_tables(self, tmp_store):
+        manifest = build_contract_manifest(tmp_store.con)
+        live = _live_tables(tmp_store)
+        assert set(manifest) == live
+        # Spelled out both directions per the task's acceptance wording.
+        assert set(manifest) - live == set()
+        assert live - set(manifest) == set()
+
+    def test_manifest_covers_representative_tables_from_both_paths(self, tmp_store):
+        """Sanity spot-check: well-known tables from each path are present at all."""
+        manifest = build_contract_manifest(tmp_store.con)
+        # schema.py-only.
+        assert "securities" in manifest
+        # migrations.py-only.
+        assert "fundamental_item" in manifest
+        # connection.py's own bootstrap-time tables (the third, folded-into-schema_py path).
+        assert "dataset_runs" in manifest
+        assert "dataset_watermarks" in manifest
+        assert "security_identifiers" in manifest
+
+    def test_manifest_has_no_column_level_drift_against_the_live_warehouse(self, tmp_store):
+        """detect_schema_drift over a fresh bootstrap with the COMPLETE manifest: no
+        undeclared_table, no missing_table (coverage is exact), and no column-level
+        drift (every column's shape is read straight off duckdb_columns(), so it cannot
+        disagree with itself).
+        """
+        manifest = build_contract_manifest(tmp_store.con)
+        rows = detect_schema_drift(tmp_store, manifest)
+        by_type: dict[str, list[DriftRow]] = {}
+        for row in rows:
+            by_type.setdefault(row.drift_type, []).append(row)
+
+        for drift_type in (
+            "undeclared_table",
+            "missing_table",
+            "undeclared_column",
+            "missing_column",
+            "type_mismatch",
+            "nullability_mismatch",
+            "missing_pit_column",
+        ):
+            assert by_type.get(drift_type, []) == [], f"unexpected {drift_type}: {by_type.get(drift_type)}"
+
+
+class TestBuildContractManifestDeclaredInAttribution:
+    """declared_in must correctly attribute each table to schema_py vs migration --
+    reconciling BOTH imperative schema paths, not just the ones CONTRACT already covers.
+    """
+
+    def _declared_in_values(self, manifest, table_name: str) -> set[str]:
+        return {spec.declared_in for spec in manifest[table_name]}
+
+    def test_schema_py_only_table_is_declared_in_schema_py(self, tmp_store):
+        # `dataset_catalog` is created only by schema.py::ensure_quant_schema, with no
+        # migration ever touching its columns either -- a clean, unmixed schema_py table.
+        manifest = build_contract_manifest(tmp_store.con)
+        assert self._declared_in_values(manifest, "dataset_catalog") == {"schema_py"}
+
+    def test_schema_py_table_with_a_later_migration_added_column_splits_at_column_level(self, tmp_store):
+        # `securities` is created by schema.py, but migrations.py separately ADDs
+        # `entity_id` to it later -- so declared_in splits within this one table.
+        manifest = build_contract_manifest(tmp_store.con)
+        specs = {spec.name: spec for spec in manifest["securities"]}
+        assert specs["entity_id"].declared_in == "migration"
+        assert specs["security_id"].declared_in == "schema_py"
+
+    def test_migration_only_table_is_declared_in_migration(self, tmp_store):
+        # `fundamental_item` is created only inside a migrations.py MIGRATIONS entry;
+        # schema.py never mentions it.
+        manifest = build_contract_manifest(tmp_store.con)
+        assert self._declared_in_values(manifest, "fundamental_item") == {"migration"}
+
+    def test_connection_py_bootstrap_tables_are_declared_in_schema_py(self, tmp_store):
+        # dataset_runs/dataset_watermarks/security_identifiers are created directly by
+        # connection.py::DuckDBStore.initialize() -- the same unversioned "always run"
+        # bootstrap semantics as schema.py, just physically colocated elsewhere.
+        manifest = build_contract_manifest(tmp_store.con)
+        for table_name in ("dataset_runs", "dataset_watermarks", "security_identifiers"):
+            assert self._declared_in_values(manifest, table_name) == {"schema_py"}
+
+    def test_table_declared_in_both_paths_is_attributed_to_migration(self, tmp_store):
+        # xbrl_validation_results is created by BOTH schema.py's ensure_quant_schema AND
+        # a registered migration (migration "xbrl_validation_results", S4d) -- a legacy
+        # table later "rebaselined" into schema.py for fresh-bootstrap speed. migration
+        # wins on overlap, matching the market_cap precedent CONTRACT already set.
+        manifest = build_contract_manifest(tmp_store.con)
+        assert self._declared_in_values(manifest, "xbrl_validation_results") == {"migration"}
+
+    def test_column_added_by_migration_to_a_schema_py_table_is_migration_at_column_level(self, tmp_store):
+        # security_identifier_history is created by schema.py, but its own CREATE TABLE
+        # already inlines available_at/run_id -- both ALSO explicitly ADDed by
+        # migrations.py::_schema_evolution_alters. declared_in is a column-level fact
+        # (per the module docstring): those two columns are migration-declared, while
+        # the table's other columns (created only by schema.py) stay schema_py.
+        manifest = build_contract_manifest(tmp_store.con)
+        specs = {spec.name: spec for spec in manifest["security_identifier_history"]}
+        assert specs["available_at"].declared_in == "migration"
+        assert specs["run_id"].declared_in == "migration"
+        assert specs["security_id"].declared_in == "schema_py"
+        assert specs["as_of_date"].declared_in == "schema_py"
+        assert specs["source_loaded_at"].declared_in == "schema_py"
+
+
+class TestBuildContractManifestConsistencyWithHandCuratedContract:
+    """The S1-0 hand-written 6-table CONTRACT and the S1-2 complete manifest must never
+    disagree on the tables CONTRACT already declares -- build_contract_manifest() reuses
+    CONTRACT verbatim for exactly this reason.
+    """
+
+    def test_contract_tables_are_reused_verbatim(self, tmp_store):
+        manifest = build_contract_manifest(tmp_store.con)
+        for table_name, specs in CONTRACT.items():
+            assert table_name in manifest
+            assert manifest[table_name] == list(specs)
+
+    def test_contract_declared_in_values_agree_with_manifest(self, tmp_store):
+        manifest = build_contract_manifest(tmp_store.con)
+        for table_name, specs in CONTRACT.items():
+            expected = {spec.name: spec.declared_in for spec in specs}
+            actual = {spec.name: spec.declared_in for spec in manifest[table_name]}
+            assert actual == expected, f"{table_name}: manifest disagrees with CONTRACT's declared_in"
+
+
+class TestBuildContractManifestDeterminism:
+    def test_deterministic_given_the_same_bootstrapped_db(self, tmp_store):
+        first = build_contract_manifest(tmp_store.con)
+        second = build_contract_manifest(tmp_store.con)
+        assert first == second
+
+    def test_agrees_across_independently_bootstrapped_warehouses(self, tmp_store, fresh_store):
+        """tmp_store (template copy) and fresh_store (full real bootstrap) must derive
+        the identical manifest -- same schema, same source tree -> same result.
+        """
+        from_tmp = build_contract_manifest(tmp_store.con)
+        from_fresh = build_contract_manifest(fresh_store.con)
+        assert set(from_tmp) == set(from_fresh)
+        for table_name in from_tmp:
+            assert from_tmp[table_name] == from_fresh[table_name], table_name

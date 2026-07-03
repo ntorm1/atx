@@ -7376,20 +7376,26 @@ def _fundamental_ratio_provenance_indexes(conn: duckdb.DuckDBPyConnection) -> No
 
 
 def _schema_contract_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
-    """PF2-S1 S1-0: schema_contract table -- the declarative manifest persisted as data.
+    """PF2-S1 S1-0/S1-2: schema_contract table -- the declarative manifest persisted as data.
 
-    Persists db/schema_contract.py::CONTRACT (one row per declared (table, column) pair,
+    Persists db/schema_contract.py::build_contract_manifest(conn) (one row per (table,
+    column) pair across EVERY live table, both imperative schema paths reconciled and
     each tagged declared_in in {schema_py, migration}) into a queryable schema_contract
     table, plus its own table_catalog/field_catalog rows per (B). Indexes land in migration
     0098 (schema-vs-index split per the S5g/S5k WAL-replay precedent -- see
     _formula_registry_schema_catalog/_formula_registry_indexes for the same split).
 
-    detect_schema_drift() reads the in-Python CONTRACT dict directly (a pure diff against
-    duckdb_tables()/duckdb_columns()); this table is the durable, plain-SQL-queryable
-    mirror of that same manifest for downstream consumers (e.g. PF2-S2's post-migration
-    verify). manifest_sha256 (schema_contract_sha256() over the sorted manifest) is
-    denormalized onto every row so a single `SELECT DISTINCT manifest_sha256` gives the
-    stable baseline to compare across bootstraps/versions.
+    PF2-S1 S1-2 made this seed source build_contract_manifest(conn) rather than the bare
+    CONTRACT subset, so the persisted rows and the Python manifest are one source of
+    truth: build_contract_manifest() reuses CONTRACT verbatim wherever CONTRACT already
+    declares a table and derives every other live table (including schema_contract
+    itself, since this function creates the table before computing the manifest) from
+    this connection's own duckdb_tables()/duckdb_columns(). detect_schema_drift() can
+    still be called with an explicit narrower contract (e.g. the bare CONTRACT, or a
+    fixture) for scoped checks; this table is the durable, plain-SQL-queryable mirror of
+    the FULL reconciled manifest. manifest_sha256 (schema_contract_sha256() over the
+    sorted manifest) is denormalized onto every row so a single `SELECT DISTINCT
+    manifest_sha256` gives the stable baseline to compare across bootstraps/versions.
     """
     conn.execute(
         """
@@ -7444,9 +7450,10 @@ def _schema_contract_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
-    from .schema_contract import CONTRACT, schema_contract_sha256
+    from .schema_contract import build_contract_manifest, schema_contract_sha256
 
-    manifest_sha256 = schema_contract_sha256(CONTRACT)
+    manifest = build_contract_manifest(conn)
+    manifest_sha256 = schema_contract_sha256(manifest)
     rows = [
         (
             table_name,
@@ -7458,7 +7465,7 @@ def _schema_contract_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
             spec.declared_in,
             manifest_sha256,
         )
-        for table_name, specs in CONTRACT.items()
+        for table_name, specs in manifest.items()
         for spec in specs
     ]
     conn.executemany(
