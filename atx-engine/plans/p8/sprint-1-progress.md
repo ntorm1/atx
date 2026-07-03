@@ -64,7 +64,7 @@ Branch: feat/p8  Worktree: C:\atx-wt\p8
 - [x] S1-1  stage_riskmodel producer (build_risk_model)
 - [x] S1-2  stage_optimize covariance-source swap
 - [x] S1-3  cleaned_alpha_cov accessor (combine seam; Sprint-3 handoff)
-- [ ] S1-4  dead-alpha crowding factors
+- [x] S1-4  dead-alpha crowding factors
 - [ ] S1-5  factor/industry neutralization reachable
 
 ## Determinism contract (every unit)
@@ -249,3 +249,39 @@ Full gate: atx-engine-risk-tests 259/261 pass (2 pre-existing RobustPipelineE2E
 failures, unrelated); atx-engine-data-tests 118/121 pass (3 pre-existing
 skips, 0 failures); atx-impl-tests build clean (data/factor_model_artifact.hpp
 is transitively included by stage_optimize.cpp/stage_riskmodel.cpp).
+
+S1-4: complete. build_risk_model gained three trailing default-nullptr/empty
+parameters: `const library::Library* dead_lib = nullptr`,
+`std::span<const combine::AlphaId> dead_ids = {}`, `atx::usize dead_as_of = 0`
+(stage_riskmodel.hpp; library/fwd.hpp's forward decl keeps the header light,
+the .cpp includes the full library/library.hpp). Internally split into
+build_base_components (the pre-augmentation (X,F,D) — Diagonal delegates to
+diagonal_risk_model exactly as before, reassembled as a FactorComponents so
+augmentation composes with EITHER kind uniformly; Factor is S1-1's existing
+body, unchanged) + a post-step in build_risk_model itself: when
+cfg.dead_alpha_factors && dead_lib!=nullptr && !dead_ids.empty(), calls
+risk::extract_dead_factors(*dead_lib, dead_ids, dead_as_of, universe_size)
+then risk::augment_factor_model(comp, dead) — both FROZEN free functions from
+risk/dead_factor.hpp, called verbatim, no new estimator math. FAIL-OPEN
+guardrail (per the sprint's risk table): dead_lib==nullptr or empty dead_ids
+is a documented no-op (the base model passes through), never an Err — a
+caller without a library does not lose its whole risk-model build.
+
+New suite AtxImplDeadFactor (atx-impl/tests/stage_riskmodel_dead_factor_test.cpp)
+3/3 green, first GREEN attempt (RED verified first: 3 "too many arguments"
+compile errors against the old 3-arg build_risk_model):
+- RaisesCrowdedVariance: two dead alphas whose holdings concentrate on ONE
+  instrument (a rank-1-ish overlap), walked to LifecycleState::Dead in a real
+  library::Library fixture (reusing risk_dead_factor_test.cpp's proven
+  admit-then-mark pattern); risk(w) for a book aligned with that instrument is
+  STRICTLY higher with dead_alpha_factors=true than without.
+- InertOff: dead_alpha_factors=false produces a BYTE-IDENTICAL artifact
+  whether or not a library + dead_ids are supplied -- the library is never
+  even consulted when the flag is off.
+- ERankTruncationAddsExactlyMinKErank: 4 dead alphas all concentrated on the
+  SAME instrument (eRank==1 by construction) add EXACTLY 1 column to X,
+  regardless of k=4 contributing alphas -- min(k, eRank) == min(4,1) == 1.
+
+Full gate: atx-impl-tests 212/216 pass (4 pre-existing skips, 0 new failures);
+atx-engine-risk-tests 259/261 (same 2 pre-existing RobustPipelineE2E failures,
+no engine files touched this unit).

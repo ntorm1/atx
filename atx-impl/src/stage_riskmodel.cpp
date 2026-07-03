@@ -9,9 +9,12 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
-#include "atx/engine/loop/panel_types.hpp" // PanelView, PanelField, kPanelFieldCount
-#include "atx/engine/loop/types.hpp"       // InstrumentId
-#include "atx/engine/risk/exposures.hpp"   // FactorModelConfig, StyleFactor
+#include "atx/engine/combine/store.hpp"     // combine::AlphaId
+#include "atx/engine/library/library.hpp"   // library::Library (S1-4, dead-alpha holdings source)
+#include "atx/engine/loop/panel_types.hpp"  // PanelView, PanelField, kPanelFieldCount
+#include "atx/engine/loop/types.hpp"        // InstrumentId
+#include "atx/engine/risk/dead_factor.hpp"  // extract_dead_factors, augment_factor_model (S1-4)
+#include "atx/engine/risk/exposures.hpp"    // FactorModelConfig, StyleFactor
 
 #include "diag_risk.hpp"
 
@@ -20,6 +23,8 @@ namespace atx::impl {
 namespace risk = atx::engine::risk;
 namespace data = atx::engine::data;
 namespace alpha = atx::engine::alpha;
+namespace library = atx::engine::library;
+namespace combine = atx::engine::combine;
 
 namespace {
 
@@ -162,20 +167,19 @@ private:
 
 } // namespace
 
-atx::core::Result<data::FactorModelArtifact>
-build_risk_model(const alpha::Panel& research, const risk::RiskModelConfig& cfg,
-                  std::span<const atx::u32> group_id) {
+namespace {
+
+// Build the BASE (pre-dead-factor-augmentation) FactorComponents per
+// cfg.kind. Diagonal delegates to diagonal_risk_model unchanged (its
+// (X, F, D, fit_end) reassembled as FactorComponents so the S1-4 augmentation
+// step composes with EITHER kind uniformly); Factor runs the real estimator.
+[[nodiscard]] atx::core::Result<risk::FactorComponents>
+build_base_components(const alpha::Panel& research, const risk::RiskModelConfig& cfg,
+                      std::span<const atx::u32> group_id) {
   if (cfg.kind == risk::RiskModelKind::Diagonal) {
-    // Inert default: delegate to the EXACT existing diagonal path, then lower
-    // its (X, F, D) straight into the artifact -- byte-identical drop-in.
     ATX_TRY(auto model, diagonal_risk_model(research));
-    data::FactorModelArtifact art;
-    art.X = model.exposures();
-    art.F = model.factor_cov();
-    art.D = model.specific_var();
-    art.fit_begin = model.fit_begin();
-    art.fit_end = model.fit_end();
-    return atx::core::Ok(std::move(art));
+    return atx::core::Ok(risk::FactorComponents{
+        model.exposures(), model.factor_cov(), model.specific_var(), model.fit_end()});
   }
 
   // Factor path.
@@ -226,8 +230,40 @@ build_risk_model(const alpha::Panel& research, const risk::RiskModelConfig& cfg,
   const std::span<const atx::f64> no_market_cap; // empty: Size never fabricated (see header note)
   const std::span<const atx::u32> group_span = cfg.industry ? group_id : std::span<const atx::u32>{};
 
-  ATX_TRY(risk::FactorComponents comp,
-          builder.build_components(view, estimation_window, no_market_cap, group_span));
+  return builder.build_components(view, estimation_window, no_market_cap, group_span);
+}
+
+} // namespace
+
+atx::core::Result<data::FactorModelArtifact>
+build_risk_model(const alpha::Panel& research, const risk::RiskModelConfig& cfg,
+                  std::span<const atx::u32> group_id, const library::Library* dead_lib,
+                  std::span<const combine::AlphaId> dead_ids, atx::usize dead_as_of) {
+  ATX_TRY(risk::FactorComponents comp, build_base_components(research, cfg, group_id));
+
+  // S1-4: dead-alpha crowding-factor augmentation (opt-in, composes with
+  // EITHER kind). FAIL-OPEN: no library / no dead ids -> the base model
+  // passes through unaugmented (documented no-op, not an Err -- see the
+  // header doc's guardrail note).
+  if (cfg.dead_alpha_factors && dead_lib != nullptr && !dead_ids.empty()) {
+    const atx::usize universe_size = static_cast<atx::usize>(comp.X.rows());
+    ATX_TRY(risk::DeadAlphaFactors dead,
+            risk::extract_dead_factors(*dead_lib, dead_ids, dead_as_of, universe_size));
+    if (dead.k_dead > 0U) {
+      ATX_TRY(risk::FactorModel augmented, risk::augment_factor_model(comp, dead));
+      data::FactorModelArtifact art;
+      art.X = augmented.exposures();
+      art.F = augmented.factor_cov();
+      art.D = augmented.specific_var();
+      art.fit_begin = augmented.fit_begin();
+      art.fit_end = augmented.fit_end();
+      return atx::core::Ok(std::move(art));
+    }
+    // k_dead == 0 (e.g. an empty-overlap dead pool): fall through to the
+    // unaugmented artifact below -- augment_factor_model's own passthrough
+    // convention, mirrored here rather than calling it (avoids a redundant
+    // FactorModel::create round-trip when there is nothing to add).
+  }
 
   data::FactorModelArtifact art;
   art.X = std::move(comp.X);

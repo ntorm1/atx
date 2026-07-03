@@ -71,12 +71,15 @@
 
 #include <span>
 #include <string>
+#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/combine/store.hpp"     // combine::AlphaId (dead_ids element type)
 #include "atx/engine/data/factor_model_artifact.hpp"
+#include "atx/engine/library/fwd.hpp"       // library::Library fwd decl (S1-4, optional dead-alpha source)
 #include "atx/engine/risk/factor_model.hpp" // RiskModelConfig, FactorModel, FactorModelBuilder
 
 #include "config.hpp" // RunConfig
@@ -102,10 +105,32 @@ namespace atx::impl {
 // otherwise. Err(InvalidArgument) if research has no "close" field, or if the
 // resolved fit window has fewer than 2 usable rows (Factor path only — the
 // Diagonal path's own requirements are diagonal_risk_model's, unchanged).
+//
+// S1-4 (dead-alpha crowding factors, opt-in via cfg.dead_alpha_factors):
+// after the base (X, F, D) is assembled (Diagonal OR Factor — augmentation
+// composes with either kind), when cfg.dead_alpha_factors is true AND `dead_lib`
+// is non-null, the holdings of every AlphaId in `dead_ids` are read from
+// `dead_lib` at `dead_as_of` via risk::extract_dead_factors (Kakushadze-Yu
+// holdings-overlap eigen-extraction) and folded in via
+// risk::augment_factor_model — a PURE transform on the already-built
+// FactorModel; the style/industry block is NOT re-estimated. This raises the
+// variance the optimizer assigns to a dead alpha's crowded holdings
+// direction, steering the book off it (R6).
+//
+// FAIL-OPEN GUARD (per the sprint's risk table): cfg.dead_alpha_factors=true
+// with `dead_lib == nullptr` (the deploy panel has no library available) is a
+// documented NO-OP — the base model is returned UNAUGMENTED, not an Err. This
+// is intentional: dead-factor augmentation is a risk-reduction ENHANCEMENT,
+// and a caller without a library should not have its entire risk-model build
+// fail. `dead_ids` empty is likewise a no-op (extract_dead_factors' own
+// documented boundary: k_dead == 0 -> augment_factor_model is a passthrough).
 [[nodiscard]] atx::core::Result<atx::engine::data::FactorModelArtifact>
 build_risk_model(const atx::engine::alpha::Panel& research,
                   const atx::engine::risk::RiskModelConfig& cfg,
-                  std::span<const atx::u32> group_id = {});
+                  std::span<const atx::u32> group_id = {},
+                  const atx::engine::library::Library* dead_lib = nullptr,
+                  std::span<const atx::engine::combine::AlphaId> dead_ids = {},
+                  atx::usize dead_as_of = 0);
 
 // ===========================================================================
 //  S1-2: run_optimize's covariance-source overload.
