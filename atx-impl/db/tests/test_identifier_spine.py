@@ -479,25 +479,75 @@ def test_export_scan_no_internal_cusip_check_passes_on_clean_export_allowlist(tm
 
 
 def test_export_scan_no_internal_cusip_check_fails_when_export_object_carries_internal_cusip(tmp_store):
-    from db.quality import run_warehouse_quality_checks
-
-    # Simulate the leak this check exists to catch: a view built directly on
-    # security_identifier_history (which carries internal_cusip) added to the
-    # lake export allowlist. We can't mutate DEFAULT_EXPORT_OBJECTS from a
-    # test without monkeypatching lake.py, so instead we prove the underlying
-    # detection SQL: any DEFAULT_EXPORT_OBJECTS member with an internal_cusip
-    # column is flagged. Create a decoy export-allowlisted-shaped table with
-    # that exact column name and confirm the raw scan SQL used by the check
-    # would flag it, by calling the builder function directly against an
-    # object list that includes the decoy.
     from db.quality import _export_scan_internal_cusip_sql
 
+    # Lower-level proof: the SQL builder itself flags any object list member
+    # with an internal_cusip column, using a decoy table shaped like an
+    # export-allowlisted object.
     tmp_store.con.execute(
         "CREATE TABLE leaky_export_decoy (security_id VARCHAR, internal_cusip VARCHAR)"
     )
     sql = _export_scan_internal_cusip_sql(("leaky_export_decoy",))
     observed = tmp_store.con.execute(sql).fetchone()[0]
     assert observed == 1.0
+
+
+def test_export_scan_internal_cusip_leak_check_fails_end_to_end_through_registered_check(tmp_store):
+    # End-to-end proof (not just the SQL-builder helper): make a REAL
+    # DEFAULT_EXPORT_OBJECTS member -- v_security_master_current, which is a
+    # view -- actually carry an internal_cusip column, then run the check the
+    # way production does, through run_warehouse_quality_checks. This proves
+    # the registered SqlQualityCheck (its sql= wiring, threshold, and
+    # comparator) genuinely catches a real leak, not just that the builder
+    # function returns the right SQL in isolation. A regression that
+    # disconnected sql= from _export_scan_internal_cusip_sql(DEFAULT_EXPORT_OBJECTS),
+    # or that flipped the comparator/threshold, would be invisible to the
+    # SQL-builder-only test above but must fail this one.
+    from db.lake import DEFAULT_EXPORT_OBJECTS
+    from db.quality import run_warehouse_quality_checks
+    from db.schema import create_security_master_current_view
+
+    assert "v_security_master_current" in DEFAULT_EXPORT_OBJECTS
+
+    # Rename the real production view out of the way, then stand up a
+    # same-named decoy that layers an internal_cusip column on top of it.
+    # This avoids hand-duplicating create_security_master_current_view's
+    # schema-drift-sensitive column list (e.g. the legacy-vs-fresh entity_id
+    # branch) while still making the actual exported object name carry the
+    # forbidden column.
+    tmp_store.con.execute("ALTER VIEW v_security_master_current RENAME TO v_security_master_current_real")
+    try:
+        tmp_store.con.execute(
+            """
+            CREATE OR REPLACE VIEW v_security_master_current AS
+            SELECT
+                real.*,
+                any_value(cusip.internal_cusip) AS internal_cusip
+            FROM v_security_master_current_real real
+            LEFT JOIN security_identifier_history cusip
+              ON cusip.security_id = real.security_id
+             AND cusip.id_type = 'CUSIP'
+             AND cusip.valid_to IS NULL
+            GROUP BY ALL
+            """
+        )
+        results = run_warehouse_quality_checks(tmp_store, record=False)
+        by_name = {r.check_name: r for r in results}
+        result = by_name["export_scan_internal_cusip_leak"]
+        assert result.status == "failed", result.details
+        assert result.observed_value == 1.0
+    finally:
+        # Restore the real view via the production builder (not a
+        # hand-duplicated copy) so this test cannot silently drift from the
+        # real schema, and so tmp_store is left clean for anything that
+        # inspects v_security_master_current afterwards.
+        tmp_store.con.execute("DROP VIEW IF EXISTS v_security_master_current")
+        tmp_store.con.execute("DROP VIEW IF EXISTS v_security_master_current_real")
+        create_security_master_current_view(tmp_store.con)
+
+    after = run_warehouse_quality_checks(tmp_store, record=False)
+    after_by_name = {r.check_name: r for r in after}
+    assert after_by_name["export_scan_internal_cusip_leak"].status == "passed"
 
 
 def test_export_scan_sql_scopes_to_default_export_objects():
@@ -629,12 +679,80 @@ def test_migration_0083_repairs_reaccumulated_self_overlaps(tmp_store):
 def test_migration_0083_is_idempotent(tmp_store):
     from db.migrations import MIGRATIONS
 
+    # Seed the same reaccumulated-self-overlap shape as
+    # test_migration_0083_repairs_reaccumulated_self_overlaps, plus an
+    # unrelated clean row, so a second .up() call that silently deletes rows
+    # it shouldn't touch (not just "fails to raise") is caught.
+    rows = [
+        _dup_identifier_row(
+            security_id="SEC-CIK-0000320193",
+            id_type="FIGI",
+            id_value="BBG000B9XRY4",
+            valid_from=dt.date(2026, 5, 1),
+            available_at=dt.datetime(2026, 5, 2, 22, 0, 0),
+            source="OpenFIGI",
+        ),
+        _dup_identifier_row(
+            security_id="SEC-CIK-0000320193",
+            id_type="FIGI",
+            id_value="BBG000B9XRY4",
+            valid_from=dt.date(2026, 5, 15),
+            available_at=dt.datetime(2026, 5, 16, 22, 0, 0),
+            source="OpenFIGI",
+        ),
+    ]
+    frame_cols = ["security_id", "id_type", "id_value", "valid_from", "valid_to", "as_of_date", "available_at", "source", "run_id"]
+    frame = pd.DataFrame(rows)[frame_cols]
+    tmp_store.con.register("seed_dupes_idempotency", frame)
+    tmp_store.con.execute(
+        """
+        INSERT INTO security_identifier_history
+            (security_id, id_type, id_value, valid_from, valid_to, as_of_date, available_at, source, run_id)
+        SELECT security_id, id_type, id_value, valid_from, valid_to, as_of_date, available_at, source, run_id
+        FROM seed_dupes_idempotency
+        """
+    )
+    tmp_store.con.unregister("seed_dupes_idempotency")
+
     migration_0083 = {migration.version: migration for migration in MIGRATIONS}[83]
-    # No seeded duplicates -- the migration must be a safe no-op when there is
-    # nothing to repair (e.g. on a fresh bootstrap where it runs as part of
-    # apply_pending_migrations).
     migration_0083.up(tmp_store.con)
+
+    row_count_after_first = tmp_store.con.execute(
+        "SELECT count(*) FROM security_identifier_history"
+    ).fetchone()[0]
+    self_overlaps_after_first = tmp_store.con.execute(
+        """
+        SELECT count(*) FROM security_identifier_history a JOIN security_identifier_history b
+          ON a.security_id=b.security_id AND a.id_type=b.id_type AND a.id_value=b.id_value AND a.source=b.source
+         AND a.valid_from < b.valid_from
+         AND a.valid_from < coalesce(b.valid_to, DATE '9999-12-31')
+         AND b.valid_from < coalesce(a.valid_to, DATE '9999-12-31')
+        """
+    ).fetchone()[0]
+    assert self_overlaps_after_first == 0
+
+    # No further duplicates to repair -- the migration must be a safe no-op
+    # on a re-run (e.g. on a fresh bootstrap where it runs as part of
+    # apply_pending_migrations, or if it is ever re-applied). Row count and
+    # the self-overlap outcome must be UNCHANGED, not just "does not raise" --
+    # a second run that silently deletes unrelated rows would otherwise pass
+    # undetected.
     migration_0083.up(tmp_store.con)
+
+    row_count_after_second = tmp_store.con.execute(
+        "SELECT count(*) FROM security_identifier_history"
+    ).fetchone()[0]
+    self_overlaps_after_second = tmp_store.con.execute(
+        """
+        SELECT count(*) FROM security_identifier_history a JOIN security_identifier_history b
+          ON a.security_id=b.security_id AND a.id_type=b.id_type AND a.id_value=b.id_value AND a.source=b.source
+         AND a.valid_from < b.valid_from
+         AND a.valid_from < coalesce(b.valid_to, DATE '9999-12-31')
+         AND b.valid_from < coalesce(a.valid_to, DATE '9999-12-31')
+        """
+    ).fetchone()[0]
+    assert row_count_after_second == row_count_after_first
+    assert self_overlaps_after_second == self_overlaps_after_first == 0
 
 
 def test_migration_0083_preserves_closed_intervals(tmp_store):
