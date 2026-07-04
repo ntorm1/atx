@@ -7489,6 +7489,201 @@ def _schema_contract_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _warehouse_catalog_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S1 S1-3: v_warehouse_catalog -- the queryable/as-of warehouse data-catalog surface.
+
+    pf1-S4-3 made *formulas* queryable (v_formula_registry / formula_registry_asof), but
+    "what did the warehouse catalog look like" (which tables/fields exist, their layer,
+    grain, PIT notes) was only readable by introspecting a live connection. This view is
+    one row per (table_name, field_name), LEFT JOINing table_catalog + field_catalog (so a
+    catalogued table with no field rows -- e.g. a fresh view row inserted before its column
+    descriptions land -- still appears), plus a best-effort LEFT JOIN onto
+    v_formula_registry for catalogued formula surfaces (table_catalog.entity = 'formula'),
+    keyed on field_catalog.field_name = v_formula_registry.formula_code. Today's only
+    entity='formula' catalog row is formula_registry/v_formula_registry itself, whose own
+    field_catalog rows describe SCHEMA columns (formula_code, family, kind, ...) rather than
+    literal formula codes, so that join is structurally present but ordinarily contributes no
+    matches in production -- exactly the "best-effort" formula-lineage column set the S1-3
+    task brief calls for; a future entity='formula' catalog row keyed by literal formula_code
+    values would light these columns up for real.
+
+    Per (B)/S7a, views are catalogued like tables: this view gets its own table_catalog +
+    field_catalog rows (mirroring the _formula_registry_catalog_view precedent --
+    migrations.py's formula_registry-view migration -- and, further back,
+    _catalog_backfill_reference_and_views' v_offexchange_security_period). Unlike that
+    precedent, this view's output columns are renamed/aliased (table_description vs
+    field_description, table_updated_at vs field_updated_at, formula_* lineage columns), so
+    the field_catalog rows below are hand-written literals (mirroring
+    _schema_contract_schema_catalog's own-column seeding) rather than re-parented verbatim
+    from a single source table's field_catalog rows.
+
+    PIT note: table_catalog/field_catalog carry ``updated_at`` (knowledge time), NOT
+    valid_from/valid_to DEFINITION validity like formula_registry. The as-of PYTHON reader
+    that filters this view by ``updated_at <= effective_ts`` (no lookahead: a catalog row
+    updated AFTER the as-of instant is excluded) is ``warehouse_catalog_asof`` in
+    ``db/asof.py``; this view itself is the always-current (unfiltered) catalog surface a
+    plain ``SELECT`` sees.
+    """
+    formula_registry_view_exists = (
+        conn.execute(
+            "SELECT count(*) FROM duckdb_views() WHERE view_name = 'v_formula_registry'"
+        ).fetchone()[0]
+        > 0
+    )
+    if formula_registry_view_exists:
+        formula_columns_sql = """
+            vfr.formula_code,
+            vfr.family AS formula_family,
+            vfr.kind AS formula_kind,
+            vfr.unit AS formula_unit,
+            vfr.expression AS formula_expression,
+            vfr.citation AS formula_citation,
+            vfr.valid_from AS formula_valid_from,
+            vfr.valid_to AS formula_valid_to
+        """
+        formula_join_sql = """
+        LEFT JOIN v_formula_registry vfr
+            ON t.entity = 'formula' AND vfr.formula_code = f.field_name
+        """
+    else:
+        # Some legacy bootstraps have formula-registry migrations recorded without the
+        # physical view present. Keep 0099 append-only and expose the same catalog shape.
+        formula_columns_sql = """
+            CAST(NULL AS VARCHAR) AS formula_code,
+            CAST(NULL AS VARCHAR) AS formula_family,
+            CAST(NULL AS VARCHAR) AS formula_kind,
+            CAST(NULL AS VARCHAR) AS formula_unit,
+            CAST(NULL AS VARCHAR) AS formula_expression,
+            CAST(NULL AS VARCHAR) AS formula_citation,
+            CAST(NULL AS DATE) AS formula_valid_from,
+            CAST(NULL AS DATE) AS formula_valid_to
+        """
+        formula_join_sql = ""
+
+    conn.execute(
+        f"""
+        CREATE OR REPLACE VIEW v_warehouse_catalog AS
+        SELECT
+            t.table_name,
+            t.layer,
+            t.entity,
+            t.grain,
+            t.description AS table_description,
+            t.natural_key_json,
+            t.pit_notes,
+            t.updated_at AS table_updated_at,
+            f.field_name,
+            f.semantic_type,
+            f.description AS field_description,
+            f.nullable AS field_nullable,
+            f.unit AS field_unit,
+            f.source_field,
+            f.updated_at AS field_updated_at,
+            {formula_columns_sql}
+        FROM table_catalog t
+        LEFT JOIN field_catalog f ON f.table_name = t.table_name
+        {formula_join_sql}
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'v_warehouse_catalog',
+                'gold',
+                'catalog',
+                'table_name,field_name',
+                'Queryable as-of warehouse data-catalog surface: one row per (table_name, field_name) joining table_catalog + field_catalog (LEFT JOIN so a catalogued table with no field rows still appears), plus best-effort formula lineage via v_formula_registry for catalogued formula surfaces (entity = ''formula''). Answers "what did the warehouse catalog look like" as one SELECT-able view, so table/field documentation is data, not a live-connection introspection.',
+                '["table_name","field_name"]',
+                'View over table_catalog/field_catalog/v_formula_registry (no filtering in the view itself). For a point-in-time read honoring catalog KNOWLEDGE time, use warehouse_catalog_asof(as_of_date, ...) in db/asof.py, which filters table_updated_at/field_updated_at <= effective_ts (no lookahead) -- unlike formula_registry_asof, which instead gates on the formula DEFINITION''s own valid_from/valid_to.',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_warehouse_catalog', 'table_name', 'identifier',
+             'Catalogued table or view name (table_catalog.table_name).',
+             false, NULL, 'table_catalog.table_name', now()),
+            ('v_warehouse_catalog', 'layer', 'category',
+             'Warehouse layer (bronze|silver|gold|control|audit|dimension|catalog|...).',
+             true, NULL, 'table_catalog.layer', now()),
+            ('v_warehouse_catalog', 'entity', 'category',
+             'Business entity the table/view represents.',
+             true, NULL, 'table_catalog.entity', now()),
+            ('v_warehouse_catalog', 'grain', 'text',
+             'Row grain of the table/view (natural key columns, human-readable).',
+             true, NULL, 'table_catalog.grain', now()),
+            ('v_warehouse_catalog', 'table_description', 'text',
+             'Table/view-level catalog description.',
+             true, NULL, 'table_catalog.description', now()),
+            ('v_warehouse_catalog', 'natural_key_json', 'json',
+             'JSON array of natural/business key column names.',
+             true, NULL, 'table_catalog.natural_key_json', now()),
+            ('v_warehouse_catalog', 'pit_notes', 'text',
+             'Free-text point-in-time usage notes for the table/view.',
+             true, NULL, 'table_catalog.pit_notes', now()),
+            ('v_warehouse_catalog', 'table_updated_at', 'timestamp',
+             'Knowledge-time timestamp the table_catalog row was last updated; the PIT gate warehouse_catalog_asof filters on (no lookahead).',
+             false, NULL, 'table_catalog.updated_at', now()),
+            ('v_warehouse_catalog', 'field_name', 'identifier',
+             'Catalogued column name within table_name; NULL when the table has no field_catalog rows yet (LEFT JOIN).',
+             true, NULL, 'field_catalog.field_name', now()),
+            ('v_warehouse_catalog', 'semantic_type', 'category',
+             'Column-level semantic type (identifier, category, text, json, flag, timestamp, date, ...).',
+             true, NULL, 'field_catalog.semantic_type', now()),
+            ('v_warehouse_catalog', 'field_description', 'text',
+             'Column-level catalog description.',
+             true, NULL, 'field_catalog.description', now()),
+            ('v_warehouse_catalog', 'field_nullable', 'flag',
+             'Declared nullability of the column per field_catalog.',
+             true, NULL, 'field_catalog.nullable', now()),
+            ('v_warehouse_catalog', 'field_unit', 'category',
+             'Column-level unit, where applicable.',
+             true, NULL, 'field_catalog.unit', now()),
+            ('v_warehouse_catalog', 'source_field', 'text',
+             'Upstream/source field this column derives from, where applicable.',
+             true, NULL, 'field_catalog.source_field', now()),
+            ('v_warehouse_catalog', 'field_updated_at', 'timestamp',
+             'Knowledge-time timestamp the field_catalog row was last updated; the PIT gate warehouse_catalog_asof filters on (no lookahead) when a field row is present.',
+             true, NULL, 'field_catalog.updated_at', now()),
+            ('v_warehouse_catalog', 'formula_code', 'identifier',
+             'Best-effort formula lineage: matching v_formula_registry.formula_code when table_catalog.entity = ''formula''; NULL otherwise or when no formula_registry row matches.',
+             true, NULL, 'v_formula_registry.formula_code', now()),
+            ('v_warehouse_catalog', 'formula_family', 'category',
+             'Best-effort formula lineage: v_formula_registry.family.',
+             true, NULL, 'v_formula_registry.family', now()),
+            ('v_warehouse_catalog', 'formula_kind', 'category',
+             'Best-effort formula lineage: v_formula_registry.kind.',
+             true, NULL, 'v_formula_registry.kind', now()),
+            ('v_warehouse_catalog', 'formula_unit', 'category',
+             'Best-effort formula lineage: v_formula_registry.unit.',
+             true, NULL, 'v_formula_registry.unit', now()),
+            ('v_warehouse_catalog', 'formula_expression', 'text',
+             'Best-effort formula lineage: v_formula_registry.expression.',
+             true, NULL, 'v_formula_registry.expression', now()),
+            ('v_warehouse_catalog', 'formula_citation', 'text',
+             'Best-effort formula lineage: v_formula_registry.citation.',
+             true, NULL, 'v_formula_registry.citation', now()),
+            ('v_warehouse_catalog', 'formula_valid_from', 'date',
+             'Best-effort formula lineage: v_formula_registry.valid_from.',
+             true, NULL, 'v_formula_registry.valid_from', now()),
+            ('v_warehouse_catalog', 'formula_valid_to', 'date',
+             'Best-effort formula lineage: v_formula_registry.valid_to.',
+             true, NULL, 'v_formula_registry.valid_to', now())
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -7910,6 +8105,11 @@ MIGRATIONS: list[Migration] = [
         version=98,
         name="schema_contract_indexes",
         up=_schema_contract_indexes,
+    ),
+    Migration(
+        version=99,
+        name="warehouse_catalog_view",
+        up=_warehouse_catalog_view,
     ),
 ]
 

@@ -23,6 +23,8 @@ as the single source of truth for what gets persisted.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import duckdb
 import pytest
 
@@ -805,3 +807,432 @@ class TestBuildContractManifestDeterminism:
         assert set(from_tmp) == set(from_fresh)
         for table_name in from_tmp:
             assert from_tmp[table_name] == from_fresh[table_name], table_name
+
+
+# ---------------------------------------------------------------------------
+# PF2-S1 S1-3: warehouse data-catalog as-of reader + CLI.
+#
+# Migration 0099 adds v_warehouse_catalog (one row per table_name/field_name,
+# LEFT JOIN table_catalog + field_catalog, plus best-effort v_formula_registry
+# lineage), catalogued with its own table_catalog/field_catalog rows exactly
+# like the v_formula_registry precedent (see test_formula_registry_catalog.py).
+#
+# CRITICAL PIT difference from formula_registry_asof: table_catalog/field_catalog
+# carry `updated_at` (knowledge time), not valid_from/valid_to DEFINITION
+# validity, so warehouse_catalog_asof DOES use as_of_ts -- a catalog row updated
+# AFTER the as-of instant must be excluded (no lookahead). All as-of-date
+# literals below use safely future dates (2026+) relative to any real bootstrap
+# `now()` seeded at test-run time, so real catalog rows (e.g. `table_catalog`
+# itself) are never accidentally excluded by the gate.
+# ---------------------------------------------------------------------------
+
+WAREHOUSE_CATALOG_VIEW_COLUMNS = (
+    "table_name",
+    "layer",
+    "entity",
+    "grain",
+    "table_description",
+    "natural_key_json",
+    "pit_notes",
+    "table_updated_at",
+    "field_name",
+    "semantic_type",
+    "field_description",
+    "field_nullable",
+    "field_unit",
+    "source_field",
+    "field_updated_at",
+    "formula_code",
+    "formula_family",
+    "formula_kind",
+    "formula_unit",
+    "formula_expression",
+    "formula_citation",
+    "formula_valid_from",
+    "formula_valid_to",
+)
+
+
+def _insert_table_catalog_row(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    *,
+    layer: str = "gold",
+    entity: str = "test",
+    updated_at: dt.datetime,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            table_name,
+            layer,
+            entity,
+            f"{table_name}_id",
+            f"Test table {table_name}.",
+            f'["{table_name}_id"]',
+            "Test.",
+            updated_at,
+        ],
+    )
+
+
+def _insert_field_catalog_row(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    field_name: str,
+    *,
+    updated_at: dt.datetime,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES (?, ?, 'text', 'Test field.', true, NULL, NULL, ?)
+        """,
+        [table_name, field_name, updated_at],
+    )
+
+
+class TestMigration0099WarehouseCatalogView:
+    def test_view_exists(self, tmp_store):
+        count = tmp_store.con.execute(
+            "SELECT count(*) FROM duckdb_views() WHERE view_name = 'v_warehouse_catalog'"
+        ).fetchone()[0]
+        assert count == 1
+
+    def test_view_is_not_a_base_table(self, tmp_store):
+        # Catalogued like a table per (B)/S7a, but the underlying object must be a VIEW.
+        count = tmp_store.con.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'v_warehouse_catalog'"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_view_columns(self, tmp_store):
+        rows = tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main' AND table_name = 'v_warehouse_catalog'
+            ORDER BY ordinal_position
+            """
+        ).fetchall()
+        assert [row[0] for row in rows] == list(WAREHOUSE_CATALOG_VIEW_COLUMNS)
+
+    def test_migration_0099_recorded(self, tmp_store):
+        versions = {
+            row[0]
+            for row in tmp_store.con.execute(
+                "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+            ).fetchall()
+        }
+        assert 99 in versions, f"Migration 0099 not recorded; found: {sorted(versions)}"
+
+    def test_migration_body_is_idempotent(self, tmp_store):
+        from db.migrations import _warehouse_catalog_view
+
+        _warehouse_catalog_view(tmp_store.con)
+        _warehouse_catalog_view(tmp_store.con)
+
+        table_catalog_count = tmp_store.con.execute(
+            "SELECT count(*) FROM table_catalog WHERE table_name = 'v_warehouse_catalog'"
+        ).fetchone()[0]
+        assert table_catalog_count == 1
+
+        field_catalog_count = tmp_store.con.execute(
+            "SELECT count(*) FROM field_catalog WHERE table_name = 'v_warehouse_catalog'"
+        ).fetchone()[0]
+        assert field_catalog_count == len(WAREHOUSE_CATALOG_VIEW_COLUMNS)
+
+    def test_apply_pending_migrations_is_idempotent(self, tmp_store):
+        from db.migrations import apply_pending_migrations
+
+        applied = apply_pending_migrations(tmp_store.con)
+        assert applied == []
+
+
+class TestWarehouseCatalogViewCatalogRegistration:
+    """Views are catalogued like tables per (B)/S7a."""
+
+    def test_table_catalog_has_view_row(self, tmp_store):
+        count = tmp_store.con.execute(
+            "SELECT count(*) FROM table_catalog WHERE table_name = 'v_warehouse_catalog'"
+        ).fetchone()[0]
+        assert count == 1
+
+    def test_field_catalog_has_one_row_per_view_column(self, tmp_store):
+        rows = tmp_store.con.execute(
+            "SELECT field_name FROM field_catalog WHERE table_name = 'v_warehouse_catalog'"
+        ).fetchall()
+        catalogued = {row[0] for row in rows}
+        expected = set(WAREHOUSE_CATALOG_VIEW_COLUMNS)
+        assert catalogued == expected, (
+            f"v_warehouse_catalog field_catalog mismatch; "
+            f"missing={sorted(expected - catalogued)}, extra={sorted(catalogued - expected)}"
+        )
+
+    def test_view_carries_its_own_catalog_rows(self, tmp_store):
+        """S1-3 acceptance: "view carries its own catalog rows" -- v_warehouse_catalog
+        catalogs itself, and those rows are themselves selectable through the view.
+        """
+        rows = tmp_store.con.execute(
+            "SELECT field_name FROM v_warehouse_catalog WHERE table_name = 'v_warehouse_catalog'"
+        ).fetchall()
+        fields = {row[0] for row in rows}
+        assert fields == set(WAREHOUSE_CATALOG_VIEW_COLUMNS)
+
+
+class TestWarehouseCatalogAsofReader:
+    """warehouse_catalog_asof(as_of_date, ..., tables=, layers=) in db/asof.py."""
+
+    def test_returns_table_and_field_rows_filterable_by_tables(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_alpha", layer="gold", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_field_catalog_row(
+            tmp_store.con, "test_wca_alpha", "col_a", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_beta", layer="silver", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_field_catalog_row(
+            tmp_store.con, "test_wca_beta", "col_b", updated_at=dt.datetime(2020, 1, 1)
+        )
+
+        result = warehouse_catalog_asof(
+            dt.date(2030, 1, 1), store=tmp_store, tables=["test_wca_alpha"]
+        )
+        assert set(result["table_name"]) == {"test_wca_alpha"}
+        assert set(result["field_name"]) == {"col_a"}
+
+    def test_filters_by_layers(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_alpha", layer="gold", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_beta", layer="silver", updated_at=dt.datetime(2020, 1, 1)
+        )
+
+        result = warehouse_catalog_asof(dt.date(2030, 1, 1), store=tmp_store, layers=["silver"])
+        table_names = set(result["table_name"])
+        assert "test_wca_beta" in table_names
+        assert "test_wca_alpha" not in table_names
+
+    def test_table_with_no_field_rows_still_appears(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_no_fields", updated_at=dt.datetime(2020, 1, 1)
+        )
+
+        result = warehouse_catalog_asof(
+            dt.date(2030, 1, 1), store=tmp_store, tables=["test_wca_no_fields"]
+        )
+        assert len(result) == 1
+        assert result["field_name"].isna().iloc[0]
+
+    def test_result_ordered_by_table_name_then_field_name(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_zzz", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_field_catalog_row(
+            tmp_store.con, "test_wca_zzz", "b_col", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_field_catalog_row(
+            tmp_store.con, "test_wca_zzz", "a_col", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_aaa", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_field_catalog_row(
+            tmp_store.con, "test_wca_aaa", "only_col", updated_at=dt.datetime(2020, 1, 1)
+        )
+
+        result = warehouse_catalog_asof(
+            dt.date(2030, 1, 1),
+            store=tmp_store,
+            tables=["test_wca_zzz", "test_wca_aaa"],
+        )
+        rows = list(zip(result["table_name"], result["field_name"]))
+        assert rows == [
+            ("test_wca_aaa", "only_col"),
+            ("test_wca_zzz", "a_col"),
+            ("test_wca_zzz", "b_col"),
+        ]
+
+    def test_opens_own_connection_when_no_store_given(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        db_path = tmp_store.path
+        tmp_store.connection.close()
+        tmp_store.connection = None
+
+        result = warehouse_catalog_asof(dt.date(2030, 1, 1), db_path=db_path, tables=["table_catalog"])
+        assert not result.empty
+        assert set(result["table_name"]) == {"table_catalog"}
+
+
+class TestWarehouseCatalogAsofNoLookahead:
+    """CRITICAL PIT gate (differs from formula_registry_asof): table_catalog/field_catalog
+    carry `updated_at` (knowledge time), not valid_from/valid_to. A catalog row updated
+    AFTER the as-of instant must be excluded -- no lookahead.
+    """
+
+    def test_table_row_future_updated_at_excludes_before_and_includes_after(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        future_updated_at = dt.datetime(2035, 6, 15, 12, 0, 0)
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_lookahead", updated_at=future_updated_at
+        )
+
+        before = warehouse_catalog_asof(
+            dt.date(2035, 6, 14), store=tmp_store, tables=["test_wca_lookahead"]
+        )
+        assert before.empty, (
+            "a table_catalog row updated_at AFTER the as-of instant must be excluded (no lookahead)"
+        )
+
+        after = warehouse_catalog_asof(
+            dt.date(2035, 6, 16), store=tmp_store, tables=["test_wca_lookahead"]
+        )
+        assert len(after) == 1
+        assert after.iloc[0]["table_name"] == "test_wca_lookahead"
+
+    def test_field_row_future_updated_at_excludes_before_and_includes_after(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        base_updated_at = dt.datetime(2020, 1, 1)
+        future_field_updated_at = dt.datetime(2035, 6, 15)
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_field_lookahead", updated_at=base_updated_at
+        )
+        _insert_field_catalog_row(
+            tmp_store.con, "test_wca_field_lookahead", "old_col", updated_at=base_updated_at
+        )
+        _insert_field_catalog_row(
+            tmp_store.con,
+            "test_wca_field_lookahead",
+            "future_col",
+            updated_at=future_field_updated_at,
+        )
+
+        before = warehouse_catalog_asof(
+            dt.date(2035, 6, 14), store=tmp_store, tables=["test_wca_field_lookahead"]
+        )
+        # The table row's own updated_at is old (visible), but the future-dated field
+        # row must be excluded while the old field row remains.
+        assert set(before["field_name"]) == {"old_col"}
+
+        after = warehouse_catalog_asof(
+            dt.date(2035, 6, 16), store=tmp_store, tables=["test_wca_field_lookahead"]
+        )
+        assert set(after["field_name"]) == {"old_col", "future_col"}
+
+
+class TestWarehouseCatalogFormulaLineage:
+    """Best-effort v_formula_registry lineage join for catalogued formula surfaces
+    (table_catalog.entity = 'formula'), keyed on field_catalog.field_name =
+    v_formula_registry.formula_code.
+    """
+
+    def test_entity_formula_row_joins_matching_formula_registry_code(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        tmp_store.con.execute(
+            """
+            INSERT INTO formula_registry (
+                formula_code, family, kind, unit, numerator_code, denominator_code,
+                numerator_item_ids_json, denominator_item_ids_json, inputs_json,
+                transform, expression, is_meaningful_rule, definition, citation,
+                valid_from, valid_to
+            )
+            VALUES (
+                'test_wca_formula', 'profitability', 'ratio', 'ratio', 'net_income', 'revenue',
+                NULL, NULL, '["ni", "rev"]',
+                'divide', NULL, NULL, 'Test formula.', 'Test citation, Journal of Testing.',
+                DATE '2000-01-01', NULL
+            )
+            """
+        )
+        _insert_table_catalog_row(
+            tmp_store.con,
+            "test_wca_formula_surface",
+            entity="formula",
+            updated_at=dt.datetime(2020, 1, 1),
+        )
+        _insert_field_catalog_row(
+            tmp_store.con,
+            "test_wca_formula_surface",
+            "test_wca_formula",
+            updated_at=dt.datetime(2020, 1, 1),
+        )
+
+        result = warehouse_catalog_asof(
+            dt.date(2030, 1, 1), store=tmp_store, tables=["test_wca_formula_surface"]
+        )
+        assert len(result) == 1
+        row = result.iloc[0]
+        assert row["formula_code"] == "test_wca_formula"
+        assert row["formula_family"] == "profitability"
+        assert row["formula_kind"] == "ratio"
+        assert row["formula_citation"] == "Test citation, Journal of Testing."
+
+    def test_non_formula_entity_leaves_formula_columns_null(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        _insert_table_catalog_row(
+            tmp_store.con, "test_wca_non_formula", entity="fact", updated_at=dt.datetime(2020, 1, 1)
+        )
+        _insert_field_catalog_row(
+            tmp_store.con, "test_wca_non_formula", "some_col", updated_at=dt.datetime(2020, 1, 1)
+        )
+
+        result = warehouse_catalog_asof(
+            dt.date(2030, 1, 1), store=tmp_store, tables=["test_wca_non_formula"]
+        )
+        assert len(result) == 1
+        assert result["formula_code"].isna().iloc[0]
+
+
+class TestWarehouseCatalogCli:
+    """Thin `python -m db.asof warehouse-catalog` CLI (db/asof.py main())."""
+
+    def test_main_warehouse_catalog_subcommand_prints_resolved_catalog(self, tmp_store, capsys):
+        from db.asof import main as asof_main
+
+        db_path = tmp_store.path
+        tmp_store.connection.close()
+        tmp_store.connection = None
+
+        exit_code = asof_main(
+            [
+                "warehouse-catalog",
+                "--as-of",
+                "2030-01-01",
+                "--db-path",
+                str(db_path),
+                "--tables",
+                "table_catalog",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "table_catalog" in captured.out
+
+    def test_main_requires_a_command(self):
+        from db.asof import main as asof_main
+
+        with pytest.raises(SystemExit):
+            asof_main([])
