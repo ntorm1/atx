@@ -22,4 +22,9 @@ One line per clean unit (ROADMAP §141). Newest last.
 
 | Unit | Commit  | Deliverable | Review |
 |------|---------|-------------|--------|
-| S5-0 | (this)  | ledger opened; 6 inert-default `RunConfig` fields (`book_turnover_gate`, `participation_cap`, `borrow_bps`, `robustness_sub_universe`/`_alt_neutralization`/`_param_perturb`) + CLI flags with fail-loud non-negative guards | — |
+| S5-0 | 147ce09 | ledger opened; 6 inert-default `RunConfig` fields (`book_turnover_gate`, `participation_cap`, `borrow_bps`, `robustness_sub_universe`/`_alt_neutralization`/`_param_perturb`) + CLI flags with fail-loud non-negative guards | — |
+| S5-1 | d1c42c0 | book-level cross-sleeve-netted turnover as a per-day rate; measured unconditionally (`book_turnover_per_day` kv), gated opt-in via `--book-turnover-gate` | — |
+| S5-2 | ca27121 | participation-rate cap inside the optimizer QP construction (`--participation-cap`) | — |
+| S5-3 | f590808 | expose the 3 previously-unreachable `eval::RobustnessBattery` checks (`sub_universe`/`alt_neutralization`/`param_perturbation`) at admission, including the S5-3-corrected per-instrument `adv_col` (length `insts`, mean-volume) fix over the plan's flat-field draft | — |
+| S5-4 | e82056e | non-zero borrow financing debit reaching `book::accumulate_report`'s realized P&L (`--borrow-bps`) | — |
+| S5-5 | (this)  | synthetic-panel smoke exercising the whole S1–S5 lever stack → one honest, finite, deterministic scorecard row | — |
