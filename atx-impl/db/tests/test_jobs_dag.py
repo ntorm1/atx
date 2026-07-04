@@ -293,6 +293,8 @@ def test_dataset_registry_dag_has_expected_foundation_edges():
         "market_cap",
         "sec_company_facts",
     )
+    assert dag.dependencies_of("fundamental_standardized") == ("fundamental_xbrl_metric",)
+    assert dag.dependencies_of("fact_disagreement") == ("fundamental_standardized",)
     assert dag.dependencies_of("short_interest_metrics") == (
         "finra_short_interest",
         "shares_outstanding_history",

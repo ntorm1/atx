@@ -29,9 +29,11 @@ from .features import (
     FundamentalFeatureBuildOptions,
     FundamentalFeatureDataset,
 )
+from .fact_disagreement import FactDisagreementDataset, FactDisagreementOptions
 from .filer_alias import FilerAliasDataset, FilerAliasOptions
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
+from .standardization import FundamentalStandardizationDataset, FundamentalStandardizationOptions
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .segments import SegmentDataset, SegmentOptions
 from .footnotes import FootnoteDataset, FootnoteOptions
@@ -874,6 +876,29 @@ def _valuation_multiples_options(params: dict[str, Any]) -> ValuationMultiplesOp
     )
 
 
+def _fundamental_standardization_options(params: dict[str, Any]) -> FundamentalStandardizationOptions:
+    default = FundamentalStandardizationOptions()
+    return FundamentalStandardizationOptions(
+        source=params.get("source") or default.source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _fact_disagreement_options(params: dict[str, Any]) -> FactDisagreementOptions:
+    default = FactDisagreementOptions()
+    return FactDisagreementOptions(
+        source=params.get("source") or default.source,
+        baseline_source=params.get("baseline_source") or default.baseline_source,
+        vendor=params.get("vendor") or default.vendor,
+        baseline_path=params.get("baseline_path") or default.baseline_path,
+        as_of_ts=_datetime_or_none(params.get("as_of_ts")),
+        tolerance_abs=float(params.get("tolerance_abs", default.tolerance_abs)),
+        tolerance_rel=float(params.get("tolerance_rel", default.tolerance_rel)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _thirteenf_position_metrics_options(params: dict[str, Any]) -> ThirteenFPositionMetricsOptions:
     default = ThirteenFPositionMetricsOptions()
     return ThirteenFPositionMetricsOptions(
@@ -1017,6 +1042,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     EquityDailyFeatureDataset.dataset_id: (EquityDailyFeatureDataset, _features_options),
     FundamentalFeatureDataset.dataset_id: (FundamentalFeatureDataset, _fundamental_features_options),
     FundamentalRatiosDataset.dataset_id: (FundamentalRatiosDataset, _fundamental_ratios_options),
+    FundamentalStandardizationDataset.dataset_id: (
+        FundamentalStandardizationDataset,
+        _fundamental_standardization_options,
+    ),
     FundamentalXbrlMetricDataset.dataset_id: (FundamentalXbrlMetricDataset, _fundamental_xbrl_metric_options),
     SegmentDataset.dataset_id: (SegmentDataset, _segment_options),
     FootnoteDataset.dataset_id: (FootnoteDataset, _footnote_options),
@@ -1025,6 +1054,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     EquityPriceMetricsDataset.dataset_id: (EquityPriceMetricsDataset, _equity_price_metrics_options),
     MarketCapDataset.dataset_id: (MarketCapDataset, _market_cap_options),
     ValuationMultiplesDataset.dataset_id: (ValuationMultiplesDataset, _valuation_multiples_options),
+    FactDisagreementDataset.dataset_id: (FactDisagreementDataset, _fact_disagreement_options),
     ThirteenFPositionMetricsDataset.dataset_id: (ThirteenFPositionMetricsDataset, _thirteenf_position_metrics_options),
     ThirteenFOptionMetricsDataset.dataset_id: (ThirteenFOptionMetricsDataset, _thirteenf_option_metrics_options),
     ThirteenFConcentrationMetricsDataset.dataset_id: (
@@ -1137,6 +1167,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "form144_intent": ("sec_insider_ownership",),
     "form144_to_form4_link": ("form144_intent", "sec_insider_ownership"),
     "fundamental_ratios": ("fundamental_xbrl_metric", "sec_company_facts"),
+    "fundamental_standardized": ("fundamental_xbrl_metric",),
     "fundamental_xbrl_metric": ("xbrl_filing_contexts",),
     "segments": ("fundamental_xbrl_metric", "xbrl_filing_contexts"),
     "footnotes": ("xbrl_filing_contexts",),
@@ -1155,6 +1186,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "fundamental_xbrl_metric",
         "sec_company_facts",
     ),
+    "fact_disagreement": ("fundamental_standardized",),
     "nasdaq_listing_events": ("sec_security_master",),
     "offexchange_quality_report": (
         "offexchange_security_period",
@@ -1710,6 +1742,19 @@ class JobManager:
             job_name="fundamental_xbrl_metric",
             dataset_id="fundamental_xbrl_metric",
             dependencies=["xbrl_filing_contexts"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="fundamental_standardized",
+            dataset_id="fundamental_standardized",
+            params={"symbols": symbols},
+            dependencies=["fundamental_xbrl_metric"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="fact_disagreement",
+            dataset_id="fact_disagreement",
+            dependencies=["fundamental_standardized"],
             **retry_policy,
         )
         self.register_job(

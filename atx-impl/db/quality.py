@@ -6391,6 +6391,96 @@ def _check_specs(
             """,
         ),
         SqlQualityCheck(
+            dataset_id="valuation_overlap_slice",
+            table_name="valuation_overlap_slice",
+            check_name="bad_valuation_overlap_slice_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM valuation_overlap_slice
+                WHERE overlap_slice_id IS NULL OR overlap_slice_id = ''
+                   OR source IS NULL OR source = ''
+                   OR market_cap_sources_json IS NULL
+                   OR symbol_scope_json IS NULL
+                   OR numerator_security_count < 0
+                   OR denominator_security_count < 0
+                   OR valuation_row_count < 0
+                   OR (coverage_ratio IS NOT NULL AND (coverage_ratio < 0 OR coverage_ratio > 1))
+                   OR stale_price_fundamental_gap_days < 0
+                   OR stale_valuation_row_count < 0
+                   OR denominator_definition IS NULL OR denominator_definition = ''
+                   OR details_json IS NULL OR details_json = ''
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_overlap_slice",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fact_disagreement",
+            table_name="fact_disagreement",
+            check_name="fact_disagreement_agreement_ratio",
+            sql="""
+                SELECT coalesce(
+                    count(*) FILTER (WHERE agreement_status = 'agrees')::DOUBLE
+                    / nullif(count(*)::DOUBLE, 0.0),
+                    1.0
+                )
+                FROM fact_disagreement
+            """,
+            threshold=0.99,
+            comparator="ge",
+            required_tables=("fact_disagreement",),
+            detail_sql="""
+                SELECT
+                    vendor,
+                    security_id,
+                    canonical_code,
+                    basis,
+                    period_end,
+                    warehouse_value,
+                    vendor_value,
+                    absolute_difference,
+                    relative_difference,
+                    agreement_status
+                FROM fact_disagreement
+                WHERE agreement_status <> 'agrees'
+                ORDER BY agreement_status, vendor, security_id, canonical_code, period_end
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="fact_disagreement",
+            table_name="fact_disagreement",
+            check_name="bad_fact_disagreement_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fact_disagreement
+                WHERE disagreement_id IS NULL OR disagreement_id = ''
+                   OR source IS NULL OR source = ''
+                   OR baseline_source IS NULL OR baseline_source = ''
+                   OR vendor IS NULL OR vendor = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR item_id IS NULL
+                   OR canonical_code IS NULL OR canonical_code = ''
+                   OR basis IS NULL OR basis = ''
+                   OR period_end IS NULL
+                   OR vendor_value IS NULL
+                   OR agreement_status NOT IN ('agrees', 'disagrees', 'missing_warehouse')
+                   OR vintage_status IS NULL OR vintage_status = ''
+                   OR is_latest_revision IS NULL
+                   OR tolerance_abs < 0
+                   OR tolerance_rel < 0
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR input_lineage_json IS NULL OR input_lineage_json = ''
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fact_disagreement",),
+        ),
+        SqlQualityCheck(
             dataset_id="short_interest_metrics",
             table_name="short_interest_metrics",
             check_name="duplicate_short_interest_metric_keys",

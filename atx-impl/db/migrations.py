@@ -7091,6 +7091,329 @@ def _valuation_multiples_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _valuation_overlap_slice_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S9 S9-0: persisted price x fundamental overlap provenance."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS valuation_overlap_slice (
+            overlap_slice_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            market_cap_sources_json VARCHAR NOT NULL,
+            symbol_scope_json VARCHAR NOT NULL,
+            start_date DATE,
+            end_date DATE,
+            as_of_ts TIMESTAMP,
+            max_visible_available_at TIMESTAMP,
+            numerator_security_count INTEGER NOT NULL,
+            denominator_security_count INTEGER NOT NULL,
+            coverage_ratio DOUBLE,
+            valuation_row_count INTEGER NOT NULL,
+            min_valuation_trade_date DATE,
+            max_valuation_trade_date DATE,
+            min_valuation_period_end DATE,
+            max_valuation_period_end DATE,
+            stale_price_fundamental_gap_days INTEGER NOT NULL,
+            stale_valuation_row_count INTEGER NOT NULL,
+            max_price_fundamental_gap_days INTEGER,
+            denominator_definition VARCHAR NOT NULL,
+            details_json VARCHAR NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'valuation_overlap_slice',
+            'atx_warehouse',
+            'Valuation overlap slice provenance',
+            'Persisted proof-slice coverage summary for the PIT price x fundamental overlap used by valuation_multiples.',
+            'source,scope,as_of_ts,run_id',
+            'valuation_overlap_slice', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'valuation_overlap_slice', 'gold', 'valuation',
+            'source,market_cap_sources_json,symbol_scope_json,start_date,end_date,as_of_ts,run_id',
+            'Durable provenance row for each valuation-multiple overlap refresh, including denominator securities, populated securities, date span, coverage ratio, and stale price/fundamental gap counts.',
+            '["source","market_cap_sources_json","symbol_scope_json","start_date","end_date","as_of_ts","run_id"]',
+            'Coverage is point-in-time: denominator and numerator are evaluated with available_at <= as_of_ts when an as-of timestamp is supplied. available_at records the coverage horizon used for the row.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("valuation_overlap_slice",))
+
+
+def _valuation_overlap_slice_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S9 S9-0/S9-3 lookup indexes for valuation overlap provenance."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_valuation_overlap_slice_scope ON valuation_overlap_slice(source, start_date, end_date, as_of_ts)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_overlap_slice_available ON valuation_overlap_slice(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_overlap_slice_run ON valuation_overlap_slice(run_id)",
+    ):
+        conn.execute(statement)
+
+
+def _fact_disagreement_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S9 S9-1: cross-vendor standardized fact reconciliation."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vendor_baseline_facts (
+            baseline_fact_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            vendor VARCHAR NOT NULL,
+            vendor_fact_id VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            item_id INTEGER NOT NULL,
+            canonical_code VARCHAR NOT NULL,
+            basis VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            value DOUBLE NOT NULL,
+            unit_type VARCHAR,
+            source_accession VARCHAR,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            input_lineage_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fact_disagreement (
+            disagreement_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            baseline_source VARCHAR NOT NULL,
+            vendor VARCHAR NOT NULL,
+            baseline_fact_id VARCHAR,
+            standardized_id VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            item_id INTEGER NOT NULL,
+            canonical_code VARCHAR NOT NULL,
+            basis VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            warehouse_value DOUBLE,
+            vendor_value DOUBLE,
+            absolute_difference DOUBLE,
+            relative_difference DOUBLE,
+            tolerance_abs DOUBLE NOT NULL,
+            tolerance_rel DOUBLE NOT NULL,
+            agreement_status VARCHAR NOT NULL,
+            vintage_status VARCHAR NOT NULL,
+            warehouse_available_at TIMESTAMP,
+            vendor_available_at TIMESTAMP,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES
+            (
+                'vendor_baseline_facts',
+                'vendor_offline',
+                'Vendor baseline comparable facts',
+                'Offline Sharadar/SimFin-style comparable fact rows normalized for like-for-like reconciliation against fundamental_standardized.',
+                'vendor,security_id,item_id,period_end,basis',
+                'vendor_baseline_facts', 'as_of_date', 'available_at', now()
+            ),
+            (
+                'fact_disagreement',
+                'atx_warehouse',
+                'Cross-vendor fact disagreement',
+                'Agreement/disagreement rows comparing fundamental_standardized to an injectable offline vendor baseline with basis and vintage alignment.',
+                'vendor,security_id,item_id,period_end,basis',
+                'fact_disagreement', 'as_of_date', 'available_at', now()
+            )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'vendor_baseline_facts', 'silver', 'fundamentals',
+                'source,vendor,security_id,item_id,period_end,basis',
+                'Normalized offline vendor comparable facts used as a cross-vendor baseline for standardized XBRL facts.',
+                '["source","vendor","security_id","item_id","period_end","basis"]',
+                'Baseline facts carry as_of_date and available_at so reconciliation can compare only facts visible at the same as-of timestamp.',
+                now()
+            ),
+            (
+                'fact_disagreement', 'gold', 'fundamental_reconciliation',
+                'source,baseline_source,vendor,security_id,item_id,period_end,basis',
+                'Like-for-like cross-vendor comparison of warehouse standardized facts against vendor_baseline_facts, including tolerance, status, and lineage.',
+                '["source","baseline_source","vendor","security_id","item_id","period_end","basis"]',
+                'Rows compare latest visible warehouse and vendor vintages using available_at <= the reconciliation as-of timestamp; available_at is the maximum visible input timestamp.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("vendor_baseline_facts", "fact_disagreement"))
+
+
+def _fact_disagreement_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S9 S9-1 lookup indexes for baseline and disagreement rows."""
+
+    for statement in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_baseline_facts_key ON vendor_baseline_facts(source, vendor, security_id, item_id, period_end, basis)",
+        "CREATE INDEX IF NOT EXISTS idx_vendor_baseline_facts_asof ON vendor_baseline_facts(as_of_date, available_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_disagreement_key ON fact_disagreement(source, baseline_source, vendor, security_id, item_id, period_end, basis)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_disagreement_status ON fact_disagreement(agreement_status, vendor, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_disagreement_asof ON fact_disagreement(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+
+def _xbrl_dqc_catalog_seed(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S9 S9-2: SQL-native DQC subset catalog rows and documented skips."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS xbrl_dqc_rule_catalog (
+            rule_code VARCHAR PRIMARY KEY,
+            rule_family VARCHAR NOT NULL,
+            port_status VARCHAR NOT NULL,
+            sql_subset_description VARCHAR NOT NULL,
+            skipped_reason VARCHAR,
+            official_rule_url VARCHAR,
+            guidance_url VARCHAR NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO xbrl_dqc_rule_catalog (
+            rule_code, rule_family, port_status, sql_subset_description,
+            skipped_reason, official_rule_url, guidance_url, updated_at
+        )
+        VALUES
+            (
+                'DQC_0004', 'dqc', 'ported_sql_subset',
+                'Assets = Liabilities + StockholdersEquity foots for same context/unit when all three facts are present.',
+                NULL, 'https://xbrl.us/data-rule/dqc_0004/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            ),
+            (
+                'DQC_0015', 'dqc', 'ported_sql_subset',
+                'Curated US-GAAP non-negative concept list flags negative facts.',
+                NULL, 'https://xbrl.us/data-rule/dqc_0015/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            ),
+            (
+                'DQC_0080', 'dqc', 'ported_sql_subset',
+                'Curated IFRS non-negative concept list flags negative facts.',
+                NULL, 'https://xbrl.us/data-rule/dqc_0080/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            ),
+            (
+                'DQC_0018', 'dqc', 'ported_sql_subset',
+                'Curated deprecated element list flags facts reported on concepts replaced by current taxonomy concepts.',
+                NULL, 'https://xbrl.us/data-rule/dqc_0018/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            ),
+            (
+                'DQC_0041', 'dqc', 'ported_sql_subset',
+                'Explicit dimension member must be reachable through a direct local dimension-domain/domain-member edge or the curated allowed pair list.',
+                NULL, 'https://xbrl.us/data-rule/dqc_0041/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            ),
+            (
+                'DQC_0053', 'dqc', 'ported_sql_subset',
+                'Curated excluded member-axis pairs and direct usable=false dimension edges.',
+                NULL, 'https://xbrl.us/data-rule/dqc_0053/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            ),
+            (
+                'DQC_0135', 'dqc', 'skipped_requires_full_processor',
+                'Extensible-enumeration validation is not ported to SQL.',
+                'Requires full Arelle/XULE extensible-enumeration semantics and taxonomy plugin metadata.',
+                'https://xbrl.us/data-rule/dqc_0135/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            ),
+            (
+                'DQC_0118', 'dqc', 'skipped_requires_full_processor',
+                'Financial-statement-table calculation validation is not ported to SQL.',
+                'Requires full statement-table calculation semantics beyond the local fact/context/linkbase tables.',
+                'https://xbrl.us/data-rule/dqc_0118/',
+                'https://xbrl.us/home/priorities/data-quality/rules-guidance/', now()
+            )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'xbrl_dqc_rule_catalog', 'reference', 'xbrl_validation',
+            'rule_code',
+            'Catalog of DQC rules ported as SQL subsets or explicitly skipped because they need a full XBRL/Arelle processor.',
+            '["rule_code"]',
+            'Reference metadata only. updated_at is knowledge time for the local DQC coverage note.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("xbrl_dqc_rule_catalog",))
+
+
+def _pf2_s9_indexes_report(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S9 S9-3: lookup indexes for S9 coverage/reconciliation surfaces."""
+
+    _valuation_overlap_slice_indexes(conn)
+    _fact_disagreement_indexes(conn)
+    _schema_contract_schema_catalog(conn)
+
+
 def _xbrl_validation_dimensional_evidence(conn: duckdb.DuckDBPyConnection) -> None:
     """PF-S7 S7-0: per-row dimensional-context evidence on xbrl_validation_results.
 
@@ -10449,6 +10772,26 @@ MIGRATIONS: list[Migration] = [
         version=123,
         name="estimate_actual_surprise_basis_extensions",
         up=_estimate_actual_surprise_basis_extensions,
+    ),
+    Migration(
+        version=124,
+        name="valuation_overlap_slice_schema_catalog",
+        up=_valuation_overlap_slice_schema_catalog,
+    ),
+    Migration(
+        version=125,
+        name="fact_disagreement_schema_catalog",
+        up=_fact_disagreement_schema_catalog,
+    ),
+    Migration(
+        version=126,
+        name="xbrl_dqc_catalog_seed",
+        up=_xbrl_dqc_catalog_seed,
+    ),
+    Migration(
+        version=127,
+        name="pf2_s9_indexes_report",
+        up=_pf2_s9_indexes_report,
     ),
 ]
 
