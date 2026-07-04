@@ -266,7 +266,14 @@ from .pricing_bulk import BulkBarsDataset, BulkBarsOptions
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
-from .migrations import MIGRATIONS, Migration, apply_pending_migrations
+from .migrations import (
+    MIGRATIONS,
+    Migration,
+    acquire_apply_lock,
+    apply_pending_migrations,
+    release_apply_lock,
+    verify_migration_checksums,
+)
 from .estimates import (
     EstimateMeasureSeedDataset,
     EstimateMeasureSeedOptions,
@@ -464,7 +471,10 @@ __all__ = [
     "JobManager",
     "MIGRATIONS",
     "Migration",
+    "acquire_apply_lock",
     "apply_pending_migrations",
+    "release_apply_lock",
+    "verify_migration_checksums",
     "LakeValidationProblem",
     "LakeValidationSummary",
     "ListingStatusIntervalDataset",

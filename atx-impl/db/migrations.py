@@ -7,6 +7,12 @@ up to date. It is safe to call multiple times; only unapplied migrations run.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import inspect
+import textwrap
+import uuid
+
 import duckdb
 from dataclasses import dataclass
 from typing import Callable
@@ -21,6 +27,140 @@ class Migration:
 
 def _noop(conn: duckdb.DuckDBPyConnection) -> None:
     """No-op body — baseline schema is already created by ensure_quant_schema."""
+
+
+def _migration_version_text(version: int) -> str:
+    return str(version).zfill(4)
+
+
+def _migration_source_checksum(migration: Migration) -> str:
+    """Stable sha256 digest of a migration's current ``up`` function source."""
+    source = inspect.getsource(migration.up)
+    normalized = textwrap.dedent(source).replace("\r\n", "\n").replace("\r", "\n").strip()
+    return hashlib.sha256(f"{normalized}\n".encode("utf-8")).hexdigest()
+
+
+def _migration_by_version() -> dict[int, Migration]:
+    return {migration.version: migration for migration in MIGRATIONS}
+
+
+def verify_migration_checksums(
+    conn: duckdb.DuckDBPyConnection, *, allow_missing: bool = False
+) -> None:
+    """Verify the append-only invariant for every applied numeric migration."""
+    migrations_by_version = _migration_by_version()
+    rows = conn.execute(
+        """
+        SELECT CAST(version AS INTEGER) AS version_int, version, checksum
+        FROM schema_migrations
+        WHERE version ~ '^[0-9]+$'
+        ORDER BY version_int
+        """
+    ).fetchall()
+
+    failures: list[str] = []
+    for version_int, _version_text, stored_checksum in rows:
+        migration = migrations_by_version.get(version_int)
+        display_version = _migration_version_text(version_int)
+        if migration is None:
+            failures.append(f"{display_version}: no migration source is registered")
+            continue
+        expected_checksum = _migration_source_checksum(migration)
+        if stored_checksum in (None, ""):
+            if allow_missing:
+                continue
+            failures.append(f"{display_version}: missing stored checksum")
+            continue
+        if stored_checksum != expected_checksum:
+            failures.append(
+                f"{display_version}: stored checksum {stored_checksum} "
+                f"does not match current source {expected_checksum}"
+            )
+
+    if failures:
+        raise RuntimeError(
+            "Migration checksum verification failed: " + "; ".join(failures)
+        )
+
+
+def _backfill_missing_migration_checksums(conn: duckdb.DuckDBPyConnection) -> None:
+    migrations_by_version = _migration_by_version()
+    rows = conn.execute(
+        """
+        SELECT CAST(version AS INTEGER) AS version_int, version
+        FROM schema_migrations
+        WHERE version ~ '^[0-9]+$'
+          AND (checksum IS NULL OR checksum = '')
+        ORDER BY version_int
+        """
+    ).fetchall()
+    updates = [
+        (_migration_source_checksum(migrations_by_version[version_int]), version_text)
+        for version_int, version_text in rows
+        if version_int in migrations_by_version
+    ]
+    if updates:
+        conn.executemany(
+            """
+            UPDATE schema_migrations
+            SET checksum = ?
+            WHERE version = ?
+              AND (checksum IS NULL OR checksum = '')
+            """,
+            updates,
+        )
+
+
+def _ensure_apply_lock_table(conn: duckdb.DuckDBPyConnection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS migration_apply_lock (
+            lock_name VARCHAR PRIMARY KEY,
+            holder_run_id VARCHAR NOT NULL,
+            heartbeat_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+
+def release_apply_lock(conn: duckdb.DuckDBPyConnection) -> None:
+    """Release the singleton migration apply lock if present."""
+    try:
+        conn.execute("DELETE FROM migration_apply_lock WHERE lock_name = 'schema_migrations'")
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def acquire_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str):
+    """Acquire the migration apply sentinel row or fail fast with the holder."""
+    _ensure_apply_lock_table(conn)
+    try:
+        conn.execute(
+            """
+            INSERT INTO migration_apply_lock (lock_name, holder_run_id, heartbeat_at)
+            VALUES ('schema_migrations', ?, CURRENT_TIMESTAMP)
+            """,
+            [run_id],
+        )
+    except Exception as exc:
+        row = conn.execute(
+            """
+            SELECT holder_run_id, heartbeat_at
+            FROM migration_apply_lock
+            WHERE lock_name = 'schema_migrations'
+            """
+        ).fetchone()
+        holder, heartbeat = row if row is not None else ("unknown", "unknown")
+        raise RuntimeError(
+            "migration apply lock is already held "
+            f"by run_id {holder} heartbeat_at {heartbeat}; aborting"
+        ) from exc
+
+    try:
+        yield
+    finally:
+        release_apply_lock(conn)
 
 
 def _schema_evolution_alters(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7684,6 +7824,94 @@ def _warehouse_catalog_view(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _migration_governance_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S2 S2-0: migration governance lock, backup registry shell, and checksum baseline."""
+    _ensure_apply_lock_table(conn)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS migration_backup_registry (
+            backup_id VARCHAR PRIMARY KEY,
+            run_id VARCHAR NOT NULL,
+            label VARCHAR,
+            database_path VARCHAR,
+            backup_path VARCHAR NOT NULL,
+            wal_backup_path VARCHAR,
+            sha256 VARCHAR NOT NULL,
+            byte_size BIGINT NOT NULL,
+            versions_before VARCHAR NOT NULL,
+            versions_after VARCHAR,
+            created_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'migration_apply_lock',
+                'control',
+                'migration_governance',
+                'singleton lock_name',
+                'Singleton advisory apply-lock row used to prevent concurrent warehouse migration apply loops.',
+                '["lock_name"]',
+                'Control table only. holder_run_id and heartbeat_at describe the current migration apply holder, not business-time facts.',
+                now()
+            ),
+            (
+                'migration_backup_registry',
+                'control',
+                'migration_backup',
+                'backup_id',
+                'Schema-only registry for governed migration database backups. S2-1 writes backup artifacts and version ranges here.',
+                '["backup_id"]',
+                'Control table only. created_at is registry knowledge time for backup artifacts, not a fact effective date.',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('migration_apply_lock', 'lock_name', 'identifier', 'Singleton lock key for the migration apply loop.', false, NULL, NULL, now()),
+            ('migration_apply_lock', 'holder_run_id', 'identifier', 'Run id that currently holds the migration apply lock.', false, NULL, NULL, now()),
+            ('migration_apply_lock', 'heartbeat_at', 'timestamp', 'Timestamp when the apply-lock row was acquired or last heartbeated.', false, NULL, NULL, now()),
+            ('migration_backup_registry', 'backup_id', 'identifier', 'Stable id for a migration backup artifact set.', false, NULL, NULL, now()),
+            ('migration_backup_registry', 'run_id', 'identifier', 'Governed migration run id that created the backup.', false, NULL, NULL, now()),
+            ('migration_backup_registry', 'label', 'category', 'Operator or tool-supplied backup label.', true, NULL, NULL, now()),
+            ('migration_backup_registry', 'database_path', 'path', 'Source DuckDB database path that was backed up.', true, NULL, NULL, now()),
+            ('migration_backup_registry', 'backup_path', 'path', 'Path to the primary DuckDB database backup artifact.', false, NULL, NULL, now()),
+            ('migration_backup_registry', 'wal_backup_path', 'path', 'Path to the copied DuckDB WAL backup artifact when one existed.', true, NULL, NULL, now()),
+            ('migration_backup_registry', 'sha256', 'identifier', 'SHA-256 digest recorded for the primary backup artifact.', false, NULL, NULL, now()),
+            ('migration_backup_registry', 'byte_size', 'count', 'Size in bytes recorded for the primary backup artifact.', false, 'bytes', NULL, now()),
+            ('migration_backup_registry', 'versions_before', 'json', 'JSON-encoded numeric migration versions present before the governed apply.', false, NULL, NULL, now()),
+            ('migration_backup_registry', 'versions_after', 'json', 'JSON-encoded numeric migration versions present after the governed apply.', true, NULL, NULL, now()),
+            ('migration_backup_registry', 'created_at', 'timestamp', 'Warehouse timestamp when the backup registry row was created.', false, NULL, NULL, now())
+        """
+    )
+
+    _backfill_missing_migration_checksums(conn)
+    _schema_contract_schema_catalog(conn)
+
+
+def _migration_governance_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S2 S2-0: lookup indexes split from migration governance schema."""
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_migration_apply_lock_heartbeat_at ON migration_apply_lock(heartbeat_at)",
+        "CREATE INDEX IF NOT EXISTS idx_migration_backup_registry_run_id ON migration_backup_registry(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_migration_backup_registry_created_at ON migration_backup_registry(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_migration_backup_registry_backup_path ON migration_backup_registry(backup_path)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -8111,6 +8339,16 @@ MIGRATIONS: list[Migration] = [
         name="warehouse_catalog_view",
         up=_warehouse_catalog_view,
     ),
+    Migration(
+        version=100,
+        name="migration_governance_schema",
+        up=_migration_governance_schema,
+    ),
+    Migration(
+        version=101,
+        name="migration_governance_indexes",
+        up=_migration_governance_indexes,
+    ),
 ]
 
 
@@ -8124,33 +8362,38 @@ def apply_pending_migrations(conn: duckdb.DuckDBPyConnection) -> list[int]:
     The schema_migrations table was created by ensure_quant_schema with columns:
         version VARCHAR PRIMARY KEY, description VARCHAR NOT NULL,
         checksum VARCHAR, applied_at TIMESTAMP NOT NULL DEFAULT now()
-    We use (version, description) and cast version int to VARCHAR for storage.
+    We cast version int to zero-padded VARCHAR for storage.
     """
-    # Fetch already-applied versions as integers
-    rows = conn.execute(
-        "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
-    ).fetchall()
-    applied: set[int] = {row[0] for row in rows}
+    run_id = f"migration-apply-{uuid.uuid4()}"
+    with acquire_apply_lock(conn, run_id):
+        # Fetch already-applied versions as integers.
+        rows = conn.execute(
+            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+        ).fetchall()
+        applied: set[int] = {row[0] for row in rows}
 
-    applied_now: list[int] = []
-    for migration in sorted(MIGRATIONS, key=lambda m: m.version):
-        if migration.version in applied:
-            continue
-        # Run inside a transaction so a failure rolls back cleanly
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            migration.up(conn)
-            conn.execute(
-                """
-                INSERT INTO schema_migrations (version, description, applied_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                """,
-                [str(migration.version).zfill(4), migration.name],
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-        applied_now.append(migration.version)
+        verify_migration_checksums(conn, allow_missing=100 not in applied)
 
-    return applied_now
+        applied_now: list[int] = []
+        for migration in sorted(MIGRATIONS, key=lambda m: m.version):
+            if migration.version in applied:
+                continue
+            checksum = _migration_source_checksum(migration)
+            # Run inside a transaction so a failure rolls back cleanly.
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                migration.up(conn)
+                conn.execute(
+                    """
+                    INSERT INTO schema_migrations (version, description, checksum, applied_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    [_migration_version_text(migration.version), migration.name, checksum],
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            applied_now.append(migration.version)
+
+        return applied_now
