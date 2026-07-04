@@ -144,6 +144,11 @@ enum class AdmitKind : atx::u8 {
   RejectDsr,           // holdout DSR below gate.cfg.min_dsr (mirrors GateVerdict::RejectDsr)
   RejectPbo,           // run-level PBO above gate.cfg.max_pbo
   RejectSplitUnstable, // holdout halves disagree in sign when require_split_stable
+  // p8 final-wave (Item 3): eval::RobustnessBattery (S5-3) wired into admission
+  // behind FactoryConfig::robustness_battery / --robustness-battery. APPENDED at
+  // the END (index 11) — the reject-histogram index is FROZEN (pinned by
+  // AdmitKindEnumFrozenPrefix, now extended to 0..11); never insert mid-enum.
+  RejectRobustness, // eval::RobustnessBattery::run(...).overall_pass == false
 };
 
 struct AdmitVerdict {

@@ -296,6 +296,7 @@ void admit_fixture(lib::Library &facade, usize n) {
   case AdmitKind::Duplicate:
   case AdmitKind::RejectPriceScale:
   case AdmitKind::RejectDsrSubwindow:
+  case AdmitKind::RejectRobustness: // p8 final-wave (Item 3): no GateVerdict analog either
     break;
   }
   return GateVerdict::Accept; // unreachable for the probe set (no duplicates/holdout rejects)

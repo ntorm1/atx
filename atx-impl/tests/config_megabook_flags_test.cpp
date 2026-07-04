@@ -50,7 +50,8 @@ TEST(ConfigParse, MegaBookFlags_RoundTrip) {
                     "--si-publication-lag", "3",
                     "--kelly-fraction", "0.5",
                     "--kelly-max-gross", "2.0",
-                    "--incremental-panel"});
+                    "--incremental-panel",
+                    "--robustness-battery"});
     ASSERT_TRUE(r.has_value()) << (r.has_value() ? "" : r.error().message());
     const RunConfig& cfg = *r;
     EXPECT_EQ(cfg.risk_model, "factor");
@@ -69,6 +70,7 @@ TEST(ConfigParse, MegaBookFlags_RoundTrip) {
     EXPECT_DOUBLE_EQ(cfg.kelly_fraction, 0.5);
     EXPECT_DOUBLE_EQ(cfg.kelly_max_gross, 2.0);
     EXPECT_TRUE(cfg.incremental_panel);
+    EXPECT_TRUE(cfg.robustness_battery);
 }
 
 // omitted -> the inert default (byte-identical no-flag path).
@@ -92,6 +94,7 @@ TEST(ConfigParse, MegaBookFlags_OmittedAreInert) {
     EXPECT_DOUBLE_EQ(cfg.kelly_fraction, 0.0);
     EXPECT_DOUBLE_EQ(cfg.kelly_max_gross, 1.0);
     EXPECT_FALSE(cfg.incremental_panel);
+    EXPECT_FALSE(cfg.robustness_battery);
 }
 
 // --risk-model / --sleeve-method reject an unknown value (closed taxonomy, like
@@ -120,6 +123,7 @@ TEST(ConfigFile, MegaBookFlags_RoundTrip) {
              "sleeve-method=erc\n"
              "require-split-stable=\n"
              "blocking-pbo=\n"
+             "robustness-battery=\n"
              "kelly-fraction=0.25\n"
              "min-dsr=0.5\n";
     }
@@ -131,6 +135,7 @@ TEST(ConfigFile, MegaBookFlags_RoundTrip) {
     EXPECT_EQ(file_r->sleeve_method, "erc");
     EXPECT_TRUE(file_r->require_split_stable);
     EXPECT_TRUE(file_r->blocking_pbo);
+    EXPECT_TRUE(file_r->robustness_battery);
     EXPECT_DOUBLE_EQ(file_r->kelly_fraction, 0.25);
 
     // A CLI-present flag wins the merge, regardless of the file's value.

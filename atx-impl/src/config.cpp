@@ -49,6 +49,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "require-split-stable"){ cfg.require_split_stable = true; return atx::core::Ok(); } // S5-0 (deflation)
     if (flag == "blocking-pbo")        { cfg.blocking_pbo         = true; return atx::core::Ok(); } // S5-2
     if (flag == "incremental-panel")   { cfg.incremental_panel    = true; return atx::core::Ok(); } // S5-0 (p7 carry-forward)
+    if (flag == "robustness-battery")  { cfg.robustness_battery   = true; return atx::core::Ok(); } // p8 final-wave (Item 3)
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -384,7 +385,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel" || flag == "dead-alpha-factors" || flag == "group-neutralize" || flag == "metabook" || flag == "impact-in-selection" || flag == "capacity-curve" || flag == "require-split-stable" || flag == "blocking-pbo" || flag == "incremental-panel") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel; S5-0: p8 hub valueless bools
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel" || flag == "dead-alpha-factors" || flag == "group-neutralize" || flag == "metabook" || flag == "impact-in-selection" || flag == "capacity-curve" || flag == "require-split-stable" || flag == "blocking-pbo" || flag == "incremental-panel" || flag == "robustness-battery") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel; S5-0: p8 hub valueless bools; Item 3: robustness-battery (p8 final-wave)
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;

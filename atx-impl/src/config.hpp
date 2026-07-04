@@ -324,13 +324,12 @@ struct RunConfig {
     // end from the CLI — adding a second `combine_method` flag would be a
     // duplicate, confusing knob. See the S5 ledger for the reconciliation note.
 
-    // --impact-in-selection / --selection-aum (S4): thread the FLAG + AUM into
-    // FitnessCfg.cost_selection (fitness.hpp field, S5-owned); the S4-4-shipped
-    // pure function factory::apply_selection_cost exists but the fitness.cpp BODY
-    // call site that reads cfg.cost_selection is NOT yet wired (S4-owned file;
-    // see the ledger for this deviation) — so at present the flag reaches the
-    // config field but does not yet change search selection. Documented gap, not
-    // a silent no-op: false (default) is inert either way.
+    // --impact-in-selection / --selection-aum (S4, wired end-to-end in the p8
+    // final-wave): threads the FLAG + AUM into FitnessCfg.cost_selection
+    // (fitness.hpp), which fitness.cpp's fitness_core/finish_report now actually
+    // consume (book_cost_bps at selection_aum nets into the ScalarRaw selection
+    // scalar via factory::apply_selection_cost). false (default) is inert
+    // either way — see fitness_cost_selection_test.cpp for the RED->GREEN proof.
     bool   impact_in_selection = false; // --impact-in-selection
     double selection_aum       = 0.0;   // --selection-aum (0 = off; AUM cost is priced at)
 
@@ -352,6 +351,18 @@ struct RunConfig {
     // warning. Distinct from --pbo-hard-block (exit-code-only escalation). false
     // (default) = advisory-only, exactly as today.
     bool blocking_pbo = false;
+
+    // --robustness-battery (p8 final-wave, Item 3): opt-in eval::RobustnessBattery
+    // (S5-3) noise-control check at admission (factory::FactoryConfig::
+    // robustness_battery). Threaded into fcfg.robustness_battery in
+    // stage_discover.cpp. A candidate whose edge SURVIVES a seeded permutation of
+    // the panel's "close" field (a dimensional-artifact negative control) is
+    // rejected with library::AdmitKind::RejectRobustness. SCOPED PARTIAL this
+    // wave: only the noise_control check is wired (see FactoryConfig's own doc
+    // for the sub_universe/alt_neutralization/param_perturbation deferral).
+    // false (default) never builds a BatteryConfig/Reevaluator/alternate Panel at
+    // all -> byte-identical to today.
+    bool robustness_battery = false;
 
     // -- p7-S7 carry-forwards (subsumed here; augment/incremental-panel wiring) --
     // --short-interest / --augment-out (FINRA short-interest augment stage): the

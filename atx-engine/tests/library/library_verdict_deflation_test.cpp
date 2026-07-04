@@ -209,6 +209,8 @@ TEST(LibraryVerdict, AdmitKindEnumFrozenPrefix) {
   static_assert(static_cast<int>(lib::AdmitKind::RejectDsr) == 8);
   static_assert(static_cast<int>(lib::AdmitKind::RejectPbo) == 9);
   static_assert(static_cast<int>(lib::AdmitKind::RejectSplitUnstable) == 10);
+  // p8 final-wave (Item 3): RejectRobustness APPENDED at 11 (never inserted mid-enum).
+  static_assert(static_cast<int>(lib::AdmitKind::RejectRobustness) == 11);
   SUCCEED();
 }
 

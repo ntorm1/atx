@@ -97,6 +97,8 @@
 
 #include "atx/engine/library/library.hpp" // library::Library, AlphaCandidate, AdmitKind, AdmitVerdict
 
+#include "atx/engine/eval/robustness_battery.hpp" // eval::BatteryConfig, RobustnessBattery (p8 Item 3)
+
 #include "atx/engine/factory/fitness.hpp" // factory::pool_aware_fitness, FitnessCfg
 #include "atx/engine/factory/genome.hpp"  // factory::Genome
 #include "atx/engine/factory/pool_view.hpp" // factory::LibraryPool, PoolView, pool_aware_fitness overload (S4b-2)
@@ -231,6 +233,18 @@ struct FactoryConfig {
   //  admitted set / digest are UNCHANGED; only whether the run reports Ok or Err
   //  differs, and only when both this AND max_pbo<1.0 are explicitly set).
   bool blocking_pbo = false; // --blocking-pbo (S5-2); false == advisory-only, as today
+  // --- p8 final-wave (Item 3) — eval::RobustnessBattery (S5-3) at admission time. ---
+  //  OPT-IN, default OFF. When true, mine_into's sequential library-backed admit
+  //  loop builds an eval::BatteryConfig with ONLY noise_control enabled (a SCOPED
+  //  PARTIAL of the 4-check battery this wave — sub_universe/alt_neutralization
+  //  need a liquidity-ADV / group_map input this admit site does not carry yet,
+  //  and param_perturbation needs an AST-level numeric-param jitter that does not
+  //  exist yet; both are deferred, ledger-noted future work) and rejects a
+  //  candidate whose edge SURVIVES a seeded permutation of the panel's "close"
+  //  field (the dimensional-artifact negative control) with
+  //  library::AdmitKind::RejectRobustness. false (the default) never builds a
+  //  BatteryConfig/Reevaluator/alternate Panel at all -> byte-identical to today.
+  bool robustness_battery = false; // --robustness-battery
 };
 
 // =========================================================================
@@ -285,7 +299,12 @@ struct FactoryReport {
   // S5-1 screens (today's factory call sites keep gc.min_dsr/max_pbo at their
   // GateConfig{} inert defaults, so kind never actually reaches 8..10 yet — see
   // the S5 ledger).
-  std::array<atx::usize, 11> reject_histogram{}; // count per library::AdmitKind (0..10)
+  // p8 final-wave (Item 3): grown 11 -> 12 for library::AdmitKind::RejectRobustness
+  // (index 11). SAME additive-growth argument as the S5-1 bump above: indices 0..10
+  // are untouched (every pre-existing EXPECT_EQ on the whole array stays byte-
+  // identical), and the new index is only ever written when FactoryConfig::
+  // robustness_battery is explicitly on.
+  std::array<atx::usize, 12> reject_histogram{}; // count per library::AdmitKind (0..11)
 
   // --- S2-1 cascade pre-gate telemetry (additive; REPORT-ONLY, never folded into digest).
   //  Number of candidates the train->holdout cascade pre-gate skipped (the expensive
@@ -382,6 +401,33 @@ void finalize_run_pbo(FactoryReport &rep,
 // byte-identical to the pre-S5-2 path (a run's control flow is unchanged).
 [[nodiscard]] atx::core::Status check_blocking_pbo(const FactoryConfig &cfg,
                                                    const FactoryReport &rep);
+
+// robustness_battery_passes — p8 final-wave (Item 3): the noise_control-only
+// eval::RobustnessBattery (S5-3) check. `battery_cfg.any_enabled() == false`
+// (the caller's inert default) returns true WITHOUT building anything (no
+// CandidateInputs copy, no Reevaluator, no alternate Panel) — the byte-identical
+// off-path. Otherwise: reads `panel`'s "close" field (absent -> the check is
+// inapplicable, per RobustnessBattery's own graceful-degradation contract, so
+// this returns true) as CandidateInputs::input_values; the Reevaluator rebuilds
+// an alternate Panel with EVERY field copied verbatim except "close", which is
+// replaced by the battery's own seeded permutation (RobustnessScenario::
+// noise_input), then re-scores `cand` on it via `pool_aware_fitness` (the SAME
+// call shape the admit loop already uses to re-score against the live pool) and
+// reports its `dsr` as the scenario edge — the §0.8 weak-panel re-eval pattern,
+// generalized to a PERMUTED rather than sub-universe-restricted Panel. Only
+// ScenarioKind::NoiseControl is handled (this wave's scoped partial, see
+// FactoryConfig::robustness_battery); any other scenario kind (never actually
+// requested when the caller's BatteryConfig only enables noise_control) returns
+// Err, which RobustnessBattery treats as "check inapplicable", never a crash.
+// Declared here (not file-local) so a unit test can drive it directly against a
+// real Genome/Panel/PoolView, exactly as detail::split_half_sharpe / finalize_run_pbo
+// are.
+[[nodiscard]] bool robustness_battery_passes(const Genome &cand, const alpha::Panel &panel,
+                                             const PoolView &pool, const WeightPolicy &policy,
+                                             const exec::ExecutionSimulator &sim,
+                                             const FitnessCfg &admit_fit,
+                                             const eval::BatteryConfig &battery_cfg,
+                                             atx::f64 base_edge);
 
 } // namespace detail
 

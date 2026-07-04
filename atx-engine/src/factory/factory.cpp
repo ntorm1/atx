@@ -168,6 +168,79 @@ void finalize_run_pbo(FactoryReport &rep,
   return atx::core::Ok();
 }
 
+// p8 final-wave (Item 3) — see the factory.hpp declaration for the full contract.
+[[nodiscard]] bool robustness_battery_passes(const Genome &cand, const alpha::Panel &panel,
+                                             const PoolView &pool, const WeightPolicy &policy,
+                                             const exec::ExecutionSimulator &sim,
+                                             const FitnessCfg &admit_fit,
+                                             const eval::BatteryConfig &battery_cfg,
+                                             atx::f64 base_edge) {
+  if (!battery_cfg.any_enabled()) {
+    return true; // inert default -> never builds a CandidateInputs/Reevaluator/alt Panel
+  }
+
+  const auto close_id = panel.field_id("close");
+  eval::CandidateInputs inputs;
+  inputs.base_edge = base_edge;
+  std::vector<atx::f64> close_col; // must outlive the reeval lambda below (captured by ref)
+  if (close_id.has_value()) {
+    const std::span<const atx::f64> close_all = panel.field_all(*close_id);
+    close_col.assign(close_all.begin(), close_all.end());
+    inputs.input_values = std::span<const atx::f64>{close_col};
+  } // else: input_values stays empty -> noise_control marks itself inapplicable (graceful)
+
+  const atx::usize dates = panel.dates();
+  const atx::usize insts = panel.instruments();
+  const atx::usize n_fields = panel.num_fields();
+
+  const eval::Reevaluator reeval =
+      [&](const eval::RobustnessScenario &sc) -> atx::core::Result<atx::f64> {
+    if (sc.kind != eval::ScenarioKind::NoiseControl || !close_id.has_value()) {
+      // Only noise_control is wired this wave (FactoryConfig::robustness_battery's
+      // BatteryConfig only ever enables noise_control, so the kind branch is never
+      // actually reached in production -- defensive, not load-bearing). The
+      // close_id guard is likewise unreachable in practice: RobustnessBattery
+      // never calls reeval(NoiseControl) when inputs.input_values is empty, which
+      // is exactly the !close_id.has_value() case above -- defensive belt-and-
+      // braces so this function can never dereference an empty Result.
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "robustness_battery_passes: scenario not supported this wave");
+    }
+    // Rebuild every field of `panel` verbatim, replacing ONLY "close" with the
+    // battery's seeded permutation (same dates/instruments/universe shape --
+    // only that one field's VALUES move, never their (date,instrument) slot).
+    std::vector<std::string> fields;
+    std::vector<std::vector<atx::f64>> cols;
+    fields.reserve(n_fields);
+    cols.reserve(n_fields);
+    for (atx::usize f = 0; f < n_fields; ++f) {
+      fields.emplace_back(panel.field_name(f));
+      if (f == static_cast<atx::usize>(*close_id)) {
+        cols.emplace_back(sc.noise_input.begin(), sc.noise_input.end());
+      } else {
+        const std::span<const atx::f64> col = panel.field_all(static_cast<alpha::FieldId>(f));
+        cols.emplace_back(col.begin(), col.end());
+      }
+    }
+    std::vector<std::uint8_t> universe(dates * insts);
+    for (atx::usize t = 0; t < dates; ++t) {
+      for (atx::usize i = 0; i < insts; ++i) {
+        universe[t * insts + i] =
+            panel.in_universe(static_cast<alpha::DateIdx>(t), i) ? 1U : 0U;
+      }
+    }
+    ATX_TRY(alpha::Panel alt_panel,
+           alpha::Panel::create(dates, insts, std::move(fields), std::move(cols),
+                                std::move(universe)));
+    ATX_TRY(const FitnessReport fit,
+           pool_aware_fitness(cand, pool, alt_panel, policy, sim, admit_fit));
+    return atx::core::Ok(fit.dsr);
+  };
+
+  const eval::BatteryResult res = eval::RobustnessBattery::run(battery_cfg, inputs, reeval);
+  return !res.ran || res.overall_pass;
+}
+
 } // namespace detail
 
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
@@ -436,10 +509,28 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     // invariant). Inactive (-inf default) -> always true (byte-identical pre-W4a bar).
     const bool split_ok =
         split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{cand_pnl}, metrics);
+
+    // p8 final-wave (Item 3): eval::RobustnessBattery noise-control check
+    // (OPT-IN, default OFF). cfg.robustness_battery == false (the default) ->
+    // battery_cfg stays BatteryConfig{} (all-false) -> robustness_battery_passes
+    // returns true WITHOUT building a CandidateInputs/Reevaluator/alternate Panel
+    // at all -> byte-identical to pre-Item-3. seed derives from res.seed (the
+    // run's own master seed) XORed with a fixed salt so the permutation is
+    // deterministic and reproducible per run, never thread/time.
+    eval::BatteryConfig battery_cfg;
+    if (cfg.robustness_battery) {
+      battery_cfg.noise_control = true; // scoped partial this wave -- see FactoryConfig's doc
+      battery_cfg.seed = res.seed ^ 0x526F627573742121ULL;
+    }
+    const bool robustness_ok = detail::robustness_battery_passes(
+        g, panel_, view, policy_, sim_, admit_fit, battery_cfg, dsr);
+
     // The deflation bar is FACTORY-side: clear it BEFORE library::admit is consulted.
     library::AdmitKind kind =
         library::AdmitKind::RejectFitness; // non-accept sentinel for the histogram
-    if (dsr >= cfg.min_dsr && split_ok) {
+    if (!robustness_ok) {
+      kind = library::AdmitKind::RejectRobustness;
+    } else if (dsr >= cfg.min_dsr && split_ok) {
       // S5-1: populate the candidate's GateDeflation from the SAME dsr/split_ok this
       // loop already computed (the running-N-deflated dsr; split_ok folds in the
       // W4a stability check). pbo is left at kInertDeflation's default (0.0, never
