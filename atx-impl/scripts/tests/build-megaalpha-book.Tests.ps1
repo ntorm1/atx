@@ -272,3 +272,143 @@ Describe 'Resolve-ActiveStages - explicit stage requests are never silently empt
         ($stages -contains 'optimize') | Should Be $false
     }
 }
+
+Describe 'Script defaults - S7-1 $AtxExe fix (stale p8 worktree -> p9 worktree)' {
+
+    It 'the $AtxExe default points at the p9 worktree binary this script now lives in' {
+        $AtxExe | Should Be 'C:\atx-wt\p9\build\bin\atx-impl.exe'
+    }
+}
+
+Describe 'New-CombineArgv - S7-1 --risk-model factor reaches the combine CLI entry (S2)' {
+
+    It 'prod: contains --risk-model factor' {
+        $argv = New-CombineArgv -PanelBin $testPanel -WorkDir $testWorkDir -Method 'stack' -RiskModel 'factor'
+        $ri = [array]::IndexOf($argv, '--risk-model')
+        $ri | Should BeGreaterThan -1
+        $argv[$ri + 1] | Should Be 'factor'
+    }
+
+    It 'default (smoke): omits --risk-model entirely (absence == inert; combine CLI entry stays Diagonal)' {
+        $argv = New-CombineArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--risk-model') | Should Be $false
+    }
+}
+
+Describe 'New-MetabookArgv - S7-1 risk-model + book-level gates now reach the prod book stage' {
+
+    It 'prod: contains --risk-model factor --dead-alpha-factors --dead-alpha-lib-dir --group-neutralize' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -RiskModel 'factor' -DeadAlphaFactors -DeadAlphaLibDir 'C:\atx-test\work\_library' -GroupNeutralize
+        ($argv -contains '--risk-model')         | Should Be $true
+        ($argv -contains '--dead-alpha-factors')  | Should Be $true
+        ($argv -contains '--dead-alpha-lib-dir')  | Should Be $true
+        ($argv -contains '--group-neutralize')    | Should Be $true
+    }
+
+    It 'default (smoke): omits risk-model/dead-alpha/group-neutralize entirely (absence == inert)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'invvol'
+        ($argv -contains '--risk-model')        | Should Be $false
+        ($argv -contains '--dead-alpha-factors') | Should Be $false
+        ($argv -contains '--dead-alpha-lib-dir') | Should Be $false
+        ($argv -contains '--group-neutralize')   | Should Be $false
+    }
+
+    It 'coupling: --dead-alpha-factors implies --dead-alpha-lib-dir is present with a non-empty value (fail-open default)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -RiskModel 'factor' -DeadAlphaFactors
+        if ($argv -contains '--dead-alpha-factors') {
+            $i = [array]::IndexOf($argv, '--dead-alpha-lib-dir')
+            $i | Should BeGreaterThan -1
+            $argv[$i + 1] | Should Not Be ''
+        }
+    }
+
+    It 'contains --book-turnover-gate 0.20 and --participation-cap when requested' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -BookTurnoverGate 0.20 -ParticipationCap 0.10
+        $gi = [array]::IndexOf($argv, '--book-turnover-gate')
+        $pi = [array]::IndexOf($argv, '--participation-cap')
+        $argv[$gi + 1] | Should Be '0.2'
+        $argv[$pi + 1] | Should Be '0.1'
+    }
+
+    It 'omits --book-turnover-gate/--participation-cap when both are 0 (the inert default)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp'
+        ($argv -contains '--book-turnover-gate') | Should Be $false
+        ($argv -contains '--participation-cap')  | Should Be $false
+    }
+}
+
+Describe 'New-DiscoverArgv - S7-1 capacity/turnover objectives + deflation + robustness battery (S4/S5/p8)' {
+
+    It 'prod: contains --deflate-selection, --capacity-objective, --turnover-objective' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -DeflateSelection -CapacityObjective -TurnoverObjective
+        ($argv -contains '--deflate-selection')  | Should Be $true
+        ($argv -contains '--capacity-objective') | Should Be $true
+        ($argv -contains '--turnover-objective') | Should Be $true
+    }
+
+    It 'default (smoke): omits deflate-selection/capacity-objective/turnover-objective entirely' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir -LooseGates
+        ($argv -contains '--deflate-selection')  | Should Be $false
+        ($argv -contains '--capacity-objective') | Should Be $false
+        ($argv -contains '--turnover-objective') | Should Be $false
+    }
+
+    It 'prod: contains --robustness-battery and its 3 sub-checks when all requested' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -RobustnessBattery -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--robustness-battery')            | Should Be $true
+        ($argv -contains '--robustness-sub-universe')       | Should Be $true
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $true
+        ($argv -contains '--robustness-param-perturb')      | Should Be $true
+    }
+
+    It 'default (smoke): omits --robustness-battery and all 3 sub-checks' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir -LooseGates
+        ($argv -contains '--robustness-battery')            | Should Be $false
+        ($argv -contains '--robustness-sub-universe')       | Should Be $false
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $false
+        ($argv -contains '--robustness-param-perturb')      | Should Be $false
+    }
+}
+
+Describe 'New-OptimizeArgv - S7-1 dead-alpha-lib-dir coupling + gp-trading flags (S1/S3)' {
+
+    It 'coupling: --dead-alpha-factors implies --dead-alpha-lib-dir is present with a non-empty value (fail-open default)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -RiskModel 'factor' -DeadAlphaFactors -GroupNeutralize
+        if ($argv -contains '--dead-alpha-factors') {
+            $i = [array]::IndexOf($argv, '--dead-alpha-lib-dir')
+            $i | Should BeGreaterThan -1
+            $argv[$i + 1] | Should Not Be ''
+        }
+    }
+
+    It 'contains --gp-trading --gp-risk-aversion --gp-trade-cost-scale when explicitly requested' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -GpTrading -GpRiskAversion 1.0 -GpTradeCostScale 1.0
+        ($argv -contains '--gp-trading')          | Should Be $true
+        $ri = [array]::IndexOf($argv, '--gp-risk-aversion')
+        $ci = [array]::IndexOf($argv, '--gp-trade-cost-scale')
+        $ri | Should BeGreaterThan -1
+        $ci | Should BeGreaterThan -1
+    }
+}
+
+Describe 'New-ReportArgv - S7-1 --borrow-bps (S5 financing into the honest book-level cost numbers)' {
+
+    It 'prod: contains --borrow-bps with a positive value' {
+        $argv = New-ReportArgv -PanelBin $testPanel -WorkDir $testWorkDir -CapacityCurve -BorrowBps 25
+        $i = [array]::IndexOf($argv, '--borrow-bps')
+        $i | Should BeGreaterThan -1
+        [double]$argv[$i + 1] | Should BeGreaterThan 0
+    }
+
+    It 'default (smoke): omits --borrow-bps' {
+        $argv = New-ReportArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--borrow-bps') | Should Be $false
+    }
+}
