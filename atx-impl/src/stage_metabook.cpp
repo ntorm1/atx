@@ -28,6 +28,7 @@
 #include "atx/engine/risk/multi_horizon.hpp"
 
 #include "artifacts.hpp"      // to_hex16
+#include "book_shape.hpp"     // book_turnover_per_day (S5-1, shared house helper)
 #include "dead_alpha_wire.hpp" // maybe_open_dead_lib / collect_dead_alpha_ids (S1, shared via S2-0)
 #include "diag_risk.hpp"      // diagonal_risk_model (the shared S5/S6 diagonal model)
 #include "research_sim.hpp"   // frictionless_sim (shared atx-impl helper)
@@ -757,6 +758,27 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
       {"risk_contrib_sum", std::to_string(risk_contrib_sum)},
       {"crossing_credit_sum", std::to_string(crossing_credit_sum)},
   };
+
+  // S5-1: book-level cross-sleeve-netted turnover as a PER-DAY rate, measured
+  // unconditionally (surfaced as a kv) and gated opt-in. result.report.turnover_net
+  // is the S2-3 fund-netted series (one L1 move per rebalance period). The schedule
+  // build_metabook_result used is dense multiples of `step` (sched.periods[s] ==
+  // s*step, EXACTLY stage_optimize.cpp's construction), reconstructed here from the
+  // same cfg.rebalance step so the day-normalization matches stage_optimize's. The
+  // added kv changes sr.kvs only, never `digest` (the fund book bytes) -- with the
+  // gate off the metabook digest is byte-identical to pre-S5-1.
+  const atx::usize turnover_step = (cfg.rebalance == "daily") ? 1U : 5U; // default weekly
+  std::vector<atx::usize> sched_periods(S);
+  for (atx::usize s = 0; s < S; ++s) sched_periods[s] = s * turnover_step;
+  const atx::f64 book_turnover =
+      book_turnover_per_day(result.report.turnover_net, sched_periods);
+  sr.kvs.emplace_back("book_turnover_per_day", std::to_string(book_turnover));
+  if (cfg.book_turnover_gate > 0.0 && book_turnover > cfg.book_turnover_gate) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: fund book turnover " + std::to_string(book_turnover) +
+                              "/day exceeds --book-turnover-gate " +
+                              std::to_string(cfg.book_turnover_gate));
+  }
   return atx::core::Ok(std::move(sr));
 }
 

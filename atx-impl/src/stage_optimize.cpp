@@ -287,6 +287,17 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
             sr.kvs.emplace_back("trade_rate", std::to_string(trade_rate_val));
         if (cfg.gp_trading)
             sr.kvs.emplace_back("gp_trading", gp_fallback ? "fallback" : "on");
+        // S5-1: measure FIRST (always -- "measure before gate"), gate opt-in second.
+        // Same shared helper + guard as the MVO branch, reusing this branch's own
+        // per-period `turnover` vector and `sched.periods`.
+        const atx::f64 book_turnover = book_turnover_per_day(turnover, sched.periods);
+        sr.kvs.emplace_back("book_turnover_per_day", std::to_string(book_turnover));
+        if (cfg.book_turnover_gate > 0.0 && book_turnover > cfg.book_turnover_gate) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "optimize: book turnover " + std::to_string(book_turnover) +
+                                      "/day exceeds --book-turnover-gate " +
+                                      std::to_string(cfg.book_turnover_gate));
+        }
         return atx::core::Ok(std::move(sr));
     }
 
@@ -440,7 +451,22 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     }
 
     // 8. Serialize + return StageResult.
-    return write_books(flat, result.turnover, result.cost_bps);
+    // S5-1: measure FIRST (always -- the design-spec's "measure before gate"
+    // mitigation), gate opt-in second. The rate is computed AFTER write_books so a
+    // rejected run's own books/sidecar stay on disk and inspectable (mirrors
+    // --blocking-pbo's documented "already persisted" caveat). The added kv changes
+    // sr.kvs's content but never sr.digest (the books panel bytes), so with the gate
+    // off the books digest is byte-identical to pre-S5-1.
+    ATX_TRY(auto sr, write_books(flat, result.turnover, result.cost_bps));
+    const atx::f64 book_turnover = book_turnover_per_day(result.turnover, sched.periods);
+    sr.kvs.emplace_back("book_turnover_per_day", std::to_string(book_turnover));
+    if (cfg.book_turnover_gate > 0.0 && book_turnover > cfg.book_turnover_gate) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "optimize: book turnover " + std::to_string(book_turnover) +
+                                  "/day exceeds --book-turnover-gate " +
+                                  std::to_string(cfg.book_turnover_gate));
+    }
+    return atx::core::Ok(std::move(sr));
 }
 
 } // namespace atx::impl
