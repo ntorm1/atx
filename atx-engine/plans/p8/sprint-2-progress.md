@@ -266,16 +266,32 @@ public substitute. A library smaller than `kFlushBatch` (every test fixture in t
 collapses to one group either way, so `ByLibraryGroup`'s only currently-tested behavior (the
 degenerate SingleSleeve fallback) is identical under either key.
 
-## S1 seam (recorded per the cross-sprint contract)
+## S1 seam (recorded per the cross-sprint contract; corrected in the p8 final-wave — see below)
 
-`model_at(period)` prefers the S1 `FactorModelArtifact` when the caller supplies a Factor
-`RiskModelConfig`, else falls back to `diag_risk.hpp`'s `diagonal_risk_model` (S2-2). S2 does
-NOT hard-depend on S1: Ω is built LOCALLY from sleeve-return P&L (`sleeve_return_cov`), a
-SLEEVE-level covariance distinct from the instrument-level `FactorModel` V. `stage_metabook`'s
-public entry point in S2 takes only the inert Diagonal path (mirrors S1's own "flag threaded in
-Sprint 5" discipline) — a Factor-model `model_at` variant is a straightforward follow-on (same
-per-step artifact `stage_optimize.cpp`'s Factor branch already builds) but is NOT wired by S2
-to keep the surface minimal; recorded here as the S5/S1 integration seam.
+**Plainly, as actually built:** `model_at(period)` ALWAYS returns `diag_risk.hpp`'s
+`diagonal_risk_model(research)` (one whole-panel model, applied at every period) — there is no
+Factor-model path in `stage_metabook.cpp` today, and `build_metabook_result`/`run_metabook` take
+no `RiskModelConfig` at all. S2 does NOT hard-depend on S1: Ω is built LOCALLY from sleeve-return
+P&L (`sleeve_return_cov`), a SLEEVE-level covariance distinct from the instrument-level
+`FactorModel` V, so the diag-only `model_at` is not a missing dependency, just an unexploited
+option. (An earlier draft of this note incorrectly described `model_at` as already preferring an
+S1 `FactorModelArtifact` when the caller supplies a Factor `RiskModelConfig` — that sentence
+contradicted this same paragraph's own next sentence, which correctly says the Factor path is
+NOT wired; corrected here rather than left standing.)
+
+A Factor-model `model_at` variant is a straightforward follow-on (the SAME per-step artifact
+`stage_optimize.cpp`'s Factor branch already builds via `build_risk_model` +
+`data::artifact_to_factor_model`) but was not attempted by S2 (to keep the surface minimal).
+The p8 final-wave brief listed this as Item 4 — OPTIONAL, "only if a small safe additive
+overload; else defer with a note." The sketch (a `const risk::RiskModelConfig &risk_cfg = {}`
+default parameter on `build_metabook_result`/`run_metabook`, branching `model_at`'s single
+whole-panel build between `diagonal_risk_model(research)` at the Diagonal default and
+`build_risk_model(research, risk_cfg)` + `data::artifact_to_factor_model` at Factor) IS a small,
+additive, default-preserving overload in principle — the default argument keeps every existing
+call site (including the R7 stage-boundary pin) byte-identical. It was deferred in this
+final-wave session on priority/budget grounds (items 1/2/3/5 were required; this one was
+explicitly optional and lowest-priority), not because it was found infeasible. Recorded here as
+the S5/S1/final-wave integration seam for whoever picks it up next.
 
 ## `run_all` / CLI seam (S5, per the brief's binding note)
 

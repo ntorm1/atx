@@ -69,15 +69,31 @@ Describe 'New-DiscoverArgv - inert-value p8 flags on smoke (loose) profile' {
         ($argv -contains '--require-split-stable') | Should Be $false
         ($argv -contains '--blocking-pbo')          | Should Be $false
     }
+
+    It 'does NOT contain --selection-aum (ImpactInSelection absent -> the companion is never emitted)' {
+        ($argv -contains '--selection-aum') | Should Be $false
+    }
 }
 
 Describe 'New-DiscoverArgv - prod profile opts in to the p8 deflation/impact seams' {
 
     $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
-        -ImpactInSelection -RequireSplitStable -BlockingPbo -MinDsr 0.5 -MaxPbo 0.5
+        -ImpactInSelection -SelectionAum 5.0e7 -RequireSplitStable -BlockingPbo -MinDsr 0.5 -MaxPbo 0.5
 
     It 'contains --impact-in-selection' {
         ($argv -contains '--impact-in-selection') | Should Be $true
+    }
+
+    It 'contains --selection-aum with a positive value (p8 final-wave: the companion --impact-in-selection needs to actually bite -- CostSelectionConfig contract)' {
+        $i = [array]::IndexOf($argv, '--selection-aum')
+        $i | Should BeGreaterThan -1
+        [double]$argv[$i + 1] | Should BeGreaterThan 0
+    }
+
+    It 'omits --selection-aum when ImpactInSelection is set but SelectionAum is 0 (the documented inert no-op)' {
+        $argvZero = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -ImpactInSelection -SelectionAum 0.0
+        ($argvZero -contains '--selection-aum') | Should Be $false
     }
 
     It 'contains --require-split-stable' {

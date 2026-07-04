@@ -204,6 +204,59 @@ once they differ. Generation 0's population is identical between both configs (g
 determined, computed BEFORE any fitness is known), so it is the one rigorous apples-to-apples
 comparison point, and it is what the test asserts.
 
+**Bench table (p8 final-wave ledger reconciliation, ANALYTICAL — NOT a live discover run).**
+The sprint-5-wire-deflate-validate.md acceptance checklist asked for "the admitted-set size and
+mean `dsr` for {undeflated, cumulative-N at N=1, at N=100}" — this was never actually recorded.
+An executed measurement needs a real `Factory::mine_into` run over a real candidate population
+(`-Profile prod`'s pop 300 / gen 15 is an hour-long, operator-driven exercise the harness's own
+`.NOTES` explicitly forbid gating a sprint on); reproducing it here would mean either fabricating
+that run's numbers or actually spending the wall-clock, neither of which this final-wave pass
+does. Instead, the table below evaluates `eval::deflated_sharpe` DIRECTLY (the exact formula in
+`deflated_sharpe.hpp`, computed by hand off the header's own equations — not a mock) at `T=120`
+(the `real_signal_panel` fixture's date count), `skew=0`, `exkurt=0` (Gaussian baseline), over a
+representative synthetic population of 8 per-period Sharpes spanning weak to exceptional, against
+`min_dsr=0.5` (`kMinDsr`, the convention `factory_oos_test.cpp` already uses):
+
+| per-period SR | annualized SR | dsr @ N=1 | dsr @ N=100 | admit @ N=1 | admit @ N=100 |
+|---:|---:|---:|---:|:---:|:---:|
+| 0.04 | 0.63 | 0.6686 | 0.0186 | yes | no |
+| 0.08 | 1.27 | 0.8082 | 0.0496 | yes | no |
+| 0.12 | 1.90 | 0.9039 | 0.1121 | yes | no |
+| 0.16 | 2.54 | 0.9586 | 0.2160 | yes | no |
+| 0.20 | 3.17 | 0.9846 | 0.3595 | yes | no |
+| 0.25 | 3.97 | 0.9964 | 0.5657 | yes | yes |
+| 0.30 | 4.76 | 0.9993 | 0.7522 | yes | yes |
+| 0.40 | 6.35 | 1.0000 | 0.9534 | yes | yes |
+
+Admitted-set size + mean `dsr` (of the same 8-candidate population, `min_dsr=0.5`):
+
+| regime | admitted | mean dsr (admitted) | mean dsr (whole population) |
+|---|---:|---:|---:|
+| undeflated (no dsr floor, `min_dsr=0`) | 8 / 8 | n/a (bar off) | n/a |
+| cumulative-N at N=1 | 8 / 8 | 0.9150 | 0.9150 |
+| cumulative-N at N=100 | 3 / 8 | 0.7571 | 0.3784 |
+
+This is the concrete quantified S5-2 claim the sprint plan asked for: at `N=100` the SAME
+population that fully clears the bar at `N=1` DROPS 5 of 8 marginal candidates (only the
+annualized-SR 3.97/4.76/6.35 survivors clear `SR*_100 ≈ 0.19–0.34`), exactly the multiple-testing
+anti-snooping bite `prior_trial_count` is for — measured directly from the formula this session,
+honestly labeled as analytical rather than claiming an unexecuted live run's numbers.
+
+**Item 1 note (p8 final-wave):** at the time of the final whole-branch integration wave (all 5
+sprints committed), the default `dev` preset (`ATX_UNITY_BUILD=ON`) FAILED to build
+`atx-engine-factory-tests` — ~14 ODR redefinition/ambiguous-call errors: `factory_behavior_test.cpp`,
+`factory_cost_aware_fitness_test.cpp`, and `factory_nsga_search_test.cpp` each wrap file-local test
+helpers (`frictionless_sim`, `Lcg`, `make_panel`, ...) in an anonymous `namespace { ... }`, which
+gives each FILE internal linkage under normal one-TU-per-file compilation but — per
+[namespace.unnamed] — collapses into the SAME compiler-synthesized namespace once Unity batching
+concatenates the three files into one translation unit. The final wave fixed this by excluding
+those 3 files from Unity batching (`SKIP_UNITY_BUILD_INCLUSION`, `atx-engine/tests/CMakeLists.txt`)
+rather than touching any test's logic. This note does not assert how earlier S5 sub-sprint sessions
+built/tested (not verified retroactively); it records only that the DEFAULT preset was red at the
+final-wave checkpoint and is green after the fix, confirmed by a full rebuild of
+`atx-engine-factory-tests` + `atx-engine-library-tests` + `atx-impl`/`atx-impl-tests` under the
+unmodified default preset.
+
 ## S5-3 — NEW `eval/robustness_battery`: the admission-time robustness subsystem
 
 Greenfield: NEW `atx-engine/include/atx/engine/eval/robustness_battery.hpp` + `src/eval/

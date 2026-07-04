@@ -52,8 +52,11 @@
                               OPT-IN mega-book profile: --risk-model factor
                               --dead-alpha-factors --group-neutralize --metabook
                               --sleeve-method hrp --method stack
-                              --impact-in-selection --capacity-curve --min-dsr 0.5
-                              --max-pbo 0.5 --require-split-stable --blocking-pbo.
+                              --impact-in-selection --selection-aum <-SelectionAum,
+                              default $50M -- p8 final-wave: --impact-in-selection
+                              alone is a documented no-op, CostSelectionConfig
+                              contract> --capacity-curve --min-dsr 0.5 --max-pbo 0.5
+                              --require-split-stable --blocking-pbo.
                               Operator-driven; NOT run by this sprint (an
                               hour-long run is never a sprint gate).
 #>
@@ -76,7 +79,15 @@ param(
     # the p8 worktree's own build output so an operator who forgets -AtxExe
     # never silently invokes the main repo's (pre-S5) binary.
     [string]   $AtxExe      = 'C:\atx-wt\p8\build\bin\atx-impl.exe',
-    [double]   $CostBps     = 10
+    [double]   $CostBps     = 10,
+    # p8 final-wave (Item 5 honesty fix): --impact-in-selection is a NO-OP unless
+    # --selection-aum is ALSO > 0 (CostSelectionConfig's own contract: 0 == off
+    # regardless of the boolean flag). The prod profile passed --impact-in-
+    # selection alone for several sprints -- genuinely inert even after the
+    # engine-side wire landed. ILLUSTRATIVE default ($50M, matching the
+    # atx-engine fitness_cost_selection_test.cpp convention); an operator MUST
+    # override this for their book's actual target AUM.
+    [double]   $SelectionAum = 5.0e7
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,6 +110,12 @@ function New-DiscoverArgv {
         # the smoke profile (proving the CLI parses them without changing the
         # digest); the prod profile turns the opt-ins ON.
         [switch] $ImpactInSelection,
+        # --selection-aum: the companion --impact-in-selection needs to actually
+        # bite (0 == off regardless of the boolean flag -- CostSelectionConfig's
+        # own contract). Only emitted when ImpactInSelection is set AND this is
+        # > 0, so a caller that omits it (or passes 0) gets the documented inert
+        # no-op rather than a silently-dead --impact-in-selection.
+        [double] $SelectionAum = 0.0,
         [switch] $RequireSplitStable,
         [switch] $BlockingPbo,
         [double] $MinDsr = 0.0,
@@ -139,7 +156,10 @@ function New-DiscoverArgv {
         '--population',      [string]$Population,
         '--generations',     [string]$Generations
     ))
-    if ($ImpactInSelection)  { $argv.Add('--impact-in-selection') }
+    if ($ImpactInSelection)  {
+        $argv.Add('--impact-in-selection')
+        if ($SelectionAum -gt 0) { $argv.Add('--selection-aum'); $argv.Add([string]$SelectionAum) }
+    }
     if ($RequireSplitStable) { $argv.Add('--require-split-stable') }
     if ($BlockingPbo)        { $argv.Add('--blocking-pbo') }
     if ($Workers -gt 0)      { $argv.Add('--workers'); $argv.Add([string]$Workers) }
@@ -307,7 +327,8 @@ if ($MyInvocation.InvocationName -ne '.') {
                 if ($Profile -eq 'prod') {
                     $argv = New-DiscoverArgv -PanelBin $PanelBin -SeedFile $SeedFile -WorkDir $WorkDir `
                         -Workers $Workers -Population $effPopulation -Generations $effGenerations `
-                        -ImpactInSelection -RequireSplitStable -BlockingPbo -MinDsr 0.5 -MaxPbo 0.5
+                        -ImpactInSelection -SelectionAum $SelectionAum `
+                        -RequireSplitStable -BlockingPbo -MinDsr 0.5 -MaxPbo 0.5
                 } else {
                     $argv = New-DiscoverArgv -PanelBin $PanelBin -SeedFile $SeedFile -WorkDir $WorkDir `
                         -Workers $Workers -Population $effPopulation -Generations $effGenerations -LooseGates
