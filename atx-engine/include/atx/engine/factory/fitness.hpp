@@ -250,6 +250,38 @@ enum class Reduce : atx::u8 { Max, Mean };
                                      atx::f64 target_aum) noexcept;
 
 // =========================================================================
+//  capacity_sqrt_law_score — S4-1: the kObjCapacity NSGA column.
+//
+//  Sweeps a small log-spaced AUM grid centered on `target_aum` through the SAME
+//  cost model book_cost_bps already prices (cost::round_trip_cost_bps — the ONE
+//  cost surface), builds the (aum, net_edge_bps) curve using the candidate's OWN
+//  realized OOS PnL as the AUM-independent gross edge (1e4 * mean(strm.pnl(0)) —
+//  the SAME quantity risk::capacity.hpp's gross_edge_bps measures for a fitted
+//  book, just already computed by the WQ eval pipeline), and reduces it to a
+//  BOUNDED, FINITE [0,1) score via cost::capacity_point's zero-crossing AUM:
+//
+//      score = capacity_aum / (capacity_aum + target_aum)   (+inf capacity -> 1.0)
+//
+//  BOUNDED so it can never hand NSGA-II's crowding_distance (pareto.hpp) an
+//  unbounded/+inf objective — two genomes tied at a raw +inf capacity_aum would
+//  produce (+inf - +inf)/+inf == NaN in the crowding-distance gap term; this
+//  transform makes that structurally impossible (isinf is special-cased to a
+//  finite 1.0 before the ratio is ever formed).
+//
+//  target_aum <= 0 -> 0.0 (documented degenerate: no AUM anchor, matches
+//  book_cost_bps's own target_aum<=0 guard). PURE; NO RNG; bit-deterministic.
+//  Relies on book_cost_bps(aum) being monotone non-decreasing in aum for a FIXED
+//  weight vector (participation scales linearly with aum; round_trip_cost_bps is
+//  monotone non-decreasing in participation) -- an already-established property
+//  of the S4.3 cost module, not new math; capacity_point's own ATX_CHECK asserts
+//  it at runtime.
+// =========================================================================
+[[nodiscard]] atx::f64 capacity_sqrt_law_score(const alpha::AlphaStreams &strm,
+                                               const alpha::Panel &panel,
+                                               const cost::CalibratedCost &cost,
+                                               atx::f64 target_aum) noexcept;
+
+// =========================================================================
 //  FitnessReport — one candidate's scored result (plan §4.6 step 5).
 //
 //  wq            : OOS WorldQuant fitness, mean over CPCV TEST folds.

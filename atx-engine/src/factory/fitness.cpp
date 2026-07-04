@@ -12,6 +12,7 @@
 #include "atx/engine/alpha/vm.hpp"             // alpha::Engine
 #include "atx/engine/combine/correlation.hpp"  // combine::pairwise_complete_corr
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics, AlphaMetrics
+#include "atx/engine/cost/capacity.hpp"       // cost::capacity_point, risk::CapacityPoint (S4-1)
 #include "atx/engine/cost/cost_aware.hpp"      // cost::round_trip_cost_bps (S4.3 ONE cost model)
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis
@@ -561,6 +562,58 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     acc += abs_w * cost::round_trip_cost_bps(cost, part, sigma); // the ONE cost model
   }
   return acc;
+}
+
+namespace detail {
+// S4-1: log-spaced AUM grid, 1 decade either side of `center`, ascending.
+// Mirrors cost::compute_capacity_vector's grid-building CONVENTION
+// (cost/capacity.hpp:145-161) at a coarser resolution -- this objective only
+// needs to bracket the zero-crossing for GA selection pressure, not emit a
+// diagnostic-grade curve, so 8 points is ample and far cheaper per genome.
+inline constexpr atx::usize kCapacityObjGridPoints = 8U;
+
+[[nodiscard]] std::vector<atx::f64> capacity_obj_aum_grid(atx::f64 center) {
+  std::vector<atx::f64> grid;
+  grid.reserve(kCapacityObjGridPoints);
+  const atx::f64 log_lo = std::log(0.1 * center);
+  const atx::f64 log_hi = std::log(10.0 * center);
+  const atx::f64 denom = static_cast<atx::f64>(kCapacityObjGridPoints - 1U);
+  for (atx::usize k = 0U; k < kCapacityObjGridPoints; ++k) {
+    const atx::f64 frac = static_cast<atx::f64>(k) / denom;
+    grid.push_back(std::exp(log_lo + frac * (log_hi - log_lo)));
+  }
+  return grid;
+}
+} // namespace detail
+
+[[nodiscard]] atx::f64 capacity_sqrt_law_score(const alpha::AlphaStreams &strm,
+                                               const alpha::Panel &panel,
+                                               const cost::CalibratedCost &cost,
+                                               atx::f64 target_aum) noexcept {
+  if (target_aum <= 0.0 || strm.n_alphas() == 0U || strm.n_periods() == 0U) {
+    return 0.0; // no AUM anchor -> no capacity signal (mirrors book_cost_bps's guard)
+  }
+  const std::span<const atx::f64> pnl0 = strm.pnl(0U);
+  atx::f64 sum = 0.0;
+  for (const atx::f64 p : pnl0) {
+    sum += p;
+  }
+  const atx::f64 gross_edge_bps =
+      pnl0.empty() ? 0.0 : 1.0e4 * (sum / static_cast<atx::f64>(pnl0.size()));
+
+  const std::vector<atx::f64> grid = detail::capacity_obj_aum_grid(target_aum);
+  std::vector<risk::CapacityPoint> curve;
+  curve.reserve(grid.size());
+  for (const atx::f64 aum : grid) { // ascending -> capacity_point's monotonicity precondition
+    const atx::f64 cost_bps_at_aum = book_cost_bps(strm, panel, cost, aum); // the ONE cost model
+    curve.push_back(risk::CapacityPoint{aum, gross_edge_bps - cost_bps_at_aum});
+  }
+  const atx::f64 capacity_aum =
+      cost::capacity_point(std::span<const risk::CapacityPoint>{curve});
+  if (std::isinf(capacity_aum)) {
+    return 1.0; // ample capacity (never crosses zero on the grid) -> saturate
+  }
+  return capacity_aum / (capacity_aum + target_aum);
 }
 
 [[nodiscard]] atx::core::Result<FitnessReport>
