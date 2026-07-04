@@ -597,6 +597,9 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.max_pbo                   = cfg.max_pbo;                 // W4b run-level CSCV-PBO batch gate (off by default = 1.0)
     fcfg.blocking_pbo               = cfg.blocking_pbo;           // S5-2: escalate an advisory PBO breach to a fail-closed run (off by default)
     fcfg.robustness_battery         = cfg.robustness_battery;    // p8 final-wave Item 3: eval::RobustnessBattery noise-control at admission (off by default)
+    fcfg.robustness_sub_universe        = cfg.robustness_sub_universe;        // S5-3: sub_universe check (off by default)
+    fcfg.robustness_alt_neutralization  = cfg.robustness_alt_neutralization;  // S5-3: alt_neutralization check (off by default)
+    fcfg.robustness_param_perturb       = cfg.robustness_param_perturb;       // S5-3: param_perturbation check (off by default)
     fcfg.max_price_scale_corr      = cfg.max_price_scale_corr;   // R2 price-scale gate (off by default = 1.0)
     fcfg.dsr_subwindows = static_cast<atx::usize>(std::max<int>(cfg.dsr_subwindows, 0)); // R3 intra-holdout DSR sub-windows (off by default = 0)
     fcfg.search.deflate_selection  = cfg.deflate_selection; // R4: opt-in deflated-Sharpe search selection

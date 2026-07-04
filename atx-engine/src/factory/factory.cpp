@@ -1,9 +1,10 @@
 #include "atx/engine/factory/factory.hpp"
 
-#include <algorithm> // std::sort, std::max, std::min
+#include <algorithm> // std::sort, std::stable_sort, std::max, std::min
 #include <cmath>     // std::sqrt (P2a holdout DSR de-annualization)
 #include <cstddef>   // std::size_t (hash_combine seed type)
 #include <limits>    // std::numeric_limits (W4b run-level PBO sentinel)
+#include <numeric>   // std::iota (S5-3 liquidity-bucket ordering)
 #include <optional>  // std::nullopt (P2a deflated_sharpe variance arg)
 #include <span>      // std::span
 #include <utility>   // std::move (admitted provenance / streams)
@@ -24,7 +25,8 @@
 
 #include "atx/engine/library/record.hpp" // library::Provenance (admitted-alpha lineage)
 
-#include "atx/engine/factory/canonical.hpp" // factory::canonical_hash (F6 dedup key)
+#include "atx/engine/factory/canonical.hpp"    // factory::canonical_hash (F6 dedup key)
+#include "atx/engine/factory/param_search.hpp" // factory::extract_free_constants/instantiate/ParamSpace (S5-3 param_perturbation)
 
 #include "atx/engine/parallel/executor.hpp" // parallel::IExecutor, Substrate, SlotView (S7.5d seam)
 #include "atx/engine/parallel/workload_mine.hpp" // parallel::serialize_mine_input / MineGenomeResult (S7.5d)
@@ -168,7 +170,7 @@ void finalize_run_pbo(FactoryReport &rep,
   return atx::core::Ok();
 }
 
-// p8 final-wave (Item 3) — see the factory.hpp declaration for the full contract.
+// See the factory.hpp declaration for the full contract.
 [[nodiscard]] bool robustness_battery_passes(const Genome &cand, const alpha::Panel &panel,
                                              const PoolView &pool, const WeightPolicy &policy,
                                              const exec::ExecutionSimulator &sim,
@@ -193,18 +195,155 @@ void finalize_run_pbo(FactoryReport &rep,
   const atx::usize insts = panel.instruments();
   const atx::usize n_fields = panel.num_fields();
 
+  // S5-3: ADV proxy (sub_universe ranking) — the PER-INSTRUMENT (length == insts)
+  // mean of the "volume" field over all dates, NOT the flat dates*insts field
+  // (eval::RobustnessBattery's top_n_indices(inputs.adv, n) treats the returned
+  // indices as INSTRUMENT indices fed straight to sub_universe's keep-mask; a
+  // flat span would rank across mixed dates and silently misindex). Absent
+  // "volume" -> adv_col stays empty -> sub_universe/alt_neutralization both mark
+  // themselves inapplicable (graceful degrade), same as noise_control above.
+  std::vector<atx::f64> adv_col; // must outlive the reeval lambda below (captured by ref)
+  const auto vol_id = panel.field_id("volume");
+  if (vol_id.has_value()) {
+    const std::span<const atx::f64> vol_all = panel.field_all(*vol_id);
+    adv_col.assign(insts, 0.0);
+    for (atx::usize i = 0; i < insts; ++i) {
+      atx::f64 sum = 0.0;
+      atx::usize n = 0;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::f64 v = vol_all[t * insts + i];
+        if (std::isfinite(v)) {
+          sum += v;
+          ++n;
+        }
+      }
+      adv_col[i] = (n > 0U) ? (sum / static_cast<atx::f64>(n)) : 0.0; // guard div-by-zero
+    }
+    inputs.adv = std::span<const atx::f64>{adv_col};
+  }
+  // Neutralization group proxy (alt_neutralization): this admit site carries no
+  // true industry/GICS group_map (factory.hpp's own doc flags this gap).
+  // Documented, honest stand-in: a deterministic liquidity-QUANTILE bucket over
+  // the SAME per-instrument adv_col (kNBuckets buckets, ascending instrument
+  // order) -- NOT a fabricated industry taxonomy, a coarse but real, order-fixed
+  // grouping. Empty (and the check gracefully inapplicable) when volume is
+  // absent, same as adv.
+  std::vector<atx::u32> group_col; // must outlive the reeval lambda below (captured by ref)
+  if (vol_id.has_value()) {
+    constexpr atx::usize kNBuckets = 5;
+    std::vector<atx::usize> order(insts);
+    std::iota(order.begin(), order.end(), atx::usize{0});
+    std::stable_sort(order.begin(), order.end(),
+                     [&](atx::usize a, atx::usize b) { return adv_col[a] < adv_col[b]; });
+    group_col.assign(insts, 0U);
+    for (atx::usize r = 0; r < insts; ++r) {
+      const atx::usize bucket = (r * kNBuckets) / std::max<atx::usize>(insts, 1);
+      group_col[order[r]] = static_cast<atx::u32>(std::min(bucket, kNBuckets - 1));
+    }
+    inputs.group_id = std::span<const atx::u32>{group_col};
+  }
+
   const eval::Reevaluator reeval =
       [&](const eval::RobustnessScenario &sc) -> atx::core::Result<atx::f64> {
+    if (sc.kind == eval::ScenarioKind::ParamPerturbation) {
+      // S5-3: a genuine caller over existing building blocks -- extract_free_
+      // constants gives the candidate's free Window/Scale/Hparam literals
+      // (param_search.hpp), each dim's CURRENT value is the Ast's Literal
+      // payload, instantiate rebuilds the genome at the jittered point. A 0-dim
+      // space (no free constant) has nothing to jitter -- every draw reproduces
+      // the SAME candidate, so the resulting edge is constant across draws
+      // (CV == 0, an honest "no knife-edge risk because there is no free
+      // parameter" pass, not a special case to detect).
+      const ParamSpace space = extract_free_constants(cand);
+      std::vector<atx::f64> x(space.dims());
+      for (atx::usize k = 0; k < space.dims(); ++k) {
+        x[k] = cand.ast.node(space.dim[k].id).value * sc.param_scale;
+      }
+      ATX_TRY(Genome jittered, instantiate(cand, space, x));
+      ATX_TRY(const FitnessReport fit,
+             pool_aware_fitness(jittered, pool, panel, policy, sim, admit_fit));
+      return atx::core::Ok(fit.dsr);
+    }
+    if (sc.kind == eval::ScenarioKind::SubUniverse) {
+      // Rebuild `panel` with every field copied verbatim; the universe mask is
+      // narrowed to sc.keep_instruments (the TOP-N-by-ADV subset) ANDed with the
+      // panel's own existing mask -- an excluded instrument is walled off from
+      // every date, not merely relabeled.
+      std::vector<std::string> fields;
+      std::vector<std::vector<atx::f64>> cols;
+      fields.reserve(n_fields);
+      cols.reserve(n_fields);
+      for (atx::usize f = 0; f < n_fields; ++f) {
+        fields.emplace_back(panel.field_name(f));
+        const std::span<const atx::f64> col = panel.field_all(static_cast<alpha::FieldId>(f));
+        cols.emplace_back(col.begin(), col.end());
+      }
+      std::vector<std::uint8_t> keep(insts, 0U);
+      for (const atx::usize i : sc.keep_instruments) {
+        if (i < insts) {
+          keep[i] = 1U;
+        }
+      }
+      std::vector<std::uint8_t> universe(dates * insts);
+      for (atx::usize t = 0; t < dates; ++t) {
+        for (atx::usize i = 0; i < insts; ++i) {
+          universe[t * insts + i] =
+              (panel.in_universe(static_cast<alpha::DateIdx>(t), i) && keep[i]) ? 1U : 0U;
+        }
+      }
+      ATX_TRY(alpha::Panel alt_panel,
+             alpha::Panel::create(dates, insts, std::move(fields), std::move(cols),
+                                  std::move(universe)));
+      ATX_TRY(const FitnessReport fit,
+             pool_aware_fitness(cand, pool, alt_panel, policy, sim, admit_fit));
+      return atx::core::Ok(fit.dsr);
+    }
+    if (sc.kind == eval::ScenarioKind::AltNeutralization && vol_id.has_value()) {
+      // Re-label the SAME liquidity-bucket field CandidateInputs.group_id was
+      // built from with the battery's seeded permutation, injected as a synthetic
+      // panel field a group-neutralizing wrapper op (mutation.hpp's
+      // wrap_group_neutralize/wrap_indneutralize) can read. A candidate whose
+      // DSL never groups by it is UNAFFECTED (pool_aware_fitness returns the same
+      // edge) -- correctly reported as "not group-dependent", not a defect.
+      std::vector<std::string> fields;
+      std::vector<std::vector<atx::f64>> cols;
+      fields.reserve(n_fields + 1);
+      cols.reserve(n_fields + 1);
+      for (atx::usize f = 0; f < n_fields; ++f) {
+        fields.emplace_back(panel.field_name(f));
+        const std::span<const atx::f64> col = panel.field_all(static_cast<alpha::FieldId>(f));
+        cols.emplace_back(col.begin(), col.end());
+      }
+      fields.emplace_back("__s5_group");
+      std::vector<atx::f64> grp_col(dates * insts, 0.0);
+      for (atx::usize t = 0; t < dates; ++t) {
+        for (atx::usize i = 0; i < insts; ++i) {
+          grp_col[t * insts + i] =
+              (i < sc.alt_group_id.size()) ? static_cast<atx::f64>(sc.alt_group_id[i]) : 0.0;
+        }
+      }
+      cols.push_back(std::move(grp_col));
+      std::vector<std::uint8_t> universe(dates * insts);
+      for (atx::usize t = 0; t < dates; ++t) {
+        for (atx::usize i = 0; i < insts; ++i) {
+          universe[t * insts + i] =
+              panel.in_universe(static_cast<alpha::DateIdx>(t), i) ? 1U : 0U;
+        }
+      }
+      ATX_TRY(alpha::Panel alt_panel,
+             alpha::Panel::create(dates, insts, std::move(fields), std::move(cols),
+                                  std::move(universe)));
+      ATX_TRY(const FitnessReport fit,
+             pool_aware_fitness(cand, pool, alt_panel, policy, sim, admit_fit));
+      return atx::core::Ok(fit.dsr);
+    }
     if (sc.kind != eval::ScenarioKind::NoiseControl || !close_id.has_value()) {
-      // Only noise_control is wired this wave (FactoryConfig::robustness_battery's
-      // BatteryConfig only ever enables noise_control, so the kind branch is never
-      // actually reached in production -- defensive, not load-bearing). The
-      // close_id guard is likewise unreachable in practice: RobustnessBattery
-      // never calls reeval(NoiseControl) when inputs.input_values is empty, which
-      // is exactly the !close_id.has_value() case above -- defensive belt-and-
-      // braces so this function can never dereference an empty Result.
+      // close_id guard: RobustnessBattery never calls reeval(NoiseControl) when
+      // inputs.input_values is empty (exactly the !close_id.has_value() case) --
+      // defensive belt-and-braces so this function can never dereference an
+      // empty Result.
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            "robustness_battery_passes: scenario not supported this wave");
+                            "robustness_battery_passes: scenario not supported");
     }
     // Rebuild every field of `panel` verbatim, replacing ONLY "close" with the
     // battery's seeded permutation (same dates/instruments/universe shape --
@@ -519,7 +658,10 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     // deterministic and reproducible per run, never thread/time.
     eval::BatteryConfig battery_cfg;
     if (cfg.robustness_battery) {
-      battery_cfg.noise_control = true; // scoped partial this wave -- see FactoryConfig's doc
+      battery_cfg.noise_control = true;
+      battery_cfg.sub_universe = cfg.robustness_sub_universe;             // S5-3
+      battery_cfg.alt_neutralization = cfg.robustness_alt_neutralization; // S5-3
+      battery_cfg.param_perturbation = cfg.robustness_param_perturb;      // S5-3
       battery_cfg.seed = res.seed ^ 0x526F627573742121ULL;
     }
     const bool robustness_ok = detail::robustness_battery_passes(
@@ -1183,7 +1325,9 @@ namespace {
 // header for the full effects contract.
 [[nodiscard]] atx::core::Result<void> Factory::admit_on_holdout(
     const Genome &cand, const alpha::Panel &holdout_panel, const FitnessCfg &admit_fit,
-    const bool robustness_battery, const atx::u64 run_seed, const atx::f64 hold_dsr,
+    const bool robustness_battery, const bool robustness_sub_universe,
+    const bool robustness_alt_neutralization, const bool robustness_param_perturb,
+    const atx::u64 run_seed, const atx::f64 hold_dsr,
     const bool price_scale_ok, const bool subwindows_ok, const bool split_ok,
     const atx::f64 min_dsr, const atx::u64 canon_hash, const std::span<const atx::f64> hold_pnl,
     const std::span<const atx::f64> hold_pos_flat, const combine::AlphaMetrics &hold_metrics,
@@ -1206,7 +1350,10 @@ namespace {
   // holdout edge -> base_edge.
   eval::BatteryConfig battery_cfg;
   if (robustness_battery) {
-    battery_cfg.noise_control = true; // scoped partial this wave -- see FactoryConfig's doc
+    battery_cfg.noise_control = true;
+    battery_cfg.sub_universe = robustness_sub_universe;             // S5-3
+    battery_cfg.alt_neutralization = robustness_alt_neutralization; // S5-3
+    battery_cfg.param_perturbation = robustness_param_perturb;      // S5-3
     battery_cfg.seed = run_seed ^ 0x526F627573742121ULL;
   }
   const LibraryPool holdout_pool_view{lib_lib};
@@ -1628,10 +1775,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     // res.seed thread the eval::RobustnessBattery noise-control check into the
     // ladder, mirroring the non-OOS mine_into admit site exactly.
     ATX_TRY_VOID(admit_on_holdout(
-        g, holdout, admit_fit, cfg.robustness_battery, res.seed, hold_dsr, price_scale_ok,
-        subwindows_ok, split_ok, cfg.min_dsr, canon_hash, std::span<const atx::f64>{hold_pnl},
-        std::span<const atx::f64>{hold_pos_flat}, hold_metrics, train_metrics, std::move(prov),
-        rep, lib_lib, gate, admitted_pnls));
+        g, holdout, admit_fit, cfg.robustness_battery, cfg.robustness_sub_universe,
+        cfg.robustness_alt_neutralization, cfg.robustness_param_perturb, res.seed, hold_dsr,
+        price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
+        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat},
+        hold_metrics, train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set. PURE /
@@ -2023,10 +2171,11 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     // ladder — the SAME shared helper the serial mine_into_oos calls, so this path
     // gets the battery for free, byte-identically, by construction.
     ATX_TRY_VOID(admit_on_holdout(
-        g, holdout, admit_fit, cfg.robustness_battery, res.seed, hold_dsr, price_scale_ok,
-        subwindows_ok, split_ok, cfg.min_dsr, canon_hash, std::span<const atx::f64>{hold_pnl},
-        std::span<const atx::f64>{hold_pos_flat}, hold_metrics, train_metrics, std::move(prov),
-        rep, lib_lib, gate, admitted_pnls));
+        g, holdout, admit_fit, cfg.robustness_battery, cfg.robustness_sub_universe,
+        cfg.robustness_alt_neutralization, cfg.robustness_param_perturb, res.seed, hold_dsr,
+        price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
+        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat},
+        hold_metrics, train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set, accumulated
