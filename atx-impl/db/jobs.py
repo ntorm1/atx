@@ -35,6 +35,7 @@ from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptio
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .segments import SegmentDataset, SegmentOptions
 from .footnotes import FootnoteDataset, FootnoteOptions
+from .press_release import PressReleaseDataset, PressReleaseOptions
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
 from .short_volume import FinraShortVolumeDataset, FinraShortVolumeOptions, ShortVolumeMetricsDataset
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
@@ -351,6 +352,20 @@ def _estimate_guidance_options(params: dict[str, Any]) -> EstimateGuidanceOption
         source=params.get("source") or default.source,
         replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
         min_confidence=float(params.get("min_confidence", default.min_confidence)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _press_release_options(params: dict[str, Any]) -> PressReleaseOptions:
+    default = PressReleaseOptions()
+    return PressReleaseOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source=params.get("source") or default.source,
+        replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
+        min_confidence=float(params.get("min_confidence", default.min_confidence)),
+        reconciliation_tolerance=float(
+            params.get("reconciliation_tolerance", default.reconciliation_tolerance)
+        ),
         run_id=params.get("run_id") or default.run_id,
     )
 
@@ -1064,6 +1079,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         EstimateGuidanceDataset,
         _estimate_guidance_options,
     ),
+    PressReleaseDataset.dataset_id: (
+        PressReleaseDataset,
+        _press_release_options,
+    ),
     EstimateRecommendationDataset.dataset_id: (
         EstimateRecommendationDataset,
         _estimate_recommendation_options,
@@ -1110,6 +1129,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "identifier_resolution_decisions",
     ),
     "est_surprise": ("est_actual", "est_consensus"),
+    "press_release_facts": ("est_actual",),
     "finra_short_interest": ("sec_security_master",),
     "finra_short_interest_features": ("finra_short_interest",),
     "finra_short_volume": ("sec_security_master",),
@@ -1836,6 +1856,12 @@ class JobManager:
             dataset_id="est_surprise",
             # est_consensus is default-empty but runs first when configured so surprise can use it.
             dependencies=["est_actual", "est_consensus"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="press_release_facts",
+            dataset_id="press_release_facts",
+            dependencies=["est_actual"],
             **retry_policy,
         )
         self.register_job(job_name="est_detail", dataset_id="est_detail", **retry_policy)

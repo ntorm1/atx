@@ -153,6 +153,16 @@ from .footnotes import (
     refresh_footnotes,
     run_footnote_refresh,
 )
+from .press_release import (
+    PressReleaseDataset,
+    PressReleaseOptions,
+    normalize_press_release_rows,
+    press_release_coverage,
+    press_release_facts_asof,
+    refresh_press_release_facts,
+    refresh_press_release_reconciliation,
+    run_press_release_refresh,
+)
 from .fundamental_xbrl_metrics import (
     CONCEPT_MAP,
     FundamentalXbrlMetricDataset,

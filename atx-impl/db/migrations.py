@@ -9667,6 +9667,247 @@ def _segment_footnote_coverage_schema_catalog(conn: duckdb.DuckDBPyConnection) -
     _schema_contract_schema_catalog(conn)
 
 
+def _press_release_facts_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S8 S8-0: preliminary 8-K Item 2.02 press-release facts."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS press_release_facts (
+            press_release_fact_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR,
+            form VARCHAR,
+            source_item VARCHAR NOT NULL,
+            source_url VARCHAR,
+            measure_code VARCHAR NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            fiscal_period VARCHAR NOT NULL,
+            period_end DATE NOT NULL,
+            value DOUBLE NOT NULL,
+            unit VARCHAR,
+            basis VARCHAR NOT NULL,
+            is_preliminary BOOLEAN NOT NULL DEFAULT true,
+            extraction_confidence DOUBLE NOT NULL,
+            evidence_text VARCHAR,
+            source_file VARCHAR,
+            source_file_sha256 VARCHAR,
+            filing_date DATE,
+            release_date DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            input_codes_json VARCHAR NOT NULL,
+            raw_payload_json VARCHAR,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'press_release_facts',
+            'atx_warehouse',
+            'Preliminary earnings press-release facts',
+            'Revenue, EPS, operating-income, and net-income facts extracted from 8-K Item 2.02 / EX-99 earnings-release text before final 10-Q/K statements arrive.',
+            'security_id,measure_code,fiscal_period,press_release',
+            'press_release_facts',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'press_release_facts',
+            'gold',
+            'press_release_fact',
+            'source,security_id,measure_code,fiscal_year,fiscal_period,accession_number,basis',
+            'Preliminary earnings figures mined from 8-K Item 2.02 / EX-99 text with evidence, confidence, source file hash, and PIT availability timestamp.',
+            '["press_release_fact_id"]',
+            'available_at is the release/acceptance timestamp; preliminary rows remain immutable and visible only when available_at <= the as-of timestamp.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("press_release_facts",))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_press_release_fact_key ON press_release_facts(source, security_id, measure_code, period_end, basis)",
+        "CREATE INDEX IF NOT EXISTS idx_press_release_fact_pit ON press_release_facts(is_latest_revision, as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_press_release_fact_file ON press_release_facts(source, source_file_sha256)",
+    ):
+        conn.execute(statement)
+    _schema_contract_schema_catalog(conn)
+
+
+def _press_release_reconciliation_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S8 S8-1: preliminary-to-final reconciliation and pdate/rdq surface."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS press_release_reconciliation (
+            press_release_reconciliation_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            press_release_fact_id VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR,
+            measure_code VARCHAR NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            fiscal_period VARCHAR NOT NULL,
+            period_end DATE NOT NULL,
+            basis VARCHAR NOT NULL,
+            preliminary_value DOUBLE NOT NULL,
+            preliminary_available_at TIMESTAMP NOT NULL,
+            final_actual_value DOUBLE,
+            final_actual_available_at TIMESTAMP,
+            final_actual_accession_number VARCHAR,
+            value_difference DOUBLE,
+            relative_difference DOUBLE,
+            reconciliation_tolerance DOUBLE NOT NULL DEFAULT 0.02,
+            reconciliation_status VARCHAR NOT NULL,
+            pdate DATE,
+            rdq DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'press_release_reconciliation',
+            'atx_warehouse',
+            'Press-release preliminary-to-final reconciliation',
+            'Reconciles preliminary earnings-release facts to final reported estimate actuals while retaining both vintages and exposing pdate/rdq flash dates.',
+            'press_release_fact_id',
+            'press_release_reconciliation',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'press_release_reconciliation',
+            'gold',
+            'press_release_reconciliation',
+            'source,press_release_fact_id',
+            'Preliminary-to-final reconciliation rows linking press_release_facts to final est_actual values when available, with matched/pending/divergent status and flash-date propagation fields.',
+            '["press_release_reconciliation_id"]',
+            'available_at is the final actual timestamp when matched, otherwise the preliminary release timestamp; this prevents final-match knowledge before final reporting.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("press_release_reconciliation",))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_press_release_recon_key ON press_release_reconciliation(source, security_id, measure_code, period_end, basis)",
+        "CREATE INDEX IF NOT EXISTS idx_press_release_recon_status ON press_release_reconciliation(source, reconciliation_status, is_latest_revision)",
+        "CREATE INDEX IF NOT EXISTS idx_press_release_recon_pit ON press_release_reconciliation(is_latest_revision, as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+    _schema_contract_schema_catalog(conn)
+
+
+def _estimate_actual_surprise_basis_extensions(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S8 S8-2/S8-3: basis tags for actuals and basis-aware surprises."""
+
+    existing_tables = {
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE schema_name = 'main'
+              AND coalesce(internal, false) = false
+            """
+        ).fetchall()
+    }
+    if not {"est_actual", "est_consensus", "est_surprise"}.issubset(existing_tables):
+        _estimates(conn)
+    # DuckDB blocks ALTER TABLE on est_surprise while the secondary index exists.
+    # Recreating it in this same legacy-forward transaction can trip DuckDB's
+    # BoundIndex delta-index assertion, so this migration keeps the schema change
+    # primary and lets future/index maintenance handle secondary index recreation.
+    conn.execute("DROP INDEX IF EXISTS idx_est_surprise_key")
+    for statement in (
+        "ALTER TABLE est_actual ADD COLUMN IF NOT EXISTS basis VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS basis VARCHAR",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS is_gaap BOOLEAN",
+        "ALTER TABLE est_surprise ADD COLUMN IF NOT EXISTS actual_basis VARCHAR",
+        "ALTER TABLE est_surprise ADD COLUMN IF NOT EXISTS consensus_basis VARCHAR",
+        "ALTER TABLE est_surprise ADD COLUMN IF NOT EXISTS basis_mismatch BOOLEAN DEFAULT false",
+    ):
+        conn.execute(statement)
+    conn.execute("UPDATE est_actual SET basis = 'GAAP' WHERE basis IS NULL OR basis = ''")
+    conn.execute("UPDATE est_surprise SET actual_basis = 'GAAP' WHERE actual_basis IS NULL OR actual_basis = ''")
+    conn.execute("UPDATE est_surprise SET basis_mismatch = false WHERE basis_mismatch IS NULL")
+    _catalog_fields_for_tables(conn, ("est_actual", "est_consensus", "est_surprise"))
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Actual value basis tag. SEC companyfacts rows are GAAP; preliminary/non-GAAP rows must be explicitly tagged before surprise matching.'
+        WHERE table_name = 'est_actual'
+          AND field_name = 'basis'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Actual basis used for surprise computation; compared to consensus_basis before surprise_pct is populated.'
+        WHERE table_name = 'est_surprise'
+          AND field_name = 'actual_basis'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Consensus basis selected for surprise_pct comparison. Untagged legacy consensus inherits the actual basis for backward-compatible arithmetic.'
+        WHERE table_name = 'est_surprise'
+          AND field_name = 'consensus_basis'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'True when actual_basis and consensus_basis are both present and different; surprise_pct is NULL in that case.'
+        WHERE table_name = 'est_surprise'
+          AND field_name = 'basis_mismatch'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -10193,6 +10434,21 @@ MIGRATIONS: list[Migration] = [
         version=120,
         name="segment_footnote_coverage_schema_catalog",
         up=_segment_footnote_coverage_schema_catalog,
+    ),
+    Migration(
+        version=121,
+        name="press_release_facts_schema_catalog",
+        up=_press_release_facts_schema_catalog,
+    ),
+    Migration(
+        version=122,
+        name="press_release_reconciliation_schema_catalog",
+        up=_press_release_reconciliation_schema_catalog,
+    ),
+    Migration(
+        version=123,
+        name="estimate_actual_surprise_basis_extensions",
+        up=_estimate_actual_surprise_basis_extensions,
     ),
 ]
 

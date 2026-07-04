@@ -5100,6 +5100,22 @@ def _check_specs(
         SqlQualityCheck(
             dataset_id="est_actual",
             table_name="est_actual",
+            check_name="est_actual_eps_missing_basis",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_actual
+                WHERE measure_code LIKE 'EPS%'
+                  AND (basis IS NULL OR basis = '')
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_actual",),
+            warn_if_missing=True,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="est_actual",
+            table_name="est_actual",
             check_name="est_actual_duplicate_key",
             sql="""
                 SELECT count(*)::DOUBLE
@@ -5610,6 +5626,81 @@ def _check_specs(
             comparator="eq",
             required_tables=("est_surprise",),
             warn_if_missing=True,
+        ),
+        SqlQualityCheck(
+            dataset_id="est_surprise",
+            table_name="est_surprise",
+            check_name="est_surprise_basis_mismatch_pct_null",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM est_surprise
+                WHERE coalesce(basis_mismatch, false)
+                  AND surprise_pct IS NOT NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("est_surprise",),
+            warn_if_missing=True,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="press_release_facts",
+            table_name="press_release_facts",
+            check_name="bad_press_release_fact_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM press_release_facts
+                WHERE security_id IS NULL
+                   OR measure_code IS NULL
+                   OR fiscal_period NOT IN ('Q1','Q2','Q3','Q4','FY')
+                   OR period_end IS NULL
+                   OR value IS NULL
+                   OR available_at IS NULL
+                   OR basis IS NULL
+                   OR basis = ''
+                   OR extraction_confidence IS NULL
+                   OR extraction_confidence < 0
+                   OR extraction_confidence > 1
+                   OR source_item NOT LIKE '%2.02%'
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("press_release_facts",),
+            warn_if_missing=True,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="press_release_facts",
+            table_name="press_release_facts",
+            check_name="press_release_no_lookahead",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM press_release_facts
+                WHERE release_date IS NOT NULL
+                  AND CAST(available_at AS DATE) < release_date
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("press_release_facts",),
+            warn_if_missing=True,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="press_release_reconciliation",
+            table_name="press_release_reconciliation",
+            check_name="press_release_preliminary_vintage_retained",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM press_release_reconciliation r
+                LEFT JOIN press_release_facts pr
+                  ON pr.press_release_fact_id = r.press_release_fact_id
+                WHERE pr.press_release_fact_id IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("press_release_reconciliation", "press_release_facts"),
+            warn_if_missing=True,
+            severity="critical",
         ),
         SqlQualityCheck(
             dataset_id="fundamental_statement_map",

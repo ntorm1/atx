@@ -271,6 +271,7 @@ class EstimateActualsDataset(Dataset):
                 f.period_end,
                 f.value,
                 f.unit,
+                'GAAP'          AS basis,
                 f.form,
                 f.accession_number,
                 f.filed_date        AS announce_date,
@@ -324,12 +325,12 @@ class EstimateActualsDataset(Dataset):
                 """
                 INSERT OR REPLACE INTO est_actual (
                     security_id, measure_code, fiscal_year, fiscal_period,
-                    period_end, value, unit, form, accession_number,
+                    period_end, value, unit, basis, form, accession_number,
                     announce_date, as_of_date, available_at, run_id, source
                 )
                 SELECT
                     security_id, measure_code, fiscal_year, fiscal_period,
-                    period_end, value, unit, form, accession_number,
+                    period_end, value, unit, basis, form, accession_number,
                     announce_date, as_of_date, available_at, run_id, source
                 FROM _est_actual_batch
                 """
@@ -367,6 +368,15 @@ class EstimateSurpriseOptions:
     min_obs: int = 4
     model: str = "srw_drift"
     run_id: str | None = None
+
+
+def _normalize_basis_tag(value: Any, *, default: str | None = None) -> str | None:
+    if value is None or pd.isna(value) or not str(value).strip():
+        return default
+    normalized = str(value).strip().upper().replace("-", "_").replace(" ", "_")
+    if normalized in {"NONGAAP", "NON_GAAP", "ADJUSTED"}:
+        return "NON_GAAP"
+    return normalized
 
 
 def _compute_sue_series(
@@ -436,6 +446,7 @@ def _compute_sue_series(
                 "fiscal_period": fp,
                 "period_end": period_end_t,
                 "actual": actual_t,
+                "actual_basis": _normalize_basis_tag(row.get("basis"), default="GAAP"),
                 "expected": None,
                 "surprise": None,
                 "sue": None,
@@ -471,6 +482,7 @@ def _compute_sue_series(
             "fiscal_period": fp,
             "period_end": period_end_t,
             "actual": actual_t,
+            "actual_basis": _normalize_basis_tag(row.get("basis"), default="GAAP"),
             "expected": expected,
             "surprise": surprise,
             "sue": sue,
@@ -508,6 +520,7 @@ class EstimateSurpriseDataset(Dataset):
                 fiscal_period,
                 period_end,
                 value          AS actual,
+                coalesce(nullif(basis, ''), 'GAAP') AS basis,
                 available_at,
                 row_number() OVER (
                     PARTITION BY security_id, measure_code, fiscal_year, fiscal_period
@@ -519,7 +532,7 @@ class EstimateSurpriseDataset(Dataset):
               {measure_filter}
         )
         SELECT security_id, measure_code, fiscal_year, fiscal_period,
-               period_end, actual, available_at
+               period_end, actual, basis, available_at
         FROM ranked
         WHERE rn = 1
         -- Per-series chronological order is re-established in Python (sort_values +
@@ -542,7 +555,8 @@ class EstimateSurpriseDataset(Dataset):
             consensus_df = store.con.execute(
                 """
                 SELECT security_id, measure_code, period_end, mean AS consensus_mean,
-                       available_at AS consensus_available_at
+                       available_at AS consensus_available_at,
+                       basis AS consensus_basis
                 FROM est_consensus
                 WHERE mean IS NOT NULL
                 """
@@ -578,6 +592,8 @@ class EstimateSurpriseDataset(Dataset):
                     r["source"] = self.source_name
                     r["run_id"] = options.run_id
                     r["consensus_mean"] = None
+                    r["consensus_basis"] = None
+                    r["basis_mismatch"] = False
                     r["surprise_pct"] = None
                     all_rows.append(r)
 
@@ -590,41 +606,89 @@ class EstimateSurpriseDataset(Dataset):
             )
 
         out_df = pd.DataFrame(all_rows)
+        out_df["actual_basis"] = out_df["actual_basis"].map(lambda value: _normalize_basis_tag(value, default="GAAP"))
 
         # Enrich with consensus if available
         if has_consensus and not consensus_df.empty:
-            # For each surprise row, find consensus where consensus_available_at <= actual.available_at
-            # We do this with a merge then filter
+            out_df["_surprise_row_id"] = range(len(out_df))
             merged = out_df.merge(
                 consensus_df,
                 on=["security_id", "measure_code", "period_end"],
                 how="left",
             )
-            mask = (
+            visible = (
                 merged["consensus_available_at"].notna()
                 & merged["available_at"].notna()
                 & (merged["consensus_available_at"] <= merged["available_at"])
             )
-            merged.loc[mask, "consensus_mean"] = merged.loc[mask, "consensus_mean_y"]
-            # surprise_pct = (actual - consensus_mean) / abs(consensus_mean)
-            valid_pct = mask & merged["consensus_mean"].notna() & (merged["consensus_mean"] != 0)
-            merged.loc[valid_pct, "surprise_pct"] = (
-                (merged.loc[valid_pct, "actual"] - merged.loc[valid_pct, "consensus_mean"])
-                / merged.loc[valid_pct, "consensus_mean"].abs()
+            merged["_visible_consensus"] = visible
+            merged["_actual_basis_norm"] = merged["actual_basis"].map(
+                lambda value: _normalize_basis_tag(value, default="GAAP")
             )
-            # Keep only the columns we need
+            merged["_consensus_basis_norm"] = [
+                _normalize_basis_tag(consensus_basis, default=actual_basis)
+                for consensus_basis, actual_basis in zip(
+                    merged["consensus_basis_y"],
+                    merged["_actual_basis_norm"],
+                )
+            ]
+            merged["_basis_match"] = (
+                merged["_visible_consensus"]
+                & merged["_actual_basis_norm"].notna()
+                & merged["_consensus_basis_norm"].notna()
+                & (merged["_actual_basis_norm"] == merged["_consensus_basis_norm"])
+            )
+            merged = merged.sort_values(
+                by=[
+                    "_surprise_row_id",
+                    "_visible_consensus",
+                    "_basis_match",
+                    "consensus_available_at",
+                ],
+                ascending=[True, False, False, False],
+                na_position="last",
+            )
+            best = merged.drop_duplicates(subset=["_surprise_row_id"], keep="first").copy()
+            best["consensus_mean"] = best["consensus_mean_x"]
+            best.loc[best["_visible_consensus"], "consensus_mean"] = best.loc[
+                best["_visible_consensus"], "consensus_mean_y"
+            ]
+            best["actual_basis"] = best["_actual_basis_norm"]
+            best["consensus_basis"] = None
+            best.loc[best["_visible_consensus"], "consensus_basis"] = best.loc[
+                best["_visible_consensus"], "_consensus_basis_norm"
+            ]
+            best["basis_mismatch"] = (
+                best["_visible_consensus"]
+                & best["actual_basis"].notna()
+                & best["consensus_basis"].notna()
+                & (best["actual_basis"] != best["consensus_basis"])
+            )
+            valid_pct = (
+                best["_visible_consensus"]
+                & ~best["basis_mismatch"]
+                & best["consensus_mean"].notna()
+                & (best["consensus_mean"] != 0)
+            )
+            best.loc[valid_pct, "surprise_pct"] = (
+                (best.loc[valid_pct, "actual"] - best.loc[valid_pct, "consensus_mean"])
+                / best.loc[valid_pct, "consensus_mean"].abs()
+            )
+            best.loc[best["basis_mismatch"], "surprise_pct"] = None
             cols = [
                 "security_id", "measure_code", "fiscal_year", "fiscal_period",
                 "period_end", "actual", "expected", "surprise", "sue",
-                "consensus_mean", "surprise_pct", "model",
+                "consensus_mean", "surprise_pct", "actual_basis",
+                "consensus_basis", "basis_mismatch", "model",
                 "as_of_date", "available_at", "run_id", "source",
             ]
-            out_df = merged[cols].copy()
+            out_df = best[cols].copy()
         else:
             out_df = out_df[[
                 "security_id", "measure_code", "fiscal_year", "fiscal_period",
                 "period_end", "actual", "expected", "surprise", "sue",
-                "consensus_mean", "surprise_pct", "model",
+                "consensus_mean", "surprise_pct", "actual_basis",
+                "consensus_basis", "basis_mismatch", "model",
                 "as_of_date", "available_at", "run_id", "source",
             ]]
 
@@ -635,13 +699,15 @@ class EstimateSurpriseDataset(Dataset):
                 INSERT OR REPLACE INTO est_surprise (
                     security_id, measure_code, fiscal_year, fiscal_period,
                     period_end, actual, expected, surprise, sue,
-                    consensus_mean, surprise_pct, model,
+                    consensus_mean, surprise_pct, actual_basis,
+                    consensus_basis, basis_mismatch, model,
                     as_of_date, available_at, run_id, source
                 )
                 SELECT
                     security_id, measure_code, fiscal_year, fiscal_period,
                     period_end, actual, expected, surprise, sue,
-                    consensus_mean, surprise_pct, model,
+                    consensus_mean, surprise_pct, actual_basis,
+                    consensus_basis, basis_mismatch, model,
                     as_of_date, available_at, run_id, source
                 FROM _est_surprise_batch
                 """
