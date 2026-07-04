@@ -392,6 +392,30 @@ struct RunConfig {
     // build). false (default) = full rebuild, byte-identical to today.
     bool incremental_panel = false;
 
+    // --gp-trading / --gp-risk-aversion / --gp-trade-cost-scale (p9 S3): opt-in
+    // Gârleanu-Pedersen aim-portfolio trade for the position-mode partial-step
+    // (stage_optimize.cpp's "5a" branch). false (default) leaves the existing
+    // linear trade_rate blend (w := prev + trade_rate*(target-prev)) untouched --
+    // the no-flag path is byte-identical. When true, the partial-trade step
+    // instead trades toward the GP AIM (risk::gp_turnover_native_step), computed
+    // from risk::gp_aim_and_value(alpha_bar, V, gp_risk_aversion) over a single
+    // whole-panel Diagonal risk model V built once for the run (see
+    // stage_optimize.cpp's gp_trading block; independent of --risk-model, which
+    // remains an MVO-branch-only concern owned by S1/S2). gp_risk_aversion=0.0
+    // (inert default) is gp_aim_and_value's own documented lambda==0 convention
+    // (aim_pos == alpha_bar, no risk-curvature fold -- a valid, if aggressive, GP
+    // setting, NOT an error; unlike the nearby risk_aversion field, this one is
+    // read RAW, with no set_flags-gated substitution). gp_trade_cost_scale=0.0
+    // (inert default) leaves the effective GP trade rate kappa == cfg.trade_rate
+    // unchanged; kappa = trade_rate / (1 + gp_trade_cost_scale) for
+    // gp_trade_cost_scale > 0 -- a scoped, caller-side scalar approximation (the
+    // shipped GP reduction has no matrix trade-cost knob to bind this to; see
+    // garleanu_pedersen.hpp's own "matrix Riccati is the recorded lift, not
+    // shipped" note).
+    bool   gp_trading          = false; // --gp-trading
+    double gp_risk_aversion    = 0.0;   // --gp-risk-aversion (0 = lambda=0 GP convention)
+    double gp_trade_cost_scale = 0.0;   // --gp-trade-cost-scale (0 = kappa == trade_rate)
+
     // Canonical names of flags explicitly supplied by the parsed source (CLI
     // args or config-file keys). Used by the run-mode merge so a CLI-present
     // flag always wins over a file value, regardless of its value (e.g. an
