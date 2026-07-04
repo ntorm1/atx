@@ -236,6 +236,116 @@ TEST(RobustnessBatteryWire, NoiseControlThroughRealPath_RejectsAndAdmitsByThresh
       << "an impossibly-lax survival ratio must ADMIT through the real path";
 }
 
+// A deterministic noisy trending "close" panel: per-instrument momentum drift
+// plus a seeded multiplicative wiggle (an integer LCG, NEVER thread/time), so
+// the terminal HOLDOUT window resembles the short/noisy regime the S5-3 unit
+// diagnostic showed noise_control REJECTS — i.e. a candidate whose holdout edge
+// SURVIVES the seeded input permutation is flagged as a dimensional artifact.
+// This is the fixture the OOS admit-path test below relies on to force a real
+// RejectRobustness on the mine_into_oos ladder.
+[[nodiscard]] Panel rbw_oos_noisy_panel() {
+  constexpr usize kDates = 60;
+  constexpr usize kInsts = 6;
+  std::vector<f64> drift(kInsts);
+  for (usize j = 0; j < kInsts; ++j) {
+    drift[j] = 0.002 * (1.0 - 0.3 * static_cast<f64>(j));
+  }
+  std::vector<f64> close(kDates * kInsts);
+  std::vector<f64> px(kInsts, 100.0);
+  std::uint64_t s = 3ULL * 0x9E3779B97F4A7C15ULL + 1ULL; // pseed=3 recipe from the S5-3 diag
+  const auto next = [&s]() noexcept -> f64 {
+    s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+    const std::uint64_t hi = s >> 11U;
+    return 2.0 * (static_cast<f64>(hi) / static_cast<f64>(1ULL << 53U)) - 1.0;
+  };
+  for (usize t = 0; t < kDates; ++t) {
+    for (usize j = 0; j < kInsts; ++j) {
+      px[j] *= (1.0 + drift[j] + 0.01 * next());
+      close[t * kInsts + j] = px[j];
+    }
+  }
+  return rbw_make_panel(kDates, kInsts, {"close"}, {close});
+}
+
+// =============================================================================
+//  (e) NoiseControlRunsOnOosAdmitPath_NotSilentlySkipped — the REGRESSION proof
+//  for the p8 final-wave Item-3 fix. Before the fix, --robustness-battery was
+//  wired ONLY into the non-OOS Factory::mine_into admit loop; the flagship
+//  --library-dir mega-book flow auto-sets oos_fraction>0, so mine_into
+//  dispatches to mine_into_oos (factory.cpp:396) BEFORE ever reaching the
+//  battery -> the flag SILENTLY did nothing on the path operators actually run.
+//  The fix wires the battery into the SHARED admit_on_holdout helper both OOS
+//  paths call. This test drives a REAL oos_fraction>0 mine_into (-> mine_into_oos
+//  -> admit_on_holdout) and asserts the battery ACTUALLY fires there:
+//    - battery ON  -> the RejectRobustness (index 11) bucket is NON-ZERO (a
+//      candidate's holdout edge survived the seeded noise permutation and was
+//      rejected ON THE OOS LADDER) -- would be 0 under the pre-fix silent no-op;
+//    - battery OFF -> that bucket is exactly 0 (the flag is load-bearing);
+//    - in BOTH cases the histogram still accounts for every evaluated candidate.
+// =============================================================================
+TEST(RobustnessBatteryWire, NoiseControlRunsOnOosAdmitPath_NotSilentlySkipped) {
+  Library lib;
+  const WeightPolicy policy{};
+  const ExecutionSimulator sim = rbw_frictionless_sim();
+  const Panel panel = rbw_oos_noisy_panel();
+
+  const auto run = [&](bool battery_on) -> FactoryReport {
+    FactoryConfig cfg;
+    cfg.search.master_seed = 0xB0071E5u;
+    cfg.search.population = 12;
+    cfg.search.generations = 3;
+    cfg.search.elites = 2;
+    cfg.search.k_tournament = 3;
+    cfg.search.p_cross = 0.5;
+    cfg.seed_exprs = {"ts_mean(close, 5)", "delta(close, 2)", "rank(close)"};
+    cfg.panel_fields = {"close"};
+    cfg.min_dsr = -1.0e9; // do not let the dsr floor mask whether the battery ran
+    cfg.oos_fraction = 0.34; // terminal ~20-date holdout -> routes to mine_into_oos
+    cfg.robustness_battery = battery_on;
+
+    lib::GateConfig gate_cfg;
+    const lib::AlphaGate gate{gate_cfg};
+    const std::string dir =
+        (std::filesystem::temp_directory_path() /
+         (battery_on ? "atx_p8_rbw_oos_on" : "atx_p8_rbw_oos_off"))
+            .string();
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    lib::Library lib_lib = lib::Library::open(dir, gate_cfg, {cfg.search.master_seed});
+
+    Factory factory{lib, panel, sim, policy};
+    auto rep_r = factory.mine_into(cfg, lib_lib, gate);
+    EXPECT_TRUE(rep_r.has_value()) << (rep_r ? "" : rep_r.error().message());
+    return rep_r ? std::move(*rep_r) : FactoryReport{};
+  };
+
+  constexpr usize kRejectRobustness = 11; // library::AdmitKind::RejectRobustness
+  static_assert(static_cast<usize>(lib::AdmitKind::RejectRobustness) == kRejectRobustness);
+
+  const FactoryReport rep_on = run(/*battery_on=*/true);
+  const FactoryReport rep_off = run(/*battery_on=*/false);
+
+  atx::u64 total_on = 0;
+  for (const atx::usize b : rep_on.reject_histogram) {
+    total_on += b;
+  }
+  EXPECT_EQ(total_on, rep_on.evaluated) << "battery-ON histogram must account for every candidate";
+
+  atx::u64 total_off = 0;
+  for (const atx::usize b : rep_off.reject_histogram) {
+    total_off += b;
+  }
+  EXPECT_EQ(total_off, rep_off.evaluated)
+      << "battery-OFF histogram must account for every candidate";
+
+  EXPECT_GT(rep_on.reject_histogram[kRejectRobustness], 0U)
+      << "the robustness battery must FIRE on the OOS admit path (mine_into_oos -> "
+         "admit_on_holdout); a zero bucket here is the pre-fix silent no-op";
+  EXPECT_EQ(rep_off.reject_histogram[kRejectRobustness], 0U)
+      << "battery OFF must never produce a RejectRobustness (the flag is load-bearing)";
+}
+
 // =============================================================================
 //  (d) MineIntoSmokeTest_RobustnessBatteryOnRunsCleanAndHistogramAccounts — the
 //  END-TO-END integration smoke test: --robustness-battery threaded through

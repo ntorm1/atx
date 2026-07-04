@@ -520,14 +520,32 @@ private:
 
   // S2-3: the "(3d) ADMISSION on the HOLDOUT" ladder, extracted VERBATIM from the two
   // formerly copy-pasted sites in mine_into_oos (serial) and mine_into_oos_parallel so
-  // they cannot drift. Executes the price-scale / sub-window / DSR+split ladder, then
-  // folds the resulting AdmitKind into the run digest + reject histogram in the EXACT
-  // same order as the inline code. A static member (not a free function) because it
-  // references the private kAdmitAsOf as the AlphaCandidate's as-of period.
+  // they cannot drift. Executes the price-scale / sub-window / robustness / DSR+split
+  // ladder, then folds the resulting AdmitKind into the run digest + reject histogram
+  // in the EXACT same order as the inline code. A static member (not a free function)
+  // because it references the private kAdmitAsOf as the AlphaCandidate's as-of period.
   //
-  // Contract (byte-identical to the inline ladder):
+  // p8 final-wave (Item 3) OOS wire: this is the SINGLE shared admit site for BOTH OOS
+  // paths, so wiring eval::RobustnessBattery HERE (instead of duplicating the check at
+  // each of the two former call sites) makes it reach mine_into_oos AND
+  // mine_into_oos_parallel simultaneously and byte-identically, by construction — the
+  // same reasoning S2-3 already used to unify the price-scale/sub-window ladder.
+  // `robustness_battery`/`run_seed` mirror the non-OOS Factory::mine_into call site
+  // EXACTLY (same BatteryConfig construction, same fixed XOR salt): `robustness_battery
+  // == false` (the default) means `battery_cfg` stays BatteryConfig{} (all-false), so
+  // detail::robustness_battery_passes returns true WITHOUT building a
+  // CandidateInputs/Reevaluator/alternate Panel at all — byte-identical to pre-wire.
+  // `cand`/`holdout_panel`/`admit_fit` are the SAME Genome/HOLDOUT-Panel/FitnessCfg the
+  // ladder's own hold_dsr and try_admit already use; the battery's admission POOL is a
+  // fresh LibraryPool{lib_lib} — the SAME persistent library try_admit below consults,
+  // consistent with the real corr-to-pool check (worst_corr_to_pool(hold_pnl) is
+  // HOLDOUT-vs-HOLDOUT-library; see the mine_into_oos (8.C) comment). base_edge is
+  // hold_dsr (this ladder's own running deflated holdout edge).
+  //
+  // Contract (byte-identical to the inline ladder, robustness inserted per Item 3):
   //   - !price_scale_ok  -> kind = RejectPriceScale
   //   - else !subwindows_ok -> kind = RejectDsrSubwindow
+  //   - else !robustness_ok (the battery check above) -> kind = RejectRobustness
   //   - else if (hold_dsr >= min_dsr && split_ok): try_admit on the HOLDOUT geometry
   //       (a clean propagated Err on a cross-run geometry MISMATCH); on Accept bumps
   //       rep.admitted, pushes OosReportEntry{canon_hash, train_metrics, hold_metrics},
@@ -538,7 +556,9 @@ private:
   // `prov` is consumed (moved into the AlphaCandidate). NOT noexcept (push_back
   // allocates on the Accept path). Returns Err iff try_admit does.
   [[nodiscard]] atx::core::Result<void>
-  admit_on_holdout(atx::f64 hold_dsr, bool price_scale_ok, bool subwindows_ok, bool split_ok,
+  admit_on_holdout(const Genome &cand, const alpha::Panel &holdout_panel,
+                   const FitnessCfg &admit_fit, bool robustness_battery, atx::u64 run_seed,
+                   atx::f64 hold_dsr, bool price_scale_ok, bool subwindows_ok, bool split_ok,
                    atx::f64 min_dsr, atx::u64 canon_hash, std::span<const atx::f64> hold_pnl,
                    std::span<const atx::f64> hold_pos_flat,
                    const combine::AlphaMetrics &hold_metrics,

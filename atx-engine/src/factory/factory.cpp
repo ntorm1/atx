@@ -1182,17 +1182,44 @@ namespace {
 // rep.admitted / the library version_id are byte-identical by construction. See the
 // header for the full effects contract.
 [[nodiscard]] atx::core::Result<void> Factory::admit_on_holdout(
-    const atx::f64 hold_dsr, const bool price_scale_ok, const bool subwindows_ok,
-    const bool split_ok, const atx::f64 min_dsr, const atx::u64 canon_hash,
-    const std::span<const atx::f64> hold_pnl, const std::span<const atx::f64> hold_pos_flat,
-    const combine::AlphaMetrics &hold_metrics, const combine::AlphaMetrics &train_metrics,
-    library::Provenance prov, FactoryReport &rep, library::Library &lib_lib,
-    const combine::AlphaGate &gate, std::vector<std::vector<atx::f64>> &admitted_pnls) {
+    const Genome &cand, const alpha::Panel &holdout_panel, const FitnessCfg &admit_fit,
+    const bool robustness_battery, const atx::u64 run_seed, const atx::f64 hold_dsr,
+    const bool price_scale_ok, const bool subwindows_ok, const bool split_ok,
+    const atx::f64 min_dsr, const atx::u64 canon_hash, const std::span<const atx::f64> hold_pnl,
+    const std::span<const atx::f64> hold_pos_flat, const combine::AlphaMetrics &hold_metrics,
+    const combine::AlphaMetrics &train_metrics, library::Provenance prov, FactoryReport &rep,
+    library::Library &lib_lib, const combine::AlphaGate &gate,
+    std::vector<std::vector<atx::f64>> &admitted_pnls) {
+  // p8 final-wave (Item 3) OOS wire: the SAME eval::RobustnessBattery noise-control
+  // check the non-OOS Factory::mine_into admit loop already runs (factory.cpp's
+  // mine_into (3d) site), now reached from BOTH OOS admit paths via this SHARED
+  // ladder. robustness_battery == false (the default) -> battery_cfg stays
+  // BatteryConfig{} (all-false) -> robustness_battery_passes returns true WITHOUT
+  // building a CandidateInputs/Reevaluator/alternate Panel at all -> byte-identical
+  // to pre-wire. seed derives from run_seed (the run's own master seed) XORed with
+  // the SAME fixed salt mine_into uses, so the permutation is deterministic and
+  // reproducible per run, never thread/time. The admission pool for the battery's
+  // internal re-score is a fresh LibraryPool over lib_lib — the SAME persistent
+  // library this ladder's own try_admit call below consults (consistent with the
+  // real corr-to-pool check, which is HOLDOUT-vs-HOLDOUT-library; see the
+  // mine_into_oos (8.C) comment). hold_dsr is this ladder's own running deflated
+  // holdout edge -> base_edge.
+  eval::BatteryConfig battery_cfg;
+  if (robustness_battery) {
+    battery_cfg.noise_control = true; // scoped partial this wave -- see FactoryConfig's doc
+    battery_cfg.seed = run_seed ^ 0x526F627573742121ULL;
+  }
+  const LibraryPool holdout_pool_view{lib_lib};
+  const bool robustness_ok = detail::robustness_battery_passes(
+      cand, holdout_panel, holdout_pool_view, policy_, sim_, admit_fit, battery_cfg, hold_dsr);
+
   library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
   if (!price_scale_ok) {
     kind = library::AdmitKind::RejectPriceScale;
   } else if (!subwindows_ok) {
     kind = library::AdmitKind::RejectDsrSubwindow;
+  } else if (!robustness_ok) {
+    kind = library::AdmitKind::RejectRobustness;
   } else if (hold_dsr >= min_dsr && split_ok) {
     // S5-1: populate defl from the holdout dsr/split_ok this ladder already gates
     // on (same rationale as the non-OOS mine_into sites: pbo stays inert, a
@@ -1597,10 +1624,14 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     // `metrics` are what was actually gated out-of-sample). S2-3: the ladder body is
     // the SHARED Factory::admit_on_holdout — the SAME definition the parallel path
     // calls, so seq==parallel + the digest fold are byte-identical by construction.
+    // p8 final-wave (Item 3) OOS wire: g/holdout/admit_fit/cfg.robustness_battery/
+    // res.seed thread the eval::RobustnessBattery noise-control check into the
+    // ladder, mirroring the non-OOS mine_into admit site exactly.
     ATX_TRY_VOID(admit_on_holdout(
-        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
-        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
-        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
+        g, holdout, admit_fit, cfg.robustness_battery, res.seed, hold_dsr, price_scale_ok,
+        subwindows_ok, split_ok, cfg.min_dsr, canon_hash, std::span<const atx::f64>{hold_pnl},
+        std::span<const atx::f64>{hold_pos_flat}, hold_metrics, train_metrics, std::move(prov),
+        rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set. PURE /
@@ -1987,10 +2018,15 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     // definition the serial mine_into_oos calls. The stateful library::admit fold stays
     // SEQUENTIAL in the parent; calling ONE helper makes seq==parallel + the digest fold
     // byte-identical BY CONSTRUCTION (they can no longer drift).
+    // p8 final-wave (Item 3) OOS wire: g/holdout/admit_fit/cfg.robustness_battery/
+    // res.seed thread the eval::RobustnessBattery noise-control check into the
+    // ladder — the SAME shared helper the serial mine_into_oos calls, so this path
+    // gets the battery for free, byte-identically, by construction.
     ATX_TRY_VOID(admit_on_holdout(
-        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
-        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
-        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
+        g, holdout, admit_fit, cfg.robustness_battery, res.seed, hold_dsr, price_scale_ok,
+        subwindows_ok, split_ok, cfg.min_dsr, canon_hash, std::span<const atx::f64>{hold_pnl},
+        std::span<const atx::f64>{hold_pos_flat}, hold_metrics, train_metrics, std::move(prov),
+        rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set, accumulated
