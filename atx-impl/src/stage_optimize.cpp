@@ -15,9 +15,11 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/data/adapt_factor.hpp"
 #include "atx/engine/library/library.hpp"
+#include "atx/engine/risk/constraints.hpp"     // ConstraintSet / ParticipationCap / PositionCap (S5-2)
 #include "atx/engine/risk/garleanu_pedersen.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
+#include "atx/engine/risk/reference_data.hpp"   // CapacityRef (%ADV participation reference — S5-2)
 
 #include "artifacts.hpp"
 #include "book_shape.hpp"
@@ -384,6 +386,13 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
         return step_models[period / step];
     };
 
+    // S5-2: participation-cap reference panels. Declared at FUNCTION scope (NOT
+    // inside the cfg.participation_cap>0 block below) on purpose: risk::CapacityRef
+    // holds non-owning (BORROWED) spans, so the buffers mc.ref.adv/price point at
+    // MUST outlive mpo.run() further down. Left empty + unread when the cap is off.
+    std::vector<atx::f64> part_adv;
+    std::vector<atx::f64> part_price;
+
     risk::MultiPeriodConfig mc;
     mc.single.risk_aversion   = cfg.set_flags.count("risk-aversion")
                                     ? cfg.risk_aversion : 1.0;
@@ -391,6 +400,51 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     mc.single.name_cap        = name_cap_val;
     mc.single.dollar_neutral  = true;
     mc.single.turnover_penalty = cfg.turnover_penalty;
+
+    // S5-2: participation-rate cap INSIDE the QP construction (inert unless
+    // --participation-cap > 0). Building a CapacityRef needs a per-instrument ADV +
+    // a current mark; reuse the SAME 20-day trailing-ADV convention stage_report.cpp's
+    // capacity-footprint metric documents, anchored at the panel's LAST date. The
+    // one correctness trap (RISKS #1): is_minimal_constraint_set returns false the
+    // moment .part is populated, so the augmented path activates -- and it
+    // materializes ConstraintSet::gross/pos INDEPENDENTLY of mc.single (it does NOT
+    // fall back to mc.single.gross_leverage/.name_cap). So cs.gross/cs.pos MUST be
+    // populated here from the SAME gross_val/name_cap_val the fast path resolves, or
+    // gross-leverage/dollar-neutral/name-cap silently vanish once .part activates.
+    if (cfg.participation_cap > 0.0) {
+        ATX_TRY(const auto vol_fid, research.field_id("volume"));
+        ATX_TRY(const auto cls_fid, research.field_id("close"));
+        constexpr atx::usize kAdvWindow = 20;
+        const atx::usize last = D - 1;
+        const atx::usize win_begin = (last + 1 > kAdvWindow) ? (last + 1 - kAdvWindow) : 0;
+        const auto vol_all = research.field_all(vol_fid);
+        const auto cls_all = research.field_all(cls_fid);
+        part_adv.assign(M, 0.0);
+        part_price.assign(M, 0.0);
+        for (atx::usize i = 0; i < M; ++i) {
+            atx::f64 sum = 0.0;
+            atx::usize n = 0;
+            for (atx::usize t = win_begin; t <= last; ++t) {
+                const atx::f64 v = vol_all[t * M + i];
+                if (!std::isnan(v)) { sum += v; ++n; }
+            }
+            part_adv[i]   = (n > 0) ? sum / static_cast<atx::f64>(n) : 0.0;
+            part_price[i] = cls_all[last * M + i];
+        }
+        risk::ConstraintSet cs;
+        cs.gross.gross_leverage = gross_val;   // carry the fast-path gross forward
+        cs.gross.dollar_neutral = true;        // (the augmented path does not read cfg.single)
+        cs.pos  = risk::PositionCap{name_cap_val};
+        cs.part = risk::ParticipationCap{cfg.participation_cap};
+        mc.constraints = std::move(cs);
+        mc.ref.adv   = part_adv;   // borrowed spans (see the function-scope note above)
+        mc.ref.price = part_price;
+        // Reuse the SAME AUM field stage_report.cpp assumes for capacity metrics, so
+        // construction-time and post-hoc capacity share ONE dollar scale.
+        mc.ref.nav = cfg.report_aum > 0.0 ? cfg.report_aum : 1e9;
+        mc.ref.horizon_days = 1.0; // conservative 1-day participation horizon
+    }
+
     risk::MultiPeriodOptimizer mpo;
     mpo.cfg = mc;
 
