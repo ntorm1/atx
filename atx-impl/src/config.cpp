@@ -63,6 +63,7 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "alpha-out")    { cfg.alpha_out     = value; return atx::core::Ok(); }
     if (flag == "run-db")       { cfg.run_db        = value; return atx::core::Ok(); }
     if (flag == "library-dir")  { cfg.library_dir   = value; return atx::core::Ok(); }
+    if (flag == "dead-alpha-lib-dir") { cfg.dead_alpha_lib_dir = value; return atx::core::Ok(); } // S1 (p9)
     if (flag == "alphas")       { cfg.alphas        = value; return atx::core::Ok(); }
     if (flag == "combo-out")    { cfg.combo_out     = value; return atx::core::Ok(); }
     if (flag == "method")       { cfg.method        = value; return atx::core::Ok(); }

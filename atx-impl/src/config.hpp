@@ -308,6 +308,15 @@ struct RunConfig {
     bool dead_alpha_factors = false; // --dead-alpha-factors (S1; false = no crowding augmentation)
     bool group_neutralize   = false; // --group-neutralize   (S1; false = no factor/industry neutralize)
 
+    // --dead-alpha-lib-dir (p9 S1): the on-disk library::Library directory whose ADMITTED alpha
+    // pool is threaded into build_risk_model's dead_lib/dead_ids as the Kakushadze-Yu crowding-
+    // factor source (stage_optimize.cpp's build_risk_model call sites — the Potemkin-book gap).
+    // "" (default) FALLS BACK to cfg.library_dir (the discover accumulating library, if
+    // --library-dir was set); if THAT is also "" -- or the resolved directory does not exist on
+    // disk -- the wire is a documented fail-open no-op (matches build_risk_model's own
+    // dead_lib==nullptr contract, stage_riskmodel.hpp:120-126).
+    std::string dead_alpha_lib_dir; // --dead-alpha-lib-dir ("" = fall back to --library-dir, else off)
+
     // --metabook (S2): enable the meta-book stage (assign_sleeves + run_metabook)
     // in run_all / the standalone "metabook" subcommand. false (default) = the
     // pipeline's optimize stage runs exactly as today (no metabook stage inserted).
