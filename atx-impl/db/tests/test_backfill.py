@@ -81,6 +81,16 @@ class FixtureMaintenanceDataset(FixtureBackfillDataset):
     fail_once_for: set[str] = set()
 
 
+class BarrierSourceDataset:
+    dataset_id = "fixture_barrier_source"
+    depends_on: tuple[str, ...] = ()
+
+
+class BarrierDependentDataset:
+    dataset_id = "fixture_barrier_dependent"
+    depends_on = (BarrierSourceDataset.dataset_id,)
+
+
 @pytest.fixture(autouse=True)
 def _reset_fixture_dataset():
     FixtureBackfillDataset.reset()
@@ -107,6 +117,19 @@ def _maintenance_registry():
         ),
         FixtureMaintenanceDataset.dataset_id: (
             FixtureMaintenanceDataset,
+            lambda params: dict(params),
+        ),
+    }
+
+
+def _barrier_registry():
+    return {
+        BarrierSourceDataset.dataset_id: (
+            BarrierSourceDataset,
+            lambda params: dict(params),
+        ),
+        BarrierDependentDataset.dataset_id: (
+            BarrierDependentDataset,
             lambda params: dict(params),
         ),
     }
@@ -637,6 +660,84 @@ def test_backfill_max_parallel_caps_concurrent_partition_executor_calls(tmp_stor
     assert result.partitions_succeeded == 6
     assert max_seen <= 2
     assert max_seen > 1
+
+
+def test_backfill_with_dependencies_holds_dependent_partitions_until_upstream_finishes(tmp_store):
+    from db.backfill import run_backfill
+
+    lock = threading.Lock()
+    source_started: set[str] = set()
+    source_finished: set[str] = set()
+    events: list[tuple[str, str, str]] = []
+    violations: list[str] = []
+    both_source_partitions_started = threading.Event()
+    all_source_partitions_finished = threading.Event()
+    release_slow_source = threading.Event()
+
+    def executor(_store, partition, _options):
+        dataset_id = partition.dataset_id
+        with lock:
+            events.append(("start", dataset_id, partition.partition_key))
+            if dataset_id == BarrierSourceDataset.dataset_id:
+                source_started.add(partition.partition_key)
+                if len(source_started) == 2:
+                    both_source_partitions_started.set()
+            elif not all_source_partitions_finished.is_set():
+                violations.append(partition.partition_key)
+                release_slow_source.set()
+
+        if dataset_id == BarrierSourceDataset.dataset_id:
+            if partition.window_lo == dt.date(2014, 1, 1):
+                assert both_source_partitions_started.wait(timeout=1.0)
+            else:
+                release_slow_source.wait(timeout=0.2)
+            with lock:
+                source_finished.add(partition.partition_key)
+                events.append(("finish", dataset_id, partition.partition_key))
+                if len(source_finished) == 2:
+                    all_source_partitions_finished.set()
+        else:
+            with lock:
+                events.append(("finish", dataset_id, partition.partition_key))
+
+        return {
+            "rows_written": 1,
+            "watermark_after": partition.window_hi.isoformat(),
+        }
+
+    result = run_backfill(
+        tmp_store,
+        BarrierDependentDataset.dataset_id,
+        dt.date(2014, 1, 1),
+        dt.date(2014, 3, 1),
+        "1mo",
+        registry=_barrier_registry(),
+        backfill_run_id="backfill-dependency-barrier",
+        include_dependencies=True,
+        executor=executor,
+        max_parallel=2,
+        clock=TickClock(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.dataset_order == (
+        BarrierSourceDataset.dataset_id,
+        BarrierDependentDataset.dataset_id,
+    )
+    assert result.partitions_succeeded == 4
+    assert violations == []
+
+    first_dependent_start = next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "start" and event[1] == BarrierDependentDataset.dataset_id
+    )
+    last_source_finish = max(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "finish" and event[1] == BarrierSourceDataset.dataset_id
+    )
+    assert first_dependent_start > last_source_finish
 
 
 def test_maintenance_schedules_only_partition_with_advanced_upstream_watermark(tmp_store):

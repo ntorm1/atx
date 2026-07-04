@@ -113,6 +113,8 @@ class OrchestratorBackfillResult:
     partitions_skipped: int
     partitions_failed: int
     rows_written: int
+    requested_max_parallel: int
+    effective_max_parallel: int
 
 
 def _quality_gate_details(gate_result: GateResult | None) -> dict[str, Any] | None:
@@ -261,6 +263,23 @@ def _nonnegative_int(value: Any, name: str) -> int:
     if parsed < 0:
         raise ValueError(f"{name} must be >= 0")
     return parsed
+
+
+def _positive_int(value: Any, name: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def _partition_parallelism_limits(
+    max_parallel: int,
+    *,
+    allow_parallel_executor: bool,
+) -> tuple[int, int]:
+    requested_parallel = _positive_int(max_parallel, "max_parallel")
+    effective_parallel = requested_parallel if allow_parallel_executor else 1
+    return requested_parallel, effective_parallel
 
 
 def _nonnegative_float(value: Any, name: str) -> float:
@@ -485,6 +504,7 @@ class DatasetOrchestrator:
         gate: bool = False,
     ) -> OrchestratorResult:
         self._initialize_store()
+        self._require_orchestrator_run(run_id)
         steps = self._step_statuses(run_id)
         missing_steps = sorted(set(self.dag.order) - set(steps))
         if missing_steps:
@@ -605,6 +625,10 @@ class DatasetOrchestrator:
             dataset_id,
             include_dependencies=include_dependencies,
         )
+        requested_parallel, effective_parallel = _partition_parallelism_limits(
+            max_parallel,
+            allow_parallel_executor=executor is not None,
+        )
         manifest_params = {
             **dict(params or {}),
             "mode": mode,
@@ -613,7 +637,9 @@ class DatasetOrchestrator:
             "end": end,
             "chunk": chunk,
             "include_dependencies": include_dependencies,
-            "max_parallel": max_parallel,
+            "max_parallel": effective_parallel,
+            "requested_max_parallel": requested_parallel,
+            "effective_max_parallel": effective_parallel,
             "dead_letter": True,
         }
         manifest = create_run_manifest(
@@ -662,7 +688,7 @@ class DatasetOrchestrator:
                 clock=self.clock,
                 retry_policy=retry_policy_by_dataset,
                 sleeper=self.sleeper,
-                max_parallel=max_parallel,
+                max_parallel=requested_parallel,
                 dead_letter=True,
             )
         except Exception as exc:
@@ -715,7 +741,9 @@ class DatasetOrchestrator:
                 "partitions_skipped": backfill_result.partitions_skipped,
                 "partitions_failed": backfill_result.partitions_failed,
                 "rows_written": backfill_result.rows_written,
-                "max_parallel": max_parallel,
+                "max_parallel": backfill_result.effective_max_parallel,
+                "requested_max_parallel": backfill_result.requested_max_parallel,
+                "effective_max_parallel": backfill_result.effective_max_parallel,
             },
             ts=self.clock(),
         )
@@ -729,6 +757,8 @@ class DatasetOrchestrator:
             partitions_skipped=backfill_result.partitions_skipped,
             partitions_failed=backfill_result.partitions_failed,
             rows_written=backfill_result.rows_written,
+            requested_max_parallel=backfill_result.requested_max_parallel,
+            effective_max_parallel=backfill_result.effective_max_parallel,
         )
 
     def _initialize_store(self) -> None:
@@ -1108,6 +1138,27 @@ class DatasetOrchestrator:
             [run_id],
         ).fetchone()[0]
         return "partial" if int(completed or 0) > 0 else "failed"
+
+    def _require_orchestrator_run(self, run_id: str) -> None:
+        row = self.store.con.execute(
+            """
+            SELECT coalesce(run_kind, 'dataset')
+            FROM etl_job_runs
+            WHERE run_id = ?
+              AND parent_run_id IS NULL
+            ORDER BY started_at DESC, job_run_id DESC
+            LIMIT 1
+            """,
+            [run_id],
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"No orchestrator run found for run_id {run_id!r}")
+        run_kind = str(row[0])
+        if run_kind != "orchestrator":
+            raise ValueError(
+                "resume() only supports run_kind='orchestrator'; "
+                f"run {run_id!r} has run_kind={run_kind!r}"
+            )
 
     def _step_statuses(self, run_id: str) -> dict[str, str]:
         rows = self.store.con.execute(

@@ -49,6 +49,8 @@ class BackfillRunResult:
     partitions_failed: int
     rows_written: int
     partition_results: tuple[PartitionResult, ...]
+    requested_max_parallel: int
+    effective_max_parallel: int
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,16 @@ def _positive_int(value: Any, name: str) -> int:
     if parsed <= 0:
         raise ValueError(f"{name} must be positive")
     return parsed
+
+
+def _parallelism_limits(
+    max_parallel: int,
+    *,
+    allow_parallel_executor: bool,
+) -> tuple[int, int]:
+    requested_parallel = _positive_int(max_parallel, "max_parallel")
+    effective_parallel = requested_parallel if allow_parallel_executor else 1
+    return requested_parallel, effective_parallel
 
 
 def _nonnegative_int(value: Any, name: str) -> int:
@@ -904,11 +916,13 @@ def _execute_partition_jobs(
     if not indexed_partitions:
         return {}
 
-    requested_parallel = _positive_int(max_parallel, "max_parallel")
     # The default registry executor receives the caller's DuckDB connection, so it
     # stays serialized. Tests or callers that inject a partition executor can opt
     # into true fan-out when that executor owns its write-safety.
-    effective_parallel = requested_parallel if allow_parallel_executor else 1
+    _requested_parallel, effective_parallel = _parallelism_limits(
+        max_parallel,
+        allow_parallel_executor=allow_parallel_executor,
+    )
     results: dict[int, PartitionResult] = {}
 
     def run_one(index: int, partition: Partition) -> tuple[int, PartitionResult, BaseException | None]:
@@ -1030,16 +1044,22 @@ def run_backfill(
         selected_registry,
         include_dependencies=include_dependencies,
     )
+    partitions_by_dataset = {
+        current_dataset_id: tuple(
+            plan_backfill(
+                current_dataset_id,
+                window_start,
+                window_end,
+                chunk_spec.label,
+                registry=selected_registry,
+            )
+        )
+        for current_dataset_id in dataset_order
+    }
     planned = tuple(
         partition
         for current_dataset_id in dataset_order
-        for partition in plan_backfill(
-            current_dataset_id,
-            window_start,
-            window_end,
-            chunk_spec.label,
-            registry=selected_registry,
-        )
+        for partition in partitions_by_dataset[current_dataset_id]
     )
 
     initial_run_status = _insert_run_header(
@@ -1064,10 +1084,17 @@ def run_backfill(
         allow_parallel_executor = False
     else:
         allow_parallel_executor = True
+    requested_parallel, effective_parallel = _parallelism_limits(
+        max_parallel,
+        allow_parallel_executor=allow_parallel_executor,
+    )
 
     try:
         result_slots: list[PartitionResult | None] = [None] * len(planned)
-        jobs: list[tuple[int, Partition]] = []
+        jobs_by_dataset: dict[str, list[tuple[int, Partition]]] = {
+            current_dataset_id: []
+            for current_dataset_id in dataset_order
+        }
         for index, partition in enumerate(planned):
             existing = _watermark_row(store, partition)
             if existing is not None:
@@ -1081,28 +1108,29 @@ def run_backfill(
                     )
                     continue
 
-            jobs.append((index, partition))
+            jobs_by_dataset[partition.dataset_id].append((index, partition))
 
-        completed = _execute_partition_jobs(
-            store,
-            jobs,
-            backfill_run_id=run_id,
-            params_for_partition=lambda partition: _partition_params(
-                params or {},
-                partition,
+        for current_dataset_id in dataset_order:
+            completed = _execute_partition_jobs(
+                store,
+                jobs_by_dataset[current_dataset_id],
                 backfill_run_id=run_id,
-            ),
-            watermark_after=_watermark_after,
-            run_executor=run_executor,
-            retry_policy=retry_policy,
-            max_parallel=max_parallel,
-            dead_letter=dead_letter,
-            sleeper=sleeper or time.sleep,
-            now=now,
-            allow_parallel_executor=allow_parallel_executor,
-        )
-        for index, result in completed.items():
-            result_slots[index] = result
+                params_for_partition=lambda partition: _partition_params(
+                    params or {},
+                    partition,
+                    backfill_run_id=run_id,
+                ),
+                watermark_after=_watermark_after,
+                run_executor=run_executor,
+                retry_policy=retry_policy,
+                max_parallel=requested_parallel,
+                dead_letter=dead_letter,
+                sleeper=sleeper or time.sleep,
+                now=now,
+                allow_parallel_executor=allow_parallel_executor,
+            )
+            for index, result in completed.items():
+                result_slots[index] = result
         results = [
             result
             for result in result_slots
@@ -1141,6 +1169,8 @@ def run_backfill(
         partitions_failed=failed,
         rows_written=sum(result.rows_written for result in results),
         partition_results=tuple(results),
+        requested_max_parallel=requested_parallel,
+        effective_max_parallel=effective_parallel,
     )
 
 
@@ -1184,65 +1214,18 @@ def run_maintenance(
         selected_registry,
         include_dependencies=include_dependencies,
     )
-    candidates = tuple(
-        partition
-        for current_dataset_id in dataset_order
-        for partition in plan_backfill(
-            current_dataset_id,
-            window_start,
-            window_end,
-            chunk_spec.label,
-            registry=selected_registry,
-        )
-    )
     partitions_by_dataset = {
         current_dataset_id: tuple(
-            partition
-            for partition in candidates
-            if partition.dataset_id == current_dataset_id
+            plan_backfill(
+                current_dataset_id,
+                window_start,
+                window_end,
+                chunk_spec.label,
+                registry=selected_registry,
+            )
         )
         for current_dataset_id in dataset_order
     }
-    sources_by_dataset = {
-        current_dataset_id: _watermark_sources_for_dataset(
-            store,
-            current_dataset_id,
-            selected_registry,
-        )
-        for current_dataset_id in dataset_order
-    }
-    partition_scope_by_dataset = {
-        current_dataset_id: _sources_have_partition_scope(
-            sources_by_dataset[current_dataset_id],
-            partitions_by_dataset[current_dataset_id],
-        )
-        for current_dataset_id in dataset_order
-    }
-    source_watermarks_by_dataset = {
-        current_dataset_id: _sources_have_current_watermark(
-            sources_by_dataset[current_dataset_id],
-        )
-        for current_dataset_id in dataset_order
-    }
-
-    current_watermarks: dict[str, str | None] = {}
-    scheduled: list[Partition] = []
-    for partition in candidates:
-        existing = _watermark_row(store, partition)
-        if existing is not None:
-            _validate_watermark_window(partition, existing)
-        current_watermark = _current_partition_watermark(
-            sources_by_dataset[partition.dataset_id],
-            partition,
-            has_partition_scope=partition_scope_by_dataset[partition.dataset_id],
-        )
-        current_watermarks[partition.partition_key] = current_watermark
-        if _should_run_maintenance_partition(
-            existing,
-            current_watermark=current_watermark,
-            has_current_watermarks=source_watermarks_by_dataset[partition.dataset_id],
-        ):
-            scheduled.append(partition)
 
     initial_run_status = _insert_run_header(
         store,
@@ -1266,40 +1249,78 @@ def run_maintenance(
         allow_parallel_executor = False
     else:
         allow_parallel_executor = True
+    requested_parallel, effective_parallel = _parallelism_limits(
+        max_parallel,
+        allow_parallel_executor=allow_parallel_executor,
+    )
 
     try:
-        indexed = list(enumerate(scheduled))
-
-        def maintenance_watermark_after(result: Any, partition: Partition) -> str:
-            return _maintenance_watermark_after(
-                result,
-                partition,
-                current_watermark=current_watermarks[partition.partition_key],
+        scheduled_total = 0
+        for current_dataset_id in dataset_order:
+            partitions = partitions_by_dataset[current_dataset_id]
+            sources = _watermark_sources_for_dataset(
+                store,
+                current_dataset_id,
+                selected_registry,
             )
+            has_partition_scope = _sources_have_partition_scope(sources, partitions)
+            has_current_watermarks = _sources_have_current_watermark(sources)
+            current_watermarks: dict[str, str | None] = {}
+            scheduled: list[Partition] = []
 
-        completed = _execute_partition_jobs(
-            store,
-            indexed,
-            backfill_run_id=run_id,
-            params_for_partition=lambda partition: _maintenance_partition_params(
-                params or {},
-                partition,
+            for partition in partitions:
+                existing = _watermark_row(store, partition)
+                if existing is not None:
+                    _validate_watermark_window(partition, existing)
+                current_watermark = _current_partition_watermark(
+                    sources,
+                    partition,
+                    has_partition_scope=has_partition_scope,
+                )
+                current_watermarks[partition.partition_key] = current_watermark
+                if _should_run_maintenance_partition(
+                    existing,
+                    current_watermark=current_watermark,
+                    has_current_watermarks=has_current_watermarks,
+                ):
+                    scheduled.append(partition)
+            scheduled_total += len(scheduled)
+
+            def maintenance_watermark_after(
+                result: Any,
+                partition: Partition,
+                *,
+                current_watermarks: Mapping[str, str | None] = current_watermarks,
+            ) -> str:
+                return _maintenance_watermark_after(
+                    result,
+                    partition,
+                    current_watermark=current_watermarks[partition.partition_key],
+                )
+
+            completed = _execute_partition_jobs(
+                store,
+                list(enumerate(scheduled)),
                 backfill_run_id=run_id,
-                current_watermark=current_watermarks[partition.partition_key],
-            ),
-            watermark_after=maintenance_watermark_after,
-            run_executor=run_executor,
-            retry_policy=retry_policy,
-            max_parallel=max_parallel,
-            dead_letter=dead_letter,
-            sleeper=sleeper or time.sleep,
-            now=now,
-            allow_parallel_executor=allow_parallel_executor,
-        )
-        results = [
-            completed[index]
-            for index in sorted(completed)
-        ]
+                params_for_partition=lambda partition, current_watermarks=current_watermarks: _maintenance_partition_params(
+                    params or {},
+                    partition,
+                    backfill_run_id=run_id,
+                    current_watermark=current_watermarks[partition.partition_key],
+                ),
+                watermark_after=maintenance_watermark_after,
+                run_executor=run_executor,
+                retry_policy=retry_policy,
+                max_parallel=requested_parallel,
+                dead_letter=dead_letter,
+                sleeper=sleeper or time.sleep,
+                now=now,
+                allow_parallel_executor=allow_parallel_executor,
+            )
+            results.extend(
+                completed[index]
+                for index in sorted(completed)
+            )
     except Exception as exc:
         error_message = f"{exc}\n{traceback.format_exc(limit=20)}"
         _finish_run(
@@ -1326,12 +1347,14 @@ def run_maintenance(
         dataset_id=dataset_id,
         status=status,
         dataset_order=dataset_order,
-        partitions_planned=len(scheduled),
+        partitions_planned=scheduled_total,
         partitions_succeeded=succeeded,
         partitions_skipped=0,
         partitions_failed=failed,
         rows_written=sum(result.rows_written for result in results),
         partition_results=tuple(results),
+        requested_max_parallel=requested_parallel,
+        effective_max_parallel=effective_parallel,
     )
 
 
