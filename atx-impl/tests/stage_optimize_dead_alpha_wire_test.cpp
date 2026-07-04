@@ -133,6 +133,20 @@ void seed_crowded_library(const fs::path& dir, usize n_dead, usize m, usize cent
   // Candidate, non-Recycled) alpha as the crowding-defense population.
 }
 
+// Create an EMPTY on-disk library (opens + flushes, ZERO admits) so a later
+// independent Library::open sees n_alphas()==0. Because the directory EXISTS,
+// the wire's maybe_open_dead_lib returns a NON-null optional -- build_risk_model
+// then receives a non-null dead_lib with EMPTY dead_ids, the one inert path that
+// does NOT rely on a passed nullptr (see FailOpen_EmptyLibraryByteIdentical).
+void seed_empty_library(const fs::path& dir) {
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  lib::Library library = lib::Library::open(dir.string(), permissive_gate_cfg(), {777ULL});
+  ASSERT_TRUE(library.flush_all().has_value());
+  // No admits -> n_alphas() == 0 on reopen.
+}
+
 class AtxImplOptimizeDeadAlphaWire : public ::testing::Test {
 protected:
   fs::path tmp_dir_;
@@ -210,6 +224,58 @@ TEST_F(AtxImplOptimizeDeadAlphaWire, FailOpen_MissingDirByteIdentical) {
 
   EXPECT_EQ(r_missing->digest, r_legacy->digest)
       << "a --dead-alpha-lib-dir that does not exist on disk must fail OPEN, not abort";
+}
+
+// The class-(a) "opened library, zero admitted alphas" case (sprint ledger
+// line ~154). Unlike the two guards above (which fail open by passing a nullptr
+// dead_lib), a resolved-and-EXISTING but EMPTY library passes a NON-null
+// dead_lib_ptr with EMPTY dead_ids. Byte-identity here therefore rests entirely
+// on the frozen `!dead_ids.empty()` short-circuit (stage_riskmodel.cpp:280),
+// NOT on a nullptr -- this is the only p9 test that guards that gate. If it ever
+// regressed (a non-null-but-empty dead_lib augmenting anyway), only this test
+// would catch it.
+TEST_F(AtxImplOptimizeDeadAlphaWire, FailOpen_EmptyLibraryByteIdentical) {
+  constexpr usize M = 10, D = 40;
+  const fs::path research_path = tmp_dir_ / "research_empty.bin";
+  const fs::path combo_path = tmp_dir_ / "combo_empty.bin";
+  ASSERT_TRUE(make_trend_research(research_path, M, D).has_value());
+  ASSERT_TRUE(make_pair_combo(combo_path, M, D).has_value());
+  const fs::path lib_dir = tmp_dir_ / "empty_lib";
+  seed_empty_library(lib_dir);
+
+  // Sanity: the library opens and is genuinely EMPTY. Since the dir EXISTS,
+  // maybe_open_dead_lib takes its non-null branch (its only null-vs-non-null
+  // discriminator, given the gate is on + dir set, is fs::exists+is_directory),
+  // so run_optimize below passes a non-null dead_lib_ptr with empty dead_ids.
+  {
+    lib::Library reopened = lib::Library::open(lib_dir.string(), permissive_gate_cfg(), {777ULL});
+    ASSERT_EQ(reopened.n_alphas(), atx::u64{0});
+  }
+
+  atx::impl::RunConfig cfg;
+  cfg.panel = research_path.string();
+  cfg.combo = combo_path.string();
+  cfg.gross = 1.0;
+  cfg.name_cap = 1.0;
+  cfg.rebalance = "weekly";
+  cfg.risk_aversion = 1.0;
+  cfg.set_flags.emplace("risk-aversion");
+  cfg.dead_alpha_factors = true;                 // gate ON
+  cfg.dead_alpha_lib_dir = lib_dir.string();     // resolves + exists, but is EMPTY
+
+  cfg.books_out = (tmp_dir_ / "books_empty_lib.bin").string();
+  auto r_empty = atx::impl::run_optimize(cfg);
+  ASSERT_TRUE(r_empty.has_value()) << r_empty.error().message();
+
+  cfg.dead_alpha_factors = false;
+  cfg.books_out = (tmp_dir_ / "books_legacy_empty.bin").string();
+  auto r_legacy = atx::impl::run_optimize(cfg);
+  ASSERT_TRUE(r_legacy.has_value());
+
+  EXPECT_EQ(r_empty->digest, r_legacy->digest)
+      << "an opened library with zero admitted alphas must be byte-identical to the "
+         "gate-off path -- the frozen !dead_ids.empty() short-circuit keeps a "
+         "non-null-but-empty dead_lib inert";
 }
 
 // -- (b) on-path RED->GREEN: crowded pool must shrink the crowded direction --
