@@ -492,3 +492,41 @@ Describe 'New-DiscoverArgv / New-MetabookArgv - S7-2 S6 guard: ml-seeds/nco defe
         ($scriptParams -contains 'SleeveMethod')   | Should Be $false
     }
 }
+
+Describe 'Smoke profile - S7-3 stays minimal: none of the new p9 flags leak in' {
+
+    It 'New-DiscoverArgv default (smoke-shaped call) omits every new p9 flag' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir -LooseGates
+        foreach ($f in @('--deflate-selection','--capacity-objective','--turnover-objective',
+                          '--robustness-battery','--robustness-sub-universe',
+                          '--robustness-alt-neutralization','--robustness-param-perturb',
+                          '--ml-seeds','--ml-seed-model-dir')) {
+            ($argv -contains $f) | Should Be $false
+        }
+    }
+
+    It 'New-CombineArgv default (smoke-shaped call) omits --risk-model' {
+        $argv = New-CombineArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--risk-model') | Should Be $false
+    }
+
+    It 'New-MetabookArgv default (smoke-shaped call) omits every new p9 flag' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'invvol'
+        foreach ($f in @('--risk-model','--dead-alpha-factors','--dead-alpha-lib-dir',
+                          '--group-neutralize','--book-turnover-gate','--participation-cap')) {
+            ($argv -contains $f) | Should Be $false
+        }
+    }
+
+    It 'New-OptimizeArgv default (smoke-shaped call) omits gp-trading + new S1 flags' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10
+        foreach ($f in @('--gp-trading','--gp-risk-aversion','--gp-trade-cost-scale','--dead-alpha-lib-dir')) {
+            ($argv -contains $f) | Should Be $false
+        }
+    }
+
+    It 'New-ReportArgv default (smoke-shaped call) omits --borrow-bps' {
+        $argv = New-ReportArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--borrow-bps') | Should Be $false
+    }
+}
