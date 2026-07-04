@@ -1260,7 +1260,7 @@ def _check_specs(
                    OR forms_json IS NULL
                    OR forms_json IN ('', '[]')
                    OR fiscal_periods_json IS NULL
-                   OR statement_category NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'other')
+                   OR statement_category NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'utility_statement', 'broker_dealer_statement', 'other')
                    OR fact_count <= 0
                    OR security_count <= 0
                    OR accession_count <= 0
@@ -2028,7 +2028,7 @@ def _check_specs(
                    OR taxonomy = ''
                    OR concept IS NULL
                    OR concept = ''
-                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'other')
+                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'utility_statement', 'broker_dealer_statement', 'other')
                    OR statement_section IS NULL
                    OR statement_section = ''
                    OR canonical_metric IS NULL
@@ -2114,7 +2114,7 @@ def _check_specs(
                    OR security_id = ''
                    OR cik IS NULL
                    OR cik = ''
-                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'other')
+                   OR statement_type NOT IN ('balance_sheet', 'income_statement', 'cash_flow', 'per_share', 'share_count', 'bank_statement', 'insurance_statement', 'reit_statement', 'utility_statement', 'broker_dealer_statement', 'other')
                    OR statement_section IS NULL
                    OR statement_section = ''
                    OR canonical_metric IS NULL
@@ -5303,11 +5303,88 @@ def _check_specs(
                        (industry_template = 'BK' AND item_id BETWEEN 1501 AND 1515)
                     OR (industry_template = 'IS' AND item_id BETWEEN 1601 AND 1610)
                     OR (industry_template = 'RT' AND item_id BETWEEN 1701 AND 1712)
+                    OR (industry_template = 'UT' AND item_id BETWEEN 1801 AND 1805)
+                    OR (industry_template = 'BD' AND item_id BETWEEN 1901 AND 1905)
                 )
             """,
-            threshold=37.0,
+            threshold=47.0,
             comparator="eq",
             required_tables=("fundamental_statement_map",),
+        ),
+        SqlQualityCheck(
+            dataset_id="industry_template",
+            table_name="entity_industry_template",
+            check_name="industry_template_exactly_one_route",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        s.security_id,
+                        count(e.route_id) AS route_count,
+                        count(DISTINCT e.industry_template) AS template_count
+                    FROM securities s
+                    LEFT JOIN entity_industry_template e
+                      ON e.security_id = s.security_id
+                     AND e.is_latest_revision
+                     AND e.valid_from <= current_date
+                     AND coalesce(e.valid_to, DATE '9999-12-31') > current_date
+                    GROUP BY s.security_id
+                    HAVING route_count <> 1
+                        OR template_count <> 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("securities", "entity_industry_template"),
+            detail_sql="""
+                SELECT
+                    s.security_id,
+                    count(e.route_id) AS route_count,
+                    count(DISTINCT e.industry_template) AS template_count,
+                    CAST(to_json(list(e.industry_template ORDER BY e.industry_template) FILTER (
+                        WHERE e.industry_template IS NOT NULL
+                    )) AS VARCHAR) AS templates_json
+                FROM securities s
+                LEFT JOIN entity_industry_template e
+                  ON e.security_id = s.security_id
+                 AND e.is_latest_revision
+                 AND e.valid_from <= current_date
+                 AND coalesce(e.valid_to, DATE '9999-12-31') > current_date
+                GROUP BY s.security_id
+                HAVING route_count <> 1
+                    OR template_count <> 1
+                ORDER BY s.security_id
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="industry_template",
+            table_name="industry_template_coverage",
+            check_name="industry_template_required_item_coverage",
+            sql="""
+                SELECT coalesce(sum(missing_item_count), 0)::DOUBLE
+                FROM industry_template_coverage
+                WHERE is_latest_revision
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("industry_template_coverage",),
+            detail_sql="""
+                SELECT
+                    industry_template,
+                    routed_entity_count,
+                    required_item_count,
+                    present_item_count,
+                    not_available_item_count,
+                    missing_item_count,
+                    missing_item_ids_json
+                FROM industry_template_coverage
+                WHERE is_latest_revision
+                  AND missing_item_count <> 0
+                ORDER BY industry_template
+            """,
+            severity="critical",
         ),
         SqlQualityCheck(
             dataset_id="filer_13f_cik_alias",

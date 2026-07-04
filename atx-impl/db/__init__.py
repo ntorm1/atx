@@ -197,6 +197,14 @@ from .fundamental_statements import (
     refresh_fundamental_ttm_points,
     seed_fundamental_statement_map,
 )
+from .industry_templates import (
+    IndustryTemplateOptions,
+    refresh_entity_industry_templates,
+    refresh_industry_template_coverage,
+    run_industry_template_refresh,
+    seed_industry_templates,
+    template_for_sic,
+)
 from .item_registry import read_fundamental_item_seed, seed_fundamental_item_registry
 from .fundamentals import (
     COMPANY_FACT_SYMBOL_SOURCES,
@@ -498,6 +506,7 @@ __all__ = [
     "IdentifierResolutionDecisionOptions",
     "IdentifierResolutionCandidateDataset",
     "IdentifierResolutionOptions",
+    "IndustryTemplateOptions",
     "BlockholderOwnershipDataset",
     "BlockholderOwnershipOptions",
     "InsiderOwnershipDataset",
@@ -644,6 +653,7 @@ __all__ = [
     "refresh_fundamental_ttm_points",
     "refresh_warehouse_watermarks",
     "refresh_feature_lineage",
+    "refresh_entity_industry_templates",
     "refresh_xbrl_concept_catalog",
     "refresh_xbrl_fact_frames",
     "refresh_xbrl_taxonomy",
@@ -658,11 +668,15 @@ __all__ = [
     "short_interest_asof",
     "short_interest_with_13f_positioning",
     "seed_fundamental_statement_map",
+    "refresh_industry_template_coverage",
+    "run_industry_template_refresh",
+    "seed_industry_templates",
     "seed_fundamental_item_registry",
     "read_fundamental_item_seed",
     "seed_corp_action_type_dim",
     "seed_delist_code_dim",
     "thirteenf_positioning_asof",
+    "template_for_sic",
     "universe_asof",
     "validate_lake_export",
 ]
