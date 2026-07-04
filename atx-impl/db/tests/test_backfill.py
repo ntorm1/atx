@@ -574,6 +574,167 @@ def test_maintenance_schedules_only_partition_with_advanced_upstream_watermark(t
     assert untouched_rows == (end - start).days - rewritten_rows
 
 
+def test_maintenance_with_only_coarse_current_watermark_is_immediate_noop(tmp_store):
+    from db.backfill import run_maintenance
+
+    registry, start, end, _partitions = _completed_maintenance_fixture(tmp_store)
+    tmp_store.con.execute(
+        """
+        DELETE FROM dataset_watermarks
+        WHERE dataset_id = ?
+        """,
+        [FixtureSourceDataset.dataset_id],
+    )
+    _upsert_dataset_watermark(
+        tmp_store,
+        FixtureSourceDataset.dataset_id,
+        "max_available_at",
+        end.isoformat(),
+    )
+    watermarks_before = tmp_store.con.execute(
+        """
+        SELECT partition_key, status, rows_written, watermark_after, run_id, updated_at
+        FROM backfill_watermark
+        WHERE dataset_id = ?
+        ORDER BY partition_key
+        """,
+        [FixtureMaintenanceDataset.dataset_id],
+    ).fetchall()
+
+    result = run_maintenance(
+        tmp_store,
+        FixtureMaintenanceDataset.dataset_id,
+        start,
+        end,
+        "3mo",
+        registry=registry,
+        backfill_run_id="maintenance-coarse-noop",
+        clock=TickClock(),
+    )
+
+    watermarks_after = tmp_store.con.execute(
+        """
+        SELECT partition_key, status, rows_written, watermark_after, run_id, updated_at
+        FROM backfill_watermark
+        WHERE dataset_id = ?
+        ORDER BY partition_key
+        """,
+        [FixtureMaintenanceDataset.dataset_id],
+    ).fetchall()
+    assert result.status == "succeeded"
+    assert result.partitions_planned == 0
+    assert result.partitions_succeeded == 0
+    assert result.rows_written == 0
+    assert FixtureMaintenanceDataset.calls == []
+    assert watermarks_after == watermarks_before
+
+
+def test_maintenance_caps_partial_trailing_coarse_watermark(tmp_store):
+    from db.backfill import plan_backfill, run_maintenance
+
+    _prepare_fixture_rows(tmp_store)
+    registry = _maintenance_registry()
+    start = dt.date(2014, 1, 1)
+    end = dt.date(2014, 4, 1)
+    partition = plan_backfill(
+        FixtureMaintenanceDataset.dataset_id,
+        start,
+        end,
+        "3mo",
+        registry=registry,
+    )[0]
+    _upsert_dataset_watermark(
+        tmp_store,
+        FixtureSourceDataset.dataset_id,
+        "max_available_at",
+        "2014-02-15",
+    )
+
+    first = run_maintenance(
+        tmp_store,
+        FixtureMaintenanceDataset.dataset_id,
+        start,
+        end,
+        "3mo",
+        registry=registry,
+        backfill_run_id="maintenance-partial-first",
+        clock=TickClock(),
+    )
+    first_watermark = tmp_store.con.execute(
+        """
+        SELECT watermark_after
+        FROM backfill_watermark
+        WHERE dataset_id = ? AND partition_key = ?
+        """,
+        [FixtureMaintenanceDataset.dataset_id, partition.partition_key],
+    ).fetchone()
+
+    _upsert_dataset_watermark(
+        tmp_store,
+        FixtureSourceDataset.dataset_id,
+        "max_available_at",
+        "2014-03-01",
+    )
+    second = run_maintenance(
+        tmp_store,
+        FixtureMaintenanceDataset.dataset_id,
+        start,
+        end,
+        "3mo",
+        registry=registry,
+        backfill_run_id="maintenance-partial-second",
+        clock=TickClock(),
+    )
+    second_watermark = tmp_store.con.execute(
+        """
+        SELECT watermark_after
+        FROM backfill_watermark
+        WHERE dataset_id = ? AND partition_key = ?
+        """,
+        [FixtureMaintenanceDataset.dataset_id, partition.partition_key],
+    ).fetchone()
+
+    assert first.partitions_planned == 1
+    assert first.partitions_succeeded == 1
+    assert first_watermark == ("2014-02-15",)
+    assert second.partitions_planned == 1
+    assert second.partitions_succeeded == 1
+    assert second_watermark == ("2014-03-01",)
+    assert FixtureMaintenanceDataset.calls == [
+        partition.partition_key,
+        partition.partition_key,
+    ]
+
+
+def test_maintenance_treats_equivalent_date_timestamp_watermarks_as_current(tmp_store):
+    from db.backfill import run_maintenance
+
+    registry, start, end, partitions = _completed_maintenance_fixture(tmp_store)
+    _upsert_dataset_watermark(
+        tmp_store,
+        FixtureSourceDataset.dataset_id,
+        _partition_watermark_name(partitions[0]),
+        "2014-04-01 00:00:00",
+    )
+
+    result = run_maintenance(
+        tmp_store,
+        FixtureMaintenanceDataset.dataset_id,
+        start,
+        end,
+        "3mo",
+        registry=registry,
+        backfill_run_id="maintenance-equal-formats",
+        clock=TickClock(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.partitions_planned == 0
+    assert result.partitions_succeeded == 0
+    assert result.rows_written == 0
+    assert FixtureMaintenanceDataset.calls == []
+
+
 def test_immediate_second_maintenance_rerun_without_advance_is_noop(tmp_store):
     from db.backfill import run_maintenance
 

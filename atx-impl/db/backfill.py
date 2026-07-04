@@ -367,6 +367,47 @@ def _watermark_name_matches_partition(name: str, partition: Partition) -> bool:
     )
 
 
+def _parse_watermark_datetime(value: Any) -> dt.datetime | None:
+    if isinstance(value, dt.datetime):
+        parsed = value
+    elif isinstance(value, dt.date):
+        parsed = dt.datetime.combine(value, dt.time.min)
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = dt.datetime.fromisoformat(text.replace("T", " "))
+        except ValueError:
+            try:
+                parsed = dt.datetime.combine(dt.date.fromisoformat(text), dt.time.min)
+            except ValueError:
+                return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _compare_watermark_values(left: Any, right: Any) -> int:
+    left_parsed = _parse_watermark_datetime(left)
+    right_parsed = _parse_watermark_datetime(right)
+    if left_parsed is not None and right_parsed is not None:
+        return (left_parsed > right_parsed) - (left_parsed < right_parsed)
+    left_text = str(left)
+    right_text = str(right)
+    return (left_text > right_text) - (left_text < right_text)
+
+
+def _watermark_less_than(left: Any, right: Any) -> bool:
+    return _compare_watermark_values(left, right) < 0
+
+
+def _sources_have_current_watermark(sources: Mapping[str, Mapping[str, str]]) -> bool:
+    return _incremental_since(sources) is not None
+
+
 def _sources_have_partition_scope(
     sources: Mapping[str, Mapping[str, str]],
     partitions: Sequence[Partition],
@@ -377,6 +418,16 @@ def _sources_have_partition_scope(
         for name in marks
         for partition in partitions
     )
+
+
+def _coarse_partition_watermark(current: str | None, partition: Partition) -> str | None:
+    if current is None:
+        return None
+    if _watermark_less_than(current, partition.window_lo.isoformat()):
+        return None
+    if _watermark_less_than(partition.window_hi.isoformat(), current):
+        return partition.window_hi.isoformat()
+    return current
 
 
 def _current_partition_watermark(
@@ -400,16 +451,17 @@ def _current_partition_watermark(
         return current
     if has_partition_scope:
         return None
-    return _incremental_since(sources)
+    return _coarse_partition_watermark(_incremental_since(sources), partition)
 
 
 def _should_run_maintenance_partition(
     existing: Sequence[Any] | None,
     *,
     current_watermark: str | None,
+    has_current_watermarks: bool = False,
 ) -> bool:
     if existing is None:
-        return True
+        return current_watermark is not None or not has_current_watermarks
     if str(existing[0]) != "succeeded":
         return True
     if current_watermark is None:
@@ -417,7 +469,7 @@ def _should_run_maintenance_partition(
     recorded = existing[4]
     if recorded is None:
         return True
-    return str(recorded) < current_watermark
+    return _watermark_less_than(recorded, current_watermark)
 
 
 def _mark_partition_running(
@@ -601,10 +653,9 @@ def _maintenance_watermark_after(
     *,
     current_watermark: str | None,
 ) -> str:
-    execution_watermark = _watermark_after(result, partition)
     if current_watermark is None:
-        return execution_watermark
-    return max(execution_watermark, current_watermark)
+        return _watermark_after(result, partition)
+    return current_watermark
 
 
 def _validate_watermark_window(partition: Partition, row: Sequence[Any]) -> None:
@@ -850,6 +901,12 @@ def run_maintenance(
         )
         for current_dataset_id in dataset_order
     }
+    source_watermarks_by_dataset = {
+        current_dataset_id: _sources_have_current_watermark(
+            sources_by_dataset[current_dataset_id],
+        )
+        for current_dataset_id in dataset_order
+    }
 
     current_watermarks: dict[str, str | None] = {}
     scheduled: list[Partition] = []
@@ -866,6 +923,7 @@ def run_maintenance(
         if _should_run_maintenance_partition(
             existing,
             current_watermark=current_watermark,
+            has_current_watermarks=source_watermarks_by_dataset[partition.dataset_id],
         ):
             scheduled.append(partition)
 
