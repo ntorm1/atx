@@ -10,8 +10,12 @@ from .warehouse import quality_check
 
 SOURCE_NAME = "XBRL validation"
 DQC_RULES_GUIDANCE_URL = "https://xbrl.us/home/priorities/data-quality/rules-guidance/"
+DQC_0004_URL = "https://xbrl.us/data-rule/dqc_0004/"
 DQC_0015_URL = "https://xbrl.us/data-rule/dqc_0015/"
+DQC_0018_URL = "https://xbrl.us/data-rule/dqc_0018/"
+DQC_0041_URL = "https://xbrl.us/data-rule/dqc_0041/"
 DQC_0053_URL = "https://xbrl.us/data-rule/dqc_0053/"
+DQC_0080_URL = "https://xbrl.us/data-rule/dqc_0080/"
 
 # PF-S7 S7-2 ports a deliberately small SQL-native subset of XBRL US DQC_0015.
 # The full rule includes a much larger element catalog plus member exclusions;
@@ -48,6 +52,35 @@ DQC_0053_EXCLUDED_MEMBER_AXIS_PAIRS: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
+# PF2-S9 S9-2 widens the SQL-native subset while documenting the boundary:
+# DQC_0004 is a same-context Assets = Liabilities + Equity footing; DQC_0080
+# mirrors the non-negative concept check for a small IFRS slice; DQC_0018 is a
+# curated deprecated-element list; DQC_0041 checks local direct axis-member
+# validity. Rules needing full Arelle/XULE semantics remain catalogued as skips
+# by migration 0126, not faked here.
+DQC_0080_IFRS_NON_NEGATIVE_CONCEPTS: tuple[tuple[str, str], ...] = (
+    ("ifrs-full", "Assets"),
+    ("ifrs-full", "CurrentAssets"),
+    ("ifrs-full", "CashAndCashEquivalents"),
+    ("ifrs-full", "Liabilities"),
+    ("ifrs-full", "CurrentLiabilities"),
+    ("ifrs-full", "Revenue"),
+)
+
+DQC_0018_DEPRECATED_CONCEPTS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "us-gaap",
+        "ExtraordinaryItemsOfIncomeStatement",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+        "Extraordinary items presentation is deprecated in modern US-GAAP taxonomy reporting.",
+    ),
+)
+
+DQC_0041_ALLOWED_MEMBER_AXIS_PAIRS: tuple[tuple[str, str], ...] = (
+    ("us-gaap:PropertyPlantAndEquipmentByTypeAxis", "us-gaap:LandMember"),
+    ("us-gaap:PropertyPlantAndEquipmentByTypeAxis", "us-gaap:BuildingMember"),
+)
+
 
 @dataclass(frozen=True)
 class XbrlValidationOptions:
@@ -78,10 +111,11 @@ def refresh_xbrl_validation_results(
     ``genuine_error``. Complete footings use ``resolved_ok``. ``absolute_tolerance``
     is never widened to make a check pass. A future Arelle/DQC sidecar can append
     additional rule families to the same table. PF-S7 S7-2 appends a small
-    SQL-native DQC subset under ``rule_family = 'dqc'``: DQC_0015 non-negative
-    concept facts and DQC_0053 excluded/unusable member-axis pairs. It is a
-    subset, not a full DQC plugin. DQC rows emitted here are violations only, so
-    failed DQC rows use ``resolution_status='genuine_error'``.
+    SQL-native DQC subset under ``rule_family = 'dqc'``: DQC_0004 same-context
+    assets footings, DQC_0015/DQC_0080 non-negative concept facts,
+    DQC_0018 deprecated elements, and DQC_0041/DQC_0053 axis-member checks.
+    It is a subset, not a full DQC plugin. DQC rows emitted here are violations
+    only, so failed DQC rows use ``resolution_status='genuine_error'``.
     """
 
     options = options or XbrlValidationOptions()
@@ -444,6 +478,12 @@ def refresh_xbrl_validation_results(
             [tolerance, validation_run_id, validation_run_id, tolerance, run_id],
         )
         _insert_dqc_subset_results(store, validation_run_id=validation_run_id, run_id=run_id)
+        _insert_pf2_s9_dqc_results(
+            store,
+            validation_run_id=validation_run_id,
+            run_id=run_id,
+            tolerance=tolerance,
+        )
 
     return int(
         store.con.execute(
@@ -707,6 +747,440 @@ def _insert_dqc_subset_results(store: DuckDBStore, *, validation_run_id: str, ru
             validation_run_id,
             run_id,
         ],
+    )
+
+
+def _insert_pf2_s9_dqc_results(
+    store: DuckDBStore,
+    *,
+    validation_run_id: str,
+    run_id: str,
+    tolerance: float,
+) -> None:
+    """Append PF2-S9 SQL-native DQC families without changing calc tolerance."""
+
+    ifrs_non_negative_values = _sql_values(DQC_0080_IFRS_NON_NEGATIVE_CONCEPTS)
+    deprecated_values = _sql_values(DQC_0018_DEPRECATED_CONCEPTS)
+    allowed_pair_values = _sql_values(DQC_0041_ALLOWED_MEMBER_AXIS_PAIRS)
+    excluded_pair_values = _sql_values(DQC_0053_EXCLUDED_MEMBER_AXIS_PAIRS)
+
+    store.con.execute(
+        f"""
+        INSERT INTO xbrl_validation_results (
+            validation_id,
+            validation_run_id,
+            rule_family,
+            rule_code,
+            severity,
+            status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            role_uri,
+            parent_taxonomy,
+            parent_concept,
+            context_ref,
+            unit_ref,
+            parent_fact_id,
+            parent_value,
+            child_weighted_sum,
+            absolute_difference,
+            tolerance,
+            child_count,
+            child_facts_json,
+            message,
+            dimensional_evidence_json,
+            resolution_status,
+            source_url,
+            run_id,
+            source_loaded_at
+        )
+        WITH grouped AS (
+            SELECT
+                security_id,
+                cik,
+                accession_number,
+                form,
+                filing_date,
+                acceptance_datetime,
+                primary_document,
+                context_ref,
+                unit_ref,
+                max(CASE WHEN taxonomy = 'us-gaap' AND concept = 'Assets' THEN filing_fact_id END) AS assets_fact_id,
+                max(CASE WHEN taxonomy = 'us-gaap' AND concept = 'Liabilities' THEN filing_fact_id END) AS liabilities_fact_id,
+                max(CASE WHEN taxonomy = 'us-gaap' AND concept = 'StockholdersEquity' THEN filing_fact_id END) AS equity_fact_id,
+                max(CASE WHEN taxonomy = 'us-gaap' AND concept = 'Assets' THEN numeric_value END) AS assets_value,
+                max(CASE WHEN taxonomy = 'us-gaap' AND concept = 'Liabilities' THEN numeric_value END) AS liabilities_value,
+                max(CASE WHEN taxonomy = 'us-gaap' AND concept = 'StockholdersEquity' THEN numeric_value END) AS equity_value,
+                max(source_url) AS source_url,
+                max(source_loaded_at) AS source_loaded_at
+            FROM xbrl_filing_facts
+            WHERE is_numeric
+              AND taxonomy = 'us-gaap'
+              AND concept IN ('Assets', 'Liabilities', 'StockholdersEquity')
+            GROUP BY
+                security_id, cik, accession_number, form, filing_date,
+                acceptance_datetime, primary_document, context_ref, unit_ref
+        ),
+        violations AS (
+            SELECT
+                *,
+                liabilities_value + equity_value AS expected_assets,
+                abs(assets_value - (liabilities_value + equity_value)) AS diff
+            FROM grouped
+            WHERE assets_value IS NOT NULL
+              AND liabilities_value IS NOT NULL
+              AND equity_value IS NOT NULL
+              AND abs(assets_value - (liabilities_value + equity_value)) > ?
+        )
+        SELECT
+            sha256(concat_ws('|', ?, 'dqc', 'DQC_0004', security_id, accession_number, primary_document, context_ref, unit_ref)) AS validation_id,
+            ? AS validation_run_id,
+            'dqc' AS rule_family,
+            'DQC_0004' AS rule_code,
+            'error' AS severity,
+            'failed' AS status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            NULL AS role_uri,
+            'us-gaap' AS parent_taxonomy,
+            'Assets' AS parent_concept,
+            context_ref,
+            unit_ref,
+            assets_fact_id AS parent_fact_id,
+            assets_value AS parent_value,
+            expected_assets AS child_weighted_sum,
+            diff AS absolute_difference,
+            ? AS tolerance,
+            2 AS child_count,
+            CAST(
+                to_json([
+                    struct_pack(filing_fact_id := liabilities_fact_id, taxonomy := 'us-gaap', concept := 'Liabilities', numeric_value := liabilities_value),
+                    struct_pack(filing_fact_id := equity_fact_id, taxonomy := 'us-gaap', concept := 'StockholdersEquity', numeric_value := equity_value)
+                ]) AS VARCHAR
+            ) AS child_facts_json,
+            'DQC_0004 subset: same-context Assets does not equal Liabilities plus StockholdersEquity within the unchanged absolute tolerance.' AS message,
+            CAST(
+                to_json(
+                    struct_pack(
+                        dqc_rule := 'DQC_0004',
+                        official_rule_url := '{DQC_0004_URL}',
+                        guidance_url := '{DQC_RULES_GUIDANCE_URL}',
+                        subset := 'same context_ref and unit_ref only; no full statement table plugin semantics',
+                        assets := assets_value,
+                        liabilities_plus_equity := expected_assets
+                    )
+                ) AS VARCHAR
+            ) AS dimensional_evidence_json,
+            'genuine_error' AS resolution_status,
+            source_url,
+            ? AS run_id,
+            coalesce(source_loaded_at, now()) AS source_loaded_at
+        FROM violations
+        """,
+        [tolerance, run_id, validation_run_id, tolerance, run_id],
+    )
+
+    store.con.execute(
+        f"""
+        INSERT INTO xbrl_validation_results (
+            validation_id,
+            validation_run_id,
+            rule_family,
+            rule_code,
+            severity,
+            status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            role_uri,
+            parent_taxonomy,
+            parent_concept,
+            context_ref,
+            unit_ref,
+            parent_fact_id,
+            parent_value,
+            child_weighted_sum,
+            absolute_difference,
+            tolerance,
+            child_count,
+            child_facts_json,
+            message,
+            dimensional_evidence_json,
+            resolution_status,
+            source_url,
+            run_id,
+            source_loaded_at
+        )
+        WITH dqc_0080_concepts(taxonomy, concept) AS (
+            VALUES
+                    {ifrs_non_negative_values}
+        ),
+        dqc_0018_deprecated(taxonomy, concept, replacement_concept, reason) AS (
+            VALUES
+                    {deprecated_values}
+        ),
+        ifrs_violations AS (
+            SELECT
+                sha256(concat_ws('|', ?, 'dqc', 'DQC_0080', f.security_id, f.accession_number, f.primary_document, f.context_ref, f.filing_fact_id)) AS validation_id,
+                f.*
+            FROM xbrl_filing_facts f
+            JOIN dqc_0080_concepts c
+              ON coalesce(f.taxonomy, '') = c.taxonomy
+             AND f.concept = c.concept
+            WHERE f.is_numeric
+              AND f.numeric_value < 0
+        ),
+        deprecated_violations AS (
+            SELECT
+                sha256(concat_ws('|', ?, 'dqc', 'DQC_0018', f.security_id, f.accession_number, f.primary_document, f.context_ref, f.filing_fact_id)) AS validation_id,
+                f.*,
+                d.replacement_concept,
+                d.reason
+            FROM xbrl_filing_facts f
+            JOIN dqc_0018_deprecated d
+              ON coalesce(f.taxonomy, '') = d.taxonomy
+             AND f.concept = d.concept
+        )
+        SELECT
+            validation_id,
+            ? AS validation_run_id,
+            'dqc' AS rule_family,
+            'DQC_0080' AS rule_code,
+            'error' AS severity,
+            'failed' AS status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            NULL AS role_uri,
+            taxonomy AS parent_taxonomy,
+            concept AS parent_concept,
+            context_ref,
+            unit_ref,
+            filing_fact_id AS parent_fact_id,
+            numeric_value AS parent_value,
+            0.0 AS child_weighted_sum,
+            abs(numeric_value) AS absolute_difference,
+            0.0 AS tolerance,
+            0 AS child_count,
+            CAST(to_json([struct_pack(filing_fact_id := filing_fact_id, taxonomy := taxonomy, concept := concept, numeric_value := numeric_value)]) AS VARCHAR) AS child_facts_json,
+            'DQC_0080 subset: sign-constrained IFRS concept reported with a negative numeric value.' AS message,
+            CAST(
+                to_json(
+                    struct_pack(
+                        dqc_rule := 'DQC_0080',
+                        official_rule_url := '{DQC_0080_URL}',
+                        guidance_url := '{DQC_RULES_GUIDANCE_URL}',
+                        subset := 'curated IFRS non-negative concept list only',
+                        observed_value := numeric_value
+                    )
+                ) AS VARCHAR
+            ) AS dimensional_evidence_json,
+            'genuine_error' AS resolution_status,
+            source_url,
+            ? AS run_id,
+            coalesce(source_loaded_at, now()) AS source_loaded_at
+        FROM ifrs_violations
+        UNION ALL
+        SELECT
+            validation_id,
+            ? AS validation_run_id,
+            'dqc' AS rule_family,
+            'DQC_0018' AS rule_code,
+            'warning' AS severity,
+            'failed' AS status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            NULL AS role_uri,
+            taxonomy AS parent_taxonomy,
+            concept AS parent_concept,
+            context_ref,
+            unit_ref,
+            filing_fact_id AS parent_fact_id,
+            numeric_value AS parent_value,
+            NULL AS child_weighted_sum,
+            NULL AS absolute_difference,
+            0.0 AS tolerance,
+            0 AS child_count,
+            CAST(to_json([struct_pack(filing_fact_id := filing_fact_id, taxonomy := taxonomy, concept := concept, replacement_concept := replacement_concept)]) AS VARCHAR) AS child_facts_json,
+            'DQC_0018 subset: deprecated taxonomy element is present; use the documented replacement concept where applicable.' AS message,
+            CAST(
+                to_json(
+                    struct_pack(
+                        dqc_rule := 'DQC_0018',
+                        official_rule_url := '{DQC_0018_URL}',
+                        guidance_url := '{DQC_RULES_GUIDANCE_URL}',
+                        subset := 'curated deprecated concept list only; extensible-enumeration checks remain skipped',
+                        replacement_concept := replacement_concept,
+                        reason := reason
+                    )
+                ) AS VARCHAR
+            ) AS dimensional_evidence_json,
+            'genuine_error' AS resolution_status,
+            source_url,
+            ? AS run_id,
+            coalesce(source_loaded_at, now()) AS source_loaded_at
+        FROM deprecated_violations
+        """,
+        [run_id, run_id, validation_run_id, run_id, validation_run_id, run_id],
+    )
+
+    store.con.execute(
+        f"""
+        INSERT INTO xbrl_validation_results (
+            validation_id,
+            validation_run_id,
+            rule_family,
+            rule_code,
+            severity,
+            status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            role_uri,
+            parent_taxonomy,
+            parent_concept,
+            context_ref,
+            unit_ref,
+            parent_fact_id,
+            parent_value,
+            child_weighted_sum,
+            absolute_difference,
+            tolerance,
+            child_count,
+            child_facts_json,
+            message,
+            dimensional_evidence_json,
+            resolution_status,
+            source_url,
+            run_id,
+            source_loaded_at
+        )
+        WITH allowed_pairs(axis_qname, member_qname) AS (
+            VALUES
+                    {allowed_pair_values}
+        ),
+        excluded_pairs(axis_qname, member_qname, reason) AS (
+            VALUES
+                    {excluded_pair_values}
+        ),
+        violations AS (
+            SELECT d.*
+            FROM xbrl_filing_dimensions d
+            WHERE d.member_kind = 'explicit'
+              AND d.dimension_concept IS NOT NULL
+              AND d.member_concept IS NOT NULL
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM xbrl_dimension_edges e
+                    WHERE e.source_concept = d.dimension_concept
+                      AND e.target_concept = d.member_concept
+                      AND coalesce(e.source_taxonomy, d.dimension_taxonomy, '') = coalesce(d.dimension_taxonomy, '')
+                      AND coalesce(e.target_taxonomy, d.member_taxonomy, '') = coalesce(d.member_taxonomy, '')
+                      AND e.usable = true
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM xbrl_dimension_edges e
+                    WHERE e.source_concept = d.dimension_concept
+                      AND e.target_concept = d.member_concept
+                      AND coalesce(e.source_taxonomy, d.dimension_taxonomy, '') = coalesce(d.dimension_taxonomy, '')
+                      AND coalesce(e.target_taxonomy, d.member_taxonomy, '') = coalesce(d.member_taxonomy, '')
+                      AND e.usable = false
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM allowed_pairs p
+                    WHERE p.axis_qname = d.dimension_qname
+                      AND p.member_qname = d.member_qname
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM excluded_pairs p
+                    WHERE p.axis_qname = d.dimension_qname
+                      AND p.member_qname = d.member_qname
+              )
+        )
+        SELECT
+            sha256(concat_ws('|', ?, 'dqc', 'DQC_0041', security_id, accession_number, primary_document, context_id, filing_dimension_id)) AS validation_id,
+            ? AS validation_run_id,
+            'dqc' AS rule_family,
+            'DQC_0041' AS rule_code,
+            'error' AS severity,
+            'failed' AS status,
+            security_id,
+            cik,
+            accession_number,
+            form,
+            filing_date,
+            acceptance_datetime,
+            primary_document,
+            NULL AS role_uri,
+            dimension_taxonomy AS parent_taxonomy,
+            dimension_concept AS parent_concept,
+            context_id AS context_ref,
+            NULL AS unit_ref,
+            NULL AS parent_fact_id,
+            NULL AS parent_value,
+            NULL AS child_weighted_sum,
+            NULL AS absolute_difference,
+            0.0 AS tolerance,
+            1 AS child_count,
+            CAST(
+                to_json([
+                    struct_pack(
+                        filing_dimension_id := filing_dimension_id,
+                        axis := dimension_qname,
+                        member := member_qname
+                    )
+                ]) AS VARCHAR
+            ) AS child_facts_json,
+            'DQC_0041 subset: explicit member is not directly allowed for the reported axis by local dimension edges or the curated allowed-pair list.' AS message,
+            CAST(
+                to_json(
+                    struct_pack(
+                        dqc_rule := 'DQC_0041',
+                        official_rule_url := '{DQC_0041_URL}',
+                        guidance_url := '{DQC_RULES_GUIDANCE_URL}',
+                        subset := 'direct usable=true local dimension edge or curated allowed-pair list only; transitive domain-member closure is skipped',
+                        axis := dimension_qname,
+                        member := member_qname
+                    )
+                ) AS VARCHAR
+            ) AS dimensional_evidence_json,
+            'genuine_error' AS resolution_status,
+            source_url,
+            ? AS run_id,
+            coalesce(source_loaded_at, now()) AS source_loaded_at
+        FROM violations
+        """,
+        [run_id, validation_run_id, run_id],
     )
 
 

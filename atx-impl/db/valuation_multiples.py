@@ -1246,6 +1246,114 @@ def valuation_multiples_overlap_coverage(
     }
 
 
+def _date_from_iso(value: Any) -> dt.date | None:
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value.date()
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    return dt.date.fromisoformat(text[:10])
+
+
+def _timestamp_from_iso(value: Any) -> dt.datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.to_pydatetime().replace(tzinfo=None)
+    if isinstance(value, dt.datetime):
+        return value.replace(tzinfo=None)
+    text = str(value).strip()
+    if not text:
+        return None
+    return dt.datetime.fromisoformat(text).replace(tzinfo=None)
+
+
+def _overlap_slice_id(options: ValuationMultiplesOptions, details: dict[str, object]) -> str:
+    payload = json_dumps(
+        {
+            "source": options.source,
+            "market_cap_sources": list(options.market_cap_sources or ()),
+            "symbols": list(_normalized_valuation_symbols(options.symbols)) if options.symbols else [],
+            "start_date": _iso_or_none(options.start_date),
+            "end_date": _iso_or_none(options.end_date),
+            "as_of_ts": details.get("as_of_ts"),
+            "run_id": options.run_id or "manual",
+        }
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _overlap_slice_row(options: ValuationMultiplesOptions, details: dict[str, object]) -> dict[str, object]:
+    available_at = (
+        _timestamp_from_iso(details.get("as_of_ts"))
+        or _timestamp_from_iso(details.get("max_visible_available_at"))
+        or dt.datetime.utcnow()
+    )
+    as_of_date = (
+        _date_from_iso(details.get("max_valuation_trade_date"))
+        or _date_from_iso(options.end_date)
+        or available_at.date()
+    )
+    return {
+        "overlap_slice_id": _overlap_slice_id(options, details),
+        "source": options.source,
+        "market_cap_sources_json": json_dumps(list(options.market_cap_sources or ())),
+        "symbol_scope_json": json_dumps(list(_normalized_valuation_symbols(options.symbols)) if options.symbols else []),
+        "start_date": options.start_date,
+        "end_date": options.end_date,
+        "as_of_ts": _timestamp_from_iso(details.get("as_of_ts")),
+        "max_visible_available_at": _timestamp_from_iso(details.get("max_visible_available_at")),
+        "numerator_security_count": int(details.get("numerator_security_count") or 0),
+        "denominator_security_count": int(details.get("denominator_security_count") or 0),
+        "coverage_ratio": details.get("coverage_ratio"),
+        "valuation_row_count": int(details.get("valuation_row_count") or 0),
+        "min_valuation_trade_date": _date_from_iso(details.get("min_valuation_trade_date")),
+        "max_valuation_trade_date": _date_from_iso(details.get("max_valuation_trade_date")),
+        "min_valuation_period_end": _date_from_iso(details.get("min_valuation_period_end")),
+        "max_valuation_period_end": _date_from_iso(details.get("max_valuation_period_end")),
+        "stale_price_fundamental_gap_days": int(details.get("stale_price_fundamental_gap_days") or 0),
+        "stale_valuation_row_count": int(details.get("stale_valuation_row_count") or 0),
+        "max_price_fundamental_gap_days": details.get("max_price_fundamental_gap_days"),
+        "denominator_definition": str(details.get("denominator_definition") or ""),
+        "details_json": json_dumps(details),
+        "is_latest_revision": True,
+        "as_of_date": as_of_date,
+        "available_at": available_at,
+        "run_id": options.run_id,
+    }
+
+
+def refresh_valuation_overlap_slice(
+    store: DuckDBStore,
+    options: ValuationMultiplesOptions | None = None,
+    *,
+    coverage_details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Persist the current valuation price x fundamental overlap coverage row."""
+
+    options = options or ValuationMultiplesOptions()
+    store.initialize()
+    details = coverage_details or valuation_multiples_overlap_coverage(
+        store,
+        options,
+        as_of_ts=options.coverage_as_of_ts,
+    )
+    row = _overlap_slice_row(options, details)
+    frame = pd.DataFrame([row])
+    with store.transaction():
+        store.con.execute("DELETE FROM valuation_overlap_slice WHERE overlap_slice_id = ?", [row["overlap_slice_id"]])
+        insert_frame(store, frame, "valuation_overlap_slice", "valuation_overlap_slice_insert")
+    return details
+
+
 def valuation_multiples_stale_gap_details(
     store: DuckDBStore,
     options: ValuationMultiplesOptions | None = None,
@@ -1662,6 +1770,7 @@ class ValuationMultiplesDataset(Dataset):
             options,
             as_of_ts=options.coverage_as_of_ts,
         )
+        refresh_valuation_overlap_slice(store, options, coverage_details=coverage_details)
         coverage_ratio = coverage_details["coverage_ratio"]
         stale_details = valuation_multiples_stale_gap_details(
             store,

@@ -942,6 +942,15 @@ def test_valuation_multiples_dataset_records_overlap_coverage_quality(tmp_store)
     assert details["as_of_ts"] == "2020-02-01T10:00:00"
     assert details["stale_price_fundamental_gap_days"] == 5
 
+    slice_row = tmp_store.con.execute(
+        """
+        SELECT numerator_security_count, denominator_security_count, coverage_ratio, valuation_row_count, run_id
+        FROM valuation_overlap_slice
+        WHERE source = 'derived_valuation_multiples_v1'
+        """
+    ).fetchone()
+    assert slice_row == (1, 2, pytest.approx(0.5), 9, "coverage-run")
+
 
 def test_valuation_overlap_coverage_respects_available_at(tmp_store) -> None:
     _seed_market_cap_inputs(tmp_store)
@@ -1158,7 +1167,16 @@ def test_valuation_multiples_migration_catalog_and_formula_seed_are_present(tmp_
         "SELECT description FROM schema_migrations WHERE version = '0087'"
     ).fetchone()[0] == "valuation_multiples_indexes"
     assert tmp_store.con.execute(
+        "SELECT description FROM schema_migrations WHERE version = '0124'"
+    ).fetchone()[0] == "valuation_overlap_slice_schema_catalog"
+    assert tmp_store.con.execute(
+        "SELECT description FROM schema_migrations WHERE version = '0127'"
+    ).fetchone()[0] == "pf2_s9_indexes_report"
+    assert tmp_store.con.execute(
         "SELECT count(*) FROM table_catalog WHERE table_name = 'valuation_multiples'"
+    ).fetchone()[0] == 1
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM table_catalog WHERE table_name = 'valuation_overlap_slice'"
     ).fetchone()[0] == 1
     assert tmp_store.con.execute(
         """

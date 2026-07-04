@@ -854,6 +854,103 @@ def test_dqc_0015_positive_curated_concept_does_not_emit_false_positive(tmp_stor
     assert dqc_rows == 0
 
 
+def test_dqc_0004_assets_liabilities_equity_subset_flags_misfoot(tmp_store):
+    """DQC_0004 subset: same-context Assets must foot to Liabilities + Equity."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_context(tmp_store)
+    _insert_fact(tmp_store, "fact-assets", 1, "Assets", 100.0)
+    _insert_fact(tmp_store, "fact-liabilities", 2, "Liabilities", 60.0)
+    _insert_fact(tmp_store, "fact-equity", 3, "StockholdersEquity", 30.0)
+
+    assert refresh_xbrl_validation_results(tmp_store) == 1
+    row = tmp_store.con.execute(
+        """
+        SELECT rule_code, parent_concept, parent_value, child_weighted_sum, absolute_difference, tolerance, message
+        FROM xbrl_validation_results
+        WHERE rule_code = 'DQC_0004'
+        """
+    ).fetchone()
+
+    assert row[0:6] == ("DQC_0004", "Assets", 100.0, 90.0, 10.0, 1.0)
+    assert "DQC_0004 subset" in row[6]
+
+
+def test_dqc_0004_footing_within_tolerance_is_quiet(tmp_store):
+    """DQC_0004 subset passing fixture: exact same-context footing is quiet."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_context(tmp_store)
+    _insert_fact(tmp_store, "fact-assets", 1, "Assets", 90.0)
+    _insert_fact(tmp_store, "fact-liabilities", 2, "Liabilities", 60.0)
+    _insert_fact(tmp_store, "fact-equity", 3, "StockholdersEquity", 30.0)
+
+    assert refresh_xbrl_validation_results(tmp_store) == 0
+
+
+def test_dqc_0080_ifrs_negative_concept_subset_flags_negative_fact(tmp_store):
+    """DQC_0080 subset: curated IFRS non-negative concepts cannot be negative."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_context(tmp_store)
+    _insert_fact(tmp_store, "fact-ifrs-negative-assets", 1, "Assets", -1.0)
+    tmp_store.con.execute(
+        """
+        UPDATE xbrl_filing_facts
+        SET taxonomy = 'ifrs-full',
+            qname = 'ifrs-full:Assets'
+        WHERE filing_fact_id = 'fact-ifrs-negative-assets'
+        """
+    )
+
+    assert refresh_xbrl_validation_results(tmp_store) == 1
+    row = tmp_store.con.execute(
+        """
+        SELECT rule_code, parent_taxonomy, parent_concept, parent_value, message
+        FROM xbrl_validation_results
+        WHERE rule_code = 'DQC_0080'
+        """
+    ).fetchone()
+
+    assert row[0:4] == ("DQC_0080", "ifrs-full", "Assets", -1.0)
+    assert "DQC_0080 subset" in row[4]
+
+
+def test_dqc_0018_deprecated_element_subset_flags_fact(tmp_store):
+    """DQC_0018 subset: curated deprecated elements are surfaced as DQC rows."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_context(tmp_store)
+    _insert_fact(
+        tmp_store,
+        "fact-deprecated-extraordinary",
+        1,
+        "ExtraordinaryItemsOfIncomeStatement",
+        1.0,
+    )
+
+    assert refresh_xbrl_validation_results(tmp_store) == 1
+    row = tmp_store.con.execute(
+        """
+        SELECT rule_code, severity, parent_concept, message, dimensional_evidence_json
+        FROM xbrl_validation_results
+        WHERE rule_code = 'DQC_0018'
+        """
+    ).fetchone()
+
+    assert row[0:3] == ("DQC_0018", "warning", "ExtraordinaryItemsOfIncomeStatement")
+    assert "deprecated taxonomy element" in row[3]
+    assert "replacement_concept" in row[4]
+
+
 def test_dqc_0053_excluded_member_axis_subset_flags_wrong_pair(tmp_store):
     """DQC_0053 subset: curated wrong member-axis pair emits a failed DQC row."""
 
@@ -927,6 +1024,33 @@ def test_dqc_0053_direct_unusable_dimension_edge_flags_pair(tmp_store):
     assert "usable=false" in rows[0][7]
 
 
+def test_dqc_0041_unknown_axis_member_subset_flags_pair(tmp_store):
+    """DQC_0041 subset: unrecognized explicit axis/member pair emits a failed row."""
+
+    from db.xbrl_validation import refresh_xbrl_validation_results
+
+    _insert_sec_submission(tmp_store)
+    _insert_dimensional_context(
+        tmp_store,
+        filing_context_id="ctx-unknown-axis-member",
+        context_id="c-unknown-axis-member",
+        axis_qname="us-gaap:TestOnlyAxis",
+        member_qname="us-gaap:UnknownMember",
+    )
+
+    assert refresh_xbrl_validation_results(tmp_store) == 1
+    row = tmp_store.con.execute(
+        """
+        SELECT rule_code, parent_concept, context_ref, message
+        FROM xbrl_validation_results
+        WHERE rule_code = 'DQC_0041'
+        """
+    ).fetchone()
+
+    assert row[0:3] == ("DQC_0041", "TestOnlyAxis", "c-unknown-axis-member")
+    assert "DQC_0041 subset" in row[3]
+
+
 def test_dqc_0053_allowed_member_axis_does_not_emit_false_positive(tmp_store):
     """DQC_0053 subset passing fixture: PPE member on PPE axis is quiet."""
 
@@ -973,3 +1097,22 @@ def test_dqc_subset_refresh_is_idempotent_for_dqc_family(tmp_store):
     ).fetchone()
 
     assert rows == (1, first_id, "dqc-idempotent-test")
+
+
+def test_dqc_rule_catalog_documents_ported_and_skipped_rules(tmp_store):
+    rows = tmp_store.con.execute(
+        """
+        SELECT rule_code, port_status
+        FROM xbrl_dqc_rule_catalog
+        WHERE rule_code IN ('DQC_0004', 'DQC_0015', 'DQC_0041', 'DQC_0118', 'DQC_0135')
+        ORDER BY rule_code
+        """
+    ).fetchall()
+
+    assert rows == [
+        ("DQC_0004", "ported_sql_subset"),
+        ("DQC_0015", "ported_sql_subset"),
+        ("DQC_0041", "ported_sql_subset"),
+        ("DQC_0118", "skipped_requires_full_processor"),
+        ("DQC_0135", "skipped_requires_full_processor"),
+    ]
