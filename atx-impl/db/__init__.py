@@ -137,6 +137,22 @@ from .calendarization import (
     refresh_fundamental_calendar_ttm,
     run_calendarization_refresh,
 )
+from .segments import (
+    SegmentDataset,
+    SegmentOptions,
+    compute_segment_rows,
+    infer_segment_type,
+    refresh_segment_footnote_coverage,
+    refresh_segments,
+    run_segment_refresh,
+)
+from .footnotes import (
+    FootnoteDataset,
+    FootnoteOptions,
+    compute_footnote_rows,
+    refresh_footnotes,
+    run_footnote_refresh,
+)
 from .fundamental_xbrl_metrics import (
     CONCEPT_MAP,
     FundamentalXbrlMetricDataset,
@@ -453,6 +469,18 @@ __all__ = [
     "compute_standardized_rows",
     "read_standardization_rules",
     "refresh_fundamental_standardized",
+    "SegmentDataset",
+    "SegmentOptions",
+    "compute_segment_rows",
+    "infer_segment_type",
+    "refresh_segment_footnote_coverage",
+    "refresh_segments",
+    "run_segment_refresh",
+    "FootnoteDataset",
+    "FootnoteOptions",
+    "compute_footnote_rows",
+    "refresh_footnotes",
+    "run_footnote_refresh",
     "FundamentalXbrlMetricDataset",
     "FundamentalXbrlMetricOptions",
     "normalize_xbrl_metric_rows",

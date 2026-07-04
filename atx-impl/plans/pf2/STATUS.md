@@ -3,9 +3,9 @@
 Updated: 2026-07-04, America/New_York
 Integration branch: `feat/warehouse-parity` / local `main`
 
-PF2-S1 through PF2-S6 are implemented. PF2-S6 lives on branch
-`feat/pf2-s6` as implementation commit
-`4b8cd5a66b6ddf76bed98ec23b8ede7f6aa0e05c`.
+PF2-S1 through PF2-S7 are implemented. PF2-S7 lives on branch
+`feat/pf2-s7` as implementation commit
+`9544e25d385017b72787984e703b34d5a4cd562b`.
 
 ## Completed
 
@@ -27,6 +27,9 @@ PF2-S1 through PF2-S6 are implemented. PF2-S6 lives on branch
 - PF2-S6: calendarization + fiscal normalization + quarterly-TTM complete on
   branch `feat/pf2-s6` as `4b8cd5a66b6ddf76bed98ec23b8ede7f6aa0e05c`.
   Migrations consumed: `0114-0116`.
+- PF2-S7: segment data + footnote sub-ledgers complete on branch
+  `feat/pf2-s7` as `9544e25d385017b72787984e703b34d5a4cd562b`.
+  Migrations consumed: `0117-0120`.
 
 ## S6 Implemented Surfaces
 
@@ -43,20 +46,46 @@ PF2-S1 through PF2-S6 are implemented. PF2-S6 lives on branch
 - Offline fixtures prove FYR boundary handling, a 371-day 53-week period, offset
   fiscal-year-end calendar TTM, partial coverage flags, and thin-cache no-op.
 
+## S7 Implemented Surfaces
+
+- New `db/segments.py` mines dimensional inline-XBRL facts into `segment_dim`
+  and `segment_fact` for business/geographic/product/customer segments, with
+  deterministic IDs, PIT lineage, revision flags, and tolerance-banded
+  reconciliation to `fundamental_standardized` / `fundamental_xbrl_metric`.
+- New `db/footnotes.py` normalizes dimensional pension/OPEB, deferred-tax,
+  lease, and SBC facts into `footnote_pension`, `footnote_deferred_tax`,
+  `footnote_lease`, and `footnote_sbc`; SBC remains aggregate/award-type only,
+  not Execucomp grant detail.
+- Migrations `0117-0120` add/catalog segment tables, footnote tables, indexes,
+  reconciliation support, and `segment_footnote_coverage` with schema-contract
+  refreshes.
+- Critical quality checks cover bad segment rows, duplicate segment revision
+  keys, tolerance-banded segment reconciliation warnings, bad footnote
+  sub-ledger rows, and coverage-count validity.
+- Jobs registry exports `segments` and `footnotes` downstream of
+  `xbrl_filing_contexts`; `segments` also depends on `fundamental_xbrl_metric`
+  for consolidated reconciliation.
+
 ## Verification
 
 - `python -m py_compile db\calendarization.py db\fundamental_statements.py db\migrations.py db\quality.py db\__init__.py db\tests\test_calendarization.py`
 - `python -m pytest db\tests\test_calendarization.py -q -n0`
 - `python -m pytest db\tests\test_fundamental_period_dates.py db\tests\test_restatement_lineage.py db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py db\tests\test_import.py -q -n0`
 - `python -m pytest db\tests -q -n0`
+- `python -m py_compile db\segments.py db\footnotes.py db\migrations.py db\quality.py db\__init__.py db\jobs.py db\tests\test_segments.py db\tests\test_footnotes.py`
+- `python -m pytest db\tests\test_segments.py db\tests\test_footnotes.py -q -n0`
+- `python -m pytest db\tests\test_import.py db\tests\test_jobs_dag.py db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py db\tests\test_segments.py db\tests\test_footnotes.py -q -n0`
+- `python -m pytest db\tests -q -n0`
 
 ## Live DB Smoke
 
-Operator-pending for S1-S6. No live 14 GB shared-DB migration/apply/rebuild was
+Operator-pending for S1-S7. No live 14 GB shared-DB migration/apply/rebuild was
 run from the PF2 worktrees. S6 live proof-slice counts for
 `fundamental_calendar_map`, `fundamental_calendar_ttm`, non-Dec-FYE relabels,
 53-week flags, stitched-TTM windows, and `run_id` remain pending until an
-approved backed-up live run.
+approved backed-up live run. S7 live proof-slice counts for `segment_dim`,
+`segment_fact`, footnote sub-ledgers, reconciliation pass/flag/no-consolidated
+split, coverage row, and `run_id` also remain pending.
 
 ## Known Caveats
 
@@ -72,12 +101,17 @@ approved backed-up live run.
   fallback for thin fixtures; broader issuer fiscal-calendar metadata is future
   input coverage.
 - S6 live proof slice is not run; docs do not claim live row counts.
+- S7 segment sums use a default 2% relative reconciliation tolerance and flag
+  divergence as a warning, not a load failure; ASC 280 segment disclosures are
+  expected to be noisy.
+- S7 live proof slice is not run; docs do not claim segment or footnote live row
+  counts.
 - `0102` remains unused reserved headroom after S2.
 
 ## Resume Point
 
-1. Merge `feat/pf2-s6` into local `main` / `feat/warehouse-parity`.
-2. Continue ROADMAP sequencing with PF2-S7 (segments and footnote sub-ledgers).
+1. Merge `feat/pf2-s7` into local `main` / `feat/warehouse-parity`.
+2. Continue ROADMAP sequencing with PF2-S8.
 3. Track progress in `.superpowers/sdd/progress.md`; append or update sprint
    closeout rows only when the sprint lands.
 
