@@ -84,7 +84,17 @@ foreach(grp IN LISTS _atx_groups)
         endif()
     endif()
 
-    if(ATX_UNITY_BUILD)
+    # The `parallel` group is opted OUT of Unity batching entirely: its test files
+    # pervasively define identically-named file-local fixture helpers (kSlotSize,
+    # make_input, digest_slots, sequential_digest, run, frictionless_sim, Lcg,
+    # compile_named, shared_lib, ...) inside unnamed namespaces, which per
+    # [namespace.unnamed] merge into ONE namespace when Unity concatenates several
+    # files into a single TU -> ODR redefinition / ambiguous-call errors across many
+    # file pairs (not just a fixed few, as in the factory group). Rather than chase
+    # every colliding pair with SKIP_UNITY_BUILD_INCLUSION, this group simply compiles
+    # file-by-file (as under -DATX_UNITY_BUILD=OFF); Unity here is only a build-speed
+    # optimization, never a correctness requirement.
+    if(ATX_UNITY_BUILD AND NOT grp STREQUAL "parallel")
         set_target_properties(${_tgt} PROPERTIES
             UNITY_BUILD ON
             UNITY_BUILD_BATCH_SIZE 16)
