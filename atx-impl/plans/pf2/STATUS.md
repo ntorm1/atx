@@ -3,9 +3,9 @@
 Updated: 2026-07-04, America/New_York
 Integration branch: `feat/warehouse-parity` / local `main`
 
-PF2-S1 through PF2-S8 are implemented. PF2-S8 lives on branch
-`feat/pf2-s8` as implementation commit
-`1e5ddce014fa3546c721baca437fd4a1d1ece4e1`.
+PF2-S1 through PF2-S9 are implemented. PF2-S9 lives on branch
+`feat/pf2-s9` as implementation commit
+`4fad387eb2da9ad268da4ecc800e2cdf8e74324d`.
 
 ## Completed
 
@@ -34,6 +34,11 @@ PF2-S1 through PF2-S8 are implemented. PF2-S8 lives on branch
   branch `feat/pf2-s8` as
   `1e5ddce014fa3546c721baca437fd4a1d1ece4e1`. Migrations consumed:
   `0121-0123`.
+- PF2-S9: populated valuation overlap provenance + cross-vendor standardized
+  fact reconciliation + wider SQL-native DQC subset complete on branch
+  `feat/pf2-s9` as
+  `4fad387eb2da9ad268da4ecc800e2cdf8e74324d`. Migrations consumed:
+  `0124-0127`.
 
 ## S6 Implemented Surfaces
 
@@ -94,6 +99,30 @@ PF2-S1 through PF2-S8 are implemented. PF2-S8 lives on branch
   and mismatch rows with populated `surprise_pct`.
 - Jobs registry exports `press_release_facts` downstream of `est_actual`.
 
+## S9 Implemented Surfaces
+
+- `valuation_multiples` now persists each refresh's proof-slice coverage into
+  `valuation_overlap_slice`, including numerator/denominator security counts,
+  overlap date spans, stale price/fundamental gaps, details JSON, and PIT
+  markers. `ValuationMultiplesDataset.load` writes both the existing quality
+  rows and the durable overlap provenance row.
+- New `db/fact_disagreement.py` normalizes injectable Sharadar/SimFin-style
+  CSV/JSON/DataFrame/callable baseline facts into `vendor_baseline_facts`,
+  compares latest visible vintages against `fundamental_standardized` on
+  `(security_id,item_id,period_end,basis)`, and writes `fact_disagreement`
+  rows with `agrees` / `disagrees` / `missing_warehouse` statuses.
+- The >99% cross-vendor agreement gate is first-class in both
+  `FactDisagreementDataset.load` and warehouse quality checks. Bad-row checks
+  cover the new overlap and disagreement surfaces.
+- `xbrl_validation.py` keeps the existing calculation-linkbase tolerance at
+  `1.0` and appends additive DQC rows for SQL-expressible subsets:
+  DQC_0004, DQC_0080, DQC_0018, and DQC_0041, alongside the existing
+  DQC_0015/DQC_0053 subset. Migration `0126` catalogs ported rules and
+  explicitly skipped full-processor rules (`DQC_0118`, `DQC_0135`).
+- Jobs registry now exposes `fundamental_standardized` and
+  `fact_disagreement`, with `fact_disagreement` downstream of the standardized
+  fact surface.
+
 ## Verification
 
 - `python -m py_compile db\calendarization.py db\fundamental_statements.py db\migrations.py db\quality.py db\__init__.py db\tests\test_calendarization.py`
@@ -109,10 +138,14 @@ PF2-S1 through PF2-S8 are implemented. PF2-S8 lives on branch
 - `python -m pytest db\tests\test_estimates.py db\tests\test_press_release.py -q -n0`
 - `python -m pytest db\tests\test_import.py db\tests\test_jobs_dag.py db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py db\tests\test_press_release.py -q -n0`
 - `python -m pytest db\tests` (xdist default): 955 passed in 188.32s
+- `python -m py_compile db\valuation_multiples.py db\fact_disagreement.py db\xbrl_validation.py db\migrations.py db\quality.py db\jobs.py db\__init__.py db\tests\test_valuation_multiples.py db\tests\test_fact_disagreement.py db\tests\test_xbrl_validation.py db\tests\test_jobs_dag.py`
+- `python -m pytest db\tests\test_valuation_multiples.py db\tests\test_fact_disagreement.py db\tests\test_xbrl_validation.py db\tests\test_jobs_dag.py -q -n0`
+- `python -m pytest db\tests\test_migrations.py db\tests\test_migration_governance.py db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py db\tests\test_import.py -q -n0`
+- `python -m pytest db\tests`: 964 passed in 168.68s
 
 ## Live DB Smoke
 
-Operator-pending for S1-S8. No live 14 GB shared-DB migration/apply/rebuild was
+Operator-pending for S1-S9. No live 14 GB shared-DB migration/apply/rebuild was
 run from the PF2 worktrees. S6 live proof-slice counts for
 `fundamental_calendar_map`, `fundamental_calendar_ttm`, non-Dec-FYE relabels,
 53-week flags, stitched-TTM windows, and `run_id` remain pending until an
@@ -121,7 +154,9 @@ approved backed-up live run. S7 live proof-slice counts for `segment_dim`,
 split, coverage row, and `run_id` also remain pending. S8 live proof-slice
 counts for `press_release_facts`, `press_release_reconciliation`, periods with
 pre-10-Q preliminary capture, EPS basis coverage, and `run_id` also remain
-pending.
+pending. S9 live proof-slice counts for `valuation_overlap_slice`,
+`valuation_multiples`, `vendor_baseline_facts`, `fact_disagreement`,
+agreement ratio, DQC rows by rule code, and `run_id` also remain pending.
 
 ## Known Caveats
 
@@ -146,12 +181,17 @@ pending.
   default DB has no loaded press-release corpus until an operator supplies one.
 - S8 live proof slice is not run; docs do not claim preliminary-capture or basis
   coverage counts.
+- S9 cross-vendor reconciliation is an offline/injectable surface. The default
+  DB has no Sharadar/SimFin baseline rows until an operator supplies a file or
+  loader; tests prove comparison and quality gating on fixtures only.
+- S9's DQC work is still a SQL-native subset, not the full XBRL-US plugin. The
+  full Arelle/XULE-dependent rules remain explicitly catalogued as skipped.
 - `0102` remains unused reserved headroom after S2.
 
 ## Resume Point
 
-1. Merge `feat/pf2-s8` into local `main` / `feat/warehouse-parity`.
-2. Continue ROADMAP sequencing with PF2-S9.
+1. Merge `feat/pf2-s9` into local `main` / `feat/warehouse-parity`.
+2. Continue ROADMAP sequencing with PF2-S10.
 3. Track progress in `.superpowers/sdd/progress.md`; append or update sprint
    closeout rows only when the sprint lands.
 
