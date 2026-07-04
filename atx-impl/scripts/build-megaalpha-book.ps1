@@ -236,6 +236,59 @@ function New-OptimizeArgv {
     [string[]]$argv.ToArray()
 }
 
+function Resolve-ActiveStages {
+    <#
+    .SYNOPSIS
+      Pure stage-list resolver (S7-0 extraction of the former inline block at
+      :285-305). Expands the 'all'/'pipeline' shorthands, de-dupes, restores
+      canonical execution order, then applies the metabook/optimize mutual
+      exclusion (both stages write books.bin -- never run both into the same
+      file) -- but ONLY when the caller used a SHORTHAND. An explicit -Stage
+      list is never second-guessed.
+
+    .NOTES
+      S7-0 BUG FIX: the pre-S7 inline block computed `$useMetabook =
+      ($Profile -eq 'prod')` and applied it unconditionally to whatever
+      `$activeStages` held, regardless of whether the caller asked for 'all'
+      (ambiguous -- the profile must decide) or explicitly for '-Stage
+      optimize' (unambiguous -- the caller said exactly what they meant).
+      The old code silently returned an EMPTY list for `-Stage optimize
+      -Profile prod`. This is the routing bug the whole S7 sprint rationale
+      depends on: it is what made `New-OptimizeArgv`'s prod branch dead code
+      and let the risk-model flags parse without ever reaching a stage that
+      runs. Fixing it here also makes S3's --gp-trading reachable at all (it
+      only bites via `optimize`, which S3's ROADMAP roots deliberately keep
+      separate from `metabook`).
+    #>
+    param(
+        [string[]] $Stage,
+        [string]   $Profile
+    )
+    $expandedStages = @()
+    foreach ($s in $Stage) {
+        if ($s -eq 'all')         { $expandedStages += @('discover', 'combine', 'metabook', 'optimize', 'report') }
+        elseif ($s -eq 'pipeline') { $expandedStages += @('combine', 'metabook', 'optimize', 'report') }
+        else                       { $expandedStages += $s }
+    }
+    $seen = @{}; $orderedStages = @()
+    foreach ($s in $expandedStages) { if (-not $seen.ContainsKey($s)) { $seen[$s] = $true; $orderedStages += $s } }
+    $canonicalOrder = @('discover', 'combine', 'metabook', 'optimize', 'report')
+    $activeStages   = $canonicalOrder | Where-Object { $orderedStages -contains $_ }
+
+    # metabook/optimize are ALTERNATIVES (both produce books.bin) ONLY when the
+    # caller used the 'all'/'pipeline' SHORTHAND -- that is the one genuinely
+    # ambiguous case (the shorthand can't know which book-build stage the
+    # caller wants, so -Profile decides: prod -> metabook, smoke -> optimize).
+    # An EXPLICIT -Stage list (e.g. -Stage optimize, or -Stage metabook,optimize)
+    # is never second-guessed: the caller said exactly what they meant.
+    $isShorthand = ($Stage -contains 'all') -or ($Stage -contains 'pipeline')
+    if ($isShorthand) {
+        if ($Profile -eq 'prod') { $activeStages = $activeStages | Where-Object { $_ -ne 'optimize' } }
+        else                     { $activeStages = $activeStages | Where-Object { $_ -ne 'metabook' } }
+    }
+    [string[]]$activeStages
+}
+
 function New-ReportArgv {
     param(
         [string] $PanelBin,
@@ -282,27 +335,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $WorkDir = Join-Path (Get-Location).Path $WorkDir
     }
 
-    $expandedStages = @()
-    foreach ($s in $Stage) {
-        if ($s -eq 'all')      { $expandedStages += @('discover', 'combine', 'metabook', 'optimize', 'report') }
-        elseif ($s -eq 'pipeline') { $expandedStages += @('combine', 'metabook', 'optimize', 'report') }
-        else { $expandedStages += $s }
-    }
-    $seen = @{}; $orderedStages = @()
-    foreach ($s in $expandedStages) { if (-not $seen.ContainsKey($s)) { $seen[$s] = $true; $orderedStages += $s } }
-    $canonicalOrder = @('discover', 'combine', 'metabook', 'optimize', 'report')
-    $activeStages   = $canonicalOrder | Where-Object { $orderedStages -contains $_ }
-
-    # metabook and optimize are ALTERNATIVES (both produce books.bin) -- the prod
-    # profile's --metabook selects metabook; smoke's default (no --metabook)
-    # selects optimize. Drop whichever one the profile did not select from the
-    # active list so DryRun/real execution never runs BOTH into the same books.bin.
-    $useMetabook = ($Profile -eq 'prod')
-    $activeStages = $activeStages | Where-Object {
-        if ($_ -eq 'metabook') { $useMetabook }
-        elseif ($_ -eq 'optimize') { -not $useMetabook }
-        else { $true }
-    }
+    $activeStages = Resolve-ActiveStages -Stage $Stage -Profile $Profile
 
     if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null }
 

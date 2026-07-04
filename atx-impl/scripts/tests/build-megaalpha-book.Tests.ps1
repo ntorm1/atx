@@ -244,3 +244,31 @@ Describe 'New-ReportArgv - --capacity-curve opt-in' {
         ($argv -contains '--report-out') | Should Be $true
     }
 }
+
+Describe 'Resolve-ActiveStages - explicit stage requests are never silently emptied (S7-0)' {
+
+    It 'an explicit -Stage optimize -Profile prod resolves to @(''optimize''), NOT empty' {
+        $stages = Resolve-ActiveStages -Stage @('optimize') -Profile 'prod'
+        ($stages -contains 'optimize') | Should Be $true
+        $stages.Count | Should Be 1
+    }
+
+    It 'the "all" shorthand still auto-excludes optimize for -Profile prod (metabook substitutes)' {
+        $stages = Resolve-ActiveStages -Stage @('all') -Profile 'prod'
+        ($stages -contains 'metabook') | Should Be $true
+        ($stages -contains 'optimize') | Should Be $false
+    }
+
+    It 'the "all" shorthand still auto-excludes metabook for -Profile smoke (optimize substitutes)' {
+        $stages = Resolve-ActiveStages -Stage @('all') -Profile 'smoke'
+        ($stages -contains 'optimize') | Should Be $true
+        ($stages -contains 'metabook') | Should Be $false
+    }
+
+    It 'the "pipeline" shorthand behaves identically to "all" minus discover' {
+        $stages = Resolve-ActiveStages -Stage @('pipeline') -Profile 'prod'
+        ($stages -contains 'discover') | Should Be $false
+        ($stages -contains 'metabook') | Should Be $true
+        ($stages -contains 'optimize') | Should Be $false
+    }
+}
