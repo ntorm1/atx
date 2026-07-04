@@ -31,6 +31,7 @@ using atx::engine::exec::ImpactCfg;
 using atx::engine::exec::SlippageCfg;
 using atx::engine::exec::SlippageMode;
 using atx::engine::factory::capacity_sqrt_law_score;
+using atx::engine::factory::turnover_autocorr_score;
 namespace cost = atx::engine::cost;
 
 [[nodiscard]] Panel make_panel(usize dates, usize insts, std::vector<std::string> fields,
@@ -150,6 +151,78 @@ TEST(CapacityObjective, NeverInfOrNaN) {
   EXPECT_TRUE(std::isfinite(score));
   EXPECT_GE(score, 0.0);
   EXPECT_LE(score, 1.0);
+}
+
+// ===========================================================================
+//  S4-2 — turnover_autocorr_score (the kObjTurnover column). Unwired helper.
+// ===========================================================================
+
+// An EXACT (noise-free) AR(1) process x[t] = mu + (x0-mu)*phi^t satisfies
+// x[t] = mu*(1-phi) + phi*x[t-1] -- OLS recovers b==phi with ZERO residual.
+// mu=0.5, phi=0.9, x0=1.0 -> a slowly-decaying, highly persistent series.
+[[nodiscard]] AlphaStreams persistent_strm(usize periods) {
+  AlphaStreams s;
+  s.n_alphas_ = 1;
+  s.n_periods_ = periods;
+  s.n_instruments_ = 1;
+  s.pnl_flat.assign(periods, 0.0);
+  s.pos_flat.resize(periods);
+  for (usize t = 0; t < periods; ++t) {
+    s.pos_flat[t] = 0.5 + 0.5 * std::pow(0.9, static_cast<f64>(t));
+  }
+  return s;
+}
+
+// An EXACT phi=-1 alternation: x[t] = -x[t-1] -- maximal churn, b==-1.0.
+[[nodiscard]] AlphaStreams churny_strm(usize periods) {
+  AlphaStreams s;
+  s.n_alphas_ = 1;
+  s.n_periods_ = periods;
+  s.n_instruments_ = 1;
+  s.pnl_flat.assign(periods, 0.0);
+  s.pos_flat.resize(periods);
+  for (usize t = 0; t < periods; ++t) {
+    s.pos_flat[t] = (t % 2 == 0) ? 0.5 : -0.5;
+  }
+  return s;
+}
+
+TEST(TurnoverObjective, PersistentSeriesScoresAboveChurnySeries) {
+  const AlphaStreams slow = persistent_strm(20);
+  const AlphaStreams churn = churny_strm(20);
+  const f64 score_slow = turnover_autocorr_score(slow);
+  const f64 score_churn = turnover_autocorr_score(churn);
+  EXPECT_NEAR(score_slow, 0.9, 1e-6) << "exact AR(1) phi=0.9 must recover b~=0.9";
+  EXPECT_NEAR(score_churn, -1.0, 1e-6) << "exact alternation must recover b~=-1.0";
+  EXPECT_GT(score_slow, score_churn);
+}
+
+TEST(TurnoverObjective, ConstantSeriesDegenerateFitIsSkippedNotZeroed) {
+  // Instrument 0 constant (zero predictor variance -> NaN fit, must be SKIPPED);
+  // instrument 1 the persistent series -- the score must reflect ONLY inst 1.
+  AlphaStreams s;
+  s.n_alphas_ = 1;
+  s.n_periods_ = 20;
+  s.n_instruments_ = 2;
+  s.pnl_flat.assign(20, 0.0);
+  s.pos_flat.assign(40, 0.0);
+  for (usize t = 0; t < 20; ++t) {
+    s.pos_flat[t * 2 + 0] = 1.0;                                            // constant
+    s.pos_flat[t * 2 + 1] = 0.5 + 0.5 * std::pow(0.9, static_cast<f64>(t)); // persistent
+  }
+  EXPECT_NEAR(turnover_autocorr_score(s), 0.9, 1e-6);
+}
+
+TEST(TurnoverObjective, ZeroLastPeriodWeightExcludesInstrument) {
+  AlphaStreams s = churny_strm(20);
+  // Zero the last-period weight for the (only) instrument -> no contributor.
+  s.pos_flat.back() = 0.0;
+  EXPECT_EQ(turnover_autocorr_score(s), 0.0);
+}
+
+TEST(TurnoverObjective, PureFunction_TwiceRunByteIdentical) {
+  const AlphaStreams s = persistent_strm(15);
+  EXPECT_EQ(turnover_autocorr_score(s), turnover_autocorr_score(s));
 }
 
 } // namespace atxtest_fitness_capacity_turnover_test

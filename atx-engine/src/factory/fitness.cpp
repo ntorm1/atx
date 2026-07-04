@@ -9,6 +9,7 @@
 
 #include "atx/engine/alpha/bytecode.hpp"       // alpha::compile, alpha::Program
 #include "atx/engine/alpha/streams.hpp"        // alpha::extract_streams, AlphaStreams
+#include "atx/engine/alpha/ts_ops.hpp"         // alpha::detail::ou_ar1_fit (S4-2 AR(1) reuse)
 #include "atx/engine/alpha/vm.hpp"             // alpha::Engine
 #include "atx/engine/combine/correlation.hpp"  // combine::pairwise_complete_corr
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics, AlphaMetrics
@@ -614,6 +615,38 @@ inline constexpr atx::usize kCapacityObjGridPoints = 8U;
     return 1.0; // ample capacity (never crosses zero on the grid) -> saturate
   }
   return capacity_aum / (capacity_aum + target_aum);
+}
+
+[[nodiscard]] atx::f64 turnover_autocorr_score(const alpha::AlphaStreams &strm) noexcept {
+  const atx::usize insts = strm.n_instruments();
+  const atx::usize periods = strm.n_periods();
+  if (insts == 0U || periods < 3U || strm.n_alphas() == 0U) {
+    return 0.0; // need >= 2 lag pairs (ou_ar1_fit's own floor)
+  }
+  const std::span<const atx::f64> last_w = strm.positions(0U, periods - 1U);
+  std::vector<atx::f64> series;
+  series.reserve(periods);
+  atx::f64 wsum = 0.0;
+  atx::f64 acc = 0.0;
+  for (atx::usize i = 0U; i < insts; ++i) { // ascending inst -> order-fixed reduction
+    const atx::f64 wi = last_w[i];
+    if (std::isnan(wi) || wi == 0.0) {
+      continue; // dead name -> no turnover signal to weight in
+    }
+    series.clear();
+    for (atx::usize t = 0U; t < periods; ++t) { // ascending period -> order-fixed
+      series.push_back(strm.positions(0U, t)[i]);
+    }
+    const alpha::detail::OuAr1Fit fit =
+        alpha::detail::ou_ar1_fit(std::span<const atx::f64>{series});
+    if (std::isnan(fit.b)) {
+      continue; // degenerate fit -- SKIP, do not zero-in a real neighbour's signal
+    }
+    const atx::f64 abs_w = std::abs(wi);
+    acc += abs_w * fit.b;
+    wsum += abs_w;
+  }
+  return (wsum == 0.0) ? 0.0 : acc / wsum;
 }
 
 [[nodiscard]] atx::core::Result<FitnessReport>

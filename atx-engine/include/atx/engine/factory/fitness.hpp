@@ -282,6 +282,30 @@ enum class Reduce : atx::u8 { Max, Mean };
                                                atx::f64 target_aum) noexcept;
 
 // =========================================================================
+//  turnover_autocorr_score — S4-2: the kObjTurnover NSGA column.
+//
+//  The |last-period-weight|-weighted mean first-order autocorrelation (AR(1)
+//  coefficient b) of each instrument's OWN target-weight time series
+//  (strm.positions(0, t)[i] across t=0..n_periods-1), reusing
+//  atx::engine::alpha::detail::ou_ar1_fit (ts_ops.hpp) -- the SAME AR(1) OLS
+//  fitter the VM's ou_rolling ops already use. Cross-module detail:: reuse is
+//  precedented (factory/search_driver.cpp, factory/mutation.cpp,
+//  factory/op_catalog.{hpp,cpp} already reach into alpha::detail::). NO new
+//  estimator math.
+//
+//  A persistent (slowly-decaying) position series has b -> 1 (needs little
+//  rebalancing); a churny one has b -> 0 or negative. b is a raw OLS slope over
+//  finite input -- never +inf/NaN except ou_ar1_fit's OWN documented degenerate
+//  return (< 2 valid lag pairs or zero predictor variance), which this function
+//  SKIPS (does not zero-in) so a constant/dead instrument never drags a real
+//  signal toward 0. Instruments with a zero/NaN last-period weight are also
+//  skipped (no notional, no turnover signal to weight in -- mirrors
+//  book_cost_bps's dead-name skip). 0.0 when no instrument contributes.
+//  PURE; NO RNG; bit-deterministic.
+// =========================================================================
+[[nodiscard]] atx::f64 turnover_autocorr_score(const alpha::AlphaStreams &strm) noexcept;
+
+// =========================================================================
 //  FitnessReport — one candidate's scored result (plan §4.6 step 5).
 //
 //  wq            : OOS WorldQuant fitness, mean over CPCV TEST folds.
