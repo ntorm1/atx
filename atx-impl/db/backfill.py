@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 from .dataset import DatasetLoadResult
-from .orchestrator import RegistryEntry, build_dataset_dag
+from .orchestrator import RegistryEntry, _incremental_since, build_dataset_dag
 
 
 Clock = Callable[[], dt.datetime]
@@ -332,6 +332,94 @@ def _watermark_row(store: Any, partition: Partition) -> tuple[Any, ...] | None:
     ).fetchone()
 
 
+def _dataset_watermarks(store: Any, dataset_id: str) -> dict[str, str]:
+    rows = store.con.execute(
+        """
+        SELECT watermark_name, watermark_value
+        FROM dataset_watermarks
+        WHERE dataset_id = ?
+        ORDER BY watermark_name
+        """,
+        [dataset_id],
+    ).fetchall()
+    return {str(name): str(value) for name, value in rows}
+
+
+def _watermark_sources_for_dataset(
+    store: Any,
+    dataset_id: str,
+    registry: Mapping[str, RegistryEntry],
+) -> dict[str, dict[str, str]]:
+    dag = build_dataset_dag(registry)
+    dependencies = dag.dependencies_of(dataset_id)
+    self_watermarks = _dataset_watermarks(store, dataset_id)
+    upstream = {
+        dependency: _dataset_watermarks(store, dependency)
+        for dependency in dependencies
+    }
+    return upstream if upstream else {dataset_id: self_watermarks}
+
+
+def _watermark_name_matches_partition(name: str, partition: Partition) -> bool:
+    return partition.partition_key in name or (
+        partition.window_lo.isoformat() in name
+        and partition.window_hi.isoformat() in name
+    )
+
+
+def _sources_have_partition_scope(
+    sources: Mapping[str, Mapping[str, str]],
+    partitions: Sequence[Partition],
+) -> bool:
+    return any(
+        _watermark_name_matches_partition(name, partition)
+        for marks in sources.values()
+        for name in marks
+        for partition in partitions
+    )
+
+
+def _current_partition_watermark(
+    sources: Mapping[str, Mapping[str, str]],
+    partition: Partition,
+    *,
+    has_partition_scope: bool,
+) -> str | None:
+    partition_sources: dict[str, dict[str, str]] = {}
+    for source_dataset_id, marks in sources.items():
+        matching = {
+            name: value
+            for name, value in marks.items()
+            if _watermark_name_matches_partition(name, partition)
+        }
+        if matching:
+            partition_sources[source_dataset_id] = matching
+
+    current = _incremental_since(partition_sources) if partition_sources else None
+    if current is not None:
+        return current
+    if has_partition_scope:
+        return None
+    return _incremental_since(sources)
+
+
+def _should_run_maintenance_partition(
+    existing: Sequence[Any] | None,
+    *,
+    current_watermark: str | None,
+) -> bool:
+    if existing is None:
+        return True
+    if str(existing[0]) != "succeeded":
+        return True
+    if current_watermark is None:
+        return False
+    recorded = existing[4]
+    if recorded is None:
+        return True
+    return str(recorded) < current_watermark
+
+
 def _mark_partition_running(
     store: Any,
     partition: Partition,
@@ -439,6 +527,26 @@ def _partition_params(
     return params
 
 
+def _maintenance_partition_params(
+    base_params: Mapping[str, Any],
+    partition: Partition,
+    *,
+    backfill_run_id: str,
+    current_watermark: str | None,
+) -> dict[str, Any]:
+    params = _partition_params(
+        base_params,
+        partition,
+        backfill_run_id=backfill_run_id,
+    )
+    params["full_rebuild"] = False
+    params["maintenance"] = True
+    if current_watermark is not None:
+        params["maintenance_watermark"] = current_watermark
+        params["current_watermark"] = current_watermark
+    return params
+
+
 def _default_executor(
     store: Any,
     partition: Partition,
@@ -485,6 +593,18 @@ def _watermark_after(result: Any, partition: Partition) -> str:
     if value is not None:
         return str(value)
     return partition.window_hi.isoformat()
+
+
+def _maintenance_watermark_after(
+    result: Any,
+    partition: Partition,
+    *,
+    current_watermark: str | None,
+) -> str:
+    execution_watermark = _watermark_after(result, partition)
+    if current_watermark is None:
+        return execution_watermark
+    return max(execution_watermark, current_watermark)
 
 
 def _validate_watermark_window(partition: Partition, row: Sequence[Any]) -> None:
@@ -660,10 +780,203 @@ def run_backfill(
     )
 
 
+def run_maintenance(
+    store: Any,
+    dataset_id: str,
+    start: dt.date | dt.datetime | str,
+    end: dt.date | dt.datetime | str,
+    chunk: int | dt.timedelta | str,
+    *,
+    registry: Mapping[str, RegistryEntry] | None = None,
+    params: Mapping[str, Any] | None = None,
+    backfill_run_id: str | None = None,
+    include_dependencies: bool = False,
+    executor: PartitionExecutor | None = None,
+    clock: Clock | None = None,
+) -> BackfillRunResult:
+    """Execute only partitions whose recorded watermark is stale or missing.
+
+    Current watermarks use the same dataset/upstream reduction as the dataset
+    orchestrator: dependency watermarks drive downstream datasets, and datasets
+    with no dependencies compare against their own watermarks. Partition-scoped
+    watermark names are preferred when present; otherwise the orchestrator-style
+    coarse watermark is used as the deterministic fallback.
+    """
+
+    selected_registry = _default_registry() if registry is None else registry
+    window_start = _coerce_date(start, "start")
+    window_end = _coerce_date(end, "end")
+    chunk_spec = _parse_chunk(chunk)
+    run_id = backfill_run_id or str(uuid.uuid4())
+    now = clock or _now_utc_naive
+
+    _initialize_store(store)
+    dataset_order = _dependency_order(
+        dataset_id,
+        selected_registry,
+        include_dependencies=include_dependencies,
+    )
+    candidates = tuple(
+        partition
+        for current_dataset_id in dataset_order
+        for partition in plan_backfill(
+            current_dataset_id,
+            window_start,
+            window_end,
+            chunk_spec.label,
+            registry=selected_registry,
+        )
+    )
+    partitions_by_dataset = {
+        current_dataset_id: tuple(
+            partition
+            for partition in candidates
+            if partition.dataset_id == current_dataset_id
+        )
+        for current_dataset_id in dataset_order
+    }
+    sources_by_dataset = {
+        current_dataset_id: _watermark_sources_for_dataset(
+            store,
+            current_dataset_id,
+            selected_registry,
+        )
+        for current_dataset_id in dataset_order
+    }
+    partition_scope_by_dataset = {
+        current_dataset_id: _sources_have_partition_scope(
+            sources_by_dataset[current_dataset_id],
+            partitions_by_dataset[current_dataset_id],
+        )
+        for current_dataset_id in dataset_order
+    }
+
+    current_watermarks: dict[str, str | None] = {}
+    scheduled: list[Partition] = []
+    for partition in candidates:
+        existing = _watermark_row(store, partition)
+        if existing is not None:
+            _validate_watermark_window(partition, existing)
+        current_watermark = _current_partition_watermark(
+            sources_by_dataset[partition.dataset_id],
+            partition,
+            has_partition_scope=partition_scope_by_dataset[partition.dataset_id],
+        )
+        current_watermarks[partition.partition_key] = current_watermark
+        if _should_run_maintenance_partition(
+            existing,
+            current_watermark=current_watermark,
+        ):
+            scheduled.append(partition)
+
+    initial_run_status = _insert_run_header(
+        store,
+        backfill_run_id=run_id,
+        dataset_id=dataset_id,
+        start=window_start,
+        end=window_end,
+        chunk_label=chunk_spec.label,
+        ts=now(),
+    )
+
+    results: list[PartitionResult] = []
+    run_executor = executor
+    if run_executor is None:
+        run_executor = lambda s, p, partition_params: _default_executor(
+            s,
+            p,
+            partition_params,
+            registry=selected_registry,
+        )
+
+    try:
+        for partition in scheduled:
+            _mark_partition_running(
+                store,
+                partition,
+                backfill_run_id=run_id,
+                ts=now(),
+            )
+            current_watermark = current_watermarks[partition.partition_key]
+            partition_params = _maintenance_partition_params(
+                params or {},
+                partition,
+                backfill_run_id=run_id,
+                current_watermark=current_watermark,
+            )
+            try:
+                execution_result = run_executor(store, partition, partition_params)
+            except Exception:
+                _mark_partition_failed(
+                    store,
+                    partition,
+                    backfill_run_id=run_id,
+                    ts=now(),
+                )
+                raise
+
+            rows = _rows_written(execution_result)
+            watermark_after = _maintenance_watermark_after(
+                execution_result,
+                partition,
+                current_watermark=current_watermark,
+            )
+            _mark_partition_succeeded(
+                store,
+                partition,
+                rows_written=rows,
+                watermark_after=watermark_after,
+                backfill_run_id=run_id,
+                ts=now(),
+            )
+            results.append(
+                PartitionResult(
+                    partition=partition,
+                    status="succeeded",
+                    rows_written=rows,
+                    watermark_after=watermark_after,
+                )
+            )
+    except Exception as exc:
+        error_message = f"{exc}\n{traceback.format_exc(limit=20)}"
+        _finish_run(
+            store,
+            backfill_run_id=run_id,
+            status="failed",
+            finished_at=now(),
+            error_message=error_message,
+        )
+        raise
+
+    succeeded = sum(1 for result in results if result.status == "succeeded")
+    failed = sum(1 for result in results if result.status == "failed")
+    status = "succeeded" if failed == 0 else "failed"
+    if not (initial_run_status == "succeeded" and succeeded == 0 and failed == 0):
+        _finish_run(
+            store,
+            backfill_run_id=run_id,
+            status=status,
+            finished_at=now(),
+        )
+    return BackfillRunResult(
+        backfill_run_id=run_id,
+        dataset_id=dataset_id,
+        status=status,
+        dataset_order=dataset_order,
+        partitions_planned=len(scheduled),
+        partitions_succeeded=succeeded,
+        partitions_skipped=0,
+        partitions_failed=failed,
+        rows_written=sum(result.rows_written for result in results),
+        partition_results=tuple(results),
+    )
+
+
 __all__ = [
     "BackfillRunResult",
     "Partition",
     "PartitionResult",
     "plan_backfill",
     "run_backfill",
+    "run_maintenance",
 ]
