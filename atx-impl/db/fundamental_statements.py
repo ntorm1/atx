@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import astuple, dataclass
 
 from .connection import DuckDBStore
+from .industry_templates import refresh_entity_industry_templates
 
 
 SOURCE_NAME = "SEC companyfacts"
@@ -473,8 +474,10 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__insurance_float","insurance_statement","balance_sheet","insurance_float","Insurance float","instant","credit","monetary",1.0,10,False,False,"Vendor/open-data gap: §2.6 lists no verified us-gaap concept.",1610,"IS",False,None),
     # -- S4b §2.7 REITs ---------------------------------------------------------------
     FundamentalStatementMapRow(SOURCE_NAME,"nareit","FundsFromOperations","reit_statement","cash_flow","ffo","Funds from operations (FFO)","duration","credit","monetary",1.0,10,True,True,"Nareit-defined FFO; often custom extension rather than core us-gaap.",1701,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ffo","reit_statement","cash_flow","ffo","Funds from operations (FFO)","duration","credit","monetary",1.0,20,True,True,"Derived fallback: FFO = net income + depreciation/amortization when reported Nareit FFO is absent.",1701,"RT",True,"ffo = net_income + depreciation_amortization"),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__ffo_per_share","reit_statement","per_share","ffo_per_share","FFO per share","duration","credit","per_share",1.0,10,False,True,"Derived: FFO per share = FFO / diluted shares.",1702,"RT",True,"ffo_per_share = ffo / shares_diluted_avg"),
     FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__affo","reit_statement","cash_flow","affo","Adjusted FFO (AFFO)","duration","credit","monetary",1.0,10,False,False,"Company-specific extension/vendor item; no verified common us-gaap concept in §2.7.",1703,"RT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__affo","reit_statement","cash_flow","affo","Adjusted FFO (AFFO)","duration","credit","monetary",1.0,20,True,True,"Derived fallback: AFFO uses reported AFFO when present, otherwise reported/derived FFO.",1703,"RT",True,"affo = coalesce(reported_affo, ffo)"),
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","__DERIVED__affo_per_share","reit_statement","per_share","affo_per_share","AFFO per share","duration","credit","per_share",1.0,10,False,True,"Derived: AFFO per share = AFFO / diluted shares.",1704,"RT",True,"affo_per_share = affo / shares_diluted_avg"),
     FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__noi","reit_statement","property","noi","Net operating income (NOI)","duration","credit","monetary",1.0,10,False,False,"REIT extension/vendor item; no verified common us-gaap concept in §2.7.",1705,"RT",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"extension","__EXTENSION__same_store_noi","reit_statement","property","same_store_noi","Same-store NOI","duration","credit","monetary",1.0,10,False,False,"REIT extension/vendor item; no verified common us-gaap concept in §2.7.",1706,"RT",False,None),
@@ -484,6 +487,18 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__nav_per_share","reit_statement","valuation","nav_per_share","Net asset value per share","instant","credit","per_share",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1710,"RT",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__capitalization_rate","reit_statement","valuation","capitalization_rate","Capitalisation rate","instant","credit","ratio",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1711,"RT",False,None),
     FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__ffo_payout_ratio","reit_statement","valuation","ffo_payout_ratio","FFO payout ratio","duration","credit","ratio",1.0,10,False,False,"Vendor/open-data gap: §2.7 lists no verified us-gaap concept.",1712,"RT",False,None),
+    # -- PF2-S5 Utility --------------------------------------------------------------
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","RegulatedAndUnregulatedOperatingRevenue","utility_statement","revenue","utility_operating_revenue","Utility operating revenue","duration","credit","monetary",1.0,10,True,True,"Utility operating revenue for regulated and unregulated activity.",1801,"UT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__utility_rate_base","utility_statement","rate_base","utility_rate_base","Utility rate base","instant","debit","monetary",1.0,10,False,False,"Regulatory rate base is usually a commission/vendor field.",1802,"UT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PublicUtilitiesPropertyPlantAndEquipmentRateBaseAmount","utility_statement","rate_base","utility_ppe_rate_base","Utility PP&E rate-base amount","instant","debit","monetary",1.0,10,True,True,"Utility property, plant, and equipment rate-base amount.",1803,"UT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","OperatingIncomeLoss","utility_statement","profitability","utility_operating_income","Utility operating income","duration","credit","monetary",1.0,10,False,True,"Utility-template operating income.",1804,"UT",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","DepreciationDepletionAndAmortization","utility_statement","costs","utility_depreciation_amortization","Utility depreciation and amortization","duration","debit","monetary",1.0,10,False,True,"Utility-template depreciation and amortization.",1805,"UT",False,None),
+    # -- PF2-S5 Broker-dealer --------------------------------------------------------
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","Revenues","broker_dealer_statement","revenue","broker_dealer_revenue","Broker-dealer revenue","duration","credit","monetary",1.0,10,True,True,"Broker-dealer template revenue.",1901,"BD",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","SegregatedCashAndSecurities","broker_dealer_statement","client_assets","segregated_cash_securities","Segregated cash and securities","instant","debit","monetary",1.0,10,True,True,"Cash and securities segregated for customers under broker-dealer rules.",1902,"BD",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","PayablesToBrokerDealersAndClearingOrganizations","broker_dealer_statement","liabilities","payables_broker_dealers","Payables to broker-dealers and clearing organizations","instant","credit","monetary",1.0,10,True,True,"Broker-dealer payables to clearing organizations.",1903,"BD",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","ReceivablesFromBrokerDealersAndClearingOrganizations","broker_dealer_statement","assets","receivables_broker_dealers","Receivables from broker-dealers and clearing organizations","instant","debit","monetary",1.0,10,True,True,"Broker-dealer receivables from clearing organizations.",1904,"BD",False,None),
+    FundamentalStatementMapRow(SOURCE_NAME,"vendor-only","__VENDOR_ONLY__net_capital","broker_dealer_statement","capital","net_capital","Broker-dealer net capital","instant","credit","monetary",1.0,10,False,False,"Regulatory net capital is not a standard us-gaap companyfacts concept.",1905,"BD",False,None),
 )
 
 
@@ -511,6 +526,8 @@ STATEMENT_MAP_OVERLAY_EXCEPTION_REASONS: dict[tuple[str, str, str, int], str] = 
     ("vendor-only", "__VENDOR_ONLY__nav_per_share", "RT", 1710): "NAV per share is vendor/appraisal-derived, not a standard us-gaap concept.",
     ("vendor-only", "__VENDOR_ONLY__capitalization_rate", "RT", 1711): "Capitalization rate is market/appraisal-derived, not a standard us-gaap concept.",
     ("vendor-only", "__VENDOR_ONLY__ffo_payout_ratio", "RT", 1712): "FFO payout ratio is derived from FFO and dividends; no direct us-gaap concept is mapped.",
+    ("vendor-only", "__VENDOR_ONLY__utility_rate_base", "UT", 1802): "Utility rate base is generally a regulatory/vendor field, not a standard us-gaap fact.",
+    ("vendor-only", "__VENDOR_ONLY__net_capital", "BD", 1905): "Broker-dealer net capital is a regulatory field, not a standard us-gaap companyfacts concept.",
 }
 
 
@@ -735,10 +752,406 @@ def seed_fundamental_statement_map(store: DuckDBStore) -> int:
     return len(FUNDAMENTAL_STATEMENT_MAP_ROWS)
 
 
+def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
+    """Derive REIT FFO/AFFO rows from raw statement points when reported rows are absent."""
+
+    before = int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
+    store.con.execute(
+        """
+        INSERT INTO fundamental_statement_points (
+            statement_point_id,
+            fact_revision_id,
+            revision_group_id,
+            source,
+            security_id,
+            symbol,
+            cik,
+            statement_type,
+            statement_section,
+            canonical_metric,
+            canonical_label,
+            taxonomy,
+            concept,
+            unit,
+            unit_type,
+            period_type,
+            normal_balance,
+            period_start,
+            period_end,
+            as_of_date,
+            available_at,
+            fiscal_year,
+            fiscal_period,
+            form,
+            accession_number,
+            source_accession,
+            filed_date,
+            revision_sequence,
+            revision_count,
+            is_latest_revision,
+            is_value_changed,
+            raw_value,
+            value,
+            previous_raw_value,
+            previous_value,
+            value_delta,
+            value_delta_percent,
+            run_id,
+            source_url,
+            source_loaded_at
+        )
+        WITH latest_routes AS (
+            SELECT security_id, industry_template
+            FROM (
+                SELECT
+                    eit.*,
+                    row_number() OVER (
+                        PARTITION BY security_id
+                        ORDER BY available_at DESC, source_loaded_at DESC, route_id DESC
+                    ) AS route_rank
+                FROM entity_industry_template eit
+                WHERE is_latest_revision
+                  AND valid_from <= current_date
+                  AND coalesce(valid_to, DATE '9999-12-31') > current_date
+            )
+            WHERE route_rank = 1
+        ),
+        source_inputs AS (
+            SELECT
+                p.source,
+                p.security_id,
+                any_value(p.symbol) AS symbol,
+                any_value(p.cik) AS cik,
+                p.period_start,
+                p.period_end,
+                p.accession_number,
+                max(p.as_of_date) AS as_of_date,
+                max(p.available_at) AS available_at,
+                any_value(p.fiscal_year) AS fiscal_year,
+                any_value(p.fiscal_period) AS fiscal_period,
+                any_value(p.form) AS form,
+                any_value(p.run_id) AS run_id,
+                coalesce(max(p.source_url), 'derived:reit_ffo_affo') AS source_url,
+                max(p.source_loaded_at) AS source_loaded_at,
+                max(p.unit) FILTER (
+                    WHERE p.canonical_metric IN ('net_income', 'da_cf', 'da_is', 'depreciation', 'ffo', 'affo')
+                ) AS monetary_unit,
+                max(p.value) FILTER (WHERE p.canonical_metric = 'net_income') AS net_income,
+                coalesce(
+                    max(p.value) FILTER (WHERE p.canonical_metric = 'da_cf'),
+                    max(p.value) FILTER (WHERE p.canonical_metric = 'da_is'),
+                    max(p.value) FILTER (WHERE p.canonical_metric = 'depreciation')
+                ) AS depreciation_amortization,
+                max(p.value) FILTER (WHERE p.canonical_metric = 'ffo') AS reported_ffo,
+                max(p.value) FILTER (WHERE p.canonical_metric = 'affo') AS reported_affo,
+                max(p.value) FILTER (WHERE p.canonical_metric = 'shares_diluted_avg') AS shares_diluted_avg
+            FROM fundamental_statement_points p
+            JOIN latest_routes r
+              ON r.security_id = p.security_id
+             AND r.industry_template = 'RT'
+            WHERE p.period_type = 'duration'
+              AND p.canonical_metric IN (
+                    'net_income',
+                    'da_cf',
+                    'da_is',
+                    'depreciation',
+                    'ffo',
+                    'affo',
+                    'shares_diluted_avg'
+              )
+            GROUP BY
+                p.source,
+                p.security_id,
+                p.period_start,
+                p.period_end,
+                p.accession_number
+        ),
+        derived_basis AS (
+            SELECT
+                *,
+                net_income + coalesce(depreciation_amortization, 0.0) AS fallback_ffo,
+                coalesce(reported_ffo, net_income + coalesce(depreciation_amortization, 0.0)) AS ffo_basis,
+                coalesce(reported_affo, reported_ffo, net_income + coalesce(depreciation_amortization, 0.0)) AS affo_basis
+            FROM source_inputs
+            WHERE net_income IS NOT NULL
+               OR reported_ffo IS NOT NULL
+               OR reported_affo IS NOT NULL
+        ),
+        candidate_rows AS (
+            SELECT
+                source,
+                security_id,
+                symbol,
+                cik,
+                'reit_statement' AS statement_type,
+                'cash_flow' AS statement_section,
+                'ffo' AS canonical_metric,
+                'Funds from operations (FFO)' AS canonical_label,
+                'derived' AS taxonomy,
+                '__DERIVED__ffo' AS concept,
+                coalesce(monetary_unit, 'USD') AS unit,
+                'monetary' AS unit_type,
+                fallback_ffo AS value,
+                period_start,
+                period_end,
+                as_of_date,
+                available_at,
+                fiscal_year,
+                fiscal_period,
+                form,
+                accession_number,
+                run_id,
+                source_url,
+                source_loaded_at
+            FROM derived_basis b
+            WHERE reported_ffo IS NULL
+              AND fallback_ffo IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM fundamental_statement_points existing
+                  WHERE existing.source = b.source
+                    AND existing.security_id = b.security_id
+                    AND existing.canonical_metric = 'ffo'
+                    AND existing.period_start IS NOT DISTINCT FROM b.period_start
+                    AND existing.period_end = b.period_end
+                    AND existing.accession_number = b.accession_number
+              )
+            UNION ALL
+            SELECT
+                source,
+                security_id,
+                symbol,
+                cik,
+                'reit_statement',
+                'cash_flow',
+                'affo',
+                'Adjusted FFO (AFFO)',
+                'derived',
+                '__DERIVED__affo',
+                coalesce(monetary_unit, 'USD'),
+                'monetary',
+                affo_basis,
+                period_start,
+                period_end,
+                as_of_date,
+                available_at,
+                fiscal_year,
+                fiscal_period,
+                form,
+                accession_number,
+                run_id,
+                source_url,
+                source_loaded_at
+            FROM derived_basis b
+            WHERE affo_basis IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM fundamental_statement_points existing
+                  WHERE existing.source = b.source
+                    AND existing.security_id = b.security_id
+                    AND existing.canonical_metric = 'affo'
+                    AND existing.period_start IS NOT DISTINCT FROM b.period_start
+                    AND existing.period_end = b.period_end
+                    AND existing.accession_number = b.accession_number
+              )
+            UNION ALL
+            SELECT
+                source,
+                security_id,
+                symbol,
+                cik,
+                'reit_statement',
+                'per_share',
+                'ffo_per_share',
+                'FFO per share',
+                'derived',
+                '__DERIVED__ffo_per_share',
+                'USD/shares',
+                'per_share',
+                ffo_basis / shares_diluted_avg,
+                period_start,
+                period_end,
+                as_of_date,
+                available_at,
+                fiscal_year,
+                fiscal_period,
+                form,
+                accession_number,
+                run_id,
+                source_url,
+                source_loaded_at
+            FROM derived_basis b
+            WHERE ffo_basis IS NOT NULL
+              AND shares_diluted_avg IS NOT NULL
+              AND shares_diluted_avg <> 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM fundamental_statement_points existing
+                  WHERE existing.source = b.source
+                    AND existing.security_id = b.security_id
+                    AND existing.canonical_metric = 'ffo_per_share'
+                    AND existing.period_start IS NOT DISTINCT FROM b.period_start
+                    AND existing.period_end = b.period_end
+                    AND existing.accession_number = b.accession_number
+              )
+            UNION ALL
+            SELECT
+                source,
+                security_id,
+                symbol,
+                cik,
+                'reit_statement',
+                'per_share',
+                'affo_per_share',
+                'AFFO per share',
+                'derived',
+                '__DERIVED__affo_per_share',
+                'USD/shares',
+                'per_share',
+                affo_basis / shares_diluted_avg,
+                period_start,
+                period_end,
+                as_of_date,
+                available_at,
+                fiscal_year,
+                fiscal_period,
+                form,
+                accession_number,
+                run_id,
+                source_url,
+                source_loaded_at
+            FROM derived_basis b
+            WHERE affo_basis IS NOT NULL
+              AND shares_diluted_avg IS NOT NULL
+              AND shares_diluted_avg <> 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM fundamental_statement_points existing
+                  WHERE existing.source = b.source
+                    AND existing.security_id = b.security_id
+                    AND existing.canonical_metric = 'affo_per_share'
+                    AND existing.period_start IS NOT DISTINCT FROM b.period_start
+                    AND existing.period_end = b.period_end
+                    AND existing.accession_number = b.accession_number
+              )
+        ),
+        keyed AS (
+            SELECT
+                sha256(
+                    concat_ws(
+                        '|',
+                        'derived_reit_ffo_affo',
+                        source,
+                        security_id,
+                        canonical_metric,
+                        unit,
+                        coalesce(CAST(period_start AS VARCHAR), ''),
+                        CAST(period_end AS VARCHAR),
+                        accession_number
+                    )
+                ) AS statement_point_id,
+                sha256(
+                    concat_ws(
+                        '|',
+                        'derived_reit_ffo_affo',
+                        source,
+                        security_id,
+                        taxonomy,
+                        concept,
+                        unit,
+                        coalesce(CAST(period_start AS VARCHAR), ''),
+                        CAST(period_end AS VARCHAR),
+                        accession_number
+                    )
+                ) AS fact_revision_id,
+                sha256(
+                    concat_ws(
+                        '|',
+                        source,
+                        security_id,
+                        canonical_metric,
+                        unit,
+                        coalesce(CAST(period_start AS VARCHAR), ''),
+                        CAST(period_end AS VARCHAR)
+                    )
+                ) AS revision_group_id,
+                *,
+                lag(value) OVER statement_window AS previous_value,
+                row_number() OVER statement_window AS revision_sequence,
+                count(*) OVER statement_window AS revision_count
+            FROM candidate_rows
+            WINDOW statement_window AS (
+                PARTITION BY source, security_id, canonical_metric, unit, period_start, period_end
+                ORDER BY
+                    coalesce(available_at, CAST(as_of_date AS TIMESTAMP)),
+                    as_of_date,
+                    coalesce(source_loaded_at, TIMESTAMP '1970-01-01'),
+                    accession_number
+                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+            )
+        )
+        SELECT
+            statement_point_id,
+            fact_revision_id,
+            revision_group_id,
+            source,
+            security_id,
+            symbol,
+            cik,
+            statement_type,
+            statement_section,
+            canonical_metric,
+            canonical_label,
+            taxonomy,
+            concept,
+            unit,
+            unit_type,
+            'duration' AS period_type,
+            'credit' AS normal_balance,
+            period_start,
+            period_end,
+            as_of_date,
+            available_at,
+            fiscal_year,
+            fiscal_period,
+            form,
+            accession_number,
+            accession_number AS source_accession,
+            as_of_date AS filed_date,
+            revision_sequence,
+            revision_count,
+            revision_sequence = revision_count AS is_latest_revision,
+            CASE
+                WHEN revision_sequence = 1 THEN false
+                ELSE value IS DISTINCT FROM previous_value
+            END AS is_value_changed,
+            value AS raw_value,
+            value,
+            previous_value AS previous_raw_value,
+            previous_value,
+            CASE
+                WHEN previous_value IS NULL OR value IS NULL THEN NULL
+                ELSE value - previous_value
+            END AS value_delta,
+            CASE
+                WHEN previous_value IS NULL OR previous_value = 0 OR value IS NULL THEN NULL
+                ELSE (value - previous_value) / abs(previous_value)
+            END AS value_delta_percent,
+            run_id,
+            source_url,
+            source_loaded_at
+        FROM keyed
+        """
+    )
+    after = int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
+    return after - before
+
+
 def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
     """Refresh normalized statement facts from mapped SEC fact revisions."""
 
     seed_fundamental_statement_map(store)
+    refresh_entity_industry_templates(store)
     with store.transaction():
         store.con.execute("DELETE FROM fundamental_statement_points")
         store.con.execute(
@@ -787,34 +1200,21 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
             )
             WITH security_industry_templates AS (
                 SELECT
-                    ec.security_id,
-                    CASE
-                        WHEN max(
-                            CASE
-                                WHEN try_cast(ec.node_code AS INTEGER) BETWEEN 6000 AND 6199 THEN 1
-                                ELSE 0
-                            END
-                        ) > 0 THEN 'BK'
-                        WHEN max(
-                            CASE
-                                WHEN try_cast(ec.node_code AS INTEGER) BETWEEN 6300 AND 6411 THEN 1
-                                ELSE 0
-                            END
-                        ) > 0 THEN 'IS'
-                        WHEN max(
-                            CASE
-                                WHEN try_cast(ec.node_code AS INTEGER) = 6798 THEN 1
-                                ELSE 0
-                            END
-                        ) > 0 THEN 'RT'
-                        ELSE 'ALL'
-                    END AS industry_template
-                FROM entity_classification ec
-                JOIN taxonomy tx
-                  ON tx.taxonomy_id = ec.taxonomy_id
-                 AND tx.code = 'SIC'
-                WHERE ec.valid_to IS NULL
-                GROUP BY ec.security_id
+                    security_id,
+                    industry_template
+                FROM (
+                    SELECT
+                        eit.*,
+                        row_number() OVER (
+                            PARTITION BY security_id
+                            ORDER BY available_at DESC, source_loaded_at DESC, route_id DESC
+                        ) AS route_rank
+                    FROM entity_industry_template eit
+                    WHERE eit.is_latest_revision
+                      AND eit.valid_from <= current_date
+                      AND coalesce(eit.valid_to, DATE '9999-12-31') > current_date
+                )
+                WHERE route_rank = 1
             ),
             mapped AS (
                 SELECT
@@ -984,6 +1384,7 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
             FROM sequenced
             """
         )
+        _insert_derived_reit_statement_points(store)
     return int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
 
 

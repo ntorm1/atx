@@ -3,7 +3,7 @@
 Groups:
 1. migration:     version 5 recorded; 4 new columns exist on fundamental_statement_map.
 2. seed coverage: exactly 137 authorized S4a item_ids after seeding.
-2b. overlays:    exactly 37 S4b bank/insurance/REIT item_ids under the right templates.
+2b. overlays:    exactly 47 S4b/S5 industry item_ids under the right templates.
 3. original 16:   all original canonical_metrics still present.
 4. item_ids:      all active rows have non-NULL item_id; multi-concept metrics share item_id
                   and have strictly increasing concept_priority.
@@ -32,6 +32,8 @@ AUTHORIZED_S4B_OVERLAY_ITEM_IDS = {
     "BK": set(range(1501, 1516)),
     "IS": set(range(1601, 1611)),
     "RT": set(range(1701, 1713)),
+    "UT": set(range(1801, 1806)),
+    "BD": set(range(1901, 1906)),
 }
 
 
@@ -207,15 +209,21 @@ def test_seed_authorized_s4b_overlay_item_id_coverage(tmp_store):
         """
         SELECT industry_template, item_id
         FROM fundamental_statement_map
-        WHERE industry_template IN ('BK', 'IS', 'RT')
+        WHERE industry_template IN ('BK', 'IS', 'RT', 'UT', 'BD')
           AND item_id IS NOT NULL
         """
     ).fetchall()
-    by_template: dict[str, set[int]] = {"BK": set(), "IS": set(), "RT": set()}
+    by_template: dict[str, set[int]] = {
+        "BK": set(),
+        "IS": set(),
+        "RT": set(),
+        "UT": set(),
+        "BD": set(),
+    }
     for template, item_id in rows:
         by_template[str(template)].add(int(item_id))
     assert by_template == AUTHORIZED_S4B_OVERLAY_ITEM_IDS
-    assert sum(len(values) for values in by_template.values()) == 37
+    assert sum(len(values) for values in by_template.values()) == 47
 
 
 def test_seed_idempotent(tmp_store):
@@ -322,7 +330,7 @@ def test_industry_templates_are_authorized(tmp_store):
             "SELECT DISTINCT industry_template FROM fundamental_statement_map"
         ).fetchall()
     }
-    assert templates == {"ALL", "BK", "IS", "RT"}
+    assert templates == {"ALL", "BK", "IS", "RT", "UT", "BD"}
 
 
 def test_bank_overlay_concept_coexists_with_core_interest_expense(tmp_store):

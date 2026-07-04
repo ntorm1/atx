@@ -5812,17 +5812,21 @@ def _fundamental_concept_coverage_reports(conn: duckdb.DuckDBPyConnection) -> No
                     WHEN 'bank' THEN 'bank_statement'
                     WHEN 'insurance' THEN 'insurance_statement'
                     WHEN 'reit' THEN 'reit_statement'
+                    WHEN 'utility' THEN 'utility_statement'
+                    WHEN 'broker_dealer' THEN 'broker_dealer_statement'
                     ELSE i.statement
                 END AS fallback_statement_type,
                 CASE i.statement
                     WHEN 'bank' THEN 'BK'
                     WHEN 'insurance' THEN 'IS'
                     WHEN 'reit' THEN 'RT'
+                    WHEN 'utility' THEN 'UT'
+                    WHEN 'broker_dealer' THEN 'BD'
                     ELSE 'ALL'
                 END AS fallback_industry_template
             FROM fundamental_item i
             WHERE i.item_id < 2000
-              AND coalesce(i.statement, '') IN ('income', 'balance', 'cashflow', 'bank', 'insurance', 'reit')
+              AND coalesce(i.statement, '') IN ('income', 'balance', 'cashflow', 'bank', 'insurance', 'reit', 'utility', 'broker_dealer')
               AND coalesce(i.is_derived, false) = false
         ),
         active_loadable_map AS (
@@ -5938,17 +5942,21 @@ def _fundamental_concept_coverage_reports(conn: duckdb.DuckDBPyConnection) -> No
                     WHEN 'bank' THEN 'bank_statement'
                     WHEN 'insurance' THEN 'insurance_statement'
                     WHEN 'reit' THEN 'reit_statement'
+                    WHEN 'utility' THEN 'utility_statement'
+                    WHEN 'broker_dealer' THEN 'broker_dealer_statement'
                     ELSE i.statement
                 END AS statement_type,
                 CASE i.statement
                     WHEN 'bank' THEN 'BK'
                     WHEN 'insurance' THEN 'IS'
                     WHEN 'reit' THEN 'RT'
+                    WHEN 'utility' THEN 'UT'
+                    WHEN 'broker_dealer' THEN 'BD'
                     ELSE 'ALL'
                 END AS industry_template
             FROM fundamental_item i
             WHERE i.item_id < 2000
-              AND coalesce(i.statement, '') IN ('income', 'balance', 'cashflow', 'bank', 'insurance', 'reit')
+              AND coalesce(i.statement, '') IN ('income', 'balance', 'cashflow', 'bank', 'insurance', 'reit', 'utility', 'broker_dealer')
               AND coalesce(i.is_derived, false) = false
         ),
         active_item_maps AS (
@@ -8542,6 +8550,301 @@ def _fundamental_pit_snapshot_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_schema_catalog(conn)
 
 
+def _industry_templates_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S5 S5-0: industry-template dim, item requirements, and entity routing."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS industry_template (
+            template_code VARCHAR PRIMARY KEY,
+            label VARCHAR NOT NULL,
+            vendor_profile VARCHAR NOT NULL,
+            accounting_class VARCHAR NOT NULL,
+            required_item_set VARCHAR NOT NULL,
+            description VARCHAR,
+            is_active BOOLEAN NOT NULL DEFAULT true,
+            valid_from DATE NOT NULL DEFAULT DATE '1900-01-01',
+            valid_to DATE,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS industry_template_item (
+            template_code VARCHAR NOT NULL,
+            item_id INTEGER NOT NULL,
+            canonical_code VARCHAR NOT NULL,
+            requirement_level VARCHAR NOT NULL,
+            not_available BOOLEAN NOT NULL DEFAULT false,
+            notes VARCHAR,
+            valid_from DATE NOT NULL DEFAULT DATE '1900-01-01',
+            valid_to DATE,
+            updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (template_code, item_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS entity_industry_template (
+            route_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            industry_template VARCHAR NOT NULL,
+            matched_taxonomy VARCHAR,
+            matched_node_code VARCHAR,
+            match_reason VARCHAR NOT NULL,
+            valid_from DATE NOT NULL,
+            valid_to DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+    import pandas as pd
+    from dataclasses import astuple
+    from .industry_templates import INDUSTRY_TEMPLATES, TEMPLATE_ITEMS
+
+    template_frame = pd.DataFrame.from_records(
+        [astuple(row) for row in INDUSTRY_TEMPLATES],
+        columns=[
+            "template_code",
+            "label",
+            "vendor_profile",
+            "accounting_class",
+            "required_item_set",
+            "description",
+            "is_active",
+            "valid_from",
+            "valid_to",
+        ],
+    )
+    item_frame = pd.DataFrame.from_records(
+        [astuple(row) for row in TEMPLATE_ITEMS],
+        columns=[
+            "template_code",
+            "item_id",
+            "canonical_code",
+            "requirement_level",
+            "not_available",
+            "notes",
+            "valid_from",
+            "valid_to",
+        ],
+    )
+    conn.register("_industry_template_seed", template_frame)
+    conn.register("_industry_template_item_seed", item_frame)
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO industry_template (
+                template_code, label, vendor_profile, accounting_class,
+                required_item_set, description, is_active, valid_from, valid_to, updated_at
+            )
+            SELECT
+                template_code, label, vendor_profile, accounting_class,
+                required_item_set, description, is_active,
+                CAST(valid_from AS DATE), CAST(valid_to AS DATE), now()
+            FROM _industry_template_seed
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO industry_template_item (
+                template_code, item_id, canonical_code, requirement_level,
+                not_available, notes, valid_from, valid_to, updated_at
+            )
+            SELECT
+                template_code, item_id, canonical_code, requirement_level,
+                not_available, notes, CAST(valid_from AS DATE), CAST(valid_to AS DATE), now()
+            FROM _industry_template_item_seed
+            """
+        )
+    finally:
+        conn.unregister("_industry_template_seed")
+        conn.unregister("_industry_template_item_seed")
+
+    for row in (
+        (
+            "industry_template",
+            "reference",
+            "industry_template",
+            "template_code",
+            "Industry statement-template dimension for commercial, bank, insurance, utility, broker-dealer, and REIT profiles.",
+            '["template_code"]',
+            "Reference dimension; use entity_industry_template for PIT entity routing.",
+        ),
+        (
+            "industry_template_item",
+            "reference",
+            "industry_template_item",
+            "template_code,item_id",
+            "Required item set for each industry statement template, including explicit Not-Available/vendor-only markers.",
+            '["template_code","item_id"]',
+            "Reference item-set rows; valid_from/valid_to bound template definitions.",
+        ),
+        (
+            "entity_industry_template",
+            "silver",
+            "entity_industry_template",
+            "source,security_id,valid_from",
+            "PIT security-to-industry-template routing materialized from SIC classifications.",
+            '["route_id"]',
+            "Resolve with valid_from/valid_to and available_at <= query timestamp; current refresh writes latest open interval rows.",
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO table_catalog (
+                table_name, layer, entity, grain, description,
+                natural_key_json, pit_notes, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, now())
+            """,
+            list(row),
+        )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('template_code', 'route_id', 'security_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('valid_from', 'valid_to', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.' AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) IN ('valid_from', 'valid_to', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name IN ('industry_template', 'industry_template_item', 'entity_industry_template')
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _industry_templates_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S5 S5-0: lookup indexes for template routing."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_entity_industry_template_security ON entity_industry_template(security_id, valid_from, valid_to)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_industry_template_template ON entity_industry_template(industry_template, is_latest_revision)",
+        "CREATE INDEX IF NOT EXISTS idx_industry_template_item_template ON industry_template_item(template_code, requirement_level)",
+    ):
+        conn.execute(statement)
+
+
+def _industry_template_coverage_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S5 S5-3: per-template coverage report table."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS industry_template_coverage (
+            coverage_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            industry_template VARCHAR NOT NULL,
+            routed_entity_count INTEGER NOT NULL DEFAULT 0,
+            required_item_count INTEGER NOT NULL DEFAULT 0,
+            present_item_count INTEGER NOT NULL DEFAULT 0,
+            not_available_item_count INTEGER NOT NULL DEFAULT 0,
+            missing_item_count INTEGER NOT NULL DEFAULT 0,
+            missing_item_ids_json VARCHAR NOT NULL DEFAULT '[]',
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'industry_template_coverage',
+            'gold',
+            'industry_template_coverage',
+            'source,industry_template,as_of_date',
+            'Per-template required-item coverage and Not-Available accounting report.',
+            '["coverage_id"]',
+            'Coverage is a PIT report row; resolve with as_of_date and available_at <= query timestamp.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('coverage_id', 'industry_template', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            replace(c.column_name, '_', ' ') || ' field on industry_template_coverage.' AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'industry_template_coverage'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _industry_template_coverage_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S5 S5-3: coverage lookup indexes and schema-contract refresh."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_industry_template_coverage_template ON industry_template_coverage(industry_template, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_industry_template_coverage_latest ON industry_template_coverage(source, is_latest_revision)",
+    ):
+        conn.execute(statement)
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -9013,6 +9316,26 @@ MIGRATIONS: list[Migration] = [
         version=109,
         name="fundamental_pit_snapshot_catalog",
         up=_fundamental_pit_snapshot_catalog,
+    ),
+    Migration(
+        version=110,
+        name="industry_templates_schema_catalog",
+        up=_industry_templates_schema_catalog,
+    ),
+    Migration(
+        version=111,
+        name="industry_templates_indexes",
+        up=_industry_templates_indexes,
+    ),
+    Migration(
+        version=112,
+        name="industry_template_coverage_schema_catalog",
+        up=_industry_template_coverage_schema_catalog,
+    ),
+    Migration(
+        version=113,
+        name="industry_template_coverage_indexes",
+        up=_industry_template_coverage_indexes,
     ),
 ]
 
