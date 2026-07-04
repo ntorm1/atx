@@ -250,7 +250,44 @@ def _insert_run_header(
     end: dt.date,
     chunk_label: str,
     ts: dt.datetime,
-) -> None:
+) -> str:
+    existing = store.con.execute(
+        """
+        SELECT dataset_id, start_date, end_date, chunk, status
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [backfill_run_id],
+    ).fetchone()
+    if existing is not None:
+        existing_dataset_id = str(existing[0])
+        existing_start = _coerce_date(existing[1], "backfill_run.start_date")
+        existing_end = _coerce_date(existing[2], "backfill_run.end_date")
+        existing_chunk = str(existing[3])
+        existing_status = str(existing[4])
+        if (
+            existing_dataset_id != dataset_id
+            or existing_start != start
+            or existing_end != end
+            or existing_chunk != chunk_label
+        ):
+            raise ValueError(
+                "backfill_run_id already exists for a different backfill window: "
+                f"{backfill_run_id!r}"
+            )
+        if existing_status in {"running", "failed"}:
+            store.con.execute(
+                """
+                UPDATE backfill_run
+                SET status = 'running',
+                    finished_at = NULL,
+                    error_message = NULL
+                WHERE backfill_run_id = ?
+                """,
+                [backfill_run_id],
+            )
+        return existing_status
+
     store.con.execute(
         """
         INSERT INTO backfill_run (
@@ -261,6 +298,7 @@ def _insert_run_header(
         """,
         [backfill_run_id, dataset_id, start, end, chunk_label, ts],
     )
+    return "inserted"
 
 
 def _finish_run(
@@ -510,7 +548,7 @@ def run_backfill(
         )
     )
 
-    _insert_run_header(
+    initial_run_status = _insert_run_header(
         store,
         backfill_run_id=run_id,
         dataset_id=dataset_id,
@@ -601,12 +639,13 @@ def run_backfill(
     skipped = sum(1 for result in results if result.status == "skipped")
     failed = sum(1 for result in results if result.status == "failed")
     status = "succeeded" if failed == 0 else "failed"
-    _finish_run(
-        store,
-        backfill_run_id=run_id,
-        status=status,
-        finished_at=now(),
-    )
+    if not (initial_run_status == "succeeded" and succeeded == 0 and failed == 0):
+        _finish_run(
+            store,
+            backfill_run_id=run_id,
+            status=status,
+            finished_at=now(),
+        )
     return BackfillRunResult(
         backfill_run_id=run_id,
         dataset_id=dataset_id,

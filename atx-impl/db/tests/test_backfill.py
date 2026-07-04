@@ -254,12 +254,13 @@ def test_immediate_second_backfill_is_strict_noop(tmp_store):
     assert watermarks_after == watermarks_before
 
 
-def test_failed_and_running_partitions_resume_without_duplicate_fixture_rows(tmp_store):
+def test_same_run_id_resumes_failed_and_running_partitions_without_duplicates(tmp_store):
     from db.backfill import plan_backfill, run_backfill
 
     _prepare_fixture_rows(tmp_store)
     start = dt.date(2014, 1, 1)
     end = dt.date(2014, 4, 1)
+    backfill_run_id = "backfill-fails-mid-window"
     partitions = plan_backfill(
         "fixture_backfill",
         start,
@@ -277,7 +278,7 @@ def test_failed_and_running_partitions_resume_without_duplicate_fixture_rows(tmp
             end,
             "1mo",
             registry=_registry(),
-            backfill_run_id="backfill-fails-mid-window",
+            backfill_run_id=backfill_run_id,
             include_dependencies=False,
             clock=TickClock(),
         )
@@ -291,6 +292,17 @@ def test_failed_and_running_partitions_resume_without_duplicate_fixture_rows(tmp
         ["fixture_backfill", partitions[1].partition_key],
     ).fetchone()
     assert failed_status == ("failed",)
+
+    failed_header = tmp_store.con.execute(
+        """
+        SELECT status, count(*)
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        GROUP BY status
+        """,
+        [backfill_run_id],
+    ).fetchone()
+    assert failed_header == ("failed", 1)
 
     tmp_store.con.execute(
         """
@@ -316,7 +328,7 @@ def test_failed_and_running_partitions_resume_without_duplicate_fixture_rows(tmp
         end,
         "1mo",
         registry=_registry(),
-        backfill_run_id="backfill-resumes",
+        backfill_run_id=backfill_run_id,
         include_dependencies=False,
         clock=TickClock(),
     )
@@ -365,6 +377,16 @@ def test_failed_and_running_partitions_resume_without_duplicate_fixture_rows(tmp
     ).fetchone()[0]
     assert fixture_count == (end - start).days
     assert duplicate_count == 0
+    final_header = tmp_store.con.execute(
+        """
+        SELECT status, count(*)
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        GROUP BY status
+        """,
+        [backfill_run_id],
+    ).fetchone()
+    assert final_header == ("succeeded", 1)
 
 
 def test_migration_0132_0133_backfill_catalog_and_indexes(tmp_store):
