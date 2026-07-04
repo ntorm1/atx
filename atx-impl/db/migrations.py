@@ -9191,6 +9191,482 @@ def _calendarization_coverage_indexes(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_schema_catalog(conn)
 
 
+def _catalog_fields_for_tables(conn: duckdb.DuckDBPyConnection, table_names: tuple[str, ...]) -> None:
+    table_list = ", ".join(f"'{name}'" for name in table_names)
+    conn.execute(
+        f"""
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%_json' THEN 'json'
+                WHEN lower(c.column_name) LIKE '%_id' OR lower(c.column_name) IN ('source', 'security_id', 'cik', 'accession_number', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'instant_date', 'as_of_date', 'filing_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE 'is_%' OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'FLOAT', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'available_at' THEN 'PIT availability timestamp inherited from the filing context acceptance datetime, falling back to filing date.'
+                WHEN 'source_loaded_at' THEN 'Warehouse/source load timestamp for lineage and replay diagnostics.'
+                WHEN 'as_of_date' THEN 'PIT as-of date for the period or instant represented by this row.'
+                WHEN 'is_latest_revision' THEN 'True for the latest visible revision within the row natural key.'
+                WHEN 'reconciliation_status' THEN 'Tolerance-banded segment-to-consolidated status: reconciled, flagged_divergent, or no_consolidated.'
+                WHEN 'reconciliation_tolerance' THEN 'Relative tolerance used for segment-to-consolidated reconciliation.'
+                WHEN 'input_codes_json' THEN 'JSON lineage of source axis/member/concept/fact identifiers consumed by the derived row.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END AS description,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'instant_date', 'as_of_date', 'filing_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%percent' OR lower(c.column_name) LIKE '%tolerance' THEN 'ratio'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name IN ({table_list})
+        """
+    )
+
+
+def _segment_surfaces_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S7 S7-0: ASC 280 segment dimension and fact surfaces."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_dim (
+            segment_dim_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR NOT NULL,
+            filing_context_id VARCHAR NOT NULL,
+            filing_dimension_id VARCHAR NOT NULL,
+            segment_type VARCHAR NOT NULL,
+            axis_qname VARCHAR NOT NULL,
+            axis_taxonomy VARCHAR,
+            axis_concept VARCHAR,
+            member_qname VARCHAR,
+            member_taxonomy VARCHAR,
+            member_concept VARCHAR,
+            member_label VARCHAR,
+            member_kind VARCHAR NOT NULL,
+            typed_member_value VARCHAR,
+            context_element VARCHAR,
+            segment_sic VARCHAR,
+            segment_naics VARCHAR,
+            major_customer_name VARCHAR,
+            major_customer_type VARCHAR,
+            axis_legal_status VARCHAR NOT NULL DEFAULT 'unchecked',
+            input_codes_json VARCHAR NOT NULL,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            revision_sequence INTEGER NOT NULL,
+            revision_count INTEGER NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_fact (
+            segment_fact_id VARCHAR PRIMARY KEY,
+            segment_dim_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR NOT NULL,
+            filing_context_id VARCHAR NOT NULL,
+            filing_fact_id VARCHAR NOT NULL,
+            segment_type VARCHAR NOT NULL,
+            axis_qname VARCHAR NOT NULL,
+            member_qname VARCHAR,
+            member_label VARCHAR,
+            canonical_item VARCHAR NOT NULL,
+            consolidated_code VARCHAR NOT NULL,
+            taxonomy VARCHAR NOT NULL,
+            concept VARCHAR NOT NULL,
+            unit VARCHAR,
+            period_type VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE,
+            instant_date DATE,
+            value DOUBLE NOT NULL,
+            raw_value VARCHAR,
+            segment_sum_value DOUBLE,
+            consolidated_value DOUBLE,
+            reconciliation_difference DOUBLE,
+            reconciliation_relative_difference DOUBLE,
+            reconciliation_tolerance DOUBLE NOT NULL DEFAULT 0.02,
+            reconciliation_status VARCHAR NOT NULL DEFAULT 'no_consolidated',
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            revision_sequence INTEGER NOT NULL,
+            revision_count INTEGER NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL,
+            input_codes_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'segments',
+            'atx_warehouse',
+            'Inline-XBRL segment surfaces',
+            'Business/geographic/product/customer segment dimensions and facts mined from dimensional inline-XBRL contexts, with tolerance-banded reconciliation to consolidated totals.',
+            'security_id,axis_member,canonical_item,period',
+            'segment_fact',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'segment_dim',
+                'gold',
+                'segment_dim',
+                'source,security_id,filing_context_id,axis_qname,member_qname',
+                'Decoded segment dimension members from dimensional inline-XBRL contexts, including ASC 280 segment family and major-customer typed-member capture.',
+                '["segment_dim_id"]',
+                'Derived from xbrl_filing_contexts/xbrl_filing_dimensions; resolve with as_of_date/available_at and is_latest_revision.',
+                now()
+            ),
+            (
+                'segment_fact',
+                'gold',
+                'segment_fact',
+                'source,security_id,segment_dim_id,canonical_item,period,accession_number',
+                'Segment-level sales, operating income, assets, D&A, and capex facts mined from dimensional inline-XBRL facts with tolerance-banded consolidated reconciliation.',
+                '["segment_fact_id"]',
+                'Derived from dimensional xbrl_filing_facts; available_at is inherited from the filing context, and reconciliation_status is warning-oriented rather than a hard assertion.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("segment_dim", "segment_fact"))
+    _schema_contract_schema_catalog(conn)
+
+
+def _footnote_subledger_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S7 S7-1/S7-2: pension, deferred-tax, lease, and SBC footnote ledgers."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS footnote_pension (
+            pension_id VARCHAR PRIMARY KEY,
+            plan_type VARCHAR NOT NULL,
+            line_item VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR NOT NULL,
+            filing_context_id VARCHAR NOT NULL,
+            filing_fact_id VARCHAR NOT NULL,
+            axis_qname VARCHAR,
+            member_qname VARCHAR,
+            member_label VARCHAR,
+            period_type VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE,
+            instant_date DATE,
+            taxonomy VARCHAR NOT NULL,
+            concept VARCHAR NOT NULL,
+            unit VARCHAR,
+            value DOUBLE NOT NULL,
+            raw_value VARCHAR,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            revision_sequence INTEGER NOT NULL,
+            revision_count INTEGER NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL,
+            input_codes_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS footnote_deferred_tax (
+            deferred_tax_id VARCHAR PRIMARY KEY,
+            tax_component VARCHAR NOT NULL,
+            line_item VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR NOT NULL,
+            filing_context_id VARCHAR NOT NULL,
+            filing_fact_id VARCHAR NOT NULL,
+            axis_qname VARCHAR,
+            member_qname VARCHAR,
+            member_label VARCHAR,
+            period_type VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE,
+            instant_date DATE,
+            taxonomy VARCHAR NOT NULL,
+            concept VARCHAR NOT NULL,
+            unit VARCHAR,
+            value DOUBLE NOT NULL,
+            raw_value VARCHAR,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            revision_sequence INTEGER NOT NULL,
+            revision_count INTEGER NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL,
+            input_codes_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS footnote_lease (
+            lease_id VARCHAR PRIMARY KEY,
+            lease_standard VARCHAR NOT NULL,
+            lease_class VARCHAR NOT NULL,
+            maturity_bucket VARCHAR,
+            line_item VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR NOT NULL,
+            filing_context_id VARCHAR NOT NULL,
+            filing_fact_id VARCHAR NOT NULL,
+            axis_qname VARCHAR,
+            member_qname VARCHAR,
+            member_label VARCHAR,
+            period_type VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE,
+            instant_date DATE,
+            taxonomy VARCHAR NOT NULL,
+            concept VARCHAR NOT NULL,
+            unit VARCHAR,
+            value DOUBLE NOT NULL,
+            raw_value VARCHAR,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            revision_sequence INTEGER NOT NULL,
+            revision_count INTEGER NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL,
+            input_codes_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS footnote_sbc (
+            sbc_id VARCHAR PRIMARY KEY,
+            award_type VARCHAR NOT NULL,
+            line_item VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            accession_number VARCHAR NOT NULL,
+            filing_context_id VARCHAR NOT NULL,
+            filing_fact_id VARCHAR NOT NULL,
+            axis_qname VARCHAR,
+            member_qname VARCHAR,
+            member_label VARCHAR,
+            period_type VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE,
+            instant_date DATE,
+            taxonomy VARCHAR NOT NULL,
+            concept VARCHAR NOT NULL,
+            unit VARCHAR,
+            value DOUBLE NOT NULL,
+            raw_value VARCHAR,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            revision_sequence INTEGER NOT NULL,
+            revision_count INTEGER NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL,
+            input_codes_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'footnotes',
+            'atx_warehouse',
+            'Inline-XBRL footnote sub-ledgers',
+            'Pension/OPEB, deferred-tax, lease, and stock-compensation sub-ledgers mined from dimensional inline-XBRL facts.',
+            'security_id,subledger,line_item,period',
+            'footnote_pension',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            ('footnote_pension', 'gold', 'footnote_pension', 'source,security_id,plan_type,line_item,period', 'Pension and OPEB benefit-obligation, asset, funded-status, cost, and assumption facts from dimensional inline-XBRL.', '["pension_id"]', 'Derived from xbrl_filing_facts/xbrl_filing_dimensions with available_at inherited from filing acceptance time.', now()),
+            ('footnote_deferred_tax', 'gold', 'footnote_deferred_tax', 'source,security_id,tax_component,line_item,period', 'Deferred-tax balance-sheet and income-statement facts plus dimensional tax components.', '["deferred_tax_id"]', 'Derived from dimensional inline-XBRL facts; resolve with as_of_date/available_at and is_latest_revision.', now()),
+            ('footnote_lease', 'gold', 'footnote_lease', 'source,security_id,lease_class,maturity_bucket,line_item,period', 'ASC 842 and pre-842 lease liability, ROU asset, and maturity facts from dimensional inline-XBRL.', '["lease_id"]', 'Derived from dimensional inline-XBRL facts; lease_standard separates ASC 842 from pre-842 disclosure concepts.', now()),
+            ('footnote_sbc', 'gold', 'footnote_sbc', 'source,security_id,award_type,line_item,period', 'Aggregate and award-type stock-based compensation expense and tax-benefit facts; per-executive grant detail is out of scope.', '["sbc_id"]', 'Derived from dimensional inline-XBRL facts; captures aggregate/award-type SBC, not Execucomp grant detail.', now())
+        """
+    )
+    _catalog_fields_for_tables(
+        conn,
+        ("footnote_pension", "footnote_deferred_tax", "footnote_lease", "footnote_sbc"),
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _segment_footnote_indexes_reconciliation(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S7 S7-3: indexes for segment reconciliation and footnote coverage checks."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_segment_dim_security_axis ON segment_dim(source, security_id, axis_qname, member_qname)",
+        "CREATE INDEX IF NOT EXISTS idx_segment_dim_latest ON segment_dim(source, is_latest_revision, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_segment_fact_reconciliation ON segment_fact(source, reconciliation_status, is_latest_revision)",
+        "CREATE INDEX IF NOT EXISTS idx_segment_fact_item_period ON segment_fact(source, security_id, canonical_item, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_footnote_pension_security ON footnote_pension(source, security_id, plan_type, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_footnote_deferred_tax_security ON footnote_deferred_tax(source, security_id, tax_component, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_footnote_lease_security ON footnote_lease(source, security_id, lease_standard, lease_class, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_footnote_sbc_security ON footnote_sbc(source, security_id, award_type, as_of_date)",
+    ):
+        conn.execute(statement)
+    _catalog_fields_for_tables(
+        conn,
+        (
+            "segment_dim",
+            "segment_fact",
+            "footnote_pension",
+            "footnote_deferred_tax",
+            "footnote_lease",
+            "footnote_sbc",
+        ),
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _segment_footnote_coverage_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S7 S7-3: coverage report for segment/footnote mining and reconciliation."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_footnote_coverage (
+            coverage_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            segment_dim_count INTEGER NOT NULL DEFAULT 0,
+            segment_fact_count INTEGER NOT NULL DEFAULT 0,
+            segment_reconciled_count INTEGER NOT NULL DEFAULT 0,
+            segment_flagged_divergent_count INTEGER NOT NULL DEFAULT 0,
+            segment_no_consolidated_count INTEGER NOT NULL DEFAULT 0,
+            footnote_pension_count INTEGER NOT NULL DEFAULT 0,
+            footnote_deferred_tax_count INTEGER NOT NULL DEFAULT 0,
+            footnote_lease_count INTEGER NOT NULL DEFAULT 0,
+            footnote_sbc_count INTEGER NOT NULL DEFAULT 0,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'segment_footnote_coverage',
+            'atx_warehouse',
+            'Segment and footnote coverage',
+            'Coverage counts and segment reconciliation status split for dimensional inline-XBRL mining.',
+            'source,as_of_date',
+            'segment_footnote_coverage',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'segment_footnote_coverage',
+            'gold',
+            'segment_footnote_coverage',
+            'source,as_of_date',
+            'Coverage counts for segment dimensions/facts, footnote sub-ledgers, and segment reconciliation status split.',
+            '["coverage_id"]',
+            'Coverage is a PIT report row; resolve with as_of_date and available_at <= query timestamp.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("segment_footnote_coverage",))
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_segment_footnote_coverage_source ON segment_footnote_coverage(source, is_latest_revision, as_of_date)"
+    )
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -9697,6 +10173,26 @@ MIGRATIONS: list[Migration] = [
         version=116,
         name="calendarization_coverage_indexes",
         up=_calendarization_coverage_indexes,
+    ),
+    Migration(
+        version=117,
+        name="segment_surfaces_schema_catalog",
+        up=_segment_surfaces_schema_catalog,
+    ),
+    Migration(
+        version=118,
+        name="footnote_subledger_schema_catalog",
+        up=_footnote_subledger_schema_catalog,
+    ),
+    Migration(
+        version=119,
+        name="segment_footnote_indexes_reconciliation",
+        up=_segment_footnote_indexes_reconciliation,
+    ),
+    Migration(
+        version=120,
+        name="segment_footnote_coverage_schema_catalog",
+        up=_segment_footnote_coverage_schema_catalog,
     ),
 ]
 

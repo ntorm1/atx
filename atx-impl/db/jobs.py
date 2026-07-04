@@ -33,6 +33,8 @@ from .filer_alias import FilerAliasDataset, FilerAliasOptions
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
+from .segments import SegmentDataset, SegmentOptions
+from .footnotes import FootnoteDataset, FootnoteOptions
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
 from .short_volume import FinraShortVolumeDataset, FinraShortVolumeOptions, ShortVolumeMetricsDataset
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
@@ -776,6 +778,26 @@ def _fundamental_xbrl_metric_options(params: dict[str, Any]) -> FundamentalXbrlM
     )
 
 
+def _segment_options(params: dict[str, Any]) -> SegmentOptions:
+    default = SegmentOptions()
+    return SegmentOptions(
+        source=params.get("source") or default.source,
+        coverage_source=params.get("coverage_source") or default.coverage_source,
+        reconciliation_tolerance=float(
+            params.get("reconciliation_tolerance", default.reconciliation_tolerance)
+        ),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _footnote_options(params: dict[str, Any]) -> FootnoteOptions:
+    default = FootnoteOptions()
+    return FootnoteOptions(
+        source=params.get("source") or default.source,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fundamental_ratios_options(params: dict[str, Any]) -> FundamentalRatiosOptions:
     default = FundamentalRatiosOptions()
     return FundamentalRatiosOptions(
@@ -981,6 +1003,8 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     FundamentalFeatureDataset.dataset_id: (FundamentalFeatureDataset, _fundamental_features_options),
     FundamentalRatiosDataset.dataset_id: (FundamentalRatiosDataset, _fundamental_ratios_options),
     FundamentalXbrlMetricDataset.dataset_id: (FundamentalXbrlMetricDataset, _fundamental_xbrl_metric_options),
+    SegmentDataset.dataset_id: (SegmentDataset, _segment_options),
+    FootnoteDataset.dataset_id: (FootnoteDataset, _footnote_options),
     ShortInterestMetricsDataset.dataset_id: (ShortInterestMetricsDataset, _short_interest_metrics_options),
     MacroMetricsDataset.dataset_id: (MacroMetricsDataset, _macro_metrics_options),
     EquityPriceMetricsDataset.dataset_id: (EquityPriceMetricsDataset, _equity_price_metrics_options),
@@ -1094,6 +1118,8 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "form144_to_form4_link": ("form144_intent", "sec_insider_ownership"),
     "fundamental_ratios": ("fundamental_xbrl_metric", "sec_company_facts"),
     "fundamental_xbrl_metric": ("xbrl_filing_contexts",),
+    "segments": ("fundamental_xbrl_metric", "xbrl_filing_contexts"),
+    "footnotes": ("xbrl_filing_contexts",),
     "identifier_resolution_candidates": ("sec_13f",),
     "identifier_resolution_decisions": ("identifier_resolution_candidates",),
     "insider_transaction_metrics": ("sec_insider_ownership",),
@@ -1663,6 +1689,18 @@ class JobManager:
         self.register_job(
             job_name="fundamental_xbrl_metric",
             dataset_id="fundamental_xbrl_metric",
+            dependencies=["xbrl_filing_contexts"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="segments",
+            dataset_id="segments",
+            dependencies=["xbrl_filing_contexts", "fundamental_xbrl_metric"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="footnotes",
+            dataset_id="footnotes",
             dependencies=["xbrl_filing_contexts"],
             **retry_policy,
         )

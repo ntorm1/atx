@@ -2671,6 +2671,157 @@ def _check_specs(
             severity="critical",
         ),
         SqlQualityCheck(
+            dataset_id="segments",
+            table_name="segment_fact",
+            check_name="bad_segment_fact_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM segment_fact
+                WHERE segment_fact_id IS NULL OR segment_fact_id = ''
+                   OR segment_dim_id IS NULL OR segment_dim_id = ''
+                   OR source IS NULL OR source = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR canonical_item IS NULL OR canonical_item = ''
+                   OR consolidated_code IS NULL OR consolidated_code = ''
+                   OR value IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR source_loaded_at IS NULL
+                   OR reconciliation_status NOT IN ('reconciled', 'flagged_divergent', 'no_consolidated')
+                   OR reconciliation_tolerance IS NULL
+                   OR revision_sequence < 1
+                   OR revision_count < revision_sequence
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("segment_fact",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="segments",
+            table_name="segment_fact",
+            check_name="duplicate_segment_fact_revision_keys",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        source,
+                        security_id,
+                        segment_dim_id,
+                        canonical_item,
+                        coalesce(CAST(period_start AS VARCHAR), ''),
+                        as_of_date,
+                        revision_sequence,
+                        count(*) AS row_count
+                    FROM segment_fact
+                    GROUP BY 1, 2, 3, 4, 5, 6, 7
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("segment_fact",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="segments",
+            table_name="segment_fact",
+            check_name="segment_reconciliation_divergence_warning",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM segment_fact
+                WHERE is_latest_revision
+                  AND reconciliation_status = 'flagged_divergent'
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("segment_fact",),
+            failure_status="warning",
+            detail_sql="""
+                SELECT
+                    security_id,
+                    canonical_item,
+                    as_of_date,
+                    segment_sum_value,
+                    consolidated_value,
+                    reconciliation_difference,
+                    reconciliation_relative_difference,
+                    reconciliation_tolerance
+                FROM segment_fact
+                WHERE is_latest_revision
+                  AND reconciliation_status = 'flagged_divergent'
+                ORDER BY abs(coalesce(reconciliation_relative_difference, 0)) DESC,
+                         security_id,
+                         canonical_item
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="footnotes",
+            table_name="footnote_pension",
+            check_name="bad_footnote_subledger_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT pension_id AS row_id, source, security_id, line_item, value, as_of_date, available_at, source_loaded_at, revision_sequence, revision_count
+                    FROM footnote_pension
+                    UNION ALL
+                    SELECT deferred_tax_id AS row_id, source, security_id, line_item, value, as_of_date, available_at, source_loaded_at, revision_sequence, revision_count
+                    FROM footnote_deferred_tax
+                    UNION ALL
+                    SELECT lease_id AS row_id, source, security_id, line_item, value, as_of_date, available_at, source_loaded_at, revision_sequence, revision_count
+                    FROM footnote_lease
+                    UNION ALL
+                    SELECT sbc_id AS row_id, source, security_id, line_item, value, as_of_date, available_at, source_loaded_at, revision_sequence, revision_count
+                    FROM footnote_sbc
+                )
+                WHERE row_id IS NULL OR row_id = ''
+                   OR source IS NULL OR source = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR line_item IS NULL OR line_item = ''
+                   OR value IS NULL
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+                   OR source_loaded_at IS NULL
+                   OR revision_sequence < 1
+                   OR revision_count < revision_sequence
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=(
+                "footnote_pension",
+                "footnote_deferred_tax",
+                "footnote_lease",
+                "footnote_sbc",
+            ),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="segment_footnote_coverage",
+            table_name="segment_footnote_coverage",
+            check_name="segment_footnote_coverage_counts_valid",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM segment_footnote_coverage
+                WHERE segment_dim_count < 0
+                   OR segment_fact_count < 0
+                   OR segment_reconciled_count < 0
+                   OR segment_flagged_divergent_count < 0
+                   OR segment_no_consolidated_count < 0
+                   OR footnote_pension_count < 0
+                   OR footnote_deferred_tax_count < 0
+                   OR footnote_lease_count < 0
+                   OR footnote_sbc_count < 0
+                   OR as_of_date IS NULL
+                   OR available_at IS NULL
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("segment_footnote_coverage",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
             dataset_id="fundamental_periods",
             table_name="fundamental_periods",
             check_name="duplicate_fundamental_period_keys",
