@@ -429,15 +429,22 @@ _ALTER_ADD_COLUMN_RE = re.compile(r"ALTER TABLE (\w+) ADD COLUMN(?: IF NOT EXIST
 # `scratch` rekey temp table) are intentionally skipped, since those are not live tables.
 _MIGRATION_HELPER_TABLE_RE = re.compile(r"""_create_\w+_table\(\s*conn\s*,\s*['"](\w+)['"]""")
 
-# Medallion data layers (table_catalog.layer) where clause (A)'s fact/derived PIT-column
-# mandate applies. Everything else -- control/audit/catalog/dimension/core/legacy/view --
-# is infrastructure, reference dimensions, entity master, metadata, or views, where a
-# `run_id`/`source_loaded_at` column is bookkeeping, NOT a bitemporal PIT column. This
-# mirrors CONTRACT's hand-curated intent: market_cap (gold, a fact) marks its PIT columns
-# while control/reference tables do not. (formula_registry is also gold but a registry,
-# not a fact; it is one of CONTRACT's 6 tables so build_contract_manifest reuses its
-# hand-curated non-PIT specs verbatim -- layer never has to disambiguate it here.)
-_FACT_DERIVED_LAYERS = frozenset({"bronze", "silver", "gold"})
+# Strong bitemporal markers. A table counts as fact/derived (clause (A)'s PIT-column
+# mandate applies -> its canonical PIT columns are is_pit_column=True) iff it physically
+# carries at least ONE of these. The ubiquitous bookkeeping columns run_id/source_loaded_at
+# are deliberately EXCLUDED here: nearly every table has them, so they cannot distinguish a
+# fact from a dimension/master/landing table.
+#
+# This reproduces CONTRACT's hand-curated split automatically, without a layer-set knob or
+# a hand override list: market_cap (has available_at + as_of_date) -> fact -> all five PIT
+# columns; formula_registry (only run_id/source_loaded_at, no strong marker) -> non-fact ->
+# its run_id/source_loaded_at are NOT PIT. trading_calendar/dataset_runs/etl_job_*/insider/
+# fund/universes/taxonomy/xbrl_filing_* likewise carry no strong marker -> non-fact -> no
+# spurious PIT columns. A genuine fact table that carries none of these markers (e.g. a raw
+# landing table) is correctly treated non-fact here; if some table that SHOULD be PIT is
+# missing markers, that is a real finding for S1-1's live gate, not a false positive to
+# paper over in the manifest.
+_STRONG_TEMPORAL_MARKERS = ("as_of_date", "available_at", "is_latest_revision")
 
 
 def _read_db_source(filename: str) -> str:
@@ -466,15 +473,6 @@ def _scan_declared_in_sources() -> tuple[set[str], set[str], set[tuple[str, str]
     migration_added_columns = set(_ALTER_ADD_COLUMN_RE.findall(migration_text))
 
     return schema_py_tables, migration_tables, migration_added_columns
-
-
-def _fetch_table_layers(con) -> dict[str, str]:
-    """table_name -> table_catalog.layer; empty (not an error) if table_catalog absent."""
-    try:
-        rows = con.execute("SELECT table_name, layer FROM table_catalog").fetchall()
-    except Exception:
-        return {}
-    return {table_name: layer for table_name, layer in rows if layer is not None}
 
 
 def _fetch_natural_keys(con) -> dict[str, set[str]]:
@@ -530,11 +528,13 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
     other live table is derived fresh:
       - column shape (data_type, nullable) from duckdb_columns();
       - is_natural_key from table_catalog.natural_key_json (or a PRIMARY KEY fallback);
-      - is_pit_column is a canonical PIT name (PIT_COLUMN_NAMES) AND the table sits in a
-        fact/derived medallion layer (_FACT_DERIVED_LAYERS via table_catalog.layer) -- a
-        `run_id`/`source_loaded_at` on a control/audit/reference table is bookkeeping, not
-        a bitemporal PIT column, so it stays is_pit_column=False (otherwise ~100 non-fact
-        tables would feed false positives into S1-1's PIT-presence gate);
+      - is_pit_column is a canonical PIT name (PIT_COLUMN_NAMES) AND the table carries at
+        least one strong bitemporal marker (_STRONG_TEMPORAL_MARKERS: as_of_date /
+        available_at / is_latest_revision) -- the ubiquitous bookkeeping run_id/
+        source_loaded_at alone do NOT make a table a fact, so a control/dimension/master/
+        landing table keeps is_pit_column=False (otherwise it feeds false positives into
+        S1-1's PIT-presence gate). This reproduces CONTRACT's hand-curated split with no
+        layer-set knob or override list;
       - declared_in from _scan_declared_in_sources() (``migration`` wins on any
         schema_py/migration overlap, at both table and column granularity).
 
@@ -544,7 +544,6 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
     live_tables = _fetch_live_tables(con)
     live_columns = _fetch_live_columns(con, sorted(live_tables))
     natural_keys = _fetch_natural_keys(con)
-    table_layers = _fetch_table_layers(con)
     # schema_py_tables is unused now that migration-wins-on-overlap collapses to a single
     # membership test (a non-migration table is schema_py by construction); keep the scan
     # returning it for callers/tests that want the full provenance triple.
@@ -560,12 +559,14 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
         # other mechanism) falls through to schema_py rather than being dropped -- every
         # live table must land in the manifest (zero residual).
         table_is_migration = table_name in migration_tables
-        # PIT columns only count where the fact/derived-row mandate applies: a table in a
-        # medallion data layer (bronze/silver/gold). Uncatalogued -> not fact/derived.
-        table_is_fact = table_layers.get(table_name) in _FACT_DERIVED_LAYERS
+        # PIT columns only count where the fact/derived-row mandate applies: the table must
+        # physically carry a strong bitemporal marker (as_of_date / available_at /
+        # is_latest_revision). run_id/source_loaded_at alone do not qualify.
+        table_columns = live_columns.get(table_name, {})
+        table_is_fact = any(marker in table_columns for marker in _STRONG_TEMPORAL_MARKERS)
         natural_key_columns = natural_keys.get(table_name, set())
         columns: list[ColumnSpec] = []
-        for column_name, (data_type, nullable) in sorted(live_columns.get(table_name, {}).items()):
+        for column_name, (data_type, nullable) in sorted(table_columns.items()):
             column_is_migration = table_is_migration or (table_name, column_name) in migration_added_columns
             columns.append(
                 ColumnSpec(

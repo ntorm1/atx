@@ -667,10 +667,13 @@ class TestBuildContractManifestDeclaredInAttribution:
 
 
 class TestBuildContractManifestPitColumnScoping:
-    """is_pit_column must be scoped to fact/derived (medallion) layers -- a canonical PIT
-    NAME on a control/audit/reference table is bookkeeping, not a bitemporal PIT column.
-    Marking all name-matches would feed ~100 false positives into S1-1's PIT-presence
-    gate, the exact "cries wolf" failure the sprint plan warns against.
+    """is_pit_column must be scoped to genuine fact/derived tables. A table counts as
+    fact/derived only if it carries a STRONG bitemporal marker (as_of_date / available_at
+    / is_latest_revision) -- the ubiquitous bookkeeping run_id/source_loaded_at alone do
+    NOT qualify (nearly every table has them). A blind name-match, OR the earlier
+    {bronze,silver,gold} layer proxy, over-marks ~100 / ~37 dimension/master/landing
+    tables and would feed false positives into S1-1's PIT-presence gate -- the exact
+    "cries wolf" failure the sprint plan warns against.
     """
 
     def _pit_cols(self, manifest, table_name: str) -> set[str]:
@@ -678,8 +681,8 @@ class TestBuildContractManifestPitColumnScoping:
 
     def test_control_and_audit_tables_have_no_pit_columns(self, tmp_store):
         manifest = build_contract_manifest(tmp_store.con)
-        # These all carry a run_id and/or source_loaded_at column, but are control/audit
-        # layer -- none should be marked a PIT column.
+        # These all carry run_id and/or source_loaded_at but no strong temporal marker --
+        # none should be marked a PIT column.
         for table_name in (
             "dataset_runs",       # control (connection.py bootstrap)
             "etl_job_runs",       # control
@@ -690,22 +693,56 @@ class TestBuildContractManifestPitColumnScoping:
         ):
             assert self._pit_cols(manifest, table_name) == set(), table_name
 
-    def test_run_id_and_source_loaded_at_on_a_control_table_are_not_pit(self, tmp_store):
+    def test_dimension_master_landing_tables_have_no_pit_columns(self, tmp_store):
+        # The reviewer's set: tables the {bronze,silver,gold} layer proxy wrongly flagged
+        # as fact. They are dimension/master/landing tables that legitimately lack the
+        # strong bitemporal markers, so under the temporal-marker rule they carry NO PIT
+        # columns. Pin the residual so a broadening of the fact test can't silently
+        # re-introduce the false positives.
         manifest = build_contract_manifest(tmp_store.con)
-        specs = {spec.name: spec for spec in manifest["dataset_runs"]}
-        assert specs["run_id"].is_pit_column is False
+        for table_name in (
+            "trading_calendar",       # only source_loaded_at
+            "insider",                # run_id + source_loaded_at, no marker
+            "fund",                   # run_id + source_loaded_at, no marker
+            "fund_class",             # run_id + source_loaded_at, no marker
+            "thirteenf_managers",     # run_id + source_loaded_at, no marker
+            "universes",              # no PIT-named columns at all
+            "formula_registry",       # CONTRACT: registry, run_id/source_loaded_at NOT PIT
+            "sec_submissions",        # landing table, no marker
+            "raw_source_files",       # landing table, no marker
+            "xbrl_filing_facts",      # raw landing, no marker
+            "xbrl_filing_contexts",   # raw landing, no marker
+            "taxonomy",               # reference, no marker
+        ):
+            assert self._pit_cols(manifest, table_name) == set(), table_name
 
-    def test_fact_layer_table_marks_its_canonical_pit_columns(self, tmp_store):
-        # market_cap (gold, a fact) is one of CONTRACT's 6 tables -- reused verbatim -- and
-        # already marks all five canonical PIT columns. Assert the reconciled manifest
-        # preserves that.
+    def test_run_id_and_source_loaded_at_on_a_non_fact_table_are_not_pit(self, tmp_store):
+        manifest = build_contract_manifest(tmp_store.con)
+        for table_name in ("dataset_runs", "insider", "fund", "thirteenf_managers"):
+            specs = {spec.name: spec for spec in manifest[table_name]}
+            for col in ("run_id", "source_loaded_at"):
+                if col in specs:
+                    assert specs[col].is_pit_column is False, f"{table_name}.{col}"
+
+    def test_formula_registry_pit_scoping_matches_contract(self, tmp_store):
+        # formula_registry (a registry with NO strong temporal marker) is one of CONTRACT's
+        # 6 tables, reused verbatim -- its run_id/source_loaded_at are deliberately NOT PIT.
+        # The temporal-marker rule reproduces exactly that split, so the verbatim CONTRACT
+        # value and the rule agree: zero PIT columns.
+        manifest = build_contract_manifest(tmp_store.con)
+        assert self._pit_cols(manifest, "formula_registry") == set()
+
+    def test_fact_table_marks_its_canonical_pit_columns(self, tmp_store):
+        # market_cap (carries available_at/as_of_date/is_latest_revision) is one of
+        # CONTRACT's 6 tables -- reused verbatim -- and marks all five canonical PIT
+        # columns. Assert the reconciled manifest preserves that.
         manifest = build_contract_manifest(tmp_store.con)
         assert self._pit_cols(manifest, "market_cap") == set(PIT_COLUMN_NAMES)
 
     def test_non_contract_fact_table_marks_present_pit_columns(self, tmp_store):
-        # valuation_multiples is gold but NOT in CONTRACT, so is_pit_column is derived via
-        # the layer classification. Every canonical PIT column it physically has must be
-        # marked (it carries all five).
+        # valuation_multiples is NOT in CONTRACT, so is_pit_column is derived by the
+        # temporal-marker rule: it carries as_of_date/available_at/is_latest_revision (so
+        # it is fact), and every canonical PIT column it physically has must be marked.
         manifest = build_contract_manifest(tmp_store.con)
         live_cols = {
             row[0]
@@ -716,6 +753,21 @@ class TestBuildContractManifestPitColumnScoping:
         expected = {name for name in PIT_COLUMN_NAMES if name in live_cols}
         assert self._pit_cols(manifest, "valuation_multiples") == expected
         assert expected  # sanity: it really does have PIT columns to mark
+
+    def test_every_pit_marked_table_actually_carries_a_strong_temporal_marker(self, tmp_store):
+        # The invariant behind the rule: a table may only have PIT-marked columns if it
+        # physically carries at least one strong marker. Zero residual otherwise.
+        from db.schema_contract import _STRONG_TEMPORAL_MARKERS
+
+        manifest = build_contract_manifest(tmp_store.con)
+        offenders = []
+        for table_name, specs in manifest.items():
+            col_names = {spec.name for spec in specs}
+            has_pit = any(spec.is_pit_column for spec in specs)
+            has_marker = any(marker in col_names for marker in _STRONG_TEMPORAL_MARKERS)
+            if has_pit and not has_marker:
+                offenders.append(table_name)
+        assert offenders == [], f"PIT-marked tables lacking a strong temporal marker: {offenders}"
 
 
 class TestBuildContractManifestConsistencyWithHandCuratedContract:
