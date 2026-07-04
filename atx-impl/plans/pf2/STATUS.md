@@ -3,9 +3,9 @@
 Updated: 2026-07-04, America/New_York
 Integration branch: `feat/warehouse-parity` / local `main`
 
-PF2-S1 through PF2-S7 are implemented. PF2-S7 lives on branch
-`feat/pf2-s7` as implementation commit
-`9544e25d385017b72787984e703b34d5a4cd562b`.
+PF2-S1 through PF2-S8 are implemented. PF2-S8 lives on branch
+`feat/pf2-s8` as implementation commit
+`1e5ddce014fa3546c721baca437fd4a1d1ece4e1`.
 
 ## Completed
 
@@ -30,6 +30,10 @@ PF2-S1 through PF2-S7 are implemented. PF2-S7 lives on branch
 - PF2-S7: segment data + footnote sub-ledgers complete on branch
   `feat/pf2-s7` as `9544e25d385017b72787984e703b34d5a4cd562b`.
   Migrations consumed: `0117-0120`.
+- PF2-S8: press-release preliminary actuals + estimate basis complete on
+  branch `feat/pf2-s8` as
+  `1e5ddce014fa3546c721baca437fd4a1d1ece4e1`. Migrations consumed:
+  `0121-0123`.
 
 ## S6 Implemented Surfaces
 
@@ -66,6 +70,30 @@ PF2-S1 through PF2-S7 are implemented. PF2-S7 lives on branch
   `xbrl_filing_contexts`; `segments` also depends on `fundamental_xbrl_metric`
   for consolidated reconciliation.
 
+## S8 Implemented Surfaces
+
+- New `db/press_release.py` ingests injectable 8-K Item 2.02 / EX-99 text or
+  normalized rows into `press_release_facts`, extracting preliminary revenue,
+  EPS, operating-income, and net-income figures with confidence, evidence text,
+  source-file hashes, release-time `available_at`, and PIT as-of reads.
+- `press_release_reconciliation` ties preliminary rows to later final
+  `est_actual` rows while retaining both vintages, and updates
+  `fundamental_periods.pdate` / `rdq` to the earlier flash date through an
+  additive reconciliation write.
+- `est_actual.basis` is stamped `GAAP` for SEC companyfacts actuals, and
+  `est_surprise` now carries `actual_basis`, `consensus_basis`, and
+  `basis_mismatch`; `surprise_pct` is suppressed when tagged bases differ while
+  untagged legacy consensus remains backward-compatible.
+- Migrations `0121-0123` add/catalog press-release fact and reconciliation
+  tables plus estimate-basis columns with schema-contract refreshes. Migration
+  `0123` defensively creates missing estimate base tables for legacy-forward DB
+  fixtures and avoids same-transaction secondary-index recreation around
+  DuckDB's `est_surprise` ALTER dependency guard.
+- Critical quality checks cover malformed press-release rows, no-lookahead
+  release timestamps, retained preliminary vintages, missing EPS actual basis,
+  and mismatch rows with populated `surprise_pct`.
+- Jobs registry exports `press_release_facts` downstream of `est_actual`.
+
 ## Verification
 
 - `python -m py_compile db\calendarization.py db\fundamental_statements.py db\migrations.py db\quality.py db\__init__.py db\tests\test_calendarization.py`
@@ -76,16 +104,24 @@ PF2-S1 through PF2-S7 are implemented. PF2-S7 lives on branch
 - `python -m pytest db\tests\test_segments.py db\tests\test_footnotes.py -q -n0`
 - `python -m pytest db\tests\test_import.py db\tests\test_jobs_dag.py db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py db\tests\test_segments.py db\tests\test_footnotes.py -q -n0`
 - `python -m pytest db\tests -q -n0`
+- `python -m py_compile db\press_release.py db\estimates.py db\migrations.py db\quality.py db\jobs.py db\__init__.py db\tests\test_press_release.py`
+- `python -m pytest db\tests\test_press_release.py -q -n0`
+- `python -m pytest db\tests\test_estimates.py db\tests\test_press_release.py -q -n0`
+- `python -m pytest db\tests\test_import.py db\tests\test_jobs_dag.py db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py db\tests\test_press_release.py -q -n0`
+- `python -m pytest db\tests` (xdist default): 955 passed in 188.32s
 
 ## Live DB Smoke
 
-Operator-pending for S1-S7. No live 14 GB shared-DB migration/apply/rebuild was
+Operator-pending for S1-S8. No live 14 GB shared-DB migration/apply/rebuild was
 run from the PF2 worktrees. S6 live proof-slice counts for
 `fundamental_calendar_map`, `fundamental_calendar_ttm`, non-Dec-FYE relabels,
 53-week flags, stitched-TTM windows, and `run_id` remain pending until an
 approved backed-up live run. S7 live proof-slice counts for `segment_dim`,
 `segment_fact`, footnote sub-ledgers, reconciliation pass/flag/no-consolidated
-split, coverage row, and `run_id` also remain pending.
+split, coverage row, and `run_id` also remain pending. S8 live proof-slice
+counts for `press_release_facts`, `press_release_reconciliation`, periods with
+pre-10-Q preliminary capture, EPS basis coverage, and `run_id` also remain
+pending.
 
 ## Known Caveats
 
@@ -106,12 +142,16 @@ split, coverage row, and `run_id` also remain pending.
   expected to be noisy.
 - S7 live proof slice is not run; docs do not claim segment or footnote live row
   counts.
+- S8 extraction is intentionally conservative and offline/injectable; the
+  default DB has no loaded press-release corpus until an operator supplies one.
+- S8 live proof slice is not run; docs do not claim preliminary-capture or basis
+  coverage counts.
 - `0102` remains unused reserved headroom after S2.
 
 ## Resume Point
 
-1. Merge `feat/pf2-s7` into local `main` / `feat/warehouse-parity`.
-2. Continue ROADMAP sequencing with PF2-S8.
+1. Merge `feat/pf2-s8` into local `main` / `feat/warehouse-parity`.
+2. Continue ROADMAP sequencing with PF2-S9.
 3. Track progress in `.superpowers/sdd/progress.md`; append or update sprint
    closeout rows only when the sprint lands.
 
