@@ -309,7 +309,10 @@ def test_governed_forward_migration_on_populated_pre_s2_db(tmp_path, monkeypatch
             )
 
     result = run_governed_migrations(db_path, backup_dir=backup_dir)
-    assert result.applied_versions == (100, 101)
+    expected_forward_versions = tuple(
+        migration.version for migration in migrations.MIGRATIONS if migration.version >= 100
+    )
+    assert result.applied_versions == expected_forward_versions
     assert result.backup is not None
     assert result.backup.backup_path.exists()
 
@@ -330,7 +333,7 @@ def test_governed_forward_migration_on_populated_pre_s2_db(tmp_path, monkeypatch
     assert row == ("S2 Forward Fixture",)
     assert registry is not None
     assert "99" in registry[0]
-    assert "101" in registry[1]
+    assert str(expected_forward_versions[-1]) in registry[1]
 
 
 def test_recover_from_wal_failure_restores_backup_and_reapplies(tmp_path):

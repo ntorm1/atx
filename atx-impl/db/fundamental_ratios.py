@@ -48,7 +48,7 @@ from .formula_library import (
     parse_operand_expression,
     resolve_composite_evaluator,
 )
-from .item_registry import input_item_ids_for_ratio, ratio_input_metrics
+from .item_registry import input_item_ids_for_ratio, ratio_input_item_ids, ratio_input_metrics
 from .warehouse import insert_frame, json_dumps, quality_check
 
 
@@ -495,12 +495,57 @@ def _wide_select(prefix: str, metric_map: dict[str, str]) -> str:
     return ",\n            ".join(parts)
 
 
+def _pivot_item_case(
+    prefix: str,
+    value_col: str,
+    item_map: dict[str, int | None],
+    accession_expr: str,
+    filed_date_expr: str,
+) -> str:
+    parts = []
+    for key, item_id in item_map.items():
+        if item_id is None:
+            parts.extend([
+                f"CAST(NULL AS DOUBLE) AS {key}",
+                f"CAST(NULL AS TIMESTAMP) AS {key}_av",
+                f"CAST(NULL AS VARCHAR) AS {key}_accession",
+                f"CAST(NULL AS DATE) AS {key}_filed_date",
+            ])
+            continue
+        parts.append(
+            f"max(CASE WHEN {prefix}.item_id = {int(item_id)} THEN {prefix}.{value_col} END) AS {key}"
+        )
+        parts.append(
+            f"max(CASE WHEN {prefix}.item_id = {int(item_id)} THEN {prefix}.available_at END) AS {key}_av"
+        )
+        parts.append(
+            f"max(CASE WHEN {prefix}.item_id = {int(item_id)} THEN {accession_expr} END) AS {key}_accession"
+        )
+        parts.append(
+            f"max(CASE WHEN {prefix}.item_id = {int(item_id)} THEN {filed_date_expr} END) AS {key}_filed_date"
+        )
+    return ",\n            ".join(parts)
+
+
+def _wide_coalesce_select(preferred: str, fallback: str, metric_map: dict[str, str]) -> str:
+    parts = []
+    for key in metric_map:
+        parts.extend([
+            f"coalesce({preferred}.{key}, {fallback}.{key}) AS {key}",
+            f"coalesce({preferred}.{key}_av, {fallback}.{key}_av) AS {key}_av",
+            f"coalesce({preferred}.{key}_accession, {fallback}.{key}_accession) AS {key}_accession",
+            f"coalesce({preferred}.{key}_filed_date, {fallback}.{key}_filed_date) AS {key}_filed_date",
+        ])
+    return ",\n            ".join(parts)
+
+
 def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> pd.DataFrame:
     """Pivot the latest-revision TTM flows + instant balances into the wide input frame."""
     symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
     registered = False
     sym_join_t = ""
     sym_join_b = ""
+    sym_join_st = ""
     if symbols:
         store.con.register(
             "ratio_symbol_filter",
@@ -510,11 +555,12 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
         sym_join_t = "JOIN ratio_symbol_filter rsf ON rsf.symbol = t.symbol"
         sym_join_b = "JOIN ratio_symbol_filter rsf ON rsf.symbol = s.symbol"
         sym_join_x = "JOIN ratio_symbol_filter rsf ON rsf.symbol = x.symbol"
+        sym_join_st = "JOIN ratio_symbol_filter rsf ON rsf.symbol = st.symbol"
     else:
         sym_join_x = ""
 
     sql = f"""
-        WITH ttm AS (
+        WITH ttm_raw AS (
             SELECT
                 t.security_id,
                 any_value(t.symbol) AS symbol,
@@ -530,6 +576,22 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             WHERE t.is_latest_revision
             GROUP BY t.security_id, t.ttm_end_date
         ),
+        std_ttm AS (
+            SELECT
+                st.security_id,
+                any_value(st.symbol) AS symbol,
+                any_value(st.cik) AS cik,
+                any_value(st.source) AS upstream_source,
+                st.period_end,
+                any_value(st.period_start) AS period_start,
+                any_value(st.fiscal_year) AS fiscal_year,
+                any_value(st.fiscal_period) AS fiscal_period,
+                {_pivot_item_case('st', 'value', ratio_input_item_ids('ttm'), 'st.source_accession', 'st.filed_date')}
+            FROM fundamental_standardized st
+            {sym_join_st}
+            WHERE st.is_latest_revision AND st.basis = 'ttm'
+            GROUP BY st.security_id, st.period_end
+        ),
         bal AS (
             SELECT
                 s.security_id,
@@ -539,6 +601,16 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             {sym_join_b}
             WHERE s.is_latest_revision AND s.period_type = 'instant'
             GROUP BY s.security_id, s.period_end
+        ),
+        std_bal AS (
+            SELECT
+                st.security_id,
+                st.period_end,
+                {_pivot_item_case('st', 'value', ratio_input_item_ids('balance'), 'st.source_accession', 'st.filed_date')}
+            FROM fundamental_standardized st
+            {sym_join_st}
+            WHERE st.is_latest_revision AND st.basis = 'instant'
+            GROUP BY st.security_id, st.period_end
         ),
         balx AS (
             SELECT
@@ -550,6 +622,16 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             WHERE x.is_latest_revision AND x.period_type = 'instant'
             GROUP BY x.security_id, x.period_end
         ),
+        std_balx AS (
+            SELECT
+                st.security_id,
+                st.period_end,
+                {_pivot_item_case('st', 'value', ratio_input_item_ids('xbrl_balance'), 'st.source_accession', 'st.filed_date')}
+            FROM fundamental_standardized st
+            {sym_join_st}
+            WHERE st.is_latest_revision AND st.basis = 'instant'
+            GROUP BY st.security_id, st.period_end
+        ),
         flowx AS (
             SELECT
                 x.security_id,
@@ -559,22 +641,60 @@ def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> 
             {sym_join_x}
             WHERE x.is_latest_revision AND x.period_type = 'duration'
             GROUP BY x.security_id, x.period_end
+        ),
+        std_flowx AS (
+            SELECT
+                st.security_id,
+                st.period_end,
+                {_pivot_item_case('st', 'value', ratio_input_item_ids('xbrl_flow'), 'st.source_accession', 'st.filed_date')}
+            FROM fundamental_standardized st
+            {sym_join_st}
+            WHERE st.is_latest_revision AND st.basis = 'annual'
+            GROUP BY st.security_id, st.period_end
+        ),
+        periods AS (
+            SELECT security_id, period_end FROM ttm_raw
+            UNION
+            SELECT security_id, period_end FROM std_ttm
         )
         SELECT
-            ttm.*,
-            {_wide_select('bal', BALANCE_INPUTS)},
-            {_wide_select('balx', XBRL_BALANCE_INPUTS)},
-            {_wide_select('flowx', XBRL_FLOW_INPUTS)}
-        FROM ttm
+            p.security_id,
+            coalesce(std_ttm.symbol, ttm_raw.symbol) AS symbol,
+            coalesce(std_ttm.cik, ttm_raw.cik) AS cik,
+            coalesce(std_ttm.upstream_source, ttm_raw.upstream_source) AS upstream_source,
+            p.period_end,
+            coalesce(std_ttm.period_start, ttm_raw.period_start) AS period_start,
+            coalesce(std_ttm.fiscal_year, ttm_raw.fiscal_year) AS fiscal_year,
+            coalesce(std_ttm.fiscal_period, ttm_raw.fiscal_period) AS fiscal_period,
+            {_wide_coalesce_select('std_ttm', 'ttm_raw', TTM_INPUTS)},
+            {_wide_coalesce_select('std_bal', 'bal', BALANCE_INPUTS)},
+            {_wide_coalesce_select('std_balx', 'balx', XBRL_BALANCE_INPUTS)},
+            {_wide_coalesce_select('std_flowx', 'flowx', XBRL_FLOW_INPUTS)}
+        FROM periods p
+        LEFT JOIN ttm_raw
+          ON ttm_raw.security_id = p.security_id
+         AND ttm_raw.period_end = p.period_end
+        LEFT JOIN std_ttm
+          ON std_ttm.security_id = p.security_id
+         AND std_ttm.period_end = p.period_end
         LEFT JOIN bal
-          ON bal.security_id = ttm.security_id
-         AND bal.period_end = ttm.period_end
+          ON bal.security_id = p.security_id
+         AND bal.period_end = p.period_end
+        LEFT JOIN std_bal
+          ON std_bal.security_id = p.security_id
+         AND std_bal.period_end = p.period_end
         LEFT JOIN balx
-          ON balx.security_id = ttm.security_id
-         AND balx.period_end = ttm.period_end
+          ON balx.security_id = p.security_id
+         AND balx.period_end = p.period_end
+        LEFT JOIN std_balx
+          ON std_balx.security_id = p.security_id
+         AND std_balx.period_end = p.period_end
         LEFT JOIN flowx
-          ON flowx.security_id = ttm.security_id
-         AND flowx.period_end = ttm.period_end
+          ON flowx.security_id = p.security_id
+         AND flowx.period_end = p.period_end
+        LEFT JOIN std_flowx
+          ON std_flowx.security_id = p.security_id
+         AND std_flowx.period_end = p.period_end
     """
     try:
         wide = store.con.execute(sql).df()
