@@ -405,17 +405,23 @@ TEST(RobustnessBatteryFullWire, AltNeutralizationRejectsGroupTilt) {
 
   eval::BatteryConfig cfg;
   cfg.alt_neutralization = true;
-  // seed=2's Fisher-Yates draw over {0,1,2,3,4} happens to produce a permutation
-  // that anti-correlates strongly enough with the true drift ranking to collapse
-  // the edge (empirically verified: this is a 5-element seeded permutation, not
-  // a hand-tuned numeric coincidence -- any seed whose draw sufficiently
-  // disagrees with the identity ordering has the same effect, since the group-
-  // tilt candidate's edge is ENTIRELY carried by bucket-vs-drift alignment).
+  // seed=2's Fisher-Yates draw over {0,1,2,3,4} produces a permutation that
+  // anti-correlates enough with the true drift ranking to drop the survival
+  // ratio below eval::BatteryConfig::min_survival_ratio (0.5, frozen) -> REJECT.
+  // This is a representative, reproducible pick, NOT universal and NOT a
+  // 1-in-N fluke: a direct seed sweep (0..199) over this exact fixture rejects
+  // 92/200 (~46%) of draws -- the remaining seeds land on permutations close
+  // enough to identity that the bucket-vs-drift alignment survives. Production
+  // draws exactly ONE seed-derived permutation, so the check's realized power on
+  // a maximally group-tilted candidate is ~46%; a candidate that never groups by
+  // the field is unaffected under EVERY seed (see the survivor test below). The
+  // wire is genuine; a "reject under ANY permutation" framing would overclaim.
   cfg.seed = 2;
   EXPECT_FALSE(atx::engine::factory::detail::robustness_battery_passes(
       cand, panel, pool, policy, sim, admit_fit, cfg, base_edge))
       << "base_edge=" << base_edge
-      << " -- a pure liquidity-bucket tilt must be REJECTED under ANY bucket permutation";
+      << " -- a pure liquidity-bucket tilt collapses below min_survival_ratio under this"
+         " (representative, ~46%-of-seeds) group permutation";
 }
 
 // =============================================================================

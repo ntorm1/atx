@@ -27,4 +27,27 @@ One line per clean unit (ROADMAP §141). Newest last.
 | S5-2 | ca27121 | participation-rate cap inside the optimizer QP construction (`--participation-cap`) | — |
 | S5-3 | f590808 | expose the 3 previously-unreachable `eval::RobustnessBattery` checks (`sub_universe`/`alt_neutralization`/`param_perturbation`) at admission, including the S5-3-corrected per-instrument `adv_col` (length `insts`, mean-volume) fix over the plan's flat-field draft | — |
 | S5-4 | e82056e | non-zero borrow financing debit reaching `book::accumulate_report`'s realized P&L (`--borrow-bps`) | — |
-| S5-5 | (this)  | synthetic-panel smoke exercising the whole S1–S5 lever stack → one honest, finite, deterministic scorecard row | — |
+| S5-5 | 3fc8fa2 | synthetic-panel smoke exercising the whole S1–S5 lever stack → one honest, finite, deterministic scorecard row | SHIP |
+
+**Review (clean, adversarial):** SHIP-WITH-MINORS → closed. No Critical; no frozen-file breach
+(`git diff --stat ca27121..HEAD` = `factory/factory.{hpp,cpp}`, `book/report.hpp`, `stage_report.cpp`,
+`stage_discover.cpp` + 3 new test files + this ledger only); commit trailers exact; `NsgaSearch.
+ScalarRaw_ReproducesGoldenDigest` (0xff95ac12512e0e91) and `FactoryOos.MineIntoOffPathDigestUnchanged`
+both green. The `alt_neutralization` wire was the primed "Potemkin" suspect — a direct seed sweep
+(0..199) against the real `robustness_battery_passes` rejects **92/200 (~46%)** of a maximally
+group-tilted candidate, so the check is genuinely powered, not rigged. `sub_universe` collapses the
+illiquid-edge scenario (`restricted_edge ≈ 1.3e-61` vs `base ≈ 1.0`) and admits the broad-edge one —
+real discrimination. S5-4 borrow closed-form (`0.5·50·1e-4`) and inert-default byte-identity confirmed;
+the pre-existing `book/pipeline.hpp:303` caller has zero diff. Regression: factory **255/255**, book
+**35/35**, impl **316/320 (+4 pre-existing skips), 0 failed**. The 2 `RobustPipelineE2E` failures in
+`atx-engine-risk-tests` are pre-existing (`robust_size` off-by-one, test file untouched since pre-p9
+`830e117`; S5-3's additions are flag-gated inert for that non-battery path) — not attributable to S5.
+
+**Two Important honesty findings, both fixed post-review (docs only, no logic change):**
+- `AltNeutralizationRejectsGroupTilt` comment + assertion overclaimed "reject under ANY permutation";
+  reworded to the measured ~46% seed-sweep rate and the real `min_survival_ratio=0.5` discriminator.
+- **Known limitation (S5-2 participation cap):** at a realistic ~$1e9 NAV over a thin/small universe the
+  participation-cap QP goes infeasible/non-convergent and `run_optimize` returns a **fail-loud** `Err`
+  (never a wrong-answer path); the QP/elasticity machinery is prior-sprint, not S5's to fix. The S5-5
+  smoke deliberately runs at `report_aum=1e6` to stay feasible; now documented at the fixture site and
+  here so an operator sizing a real book knows the cap's large-AUM/thin-universe edge.

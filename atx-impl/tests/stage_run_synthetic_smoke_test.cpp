@@ -170,6 +170,15 @@ run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_pa
     cfg.rebalance = "weekly";
     cfg.risk_aversion = 1.0; // MVO path (participation-cap/book-turnover-gate are QP-construction levers)
     cfg.set_flags.emplace("risk-aversion");
+    // KNOWN LIMITATION (S5-2 participation cap): deliberately downscaled from
+    // RunConfig's 1e9 default to 1e6. At a realistic ~1e9 NAV over this thin,
+    // small (12-name) synthetic universe the participation-cap QP becomes
+    // infeasible/non-convergent and run_optimize returns a fail-loud Err
+    // ("ConstrainedQpSolver::solve: book violates constraint row ... the set may
+    // be infeasible"). That is a genuine large-AUM/thin-universe limitation of
+    // the S5-2 cap (its QP/elasticity machinery is prior-sprint, not S5's to fix)
+    // — fail-loud, never a wrong-answer path. 1e6 keeps the smoke feasible while
+    // still exercising the cap as a real, non-trivial QP-construction lever.
     cfg.report_aum = 1.0e6; // sets both the participation-cap NAV scale and the report capacity scale
     // A2a-style holdout split (mirrors run_all's own default): without it,
     // holdout_begin == research.dates() -> oos_idx is empty -> portfolio_oos_sharpe
