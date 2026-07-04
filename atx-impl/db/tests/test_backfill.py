@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import inspect
 import threading
-import time
 
 import pytest
 
@@ -321,6 +320,43 @@ def test_run_backfill_full_run_records_succeeded_watermarks(tmp_store):
     assert header == ("fixture_backfill", start, end, "2y", "succeeded")
 
 
+def test_run_backfill_rejects_invalid_max_parallel_without_running_header(tmp_store):
+    from db.backfill import run_backfill
+
+    run_id = "backfill-invalid-max-parallel"
+
+    with pytest.raises(ValueError, match="max_parallel must be positive"):
+        run_backfill(
+            tmp_store,
+            "fixture_backfill",
+            dt.date(2014, 1, 1),
+            dt.date(2014, 3, 1),
+            "1mo",
+            registry=_registry(),
+            backfill_run_id=run_id,
+            include_dependencies=False,
+            max_parallel=0,
+            clock=TickClock(),
+        )
+
+    assert tmp_store.con.execute(
+        """
+        SELECT status
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [run_id],
+    ).fetchall() == []
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM backfill_run
+        WHERE backfill_run_id = ? AND status = 'running'
+        """,
+        [run_id],
+    ).fetchone()[0] == 0
+
+
 def test_immediate_second_backfill_is_strict_noop(tmp_store):
     from db.backfill import run_backfill
 
@@ -625,22 +661,28 @@ def test_backfill_dead_letters_poisoned_partition_and_clears_after_fixed_rerun(t
 def test_backfill_max_parallel_caps_concurrent_partition_executor_calls(tmp_store):
     from db.backfill import run_backfill
 
+    overlap = threading.Barrier(2, timeout=5.0)
     lock = threading.Lock()
     active = 0
     max_seen = 0
+    barrier_passes = 0
 
     def executor(_store, partition, _options):
-        nonlocal active, max_seen
+        nonlocal active, max_seen, barrier_passes
         with lock:
             active += 1
             max_seen = max(max_seen, active)
-        time.sleep(0.03)
-        with lock:
-            active -= 1
-        return {
-            "rows_written": 1,
-            "watermark_after": partition.window_hi.isoformat(),
-        }
+        try:
+            overlap.wait()
+            with lock:
+                barrier_passes += 1
+            return {
+                "rows_written": 1,
+                "watermark_after": partition.window_hi.isoformat(),
+            }
+        finally:
+            with lock:
+                active -= 1
 
     result = run_backfill(
         tmp_store,
@@ -659,7 +701,8 @@ def test_backfill_max_parallel_caps_concurrent_partition_executor_calls(tmp_stor
     assert result.status == "succeeded"
     assert result.partitions_succeeded == 6
     assert max_seen <= 2
-    assert max_seen > 1
+    assert max_seen == 2
+    assert barrier_passes == 6
 
 
 def test_backfill_with_dependencies_holds_dependent_partitions_until_upstream_finishes(tmp_store):
@@ -738,6 +781,42 @@ def test_backfill_with_dependencies_holds_dependent_partitions_until_upstream_fi
         if event[0] == "finish" and event[1] == BarrierSourceDataset.dataset_id
     )
     assert first_dependent_start > last_source_finish
+
+
+def test_run_maintenance_rejects_invalid_max_parallel_without_running_header(tmp_store):
+    from db.backfill import run_maintenance
+
+    run_id = "maintenance-invalid-max-parallel"
+
+    with pytest.raises(ValueError, match="max_parallel must be positive"):
+        run_maintenance(
+            tmp_store,
+            "fixture_backfill",
+            dt.date(2014, 1, 1),
+            dt.date(2014, 3, 1),
+            "1mo",
+            registry=_registry(),
+            backfill_run_id=run_id,
+            max_parallel=0,
+            clock=TickClock(),
+        )
+
+    assert tmp_store.con.execute(
+        """
+        SELECT status
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [run_id],
+    ).fetchall() == []
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM backfill_run
+        WHERE backfill_run_id = ? AND status = 'running'
+        """,
+        [run_id],
+    ).fetchone()[0] == 0
 
 
 def test_maintenance_schedules_only_partition_with_advanced_upstream_watermark(tmp_store):

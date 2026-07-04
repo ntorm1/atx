@@ -1062,17 +1062,6 @@ def run_backfill(
         for partition in partitions_by_dataset[current_dataset_id]
     )
 
-    initial_run_status = _insert_run_header(
-        store,
-        backfill_run_id=run_id,
-        dataset_id=dataset_id,
-        start=window_start,
-        end=window_end,
-        chunk_label=chunk_spec.label,
-        ts=now(),
-    )
-
-    results: list[PartitionResult] = []
     run_executor = executor
     if run_executor is None:
         run_executor = lambda s, p, partition_params: _default_executor(
@@ -1089,6 +1078,17 @@ def run_backfill(
         allow_parallel_executor=allow_parallel_executor,
     )
 
+    initial_run_status = _insert_run_header(
+        store,
+        backfill_run_id=run_id,
+        dataset_id=dataset_id,
+        start=window_start,
+        end=window_end,
+        chunk_label=chunk_spec.label,
+        ts=now(),
+    )
+
+    results: list[PartitionResult] = []
     try:
         result_slots: list[PartitionResult | None] = [None] * len(planned)
         jobs_by_dataset: dict[str, list[tuple[int, Partition]]] = {
@@ -1227,17 +1227,6 @@ def run_maintenance(
         for current_dataset_id in dataset_order
     }
 
-    initial_run_status = _insert_run_header(
-        store,
-        backfill_run_id=run_id,
-        dataset_id=dataset_id,
-        start=window_start,
-        end=window_end,
-        chunk_label=chunk_spec.label,
-        ts=now(),
-    )
-
-    results: list[PartitionResult] = []
     run_executor = executor
     if run_executor is None:
         run_executor = lambda s, p, partition_params: _default_executor(
@@ -1254,6 +1243,17 @@ def run_maintenance(
         allow_parallel_executor=allow_parallel_executor,
     )
 
+    initial_run_status = _insert_run_header(
+        store,
+        backfill_run_id=run_id,
+        dataset_id=dataset_id,
+        start=window_start,
+        end=window_end,
+        chunk_label=chunk_spec.label,
+        ts=now(),
+    )
+
+    results: list[PartitionResult] = []
     try:
         scheduled_total = 0
         for current_dataset_id in dataset_order:
