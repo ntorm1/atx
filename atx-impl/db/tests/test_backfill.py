@@ -1,0 +1,456 @@
+from __future__ import annotations
+
+import datetime as dt
+import inspect
+
+import pytest
+
+
+class TickClock:
+    def __init__(self) -> None:
+        self.current = dt.datetime(2026, 7, 4, 9, 30, 0)
+
+    def __call__(self) -> dt.datetime:
+        value = self.current
+        self.current += dt.timedelta(seconds=1)
+        return value
+
+
+class FixtureBackfillDataset:
+    dataset_id = "fixture_backfill"
+    depends_on: tuple[str, ...] = ()
+    calls: list[str] = []
+    fail_once_for: set[str] = set()
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.calls = []
+        cls.fail_once_for = set()
+
+    def run(self, store, options):
+        from db.dataset import DatasetLoadResult
+
+        partition_key = str(options["partition_key"])
+        window_lo = options["window_lo"]
+        window_hi = options["window_hi"]
+        FixtureBackfillDataset.calls.append(partition_key)
+
+        current = window_lo
+        rows = 0
+        should_fail = partition_key in FixtureBackfillDataset.fail_once_for
+        while current < window_hi:
+            if should_fail and rows >= 2:
+                FixtureBackfillDataset.fail_once_for.remove(partition_key)
+                raise RuntimeError(f"planned partial failure for {partition_key}")
+            store.con.execute(
+                """
+                INSERT OR REPLACE INTO fixture_backfill_rows (
+                    dataset_id, as_of_date, partition_key, backfill_run_id
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    self.dataset_id,
+                    current,
+                    partition_key,
+                    options["backfill_run_id"],
+                ],
+            )
+            rows += 1
+            current += dt.timedelta(days=1)
+
+        return DatasetLoadResult(
+            dataset_id=self.dataset_id,
+            rows_loaded=rows,
+            source="fixture",
+            details={"watermark_after": window_hi.isoformat()},
+        )
+
+
+@pytest.fixture(autouse=True)
+def _reset_fixture_dataset():
+    FixtureBackfillDataset.reset()
+    yield
+    FixtureBackfillDataset.reset()
+
+
+def _registry():
+    return {
+        FixtureBackfillDataset.dataset_id: (
+            FixtureBackfillDataset,
+            lambda params: dict(params),
+        )
+    }
+
+
+def _prepare_fixture_rows(store) -> None:
+    store.con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fixture_backfill_rows (
+            dataset_id VARCHAR NOT NULL,
+            as_of_date DATE NOT NULL,
+            partition_key VARCHAR NOT NULL,
+            backfill_run_id VARCHAR NOT NULL,
+            PRIMARY KEY (dataset_id, as_of_date)
+        )
+        """
+    )
+
+
+def test_plan_backfill_is_deterministic_for_half_open_quarterly_windows():
+    from db.backfill import Partition, plan_backfill
+
+    expected = [
+        Partition(
+            "fixture_backfill",
+            dt.date(2014, 1, 1),
+            dt.date(2014, 4, 1),
+            "fixture_backfill:2014-01-01:2014-04-01",
+        ),
+        Partition(
+            "fixture_backfill",
+            dt.date(2014, 4, 1),
+            dt.date(2014, 7, 1),
+            "fixture_backfill:2014-04-01:2014-07-01",
+        ),
+        Partition(
+            "fixture_backfill",
+            dt.date(2014, 7, 1),
+            dt.date(2014, 10, 1),
+            "fixture_backfill:2014-07-01:2014-10-01",
+        ),
+        Partition(
+            "fixture_backfill",
+            dt.date(2014, 10, 1),
+            dt.date(2015, 1, 1),
+            "fixture_backfill:2014-10-01:2015-01-01",
+        ),
+    ]
+
+    first = plan_backfill(
+        "fixture_backfill",
+        dt.date(2014, 1, 1),
+        dt.date(2015, 1, 1),
+        "3mo",
+        registry=_registry(),
+    )
+    second = plan_backfill(
+        "fixture_backfill",
+        "2014-01-01",
+        "2015-01-01",
+        "1q",
+        registry=_registry(),
+    )
+
+    assert first == expected
+    assert second == expected
+
+
+def test_run_backfill_full_run_records_succeeded_watermarks(tmp_store):
+    from db.backfill import run_backfill
+
+    _prepare_fixture_rows(tmp_store)
+    start = dt.date(2014, 1, 1)
+    end = dt.date(2020, 1, 1)
+
+    result = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        start,
+        end,
+        "2y",
+        registry=_registry(),
+        backfill_run_id="backfill-full",
+        include_dependencies=False,
+        clock=TickClock(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.partitions_planned == 3
+    assert result.partitions_succeeded == 3
+    assert result.partitions_skipped == 0
+    assert result.rows_written == (end - start).days
+
+    watermark_rows = tmp_store.con.execute(
+        """
+        SELECT status, count(*), sum(rows_written)
+        FROM backfill_watermark
+        WHERE dataset_id = 'fixture_backfill'
+        GROUP BY status
+        """
+    ).fetchall()
+    assert watermark_rows == [("succeeded", 3, (end - start).days)]
+
+    fixture_count = tmp_store.con.execute(
+        "SELECT count(*) FROM fixture_backfill_rows"
+    ).fetchone()[0]
+    assert fixture_count == (end - start).days
+
+    header = tmp_store.con.execute(
+        """
+        SELECT dataset_id, start_date, end_date, chunk, status
+        FROM backfill_run
+        WHERE backfill_run_id = 'backfill-full'
+        """
+    ).fetchone()
+    assert header == ("fixture_backfill", start, end, "2y", "succeeded")
+
+
+def test_immediate_second_backfill_is_strict_noop(tmp_store):
+    from db.backfill import run_backfill
+
+    _prepare_fixture_rows(tmp_store)
+    start = dt.date(2014, 1, 1)
+    end = dt.date(2015, 1, 1)
+
+    first = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        start,
+        end,
+        "3mo",
+        registry=_registry(),
+        backfill_run_id="backfill-first",
+        include_dependencies=False,
+        clock=TickClock(),
+    )
+    calls_after_first = list(FixtureBackfillDataset.calls)
+    watermarks_before = tmp_store.con.execute(
+        """
+        SELECT partition_key, status, rows_written, watermark_after, run_id, updated_at
+        FROM backfill_watermark
+        WHERE dataset_id = 'fixture_backfill'
+        ORDER BY partition_key
+        """
+    ).fetchall()
+
+    second = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        start,
+        end,
+        "3mo",
+        registry=_registry(),
+        backfill_run_id="backfill-second",
+        include_dependencies=False,
+        clock=TickClock(),
+    )
+    watermarks_after = tmp_store.con.execute(
+        """
+        SELECT partition_key, status, rows_written, watermark_after, run_id, updated_at
+        FROM backfill_watermark
+        WHERE dataset_id = 'fixture_backfill'
+        ORDER BY partition_key
+        """
+    ).fetchall()
+
+    assert first.partitions_planned == 4
+    assert second.status == "succeeded"
+    assert second.partitions_planned == 4
+    assert second.partitions_skipped == 4
+    assert second.partitions_succeeded == 0
+    assert second.rows_written == 0
+    assert FixtureBackfillDataset.calls == calls_after_first
+    assert watermarks_after == watermarks_before
+
+
+def test_failed_and_running_partitions_resume_without_duplicate_fixture_rows(tmp_store):
+    from db.backfill import plan_backfill, run_backfill
+
+    _prepare_fixture_rows(tmp_store)
+    start = dt.date(2014, 1, 1)
+    end = dt.date(2014, 4, 1)
+    partitions = plan_backfill(
+        "fixture_backfill",
+        start,
+        end,
+        "1mo",
+        registry=_registry(),
+    )
+    FixtureBackfillDataset.fail_once_for = {partitions[1].partition_key}
+
+    with pytest.raises(RuntimeError, match="planned partial failure"):
+        run_backfill(
+            tmp_store,
+            "fixture_backfill",
+            start,
+            end,
+            "1mo",
+            registry=_registry(),
+            backfill_run_id="backfill-fails-mid-window",
+            include_dependencies=False,
+            clock=TickClock(),
+        )
+
+    failed_status = tmp_store.con.execute(
+        """
+        SELECT status
+        FROM backfill_watermark
+        WHERE dataset_id = ? AND partition_key = ?
+        """,
+        ["fixture_backfill", partitions[1].partition_key],
+    ).fetchone()
+    assert failed_status == ("failed",)
+
+    tmp_store.con.execute(
+        """
+        INSERT OR REPLACE INTO backfill_watermark (
+            dataset_id, partition_key, window_lo, window_hi, status,
+            rows_written, watermark_after, run_id, updated_at
+        )
+        VALUES (?, ?, ?, ?, 'running', 0, NULL, 'interrupted-run', ?)
+        """,
+        [
+            "fixture_backfill",
+            partitions[2].partition_key,
+            partitions[2].window_lo,
+            partitions[2].window_hi,
+            dt.datetime(2026, 7, 4, 9, 45, 0),
+        ],
+    )
+
+    result = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        start,
+        end,
+        "1mo",
+        registry=_registry(),
+        backfill_run_id="backfill-resumes",
+        include_dependencies=False,
+        clock=TickClock(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.partitions_skipped == 1
+    assert result.partitions_succeeded == 2
+    assert result.rows_written == (
+        (partitions[1].window_hi - partitions[1].window_lo).days
+        + (partitions[2].window_hi - partitions[2].window_lo).days
+    )
+    assert FixtureBackfillDataset.calls == [
+        partitions[0].partition_key,
+        partitions[1].partition_key,
+        partitions[1].partition_key,
+        partitions[2].partition_key,
+    ]
+
+    final_statuses = tmp_store.con.execute(
+        """
+        SELECT partition_key, status
+        FROM backfill_watermark
+        WHERE dataset_id = 'fixture_backfill'
+        ORDER BY window_lo
+        """
+    ).fetchall()
+    assert final_statuses == [
+        (partitions[0].partition_key, "succeeded"),
+        (partitions[1].partition_key, "succeeded"),
+        (partitions[2].partition_key, "succeeded"),
+    ]
+
+    fixture_count = tmp_store.con.execute(
+        "SELECT count(*) FROM fixture_backfill_rows"
+    ).fetchone()[0]
+    duplicate_count = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM (
+            SELECT dataset_id, as_of_date, count(*) AS n
+            FROM fixture_backfill_rows
+            GROUP BY dataset_id, as_of_date
+            HAVING count(*) > 1
+        )
+        """
+    ).fetchone()[0]
+    assert fixture_count == (end - start).days
+    assert duplicate_count == 0
+
+
+def test_migration_0132_0133_backfill_catalog_and_indexes(tmp_store):
+    from db import migrations
+
+    versions = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT CAST(version AS INTEGER)
+            FROM schema_migrations
+            WHERE version ~ '^[0-9]+$'
+            """
+        ).fetchall()
+    }
+    assert {132, 133}.issubset(versions)
+
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE table_name IN (
+                'backfill_run',
+                'backfill_watermark',
+                'backfill_dead_letter'
+            )
+            """
+        ).fetchall()
+    }
+    assert tables == {"backfill_run", "backfill_watermark", "backfill_dead_letter"}
+
+    catalogued = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM table_catalog
+            WHERE table_name IN (
+                'backfill_run',
+                'backfill_watermark',
+                'backfill_dead_letter'
+            )
+            """
+        ).fetchall()
+    }
+    assert catalogued == {"backfill_run", "backfill_watermark", "backfill_dead_letter"}
+
+    for table_name in catalogued:
+        columns = {
+            row[0]
+            for row in tmp_store.con.execute(
+                "SELECT column_name FROM duckdb_columns() WHERE table_name = ?",
+                [table_name],
+            ).fetchall()
+        }
+        fields = {
+            row[0]
+            for row in tmp_store.con.execute(
+                "SELECT field_name FROM field_catalog WHERE table_name = ?",
+                [table_name],
+            ).fetchall()
+        }
+        assert fields == columns
+
+    indexes = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE table_name IN (
+                'backfill_run',
+                'backfill_watermark',
+                'backfill_dead_letter'
+            )
+            """
+        ).fetchall()
+    }
+    assert "idx_backfill_run_dataset_status" in indexes
+    assert "idx_backfill_watermark_status" in indexes
+    assert "idx_backfill_watermark_run" in indexes
+    assert "idx_backfill_dead_letter_partition" in indexes
+
+    schema_src = inspect.getsource(migrations._pf3_s1_backfill_schema_catalog)
+    index_src = inspect.getsource(migrations._pf3_s1_backfill_indexes)
+    assert "CREATE INDEX" not in schema_src
+    assert "CREATE TABLE" not in index_src

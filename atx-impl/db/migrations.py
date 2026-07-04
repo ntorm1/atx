@@ -10570,6 +10570,136 @@ def _pf2_s10_indexes_rebuild(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_schema_catalog(conn)
 
 
+def _pf3_s1_backfill_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S1 S1-0: windowed backfill run headers and per-partition progress."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backfill_run (
+            backfill_run_id VARCHAR PRIMARY KEY,
+            dataset_id VARCHAR NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            chunk VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            started_at TIMESTAMP NOT NULL DEFAULT now(),
+            finished_at TIMESTAMP,
+            error_message VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backfill_watermark (
+            dataset_id VARCHAR NOT NULL,
+            partition_key VARCHAR NOT NULL,
+            window_lo DATE NOT NULL,
+            window_hi DATE NOT NULL,
+            status VARCHAR NOT NULL,
+            rows_written BIGINT NOT NULL DEFAULT 0,
+            watermark_after VARCHAR,
+            run_id VARCHAR NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (dataset_id, partition_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backfill_dead_letter (
+            dataset_id VARCHAR NOT NULL,
+            partition_key VARCHAR NOT NULL,
+            run_id VARCHAR NOT NULL,
+            error VARCHAR NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            dead_lettered_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (dataset_id, partition_key, run_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'backfill_run',
+                'audit',
+                'backfill_run',
+                'backfill_run_id',
+                'PF3 windowed historical backfill run header with requested dataset, half-open date bounds, chunk size, terminal status, and error summary.',
+                '["backfill_run_id"]',
+                'Control/audit header for deterministic backfill planning. start_date/end_date define the requested half-open planning window; per-partition PIT progress lives in backfill_watermark.',
+                now()
+            ),
+            (
+                'backfill_watermark',
+                'control',
+                'backfill_watermark',
+                'dataset_id,partition_key',
+                'Per-dataset, per-partition backfill progress state used to skip completed windows and resume running or failed windows idempotently.',
+                '["dataset_id","partition_key"]',
+                'Clause H state table. A succeeded row is a strict no-op on rerun; window_lo/window_hi are half-open partition bounds and watermark_after records the completed partition high-water mark.',
+                now()
+            ),
+            (
+                'backfill_dead_letter',
+                'audit',
+                'backfill_dead_letter',
+                'dataset_id,partition_key,run_id',
+                'Dead-letter quarantine table reserved for PF3-S1 retry/fan-out follow-up work when a poisoned partition exhausts its retry budget.',
+                '["dataset_id","partition_key","run_id"]',
+                'Append-only failure quarantine. S1-0 lands the catalogued schema so S1-2 can wire retry exhaustion without another schema churn.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(
+        conn,
+        ("backfill_run", "backfill_watermark", "backfill_dead_letter"),
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Exclusive upper bound of the deterministic half-open backfill partition window.'
+        WHERE table_name = 'backfill_watermark'
+          AND field_name = 'window_hi'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Inclusive lower bound of the deterministic half-open backfill partition window.'
+        WHERE table_name = 'backfill_watermark'
+          AND field_name = 'window_lo'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Backfill run identifier that last advanced this partition state.'
+        WHERE table_name = 'backfill_watermark'
+          AND field_name = 'run_id'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _pf3_s1_backfill_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S1 S1-0: indexes for backfill run and partition progress lookup."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_backfill_run_dataset_status ON backfill_run(dataset_id, status, started_at)",
+        "CREATE INDEX IF NOT EXISTS idx_backfill_watermark_status ON backfill_watermark(dataset_id, status, window_lo, window_hi)",
+        "CREATE INDEX IF NOT EXISTS idx_backfill_watermark_run ON backfill_watermark(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_backfill_dead_letter_partition ON backfill_dead_letter(dataset_id, partition_key, dead_lettered_at)",
+    ):
+        conn.execute(statement)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -11151,6 +11281,16 @@ MIGRATIONS: list[Migration] = [
         version=131,
         name="pf2_s10_indexes_rebuild",
         up=_pf2_s10_indexes_rebuild,
+    ),
+    Migration(
+        version=132,
+        name="pf3_s1_backfill_schema_catalog",
+        up=_pf3_s1_backfill_schema_catalog,
+    ),
+    Migration(
+        version=133,
+        name="pf3_s1_backfill_indexes",
+        up=_pf3_s1_backfill_indexes,
     ),
 ]
 
