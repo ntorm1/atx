@@ -165,10 +165,12 @@ def quality_check(
     table_name: str,
     check_name: str,
     status: str,
+    severity: str | None = None,
     observed_value: float | None = None,
     threshold_value: float | None = None,
     details: dict[str, Any] | None = None,
 ) -> None:
+    resolved_severity = severity or ("warning" if status == "warning" else "error")
     store.con.execute(
         """
         INSERT INTO data_quality_checks (
@@ -177,12 +179,13 @@ def quality_check(
             table_name,
             check_name,
             status,
+            severity,
             observed_value,
             threshold_value,
             details_json,
             checked_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             str(uuid.uuid4()),
@@ -190,6 +193,7 @@ def quality_check(
             table_name,
             check_name,
             status,
+            resolved_severity,
             observed_value,
             threshold_value,
             json_dumps(details or {}),

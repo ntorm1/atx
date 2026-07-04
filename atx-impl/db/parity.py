@@ -142,7 +142,10 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "canonical income/balance/cash-flow statement points, fiscal-period windows, TTM values, "
             "observed SEC frames, public FASB/XBRL presentation/calculation/dimension relationships, "
             "issuer filing-instance fact/context/dimension-member extraction, "
-            "and sec_fundamentals_v1 accounting, valuation, cash-flow, shareholder-yield, growth, and revision features."
+            "standardized comparable item facts, PIT month snapshots, industry-template routing, "
+            "calendar-aligned TTM, segment and footnote sub-ledgers, preliminary press-release facts, "
+            "valuation overlap provenance, injectable vendor-baseline reconciliation, wider SQL-native DQC checks, "
+            "and S10 quality-gated production observability."
         ),
         warehouse_tables=(
             "sec_company_facts",
@@ -159,14 +162,31 @@ PROVIDER_PARITY_ROWS: tuple[ProviderParityRow, ...] = (
             "fundamental_periods",
             "fundamental_ttm_points",
             "fundamental_points",
+            "fundamental_standardized",
+            "fundamental_standardization_exception",
+            "fundamental_pit_snapshot",
+            "fundamental_calendar_map",
+            "fundamental_calendar_ttm",
+            "segment_dim",
+            "segment_fact",
+            "footnote_pension",
+            "footnote_deferred_tax",
+            "footnote_lease",
+            "footnote_sbc",
+            "press_release_facts",
+            "press_release_reconciliation",
+            "valuation_multiples",
+            "valuation_overlap_slice",
+            "vendor_baseline_facts",
+            "fact_disagreement",
             "feature_values",
             "v_fundamental_ttm_latest",
             "v_fundamental_statement_latest",
             "v_fundamental_points_latest",
         ),
-        parity_status="partial",
-        limitations="Compustat standardized taxonomy, history, and point-in-time snapshots are proprietary.",
-        next_gap="S4a/S4b concept dictionary now covers 137 authorized cross-industry item_ids plus 37 bank/insurance/REIT overlay item_ids; rdq date capture (S4c), DQC validation (S4d), and broader issuer backfill remain pending.",
+        parity_status="implemented",
+        limitations="Code/schema parity for US fundamentals depth and S10 production gates is implemented; licensed vendor history, full XBRL-US/Arelle DQC execution, and live proof-slice backfills remain operator-supplied inputs.",
+        next_gap="Run the approved backed-up one-year live proof slice, load operator-supplied Sharadar/SimFin-style baselines and 8-K press-release corpus, then record row counts, agreement ratios, gate run_id, storage stats, and rebuild id.",
         source_urls=(
             "https://www.marketplace.spglobal.com/en/datasets/compustat-financials-%288%29",
             "https://www.marketplace.spglobal.com/en/solutions/xpressfeed-%28b73250d6-a15c-4243-9016-3e5bf6300e43%29",

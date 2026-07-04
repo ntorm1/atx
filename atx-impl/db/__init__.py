@@ -323,8 +323,14 @@ from .short_volume import (
     refresh_short_volume_metrics,
 )
 from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
-from .quality import QualityResult, run_warehouse_quality_checks
+from .observability import (
+    DataQualityAnomaly,
+    detect_rowcount_anomalies,
+    evaluate_freshness_slas,
+)
+from .quality import GateResult, QualityResult, evaluate_quality_gate, run_warehouse_quality_checks
 from .queries import SHORT_INTEREST_WITH_13F_SQL, short_interest_with_13f_positioning
+from .rebuild import WarehouseRebuildResult, run_warehouse_rebuild
 from .sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from .security_master import SecurityMasterDataset, SecurityMasterOptions
 from .shares_outstanding import (
@@ -333,6 +339,12 @@ from .shares_outstanding import (
     refresh_shares_outstanding_history,
 )
 from .short_interest_features import ShortInterestFeatureDataset, ShortInterestFeatureOptions
+from .storage_admin import (
+    StorageCompactionResult,
+    StorageStatsResult,
+    checkpoint_and_compact,
+    record_storage_stats,
+)
 from .symbol_directory import (
     NasdaqListingEventsDataset,
     NasdaqListingEventsOptions,
@@ -717,7 +729,18 @@ __all__ = [
     "load_delisting_return_observations",
     "macro_asof",
     "ownership_asof",
+    "evaluate_quality_gate",
+    "GateResult",
     "run_warehouse_quality_checks",
+    "evaluate_freshness_slas",
+    "detect_rowcount_anomalies",
+    "DataQualityAnomaly",
+    "record_storage_stats",
+    "checkpoint_and_compact",
+    "StorageStatsResult",
+    "StorageCompactionResult",
+    "run_warehouse_rebuild",
+    "WarehouseRebuildResult",
     "refresh_fundamental_fact_revisions",
     "refresh_fundamental_periods",
     "refresh_fundamental_statement_points",

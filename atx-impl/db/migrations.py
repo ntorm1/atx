@@ -10231,6 +10231,345 @@ def _estimate_actual_surprise_basis_extensions(conn: duckdb.DuckDBPyConnection) 
     _schema_contract_schema_catalog(conn)
 
 
+def _quality_check_registry_seed_rows() -> list[tuple[object, ...]]:
+    from .quality import (
+        CATALOG_COMPLETENESS_CHECK_NAME,
+        DEFAULT_VALUATION_STALE_GAP_DAYS,
+        PIT_COLUMN_PRESENCE_CHECK_NAME,
+        SCHEMA_CONTRACT_DATASET_ID,
+        _check_specs,
+        severity_for_failure_status,
+    )
+
+    rows: list[tuple[object, ...]] = []
+    for spec in _check_specs(
+        daily_macro_stale_days=10,
+        monthly_macro_stale_days=70,
+        valuation_stale_gap_days=DEFAULT_VALUATION_STALE_GAP_DAYS,
+    ):
+        severity = spec.severity or severity_for_failure_status(spec.failure_status)
+        rows.append(
+            (
+                spec.check_name,
+                spec.dataset_id,
+                spec.table_name,
+                severity,
+                float(spec.threshold),
+                spec.comparator,
+                True,
+                spec.failure_status,
+                "static_sql",
+            )
+        )
+    rows.extend(
+        [
+            (
+                CATALOG_COMPLETENESS_CHECK_NAME,
+                SCHEMA_CONTRACT_DATASET_ID,
+                "table_catalog",
+                "critical",
+                0.0,
+                "eq",
+                True,
+                "failed",
+                "schema_contract",
+            ),
+            (
+                PIT_COLUMN_PRESENCE_CHECK_NAME,
+                SCHEMA_CONTRACT_DATASET_ID,
+                "schema_contract",
+                "critical",
+                0.0,
+                "eq",
+                True,
+                "failed",
+                "schema_contract",
+            ),
+        ]
+    )
+    return rows
+
+
+def _quality_gating_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S10 S10-0: severity/threshold registry for quality-as-SLO gates."""
+
+    conn.execute("ALTER TABLE data_quality_checks ADD COLUMN IF NOT EXISTS severity VARCHAR")
+    conn.execute(
+        """
+        UPDATE data_quality_checks
+        SET severity = CASE
+            WHEN status = 'warning' THEN 'warning'
+            WHEN status = 'failed' THEN 'error'
+            ELSE 'warning'
+        END
+        WHERE severity IS NULL OR severity = ''
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS quality_check_registry (
+            check_name VARCHAR PRIMARY KEY,
+            dataset_id VARCHAR NOT NULL,
+            table_name VARCHAR,
+            severity VARCHAR NOT NULL,
+            threshold_value DOUBLE,
+            comparator VARCHAR NOT NULL DEFAULT 'eq',
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            failure_status VARCHAR NOT NULL DEFAULT 'failed',
+            source VARCHAR NOT NULL DEFAULT 'static_sql',
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+        """,
+        _quality_check_registry_seed_rows(),
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'quality_check_registry',
+            'control',
+            'quality_gate_registry',
+            'check_name',
+            'Thresholds-as-data and severity taxonomy for warehouse quality checks consumed by S10 orchestrator gates.',
+            '["check_name"]',
+            'Control table; updated_at records threshold/severity knowledge time. The gate decision is deterministic for a fixed registry snapshot and warehouse state.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("data_quality_checks", "quality_check_registry"))
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'S10 quality-gate severity: critical halts an opt-in orchestrator run, error degrades it to partial, warning records only.'
+        WHERE table_name = 'data_quality_checks'
+          AND field_name = 'severity'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _observability_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S10 S10-1: freshness SLA and row-count anomaly observability."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dataset_freshness_sla (
+            dataset_id VARCHAR PRIMARY KEY,
+            max_lag_days INTEGER NOT NULL,
+            severity VARCHAR NOT NULL DEFAULT 'warning',
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_quality_anomaly (
+            anomaly_id VARCHAR PRIMARY KEY,
+            dataset_id VARCHAR NOT NULL,
+            check_name VARCHAR NOT NULL,
+            baseline_median DOUBLE NOT NULL,
+            baseline_mad DOUBLE NOT NULL,
+            observed_value DOUBLE NOT NULL,
+            z_score DOUBLE NOT NULL,
+            is_anomaly BOOLEAN NOT NULL,
+            checked_at TIMESTAMP NOT NULL DEFAULT now(),
+            severity VARCHAR NOT NULL DEFAULT 'warning',
+            details_json VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'dataset_freshness_sla',
+                'control',
+                'freshness_sla',
+                'dataset_id',
+                'Per-dataset freshness service-level objectives evaluated against dataset_watermarks.',
+                '["dataset_id"]',
+                'Control table; updated_at is the knowledge time for the active SLA definition.',
+                now()
+            ),
+            (
+                'data_quality_anomaly',
+                'audit',
+                'quality_anomaly',
+                'dataset_id,check_name,checked_at',
+                'Row-count anomaly events derived from data_quality_checks history using a deterministic median/MAD baseline.',
+                '["anomaly_id"]',
+                'Append-only observability event table; checked_at is the evaluation time and source_loaded_at is the warehouse load time.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("dataset_freshness_sla", "data_quality_anomaly"))
+    _schema_contract_schema_catalog(conn)
+
+
+def _storage_lake_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S10 S10-2: storage stats plus lake partition/incremental state."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS warehouse_storage_stats (
+            storage_stat_id VARCHAR PRIMARY KEY,
+            checked_at TIMESTAMP NOT NULL DEFAULT now(),
+            db_path VARCHAR NOT NULL,
+            db_size_bytes BIGINT NOT NULL,
+            wal_size_bytes BIGINT NOT NULL DEFAULT 0,
+            table_name VARCHAR,
+            row_count BIGINT,
+            byte_count BIGINT,
+            details_json VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lake_partition_specs (
+            object_name VARCHAR PRIMARY KEY,
+            partition_columns_json VARCHAR NOT NULL,
+            watermark_column VARCHAR,
+            retention_runs INTEGER NOT NULL DEFAULT 3,
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lake_partition_state (
+            object_name VARCHAR NOT NULL,
+            partition_key VARCHAR NOT NULL,
+            watermark_value VARCHAR,
+            export_run_id VARCHAR NOT NULL,
+            row_count BIGINT NOT NULL DEFAULT 0,
+            byte_count BIGINT NOT NULL DEFAULT 0,
+            exported_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (object_name, partition_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'warehouse_storage_stats',
+                'audit',
+                'storage_stat',
+                'checked_at,table_name',
+                'Warehouse DB/WAL size and per-table row-count observations captured for storage SLO monitoring.',
+                '["storage_stat_id"]',
+                'Append-only storage observation table; checked_at is the measurement time.',
+                now()
+            ),
+            (
+                'lake_partition_specs',
+                'control',
+                'lake_partition_spec',
+                'object_name',
+                'Per-export-object partition columns, incremental watermark column, and retention policy for lake exports.',
+                '["object_name"]',
+                'Control table; updated_at records the knowledge time for lake partition behavior.',
+                now()
+            ),
+            (
+                'lake_partition_state',
+                'audit',
+                'lake_partition_state',
+                'object_name,partition_key',
+                'Latest exported watermark and audit metadata per lake object partition.',
+                '["object_name","partition_key"]',
+                'State table used only for incremental export planning; exported_at records when the partition state was last advanced.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(
+        conn,
+        ("warehouse_storage_stats", "lake_partition_specs", "lake_partition_state"),
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _pf2_s10_indexes_rebuild(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S10 S10-3: capstone indexes and deterministic rebuild audit log."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS warehouse_rebuild_runs (
+            rebuild_run_id VARCHAR PRIMARY KEY,
+            orchestrator_run_id VARCHAR,
+            git_sha VARCHAR,
+            since_date DATE,
+            until_date DATE,
+            status VARCHAR NOT NULL,
+            dataset_counts_json VARCHAR,
+            params_json VARCHAR,
+            started_at TIMESTAMP NOT NULL DEFAULT now(),
+            finished_at TIMESTAMP,
+            error_message VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_data_quality_checks_dataset_severity ON data_quality_checks(dataset_id, severity, checked_at)",
+        "CREATE INDEX IF NOT EXISTS idx_quality_check_registry_dataset ON quality_check_registry(dataset_id, enabled, severity)",
+        "CREATE INDEX IF NOT EXISTS idx_dataset_freshness_sla_enabled ON dataset_freshness_sla(enabled, severity)",
+        "CREATE INDEX IF NOT EXISTS idx_data_quality_anomaly_dataset ON data_quality_anomaly(dataset_id, check_name, checked_at)",
+        "CREATE INDEX IF NOT EXISTS idx_warehouse_storage_stats_checked ON warehouse_storage_stats(checked_at, table_name)",
+        "CREATE INDEX IF NOT EXISTS idx_lake_partition_state_object ON lake_partition_state(object_name, exported_at)",
+        "CREATE INDEX IF NOT EXISTS idx_warehouse_rebuild_runs_status ON warehouse_rebuild_runs(status, started_at)",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'warehouse_rebuild_runs',
+            'audit',
+            'warehouse_rebuild',
+            'rebuild_run_id',
+            'Deterministic full-warehouse rebuild audit log linking git SHA, date replay bounds, orchestrator run id, status, and per-dataset counts.',
+            '["rebuild_run_id"]',
+            'Append-only rebuild log; git_sha plus since/until parameters identify a reproducible rebuild input snapshot.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("warehouse_rebuild_runs",))
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -10792,6 +11131,26 @@ MIGRATIONS: list[Migration] = [
         version=127,
         name="pf2_s9_indexes_report",
         up=_pf2_s9_indexes_report,
+    ),
+    Migration(
+        version=128,
+        name="quality_gating_schema_catalog",
+        up=_quality_gating_schema_catalog,
+    ),
+    Migration(
+        version=129,
+        name="observability_schema_catalog",
+        up=_observability_schema_catalog,
+    ),
+    Migration(
+        version=130,
+        name="storage_lake_schema_catalog",
+        up=_storage_lake_schema_catalog,
+    ),
+    Migration(
+        version=131,
+        name="pf2_s10_indexes_rebuild",
+        up=_pf2_s10_indexes_rebuild,
     ),
 ]
 

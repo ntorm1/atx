@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,6 +157,15 @@ class LakeValidationSummary:
     problems: list[LakeValidationProblem]
 
 
+@dataclass(frozen=True)
+class LakePartitionSpec:
+    object_name: str
+    partition_columns: tuple[str, ...]
+    watermark_column: str | None
+    retention_runs: int
+    enabled: bool
+
+
 _OBJECT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -194,12 +204,129 @@ def _object_schema(store, object_name: str) -> list[dict[str, object]]:
     ]
 
 
+def _table_exists(store, table_name: str) -> bool:
+    row = store.con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = ?
+        """,
+        [table_name],
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def _load_partition_specs(store, objects: tuple[str, ...]) -> dict[str, LakePartitionSpec]:
+    if not objects or not _table_exists(store, "lake_partition_specs"):
+        return {}
+    placeholders = ", ".join("?" for _ in objects)
+    rows = store.con.execute(
+        f"""
+        SELECT object_name, partition_columns_json, watermark_column, retention_runs, enabled
+        FROM lake_partition_specs
+        WHERE object_name IN ({placeholders})
+        """,
+        list(objects),
+    ).fetchall()
+    specs: dict[str, LakePartitionSpec] = {}
+    for object_name, columns_json, watermark_column, retention_runs, enabled in rows:
+        try:
+            columns = tuple(str(value) for value in json.loads(str(columns_json)))
+        except Exception:
+            columns = ()
+        specs[str(object_name)] = LakePartitionSpec(
+            object_name=str(object_name),
+            partition_columns=columns,
+            watermark_column=None if watermark_column in (None, "") else str(watermark_column),
+            retention_runs=max(0, int(retention_runs or 0)),
+            enabled=bool(enabled),
+        )
+    return specs
+
+
+def _sql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (dt.date, dt.datetime)):
+        text = value.isoformat()
+    else:
+        text = str(value)
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _partition_key(columns: tuple[str, ...], values: tuple[Any, ...]) -> str:
+    return json.dumps(
+        {column: None if value is None else str(value) for column, value in zip(columns, values, strict=True)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _safe_partition_value(value: Any) -> str:
+    if value is None:
+        return "__HIVE_DEFAULT_PARTITION__"
+    text = str(value)
+    return re.sub(r"[^0-9A-Za-z_.=-]+", "_", text).strip("_") or "blank"
+
+
+def _partition_dir(root: Path, columns: tuple[str, ...], values: tuple[Any, ...]) -> Path:
+    path = root
+    for column, value in zip(columns, values, strict=True):
+        path = path / f"{column}={_safe_partition_value(value)}"
+    return path
+
+
+def _partition_predicate(columns: tuple[str, ...], values: tuple[Any, ...]) -> str:
+    return " AND ".join(
+        f"{_quote_object_name(column)} IS NOT DISTINCT FROM {_sql_literal(value)}"
+        for column, value in zip(columns, values, strict=True)
+    )
+
+
+def _directory_sha256(files: list[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for item in sorted(files, key=lambda value: str(value["path"])):
+        digest.update(str(item["path"]).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(item["sha256"]).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _safe_prune_run_dirs(lake_root: Path, keep_run_ids: set[str]) -> None:
+    root = lake_root.resolve()
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name in keep_run_ids:
+            continue
+        try:
+            uuid.UUID(child.name)
+        except ValueError:
+            continue
+        resolved = child.resolve()
+        if root not in resolved.parents:
+            continue
+        shutil.rmtree(resolved)
+
+
 class LakehouseExporter:
     def __init__(self, db_path: Path | str = DEFAULT_DB_PATH, lake_root: Path | str = DEFAULT_LAKE_ROOT) -> None:
         self.db_path = Path(db_path)
         self.lake_root = Path(lake_root)
 
-    def export_objects(self, objects: tuple[str, ...] = DEFAULT_EXPORT_OBJECTS) -> list[LakeExportResult]:
+    def export_objects(
+        self,
+        objects: tuple[str, ...] = DEFAULT_EXPORT_OBJECTS,
+        *,
+        incremental: bool = False,
+        retain_runs: int | None = None,
+    ) -> list[LakeExportResult]:
         objects = tuple(objects)
         self.lake_root.mkdir(parents=True, exist_ok=True)
         results: list[LakeExportResult] = []
@@ -228,90 +355,61 @@ class LakehouseExporter:
                     str(self.lake_root.resolve()),
                     len(objects),
                     started_at,
-                    json_dumps({"objects": list(objects), "format": "parquet", "compression": "zstd"}),
+                    json_dumps(
+                        {
+                            "objects": list(objects),
+                            "format": "parquet",
+                            "compression": "zstd",
+                            "incremental": incremental,
+                        }
+                    ),
                 ],
             )
             try:
+                partition_specs = _load_partition_specs(store, objects)
                 for object_name in objects:
-                    quoted_object_name = _quote_object_name(object_name)
-                    schema = _object_schema(store, object_name)
-                    schema_hash = _schema_sha256(schema)
-                    rows = int(store.con.execute(f"SELECT count(*) FROM {quoted_object_name}").fetchone()[0])
-                    output_dir = self.lake_root / object_name
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    output_path = output_dir / "part-00000.parquet"
-                    escaped = str(output_path).replace("'", "''")
-                    store.con.execute(
-                        f"""
-                        COPY (
-                            SELECT *
-                            FROM {quoted_object_name}
-                        )
-                        TO '{escaped}'
-                        (FORMAT PARQUET, COMPRESSION ZSTD)
-                        """
-                    )
-                    byte_count = output_path.stat().st_size
-                    parquet_sha256 = file_sha256(output_path)
-                    manifest_path = output_dir / "_manifest.json"
-                    manifest = {
-                        "manifest_version": 1,
-                        "export_run_id": export_run_id,
-                        "object_name": object_name,
-                        "rows": rows,
-                        "exported_at_utc": exported_at.isoformat(),
-                        "db_path": str(self.db_path.resolve()),
-                        "output_path": str(output_path.resolve()),
-                        "format": "parquet",
-                        "compression": "zstd",
-                        "partition_columns": [],
-                        "byte_count": byte_count,
-                        "sha256": parquet_sha256,
-                        "schema_sha256": schema_hash,
-                        "schema": schema,
-                    }
-                    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-                    store.con.execute(
-                        """
-                        INSERT INTO lake_export_files (
-                            export_run_id,
-                            object_name,
-                            output_path,
-                            manifest_path,
-                            rows,
-                            byte_count,
-                            sha256,
-                            schema_sha256,
-                            format,
-                            compression,
-                            exported_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        [
-                            export_run_id,
-                            object_name,
-                            str(output_path.resolve()),
-                            str(manifest_path.resolve()),
-                            rows,
-                            byte_count,
-                            parquet_sha256,
-                            schema_hash,
-                            "parquet",
-                            "zstd",
-                            exported_at_naive,
-                        ],
-                    )
-                    results.append(
-                        LakeExportResult(
-                            export_run_id=export_run_id,
+                    spec = partition_specs.get(object_name)
+                    if spec is not None and spec.enabled and spec.partition_columns:
+                        result = self._export_partitioned_object(
+                            store,
                             object_name=object_name,
-                            output_path=output_path,
-                            manifest_path=manifest_path,
-                            rows=rows,
-                            byte_count=byte_count,
-                            sha256=parquet_sha256,
+                            spec=spec,
+                            export_run_id=export_run_id,
+                            exported_at=exported_at,
+                            exported_at_naive=exported_at_naive,
+                            incremental=incremental,
                         )
+                    else:
+                        result = self._export_single_file_object(
+                            store,
+                            object_name=object_name,
+                            export_run_id=export_run_id,
+                            exported_at=exported_at,
+                            exported_at_naive=exported_at_naive,
+                        )
+                    results.append(result)
+                keep = retain_runs
+                if keep is None:
+                    spec_retention = [
+                        spec.retention_runs
+                        for spec in partition_specs.values()
+                        if spec.enabled and spec.partition_columns and spec.retention_runs > 0
+                    ]
+                    keep = max(spec_retention) if spec_retention else None
+                if keep:
+                    keep_rows = store.con.execute(
+                        """
+                        SELECT export_run_id
+                        FROM lake_export_runs
+                        WHERE status = 'succeeded'
+                        ORDER BY coalesce(finished_at, started_at) DESC
+                        LIMIT ?
+                        """,
+                        [int(keep)],
+                    ).fetchall()
+                    _safe_prune_run_dirs(
+                        self.lake_root,
+                        {export_run_id, *(str(row[0]) for row in keep_rows)},
                     )
                 store.con.execute(
                     """
@@ -350,6 +448,281 @@ class LakehouseExporter:
                 )
                 raise
         return results
+
+    def _record_export_file(
+        self,
+        store,
+        *,
+        export_run_id: str,
+        object_name: str,
+        output_path: Path,
+        manifest_path: Path,
+        rows: int,
+        byte_count: int,
+        sha256: str,
+        schema_sha256: str,
+        exported_at_naive: dt.datetime,
+    ) -> None:
+        store.con.execute(
+            """
+            INSERT INTO lake_export_files (
+                export_run_id,
+                object_name,
+                output_path,
+                manifest_path,
+                rows,
+                byte_count,
+                sha256,
+                schema_sha256,
+                format,
+                compression,
+                exported_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                export_run_id,
+                object_name,
+                str(output_path.resolve()),
+                str(manifest_path.resolve()),
+                rows,
+                byte_count,
+                sha256,
+                schema_sha256,
+                "parquet",
+                "zstd",
+                exported_at_naive,
+            ],
+        )
+
+    def _export_single_file_object(
+        self,
+        store,
+        *,
+        object_name: str,
+        export_run_id: str,
+        exported_at: dt.datetime,
+        exported_at_naive: dt.datetime,
+    ) -> LakeExportResult:
+        quoted_object_name = _quote_object_name(object_name)
+        schema = _object_schema(store, object_name)
+        schema_hash = _schema_sha256(schema)
+        rows = int(store.con.execute(f"SELECT count(*) FROM {quoted_object_name}").fetchone()[0])
+        output_dir = self.lake_root / object_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "part-00000.parquet"
+        escaped = str(output_path).replace("'", "''")
+        store.con.execute(
+            f"""
+            COPY (
+                SELECT *
+                FROM {quoted_object_name}
+            )
+            TO '{escaped}'
+            (FORMAT PARQUET, COMPRESSION ZSTD)
+            """
+        )
+        byte_count = output_path.stat().st_size
+        parquet_sha256 = file_sha256(output_path)
+        manifest_path = output_dir / "_manifest.json"
+        manifest = {
+            "manifest_version": 1,
+            "export_run_id": export_run_id,
+            "object_name": object_name,
+            "rows": rows,
+            "exported_at_utc": exported_at.isoformat(),
+            "db_path": str(self.db_path.resolve()),
+            "output_path": str(output_path.resolve()),
+            "format": "parquet",
+            "compression": "zstd",
+            "partition_columns": [],
+            "byte_count": byte_count,
+            "sha256": parquet_sha256,
+            "schema_sha256": schema_hash,
+            "schema": schema,
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        self._record_export_file(
+            store,
+            export_run_id=export_run_id,
+            object_name=object_name,
+            output_path=output_path,
+            manifest_path=manifest_path,
+            rows=rows,
+            byte_count=byte_count,
+            sha256=parquet_sha256,
+            schema_sha256=schema_hash,
+            exported_at_naive=exported_at_naive,
+        )
+        return LakeExportResult(
+            export_run_id=export_run_id,
+            object_name=object_name,
+            output_path=output_path,
+            manifest_path=manifest_path,
+            rows=rows,
+            byte_count=byte_count,
+            sha256=parquet_sha256,
+        )
+
+    def _export_partitioned_object(
+        self,
+        store,
+        *,
+        object_name: str,
+        spec: LakePartitionSpec,
+        export_run_id: str,
+        exported_at: dt.datetime,
+        exported_at_naive: dt.datetime,
+        incremental: bool,
+    ) -> LakeExportResult:
+        quoted_object_name = _quote_object_name(object_name)
+        schema = _object_schema(store, object_name)
+        schema_columns = {str(column["name"]) for column in schema}
+        missing = [column for column in spec.partition_columns if column not in schema_columns]
+        if missing:
+            raise ValueError(f"Partition columns not found for {object_name}: {missing}")
+        if spec.watermark_column and spec.watermark_column not in schema_columns:
+            raise ValueError(f"Watermark column not found for {object_name}: {spec.watermark_column}")
+        schema_hash = _schema_sha256(schema)
+        partition_select = ", ".join(_quote_object_name(column) for column in spec.partition_columns)
+        partition_rows = store.con.execute(
+            f"""
+            SELECT DISTINCT {partition_select}
+            FROM {quoted_object_name}
+            ORDER BY {partition_select}
+            """
+        ).fetchall()
+        state_rows = store.con.execute(
+            """
+            SELECT partition_key, watermark_value
+            FROM lake_partition_state
+            WHERE object_name = ?
+            """,
+            [object_name],
+        ).fetchall()
+        prior_state = {str(key): None if value is None else str(value) for key, value in state_rows}
+        output_dir = self.lake_root / export_run_id / object_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        files: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        total_rows = 0
+        total_bytes = 0
+        for row in partition_rows:
+            values = tuple(row)
+            key = _partition_key(spec.partition_columns, values)
+            predicate = _partition_predicate(spec.partition_columns, values)
+            watermark_value: str | None = None
+            if spec.watermark_column:
+                watermark_row = store.con.execute(
+                    f"""
+                    SELECT max({_quote_object_name(spec.watermark_column)})
+                    FROM {quoted_object_name}
+                    WHERE {predicate}
+                    """
+                ).fetchone()
+                watermark_value = None if watermark_row is None or watermark_row[0] is None else str(watermark_row[0])
+            if incremental and prior_state.get(key) == watermark_value:
+                skipped.append({"partition_key": key, "watermark_value": watermark_value})
+                continue
+            partition_path = _partition_dir(output_dir, spec.partition_columns, values)
+            partition_path.mkdir(parents=True, exist_ok=True)
+            output_path = partition_path / "part-00000.parquet"
+            escaped = str(output_path).replace("'", "''")
+            store.con.execute(
+                f"""
+                COPY (
+                    SELECT *
+                    FROM {quoted_object_name}
+                    WHERE {predicate}
+                )
+                TO '{escaped}'
+                (FORMAT PARQUET, COMPRESSION ZSTD)
+                """
+            )
+            row_count = int(
+                store.con.execute(
+                    f"SELECT count(*) FROM {quoted_object_name} WHERE {predicate}"
+                ).fetchone()[0]
+            )
+            byte_count = output_path.stat().st_size
+            sha256 = file_sha256(output_path)
+            file_row = {
+                "partition_key": key,
+                "partition_values": {
+                    column: None if value is None else str(value)
+                    for column, value in zip(spec.partition_columns, values, strict=True)
+                },
+                "watermark_value": watermark_value,
+                "path": str(output_path.resolve()),
+                "rows": row_count,
+                "byte_count": byte_count,
+                "sha256": sha256,
+            }
+            files.append(file_row)
+            total_rows += row_count
+            total_bytes += byte_count
+            store.con.execute(
+                """
+                INSERT OR REPLACE INTO lake_partition_state (
+                    object_name, partition_key, watermark_value, export_run_id,
+                    row_count, byte_count, exported_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    object_name,
+                    key,
+                    watermark_value,
+                    export_run_id,
+                    row_count,
+                    byte_count,
+                    exported_at_naive,
+                ],
+            )
+        parquet_sha256 = _directory_sha256(files)
+        manifest_path = output_dir / "_manifest.json"
+        manifest = {
+            "manifest_version": 1,
+            "export_run_id": export_run_id,
+            "object_name": object_name,
+            "rows": total_rows,
+            "exported_at_utc": exported_at.isoformat(),
+            "db_path": str(self.db_path.resolve()),
+            "output_path": str(output_dir.resolve()),
+            "format": "parquet",
+            "compression": "zstd",
+            "partition_columns": list(spec.partition_columns),
+            "watermark_column": spec.watermark_column,
+            "incremental": incremental,
+            "skipped_partitions": skipped,
+            "files": files,
+            "byte_count": total_bytes,
+            "sha256": parquet_sha256,
+            "schema_sha256": schema_hash,
+            "schema": schema,
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        self._record_export_file(
+            store,
+            export_run_id=export_run_id,
+            object_name=object_name,
+            output_path=output_dir,
+            manifest_path=manifest_path,
+            rows=total_rows,
+            byte_count=total_bytes,
+            sha256=parquet_sha256,
+            schema_sha256=schema_hash,
+            exported_at_naive=exported_at_naive,
+        )
+        return LakeExportResult(
+            export_run_id=export_run_id,
+            object_name=object_name,
+            output_path=output_dir,
+            manifest_path=manifest_path,
+            rows=total_rows,
+            byte_count=total_bytes,
+            sha256=parquet_sha256,
+        )
 
 
 def _latest_succeeded_export_run_id(store) -> str:
