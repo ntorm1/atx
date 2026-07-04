@@ -423,6 +423,33 @@ struct RunConfig {
     double gp_risk_aversion    = 0.0;   // --gp-risk-aversion (0 = lambda=0 GP convention)
     double gp_trade_cost_scale = 0.0;   // --gp-trade-cost-scale (0 = kappa == trade_rate)
 
+    // -- p9 S5: book-level gates / capacity-in-optimizer / full robustness battery / borrow --
+    // All fields inert-default; a run asserting none of them is byte-identical to pre-S5.
+    // --book-turnover-gate (S5-1): cross-sleeve-netted book turnover, expressed as a PER-DAY
+    // L1 rate (mean per-period turnover / average rebalance-day spacing). 0.0 (default) = the
+    // rate is measured and surfaced (stage_optimize/stage_metabook kvs: "book_turnover_per_day")
+    // but never rejects. Active when > 0.0: a measured rate exceeding this threshold fails the
+    // stage CLOSED (mirrors --blocking-pbo's escalation; the books/sidecar are already written
+    // by the time the check runs, so a rejected run's own diagnostics stay inspectable).
+    double book_turnover_gate = 0.0;
+    // --participation-cap (S5-2): ADV participation fraction rho bounding |w_i| INSIDE the
+    // optimizer's QP construction (risk::ParticipationCap.adv_frac), not just the post-hoc
+    // stage_report.cpp capacity curve. 0.0 (default) = mc.constraints stays unset -> the fast
+    // (non-augmented) PortfolioOptimizer path runs, byte-identical to today.
+    double participation_cap = 0.0;
+    // --borrow-bps (S5-4): flat per-period financing charge (bps) on the book's SHORT weight
+    // (mirrors --cost-bps's own bps-per-period convention). 0.0 (default) = pnl_borrow is
+    // exactly 0.0 every period -> report digest byte-identical to today.
+    double borrow_bps = 0.0;
+    // --robustness-sub-universe / --robustness-alt-neutralization / --robustness-param-perturb
+    // (S5-3): expose the 3 currently-unreachable eval::BatteryConfig checks (noise_control is
+    // already wired via --robustness-battery alone, p8 final-wave). Each requires BOTH its own
+    // flag AND --robustness-battery; all false (default) = battery_cfg construction is exactly
+    // today's noise-control-only shape -> byte-identical admitted set/digest.
+    bool robustness_sub_universe = false;
+    bool robustness_alt_neutralization = false;
+    bool robustness_param_perturb = false;
+
     // Canonical names of flags explicitly supplied by the parsed source (CLI
     // args or config-file keys). Used by the run-mode merge so a CLI-present
     // flag always wins over a file value, regardless of its value (e.g. an
