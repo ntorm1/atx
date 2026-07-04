@@ -9,16 +9,24 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/parser.hpp"
+#include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/streams.hpp"
+#include "atx/engine/alpha/typecheck.hpp"
+#include "atx/engine/combine/store.hpp"
 #include "atx/engine/cost/calibration.hpp"
+#include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/fitness.hpp"
+#include "atx/engine/factory/genome.hpp"
 #include "atx/engine/factory/search_driver.hpp"
+#include "atx/engine/loop/weight_policy.hpp"
 
 namespace atxtest_fitness_capacity_turnover_test {
 using atx::f64;
@@ -32,7 +40,67 @@ using atx::engine::exec::SlippageCfg;
 using atx::engine::exec::SlippageMode;
 using atx::engine::factory::capacity_sqrt_law_score;
 using atx::engine::factory::turnover_autocorr_score;
+using atx::engine::WeightPolicy;
+using atx::engine::alpha::Library;
+using atx::engine::combine::AlphaStore;
+using atx::engine::exec::ExecutionSimulator;
+using atx::engine::exec::FillCfg;
+using atx::engine::exec::LatencyCfg;
+using atx::engine::exec::VolumeCapCfg;
+using atx::engine::factory::FitnessCfg;
+using atx::engine::factory::Genome;
+using atx::engine::factory::kObjCapacity;
+using atx::engine::factory::pool_aware_fitness;
 namespace cost = atx::engine::cost;
+
+// ---- end-to-end (pool_aware_fitness) helpers ------------------------------
+[[nodiscard]] ExecutionSimulator e2e_sim() {
+  return ExecutionSimulator{FillCfg{},
+                            SlippageCfg{SlippageMode::VolumeShare, 0.0, 0.0, 0.0, 0.0},
+                            ImpactCfg{0.0, 0.5, 0.0},
+                            CommissionCfg{CommissionMode::PerShare, 0.0, 0.0, 1.0, 0.0},
+                            LatencyCfg{},
+                            VolumeCapCfg{1.0}};
+}
+
+struct Lcg {
+  std::uint64_t s;
+  [[nodiscard]] f64 next() noexcept {
+    s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+    const std::uint64_t hi = s >> 11U;
+    const f64 u = static_cast<f64>(hi) / static_cast<f64>(1ULL << 53U);
+    return 2.0 * u - 1.0;
+  }
+};
+
+[[nodiscard]] std::vector<f64> noisy_close(usize dates, usize insts,
+                                           const std::vector<f64> &drift, std::uint64_t seed,
+                                           f64 noise_amp) {
+  std::vector<f64> close(dates * insts);
+  std::vector<f64> px(insts, 100.0);
+  Lcg rng{seed};
+  for (usize t = 0; t < dates; ++t) {
+    for (usize j = 0; j < insts; ++j) {
+      px[j] *= (1.0 + drift[j] + noise_amp * rng.next());
+      close[t * insts + j] = px[j];
+    }
+  }
+  return close;
+}
+
+[[nodiscard]] Genome make_genome(std::string_view src, Library &lib) {
+  auto parsed = atx::engine::alpha::parse_expr(src, lib);
+  EXPECT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().message());
+  if (!parsed) {
+    return Genome{};
+  }
+  auto info = atx::engine::alpha::analyze(*parsed);
+  EXPECT_TRUE(info.has_value()) << (info ? "" : info.error().message());
+  if (!info) {
+    return Genome{};
+  }
+  return Genome{std::move(*parsed), std::move(*info), 0};
+}
 
 [[nodiscard]] Panel make_panel(usize dates, usize insts, std::vector<std::string> fields,
                                std::vector<std::vector<f64>> cols) {
@@ -53,6 +121,15 @@ namespace cost = atx::engine::cost;
     close[t] = px;
   }
   return make_panel(kDates, 1, {"close", "volume"}, {close, volume});
+}
+
+// A {close, volume} panel over a caller-supplied close path with a flat ADV. Two
+// panels sharing the SAME close but differing in `volume` yield an IDENTICAL gross
+// edge (pnl depends only on close+weights), isolating the capacity gap to ADV.
+[[nodiscard]] Panel close_volume_panel(usize dates, usize insts, const std::vector<f64> &close,
+                                       f64 volume_level) {
+  const std::vector<f64> volume(dates * insts, volume_level);
+  return make_panel(dates, insts, {"close", "volume"}, {close, volume});
 }
 
 [[nodiscard]] AlphaStreams full_weight_strm(usize periods, f64 per_period_edge) {
@@ -223,6 +300,82 @@ TEST(TurnoverObjective, ZeroLastPeriodWeightExcludesInstrument) {
 TEST(TurnoverObjective, PureFunction_TwiceRunByteIdentical) {
   const AlphaStreams s = persistent_strm(15);
   EXPECT_EQ(turnover_autocorr_score(s), turnover_autocorr_score(s));
+}
+
+// ===========================================================================
+//  S4-4 — determinism classes threaded through the REAL pool_aware_fitness.
+// ===========================================================================
+
+// (b) end-to-end: two panels sharing the SAME close (hence identical gross edge)
+// but differing ONLY in ADV ("volume"). With the capacity objective ON, the
+// deeper-ADV panel's kObjCapacity column is STRICTLY greater and n_objectives
+// covers the slot -- proving the wire populates the real objective vector, not
+// just the standalone helper.
+TEST(FitnessCapacityTurnover, EndToEndObjectivesReflectCapacityGap) {
+  constexpr usize kDates = 80, kInsts = 6;
+  Library lib;
+  const WeightPolicy policy{};
+  const ExecutionSimulator sim = e2e_sim();
+  const AlphaStore empty;
+  std::vector<f64> drift(kInsts);
+  for (usize j = 0; j < kInsts; ++j) {
+    drift[j] = 0.006 - 0.0024 * static_cast<f64>(j);
+  }
+  const std::vector<f64> close = noisy_close(kDates, kInsts, drift, 0xBADF00Du, 0.012);
+  const Panel high_adv = close_volume_panel(kDates, kInsts, close, 1.0e5); // deep ADV
+  const Panel low_adv = close_volume_panel(kDates, kInsts, close, 1.0e4);  // thin ADV
+  const Genome cand = make_genome("rank(close)", lib);
+
+  FitnessCfg cfg{};
+  cfg.capacity_objective = true;
+  cfg.target_aum = 1.0e6;
+  cfg.cost = impact_only_cost(ImpactCfg{1.0, 0.5, 0.314}); // zero slippage -> pure impact
+
+  const auto rep_high = pool_aware_fitness(cand, empty, high_adv, policy, sim, cfg);
+  const auto rep_low = pool_aware_fitness(cand, empty, low_adv, policy, sim, cfg);
+  ASSERT_TRUE(rep_high.has_value()) << (rep_high ? "" : rep_high.error().message());
+  ASSERT_TRUE(rep_low.has_value()) << (rep_low ? "" : rep_low.error().message());
+
+  EXPECT_GT(rep_high->objectives[kObjCapacity], rep_low->objectives[kObjCapacity])
+      << "deeper ADV must yield a strictly higher kObjCapacity column end-to-end";
+  EXPECT_GE(rep_high->n_objectives, kObjCapacity + 1)
+      << "capacity ON must bump n_objectives to cover slot kObjCapacity";
+  EXPECT_GT(rep_high->objectives[kObjCapacity], 0.0);
+  EXPECT_LT(rep_high->objectives[kObjCapacity], 1.0) << "interior, not saturated";
+  EXPECT_GT(rep_low->objectives[kObjCapacity], 0.0);
+}
+
+// (c) twice-run: identical (genome, panel, pool, cfg) -> bit-identical objective
+// vectors, with BOTH new objectives active.
+TEST(FitnessCapacityTurnover, TwiceRun_ObjectivesBitIdentical) {
+  constexpr usize kDates = 64, kInsts = 5;
+  Library lib;
+  const WeightPolicy policy{};
+  const ExecutionSimulator sim = e2e_sim();
+  const AlphaStore empty;
+  std::vector<f64> drift(kInsts);
+  for (usize j = 0; j < kInsts; ++j) {
+    drift[j] = 0.005 - 0.0020 * static_cast<f64>(j);
+  }
+  const std::vector<f64> close = noisy_close(kDates, kInsts, drift, 0x5A5Au, 0.010);
+  const Panel panel = close_volume_panel(kDates, kInsts, close, 5.0e4);
+  const Genome cand = make_genome("rank(close)", lib);
+
+  FitnessCfg cfg{};
+  cfg.capacity_objective = true;
+  cfg.turnover_objective = true;
+  cfg.target_aum = 5.0e5;
+  cfg.cost = impact_only_cost(ImpactCfg{1.0, 0.5, 0.314});
+
+  const auto a = pool_aware_fitness(cand, empty, panel, policy, sim, cfg);
+  const auto b = pool_aware_fitness(cand, empty, panel, policy, sim, cfg);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  EXPECT_EQ(a->n_objectives, b->n_objectives);
+  EXPECT_EQ(std::memcmp(a->objectives.data(), b->objectives.data(),
+                        sizeof(f64) * a->objectives.size()),
+            0)
+      << "objective vector must be bit-identical across two identical calls";
 }
 
 } // namespace atxtest_fitness_capacity_turnover_test
