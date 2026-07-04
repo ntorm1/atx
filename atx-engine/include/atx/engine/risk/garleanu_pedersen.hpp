@@ -144,4 +144,62 @@ struct GpAimValue {
 [[nodiscard]] atx::core::Result<GpAimValue>
 gp_aim_and_value(std::span<const atx::f64> alpha_bar, const FactorModel &V, atx::f64 lambda);
 
+// ===========================================================================
+//  gp_turnover_native_step (S4-5a [B8]) — trade partway toward the AIM, not
+//  the freshly-shaped target.
+// ===========================================================================
+//  Root cause this closes: the book's existing partial-trade step (S1/S7,
+//  atx-impl/src/stage_optimize.cpp) is a LINEAR blend toward whatever target
+//  the CURRENT period's optimizer just shaped: `w := prev + rate·(target −
+//  prev)`. That target is re-derived from scratch every period — for a
+//  mean-reverting/decaying signal it can swing sharply period-to-period even
+//  though the GP-correct AIM (this header's `aim_pos`, which already folds in
+//  the signal's own decay path via `alpha_bar`) barely moves, because the aim
+//  anticipates the reversion the raw per-period target does not. Blending
+//  toward the SAME (jumpy) target every period at a fixed rate churns the book
+//  chasing noise the aim already discounted — the classic "aim in front of
+//  the target, trade partially toward the aim" prescription (Gârleanu-Pedersen
+//  2013) this function ships literally:
+//
+//    w := prev + κ·(aim_pos − prev)
+//
+//  with κ the caller's scalar GP trade rate (the SAME `cfg.trade_rate` this
+//  codebase already threads through the linear-blend step — this is a drop-in
+//  REPLACEMENT target, not a new knob). `gp_turnover_reduces` (tests/risk/
+//  gp_turnover_test.cpp) proves the turnover reduction by construction: at a
+//  trade rate calibrated so both a target-blend and an aim-blend land at the
+//  SAME final tracking error to the (moving) aim, the aim-blend's cumulative
+//  Σ|w−prev| is strictly lower.
+//
+//  BOUNDARY PIN (byte-identical at full rate): κ = 1.0 ⇒ w == aim_pos EXACTLY,
+//  for ANY `prev`/`aim_pos`. This is SPECIAL-CASED in the implementation (a
+//  direct copy) rather than left to the arithmetic `prev + 1.0·(aim_pos −
+//  prev)`, which is NOT bit-exact to `aim_pos` in general floating point when
+//  `prev` and `aim_pos` differ by many ULPs (two separate roundings — found
+//  and fixed via this unit's own RED test, see the .cpp for the reproducing
+//  numbers). Combined
+//  with this header's ALREADY-documented degenerate collapse (H=1 + identity
+//  decay ⇒ ᾱ == α_t bit-identically ⇒ `aim_pos` IS the single-period Markowitz
+//  target, lines 65-72 above), a caller running full trade-rate with a
+//  non-decaying signal gets a step BYTE-IDENTICAL to today's undamped
+//  single-period book — the inert boundary `gp_full_rate_byte_identical`
+//  pins.
+//
+//  This is the header's own turnover-native PRODUCER only — no Riccati is
+//  solved (the scalar-Λ reduction this whole header ships stays exactly as
+//  documented above) and no existing call site is touched: wiring this into
+//  the live book is an S1/S5 seam at `atx-impl/src/stage_optimize.cpp:159-172`
+//  (S4 must not edit that file — see sprint-4-progress.md for the recorded
+//  seam).
+//
+//  PRECONDITION: prev.size() == aim_pos.size() (ABORTS in debug — a length
+//  mismatch is a programmer error, mirroring `gp_aim_and_value`'s Result-typed
+//  validation being reserved for genuinely caller-supplied, recoverable
+//  inputs; this is an internal wiring invariant instead). Deterministic
+//  (R1): pure elementwise arithmetic, no allocation beyond the returned
+//  vector, no RNG/clock/map — byte-identical across runs and threads.
+[[nodiscard]] std::vector<atx::f64> gp_turnover_native_step(std::span<const atx::f64> prev,
+                                                            std::span<const atx::f64> aim_pos,
+                                                            atx::f64 trade_rate);
+
 } // namespace atx::engine::risk

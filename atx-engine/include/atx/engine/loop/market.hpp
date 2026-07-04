@@ -24,6 +24,13 @@
 //  A mark is a quiet NaN until the first slice sets it (no synthetic price is
 //  invented). bar_volume starts at 0.
 //
+//  S4-3d [B6]: each instrument ALSO carries a cumulative permanent-impact
+//  offset, accrued by `shift_mark` and re-applied on top of every subsequent
+//  fresh close (`mark = incoming_close + cumulative_perm_offset`) — see
+//  `update_prices` and `shift_mark` below. It starts at 0.0 and never resets,
+//  so a large fill's footprint survives every later bar's price update instead
+//  of being clobbered by the next (unimpacted, historical) close.
+//
 // ===========================================================================
 //  The money boundary — marks are f64 by design
 // ===========================================================================
@@ -103,22 +110,54 @@ public:
     build_index();
     marks_.assign(universe.size(), kAbsentMark); // NaN until first slice sets it
     volumes_.assign(universe.size(), 0.0);
+    present_.assign(universe.size(), false); // S4-3b scratch mask, reused every call
+    perm_offset_.assign(universe.size(), 0.0); // S4-3d cumulative permanent-impact shift
     init_stats(stats);
   }
 
   /// Refresh mark + last bar volume from a sealed cross-section. Only the
-  /// instruments present in the slice are touched; absent universe members keep
-  /// their prior values. A row whose id is outside the universe is ignored.
-  /// O(rows · log n_inst); ZERO allocation.
+  /// instruments present in the slice have their MARK touched; absent universe
+  /// members keep their prior mark (a persistent last-value MTM reference — see
+  /// header). A row whose id is outside the universe is ignored.
+  ///
+  /// S4-3b [B4 fix]: EXECUTABLE volume is a different contract from the mark —
+  /// an instrument absent from this slice did NOT trade this bar, so it has NO
+  /// per-bar fillable budget (its stale prior volume must not feed a phantom
+  /// fill on, e.g., a delisted name via `ExecutionSimulator::volume_capped_qty`).
+  /// Every universe member NOT present in `s.rows` has its volume zeroed each
+  /// call; present members get the slice's own bar volume. The mark is
+  /// deliberately left untouched for absent names (MTM of a halted/delisted
+  /// open position is a separate concern, scoped out of this fix).
+  ///
+  /// S4-3d [B6 fix]: a fresh close for a PRESENT name does not simply
+  /// overwrite the mark — it is combined with `perm_offset_[idx]`, the
+  /// cumulative permanent-impact shift `shift_mark` has accrued for that
+  /// instrument (`mark = incoming_close + cumulative_perm_offset`). The sim's
+  /// close feed is the unimpacted historical close, so without this the
+  /// "permanent" shift a large fill applies would be clobbered by the very
+  /// next slice — effectively temporary. An instrument that has never had its
+  /// mark shifted carries `perm_offset_[idx] == 0.0`, so this is byte-
+  /// identical to the pre-fix assignment on every unconfigured/no-impact path.
+  ///
+  /// O(rows · log n_inst + n_inst); ZERO steady-state allocation (`present_` is
+  /// sized once at construction and only re-zeroed here, per call).
   void update_prices(const MarketSlice &s) noexcept {
+    std::fill(present_.begin(), present_.end(), false);
     for (const SliceRow &r : s.rows) {
       const atx::usize idx = index_of(r.id);
       if (idx == kNoIndex) {
         continue; // id outside the universe — ignored.
       }
-      // Reference price is the bar's close; volume is the sealed bar's volume.
-      marks_[idx] = r.bar.close.to_decimal().to_double();
+      // Reference price is the bar's close plus the persisted permanent-impact
+      // offset (B6 fix); volume is the sealed bar's volume.
+      marks_[idx] = r.bar.close.to_decimal().to_double() + perm_offset_[idx];
       volumes_[idx] = r.bar.volume.to_decimal().to_double();
+      present_[idx] = true;
+    }
+    for (atx::usize i = 0; i < volumes_.size(); ++i) {
+      if (!present_[i]) {
+        volumes_[i] = 0.0; // absent this bar -> no executable liquidity (B4 fix)
+      }
     }
   }
 
@@ -143,12 +182,20 @@ public:
   /// price by the modelled permanent impact. PRECONDITION: id is in the universe
   /// AND its mark is already set (shifting an unset NaN mark is a programmer
   /// error — there is no price to move). ABORTS in debug.
+  ///
+  /// S4-3d [B6 fix]: `delta` also accumulates into `perm_offset_[idx]`, a
+  /// per-instrument running total that `update_prices` re-applies on top of
+  /// every subsequent fresh close — this is what makes the shift PERSIST
+  /// (rather than being clobbered the moment the next slice sets a new close).
+  /// The immediate in-place shift below is unchanged (same-bar valuation must
+  /// still reflect the impact right away).
   void shift_mark(InstrumentId id, atx::f64 delta) noexcept {
     const atx::usize idx = require_index(id);
     // SAFETY: shifting NaN silently yields NaN and would mask a sequencing bug
     // (impact applied before any price was seen); assert the mark exists first.
     ATX_ASSERT(!std::isnan(marks_[idx])); // mark must be priced before a shift
     marks_[idx] += delta;
+    perm_offset_[idx] += delta; // B6 fix: persist for the next update_prices
   }
 
 private:
@@ -206,6 +253,8 @@ private:
   std::vector<atx::f64> marks_{};          // last reference price (NaN = unset)
   std::vector<atx::f64> volumes_{};        // last sealed bar volume
   std::vector<InstrumentStats> stats_{};   // per-instrument cost params
+  std::vector<bool> present_{};            // S4-3b: per-call slice-presence scratch mask
+  std::vector<atx::f64> perm_offset_{};    // S4-3d: cumulative per-instrument permanent shift
 };
 
 } // namespace atx::engine

@@ -154,6 +154,93 @@ void finalize_run_pbo(FactoryReport &rep,
   rep.pbo_gate_passed = (max_pbo >= 1.0) ? true : !(rep.pbo > max_pbo);
 }
 
+// S5-2 — see the factory.hpp declaration for the full contract.
+[[nodiscard]] atx::core::Status check_blocking_pbo(const FactoryConfig &cfg,
+                                                   const FactoryReport &rep) {
+  if (cfg.blocking_pbo && !rep.pbo_gate_passed) {
+    return atx::core::Err(
+        atx::core::ErrorCode::InvalidArgument,
+        "mine_into: blocking PBO breach (pbo=" + std::to_string(rep.pbo) +
+            " > max_pbo threshold) -- run failed CLOSED (--blocking-pbo); the "
+            "library/manifest for this run's admits may already be persisted "
+            "(same caveat as --pbo-hard-block)");
+  }
+  return atx::core::Ok();
+}
+
+// p8 final-wave (Item 3) — see the factory.hpp declaration for the full contract.
+[[nodiscard]] bool robustness_battery_passes(const Genome &cand, const alpha::Panel &panel,
+                                             const PoolView &pool, const WeightPolicy &policy,
+                                             const exec::ExecutionSimulator &sim,
+                                             const FitnessCfg &admit_fit,
+                                             const eval::BatteryConfig &battery_cfg,
+                                             atx::f64 base_edge) {
+  if (!battery_cfg.any_enabled()) {
+    return true; // inert default -> never builds a CandidateInputs/Reevaluator/alt Panel
+  }
+
+  const auto close_id = panel.field_id("close");
+  eval::CandidateInputs inputs;
+  inputs.base_edge = base_edge;
+  std::vector<atx::f64> close_col; // must outlive the reeval lambda below (captured by ref)
+  if (close_id.has_value()) {
+    const std::span<const atx::f64> close_all = panel.field_all(*close_id);
+    close_col.assign(close_all.begin(), close_all.end());
+    inputs.input_values = std::span<const atx::f64>{close_col};
+  } // else: input_values stays empty -> noise_control marks itself inapplicable (graceful)
+
+  const atx::usize dates = panel.dates();
+  const atx::usize insts = panel.instruments();
+  const atx::usize n_fields = panel.num_fields();
+
+  const eval::Reevaluator reeval =
+      [&](const eval::RobustnessScenario &sc) -> atx::core::Result<atx::f64> {
+    if (sc.kind != eval::ScenarioKind::NoiseControl || !close_id.has_value()) {
+      // Only noise_control is wired this wave (FactoryConfig::robustness_battery's
+      // BatteryConfig only ever enables noise_control, so the kind branch is never
+      // actually reached in production -- defensive, not load-bearing). The
+      // close_id guard is likewise unreachable in practice: RobustnessBattery
+      // never calls reeval(NoiseControl) when inputs.input_values is empty, which
+      // is exactly the !close_id.has_value() case above -- defensive belt-and-
+      // braces so this function can never dereference an empty Result.
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "robustness_battery_passes: scenario not supported this wave");
+    }
+    // Rebuild every field of `panel` verbatim, replacing ONLY "close" with the
+    // battery's seeded permutation (same dates/instruments/universe shape --
+    // only that one field's VALUES move, never their (date,instrument) slot).
+    std::vector<std::string> fields;
+    std::vector<std::vector<atx::f64>> cols;
+    fields.reserve(n_fields);
+    cols.reserve(n_fields);
+    for (atx::usize f = 0; f < n_fields; ++f) {
+      fields.emplace_back(panel.field_name(f));
+      if (f == static_cast<atx::usize>(*close_id)) {
+        cols.emplace_back(sc.noise_input.begin(), sc.noise_input.end());
+      } else {
+        const std::span<const atx::f64> col = panel.field_all(static_cast<alpha::FieldId>(f));
+        cols.emplace_back(col.begin(), col.end());
+      }
+    }
+    std::vector<std::uint8_t> universe(dates * insts);
+    for (atx::usize t = 0; t < dates; ++t) {
+      for (atx::usize i = 0; i < insts; ++i) {
+        universe[t * insts + i] =
+            panel.in_universe(static_cast<alpha::DateIdx>(t), i) ? 1U : 0U;
+      }
+    }
+    ATX_TRY(alpha::Panel alt_panel,
+           alpha::Panel::create(dates, insts, std::move(fields), std::move(cols),
+                                std::move(universe)));
+    ATX_TRY(const FitnessReport fit,
+           pool_aware_fitness(cand, pool, alt_panel, policy, sim, admit_fit));
+    return atx::core::Ok(fit.dsr);
+  };
+
+  const eval::BatteryResult res = eval::RobustnessBattery::run(battery_cfg, inputs, reeval);
+  return !res.ran || res.overall_pass;
+}
+
 } // namespace detail
 
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
@@ -324,7 +411,18 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchDriver driver{lib_,           panel_,           policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
+  // R1: read the cross-run cumulative trial count BEFORE the search runs (a pure
+  // property of the already-existing library — no ordering hazard). S5-2: thread it
+  // into SearchConfig::prior_trial_count so the search's OWN per-generation NSGA
+  // `dsr` selection column (active only when cfg.search.deflate_selection is set) is
+  // deflated by the ACTUAL cross-run N, not just this run's local canon.size() —
+  // otherwise a multi-run --library-dir sweep's LATER runs under-deflate their own
+  // selection signal (they see only their own small in-run N). Inert at prior==0
+  // (fresh library) or deflate_selection==false (SearchConfig ignores the field).
+  const atx::u64 prior_r1 = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1);
+  const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
 
   // The persistent library is the ADMISSION pool: the deflated-fitness ranking and
   // the per-candidate re-score below score marginal corr against it (O(neighbors)).
@@ -344,7 +442,6 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // prior == 0 (fresh library / single run) this equals res.trial_count — byte-
   // identical to the pre-R1 path.
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1 = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
     admit_fit.trial_count = static_cast<atx::usize>(prior_r1) + res.trial_count;
   }
@@ -412,17 +509,50 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
     // invariant). Inactive (-inf default) -> always true (byte-identical pre-W4a bar).
     const bool split_ok =
         split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{cand_pnl}, metrics);
+
+    // p8 final-wave (Item 3): eval::RobustnessBattery noise-control check
+    // (OPT-IN, default OFF). cfg.robustness_battery == false (the default) ->
+    // battery_cfg stays BatteryConfig{} (all-false) -> robustness_battery_passes
+    // returns true WITHOUT building a CandidateInputs/Reevaluator/alternate Panel
+    // at all -> byte-identical to pre-Item-3. seed derives from res.seed (the
+    // run's own master seed) XORed with a fixed salt so the permutation is
+    // deterministic and reproducible per run, never thread/time.
+    eval::BatteryConfig battery_cfg;
+    if (cfg.robustness_battery) {
+      battery_cfg.noise_control = true; // scoped partial this wave -- see FactoryConfig's doc
+      battery_cfg.seed = res.seed ^ 0x526F627573742121ULL;
+    }
+    const bool robustness_ok = detail::robustness_battery_passes(
+        g, panel_, view, policy_, sim_, admit_fit, battery_cfg, dsr);
+
     // The deflation bar is FACTORY-side: clear it BEFORE library::admit is consulted.
     library::AdmitKind kind =
         library::AdmitKind::RejectFitness; // non-accept sentinel for the histogram
-    if (dsr >= cfg.min_dsr && split_ok) {
+    if (!robustness_ok) {
+      kind = library::AdmitKind::RejectRobustness;
+    } else if (dsr >= cfg.min_dsr && split_ok) {
+      // S5-1: populate the candidate's GateDeflation from the SAME dsr/split_ok this
+      // loop already computed (the running-N-deflated dsr; split_ok folds in the
+      // W4a stability check). pbo is left at kInertDeflation's default (0.0, never
+      // fires) — PBO is a RUN-level statistic (finalize_run_pbo, computed AFTER the
+      // whole admit loop over the admitted SET), so no per-candidate value exists
+      // here; that seam is the DISTINCT blocking-PBO mechanism (S5-2), not this one.
+      // Because this call site already gates dsr >= cfg.min_dsr / split_ok above,
+      // library::verdict_for's mirrored S5-1 screens can only confirm what this
+      // factory-side pre-check already proved — a redundant, harmless double-check
+      // for THIS caller, but the wire that makes verdict_for's screens load-bearing
+      // for any OTHER caller of Library::admit that does not pre-check.
+      combine::GateDeflation defl;
+      defl.dsr = dsr;
+      defl.split_stable = split_ok;
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{cand_pnl},
                                          std::span<const atx::f64>{cand_pos},
                                          metrics,
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
+                                         /*source=*/nullptr,
+                                         defl};
       // Cross-run accumulation guard (Task 8 footgun): route the persistent-library
       // admit through the geometry-checked seam. On a matching/fresh geometry this
       // delegates to admit() VERBATIM (same verdict, same state mutation, digest-
@@ -457,6 +587,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 
@@ -590,7 +721,12 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchDriver driver{lib_,           panel_,           policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool);
+  // S5-2: same cross-run prior_trial_count wire as the serial mine_into (read
+  // BEFORE the search runs; see that site's comment for the full reasoning).
+  const atx::u64 prior_r1_par = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par);
+  const SearchResult res = driver.run(search_cfg, search_pool);
 
   rep.evaluated = res.trial_count;
   fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
@@ -604,7 +740,6 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // F4 / R1 — identical to the sequential path: prior + this run's N (see serial
   // mine_into above for the full reasoning). When prior == 0 this is res.trial_count.
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1_par = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
     admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par) + res.trial_count;
   }
@@ -687,13 +822,20 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
         split_floor_ok(cfg.min_split_sharpe, std::span<const atx::f64>{cand_pnl}, metrics);
     library::AdmitKind kind = library::AdmitKind::RejectFitness;
     if (dsr >= cfg.min_dsr && split_ok) {
+      // S5-1: same defl population as the serial mine_into (dsr/split_ok already
+      // computed above); pbo stays inert (run-level, not per-candidate — see the
+      // serial site's comment).
+      combine::GateDeflation defl;
+      defl.dsr = dsr;
+      defl.split_stable = split_ok;
       const library::AlphaCandidate cand{canon_hash,
                                          std::span<const atx::f64>{cand_pnl},
                                          std::span<const atx::f64>{cand_pos},
                                          metrics,
                                          std::move(prov),
                                          /*as_of=*/kAdmitAsOf,
-                                         /*source=*/nullptr};
+                                         /*source=*/nullptr,
+                                         defl};
       // Cross-run accumulation guard (Task 8): route the persistent-library admit
       // through the geometry-checked seam (try_admit delegates to admit() VERBATIM on
       // a matching/fresh geometry — digest-identical — and returns a CLEAN propagated
@@ -723,6 +865,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.trial_count > 0U) {
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 
@@ -974,13 +1117,33 @@ namespace {
 //  The safety factor (calibrated to 3.0 at the call site) makes the skip threshold
 //  min_dsr / factor small; a LARGER factor LOOSENS the gate (fewer skips, strictly safer).
 //  A NaN/non-finite or non-positive train Sharpe is treated as "cannot prove admissible only
-//  from this" -> KEEP (return true) so the gate never skips on a degenerate proxy. trial_count
-//  is accepted for a future tightening but is NOT used to make the bound tighter here (a looser
-//  bound is always the safe direction). The bound is proven by AdmittedSetUnchanged.
+//  from this" -> KEEP (return true) so the gate never skips on a degenerate proxy.
+//
+//  S1-4 — threading the realized trial count N. The previous implementation voided
+//  trial_count. We now FOLD the expected-maximum-Sharpe benchmark SR*_N into the keep
+//  side of the bound:  keep iff  sr_tr*factor + SR*_N >= min_dsr.  SR*_N =
+//  expected_max_sharpe(N, V) >= 0 is the selection benchmark for N i.i.d. trials, with
+//  a fixed unit-variance proxy V = 1/252 (a small constant magnitude, NOT the holdout
+//  sample length T); it rises monotonically
+//  with N and is 0 at N<=1. Because SR*_N is ADDED to the keep side, a larger N can only
+//  ever KEEP more (never skip more): the bound is monotone-LOOSENING in N, which is the
+//  STRICTLY SAFE direction for a true upper bound — it can never start skipping a candidate
+//  the gate-off run would have evaluated, so the AdmittedSetUnchanged digest/histogram proof
+//  is preserved by construction (the skip set only shrinks vs. the N-ignoring bound).
+//
+//  NOTE (spec reconciliation): the S1-4 plan prose claims the bound becomes "stricter" with N,
+//  but its own concrete formula adds SR*_N to the keep side (looser) and its concrete monotone
+//  Accept test asserts "skip@N=100 => skip@N=10" — i.e. the skip set SHRINKS as N grows
+//  (looser). The arithmetic + the concrete test agree (looser/safer); the "stricter" prose is
+//  the inconsistency. We implement the SAFE arithmetic, which is the only direction that keeps
+//  the binding AdmittedSetUnchanged + byte-identity invariants green. See cascade_trial_count_test.
+//
+//  Determinism: at N<=1, or min_dsr<=0, or factor<=0, SR*_N is 0 (or the early-return fires),
+//  so the bound collapses to the exact pre-S1-4 expression -> byte-identical. The bound is
+//  proven by AdmittedSetUnchanged + CascadeGate_SeqEqualsParallel.
 [[nodiscard]] bool cascade_gate_passes(const combine::AlphaMetrics &train_metrics,
                                        const FactoryConfig &cfg,
                                        atx::usize trial_count) noexcept {
-  static_cast<void>(trial_count); // reserved for a future (looser-only) tightening
   if (!(cfg.cascade_gate_factor > 0.0)) {
     return true; // gate inert (OFF default or non-positive): never skip
   }
@@ -992,9 +1155,21 @@ namespace {
   if (!std::isfinite(sr_tr)) {
     return true; // degenerate proxy (NaN/inf): keep (the gate can prove nothing here)
   }
-  // keep iff sr_tr * factor >= min_dsr ; equivalently skip only the provably-too-weak
-  // (a low-positive OR non-positive train Sharpe — the latter is even more hopeless).
-  return sr_tr * cfg.cascade_gate_factor >= cfg.min_dsr;
+  // S1-4: the expected-maximum-Sharpe selection benchmark for N realized trials. At N<=1
+  // expected_max_sharpe returns 0 (no selection -> byte-identical to the pre-S1-4 bound).
+  // The variance proxy is a fixed 1/252 (a small constant magnitude, NOT the holdout sample
+  // length T): a CONSERVATIVE UPPER-BOUND screen only needs a monotone-in-N keep-margin bump,
+  // not the exact holdout V. NOTE: cumulative-N deflation is actually enforced downstream at the
+  // holdout DSR gate (prior_r1 + res.trial_count); this pre-gate's N-term only relaxes the skip
+  // filter and is NOT itself a deflation mechanism.
+  const atx::f64 sr_star_n =
+      (trial_count > 1U)
+          ? eval::expected_max_sharpe(trial_count, 1.0 / combine::kAnnualizationDays)
+          : 0.0;
+  // keep iff sr_tr*factor + SR*_N >= min_dsr ; skip only the provably-too-weak. Adding the
+  // non-negative SR*_N can only RELAX the keep test (monotone-loosening in N) -> never skips
+  // a candidate the N-ignoring bound kept -> the AdmittedSetUnchanged proof holds.
+  return sr_tr * cfg.cascade_gate_factor + sr_star_n >= cfg.min_dsr;
 }
 
 } // namespace
@@ -1007,22 +1182,56 @@ namespace {
 // rep.admitted / the library version_id are byte-identical by construction. See the
 // header for the full effects contract.
 [[nodiscard]] atx::core::Result<void> Factory::admit_on_holdout(
-    const atx::f64 hold_dsr, const bool price_scale_ok, const bool subwindows_ok,
-    const bool split_ok, const atx::f64 min_dsr, const atx::u64 canon_hash,
-    const std::span<const atx::f64> hold_pnl, const std::span<const atx::f64> hold_pos_flat,
-    const combine::AlphaMetrics &hold_metrics, const combine::AlphaMetrics &train_metrics,
-    library::Provenance prov, FactoryReport &rep, library::Library &lib_lib,
-    const combine::AlphaGate &gate, std::vector<std::vector<atx::f64>> &admitted_pnls) {
+    const Genome &cand, const alpha::Panel &holdout_panel, const FitnessCfg &admit_fit,
+    const bool robustness_battery, const atx::u64 run_seed, const atx::f64 hold_dsr,
+    const bool price_scale_ok, const bool subwindows_ok, const bool split_ok,
+    const atx::f64 min_dsr, const atx::u64 canon_hash, const std::span<const atx::f64> hold_pnl,
+    const std::span<const atx::f64> hold_pos_flat, const combine::AlphaMetrics &hold_metrics,
+    const combine::AlphaMetrics &train_metrics, library::Provenance prov, FactoryReport &rep,
+    library::Library &lib_lib, const combine::AlphaGate &gate,
+    std::vector<std::vector<atx::f64>> &admitted_pnls) {
+  // p8 final-wave (Item 3) OOS wire: the SAME eval::RobustnessBattery noise-control
+  // check the non-OOS Factory::mine_into admit loop already runs (factory.cpp's
+  // mine_into (3d) site), now reached from BOTH OOS admit paths via this SHARED
+  // ladder. robustness_battery == false (the default) -> battery_cfg stays
+  // BatteryConfig{} (all-false) -> robustness_battery_passes returns true WITHOUT
+  // building a CandidateInputs/Reevaluator/alternate Panel at all -> byte-identical
+  // to pre-wire. seed derives from run_seed (the run's own master seed) XORed with
+  // the SAME fixed salt mine_into uses, so the permutation is deterministic and
+  // reproducible per run, never thread/time. The admission pool for the battery's
+  // internal re-score is a fresh LibraryPool over lib_lib — the SAME persistent
+  // library this ladder's own try_admit call below consults (consistent with the
+  // real corr-to-pool check, which is HOLDOUT-vs-HOLDOUT-library; see the
+  // mine_into_oos (8.C) comment). hold_dsr is this ladder's own running deflated
+  // holdout edge -> base_edge.
+  eval::BatteryConfig battery_cfg;
+  if (robustness_battery) {
+    battery_cfg.noise_control = true; // scoped partial this wave -- see FactoryConfig's doc
+    battery_cfg.seed = run_seed ^ 0x526F627573742121ULL;
+  }
+  const LibraryPool holdout_pool_view{lib_lib};
+  const bool robustness_ok = detail::robustness_battery_passes(
+      cand, holdout_panel, holdout_pool_view, policy_, sim_, admit_fit, battery_cfg, hold_dsr);
+
   library::AdmitKind kind = library::AdmitKind::RejectFitness; // non-accept sentinel
   if (!price_scale_ok) {
     kind = library::AdmitKind::RejectPriceScale;
   } else if (!subwindows_ok) {
     kind = library::AdmitKind::RejectDsrSubwindow;
+  } else if (!robustness_ok) {
+    kind = library::AdmitKind::RejectRobustness;
   } else if (hold_dsr >= min_dsr && split_ok) {
+    // S5-1: populate defl from the holdout dsr/split_ok this ladder already gates
+    // on (same rationale as the non-OOS mine_into sites: pbo stays inert, a
+    // run-level statistic with no per-candidate analog here).
+    combine::GateDeflation defl;
+    defl.dsr = hold_dsr;
+    defl.split_stable = split_ok;
     const library::AlphaCandidate cand{canon_hash,           hold_pnl,        hold_pos_flat,
                                        hold_metrics,         std::move(prov),
                                        /*as_of=*/kAdmitAsOf,
-                                       /*source=*/nullptr};
+                                       /*source=*/nullptr,
+                                       defl};
     // Cross-run accumulation guard (Task 8): the EXACT OOS-holdout geometry the
     // reopened-library footgun names. try_admit delegates to admit() VERBATIM on a
     // matching/fresh geometry (digest-identical) and propagates a CLEAN error when
@@ -1133,7 +1342,12 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchDriver driver{lib_,           train,            policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool, sink, resume);
+  // S5-2: cross-run prior_trial_count wire (read BEFORE the search runs; see the
+  // non-OOS serial mine_into's comment for the full reasoning).
+  const atx::u64 prior_r1_oos_pre = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_oos_pre);
+  const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
 
   // (8.C) OOS train-ranking corr length safety: rank the OOS candidates against an
   // EMPTY pool for the corr/diversify term. The candidate's ranking pnl here is
@@ -1164,10 +1378,10 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   rep.digest = res.digest; // seed the admission digest with the search fingerprint (F1/F2)
 
   // F4 / R1 — prior cumulative N + this run's N (same reasoning as serial mine_into).
+  // Reuses prior_r1_oos_pre (read once, before the search, for S5-2's prior_trial_count).
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
-    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_oos) + res.trial_count;
+    admit_fit.trial_count = static_cast<atx::usize>(prior_r1_oos_pre) + res.trial_count;
   }
 
   // (2) rank the distinct scored candidates by deflated fitness against an EMPTY pool
@@ -1410,10 +1624,14 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     // `metrics` are what was actually gated out-of-sample). S2-3: the ladder body is
     // the SHARED Factory::admit_on_holdout — the SAME definition the parallel path
     // calls, so seq==parallel + the digest fold are byte-identical by construction.
+    // p8 final-wave (Item 3) OOS wire: g/holdout/admit_fit/cfg.robustness_battery/
+    // res.seed thread the eval::RobustnessBattery noise-control check into the
+    // ladder, mirroring the non-OOS mine_into admit site exactly.
     ATX_TRY_VOID(admit_on_holdout(
-        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
-        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
-        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
+        g, holdout, admit_fit, cfg.robustness_battery, res.seed, hold_dsr, price_scale_ok,
+        subwindows_ok, split_ok, cfg.min_dsr, canon_hash, std::span<const atx::f64>{hold_pnl},
+        std::span<const atx::f64>{hold_pos_flat}, hold_metrics, train_metrics, std::move(prov),
+        rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set. PURE /
@@ -1431,6 +1649,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
 
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 
@@ -1523,7 +1742,14 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   SearchDriver driver{lib_,           train,            policy_,         sim_,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
-  const SearchResult res = driver.run(cfg.search, search_pool);
+  // S5-2: cross-run prior_trial_count wire, read BEFORE the search runs — captured
+  // in the SEQUENTIAL parent before any parallel_for (the search's own internal
+  // parallelism, unaffected by this task), so seq==parallel holds trivially: this
+  // is a single scalar read of the already-existing library, not a per-worker value.
+  const atx::u64 prior_r1_par_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
+  SearchConfig search_cfg = cfg.search;
+  search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par_oos);
+  const SearchResult res = driver.run(search_cfg, search_pool);
 
   rep.evaluated = res.trial_count;
   fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
@@ -1536,7 +1762,6 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
 
   // F4 / R1 — prior + this run's N, IDENTICAL to serial mine_into_oos.
   FitnessCfg admit_fit = cfg.search.fitness;
-  const atx::u64 prior_r1_par_oos = lib_lib.cumulative_trials(); // R1: cross-run cumulative N
   if (res.trial_count > 0U) {
     admit_fit.trial_count = static_cast<atx::usize>(prior_r1_par_oos) + res.trial_count;
   }
@@ -1793,10 +2018,15 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     // definition the serial mine_into_oos calls. The stateful library::admit fold stays
     // SEQUENTIAL in the parent; calling ONE helper makes seq==parallel + the digest fold
     // byte-identical BY CONSTRUCTION (they can no longer drift).
+    // p8 final-wave (Item 3) OOS wire: g/holdout/admit_fit/cfg.robustness_battery/
+    // res.seed thread the eval::RobustnessBattery noise-control check into the
+    // ladder — the SAME shared helper the serial mine_into_oos calls, so this path
+    // gets the battery for free, byte-identically, by construction.
     ATX_TRY_VOID(admit_on_holdout(
-        hold_dsr, price_scale_ok, subwindows_ok, split_ok, cfg.min_dsr, canon_hash,
-        std::span<const atx::f64>{hold_pnl}, std::span<const atx::f64>{hold_pos_flat}, hold_metrics,
-        train_metrics, std::move(prov), rep, lib_lib, gate, admitted_pnls));
+        g, holdout, admit_fit, cfg.robustness_battery, res.seed, hold_dsr, price_scale_ok,
+        subwindows_ok, split_ok, cfg.min_dsr, canon_hash, std::span<const atx::f64>{hold_pnl},
+        std::span<const atx::f64>{hold_pos_flat}, hold_metrics, train_metrics, std::move(prov),
+        rep, lib_lib, gate, admitted_pnls));
   }
 
   // A3 — the SINGLE POST-HOC run-level CSCV-PBO over the admitted HOLDOUT set, accumulated
@@ -1813,6 +2043,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     lib_lib.add_trials(static_cast<atx::u64>(res.trial_count));
   }
 
+  ATX_TRY_VOID(detail::check_blocking_pbo(cfg, rep));
   return atx::core::Ok(std::move(rep));
 }
 

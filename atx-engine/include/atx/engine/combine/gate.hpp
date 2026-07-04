@@ -24,6 +24,9 @@
 //    2. metrics.sharpe       >= cfg.min_sharpe       else RejectSharpe    (low sanity floor; DSR is the sig gate)
 //    3. metrics.turnover     <= cfg.max_turnover     else RejectTurnover  (ceiling)
 //    3b.metrics.holding_days >= cfg.min_holding_days else RejectTurnover  (S4-2 floor; inert at min_holding_days=0)
+//    3c.defl.dsr             >= cfg.min_dsr          else RejectDsr            (S1-1; inert at min_dsr=0)
+//    3d.defl.pbo             <= cfg.max_pbo          else RejectPbo            (S1-2; inert at max_pbo=1)
+//    3e.defl.split_stable    (when require_split_stable) else RejectSplitUnstable (S1-3; inert when flag false)
 //    4. corr_to_pool         <= cfg.max_pool_corr    else RejectCorrelated
 //    else                                                 Accept
 //  corr_to_pool = max_j |pairwise_complete_corr(candidate, member_j)| over the
@@ -75,6 +78,15 @@ struct GateConfig {
   // Cost / holding-period fields (S4 plumbing; inert at the 0.0 default — read only when > 0.0).
   atx::f64 rt_cost_bps      = 0.0; // round-trip cost in bps; 0 => frictionless (no cost gate)
   atx::f64 min_holding_days = 0.0; // holding-period floor in periods; 0 => inert
+
+  // Deflation / selection-bias fields (S1 plumbing; inert at the stated defaults).
+  // These give the STATELESS gate (the library / standalone caller) the same DSR /
+  // PBO / split-half honesty the factory tier already enforces via FactoryConfig.
+  // Each is read ONLY when non-inert, so the default off-path is byte-identical to
+  // the pre-S1 verdict (see AlphaGate::admit S1-1/S1-2/S1-3 guards).
+  atx::f64 min_dsr              = 0.0;   // DSR floor; 0.0 => inert (DSR ∈ [0,1] always ≥ 0)
+  atx::f64 max_pbo             = 1.0;   // PBO ceiling; 1.0 => inert (PBO ∈ [0,1] never > 1)
+  bool     require_split_stable = false; // require split-half sign agreement; false => inert
 };
 
 // ===========================================================================
@@ -93,7 +105,42 @@ enum class GateVerdict : atx::u8 {
   RejectFitness,
   RejectTurnover,
   RejectCorrelated,
+  // S1: deflation / selection-bias rejects. APPENDED at the END — the enumerator
+  // order is a FROZEN reject-histogram index, so new buckets must extend the tail
+  // (indices 5,6,7) and never renumber an existing value. Pinned by the
+  // gate_verdict_histogram_layout static_assert (S1-5).
+  RejectDsr,           // S1: holdout DSR below cfg.min_dsr floor
+  RejectPbo,           // S1: run-level PBO above cfg.max_pbo ceiling
+  RejectSplitUnstable, // S1: split-half holdout halves disagree in Sharpe sign
 };
+
+// ===========================================================================
+//  GateDeflation — the per-candidate deflation / selection-bias scalars the S1
+//  gate screens against (DSR floor, PBO ceiling, split-half stability).
+//
+//  WHY A SEPARATE STRUCT (not fields on AlphaMetrics): AlphaMetrics is serialized
+//  VERBATIM into the library segment record (library/record.hpp::AlphaDirEntry,
+//  pinned by static_assert(sizeof(AlphaMetrics)==56) and embedded in the segment
+//  CRC / manifest version_id). Growing AlphaMetrics would change the on-disk format
+//  and break byte-identity of every library golden/digest — forbidden by the p7
+//  determinism contract. These deflation scalars are an ADMISSION-TIME screening
+//  input, not durable record metadata, so they live in this small NON-serialized
+//  POD that the caller fills (from holdout_dsr() / pbo_cscv / split_floor_ok) and
+//  passes alongside the metrics. The inert sentinels match the plan's intent: an
+//  UNSET instance can never trip a gate at the inert GateConfig default.
+//    dsr = 1.0  : DSR max => clears any min_dsr ∈ [0,1]
+//    pbo = 0.0  : PBO min => never exceeds any max_pbo ∈ [0,1]
+//    split_stable = false : gated only when require_split_stable is explicitly set
+// ===========================================================================
+struct GateDeflation {
+  atx::f64 dsr          = 1.0;   // Deflated Sharpe Ratio ∈ [0,1]
+  atx::f64 pbo          = 0.0;   // Probability of Backtest Overfitting ∈ [0,1]
+  bool     split_stable = false; // both holdout halves share the full-sample Sharpe sign
+};
+
+// The inert default deflation input: passing this (or nothing) to admit() leaves
+// the three S1 screens dormant, so the verdict is byte-identical to the pre-S1 gate.
+inline constexpr GateDeflation kInertDeflation{};
 
 // ===========================================================================
 //  AlphaGate — stateless admission screen (holds only its config).
@@ -101,14 +148,17 @@ enum class GateVerdict : atx::u8 {
 struct AlphaGate {
   GateConfig cfg;
 
-  // Admit iff metrics clear the floors AND max |corr-to-pool| <= max_pool_corr.
-  // `candidate_pnl` is the candidate's realized-PnL stream (length == the pool's
-  // n_periods() once the pool is non-empty); it is correlated pairwise-complete
-  // against each accepted member's PnL row. Returns the §5.2 fixed-order verdict.
+  // Admit iff metrics clear the floors AND the deflation screens AND max
+  // |corr-to-pool| <= max_pool_corr. `candidate_pnl` is the candidate's realized-PnL
+  // stream (length == the pool's n_periods() once the pool is non-empty); it is
+  // correlated pairwise-complete against each accepted member's PnL row. `defl`
+  // carries the per-candidate DSR / PBO / split-half scalars the S1 deflation gates
+  // screen against; it DEFAULTS to the inert instance, so every pre-S1 caller (which
+  // omits it) gets a byte-identical verdict. Returns the §5.2 fixed-order verdict.
   // PURE + const: reads only; the caller inserts on Accept.
   [[nodiscard]] GateVerdict admit(const AlphaMetrics &metrics,
-                                  std::span<const atx::f64> candidate_pnl,
-                                  const AlphaStore &pool) const noexcept {
+                                  std::span<const atx::f64> candidate_pnl, const AlphaStore &pool,
+                                  const GateDeflation &defl = kInertDeflation) const noexcept {
     // §5.2 checks 1–3: the standalone quality floors, in fixed order. First
     // failing condition is the verdict (deterministic).
     // Fitness (WQ-aligned) is the dominant primary gate; sharpe is a low
@@ -136,6 +186,34 @@ struct AlphaGate {
     // branch is never taken and verdicts are byte-identical to pre-S4-2.
     if (cfg.min_holding_days > 0.0 && metrics.holding_days < cfg.min_holding_days) {
       return GateVerdict::RejectTurnover;
+    }
+    // S1 deflation / selection-bias screens. These are CHEAP scalar comparisons, so
+    // they slot in BEFORE the O(|pool|·T) correlation sweep (a deflation-rejected
+    // candidate never pays the corr cost) and AFTER the standalone quality floors
+    // (they are quality floors of the same kind). Each is INERT at its GateConfig
+    // default, so the off-path is byte-identical to the pre-S1 verdict; each fires
+    // only when the caller sets a non-inert bar AND supplies the matching `defl`.
+    //
+    // S1-1: DSR (Deflated Sharpe Ratio) floor — the statistical-significance gate.
+    // DSR ∈ [0,1] = P(true SR > SR*_N | data) under N-trial selection bias. Inert at
+    // min_dsr=0.0 (DSR is always ≥ 0, so the test never fires); fires only when the
+    // caller sets a positive bar (e.g. the FactoryConfig-aligned min_dsr=0.5).
+    if (cfg.min_dsr > 0.0 && defl.dsr < cfg.min_dsr) {
+      return GateVerdict::RejectDsr;
+    }
+    // S1-2: PBO (Probability of Backtest Overfitting) ceiling — run-level overfit
+    // screen. PBO ∈ [0,1]: → 0 a persistent edge; → 0.5 the IS winner is OOS noise.
+    // Inert at max_pbo=1.0 (PBO never strictly exceeds 1.0, so the test never fires).
+    if (cfg.max_pbo < 1.0 && defl.pbo > cfg.max_pbo) {
+      return GateVerdict::RejectPbo;
+    }
+    // S1-3: split-half stability — reject a single-regime artifact. split_stable ==
+    // both halves of the holdout PnL share the full-sample Sharpe sign. Inert at the
+    // default require_split_stable=false (boolean guard; never fires). When active,
+    // rejects a candidate whose halves contradict (strong H1, dead/negative H2 is the
+    // canonical failure mode).
+    if (cfg.require_split_stable && !defl.split_stable) {
+      return GateVerdict::RejectSplitUnstable;
     }
     // §5.2 check 4 (LAZY): only now — after the floors pass — pay the
     // O(|pool|·T) correlation cost. Empty pool ⇒ corr_to_pool = 0 (the loop

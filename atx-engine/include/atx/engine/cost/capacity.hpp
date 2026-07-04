@@ -8,6 +8,7 @@
 // Header-only, #pragma once.
 #pragma once
 
+#include <cmath>  // std::pow, std::exp, std::log (log-spaced AUM grid)
 #include <limits> // std::numeric_limits
 #include <span>   // std::span
 #include <vector> // std::vector
@@ -88,6 +89,168 @@ capacity_for_alpha(const alpha::AlphaStreams& streams, atx::usize alpha_idx,
 
   // Net edge stays positive across the entire grid.
   return std::numeric_limits<atx::f64>::infinity();
+}
+
+// ---------------------------------------------------------------------------
+//  compute_capacity_vector — the per-alpha capacity-AUM vector (P7-S4-2).
+//
+//  Returns, for each alpha a in [0, streams.n_alphas()) in ASCENDING order, the
+//  capacity AUM of that alpha's LAST-period target book — the AUM where the net
+//  frictionless edge crosses zero (capacity_point of the swept net-edge curve).
+//  This is the real per-name capacity vector that replaces the constant-1.0 stub
+//  in the driver's decorrelate_weights blend (S4 proves the math; S7 wires the
+//  driver call site — this header adds NO new cost model, REUSING capacity_for_alpha
+//  -> risk::capacity_curve and capacity_point verbatim).
+//
+//  AUM grid: a log-spaced grid of kCapacityAumGridPoints points from
+//  0.01*target_aum to 10*target_aum (two decades each side of the operational AUM
+//  — wide enough to bracket the zero-crossing in typical cases). The grid is a pure
+//  deterministic function of target_aum (same target_aum -> same grid -> same
+//  output); ascending alpha order, no RNG -> bit-deterministic.
+//
+//  Per-alpha capacity AUM semantics (the downstream cap_scale contract):
+//    * +inf  — the grid never crossed zero (the book has spare capacity at 10x the
+//              target). The caller's cap_scale = clamp(capacity/floor, 0, 1)
+//              clamps +inf to 1.0 (no penalty) — the existing contract.
+//    * 0     — the last-period book has no positive frictionless edge
+//              (capacity_point returns grid[0] which, on a positive grid, is only
+//              reached when net edge is already <= 0 at the smallest AUM; for a
+//              dead book gross<=0 so cap_scale -> ~0, fading it out).
+//    * finite in (0, +inf) — the interpolated zero-crossing AUM.
+//
+//  LIMITATION (documented, inherited from capacity_for_alpha): the book proxy is
+//  the LAST-period target weights (streams.positions(a, n_periods-1)), NOT a
+//  realized-PnL edge estimate. The p6-S6-1 realized-edge refinement is a driver-
+//  layer concern, out of scope for this engine-layer helper (see the S4 plan
+//  "capacity_for_alpha uses last-period weights" guardrail).
+//
+//  PRECONDITION: streams.n_periods() > 0 (ATX_CHECK in capacity_for_alpha) AND
+//  target_aum > 0.0 (ATX_CHECK at entry below). target_aum MUST be strictly
+//  positive: the log-spaced grid takes std::log(0.01*target_aum), so a non-positive
+//  target_aum would produce -inf/NaN grid points — the helper checks this
+//  precondition and fails closed; it does NOT silently degrade on non-positive
+//  input. The driver guards this, as it does for the stub path.
+//  PURE given (streams, panel, sim, target_aum); NO RNG; thread-safe (no shared
+//  state). Header-only inline — a cold, research-cadence call.
+// ---------------------------------------------------------------------------
+inline constexpr atx::usize kCapacityAumGridPoints = 20U; // log-spaced grid resolution
+
+[[nodiscard]] inline std::vector<atx::f64>
+compute_capacity_vector(const alpha::AlphaStreams& streams, const PanelView& panel,
+                        const exec::ExecutionSimulator& sim, atx::f64 target_aum) {
+  ATX_CHECK(target_aum > 0.0); // log-spaced grid needs a strictly positive AUM
+  // Log-spaced AUM grid from 0.01*target_aum to 10*target_aum, ascending. Built
+  // once and reused for every alpha (the grid depends only on target_aum). For a
+  // single grid point the loop degenerates to the lone endpoint.
+  std::vector<atx::f64> aum_grid;
+  aum_grid.reserve(kCapacityAumGridPoints);
+  const atx::f64 lo = 0.01 * target_aum;
+  const atx::f64 hi = 10.0 * target_aum;
+  if (kCapacityAumGridPoints == 1U) {
+    aum_grid.push_back(lo);
+  } else {
+    // Geometric spacing: aum_k = lo * (hi/lo)^(k/(N-1)). Computed via exp/log so the
+    // ratio is exact at the endpoints (k=0 -> lo, k=N-1 -> hi) for lo > 0.
+    const atx::f64 log_lo = std::log(lo);
+    const atx::f64 log_hi = std::log(hi);
+    const atx::f64 denom = static_cast<atx::f64>(kCapacityAumGridPoints - 1U);
+    for (atx::usize k = 0U; k < kCapacityAumGridPoints; ++k) {
+      const atx::f64 frac = static_cast<atx::f64>(k) / denom;
+      aum_grid.push_back(std::exp(log_lo + frac * (log_hi - log_lo)));
+    }
+  }
+
+  const atx::usize n_alphas = streams.n_alphas();
+  std::vector<atx::f64> out;
+  out.reserve(n_alphas);
+  for (atx::usize a = 0U; a < n_alphas; ++a) { // ascending alpha order (determinism)
+    const std::vector<risk::CapacityPoint> curve =
+        capacity_for_alpha(streams, a, panel, sim, std::span<const atx::f64>{aum_grid});
+    out.push_back(capacity_point(std::span<const risk::CapacityPoint>{curve}));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+//  CapacityScorecard — a first-class, self-contained capacity artefact (P7-S4-3).
+//
+//  Packages the AUM->net-edge sweep of a fitted book at a given operational AUM:
+//    capacity_point_aum : the AUM where net edge -> 0 (linear interpolation over
+//                         aum_grid), or +inf if the grid does not bracket the
+//                         crossing. See cost::capacity_point.
+//    gross_edge_bps     : the AUM-independent frictionless edge (gross), in bps —
+//                         the thing impact erodes (risk::detail::gross_edge_bps).
+//    net_edge_at_target : the net edge (bps) at the grid point nearest target_aum
+//                         (the operational AUM); the last point if target_aum
+//                         exceeds the grid.
+//    curve              : the full (aum, net_edge_bps) series in grid order.
+//                         Monotone NON-INCREASING (the capacity-model CONTRACT,
+//                         verified by capacity_point's C4 guard) — callers may plot
+//                         or interpolate without re-checking.
+//
+//  This is the report-facing summary the driver (S7) wires to the report KV block;
+//  S4 ships the struct + builder and proves it on tiny fixtures (no report emission
+//  is touched here). Rule of Zero (the `curve` vector self-manages).
+// ---------------------------------------------------------------------------
+struct CapacityScorecard {
+  atx::f64 capacity_point_aum{};                 // AUM at which net edge == 0 (or +inf)
+  atx::f64 gross_edge_bps{};                      // frictionless edge (AUM-independent)
+  atx::f64 net_edge_at_target{};                  // net edge at the target_aum grid point
+  std::vector<risk::CapacityPoint> curve{};       // the full sweep, grid order
+};
+
+// ---------------------------------------------------------------------------
+//  emit_capacity_scorecard — build a CapacityScorecard for a combined-book weight
+//  vector over `aum_grid` at the operational `target_aum`.
+//
+//  Delegates the sweep to capacity_for_book -> risk::capacity_curve (ONE cost
+//  model) and the zero-crossing to capacity_point; the gross edge is read directly
+//  from risk::detail::gross_edge_bps over the SAME usable edge window
+//  capacity_curve uses (computed once, AUM-independent) so the scorecard reports
+//  the gross figure without re-deriving cost. net_edge_at_target is the curve point
+//  whose AUM is closest to target_aum (ties -> the lower index), or the last point
+//  when target_aum exceeds every grid AUM.
+//
+//  aum_grid SHOULD be non-empty and ascending (capacity_point interpolates over
+//  it). An EMPTY grid degenerates cleanly: capacity_point_aum = +inf, an empty
+//  curve, and net_edge_at_target = gross_edge_bps (no AUM sampled -> no erosion to
+//  report). A short panel degenerates gracefully (windows clamp; no OOB / div-by-
+//  zero — see risk::capacity_curve). PURE: same (weights, panel, sim, aum_grid,
+//  target_aum) -> bit-identical scorecard; no RNG; thread-safe (no shared state).
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline CapacityScorecard
+emit_capacity_scorecard(std::span<const atx::f64> weights, const PanelView& panel,
+                        const exec::ExecutionSimulator& sim,
+                        std::span<const atx::f64> aum_grid, atx::f64 target_aum) {
+  CapacityScorecard sc;
+  sc.curve = capacity_for_book(weights, panel, sim, aum_grid); // ONE cost surface
+  sc.capacity_point_aum = capacity_point(std::span<const risk::CapacityPoint>{sc.curve});
+
+  // Gross edge: AUM-independent, over the SAME usable edge window the curve used
+  // (ALL usable trailing returns, clamped to the panel's history).
+  const atx::usize w_edge = risk::detail::usable_return_window(panel, panel.rows());
+  sc.gross_edge_bps = risk::detail::gross_edge_bps(weights, panel, w_edge);
+
+  // net_edge_at_target: the curve point whose AUM is nearest target_aum. Empty grid
+  // -> no erosion sampled, report the gross edge (the AUM->0 limit). Otherwise scan
+  // for the minimum |aum - target_aum| (ascending; first match wins on a tie).
+  if (sc.curve.empty()) {
+    sc.net_edge_at_target = sc.gross_edge_bps;
+    return sc;
+  }
+  atx::usize best = 0U;
+  atx::f64 best_dist = (sc.curve[0U].aum < target_aum) ? (target_aum - sc.curve[0U].aum)
+                                                       : (sc.curve[0U].aum - target_aum);
+  for (atx::usize k = 1U; k < sc.curve.size(); ++k) {
+    const atx::f64 d = (sc.curve[k].aum < target_aum) ? (target_aum - sc.curve[k].aum)
+                                                      : (sc.curve[k].aum - target_aum);
+    if (d < best_dist) {
+      best_dist = d;
+      best = k;
+    }
+  }
+  sc.net_edge_at_target = sc.curve[best].net_edge_bps;
+  return sc;
 }
 
 } // namespace atx::engine::cost

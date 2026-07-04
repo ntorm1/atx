@@ -338,19 +338,19 @@ struct TsvFit {
   case OpCode::TsMax:
   case OpCode::TsScale:
     return true;
-  // DELIBERATELY BATCH (per-cell ts_value_at, BIT-EXACT vs the oracle):
-  //  * ts_var / ts_std / ts_zscore — a rolling Σx² variance (`sxx - sx*sx/n`)
-  //    suffers catastrophic cancellation on a high-mean/low-variance or
-  //    high-magnitude window (e.g. ts_std(volume,d) at 1e7..1e8, which alpha101
-  //    uses): it loses ~8 significant digits and can even go negative ->
-  //    a SPURIOUS inf/NaN zscore where the batch oracle is finite.
-  //  * ts_av_diff (x[t] - rolling mean) — its OUTPUT is itself a near-
-  //    cancellation (x[t] ≈ mean on a high-mean/low-variance window), so a tiny
-  //    rolling-mean drift blows up to a large RELATIVE error in the small
-  //    output (measured ~1.5e-4 rel at 1e6 magnitude). The batch per-window mean
-  //    keeps x-mean accurate. So av_diff stays batch + bit-exact.
-  // No O(1)-slide form of any of these is provably within 1e-9 on arbitrary-
-  // magnitude columns. See AlphaTsOnline_Adversarial.
+  // THE VARIANCE FAMILY (ts_var / ts_std / ts_zscore / ts_av_diff) is NOT routed
+  // by THIS helper. It has its own mode-gated dispatch (see ts_is_online_variance_op
+  // and tsv_welford_dispatch below):
+  //  * Under EvalMode::AuditExact (the default) it stays per-cell batch
+  //    (ts_value_at, BIT-EXACT vs the oracle) — the AuditExact byte-identity gate.
+  //  * Under EvalMode::ResearchFast it slides a Welford/Neumaier-compensated O(T)
+  //    kernel (S3-1/S3-2): the mean is a compensated running window-sum so the
+  //    rolling-Σx² catastrophic cancellation that sank the old naive slide (high-
+  //    mean/low-variance columns, e.g. ts_std(volume,d) at 1e7..1e8) never forms.
+  //    var/std/zscore conform at atol=rtol=1e-9; ts_av_diff was MEASURED at
+  //    |welford-oracle| = 4.66e-10 (well under the 1e-7 gate) and ships online too
+  //    — NOT the ~1.5e-4 the naive rolling-mean form produced. See
+  //    AlphaTsOnline_Adversarial / ts_online_variance_test.cpp.
   default:
     return false;
   }
@@ -474,6 +474,220 @@ inline void ts_online_extreme(OpCode op, std::span<const atx::f64> x, std::span<
       const atx::f64 range = hi - lo;
       out[oi] = range == 0.0 ? 0.0 : (x[oi] - lo) / range;
     }
+  }
+}
+
+// ===========================================================================
+//  WELFORD / NEUMAIER ONLINE VARIANCE FAMILY (p7 S3-1 / S3-2) — O(T) per column.
+//
+//  RATIONALE: the batch ts_var recomputes mean + Σ(v-m)² over the FULL window per
+//  output cell (O(T*W)). The previous online attempt carried Σx² and formed the
+//  variance as `Sxx - Sx²/n` — catastrophic cancellation on a high-mean /
+//  low-variance column (e.g. ts_std(volume,d) at 1e7..1e8) where Sxx and Sx²/n
+//  are huge and nearly equal, losing ~8 sig digits and even going negative. THIS
+//  kernel never forms Σx². It carries Welford's running mean `m` and the
+//  sum-of-squared-deviations `S` (= Σ(vᵢ - m̄)²) and slides them with the
+//  add/remove (West 1979 / Pébay 2008) updates, so no large-magnitude
+//  intermediate is ever subtracted from another. The running mean uses NEUMAIER
+//  compensated summation (a carried correction term `c`) to bound the mean drift
+//  even on high-magnitude columns, which in turn bounds the (vᵢ - m) deviations.
+//
+//  WHY ResearchFast (NOT bit-exact): the slide visits each element once for the
+//  add and once for the remove, a DIFFERENT FP operation order than the oracle's
+//  two chronological per-window passes. The result is provably more accurate but
+//  not bit-identical, so this path ships ONLY under EvalMode::ResearchFast; the
+//  default AuditExact path keeps the batch kernel (ts_value_at) byte-for-byte.
+//  Conformance is a tight tolerance (atol=rtol=1e-9 for var/std/zscore; atol=1e-7
+//  for av_diff), proven by ts_online_variance_test.cpp.
+//
+//  NaN / min_periods GATE — IDENTICAL to the batch path: output is non-NaN ONLY
+//  when (t+1 >= d && nan_cnt == 0). A NaN entering increments nan_cnt and is NOT
+//  folded into (m, S, n); a NaN leaving decrements it. Because (m, S, n) only
+//  ever absorb FINITE cells (added on entry, removed on exit), at every cell with
+//  nan_cnt==0 they reflect EXACTLY the d finite cells of the trailing window — no
+//  stale carry from an earlier NaN-containing window. n is the live finite count;
+//  sample variance is S/(n-1), NaN when n < 2 (matches tsv_var's d<2 guard since
+//  n==d on a full NaN-free window). Constant window -> S accumulates exact zeros
+//  -> var == 0.0 (never a spurious negative; clamped below as a guard).
+//
+//  DETERMINISM: the slide order is fixed (strictly increasing t, add-then-remove),
+//  so the same column yields the same output every run; each column is independent
+//  (no cross-call / cross-column state), so the sweep is resumable and the cross-
+//  instrument parallelism (S3-3, batch path) and twice-run identity both hold.
+// ===========================================================================
+
+// Which ops route through the ResearchFast online variance sweep. S3-1: TsVar /
+// TsStd. S3-2 adds TsZscore (and TsAvDiff if its adversarial tolerance is met).
+// This helper lives beside ts_is_online_op so the vm.hpp dispatch reads both from
+// ts_ops.hpp; the EvalMode gate itself is in vm.hpp (the kernels are exported
+// unconditionally).
+[[nodiscard]] inline bool ts_is_online_variance_op(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::TsVar:
+  case OpCode::TsStd:
+  case OpCode::TsZscore:
+  case OpCode::TsAvDiff:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Selects which derived quantity a variance-family sweep emits per cell.
+enum class TsvVarOut : atx::u8 {
+  Var,    // sample variance S/(n-1)
+  Std,    // sqrt(sample variance)
+  Zscore, // (x[t] - mean) / sample std
+  AvDiff, // x[t] - mean
+};
+
+// The single O(T) variance-family sweep down instrument column `j`. The mean is a
+// NEUMAIER-compensated running window-sum (`sx` + correction `cx`) divided by the
+// live finite count `n`; the sum-of-squared-deviations `S` slides via Welford
+// add/remove keyed on that mean. Emits `which` per cell. Writes EVERY output cell
+// (NaN on the warm-up / any-NaN / n<2 gate). The slide adds the entering finite
+// cell and removes the leaving finite cell so (sx, S, n) always reflect the
+// current window's finite cells exactly when nan_cnt==0.
+//
+// Neumaier add/remove of the window sum: a leaving element is removed by adding
+// its NEGATION through the same compensated step, so the carried correction `cx`
+// tracks the lost low-order bits in BOTH directions — the mean error stays bounded
+// even on a high-magnitude column (e.g. volume ~1e7) where a naive running sum
+// would shed ~8 sig digits.
+//
+// SAFETY (strided-window walk): the entering index t*I+j (t<dates) and the leaving
+// index (t-d)*I+j (evaluated only when t>=d, so t-d>=0) stay in [0, dates*I). The
+// add and remove operate on (sx, cx, S, n) only — no buffer is indexed past the
+// column.
+inline void tsv_welford_var_family(TsvVarOut which, std::span<const atx::f64> x,
+                                   std::span<atx::f64> out, atx::usize dates, atx::usize j,
+                                   atx::usize d, atx::usize instruments) noexcept {
+  atx::f64 sx = 0.0;      // Neumaier-compensated running sum of the window's finite cells
+  atx::f64 cx = 0.0;      // Neumaier correction (carried low-order bits of sx)
+  atx::f64 m = 0.0;       // current window mean (sx+cx)/n; the Welford reference
+  atx::f64 s = 0.0;       // Σ(vᵢ - m̄)² (sum of squared deviations)
+  atx::usize n = 0;       // live count of finite cells in the window
+  atx::usize nan_cnt = 0; // NaNs currently in the trailing window
+  // Neumaier compensated accumulation of `v` into (sx, cx).
+  const auto neumaier_add = [&sx, &cx](atx::f64 v) noexcept {
+    const atx::f64 tt = sx + v;
+    cx += (std::fabs(sx) >= std::fabs(v)) ? (sx - tt) + v : (v - tt) + sx;
+    sx = tt;
+  };
+  for (atx::usize t = 0; t < dates; ++t) {
+    const atx::f64 enter = x[t * instruments + j];
+    if (ts_is_nan(enter)) {
+      ++nan_cnt;
+    } else {
+      // Welford add keyed on the freshly-recomputed compensated mean: n+1; delta =
+      // x - m_old; m_new = (sx+cx)/n; S += (x - m_old)*(x - m_new).
+      ++n;
+      const atx::f64 m_old = m;
+      neumaier_add(enter);
+      m = (sx + cx) / static_cast<atx::f64>(n);
+      s += (enter - m_old) * (enter - m);
+    }
+    if (t >= d) {
+      const atx::f64 leave = x[(t - d) * instruments + j];
+      if (ts_is_nan(leave)) {
+        --nan_cnt;
+      } else if (n <= 1) {
+        // The window's last finite cell leaves: reset to an empty, drift-free
+        // accumulator (avoids a divide-by-zero mean and clears residual roundoff).
+        n = 0;
+        sx = 0.0;
+        cx = 0.0;
+        m = 0.0;
+        s = 0.0;
+      } else {
+        // Welford remove: n-1; delta = x_old - m_old; m_new = (sx+cx)/n;
+        // S -= (x_old - m_old)*(x_old - m_new). m_old is the pre-removal mean.
+        const atx::f64 m_old = m;
+        --n;
+        neumaier_add(-leave);
+        m = (sx + cx) / static_cast<atx::f64>(n);
+        s -= (leave - m_old) * (leave - m);
+      }
+    }
+    const atx::usize oi = t * instruments + j;
+    // AvDiff is defined for n>=1 (oracle: w.back()-mean, finite at n==1 -> 0.0),
+    // unlike var/std/zscore which need n>=2 (sample variance) and are NaN at n==1
+    // in BOTH paths. Special-case AvDiff at n==1 so the ResearchFast kernel matches
+    // the batch oracle at d==1 (x[oi]==m -> 0.0) instead of spuriously gating NaN.
+    if (which == TsvVarOut::AvDiff && n == 1 && t + 1 >= d && nan_cnt == 0) {
+      out[oi] = x[oi] - m; // m == x[oi] (sole finite cell) -> 0.0; oracle-exact
+      continue;
+    }
+    if (t + 1 < d || nan_cnt != 0 || n < 2) {
+      out[oi] = kTsNaN; // warm-up / any-NaN / n<2 -> NaN (matches tsv_var gate)
+      continue;
+    }
+    // S can drift very slightly negative on a constant window from the
+    // add/remove roundoff; clamp at 0 so var/std are never spurious NaN/inf.
+    const atx::f64 ss = s < 0.0 ? 0.0 : s;
+    const atx::f64 var = ss / static_cast<atx::f64>(n - 1);
+    switch (which) {
+    case TsvVarOut::Var:
+      out[oi] = var;
+      break;
+    case TsvVarOut::Std:
+      out[oi] = std::sqrt(var);
+      break;
+    case TsvVarOut::Zscore:
+      out[oi] = (x[oi] - m) / std::sqrt(var); // var==0 -> +/-inf or NaN (x==m)
+      break;
+    case TsvVarOut::AvDiff:
+      out[oi] = x[oi] - m;
+      break;
+    }
+  }
+}
+
+// Thin per-op wrappers (mirror the ts_online_* naming). Each sweeps one column.
+inline void tsv_welford_var_col(std::span<const atx::f64> x, std::span<atx::f64> out,
+                                atx::usize dates, atx::usize j, atx::usize d,
+                                atx::usize instruments) noexcept {
+  tsv_welford_var_family(TsvVarOut::Var, x, out, dates, j, d, instruments);
+}
+
+inline void tsv_welford_std_col(std::span<const atx::f64> x, std::span<atx::f64> out,
+                                atx::usize dates, atx::usize j, atx::usize d,
+                                atx::usize instruments) noexcept {
+  tsv_welford_var_family(TsvVarOut::Std, x, out, dates, j, d, instruments);
+}
+
+inline void tsv_welford_zscore_col(std::span<const atx::f64> x, std::span<atx::f64> out,
+                                   atx::usize dates, atx::usize j, atx::usize d,
+                                   atx::usize instruments) noexcept {
+  tsv_welford_var_family(TsvVarOut::Zscore, x, out, dates, j, d, instruments);
+}
+
+inline void tsv_welford_avdiff_col(std::span<const atx::f64> x, std::span<atx::f64> out,
+                                   atx::usize dates, atx::usize j, atx::usize d,
+                                   atx::usize instruments) noexcept {
+  tsv_welford_var_family(TsvVarOut::AvDiff, x, out, dates, j, d, instruments);
+}
+
+// Dispatch a single variance-family op to its column sweep (used by vm.hpp under
+// EvalMode::ResearchFast). `op` MUST satisfy ts_is_online_variance_op.
+inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
+                                 atx::usize dates, atx::usize j, atx::usize d,
+                                 atx::usize instruments) noexcept {
+  switch (op) {
+  case OpCode::TsVar:
+    tsv_welford_var_col(x, out, dates, j, d, instruments);
+    break;
+  case OpCode::TsStd:
+    tsv_welford_std_col(x, out, dates, j, d, instruments);
+    break;
+  case OpCode::TsZscore:
+    tsv_welford_zscore_col(x, out, dates, j, d, instruments);
+    break;
+  case OpCode::TsAvDiff:
+    tsv_welford_avdiff_col(x, out, dates, j, d, instruments);
+    break;
+  default:
+    ATX_UNREACHABLE(); // only the variance-family ops route here
   }
 }
 

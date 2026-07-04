@@ -14,8 +14,9 @@ namespace atx::impl {
 
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
-inline constexpr std::array<std::string_view, 9> kSubcommands = {
-    "load", "panel", "discover", "combine", "optimize", "report", "run", "regime", "sweep"};
+inline constexpr std::array<std::string_view, 10> kSubcommands = {
+    "load", "panel", "discover", "combine", "optimize", "report", "run", "regime", "sweep",
+    "metabook"}; // S5-4: standalone meta-book stage (S2's fund::MetaBook, hub-routed)
 
 // ----------------------------------------------------------------------------
 // RunConfig â€” all CLI flags / config-file keys for every subcommand.
@@ -239,6 +240,20 @@ struct RunConfig {
     // Σ|w|=1. Default false => the gated block is skipped and combo.bin is byte-identical.
     bool        conviction = false;  // --conviction
 
+    // --kelly-fraction / --kelly-max-gross (S5-2, opt-in): fractional-Kelly,
+    // conviction-scaled, covariance-aware sizing of the combined book. When
+    // kelly_fraction > 0, the combiner's renormalized weights are REPLACED by the
+    // Kelly target f = kelly_fraction * V^{-1}mu, scaled per-alpha by conviction
+    // (S5-1 scores when --conviction is on, else an all-1.0 vector) and gross-clamped
+    // to kelly_max_gross. V is a diagonal FactorModel built from per-alpha realized
+    // PnL variance over the fit window (the minimal-scope covariance; a full factor
+    // model is out of S5 scope). Default 0.0 = OFF => the Kelly block is skipped
+    // entirely and combo.bin / the digest are byte-identical to today. See
+    // risk/kelly_sizing.hpp. (CLI arg parsing in config.cpp is deferred to S7; these
+    // fields are set directly on RunConfig until then.)
+    double      kelly_fraction  = 0.0; // --kelly-fraction  (0.0 = off = byte-identical)
+    double      kelly_max_gross = 1.0; // --kelly-max-gross (cap on Sum|w|; <=0 disables clamp)
+
     // --walk-forward <k> (D3b, opt-in): when k>=1, run an expanding-window k-fold walk-forward re-fit of
     // the combiner over [fit_begin, np) and RECORD each fold's OOS Sharpe + their mean as telemetry. The
     // shipped combo.bin is unchanged (WF re-fits are scratch). Default 0 = off => byte-identical, no extra work.
@@ -274,6 +289,99 @@ struct RunConfig {
     bool help        = false;
     bool quiet       = false;
     bool digest_only = false;
+
+    // =========================================================================
+    // -- S5 (p8 hub): risk-model / meta-book / combine-method / cost-in-selection /
+    //    deflation knobs the S1-S4 feature sprints exposed on their own engine
+    //    config structs. Each field below defaults to TODAY's behavior, so a
+    //    discover/combine/optimize/report/run invocation with NONE of these flags
+    //    asserted is byte-identical to pre-S5 (the AtxImplDiscover / FactoryOos /
+    //    NsgaSearch goldens are the gate). Appended at struct END per the p8
+    //    convention (aggregate-init order is load-bearing).
+    // =========================================================================
+    // --risk-model=diagonal|factor (S1): selects risk::RiskModelConfig::kind at the
+    // optimize call site. "diagonal" (default) reproduces today's per-name variance
+    // model exactly (risk::RiskModelConfig{} default); "factor" activates the S1
+    // factor-covariance spine (stage_optimize.cpp threads this into the 2-arg
+    // run_optimize(cfg, risk_cfg) overload the CLI zero-arg path now calls).
+    std::string risk_model = "diagonal";
+    bool dead_alpha_factors = false; // --dead-alpha-factors (S1; false = no crowding augmentation)
+    bool group_neutralize   = false; // --group-neutralize   (S1; false = no factor/industry neutralize)
+
+    // --metabook (S2): enable the meta-book stage (assign_sleeves + run_metabook)
+    // in run_all / the standalone "metabook" subcommand. false (default) = the
+    // pipeline's optimize stage runs exactly as today (no metabook stage inserted).
+    bool metabook = false;
+    // --sleeve-method=erc|hrp|invvol (S2): fund::RiskBudgetMethod for
+    // MetaAllocatorConfig; ignored unless --metabook is set. "invvol" is the
+    // simplest/most-conservative default among the three (not necessarily the
+    // engine's own MetaAllocatorConfig{} default, which is EqualRiskContribution) —
+    // the mapping is applied only when --metabook activates the stage at all.
+    std::string sleeve_method = "invvol";
+
+    // --combine-method: NOT a new field. `--method stack|regime-stack` (S3;
+    // stage_combine.cpp's existing method_from_string) ALREADY routes this end to
+    // end from the CLI — adding a second `combine_method` flag would be a
+    // duplicate, confusing knob. See the S5 ledger for the reconciliation note.
+
+    // --impact-in-selection / --selection-aum (S4, wired end-to-end in the p8
+    // final-wave): threads the FLAG + AUM into FitnessCfg.cost_selection
+    // (fitness.hpp), which fitness.cpp's fitness_core/finish_report now actually
+    // consume (book_cost_bps at selection_aum nets into the ScalarRaw selection
+    // scalar via factory::apply_selection_cost). false (default) is inert
+    // either way — see fitness_cost_selection_test.cpp for the RED->GREEN proof.
+    bool   impact_in_selection = false; // --impact-in-selection
+    double selection_aum       = 0.0;   // --selection-aum (0 = off; AUM cost is priced at)
+
+    // --capacity-curve (S4): documented pass-through marker. stage_report.cpp
+    // ALREADY emits the book-level capacity curve unconditionally whenever
+    // cfg.report_aum > 0.0 (the existing default) — there is no gate in the S4
+    // emit body for a separate flag (S4-owned file; not edited by S5). This field
+    // lets an operator/harness assert intent explicitly; the V1 scorecard (S5-5)
+    // is the actual CONSUMER of the emitted capacity_point_aum / book_gross_edge_bps
+    // KVs regardless of this flag's value.
+    bool capacity_curve = false;
+
+    // --require-split-stable (deflation, S1 GateConfig plumbing): wired into
+    // stage_discover.cpp's `gc.require_split_stable` (the AlphaGate the library
+    // path consults). false (default) = GateConfig inert (byte-identical).
+    bool require_split_stable = false;
+    // --blocking-pbo (S5-2): opt-in escalation of the advisory run-level PBO gate
+    // to UN-ADMIT the run's marginal admits (or fail closed) instead of merely
+    // warning. Distinct from --pbo-hard-block (exit-code-only escalation). false
+    // (default) = advisory-only, exactly as today.
+    bool blocking_pbo = false;
+
+    // --robustness-battery (p8 final-wave, Item 3): opt-in eval::RobustnessBattery
+    // (S5-3) noise-control check at admission (factory::FactoryConfig::
+    // robustness_battery). Threaded into fcfg.robustness_battery in
+    // stage_discover.cpp. A candidate whose edge SURVIVES a seeded permutation of
+    // the panel's "close" field (a dimensional-artifact negative control) is
+    // rejected with library::AdmitKind::RejectRobustness. SCOPED PARTIAL this
+    // wave: only the noise_control check is wired (see FactoryConfig's own doc
+    // for the sub_universe/alt_neutralization/param_perturbation deferral).
+    // false (default) never builds a BatteryConfig/Reevaluator/alternate Panel at
+    // all -> byte-identical to today.
+    bool robustness_battery = false;
+
+    // -- p7-S7 carry-forwards (subsumed here; augment/incremental-panel wiring) --
+    // --short-interest / --augment-out (FINRA short-interest augment stage): the
+    // RunConfig fields the CLI would need are threaded here, but the "augment"
+    // CLI subcommand itself is NOT implemented in this sprint — building it needs
+    // NEW infrastructure (reconstructing the panel date axis + a FINRA-ticker ->
+    // instrument map from the ORATS seg partition + symbology, per
+    // stage_augment.hpp's own CLI-deferral note) well beyond CLI flag threading.
+    // The pure engine core (augment_panel_with_finra) is fully built/tested
+    // (S2/p7); only the CLI stage is deferred. Recorded honestly in the S5 ledger
+    // (never a hard block) rather than fabricated.
+    std::string short_interest;             // --short-interest <csv> (deferred stage; see ledger)
+    std::string augment_out;                // --augment-out <bin>   (deferred stage; see ledger)
+    long        si_publication_lag = 2;     // --si-publication-lag <days>
+    // --incremental-panel (S6/p7 carry-forward): runtime opt-in for
+    // stage_panel.cpp's acquire_history_panel incremental append path (previously
+    // gated behind the ATX_PANEL_INCREMENTAL compile macro, unreachable from any
+    // build). false (default) = full rebuild, byte-identical to today.
+    bool incremental_panel = false;
 
     // Canonical names of flags explicitly supplied by the parsed source (CLI
     // args or config-file keys). Used by the run-mode merge so a CLI-present

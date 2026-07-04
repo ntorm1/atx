@@ -1,4 +1,5 @@
 #include "stages.hpp"
+#include "stage_regime.hpp"
 
 #include <array>
 #include <filesystem>
@@ -11,6 +12,17 @@
 #include "config.hpp"
 
 namespace atx::impl {
+
+// ---------------------------------------------------------------------------
+// S3-3: append-only HMM extension (see stage_regime.hpp for the full
+// rationale — the observable-agnostic wrapper + why RegimeStack's specific
+// observable choice is NOT a free parameter). run_regime below (the
+// macro-series loader) is completely untouched by this addition.
+// ---------------------------------------------------------------------------
+atx::engine::learn::Hmm fit_regime_hmm(const atx::core::linalg::MatX& obs,
+                                       const atx::engine::learn::HmmCfg& cfg) {
+    return atx::engine::learn::baum_welch(obs, cfg);
+}
 
 atx::core::Result<StageResult> run_regime(const RunConfig& cfg) {
     namespace fs = std::filesystem;

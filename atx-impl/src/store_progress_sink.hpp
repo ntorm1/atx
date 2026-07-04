@@ -12,6 +12,7 @@
 // RNG): same RunConfig -> same fingerprint -> a re-launch resumes the same run. fp_hex
 // renders a u64 as the 16-char lowercase hex pipeline_run_id.
 
+#include <chrono> // std::chrono::steady_clock (per-checkpoint wall_ms, S6-3)
 #include <string>
 
 #include "atx/core/error.hpp" // atx::core::Status
@@ -31,13 +32,21 @@ namespace atx::impl {
 // PipelineRecorder as a checkpoint + iteration + events (one atomic Transaction).
 class StoreProgressSink final : public atx::engine::factory::SearchProgressSink {
  public:
-  explicit StoreProgressSink(atx::engine::store::PipelineRecorder& rec) : rec_{rec} {}
+  // Captures a monotonic start instant at construction; each on_generation records
+  // the wall-clock milliseconds elapsed since then as the checkpoint's wall_ms
+  // (provenance only — never an engine determinism input).
+  explicit StoreProgressSink(atx::engine::store::PipelineRecorder& rec)
+      : rec_{rec}, start_tp_{std::chrono::steady_clock::now()} {}
 
   [[nodiscard]] atx::core::Status
   on_generation(const atx::engine::factory::GenerationSnapshot& s) override;
 
  private:
   atx::engine::store::PipelineRecorder& rec_;
+  // Monotonic search-start instant; steady_clock (NOT system_clock) so the elapsed
+  // value is immune to wall-clock adjustments. Cumulative elapsed-since-start per
+  // checkpoint (a monotonically non-decreasing series across generations).
+  std::chrono::steady_clock::time_point start_tp_;
 };
 
 // Deterministic FNV-1a64 over the resumable inputs. Same config -> same fp; a change to

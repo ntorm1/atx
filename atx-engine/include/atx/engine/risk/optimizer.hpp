@@ -394,6 +394,14 @@ private:
     // single name once Σ|w| = L with ≥ 2 live names).
     if (cap < cfg.gross_leverage) {
       cap_clip_renorm(v, s, cap);
+      // S4-2 [B2 fix]: cap_clip_renorm's deficit-renorm scales ONLY the sub-cap
+      // (unpinned) names, which is generally ASYMMETRIC across sign when the cap
+      // binds harder on one side than the other -- leaving Σw != 0 on a book the
+      // caller declared dollar-neutral (a spurious market-beta exposure). Re-center
+      // AFTER the clip settles. No-op (both by demean_live's own internal check
+      // AND this early exit) when dollar_neutral is off -- a book that wants net
+      // exposure is left exactly as cap_clip_renorm produced it.
+      recenter_after_clip(v, s, cap);
     }
   }
 
@@ -454,6 +462,52 @@ private:
       if (std::fabs(v[i]) < cap) {
         v[i] *= scale; // only the sub-cap names absorb the deficit
       }
+    }
+  }
+
+  // S4-2 [B2 fix] — re-center the clipped book: cap_clip_renorm's final pass
+  // scales ONLY the unpinned (sub-cap) names to hit the gross budget L, holding
+  // pinned names exactly at ±cap. When the cap binds an unequal COUNT/magnitude
+  // of longs vs shorts, the pinned mass alone is generally != 0, so the book
+  // exits cap_clip_renorm with Σw != 0 even though it entered demean_live/
+  // gross_normalize perfectly centered -- a spurious net exposure on a book the
+  // caller declared dollar-neutral.
+  //
+  // FIX: alternate {demean_live (a uniform shift over ALL live cells -- pinned
+  // AND unbound -- so Σw is driven to EXACTLY 0 each pass), cap_clip_renorm (a
+  // full re-settle: the shift can push a pinned name back over the cap on the
+  // OPPOSITE side, or pull a previously-pinned name below it; the re-settle
+  // reclips and restores Σ|w|=L via the unbound-only deficit-renorm)}. Each
+  // pass is a CONTRACTION (verified numerically: ~0.36x residual per pass on an
+  // adversarial fixture) because demean_live zeroes Σw exactly while
+  // cap_clip_renorm's reclip can only partially undo that gain -- so the
+  // residual net exposure shrinks geometrically toward the noise floor.
+  // kRecenterIters=32 clears float EPSILON-level residual (<1e-15) even on an
+  // adversarial fixture with an 8% initial bias (see optimizer_recenter_test.cpp);
+  // a book where the cap binds only mildly asymmetrically (the common case)
+  // converges in far fewer passes. NO convergence-dependent early exit
+  // (determinism §3.2) -- always runs the fixed count. Gated by the SAME
+  // `cap < gross_leverage` guard as project()'s cap_clip_renorm call (a cap that
+  // cannot bind needs no re-center) and is a no-op whenever dollar_neutral is
+  // off (demean_live's own internal check), so a book that wants net exposure
+  // is untouched -- see clip_renorm_non_neutral_unchanged in
+  // optimizer_recenter_test.cpp.
+  //
+  // COST: gated behind a BINDING per-name cap (name_cap < gross_leverage), which
+  // is an opt-in configuration, not the default (OptimizerConfig::name_cap ==
+  // gross_leverage == 1.0 by default -- cap_clip_renorm/recenter never runs on
+  // the default path). O(n) per pass, kRecenterIters passes, called from
+  // project() (itself called O(max_iters) times per solve()) -- a bounded,
+  // cold-path-acceptable multiple, not a hot-loop concern (rebalance cadence).
+  static constexpr atx::usize kRecenterIters = 32;
+
+  void recenter_after_clip(std::vector<atx::f64> &v, const Scratch &s, atx::f64 cap) const noexcept {
+    if (!cfg.dollar_neutral) {
+      return; // book may carry net exposure by design -- leave the clip result alone
+    }
+    for (atx::usize iter = 0; iter < kRecenterIters; ++iter) {
+      demean_live(v, s);    // uniform shift over ALL live cells -> Σw = 0 exactly
+      cap_clip_renorm(v, s, cap); // re-settle: reclip + restore Σ|w| = L
     }
   }
 };

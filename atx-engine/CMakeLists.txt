@@ -16,6 +16,9 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/eval/perf_metrics.cpp
     # breadth / effective-N instrumentation (S10-5)
     src/eval/breadth.cpp
+    # p8-S5-3: the robustness battery (admission-time noise/sub-universe/
+    # alt-neutralization/param-perturbation screening)
+    src/eval/robustness_battery.cpp
     src/alpha/bytecode.cpp
     src/alpha/dag.cpp
     src/alpha/lexer.cpp
@@ -74,6 +77,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/data/orats_history.cpp
     # ORATS history panel helpers: orats_total_return_close (p3 S3-3)
     src/data/history_panel.cpp
+    # FINRA consolidated short-interest causal loader (p7 S2-1 / track-b B1)
+    src/data/finra_short.cpp
     src/parallel/batch_eval.cpp
     src/parallel/parallel_run.cpp
     src/parallel/process_executor.cpp

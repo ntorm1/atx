@@ -1,6 +1,9 @@
 #include "stages.hpp"
+#include "stage_combine.hpp"
+#include "stage_regime.hpp" // atx::impl::fit_regime_hmm (S3-3)
 
 #include <algorithm>   // std::sort
+#include <array>       // std::array (single-horizon span for meta_features_from_pool)
 #include <cmath>       // std::floor (A2a holdout-fit window)
 #include <filesystem>
 #include <fstream>
@@ -23,14 +26,24 @@
 #include "atx/engine/combine/crowding.hpp"     // combine::decorrelate_weights, CrowdingConfig (9.2)
 #include "atx/engine/combine/gate.hpp"         // combine::GateConfig (library open, 8.B)
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics
+#include "atx/engine/combine/regime_combiner.hpp" // combine::fit_regime_combiner, RegimeCombiner (S3-3)
 #include "atx/engine/combine/store.hpp"        // combine::AlphaStore
+#include "atx/engine/data/factor_model_artifact.hpp" // data::cleaned_alpha_cov (S3-4, S1 seam)
+#include "atx/engine/eval/cpcv.hpp"            // eval::CpcvConfig (S3-1 stack CPCV threading)
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
 #include "atx/engine/eval/pbo.hpp"             // eval::PboResult (full def needed to construct zero value)
 #include "atx/engine/eval/perf_metrics.hpp"    // eval::compute_return_metrics, ReturnMetricsCfg, ReturnMetrics
 #include "atx/engine/eval/breadth.hpp"          // eval::effective_breadth
 #include "atx/engine/eval/stats_ext.hpp"       // eval::mean_std_pop (MeanStd), skewness, excess_kurtosis
+#include "atx/engine/learn/ensemble.hpp"       // learn::fit_stack, meta_features_from_pool, StackingCfg (S3-1)
+#include "atx/engine/learn/feature_matrix.hpp" // learn::FeatureMatrix (S3-1)
+#include "atx/engine/learn/hmm.hpp"            // learn::Hmm, baum_welch, regime_posterior_at (S3-3)
 #include "atx/engine/library/library.hpp"      // library::Library, AlphaId, AlphaRecordView (8.B)
 #include "atx/engine/loop/weight_policy.hpp"   // engine::WeightPolicy
+#include "atx/engine/risk/factor_model.hpp"    // risk::FactorModel (S5-2 diagonal cov)
+#include "atx/engine/risk/kelly_sizing.hpp"    // risk::kelly_size, KellyConfig, KellyWeights (S5-2)
+#include "atx/core/linalg/linalg.hpp"          // core::linalg::VecX, MatX (S5-2 Kelly inputs)
+#include "atx/core/linalg/solve.hpp"           // core::linalg::solve_spd (S3-1 stack->weight projection)
 
 #include "artifacts.hpp"
 #include "config.hpp"
@@ -42,6 +55,8 @@ namespace atx::impl {
 
 namespace alpha   = atx::engine::alpha;
 namespace combine = atx::engine::combine;
+namespace risk    = atx::engine::risk;  // S3-4: RiskModelConfig/RiskModelKind
+namespace learn   = atx::engine::learn; // S3-1/S3-3: fit_stack, meta_features_from_pool, Hmm
 using atx::engine::WeightPolicy;
 
 // ---------------------------------------------------------------------------
@@ -64,8 +79,40 @@ method_from_string(const std::string& s) {
     if (s == "bounded") {
         return atx::core::Ok(combine::CombineMethod::BoundedRegression);
     }
+    // S3-1: opt-in nonlinear / regime-conditional stacking. CLI flag threading
+    // (making these reachable from the actual --method command line argument)
+    // is Sprint 5's job (the four hub files); this string arm is exercised
+    // today only by direct-call tests that populate cfg.method by hand.
+    if (s == "stack") {
+        return atx::core::Ok(combine::CombineMethod::Stack);
+    }
+    if (s == "regime-stack") {
+        return atx::core::Ok(combine::CombineMethod::RegimeStack);
+    }
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "combine: unknown --method '" + s + "'");
+}
+
+// method_to_string — the inverse of method_from_string, used for the kvs
+// "method" field and the weights-sidecar "method=" line. S3 threads the
+// ACTUAL CombineMethod being run (via the CombinerConfig overloads below) —
+// which need not equal cfg.method's raw string (a direct-call test may set
+// combiner_cfg.method without ever populating cfg.method) — so those labels
+// are derived from the resolved enum, not the raw config string. For the five
+// legacy methods this reproduces cfg.method's pre-S3 label BYTE-IDENTICALLY
+// (method_from_string/method_to_string round-trip on the same exact strings),
+// so the zero-arg run_combine(cfg) path is unaffected.
+static std::string method_to_string(combine::CombineMethod m) {
+    switch (m) {
+    case combine::CombineMethod::EqualWeight:       return "equal";
+    case combine::CombineMethod::RankAverage:       return "rank";
+    case combine::CombineMethod::IcWeighted:        return "ic";
+    case combine::CombineMethod::ShrinkageMv:       return "shrinkage-mv";
+    case combine::CombineMethod::BoundedRegression: return "bounded";
+    case combine::CombineMethod::Stack:             return "stack";
+    case combine::CombineMethod::RegimeStack:       return "regime-stack";
+    }
+    return "shrinkage-mv"; // unreachable: every CombineMethod handled above
 }
 
 // ---------------------------------------------------------------------------
@@ -109,11 +156,19 @@ static atx::f64 blend_window_sharpe(const combine::AlphaStore& pool,
 //
 // Determinism: order-fixed alpha loop, no RNG/alloc beyond the window sub-span;
 // identical inputs -> identical weights.
+//
+// S5-1 telemetry: when `out_scores != nullptr`, the per-alpha ConvictionScore
+// (final score + clamped DSR / stability terms) is appended in AlphaId order so
+// the caller can surface WHY each alpha was sized the way it was. The collector is
+// PURE telemetry — it does not alter the weights, the renorm, or the order, so the
+// main path (collector or not) computes byte-identical weights. The walk-forward
+// folds pass nullptr (their scratch weights are not the shipped book's telemetry).
 // ---------------------------------------------------------------------------
 static void apply_conviction(const combine::AlphaStore& pool,
                              std::vector<atx::f64>& weights,
                              atx::usize conv_begin, atx::usize conv_end,
-                             atx::usize na) {
+                             atx::usize na,
+                             std::vector<combine::ConvictionScore>* out_scores = nullptr) {
     namespace ce = atx::engine::combine;
     namespace ev = atx::engine::eval;
 
@@ -166,6 +221,9 @@ static void apply_conviction(const combine::AlphaStore& pool,
         const ce::ConvictionScore cs =
             ce::conviction(dsr, pbo, ratio, ce::ExplainFlag::PartlyExplained, ccfg);
         weights[a] *= cs.score;
+        if (out_scores != nullptr) {
+            out_scores->push_back(cs); // S5-1: per-alpha breakdown for KV telemetry
+        }
     }
     // Renormalize so Σ|w| = 1 (gross-exposure target maintained).
     ce::detail::renorm_abs_sum(weights);
@@ -286,7 +344,13 @@ static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usiz
     const atx::usize n = (insts < w.size()) ? insts : w.size();
 
     // The AUM-independent cost bracket C: cost_bps(aum) = C·aum^delta, with
-    //   C = 1e4 · Σ_i |w_i| · Y · σ_i · (|w_i|/(price_i·ADV_i))^delta.
+    //   C = 1e4 · Σ_i |w_i| · Y · σ_i · (|w_i|/ADV_i)^delta.
+    // S3-SEAM (p8, fix handed off by S4-1): participation is NOTIONAL/DOLLAR-ADV
+    // (unitless) — `abs_w` is already a FRACTION of book (not a share count), so
+    // dividing by `price` on top of `adv` (itself a DOLLAR-ADV, Σ close·volume)
+    // was off by a factor of `price` (identical shape to the S4-1 bug fixed in
+    // risk/capacity.hpp and factory/fitness.cpp). `price` is still READ below to
+    // gate out unpriced names (no book value) but no longer enters the ratio.
     atx::f64 C = 0.0;
     for (atx::usize i = 0U; i < n; ++i) {
         const atx::f64 wi = w[i];
@@ -298,7 +362,7 @@ static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usiz
         if (adv <= 0.0) continue;
         const atx::f64 sigma = return_vol(i);
         if (sigma <= 0.0) continue;
-        const atx::f64 part_per_aum = abs_w / (price * adv); // part_i = part_per_aum·aum
+        const atx::f64 part_per_aum = abs_w / adv; // part_i = part_per_aum·aum (S3-SEAM fix)
         if (part_per_aum <= 0.0) continue;
         C += abs_w * impact.Y * sigma * std::pow(part_per_aum, impact.delta);
     }
@@ -311,10 +375,13 @@ static atx::f64 alpha_capacity_aum(const alpha::AlphaStreams& streams, atx::usiz
 }
 
 // ---------------------------------------------------------------------------
-// alpha_max_participation — the max per-name participation part_i = (target_aum·
-// |w_i|/price_i)/ADV_i over alpha `a`'s LAST-period book at `target_aum`. A pure
-// liquidity-footprint telemetry figure (the single most liquidity-stressed name in
-// the book): 0 when no name has finite price+ADV. Mirrors book_cost_bps's guards.
+// alpha_max_participation — the max per-name participation part_i =
+// (target_aum·|w_i|)/ADV_i over alpha `a`'s LAST-period book at `target_aum`. A
+// pure liquidity-footprint telemetry figure (the single most liquidity-stressed
+// name in the book): 0 when no name has finite price+ADV. Mirrors
+// book_cost_bps's guards. S3-SEAM (p8, fix handed off by S4-1): participation
+// is notional/dollar-ADV (unitless) — `price` no longer enters the ratio (see
+// alpha_capacity_aum's identical fix above for the full rationale).
 // ---------------------------------------------------------------------------
 static atx::f64 alpha_max_participation(const alpha::AlphaStreams& streams, atx::usize a,
                                         std::span<const atx::f64> close,
@@ -343,10 +410,348 @@ static atx::f64 alpha_max_participation(const alpha::AlphaStreams& streams, atx:
         if (std::isnan(price) || price <= 0.0) continue;
         const atx::f64 adv = dollar_adv(i);
         if (adv <= 0.0) continue;
-        const atx::f64 part = (target_aum * abs_w / price) / adv;
+        const atx::f64 part = (target_aum * abs_w) / adv; // S3-SEAM fix (drop /price)
         if (part > max_part) max_part = part;
     }
     return max_part;
+}
+
+// ---------------------------------------------------------------------------
+// windowed_pool (S3-1) — a sub-pool covering ONLY [fit_begin, fit_end)
+// periods, re-indexed so window-local period 0 == fit_begin.
+//
+// meta_features_from_pool (learn/ensemble.hpp) has no fit-window parameter of
+// its own — it always emits one row per (date, instrument) cell over the
+// WHOLE pool it is given. To give the stack the SAME [fit_begin, fit_end)
+// firewall the linear AlphaCombiner::fit enforces (window_span reads only
+// pnl(id).subspan(fit_begin, T)), the stack's meta must be built from a pool
+// that ONLY CONTAINS that window — so this function re-slices the
+// already-PIT-correct full pool's pnl/positions (a pure COPY of a sub-span,
+// not a recomputation) into a fresh AlphaStore. PURE, order-fixed (ascending
+// alpha, ascending period).
+// ---------------------------------------------------------------------------
+static atx::core::Result<combine::AlphaStore>
+windowed_pool(const combine::AlphaStore& pool, atx::usize fit_begin, atx::usize fit_end) {
+    combine::AlphaStore out;
+    const atx::usize ni = pool.n_instruments();
+    const atx::usize wlen = fit_end - fit_begin;
+    for (atx::usize a = 0; a < pool.n_alphas(); ++a) {
+        const auto id = combine::AlphaId{static_cast<atx::u32>(a)};
+        const auto full_pnl = pool.pnl(id);
+        const std::vector<atx::f64> pnl_w(full_pnl.begin() + static_cast<std::ptrdiff_t>(fit_begin),
+                                          full_pnl.begin() + static_cast<std::ptrdiff_t>(fit_end));
+        std::vector<atx::f64> pos_w;
+        pos_w.reserve(wlen * ni);
+        for (atx::usize t = 0; t < wlen; ++t) {
+            const auto cs = pool.positions(id, fit_begin + t);
+            pos_w.insert(pos_w.end(), cs.begin(), cs.end());
+        }
+        ATX_TRY(auto new_id, out.insert(/*source*/nullptr, pnl_w, pos_w, pool.get(id).metrics));
+        (void)new_id;
+    }
+    return atx::core::Ok(std::move(out));
+}
+
+// ---------------------------------------------------------------------------
+// build_forward_returns_window (S3-1) — the forward-return label the stack's
+// meta consumes, period-major then instrument-minor, over the SAME
+// [fit_begin, fit_end) window as windowed_pool (window-local index t in
+// [0, fit_end-fit_begin)).
+//
+// PIT firewall: row t's label reads close at (fit_begin+t) and
+// (fit_begin+t+horizon) ONLY WHEN fit_begin+t+horizon < fit_end — i.e. it
+// NEVER reads a panel row >= fit_end even though the full research panel may
+// carry real data there (the report stage's OOS window). The window's own
+// tail (the last `horizon` rows) therefore carries NaN, exactly mirroring
+// FeatureMatrix's own forward_return contract ("the tail is unknowable, NOT
+// zero") — meta_features_from_pool only reads this array when
+// fit_begin+t+horizon < windowed.n_periods() (== fit_end-fit_begin), so the
+// NaN fill here is a belt-and-suspenders match to that guard, not load-bearing
+// on its own.
+// ---------------------------------------------------------------------------
+static std::vector<atx::f64>
+build_forward_returns_window(std::span<const atx::f64> close_all, atx::usize ni,
+                             atx::usize fit_begin, atx::usize fit_end, atx::u16 horizon) {
+    const atx::usize wlen = fit_end - fit_begin;
+    std::vector<atx::f64> out(wlen * ni, std::numeric_limits<atx::f64>::quiet_NaN());
+    const atx::usize h = static_cast<atx::usize>(horizon);
+    for (atx::usize t = 0; t < wlen; ++t) {
+        const atx::usize d = fit_begin + t;
+        if (d + h >= fit_end) {
+            continue; // tail: unknowable inside the window (PIT — never read fit_end+)
+        }
+        for (atx::usize i = 0; i < ni; ++i) {
+            const atx::f64 now = close_all[d * ni + i];
+            const atx::f64 fut = close_all[(d + h) * ni + i];
+            out[t * ni + i] = (std::isnan(now) || std::isnan(fut) || now == 0.0)
+                                  ? std::numeric_limits<atx::f64>::quiet_NaN()
+                                  : (fut / now - 1.0);
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// weights_from_stack_projection (S3-1) — the stack -> per-alpha-weight bridge.
+//
+// fit_stack/stack_to_candidate produce a per-(date,instrument) predicted
+// POSITION stream (stack_pos_flat, over `windowed`'s window), not a per-alpha
+// weight vector — but every downstream consumer of `combo.weights` (the
+// combined mega-alpha blend at step 9, --conviction, --kelly-fraction,
+// --corr-penalty/--capacity-floor, the breadth telemetry) is built around
+// "one weight per pool alpha". DECISION (documented, pinned by the twice-run
+// test): ship the CONSERVATIVE order-fixed least-squares projection of the
+// stack's position stream onto the pool's own per-alpha position streams over
+// the fit window, keeping the artifact shape identical to every other method
+// — NOT sc.pos_flat directly, which would silently bypass every one of those
+// downstream transforms for Stack/RegimeStack (a much larger behavior change
+// than a wiring sprint should introduce; see the sprint-3 ledger's "stack->
+// weight bridge" entry for the full risk comparison).
+//
+// Solve: w = argmin_w Sum_{t,i} (Sum_a w_a*pos_a(t,i) - stack_pos(t,i))^2, the
+// normal-equations form  G w = rhs  with
+//   G[a,b]  = Sum_{t,i} pos_a(t,i)*pos_b(t,i)      (the pool's own Gram matrix)
+//   rhs[a]  = Sum_{t,i} pos_a(t,i)*stack_pos(t,i)
+// solved via solve_spd on G + ridge_lambda*I (a tiny ridge floor — the SAME
+// role cfg.ridge_lambda already plays for BoundedRegression — guarantees a
+// well-defined solve even when two pool alphas are near-collinear over the
+// window). Deterministic: ascending alpha/date/instrument sums, no RNG; ends
+// with the SAME renorm_abs_sum every other method's Combination uses
+// (Sum|w|=1). No new estimator math — reuses combine::detail::renorm_abs_sum
+// and atx::core::linalg::solve_spd, both already-frozen public helpers.
+// ---------------------------------------------------------------------------
+static atx::core::Result<std::vector<atx::f64>>
+weights_from_stack_projection(const combine::AlphaStore& windowed,
+                              std::span<const atx::f64> stack_pos_flat,
+                              atx::f64 ridge_lambda) {
+    using atx::core::linalg::MatX;
+    using atx::core::linalg::VecX;
+    const atx::usize na = windowed.n_alphas();
+    const atx::usize wp = windowed.n_periods();
+    const atx::usize ni = windowed.n_instruments();
+
+    MatX g = MatX::Zero(static_cast<Eigen::Index>(na), static_cast<Eigen::Index>(na));
+    VecX rhs = VecX::Zero(static_cast<Eigen::Index>(na));
+    for (atx::usize a = 0; a < na; ++a) {
+        const auto id_a = combine::AlphaId{static_cast<atx::u32>(a)};
+        for (atx::usize b = a; b < na; ++b) {
+            const auto id_b = combine::AlphaId{static_cast<atx::u32>(b)};
+            atx::f64 sum = 0.0;
+            for (atx::usize t = 0; t < wp; ++t) {
+                const auto pa = windowed.positions(id_a, t);
+                const auto pb = windowed.positions(id_b, t);
+                for (atx::usize i = 0; i < ni; ++i) {
+                    sum += pa[i] * pb[i];
+                }
+            }
+            g(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) = sum;
+            g(static_cast<Eigen::Index>(b), static_cast<Eigen::Index>(a)) = sum;
+        }
+        atx::f64 r = 0.0;
+        for (atx::usize t = 0; t < wp; ++t) {
+            const auto pa = windowed.positions(id_a, t);
+            for (atx::usize i = 0; i < ni; ++i) {
+                r += pa[i] * stack_pos_flat[t * ni + i];
+            }
+        }
+        rhs(static_cast<Eigen::Index>(a)) = r;
+    }
+    for (Eigen::Index a = 0; a < g.rows(); ++a) {
+        g(a, a) += ridge_lambda; // SPD floor (mirrors the BoundedRegression ridge role)
+    }
+    ATX_TRY(VecX w_raw, atx::core::linalg::solve_spd(g, rhs));
+    std::vector<atx::f64> w(na);
+    for (atx::usize a = 0; a < na; ++a) {
+        w[a] = w_raw(static_cast<Eigen::Index>(a));
+    }
+    combine::detail::renorm_abs_sum(w); // Sum|w| = 1, the shared gross convention
+    return atx::core::Ok(std::move(w));
+}
+
+// ---------------------------------------------------------------------------
+// fit_shrinkage_mv_cleaned_cov (S3-4) — the opt-in ShrinkageMv weight fit that
+// consumes atx::engine::data::cleaned_alpha_cov (the S1-shipped LW constant-
+// correlation shrink + Marchenko-Pastur eigen-clip + strict-PD floor pipeline,
+// factor_model_artifact.hpp's "combine-visible shrunk/denoised covariance")
+// IN PLACE OF the raw complete-case MLE sample covariance, gated on
+// `risk_cfg.kind == risk::RiskModelKind::Factor` at this function's ONE call
+// site in run_combine (step 8a). Default `risk_cfg.kind == Diagonal` never
+// calls this function at all -> combine::AlphaCombiner::fit's ShrinkageMv path
+// (Ledoit-Wolf shrunk-to-scaled-identity, `fit_shrinkage_mv` in combiner.hpp)
+// is untouched and the digest stays byte-identical to pre-S3-4.
+//
+// Deliberately NOT a modification of AlphaCombiner::fit's internal ShrinkageMv/
+// Ledoit-Wolf pipeline (combiner.hpp is append-only under this sprint's
+// ownership boundaries, and double-shrinking — LW-to-identity THEN MP-eigen-
+// clipping the same matrix — would be an uncontrolled, undocumented estimator
+// change). Instead this is a SEPARATE, PARALLEL weight fit reusing the exact
+// same public inputs combiner.hpp's own fit_shrinkage_mv reads
+// (`combine::detail::window_means` + `combine::detail::complete_case_centered`
+// over the SAME [fit_begin, fit_end) window), swapping only the covariance
+// source for the risk-model-cleaned one, then solving Σ̂w = μ via the SAME
+// `solve_spd` + `renorm_abs_sum(Σ|w|=1)` convention every other method uses.
+//
+// PIT/firewall: identical to fit_shrinkage_mv — window_means/complete_case_
+// centered read ONLY pool.pnl(id).subspan(fit_begin, t); cleaned_alpha_cov is a
+// PURE function of that same `centered` matrix (data/factor_model_artifact.hpp
+// — no RNG, no clock). Determinism: same inputs -> byte-identical weights,
+// every run.
+// ---------------------------------------------------------------------------
+atx::core::Result<combine::Combination>
+fit_shrinkage_mv_cleaned_cov(const combine::AlphaStore& pool, atx::usize fit_begin, atx::usize fit_end) {
+    using atx::core::linalg::MatX;
+    using atx::core::linalg::VecX;
+    namespace data = atx::engine::data;
+
+    const atx::usize n = pool.n_alphas();
+    const atx::usize t = fit_end - fit_begin;
+    const VecX mu = combine::detail::window_means(pool, n, fit_begin, t);
+    const MatX centered = combine::detail::complete_case_centered(pool, n, fit_begin, t, mu);
+    const MatX cov = data::cleaned_alpha_cov(centered); // S1's shrunk/denoised covariance (non-fallible)
+
+    ATX_TRY(VecX raw, atx::core::linalg::solve_spd(cov, mu));
+    std::vector<atx::f64> w(n);
+    for (atx::usize i = 0; i < n; ++i) {
+        w[i] = raw[static_cast<Eigen::Index>(i)];
+    }
+    combine::detail::renorm_abs_sum(w); // Sum|w| = 1, the shared gross convention
+
+    combine::Combination combo;
+    combo.weights = std::move(w);
+    combo.fit_begin = fit_begin;
+    combo.fit_end = fit_end;
+    return atx::core::Ok(std::move(combo));
+}
+
+// ---------------------------------------------------------------------------
+// fit_stack_combo (S3-1 producer / S3-2 the honest-gate / S3-3 the regime
+// overlay) — declared in stage_combine.hpp so the decisive admit/reject/
+// single-state fixtures can drive it directly against a HAND-BUILT pool
+// (bypassing the DSL/VM entirely, the same technique ensemble_test.cpp uses
+// for fit_stack itself), independent of whether a real alpha DSL expression
+// happens to produce interaction/linear structure in its positions.
+//
+// Builds the meta over [fit_begin, fit_end) (windowed_pool + the PIT-causal
+// forward-return label), then when `with_regime` is true (RegimeStack) fits a
+// PIT HMM (via stage_regime.hpp's fit_regime_hmm) on
+// learn::ensemble_detail::regime_observable(meta) — NOT a panel-close or
+// macro-series proxy (see stage_regime.hpp's header note): fit_stack's
+// regime-conditional arm RE-DERIVES that exact observable internally from
+// `meta`, so the Hmm passed to it must have been fit on the SAME series or
+// the composition is statistically meaningless. Then decides admit vs
+// fallback — the SAME purged-CPCV-scored linear-vs-nonlinear gate fit_stack
+// always computes (eval/cpcv.hpp — López de Prado AFML Ch. 7, purge+embargo
+// cited at fit_stack's own call site in ensemble.cpp):
+//
+//   S3-2 the honest-gate (MANDATORY, not advisory, applies identically to
+//   BOTH Stack and RegimeStack). Phase-D measured oos_pbo=0.79 (textbook
+//   overfit) and a GBT is the highest-variance learner in the codebase — an
+//   UNGATED stacking step would make the overfit WORSE, not better. ADMIT the
+//   stack as the shipped combiner ONLY if verdict.admitted (the nonlinear
+//   base beat linear OOS-after-deflation on the SAME folds/metric); ELSE fall
+//   back to a LINEAR combiner with a FRESH DEFAULT CombinerConfig
+//   (method==ShrinkageMv) — never combiner_cfg (whose .method is
+//   Stack/RegimeStack and would hit AlphaCombiner::fit's S3-0 Err arm):
+//     * Stack (with_regime==false): the flat AlphaCombiner{}.fit(pool,
+//       fit_begin, fit_end) — byte-identical to today's `--method
+//       shrinkage-mv` book (stack_rejects_on_linear_fixture proves this).
+//     * RegimeStack (with_regime==true): the REGIME-CONDITIONAL linear blend
+//       — combine::fit_regime_combiner(pool, labels, hmm.n_states, fit_begin,
+//       fit_end, {}) partitioned by the SAME Hmm's PIT-argmax regime per
+//       date (learn::ensemble_detail::date_regimes), blended at the
+//       fit-boundary date by learn::regime_posterior_at(hmm, obs, wlen-1)
+//       via RegimeCombiner::blend — so a pool whose optimal combination
+//       DIFFERS by regime (mirrors BAB flipping sign) tracks the
+//       regime-appropriate linear combo even when the nonlinear arm itself
+//       does not admit.
+//
+//   n_regimes==1 (HmmCfg.n_states==1, combiner_cfg.regime_n_states) makes
+//   BOTH arms above reduce to their Stack (with_regime==false) counterpart
+//   EXACTLY: fit_regime_nonlinear's single-partition union equals
+//   fit_flat_nonlinear (identical verdict); deploy_nonlinear never reads
+//   regime at all (identical admit-path weights); and
+//   fit_regime_combiner/blend with one all-zero-labeled regime is regime_
+//   combiner.hpp's OWN documented byte-identical reduction to
+//   AlphaCombiner{}.fit (identical fallback-path weights) — this composition
+//   is the RegimeStack single-state fallback guard
+//   (regime_stack_single_state_byte_identical), not a special case coded here.
+// ---------------------------------------------------------------------------
+atx::core::Result<StackFitResult>
+fit_stack_combo(const combine::AlphaStore& pool, std::span<const atx::f64> close_all, atx::usize ni,
+                atx::usize fit_begin, atx::usize fit_end, const combine::CombinerConfig& combiner_cfg,
+                bool with_regime) {
+    ATX_TRY(auto windowed, windowed_pool(pool, fit_begin, fit_end));
+    const std::vector<atx::f64> fwd = build_forward_returns_window(
+        close_all, ni, fit_begin, fit_end, combiner_cfg.stack_horizon);
+    const std::array<atx::u16, 1> horizons{combiner_cfg.stack_horizon};
+    const learn::FeatureMatrix meta = learn::meta_features_from_pool(
+        windowed, std::span<const atx::f64>{fwd}, std::span<const atx::u16>{horizons});
+
+    learn::StackingCfg scfg;
+    scfg.master_seed = combiner_cfg.stack_master_seed;
+    scfg.horizons = {combiner_cfg.stack_horizon};
+    scfg.cpcv.n_groups = combiner_cfg.stack_cpcv_groups;
+    scfg.cpcv.n_test_groups = combiner_cfg.stack_cpcv_test_groups;
+    scfg.cpcv.embargo = combiner_cfg.stack_cpcv_embargo;
+
+    // S3-3: fit the PIT regime HMM on the meta's OWN regime marker (the
+    // frozen fit_stack's binding observable choice — see the doc block
+    // above). `obs`/`hmm` stay default/unused when with_regime is false.
+    atx::core::linalg::MatX obs;
+    learn::Hmm hmm;
+    const learn::Hmm* regime_ptr = nullptr;
+    if (with_regime) {
+        obs = learn::ensemble_detail::regime_observable(meta);
+        learn::HmmCfg hcfg;
+        hcfg.n_states = combiner_cfg.regime_n_states;
+        hcfg.master_seed = combiner_cfg.stack_master_seed;
+        hmm = fit_regime_hmm(obs, hcfg);
+        regime_ptr = &hmm;
+    }
+
+    StackFitResult out;
+    out.verdict = learn::fit_stack(meta, regime_ptr, scfg);
+    if (out.verdict.admitted) {
+        // deploy_nonlinear (inside stack_to_candidate) is ALWAYS the flat
+        // refit regardless of regime_ptr (ensemble.hpp's own documented
+        // contract) -- the admit-path weights are identical for Stack and a
+        // (still-admitted) RegimeStack.
+        const learn::StackCandidate sc = learn::stack_to_candidate(out.verdict, meta, scfg);
+        ATX_TRY(auto w, weights_from_stack_projection(
+                            windowed, std::span<const atx::f64>{sc.pos_flat}, combiner_cfg.ridge_lambda));
+        out.combo.weights = std::move(w);
+    } else if (!with_regime) {
+        combine::AlphaCombiner linear_fallback; // default-constructed cfg: method == ShrinkageMv
+        ATX_TRY(out.combo, linear_fallback.fit(pool, fit_begin, fit_end));
+    } else {
+        // RegimeStack fallback: the regime-conditional LINEAR blend. Labels
+        // are WINDOW-LOCAL dates (length == windowed.n_periods()); place them
+        // into a GLOBAL-length vector at offset fit_begin (fit_regime_combiner
+        // requires length == pool.n_periods() but only reads [fit_begin,
+        // fit_end) — positions outside the window are never consulted).
+        const std::vector<atx::u32> window_labels = learn::ensemble_detail::date_regimes(hmm, obs);
+        std::vector<atx::u32> global_labels(pool.n_periods(), 0U);
+        for (atx::usize t = 0; t < window_labels.size(); ++t) {
+            global_labels[fit_begin + t] = window_labels[t];
+        }
+        const combine::CombinerConfig lin_cfg{}; // default-constructed: method == ShrinkageMv
+        ATX_TRY(auto rc, combine::fit_regime_combiner(pool, std::span<const atx::u32>{global_labels},
+                                                       hmm.n_states, fit_begin, fit_end, lin_cfg));
+        // The ship-time (PIT) posterior: "as of" the last in-window date,
+        // mirroring every other method's [fit_begin, fit_end) convention.
+        const atx::usize wlen_minus_1 =
+            (window_labels.empty()) ? 0U : (window_labels.size() - 1U);
+        const atx::core::linalg::VecX posterior =
+            learn::regime_posterior_at(hmm, obs, wlen_minus_1);
+        std::vector<atx::f64> posterior_vec(static_cast<atx::usize>(posterior.size()));
+        for (Eigen::Index s = 0; s < posterior.size(); ++s) {
+            posterior_vec[static_cast<atx::usize>(s)] = posterior(s);
+        }
+        out.combo.weights = rc.blend(std::span<const atx::f64>{posterior_vec});
+    }
+    out.combo.fit_begin = fit_begin;
+    out.combo.fit_end = fit_end;
+    return atx::core::Ok(std::move(out));
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +759,27 @@ static atx::f64 alpha_max_participation(const alpha::AlphaStreams& streams, atx:
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
 {
+    ATX_TRY(auto cm0, method_from_string(cfg.method));
+    combine::CombinerConfig combiner_cfg0{};
+    combiner_cfg0.method = cm0;
+    return run_combine(cfg, combiner_cfg0, risk::RiskModelConfig{});
+}
+
+atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
+                                           const combine::CombinerConfig& combiner_cfg)
+{
+    return run_combine(cfg, combiner_cfg, risk::RiskModelConfig{});
+}
+
+atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
+                                           const combine::CombinerConfig& combiner_cfg,
+                                           const risk::RiskModelConfig& risk_cfg)
+{
+    // S3-4: risk_cfg.kind==Factor (opt-in, default Diagonal) is consumed at two
+    // sites below — the ShrinkageMv cleaned-covariance weight fit (step 8a) and
+    // the breadth-instrumentation covariance (step 12). See fit_shrinkage_mv_
+    // cleaned_cov's doc block for the full rationale.
+
     // 1. Validate required flags. The alpha SOURCE is either the loose .dsl directory
     //    (--alphas) or, when --library-dir is set (8.B), the accumulated persistent
     //    library::Library. Exactly one source feeds the combine inputs; everything
@@ -493,9 +919,9 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     }
 
     // 8. Resolve method and fit window.
-    ATX_TRY(auto cm, method_from_string(cfg.method));
+    const combine::CombineMethod cm = combiner_cfg.method;
     combine::AlphaCombiner combiner;
-    combiner.cfg.method = cm;
+    combiner.cfg = combiner_cfg;
 
     const atx::usize fit_begin =
         cfg.fit_begin > 0 ? static_cast<atx::usize>(cfg.fit_begin) : 0;
@@ -524,7 +950,33 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     // Existing guard: fit_end never exceeds np (all branches above already respect it).
     if (fit_end > np) fit_end = np;
 
-    ATX_TRY(auto combo, combiner.fit(pool, fit_begin, fit_end));
+    // 8a. (S3-1/S3-2) Stack / RegimeStack: nonlinear alpha-of-alphas over the
+    //     SAME [fit_begin, fit_end) window every other method fits on, gated
+    //     by fit_stack_combo's admit-vs-fallback contract (S3-2 — see its doc
+    //     comment above the definition below for the honest-gate rationale).
+    //     (S3-4) ShrinkageMv + risk_cfg.kind==Factor: an opt-in PARALLEL weight
+    //     fit that swaps the raw complete-case MLE covariance for
+    //     data::cleaned_alpha_cov (see fit_shrinkage_mv_cleaned_cov's doc block).
+    //     Default risk_cfg.kind==Diagonal never enters this branch, so the
+    //     no-flag ShrinkageMv path stays byte-identical to pre-S3-4.
+    combine::Combination combo;
+    bool stack_telemetry_on = false;
+    learn::StackingVerdict stack_verdict{}; // populated only on the Stack/RegimeStack path
+    if (cm == combine::CombineMethod::Stack || cm == combine::CombineMethod::RegimeStack) {
+        ATX_TRY(const auto close_id, panel.field_id("close"));
+        const std::span<const atx::f64> close_all = panel.field_all(close_id);
+        const bool with_regime = (cm == combine::CombineMethod::RegimeStack);
+        ATX_TRY(auto sfr, fit_stack_combo(pool, close_all, ni, fit_begin, fit_end, combiner_cfg,
+                                          with_regime));
+        combo = std::move(sfr.combo);
+        stack_verdict = sfr.verdict;
+        stack_telemetry_on = true;
+    } else if (cm == combine::CombineMethod::ShrinkageMv &&
+               risk_cfg.kind == risk::RiskModelKind::Factor) {
+        ATX_TRY(combo, fit_shrinkage_mv_cleaned_cov(pool, fit_begin, fit_end));
+    } else {
+        ATX_TRY(combo, combiner.fit(pool, fit_begin, fit_end));
+    }
 
     // 8b. (D1.2) Opt-in conviction weighting: a post-fit transform that scales each
     //     alpha's fitted weight by a per-alpha conviction score computed AT COMBINE TIME
@@ -532,14 +984,121 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     //     Sharpe stability), then renormalizes Σ|w|=1. Default (cfg.conviction == false)
     //     skips this block entirely — combo.weights are untouched and the output is
     //     byte-identical to today. The conviction math runs ONLY inside this if-block.
+    // S5-1: per-alpha conviction breakdown collected from the MAIN-path transform
+    // (AlphaId order). Populated only when cfg.conviction is on; emitted as additive
+    // KVs at step 14. Empty (and no KVs) on the default path -> byte-identical.
+    std::vector<combine::ConvictionScore> conviction_scores;
     if (cfg.conviction) {
         // Apply the conviction transform over the FULL stream [0, np). This is
         // byte-identical to the original inline D1.2 block (the helper over the
         // full window reproduces today's weights EXACTLY — the conviction-digest
         // test is pinned). The same helper re-applies per-fold conviction in the
-        // walk-forward loop below (T7 NEW-1).
+        // walk-forward loop below (T7 NEW-1). Pass the collector so the per-alpha
+        // ConvictionScore breakdown can be surfaced as telemetry (S5-1); collecting
+        // does not change the weights or their order.
         apply_conviction(pool, combo.weights, /*conv_begin=*/0U, /*conv_end=*/np,
-                         pool.n_alphas());
+                         pool.n_alphas(), &conviction_scores);
+    }
+
+    // 8b-2. (S5-2) Opt-in fractional-Kelly sizing. Replaces the combiner's
+    //     renormalized (post-conviction, if --conviction) weights with a covariance-
+    //     aware, conviction-scaled Kelly target over the ALPHAS of the pool:
+    //         f = kelly_fraction * V^{-1} mu ,  w_a = conviction[a] * f_a ,  gross-clamp
+    //     where each ALPHA is a "name" for the sizing layer (the combine stage's
+    //     natural unit), mu[a] is alpha a's realized mean PnL over [fit_begin, fit_end),
+    //     and V is a DIAGONAL FactorModel of per-alpha realized PnL variance over the
+    //     same fit window. The diagonal form is the deliberate minimal scope (the plan's
+    //     risks/guardrails): kelly_size is agnostic to how rich the FactorModel is
+    //     (Woodbury works on the degenerate K=0/zero-exposure diagonal case), and a full
+    //     statistical factor model is out of S5 scope. Per-alpha conviction is the S5-1
+    //     scores when --conviction is on, else an all-1.0 vector (full conviction for
+    //     every alpha, so Kelly operates without a haircut). Off (kelly_fraction <= 0)
+    //     => this entire block is skipped, combo.weights is untouched, the digest is
+    //     byte-identical, and the three kelly_* KVs are absent. The block runs ONLY
+    //     inside the gate; no side-channel writes outside it.
+    //
+    //     SCOPE CAVEAT: this sizes the SHIPPED book (combo.weights) AFTER the WF loop's
+    //     scratch scoring, so the WF OOS telemetry measures the conviction-weighted but
+    //     NOT the Kelly-weighted book (making WF Kelly-aware would require fitting a
+    //     FactorModel inside every fold — explicitly out of S5 scope).
+    std::string kelly_fraction_used_str;
+    std::string kelly_gross_str;
+    std::string kelly_scale_applied_str;
+    if (cfg.kelly_fraction > 0.0) {
+        namespace risk = atx::engine::risk;
+        using atx::core::linalg::MatX;
+        using atx::core::linalg::VecX;
+
+        const atx::usize na = pool.n_alphas();
+        ATX_ASSERT(combo.weights.size() == na); // one weight per pool alpha (step-9 invariant)
+
+        // Per-alpha realized mean PnL (mu) and population variance (the diagonal D) over
+        // the fit window [fit_begin, fit_end). The window is guaranteed >= 2 periods by
+        // the fit_end resolution above. A degenerate (zero-variance) alpha is floored by
+        // FactorModel::create (kSpecificVarFloor) so V stays positive-definite.
+        const atx::usize wlen = (fit_end > fit_begin) ? (fit_end - fit_begin) : 0U;
+        VecX mu(static_cast<Eigen::Index>(na));
+        VecX d(static_cast<Eigen::Index>(na));
+        for (atx::usize a = 0; a < na; ++a) {
+            const std::span<const atx::f64> pnl = pool.pnl(combine::AlphaId{static_cast<atx::u32>(a)});
+            atx::f64 sum = 0.0;
+            atx::usize n = 0U;
+            for (atx::usize i = 0; i < wlen; ++i) {
+                const atx::f64 p = pnl[fit_begin + i];
+                if (std::isfinite(p)) { sum += p; ++n; }
+            }
+            const atx::f64 mean = (n == 0U) ? 0.0 : sum / static_cast<atx::f64>(n);
+            atx::f64 ss = 0.0;
+            for (atx::usize i = 0; i < wlen; ++i) {
+                const atx::f64 p = pnl[fit_begin + i];
+                if (std::isfinite(p)) { const atx::f64 dv = p - mean; ss += dv * dv; }
+            }
+            const atx::f64 var = (n == 0U) ? 0.0 : ss / static_cast<atx::f64>(n);
+            mu[static_cast<Eigen::Index>(a)] = mean;
+            d[static_cast<Eigen::Index>(a)] = var; // floored to >0 by FactorModel::create
+        }
+
+        // Per-alpha conviction in [0,1]: the S5-1 scores when --conviction is on (same
+        // order, one per alpha), else full conviction (1.0) for every alpha. A zero
+        // conviction propagates exactly to a 0.0 Kelly weight (kelly_size's contract).
+        VecX conv(static_cast<Eigen::Index>(na));
+        for (atx::usize a = 0; a < na; ++a) {
+            atx::f64 c = 1.0;
+            if (cfg.conviction && a < conviction_scores.size()) {
+                c = conviction_scores[a].score; // already in [0,1] (conviction() guarantee)
+            }
+            if (c < 0.0) c = 0.0;
+            if (c > 1.0) c = 1.0;
+            conv[static_cast<Eigen::Index>(a)] = c;
+        }
+
+        // Diagonal FactorModel V = diag(D): zero exposures (X = na x 1 of zeros) so the
+        // factor block X F Xᵀ vanishes and V == diag(D). K=1 with F=[1] is the minimal
+        // SPD form create() accepts; F is irrelevant since X is zero.
+        MatX x = MatX::Zero(static_cast<Eigen::Index>(na), 1);
+        MatX f(1, 1);
+        f(0, 0) = 1.0;
+        auto fm = risk::FactorModel::create(std::move(x), std::move(f), d, fit_begin, fit_end);
+        if (!fm.has_value()) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "combine: --kelly-fraction could not build the diagonal "
+                                  "covariance: " + fm.error().message());
+        }
+
+        risk::KellyConfig kcfg{};
+        kcfg.kelly_fraction = cfg.kelly_fraction;
+        kcfg.max_gross = cfg.kelly_max_gross;
+        const risk::KellyWeights kw = risk::kelly_size(mu, *fm, conv, kcfg);
+
+        // Replace the shipped per-alpha weights with the Kelly target (in AlphaId order).
+        ATX_ASSERT(static_cast<atx::usize>(kw.weights.size()) == na);
+        for (atx::usize a = 0; a < na; ++a) {
+            combo.weights[a] = kw.weights[static_cast<Eigen::Index>(a)];
+        }
+
+        kelly_fraction_used_str = std::to_string(cfg.kelly_fraction);
+        kelly_gross_str         = std::to_string(kw.gross);
+        kelly_scale_applied_str = std::to_string(kw.scale_applied);
     }
 
     // T6 capacity telemetry (additive; populated only on the opt-in capacity path).
@@ -696,7 +1255,7 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
             return atx::core::Err(atx::core::ErrorCode::IoError,
                                   "combine: cannot write weights sidecar: " + sidecar_path);
         }
-        const std::string method_str = cfg.method.empty() ? "shrinkage-mv" : cfg.method;
+        const std::string method_str = method_to_string(cm);
         wf << "method="     << method_str        << '\n';
         wf << "fit_begin="  << fit_begin         << '\n';
         wf << "fit_end="    << fit_end            << '\n';
@@ -750,9 +1309,15 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
             //   window_means  -> per-alpha window means mu (VecX, length na)
             //   complete_case_centered -> T_cc x na demeaned matrix (listwise NaN drop)
             //   mle_covariance -> N x N MLE covariance S (divisor T_cc)
+            // (S3-4) risk_cfg.kind==Factor: breadth is measured against the SAME
+            // cleaned_alpha_cov the ShrinkageMv weight fit above uses, so the
+            // telemetry stays coherent with whichever covariance actually shipped.
+            // Default risk_cfg.kind==Diagonal keeps mle_covariance -> byte-identical.
             const VecX mu = combine::detail::window_means(pool, na, fit_begin, t);
             const MatX centered = combine::detail::complete_case_centered(pool, na, fit_begin, t, mu);
-            const MatX cov = combine::detail::mle_covariance(centered, na);
+            const MatX cov = (risk_cfg.kind == risk::RiskModelKind::Factor)
+                                 ? atx::engine::data::cleaned_alpha_cov(centered)
+                                 : combine::detail::mle_covariance(centered, na);
             effective_n = ev::effective_breadth(cov);
 
             // Step 2 — realized IR: annualized Sharpe of the weighted-blend PnL stream
@@ -835,7 +1400,7 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
     }
 
     // 14. Return StageResult.
-    const std::string method_label = cfg.method.empty() ? "shrinkage-mv" : cfg.method;
+    const std::string method_label = method_to_string(cm);
     StageResult sr;
     sr.digest = digest;
     sr.kvs = {
@@ -882,6 +1447,63 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
                             std::isinf(cap_min) ? std::string("inf") : std::to_string(cap_min));
         sr.kvs.emplace_back("capacity_max_participation",
                             std::to_string(capacity_max_participation));
+    }
+    // S5-1: additive conviction telemetry — present ONLY when --conviction (the
+    // collector is empty otherwise, so the default kvs set is byte-identical). The
+    // three keys are comma-joined per-alpha breakdowns in AlphaId order, so the
+    // operator can see, per admitted alpha, the final score and the (clamped, in
+    // [0,1]) DSR and stability terms that produced it. These feed kvs ONLY — never
+    // combo.bin or the panel digest (sr.digest is set from write_panel above).
+    if (!conviction_scores.empty()) {
+        std::string scores_csv;
+        std::string dsr_csv;
+        std::string stab_csv;
+        for (atx::usize a = 0; a < conviction_scores.size(); ++a) {
+            if (a > 0) {
+                scores_csv += ',';
+                dsr_csv += ',';
+                stab_csv += ',';
+            }
+            const combine::ConvictionScore& cs = conviction_scores[a];
+            scores_csv += std::to_string(cs.score);
+            dsr_csv += std::to_string(cs.dsr_term);
+            stab_csv += std::to_string(cs.stability_term);
+        }
+        sr.kvs.emplace_back("conviction_scores", std::move(scores_csv));
+        sr.kvs.emplace_back("conviction_dsr_terms", std::move(dsr_csv));
+        sr.kvs.emplace_back("conviction_stability_terms", std::move(stab_csv));
+    }
+    // S5-2: additive fractional-Kelly telemetry — present ONLY when kelly_fraction > 0
+    // (the strings are empty otherwise, so the default kvs set is byte-identical). These
+    // record the realized Kelly sizing of the shipped book; they feed kvs ONLY (the
+    // weights themselves are already folded into combo.bin above when the block ran).
+    //   kelly_fraction_used  — the cfg.kelly_fraction applied.
+    //   kelly_gross          — realized Sum|w| after the gross clamp.
+    //   kelly_scale_applied  — gross-clamp factor (1.0 when the clamp was not binding).
+    if (!kelly_fraction_used_str.empty()) {
+        sr.kvs.emplace_back("kelly_fraction_used", std::move(kelly_fraction_used_str));
+        sr.kvs.emplace_back("kelly_gross",         std::move(kelly_gross_str));
+        sr.kvs.emplace_back("kelly_scale_applied", std::move(kelly_scale_applied_str));
+    }
+    // S3-1/S3-2: additive stacking-gate telemetry — present ONLY on the
+    // Stack/RegimeStack path (absent otherwise, so every legacy method's kvs
+    // set stays byte-identical). `stack_verdict_hash` is fit_stack's M1
+    // byte-identical digest of the decided verdict fields (the "same seed ->
+    // same verdict" pin V1's scorecard reads); `stack_admitted`/the four
+    // oos_* scalars are the honest linear-vs-nonlinear comparison S3-2's
+    // admit-vs-fallback gate decided on. Never folded into combo.bin/digest.
+    if (stack_telemetry_on) {
+        sr.kvs.emplace_back("stack_verdict_hash",
+                            std::to_string(stack_verdict.verdict_hash));
+        sr.kvs.emplace_back("stack_admitted", stack_verdict.admitted ? "1" : "0");
+        sr.kvs.emplace_back("stack_oos_dsr_nonlinear",
+                            std::to_string(stack_verdict.oos_dsr_nonlinear));
+        sr.kvs.emplace_back("stack_oos_dsr_linear",
+                            std::to_string(stack_verdict.oos_dsr_linear));
+        sr.kvs.emplace_back("stack_oos_ic_nonlinear",
+                            std::to_string(stack_verdict.oos_ic_nonlinear));
+        sr.kvs.emplace_back("stack_oos_ic_linear",
+                            std::to_string(stack_verdict.oos_ic_linear));
     }
     return atx::core::Ok(std::move(sr));
 }

@@ -1,7 +1,10 @@
 # Module p7 — Production Alpha Book + High-Performance DSL Pipeline
 
 **Last reviewed:** 2026-06-28
-**Started:** planned; no sprint open yet
+**Started:** Wave 1 (S1 deflation · S2 breadth · S3 eval-VM) merged 2026-06-28 (`4a2113b`); Wave 2
+(S4 turnover/capacity · S5 conviction sizing) merged 2026-06-28 (`d95ce04`). Spine S1–S5 all on main.
+Next: Wave 3 (S6 incremental panel ⏳ open `feat/p7-s6`, S7 wire + dev-panel validate). V1 unblocked
+(operator prod run after S7 wires the Wave-1/2 carry-forwards). See `TRACKER.md` for live status.
 **Source:** p6 close-out (`atx-impl/research/2026-06-27-tradeable-alpha-results.md`) + a 4-explorer
 survey of the post-p6 engine (2026-06-28); user direction 2026-06-28 (small targeted tests, parallel
 agent streams, no hour-long production runs in the dev loop).
@@ -78,6 +81,22 @@ are **uncalled in the atx-impl deploy pipeline**. S5 is wiring, not new engine c
 | `conviction()` computed but **uncalled** in the active pipeline; no fractional-Kelly; walk-forward measures the bare combiner, not the shipped conviction-weighted book | **S5** |
 | Panel build is **full-rebuild only** (one new day ⇒ rebuild all segs); `config_json`/`engine_git_sha`/`wall_ms` provenance empty | **S6** |
 | New S1/S4/S5 knobs need CLI threading + a fast validation that is **not** an hour-long prod run | **S7** |
+
+**Wave-1 landed (2026-06-28, `4a2113b`):** S1 ✓ DSR/PBO/split-stable now gate in `AlphaGate::admit`
+(carried on a non-serialized `GateDeflation` POD — `AlphaMetrics` is a frozen 56-byte on-disk record,
+so the plan's "add fields to AlphaMetrics" was byte-identity-unsafe and was correctly rerouted). S2 ✓
+FINRA + IV-surface + liquidity families + multi-family seeds (engine/core only; CLI deferred to S7
+per decision D1). S3 ✓ online Welford variance family (ResearchFast) + cross-instrument column
+parallelism (AuditExact) with recorded bench wins (TsVar 4.27×, TsZscore 4.70×, column-parallel w4
+3.05×). Determinism held: oracle/golden/digest slice 18/18 + alpha 602/602 on merged main.
+**S1-4 correction (do not overstate):** the cascade pre-gate threads cumulative N only in the *safe
+(looser) direction* — it is a perf pre-filter, **not** a deflation mechanism. Cumulative-sweep
+trial-count deflation is enforced at the **holdout DSR gate** (`prior_r1 + res.trial_count`,
+pre-existing). A genuinely-stricter pre-gate cannot land under the frozen byte-identity contract
+(it would change the admitted set ⇒ golden re-baseline). **Wave-1 carry-forward to S7:** wire
+`GateDeflation` into `library::verdict_for` (else the new gate screens are dead code on live callers);
+thread S2's augment CLI (`--short-interest`/`--augment-out`/`--si-publication-lag` + `augment`
+subcommand + `run_augment` stage); fix the stale `stage_discover.cpp` "0..5" reject-histogram comment.
 
 ---
 

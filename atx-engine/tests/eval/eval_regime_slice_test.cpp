@@ -40,7 +40,13 @@ using atx::engine::eval::RobustnessVerdict;
 using atx::engine::eval::walk_forward_sharpe;
 
 // A tiny deterministic LCG -> uniform(-1, 1), the S3/S4 fixture idiom (no RNG dep).
-struct Lcg {
+// Named RegimeSliceLcg (not the generic Lcg every other fixture file uses) because
+// ATX_UNITY_BUILD batches multiple *_test.cpp TUs into one translation unit: two
+// anonymous-namespace `struct Lcg` definitions in DIFFERENT files are still an ODR
+// redefinition WITHIN that single unity TU (unnamed namespaces merge per-TU, not
+// per-file). Pre-existing latent collision with eval_lockbox_test.cpp's own Lcg,
+// exposed only once these two files land in the same unity batch (p8-S5-3).
+struct RegimeSliceLcg {
   std::uint64_t s;
   [[nodiscard]] f64 next() noexcept {
     s = s * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -58,7 +64,7 @@ struct Lcg {
   const usize insts = 1;
   std::vector<f64> close(dates * insts);
   f64 px = 100.0;
-  Lcg rng{seed};
+  RegimeSliceLcg rng{seed};
   for (usize t = 0; t < dates; ++t) {
     px *= (1.0 + sigma[t] * rng.next());
     close[t] = px;

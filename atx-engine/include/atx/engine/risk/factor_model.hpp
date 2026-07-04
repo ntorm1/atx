@@ -94,6 +94,63 @@ inline constexpr atx::f64 kSpecificVarFloor = 1e-12;
 inline constexpr atx::f64 kNeutralizeRidge = 1e-10;
 
 // ===========================================================================
+//  RiskModelConfig — the p8-S1 inert-default covariance-source switch.
+//
+//  The single config every S1 wiring unit reads to decide WHICH covariance the
+//  runnable pipeline (atx-impl's stage_riskmodel / stage_optimize) builds. Every
+//  field defaults to the value that reproduces TODAY's behavior exactly:
+//    kind==Diagonal            -> atx::impl::diagonal_risk_model (X=0, F=[1],
+//                                 D=per-name TRI-return variance) — unchanged.
+//    dead_alpha_factors==false -> no Kakushadze-Yu crowding augmentation.
+//    group_neutralize==false   -> FactorModel::neutralize is never invoked on
+//                                 the optimize path.
+//  `Factor` and the two bools are OPT-IN; flipping any of them is the only way
+//  to reach the S8 Barra estimator / dead-factor augmentation / neutralize path
+//  this sprint wires. `RiskModelKind::Diagonal` is FROZEN at enum value 0 (the
+//  determinism-contract anchor: a default-constructed RiskModelConfig — or any
+//  aggregate-init that leaves `kind` at its member-initializer — resolves to
+//  the byte-identical diagonal path, even if a future sprint appends more
+//  enumerators after Factor).
+//
+//  Threading: this struct is NOT a member of atx-impl's RunConfig (the S5 CLI
+//  hub owns that wiring, out of S1 scope — see sprint-1-risk-model-covariance.md
+//  "Out of scope"). S1's stage_riskmodel / stage_optimize call sites take a
+//  RiskModelConfig by value/const-ref directly; tests exercise the Factor path
+//  via a direct call, not a CLI flag.
+// ===========================================================================
+
+// The covariance-source selector. Append-only; Diagonal is pinned at 0 and must
+// never move (existing callers that value-initialize RiskModelConfig depend on
+// the zero value routing to the legacy diagonal path).
+enum class RiskModelKind : atx::u8 { Diagonal = 0, Factor = 1 };
+
+struct RiskModelConfig {
+  RiskModelKind kind = RiskModelKind::Diagonal; // inert => today's per-name variance
+  bool dead_alpha_factors = false;              // inert => no crowding augmentation
+  bool group_neutralize = false;                // inert => no factor/industry neutralize
+  // fit_lookback_days (Factor only; ignored when kind==Diagonal, which always
+  // reads the whole panel): the number of TRAILING per-date cross-sections the
+  // estimator regresses over to build (X, F, D) -- atx-impl's
+  // stage_riskmodel.cpp clamps this to `min(fit_lookback_days, fit_end - 1)`
+  // (estimation_window) and reads panel rows [fit_end - estimation_window -
+  // deepest_lookback, fit_end); rows at/after fit_end are NEVER read (the PIT
+  // anchor -- see stage_riskmodel.cpp's PanelWindowView doc). Larger =>
+  // smoother / more stable factor-return estimates over a longer trailing
+  // history; smaller => more reactive to recent regime shifts but a noisier
+  // per-date WLS fit. DEFAULT 252 = one trailing trading year, the same
+  // convention Barra-style commercial risk models use for their monthly/daily
+  // factor-return history window.
+  atx::u32 fit_lookback_days = 252U;
+  // Style-block toggles: all ON by default (the full Barra style block when
+  // kind==Factor); IGNORED entirely when kind==Diagonal (no exposures are built).
+  bool style_size = true;
+  bool style_vol = true;
+  bool style_mom = true;
+  bool style_beta = true;
+  bool industry = true;
+};
+
+// ===========================================================================
 //  FactorModel — factored covariance V = X F Xᵀ + D (apply-math; P4-7a).
 //
 //  The private (X, F, D, dinv, cached Cholesky) state is held behind a PIMPL

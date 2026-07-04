@@ -97,6 +97,8 @@
 
 #include "atx/engine/library/library.hpp" // library::Library, AlphaCandidate, AdmitKind, AdmitVerdict
 
+#include "atx/engine/eval/robustness_battery.hpp" // eval::BatteryConfig, RobustnessBattery (p8 Item 3)
+
 #include "atx/engine/factory/fitness.hpp" // factory::pool_aware_fitness, FitnessCfg
 #include "atx/engine/factory/genome.hpp"  // factory::Genome
 #include "atx/engine/factory/pool_view.hpp" // factory::LibraryPool, PoolView, pool_aware_fitness overload (S4b-2)
@@ -217,6 +219,32 @@ struct FactoryConfig {
   //  strictly safer). INACTIVE (<= 0.0, the default): the pre-gate is NEVER consulted, so the
   //  path is byte-identical to pre-S2-1. Active when > 0.0.
   atx::f64 cascade_gate_factor = 0.0; // --cascade-gate (S2-1); 0.0 == OFF, byte-identical
+  // --- S5-2 blocking PBO (OPTIONAL; default DISABLED = false). ---
+  //  W4b's run-level CSCV-PBO verdict (`rep.pbo_gate_passed`) is ADVISORY-but-
+  //  RECORDED: a breach never un-admits or fails the run. `blocking_pbo` escalates
+  //  a breach to a FAIL-CLOSED run: `mine_into`/`mine_into_oos`(_parallel) return
+  //  Err instead of Ok(rep) when `pbo_gate_passed` is false (checked AFTER the
+  //  admit loop + finalize_run_pbo, so the verdict is already computed). Distinct
+  //  from `--pbo-hard-block` (RunConfig), which only escalates the STAGE's exit
+  //  code while `mine_into` itself still returns Ok — blocking_pbo fails the
+  //  FACTORY call itself, a strictly stronger escalation. Inert at max_pbo>=1.0
+  //  (finalize_run_pbo never computes a verdict, pbo_gate_passed stays true) OR
+  //  blocking_pbo==false (the default) — byte-identical to today either way (the
+  //  admitted set / digest are UNCHANGED; only whether the run reports Ok or Err
+  //  differs, and only when both this AND max_pbo<1.0 are explicitly set).
+  bool blocking_pbo = false; // --blocking-pbo (S5-2); false == advisory-only, as today
+  // --- p8 final-wave (Item 3) — eval::RobustnessBattery (S5-3) at admission time. ---
+  //  OPT-IN, default OFF. When true, mine_into's sequential library-backed admit
+  //  loop builds an eval::BatteryConfig with ONLY noise_control enabled (a SCOPED
+  //  PARTIAL of the 4-check battery this wave — sub_universe/alt_neutralization
+  //  need a liquidity-ADV / group_map input this admit site does not carry yet,
+  //  and param_perturbation needs an AST-level numeric-param jitter that does not
+  //  exist yet; both are deferred, ledger-noted future work) and rejects a
+  //  candidate whose edge SURVIVES a seeded permutation of the panel's "close"
+  //  field (the dimensional-artifact negative control) with
+  //  library::AdmitKind::RejectRobustness. false (the default) never builds a
+  //  BatteryConfig/Reevaluator/alternate Panel at all -> byte-identical to today.
+  bool robustness_battery = false; // --robustness-battery
 };
 
 // =========================================================================
@@ -262,7 +290,21 @@ struct FactoryReport {
   atx::usize duplicates{0};                     // library-wide F6 dedup hits (AdmitKind::Duplicate)
   atx::u64 library_n_alphas_before{0};          // library::n_alphas() at run start
   atx::u64 library_n_alphas_after{0};           // library::n_alphas() at run end
-  std::array<atx::usize, 8> reject_histogram{}; // count per library::AdmitKind (0..7)
+  // S5-1: sized to 11 (library::AdmitKind now has 11 enumerators, 0..10, after the
+  // S5-1 RejectDsr/RejectPbo/RejectSplitUnstable append). Growing a fixed-size,
+  // zero-initialized std::array does not change any existing index's value or
+  // meaning — indices 0..7 are untouched, so every pre-S5-1 histogram comparison
+  // (EXPECT_EQ on the whole array) stays byte-identical; this only removes a
+  // latent out-of-bounds write for a FUTURE caller whose GateConfig activates the
+  // S5-1 screens (today's factory call sites keep gc.min_dsr/max_pbo at their
+  // GateConfig{} inert defaults, so kind never actually reaches 8..10 yet — see
+  // the S5 ledger).
+  // p8 final-wave (Item 3): grown 11 -> 12 for library::AdmitKind::RejectRobustness
+  // (index 11). SAME additive-growth argument as the S5-1 bump above: indices 0..10
+  // are untouched (every pre-existing EXPECT_EQ on the whole array stays byte-
+  // identical), and the new index is only ever written when FactoryConfig::
+  // robustness_battery is explicitly on.
+  std::array<atx::usize, 12> reject_histogram{}; // count per library::AdmitKind (0..11)
 
   // --- S2-1 cascade pre-gate telemetry (additive; REPORT-ONLY, never folded into digest).
   //  Number of candidates the train->holdout cascade pre-gate skipped (the expensive
@@ -348,6 +390,44 @@ void finalize_run_pbo(FactoryReport &rep,
                       const std::vector<std::vector<atx::f64>> &admitted_pnls,
                       atx::f64 max_pbo,
                       bool always_compute = false);
+
+// check_blocking_pbo — S5-2: the blocking-PBO fail-closed escalation. Called AFTER
+// finalize_run_pbo (so rep.pbo_gate_passed reflects the just-computed verdict) and
+// AFTER the admit loop (the library already persisted this run's admits — same
+// documented caveat as --pbo-hard-block). Returns Err iff cfg.blocking_pbo is set
+// AND the run-level PBO gate is ACTIVE and breached (rep.pbo_gate_passed == false);
+// Ok() otherwise. At blocking_pbo==false (default) or max_pbo>=1.0 (pbo_gate_passed
+// stays true, fail-open by finalize_run_pbo's own contract) this is always Ok() —
+// byte-identical to the pre-S5-2 path (a run's control flow is unchanged).
+[[nodiscard]] atx::core::Status check_blocking_pbo(const FactoryConfig &cfg,
+                                                   const FactoryReport &rep);
+
+// robustness_battery_passes — p8 final-wave (Item 3): the noise_control-only
+// eval::RobustnessBattery (S5-3) check. `battery_cfg.any_enabled() == false`
+// (the caller's inert default) returns true WITHOUT building anything (no
+// CandidateInputs copy, no Reevaluator, no alternate Panel) — the byte-identical
+// off-path. Otherwise: reads `panel`'s "close" field (absent -> the check is
+// inapplicable, per RobustnessBattery's own graceful-degradation contract, so
+// this returns true) as CandidateInputs::input_values; the Reevaluator rebuilds
+// an alternate Panel with EVERY field copied verbatim except "close", which is
+// replaced by the battery's own seeded permutation (RobustnessScenario::
+// noise_input), then re-scores `cand` on it via `pool_aware_fitness` (the SAME
+// call shape the admit loop already uses to re-score against the live pool) and
+// reports its `dsr` as the scenario edge — the §0.8 weak-panel re-eval pattern,
+// generalized to a PERMUTED rather than sub-universe-restricted Panel. Only
+// ScenarioKind::NoiseControl is handled (this wave's scoped partial, see
+// FactoryConfig::robustness_battery); any other scenario kind (never actually
+// requested when the caller's BatteryConfig only enables noise_control) returns
+// Err, which RobustnessBattery treats as "check inapplicable", never a crash.
+// Declared here (not file-local) so a unit test can drive it directly against a
+// real Genome/Panel/PoolView, exactly as detail::split_half_sharpe / finalize_run_pbo
+// are.
+[[nodiscard]] bool robustness_battery_passes(const Genome &cand, const alpha::Panel &panel,
+                                             const PoolView &pool, const WeightPolicy &policy,
+                                             const exec::ExecutionSimulator &sim,
+                                             const FitnessCfg &admit_fit,
+                                             const eval::BatteryConfig &battery_cfg,
+                                             atx::f64 base_edge);
 
 } // namespace detail
 
@@ -440,14 +520,32 @@ private:
 
   // S2-3: the "(3d) ADMISSION on the HOLDOUT" ladder, extracted VERBATIM from the two
   // formerly copy-pasted sites in mine_into_oos (serial) and mine_into_oos_parallel so
-  // they cannot drift. Executes the price-scale / sub-window / DSR+split ladder, then
-  // folds the resulting AdmitKind into the run digest + reject histogram in the EXACT
-  // same order as the inline code. A static member (not a free function) because it
-  // references the private kAdmitAsOf as the AlphaCandidate's as-of period.
+  // they cannot drift. Executes the price-scale / sub-window / robustness / DSR+split
+  // ladder, then folds the resulting AdmitKind into the run digest + reject histogram
+  // in the EXACT same order as the inline code. A static member (not a free function)
+  // because it references the private kAdmitAsOf as the AlphaCandidate's as-of period.
   //
-  // Contract (byte-identical to the inline ladder):
+  // p8 final-wave (Item 3) OOS wire: this is the SINGLE shared admit site for BOTH OOS
+  // paths, so wiring eval::RobustnessBattery HERE (instead of duplicating the check at
+  // each of the two former call sites) makes it reach mine_into_oos AND
+  // mine_into_oos_parallel simultaneously and byte-identically, by construction — the
+  // same reasoning S2-3 already used to unify the price-scale/sub-window ladder.
+  // `robustness_battery`/`run_seed` mirror the non-OOS Factory::mine_into call site
+  // EXACTLY (same BatteryConfig construction, same fixed XOR salt): `robustness_battery
+  // == false` (the default) means `battery_cfg` stays BatteryConfig{} (all-false), so
+  // detail::robustness_battery_passes returns true WITHOUT building a
+  // CandidateInputs/Reevaluator/alternate Panel at all — byte-identical to pre-wire.
+  // `cand`/`holdout_panel`/`admit_fit` are the SAME Genome/HOLDOUT-Panel/FitnessCfg the
+  // ladder's own hold_dsr and try_admit already use; the battery's admission POOL is a
+  // fresh LibraryPool{lib_lib} — the SAME persistent library try_admit below consults,
+  // consistent with the real corr-to-pool check (worst_corr_to_pool(hold_pnl) is
+  // HOLDOUT-vs-HOLDOUT-library; see the mine_into_oos (8.C) comment). base_edge is
+  // hold_dsr (this ladder's own running deflated holdout edge).
+  //
+  // Contract (byte-identical to the inline ladder, robustness inserted per Item 3):
   //   - !price_scale_ok  -> kind = RejectPriceScale
   //   - else !subwindows_ok -> kind = RejectDsrSubwindow
+  //   - else !robustness_ok (the battery check above) -> kind = RejectRobustness
   //   - else if (hold_dsr >= min_dsr && split_ok): try_admit on the HOLDOUT geometry
   //       (a clean propagated Err on a cross-run geometry MISMATCH); on Accept bumps
   //       rep.admitted, pushes OosReportEntry{canon_hash, train_metrics, hold_metrics},
@@ -458,7 +556,9 @@ private:
   // `prov` is consumed (moved into the AlphaCandidate). NOT noexcept (push_back
   // allocates on the Accept path). Returns Err iff try_admit does.
   [[nodiscard]] atx::core::Result<void>
-  admit_on_holdout(atx::f64 hold_dsr, bool price_scale_ok, bool subwindows_ok, bool split_ok,
+  admit_on_holdout(const Genome &cand, const alpha::Panel &holdout_panel,
+                   const FitnessCfg &admit_fit, bool robustness_battery, atx::u64 run_seed,
+                   atx::f64 hold_dsr, bool price_scale_ok, bool subwindows_ok, bool split_ok,
                    atx::f64 min_dsr, atx::u64 canon_hash, std::span<const atx::f64> hold_pnl,
                    std::span<const atx::f64> hold_pos_flat,
                    const combine::AlphaMetrics &hold_metrics,

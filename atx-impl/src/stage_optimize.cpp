@@ -1,8 +1,10 @@
 #include "stages.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -10,21 +12,42 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/data/adapt_factor.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
 #include "artifacts.hpp"
 #include "book_shape.hpp"
 #include "config.hpp"
-#include "diag_risk.hpp"
 #include "serialize_panel.hpp"
+#include "stage_riskmodel.hpp"
 
 namespace atx::impl {
 
 namespace alpha = atx::engine::alpha;
+namespace data  = atx::engine::data;
 namespace risk  = atx::engine::risk;
 
+// S1-2 / S5-0: the public no-flag entry point (declared in stages.hpp, the
+// S5-CLI-hub surface) builds a RiskModelConfig from the S5-0 CLI fields
+// (--risk-model / --dead-alpha-factors / --group-neutralize) and forwards to
+// the parameterized overload below. At the field defaults
+// (risk_model=="diagonal", dead_alpha_factors=false, group_neutralize=false)
+// the constructed RiskModelConfig is IDENTICAL to RiskModelConfig{} — same
+// code, same input every existing caller already gets — so the no-flag path
+// is byte-identical to pre-S1/pre-S5 BY CONSTRUCTION, not by parallel-
+// maintained duplicate logic.
 atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
+{
+    risk::RiskModelConfig risk_cfg{};
+    risk_cfg.kind = (cfg.risk_model == "factor") ? risk::RiskModelKind::Factor
+                                                  : risk::RiskModelKind::Diagonal;
+    risk_cfg.dead_alpha_factors = cfg.dead_alpha_factors;
+    risk_cfg.group_neutralize   = cfg.group_neutralize;
+    return run_optimize(cfg, risk_cfg);
+}
+
+atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::RiskModelConfig& risk_cfg)
 {
     // 1. Validate required flags.
     if (cfg.panel.empty() || cfg.combo.empty() || cfg.books_out.empty()) {
@@ -197,9 +220,70 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     }
 
     // 5b. MVO path (default: position_mode=false).
-    // Build the diagonal FactorModel from per-instrument TRI-return variance — needed
-    // ONLY by the mean-variance path; position-mode returned above without it.
-    ATX_TRY(auto model, diagonal_risk_model(research));
+    // S1 fix-loop (per-fit-window PIT; corrected from the original S1-2
+    // single-whole-panel-fit landing, which was a silent look-ahead: an EARLY
+    // rebalance decision was informed by covariance estimated from LATER
+    // dates). The covariance source now depends on risk_cfg.kind:
+    //
+    //   Diagonal (inert default, reached by every existing caller via the
+    //   zero-arg run_optimize forward above): UNCHANGED -- byte-identical to
+    //   pre-S1. ONE whole-panel model, applied to every period
+    //   (build_risk_model's Diagonal branch lowers diagonal_risk_model's own
+    //   (X, F, D) straight back into a FactorModel).
+    //
+    //   Factor: ONE model PER REBALANCE STEP. For step s covering date
+    //   `period = sched.periods[s]`, fit at fit_end = period + 1 (data
+    //   through `period` inclusive, nothing after -- PIT-clean; see
+    //   build_risk_model's fit_end doc). A step too early for a genuine
+    //   Factor fit (fit_end < 2, or an under-determined cross-section --
+    //   build_risk_model returns Err) falls back to a PIT diagonal over
+    //   [0, fit_end) for THAT STEP ONLY (diag_risk.hpp's fit_end overload,
+    //   via a default-constructed kind==Diagonal RiskModelConfig) -- never
+    //   the whole-panel diagonal, which would reintroduce look-ahead for that
+    //   step. This is honest, not a workaround: a factor covariance cannot be
+    //   estimated before there is history to estimate it from.
+    //
+    // model_at's TYPE (const risk::FactorModel&) and the mpo.run call below
+    // are UNCHANGED; only the backing model's SOURCE + cadence differ.
+    std::optional<risk::FactorModel> single_model; // Diagonal path only
+    std::vector<risk::FactorModel> step_models;    // Factor path only; one per sched.periods[s]
+
+    if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
+        ATX_TRY(auto artifact, build_risk_model(research, risk_cfg));
+        ATX_TRY(auto model, data::artifact_to_factor_model(artifact));
+        single_model.emplace(std::move(model));
+    } else {
+        const risk::RiskModelConfig diag_fallback_cfg; // kind==Diagonal (default) -- warm-up fallback
+        step_models.reserve(S);
+        for (atx::usize s = 0; s < S; ++s) {
+            const atx::usize fit_end = sched.periods[s] + 1U; // PIT: through `period` inclusive
+            auto factor_artifact = build_risk_model(research, risk_cfg, {}, nullptr, {}, 0, fit_end);
+            if (factor_artifact.has_value()) {
+                ATX_TRY(auto step_model, data::artifact_to_factor_model(*factor_artifact));
+                step_models.push_back(std::move(step_model));
+            } else {
+                // Warm-up fallback: too little history yet for a genuine
+                // Factor fit at this step -- a PIT diagonal over [0, fit_end).
+                ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, nullptr,
+                                                             {}, 0, fit_end));
+                ATX_TRY(auto diag_model, data::artifact_to_factor_model(diag_artifact));
+                step_models.push_back(std::move(diag_model));
+            }
+        }
+    }
+
+    // date -> step lookup: periods are dense multiples of `step`
+    // (sched.periods[s] == s*step by construction above), so the step
+    // covering any date d is floor(d/step) -- exact at a schedule date, and
+    // FORWARD-FILLED between them (the "in-force step model" the S1-5
+    // neutralize block below needs for a non-schedule date).
+    auto model_at = [&](atx::usize period) -> const risk::FactorModel& {
+        if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
+            return *single_model;
+        }
+        return step_models[period / step];
+    };
+
     risk::MultiPeriodConfig mc;
     mc.single.risk_aversion   = cfg.set_flags.count("risk-aversion")
                                     ? cfg.risk_aversion : 1.0;
@@ -217,13 +301,42 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg)
     // 6. Callbacks + run.
     ATX_TRY(const auto alpha_fid, combo.field_id("alpha"));
 
-    auto alpha_at = [&combo, alpha_fid](atx::usize period)
+    // S1-5: factor/industry neutralization (opt-in via risk_cfg.group_neutralize).
+    // FactorModel::neutralize residualizes a signal against a model's exposure
+    // columns IN PLACE (s <- s - X(XtX)^-1 Xt s); it needs a MUTABLE span, so
+    // when the flag is on we precompute one neutralized copy of the WHOLE combo
+    // signal (every period) upfront and have alpha_at read from that buffer
+    // instead of combo directly. group_neutralize==false (inert default) skips
+    // this block entirely -- alpha_at reads combo verbatim, byte-identical to
+    // pre-S1. S1 fix-loop (part D): each date `d` is neutralized against
+    // model_at(d) -- the IN-FORCE step model for the rebalance step covering
+    // `d` (Diagonal: the single model, a no-op since its exposures are all
+    // zero; Factor: the per-window PIT model, FORWARD-FILLED between
+    // rebalance dates -- model_at already reduces any date to
+    // floor(date/step), so calling it here with a non-schedule date is
+    // exactly the forward-fill this needs; group_neutralize defaults false,
+    // so the default path is unaffected either way). The neutralize itself is
+    // a deterministic linear residualization (no RNG); NaN cells propagate
+    // per FactorModel::neutralize's documented policy (a WeightPolicy
+    // downstream maps a NaN weight to 0 -- unchanged from today's contract).
+    std::vector<atx::f64> neutralized_flat;
+    if (risk_cfg.group_neutralize) {
+        neutralized_flat.resize(D * M);
+        for (atx::usize d = 0; d < D; ++d) {
+            const auto cs = combo.field_cross_section(alpha_fid, d);
+            std::copy(cs.begin(), cs.end(), neutralized_flat.begin() + static_cast<std::ptrdiff_t>(d * M));
+            std::span<atx::f64> row{neutralized_flat.data() + d * M, M};
+            model_at(d).neutralize(row);
+        }
+    }
+
+    auto alpha_at = [&combo, alpha_fid, &neutralized_flat, &risk_cfg, M](atx::usize period)
         -> std::span<const atx::f64>
     {
+        if (risk_cfg.group_neutralize) {
+            return std::span<const atx::f64>{neutralized_flat.data() + period * M, M};
+        }
         return combo.field_cross_section(alpha_fid, period);
-    };
-    auto model_at = [&model](atx::usize) -> const risk::FactorModel& {
-        return model;
     };
 
     ATX_TRY(auto result, mpo.run(sched, alpha_at, model_at, cost));

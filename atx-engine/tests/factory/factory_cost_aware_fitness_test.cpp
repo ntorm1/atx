@@ -183,14 +183,15 @@ TEST(FactoryCostAwareFitness, HandCheck_BookCostMatchesRoundTrip) {
   const f64 target_aum = 5.0e5; // $500k
 
   // Hand-compute the single name's participation + sigma over the windows.
-  //   price   = close(last) = 99.0
+  //   price   = close(last) = 99.0 (gates the name in; not a divisor, S4-1 -- see
+  //             book_cost_bps's own `price` guard, unchanged by this fix).
   //   adv     = mean(close*volume over all 3 rows) = (100+110+99)*1000/3 = 103000.
-  //   notional= aum*|w| = 5e5;  shares = 5e5/99;  part = shares/adv.
+  //   notional= aum*|w| = 5e5;  part = notional/adv (S4-1 [B1 fix]: dollars/dollars,
+  //   NOT (notional/price)/adv -- see capacity_participation_test.cpp, tests/risk/).
   //   sigma   = popstd of the two returns {+0.10, -0.10} = 0.10.
-  const f64 price = 99.0;
   const f64 adv = (100.0 + 110.0 + 99.0) * 1000.0 / 3.0;
-  const f64 shares = target_aum * 1.0 / price;
-  const f64 part = shares / adv;
+  const f64 notional = target_aum * 1.0;
+  const f64 part = notional / adv;
   const f64 sigma = 0.10;
   const f64 expected = 1.0 * cost::round_trip_cost_bps(cc, part, sigma); // |w| == 1
 

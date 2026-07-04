@@ -50,11 +50,14 @@
 //     via detail::step_return). PIT/structural: reads only rows >= r (history). A
 //     NaN return drops that (r,i) term from the cross-sectional sum.
 //  2. Per-name √-impact cost at a given `aum`:
-//       price_i    = close(0,i)                          (current mark)
-//       notional_i = aum * |w[i]|                        (book gross-scaled to aum)
-//       shares_i   = notional_i / price_i
-//       ADV_i      = mean_{r in [0,W_adv)} close(r,i)*volume(r,i)  (dollar ADV)
-//       part_i     = shares_i / ADV_i
+//       price_i    = close(0,i)                    (current mark; prices the name
+//                                                     in/out -- NOT a participation
+//                                                     divisor, S4-1)
+//       notional_i = aum * |w[i]|                   (book gross-scaled to aum, $)
+//       ADV_i      = mean_{r in [0,W_adv)} close(r,i)*volume(r,i)  (dollar ADV, $)
+//       part_i     = notional_i / ADV_i              (S4-1: dollars/dollars, UNITLESS
+//                                                      -- NOT shares_i/ADV_i, which was
+//                                                      off by a factor of price_i)
 //       sigma_i    = popstd_{r in [0,W_vol)} ret_i(r)    (return volatility)
 //       temp_i     = Y * sigma_i * part_i^delta          (sim's OWN coefficients)
 //     Cost in bps as a fraction of gross notional (notional_i ∝ |w[i]|, so the
@@ -235,9 +238,13 @@ inline constexpr atx::usize kCapacityVolWindow = 60U; // return-volatility lookb
     if (adv <= 0.0) {
       continue; // no traded value -> participation undefined; contributes nothing
     }
-    const atx::f64 notional = aum * abs_w;        // book gross-scaled to this aum
-    const atx::f64 shares = notional / price;     // share count at the current mark
-    const atx::f64 part = shares / adv;           // participation = shares / ADV
+    const atx::f64 notional = aum * abs_w; // book gross-scaled to this aum ($)
+    // S4-1 [B1 fix]: participation is DOLLARS / dollar-ADV (unitless), NOT
+    // shares/dollar-ADV. The prior code divided notional by price to get a
+    // share count, then divided THAT by a DOLLAR-ADV -- off by exactly a
+    // factor of price_i (a $100 stock understated participation 100x,
+    // inflating capacity ~price^(1/delta)x). See capacity_participation_test.cpp.
+    const atx::f64 part = notional / adv; // participation = notional / dollar-ADV
     const atx::f64 sigma = return_volatility(panel, i, w_vol);
     if (part <= 0.0 || sigma <= 0.0) {
       continue; // zero participation or zero vol -> temp = 0 (matches the sim)

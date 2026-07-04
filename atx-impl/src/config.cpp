@@ -41,6 +41,15 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "protect-seed-elites") { cfg.protect_seed_elites = true; return atx::core::Ok(); } // S7-1
     if (flag == "mutate-seed-copies")  { cfg.mutate_seed_copies  = true; return atx::core::Ok(); } // S7-1
     if (flag == "augment-panel")       { cfg.augment_panel        = true; return atx::core::Ok(); } // S7-3
+    if (flag == "dead-alpha-factors")  { cfg.dead_alpha_factors   = true; return atx::core::Ok(); } // S5-0 (S1)
+    if (flag == "group-neutralize")    { cfg.group_neutralize     = true; return atx::core::Ok(); } // S5-0 (S1)
+    if (flag == "metabook")            { cfg.metabook             = true; return atx::core::Ok(); } // S5-0 (S2)
+    if (flag == "impact-in-selection") { cfg.impact_in_selection  = true; return atx::core::Ok(); } // S5-0 (S4)
+    if (flag == "capacity-curve")      { cfg.capacity_curve       = true; return atx::core::Ok(); } // S5-0 (S4)
+    if (flag == "require-split-stable"){ cfg.require_split_stable = true; return atx::core::Ok(); } // S5-0 (deflation)
+    if (flag == "blocking-pbo")        { cfg.blocking_pbo         = true; return atx::core::Ok(); } // S5-2
+    if (flag == "incremental-panel")   { cfg.incremental_panel    = true; return atx::core::Ok(); } // S5-0 (p7 carry-forward)
+    if (flag == "robustness-battery")  { cfg.robustness_battery   = true; return atx::core::Ok(); } // p8 final-wave (Item 3)
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -67,6 +76,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "regime-out")    { cfg.regime_out    = value; return atx::core::Ok(); }
     if (flag == "regime-segs")   { cfg.regime_segs   = value; return atx::core::Ok(); }
     if (flag == "regime-fields") { cfg.regime_fields = value; return atx::core::Ok(); }
+    if (flag == "short-interest") { cfg.short_interest = value; return atx::core::Ok(); } // S5-0
+    if (flag == "augment-out")    { cfg.augment_out    = value; return atx::core::Ok(); } // S5-0
 
     // Repeatable string flag
     if (flag == "seed-expr")    { cfg.seed_exprs.emplace_back(value); return atx::core::Ok(); }
@@ -112,6 +123,28 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                 + std::string(value) + "'");
         }
         cfg.weight_transform = std::move(lowered);
+        return atx::core::Ok();
+    }
+
+    // --risk-model (S5-0/S1): closed taxonomy {diagonal, factor}. "diagonal" is the
+    // inert default (risk::RiskModelConfig{}'s own default kind).
+    if (flag == "risk-model") {
+        if (value != "diagonal" && value != "factor") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--risk-model must be 'diagonal' or 'factor': got '" + std::string(value) + "'");
+        }
+        cfg.risk_model = value;
+        return atx::core::Ok();
+    }
+    // --sleeve-method (S5-0/S2): closed taxonomy {erc, hrp, invvol}; ignored unless
+    // --metabook is set. Validated eagerly (like --weight-transform) so a typo
+    // fails fast at parse time rather than silently falling back downstream.
+    if (flag == "sleeve-method") {
+        if (value != "erc" && value != "hrp" && value != "invvol") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--sleeve-method must be one of erc|hrp|invvol: got '" + std::string(value) + "'");
+        }
+        cfg.sleeve_method = value;
         return atx::core::Ok();
     }
 
@@ -280,6 +313,10 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         }
         return atx::core::Ok();
     }
+    if (flag == "selection-aum")      return parse_double(cfg.selection_aum);      // S5-0 (S4)
+    if (flag == "kelly-fraction")     return parse_double(cfg.kelly_fraction);     // S5-0 (p7 carry-forward)
+    if (flag == "kelly-max-gross")    return parse_double(cfg.kelly_max_gross);    // S5-0 (p7 carry-forward)
+    if (flag == "si-publication-lag") return parse_long(cfg.si_publication_lag);   // S5-0 (p7 carry-forward)
     if (flag == "report-aum") {
         ATX_TRY_VOID(parse_double(cfg.report_aum));
         if (cfg.report_aum <= 0.0) {
@@ -348,7 +385,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel" || flag == "dead-alpha-factors" || flag == "group-neutralize" || flag == "metabook" || flag == "impact-in-selection" || flag == "capacity-curve" || flag == "require-split-stable" || flag == "blocking-pbo" || flag == "incremental-panel" || flag == "robustness-battery") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel; S5-0: p8 hub valueless bools; Item 3: robustness-battery (p8 final-wave)
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;
