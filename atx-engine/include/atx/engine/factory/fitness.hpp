@@ -167,25 +167,31 @@ private:
 //  kMaxObjectives — the fixed capacity of a candidate's objective vector (S4.1).
 //
 //  S4.1 ships three objectives {wq, diversify, robust} (a re-projection of the
-//  existing FitnessReport fields — NO new fitness math). The capacity is sized to
-//  7 to leave room for S4.2 (behavioral novelty), S4.3 (a pre-negated cost
-//  objective), S4.4 (parsimony), and R4 (deflated-Sharpe selection column)
-//  WITHOUT touching this constant or any struct layout again. The
+//  existing FitnessReport fields — NO new fitness math). S4 (p9) grows the capacity
+//  7->9 to APPEND kObjCapacity (slot 7) + kObjTurnover (slot 8) as two new OPT-IN
+//  columns; slots 0-6 are UNCHANGED (frozen-prefix pin). The
 //  std::array<f64, kMaxObjectives> is a fixed-size, allocation-free inline buffer
 //  — it carries through Scored (search_driver.hpp) into the NSGA-II ObjMatrix.
 //
 //  OFF-PATH SAFETY: NSGA-II builds its ObjMatrix over the first k = max(n_objectives)
 //  columns (search_driver.cpp assign_pareto_ranks), NOT kMaxObjectives. Inactive
-//  slot 6 stays at its zero default and is NEVER read unless deflate_selection is
-//  on — so growing 6->7 is byte-identical on the off-path. res.digest folds
-//  signal_set_digest (NOT the objectives array), so no golden hashes this width.
+//  slots 6/7/8 stay at their zero default and are NEVER read unless their own gate
+//  flag is on — so growing 7->9 is byte-identical on the off-path (the width NSGA-II
+//  uses is n_objectives, never kMaxObjectives). res.digest folds signal_set_digest
+//  (NOT the objectives array), so no golden hashes this width.
 // =========================================================================
-inline constexpr atx::usize kMaxObjectives = 7;
+inline constexpr atx::usize kMaxObjectives = 9; // S4: 7->9 (+capacity +turnover)
 // Objective-slot indices (NSGA-II maximizes every column; inactive columns MUST be
 // uniform across genomes -> inert). 0 wq, 1 diversify, 2 robust, 3 novelty,
 // 4 -cost_bps, 5 -node_count (parsimony), 6 dsr (deflated-Sharpe, R4 opt-in).
 inline constexpr atx::usize kObjParsimony  = 5;
 inline constexpr atx::usize kObjDeflation  = 6; // R4: deflated-Sharpe selection objective
+// S4: capacity/turnover — APPEND-ONLY (frozen-prefix pin: slots 0-6 unchanged).
+inline constexpr atx::usize kObjCapacity   = 7; // S4-1: sqrt-law impact capacity score
+inline constexpr atx::usize kObjTurnover   = 8; // S4-2: signal first-order autocorrelation
+static_assert(kObjCapacity == 7, "S4 frozen-prefix: kObjCapacity is APPEND-ONLY slot 7");
+static_assert(kObjTurnover == 8, "S4 frozen-prefix: kObjTurnover is APPEND-ONLY slot 8");
+static_assert(kMaxObjectives == 9, "S4: kMaxObjectives must grow 7->9 for the two new slots");
 
 // =========================================================================
 //  Reduce — how corr_to_pool folds the per-member |corr| over the pool.
@@ -310,6 +316,12 @@ struct FitnessReport {
   // digest, so surfacing it is byte-identical on every existing path (same pattern
   // as sharpe_h1/sharpe_h2). default-init 0.0 for an eval-failure / empty stream.
   atx::f64 turnover{0.0};
+  // S4: bounded, finite projections of the two new NSGA columns -- ALSO the exact
+  // value written into objectives[kObjCapacity]/[kObjTurnover] when the gate is on.
+  // 0.0 (the default) when off -- the boundary-pin no-op, same convention as
+  // cost_bps/turnover above. Do NOT enter `raw`; pure reporting + the objective copy.
+  atx::f64 capacity_score{0.0};    // S4-1: bounded [0,1) sqrt-law capacity score
+  atx::f64 turnover_autocorr{0.0}; // S4-2: |w|-weighted mean AR(1) coefficient
 };
 
 // =========================================================================
@@ -369,6 +381,13 @@ struct FitnessCfg {
   atx::f64 max_turnover_target =                                 // S3-0: +inf ⇒ no excess ever
       std::numeric_limits<atx::f64>::infinity();
   cost::CostSelectionConfig cost_selection{};                    // B7: off by default (see above)
+  // S4: capacity/turnover NSGA objective gates. SearchDriver::evaluate_generation
+  // copies the SAME-NAMED SearchConfig-level flag into the per-generation FitnessCfg
+  // (gen_fit) because only fitness_core/finish_report (which hold strm/panel) can
+  // compute the columns. Both default false: FitnessCfg{} is the pre-S4 struct plus
+  // two inert bools appended at the end -- no aggregate-init break, no digest drift.
+  bool capacity_objective = false; // S4-1: gates the kObjCapacity compute
+  bool turnover_objective = false; // S4-2: gates the kObjTurnover compute
 };
 
 namespace detail {
@@ -468,6 +487,12 @@ struct FitnessCore {
   // finish_report) because finish_report has no strm/panel in scope — see
   // fitness_cost_selection.hpp's documented SEAM.
   atx::f64 selection_cost_bps{0.0};
+  // S4: the two new NSGA columns, computed in fitness_core (which holds strm/panel)
+  // ONLY when their gate is set, else the inert default 0.0. finish_report projects
+  // them into objectives[kObjCapacity]/[kObjTurnover] and bumps n_objectives. 0.0 on
+  // the off-path -> the objective slots stay at their uniform default (inert in NSGA).
+  atx::f64 capacity_score{0.0};    // S4-1: sqrt-law capacity headroom, bounded [0,1)
+  atx::f64 turnover_autocorr{0.0}; // S4-2: |w|-weighted mean AR(1) coefficient
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:

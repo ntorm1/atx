@@ -391,7 +391,9 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   // no additional eval) into FitnessCore so finish_report can apply the opt-in
   // penalty.  The FitnessCore field order (matched by this aggregate init) is:
   //   oos_pnl, wq, robust, dsr, haircut_sharpe, cost_bps, turnover,
-  //   sharpe_h1, sharpe_h2, split_stable, selection_cost_bps
+  //   sharpe_h1, sharpe_h2, split_stable, selection_cost_bps,
+  //   capacity_score, turnover_autocorr (S4 — the two trailing gate columns; left
+  //   at their inert 0.0 defaults here, populated by S4-3's gated compute block).
   return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
                                    dsr.haircut_sharpe, cost_bps, agg.turnover,
                                    split.sharpe_h1, split.sharpe_h2, split.stable,
