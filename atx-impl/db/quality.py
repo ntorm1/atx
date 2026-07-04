@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Mapping, Sequence
 
 from .connection import DuckDBStore
 from .lake import DEFAULT_EXPORT_OBJECTS
+from .schema_contract import (
+    ColumnSpec,
+    PIT_COLUMN_NAMES,
+    _fetch_catalogued_tables,
+    _fetch_live_tables,
+    build_contract_manifest,
+)
 from .warehouse import quality_check
 
 
@@ -17,6 +24,12 @@ from .warehouse import quality_check
 # name.
 INTERNAL_ONLY_EXPORT_FORBIDDEN_COLUMN = "internal_cusip"
 DEFAULT_VALUATION_STALE_GAP_DAYS = 5
+
+# PF2-S1 S1-1: check_name constants for the two schema-contract gates below, so tests
+# and (later) PF2-S10's orchestrator gating never have to hand-copy the literal string.
+CATALOG_COMPLETENESS_CHECK_NAME = "catalog_completeness"
+PIT_COLUMN_PRESENCE_CHECK_NAME = "pit_column_presence"
+SCHEMA_CONTRACT_DATASET_ID = "schema_contract"
 
 # PF-S7 S7-1: the statement-layer parent that fundamental_ratios rows resolve
 # against. TODAY this is fundamental_points (raw SEC companyfacts). Once
@@ -47,6 +60,12 @@ def _export_scan_internal_cusip_sql(export_objects: tuple[str, ...]) -> str:
 
 Comparator = Literal["eq", "le", "ge"]
 FailureStatus = Literal["failed", "warning"]
+# PF2-S1 S1-1: a gate-readiness tag, orthogonal to failure_status/status. "critical"
+# marks a check PF2-S10 can later wire into orchestrator gating (clause G, adopted
+# incrementally); this sprint only authors that tag, it does not wire any gate.
+# Defaults to "standard" everywhere so every pre-existing check (and QualityResult
+# construction site) is unaffected -- additive only.
+Severity = Literal["standard", "critical"]
 
 
 @dataclass(frozen=True)
@@ -61,6 +80,7 @@ class SqlQualityCheck:
     warn_if_missing: bool = True
     failure_status: FailureStatus = "failed"
     detail_sql: str | None = None
+    severity: Severity = "standard"
 
 
 @dataclass(frozen=True)
@@ -72,6 +92,7 @@ class QualityResult:
     observed_value: float | None
     threshold_value: float | None
     details: dict[str, object]
+    severity: Severity = "standard"
 
 
 def _table_exists(store: DuckDBStore, table_name: str) -> bool:
@@ -6338,6 +6359,103 @@ def _check_specs(
     return single_table_checks + referential_checks
 
 
+def catalog_completeness_check(
+    store: DuckDBStore, *, checked_at: dt.datetime | None = None
+) -> QualityResult:
+    """Every non-ephemeral live table must have a ``table_catalog`` row.
+
+    PF2-S1 S1-1: `table_catalog` is hand-seeded (`schema.py::_seed_catalog` plus each
+    migration's own insert) with nothing asserting ``duckdb_tables() ⊆ table_catalog``
+    (sprint plan fact 2). This check closes that gap as a first-class, gate-ready
+    (severity="critical") QualityResult -- PF2-S10 will later wire it into orchestrator
+    gating (clause G, adopted incrementally); this sprint only authors the check.
+
+    Reuses ``schema_contract.py``'s own live-table/catalogued-table readers verbatim
+    (``_fetch_live_tables``/``_fetch_catalogued_tables``) so the ephemeral filter
+    (``duckdb_tables()`` already excludes registered temp relations for free; the
+    duckdb_%/sqlite_%/pragma_% internals are filtered explicitly) can never drift out
+    of sync between the drift detector and this check.
+    """
+    checked_at = checked_at or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    con = store.con
+
+    if not _table_exists(store, "table_catalog"):
+        return QualityResult(
+            dataset_id=SCHEMA_CONTRACT_DATASET_ID,
+            table_name="table_catalog",
+            check_name=CATALOG_COMPLETENESS_CHECK_NAME,
+            status="warning",
+            observed_value=None,
+            threshold_value=0.0,
+            details={"missing_tables": ["table_catalog"], "checked_at": checked_at.isoformat()},
+            severity="critical",
+        )
+
+    uncatalogued = sorted(_fetch_live_tables(con) - _fetch_catalogued_tables(con))
+    observed_value = float(len(uncatalogued))
+    passed = observed_value == 0.0
+    return QualityResult(
+        dataset_id=SCHEMA_CONTRACT_DATASET_ID,
+        table_name="table_catalog",
+        check_name=CATALOG_COMPLETENESS_CHECK_NAME,
+        status="passed" if passed else "failed",
+        observed_value=observed_value,
+        threshold_value=0.0,
+        details={"uncatalogued_tables": uncatalogued, "checked_at": checked_at.isoformat()},
+        severity="critical",
+    )
+
+
+def pit_column_presence_check(
+    store: DuckDBStore,
+    *,
+    manifest: Mapping[str, Sequence[ColumnSpec]] | None = None,
+    checked_at: dt.datetime | None = None,
+) -> QualityResult:
+    """Every fact/derived table must carry all five canonical PIT columns.
+
+    PF2-S1 S1-1: clause (A) requires every fact/derived row to carry ``as_of_date,
+    available_at, source_loaded_at, run_id, is_latest_revision`` (sprint plan fact 5),
+    but nothing asserted it -- a fact table shipped without ``available_at`` would pass
+    every existing check and silently break as-of readers.
+
+    The fact/non-fact partition comes from the S1-2 manifest
+    (``schema_contract.build_contract_manifest``), NOT a hardcoded table list: a table
+    counts as fact/derived iff at least one of its ``ColumnSpec``s has
+    ``is_pit_column=True`` (equivalently, it carries >=1 strong bitemporal marker --
+    see ``schema_contract._STRONG_TEMPORAL_MARKERS``). ``manifest`` defaults to a fresh
+    ``build_contract_manifest(store.con)`` call; tests may inject a narrower manifest
+    the same way ``detect_schema_drift``'s ``contract`` parameter does.
+    """
+    checked_at = checked_at or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    resolved_manifest: Mapping[str, Sequence[ColumnSpec]] = (
+        manifest if manifest is not None else build_contract_manifest(store.con)
+    )
+
+    offenders: dict[str, list[str]] = {}
+    for table_name, specs in resolved_manifest.items():
+        is_fact = any(spec.is_pit_column for spec in specs)
+        if not is_fact:
+            continue
+        spec_names = {spec.name for spec in specs}
+        missing = sorted(set(PIT_COLUMN_NAMES) - spec_names)
+        if missing:
+            offenders[table_name] = missing
+
+    observed_value = float(len(offenders))
+    passed = observed_value == 0.0
+    return QualityResult(
+        dataset_id=SCHEMA_CONTRACT_DATASET_ID,
+        table_name="schema_contract",
+        check_name=PIT_COLUMN_PRESENCE_CHECK_NAME,
+        status="passed" if passed else "failed",
+        observed_value=observed_value,
+        threshold_value=0.0,
+        details={"tables_missing_pit_columns": offenders, "checked_at": checked_at.isoformat()},
+        severity="critical",
+    )
+
+
 def run_warehouse_quality_checks(
     store: DuckDBStore,
     *,
@@ -6366,6 +6484,7 @@ def run_warehouse_quality_checks(
                 observed_value=None,
                 threshold_value=spec.threshold,
                 details={"missing_tables": missing_tables, "checked_at": checked_at.isoformat()},
+                severity=spec.severity,
             )
         else:
             observed = store.con.execute(spec.sql).fetchone()[0]
@@ -6391,6 +6510,7 @@ def run_warehouse_quality_checks(
                 observed_value=observed_value,
                 threshold_value=spec.threshold,
                 details=details,
+                severity=spec.severity,
             )
         if record:
             quality_check(
@@ -6404,4 +6524,27 @@ def run_warehouse_quality_checks(
                 details=result.details,
             )
         results.append(result)
+
+    # PF2-S1 S1-1: catalog-completeness + PIT-column-presence. Both read the S1-2
+    # manifest / schema_contract.py's own introspection helpers rather than a static
+    # SqlQualityCheck string (the fact/non-fact partition and the catalogued-table set
+    # are runtime facts, not compile-time SQL), so they are computed directly and
+    # folded into the same result list / record() path as every other check.
+    for result in (
+        catalog_completeness_check(store, checked_at=checked_at),
+        pit_column_presence_check(store, checked_at=checked_at),
+    ):
+        if record:
+            quality_check(
+                store,
+                dataset_id=result.dataset_id,
+                table_name=result.table_name,
+                check_name=result.check_name,
+                status=result.status,
+                observed_value=result.observed_value,
+                threshold_value=result.threshold_value,
+                details=result.details,
+            )
+        results.append(result)
+
     return results
