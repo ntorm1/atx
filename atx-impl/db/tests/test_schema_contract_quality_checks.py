@@ -234,10 +234,12 @@ class TestRunWarehouseQualityChecksIncludesSchemaContractChecks:
                 ),
             )
         }
-        # A couple of well-known pre-existing checks are still present, with the
-        # default "standard" severity -- additive only, no regression.
-        assert results["duplicate_equity_daily_bars"].severity == "standard"
-        assert results["fundamental_ratios_without_fundamental_points"].severity == "standard"
+        # A couple of well-known pre-existing checks are still present. PF2-S10
+        # maps the old failed/warning status split into the gate taxonomy:
+        # failed checks default to error unless the registry promotes/demotes
+        # them as data.
+        assert results["duplicate_equity_daily_bars"].severity == "error"
+        assert results["fundamental_ratios_without_fundamental_points"].severity == "error"
 
     def test_new_checks_are_recorded_when_record_true(self, tmp_store):
         run_warehouse_quality_checks(

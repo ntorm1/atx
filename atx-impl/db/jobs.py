@@ -1371,6 +1371,7 @@ def refresh_quant_warehouse(
     run_id: str | None = None,
     resume: str | None = None,
     full_rebuild: bool = False,
+    gate: bool = False,
     git_sha: str | None = None,
     actor: str = "warehouse_jobs",
 ) -> OrchestratorResult:
@@ -1389,12 +1390,14 @@ def refresh_quant_warehouse(
             resume,
             params=run_params,
             full_rebuild=full_rebuild,
+            gate=gate,
         )
     return orchestrator.run(
         run_id=run_id,
         params=run_params,
         git_sha=git_sha if git_sha is not None else current_git_sha(),
         full_rebuild=full_rebuild,
+        gate=gate,
     )
 
 

@@ -3,9 +3,9 @@
 Updated: 2026-07-04, America/New_York
 Integration branch: `feat/warehouse-parity` / local `main`
 
-PF2-S1 through PF2-S9 are implemented. PF2-S9 lives on branch
-`feat/pf2-s9` as implementation commit
-`4fad387eb2da9ad268da4ecc800e2cdf8e74324d`.
+PF2-S1 through PF2-S10 are implemented. PF2-S10 lives on branch
+`feat/pf2-s10` as implementation commit
+`349474adf1b00ad83c7923c40357b6eda84d15b8`.
 
 ## Completed
 
@@ -39,6 +39,10 @@ PF2-S1 through PF2-S9 are implemented. PF2-S9 lives on branch
   `feat/pf2-s9` as
   `4fad387eb2da9ad268da4ecc800e2cdf8e74324d`. Migrations consumed:
   `0124-0127`.
+- PF2-S10: quality-as-SLO gating + observability + storage/lake management +
+  reproducible rebuild complete on branch `feat/pf2-s10` as
+  `349474adf1b00ad83c7923c40357b6eda84d15b8`. Migrations consumed:
+  `0128-0131`.
 
 ## S6 Implemented Surfaces
 
@@ -123,6 +127,31 @@ PF2-S1 through PF2-S9 are implemented. PF2-S9 lives on branch
   `fact_disagreement`, with `fact_disagreement` downstream of the standardized
   fact surface.
 
+## S10 Implemented Surfaces
+
+- `quality_check_registry` now carries thresholds-as-data and the S10 severity
+  taxonomy (`critical` / `error` / `warning`), while `data_quality_checks`
+  persists severity on every recorded row. Existing SQL bodies remain unchanged.
+- `evaluate_quality_gate(...)` runs dataset-scoped checks and returns a
+  deterministic gate decision. `DatasetOrchestrator.run(..., gate=True)` halts
+  on `critical`, degrades the final run to `partial` on `error`, and records
+  warnings only; `gate=False` preserves the old ungated walk.
+- New `db/observability.py` evaluates per-dataset freshness SLAs over
+  `dataset_watermarks` and detects row-count anomalies from historical
+  `data_quality_checks` observations, emitting severity-tagged checks.
+- New `db/storage_admin.py` records DB/WAL/table storage stats and runs
+  backup-before-compact `CHECKPOINT` / `VACUUM` / `CHECKPOINT`, falling back to
+  DuckDB `EXPORT DATABASE` when Windows file locks prevent copying an open DB.
+- `LakehouseExporter` keeps the old single-file export for undeclared objects,
+  and adds opt-in partition specs, incremental partition skipping, state rows,
+  and run-scoped partition manifests for declared objects.
+- New `db/rebuild.py` and `scripts/warehouse_rebuild.py` drive auditable
+  deterministic full rebuilds through the orchestrator with optional date
+  replay bounds and `gate=True`, writing `warehouse_rebuild_runs`.
+- `db/parity.py` flips the S&P Global Compustat standardized-fundamentals row
+  to `implemented` for code/schema parity, with live proof-slice and licensed
+  baseline inputs still called out as operator-supplied.
+
 ## Verification
 
 - `python -m py_compile db\calendarization.py db\fundamental_statements.py db\migrations.py db\quality.py db\__init__.py db\tests\test_calendarization.py`
@@ -142,6 +171,13 @@ PF2-S1 through PF2-S9 are implemented. PF2-S9 lives on branch
 - `python -m pytest db\tests\test_valuation_multiples.py db\tests\test_fact_disagreement.py db\tests\test_xbrl_validation.py db\tests\test_jobs_dag.py -q -n0`
 - `python -m pytest db\tests\test_migrations.py db\tests\test_migration_governance.py db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py db\tests\test_import.py -q -n0`
 - `python -m pytest db\tests`: 964 passed in 168.68s
+- `python -m py_compile db\quality.py db\orchestrator.py db\jobs.py db\migrations.py db\observability.py db\storage_admin.py db\lake.py db\rebuild.py db\warehouse.py db\__init__.py scripts\warehouse_rebuild.py db\tests\test_quality_gating.py db\tests\test_observability.py db\tests\test_storage_admin.py`
+- `python -m pytest db\tests\test_quality_gating.py db\tests\test_observability.py db\tests\test_storage_admin.py -q -n0`
+- `python -m pytest db\tests\test_import.py db\tests\test_orchestrator.py db\tests\test_identifier_spine.py -q -n0`
+- `python -m pytest db\tests\test_migrations.py db\tests\test_migration_governance.py -q -n0`
+- `python -m pytest db\tests\test_schema_contract.py db\tests\test_schema_contract_quality_checks.py -q -n0`
+- `python -m pytest db\tests\test_import.py -q -n0` after the parity-ledger flip
+- `python -m pytest db\tests` (xdist default): 976 passed in 189.42s
 
 ## Live DB Smoke
 
@@ -156,13 +192,18 @@ counts for `press_release_facts`, `press_release_reconciliation`, periods with
 pre-10-Q preliminary capture, EPS basis coverage, and `run_id` also remain
 pending. S9 live proof-slice counts for `valuation_overlap_slice`,
 `valuation_multiples`, `vendor_baseline_facts`, `fact_disagreement`,
-agreement ratio, DQC rows by rule code, and `run_id` also remain pending.
+agreement ratio, DQC rows by rule code, and `run_id` also remain pending. S10
+live smoke for an intentionally tripped/reverted critical gate, real
+`warehouse_storage_stats.db_size_bytes`, freshness sweep, partitioned lake
+sample, and deterministic rebuild `rebuild_run_id` / `git_sha` also remains
+operator-pending.
 
 ## Known Caveats
 
 - S1's PIT-column-presence gate intentionally exposes known pre-existing PIT
   gaps on older fact tables, especially missing `is_latest_revision`; PF2-S10
-  owns halt/exemption/backfill policy.
+  now wires critical gates to halt when opted in, but the live policy choice
+  (backfill, explicit exemption, or staged threshold) is still operator-owned.
 - S4 ratio-vintage history is opt-in and currently lifts TTM accession vintages.
   The default ratio rebuild remains latest-revision mode for compatibility.
 - S5 industry routing is SIC-derived. Unclassified entities deterministically
@@ -186,14 +227,17 @@ agreement ratio, DQC rows by rule code, and `run_id` also remain pending.
   loader; tests prove comparison and quality gating on fixtures only.
 - S9's DQC work is still a SQL-native subset, not the full XBRL-US plugin. The
   full Arelle/XULE-dependent rules remain explicitly catalogued as skipped.
+- S10 storage compaction was fixture-tested only. Live compaction/rebuild must
+  be run from the primary tree with the PF2-S2 backup governance path and the
+  S10 DR runbook.
 - `0102` remains unused reserved headroom after S2.
 
 ## Resume Point
 
-1. Merge `feat/pf2-s9` into local `main` / `feat/warehouse-parity`.
-2. Continue ROADMAP sequencing with PF2-S10.
-3. Track progress in `.superpowers/sdd/progress.md`; append or update sprint
-   closeout rows only when the sprint lands.
+1. Merge `feat/pf2-s10` into local `main` / `feat/warehouse-parity`.
+2. Run the post-merge S10 smoke from local main.
+3. Operator live DB smoke remains pending; use
+   `plans/pf2/PF2_S10_DR_RUNBOOK.md` before any live compaction or rebuild.
 
 ## Dirty Worktree Notes
 

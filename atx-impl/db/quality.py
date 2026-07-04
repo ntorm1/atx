@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable, Literal, Mapping, Sequence
 
 from .connection import DuckDBStore
@@ -60,12 +60,10 @@ def _export_scan_internal_cusip_sql(export_objects: tuple[str, ...]) -> str:
 
 Comparator = Literal["eq", "le", "ge"]
 FailureStatus = Literal["failed", "warning"]
-# PF2-S1 S1-1: a gate-readiness tag, orthogonal to failure_status/status. "critical"
-# marks a check PF2-S10 can later wire into orchestrator gating (clause G, adopted
-# incrementally); this sprint only authors that tag, it does not wire any gate.
-# Defaults to "standard" everywhere so every pre-existing check (and QualityResult
-# construction site) is unaffected -- additive only.
-Severity = Literal["standard", "critical"]
+Severity = Literal["critical", "error", "warning"]
+GateDecision = Literal["pass", "partial", "halt"]
+SEVERITY_RANK: dict[str, int] = {"warning": 1, "error": 2, "critical": 3}
+PASS_STATUSES = frozenset({"passed", "skipped"})
 
 
 @dataclass(frozen=True)
@@ -80,7 +78,7 @@ class SqlQualityCheck:
     warn_if_missing: bool = True
     failure_status: FailureStatus = "failed"
     detail_sql: str | None = None
-    severity: Severity = "standard"
+    severity: Severity | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +90,32 @@ class QualityResult:
     observed_value: float | None
     threshold_value: float | None
     details: dict[str, object]
-    severity: Severity = "standard"
+    severity: Severity = "error"
+
+
+@dataclass(frozen=True)
+class QualityRegistryEntry:
+    check_name: str
+    dataset_id: str
+    table_name: str | None
+    severity: Severity
+    threshold_value: float | None
+    comparator: Comparator | None
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class GateResult:
+    dataset_id: str
+    decision: GateDecision
+    worst_severity: Severity | None
+    result_count: int
+    failed_count: int
+    failed_results: tuple[QualityResult, ...]
+
+    @property
+    def passed(self) -> bool:
+        return self.decision == "pass"
 
 
 def _main_objects(store: DuckDBStore) -> set[str]:
@@ -130,6 +153,147 @@ def _passes(observed_value: float, threshold: float, comparator: Comparator) -> 
     if comparator == "ge":
         return observed_value >= threshold
     raise ValueError(f"Unknown comparator {comparator!r}")
+
+
+def severity_for_failure_status(failure_status: str) -> Severity:
+    return "warning" if failure_status == "warning" else "error"
+
+
+def _coerce_severity(value: object, fallback: Severity) -> Severity:
+    text = str(value or "").strip().lower()
+    if text in SEVERITY_RANK:
+        return text  # type: ignore[return-value]
+    return fallback
+
+
+def _coerce_comparator(value: object, fallback: Comparator) -> Comparator:
+    text = str(value or "").strip().lower()
+    if text in {"eq", "le", "ge"}:
+        return text  # type: ignore[return-value]
+    return fallback
+
+
+def _spec_default_severity(spec: SqlQualityCheck) -> Severity:
+    return spec.severity or severity_for_failure_status(spec.failure_status)
+
+
+def _quality_registry(store: DuckDBStore) -> dict[str, QualityRegistryEntry]:
+    if not _table_exists(store, "quality_check_registry"):
+        return {}
+    rows = store.con.execute(
+        """
+        SELECT check_name, dataset_id, table_name, severity, threshold_value, comparator, enabled
+        FROM quality_check_registry
+        """
+    ).fetchall()
+    entries: dict[str, QualityRegistryEntry] = {}
+    for check_name, dataset_id, table_name, severity, threshold, comparator, enabled in rows:
+        entries[str(check_name)] = QualityRegistryEntry(
+            check_name=str(check_name),
+            dataset_id=str(dataset_id),
+            table_name=None if table_name is None else str(table_name),
+            severity=_coerce_severity(severity, "error"),
+            threshold_value=None if threshold is None else float(threshold),
+            comparator=None if comparator is None else _coerce_comparator(comparator, "eq"),
+            enabled=bool(enabled),
+        )
+    return entries
+
+
+def _resolve_spec(
+    spec: SqlQualityCheck,
+    registry: Mapping[str, QualityRegistryEntry],
+) -> SqlQualityCheck | None:
+    entry = registry.get(spec.check_name)
+    if entry is not None and not entry.enabled:
+        return None
+    severity = entry.severity if entry is not None else _spec_default_severity(spec)
+    threshold = (
+        entry.threshold_value
+        if entry is not None and entry.threshold_value is not None
+        else spec.threshold
+    )
+    comparator = (
+        entry.comparator
+        if entry is not None and entry.comparator is not None
+        else spec.comparator
+    )
+    return replace(spec, threshold=threshold, comparator=comparator, severity=severity)
+
+
+def _apply_registry_to_result(
+    result: QualityResult,
+    registry: Mapping[str, QualityRegistryEntry],
+) -> QualityResult | None:
+    entry = registry.get(result.check_name)
+    if entry is not None and not entry.enabled:
+        return None
+    severity = entry.severity if entry is not None else result.severity
+    threshold = (
+        entry.threshold_value
+        if entry is not None and entry.threshold_value is not None
+        else result.threshold_value
+    )
+    comparator = (
+        entry.comparator
+        if entry is not None and entry.comparator is not None
+        else "eq"
+    )
+    status = result.status
+    if result.observed_value is not None and threshold is not None:
+        passed = _passes(float(result.observed_value), float(threshold), comparator)
+        if passed:
+            status = "passed"
+        elif result.status in PASS_STATUSES:
+            status = "failed"
+    return replace(
+        result,
+        status=status,
+        threshold_value=threshold,
+        severity=severity,
+        details={
+            **result.details,
+            "registry_comparator": comparator,
+            "registry_threshold_value": threshold,
+        },
+    )
+
+
+def _record_quality_result(store: DuckDBStore, result: QualityResult) -> None:
+    quality_check(
+        store,
+        dataset_id=result.dataset_id,
+        table_name=result.table_name,
+        check_name=result.check_name,
+        status=result.status,
+        severity=result.severity,
+        observed_value=result.observed_value,
+        threshold_value=result.threshold_value,
+        details=result.details,
+    )
+
+
+def summarize_quality_gate(dataset_id: str, results: Iterable[QualityResult]) -> GateResult:
+    all_results = tuple(results)
+    failed = tuple(result for result in all_results if result.status not in PASS_STATUSES)
+    worst: Severity | None = None
+    for result in failed:
+        if worst is None or SEVERITY_RANK[result.severity] > SEVERITY_RANK[worst]:
+            worst = result.severity
+    if worst == "critical":
+        decision: GateDecision = "halt"
+    elif worst == "error":
+        decision = "partial"
+    else:
+        decision = "pass"
+    return GateResult(
+        dataset_id=dataset_id,
+        decision=decision,
+        worst_severity=worst,
+        result_count=len(all_results),
+        failed_count=len(failed),
+        failed_results=failed,
+    )
 
 
 @dataclass(frozen=True)
@@ -7151,11 +7315,16 @@ def run_warehouse_quality_checks(
     requested_checks = set(check_names) if check_names is not None else None
     requested_datasets = set(dataset_ids) if dataset_ids is not None else None
     objects = _main_objects(store)
+    registry = _quality_registry(store)
     for spec in _check_specs(
         daily_macro_stale_days=daily_macro_stale_days,
         monthly_macro_stale_days=monthly_macro_stale_days,
         valuation_stale_gap_days=valuation_stale_gap_days,
     ):
+        resolved_spec = _resolve_spec(spec, registry)
+        if resolved_spec is None:
+            continue
+        spec = resolved_spec
         if (
             (requested_checks is not None or requested_datasets is not None)
             and not (
@@ -7205,16 +7374,7 @@ def run_warehouse_quality_checks(
                 severity=spec.severity,
             )
         if record:
-            quality_check(
-                store,
-                dataset_id=result.dataset_id,
-                table_name=result.table_name,
-                check_name=result.check_name,
-                status=result.status,
-                observed_value=result.observed_value,
-                threshold_value=result.threshold_value,
-                details=result.details,
-            )
+            _record_quality_result(store, result)
         results.append(result)
 
     # PF2-S1 S1-1: catalog-completeness + PIT-column-presence. Both read the S1-2
@@ -7239,17 +7399,43 @@ def run_warehouse_quality_checks(
         schema_results.append(pit_column_presence_check(store, checked_at=checked_at))
 
     for result in schema_results:
+        resolved_result = _apply_registry_to_result(result, registry)
+        if resolved_result is None:
+            continue
+        result = resolved_result
         if record:
-            quality_check(
-                store,
-                dataset_id=result.dataset_id,
-                table_name=result.table_name,
-                check_name=result.check_name,
-                status=result.status,
-                observed_value=result.observed_value,
-                threshold_value=result.threshold_value,
-                details=result.details,
-            )
+            _record_quality_result(store, result)
         results.append(result)
 
     return results
+
+
+def evaluate_quality_gate(
+    store: DuckDBStore,
+    dataset_id: str,
+    *,
+    daily_macro_stale_days: int = 10,
+    monthly_macro_stale_days: int = 70,
+    valuation_stale_gap_days: int = DEFAULT_VALUATION_STALE_GAP_DAYS,
+    record: bool = True,
+    check_names: Iterable[str] | None = None,
+    additional_results: Iterable[QualityResult] = (),
+) -> GateResult:
+    """Run and summarize the S10 quality gate for one dataset.
+
+    ``additional_results`` lets dynamic observability checks (freshness/anomaly)
+    use the same severity decision path after they have emitted their own
+    ``data_quality_checks`` rows.
+    """
+
+    results = run_warehouse_quality_checks(
+        store,
+        daily_macro_stale_days=daily_macro_stale_days,
+        monthly_macro_stale_days=monthly_macro_stale_days,
+        valuation_stale_gap_days=valuation_stale_gap_days,
+        record=record,
+        check_names=check_names,
+        dataset_ids=(dataset_id,),
+    )
+    results.extend(additional_results)
+    return summarize_quality_gate(dataset_id, results)

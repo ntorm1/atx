@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from .quality import GateDecision, GateResult, evaluate_quality_gate
+
 
 RegistryEntry = type[Any] | tuple[type[Any], Any]
 OptionFactory = Callable[[dict[str, Any]], Any]
@@ -57,6 +59,17 @@ class OrchestratorRunError(RuntimeError):
     """Raised when an orchestrator step exhausts its retry policy."""
 
 
+class QualityGateError(OrchestratorRunError):
+    """Raised when an opt-in critical quality gate halts a dataset step."""
+
+    def __init__(self, dataset_id: str, gate_result: GateResult) -> None:
+        self.dataset_id = dataset_id
+        self.gate_result = gate_result
+        checks = ", ".join(result.check_name for result in gate_result.failed_results[:5])
+        suffix = f": {checks}" if checks else ""
+        super().__init__(f"Quality gate halted dataset {dataset_id!r}{suffix}")
+
+
 @dataclass(frozen=True)
 class DatasetDAG:
     dependencies: dict[str, tuple[str, ...]]
@@ -87,6 +100,28 @@ class OrchestratorResult:
     run_id: str
     status: str
     dataset_order: tuple[str, ...]
+
+
+def _quality_gate_details(gate_result: GateResult | None) -> dict[str, Any] | None:
+    if gate_result is None:
+        return None
+    return {
+        "dataset_id": gate_result.dataset_id,
+        "decision": gate_result.decision,
+        "worst_severity": gate_result.worst_severity,
+        "result_count": gate_result.result_count,
+        "failed_count": gate_result.failed_count,
+        "failed_checks": [
+            {
+                "check_name": result.check_name,
+                "status": result.status,
+                "severity": result.severity,
+                "observed_value": result.observed_value,
+                "threshold_value": result.threshold_value,
+            }
+            for result in gate_result.failed_results
+        ],
+    }
 
 
 def _dataset_class(entry: RegistryEntry) -> type[Any]:
@@ -397,6 +432,7 @@ class DatasetOrchestrator:
         params: Mapping[str, Any] | None = None,
         git_sha: str | None = None,
         full_rebuild: bool = False,
+        gate: bool = False,
     ) -> OrchestratorResult:
         self._initialize_store()
         manifest = create_run_manifest(
@@ -413,6 +449,7 @@ class DatasetOrchestrator:
             params=dict(params or {}),
             full_rebuild=full_rebuild,
             resume=False,
+            gate=gate,
         )
 
     def resume(
@@ -421,6 +458,7 @@ class DatasetOrchestrator:
         *,
         params: Mapping[str, Any] | None = None,
         full_rebuild: bool = False,
+        gate: bool = False,
     ) -> OrchestratorResult:
         self._initialize_store()
         steps = self._step_statuses(run_id)
@@ -453,6 +491,7 @@ class DatasetOrchestrator:
                     if steps.get(dataset_id) in {"pending", "failed", "running"}
                 ],
                 "full_rebuild": full_rebuild,
+                "gate": gate,
             },
             ts=ts,
         )
@@ -461,6 +500,7 @@ class DatasetOrchestrator:
             params=dict(params or {}),
             full_rebuild=full_rebuild,
             resume=True,
+            gate=gate,
         )
 
     def _initialize_store(self) -> None:
@@ -475,8 +515,10 @@ class DatasetOrchestrator:
         params: dict[str, Any],
         full_rebuild: bool,
         resume: bool,
+        gate: bool,
     ) -> OrchestratorResult:
         forced_stale: set[str] = set()
+        partial_due_to_gate = False
         try:
             for dataset_id in self.dag.order:
                 status = self._step_status(run_id, dataset_id)
@@ -502,7 +544,7 @@ class DatasetOrchestrator:
                     self._skip_step(run_id, dataset_id, before_json, before)
                     continue
 
-                self._run_step(
+                gate_decision = self._run_step(
                     run_id,
                     dataset_id,
                     base_params=params,
@@ -510,8 +552,23 @@ class DatasetOrchestrator:
                     watermark_before_json=before_json,
                     full_rebuild=full_rebuild,
                     forced_by_upstream=forced,
+                    gate=gate,
                 )
+                if gate_decision == "partial":
+                    partial_due_to_gate = True
                 forced_stale.update(self.dag.children_of(dataset_id))
+        except QualityGateError as exc:
+            self._finish_run(run_id, "failed", error_message=str(exc))
+            record_audit(
+                self.store,
+                run_id=run_id,
+                dataset_id=None,
+                actor=self.actor,
+                action="run_quality_gate_halt",
+                details={"error": str(exc), "dataset_id": exc.dataset_id},
+                ts=self.clock(),
+            )
+            raise
         except Exception as exc:
             self._finish_run(
                 run_id,
@@ -529,19 +586,20 @@ class DatasetOrchestrator:
             )
             raise
 
-        self._finish_run(run_id, "succeeded")
+        final_status = "partial" if partial_due_to_gate else "succeeded"
+        self._finish_run(run_id, final_status)
         record_audit(
             self.store,
             run_id=run_id,
             dataset_id=None,
             actor=self.actor,
-            action="run_succeed",
-            details={"dataset_count": len(self.dag.order)},
+            action="run_partial" if partial_due_to_gate else "run_succeed",
+            details={"dataset_count": len(self.dag.order), "gate": gate},
             ts=self.clock(),
         )
         return OrchestratorResult(
             run_id=run_id,
-            status="succeeded",
+            status=final_status,
             dataset_order=self.dag.order,
         )
 
@@ -675,7 +733,8 @@ class DatasetOrchestrator:
         watermark_before_json: str,
         full_rebuild: bool,
         forced_by_upstream: bool,
-    ) -> None:
+        gate: bool,
+    ) -> GateDecision:
         retry_policy = self._retry_policy(dataset_id)
         max_attempts = retry_policy.max_retries + 1
         params = self._params_for_step(
@@ -762,6 +821,63 @@ class DatasetOrchestrator:
             self._refresh_watermarks()
             after = self._watermark_snapshot(dataset_id)
             after_json = _json_dumps(after)
+            gate_result: GateResult | None = None
+            gate_decision: GateDecision = "pass"
+            if gate:
+                gate_result = evaluate_quality_gate(self.store, dataset_id)
+                gate_decision = gate_result.decision
+                if gate_decision == "halt":
+                    failed_at = self.clock()
+                    error_message = str(QualityGateError(dataset_id, gate_result))
+                    self.store.con.execute(
+                        """
+                        UPDATE etl_job_steps
+                        SET status = 'failed',
+                            finished_at = ?,
+                            watermark_before = ?,
+                            watermark_after = ?,
+                            error = ?
+                        WHERE run_id = ? AND dataset_id = ?
+                        """,
+                        [
+                            failed_at,
+                            watermark_before_json,
+                            after_json,
+                            error_message,
+                            run_id,
+                            dataset_id,
+                        ],
+                    )
+                    record_audit(
+                        self.store,
+                        run_id=run_id,
+                        dataset_id=dataset_id,
+                        actor=self.actor,
+                        action="step_quality_gate_halt",
+                        details=_quality_gate_details(gate_result),
+                        ts=failed_at,
+                    )
+                    raise QualityGateError(dataset_id, gate_result)
+                if gate_decision == "partial":
+                    record_audit(
+                        self.store,
+                        run_id=run_id,
+                        dataset_id=dataset_id,
+                        actor=self.actor,
+                        action="step_quality_gate_degrade",
+                        details=_quality_gate_details(gate_result),
+                        ts=self.clock(),
+                    )
+                elif gate_result.failed_count:
+                    record_audit(
+                        self.store,
+                        run_id=run_id,
+                        dataset_id=dataset_id,
+                        actor=self.actor,
+                        action="step_quality_gate_warn",
+                        details=_quality_gate_details(gate_result),
+                        ts=self.clock(),
+                    )
             finished_at = self.clock()
             self.store.con.execute(
                 """
@@ -794,10 +910,11 @@ class DatasetOrchestrator:
                     "rows": int(getattr(result, "rows_loaded", 0) or 0),
                     "watermark_before": dict(watermark_before),
                     "watermark_after": after,
+                    "quality_gate": _quality_gate_details(gate_result) if gate_result else None,
                 },
                 ts=finished_at,
             )
-            return
+            return gate_decision
 
         raise OrchestratorRunError(error_message or f"Dataset {dataset_id!r} failed")
 

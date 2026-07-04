@@ -213,6 +213,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             table_name VARCHAR NOT NULL,
             check_name VARCHAR NOT NULL,
             status VARCHAR NOT NULL,
+            severity VARCHAR NOT NULL DEFAULT 'error',
             observed_value DOUBLE,
             threshold_value DOUBLE,
             details_json VARCHAR,
