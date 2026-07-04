@@ -227,7 +227,14 @@ def test_real_seed_has_no_duplicate_concept_to_item_mappings(tmp_store):
     from db.quality import run_warehouse_quality_checks
 
     seed_fundamental_item_registry(tmp_store)
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("duplicate_fundamental_item_alias_item_mappings",),
+        )
+    }
 
     result = results["duplicate_fundamental_item_alias_item_mappings"]
     assert result.status == "passed"
@@ -248,7 +255,14 @@ def test_duplicate_concept_to_item_mapping_quality_check_fails(tmp_store):
         """
     )
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("duplicate_fundamental_item_alias_item_mappings",),
+        )
+    }
     result = results["duplicate_fundamental_item_alias_item_mappings"]
 
     assert result.status == "failed"
@@ -272,7 +286,14 @@ def test_unmapped_fact_concepts_quality_check_warns_with_details(tmp_store):
     _insert_raw_point(tmp_store, metric="UnmappedRawConcept")
     _fundamental_fact_item_links(tmp_store.con)
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("unmapped_fundamental_fact_concepts",),
+        )
+    }
     result = results["unmapped_fundamental_fact_concepts"]
     detail_pairs = {
         (row["fact_table"], row["taxonomy"], row["concept"])

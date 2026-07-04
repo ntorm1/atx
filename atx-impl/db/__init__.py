@@ -266,7 +266,30 @@ from .pricing_bulk import BulkBarsDataset, BulkBarsOptions
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
-from .migrations import MIGRATIONS, Migration, apply_pending_migrations
+from .migrations import (
+    MIGRATIONS,
+    Migration,
+    acquire_apply_lock,
+    apply_pending_migrations,
+    release_apply_lock,
+    verify_migration_checksums,
+)
+from .migration_admin import (
+    BackupArtifact,
+    GovernedMigrationResult,
+    RetentionResult,
+    SchemaVerificationError,
+    backup_database,
+    checkpoint,
+    complete_backup_record,
+    enforce_backup_retention,
+    prune_backups,
+    recover_from_wal_failure,
+    record_backup,
+    restore_database,
+    run_governed_migrations,
+    verify_schema,
+)
 from .estimates import (
     EstimateMeasureSeedDataset,
     EstimateMeasureSeedOptions,
@@ -464,7 +487,24 @@ __all__ = [
     "JobManager",
     "MIGRATIONS",
     "Migration",
+    "acquire_apply_lock",
     "apply_pending_migrations",
+    "BackupArtifact",
+    "backup_database",
+    "checkpoint",
+    "complete_backup_record",
+    "enforce_backup_retention",
+    "GovernedMigrationResult",
+    "prune_backups",
+    "recover_from_wal_failure",
+    "record_backup",
+    "release_apply_lock",
+    "restore_database",
+    "RetentionResult",
+    "run_governed_migrations",
+    "SchemaVerificationError",
+    "verify_schema",
+    "verify_migration_checksums",
     "LakeValidationProblem",
     "LakeValidationSummary",
     "ListingStatusIntervalDataset",

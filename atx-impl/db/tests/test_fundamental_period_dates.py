@@ -186,7 +186,11 @@ def test_fundamental_period_date_quality_passes_clean_sample(tmp_store):
     _insert_item_202_8k(tmp_store)
     refresh_fundamental_periods(tmp_store)
 
-    results = run_warehouse_quality_checks(tmp_store, record=False)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("bad_fundamental_period_rows",),
+    )
     bad_period_results = [
         result for result in results if result.check_name == "bad_fundamental_period_rows"
     ]

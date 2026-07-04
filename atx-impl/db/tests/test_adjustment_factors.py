@@ -345,7 +345,11 @@ def test_adjustment_factor_quality_checks_and_watermarks_pass_clean_sample(tmp_s
 
     target_results = [
         result
-        for result in run_warehouse_quality_checks(tmp_store, record=False)
+        for result in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            dataset_ids=("adjustment_factor_history",),
+        )
         if result.dataset_id == "adjustment_factor_history"
     ]
     assert {result.check_name for result in target_results} == {

@@ -98,7 +98,11 @@ def test_collapse_identifier_history_open_duplicates_clears_overlaps(tmp_store):
     ).fetchall()
     assert kept == [("CIK", dt.date(2026, 2, 1)), ("TICKER", dt.date(2026, 2, 1))]
 
-    results = run_warehouse_quality_checks(tmp_store, record=False)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("identifier_same_source_self_overlaps", "duplicate_identifier_history_keys"),
+    )
     by_name = {getattr(r, "check_name", None): r for r in results}
     for name in ("identifier_same_source_self_overlaps", "duplicate_identifier_history_keys"):
         r = by_name[name]

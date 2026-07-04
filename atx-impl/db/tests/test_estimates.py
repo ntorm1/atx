@@ -943,7 +943,15 @@ class TestInjectableLoaders:
         assert len(before) == 0
         assert len(after) == 2
 
-        quality = run_warehouse_quality_checks(tmp_store, record=False)
+        quality = run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=(
+                "est_guidance_missing_available_at",
+                "est_guidance_duplicate_id",
+                "est_guidance_invalid_values",
+            ),
+        )
         for check_name in (
             "est_guidance_missing_available_at",
             "est_guidance_duplicate_id",
@@ -1549,7 +1557,11 @@ class TestQualityChecks:
                     '2022-06-30', 1.00, '2022-06-30', now(), 'test', 'acc-bad')
             """
         )
-        results = run_warehouse_quality_checks(tmp_store, record=False)
+        results = run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("est_actual_invalid_fiscal_period",),
+        )
         check = next(
             (r for r in results if r.check_name == "est_actual_invalid_fiscal_period"), None
         )
@@ -1569,7 +1581,11 @@ class TestQualityChecks:
                     '2022-12-31', NULL, '2022-12-31', now(), 'test', 'acc-null')
             """
         )
-        results = run_warehouse_quality_checks(tmp_store, record=False)
+        results = run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("est_actual_null_value",),
+        )
         check = next(
             (r for r in results if r.check_name == "est_actual_null_value"), None
         )
@@ -1597,7 +1613,11 @@ class TestQualityChecks:
                 """,
                 [fp, pe, val, pe, acc],
             )
-        results = run_warehouse_quality_checks(tmp_store, record=False)
+        results = run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("est_actual_invalid_fiscal_period", "est_actual_null_value"),
+        )
         fp_check = next(
             (r for r in results if r.check_name == "est_actual_invalid_fiscal_period"), None
         )

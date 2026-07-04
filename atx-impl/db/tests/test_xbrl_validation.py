@@ -671,7 +671,11 @@ def test_xbrl_validation_quality_surfaces_failures(tmp_store):
     _seed_validation_fixture(tmp_store, parent_value=950.0)
     refresh_xbrl_validation_results(tmp_store)
 
-    results = run_warehouse_quality_checks(tmp_store, record=False)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("failed_xbrl_calculation_linkbase_checks",),
+    )
     failures = [
         result
         for result in results
@@ -755,7 +759,17 @@ def test_xbrl_quality_checks_use_genuine_error_residual(tmp_store):
     _seed_dimensional_fixture(tmp_store)
     refresh_xbrl_validation_results(tmp_store)
 
-    results = {result.check_name: result for result in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        result.check_name: result
+        for result in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=(
+                "failed_xbrl_calculation_linkbase_checks",
+                "bad_xbrl_validation_result_rows",
+            ),
+        )
+    }
 
     assert results["failed_xbrl_calculation_linkbase_checks"].status == "failed"
     assert results["failed_xbrl_calculation_linkbase_checks"].observed_value == 1.0

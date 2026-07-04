@@ -267,7 +267,10 @@ def test_insider_quality_checks_pass_clean_sample(tmp_store, tmp_path):
     _load_blockholder_sample(tmp_store, tmp_path)
     from db.quality import run_warehouse_quality_checks
 
-    results = run_warehouse_quality_checks(tmp_store)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        dataset_ids=("sec_insider_ownership", "sec_blockholder_ownership"),
+    )
     s3_results = [
         result
         for result in results

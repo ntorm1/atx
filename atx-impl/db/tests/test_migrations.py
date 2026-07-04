@@ -4,40 +4,15 @@ from __future__ import annotations
 
 
 def test_migrations_recorded_after_bootstrap(tmp_store):
-    """After bootstrap, schema_migrations should contain versions 1, 2, and 3."""
+    """After bootstrap, schema_migrations records every registered migration."""
+    from db.migrations import MIGRATIONS
+
     rows = tmp_store.con.execute(
         "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$' ORDER BY 1"
     ).fetchall()
     versions = [row[0] for row in rows]
-    assert 1 in versions, f"Migration 0001 not recorded; found: {versions}"
-    assert 2 in versions, f"Migration 0002 not recorded; found: {versions}"
-    assert 3 in versions, f"Migration 0003 not recorded; found: {versions}"
-    assert 10 in versions, f"Migration 0010 not recorded; found: {versions}"
-    assert 11 in versions, f"Migration 0011 not recorded; found: {versions}"
-    assert 12 in versions, f"Migration 0012 not recorded; found: {versions}"
-    assert 13 in versions, f"Migration 0013 not recorded; found: {versions}"
-    assert 14 in versions, f"Migration 0014 not recorded; found: {versions}"
-    assert 15 in versions, f"Migration 0015 not recorded; found: {versions}"
-    assert 16 in versions, f"Migration 0016 not recorded; found: {versions}"
-    assert 17 in versions, f"Migration 0017 not recorded; found: {versions}"
-    assert 18 in versions, f"Migration 0018 not recorded; found: {versions}"
-    assert 19 in versions, f"Migration 0019 not recorded; found: {versions}"
-    assert 20 in versions, f"Migration 0020 not recorded; found: {versions}"
-    assert 21 in versions, f"Migration 0021 not recorded; found: {versions}"
-    assert 22 in versions, f"Migration 0022 not recorded; found: {versions}"
-    assert 23 in versions, f"Migration 0023 not recorded; found: {versions}"
-    assert 24 in versions, f"Migration 0024 not recorded; found: {versions}"
-    assert 25 in versions, f"Migration 0025 not recorded; found: {versions}"
-    assert 26 in versions, f"Migration 0026 not recorded; found: {versions}"
-    assert 27 in versions, f"Migration 0027 not recorded; found: {versions}"
-    assert 28 in versions, f"Migration 0028 not recorded; found: {versions}"
-    assert 46 in versions, f"Migration 0046 not recorded; found: {versions}"
-    assert 47 in versions, f"Migration 0047 not recorded; found: {versions}"
-    assert 48 in versions, f"Migration 0048 not recorded; found: {versions}"
-    assert 49 in versions, f"Migration 0049 not recorded; found: {versions}"
-    assert 50 in versions, f"Migration 0050 not recorded; found: {versions}"
-    assert 51 in versions, f"Migration 0051 not recorded; found: {versions}"
-    assert 52 in versions, f"Migration 0052 not recorded; found: {versions}"
+    expected = [migration.version for migration in MIGRATIONS]
+    assert versions == expected
 
 
 def test_apply_pending_idempotent(tmp_store):

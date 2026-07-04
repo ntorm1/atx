@@ -576,7 +576,11 @@ def test_quality_check_concept_coverage_passes(tmp_store):
     from db.quality import run_warehouse_quality_checks
 
     seed_fundamental_statement_map(tmp_store)
-    results = run_warehouse_quality_checks(tmp_store, record=False)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("fundamental_statement_map_concept_coverage",),
+    )
     coverage_results = [
         r for r in results if r.check_name == "fundamental_statement_map_concept_coverage"
     ]

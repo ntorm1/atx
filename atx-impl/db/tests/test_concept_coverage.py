@@ -205,7 +205,14 @@ def test_s3_1_fetch_set_has_zero_loaded_concepts_without_statement_map(tmp_store
     for taxonomy, concept in sorted({(row[0], row[1]) for row in _read_concept_map_seed()}):
         _insert_concept_catalog(tmp_store, taxonomy, concept)
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("loaded_xbrl_concepts_without_statement_map",),
+        )
+    }
     unmapped = results["loaded_xbrl_concepts_without_statement_map"]
     assert unmapped.status == "passed"
     assert unmapped.observed_value == 0.0
@@ -362,7 +369,14 @@ def test_s3_3_unmapped_report_and_quality_gate_detect_future_gaps(tmp_store):
     _insert_item(tmp_store, 1001, "revenue", "income")
     _insert_concept_catalog(tmp_store, "us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax")
 
-    clean = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    clean = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("fundamental_unmapped_concept_report_empty",),
+        )
+    }
     assert clean["fundamental_unmapped_concept_report_empty"].status == "passed"
 
     _insert_item(tmp_store, 1999, "future_gap", "income")
@@ -390,7 +404,14 @@ def test_s3_3_unmapped_report_and_quality_gate_detect_future_gaps(tmp_store):
         "future_gap",
     ) in rows
 
-    failed = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    failed = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("fundamental_unmapped_concept_report_empty",),
+        )
+    }
     gate = failed["fundamental_unmapped_concept_report_empty"]
     assert gate.status == "failed"
     assert gate.observed_value == 2.0
@@ -420,7 +441,14 @@ def test_s3_3_overlay_allowlist_is_excluded_from_unmapped_gate(tmp_store):
         "SELECT count(*) FROM fundamental_unmapped_concept_report"
     ).fetchone()[0] == 0
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("fundamental_unmapped_concept_report_empty",),
+        )
+    }
     assert results["fundamental_unmapped_concept_report_empty"].status == "passed"
 
 
@@ -443,7 +471,14 @@ def test_s3_3_universe_gap_report_and_quality_check(tmp_store):
     ).fetchone()
     assert row == (2, 1, 0, True)
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("xbrl_metric_covers_fundamental_ratio_universe",),
+        )
+    }
     assert results["xbrl_metric_covers_fundamental_ratio_universe"].status == "passed"
 
     _insert_ratio(tmp_store, "SEC-3")
@@ -460,7 +495,14 @@ def test_s3_3_universe_gap_report_and_quality_check(tmp_store):
     ).fetchone()
     assert gap == (2, 2, 1, False, "SEC-3")
 
-    failed = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    failed = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("xbrl_metric_covers_fundamental_ratio_universe",),
+        )
+    }
     universe = failed["xbrl_metric_covers_fundamental_ratio_universe"]
     assert universe.status == "failed"
     assert universe.observed_value == 1.0

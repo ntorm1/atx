@@ -66,7 +66,7 @@ class DuckDBStore:
         whole rebuild. Any schema change must bump a migration version (S0 discipline),
         so a stale warehouse falls through to the full idempotent path below.
         """
-        from .migrations import MIGRATIONS
+        from .migrations import MIGRATIONS, verify_migration_checksums
 
         if not MIGRATIONS:
             return False
@@ -78,7 +78,10 @@ class DuckDBStore:
             ).fetchone()
         except Exception:
             return False  # schema_migrations absent -> fresh/legacy db, full init needed
-        return row is not None and row[0] is not None and int(row[0]) >= target
+        if row is not None and row[0] is not None and int(row[0]) >= target:
+            verify_migration_checksums(con)
+            return True
+        return False
 
     def initialize(self) -> None:
         if self._initialized:

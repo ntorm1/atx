@@ -43,7 +43,14 @@ def test_overlay_statement_map_rows_are_not_flagged_bad(tmp_store):
     """
     from db.quality import run_warehouse_quality_checks
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("bad_fundamental_statement_map_rows",),
+        )
+    }
     bad = results["bad_fundamental_statement_map_rows"]
     assert bad.status == "passed", f"observed bad rows = {bad.observed_value}"
 
@@ -73,13 +80,27 @@ def test_price_feed_ticker_overlaps_are_not_flagged(tmp_store):
     # Two price-feed securities sharing ticker ET over overlapping windows: allowed.
     _listing("TBLTICKERHISTORY-1-ET", "ET", "tbltickerhistory3_10y")
     _listing("TBLTICKERHISTORY-2-ET", "ET", "tbltickerhistory3_10y")
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("listing_multi_security_overlaps",),
+        )
+    }
     assert results["listing_multi_security_overlaps"].status == "passed"
 
     # Same overlap on reference-master securities is still a failure.
     _listing("SEC-CIK-0000000001", "ZZZ", "sec_reference")
     _listing("SEC-CIK-0000000002", "ZZZ", "sec_reference")
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("listing_multi_security_overlaps",),
+        )
+    }
     assert results["listing_multi_security_overlaps"].status == "failed"
 
 
@@ -111,7 +132,14 @@ def test_entity_id_multi_security_overlap_allowed_but_security_identifier_overla
         """
     )
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("identifier_multi_security_overlaps",),
+        )
+    }
     entity_overlap = results["identifier_multi_security_overlaps"]
     assert entity_overlap.status == "passed"
     assert entity_overlap.observed_value == 0.0
@@ -128,7 +156,14 @@ def test_entity_id_multi_security_overlap_allowed_but_security_identifier_overla
         """
     )
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("identifier_multi_security_overlaps",),
+        )
+    }
     cik_overlap = results["identifier_multi_security_overlaps"]
     assert cik_overlap.status == "failed"
     assert cik_overlap.observed_value == 1.0
@@ -138,6 +173,10 @@ def test_quality_checks_record_to_db(tmp_store):
     """With record=True, run_warehouse_quality_checks writes rows to data_quality_checks."""
     from db.quality import run_warehouse_quality_checks
 
-    run_warehouse_quality_checks(tmp_store, record=True)
+    run_warehouse_quality_checks(
+        tmp_store,
+        record=True,
+        check_names=("duplicate_equity_daily_bars",),
+    )
     count = tmp_store.con.execute("SELECT count(*) FROM data_quality_checks").fetchone()[0]
     assert count > 0, "data_quality_checks should have rows after record=True run"

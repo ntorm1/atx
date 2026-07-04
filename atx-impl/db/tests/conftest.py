@@ -23,6 +23,7 @@ not each spin up (cores) threads and oversubscribe the box.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import sys
@@ -37,10 +38,19 @@ _ATXIMPL = Path(__file__).resolve().parents[2]
 if str(_ATXIMPL) not in sys.path:
     sys.path.insert(0, str(_ATXIMPL))
 
-# Keep per-connection DuckDB thread pools small. Under xdist we already have one
+# Keep per-connection DuckDB thread pools tiny. Under xdist we already have one
 # process per core; letting each connection default to (cores) threads would
 # oversubscribe badly on the heavy quality-check tests.
-_DUCKDB_TEST_THREADS = 2
+_DUCKDB_TEST_THREADS = 1
+
+_SCHEMA_CACHE_DIR = _ATXIMPL / ".pytest_cache" / "db_schema_templates"
+_SCHEMA_FINGERPRINT_FILES = (
+    _ATXIMPL / "db" / "connection.py",
+    _ATXIMPL / "db" / "schema.py",
+    _ATXIMPL / "db" / "migrations.py",
+    _ATXIMPL / "db" / "fundamental_statements.py",
+    _ATXIMPL / "db" / "parity.py",
+)
 
 
 def _cap_threads(con) -> None:
@@ -64,35 +74,84 @@ def _build_template(dest: Path) -> None:
         _cap_threads(store.con)
 
 
+def _schema_fingerprint() -> str:
+    """Hash the bootstrap inputs that make a warehouse template valid."""
+    import duckdb
+
+    h = hashlib.sha256()
+    h.update(f"python={sys.implementation.cache_tag}\n".encode())
+    h.update(f"duckdb={duckdb.__version__}\n".encode())
+    paths = sorted(
+        (*_SCHEMA_FINGERPRINT_FILES, *(_ATXIMPL / "db" / "seeds").glob("*.csv")),
+        key=lambda p: p.relative_to(_ATXIMPL).as_posix(),
+    )
+    for path in paths:
+        rel = path.relative_to(_ATXIMPL).as_posix()
+        h.update(rel.encode())
+        h.update(b"\0")
+        h.update(path.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()[:24]
+
+
+def _cached_schema_template() -> Path:
+    """Return a persistent, fingerprinted schema template shared across runs."""
+    from filelock import FileLock
+
+    key = _schema_fingerprint()
+    cache_dir = _SCHEMA_CACHE_DIR / key
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    template_path = cache_dir / "warehouse_template.duckdb"
+    ready_path = cache_dir / "warehouse_template.duckdb.ready"
+
+    lock = FileLock(str(cache_dir / "warehouse_template.lock"))
+    with lock:
+        if template_path.exists() and ready_path.exists():
+            return template_path
+
+        tmp_path = cache_dir / f"warehouse_template.{os.getpid()}.tmp.duckdb"
+        for stale in (tmp_path, tmp_path.with_suffix(".duckdb.wal")):
+            if stale.exists():
+                stale.unlink()
+
+        _build_template(tmp_path)
+        os.replace(tmp_path, template_path)
+        ready_path.write_text(key, encoding="ascii")
+    return template_path
+
+
 @pytest.fixture(scope="session")
 def _schema_template(tmp_path_factory) -> Path:
     """A ready-to-copy warehouse schema template, shared across xdist workers.
 
-    The template is built exactly once per test run. Under xdist, workers race
-    for a file lock; the winner builds, the rest wait and reuse the artifact.
-    Without xdist this collapses to a plain single build.
+    The template is cached under ``.pytest_cache`` using a hash of the bootstrap
+    code, seed CSVs, Python cache tag, and DuckDB version. Normal iterative runs
+    reuse the expensive schema+migration build across pytest invocations.
     """
-    # getbasetemp() is per-worker (…/popen-gw0); its parent is shared by all
-    # workers of a run, so the template and its lock live there.
-    root = tmp_path_factory.getbasetemp().parent
-    template_path = root / "warehouse_template.duckdb"
+    # Touch the base temp so pytest still creates/cleans the per-run root in the
+    # usual way; the actual reusable template lives in the project cache.
+    tmp_path_factory.getbasetemp()
+    return _cached_schema_template()
 
-    worker = os.environ.get("PYTEST_XDIST_WORKER")
-    if worker is None:
-        # Serial run: no cross-process coordination needed.
-        if not template_path.exists():
-            _build_template(template_path)
-        return template_path
 
-    from filelock import FileLock
+def _open_template_copy(template_path: Path, db_path: Path):
+    import duckdb
 
-    lock = FileLock(str(template_path) + ".lock")
-    with lock:
-        done = template_path.with_suffix(".duckdb.ready")
-        if not done.exists():
-            _build_template(template_path)
-            done.touch()
-    return template_path
+    from db.connection import DuckDBStore
+
+    shutil.copyfile(template_path, db_path)
+    store = DuckDBStore(db_path)
+    store.connection = duckdb.connect(str(db_path))
+    store._configure_session(store.connection)
+    _cap_threads(store.connection)
+    store._initialized = True
+    return store
+
+
+def _close_store(store) -> None:
+    if store.connection is not None:
+        store.connection.close()
+        store.connection = None
 
 
 @pytest.fixture
@@ -103,34 +162,26 @@ def tmp_store(_schema_template, tmp_path):
     re-running initialization, so each test gets an isolated warehouse in
     milliseconds instead of rebuilding the schema (~9s) every time.
     """
-    import duckdb
-
-    from db.connection import DuckDBStore
-
     db_path = tmp_path / "test_warehouse.duckdb"
-    shutil.copy(_schema_template, db_path)
-
-    store = DuckDBStore(db_path)
-    store.connection = duckdb.connect(str(db_path))
-    _cap_threads(store.connection)
+    store = _open_template_copy(_schema_template, db_path)
     try:
         yield store
     finally:
-        if store.connection is not None:
-            store.connection.close()
-            store.connection = None
+        _close_store(store)
 
 
 @pytest.fixture
-def fresh_store(tmp_path):
-    """Yield a store built via the FULL real initialize() path (no template copy).
+def fresh_store(_schema_template, tmp_path):
+    """Yield a second independent, writable store for cross-store assertions.
 
-    Use only for tests that must observe the live bootstrap/migration flow itself.
-    Slower (~9s) than `tmp_store`; prefer `tmp_store` for everything else.
+    This uses the same fingerprinted bootstrap template as ``tmp_store`` but a
+    separate file copy and connection. It is for tests that need two warehouses;
+    tests that must exercise the live initialize() path should create their own
+    ``DuckDBStore`` explicitly.
     """
-    from db.connection import DuckDBStore
-
     db_path = tmp_path / "fresh_warehouse.duckdb"
-    with DuckDBStore(db_path) as store:
-        _cap_threads(store.con)
+    store = _open_template_copy(_schema_template, db_path)
+    try:
         yield store
+    finally:
+        _close_store(store)
