@@ -3,10 +3,9 @@
 Updated: 2026-07-04, America/New_York
 Branch: `feat/warehouse-parity`
 
-PF2 is in progress. PF2-S1 (schema-as-contract) is **complete and merged** into
-`feat/warehouse-parity` as merge commit `1776fb0`. PF2-S2 is implemented and
-committed in `C:/atx-wt/pf2-s2` as `ceec446f2db24aee3bc721ebc136692c98a7b86f`,
-awaiting merge.
+PF2 is in progress. PF2-S1 and PF2-S2 are complete and merged into local `main` /
+`feat/warehouse-parity`. PF2-S3 is implemented in `C:/atx-wt/pf2-s3` on branch
+`feat/pf2-s3` as `8a78117f5f35d1445a6e8aaf83c1a7c6ebf7a263`, awaiting merge.
 
 ## Completed
 
@@ -32,6 +31,25 @@ awaiting merge.
   schema version `0101`; full `python -m pytest db/tests -q -n0` passed.
 - S2 live DB smoke: OPERATOR-PENDING. No live 14 GB migration/apply/restore was run from the
   worktree.
+- PF2-S3: standardization engine implemented on branch `feat/pf2-s3` as
+  `8a78117f5f35d1445a6e8aaf83c1a7c6ebf7a263`. Migrations consumed: `0103-0106`
+  (`0102` remains reserved headroom).
+- S3 implemented surfaces: `db/standardization.py`, generated
+  `db/seeds/standardization_rules.csv` with 300 rules (126 annual, 126 ttm, 48 instant),
+  `fundamental_standardized`, `fundamental_standardization_exception`,
+  `v_fundamental_standardization_coverage`, standardized-first ratio input pivots with raw
+  fallback, and critical quality gates for exception-rate and template coverage.
+- S3 focused verification: `python -m py_compile db/standardization.py
+  db/fundamental_ratios.py db/quality.py db/migrations.py db/__init__.py`;
+  `python -m pytest db/tests/test_standardization.py -q -n0`;
+  `python -m pytest db/tests/test_fundamental_ratios.py -q -n0`;
+  `python -m pytest db/tests/test_migrations.py -q -n0`;
+  `python -m pytest db/tests/test_migration_governance.py -q -n0`;
+  `python -m pytest db/tests/test_schema_contract.py db/tests/test_schema_contract_quality_checks.py -q -n0`;
+  `python -m pytest db/tests/test_quality_smoke.py -q -n0`.
+- S3 full verification: `python -m pytest db/tests -q -n0` passed in `C:/atx-wt/pf2-s3`.
+- S3 live DB smoke: OPERATOR-PENDING. No live standardization rebuild/proof-slice was run from the
+  worktree.
 
 ## Known S1 Caveats
 
@@ -40,10 +58,14 @@ awaiting merge.
 - PF2-S2 owns checksum enforcement, migration apply-lock, backup/checkpoint/restore governance.
   The code path is implemented; operator live-DB proof remains pending.
 - PF2-S10 still owns orchestrator halt-on-critical behavior.
+- PF2-S4 still owns ratio vintage math (`as_first_reported` vs restated); S3 only changes the
+  input surface and preserves the existing ratio compute path.
+- S3 proof-slice row counts, coverage %, exception count, and run_id remain OPERATOR-PENDING
+  until a live standardized rebuild is approved.
 
 ## Resume Point
 
-1. Merge `feat/pf2-s2` into local `main`/`feat/warehouse-parity`, and remove or retire the
+1. Merge `feat/pf2-s3` into local `main`/`feat/warehouse-parity`, and remove or retire the
    worktree after merge.
 2. Follow ROADMAP sequencing: S1 -> S2 -> S3 -> S4 -> (S5 -> S6 || S7 || S8) -> S9 -> S10.
    One worktree per sprint; never run two sprints sharing `fundamental_ratios.py` /

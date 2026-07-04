@@ -8016,6 +8016,376 @@ def _migration_governance_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _fundamental_standardized_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S3 S3-0: standardized comparable fundamental item fact."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_standardized (
+            standardized_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            upstream_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            item_id INTEGER NOT NULL,
+            canonical_code VARCHAR NOT NULL,
+            basis VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            value DOUBLE NOT NULL,
+            unit_type VARCHAR,
+            source_accession VARCHAR,
+            filed_date DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            input_codes_json VARCHAR NOT NULL,
+            input_item_ids_json VARCHAR NOT NULL,
+            rule_id VARCHAR NOT NULL,
+            combination_rule VARCHAR NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_standardized',
+            'sec_edgar',
+            'Standardized comparable fundamental items',
+            'Comparable long-format PIT facts produced by db.standardization from declarative standardization_rules.csv, one row per canonical fundamental_item item and reporting basis.',
+            'security_id,item_id,period_end,basis',
+            'fundamental_standardized', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_standardized',
+            'gold',
+            'fundamental_standardized',
+            'security_id,item_id,period_end,basis',
+            'Comparable standardized fundamental item values emitted by a deterministic rule engine over statement, TTM, and XBRL candidate facts.',
+            '["source", "security_id", "item_id", "period_end", "basis", "available_at"]',
+            'Use as_of_date/available_at and is_latest_revision for PIT-safe standardized item reads; available_at is the max availability of the input facts used by the rule.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('standardized_id', 'security_id', 'cik', 'source_accession', 'run_id', 'rule_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'filed_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN lower(c.column_name) IN ('is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'value' THEN 'Standardized comparable item value after the rule combination, sign, and scale dispatch.'
+                WHEN 'item_id' THEN 'Canonical fundamental_item.item_id emitted by the standardization rule.'
+                WHEN 'basis' THEN 'Reporting basis of the standardized item: instant, annual, or ttm.'
+                WHEN 'input_codes_json' THEN 'JSON list of source taxonomy/concept or warehouse metric codes consumed by the rule.'
+                WHEN 'input_item_ids_json' THEN 'JSON list of source item_ids consumed by the rule.'
+                WHEN 'available_at' THEN 'Timestamp when all input facts used by the standardized value were knowable.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on fundamental_standardized.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'filed_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_standardized'
+        """
+    )
+
+
+def _fundamental_standardized_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S3 S3-0: lookup indexes for standardized fundamentals."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_standardized_item ON fundamental_standardized(item_id, basis, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_standardized_security ON fundamental_standardized(security_id, period_end, basis)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_standardized_asof ON fundamental_standardized(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_standardized_latest ON fundamental_standardized(is_latest_revision, basis)",
+    ):
+        conn.execute(statement)
+
+
+def _fundamental_standardization_exception_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S3 S3-1: exception table for unrouted standardization inputs."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_standardization_exception (
+            exception_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            upstream_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            basis VARCHAR,
+            period_start DATE,
+            period_end DATE,
+            accession_number VARCHAR,
+            concept VARCHAR,
+            taxonomy VARCHAR,
+            unit VARCHAR,
+            value DOUBLE,
+            reason VARCHAR NOT NULL,
+            as_of_date DATE,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        "ALTER TABLE fundamental_standardization_exception ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true"
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_std_exception_security ON fundamental_standardization_exception(security_id, period_end, basis)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_std_exception_reason ON fundamental_standardization_exception(reason)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_std_exception_asof ON fundamental_standardization_exception(as_of_date, available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_standardization_exception',
+            'sec_edgar',
+            'Fundamental standardization exceptions',
+            'Every candidate filing tag that could not route to a canonical standardization rule, preserving custom-extension and unmapped-concept evidence instead of silently dropping it.',
+            'security_id,period_end,concept,reason',
+            'fundamental_standardization_exception', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_standardization_exception',
+            'silver',
+            'fundamental_standardization_exception',
+            'security_id,period_end,concept,reason',
+            'Audit table for standardization inputs that did not resolve to an active rule, including unmapped custom XBRL extensions.',
+            '["exception_id"]',
+            'Use available_at and as_of_date to inspect exception visibility without lookahead; exception rates feed the S3 quality gate.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('exception_id', 'security_id', 'cik', 'accession_number', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'concept' THEN 'Raw source concept or metric that failed routing.'
+                WHEN 'reason' THEN 'Closed exception reason, such as unmapped_concept or no_active_standardization_rule.'
+                WHEN 'available_at' THEN 'Timestamp when the failed candidate input was knowable.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on fundamental_standardization_exception.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_standardization_exception'
+        """
+    )
+
+
+def _fundamental_standardization_coverage_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S3 S3-3: coverage view over standardized item population."""
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_standardization_coverage AS
+        WITH template AS (
+            SELECT 'annual' AS basis, 126.0 AS template_item_count
+            UNION ALL SELECT 'ttm' AS basis, 126.0 AS template_item_count
+            UNION ALL SELECT 'instant' AS basis, 48.0 AS template_item_count
+        ),
+        std AS (
+            SELECT
+                source,
+                security_id,
+                any_value(symbol) AS symbol,
+                any_value(cik) AS cik,
+                period_end,
+                basis,
+                max(available_at) AS available_at,
+                count(DISTINCT item_id)::DOUBLE AS populated_item_count,
+                sum(CASE WHEN combination_rule IN ('identity', 'coalesce_priority') THEN 1 ELSE 0 END)::DOUBLE AS direct_or_coalesce_count,
+                sum(CASE WHEN combination_rule = 'sum' THEN 1 ELSE 0 END)::DOUBLE AS sum_count,
+                sum(CASE WHEN combination_rule = 'difference' THEN 1 ELSE 0 END)::DOUBLE AS difference_count,
+                sum(CASE WHEN combination_rule = 'first_non_null' THEN 1 ELSE 0 END)::DOUBLE AS first_non_null_count
+            FROM fundamental_standardized
+            WHERE is_latest_revision
+            GROUP BY source, security_id, period_end, basis
+        ),
+        exc AS (
+            SELECT
+                source,
+                security_id,
+                any_value(symbol) AS symbol,
+                any_value(cik) AS cik,
+                period_end,
+                basis,
+                max(available_at) AS available_at,
+                count(*)::DOUBLE AS exception_count
+            FROM fundamental_standardization_exception
+            GROUP BY source, security_id, period_end, basis
+        ),
+        keys AS (
+            SELECT source, security_id, symbol, cik, period_end, basis FROM std
+            UNION
+            SELECT source, security_id, symbol, cik, period_end, basis FROM exc
+        )
+        SELECT
+            k.source,
+            k.security_id,
+            coalesce(s.symbol, e.symbol, k.symbol) AS symbol,
+            coalesce(s.cik, e.cik, k.cik) AS cik,
+            k.period_end,
+            k.basis,
+            greatest(coalesce(s.available_at, TIMESTAMP '1900-01-01'), coalesce(e.available_at, TIMESTAMP '1900-01-01')) AS available_at,
+            coalesce(s.populated_item_count, 0.0) AS populated_item_count,
+            coalesce(t.template_item_count, 0.0) AS template_item_count,
+            CASE
+                WHEN coalesce(t.template_item_count, 0.0) = 0.0 THEN NULL
+                ELSE coalesce(s.populated_item_count, 0.0) / t.template_item_count
+            END AS coverage_ratio,
+            coalesce(s.direct_or_coalesce_count, 0.0) AS direct_or_coalesce_count,
+            coalesce(s.sum_count, 0.0) AS sum_count,
+            coalesce(s.difference_count, 0.0) AS difference_count,
+            coalesce(s.first_non_null_count, 0.0) AS first_non_null_count,
+            coalesce(e.exception_count, 0.0) AS exception_count
+        FROM keys k
+        LEFT JOIN std s
+          ON s.source = k.source
+         AND s.security_id = k.security_id
+         AND s.period_end = k.period_end
+         AND s.basis = k.basis
+        LEFT JOIN exc e
+          ON e.source = k.source
+         AND e.security_id = k.security_id
+         AND e.period_end = k.period_end
+         AND e.basis = k.basis
+        LEFT JOIN template t ON t.basis = k.basis
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'v_fundamental_standardization_coverage',
+            'gold',
+            'fundamental_standardization_coverage',
+            'security_id,period_end,basis',
+            'Coverage view reporting populated standardized item count versus the canonical template count, plus exception counts by security-period-basis.',
+            '["source", "security_id", "period_end", "basis"]',
+            'Coverage is derived from standardized rows and exception rows using their available_at timestamps; filter by available_at for PIT-safe proof-slice reporting.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('security_id') THEN 'identifier'
+                WHEN lower(c.column_name) = 'period_end' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            replace(c.column_name, '_', ' ') || ' field on v_fundamental_standardization_coverage.' AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) = 'period_end' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%ratio%' THEN 'ratio'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'v_fundamental_standardization_coverage'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -8452,6 +8822,26 @@ MIGRATIONS: list[Migration] = [
         version=101,
         name="migration_governance_indexes",
         up=_migration_governance_indexes,
+    ),
+    Migration(
+        version=103,
+        name="fundamental_standardized_schema_catalog",
+        up=_fundamental_standardized_schema_catalog,
+    ),
+    Migration(
+        version=104,
+        name="fundamental_standardized_indexes",
+        up=_fundamental_standardized_indexes,
+    ),
+    Migration(
+        version=105,
+        name="fundamental_standardization_exception_schema_catalog",
+        up=_fundamental_standardization_exception_schema_catalog,
+    ),
+    Migration(
+        version=106,
+        name="fundamental_standardization_coverage_view",
+        up=_fundamental_standardization_coverage_view,
     ),
 ]
 

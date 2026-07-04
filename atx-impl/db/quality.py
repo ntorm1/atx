@@ -271,6 +271,76 @@ def _check_specs(
     valuation_stale_gap_days = int(valuation_stale_gap_days)
     single_table_checks = (
         SqlQualityCheck(
+            dataset_id="fundamental_standardized",
+            table_name="v_fundamental_standardization_coverage",
+            check_name="fundamental_standardization_exception_rate",
+            sql="""
+                SELECT coalesce(max(
+                    CASE
+                        WHEN populated_item_count + exception_count = 0 THEN 0.0
+                        ELSE exception_count / (populated_item_count + exception_count)
+                    END
+                ), 0.0)::DOUBLE
+                FROM v_fundamental_standardization_coverage
+            """,
+            threshold=0.25,
+            comparator="le",
+            required_tables=(
+                "fundamental_standardized",
+                "fundamental_standardization_exception",
+                "v_fundamental_standardization_coverage",
+            ),
+            detail_sql="""
+                SELECT
+                    source,
+                    security_id,
+                    period_end,
+                    basis,
+                    populated_item_count,
+                    exception_count,
+                    CASE
+                        WHEN populated_item_count + exception_count = 0 THEN 0.0
+                        ELSE exception_count / (populated_item_count + exception_count)
+                    END AS exception_rate
+                FROM v_fundamental_standardization_coverage
+                WHERE populated_item_count + exception_count > 0
+                  AND exception_count / (populated_item_count + exception_count) > 0.25
+                ORDER BY exception_rate DESC, security_id, period_end
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_standardized",
+            table_name="v_fundamental_standardization_coverage",
+            check_name="fundamental_standardization_template_coverage",
+            sql="""
+                SELECT coalesce(min(coverage_ratio), 1.0)::DOUBLE
+                FROM v_fundamental_standardization_coverage
+                WHERE populated_item_count + exception_count > 0
+            """,
+            threshold=0.05,
+            comparator="ge",
+            required_tables=("fundamental_standardized", "v_fundamental_standardization_coverage"),
+            detail_sql="""
+                SELECT
+                    source,
+                    security_id,
+                    period_end,
+                    basis,
+                    populated_item_count,
+                    template_item_count,
+                    coverage_ratio,
+                    exception_count
+                FROM v_fundamental_standardization_coverage
+                WHERE populated_item_count + exception_count > 0
+                  AND coverage_ratio < 0.05
+                ORDER BY coverage_ratio, security_id, period_end
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
             dataset_id="tbltickerhistory_daily",
             table_name="equity_daily_bars",
             check_name="duplicate_equity_daily_bars",
