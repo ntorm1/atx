@@ -1,38 +1,40 @@
-# PF2 Status — Fundamentals Depth + Production Warehouse
+# PF2 Status - Fundamentals Depth + Production Warehouse
 
-Updated: 2026-07-03, America/New_York
+Updated: 2026-07-04, America/New_York
 Branch: `feat/warehouse-parity`
 
-This module is **designed, not started**. It succeeds pf1 (the fundamentals spine) and assumes
-pf1 PF-S1…PF-S8 have landed. Begin with `superpowers:subagent-driven-development`; the controller
-should not write implementation code.
+PF2 is in progress. PF2-S1 (schema-as-contract) is **complete and merged** into
+`feat/warehouse-parity` as merge commit `1776fb0`.
 
-## Predecessor state (pf1)
+## Completed
 
-At pf2 design time, pf1 was in flight: PF-S1 (item dictionary), PF-S2 (orchestrator), PF-S3 (concept
-coverage), PF-S5 (identifier spine), and PF-S4 (formula registry) had landed; **PF-S7 (XBRL validation)
-was in progress, with PF-S6 (valuation multiples) and PF-S8 (restatement lineage) remaining.** pf2 must
-not start until pf1's north-star acceptance is met. If a pf1 deliverable name differs from what a pf2
-sprint references (e.g. `valuation_multiples.py`), reconcile to the landed name.
+- PF2-S1: schema-as-contract complete on branch `feat/pf2-s1`, base `636e82b`.
+  Sprint worktree `C:/atx-wt/pf2-s1` was removed after merge.
+- S1 task commits: `f7a83a2`, `a10c443`, `e17972c`, `a276aba`, `5df7d59`,
+  `a01b045`, `f38d598`; closeout docs commit `1878f0a`.
+- Migrations consumed: `0097-0099`.
+- Offline verification after merge from `C:/atx`: `python -m pytest atx-impl/db/tests -q`
+  passed to 100% in about 225s.
+- Live DB smoke: OPERATOR-PENDING. No live migration/apply/smoke was run from the worktree.
 
-## Not started
+## Known S1 Caveats
 
-- PF2-S1…PF2-S10 are all **pending**. No code, migrations, or tranche rows exist yet.
-- Reserved migration range for the whole module: `0097–0131` (migration head at design time = `0083`;
-  pf1 reserves through `0096`).
+- PIT-column-presence intentionally exposes known live PIT gaps on pre-existing fact tables, mostly
+  missing `is_latest_revision`; ratchet/backfill/exemption belongs to S10 quality gating or future cleanup.
+- PF2-S2 still owns checksum enforcement, migration apply-lock, backup/checkpoint/restore governance.
+  PF2-S1 did not implement those.
+- PF2-S10 still owns orchestrator halt-on-critical behavior.
 
 ## Resume Point
 
-1. Confirm pf1 is complete and green (`python -m pytest atx-impl\db\tests -q`).
-2. Read `atx-impl/plans/pf2/ROADMAP.md` (contract, ownership, sequencing, north star).
-3. Start PF2-S1 (schema-as-contract) — the platform foundation everything else lands on. Spin its
-   worktree with `atx-impl/scripts/new_db_worktree.sh new pf2-s1`; `finish pf2-s1` merges it back into
-   the mainline at sprint end.
-4. Follow ROADMAP sequencing: S1→S2 → S3→S4 → (S5→S6 ‖ S7 ‖ S8) → S9 → S10. One worktree per sprint;
-   never run two sprints sharing `fundamental_ratios.py`/`fundamental_statements.py` in concurrent
-   worktrees.
-5. Track progress in `.superpowers/sdd/progress.md`; append a `WAREHOUSE_PARITY_TRANCHES.md` row per
-   sprint and update `PARITY_GAP.md`.
+1. Start PF2-S2 (migration governance + backup/checkpoint/DR) by creating a `pf2-s2` worktree off
+   `feat/warehouse-parity`.
+2. Read `atx-impl/plans/pf2/ROADMAP.md` and the PF2-S2 sprint plan.
+3. Follow ROADMAP sequencing: S1 -> S2 -> S3 -> S4 -> (S5 -> S6 || S7 || S8) -> S9 -> S10.
+   One worktree per sprint; never run two sprints sharing `fundamental_ratios.py` /
+   `fundamental_statements.py` in concurrent worktrees.
+4. Track progress in `.superpowers/sdd/progress.md`; append/update sprint closeout rows only when the
+   sprint actually lands.
 
 ## Dirty Worktree Notes
 
