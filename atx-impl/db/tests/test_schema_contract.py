@@ -29,6 +29,7 @@ import pytest
 from db.connection import DuckDBStore
 from db.schema_contract import (
     CONTRACT,
+    PIT_COLUMN_NAMES,
     ColumnSpec,
     DriftRow,
     build_contract_manifest,
@@ -636,6 +637,85 @@ class TestBuildContractManifestDeclaredInAttribution:
         assert specs["security_id"].declared_in == "schema_py"
         assert specs["as_of_date"].declared_in == "schema_py"
         assert specs["source_loaded_at"].declared_in == "schema_py"
+
+    def test_fstring_helper_created_table_base_columns_are_migration(self, tmp_store):
+        # fundamental_statement_map is created by BOTH schema.py (direct CREATE) AND a
+        # migration -- but the migration creates it via an f-string-templated helper
+        # (_create_fundamental_statement_map_table(conn, "fundamental_statement_map"),
+        # `CREATE TABLE IF NOT EXISTS {table_name}`) that the literal CREATE-TABLE regex
+        # cannot see. _MIGRATION_HELPER_TABLE_RE catches the helper call site so this
+        # genuine overlap table is attributed migration (migration wins), including its
+        # BASE columns (source, taxonomy, concept, ...), not just its 4 ALTER-added ones.
+        manifest = build_contract_manifest(tmp_store.con)
+        specs = {spec.name: spec for spec in manifest["fundamental_statement_map"]}
+        for base_col in ("source", "taxonomy", "concept", "statement_type", "canonical_metric"):
+            assert specs[base_col].declared_in == "migration", base_col
+        # And the ALTER-added ones remain migration too.
+        for added_col in ("item_id", "industry_template", "is_derived", "derivation_expr"):
+            assert specs[added_col].declared_in == "migration", added_col
+
+    def test_fstring_helper_scratch_temp_table_is_not_captured_as_live(self, tmp_store):
+        # The helper is also called with a VARIABLE (`scratch` = the rekey temp table),
+        # not a string literal -- _MIGRATION_HELPER_TABLE_RE deliberately skips it, and it
+        # is dropped within the migration, so it must not appear in the manifest at all.
+        from db.schema_contract import _scan_declared_in_sources
+
+        _schema_py, migration_tables, _added = _scan_declared_in_sources()
+        assert "fundamental_statement_map_rekey" not in migration_tables
+        manifest = build_contract_manifest(tmp_store.con)
+        assert "fundamental_statement_map_rekey" not in manifest
+
+
+class TestBuildContractManifestPitColumnScoping:
+    """is_pit_column must be scoped to fact/derived (medallion) layers -- a canonical PIT
+    NAME on a control/audit/reference table is bookkeeping, not a bitemporal PIT column.
+    Marking all name-matches would feed ~100 false positives into S1-1's PIT-presence
+    gate, the exact "cries wolf" failure the sprint plan warns against.
+    """
+
+    def _pit_cols(self, manifest, table_name: str) -> set[str]:
+        return {spec.name for spec in manifest[table_name] if spec.is_pit_column}
+
+    def test_control_and_audit_tables_have_no_pit_columns(self, tmp_store):
+        manifest = build_contract_manifest(tmp_store.con)
+        # These all carry a run_id and/or source_loaded_at column, but are control/audit
+        # layer -- none should be marked a PIT column.
+        for table_name in (
+            "dataset_runs",       # control (connection.py bootstrap)
+            "etl_job_runs",       # control
+            "etl_job_steps",      # control
+            "etl_job_audit",      # audit
+            "lake_export_runs",   # audit
+            "schema_contract",    # control (this sprint's own table)
+        ):
+            assert self._pit_cols(manifest, table_name) == set(), table_name
+
+    def test_run_id_and_source_loaded_at_on_a_control_table_are_not_pit(self, tmp_store):
+        manifest = build_contract_manifest(tmp_store.con)
+        specs = {spec.name: spec for spec in manifest["dataset_runs"]}
+        assert specs["run_id"].is_pit_column is False
+
+    def test_fact_layer_table_marks_its_canonical_pit_columns(self, tmp_store):
+        # market_cap (gold, a fact) is one of CONTRACT's 6 tables -- reused verbatim -- and
+        # already marks all five canonical PIT columns. Assert the reconciled manifest
+        # preserves that.
+        manifest = build_contract_manifest(tmp_store.con)
+        assert self._pit_cols(manifest, "market_cap") == set(PIT_COLUMN_NAMES)
+
+    def test_non_contract_fact_table_marks_present_pit_columns(self, tmp_store):
+        # valuation_multiples is gold but NOT in CONTRACT, so is_pit_column is derived via
+        # the layer classification. Every canonical PIT column it physically has must be
+        # marked (it carries all five).
+        manifest = build_contract_manifest(tmp_store.con)
+        live_cols = {
+            row[0]
+            for row in tmp_store.con.execute(
+                "SELECT column_name FROM duckdb_columns() WHERE table_name = 'valuation_multiples'"
+            ).fetchall()
+        }
+        expected = {name for name in PIT_COLUMN_NAMES if name in live_cols}
+        assert self._pit_cols(manifest, "valuation_multiples") == expected
+        assert expected  # sanity: it really does have PIT columns to mark
 
 
 class TestBuildContractManifestConsistencyWithHandCuratedContract:

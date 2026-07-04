@@ -405,7 +405,13 @@ def schema_contract_sha256(contract: Mapping[str, Sequence[ColumnSpec]] | None =
 # types/nullability), so simple regexes over the literal "CREATE TABLE IF NOT EXISTS x"
 # and "ALTER TABLE x ADD COLUMN [IF NOT EXISTS] y" statements are sufficient and avoid a
 # hand-maintained table-by-table literal that would rot exactly like the manifest itself
-# used to.
+# used to. The ONE wrinkle: migrations.py creates fundamental_statement_map via an
+# f-string-templated helper (`CREATE TABLE IF NOT EXISTS {table_name}` in
+# _create_fundamental_statement_map_table), which the literal-CREATE regex cannot see.
+# Since that table is ALSO created directly by schema.py, missing the migration side would
+# wrongly attribute its base columns schema_py (violating "migration wins on overlap"), so
+# we additionally scan for `_create_*_table(conn, "literal")` helper call sites and treat
+# their string-literal table_name args as migration-created too.
 # ---------------------------------------------------------------------------
 
 _DB_DIR = Path(__file__).resolve().parent
@@ -417,6 +423,21 @@ _MIGRATION_SOURCE_FILES = ("migrations.py",)
 
 _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
 _ALTER_ADD_COLUMN_RE = re.compile(r"ALTER TABLE (\w+) ADD COLUMN(?: IF NOT EXISTS)? (\w+)")
+# f-string-templated helper table creations, e.g.
+# `_create_fundamental_statement_map_table(conn, "fundamental_statement_map")`. Only
+# string-literal table_name args are captured -- calls passing a variable (e.g. the
+# `scratch` rekey temp table) are intentionally skipped, since those are not live tables.
+_MIGRATION_HELPER_TABLE_RE = re.compile(r"""_create_\w+_table\(\s*conn\s*,\s*['"](\w+)['"]""")
+
+# Medallion data layers (table_catalog.layer) where clause (A)'s fact/derived PIT-column
+# mandate applies. Everything else -- control/audit/catalog/dimension/core/legacy/view --
+# is infrastructure, reference dimensions, entity master, metadata, or views, where a
+# `run_id`/`source_loaded_at` column is bookkeeping, NOT a bitemporal PIT column. This
+# mirrors CONTRACT's hand-curated intent: market_cap (gold, a fact) marks its PIT columns
+# while control/reference tables do not. (formula_registry is also gold but a registry,
+# not a fact; it is one of CONTRACT's 6 tables so build_contract_manifest reuses its
+# hand-curated non-PIT specs verbatim -- layer never has to disambiguate it here.)
+_FACT_DERIVED_LAYERS = frozenset({"bronze", "silver", "gold"})
 
 
 def _read_db_source(filename: str) -> str:
@@ -431,7 +452,8 @@ def _scan_declared_in_sources() -> tuple[set[str], set[str], set[tuple[str, str]
         schema.py or connection.py.
       - migration_tables: table names created via ``CREATE TABLE IF NOT EXISTS``
         anywhere in migrations.py (every such statement lives inside some MIGRATIONS
-        entry's ``up()``).
+        entry's ``up()``), PLUS tables created via an f-string-templated
+        ``_create_*_table(conn, "literal")`` helper (see _MIGRATION_HELPER_TABLE_RE).
       - migration_added_columns: (table, column) pairs added via an ``ALTER TABLE ...
         ADD COLUMN`` in migrations.py.
     """
@@ -440,9 +462,19 @@ def _scan_declared_in_sources() -> tuple[set[str], set[str], set[tuple[str, str]
 
     schema_py_tables = set(_CREATE_TABLE_RE.findall(schema_py_text))
     migration_tables = set(_CREATE_TABLE_RE.findall(migration_text))
+    migration_tables |= set(_MIGRATION_HELPER_TABLE_RE.findall(migration_text))
     migration_added_columns = set(_ALTER_ADD_COLUMN_RE.findall(migration_text))
 
     return schema_py_tables, migration_tables, migration_added_columns
+
+
+def _fetch_table_layers(con) -> dict[str, str]:
+    """table_name -> table_catalog.layer; empty (not an error) if table_catalog absent."""
+    try:
+        rows = con.execute("SELECT table_name, layer FROM table_catalog").fetchall()
+    except Exception:
+        return {}
+    return {table_name: layer for table_name, layer in rows if layer is not None}
 
 
 def _fetch_natural_keys(con) -> dict[str, set[str]]:
@@ -495,11 +527,16 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
     Wherever CONTRACT (the S1-0 hand-curated 6-table subset) already declares a table,
     its ColumnSpec list is reused verbatim -- the hand-curated subset and the full
     manifest must never disagree (see test_schema_contract.py's consistency test). Every
-    other live table is derived fresh: column shape from duckdb_columns(), is_natural_key
-    from table_catalog.natural_key_json (or a PRIMARY KEY fallback), is_pit_column from
-    the canonical PIT_COLUMN_NAMES, and declared_in from _scan_declared_in_sources()
-    (``migration`` wins on any schema_py/migration overlap, at both table and column
-    granularity -- see the module-level design note above).
+    other live table is derived fresh:
+      - column shape (data_type, nullable) from duckdb_columns();
+      - is_natural_key from table_catalog.natural_key_json (or a PRIMARY KEY fallback);
+      - is_pit_column is a canonical PIT name (PIT_COLUMN_NAMES) AND the table sits in a
+        fact/derived medallion layer (_FACT_DERIVED_LAYERS via table_catalog.layer) -- a
+        `run_id`/`source_loaded_at` on a control/audit/reference table is bookkeeping, not
+        a bitemporal PIT column, so it stays is_pit_column=False (otherwise ~100 non-fact
+        tables would feed false positives into S1-1's PIT-presence gate);
+      - declared_in from _scan_declared_in_sources() (``migration`` wins on any
+        schema_py/migration overlap, at both table and column granularity).
 
     Deterministic given a bootstrapped DB: same live schema + same source tree -> same
     manifest, every time.
@@ -507,7 +544,11 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
     live_tables = _fetch_live_tables(con)
     live_columns = _fetch_live_columns(con, sorted(live_tables))
     natural_keys = _fetch_natural_keys(con)
-    schema_py_tables, migration_tables, migration_added_columns = _scan_declared_in_sources()
+    table_layers = _fetch_table_layers(con)
+    # schema_py_tables is unused now that migration-wins-on-overlap collapses to a single
+    # membership test (a non-migration table is schema_py by construction); keep the scan
+    # returning it for callers/tests that want the full provenance triple.
+    _schema_py_tables, migration_tables, migration_added_columns = _scan_declared_in_sources()
 
     manifest: dict[str, list[ColumnSpec]] = {}
     for table_name in sorted(live_tables):
@@ -515,15 +556,13 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
             manifest[table_name] = list(CONTRACT[table_name])
             continue
 
-        # migration wins on overlap; a table absent from BOTH regex scans (e.g. created
-        # by some other mechanism entirely) defaults to schema_py rather than silently
-        # being dropped -- every live table must land in the manifest (zero residual).
-        if table_name in migration_tables:
-            table_is_migration = True
-        elif table_name in schema_py_tables:
-            table_is_migration = False
-        else:
-            table_is_migration = False
+        # migration wins on overlap. A table absent from BOTH scans (e.g. created by some
+        # other mechanism) falls through to schema_py rather than being dropped -- every
+        # live table must land in the manifest (zero residual).
+        table_is_migration = table_name in migration_tables
+        # PIT columns only count where the fact/derived-row mandate applies: a table in a
+        # medallion data layer (bronze/silver/gold). Uncatalogued -> not fact/derived.
+        table_is_fact = table_layers.get(table_name) in _FACT_DERIVED_LAYERS
         natural_key_columns = natural_keys.get(table_name, set())
         columns: list[ColumnSpec] = []
         for column_name, (data_type, nullable) in sorted(live_columns.get(table_name, {}).items()):
@@ -534,7 +573,7 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
                     data_type=data_type,
                     nullable=nullable,
                     is_natural_key=column_name in natural_key_columns,
-                    is_pit_column=column_name in PIT_COLUMN_NAMES,
+                    is_pit_column=table_is_fact and column_name in PIT_COLUMN_NAMES,
                     declared_in="migration" if column_is_migration else "schema_py",
                 )
             )
