@@ -15,9 +15,19 @@ One line per unit (ROADMAP §141). Newest last.
 
 | Unit | Commit  | Deliverable                                                                                  | Review |
 |------|---------|----------------------------------------------------------------------------------------------|--------|
-| S3-0 | a59ee77 | ledger opened; `RunConfig::{gp_trading,gp_risk_aversion,gp_trade_cost_scale}` + CLI parse arms | —      |
-| S3-1 | 52551a5 | wire `gp_aim_and_value`/`gp_turnover_native_step` into the position-mode partial-trade step   | —      |
-| S3-2 | (this)  | determinism battery (off-path byte-identity, twice-run) + mean-reverting turnover proof; close | —      |
+| S3-0 | a59ee77 | ledger opened; `RunConfig::{gp_trading,gp_risk_aversion,gp_trade_cost_scale}` + CLI parse arms | SHIP   |
+| S3-1 | 52551a5 | wire `gp_aim_and_value`/`gp_turnover_native_step` into the position-mode partial-trade step   | SHIP   |
+| S3-2 | 9d3da90 | determinism battery (off-path byte-identity, twice-run) + mean-reverting turnover proof; close | SHIP   |
+
+**Review (clean, adversarial):** SHIP. Reviewer verified the turnover proof is a genuine
+mechanistically-grounded win, not a degenerate/lazy one: at `trade_rate=1.0` the frozen
+`gp_turnover_native_step` returns the aim exactly (zero inertia, `kappa=1.0`), so both paths fully
+redeploy every period and the 5.4× turnover gap is 100% attributable to book composition — the
+"GP trades less" confound is impossible by construction. All four determinism classes bit-exact;
+the M=2-cannot-diverge structural claim independently reconfirmed against `book_shape.hpp`; frozen
+files (`garleanu_pedersen.{hpp,cpp}`, S1's MVO `build_risk_model` sites) untouched; config golden
+intact. Only finding was Minor — an unconditional `std::cout` left in the proof test; removed
+post-review (values already stream into the `EXPECT_LT`/`EXPECT_GE` failure messages).
 
 ## Determinism contract — all four classes satisfied
 

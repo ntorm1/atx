@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <string>
 #include <vector>
 
@@ -259,10 +258,6 @@ TEST_F(AtxImplOptimizeGpTrading, GpLowersTurnoverAtMatchedOrBetterSharpe) {
   };
   const f64 legacy_edge = avg_edge_weight((tmp_dir_ / "books_legacy_mr.bin").string());
   const f64 gp_edge     = avg_edge_weight((tmp_dir_ / "books_gp_mr.bin").string());
-
-  std::cout << "[S3-2 turnover proof] gp_turnover=" << gp_turnover
-            << " legacy_turnover=" << legacy_turnover
-            << " gp_edge=" << gp_edge << " legacy_edge=" << legacy_edge << std::endl;
 
   EXPECT_LT(gp_turnover, legacy_turnover)
       << "GP-wired trading must realize strictly lower cumulative turnover than the legacy "
