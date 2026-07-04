@@ -658,6 +658,118 @@ def test_backfill_dead_letters_poisoned_partition_and_clears_after_fixed_rerun(t
     ).fetchone() == ("succeeded", "backfill-poison-fixed")
 
 
+def test_backfill_status_view_reports_run_partition_and_dead_letter_state(tmp_store):
+    from db.backfill import plan_backfill, run_backfill
+    from db.orchestrator import RetryPolicy
+
+    _prepare_fixture_rows(tmp_store)
+    start = dt.date(2014, 1, 1)
+    end = dt.date(2014, 4, 1)
+    partitions = plan_backfill(
+        "fixture_backfill",
+        start,
+        end,
+        "1mo",
+        registry=_registry(),
+    )
+    poisoned = partitions[1].partition_key
+
+    def executor(store, partition, options):
+        if partition.partition_key == poisoned:
+            raise RuntimeError(f"poisoned fixture partition {partition.partition_key}")
+        return FixtureBackfillDataset().run(store, options)
+
+    result = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        start,
+        end,
+        "1mo",
+        registry=_registry(),
+        backfill_run_id="backfill-status-view",
+        include_dependencies=False,
+        executor=executor,
+        retry_policy=RetryPolicy(max_retries=1, retry_delay_seconds=0),
+        dead_letter=True,
+        clock=TickClock(),
+    )
+
+    rows = tmp_store.con.execute(
+        """
+        SELECT
+            backfill_run_id,
+            run_id,
+            root_dataset_id,
+            partition_dataset_id,
+            dataset_id,
+            partition_key,
+            window_lo,
+            window_hi,
+            status,
+            rows_written,
+            watermark_after,
+            attempts,
+            dead_letter_state,
+            dead_letter_error,
+            run_status,
+            run_start_date,
+            run_end_date,
+            run_chunk
+        FROM v_backfill_status
+        WHERE dataset_id = ? AND backfill_run_id = ?
+        ORDER BY window_lo
+        """,
+        ["fixture_backfill", "backfill-status-view"],
+    ).fetchall()
+
+    assert result.status == "partial"
+    assert len(rows) == 3
+    assert rows[0] == (
+        "backfill-status-view",
+        "backfill-status-view",
+        "fixture_backfill",
+        "fixture_backfill",
+        "fixture_backfill",
+        partitions[0].partition_key,
+        partitions[0].window_lo,
+        partitions[0].window_hi,
+        "succeeded",
+        (partitions[0].window_hi - partitions[0].window_lo).days,
+        partitions[0].window_hi.isoformat(),
+        0,
+        "clear",
+        None,
+        "partial",
+        start,
+        end,
+        "1mo",
+    )
+    assert rows[1][5:14] == (
+        partitions[1].partition_key,
+        partitions[1].window_lo,
+        partitions[1].window_hi,
+        "failed",
+        0,
+        None,
+        2,
+        "dead_lettered",
+        rows[1][13],
+    )
+    assert "poisoned fixture partition" in rows[1][13]
+
+    filtered = tmp_store.con.execute(
+        """
+        SELECT partition_key
+        FROM v_backfill_status
+        WHERE partition_dataset_id = ?
+          AND backfill_run_id = ?
+          AND status = 'failed'
+        """,
+        ["fixture_backfill", "backfill-status-view"],
+    ).fetchall()
+    assert filtered == [(poisoned,)]
+
+
 def test_backfill_max_parallel_caps_concurrent_partition_executor_calls(tmp_store):
     from db.backfill import run_backfill
 
@@ -1194,7 +1306,7 @@ def test_maintenance_uses_existing_watermark_table_without_rewriting_completed_h
     assert header == (FixtureMaintenanceDataset.dataset_id, "succeeded")
 
 
-def test_migration_0132_0133_backfill_catalog_and_indexes(tmp_store):
+def test_migration_0132_0133_0134_backfill_catalog_indexes_and_status_view(tmp_store):
     from db import migrations
 
     versions = {
@@ -1207,7 +1319,7 @@ def test_migration_0132_0133_backfill_catalog_and_indexes(tmp_store):
             """
         ).fetchall()
     }
-    assert {132, 133}.issubset(versions)
+    assert {132, 133, 134}.issubset(versions)
 
     tables = {
         row[0]
@@ -1277,7 +1389,52 @@ def test_migration_0132_0133_backfill_catalog_and_indexes(tmp_store):
     assert "idx_backfill_watermark_run" in indexes
     assert "idx_backfill_dead_letter_partition" in indexes
 
+    views = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT view_name
+            FROM duckdb_views()
+            WHERE view_name = 'v_backfill_status'
+            """
+        ).fetchall()
+    }
+    assert views == {"v_backfill_status"}
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM table_catalog
+        WHERE table_name = 'v_backfill_status'
+          AND entity = 'backfill_status'
+        """
+    ).fetchone()[0] == 1
+    view_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'v_backfill_status'
+            """
+        ).fetchall()
+    }
+    view_fields = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT field_name
+            FROM field_catalog
+            WHERE table_name = 'v_backfill_status'
+            """
+        ).fetchall()
+    }
+    assert view_fields == view_columns
+
     schema_src = inspect.getsource(migrations._pf3_s1_backfill_schema_catalog)
     index_src = inspect.getsource(migrations._pf3_s1_backfill_indexes)
+    view_src = inspect.getsource(migrations._pf3_s1_backfill_status_view)
     assert "CREATE INDEX" not in schema_src
     assert "CREATE TABLE" not in index_src
+    assert "CREATE TABLE" not in view_src
+    assert "CREATE INDEX" not in view_src

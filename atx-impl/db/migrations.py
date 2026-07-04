@@ -10700,6 +10700,166 @@ def _pf3_s1_backfill_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S1 S1-3: catalogued backfill run/partition observability view."""
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_backfill_status AS
+        WITH latest_dead_letter AS (
+            SELECT
+                dataset_id,
+                partition_key,
+                run_id,
+                error,
+                attempts,
+                dead_lettered_at,
+                row_number() OVER (
+                    PARTITION BY dataset_id, partition_key
+                    ORDER BY dead_lettered_at DESC, run_id DESC
+                ) AS rn
+            FROM backfill_dead_letter
+        )
+        SELECT
+            coalesce(r.backfill_run_id, w.run_id) AS backfill_run_id,
+            w.run_id,
+            r.dataset_id AS root_dataset_id,
+            w.dataset_id AS partition_dataset_id,
+            w.dataset_id AS dataset_id,
+            w.partition_key,
+            w.window_lo,
+            w.window_hi,
+            w.status,
+            w.rows_written,
+            w.watermark_after,
+            coalesce(d.attempts, 0) AS attempts,
+            d.error AS dead_letter_error,
+            d.dead_lettered_at,
+            CASE
+                WHEN d.partition_key IS NULL THEN 'clear'
+                ELSE 'dead_lettered'
+            END AS dead_letter_state,
+            d.run_id AS dead_letter_run_id,
+            r.status AS run_status,
+            r.started_at AS run_started_at,
+            r.finished_at AS run_finished_at,
+            r.start_date AS run_start_date,
+            r.end_date AS run_end_date,
+            r.chunk AS run_chunk,
+            r.error_message AS run_error_message,
+            w.updated_at AS partition_updated_at
+        FROM backfill_watermark w
+        LEFT JOIN backfill_run r
+            ON r.backfill_run_id = w.run_id
+        LEFT JOIN latest_dead_letter d
+            ON d.dataset_id = w.dataset_id
+           AND d.partition_key = w.partition_key
+           AND d.rn = 1
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'v_backfill_status',
+            'observability',
+            'backfill_status',
+            'partition_dataset_id,partition_key',
+            'Queryable PF3 backfill observability surface joining the run header, current per-partition watermark/progress row, and active/latest dead-letter quarantine state.',
+            '["partition_dataset_id","partition_key"]',
+            'Current-state view over persisted backfill progress. It reports recorded watermarks and dead-letter rows only; it does not compute forward-looking freshness or synthesize historical partitions absent from backfill_watermark.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_backfill_status', 'backfill_run_id', 'identifier',
+             'Backfill run identifier from backfill_run, falling back to the watermark run_id for legacy/current-state rows without a matching run header.',
+             false, NULL, 'backfill_run.backfill_run_id', now()),
+            ('v_backfill_status', 'run_id', 'identifier',
+             'Run id that last advanced the partition watermark row.',
+             false, NULL, 'backfill_watermark.run_id', now()),
+            ('v_backfill_status', 'root_dataset_id', 'identifier',
+             'Requested/root dataset id from the backfill run header; dependency partition rows may have a different partition_dataset_id.',
+             true, NULL, 'backfill_run.dataset_id', now()),
+            ('v_backfill_status', 'partition_dataset_id', 'identifier',
+             'Dataset id of the concrete partition watermark row.',
+             false, NULL, 'backfill_watermark.dataset_id', now()),
+            ('v_backfill_status', 'dataset_id', 'identifier',
+             'Compatibility alias for partition_dataset_id so operators can filter by the partition dataset directly.',
+             false, NULL, 'backfill_watermark.dataset_id', now()),
+            ('v_backfill_status', 'partition_key', 'identifier',
+             'Deterministic partition key for the half-open window.',
+             false, NULL, 'backfill_watermark.partition_key', now()),
+            ('v_backfill_status', 'window_lo', 'date',
+             'Inclusive lower bound of the deterministic half-open backfill partition window.',
+             false, 'date', 'backfill_watermark.window_lo', now()),
+            ('v_backfill_status', 'window_hi', 'date',
+             'Exclusive upper bound of the deterministic half-open backfill partition window.',
+             false, 'date', 'backfill_watermark.window_hi', now()),
+            ('v_backfill_status', 'status', 'category',
+             'Current partition status recorded in backfill_watermark.',
+             false, NULL, 'backfill_watermark.status', now()),
+            ('v_backfill_status', 'rows_written', 'measure',
+             'Rows written by the run that last advanced this partition watermark.',
+             false, 'rows', 'backfill_watermark.rows_written', now()),
+            ('v_backfill_status', 'watermark_after', 'text',
+             'Recorded high-water mark after the last successful partition advance.',
+             true, NULL, 'backfill_watermark.watermark_after', now()),
+            ('v_backfill_status', 'attempts', 'measure',
+             'Dead-letter attempt count when the partition is quarantined; zero otherwise.',
+             false, 'count', 'backfill_dead_letter.attempts', now()),
+            ('v_backfill_status', 'dead_letter_error', 'text',
+             'Latest active dead-letter error text for the partition, if quarantined.',
+             true, NULL, 'backfill_dead_letter.error', now()),
+            ('v_backfill_status', 'dead_lettered_at', 'timestamp',
+             'Timestamp when the latest active dead-letter row was recorded.',
+             true, 'timestamp', 'backfill_dead_letter.dead_lettered_at', now()),
+            ('v_backfill_status', 'dead_letter_state', 'category',
+             'clear when no active dead-letter row exists for the partition; dead_lettered otherwise.',
+             false, NULL, 'backfill_dead_letter', now()),
+            ('v_backfill_status', 'dead_letter_run_id', 'identifier',
+             'Run id that produced the latest active dead-letter row, if any.',
+             true, NULL, 'backfill_dead_letter.run_id', now()),
+            ('v_backfill_status', 'run_status', 'category',
+             'Status of the run header that last advanced this partition.',
+             true, NULL, 'backfill_run.status', now()),
+            ('v_backfill_status', 'run_started_at', 'timestamp',
+             'Run header start timestamp.',
+             true, 'timestamp', 'backfill_run.started_at', now()),
+            ('v_backfill_status', 'run_finished_at', 'timestamp',
+             'Run header finish timestamp, if terminal.',
+             true, 'timestamp', 'backfill_run.finished_at', now()),
+            ('v_backfill_status', 'run_start_date', 'date',
+             'Requested inclusive start date from the run header.',
+             true, 'date', 'backfill_run.start_date', now()),
+            ('v_backfill_status', 'run_end_date', 'date',
+             'Requested exclusive end date from the run header.',
+             true, 'date', 'backfill_run.end_date', now()),
+            ('v_backfill_status', 'run_chunk', 'text',
+             'Requested chunk size label from the run header.',
+             true, NULL, 'backfill_run.chunk', now()),
+            ('v_backfill_status', 'run_error_message', 'text',
+             'Run-level error summary from backfill_run, if the run failed.',
+             true, NULL, 'backfill_run.error_message', now()),
+            ('v_backfill_status', 'partition_updated_at', 'timestamp',
+             'Timestamp when the partition watermark row was last updated.',
+             false, 'timestamp', 'backfill_watermark.updated_at', now())
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -11291,6 +11451,11 @@ MIGRATIONS: list[Migration] = [
         version=133,
         name="pf3_s1_backfill_indexes",
         up=_pf3_s1_backfill_indexes,
+    ),
+    Migration(
+        version=134,
+        name="pf3_s1_backfill_status_view",
+        up=_pf3_s1_backfill_status_view,
     ),
 ]
 
