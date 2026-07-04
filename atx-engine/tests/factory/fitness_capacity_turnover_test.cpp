@@ -378,4 +378,50 @@ TEST(FitnessCapacityTurnover, TwiceRun_ObjectivesBitIdentical) {
       << "objective vector must be bit-identical across two identical calls";
 }
 
+// (b) end-to-end under REALISTIC fixed slippage (the production DEFAULT
+// SlippageCfg{}, ~10 bps round-trip). Fixed slippage is an additive, ADV/AUM-
+// INDEPENDENT downshift of the net-edge curve, so as long as the realized gross
+// edge clears that fixed floor the zero-crossing STILL moves with ADV -- capacity
+// discrimination survives real fixed costs (not just the zeroed-slippage isolation
+// used by EndToEndObjectivesReflectCapacityGap). Same close for both panels (so the
+// gross edge is identical); only ADV ("volume") differs. rank(close) over a
+// persistent cross-sectional drift earns a gross edge comfortably above the 10 bps
+// floor here, so both crossings land in the transform's interior (0,1).
+TEST(FitnessCapacityTurnover, EndToEndCapacityDiscriminatesUnderRealisticSlippage) {
+  constexpr usize kDates = 80, kInsts = 6;
+  Library lib;
+  const WeightPolicy policy{};
+  const ExecutionSimulator sim = e2e_sim();
+  const AlphaStore empty;
+  std::vector<f64> drift(kInsts);
+  for (usize j = 0; j < kInsts; ++j) {
+    drift[j] = 0.015 - 0.006 * static_cast<f64>(j); // wide, persistent cross-sectional spread
+  }
+  const std::vector<f64> close = noisy_close(kDates, kInsts, drift, 0xBADF00Du, 0.012);
+  const Panel high_adv = close_volume_panel(kDates, kInsts, close, 1.0e4); // deep ADV
+  const Panel low_adv = close_volume_panel(kDates, kInsts, close, 1.0e3);  // thin ADV
+  const Genome cand = make_genome("rank(close)", lib);
+
+  FitnessCfg cfg{};
+  cfg.capacity_objective = true;
+  cfg.target_aum = 1.0e6;
+  // REAL production default cost: nonzero fixed slippage (SlippageCfg{}.bps == 5.0
+  // -> ~10 bps round-trip) PLUS the sqrt-law impact. NOT impact_only_cost.
+  cfg.cost = cost::CalibratedCost{ImpactCfg{1.0, 0.5, 0.314}, SlippageCfg{}, cost::FitReport{}};
+
+  const auto rep_high = pool_aware_fitness(cand, empty, high_adv, policy, sim, cfg);
+  const auto rep_low = pool_aware_fitness(cand, empty, low_adv, policy, sim, cfg);
+  ASSERT_TRUE(rep_high.has_value()) << (rep_high ? "" : rep_high.error().message());
+  ASSERT_TRUE(rep_low.has_value()) << (rep_low ? "" : rep_low.error().message());
+
+  EXPECT_GT(rep_high->objectives[kObjCapacity], rep_low->objectives[kObjCapacity])
+      << "under realistic fixed slippage, deeper ADV must STILL yield a strictly "
+         "higher kObjCapacity column (gross edge clears the fixed-cost floor, so the "
+         "zero-crossing moves with ADV)";
+  EXPECT_EQ(rep_high->n_objectives, kObjCapacity + 1)
+      << "capacity ON must bump n_objectives to cover slot kObjCapacity (8)";
+  EXPECT_GT(rep_low->objectives[kObjCapacity], 0.0);
+  EXPECT_LT(rep_high->objectives[kObjCapacity], 1.0) << "interior, not saturated";
+}
+
 } // namespace atxtest_fitness_capacity_turnover_test
