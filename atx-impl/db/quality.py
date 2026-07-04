@@ -2430,7 +2430,10 @@ def _check_specs(
                    OR revision_sequence > revision_count
                    OR is_latest_revision <> (revision_sequence = revision_count)
                    OR (revision_sequence = 1 AND is_value_changed)
-                   OR calculation_method <> 'sum_four_visible_quarter_like_statement_points_with_ytd_quarter_derivations'
+                   OR calculation_method NOT IN (
+                       'sum_four_visible_quarter_like_statement_points_with_ytd_quarter_derivations',
+                       'stitched_quarterly_ttm'
+                   )
             """,
             threshold=0.0,
             required_tables=("fundamental_ttm_points",),
@@ -2481,6 +2484,191 @@ def _check_specs(
             """,
             threshold=0.0,
             required_tables=("fundamental_ttm_points",),
+        ),
+        SqlQualityCheck(
+            dataset_id="calendarization",
+            table_name="fundamental_calendar_map",
+            check_name="calendarization_map_exactly_one_label",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        p.fundamental_period_id,
+                        count(m.calendar_map_id) AS map_rows,
+                        sum(CASE
+                            WHEN m.fiscal_scheme_period IS NULL
+                              OR m.fiscal_scheme_period = ''
+                              OR m.containing_calendar_period IS NULL
+                              OR m.containing_calendar_period = ''
+                              OR m.greatest_overlap_calendar_period IS NULL
+                              OR m.greatest_overlap_calendar_period = ''
+                            THEN 1 ELSE 0
+                        END) AS bad_label_rows
+                    FROM fundamental_periods p
+                    LEFT JOIN fundamental_calendar_map m
+                      ON m.fundamental_period_id = p.fundamental_period_id
+                     AND m.is_latest_revision
+                    GROUP BY p.fundamental_period_id
+                    HAVING map_rows <> 1
+                        OR bad_label_rows <> 0
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_periods", "fundamental_calendar_map"),
+            detail_sql="""
+                SELECT
+                    p.fundamental_period_id,
+                    count(m.calendar_map_id) AS map_rows,
+                    sum(CASE
+                        WHEN m.fiscal_scheme_period IS NULL
+                          OR m.fiscal_scheme_period = ''
+                          OR m.containing_calendar_period IS NULL
+                          OR m.containing_calendar_period = ''
+                          OR m.greatest_overlap_calendar_period IS NULL
+                          OR m.greatest_overlap_calendar_period = ''
+                        THEN 1 ELSE 0
+                    END) AS bad_label_rows
+                FROM fundamental_periods p
+                LEFT JOIN fundamental_calendar_map m
+                  ON m.fundamental_period_id = p.fundamental_period_id
+                 AND m.is_latest_revision
+                GROUP BY p.fundamental_period_id
+                HAVING map_rows <> 1
+                    OR bad_label_rows <> 0
+                ORDER BY p.fundamental_period_id
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="calendarization",
+            table_name="fundamental_calendar_map",
+            check_name="calendarization_53_week_flagged",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fundamental_calendar_map
+                WHERE (
+                       period_length_days >= 371
+                    OR (normalized_period_type = 'annual' AND period_length_days > 364)
+                    OR (normalized_period_type = 'quarter' AND period_length_days > 91)
+                )
+                  AND NOT is_53_week
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_calendar_map",),
+            detail_sql="""
+                SELECT
+                    fundamental_period_id,
+                    security_id,
+                    period_start,
+                    period_end,
+                    normalized_period_type,
+                    period_length_days,
+                    week_count,
+                    is_53_week
+                FROM fundamental_calendar_map
+                WHERE (
+                       period_length_days >= 371
+                    OR (normalized_period_type = 'annual' AND period_length_days > 364)
+                    OR (normalized_period_type = 'quarter' AND period_length_days > 91)
+                )
+                  AND NOT is_53_week
+                ORDER BY security_id, period_end
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="calendarization",
+            table_name="fundamental_calendar_ttm",
+            check_name="calendar_ttm_no_duplicate_windows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        source,
+                        upstream_source,
+                        security_id,
+                        calendar_period,
+                        canonical_metric,
+                        unit,
+                        revision_sequence,
+                        count(*) AS row_count
+                    FROM fundamental_calendar_ttm
+                    GROUP BY 1, 2, 3, 4, 5, 6, 7
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_calendar_ttm",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="calendarization",
+            table_name="fundamental_ttm_points",
+            check_name="stitched_ttm_no_duplicate_windows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        source,
+                        security_id,
+                        ttm_end_date,
+                        canonical_metric,
+                        unit,
+                        revision_sequence,
+                        count(*) AS row_count
+                    FROM fundamental_ttm_points
+                    WHERE calculation_method = 'stitched_quarterly_ttm'
+                    GROUP BY 1, 2, 3, 4, 5, 6
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("fundamental_ttm_points",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="calendarization",
+            table_name="calendarization_coverage",
+            check_name="calendarization_coverage_green",
+            sql="""
+                SELECT coalesce(sum(
+                    fiscal_scheme_unmapped_count
+                    + containing_scheme_unmapped_count
+                    + overlap_scheme_unmapped_count
+                    + duplicate_map_count
+                    + unflagged_53_week_count
+                    + duplicate_calendar_ttm_window_count
+                    + duplicate_stitched_ttm_window_count
+                ), 0)::DOUBLE
+                FROM calendarization_coverage
+                WHERE is_latest_revision
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("calendarization_coverage",),
+            detail_sql="""
+                SELECT *
+                FROM calendarization_coverage
+                WHERE is_latest_revision
+                  AND (
+                    fiscal_scheme_unmapped_count
+                    + containing_scheme_unmapped_count
+                    + overlap_scheme_unmapped_count
+                    + duplicate_map_count
+                    + unflagged_53_week_count
+                    + duplicate_calendar_ttm_window_count
+                    + duplicate_stitched_ttm_window_count
+                  ) <> 0
+                ORDER BY available_at DESC
+                LIMIT 25
+            """,
+            severity="critical",
         ),
         SqlQualityCheck(
             dataset_id="fundamental_periods",
