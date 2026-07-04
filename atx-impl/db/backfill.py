@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import datetime as dt
+import concurrent.futures
 import re
 import traceback
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 from .dataset import DatasetLoadResult
-from .orchestrator import RegistryEntry, _incremental_since, build_dataset_dag
+from .orchestrator import RegistryEntry, RetryPolicy, _incremental_since, build_dataset_dag
 
 
 Clock = Callable[[], dt.datetime]
 PartitionExecutor = Callable[[Any, "Partition", Mapping[str, Any]], Any]
+Sleeper = Callable[[float], None]
+RetryPolicyConfig = RetryPolicy | Mapping[str, Any] | Mapping[str, RetryPolicy | Mapping[str, Any]] | None
 
 
 @dataclass(frozen=True, order=True)
@@ -29,6 +33,8 @@ class PartitionResult:
     status: str
     rows_written: int = 0
     watermark_after: str | None = None
+    attempts: int = 0
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,56 @@ _CHUNK_RE = re.compile(r"^\s*(\d+)\s*([A-Za-z]*)\s*$")
 
 def _now_utc_naive() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+
+def _positive_int(value: Any, name: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def _nonnegative_int(value: Any, name: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return parsed
+
+
+def _nonnegative_float(value: Any, name: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return parsed
+
+
+def _coerce_retry_policy(value: RetryPolicy | Mapping[str, Any] | None) -> RetryPolicy | None:
+    if value is None:
+        return None
+    if isinstance(value, RetryPolicy):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("retry_policy must be a RetryPolicy or mapping")
+    return RetryPolicy(
+        max_retries=_nonnegative_int(value.get("max_retries", 0), "max_retries"),
+        retry_delay_seconds=_nonnegative_float(
+            value.get("retry_delay_seconds", 0.0),
+            "retry_delay_seconds",
+        ),
+    )
+
+
+def _retry_policy_for_dataset(
+    retry_policy: RetryPolicyConfig,
+    dataset_id: str,
+) -> RetryPolicy | None:
+    if retry_policy is None or isinstance(retry_policy, RetryPolicy):
+        return retry_policy
+    if not isinstance(retry_policy, Mapping):
+        raise TypeError("retry_policy must be a RetryPolicy or mapping")
+    if "max_retries" in retry_policy or "retry_delay_seconds" in retry_policy:
+        return _coerce_retry_policy(retry_policy)
+    return _coerce_retry_policy(retry_policy.get(dataset_id))
 
 
 def _default_registry() -> Mapping[str, RegistryEntry]:
@@ -554,6 +610,46 @@ def _mark_partition_failed(
     )
 
 
+def _record_dead_letter(
+    store: Any,
+    partition: Partition,
+    *,
+    backfill_run_id: str,
+    error: str,
+    attempts: int,
+    ts: dt.datetime,
+) -> None:
+    store.con.execute(
+        """
+        INSERT OR REPLACE INTO backfill_dead_letter (
+            dataset_id, partition_key, run_id, error, attempts, dead_lettered_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            partition.dataset_id,
+            partition.partition_key,
+            backfill_run_id,
+            error,
+            attempts,
+            ts,
+        ],
+    )
+
+
+def _clear_partition_dead_letter(
+    store: Any,
+    partition: Partition,
+) -> None:
+    store.con.execute(
+        """
+        DELETE FROM backfill_dead_letter
+        WHERE dataset_id = ? AND partition_key = ?
+        """,
+        [partition.dataset_id, partition.partition_key],
+    )
+
+
 def _partition_params(
     base_params: Mapping[str, Any],
     partition: Partition,
@@ -674,6 +770,224 @@ def _initialize_store(store: Any) -> None:
         initialize()
 
 
+@dataclass(frozen=True)
+class _ExecutionOutcome:
+    result: Any = None
+    attempts: int = 0
+    error: str | None = None
+    exception: BaseException | None = None
+
+
+def _execute_with_retry(
+    store: Any,
+    partition: Partition,
+    partition_params: Mapping[str, Any],
+    run_executor: PartitionExecutor,
+    *,
+    retry_policy: RetryPolicy | None,
+    sleeper: Sleeper,
+) -> _ExecutionOutcome:
+    max_attempts = (retry_policy.max_retries + 1) if retry_policy is not None else 1
+    delay_base = retry_policy.retry_delay_seconds if retry_policy is not None else 0.0
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _ExecutionOutcome(
+                result=run_executor(store, partition, partition_params),
+                attempts=attempt,
+            )
+        except Exception as exc:
+            error = f"{exc}\n{traceback.format_exc(limit=20)}"
+            if attempt < max_attempts:
+                delay = delay_base * (2 ** (attempt - 1))
+                if delay > 0:
+                    sleeper(delay)
+                continue
+            return _ExecutionOutcome(
+                attempts=attempt,
+                error=error,
+                exception=exc,
+            )
+
+    return _ExecutionOutcome(
+        attempts=max_attempts,
+        error=f"Partition {partition.partition_key!r} failed without an exception",
+    )
+
+
+def _partition_result_from_outcome(
+    partition: Partition,
+    outcome: _ExecutionOutcome,
+    *,
+    watermark_after: Callable[[Any, Partition], str],
+) -> PartitionResult:
+    if outcome.exception is not None:
+        return PartitionResult(
+            partition=partition,
+            status="failed",
+            attempts=outcome.attempts,
+            error=outcome.error,
+        )
+    rows = _rows_written(outcome.result)
+    watermark = watermark_after(outcome.result, partition)
+    return PartitionResult(
+        partition=partition,
+        status="succeeded",
+        rows_written=rows,
+        watermark_after=watermark,
+        attempts=outcome.attempts,
+    )
+
+
+def _persist_partition_result(
+    store: Any,
+    result: PartitionResult,
+    *,
+    backfill_run_id: str,
+    dead_letter: bool,
+    now: Clock,
+) -> PartitionResult:
+    partition = result.partition
+    if result.status == "succeeded":
+        _mark_partition_succeeded(
+            store,
+            partition,
+            rows_written=result.rows_written,
+            watermark_after=result.watermark_after or partition.window_hi.isoformat(),
+            backfill_run_id=backfill_run_id,
+            ts=now(),
+        )
+        _clear_partition_dead_letter(store, partition)
+        return result
+
+    _mark_partition_failed(
+        store,
+        partition,
+        backfill_run_id=backfill_run_id,
+        ts=now(),
+    )
+    if dead_letter:
+        _record_dead_letter(
+            store,
+            partition,
+            backfill_run_id=backfill_run_id,
+            error=result.error or "partition failed",
+            attempts=result.attempts,
+            ts=now(),
+        )
+        return PartitionResult(
+            partition=partition,
+            status="dead_lettered",
+            rows_written=0,
+            watermark_after=None,
+            attempts=result.attempts,
+            error=result.error,
+        )
+    return result
+
+
+def _execute_partition_jobs(
+    store: Any,
+    indexed_partitions: Sequence[tuple[int, Partition]],
+    *,
+    backfill_run_id: str,
+    params_for_partition: Callable[[Partition], Mapping[str, Any]],
+    watermark_after: Callable[[Any, Partition], str],
+    run_executor: PartitionExecutor,
+    retry_policy: RetryPolicyConfig,
+    max_parallel: int,
+    dead_letter: bool,
+    sleeper: Sleeper,
+    now: Clock,
+    allow_parallel_executor: bool,
+) -> dict[int, PartitionResult]:
+    if not indexed_partitions:
+        return {}
+
+    requested_parallel = _positive_int(max_parallel, "max_parallel")
+    # The default registry executor receives the caller's DuckDB connection, so it
+    # stays serialized. Tests or callers that inject a partition executor can opt
+    # into true fan-out when that executor owns its write-safety.
+    effective_parallel = requested_parallel if allow_parallel_executor else 1
+    results: dict[int, PartitionResult] = {}
+
+    def run_one(index: int, partition: Partition) -> tuple[int, PartitionResult, BaseException | None]:
+        policy = _retry_policy_for_dataset(retry_policy, partition.dataset_id)
+        outcome = _execute_with_retry(
+            store,
+            partition,
+            params_for_partition(partition),
+            run_executor,
+            retry_policy=policy,
+            sleeper=sleeper,
+        )
+        result = _partition_result_from_outcome(
+            partition,
+            outcome,
+            watermark_after=watermark_after,
+        )
+        return index, result, outcome.exception
+
+    def persist(index: int, result: PartitionResult, exc: BaseException | None) -> None:
+        persisted = _persist_partition_result(
+            store,
+            result,
+            backfill_run_id=backfill_run_id,
+            dead_letter=dead_letter,
+            now=now,
+        )
+        results[index] = persisted
+        if exc is not None and not dead_letter:
+            raise exc
+
+    if effective_parallel == 1:
+        for index, partition in indexed_partitions:
+            _mark_partition_running(
+                store,
+                partition,
+                backfill_run_id=backfill_run_id,
+                ts=now(),
+            )
+            completed_index, result, exc = run_one(index, partition)
+            persist(completed_index, result, exc)
+        return results
+
+    pending: dict[concurrent.futures.Future[tuple[int, PartitionResult, BaseException | None]], None] = {}
+    next_position = 0
+
+    def submit_next(
+        pool: concurrent.futures.ThreadPoolExecutor,
+    ) -> None:
+        nonlocal next_position
+        if next_position >= len(indexed_partitions):
+            return
+        index, partition = indexed_partitions[next_position]
+        next_position += 1
+        _mark_partition_running(
+            store,
+            partition,
+            backfill_run_id=backfill_run_id,
+            ts=now(),
+        )
+        pending[pool.submit(run_one, index, partition)] = None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=effective_parallel) as pool:
+        for _ in range(effective_parallel):
+            submit_next(pool)
+        while pending:
+            done, _not_done = concurrent.futures.wait(
+                pending,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                pending.pop(future, None)
+                completed_index, result, exc = future.result()
+                persist(completed_index, result, exc)
+                submit_next(pool)
+
+    return results
+
+
 def run_backfill(
     store: Any,
     dataset_id: str,
@@ -687,11 +1001,20 @@ def run_backfill(
     include_dependencies: bool = True,
     executor: PartitionExecutor | None = None,
     clock: Clock | None = None,
+    retry_policy: RetryPolicyConfig = None,
+    sleeper: Sleeper | None = None,
+    max_parallel: int = 1,
+    dead_letter: bool = False,
 ) -> BackfillRunResult:
     """Execute a windowed backfill and persist per-partition progress.
 
     Completed partitions are strict no-ops: their existing ``backfill_watermark`` rows
     are read but not updated, and the dataset executor is not called.
+
+    The built-in registry executor uses the caller's DuckDB connection and is
+    therefore serialized even if ``max_parallel`` is greater than one. Injected
+    executors can fan out up to ``max_parallel`` when they manage their own write
+    safety; results are still returned in deterministic partition order.
     """
 
     selected_registry = _default_registry() if registry is None else registry
@@ -738,63 +1061,53 @@ def run_backfill(
             partition_params,
             registry=selected_registry,
         )
+        allow_parallel_executor = False
+    else:
+        allow_parallel_executor = True
 
     try:
-        for partition in planned:
+        result_slots: list[PartitionResult | None] = [None] * len(planned)
+        jobs: list[tuple[int, Partition]] = []
+        for index, partition in enumerate(planned):
             existing = _watermark_row(store, partition)
             if existing is not None:
                 _validate_watermark_window(partition, existing)
                 if str(existing[0]) == "succeeded":
-                    results.append(
-                        PartitionResult(
-                            partition=partition,
-                            status="skipped",
-                            rows_written=0,
-                            watermark_after=None if existing[4] is None else str(existing[4]),
-                        )
+                    result_slots[index] = PartitionResult(
+                        partition=partition,
+                        status="skipped",
+                        rows_written=0,
+                        watermark_after=None if existing[4] is None else str(existing[4]),
                     )
                     continue
 
-            _mark_partition_running(
-                store,
-                partition,
-                backfill_run_id=run_id,
-                ts=now(),
-            )
-            partition_params = _partition_params(
+            jobs.append((index, partition))
+
+        completed = _execute_partition_jobs(
+            store,
+            jobs,
+            backfill_run_id=run_id,
+            params_for_partition=lambda partition: _partition_params(
                 params or {},
                 partition,
                 backfill_run_id=run_id,
-            )
-            try:
-                execution_result = run_executor(store, partition, partition_params)
-            except Exception:
-                _mark_partition_failed(
-                    store,
-                    partition,
-                    backfill_run_id=run_id,
-                    ts=now(),
-                )
-                raise
-
-            rows = _rows_written(execution_result)
-            watermark_after = _watermark_after(execution_result, partition)
-            _mark_partition_succeeded(
-                store,
-                partition,
-                rows_written=rows,
-                watermark_after=watermark_after,
-                backfill_run_id=run_id,
-                ts=now(),
-            )
-            results.append(
-                PartitionResult(
-                    partition=partition,
-                    status="succeeded",
-                    rows_written=rows,
-                    watermark_after=watermark_after,
-                )
-            )
+            ),
+            watermark_after=_watermark_after,
+            run_executor=run_executor,
+            retry_policy=retry_policy,
+            max_parallel=max_parallel,
+            dead_letter=dead_letter,
+            sleeper=sleeper or time.sleep,
+            now=now,
+            allow_parallel_executor=allow_parallel_executor,
+        )
+        for index, result in completed.items():
+            result_slots[index] = result
+        results = [
+            result
+            for result in result_slots
+            if result is not None
+        ]
     except Exception as exc:
         error_message = f"{exc}\n{traceback.format_exc(limit=20)}"
         _finish_run(
@@ -808,8 +1121,8 @@ def run_backfill(
 
     succeeded = sum(1 for result in results if result.status == "succeeded")
     skipped = sum(1 for result in results if result.status == "skipped")
-    failed = sum(1 for result in results if result.status == "failed")
-    status = "succeeded" if failed == 0 else "failed"
+    failed = sum(1 for result in results if result.status in {"failed", "dead_lettered"})
+    status = "succeeded" if failed == 0 else ("partial" if dead_letter else "failed")
     if not (initial_run_status == "succeeded" and succeeded == 0 and failed == 0):
         _finish_run(
             store,
@@ -844,6 +1157,10 @@ def run_maintenance(
     include_dependencies: bool = False,
     executor: PartitionExecutor | None = None,
     clock: Clock | None = None,
+    retry_policy: RetryPolicyConfig = None,
+    sleeper: Sleeper | None = None,
+    max_parallel: int = 1,
+    dead_letter: bool = False,
 ) -> BackfillRunResult:
     """Execute only partitions whose recorded watermark is stale or missing.
 
@@ -946,55 +1263,43 @@ def run_maintenance(
             partition_params,
             registry=selected_registry,
         )
+        allow_parallel_executor = False
+    else:
+        allow_parallel_executor = True
 
     try:
-        for partition in scheduled:
-            _mark_partition_running(
-                store,
+        indexed = list(enumerate(scheduled))
+
+        def maintenance_watermark_after(result: Any, partition: Partition) -> str:
+            return _maintenance_watermark_after(
+                result,
                 partition,
-                backfill_run_id=run_id,
-                ts=now(),
+                current_watermark=current_watermarks[partition.partition_key],
             )
-            current_watermark = current_watermarks[partition.partition_key]
-            partition_params = _maintenance_partition_params(
+
+        completed = _execute_partition_jobs(
+            store,
+            indexed,
+            backfill_run_id=run_id,
+            params_for_partition=lambda partition: _maintenance_partition_params(
                 params or {},
                 partition,
                 backfill_run_id=run_id,
-                current_watermark=current_watermark,
-            )
-            try:
-                execution_result = run_executor(store, partition, partition_params)
-            except Exception:
-                _mark_partition_failed(
-                    store,
-                    partition,
-                    backfill_run_id=run_id,
-                    ts=now(),
-                )
-                raise
-
-            rows = _rows_written(execution_result)
-            watermark_after = _maintenance_watermark_after(
-                execution_result,
-                partition,
-                current_watermark=current_watermark,
-            )
-            _mark_partition_succeeded(
-                store,
-                partition,
-                rows_written=rows,
-                watermark_after=watermark_after,
-                backfill_run_id=run_id,
-                ts=now(),
-            )
-            results.append(
-                PartitionResult(
-                    partition=partition,
-                    status="succeeded",
-                    rows_written=rows,
-                    watermark_after=watermark_after,
-                )
-            )
+                current_watermark=current_watermarks[partition.partition_key],
+            ),
+            watermark_after=maintenance_watermark_after,
+            run_executor=run_executor,
+            retry_policy=retry_policy,
+            max_parallel=max_parallel,
+            dead_letter=dead_letter,
+            sleeper=sleeper or time.sleep,
+            now=now,
+            allow_parallel_executor=allow_parallel_executor,
+        )
+        results = [
+            completed[index]
+            for index in sorted(completed)
+        ]
     except Exception as exc:
         error_message = f"{exc}\n{traceback.format_exc(limit=20)}"
         _finish_run(
@@ -1007,8 +1312,8 @@ def run_maintenance(
         raise
 
     succeeded = sum(1 for result in results if result.status == "succeeded")
-    failed = sum(1 for result in results if result.status == "failed")
-    status = "succeeded" if failed == 0 else "failed"
+    failed = sum(1 for result in results if result.status in {"failed", "dead_lettered"})
+    status = "succeeded" if failed == 0 else ("partial" if dead_letter else "failed")
     if not (initial_run_status == "succeeded" and succeeded == 0 and failed == 0):
         _finish_run(
             store,

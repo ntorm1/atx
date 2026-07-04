@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 import inspect
+import threading
+import time
 
 import pytest
 
@@ -487,6 +489,154 @@ def test_same_run_id_resumes_failed_and_running_partitions_without_duplicates(tm
         [backfill_run_id],
     ).fetchone()
     assert final_header == ("succeeded", 1)
+
+
+def test_backfill_dead_letters_poisoned_partition_and_clears_after_fixed_rerun(tmp_store):
+    from db.backfill import plan_backfill, run_backfill
+    from db.orchestrator import RetryPolicy
+
+    _prepare_fixture_rows(tmp_store)
+    start = dt.date(2014, 1, 1)
+    end = dt.date(2014, 4, 1)
+    partitions = plan_backfill(
+        "fixture_backfill",
+        start,
+        end,
+        "1mo",
+        registry=_registry(),
+    )
+    poisoned = {partitions[1].partition_key}
+    attempts: dict[str, int] = {}
+
+    def executor(store, partition, options):
+        attempts[partition.partition_key] = attempts.get(partition.partition_key, 0) + 1
+        if partition.partition_key in poisoned:
+            raise RuntimeError(f"poisoned fixture partition {partition.partition_key}")
+        return FixtureBackfillDataset().run(store, options)
+
+    first = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        start,
+        end,
+        "1mo",
+        registry=_registry(),
+        backfill_run_id="backfill-poisoned",
+        include_dependencies=False,
+        executor=executor,
+        retry_policy=RetryPolicy(max_retries=2, retry_delay_seconds=0),
+        dead_letter=True,
+        clock=TickClock(),
+    )
+
+    assert first.status == "partial"
+    assert first.partitions_succeeded == 2
+    assert first.partitions_failed == 1
+    assert attempts[partitions[1].partition_key] == 3
+
+    dead_letter = tmp_store.con.execute(
+        """
+        SELECT error, attempts
+        FROM backfill_dead_letter
+        WHERE dataset_id = ? AND partition_key = ? AND run_id = ?
+        """,
+        ["fixture_backfill", partitions[1].partition_key, "backfill-poisoned"],
+    ).fetchone()
+    assert dead_letter is not None
+    assert "poisoned fixture partition" in dead_letter[0]
+    assert dead_letter[1] == 3
+
+    statuses = tmp_store.con.execute(
+        """
+        SELECT partition_key, status
+        FROM backfill_watermark
+        WHERE dataset_id = 'fixture_backfill'
+        ORDER BY window_lo
+        """
+    ).fetchall()
+    assert statuses == [
+        (partitions[0].partition_key, "succeeded"),
+        (partitions[1].partition_key, "failed"),
+        (partitions[2].partition_key, "succeeded"),
+    ]
+
+    poisoned.clear()
+    attempts.clear()
+    fixed = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        start,
+        end,
+        "1mo",
+        registry=_registry(),
+        backfill_run_id="backfill-poison-fixed",
+        include_dependencies=False,
+        executor=executor,
+        retry_policy=RetryPolicy(max_retries=2, retry_delay_seconds=0),
+        dead_letter=True,
+        clock=TickClock(),
+    )
+
+    assert fixed.status == "succeeded"
+    assert fixed.partitions_skipped == 2
+    assert fixed.partitions_succeeded == 1
+    assert attempts == {partitions[1].partition_key: 1}
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM backfill_dead_letter
+        WHERE dataset_id = ? AND partition_key = ?
+        """,
+        ["fixture_backfill", partitions[1].partition_key],
+    ).fetchone()[0] == 0
+    assert tmp_store.con.execute(
+        """
+        SELECT status, run_id
+        FROM backfill_watermark
+        WHERE dataset_id = ? AND partition_key = ?
+        """,
+        ["fixture_backfill", partitions[1].partition_key],
+    ).fetchone() == ("succeeded", "backfill-poison-fixed")
+
+
+def test_backfill_max_parallel_caps_concurrent_partition_executor_calls(tmp_store):
+    from db.backfill import run_backfill
+
+    lock = threading.Lock()
+    active = 0
+    max_seen = 0
+
+    def executor(_store, partition, _options):
+        nonlocal active, max_seen
+        with lock:
+            active += 1
+            max_seen = max(max_seen, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return {
+            "rows_written": 1,
+            "watermark_after": partition.window_hi.isoformat(),
+        }
+
+    result = run_backfill(
+        tmp_store,
+        "fixture_backfill",
+        dt.date(2014, 1, 1),
+        dt.date(2014, 7, 1),
+        "1mo",
+        registry=_registry(),
+        backfill_run_id="backfill-parallel-cap",
+        include_dependencies=False,
+        executor=executor,
+        max_parallel=2,
+        clock=TickClock(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.partitions_succeeded == 6
+    assert max_seen <= 2
+    assert max_seen > 1
 
 
 def test_maintenance_schedules_only_partition_with_advanced_upstream_watermark(tmp_store):
