@@ -877,7 +877,7 @@ def _seed_byte_identity_panel(store):
 # later metadata columns so this list never drifts from "pre-existing values".
 _PRE_EXISTING_RATIO_COLUMNS = [
     c for c in RATIO_COLUMNS
-    if c not in {"input_item_ids_json", "source_accession", "filed_date"}
+    if c not in {"input_item_ids_json", "source_accession", "filed_date", "vintage_class"}
 ]
 
 _LITERAL_TTM_INPUTS = {

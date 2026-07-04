@@ -30,7 +30,9 @@ from db.asof import (
     form144_reconciliation_asof,
     fundamental_periods_asof,
     fundamental_ratios_asof,
+    fundamental_ratios_asof_month,
     fundamental_xbrl_metric_asof,
+    pit_snapshot_asof,
     short_interest_metrics_asof,
     macro_metrics_asof,
     equity_price_metrics_asof,
@@ -78,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run common point-in-time warehouse queries.")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--as-of-date", type=dt.date.fromisoformat, required=True)
+    parser.add_argument("--as-of-month", type=dt.date.fromisoformat, help="Optional month boundary for month-snapshot views.")
     parser.add_argument("--as-of-ts", type=dt.datetime.fromisoformat, help="Optional availability timestamp.")
     parser.add_argument(
         "--view",
@@ -87,6 +90,8 @@ def parse_args() -> argparse.Namespace:
             "fundamental-statements",
             "fundamental-ttm",
             "fundamental-ratios",
+            "fundamental-ratios-asof-month",
+            "pit-snapshot",
             "fundamental-xbrl-metric",
             "short-interest-metrics",
             "macro-metrics",
@@ -214,6 +219,20 @@ def main() -> int:
             db_path=args.db_path,
             symbols=parse_csv(args.symbols),
             ratio_codes=parse_csv(args.metrics),
+        )
+    elif args.view == "fundamental-ratios-asof-month":
+        frame = fundamental_ratios_asof_month(
+            args.as_of_month or args.as_of_date,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+            ratio_codes=parse_csv(args.metrics),
+        )
+    elif args.view == "pit-snapshot":
+        frame = pit_snapshot_asof(
+            args.as_of_month or args.as_of_date,
+            db_path=args.db_path,
+            symbols=parse_csv(args.symbols),
+            metrics=parse_csv(args.metrics),
         )
     elif args.view == "fundamental-xbrl-metric":
         frame = fundamental_xbrl_metric_asof(
