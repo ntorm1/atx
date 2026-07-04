@@ -40,7 +40,12 @@
 //        .cost_bps[s] is the per-period charge in BASIS POINTS (turnover ×
 //        round_trip_cost_bps, see risk::MultiPeriodOptimizer::run). pnl_gross is a
 //        FRACTIONAL return (Σ weight·return), so we convert bps→fraction by ·1e-4
-//        before subtracting. pnl_net[s] = pnl_gross[s] − pnl_cost[s].
+//        before subtracting.
+//    * pnl_borrow[s] = (Σ_i |book[i]| over SHORT names only) · borrow_bps · 1e-4
+//        (S5-4): a flat per-period financing charge on the book's short notional,
+//        the SAME bps-per-period → fraction convention pnl_cost uses. borrow_bps
+//        defaults to 0.0 (inert; pnl_borrow[s] is then exactly 0.0 for every s).
+//        pnl_net[s] = pnl_gross[s] − pnl_cost[s] − pnl_borrow[s].
 //    * gross_leverage[s] = Σ_i |book[i]|; net_exposure[s] = Σ_i book[i];
 //        turnover[s]      = books.turnover[s].
 //    * equity_curve[s] = cumulative SUM of pnl_net (a net-return series; simplest
@@ -111,8 +116,9 @@ struct BookReport {
   std::vector<atx::f64> net_exposure;                 // Σ_i book[i] per period
   std::vector<atx::f64> turnover;                     // books.turnover[s] per period
   std::vector<atx::f64> pnl_gross;                    // Σ_i book[i]·r[i] (NaN/non-live → 0)
-  std::vector<atx::f64> pnl_net;                      // pnl_gross − pnl_cost
+  std::vector<atx::f64> pnl_net;                      // pnl_gross − pnl_cost − pnl_borrow
   std::vector<atx::f64> pnl_cost;                     // cost_bps · 1e-4 (bps → fraction)
+  std::vector<atx::f64> pnl_borrow;                   // S5-4: short-notional financing debit per period (bps -> fraction)
   atx::core::linalg::MatX factor_exposures;           // per-period Xᵀw (rows=periods, cols=n_factors)
   std::vector<atx::f64> capacity_utilization;         // gross / capacity per period
   std::array<atx::usize, 6> lifecycle_census{};       // count per LifecycleState at as_of
@@ -132,6 +138,7 @@ namespace detail {
 struct PeriodAccum {
   atx::f64 pnl_gross;
   atx::f64 pnl_cost;
+  atx::f64 pnl_borrow; // S5-4: short-notional financing debit, bps-per-period convention
   atx::f64 gross;
   atx::f64 net;
 };
@@ -140,23 +147,35 @@ struct PeriodAccum {
 // order. NaN return OR out-of-universe → 0 (no-survivorship, R4). PRECONDITION
 // (front-door-guarded by the caller): book.size() == r.size() == V.n_instruments()
 // and `date` < panel.dates(), so every read is in-bounds.
+//
+// S5-4: `borrow_bps` (default 0.0) is a flat per-period financing charge on the
+// book's SHORT notional (Σ|w_i| over w_i<0 only — long positions are never
+// charged), mirroring cost_bps's own bps-per-period convention. borrow_bps==0.0
+// (the default) makes pnl_borrow exactly 0.0 for every book — the trailing
+// defaulted parameter keeps every pre-S5-4 caller byte-identical automatically.
 [[nodiscard]] inline PeriodAccum accumulate_period(const std::vector<atx::f64> &book,
                                                    std::span<const atx::f64> r,
                                                    const alpha::Panel &panel, atx::usize date,
-                                                   atx::f64 cost_bps) noexcept {
+                                                   atx::f64 cost_bps,
+                                                   atx::f64 borrow_bps = 0.0) noexcept {
   atx::f64 pnl_gross = 0.0;
   atx::f64 gross = 0.0;
   atx::f64 net = 0.0;
+  atx::f64 short_w = 0.0; // S5-4: Σ|w_i| over SHORT names only (weight-space notional)
   for (atx::usize i = 0; i < book.size(); ++i) {
     const atx::f64 w = book[i];
     gross += std::fabs(w);
     net += w;
+    if (w < 0.0) {
+      short_w += -w;
+    }
     const bool live = i < r.size() && !std::isnan(r[i]) && panel.in_universe(date, i);
     if (live) {
       pnl_gross += w * r[i];
     }
   }
-  return PeriodAccum{pnl_gross, cost_bps * 1e-4 /*bps → fractional return*/, gross, net};
+  return PeriodAccum{pnl_gross, cost_bps * 1e-4 /*bps → fractional return*/,
+                     short_w * borrow_bps * 1e-4 /*bps → fractional return*/, gross, net};
 }
 
 // Shortest exact round-trip decimal of a finite f64 (locale-INDEPENDENT, the same
@@ -239,7 +258,7 @@ template <class Cell>
 accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &panel,
                   alpha::FieldId returns_field, const risk::RebalanceSchedule &sched,
                   const risk::FactorModel &V, atx::f64 capacity_gross, const library::Library &lib,
-                  atx::usize as_of) {
+                  atx::usize as_of, atx::f64 borrow_bps = 0.0) {
   const atx::usize n = sched.periods.size();
   const atx::usize m = V.n_instruments();
   if (books.books.size() != n || books.cost_bps.size() != n || books.turnover.size() != n) {
@@ -265,6 +284,7 @@ accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &pane
   rep.pnl_gross.reserve(n);
   rep.pnl_net.reserve(n);
   rep.pnl_cost.reserve(n);
+  rep.pnl_borrow.reserve(n);
   rep.capacity_utilization.reserve(n);
   rep.factor_exposures = atx::core::linalg::MatX::Zero(static_cast<Eigen::Index>(n),
                                                        static_cast<Eigen::Index>(V.n_factors()));
@@ -274,12 +294,14 @@ accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &pane
     const std::vector<atx::f64> &book = books.books[s];
     const atx::usize date = sched.periods[s];
     const detail::PeriodAccum acc = detail::accumulate_period(
-        book, panel.field_cross_section(returns_field, date), panel, date, books.cost_bps[s]);
-    const atx::f64 pnl_net = acc.pnl_gross - acc.pnl_cost;
+        book, panel.field_cross_section(returns_field, date), panel, date, books.cost_bps[s],
+        borrow_bps);
+    const atx::f64 pnl_net = acc.pnl_gross - acc.pnl_cost - acc.pnl_borrow;
     equity += pnl_net;
 
     rep.pnl_gross.push_back(acc.pnl_gross);
     rep.pnl_cost.push_back(acc.pnl_cost);
+    rep.pnl_borrow.push_back(acc.pnl_borrow);
     rep.pnl_net.push_back(pnl_net);
     rep.equity_curve.push_back(equity);
     rep.gross_leverage.push_back(acc.gross);
