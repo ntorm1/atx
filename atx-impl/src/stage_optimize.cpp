@@ -15,6 +15,7 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/data/adapt_factor.hpp"
 #include "atx/engine/library/library.hpp"
+#include "atx/engine/risk/garleanu_pedersen.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
@@ -174,6 +175,37 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
 
         std::vector<atx::f64> prev(M, 0.0);  // w[-1] = 0 (flat)
 
+        // S3: Gârleanu-Pedersen aim-portfolio trading (opt-in via cfg.gp_trading). Built
+        // ONCE for the whole run: a single whole-panel Diagonal FactorModel (the SAME
+        // inert-default kind risk::RiskModelConfig{} builds on the MVO branch below),
+        // INDEPENDENT of --risk-model/risk_cfg -- position-mode never threads risk_cfg
+        // today, and extending risk-model SELECTION into position mode is S1/S2 turf,
+        // not S3's. Kept outside the per-period loop: it is the fixed risk lens
+        // gp_aim_and_value inverts every period, not a per-period PIT refit (Diagonal's
+        // own variance estimate already reads the whole research panel once, exactly as
+        // the MVO Diagonal branch below does -- no look-ahead concern distinct from that
+        // existing path).
+        //
+        // Fail-open (never silent, per the ROADMAP guardrail): if the build Errs (e.g.
+        // `research` lacks "close"), gp_trading is disabled FOR THIS RUN -- every period
+        // falls back to the pre-S3 linear blend, and the fallback is recorded in kvs
+        // (see write_books call below) so it is never silent.
+        std::optional<risk::FactorModel> gp_v;
+        bool gp_fallback = false;
+        if (cfg.gp_trading) {
+            auto gp_artifact = build_risk_model(research, risk::RiskModelConfig{});
+            if (gp_artifact.has_value()) {
+                auto gp_model = data::artifact_to_factor_model(*gp_artifact);
+                if (gp_model.has_value()) {
+                    gp_v.emplace(std::move(*gp_model));
+                } else {
+                    gp_fallback = true;
+                }
+            } else {
+                gp_fallback = true;
+            }
+        }
+
         for (atx::usize s = 0; s < S; ++s) {
             const atx::usize d = sched.periods[s];
             const auto cs = combo.field_cross_section(alpha_fid, d);
@@ -184,16 +216,48 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
             }
             shape_book(w, std::span<const std::uint8_t>{live}, gross_val, name_cap_val);
 
-            // Partial-step (Garleanu-Pedersen / WorldQuant trade-rate): deploy only
-            // part of the way from the prior book to the freshly-shaped target,
-            // smoothing the book and cutting turnover.
-            // w := prev + rate*(w - prev).
-            // Dollar-neutrality is preserved (linear blend of two dollar-neutral
-            // books) and name-cap is preserved (|blend| <= max(|prev|,|target|) <=
-            // cap); gross may drift slightly BELOW the target (intended — the
-            // partial step IS the deployed position, not re-normalized).
-            // Guard preserves byte-identical legacy output when trade_rate == 1.0.
-            if (trade_rate_val < 1.0) {
+            // Partial-step: either the Gârleanu-Pedersen aim-portfolio trade (opt-in,
+            // cfg.gp_trading) or the pre-S3 linear blend toward the freshly-shaped target.
+            // See garleanu_pedersen.hpp for the closed-form math; this call site is the
+            // ONLY thing S3 changes. The legacy `else if` arm below is textually the
+            // pre-S3 code, so gp_trading=false is byte-identical by construction.
+            //
+            // Legacy linear blend (w := prev + rate*(w - prev)): dollar-neutrality is
+            // preserved (linear blend of two dollar-neutral books) and name-cap is
+            // preserved (|blend| <= max(|prev|,|target|) <= cap); gross may drift
+            // slightly BELOW the target (intended -- the partial step IS the deployed
+            // position, not re-normalized). Guard keeps byte-identical output at
+            // trade_rate == 1.0.
+            if (cfg.gp_trading && gp_v.has_value()) {
+                // alpha_bar: the per-name RETURN-space signal this period -- the SAME raw
+                // cross-section shape_book above just turned into the legacy target `w`.
+                // NaN names are preserved (gp_aim_and_value maps them to 0 in the V^-1 apply).
+                std::vector<atx::f64> alpha_bar(cs.begin(), cs.end());
+                auto gp = risk::gp_aim_and_value(std::span<const atx::f64>{alpha_bar}, *gp_v,
+                                                 cfg.gp_risk_aversion);
+                if (gp.has_value()) {
+                    // Shape the GP aim through the SAME gross/name-cap/dollar-neutral
+                    // contract as the legacy target `w`, so the GP path never breaks the
+                    // book-shape invariants the rest of this function (and shape_book's own
+                    // header) document.
+                    std::vector<atx::f64> aim = gp->aim_pos;
+                    shape_book(aim, std::span<const std::uint8_t>{live}, gross_val, name_cap_val);
+                    // kappa: cfg.trade_rate discounted by the trade-cost-scale knob
+                    // (gp_trade_cost_scale == 0 => kappa == trade_rate_val, inert).
+                    const atx::f64 kappa = trade_rate_val / (1.0 + cfg.gp_trade_cost_scale);
+                    w = risk::gp_turnover_native_step(std::span<const atx::f64>{prev},
+                                                      std::span<const atx::f64>{aim}, kappa);
+                } else {
+                    // Degenerate per-period fallback (defensive -- lambda>=0 is CLI-guarded
+                    // and the length always matches M by construction, so this should not
+                    // fire in practice). Never silently drop the period: trade the legacy way.
+                    if (trade_rate_val < 1.0) {
+                        for (atx::usize i = 0; i < M; ++i) {
+                            w[i] = prev[i] + trade_rate_val * (w[i] - prev[i]);
+                        }
+                    }
+                }
+            } else if (trade_rate_val < 1.0) {
                 for (atx::usize i = 0; i < M; ++i) {
                     w[i] = prev[i] + trade_rate_val * (w[i] - prev[i]);
                 }
@@ -221,6 +285,8 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
         ATX_TRY(auto sr, write_books(books_flat, turnover, cost_bps));
         if (cfg.set_flags.count("trade-rate"))
             sr.kvs.emplace_back("trade_rate", std::to_string(trade_rate_val));
+        if (cfg.gp_trading)
+            sr.kvs.emplace_back("gp_trading", gp_fallback ? "fallback" : "on");
         return atx::core::Ok(std::move(sr));
     }
 
