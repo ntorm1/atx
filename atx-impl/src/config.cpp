@@ -51,6 +51,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "incremental-panel")   { cfg.incremental_panel    = true; return atx::core::Ok(); } // S5-0 (p7 carry-forward)
     if (flag == "robustness-battery")  { cfg.robustness_battery   = true; return atx::core::Ok(); } // p8 final-wave (Item 3)
     if (flag == "gp-trading")          { cfg.gp_trading           = true; return atx::core::Ok(); } // p9 S3
+    if (flag == "capacity-objective")  { cfg.capacity_objective   = true; return atx::core::Ok(); } // p9 S4
+    if (flag == "turnover-objective")  { cfg.turnover_objective   = true; return atx::core::Ok(); } // p9 S4
 
     // String flags
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
@@ -403,7 +405,7 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel" || flag == "dead-alpha-factors" || flag == "group-neutralize" || flag == "metabook" || flag == "impact-in-selection" || flag == "capacity-curve" || flag == "require-split-stable" || flag == "blocking-pbo" || flag == "incremental-panel" || flag == "robustness-battery" || flag == "gp-trading") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel; S5-0: p8 hub valueless bools; Item 3: robustness-battery (p8 final-wave); p9 S3: gp-trading
+        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel" || flag == "dead-alpha-factors" || flag == "group-neutralize" || flag == "metabook" || flag == "impact-in-selection" || flag == "capacity-curve" || flag == "require-split-stable" || flag == "blocking-pbo" || flag == "incremental-panel" || flag == "robustness-battery" || flag == "gp-trading" || flag == "capacity-objective" || flag == "turnover-objective") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel; S5-0: p8 hub valueless bools; Item 3: robustness-battery (p8 final-wave); p9 S3: gp-trading; p9 S4: capacity-objective/turnover-objective
             auto r = apply_flag(cfg, flag, "");
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;

@@ -166,6 +166,13 @@ struct RunConfig {
     // search digest and every existing golden are BYTE-IDENTICAL to today.
     bool        deflate_selection = false;  // --deflate-selection (R4)
 
+    // --capacity-objective / --turnover-objective (S4): opt-in NSGA objectives.
+    // capacity_objective REQUIRES --target-aum > 0 (its AUM anchor) -- validated in
+    // stage_discover.cpp (fail-loud, not a silent no-op). Both default false ->
+    // byte-identical to today.
+    bool        capacity_objective = false; // --capacity-objective -> SearchConfig
+    bool        turnover_objective = false; // --turnover-objective -> SearchConfig
+
     // --typed-fields (R1): opt-in field-type discipline. When set, before running
     // the search a one-pass cardinality scan classifies each numeric panel field;
     // binary / low-cardinality / categorical fields are excluded from the grammar's

@@ -165,6 +165,8 @@ struct Lcg {
   c.adaptive_operators = false;  // Task 5: fixed-uniform operator draw on the pin
   c.jitter_anneal = false;       // Task 5: constant sigma on the pin
   c.enable_wrap_in_op = false;   // W1b: wrap_in_op OFF on the boundary pin (legacy)
+  c.capacity_objective = false;  // S4: capacity objective off on the boundary pin
+  c.turnover_objective = false;  // S4: turnover objective off on the boundary pin
   return c;
 }
 
@@ -182,6 +184,22 @@ TEST(NsgaSearch, ScalarRaw_ReproducesGoldenDigest) {
   const SearchResult r = driver.run(legacy_pin_cfg(777), pool);
   EXPECT_EQ(r.digest, kGoldenDigest)
       << "ScalarRaw boundary pin broke: an S4 edit perturbed the pre-S4 path.";
+}
+
+// S4: with BOTH new objective flags at their inert default (false), the objective
+// vector width stays exactly what it was pre-S4 -> the golden digest is unmoved.
+// This pins the load-bearing invariant that kMaxObjectives 7->9 growth is inert on
+// the off-path (NSGA-II sizes off n_objectives, never kMaxObjectives).
+TEST(NsgaSearch, CapacityTurnoverObjectives_DefaultOff_ByteIdentical) {
+  Library lib{};
+  Panel panel = fixture_panel(96, 6);
+  WeightPolicy policy{};
+  ExecutionSimulator sim = frictionless_sim();
+  SearchDriver driver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}};
+  AlphaStore pool{};
+  const SearchResult r = driver.run(legacy_pin_cfg(777), pool);
+  EXPECT_EQ(r.digest, kGoldenDigest)
+      << "ScalarRaw boundary pin broken by kMaxObjectives growth (7->9).";
 }
 
 // ---------------------------------------------------------------------------

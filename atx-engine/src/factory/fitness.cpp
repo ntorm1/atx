@@ -389,6 +389,19 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     selection_cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.cost_selection.selection_aum);
   }
 
+  // (6c) S4-1: sqrt-law capacity objective, GATED on cfg.capacity_objective (mirrors
+  // the S4.3 cost gate -- zero compute at all when off, preserving both the
+  // off-path byte-identity AND the off-path perf cost).
+  atx::f64 capacity_score = 0.0;
+  if (cfg.capacity_objective) {
+    capacity_score = capacity_sqrt_law_score(strm, panel, cfg.cost, cfg.target_aum);
+  }
+  // (6d) S4-2: turnover/alpha-decay objective, GATED on cfg.turnover_objective.
+  atx::f64 turnover_autocorr = 0.0;
+  if (cfg.turnover_objective) {
+    turnover_autocorr = turnover_autocorr_score(strm);
+  }
+
   // S3-0: thread the OOS mean turnover (already computed in aggregate_oos with
   // no additional eval) into FitnessCore so finish_report can apply the opt-in
   // penalty.  The FitnessCore field order (matched by this aggregate init) is:
@@ -399,7 +412,7 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
                                    dsr.haircut_sharpe, cost_bps, agg.turnover,
                                    split.sharpe_h1, split.sharpe_h2, split.stable,
-                                   selection_cost_bps});
+                                   selection_cost_bps, capacity_score, turnover_autocorr});
 }
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
@@ -482,6 +495,25 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     rep.cost_bps = core.cost_bps;
     rep.objectives[4] = -core.cost_bps;
     rep.n_objectives = 5;
+  }
+  // S4-1: kObjCapacity -- active iff cfg.capacity_objective. std::max (not a hard
+  // assignment) so this never REGRESSES n_objectives if cost_active already bumped
+  // it to 5 -- mirrors search_driver.cpp's kObjParsimony/kObjDeflation bump pattern.
+  // When off: rep.capacity_score stays core's inert 0.0, objectives[7] is untouched
+  // (uniform default across genomes -> inert in NSGA), n_objectives is unchanged --
+  // the boundary-pin no-op, byte-identical.
+  rep.capacity_score = core.capacity_score;
+  if (cfg.capacity_objective) {
+    rep.objectives[kObjCapacity] = core.capacity_score;
+    rep.n_objectives = static_cast<atx::u8>(
+        std::max<atx::usize>(rep.n_objectives, kObjCapacity + 1U));
+  }
+  // S4-2: kObjTurnover -- active iff cfg.turnover_objective (same discipline).
+  rep.turnover_autocorr = core.turnover_autocorr;
+  if (cfg.turnover_objective) {
+    rep.objectives[kObjTurnover] = core.turnover_autocorr;
+    rep.n_objectives = static_cast<atx::u8>(
+        std::max<atx::usize>(rep.n_objectives, kObjTurnover + 1U));
   }
   // S4.2: carry the candidate's realized OOS PnL profile (the behavioral
   // descriptor / phenotype) out of the core so the SearchDriver can canon-cache it

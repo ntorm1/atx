@@ -195,6 +195,8 @@ namespace {
     kv_d("robust_holdout_frac", cfg.robust_holdout_frac);
     kv_d("max_price_scale_corr", cfg.max_price_scale_corr);
     kv_b("deflate_selection", cfg.deflate_selection);
+    kv_b("capacity_objective", cfg.capacity_objective); // S4: kObjCapacity NSGA gate
+    kv_b("turnover_objective", cfg.turnover_objective); // S4: kObjTurnover NSGA gate
     // Grammar / field discipline.
     kv_b("typed_fields", cfg.typed_fields);
     kv_i("field_cardinality_max", cfg.field_cardinality_max);
@@ -598,6 +600,8 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.max_price_scale_corr      = cfg.max_price_scale_corr;   // R2 price-scale gate (off by default = 1.0)
     fcfg.dsr_subwindows = static_cast<atx::usize>(std::max<int>(cfg.dsr_subwindows, 0)); // R3 intra-holdout DSR sub-windows (off by default = 0)
     fcfg.search.deflate_selection  = cfg.deflate_selection; // R4: opt-in deflated-Sharpe search selection
+    fcfg.search.capacity_objective = cfg.capacity_objective; // S4: kObjCapacity gate (also fixes the ungated path)
+    fcfg.search.turnover_objective = cfg.turnover_objective; // S4: kObjTurnover gate
     fcfg.oos_fraction              = eff_oos_fraction; // R3a: use the effective fraction (auto-default 0.25 for accumulation)
     fcfg.oos_embargo               = cfg.oos_embargo;
     fcfg.oos_n_windows = static_cast<atx::usize>(std::max<long>(cfg.oos_windows, 0));
@@ -805,6 +809,8 @@ atx::core::Result<StageResult> run_discover_gated(
         mf << "max_turnover="    << gc.max_turnover      << '\n';
         mf << "max_pool_corr="   << gc.max_pool_corr     << '\n';
         mf << "target_aum="      << cfg.target_aum       << '\n';
+        mf << "capacity_objective=" << cfg.capacity_objective << '\n'; // S4
+        mf << "turnover_objective=" << cfg.turnover_objective << '\n'; // S4
         // W5: capacity-universe size as a RECORDED admission metric — emitted ONLY when
         // the W2 capacity screen was active (capacity_on), gated so the OFF-path manifest
         // is byte-identical (mirrors the OOS / W4b-PBO emit-only-when-active discipline).
@@ -1007,6 +1013,14 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
             "group_map is supplied to the search eval path); it is exposed but "
             "out of W1a scope. Omit it.");
     }
+    // S4: --capacity-objective needs a positive --target-aum anchor (its AUM). A
+    // parsed flag that silently scores 0 for every genome is a defect (the anti-
+    // roadmap "fail-loud, never a silent no-op" guardrail), so reject the combo.
+    if (cfg.capacity_objective && cfg.target_aum <= 0.0) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "discover: --capacity-objective requires --target-aum > 0 (the capacity "
+            "score's AUM anchor); without it the objective would be a silent no-op.");
+    }
 
     exec::ExecutionSimulator sim = frictionless_sim();
     combine::AlphaStore pool{};   // empty pool: first-generation discovery
@@ -1038,6 +1052,8 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     sc.deflate_selection              = cfg.deflate_selection;            // also fixes the ungated path (was only set on fcfg.search)
     sc.fitness.turnover_penalty_slope = cfg.turnover_penalty_slope;
     sc.fitness.max_turnover_target    = cfg.max_turnover_target;
+    sc.capacity_objective             = cfg.capacity_objective;           // S4: kObjCapacity gate (SearchConfig -> gen_fit)
+    sc.turnover_objective             = cfg.turnover_objective;           // S4: kObjTurnover gate
 
     // Parallelize the search (digest-invariant: SearchConfig::n_workers affects
     // speed/memory, never bits — F1). --workers overrides; 0 = auto (cores-1).
