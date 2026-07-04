@@ -7,6 +7,7 @@ up to date. It is safe to call multiple times; only unapplied migrations run.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 import inspect
@@ -34,14 +35,65 @@ def _migration_version_text(version: int) -> str:
 
 
 def _migration_source_checksum(migration: Migration) -> str:
-    """Stable sha256 digest of a migration's current ``up`` function source."""
-    source = inspect.getsource(migration.up)
-    normalized = textwrap.dedent(source).replace("\r\n", "\n").replace("\r", "\n").strip()
-    return hashlib.sha256(f"{normalized}\n".encode("utf-8")).hexdigest()
+    """Stable sha256 digest of a migration's ``up`` source plus direct helper sources."""
+    parts: list[tuple[str, str]] = []
+    seen: set[int] = set()
+
+    def normalize_source(func: Callable) -> str:
+        source = inspect.getsource(func)
+        return textwrap.dedent(source).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    def direct_module_helper_names(source: str) -> set[str]:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return set()
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                name = node.func.id
+                helper = migration.up.__globals__.get(name)
+                if callable(helper) and getattr(helper, "__name__", "") != migration.up.__name__:
+                    names.add(name)
+        return names
+
+    def collect(name: str, func: Callable, depth: int) -> None:
+        identity = id(func)
+        if identity in seen:
+            return
+        seen.add(identity)
+        try:
+            source = normalize_source(func)
+        except (OSError, TypeError):
+            source = repr(func)
+        parts.append((name, source))
+        if depth >= 4:
+            return
+        for helper_name in sorted(direct_module_helper_names(source)):
+            helper = migration.up.__globals__.get(helper_name)
+            if callable(helper):
+                collect(helper_name, helper, depth + 1)
+
+    collect(migration.up.__name__, migration.up, 0)
+    payload = "\n\n".join(
+        f"# symbol:{name}\n{source}" for name, source in sorted(parts, key=lambda item: item[0])
+    )
+    return hashlib.sha256(f"{payload}\n".encode("utf-8")).hexdigest()
 
 
 def _migration_by_version() -> dict[int, Migration]:
+    _validate_migration_registry()
     return {migration.version: migration for migration in MIGRATIONS}
+
+
+def _validate_migration_registry() -> None:
+    versions = [migration.version for migration in MIGRATIONS]
+    if versions != sorted(versions):
+        raise RuntimeError(f"MIGRATIONS must be sorted ascending: {versions}")
+    duplicates = sorted({version for version in versions if versions.count(version) > 1})
+    if duplicates:
+        formatted = ", ".join(_migration_version_text(version) for version in duplicates)
+        raise RuntimeError(f"MIGRATIONS contains duplicate versions: {formatted}")
 
 
 def verify_migration_checksums(
@@ -123,12 +175,41 @@ def _ensure_apply_lock_table(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def release_apply_lock(conn: duckdb.DuckDBPyConnection) -> None:
-    """Release the singleton migration apply lock if present."""
-    try:
-        conn.execute("DELETE FROM migration_apply_lock WHERE lock_name = 'schema_migrations'")
-    except Exception:
-        pass
+def release_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str) -> None:
+    """Release the singleton migration apply lock held by ``run_id``."""
+    table_exists = conn.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE table_name = 'migration_apply_lock'
+        """
+    ).fetchone()[0]
+    if not table_exists:
+        return
+
+    row = conn.execute(
+        """
+        SELECT holder_run_id
+        FROM migration_apply_lock
+        WHERE lock_name = 'schema_migrations'
+        """
+    ).fetchone()
+    if row is None:
+        return
+    holder = row[0]
+    if holder != run_id:
+        raise RuntimeError(
+            "migration apply lock is held "
+            f"by run_id {holder}; refusing release by run_id {run_id}"
+        )
+    conn.execute(
+        """
+        DELETE FROM migration_apply_lock
+        WHERE lock_name = 'schema_migrations'
+          AND holder_run_id = ?
+        """,
+        [run_id],
+    )
 
 
 @contextlib.contextmanager
@@ -160,7 +241,7 @@ def acquire_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str):
     try:
         yield
     finally:
-        release_apply_lock(conn)
+        release_apply_lock(conn, run_id)
 
 
 def _schema_evolution_alters(conn: duckdb.DuckDBPyConnection) -> None:

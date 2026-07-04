@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import duckdb
 import pytest
 
 
@@ -49,6 +50,35 @@ def test_verify_migration_checksums_names_tampered_version(tmp_store, monkeypatc
         migrations.verify_migration_checksums(tmp_store.con)
 
 
+def test_current_schema_initialize_verifies_checksums(tmp_store):
+    from db.connection import DuckDBStore
+
+    db_path = tmp_store.path
+    tmp_store.con.execute(
+        "UPDATE schema_migrations SET checksum = 'tampered' WHERE version = '0101'"
+    )
+    tmp_store.con.close()
+    tmp_store.connection = None
+
+    with pytest.raises(RuntimeError, match="0101"):
+        with DuckDBStore(db_path):
+            pass
+
+
+def test_migration_checksum_includes_direct_helper_source(monkeypatch):
+    import db.migrations as migrations
+
+    migration_0100 = next(migration for migration in migrations.MIGRATIONS if migration.version == 100)
+    original = migrations._migration_source_checksum(migration_0100)
+
+    def changed_backfill(conn):
+        conn.execute("SELECT 42")
+
+    monkeypatch.setattr(migrations, "_backfill_missing_migration_checksums", changed_backfill)
+
+    assert migrations._migration_source_checksum(migration_0100) != original
+
+
 def test_apply_pending_migrations_clean_current_db_returns_empty(tmp_store):
     from db.migrations import apply_pending_migrations
 
@@ -61,6 +91,42 @@ def test_held_apply_lock_fails_fast(tmp_store):
     with acquire_apply_lock(tmp_store.con, "held-by-test"):
         with pytest.raises(RuntimeError, match="migration apply lock.*held-by-test"):
             apply_pending_migrations(tmp_store.con)
+
+
+def test_apply_lock_release_is_holder_scoped(tmp_store):
+    from db.migrations import acquire_apply_lock, release_apply_lock
+
+    with acquire_apply_lock(tmp_store.con, "holder-a"):
+        with pytest.raises(RuntimeError, match="holder-a"):
+            release_apply_lock(tmp_store.con, "holder-b")
+        holder = tmp_store.con.execute(
+            "SELECT holder_run_id FROM migration_apply_lock WHERE lock_name = 'schema_migrations'"
+        ).fetchone()
+        assert holder == ("holder-a",)
+
+    remaining = tmp_store.con.execute(
+        "SELECT count(*) FROM migration_apply_lock WHERE lock_name = 'schema_migrations'"
+    ).fetchone()[0]
+    assert remaining == 0
+
+
+def test_apply_lock_blocks_second_connection(tmp_store, tmp_path):
+    from db.connection import DuckDBStore
+    from db.migrations import acquire_apply_lock
+
+    db_path = tmp_path / "lock_contention.duckdb"
+    with DuckDBStore(db_path):
+        pass
+    con_a = duckdb.connect(str(db_path))
+    con_b = duckdb.connect(str(db_path))
+    try:
+        with acquire_apply_lock(con_a, "holder-a"):
+            with pytest.raises(RuntimeError, match="migration apply lock.*holder-a"):
+                with acquire_apply_lock(con_b, "holder-b"):
+                    pass
+    finally:
+        con_a.close()
+        con_b.close()
 
 
 def test_migration_governance_migrations_schema_catalog_and_indexes(tmp_store):
