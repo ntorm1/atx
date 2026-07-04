@@ -1332,3 +1332,301 @@ path, since `fit_shrinkage_mv_cleaned_cov` never reads them). This plan omits th
 (documented in the S2-1 code comment); including them would not change any test outcome in this
 sprint but would future-proof against a later sprint wiring a combine-side consumer for either
 field.
+
+---
+
+# AMENDMENT (authoritative — supersedes the conflicting parts above)
+
+**Reconciliation decision (operator-approved):** ROADMAP addendum **R3/R4** (self-labeled
+authoritative, "the load-bearing one") requires that S1's dead-alpha crowding defense reach the
+**mega-book / metabook** path — because `stage_run.cpp:127` (`if (cfg.metabook) run_metabook()
+else run_optimize()`) means the flagship recipe's `--metabook` makes `stage_optimize` **never
+run**. R6 further confirms the prod `optimize` argv branch is DEAD. Therefore crowding defense that
+lands only in `stage_optimize` (S1) is a **Potemkin win on a dead path**. The body of S2-2 above
+passes `build_risk_model(..., nullptr, {}, 0, fit_end)` in the metabook Factor loop — which
+**defers** this and leaves the contradiction unresolved. This amendment REPLACES that with the
+R3/R4-honoring wire, via a shared header (chosen mechanism), and adds one new unit (**S2-0**) that
+must land FIRST.
+
+Where this amendment and the S2-1/S2-2 bodies above disagree, **this amendment wins.** S2-1
+(`run_combine` routing) is unchanged. S2-2's *structure* (additive 3-arg overload, 2-arg
+forwarders, per-step PIT loop, `model_at`, PIT tests) is unchanged — only the two `build_risk_model`
+call sites inside the Factor loop and their supporting resolve-once block change, plus one new test.
+
+**Revised unit order:** **S2-0** (shared header extraction) → **S2-1** (`run_combine`, as written
+above) → **S2-2** (metabook overload, as written above BUT with the dead_lib wire from this
+amendment) → **S2-3** (crowding-reaches-metabook proof, NEW).
+
+**Ownership delta:** S2 now also edits `atx-impl/src/stage_optimize.cpp` (S2-0 removes the three
+anon-namespace helpers and replaces them with an `#include` — a pure relocation, no logic change)
+and creates `atx-impl/src/dead_alpha_wire.hpp`. This is legitimate: S1 is already committed on this
+same branch; the "must not touch stage_optimize.cpp" rule was a same-time parallel-safety guard, not
+a sequential one. S2-0's acceptance is that **every S1 test still passes byte-identically** after
+the relocation.
+
+---
+
+### S2-0 — Extract the dead-alpha wire into a shared header (do FIRST)
+
+**Goal:** promote S1's three anon-namespace helpers in `stage_optimize.cpp` (lines ~35-102:
+`resolve_dead_alpha_lib_dir`, `maybe_open_dead_lib`, `collect_dead_alpha_ids`) into a new shared
+header `atx-impl/src/dead_alpha_wire.hpp` in `namespace atx::impl`, so `stage_metabook.cpp` (S2-2)
+can reuse the IDENTICAL resolution logic. Pure relocation — zero logic change, so every S1 test is
+byte-identical after.
+
+**Files:**
+- Create `atx-impl/src/dead_alpha_wire.hpp`.
+- Modify `atx-impl/src/stage_optimize.cpp` (remove the 3 helpers + their `namespace { }` wrapper;
+  add the include).
+
+**Steps:**
+
+1. **Create `atx-impl/src/dead_alpha_wire.hpp`** — the three helpers verbatim (bodies unchanged),
+   as `inline` functions in `namespace atx::impl`. Update ONLY the lead comment to note the shared
+   ownership. Exact content:
+   ```cpp
+   #pragma once
+
+   // Shared dead-alpha crowding wire (p9 S1, extracted in S2-0 for metabook reuse).
+   // resolve/open/collect the accumulating library::Library that build_risk_model
+   // augments into Kakushadze-Yu dead-alpha crowding factors. Consumed by BOTH
+   // stage_optimize.cpp (S1, the run_optimize path) AND stage_metabook.cpp (S2, the
+   // run_metabook / mega-book path) -- the two build_risk_model sites the p9 ROADMAP
+   // R3/R4 names. Header-only inline: both TUs already pull library.hpp; the fail-open
+   // contract (nullptr/{} => byte-identical no-op) lives entirely in maybe_open_dead_lib.
+
+   #include <filesystem>
+   #include <optional>
+   #include <string>
+   #include <vector>
+
+   #include "config.hpp" // atx::impl::RunConfig
+
+   #include "atx/engine/combine/gate.hpp"          // combine::GateConfig, AlphaId
+   #include "atx/engine/library/library.hpp"       // library::Library
+   #include "atx/engine/library/lifecycle.hpp"     // library::LifecycleState
+   #include "atx/engine/risk/factor_model.hpp"     // risk::RiskModelConfig
+
+   namespace atx::impl {
+
+   namespace combine = atx::engine::combine;
+   namespace library = atx::engine::library;
+   namespace risk    = atx::engine::risk;
+
+   // (verbatim body of resolve_dead_alpha_lib_dir, now `inline`)
+   [[nodiscard]] inline std::string resolve_dead_alpha_lib_dir(const RunConfig& cfg) {
+       return !cfg.dead_alpha_lib_dir.empty() ? cfg.dead_alpha_lib_dir : cfg.library_dir;
+   }
+
+   // (verbatim body of maybe_open_dead_lib, now `inline` -- keep S1's full comment)
+   [[nodiscard]] inline std::optional<library::Library>
+   maybe_open_dead_lib(const RunConfig& cfg, const risk::RiskModelConfig& risk_cfg) {
+       if (!risk_cfg.dead_alpha_factors) {
+           return std::nullopt;
+       }
+       const std::string dir = resolve_dead_alpha_lib_dir(cfg);
+       if (dir.empty()) {
+           return std::nullopt;
+       }
+       std::error_code ec;
+       if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+           return std::nullopt;
+       }
+       return library::Library::open(dir, combine::GateConfig{}, {cfg.seed});
+   }
+
+   // (verbatim body of collect_dead_alpha_ids, now `inline` -- keep S1's full comment)
+   [[nodiscard]] inline std::vector<combine::AlphaId>
+   collect_dead_alpha_ids(const library::Library& lib, atx::usize dead_as_of) {
+       std::vector<combine::AlphaId> ids;
+       const atx::u64 n = lib.n_alphas();
+       ids.reserve(static_cast<atx::usize>(n));
+       for (atx::u64 a = 0; a < n; ++a) {
+           const combine::AlphaId id{static_cast<atx::u32>(a)};
+           const auto st = lib.state_as_of(id, dead_as_of);
+           if (st.has_value() && *st != library::LifecycleState::Candidate &&
+               *st != library::LifecycleState::Recycled) {
+               ids.push_back(id);
+           }
+       }
+       return ids;
+   }
+
+   } // namespace atx::impl
+   ```
+   IMPORTANT: copy S1's actual full comment blocks from `stage_optimize.cpp:37-100` verbatim onto
+   the three functions (the abbreviated `// (verbatim body...)` markers above are placeholders —
+   the real comments must survive the move). Confirm the include of `combine/gate.hpp` is where
+   `combine::GateConfig` and `combine::AlphaId` actually come from by reading `stage_optimize.cpp`'s
+   own include list; if S1 pulls them from a different header, match that instead.
+
+2. **Edit `stage_optimize.cpp`:** delete the entire `namespace { ... } // namespace` block that
+   holds the three helpers (S1's lines ~35-102), and add `#include "dead_alpha_wire.hpp"` alongside
+   the other local-header includes. Keep the file's own `namespace combine`/`namespace library`
+   aliases (lines 32-33) — they are still used by the call-site block at ~331-337. The unqualified
+   calls (`maybe_open_dead_lib(cfg, risk_cfg)`, `collect_dead_alpha_ids(...)`) still resolve because
+   the header's functions are in the same `namespace atx::impl` the call sites live in. If the
+   compiler now complains those aliases are redundant/ambiguous with the header's own aliases,
+   prefer the header's and drop the file-local duplicates — but only if the build actually errors.
+
+3. **Verify (S2-0 acceptance — byte-identity of the relocation):**
+   ```
+   <scratch>\p9-build.ps1 -Target atx-impl-tests
+   <scratch>\p9-ctest.ps1 -R "AtxImplOptimizeDeadAlphaWire|AtxImplOptimizeDeadAlphaDeterminism|AtxImplOptimizeRiskModel|AtxImplDeadFactor|ConfigParse"
+   ```
+   Expected: the SAME 19/19 green S1 shipped — no test changes value (this is a pure move). If any
+   S1 test now fails, the relocation changed behavior — STOP and fix before proceeding.
+
+4. **Commit** (stage exactly these two paths):
+   ```
+   git add atx-impl/src/dead_alpha_wire.hpp atx-impl/src/stage_optimize.cpp
+   git commit -m "$(cat <<'EOF'
+   PF-P9 S2-0: extract dead-alpha wire into shared header for metabook reuse
+
+   Relocates S1's three anon-namespace helpers (resolve_dead_alpha_lib_dir,
+   maybe_open_dead_lib, collect_dead_alpha_ids) from stage_optimize.cpp into
+   a new atx-impl/src/dead_alpha_wire.hpp (inline, namespace atx::impl), so
+   stage_metabook.cpp (S2-2) reuses the IDENTICAL resolution logic instead of
+   duplicating it -- satisfying ROADMAP R4 (shared dead-lib helper both stages
+   include). Pure relocation, zero logic change: all 19 S1 tests byte-identical.
+
+   Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+   EOF
+   )"
+   ```
+
+---
+
+### S2-2 amendment — thread the dead-alpha wire through the metabook Factor loop
+
+Inside the S2-2 `build_metabook_result(cfg, scfg_in, risk_cfg)` Factor branch (the `else` at line
+704 above), the two `build_risk_model(research, ..., {}, nullptr, {}, 0, fit_end)` calls (lines 710
+and 718) are REPLACED to pass the resolved dead-alpha triple, exactly as `stage_optimize.cpp`'s
+own Factor loop does after S1.
+
+**Additional includes in `stage_metabook.cpp`** (alongside the S2-2 includes already specified):
+```cpp
+#include "dead_alpha_wire.hpp" // maybe_open_dead_lib / collect_dead_alpha_ids (S1, shared via S2-0)
+```
+and the namespace aliases (next to the `namespace risk`/`namespace data` aliases S2-2 adds):
+```cpp
+namespace combine = atx::engine::combine;
+namespace library = atx::engine::library;
+```
+
+**Resolve-once block** — inside the Factor `else` branch, BEFORE the `for (s...)` loop (i.e. right
+after `step_models.reserve(n_steps);`), mirroring `stage_optimize.cpp`'s resolve-once block:
+```cpp
+// R3/R4 (p9): reach the mega-book with S1's crowding defense. The metabook path
+// SUBSTITUTES run_optimize (stage_run.cpp:127), so this is the mega-book's only
+// build_risk_model site -- resolve the dead-alpha library ONCE (Library::open does
+// sqlite I/O; the triple is identical for every step) via the SAME shared helpers
+// stage_optimize uses. Fail-open: dead_alpha_factors=false / no dir / missing dir /
+// empty pool all yield nullptr/{}, byte-identical to the pre-amendment nullptr calls.
+std::optional<library::Library> dead_lib_opt = maybe_open_dead_lib(cfg, risk_cfg);
+const library::Library* dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
+std::vector<combine::AlphaId> dead_ids;
+atx::usize dead_as_of = 0;
+if (dead_lib_ptr != nullptr) {
+    dead_as_of = dead_lib_ptr->n_periods() > 0 ? dead_lib_ptr->n_periods() - 1 : 0;
+    dead_ids = collect_dead_alpha_ids(*dead_lib_ptr, dead_as_of);
+}
+```
+
+**The two call-site edits** (inside the loop):
+```cpp
+// line 710 BEFORE:
+auto factor_artifact = build_risk_model(research, risk_cfg, {}, nullptr, {}, 0, fit_end);
+// AFTER:
+auto factor_artifact =
+    build_risk_model(research, risk_cfg, {}, dead_lib_ptr, dead_ids, dead_as_of, fit_end);
+```
+```cpp
+// lines 718-719 BEFORE:
+ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, nullptr,
+                                             {}, 0, fit_end));
+// AFTER (inert -- diag_fallback_cfg.dead_alpha_factors==false gates the augmentation off
+// regardless -- but threaded for symmetry so no build_risk_model call in this loop spells
+// a literal nullptr, matching stage_optimize.cpp's own post-S1 shape):
+ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, dead_lib_ptr,
+                                             dead_ids, dead_as_of, fit_end));
+```
+
+**Byte-identity is preserved** (S2-2's `MetabookRiskModelWire` PIT tests keep their exact digests):
+the Diagonal default branch never enters this loop; the Factor branch with `dead_alpha_factors=false`
+(the PIT tests' config) makes `maybe_open_dead_lib` return `nullopt` ⇒ `dead_lib_ptr==nullptr` ⇒
+identical args to the pre-amendment `nullptr` calls. The S2-2 commit message gains one line:
+`Factor loop threads the S1 dead-alpha wire (R3/R4) so crowding reaches the mega-book; inert when
+--dead-alpha-factors is off.`
+
+---
+
+### S2-3 — Crowding reaches the mega-book (NEW proof unit)
+
+**Goal:** the genuine RED→GREEN for R3/R4 — a crowded-pool library makes `run_metabook`'s Factor
+path size DOWN the crowded instrument, proving S1's defense now reaches the mega-book. RED against
+the pre-amendment S2-2 (nullptr in the loop ⇒ no effect ⇒ weights identical); GREEN after.
+
+**Files:** Create `atx-impl/tests/stage_metabook_dead_alpha_wire_test.cpp` (suite
+`MetabookDeadAlphaWire`).
+
+**Fixtures:** reuse S1's on-disk `seed_crowded_library` (copy verbatim from
+`stage_optimize_dead_alpha_wire_test.cpp`, per this codebase's no-cross-file-test-dependency
+convention) and the metabook research/combo fixture from the S2-2 test file
+(`stage_metabook_riskmodel_wire_test.cpp` — copy its `make_*` helpers locally). The metabook combo
+must define at least one sleeve/source so `MetaBook::run` produces `fund_books` (mirror exactly the
+S2-2 wire test's fixture — do not invent a new metabook input shape).
+
+**Tests:**
+
+1. **`CrowdingDeleversMegaBook` (the R3/R4 RED→GREEN).** Build research + a crowded on-disk library
+   concentrated on instrument `center`. Run `run_metabook` TWICE with `cfg.risk_model="factor"`:
+   (baseline) `dead_alpha_factors=false`; (delevered) `dead_alpha_factors=true` +
+   `dead_alpha_lib_dir` pointed at the crowded library. Load both `fund_books` panels; assert the
+   crowded instrument's |weight| in the last period **strictly shrinks** in the delevered run
+   (`EXPECT_LT(|w_delev[center]|, |w_base[center]|)`), plus the `std::bit_cast<std::uint64_t>`
+   inequality proving the two runs are not byte-identical. This is RED on the pre-amendment loop
+   (nullptr ⇒ identical weights, both `EXPECT_LT`/`EXPECT_NE` fail) and GREEN after the wire lands.
+   **Honesty gate:** if the metabook/sleeve optimizer does NOT consume the augmented FactorModel
+   covariance in a way that de-levers the crowded direction, this test will not move to GREEN — in
+   that case STOP and report exactly which consumer ignores the augmentation (do not weaken the
+   assertion to force a pass; the whole point of R3/R4 is that the augmentation must actually bite
+   on the mega-book path). A genuinely-inert result is a finding, not a test to soften.
+2. **`MegaBookFailOpenByteIdentical` (regression guard).** `cfg.risk_model="factor"`,
+   `dead_alpha_factors=true`, but `dead_alpha_lib_dir` = a nonexistent dir. `run_metabook` must
+   return Ok and produce a digest byte-identical to the same run with `dead_alpha_factors=false` —
+   the metabook analog of S1's `FailOpen_MissingDirByteIdentical` (proves the shared
+   `maybe_open_dead_lib` fail-open guard protects the metabook path too, no abort).
+
+**Verify:**
+```
+<scratch>\p9-build.ps1 -Target atx-impl-tests
+<scratch>\p9-ctest.ps1 -R "MetabookDeadAlphaWire|MetabookRiskModelWire"
+```
+Expected: `MetabookDeadAlphaWire` green (2/2), `MetabookRiskModelWire` (S2-2) still green.
+
+**Commit** (stage exactly the one test file):
+```
+git add atx-impl/tests/stage_metabook_dead_alpha_wire_test.cpp
+git commit -m "$(cat <<'EOF'
+PF-P9 S2-3: prove S1 crowding defense reaches the mega-book (R3/R4)
+
+The mega-book recipe sets --metabook, so stage_optimize (S1's wire) never
+runs on it (stage_run.cpp:127). S2-2's metabook Factor loop now threads the
+shared dead-alpha wire, so a crowded-pool library sizes DOWN the crowded
+instrument in run_metabook's Factor path -- RED before the wire (nullptr =>
+identical weights), GREEN after. Plus a mega-book fail-open byte-identity
+guard mirroring S1's missing-dir test.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+**Revised sprint-close acceptance (supersedes the bench section's crowding bullet):** in addition
+to S2-1's combine diversification win and S2-2's metabook PIT correctness, the mega-book path now
+de-crowds — `MetabookDeadAlphaWire.CrowdingDeleversMegaBook` GREEN — closing R3/R4 so S1's crowding
+defense is live on the path the flagship recipe actually executes, not only the R6-dead optimize
+path.
