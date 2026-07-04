@@ -113,6 +113,9 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/regime/loader.cpp
     src/regime/store.cpp
     src/regime/with_regime_fields.cpp
+    # disk hive-parquet options store + quant (feat/disk-data-layer)
+    src/data/disk.cpp
+    src/quant/trading_calendar.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
@@ -158,4 +161,8 @@ endif()
 
 if(ATX_BUILD_BENCH)
     add_subdirectory(bench)
+endif()
+
+if(ATX_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()

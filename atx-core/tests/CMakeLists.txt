@@ -49,6 +49,7 @@ add_executable(atx-core-tests
     parquet_writer_test.cpp
     databento_test.cpp
     zip_reader_test.cpp
+    databento_split_test.cpp
 )
 
 target_link_libraries(atx-core-tests
