@@ -1897,6 +1897,7 @@ def refresh_fundamental_ttm_points(store: DuckDBStore) -> int:
                     CAST(to_json(list(accession_number ORDER BY period_end, statement_point_id)) AS VARCHAR) AS input_accessions_json,
                     CAST(to_json(list(CAST(period_end AS VARCHAR) ORDER BY period_end, statement_point_id)) AS VARCHAR) AS input_period_ends_json,
                     sum(value) AS ttm_value,
+                    bool_or(fiscal_period = 'Q4_DERIVED') AS has_stitched_q4,
                     max(coalesce(source_loaded_at, anchor_source_loaded_at)) AS source_loaded_at
                 FROM trailing_windows
                 WHERE trailing_rank <= 4
@@ -1973,7 +1974,10 @@ def refresh_fundamental_ttm_points(store: DuckDBStore) -> int:
                     WHEN revision_sequence = 1 THEN false
                     ELSE ttm_value IS DISTINCT FROM previous_ttm_value
                 END AS is_value_changed,
-                'sum_four_visible_quarter_like_statement_points_with_ytd_quarter_derivations' AS calculation_method,
+                CASE
+                    WHEN has_stitched_q4 THEN 'stitched_quarterly_ttm'
+                    ELSE 'sum_four_visible_quarter_like_statement_points_with_ytd_quarter_derivations'
+                END AS calculation_method,
                 source_loaded_at
             FROM sequenced
             """

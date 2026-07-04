@@ -8845,6 +8845,352 @@ def _industry_template_coverage_indexes(conn: duckdb.DuckDBPyConnection) -> None
     _schema_contract_schema_catalog(conn)
 
 
+def _calendarization_map_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S6 S6-0: fiscal-to-calendar map and 52/53-week flags."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_calendar_map (
+            calendar_map_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            upstream_source VARCHAR NOT NULL,
+            fundamental_period_id VARCHAR NOT NULL,
+            period_group_id VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR NOT NULL,
+            accession_number VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            normalized_period_type VARCHAR NOT NULL,
+            fyr INTEGER NOT NULL,
+            period_length_days INTEGER,
+            week_count INTEGER,
+            is_53_week BOOLEAN NOT NULL,
+            reported_fiscal_year INTEGER,
+            reported_fiscal_period VARCHAR,
+            fiscal_scheme_year INTEGER NOT NULL,
+            fiscal_scheme_quarter INTEGER NOT NULL,
+            fiscal_scheme_period VARCHAR,
+            containing_calendar_year INTEGER NOT NULL,
+            containing_calendar_quarter INTEGER NOT NULL,
+            containing_calendar_period VARCHAR,
+            greatest_overlap_calendar_year INTEGER NOT NULL,
+            greatest_overlap_calendar_quarter INTEGER NOT NULL,
+            greatest_overlap_calendar_period VARCHAR,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'calendarization',
+            'atx_warehouse',
+            'Fundamental calendarization',
+            'Fiscal-to-calendar period labels, 52/53-week flags, calendar-aligned TTM, and coverage checks for fundamental statement periods.',
+            'security_id,period_end,accession_number',
+            'fundamental_calendar_map',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_calendar_map',
+            'gold',
+            'fundamental_calendar_map',
+            'source,upstream_source,fundamental_period_id',
+            'Fiscal-to-calendar map for fundamental_periods, including fiscal-reported, containing-calendar, and Compustat-FYR greatest-overlap labels plus period length and 52/53-week flags.',
+            '["calendar_map_id"]',
+            'Derived from fundamental_periods; resolve with as_of_date/available_at and is_latest_revision. source identifies the calendarization run, upstream_source the original statement source.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('calendar_map_id', 'fundamental_period_id', 'period_group_id', 'security_id', 'cik', 'accession_number', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('is_53_week', 'is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'fyr' THEN 'Fiscal-year-end calendar month under the Compustat FYR convention.'
+                WHEN 'period_length_days' THEN 'Inclusive day count from period_start through period_end.'
+                WHEN 'week_count' THEN 'Rounded fiscal-week count implied by period_length_days.'
+                WHEN 'is_53_week' THEN 'True when the period is one fiscal week longer than its normal quarter/YTD/year bucket.'
+                WHEN 'greatest_overlap_calendar_period' THEN 'Calendar period label under the Compustat-FYR greatest-overlap scheme.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on fundamental_calendar_map.'
+            END AS description,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('period_start', 'period_end', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%days' THEN 'days'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_calendar_map'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _calendarization_ttm_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S6 S6-1: calendar-aligned trailing-twelve-month surface."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_calendar_ttm (
+            calendar_ttm_id VARCHAR PRIMARY KEY,
+            calendar_ttm_revision_group_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            upstream_source VARCHAR NOT NULL,
+            anchor_statement_point_id VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR NOT NULL,
+            statement_type VARCHAR NOT NULL,
+            statement_section VARCHAR NOT NULL,
+            canonical_metric VARCHAR NOT NULL,
+            canonical_label VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            unit_type VARCHAR NOT NULL,
+            calendar_year INTEGER NOT NULL,
+            calendar_quarter INTEGER NOT NULL,
+            calendar_period VARCHAR NOT NULL,
+            calendar_period_end DATE NOT NULL,
+            ttm_start_date DATE NOT NULL,
+            ttm_end_date DATE NOT NULL,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            quarter_count INTEGER NOT NULL,
+            coverage_days INTEGER NOT NULL,
+            is_complete BOOLEAN NOT NULL,
+            min_input_available_at TIMESTAMP,
+            max_input_available_at TIMESTAMP,
+            input_statement_point_ids_json VARCHAR NOT NULL,
+            input_accessions_json VARCHAR NOT NULL,
+            input_calendar_periods_json VARCHAR NOT NULL,
+            ttm_value DOUBLE,
+            previous_ttm_value DOUBLE,
+            ttm_value_delta DOUBLE,
+            ttm_value_delta_percent DOUBLE,
+            revision_sequence INTEGER NOT NULL,
+            revision_count INTEGER NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL,
+            is_value_changed BOOLEAN NOT NULL,
+            calculation_method VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_calendar_ttm',
+            'atx_warehouse',
+            'Calendar-aligned fundamental TTM',
+            'Trailing-twelve-month statement values re-expressed on common calendar quarter ends from the fiscal calendar map.',
+            'security_id,canonical_metric,calendar_period,unit',
+            'fundamental_calendar_ttm',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_calendar_ttm',
+            'gold',
+            'fundamental_calendar_ttm',
+            'source,upstream_source,security_id,canonical_metric,calendar_period,unit',
+            'Calendar-aligned trailing-twelve-month statement values built from PIT-visible quarter-like statement facts mapped to greatest-overlap calendar quarters.',
+            '["calendar_ttm_id"]',
+            'Use as_of_date/available_at and is_latest_revision for PIT-safe calendar-aligned TTM reads; is_complete distinguishes four-quarter complete windows from partial proof-slice visibility.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('calendar_ttm_id', 'calendar_ttm_revision_group_id', 'anchor_statement_point_id', 'security_id', 'cik', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('calendar_period_end', 'ttm_start_date', 'ttm_end_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN lower(c.column_name) IN ('is_complete', 'is_latest_revision', 'is_value_changed') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'calendar_period' THEN 'Calendar quarter label under the greatest-overlap scheme.'
+                WHEN 'coverage_days' THEN 'Inclusive day span covered by the visible trailing quarter inputs.'
+                WHEN 'is_complete' THEN 'True when the row has four visible quarters and coverage_days is within the annual tolerance.'
+                WHEN 'input_statement_point_ids_json' THEN 'JSON lineage for statement points consumed in the calendar TTM window.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on fundamental_calendar_ttm.'
+            END AS description,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN ('calendar_period_end', 'ttm_start_date', 'ttm_end_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%days' THEN 'days'
+                WHEN lower(c.column_name) LIKE '%percent' THEN 'ratio'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_calendar_ttm'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _calendarization_coverage_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S6 S6-3: coverage report, quality-check support indexes, and contract."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS calendarization_coverage (
+            coverage_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            period_count INTEGER NOT NULL DEFAULT 0,
+            map_row_count INTEGER NOT NULL DEFAULT 0,
+            fiscal_scheme_unmapped_count INTEGER NOT NULL DEFAULT 0,
+            containing_scheme_unmapped_count INTEGER NOT NULL DEFAULT 0,
+            overlap_scheme_unmapped_count INTEGER NOT NULL DEFAULT 0,
+            duplicate_map_count INTEGER NOT NULL DEFAULT 0,
+            overlength_period_count INTEGER NOT NULL DEFAULT 0,
+            unflagged_53_week_count INTEGER NOT NULL DEFAULT 0,
+            calendar_ttm_row_count INTEGER NOT NULL DEFAULT 0,
+            incomplete_calendar_ttm_count INTEGER NOT NULL DEFAULT 0,
+            duplicate_calendar_ttm_window_count INTEGER NOT NULL DEFAULT 0,
+            stitched_ttm_row_count INTEGER NOT NULL DEFAULT 0,
+            duplicate_stitched_ttm_window_count INTEGER NOT NULL DEFAULT 0,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'calendarization_coverage',
+            'gold',
+            'calendarization_coverage',
+            'source,as_of_date',
+            'Coverage report for fiscal-to-calendar map completeness, 52/53-week flags, and calendar/stiched TTM duplicate windows.',
+            '["coverage_id"]',
+            'Coverage is a PIT report row; resolve with as_of_date and available_at <= query timestamp.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('coverage_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) IN ('is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            replace(c.column_name, '_', ' ') || ' field on calendarization_coverage.' AS description,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) = 'as_of_date' THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'calendarization_coverage'
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_calendar_map_period ON fundamental_calendar_map(upstream_source, security_id, period_end, accession_number)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_calendar_map_overlap ON fundamental_calendar_map(greatest_overlap_calendar_period, is_latest_revision)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_calendar_map_53_week ON fundamental_calendar_map(is_53_week, period_length_days)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_calendar_ttm_window ON fundamental_calendar_ttm(source, upstream_source, security_id, canonical_metric, calendar_period, unit)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_calendar_ttm_latest ON fundamental_calendar_ttm(is_latest_revision, is_complete)",
+        "CREATE INDEX IF NOT EXISTS idx_calendarization_coverage_source ON calendarization_coverage(source, is_latest_revision, as_of_date)",
+    ):
+        conn.execute(statement)
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -9336,6 +9682,21 @@ MIGRATIONS: list[Migration] = [
         version=113,
         name="industry_template_coverage_indexes",
         up=_industry_template_coverage_indexes,
+    ),
+    Migration(
+        version=114,
+        name="calendarization_map_schema_catalog",
+        up=_calendarization_map_schema_catalog,
+    ),
+    Migration(
+        version=115,
+        name="calendarization_ttm_schema_catalog",
+        up=_calendarization_ttm_schema_catalog,
+    ),
+    Migration(
+        version=116,
+        name="calendarization_coverage_indexes",
+        up=_calendarization_coverage_indexes,
     ),
 ]
 
