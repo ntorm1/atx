@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -13,6 +14,7 @@
 
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/data/adapt_factor.hpp"
+#include "atx/engine/library/library.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
 
@@ -27,6 +29,77 @@ namespace atx::impl {
 namespace alpha = atx::engine::alpha;
 namespace data  = atx::engine::data;
 namespace risk  = atx::engine::risk;
+namespace combine = atx::engine::combine;
+namespace library = atx::engine::library;
+
+namespace {
+
+// S1 (p9): resolve the on-disk library directory the dead-alpha crowding wire
+// reads from. --dead-alpha-lib-dir wins when set; otherwise fall back to the
+// discover stage's own accumulating --library-dir (the "library dir already in
+// the pipeline" the p9 ROADMAP names as S1's source). Neither set -> "" -> the
+// caller's fail-open no-op (maybe_open_dead_lib below).
+[[nodiscard]] std::string resolve_dead_alpha_lib_dir(const RunConfig& cfg) {
+    return !cfg.dead_alpha_lib_dir.empty() ? cfg.dead_alpha_lib_dir : cfg.library_dir;
+}
+
+// S1 (p9): open the accumulating library for the dead-alpha-factor wire, or
+// return nullopt on any of three fail-open conditions: (1) the augmentation
+// gate itself is off; (2) no directory resolves anywhere; (3) the resolved
+// directory does not exist yet (an operator ran --dead-alpha-factors before any
+// --library-dir discover run created it -- a MISSING library is a documented
+// no-op, not a hard failure: crowding defense is a risk-reduction enhancement,
+// never a run-blocking dependency -- mirrors build_risk_model's own dead_lib==
+// nullptr contract, stage_riskmodel.hpp:120-126). GateConfig{} is inert here:
+// this handle only ever calls the READ methods (n_alphas/n_periods/
+// state_as_of); the gate floors matter only to admit()/try_admit(), never
+// invoked on this path.
+[[nodiscard]] std::optional<library::Library>
+maybe_open_dead_lib(const RunConfig& cfg, const risk::RiskModelConfig& risk_cfg) {
+    if (!risk_cfg.dead_alpha_factors) {
+        return std::nullopt;
+    }
+    const std::string dir = resolve_dead_alpha_lib_dir(cfg);
+    if (dir.empty()) {
+        return std::nullopt;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+        return std::nullopt;
+    }
+    return library::Library::open(dir, combine::GateConfig{}, {cfg.seed});
+}
+
+// S1 (p9): the "admitted dead-alpha pool" -- every AlphaId the library already
+// admitted as of `dead_as_of`. The codebase today has NO driver that walks an
+// alpha through Live->Decaying->Dead (grep of atx-impl/src for
+// LifecycleState::Dead / .mark( is empty), so gating on LifecycleState::Dead
+// literally would make this wire a permanent no-op against every real
+// accumulating library. Until a future sprint adds that lifecycle-aging
+// driver, "dead" here means "already admitted, not yet recycled":
+// state_as_of(id, dead_as_of) NOT IN {Candidate, Recycled} -- Candidate
+// excludes an id not yet admitted as of this PIT query (the state_as_of PIT
+// contract, lifecycle.hpp:150-164); Recycled excludes a GC'd/reclaimed slot.
+// Ascending AlphaId order by construction; NOT load-bearing for
+// extract_dead_factors' own bit-reproducibility (it re-sorts internally,
+// dead_factor.hpp:194-198) -- see the DeadIdOrderInvariant proof (S1-2).
+[[nodiscard]] std::vector<combine::AlphaId>
+collect_dead_alpha_ids(const library::Library& lib, atx::usize dead_as_of) {
+    std::vector<combine::AlphaId> ids;
+    const atx::u64 n = lib.n_alphas();
+    ids.reserve(static_cast<atx::usize>(n));
+    for (atx::u64 a = 0; a < n; ++a) {
+        const combine::AlphaId id{static_cast<atx::u32>(a)};
+        const auto st = lib.state_as_of(id, dead_as_of);
+        if (st.has_value() && *st != library::LifecycleState::Candidate &&
+            *st != library::LifecycleState::Recycled) {
+            ids.push_back(id);
+        }
+    }
+    return ids;
+}
+
+} // namespace
 
 // S1-2 / S5-0: the public no-flag entry point (declared in stages.hpp, the
 // S5-CLI-hub surface) builds a RiskModelConfig from the S5-0 CLI fields
@@ -248,8 +321,25 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     std::optional<risk::FactorModel> single_model; // Diagonal path only
     std::vector<risk::FactorModel> step_models;    // Factor path only; one per sched.periods[s]
 
+    // S1 (p9): resolve the dead-alpha wire ONCE, shared by both the Diagonal
+    // single-model branch and the Factor per-step loop below (Library::open does
+    // real sqlite I/O; reopening it per rebalance step would be wasteful and
+    // unnecessary since the resolved triple is identical for every step -- the
+    // library's own holdings/period axis has no established alignment with the
+    // per-step fit_end, so a single "latest known crowding snapshot" is used for
+    // the whole run rather than attempting a per-step correspondence).
+    std::optional<library::Library> dead_lib_opt = maybe_open_dead_lib(cfg, risk_cfg);
+    const library::Library* dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
+    std::vector<combine::AlphaId> dead_ids;
+    atx::usize dead_as_of = 0;
+    if (dead_lib_ptr != nullptr) {
+        dead_as_of = dead_lib_ptr->n_periods() > 0 ? dead_lib_ptr->n_periods() - 1 : 0;
+        dead_ids = collect_dead_alpha_ids(*dead_lib_ptr, dead_as_of);
+    }
+
     if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
-        ATX_TRY(auto artifact, build_risk_model(research, risk_cfg));
+        ATX_TRY(auto artifact,
+                build_risk_model(research, risk_cfg, /*group_id=*/{}, dead_lib_ptr, dead_ids, dead_as_of));
         ATX_TRY(auto model, data::artifact_to_factor_model(artifact));
         single_model.emplace(std::move(model));
     } else {
@@ -257,15 +347,16 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
         step_models.reserve(S);
         for (atx::usize s = 0; s < S; ++s) {
             const atx::usize fit_end = sched.periods[s] + 1U; // PIT: through `period` inclusive
-            auto factor_artifact = build_risk_model(research, risk_cfg, {}, nullptr, {}, 0, fit_end);
+            auto factor_artifact =
+                build_risk_model(research, risk_cfg, {}, dead_lib_ptr, dead_ids, dead_as_of, fit_end);
             if (factor_artifact.has_value()) {
                 ATX_TRY(auto step_model, data::artifact_to_factor_model(*factor_artifact));
                 step_models.push_back(std::move(step_model));
             } else {
                 // Warm-up fallback: too little history yet for a genuine
                 // Factor fit at this step -- a PIT diagonal over [0, fit_end).
-                ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, nullptr,
-                                                             {}, 0, fit_end));
+                ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, dead_lib_ptr,
+                                                             dead_ids, dead_as_of, fit_end));
                 ATX_TRY(auto diag_model, data::artifact_to_factor_model(diag_artifact));
                 step_models.push_back(std::move(diag_model));
             }
