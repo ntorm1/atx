@@ -5,7 +5,7 @@ Branch: `feat/warehouse-parity`
 
 PF2 is in progress. PF2-S1 (schema-as-contract) is **complete and merged** into
 `feat/warehouse-parity` as merge commit `1776fb0`. PF2-S2 is implemented and
-committed in `C:/atx-wt/pf2-s2` as `eba1df9ffa00620b9bab7f16baf5e14bb42bdf41`,
+committed in `C:/atx-wt/pf2-s2` as `ceec446f2db24aee3bc721ebc136692c98a7b86f`,
 awaiting merge.
 
 ## Completed
@@ -19,7 +19,7 @@ awaiting merge.
   passed to 100% in about 225s.
 - Live DB smoke: OPERATOR-PENDING. No live migration/apply/smoke was run from the worktree.
 - PF2-S2: migration governance + backup/checkpoint/DR implemented on branch `feat/pf2-s2`
-  as `eba1df9ffa00620b9bab7f16baf5e14bb42bdf41`. Migrations consumed: `0100-0101`
+  as `ceec446f2db24aee3bc721ebc136692c98a7b86f`. Migrations consumed: `0100-0101`
   (`0102` remains reserved headroom). The local-main DB testing-speed improvements were
   merged into the worktree before S2 verification.
 - S2 implemented surfaces: migration source checksums + checksum verification, persistent
