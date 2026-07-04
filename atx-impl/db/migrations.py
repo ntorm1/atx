@@ -8386,6 +8386,162 @@ def _fundamental_standardization_coverage_view(conn: duckdb.DuckDBPyConnection) 
     _schema_contract_schema_catalog(conn)
 
 
+def _fundamental_pit_snapshot_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S4 S4-0/S4-1: ratio vintage column + PIT month snapshot table."""
+
+    conn.execute(
+        "ALTER TABLE fundamental_ratios ADD COLUMN IF NOT EXISTS vintage_class VARCHAR DEFAULT 'most_recently_restated'"
+    )
+    conn.execute(
+        """
+        UPDATE fundamental_ratios
+        SET vintage_class = CASE
+            WHEN is_latest_revision THEN 'most_recently_restated'
+            ELSE 'as_first_reported'
+        END
+        WHERE vintage_class IS NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_pit_snapshot (
+            snapshot_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            snapshot_month DATE NOT NULL,
+            upstream_source VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            canonical_metric VARCHAR NOT NULL,
+            item_id INTEGER,
+            basis VARCHAR NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            value DOUBLE,
+            unit VARCHAR,
+            unit_type VARCHAR,
+            vintage_class VARCHAR NOT NULL,
+            source_accession VARCHAR,
+            filed_date DATE,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            input_codes_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+
+def _fundamental_pit_snapshot_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S4 S4-0/S4-3: lookup indexes for month snapshots and ratio vintages."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_vintage ON fundamental_ratios(security_id, ratio_code, period_end, vintage_class, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_pit_snapshot_month ON fundamental_pit_snapshot(snapshot_month, security_id, canonical_metric)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_pit_snapshot_asof ON fundamental_pit_snapshot(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_pit_snapshot_vintage ON fundamental_pit_snapshot(vintage_class, is_latest_revision)",
+    ):
+        conn.execute(statement)
+
+
+def _fundamental_pit_snapshot_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S4 S4-0/S4-3: catalog PIT snapshot and ratio-vintage metadata."""
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_pit_snapshot',
+            'sec_edgar',
+            'Fundamental PIT month snapshots',
+            'End-of-month reconstruction of visible bitemporal fundamental facts with as-first-reported/restated vintage classification.',
+            'snapshot_month,security_id,canonical_metric,period_end,basis',
+            'fundamental_pit_snapshot', 'as_of_date', 'available_at', now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_pit_snapshot',
+            'gold',
+            'fundamental_pit_snapshot',
+            'snapshot_month,security_id,canonical_metric,period_end,basis',
+            'Compustat Snapshot-style month-end reconstruction over loaded bitemporal fundamentals, preserving vintage class and source accession.',
+            '["source", "snapshot_month", "security_id", "canonical_metric", "period_end", "basis"]',
+            'Rows are materialized only for requested proof/backfill months. Month reconstruction gates on available_at <= month end; use snapshot_month plus available_at/as_of_date for PIT reads.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('snapshot_id', 'security_id', 'cik', 'source_accession', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN ('snapshot_month', 'period_start', 'period_end', 'filed_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            CASE c.column_name
+                WHEN 'snapshot_month' THEN 'End-of-month snapshot date this row reconstructs.'
+                WHEN 'vintage_class' THEN 'as_first_reported, most_recently_restated, or intermediate_restatement.'
+                WHEN 'available_at' THEN 'Timestamp when the selected vintage became visible; must be <= snapshot month end.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on fundamental_pit_snapshot.'
+            END AS description,
+            coalesce(c.is_nullable, true) AS nullable,
+            CASE
+                WHEN lower(c.column_name) IN ('snapshot_month', 'period_start', 'period_end', 'filed_date', 'as_of_date') THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_pit_snapshot'
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES (
+            'fundamental_ratios',
+            'vintage_class',
+            'category',
+            'Ratio vintage classification: as_first_reported, most_recently_restated, or intermediate_restatement.',
+            true,
+            NULL,
+            NULL,
+            now()
+        )
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -8842,6 +8998,21 @@ MIGRATIONS: list[Migration] = [
         version=106,
         name="fundamental_standardization_coverage_view",
         up=_fundamental_standardization_coverage_view,
+    ),
+    Migration(
+        version=107,
+        name="fundamental_pit_snapshot_schema",
+        up=_fundamental_pit_snapshot_schema,
+    ),
+    Migration(
+        version=108,
+        name="fundamental_pit_snapshot_indexes",
+        up=_fundamental_pit_snapshot_indexes,
+    ),
+    Migration(
+        version=109,
+        name="fundamental_pit_snapshot_catalog",
+        up=_fundamental_pit_snapshot_catalog,
     ),
 ]
 

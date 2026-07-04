@@ -8,6 +8,16 @@ import pandas as pd
 from .connection import DEFAULT_DB_PATH, connect
 
 
+def _month_end(value: dt.date) -> dt.date:
+    if value.month == 12:
+        return dt.date(value.year, 12, 31)
+    return dt.date(value.year, value.month + 1, 1) - dt.timedelta(days=1)
+
+
+def _month_end_asof_ts(value: dt.date) -> dt.datetime:
+    return dt.datetime.combine(_month_end(value), dt.time(23, 59, 59, 999999))
+
+
 SECURITY_MASTER_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -3243,6 +3253,103 @@ def fundamental_ratios_asof(
         return _run(store)
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
+
+
+FUNDAMENTAL_RATIOS_ASOF_MONTH_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_month,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        r.*,
+        row_number() OVER (
+            PARTITION BY r.security_id, r.ratio_code, r.basis, r.period_end
+            ORDER BY coalesce(r.filed_date, r.as_of_date) DESC,
+                     r.available_at DESC,
+                     coalesce(r.source_accession, '') DESC
+        ) AS rn
+    FROM fundamental_ratios r
+    {symbol_join}
+    {code_join}
+    {category_join}
+    CROSS JOIN params p
+    WHERE r.available_at <= p.as_of_ts
+      AND r.as_of_date <= p.as_of_month
+)
+SELECT * EXCLUDE (rn)
+FROM ranked
+WHERE rn = 1
+ORDER BY symbol, ratio_code, basis, period_end
+"""
+
+
+def fundamental_ratios_asof_month(
+    as_of_month: dt.date,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: "DuckDBStore | None" = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    ratio_codes: tuple[str, ...] | list[str] | None = None,
+    categories: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Return the latest ratio vintage visible at the end of ``as_of_month``."""
+
+    month = _month_end(as_of_month)
+    as_of_ts = _month_end_asof_ts(as_of_month)
+    symbol_values = _normalize_symbols(symbols)
+    code_values = _normalize_strings(ratio_codes)
+    category_values = _normalize_strings(categories)
+
+    def _run(active):
+        registered = []
+        try:
+            symbol_join = ""
+            code_join = ""
+            category_join = ""
+            if _register_filter(active, "asof_month_ratios_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_month_ratios_symbol_filter")
+                symbol_join = "JOIN asof_month_ratios_symbol_filter sf ON sf.symbol = r.symbol"
+            if _register_filter(active, "asof_month_ratios_code_filter", "ratio_code", code_values):
+                registered.append("asof_month_ratios_code_filter")
+                code_join = "JOIN asof_month_ratios_code_filter cf ON cf.ratio_code = upper(r.ratio_code)"
+            if _register_filter(active, "asof_month_ratios_category_filter", "ratio_category", category_values):
+                registered.append("asof_month_ratios_category_filter")
+                category_join = "JOIN asof_month_ratios_category_filter gf ON gf.ratio_category = upper(r.ratio_category)"
+            sql = FUNDAMENTAL_RATIOS_ASOF_MONTH_SQL.format(
+                symbol_join=symbol_join,
+                code_join=code_join,
+                category_join=category_join,
+            )
+            return active.con.execute(sql, [month, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)
+
+
+def pit_snapshot_asof(
+    snapshot_month: dt.date,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: "DuckDBStore | None" = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    metrics: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    from .pit_snapshot import pit_snapshot_asof as _pit_snapshot_asof
+
+    return _pit_snapshot_asof(
+        snapshot_month,
+        db_path=db_path,
+        store=store,
+        symbols=symbols,
+        metrics=metrics,
+    )
 
 
 CORPORATE_ACTION_DIVIDEND_METRICS_ASOF_SQL = """

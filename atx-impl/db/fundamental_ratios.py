@@ -72,7 +72,7 @@ RATIO_COLUMNS = [
     "ratio_code", "ratio_category", "ratio_kind", "basis", "unit",
     "period_start", "period_end", "fiscal_year", "fiscal_period",
     "value", "numerator_code", "numerator_value", "denominator_code",
-    "denominator_value", "is_meaningful", "is_latest_revision",
+    "denominator_value", "is_meaningful", "is_latest_revision", "vintage_class",
     "source_accession", "filed_date", "as_of_date", "available_at",
     "input_codes_json", "input_item_ids_json", "run_id",
 ]
@@ -206,6 +206,7 @@ class FundamentalRatiosOptions:
     basis: str = DEFAULT_BASIS
     symbols: tuple[str, ...] | None = None
     run_id: str | None = None
+    vintage_mode: str = "latest"
 
 
 def _present(value: Any) -> bool:
@@ -216,8 +217,10 @@ def _present(value: Any) -> bool:
 
 
 def _ratio_id(source: str, security_id: str, ratio_code: str, basis: str,
-              period_end: Any, available_at: Any) -> str:
-    payload = "|".join(str(p) for p in (source, security_id, ratio_code, basis, period_end, available_at))
+              period_end: Any, available_at: Any, source_accession: Any | None = None) -> str:
+    payload = "|".join(
+        str(p) for p in (source, security_id, ratio_code, basis, period_end, available_at, source_accession)
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -300,8 +303,12 @@ def _ratio_record(
     filed_date,
 ) -> dict:
     period_end = rec.get("period_end")
+    vintage_class = rec.get("vintage_class") if _present(rec.get("vintage_class")) else "most_recently_restated"
+    is_latest_revision = bool(rec.get("is_latest_revision")) if _present(rec.get("is_latest_revision")) else True
+    source_accession = rec.get("source_accession") if _present(rec.get("source_accession")) else source_accession
+    filed_date = rec.get("filed_date") if _present(rec.get("filed_date")) else filed_date
     return {
-        "ratio_id": _ratio_id(source, rec.get("security_id"), d.code, basis, period_end, available_at),
+        "ratio_id": _ratio_id(source, rec.get("security_id"), d.code, basis, period_end, available_at, source_accession),
         "source": source,
         "upstream_source": rec.get("upstream_source"),
         "security_id": rec.get("security_id"),
@@ -322,7 +329,8 @@ def _ratio_record(
         "denominator_code": None if d.composite is not None else d.denominator_code,
         "denominator_value": den,
         "is_meaningful": is_meaningful,
-        "is_latest_revision": True,
+        "is_latest_revision": is_latest_revision,
+        "vintage_class": vintage_class,
         "source_accession": source_accession,
         "filed_date": filed_date,
         "as_of_date": period_end,
@@ -539,8 +547,95 @@ def _wide_coalesce_select(preferred: str, fallback: str, metric_map: dict[str, s
     return ",\n            ".join(parts)
 
 
+def _load_ratio_inputs_history(store: DuckDBStore, options: FundamentalRatiosOptions) -> pd.DataFrame:
+    """Vintage-aware ratio input frame, one row per TTM accession vintage.
+
+    This S4 path is intentionally opt-in. It lifts the already-bitemporal TTM fact
+    vintages into the pure ratio transform without changing the default latest-mode
+    rebuild used by existing callers.
+    """
+
+    symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
+    registered = False
+    sym_join_t = ""
+    if symbols:
+        store.con.register(
+            "ratio_history_symbol_filter",
+            pd.DataFrame({"symbol": sorted({str(s).strip().upper() for s in symbols})}),
+        )
+        registered = True
+        sym_join_t = "JOIN ratio_history_symbol_filter rsf ON rsf.symbol = t.symbol"
+
+    sql = f"""
+        WITH ttm_vintage AS (
+            SELECT
+                t.security_id,
+                any_value(t.symbol) AS symbol,
+                any_value(t.cik) AS cik,
+                any_value(t.source) AS upstream_source,
+                t.ttm_end_date AS period_end,
+                any_value(t.ttm_start_date) AS period_start,
+                any_value(t.fiscal_year) AS fiscal_year,
+                any_value(t.fiscal_period) AS fiscal_period,
+                t.accession_number AS source_accession,
+                any_value(t.as_of_date) AS filed_date,
+                {_pivot_case('t', 'ttm_value', TTM_INPUTS, 't.accession_number', 't.as_of_date')}
+            FROM fundamental_ttm_points t
+            {sym_join_t}
+            GROUP BY t.security_id, t.ttm_end_date, t.accession_number
+        ),
+        ranked AS (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY security_id, period_end
+                    ORDER BY filed_date ASC, source_accession ASC
+                ) AS first_rank,
+                row_number() OVER (
+                    PARTITION BY security_id, period_end
+                    ORDER BY filed_date DESC, source_accession DESC
+                ) AS latest_rank,
+                count(*) OVER (
+                    PARTITION BY security_id, period_end
+                ) AS vintage_count
+            FROM ttm_vintage
+        )
+        SELECT
+            security_id,
+            symbol,
+            cik,
+            upstream_source,
+            period_end,
+            period_start,
+            fiscal_year,
+            fiscal_period,
+            source_accession,
+            filed_date,
+            CASE
+                WHEN vintage_count = 1 THEN 'as_first_reported'
+                WHEN first_rank = 1 THEN 'as_first_reported'
+                WHEN latest_rank = 1 THEN 'most_recently_restated'
+                ELSE 'intermediate_restatement'
+            END AS vintage_class,
+            latest_rank = 1 AS is_latest_revision,
+            {_wide_select('ranked', TTM_INPUTS)}
+        FROM ranked
+    """
+    try:
+        wide = store.con.execute(sql).df()
+    finally:
+        if registered:
+            store.con.unregister("ratio_history_symbol_filter")
+    return _attach_prior_year(wide)
+
+
 def load_ratio_inputs(store: DuckDBStore, options: FundamentalRatiosOptions) -> pd.DataFrame:
     """Pivot the latest-revision TTM flows + instant balances into the wide input frame."""
+    if options.vintage_mode == "history":
+        return _load_ratio_inputs_history(store, options)
+    if options.vintage_mode != "latest":
+        raise ValueError("FundamentalRatiosOptions.vintage_mode must be 'latest' or 'history'")
+
     symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
     registered = False
     sym_join_t = ""
