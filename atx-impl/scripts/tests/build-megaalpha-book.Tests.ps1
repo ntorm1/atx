@@ -412,3 +412,83 @@ Describe 'New-ReportArgv - S7-1 --borrow-bps (S5 financing into the honest book-
         ($argv -contains '--borrow-bps') | Should Be $false
     }
 }
+
+Describe 'New-OptimizeArgv - S7-2 gp-trading coupling' {
+
+    It 'contains --gp-trading --gp-risk-aversion --gp-trade-cost-scale together' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -GpTrading -GpRiskAversion 1.0 -GpTradeCostScale 1.0
+        ($argv -contains '--gp-trading') | Should Be $true
+        $ri = [array]::IndexOf($argv, '--gp-risk-aversion')
+        $ci = [array]::IndexOf($argv, '--gp-trade-cost-scale')
+        $ri | Should BeGreaterThan -1
+        $ci | Should BeGreaterThan -1
+    }
+
+    It 'omits all three by default (smoke stays untouched)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10
+        ($argv -contains '--gp-trading') | Should Be $false
+        ($argv -contains '--gp-risk-aversion') | Should Be $false
+        ($argv -contains '--gp-trade-cost-scale') | Should Be $false
+    }
+
+    It 'coupling: --gp-risk-aversion/--gp-trade-cost-scale are NEVER emitted without --gp-trading (no orphan numerics)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -GpRiskAversion 1.0 -GpTradeCostScale 1.0
+        ($argv -contains '--gp-trading') | Should Be $false
+        ($argv -contains '--gp-risk-aversion') | Should Be $false
+        ($argv -contains '--gp-trade-cost-scale') | Should Be $false
+    }
+
+    It 'coupling: --gp-trading alone still emits its own risk-aversion/cost-scale (illustrative defaults, never a bare flag)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 -GpTrading
+        ($argv -contains '--gp-trading') | Should Be $true
+        ($argv -contains '--gp-risk-aversion') | Should Be $true
+        ($argv -contains '--gp-trade-cost-scale') | Should Be $true
+    }
+}
+
+Describe 'New-DiscoverArgv - S7-2 robustness sub-checks require the master --robustness-battery' {
+
+    It 'sub-checks are ABSENT even if requested when RobustnessBattery is not set (fail-safe, not silent)' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--robustness-sub-universe') | Should Be $false
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $false
+        ($argv -contains '--robustness-param-perturb') | Should Be $false
+        ($argv -contains '--robustness-battery') | Should Be $false
+    }
+
+    It 'sub-checks ARE present when RobustnessBattery is also set (the prod combination)' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -RobustnessBattery -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--robustness-battery') | Should Be $true
+        ($argv -contains '--robustness-sub-universe') | Should Be $true
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $true
+        ($argv -contains '--robustness-param-perturb') | Should Be $true
+    }
+}
+
+Describe 'New-DiscoverArgv / New-MetabookArgv - S7-2 S6 guard: ml-seeds/nco deferred, never emitted' {
+
+    It 'discover: --ml-seeds / --ml-seed-model-dir are structurally absent -- S6 deferred, no wiring exists' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -DeflateSelection -CapacityObjective -TurnoverObjective `
+            -RobustnessBattery -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--ml-seeds') | Should Be $false
+        ($argv -contains '--ml-seed-model-dir') | Should Be $false
+    }
+
+    It 'metabook: --sleeve-method stays hrp (prod)/invvol (smoke) -- the raw string pass-through is unchanged by S7' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp'
+        $si = [array]::IndexOf($argv, '--sleeve-method')
+        $argv[$si + 1] | Should Be 'hrp'
+    }
+
+    It 'the top-level script exposes no -MlSeeds / -MlSeedModelDir / -SleeveMethod switch (S6 wiring was never added, not silently omitted)' {
+        $scriptParams = (Get-Command $scriptPath).Parameters.Keys
+        ($scriptParams -contains 'MlSeeds')        | Should Be $false
+        ($scriptParams -contains 'MlSeedModelDir') | Should Be $false
+        ($scriptParams -contains 'SleeveMethod')   | Should Be $false
+    }
+}

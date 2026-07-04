@@ -228,10 +228,17 @@ function New-DiscoverArgv {
     if ($DeflateSelection)   { $argv.Add('--deflate-selection') }
     if ($CapacityObjective)  { $argv.Add('--capacity-objective') }
     if ($TurnoverObjective)  { $argv.Add('--turnover-objective') }
-    if ($RobustnessBattery)  { $argv.Add('--robustness-battery') }
-    if ($RobustnessSubUniverse)       { $argv.Add('--robustness-sub-universe') }
-    if ($RobustnessAltNeutralization) { $argv.Add('--robustness-alt-neutralization') }
-    if ($RobustnessParamPerturb)      { $argv.Add('--robustness-param-perturb') }
+    # S7-2: the 3 sub-checks are gated UNDER the master switch -- structurally
+    # incapable of being emitted without it, closing the "1 of 4 checks
+    # reachable, no surface for the other 3" gap honestly (the sub-checks are
+    # meaningless without the master; recreating a different half-wired state
+    # via 3 more independently-optional flags would not be an improvement).
+    if ($RobustnessBattery) {
+        $argv.Add('--robustness-battery')
+        if ($RobustnessSubUniverse)       { $argv.Add('--robustness-sub-universe') }
+        if ($RobustnessAltNeutralization) { $argv.Add('--robustness-alt-neutralization') }
+        if ($RobustnessParamPerturb)      { $argv.Add('--robustness-param-perturb') }
+    }
     if ($Workers -gt 0)      { $argv.Add('--workers'); $argv.Add([string]$Workers) }
 
     [string[]]$argv.ToArray()
@@ -342,9 +349,13 @@ function New-OptimizeArgv {
         # Independently gated for now (S7-2 couples all three under
         # -GpTrading so the risk-aversion/cost-scale numerics never travel
         # without the master switch).
+        # S7-2: coupled under -GpTrading (illustrative defaults, matching the
+        # -SelectionAum convention) -- risk-aversion/cost-scale never travel
+        # as orphan numerics without the master switch, and the master switch
+        # never emits a bare --gp-trading missing its own two companions.
         [switch] $GpTrading,
-        [double] $GpRiskAversion = 0.0,
-        [double] $GpTradeCostScale = 0.0
+        [double] $GpRiskAversion = 1.0,
+        [double] $GpTradeCostScale = 1.0
     )
     $libraryDir = Join-Path $WorkDir '_library'
     $comboIn    = Join-Path $WorkDir 'combo.bin'
@@ -366,9 +377,11 @@ function New-OptimizeArgv {
         $argv.Add('--dead-alpha-lib-dir'); $argv.Add($libDir)
     }
     if ($GroupNeutralize)  { $argv.Add('--group-neutralize') }
-    if ($GpTrading)              { $argv.Add('--gp-trading') }
-    if ($GpRiskAversion -gt 0)   { $argv.Add('--gp-risk-aversion'); $argv.Add([string]$GpRiskAversion) }
-    if ($GpTradeCostScale -gt 0) { $argv.Add('--gp-trade-cost-scale'); $argv.Add([string]$GpTradeCostScale) }
+    if ($GpTrading) {
+        $argv.Add('--gp-trading')
+        $argv.Add('--gp-risk-aversion');   $argv.Add([string]$GpRiskAversion)
+        $argv.Add('--gp-trade-cost-scale'); $argv.Add([string]$GpTradeCostScale)
+    }
     [string[]]$argv.ToArray()
 }
 
