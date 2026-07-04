@@ -7375,6 +7375,315 @@ def _fundamental_ratio_provenance_indexes(conn: duckdb.DuckDBPyConnection) -> No
         conn.execute(statement)
 
 
+def _schema_contract_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S1 S1-0/S1-2: schema_contract table -- the declarative manifest persisted as data.
+
+    Persists db/schema_contract.py::build_contract_manifest(conn) (one row per (table,
+    column) pair across EVERY live table, both imperative schema paths reconciled and
+    each tagged declared_in in {schema_py, migration}) into a queryable schema_contract
+    table, plus its own table_catalog/field_catalog rows per (B). Indexes land in migration
+    0098 (schema-vs-index split per the S5g/S5k WAL-replay precedent -- see
+    _formula_registry_schema_catalog/_formula_registry_indexes for the same split).
+
+    PF2-S1 S1-2 made this seed source build_contract_manifest(conn) rather than the bare
+    CONTRACT subset, so the persisted rows and the Python manifest are one source of
+    truth: build_contract_manifest() reuses CONTRACT verbatim wherever CONTRACT already
+    declares a table and derives every other live table (including schema_contract
+    itself, since this function creates the table before computing the manifest) from
+    this connection's own duckdb_tables()/duckdb_columns(). detect_schema_drift() can
+    still be called with an explicit narrower contract (e.g. the bare CONTRACT, or a
+    fixture) for scoped checks; this table is the durable, plain-SQL-queryable mirror of
+    the FULL reconciled manifest. manifest_sha256 (schema_contract_sha256() over the
+    sorted manifest) is denormalized onto every row so a single `SELECT DISTINCT
+    manifest_sha256` gives the stable baseline to compare across bootstraps/versions.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_contract (
+            table_name VARCHAR NOT NULL,
+            column_name VARCHAR NOT NULL,
+            data_type VARCHAR NOT NULL,
+            nullable BOOLEAN NOT NULL,
+            is_natural_key BOOLEAN NOT NULL DEFAULT false,
+            is_pit_column BOOLEAN NOT NULL DEFAULT false,
+            declared_in VARCHAR NOT NULL,
+            manifest_sha256 VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (table_name, column_name)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'schema_contract',
+            'control',
+            'schema_contract_row',
+            'table_name,column_name',
+            'Declarative warehouse schema contract: one row per manifest (table, column) pair persisted from db/schema_contract.py::CONTRACT, tagged declared_in (schema_py|migration). The queryable/durable mirror of the manifest detect_schema_drift diffs live duckdb_tables()/duckdb_columns() against.',
+            '["table_name","column_name"]',
+            'manifest_sha256 is the stable hash (schema_contract.py::schema_contract_sha256) over the sorted manifest at seed time; compare across bootstraps to detect manifest drift itself. This table documents the CONTRACT, not fact rows, so it carries no as_of_date/available_at PIT columns of its own.',
+            now()
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('schema_contract', 'table_name', 'identifier', 'Contracted table name.', false, NULL, NULL, now()),
+            ('schema_contract', 'column_name', 'identifier', 'Contracted column name within table_name.', false, NULL, NULL, now()),
+            ('schema_contract', 'data_type', 'category', 'Declared DuckDB data type (matches duckdb_columns().data_type spelling, e.g. VARCHAR, TIMESTAMP).', false, NULL, NULL, now()),
+            ('schema_contract', 'nullable', 'flag', 'Declared nullability for the column.', false, NULL, NULL, now()),
+            ('schema_contract', 'is_natural_key', 'flag', 'True when the column participates in the table''s natural/business key (per table_catalog.natural_key_json), independent of its surrogate PRIMARY KEY if any.', false, NULL, NULL, now()),
+            ('schema_contract', 'is_pit_column', 'flag', 'True for the canonical bitemporal PIT columns (as_of_date, available_at, source_loaded_at, run_id, is_latest_revision) where the fact/derived-row mandate applies to this table.', false, NULL, NULL, now()),
+            ('schema_contract', 'declared_in', 'category', 'Which imperative code path declares this column: schema_py (schema.py::ensure_quant_schema) or migration (migrations.py::MIGRATIONS). Column-level, not table-level: a schema.py table can gain later columns via a migration ALTER TABLE.', false, NULL, NULL, now()),
+            ('schema_contract', 'manifest_sha256', 'identifier', 'schema_contract_sha256() over the sorted manifest at seed time; a stable baseline for detecting manifest changes across re-bootstraps.', false, NULL, NULL, now()),
+            ('schema_contract', 'source_loaded_at', 'timestamp', 'Warehouse-assigned timestamp when this manifest row was seeded (DEFAULT now()).', false, NULL, NULL, now())
+        """
+    )
+
+    from .schema_contract import build_contract_manifest, schema_contract_sha256
+
+    manifest = build_contract_manifest(conn)
+    manifest_sha256 = schema_contract_sha256(manifest)
+    rows = [
+        (
+            table_name,
+            spec.name,
+            spec.data_type,
+            spec.nullable,
+            spec.is_natural_key,
+            spec.is_pit_column,
+            spec.declared_in,
+            manifest_sha256,
+        )
+        for table_name, specs in manifest.items()
+        for spec in specs
+    ]
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO schema_contract (
+            table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
+            declared_in, manifest_sha256, source_loaded_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
+        """,
+        rows,
+    )
+
+
+def _schema_contract_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S1 S1-0: lookup indexes split from schema migration 0097."""
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_schema_contract_table_name ON schema_contract(table_name)",
+        "CREATE INDEX IF NOT EXISTS idx_schema_contract_declared_in ON schema_contract(declared_in)",
+    ):
+        conn.execute(statement)
+
+
+def _warehouse_catalog_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF2-S1 S1-3: v_warehouse_catalog -- the queryable/as-of warehouse data-catalog surface.
+
+    pf1-S4-3 made *formulas* queryable (v_formula_registry / formula_registry_asof), but
+    "what did the warehouse catalog look like" (which tables/fields exist, their layer,
+    grain, PIT notes) was only readable by introspecting a live connection. This view is
+    one row per (table_name, field_name), LEFT JOINing table_catalog + field_catalog (so a
+    catalogued table with no field rows -- e.g. a fresh view row inserted before its column
+    descriptions land -- still appears), plus a best-effort LEFT JOIN onto
+    v_formula_registry for catalogued formula surfaces (table_catalog.entity = 'formula'),
+    keyed on field_catalog.field_name = v_formula_registry.formula_code. Today's only
+    entity='formula' catalog row is formula_registry/v_formula_registry itself, whose own
+    field_catalog rows describe SCHEMA columns (formula_code, family, kind, ...) rather than
+    literal formula codes, so that join is structurally present but ordinarily contributes no
+    matches in production -- exactly the "best-effort" formula-lineage column set the S1-3
+    task brief calls for; a future entity='formula' catalog row keyed by literal formula_code
+    values would light these columns up for real.
+
+    Per (B)/S7a, views are catalogued like tables: this view gets its own table_catalog +
+    field_catalog rows (mirroring the _formula_registry_catalog_view precedent --
+    migrations.py's formula_registry-view migration -- and, further back,
+    _catalog_backfill_reference_and_views' v_offexchange_security_period). Unlike that
+    precedent, this view's output columns are renamed/aliased (table_description vs
+    field_description, table_updated_at vs field_updated_at, formula_* lineage columns), so
+    the field_catalog rows below are hand-written literals (mirroring
+    _schema_contract_schema_catalog's own-column seeding) rather than re-parented verbatim
+    from a single source table's field_catalog rows.
+
+    PIT note: table_catalog/field_catalog carry ``updated_at`` (knowledge time), NOT
+    valid_from/valid_to DEFINITION validity like formula_registry. The as-of PYTHON reader
+    that filters this view by ``updated_at <= effective_ts`` (no lookahead: a catalog row
+    updated AFTER the as-of instant is excluded) is ``warehouse_catalog_asof`` in
+    ``db/asof.py``; this view itself is the always-current (unfiltered) catalog surface a
+    plain ``SELECT`` sees.
+    """
+    formula_registry_view_exists = (
+        conn.execute(
+            "SELECT count(*) FROM duckdb_views() WHERE view_name = 'v_formula_registry'"
+        ).fetchone()[0]
+        > 0
+    )
+    if formula_registry_view_exists:
+        formula_columns_sql = """
+            vfr.formula_code,
+            vfr.family AS formula_family,
+            vfr.kind AS formula_kind,
+            vfr.unit AS formula_unit,
+            vfr.expression AS formula_expression,
+            vfr.citation AS formula_citation,
+            vfr.valid_from AS formula_valid_from,
+            vfr.valid_to AS formula_valid_to
+        """
+        formula_join_sql = """
+        LEFT JOIN v_formula_registry vfr
+            ON t.entity = 'formula' AND vfr.formula_code = f.field_name
+        """
+    else:
+        # Some legacy bootstraps have formula-registry migrations recorded without the
+        # physical view present. Keep 0099 append-only and expose the same catalog shape.
+        formula_columns_sql = """
+            CAST(NULL AS VARCHAR) AS formula_code,
+            CAST(NULL AS VARCHAR) AS formula_family,
+            CAST(NULL AS VARCHAR) AS formula_kind,
+            CAST(NULL AS VARCHAR) AS formula_unit,
+            CAST(NULL AS VARCHAR) AS formula_expression,
+            CAST(NULL AS VARCHAR) AS formula_citation,
+            CAST(NULL AS DATE) AS formula_valid_from,
+            CAST(NULL AS DATE) AS formula_valid_to
+        """
+        formula_join_sql = ""
+
+    conn.execute(
+        f"""
+        CREATE OR REPLACE VIEW v_warehouse_catalog AS
+        SELECT
+            t.table_name,
+            t.layer,
+            t.entity,
+            t.grain,
+            t.description AS table_description,
+            t.natural_key_json,
+            t.pit_notes,
+            t.updated_at AS table_updated_at,
+            f.field_name,
+            f.semantic_type,
+            f.description AS field_description,
+            f.nullable AS field_nullable,
+            f.unit AS field_unit,
+            f.source_field,
+            f.updated_at AS field_updated_at,
+            {formula_columns_sql}
+        FROM table_catalog t
+        LEFT JOIN field_catalog f ON f.table_name = t.table_name
+        {formula_join_sql}
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'v_warehouse_catalog',
+                'gold',
+                'catalog',
+                'table_name,field_name',
+                'Queryable as-of warehouse data-catalog surface: one row per (table_name, field_name) joining table_catalog + field_catalog (LEFT JOIN so a catalogued table with no field rows still appears), plus best-effort formula lineage via v_formula_registry for catalogued formula surfaces (entity = ''formula''). Answers "what did the warehouse catalog look like" as one SELECT-able view, so table/field documentation is data, not a live-connection introspection.',
+                '["table_name","field_name"]',
+                'View over table_catalog/field_catalog/v_formula_registry (no filtering in the view itself). For a point-in-time read honoring catalog KNOWLEDGE time, use warehouse_catalog_asof(as_of_date, ...) in db/asof.py, which filters table_updated_at/field_updated_at <= effective_ts (no lookahead) -- unlike formula_registry_asof, which instead gates on the formula DEFINITION''s own valid_from/valid_to.',
+                now()
+            )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_warehouse_catalog', 'table_name', 'identifier',
+             'Catalogued table or view name (table_catalog.table_name).',
+             false, NULL, 'table_catalog.table_name', now()),
+            ('v_warehouse_catalog', 'layer', 'category',
+             'Warehouse layer (bronze|silver|gold|control|audit|dimension|catalog|...).',
+             true, NULL, 'table_catalog.layer', now()),
+            ('v_warehouse_catalog', 'entity', 'category',
+             'Business entity the table/view represents.',
+             true, NULL, 'table_catalog.entity', now()),
+            ('v_warehouse_catalog', 'grain', 'text',
+             'Row grain of the table/view (natural key columns, human-readable).',
+             true, NULL, 'table_catalog.grain', now()),
+            ('v_warehouse_catalog', 'table_description', 'text',
+             'Table/view-level catalog description.',
+             true, NULL, 'table_catalog.description', now()),
+            ('v_warehouse_catalog', 'natural_key_json', 'json',
+             'JSON array of natural/business key column names.',
+             true, NULL, 'table_catalog.natural_key_json', now()),
+            ('v_warehouse_catalog', 'pit_notes', 'text',
+             'Free-text point-in-time usage notes for the table/view.',
+             true, NULL, 'table_catalog.pit_notes', now()),
+            ('v_warehouse_catalog', 'table_updated_at', 'timestamp',
+             'Knowledge-time timestamp the table_catalog row was last updated; the PIT gate warehouse_catalog_asof filters on (no lookahead).',
+             false, NULL, 'table_catalog.updated_at', now()),
+            ('v_warehouse_catalog', 'field_name', 'identifier',
+             'Catalogued column name within table_name; NULL when the table has no field_catalog rows yet (LEFT JOIN).',
+             true, NULL, 'field_catalog.field_name', now()),
+            ('v_warehouse_catalog', 'semantic_type', 'category',
+             'Column-level semantic type (identifier, category, text, json, flag, timestamp, date, ...).',
+             true, NULL, 'field_catalog.semantic_type', now()),
+            ('v_warehouse_catalog', 'field_description', 'text',
+             'Column-level catalog description.',
+             true, NULL, 'field_catalog.description', now()),
+            ('v_warehouse_catalog', 'field_nullable', 'flag',
+             'Declared nullability of the column per field_catalog.',
+             true, NULL, 'field_catalog.nullable', now()),
+            ('v_warehouse_catalog', 'field_unit', 'category',
+             'Column-level unit, where applicable.',
+             true, NULL, 'field_catalog.unit', now()),
+            ('v_warehouse_catalog', 'source_field', 'text',
+             'Upstream/source field this column derives from, where applicable.',
+             true, NULL, 'field_catalog.source_field', now()),
+            ('v_warehouse_catalog', 'field_updated_at', 'timestamp',
+             'Knowledge-time timestamp the field_catalog row was last updated; the PIT gate warehouse_catalog_asof filters on (no lookahead) when a field row is present.',
+             true, NULL, 'field_catalog.updated_at', now()),
+            ('v_warehouse_catalog', 'formula_code', 'identifier',
+             'Best-effort formula lineage: matching v_formula_registry.formula_code when table_catalog.entity = ''formula''; NULL otherwise or when no formula_registry row matches.',
+             true, NULL, 'v_formula_registry.formula_code', now()),
+            ('v_warehouse_catalog', 'formula_family', 'category',
+             'Best-effort formula lineage: v_formula_registry.family.',
+             true, NULL, 'v_formula_registry.family', now()),
+            ('v_warehouse_catalog', 'formula_kind', 'category',
+             'Best-effort formula lineage: v_formula_registry.kind.',
+             true, NULL, 'v_formula_registry.kind', now()),
+            ('v_warehouse_catalog', 'formula_unit', 'category',
+             'Best-effort formula lineage: v_formula_registry.unit.',
+             true, NULL, 'v_formula_registry.unit', now()),
+            ('v_warehouse_catalog', 'formula_expression', 'text',
+             'Best-effort formula lineage: v_formula_registry.expression.',
+             true, NULL, 'v_formula_registry.expression', now()),
+            ('v_warehouse_catalog', 'formula_citation', 'text',
+             'Best-effort formula lineage: v_formula_registry.citation.',
+             true, NULL, 'v_formula_registry.citation', now()),
+            ('v_warehouse_catalog', 'formula_valid_from', 'date',
+             'Best-effort formula lineage: v_formula_registry.valid_from.',
+             true, NULL, 'v_formula_registry.valid_from', now()),
+            ('v_warehouse_catalog', 'formula_valid_to', 'date',
+             'Best-effort formula lineage: v_formula_registry.valid_to.',
+             true, NULL, 'v_formula_registry.valid_to', now())
+        """
+    )
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -7786,6 +8095,21 @@ MIGRATIONS: list[Migration] = [
         version=93,
         name="fundamental_ratio_provenance_indexes",
         up=_fundamental_ratio_provenance_indexes,
+    ),
+    Migration(
+        version=97,
+        name="schema_contract_schema_catalog",
+        up=_schema_contract_schema_catalog,
+    ),
+    Migration(
+        version=98,
+        name="schema_contract_indexes",
+        up=_schema_contract_indexes,
+    ),
+    Migration(
+        version=99,
+        name="warehouse_catalog_view",
+        up=_warehouse_catalog_view,
     ),
 ]
 
