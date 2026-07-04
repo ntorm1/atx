@@ -282,7 +282,11 @@ def test_daily_adjustment_dataset_records_run_quality_and_watermarks(tmp_store):
 
     target_results = [
         result
-        for result in run_warehouse_quality_checks(tmp_store, record=False)
+        for result in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            dataset_ids=("daily_adjustment_factors",),
+        )
         if result.dataset_id == "daily_adjustment_factors"
     ]
     assert {result.check_name for result in target_results} == {

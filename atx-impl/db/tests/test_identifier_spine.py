@@ -471,7 +471,11 @@ def test_security_entity_ids_asof_merger_fixture_no_lookahead(tmp_store):
 def test_export_scan_no_internal_cusip_check_passes_on_clean_export_allowlist(tmp_store):
     from db.quality import run_warehouse_quality_checks
 
-    results = run_warehouse_quality_checks(tmp_store, record=False)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("export_scan_internal_cusip_leak",),
+    )
     by_name = {r.check_name: r for r in results}
     result = by_name["export_scan_internal_cusip_leak"]
     assert result.status == "passed", result.details
@@ -531,7 +535,11 @@ def test_export_scan_internal_cusip_leak_check_fails_end_to_end_through_register
             GROUP BY ALL
             """
         )
-        results = run_warehouse_quality_checks(tmp_store, record=False)
+        results = run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("export_scan_internal_cusip_leak",),
+        )
         by_name = {r.check_name: r for r in results}
         result = by_name["export_scan_internal_cusip_leak"]
         assert result.status == "failed", result.details
@@ -545,7 +553,11 @@ def test_export_scan_internal_cusip_leak_check_fails_end_to_end_through_register
         tmp_store.con.execute("DROP VIEW IF EXISTS v_security_master_current_real")
         create_security_master_current_view(tmp_store.con)
 
-    after = run_warehouse_quality_checks(tmp_store, record=False)
+    after = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("export_scan_internal_cusip_leak",),
+    )
     after_by_name = {r.check_name: r for r in after}
     assert after_by_name["export_scan_internal_cusip_leak"].status == "passed"
 
@@ -669,7 +681,11 @@ def test_migration_0083_repairs_reaccumulated_self_overlaps(tmp_store):
     ).fetchall()
     assert kept == [(dt.date(2026, 5, 1),)]
 
-    results = run_warehouse_quality_checks(tmp_store, record=False)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("identifier_same_source_self_overlaps",),
+    )
     by_name = {r.check_name: r for r in results}
     result = by_name["identifier_same_source_self_overlaps"]
     assert result.status == "passed", result.details

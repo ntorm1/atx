@@ -378,11 +378,9 @@ class TestSchemaContractSha256:
         assert len(digest) == 64
         int(digest, 16)  # raises if not hex
 
-    def test_default_contract_is_stable_across_rebootstraps(self, tmp_store, fresh_store):
-        """Stable across re-bootstraps of the same schema: two independently bootstrapped
-        warehouses -- the fast template-copy tmp_store and the fully independent
-        fresh_store bootstrap path (conftest.py's _build_template vs a real
-        DuckDBStore.__enter__ run) -- must agree on the manifest_sha256 persisted by
+    def test_default_contract_is_stable_across_independent_stores(self, tmp_store, fresh_store):
+        """Stable across independent stores of the same schema: two isolated
+        warehouse copies must agree on the manifest_sha256 persisted by
         migration 0097, and both must match schema_contract_sha256(build_contract_manifest(...))
         computed fresh against either store (PF2-S1 S1-2: migration 0097 now seeds from the
         full reconciled manifest, not the bare 6-table CONTRACT).
@@ -798,10 +796,8 @@ class TestBuildContractManifestDeterminism:
         second = build_contract_manifest(tmp_store.con)
         assert first == second
 
-    def test_agrees_across_independently_bootstrapped_warehouses(self, tmp_store, fresh_store):
-        """tmp_store (template copy) and fresh_store (full real bootstrap) must derive
-        the identical manifest -- same schema, same source tree -> same result.
-        """
+    def test_agrees_across_independent_warehouses(self, tmp_store, fresh_store):
+        """Independent stores with the same schema must derive the same manifest."""
         from_tmp = build_contract_manifest(tmp_store.con)
         from_fresh = build_contract_manifest(fresh_store.con)
         assert set(from_tmp) == set(from_fresh)

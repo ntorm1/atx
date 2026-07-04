@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Literal, Mapping, Sequence
+from typing import Iterable, Literal, Mapping, Sequence
 
 from .connection import DuckDBStore
 from .lake import DEFAULT_EXPORT_OBJECTS
@@ -95,27 +95,31 @@ class QualityResult:
     severity: Severity = "standard"
 
 
-def _table_exists(store: DuckDBStore, table_name: str) -> bool:
-    return bool(
-        store.con.execute(
+def _main_objects(store: DuckDBStore) -> set[str]:
+    return {
+        row[0]
+        for row in store.con.execute(
             """
-            SELECT count(*)
-            FROM (
-                SELECT table_name AS object_name
-                FROM duckdb_tables()
-                WHERE schema_name = 'main'
-                  AND coalesce(internal, false) = false
-                UNION ALL
-                SELECT view_name AS object_name
-                FROM duckdb_views()
-                WHERE schema_name = 'main'
-                  AND coalesce(internal, false) = false
-            )
-            WHERE object_name = ?
-            """,
-            [table_name],
-        ).fetchone()[0]
-    )
+            SELECT table_name AS object_name
+            FROM duckdb_tables()
+            WHERE schema_name = 'main'
+              AND coalesce(internal, false) = false
+            UNION
+            SELECT view_name AS object_name
+            FROM duckdb_views()
+            WHERE schema_name = 'main'
+              AND coalesce(internal, false) = false
+            """
+        ).fetchall()
+    }
+
+
+def _table_exists(
+    store: DuckDBStore, table_name: str, *, objects: set[str] | None = None
+) -> bool:
+    if objects is not None:
+        return table_name in objects
+    return table_name in _main_objects(store)
 
 
 def _passes(observed_value: float, threshold: float, comparator: Comparator) -> bool:
@@ -6360,7 +6364,10 @@ def _check_specs(
 
 
 def catalog_completeness_check(
-    store: DuckDBStore, *, checked_at: dt.datetime | None = None
+    store: DuckDBStore,
+    *,
+    checked_at: dt.datetime | None = None,
+    objects: set[str] | None = None,
 ) -> QualityResult:
     """Every non-ephemeral live table must have a ``table_catalog`` row.
 
@@ -6379,7 +6386,7 @@ def catalog_completeness_check(
     checked_at = checked_at or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     con = store.con
 
-    if not _table_exists(store, "table_catalog"):
+    if not _table_exists(store, "table_catalog", objects=objects):
         return QualityResult(
             dataset_id=SCHEMA_CONTRACT_DATASET_ID,
             table_name="table_catalog",
@@ -6463,17 +6470,35 @@ def run_warehouse_quality_checks(
     monthly_macro_stale_days: int = 70,
     valuation_stale_gap_days: int = DEFAULT_VALUATION_STALE_GAP_DAYS,
     record: bool = True,
+    check_names: Iterable[str] | None = None,
+    dataset_ids: Iterable[str] | None = None,
 ) -> list[QualityResult]:
-    """Run production-oriented SQL checks and optionally append check outcomes."""
+    """Run production-oriented SQL checks and optionally append check outcomes.
+
+    ``check_names`` and ``dataset_ids`` are narrowing filters for targeted tests
+    and local diagnosis. Leaving both unset preserves the full production sweep.
+    """
 
     results: list[QualityResult] = []
     checked_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    requested_checks = set(check_names) if check_names is not None else None
+    requested_datasets = set(dataset_ids) if dataset_ids is not None else None
+    objects = _main_objects(store)
     for spec in _check_specs(
         daily_macro_stale_days=daily_macro_stale_days,
         monthly_macro_stale_days=monthly_macro_stale_days,
         valuation_stale_gap_days=valuation_stale_gap_days,
     ):
-        missing_tables = [table for table in spec.required_tables if not _table_exists(store, table)]
+        if (
+            (requested_checks is not None or requested_datasets is not None)
+            and not (
+                (requested_checks is not None and spec.check_name in requested_checks)
+                or (requested_datasets is not None and spec.dataset_id in requested_datasets)
+            )
+        ):
+            continue
+
+        missing_tables = [table for table in spec.required_tables if table not in objects]
         if missing_tables:
             status = "warning" if spec.warn_if_missing else "failed"
             result = QualityResult(
@@ -6530,10 +6555,23 @@ def run_warehouse_quality_checks(
     # SqlQualityCheck string (the fact/non-fact partition and the catalogued-table set
     # are runtime facts, not compile-time SQL), so they are computed directly and
     # folded into the same result list / record() path as every other check.
-    for result in (
-        catalog_completeness_check(store, checked_at=checked_at),
-        pit_column_presence_check(store, checked_at=checked_at),
+    schema_results: list[QualityResult] = []
+    if (
+        (requested_checks is None and requested_datasets is None)
+        or (requested_checks is not None and CATALOG_COMPLETENESS_CHECK_NAME in requested_checks)
+        or (requested_datasets is not None and SCHEMA_CONTRACT_DATASET_ID in requested_datasets)
     ):
+        schema_results.append(
+            catalog_completeness_check(store, checked_at=checked_at, objects=objects)
+        )
+    if (
+        (requested_checks is None and requested_datasets is None)
+        or (requested_checks is not None and PIT_COLUMN_PRESENCE_CHECK_NAME in requested_checks)
+        or (requested_datasets is not None and SCHEMA_CONTRACT_DATASET_ID in requested_datasets)
+    ):
+        schema_results.append(pit_column_presence_check(store, checked_at=checked_at))
+
+    for result in schema_results:
         if record:
             quality_check(
                 store,

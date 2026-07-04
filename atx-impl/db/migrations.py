@@ -212,9 +212,8 @@ def release_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str) -> None:
     )
 
 
-@contextlib.contextmanager
-def acquire_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str):
-    """Acquire the migration apply sentinel row or fail fast with the holder."""
+def claim_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str) -> None:
+    """Persistently claim the migration apply sentinel row."""
     _ensure_apply_lock_table(conn)
     try:
         conn.execute(
@@ -238,6 +237,11 @@ def acquire_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str):
             f"by run_id {holder} heartbeat_at {heartbeat}; aborting"
         ) from exc
 
+
+@contextlib.contextmanager
+def acquire_apply_lock(conn: duckdb.DuckDBPyConnection, run_id: str):
+    """Acquire the migration apply sentinel row or fail fast with the holder."""
+    claim_apply_lock(conn, run_id)
     try:
         yield
     finally:
@@ -7675,6 +7679,16 @@ def _schema_contract_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
 
     manifest = build_contract_manifest(conn)
     manifest_sha256 = schema_contract_sha256(manifest)
+    columns = [
+        "table_name",
+        "column_name",
+        "data_type",
+        "nullable",
+        "is_natural_key",
+        "is_pit_column",
+        "declared_in",
+        "manifest_sha256",
+    ]
     rows = [
         (
             table_name,
@@ -7689,16 +7703,25 @@ def _schema_contract_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
         for table_name, specs in manifest.items()
         for spec in specs
     ]
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO schema_contract (
-            table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
-            declared_in, manifest_sha256, source_loaded_at
+    import pandas as pd
+
+    seed = pd.DataFrame.from_records(rows, columns=columns)
+    conn.register("_schema_contract_seed", seed)
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO schema_contract (
+                table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
+                declared_in, manifest_sha256, source_loaded_at
+            )
+            SELECT
+                table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
+                declared_in, manifest_sha256, now()
+            FROM _schema_contract_seed
+            """
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
-        """,
-        rows,
-    )
+    finally:
+        conn.unregister("_schema_contract_seed")
 
 
 def _schema_contract_indexes(conn: duckdb.DuckDBPyConnection) -> None:
@@ -8433,7 +8456,45 @@ MIGRATIONS: list[Migration] = [
 ]
 
 
-def apply_pending_migrations(conn: duckdb.DuckDBPyConnection) -> list[int]:
+def _apply_pending_migrations_unlocked(conn: duckdb.DuckDBPyConnection) -> list[int]:
+    rows = conn.execute(
+        "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+    ).fetchall()
+    applied: set[int] = {row[0] for row in rows}
+
+    verify_migration_checksums(conn, allow_missing=100 not in applied)
+
+    applied_now: list[int] = []
+    for migration in sorted(MIGRATIONS, key=lambda m: m.version):
+        if migration.version in applied:
+            continue
+        checksum = _migration_source_checksum(migration)
+        # Run inside a transaction so a failure rolls back cleanly.
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            migration.up(conn)
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, description, checksum, applied_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                [_migration_version_text(migration.version), migration.name, checksum],
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        applied_now.append(migration.version)
+
+    return applied_now
+
+
+def apply_pending_migrations(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    run_id: str | None = None,
+    acquire_lock: bool = True,
+) -> list[int]:
     """Apply any MIGRATIONS whose version is not yet recorded in schema_migrations.
 
     Runs each migration inside a transaction. Inserts a tracking row on success.
@@ -8445,36 +8506,9 @@ def apply_pending_migrations(conn: duckdb.DuckDBPyConnection) -> list[int]:
         checksum VARCHAR, applied_at TIMESTAMP NOT NULL DEFAULT now()
     We cast version int to zero-padded VARCHAR for storage.
     """
-    run_id = f"migration-apply-{uuid.uuid4()}"
-    with acquire_apply_lock(conn, run_id):
-        # Fetch already-applied versions as integers.
-        rows = conn.execute(
-            "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
-        ).fetchall()
-        applied: set[int] = {row[0] for row in rows}
+    if not acquire_lock:
+        return _apply_pending_migrations_unlocked(conn)
 
-        verify_migration_checksums(conn, allow_missing=100 not in applied)
-
-        applied_now: list[int] = []
-        for migration in sorted(MIGRATIONS, key=lambda m: m.version):
-            if migration.version in applied:
-                continue
-            checksum = _migration_source_checksum(migration)
-            # Run inside a transaction so a failure rolls back cleanly.
-            conn.execute("BEGIN TRANSACTION")
-            try:
-                migration.up(conn)
-                conn.execute(
-                    """
-                    INSERT INTO schema_migrations (version, description, checksum, applied_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                    """,
-                    [_migration_version_text(migration.version), migration.name, checksum],
-                )
-                conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
-            applied_now.append(migration.version)
-
-        return applied_now
+    lock_run_id = run_id or f"migration-apply-{uuid.uuid4()}"
+    with acquire_apply_lock(conn, lock_run_id):
+        return _apply_pending_migrations_unlocked(conn)

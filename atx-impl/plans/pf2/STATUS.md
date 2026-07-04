@@ -4,7 +4,9 @@ Updated: 2026-07-04, America/New_York
 Branch: `feat/warehouse-parity`
 
 PF2 is in progress. PF2-S1 (schema-as-contract) is **complete and merged** into
-`feat/warehouse-parity` as merge commit `1776fb0`.
+`feat/warehouse-parity` as merge commit `1776fb0`. PF2-S2 is implemented and
+committed in `C:/atx-wt/pf2-s2` as `eba1df9ffa00620b9bab7f16baf5e14bb42bdf41`,
+awaiting merge.
 
 ## Completed
 
@@ -16,24 +18,37 @@ PF2 is in progress. PF2-S1 (schema-as-contract) is **complete and merged** into
 - Offline verification after merge from `C:/atx`: `python -m pytest atx-impl/db/tests -q`
   passed to 100% in about 225s.
 - Live DB smoke: OPERATOR-PENDING. No live migration/apply/smoke was run from the worktree.
+- PF2-S2: migration governance + backup/checkpoint/DR implemented on branch `feat/pf2-s2`
+  as `eba1df9ffa00620b9bab7f16baf5e14bb42bdf41`. Migrations consumed: `0100-0101`
+  (`0102` remains reserved headroom). The local-main DB testing-speed improvements were
+  merged into the worktree before S2 verification.
+- S2 implemented surfaces: migration source checksums + checksum verification, persistent
+  `migration_apply_lock`, `migration_backup_registry`, new `db/migration_admin.py`
+  checkpoint/backup/restore/recovery/retention helpers, and governed
+  `scripts/warehouse_migrate.py`.
+- S2 focused verification so far: `python -m py_compile db/migration_admin.py db/migrations.py
+  scripts/warehouse_migrate.py`; `python -m pytest db/tests/test_migration_governance.py -q -n0`;
+  `python -m pytest db/tests/test_migrations.py -q -n0`; temp `warehouse_migrate.py` smoke to
+  schema version `0101`; full `python -m pytest db/tests -q -n0` passed.
+- S2 live DB smoke: OPERATOR-PENDING. No live 14 GB migration/apply/restore was run from the
+  worktree.
 
 ## Known S1 Caveats
 
 - PIT-column-presence intentionally exposes known live PIT gaps on pre-existing fact tables, mostly
   missing `is_latest_revision`; ratchet/backfill/exemption belongs to S10 quality gating or future cleanup.
-- PF2-S2 still owns checksum enforcement, migration apply-lock, backup/checkpoint/restore governance.
-  PF2-S1 did not implement those.
+- PF2-S2 owns checksum enforcement, migration apply-lock, backup/checkpoint/restore governance.
+  The code path is implemented; operator live-DB proof remains pending.
 - PF2-S10 still owns orchestrator halt-on-critical behavior.
 
 ## Resume Point
 
-1. Start PF2-S2 (migration governance + backup/checkpoint/DR) by creating a `pf2-s2` worktree off
-   `feat/warehouse-parity`.
-2. Read `atx-impl/plans/pf2/ROADMAP.md` and the PF2-S2 sprint plan.
-3. Follow ROADMAP sequencing: S1 -> S2 -> S3 -> S4 -> (S5 -> S6 || S7 || S8) -> S9 -> S10.
+1. Merge `feat/pf2-s2` into local `main`/`feat/warehouse-parity`, and remove or retire the
+   worktree after merge.
+2. Follow ROADMAP sequencing: S1 -> S2 -> S3 -> S4 -> (S5 -> S6 || S7 || S8) -> S9 -> S10.
    One worktree per sprint; never run two sprints sharing `fundamental_ratios.py` /
    `fundamental_statements.py` in concurrent worktrees.
-4. Track progress in `.superpowers/sdd/progress.md`; append/update sprint closeout rows only when the
+3. Track progress in `.superpowers/sdd/progress.md`; append/update sprint closeout rows only when the
    sprint actually lands.
 
 ## Dirty Worktree Notes

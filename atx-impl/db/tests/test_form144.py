@@ -266,7 +266,10 @@ def test_form144_quality_checks_pass_clean_sample(tmp_store, tmp_path):
         ("form144_to_form4_link", "max_sale_date"),
     ]
 
-    results = run_warehouse_quality_checks(tmp_store)
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        dataset_ids=("form144_intent", "form144_to_form4_link"),
+    )
     form144_results = [
         result
         for result in results

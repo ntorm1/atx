@@ -1052,16 +1052,24 @@ def test_valuation_multiples_warehouse_quality_specs_pass_clean_fixture(tmp_stor
     _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
     refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="quality-run"))
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
-
-    for check_name in (
+    quality_checks = (
         "duplicate_valuation_multiple_natural_keys",
         "bad_valuation_multiple_rows",
         "non_finite_valuation_multiple_values",
         "valuation_multiple_arithmetic_consistency",
         "valuation_multiple_non_positive_denominator_meaningfulness",
         "stale_price_fundamental_gap_days",
-    ):
+    )
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=quality_checks,
+        )
+    }
+
+    for check_name in quality_checks:
         assert results[check_name].status == "passed", check_name
 
 
@@ -1112,6 +1120,7 @@ def test_valuation_multiples_warehouse_quality_stale_gap_fires(tmp_store) -> Non
             tmp_store,
             record=False,
             valuation_stale_gap_days=5,
+            check_names=("stale_price_fundamental_gap_days",),
         )
     }
     stale = results["stale_price_fundamental_gap_days"]

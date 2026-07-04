@@ -641,6 +641,32 @@ def seed_fundamental_statement_map(store: DuckDBStore) -> int:
     """Seed canonical statement mappings for public SEC companyfacts concepts."""
 
     _ensure_fundamental_statement_map_storage(store)
+    import pandas as pd
+
+    seed = pd.DataFrame.from_records(
+        [astuple(row) for row in FUNDAMENTAL_STATEMENT_MAP_ROWS],
+        columns=(
+            "source",
+            "taxonomy",
+            "concept",
+            "statement_type",
+            "statement_section",
+            "canonical_metric",
+            "canonical_label",
+            "period_type",
+            "normal_balance",
+            "unit_type",
+            "value_multiplier",
+            "concept_priority",
+            "is_core_metric",
+            "is_active",
+            "notes",
+            "item_id",
+            "industry_template",
+            "is_derived",
+            "derivation_expr",
+        ),
+    )
     store.con.execute(
         """
         DELETE FROM fundamental_statement_map
@@ -650,7 +676,8 @@ def seed_fundamental_statement_map(store: DuckDBStore) -> int:
         """,
         [SOURCE_NAME],
     )
-    for row in FUNDAMENTAL_STATEMENT_MAP_ROWS:
+    store.con.register("_fundamental_statement_map_seed", seed)
+    try:
         store.con.execute(
             """
             INSERT OR REPLACE INTO fundamental_statement_map (
@@ -675,10 +702,32 @@ def seed_fundamental_statement_map(store: DuckDBStore) -> int:
                 derivation_expr,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
-            """,
-            list(astuple(row)),
+            SELECT
+                source,
+                taxonomy,
+                concept,
+                statement_type,
+                statement_section,
+                canonical_metric,
+                canonical_label,
+                period_type,
+                normal_balance,
+                unit_type,
+                value_multiplier,
+                concept_priority,
+                is_core_metric,
+                is_active,
+                notes,
+                item_id,
+                industry_template,
+                is_derived,
+                derivation_expr,
+                now()
+            FROM _fundamental_statement_map_seed
+            """
         )
+    finally:
+        store.con.unregister("_fundamental_statement_map_seed")
     store.con.execute(
         "CREATE INDEX IF NOT EXISTS idx_fundamental_statement_map_lookup "
         "ON fundamental_statement_map(taxonomy, concept, is_active)"

@@ -25,6 +25,19 @@ from __future__ import annotations
 import datetime as dt
 
 
+def _quality_by_name(store, *check_names: str):
+    from db.quality import run_warehouse_quality_checks
+
+    return {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            store,
+            record=False,
+            check_names=check_names,
+        )
+    }
+
+
 def _insert_fundamental_ratio(
     con, *, ratio_id: str, security_id: str, period_end: str = "2023-12-31"
 ) -> None:
@@ -212,12 +225,10 @@ def test_referential_check_specs_are_registered_in_check_specs():
 def test_planted_orphan_fundamental_ratio_is_red(tmp_store):
     """A fundamental_ratios row whose security has NO backing fundamental_points
     row is an orphan -> the check goes red."""
-    from db.quality import run_warehouse_quality_checks
-
     con = tmp_store.con
     _insert_fundamental_ratio(con, ratio_id="ratio-orphan", security_id="SEC-ORPHAN")
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = _quality_by_name(tmp_store, "fundamental_ratios_without_fundamental_points")
     check = results["fundamental_ratios_without_fundamental_points"]
 
     assert check.status == "failed"
@@ -227,13 +238,11 @@ def test_planted_orphan_fundamental_ratio_is_red(tmp_store):
 def test_clean_fundamental_ratio_with_backing_points_is_green(tmp_store):
     """A fundamental_ratios row whose security DOES have a backing
     fundamental_points row resolves cleanly -> 0 orphans, green."""
-    from db.quality import run_warehouse_quality_checks
-
     con = tmp_store.con
     _insert_fundamental_ratio(con, ratio_id="ratio-ok", security_id="SEC-OK")
     _insert_fundamental_point(con, security_id="SEC-OK")
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = _quality_by_name(tmp_store, "fundamental_ratios_without_fundamental_points")
     check = results["fundamental_ratios_without_fundamental_points"]
 
     assert check.status == "passed"
@@ -243,15 +252,13 @@ def test_clean_fundamental_ratio_with_backing_points_is_green(tmp_store):
 def test_fundamental_ratio_same_security_wrong_period_is_red(tmp_store):
     """A security-only parent row is not enough: ratios resolve to points on
     at least (security_id, period_end)."""
-    from db.quality import run_warehouse_quality_checks
-
     con = tmp_store.con
     _insert_fundamental_ratio(
         con, ratio_id="ratio-wrong-period", security_id="SEC-A", period_end="2023-12-31"
     )
     _insert_fundamental_point(con, security_id="SEC-A", period_end="2022-12-31")
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = _quality_by_name(tmp_store, "fundamental_ratios_without_fundamental_points")
     check = results["fundamental_ratios_without_fundamental_points"]
 
     assert check.status == "failed"
@@ -266,8 +273,6 @@ def test_fundamental_ratio_same_security_wrong_period_is_red(tmp_store):
 def test_fundamental_points_item_id_orphan_is_red(tmp_store):
     """A fundamental_points row whose item_id has no matching fundamental_item
     row is an orphan -> red, counting only the unresolved row."""
-    from db.quality import run_warehouse_quality_checks
-
     con = tmp_store.con
     _insert_fundamental_item(con, item_id=9001, canonical_code="revenue")
     # Resolves cleanly (item_id 9001 exists).
@@ -275,7 +280,7 @@ def test_fundamental_points_item_id_orphan_is_red(tmp_store):
     # Orphan: item_id 9999 does not exist in fundamental_item.
     _insert_fundamental_point(con, security_id="SEC-A", metric="mystery_metric", item_id=9999)
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = _quality_by_name(tmp_store, "fundamental_points_item_without_fundamental_item")
     check = results["fundamental_points_item_without_fundamental_item"]
 
     assert check.status == "failed"
@@ -285,14 +290,12 @@ def test_fundamental_points_item_id_orphan_is_red(tmp_store):
 def test_fundamental_points_null_item_id_is_skipped_not_orphan(tmp_store):
     """A NULL item_id is not-yet-mapped, not an orphan -- it must be skipped
     entirely (not counted on either side of the anti-join)."""
-    from db.quality import run_warehouse_quality_checks
-
     con = tmp_store.con
     # No fundamental_item rows at all; if the NULL key were treated as an
     # orphan this would incorrectly go red.
     _insert_fundamental_point(con, security_id="SEC-A", metric="unmapped_metric", item_id=None)
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = _quality_by_name(tmp_store, "fundamental_points_item_without_fundamental_item")
     check = results["fundamental_points_item_without_fundamental_item"]
 
     assert check.status == "passed"
@@ -302,8 +305,6 @@ def test_fundamental_points_null_item_id_is_skipped_not_orphan(tmp_store):
 def test_fundamental_statement_points_item_orphan_and_null_skip(tmp_store):
     """Same orphan + NULL-skip semantics for the fundamental_statement_points
     variant of the item-resolution check."""
-    from db.quality import run_warehouse_quality_checks
-
     con = tmp_store.con
     _insert_fundamental_item(con, item_id=9002, canonical_code="net_income")
     _insert_fundamental_statement_point(
@@ -316,7 +317,7 @@ def test_fundamental_statement_points_item_orphan_and_null_skip(tmp_store):
         con, statement_point_id="stmt-unmapped", security_id="SEC-B", item_id=None
     )
 
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = _quality_by_name(tmp_store, "fundamental_statement_points_item_without_fundamental_item")
     check = results["fundamental_statement_points_item_without_fundamental_item"]
 
     assert check.status == "failed"
@@ -342,7 +343,7 @@ def test_referential_check_no_ops_when_parent_table_missing(tmp_store):
     """
     from unittest.mock import patch
 
-    from db.quality import ReferentialQualityCheck, run_warehouse_quality_checks
+    from db.quality import ReferentialQualityCheck
 
     con = tmp_store.con
     _insert_fundamental_point(con, security_id="SEC-A", metric="revenue", item_id=1)
@@ -356,7 +357,7 @@ def test_referential_check_no_ops_when_parent_table_missing(tmp_store):
         parent_key="item_id",
     )
     with patch("db.quality._check_specs", return_value=(spec.compile(),)):
-        results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+        results = _quality_by_name(tmp_store, spec.check_name)
 
     check = results[spec.check_name]
     assert check.status == "warning"
@@ -368,7 +369,7 @@ def test_referential_check_no_ops_when_child_table_missing(tmp_store):
     """Symmetrically, a missing child table also no-ops rather than raising."""
     from unittest.mock import patch
 
-    from db.quality import ReferentialQualityCheck, run_warehouse_quality_checks
+    from db.quality import ReferentialQualityCheck
 
     spec = ReferentialQualityCheck(
         dataset_id="fundamental_ratios",
@@ -379,7 +380,7 @@ def test_referential_check_no_ops_when_child_table_missing(tmp_store):
         parent_key="security_id",
     )
     with patch("db.quality._check_specs", return_value=(spec.compile(),)):
-        results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+        results = _quality_by_name(tmp_store, spec.check_name)
 
     check = results[spec.check_name]
     assert check.status == "warning"
@@ -393,9 +394,12 @@ def test_referential_check_no_ops_when_child_table_missing(tmp_store):
 
 
 def test_existing_single_table_checks_still_present(tmp_store):
-    from db.quality import run_warehouse_quality_checks
-
-    results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+    results = _quality_by_name(
+        tmp_store,
+        "orphan_equity_daily_bars",
+        "xbrl_filing_facts_without_context",
+        "duplicate_fundamental_ratio_natural_keys",
+    )
 
     # A sample of pre-existing hand-rolled orphan/scalar checks must still run.
     for check_name in (

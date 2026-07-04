@@ -300,7 +300,11 @@ def test_shares_quality_checks_and_watermarks_pass_clean_sample(tmp_store):
 
     target_results = [
         result
-        for result in run_warehouse_quality_checks(tmp_store, record=False)
+        for result in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            dataset_ids=("shares_outstanding_history",),
+        )
         if result.dataset_id == "shares_outstanding_history"
     ]
     assert {result.check_name for result in target_results} == {

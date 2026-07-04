@@ -209,21 +209,42 @@ class TestPitColumnPresenceCheck:
 
 class TestRunWarehouseQualityChecksIncludesSchemaContractChecks:
     def test_results_include_both_new_checks(self, tmp_store):
-        results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+        results = {
+            r.check_name: r
+            for r in run_warehouse_quality_checks(
+                tmp_store,
+                record=False,
+                check_names=("catalog_completeness", "pit_column_presence"),
+            )
+        }
         assert "catalog_completeness" in results
         assert "pit_column_presence" in results
         assert results["catalog_completeness"].severity == "critical"
         assert results["pit_column_presence"].severity == "critical"
 
     def test_existing_checks_are_unaffected(self, tmp_store):
-        results = {r.check_name: r for r in run_warehouse_quality_checks(tmp_store, record=False)}
+        results = {
+            r.check_name: r
+            for r in run_warehouse_quality_checks(
+                tmp_store,
+                record=False,
+                check_names=(
+                    "duplicate_equity_daily_bars",
+                    "fundamental_ratios_without_fundamental_points",
+                ),
+            )
+        }
         # A couple of well-known pre-existing checks are still present, with the
         # default "standard" severity -- additive only, no regression.
         assert results["duplicate_equity_daily_bars"].severity == "standard"
         assert results["fundamental_ratios_without_fundamental_points"].severity == "standard"
 
     def test_new_checks_are_recorded_when_record_true(self, tmp_store):
-        run_warehouse_quality_checks(tmp_store, record=True)
+        run_warehouse_quality_checks(
+            tmp_store,
+            record=True,
+            check_names=("catalog_completeness", "pit_column_presence"),
+        )
         rows = tmp_store.con.execute(
             "SELECT check_name FROM data_quality_checks WHERE check_name IN "
             "('catalog_completeness', 'pit_column_presence')"

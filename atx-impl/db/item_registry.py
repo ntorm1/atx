@@ -516,6 +516,38 @@ def seed_fundamental_item_registry(
     }
 
     seed_item_ids = sorted(items)
+    import pyarrow as pa
+
+    item_columns = (
+        "item_id",
+        "canonical_code",
+        "statement",
+        "section",
+        "data_type",
+        "unit_type",
+        "sign_convention",
+        "is_derived",
+        "definition",
+        "citation",
+    )
+    alias_columns = (
+        "item_id",
+        "alias_scheme",
+        "alias_code",
+        "coalesce_priority",
+        "valid_from",
+        "valid_to",
+    )
+    vendor_columns = ("item_id", "vendor", "vendor_field", "sign_note")
+
+    def _arrow_table(records, columns):
+        if not records:
+            return pa.table({column: [] for column in columns})
+        return pa.Table.from_pylist([dict(zip(columns, record, strict=True)) for record in records])
+
+    item_frame = _arrow_table(sorted(items.values(), key=lambda values: values[0]), item_columns)
+    alias_frame = _arrow_table(sorted(aliases), alias_columns)
+    vendor_frame = _arrow_table(sorted(vendor_maps), vendor_columns)
 
     with store.transaction():
         store.con.execute(
@@ -526,7 +558,10 @@ def seed_fundamental_item_registry(
             "DELETE FROM fundamental_item_vendor_map WHERE item_id = ANY(?)",
             [seed_item_ids],
         )
-        for item in sorted(items.values(), key=lambda values: values[0]):
+        store.con.register("_fundamental_item_seed", item_frame)
+        store.con.register("_fundamental_item_alias_seed", alias_frame)
+        store.con.register("_fundamental_item_vendor_seed", vendor_frame)
+        try:
             store.con.execute(
                 """
                 INSERT INTO fundamental_item (
@@ -541,7 +576,18 @@ def seed_fundamental_item_registry(
                     definition,
                     citation
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT
+                    item_id,
+                    canonical_code,
+                    statement,
+                    section,
+                    data_type,
+                    unit_type,
+                    sign_convention,
+                    is_derived,
+                    definition,
+                    citation
+                FROM _fundamental_item_seed
                 ON CONFLICT (item_id) DO UPDATE SET
                     canonical_code = excluded.canonical_code,
                     statement = excluded.statement,
@@ -552,11 +598,9 @@ def seed_fundamental_item_registry(
                     is_derived = excluded.is_derived,
                     definition = excluded.definition,
                     citation = excluded.citation
-                """,
-                list(item),
+                """
             )
 
-        for alias in sorted(aliases):
             store.con.execute(
                 """
                 INSERT INTO fundamental_item_alias (
@@ -567,12 +611,17 @@ def seed_fundamental_item_registry(
                     valid_from,
                     valid_to
                 )
-                VALUES (?, ?, ?, ?, CAST(? AS DATE), CAST(? AS DATE))
-                """,
-                list(alias),
+                SELECT
+                    item_id,
+                    alias_scheme,
+                    alias_code,
+                    coalesce_priority,
+                    CAST(valid_from AS DATE),
+                    CAST(valid_to AS DATE)
+                FROM _fundamental_item_alias_seed
+                """
             )
 
-        for vendor_map in sorted(vendor_maps):
             store.con.execute(
                 """
                 INSERT INTO fundamental_item_vendor_map (
@@ -581,10 +630,14 @@ def seed_fundamental_item_registry(
                     vendor_field,
                     sign_note
                 )
-                VALUES (?, ?, ?, ?)
-                """,
-                list(vendor_map),
+                SELECT item_id, vendor, vendor_field, sign_note
+                FROM _fundamental_item_vendor_seed
+                """
             )
+        finally:
+            store.con.unregister("_fundamental_item_seed")
+            store.con.unregister("_fundamental_item_alias_seed")
+            store.con.unregister("_fundamental_item_vendor_seed")
 
     return len(items)
 
