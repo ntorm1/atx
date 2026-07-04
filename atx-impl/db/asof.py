@@ -3916,15 +3916,112 @@ WITH params AS (
     SELECT
         CAST(? AS DATE) AS as_of_date,
         CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible_tables AS (
+    SELECT DISTINCT
+        v.table_name,
+        v.layer,
+        v.entity,
+        v.grain,
+        v.table_description,
+        v.natural_key_json,
+        v.pit_notes,
+        v.table_updated_at
+    FROM v_warehouse_catalog v
+    CROSS JOIN params p
+    WHERE v.table_updated_at <= p.as_of_ts
+),
+visible_fields AS (
+    SELECT
+        v.table_name,
+        v.field_name,
+        v.semantic_type,
+        v.field_description,
+        v.field_nullable,
+        v.field_unit,
+        v.source_field,
+        v.field_updated_at,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_code
+            ELSE NULL
+        END AS formula_code,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_family
+            ELSE NULL
+        END AS formula_family,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_kind
+            ELSE NULL
+        END AS formula_kind,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_unit
+            ELSE NULL
+        END AS formula_unit,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_expression
+            ELSE NULL
+        END AS formula_expression,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_citation
+            ELSE NULL
+        END AS formula_citation,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_valid_from
+            ELSE NULL
+        END AS formula_valid_from,
+        CASE
+            WHEN v.formula_valid_from <= p.as_of_date
+             AND coalesce(v.formula_valid_to, DATE '9999-12-31') > p.as_of_date
+            THEN v.formula_valid_to
+            ELSE NULL
+        END AS formula_valid_to
+    FROM v_warehouse_catalog v
+    CROSS JOIN params p
+    WHERE v.field_updated_at <= p.as_of_ts
 )
-SELECT v.*
-FROM v_warehouse_catalog v
+SELECT
+    t.table_name,
+    t.layer,
+    t.entity,
+    t.grain,
+    t.table_description,
+    t.natural_key_json,
+    t.pit_notes,
+    t.table_updated_at,
+    f.field_name,
+    f.semantic_type,
+    f.field_description,
+    f.field_nullable,
+    f.field_unit,
+    f.source_field,
+    f.field_updated_at,
+    f.formula_code,
+    f.formula_family,
+    f.formula_kind,
+    f.formula_unit,
+    f.formula_expression,
+    f.formula_citation,
+    f.formula_valid_from,
+    f.formula_valid_to
+FROM visible_tables t
+LEFT JOIN visible_fields f ON f.table_name = t.table_name
 {table_join}
 {layer_join}
-CROSS JOIN params p
-WHERE v.table_updated_at <= p.as_of_ts
-  AND (v.field_updated_at IS NULL OR v.field_updated_at <= p.as_of_ts)
-ORDER BY v.table_name, v.field_name
+ORDER BY t.table_name, f.field_name
 """
 
 
@@ -3966,12 +4063,12 @@ def warehouse_catalog_asof(
             if _register_filter(active, "asof_warehouse_catalog_table_filter", "table_name", table_values):
                 registered.append("asof_warehouse_catalog_table_filter")
                 table_join = (
-                    "JOIN asof_warehouse_catalog_table_filter tf ON tf.table_name = upper(v.table_name)"
+                    "JOIN asof_warehouse_catalog_table_filter tf ON tf.table_name = upper(t.table_name)"
                 )
             if _register_filter(active, "asof_warehouse_catalog_layer_filter", "layer", layer_values):
                 registered.append("asof_warehouse_catalog_layer_filter")
                 layer_join = (
-                    "JOIN asof_warehouse_catalog_layer_filter lf ON lf.layer = upper(v.layer)"
+                    "JOIN asof_warehouse_catalog_layer_filter lf ON lf.layer = upper(t.layer)"
                 )
             sql = WAREHOUSE_CATALOG_ASOF_SQL.format(table_join=table_join, layer_join=layer_join)
             return active.con.execute(sql, [as_of_date, effective_ts]).df()

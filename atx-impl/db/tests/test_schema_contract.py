@@ -955,6 +955,83 @@ class TestMigration0099WarehouseCatalogView:
         applied = apply_pending_migrations(tmp_store.con)
         assert applied == []
 
+    def test_migration_body_without_formula_registry_view_keeps_null_formula_columns(self):
+        from db.migrations import _warehouse_catalog_view
+
+        store = _bare_store()
+        try:
+            store.con.execute(
+                """
+                CREATE TABLE table_catalog (
+                    table_name VARCHAR PRIMARY KEY,
+                    layer VARCHAR,
+                    entity VARCHAR,
+                    grain VARCHAR,
+                    description VARCHAR,
+                    natural_key_json VARCHAR,
+                    pit_notes VARCHAR,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+            store.con.execute(
+                """
+                CREATE TABLE field_catalog (
+                    table_name VARCHAR NOT NULL,
+                    field_name VARCHAR NOT NULL,
+                    semantic_type VARCHAR,
+                    description VARCHAR,
+                    nullable BOOLEAN,
+                    unit VARCHAR,
+                    source_field VARCHAR,
+                    updated_at TIMESTAMP,
+                    PRIMARY KEY (table_name, field_name)
+                )
+                """
+            )
+            _insert_table_catalog_row(
+                store.con,
+                "test_wca_no_formula_registry",
+                entity="formula",
+                updated_at=dt.datetime(2020, 1, 1),
+            )
+            _insert_field_catalog_row(
+                store.con,
+                "test_wca_no_formula_registry",
+                "missing_formula",
+                updated_at=dt.datetime(2020, 1, 1),
+            )
+
+            _warehouse_catalog_view(store.con)
+
+            row = store.con.execute(
+                """
+                SELECT formula_code, formula_family, formula_valid_from
+                FROM v_warehouse_catalog
+                WHERE table_name = 'test_wca_no_formula_registry'
+                """
+            ).fetchone()
+            assert row == (None, None, None)
+
+            formula_column_types = dict(
+                store.con.execute(
+                    """
+                    SELECT column_name, data_type
+                    FROM information_schema.columns
+                    WHERE table_schema = 'main'
+                      AND table_name = 'v_warehouse_catalog'
+                      AND column_name IN ('formula_code', 'formula_family', 'formula_valid_from')
+                    """
+                ).fetchall()
+            )
+            assert formula_column_types == {
+                "formula_code": "VARCHAR",
+                "formula_family": "VARCHAR",
+                "formula_valid_from": "DATE",
+            }
+        finally:
+            store.connection.close()
+
 
 class TestWarehouseCatalogViewCatalogRegistration:
     """Views are catalogued like tables per (B)/S7a."""
@@ -1140,6 +1217,34 @@ class TestWarehouseCatalogAsofNoLookahead:
         )
         assert set(after["field_name"]) == {"old_col", "future_col"}
 
+    def test_table_remains_visible_when_only_field_rows_are_future_dated(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        _insert_table_catalog_row(
+            tmp_store.con,
+            "test_wca_only_future_fields",
+            updated_at=dt.datetime(2020, 1, 1),
+        )
+        _insert_field_catalog_row(
+            tmp_store.con,
+            "test_wca_only_future_fields",
+            "future_col",
+            updated_at=dt.datetime(2035, 6, 15),
+        )
+
+        before = warehouse_catalog_asof(
+            dt.date(2035, 6, 14), store=tmp_store, tables=["test_wca_only_future_fields"]
+        )
+        assert len(before) == 1
+        assert before.iloc[0]["table_name"] == "test_wca_only_future_fields"
+        assert before["field_name"].isna().iloc[0]
+
+        after = warehouse_catalog_asof(
+            dt.date(2035, 6, 16), store=tmp_store, tables=["test_wca_only_future_fields"]
+        )
+        assert len(after) == 1
+        assert after.iloc[0]["field_name"] == "future_col"
+
 
 class TestWarehouseCatalogFormulaLineage:
     """Best-effort v_formula_registry lineage join for catalogued formula surfaces
@@ -1204,6 +1309,96 @@ class TestWarehouseCatalogFormulaLineage:
         )
         assert len(result) == 1
         assert result["formula_code"].isna().iloc[0]
+
+    def test_formula_lineage_is_null_before_formula_valid_from(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        tmp_store.con.execute(
+            """
+            INSERT INTO formula_registry (
+                formula_code, family, kind, unit, numerator_code, denominator_code,
+                numerator_item_ids_json, denominator_item_ids_json, inputs_json,
+                transform, expression, is_meaningful_rule, definition, citation,
+                valid_from, valid_to
+            )
+            VALUES (
+                'test_wca_future_formula', 'profitability', 'ratio', 'ratio', 'net_income', 'revenue',
+                NULL, NULL, '["ni", "rev"]',
+                'divide', NULL, NULL, 'Future formula.', 'Future citation.',
+                DATE '2035-01-01', NULL
+            )
+            """
+        )
+        _insert_table_catalog_row(
+            tmp_store.con,
+            "test_wca_future_formula_surface",
+            entity="formula",
+            updated_at=dt.datetime(2020, 1, 1),
+        )
+        _insert_field_catalog_row(
+            tmp_store.con,
+            "test_wca_future_formula_surface",
+            "test_wca_future_formula",
+            updated_at=dt.datetime(2020, 1, 1),
+        )
+
+        before = warehouse_catalog_asof(
+            dt.date(2034, 12, 31), store=tmp_store, tables=["test_wca_future_formula_surface"]
+        )
+        assert len(before) == 1
+        assert before.iloc[0]["field_name"] == "test_wca_future_formula"
+        assert before["formula_code"].isna().iloc[0]
+
+        after = warehouse_catalog_asof(
+            dt.date(2035, 1, 1), store=tmp_store, tables=["test_wca_future_formula_surface"]
+        )
+        assert len(after) == 1
+        assert after.iloc[0]["formula_code"] == "test_wca_future_formula"
+
+    def test_formula_lineage_is_null_after_formula_valid_to(self, tmp_store):
+        from db.asof import warehouse_catalog_asof
+
+        tmp_store.con.execute(
+            """
+            INSERT INTO formula_registry (
+                formula_code, family, kind, unit, numerator_code, denominator_code,
+                numerator_item_ids_json, denominator_item_ids_json, inputs_json,
+                transform, expression, is_meaningful_rule, definition, citation,
+                valid_from, valid_to
+            )
+            VALUES (
+                'test_wca_retired_formula', 'profitability', 'ratio', 'ratio', 'net_income', 'revenue',
+                NULL, NULL, '["ni", "rev"]',
+                'divide', NULL, NULL, 'Retired formula.', 'Retired citation.',
+                DATE '2000-01-01', DATE '2030-01-01'
+            )
+            """
+        )
+        _insert_table_catalog_row(
+            tmp_store.con,
+            "test_wca_retired_formula_surface",
+            entity="formula",
+            updated_at=dt.datetime(2020, 1, 1),
+        )
+        _insert_field_catalog_row(
+            tmp_store.con,
+            "test_wca_retired_formula_surface",
+            "test_wca_retired_formula",
+            updated_at=dt.datetime(2020, 1, 1),
+        )
+
+        active = warehouse_catalog_asof(
+            dt.date(2029, 12, 31), store=tmp_store, tables=["test_wca_retired_formula_surface"]
+        )
+        assert len(active) == 1
+        assert active.iloc[0]["formula_code"] == "test_wca_retired_formula"
+
+        retired = warehouse_catalog_asof(
+            dt.date(2030, 1, 1), store=tmp_store, tables=["test_wca_retired_formula_surface"]
+        )
+        assert len(retired) == 1
+        assert retired.iloc[0]["field_name"] == "test_wca_retired_formula"
+        assert retired["formula_code"].isna().iloc[0]
 
 
 class TestWarehouseCatalogCli:
