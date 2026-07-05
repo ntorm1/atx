@@ -10757,10 +10757,61 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
             FROM backfill_run
             WHERE start_date < end_date
         ),
+        run_step_datasets AS (
+            SELECT DISTINCT
+                r.run_id AS backfill_run_id,
+                s.dataset_id AS partition_dataset_id
+            FROM etl_job_runs r
+            JOIN etl_job_steps s
+              ON s.run_id = r.run_id
+            WHERE r.parent_run_id IS NULL
+              AND r.run_kind IN ('backfill', 'maintenance')
+        ),
+        run_plan_seed AS (
+            SELECT
+                rs.backfill_run_id,
+                rs.root_dataset_id,
+                d.partition_dataset_id,
+                rs.start_date,
+                rs.end_date,
+                rs.chunk,
+                rs.run_status,
+                rs.started_at,
+                rs.finished_at,
+                rs.error_message,
+                rs.chunk_amount,
+                rs.chunk_unit
+            FROM run_seed rs
+            JOIN run_step_datasets d
+              ON d.backfill_run_id = rs.backfill_run_id
+
+            UNION ALL
+
+            SELECT
+                rs.backfill_run_id,
+                rs.root_dataset_id,
+                rs.root_dataset_id AS partition_dataset_id,
+                rs.start_date,
+                rs.end_date,
+                rs.chunk,
+                rs.run_status,
+                rs.started_at,
+                rs.finished_at,
+                rs.error_message,
+                rs.chunk_amount,
+                rs.chunk_unit
+            FROM run_seed rs
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM run_step_datasets d
+                WHERE d.backfill_run_id = rs.backfill_run_id
+            )
+        ),
         run_partition_plan AS (
             SELECT
                 backfill_run_id,
                 root_dataset_id,
+                partition_dataset_id,
                 start_date,
                 end_date,
                 chunk,
@@ -10781,7 +10832,7 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
                     END,
                     end_date
                 ) AS window_hi
-            FROM run_seed
+            FROM run_plan_seed
             WHERE chunk_amount > 0
               AND chunk_unit IS NOT NULL
 
@@ -10790,6 +10841,7 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
             SELECT
                 backfill_run_id,
                 root_dataset_id,
+                partition_dataset_id,
                 start_date,
                 end_date,
                 chunk,
@@ -10818,7 +10870,7 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
                 p.backfill_run_id,
                 w.run_id,
                 p.root_dataset_id,
-                w.dataset_id AS partition_dataset_id,
+                p.partition_dataset_id AS partition_dataset_id,
                 w.dataset_id AS dataset_id,
                 w.partition_key,
                 w.window_lo,
@@ -10844,9 +10896,9 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
                 w.updated_at AS partition_updated_at
             FROM run_partition_plan p
             JOIN backfill_watermark w
-                ON w.dataset_id = p.root_dataset_id
+                ON w.dataset_id = p.partition_dataset_id
                AND w.partition_key = concat(
-                    p.root_dataset_id,
+                    p.partition_dataset_id,
                     ':',
                     CAST(p.window_lo AS VARCHAR),
                     ':',
@@ -10941,7 +10993,7 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
             'backfill_run_id,partition_dataset_id,partition_key',
             'Queryable PF3 backfill observability surface joining run headers, current per-partition watermark/progress rows, and active/latest dead-letter quarantine state.',
             '["backfill_run_id","partition_dataset_id","partition_key"]',
-            'Run-scoped current-state view over persisted backfill progress. For all-skipped idempotent reruns, matching root partitions are projected from the run header and existing watermark rows without mutating backfill_watermark.',
+            'Run-scoped current-state view over persisted backfill progress. For all-skipped idempotent reruns, matching manifest partitions are projected from the run header, orchestrator steps when present, and existing watermark rows without mutating backfill_watermark.',
             now()
         )
         """

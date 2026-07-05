@@ -4,6 +4,8 @@ import datetime as dt
 import json
 from pathlib import Path
 
+import pytest
+
 
 class CliBackfillDataset:
     dataset_id = "cli_backfill"
@@ -62,12 +64,35 @@ class CliBackfillDataset:
         )
 
 
+class CliBackfillDependencyDataset(CliBackfillDataset):
+    dataset_id = "cli_backfill_dep"
+    calls: list[str] = []
+    failing_partition: str | None = None
+
+
+class CliBackfillRootDataset(CliBackfillDataset):
+    dataset_id = "cli_backfill_root"
+    depends_on = ("cli_backfill_dep",)
+    calls: list[str] = []
+    failing_partition: str | None = None
+
+
 def _registry():
     return {
         CliBackfillDataset.dataset_id: (
             CliBackfillDataset,
             lambda params: dict(params),
         )
+    }
+
+
+def _dependency_registry():
+    return {
+        cls.dataset_id: (
+            cls,
+            lambda params: dict(params),
+        )
+        for cls in (CliBackfillDependencyDataset, CliBackfillRootDataset)
     }
 
 
@@ -236,3 +261,162 @@ def test_warehouse_backfill_cli_status_reports_all_skipped_rerun(
     assert {row["status"] for row in status["rows"]} == {"skipped"}
     assert {row["rows_written"] for row in status["rows"]} == {0}
     assert {row["run_status"] for row in status["rows"]} == {"succeeded"}
+
+
+def test_warehouse_backfill_cli_status_reports_dependency_all_skipped_rerun(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    CliBackfillDependencyDataset.reset()
+    CliBackfillRootDataset.reset()
+    db_path = tmp_path / "warehouse_backfill_cli_dependency_skipped.duckdb"
+    registry = _dependency_registry()
+
+    first = _run_cli(
+        [
+            "backfill",
+            "--dataset",
+            "cli_backfill_root",
+            "--start",
+            "2014-01-01",
+            "--end",
+            "2014-03-01",
+            "--chunk",
+            "1mo",
+            "--db-path",
+            str(db_path),
+        ],
+        capsys,
+        registry=registry,
+    )
+    dependency_calls_after_first = list(CliBackfillDependencyDataset.calls)
+    root_calls_after_first = list(CliBackfillRootDataset.calls)
+
+    second = _run_cli(
+        [
+            "backfill",
+            "--dataset",
+            "cli_backfill_root",
+            "--start",
+            "2014-01-01",
+            "--end",
+            "2014-03-01",
+            "--chunk",
+            "1mo",
+            "--db-path",
+            str(db_path),
+        ],
+        capsys,
+        registry=registry,
+    )
+
+    assert first["status"] == "succeeded"
+    assert first["partitions_planned"] == 4
+    assert second["status"] == "succeeded"
+    assert second["partitions_planned"] == 4
+    assert second["partitions_skipped"] == 4
+    assert second["partitions_succeeded"] == 0
+    assert second["rows_written"] == 0
+    assert CliBackfillDependencyDataset.calls == dependency_calls_after_first
+    assert CliBackfillRootDataset.calls == root_calls_after_first
+
+    status = _run_cli(
+        [
+            "status",
+            "--dataset",
+            "cli_backfill_root",
+            "--backfill-run-id",
+            second["backfill_run_id"],
+            "--db-path",
+            str(db_path),
+        ],
+        capsys,
+        registry=registry,
+    )
+
+    rows = status["rows"]
+    identity_keys = {
+        (row["partition_dataset_id"], row["partition_key"])
+        for row in rows
+    }
+    assert status["count"] == second["partitions_planned"]
+    assert status["count"] == second["partitions_skipped"]
+    assert len(rows) == len(identity_keys)
+    assert {row["root_dataset_id"] for row in rows} == {"cli_backfill_root"}
+    assert {row["partition_dataset_id"] for row in rows} == {
+        "cli_backfill_dep",
+        "cli_backfill_root",
+    }
+    assert {
+        dataset_id: sum(
+            1 for row in rows if row["partition_dataset_id"] == dataset_id
+        )
+        for dataset_id in {"cli_backfill_dep", "cli_backfill_root"}
+    } == {"cli_backfill_dep": 2, "cli_backfill_root": 2}
+    assert {row["backfill_run_id"] for row in rows} == {second["backfill_run_id"]}
+    assert {row["run_id"] for row in rows} == {first["backfill_run_id"]}
+    assert {row["status"] for row in rows} == {"skipped"}
+    assert {row["rows_written"] for row in rows} == {0}
+    assert {row["run_status"] for row in rows} == {"succeeded"}
+
+
+def test_warehouse_backfill_cli_direct_resume_missing_dataset_does_not_leave_running(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    from db import DuckDBStore
+    from scripts import warehouse_backfill
+
+    db_path = tmp_path / "warehouse_backfill_cli_direct_missing.duckdb"
+    run_id = "direct-missing-dataset"
+    with DuckDBStore(db_path) as store:
+        store.con.execute(
+            """
+            INSERT INTO backfill_run (
+                backfill_run_id,
+                dataset_id,
+                start_date,
+                end_date,
+                chunk,
+                status,
+                started_at,
+                finished_at,
+                error_message
+            )
+            VALUES (?, ?, ?, ?, ?, 'running', ?, NULL, NULL)
+            """,
+            [
+                run_id,
+                "missing_direct_dataset",
+                dt.date(2014, 1, 1),
+                dt.date(2014, 2, 1),
+                "1mo",
+                dt.datetime(2026, 7, 1, 12, 0, 0),
+            ],
+        )
+
+    with pytest.raises(KeyError, match="Unknown dataset_id"):
+        warehouse_backfill.main(
+            [
+                "resume",
+                "--backfill-run-id",
+                run_id,
+                "--db-path",
+                str(db_path),
+            ],
+            registry={},
+        )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+    with DuckDBStore(db_path) as store:
+        row = store.con.execute(
+            """
+            SELECT status, error_message
+            FROM backfill_run
+            WHERE backfill_run_id = ?
+            """,
+            [run_id],
+        ).fetchone()
+    assert row[0] == "failed"
+    assert "Unknown dataset_id 'missing_direct_dataset'" in row[1]

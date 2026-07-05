@@ -148,28 +148,32 @@ def _direct_resume_from_backfill_run(
     ).fetchone()
     if row is None:
         raise KeyError(f"No backfill_run found for backfill_run_id {backfill_run_id!r}")
-    store.con.execute(
-        """
-        UPDATE backfill_run
-        SET status = 'running',
-            finished_at = NULL,
-            error_message = NULL
-        WHERE backfill_run_id = ?
-        """,
-        [backfill_run_id],
-    )
-    return backfill_driver.run_backfill(
-        store,
-        str(row[0]),
-        row[1],
-        row[2],
-        str(row[3]),
-        registry=registry,
-        backfill_run_id=backfill_run_id,
-        include_dependencies=False,
-        max_parallel=1,
-        dead_letter=True,
-    )
+    try:
+        return backfill_driver.run_backfill(
+            store,
+            str(row[0]),
+            row[1],
+            row[2],
+            str(row[3]),
+            registry=registry,
+            backfill_run_id=backfill_run_id,
+            include_dependencies=False,
+            max_parallel=1,
+            dead_letter=True,
+        )
+    except Exception as exc:
+        store.con.execute(
+            """
+            UPDATE backfill_run
+            SET status = 'failed',
+                finished_at = now(),
+                error_message = ?
+            WHERE backfill_run_id = ?
+              AND status = 'running'
+            """,
+            [str(exc), backfill_run_id],
+        )
+        raise
 
 
 def main(
