@@ -308,6 +308,7 @@
     "macro_metrics",
     "macro_metrics_asof",
     "market_cap_asof",
+    "metric_engine",
     "migration_admin",
     "migrations",
     "module_boundaries",

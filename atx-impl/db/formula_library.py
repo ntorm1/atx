@@ -94,12 +94,21 @@ SEED_COLUMNS = (
 # Governed enums. `kind` mirrors fundamental_ratios.RatioDef.kind exactly
 # (fundamental_ratios.py RatioDef :76-77 docstring). `transform` is the
 # reducer-selector mini-grammar named in the S4-0 brief: divide/sum/
-# difference/pct_change cover the existing kind branches in
-# compute_ratio_rows (:618-633); identity covers multi-term `expression`
+# difference/pct_change/cagr/stability/consistency cover the existing ratio
+# reducers plus PF3-S6's first-class growth metric engine. identity covers multi-term `expression`
 # formulas (composites, DuPont) where the top-level value is not itself a
 # binary reduction of numerator/denominator.
 VALID_KINDS = frozenset({"ratio", "level", "difference", "growth", "per_share", "score"})
-VALID_TRANSFORMS = frozenset({"divide", "sum", "difference", "pct_change", "identity"})
+VALID_TRANSFORMS = frozenset({
+    "divide",
+    "sum",
+    "difference",
+    "pct_change",
+    "cagr",
+    "stability",
+    "consistency",
+    "identity",
+})
 
 
 # --------------------------------------------------------------------------- #

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import duckdb
 
@@ -13,6 +14,122 @@ from .bodies_0001_0137 import (
     _formula_registry_schema_catalog,
 )
 from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
+
+
+def _s6_1_growth_formula_rows() -> tuple[tuple[object, ...], ...]:
+    metrics = (
+        ("revenue", "revenue", "ttm", "[1001]", "trailing-twelve-month revenue"),
+        ("net_income", "net_income", "ttm", "[1031]", "trailing-twelve-month net income"),
+        ("operating_income", "operating_income", "ttm", "[1014]", "trailing-twelve-month operating income"),
+        (
+            "operating_cash_flow",
+            "operating_cash_flow",
+            "ttm",
+            "[1301]",
+            "trailing-twelve-month operating cash flow",
+        ),
+        ("free_cash_flow", "free_cash_flow", "ttm", "[1301, 1305]", "trailing-twelve-month free cash flow"),
+        ("assets", "assets", "instant", "[1101]", "total assets"),
+        ("equity", "stockholders_equity", "instant", "[1221]", "stockholders equity"),
+    )
+    rows: list[tuple[object, ...]] = []
+    for prefix, metric_code, basis, item_ids, label in metrics:
+        inputs_json = json.dumps([metric_code])
+        rows.extend(
+            [
+                (
+                    f"{prefix}_growth_qoq",
+                    "growth_cagr",
+                    "growth",
+                    "ratio",
+                    metric_code,
+                    f"{metric_code}_prior_quarter",
+                    item_ids,
+                    item_ids,
+                    inputs_json,
+                    "pct_change",
+                    f"metric:{metric_code}|mode:qoq|horizon_years:0.25|basis:{basis}",
+                    "require_positive_denominator",
+                    f"Quarter-over-quarter percentage change in {label}.",
+                    None,
+                    "1900-01-01",
+                    None,
+                ),
+                (
+                    f"{prefix}_cagr_3y",
+                    "growth_cagr",
+                    "growth",
+                    "ratio",
+                    metric_code,
+                    f"{metric_code}_prior_3y",
+                    item_ids,
+                    item_ids,
+                    inputs_json,
+                    "cagr",
+                    f"metric:{metric_code}|mode:cagr|horizon_years:3|basis:{basis}",
+                    "require_positive_denominator",
+                    f"Three-year compound annual growth rate in {label}.",
+                    None,
+                    "1900-01-01",
+                    None,
+                ),
+                (
+                    f"{prefix}_cagr_5y",
+                    "growth_cagr",
+                    "growth",
+                    "ratio",
+                    metric_code,
+                    f"{metric_code}_prior_5y",
+                    item_ids,
+                    item_ids,
+                    inputs_json,
+                    "cagr",
+                    f"metric:{metric_code}|mode:cagr|horizon_years:5|basis:{basis}",
+                    "require_positive_denominator",
+                    f"Five-year compound annual growth rate in {label}.",
+                    None,
+                    "1900-01-01",
+                    None,
+                ),
+                (
+                    f"{prefix}_growth_stability_3y",
+                    "growth_cagr",
+                    "growth",
+                    "ratio",
+                    f"{prefix}_yoy_growth",
+                    "trailing_3y_window",
+                    item_ids,
+                    item_ids,
+                    inputs_json,
+                    "stability",
+                    f"metric:{metric_code}|mode:stability|horizon_years:3|basis:{basis}|min_observations:2",
+                    None,
+                    f"Three-year stability score for {label} growth.",
+                    None,
+                    "1900-01-01",
+                    None,
+                ),
+                (
+                    f"{prefix}_growth_consistency_3y",
+                    "growth_cagr",
+                    "growth",
+                    "ratio",
+                    "positive_growth_observations",
+                    "trailing_3y_observations",
+                    item_ids,
+                    item_ids,
+                    inputs_json,
+                    "consistency",
+                    f"metric:{metric_code}|mode:consistency|horizon_years:3|basis:{basis}|min_observations:2",
+                    None,
+                    f"Three-year positive-growth consistency share for {label}.",
+                    None,
+                    "1900-01-01",
+                    None,
+                ),
+            ]
+        )
+    return tuple(rows)
 
 
 _S6_0_FORMULA_REGISTRY_ROWS = (
@@ -469,6 +586,130 @@ _S6_0_FORMULA_REGISTRY_ROWS = (
 )
 
 
+def _pf3_s6_upsert_formula_registry_rows(
+    conn: duckdb.DuckDBPyConnection,
+    rows: tuple[tuple[object, ...], ...],
+    *,
+    temp_table: str,
+) -> None:
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE IF NOT EXISTS {temp_table} (
+            formula_code VARCHAR PRIMARY KEY,
+            family VARCHAR NOT NULL,
+            kind VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            numerator_code VARCHAR,
+            denominator_code VARCHAR,
+            numerator_item_ids_json VARCHAR,
+            denominator_item_ids_json VARCHAR,
+            inputs_json VARCHAR NOT NULL,
+            transform VARCHAR NOT NULL,
+            expression VARCHAR,
+            is_meaningful_rule VARCHAR,
+            definition VARCHAR NOT NULL,
+            citation VARCHAR,
+            valid_from DATE NOT NULL,
+            valid_to DATE
+        )
+        """
+    )
+    conn.execute(f"DELETE FROM {temp_table}")
+    conn.executemany(
+        f"""
+        INSERT INTO {temp_table} (
+            formula_code,
+            family,
+            kind,
+            unit,
+            numerator_code,
+            denominator_code,
+            numerator_item_ids_json,
+            denominator_item_ids_json,
+            inputs_json,
+            transform,
+            expression,
+            is_meaningful_rule,
+            definition,
+            citation,
+            valid_from,
+            valid_to
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS DATE), CAST(? AS DATE))
+        """,
+        rows,
+    )
+    conn.execute(
+        f"""
+        UPDATE formula_registry AS target
+        SET family = seed.family,
+            kind = seed.kind,
+            unit = seed.unit,
+            numerator_code = seed.numerator_code,
+            denominator_code = seed.denominator_code,
+            numerator_item_ids_json = seed.numerator_item_ids_json,
+            denominator_item_ids_json = seed.denominator_item_ids_json,
+            inputs_json = seed.inputs_json,
+            transform = seed.transform,
+            expression = seed.expression,
+            is_meaningful_rule = seed.is_meaningful_rule,
+            definition = seed.definition,
+            citation = seed.citation,
+            valid_from = seed.valid_from,
+            valid_to = seed.valid_to,
+            run_id = NULL,
+            source_loaded_at = now()
+        FROM {temp_table} AS seed
+        WHERE target.formula_code = seed.formula_code
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO formula_registry (
+            formula_code,
+            family,
+            kind,
+            unit,
+            numerator_code,
+            denominator_code,
+            numerator_item_ids_json,
+            denominator_item_ids_json,
+            inputs_json,
+            transform,
+            expression,
+            is_meaningful_rule,
+            definition,
+            citation,
+            valid_from,
+            valid_to
+        )
+        SELECT seed.formula_code,
+               seed.family,
+               seed.kind,
+               seed.unit,
+               seed.numerator_code,
+               seed.denominator_code,
+               seed.numerator_item_ids_json,
+               seed.denominator_item_ids_json,
+               seed.inputs_json,
+               seed.transform,
+               seed.expression,
+               seed.is_meaningful_rule,
+               seed.definition,
+               seed.citation,
+               seed.valid_from,
+               seed.valid_to
+        FROM {temp_table} AS seed
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM formula_registry AS target
+            WHERE target.formula_code = seed.formula_code
+        )
+        """
+    )
+    conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
+
+
 def _pf3_s6_ratio_formula_catalog_expansion(conn: duckdb.DuckDBPyConnection) -> None:
     """PF3-S6 S6-0: persist the expanded ratio formula catalog."""
 
@@ -603,10 +844,171 @@ def _pf3_s6_ratio_formula_catalog_expansion(conn: duckdb.DuckDBPyConnection) -> 
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s6_growth_engine_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S6 S6-1: first-class growth/CAGR metric surface."""
+
+    _formula_registry_schema_catalog(conn)
+    _pf3_s6_upsert_formula_registry_rows(
+        conn,
+        _s6_1_growth_formula_rows(),
+        temp_table="_pf3_s6_growth_formula_registry_seed_rows",
+    )
+    _formula_registry_catalog_view(conn)
+    _catalog_fields_for_tables(conn, ("formula_registry", "v_formula_registry"))
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_growth (
+            growth_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            cik VARCHAR,
+            formula_code VARCHAR NOT NULL,
+            family VARCHAR NOT NULL,
+            kind VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            basis VARCHAR NOT NULL,
+            growth_method VARCHAR NOT NULL,
+            horizon_years DOUBLE NOT NULL,
+            elapsed_years DOUBLE NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            base_period_start DATE,
+            base_period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            value DOUBLE NOT NULL,
+            current_code VARCHAR NOT NULL,
+            current_value DOUBLE NOT NULL,
+            base_code VARCHAR NOT NULL,
+            base_value DOUBLE NOT NULL,
+            is_meaningful BOOLEAN NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            vintage_class VARCHAR,
+            current_available_at TIMESTAMP NOT NULL,
+            base_available_at TIMESTAMP NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            as_of_date DATE NOT NULL,
+            current_source_accession VARCHAR,
+            base_source_accession VARCHAR,
+            current_filed_date DATE,
+            base_filed_date DATE,
+            input_codes_json VARCHAR NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_growth',
+            'atx_warehouse',
+            'Derived fundamental growth metrics',
+            'PIT-safe YoY, QoQ, multi-year CAGR, and trailing growth-stability metrics computed from fundamental_ttm_points and fundamental_statement_points period history.',
+            'security_id,formula_code,basis,horizon_years,period_end',
+            'fundamental_growth',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'fundamental_growth',
+            'gold',
+            'fundamental_growth',
+            'source,security_id,formula_code,basis,horizon_years,period_end',
+            'First-class fundamental growth metric surface for YoY, QoQ, CAGR, and growth stability/consistency metrics.',
+            '["source","security_id","formula_code","basis","horizon_years","period_end"]',
+            'Rows are visible only when every consumed current/base period is visible. available_at is the maximum availability timestamp across the exact period inputs captured in input_lineage_json.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) IN ('growth_id', 'security_id', 'run_id') THEN 'identifier'
+                WHEN lower(c.column_name) IN (
+                    'period_start', 'period_end', 'base_period_start', 'base_period_end',
+                    'as_of_date', 'current_filed_date', 'base_filed_date'
+                ) THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                WHEN lower(c.column_name) IN ('is_meaningful', 'is_latest_revision') OR upper(c.data_type) = 'BOOLEAN' THEN 'flag'
+                WHEN lower(c.column_name) IN ('value', 'current_value', 'base_value', 'horizon_years', 'elapsed_years') THEN 'measure'
+                ELSE 'text'
+            END,
+            CASE c.column_name
+                WHEN 'formula_code' THEN 'Formula code registered in formula_registry for this growth metric.'
+                WHEN 'growth_method' THEN 'Growth method: yoy, qoq, cagr, stability, or consistency.'
+                WHEN 'value' THEN 'Computed growth metric value.'
+                WHEN 'available_at' THEN 'Maximum availability timestamp across every consumed input period.'
+                WHEN 'input_lineage_json' THEN 'JSON lineage for the exact current/base periods consumed by the metric.'
+                ELSE replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.'
+            END,
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) IN (
+                    'period_start', 'period_end', 'base_period_start', 'base_period_end',
+                    'as_of_date', 'current_filed_date', 'base_filed_date'
+                ) THEN 'date'
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN lower(c.column_name) LIKE '%json%' THEN 'json'
+                ELSE NULL
+            END,
+            NULL,
+            now()
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name = 'fundamental_growth'
+        """
+    )
+    for statement in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_fundamental_growth_key "
+        "ON fundamental_growth(source, security_id, formula_code, basis, horizon_years, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_growth_security_period "
+        "ON fundamental_growth(security_id, period_end)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_growth_asof "
+        "ON fundamental_growth(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_growth_formula "
+        "ON fundamental_growth(formula_code, growth_method, basis)",
+    ):
+        conn.execute(statement)
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=148,
         name="pf3_s6_ratio_formula_catalog_expansion",
         up=_pf3_s6_ratio_formula_catalog_expansion,
+    ),
+    Migration(
+        version=149,
+        name="pf3_s6_growth_engine_schema_catalog",
+        up=_pf3_s6_growth_engine_schema_catalog,
     ),
 ]

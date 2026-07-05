@@ -33,6 +33,7 @@ from .fact_disagreement import FactDisagreementDataset, FactDisagreementOptions
 from .filer_alias import FilerAliasDataset, FilerAliasOptions
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
+from .metric_engine import FundamentalGrowthDataset, FundamentalGrowthOptions
 from .standardization import FundamentalStandardizationDataset, FundamentalStandardizationOptions
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .segments import SegmentDataset, SegmentOptions
@@ -852,6 +853,16 @@ def _fundamental_ratios_options(params: dict[str, Any]) -> FundamentalRatiosOpti
     )
 
 
+def _fundamental_growth_options(params: dict[str, Any]) -> FundamentalGrowthOptions:
+    default = FundamentalGrowthOptions()
+    return FundamentalGrowthOptions(
+        source=params.get("source") or default.source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        metrics=_string_tuple_or_none(params.get("metrics")) or default.metrics,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _short_interest_metrics_options(params: dict[str, Any]) -> ShortInterestMetricsOptions:
     default = ShortInterestMetricsOptions()
     return ShortInterestMetricsOptions(
@@ -1085,6 +1096,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     EquityDailyFeatureDataset.dataset_id: (EquityDailyFeatureDataset, _features_options),
     FundamentalFeatureDataset.dataset_id: (FundamentalFeatureDataset, _fundamental_features_options),
     FundamentalRatiosDataset.dataset_id: (FundamentalRatiosDataset, _fundamental_ratios_options),
+    FundamentalGrowthDataset.dataset_id: (FundamentalGrowthDataset, _fundamental_growth_options),
     FundamentalStandardizationDataset.dataset_id: (
         FundamentalStandardizationDataset,
         _fundamental_standardization_options,
@@ -1211,6 +1223,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "form144_intent": ("sec_insider_ownership",),
     "form144_to_form4_link": ("form144_intent", "sec_insider_ownership"),
     "fundamental_ratios": ("fundamental_xbrl_metric", "sec_company_facts"),
+    "fundamental_growth": ("fundamental_xbrl_metric", "sec_company_facts"),
     "fundamental_standardized": ("fundamental_xbrl_metric",),
     "fundamental_xbrl_metric": ("xbrl_filing_contexts",),
     "segments": ("fundamental_xbrl_metric", "xbrl_filing_contexts"),
