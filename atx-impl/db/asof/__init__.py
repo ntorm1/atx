@@ -47,6 +47,7 @@ from .pricing import (
     SHORT_INTEREST_ASOF_SQL,
     MACRO_ASOF_SQL,
     UNIVERSE_ASOF_SQL,
+    UNIVERSE_MEMBERSHIP_ASOF_SQL,
     CORPORATE_ACTIONS_ASOF_SQL,
     adjustment_factors_asof,
     daily_adjustment_factors_asof,
@@ -55,6 +56,7 @@ from .pricing import (
     short_interest_asof,
     macro_asof,
     universe_asof,
+    universe_membership_asof,
     corporate_actions_asof,
 )
 
@@ -184,6 +186,7 @@ for _function_name in (
     "short_interest_asof",
     "macro_asof",
     "universe_asof",
+    "universe_membership_asof",
     "corporate_actions_asof",
     "thirteenf_positioning_asof",
     "ownership_asof",

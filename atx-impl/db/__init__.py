@@ -60,6 +60,7 @@ from .asof import (
     short_interest_asof,
     thirteenf_positioning_asof,
     universe_asof,
+    universe_membership_asof,
 )
 from .adjustment_factors import (
     AdjustmentFactorHistoryDataset,
@@ -782,5 +783,6 @@ __all__ = [
     "thirteenf_positioning_asof",
     "template_for_sic",
     "universe_asof",
+    "universe_membership_asof",
     "validate_lake_export",
 ]

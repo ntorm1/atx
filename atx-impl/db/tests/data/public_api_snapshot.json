@@ -439,6 +439,7 @@
     "ticker_history",
     "universe",
     "universe_asof",
+    "universe_membership_asof",
     "universes",
     "validate_lake_export",
     "valuation_multiples",
@@ -507,6 +508,7 @@
     "THIRTEENF_POSITIONING_ASOF_SQL",
     "THIRTEENF_POSITION_METRICS_ASOF_SQL",
     "UNIVERSE_ASOF_SQL",
+    "UNIVERSE_MEMBERSHIP_ASOF_SQL",
     "VALUATION_MULTIPLES_ASOF_SQL",
     "WAREHOUSE_CATALOG_ASOF_SQL",
     "_build_arg_parser",
@@ -580,6 +582,7 @@
     "thirteenf_position_metrics_asof",
     "thirteenf_positioning_asof",
     "universe_asof",
+    "universe_membership_asof",
     "valuation_multiples_asof",
     "warehouse_catalog_asof"
   ],

@@ -4,6 +4,7 @@ import datetime as dt
 
 import pandas as pd
 
+from db.asof import universe_membership_asof
 from db.universe import (
     GovernedUniverseMembershipDataset,
     UniverseMembershipOptions,
@@ -177,7 +178,20 @@ def _insert_listing(
     )
 
 
-def test_governed_universe_dataset_writes_interval_members_and_exclusions(tmp_store):
+def _governed_universe_options() -> UniverseMembershipOptions:
+    return UniverseMembershipOptions(
+        universe_id="test_common",
+        start_date=dt.date(2020, 1, 2),
+        end_date=dt.date(2020, 1, 5),
+        lookback_days=1,
+        min_history_days=1,
+        min_price=5.0,
+        min_dollar_volume=10_000_000.0,
+        run_id="run-1",
+    )
+
+
+def _load_governed_universe_slice(tmp_store):
     _insert_security(tmp_store, "COMMON", "COM")
     _insert_security(tmp_store, "PREF", "PRF", asset_class="PREFERRED")
     _insert_security(tmp_store, "DELIST", "DEL")
@@ -201,17 +215,11 @@ def test_governed_universe_dataset_writes_interval_members_and_exclusions(tmp_st
     )
     insert_frame(tmp_store, _bar_rows(), "equity_daily_bars", "governed_universe_bars")
 
-    options = UniverseMembershipOptions(
-        universe_id="test_common",
-        start_date=dt.date(2020, 1, 2),
-        end_date=dt.date(2020, 1, 5),
-        lookback_days=1,
-        min_history_days=1,
-        min_price=5.0,
-        min_dollar_volume=10_000_000.0,
-        run_id="run-1",
-    )
-    result = GovernedUniverseMembershipDataset().run(tmp_store, options)
+    return GovernedUniverseMembershipDataset().run(tmp_store, _governed_universe_options())
+
+
+def test_governed_universe_dataset_writes_interval_members_and_exclusions(tmp_store):
+    result = _load_governed_universe_slice(tmp_store)
 
     assert result.rows_loaded == 4
     rows = tmp_store.con.execute(
@@ -230,7 +238,7 @@ def test_governed_universe_dataset_writes_interval_members_and_exclusions(tmp_st
     ]
 
     # Idempotent replacement for the same slice: no duplicate intervals.
-    second = GovernedUniverseMembershipDataset().run(tmp_store, options)
+    second = GovernedUniverseMembershipDataset().run(tmp_store, _governed_universe_options())
     assert second.rows_loaded == 4
     assert tmp_store.con.execute(
         """
@@ -239,6 +247,87 @@ def test_governed_universe_dataset_writes_interval_members_and_exclusions(tmp_st
         WHERE universe_id = 'test_common'
         """
     ).fetchone() == (4, 4)
+
+
+def test_universe_membership_asof_gates_availability_and_validity(tmp_store):
+    _load_governed_universe_slice(tmp_store)
+
+    early = universe_membership_asof(
+        dt.date(2020, 1, 2),
+        as_of_ts=dt.datetime(2020, 1, 2, 21, 59),
+        store=tmp_store,
+        universe_id="test_common",
+    )
+    assert early.empty
+
+    jan3 = universe_membership_asof(
+        dt.date(2020, 1, 3),
+        as_of_ts=dt.datetime(2020, 1, 3, 23),
+        store=tmp_store,
+        universe_id="test_common",
+    )
+    assert jan3[["security_id", "symbol"]].to_dict("records") == [
+        {"security_id": "COMMON", "symbol": "COM"},
+        {"security_id": "DELIST", "symbol": "DEL"},
+    ]
+
+    jan4 = universe_membership_asof(
+        dt.date(2020, 1, 4),
+        as_of_ts=dt.datetime(2020, 1, 4, 23),
+        store=tmp_store,
+        universe_id="test_common",
+    )
+    assert jan4["security_id"].tolist() == ["COMMON"]
+
+
+def test_price_fundamental_overlap_view_counts_visible_universe_security_days(tmp_store):
+    _load_governed_universe_slice(tmp_store)
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                {
+                    "source": "fixture",
+                    "security_id": "COMMON",
+                    "symbol": "COM",
+                    "metric": "revenue",
+                    "period_start": dt.date(2019, 1, 1),
+                    "period_end": dt.date(2019, 12, 31),
+                    "as_of_date": dt.date(2020, 1, 2),
+                    "value": 100.0,
+                    "available_at": pd.Timestamp("2020-01-02 21:00:00"),
+                    "run_id": "fundamentals",
+                }
+            ]
+        ),
+        "fundamental_points",
+        "overlap_fundamental_points",
+    )
+
+    row = tmp_store.con.execute(
+        """
+        SELECT
+            universe_id,
+            overlap_month,
+            universe_price_days,
+            price_fundamental_days,
+            universe_priced_security_count,
+            overlapped_security_count,
+            overlap_ratio
+        FROM v_price_fundamental_overlap
+        WHERE universe_id = 'test_common'
+        """
+    ).fetchone()
+
+    assert row[:6] == (
+        "test_common",
+        dt.date(2020, 1, 1),
+        6,
+        4,
+        2,
+        1,
+    )
+    assert round(row[6], 6) == round(4 / 6, 6)
 
 
 def test_universe_membership_migration_catalogs_contract_surface(tmp_store):
