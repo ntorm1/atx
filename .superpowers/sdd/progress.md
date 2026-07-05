@@ -1,8 +1,8 @@
 # PF3 SDD Progress
 
 Controller: Codex
-Worktree: `C:\atx-wt\pf3-s7`
-Branch: `feat/pf3-s7`
+Worktree: `C:\atx-wt\pf3-s8`
+Branch: `feat/pf3-s8`
 Updated: 2026-07-05 America/New_York
 
 ## Landed Before This Worktree
@@ -13,6 +13,7 @@ Updated: 2026-07-05 America/New_York
 - PF3-S4 PIT universe + historical price backfill client: merged to `main`.
 - PF3-S5 valuation input completeness: merged to `main` at `6a33e86`.
 - PF3-S6 ratio & metric engine v2: completed on `feat/pf3-s6` through `29d2cc1`. This S7 worktree is stacked on `feat/pf3-s6` because the primary tree is currently on an unrelated dirty branch and the helper finish merge could not be run safely from it.
+- PF3-S7 factor framework + PIT engine: completed on `feat/pf3-s7` through `f8aa3fa`. This S8 worktree is stacked on `feat/pf3-s7` for the same primary-tree isolation reason.
 
 ## PF3-S6 - Ratio & Metric Engine V2
 
@@ -27,6 +28,13 @@ Updated: 2026-07-05 America/New_York
 - S7-1 - Factor dependency DAG + PIT compute engine: done. Controller added `db.factors.engine` with typed dependency-edge generation, topological ordering/cycle rejection, a minimal PIT-safe expression materializer with `available_at = max(inputs)`, migration 0153 for `factor_dependency_edges`/`factor_build_manifests`, and tests covering seeded legacy edges plus fixture compute.
 - S7-2 - Cross-sectional operators: done. Controller added pure `rank`, `zscore`, and `winsorize` operators in `db.factors.cross_section`, migration 0154 with `factor_operator` metadata, and tests proving full-frame output matches per-date isolated computation.
 - S7-3 - Neutralization + leakage/lookahead gate: done. Controller added pure neutralization residuals, `pit_safety_report` for future-input and cross-date-pooling detection, migration 0155 indexes plus `v_factor_engine_catalog`, and a critical `factor_operator_pit_safety` registry row.
+
+## PF3-S8 - Fundamental Factor Families
+
+- S8-0 - Core academic families: done. Controller added `db/seeds/factor_definitions.csv`, `db.factors.fundamental_families`, migration 0156 seeding value/quality/profitability rows into `factor_definition`, and tests covering Novy-Marx gross profitability hand reconciliation, PIT availability, lineage, missing-leg withholding, and catalog round-trip.
+- S8-1 - Growth / investment / leverage + named composites: not started.
+- S8-2 - Signal-native factors: not started.
+- S8-3 - Family panels + lineage + gated checks: not started.
 
 ## Verification
 
@@ -83,6 +91,13 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S7-3.
 - `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S7-3.
 - `git diff --check` passed after S7-3 with Git LF/CRLF normalization warnings only.
+- `python -m py_compile db\factors\fundamental_families.py db\migrations\bodies_0156_0159.py db\tests\test_fundamental_factors.py` passed after S8-0.
+- `python -m pytest db\tests\test_fundamental_factors.py -q -n0` passed after S8-0.
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S8-0.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S8-0.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S8-0.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S8-0.
+- `git diff --check` passed after S8-0 with Git LF/CRLF normalization warnings only.
 
 ## Live Smoke
 

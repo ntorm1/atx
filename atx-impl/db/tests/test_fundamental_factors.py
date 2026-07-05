@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import datetime as dt
+import json
+
+import pandas as pd
+import pytest
+
+from db.factors.fundamental_families import (
+    compute_fundamental_factor_rows,
+    factor_seed_definitions,
+    factor_seed_frame,
+    load_factor_seed_specs,
+)
+
+
+def _metric(
+    security_id: str,
+    metric_code: str,
+    value: float,
+    available_at: str,
+    *,
+    symbol: str,
+    as_of_date: dt.date = dt.date(2023, 12, 31),
+) -> dict[str, object]:
+    return {
+        "security_id": security_id,
+        "symbol": symbol,
+        "metric_code": metric_code,
+        "as_of_date": as_of_date,
+        "value": value,
+        "available_at": pd.Timestamp(available_at),
+        "metric_row_id": f"{security_id}-{metric_code}",
+        "formula_code": metric_code,
+        "standardization_rule_id": f"std-{metric_code}",
+        "vintage_class": "as_first_reported",
+        "source_table": "fixture_metrics",
+    }
+
+
+def _fixture_metrics() -> pd.DataFrame:
+    rows = []
+    values = {
+        "SEC-A": {
+            "symbol": "AAA",
+            "gross_profit": 400.0,
+            "assets": 1000.0,
+            "net_income": 120.0,
+            "stockholders_equity": 500.0,
+            "operating_cash_flow": 180.0,
+            "book_to_market": 0.80,
+            "earnings_yield": 0.10,
+            "free_cash_flow_yield": 0.08,
+        },
+        "SEC-B": {
+            "symbol": "BBB",
+            "gross_profit": 240.0,
+            "assets": 1200.0,
+            "net_income": 90.0,
+            "stockholders_equity": 450.0,
+            "operating_cash_flow": 120.0,
+            "book_to_market": 0.50,
+            "earnings_yield": 0.06,
+            "free_cash_flow_yield": 0.03,
+        },
+    }
+    for security_id, metrics in values.items():
+        symbol = str(metrics["symbol"])
+        for metric_code, value in metrics.items():
+            if metric_code == "symbol":
+                continue
+            rows.append(
+                _metric(
+                    security_id,
+                    metric_code,
+                    float(value),
+                    "2024-02-01 10:00:00" if metric_code != "assets" else "2024-02-02 10:00:00",
+                    symbol=symbol,
+                )
+            )
+    return pd.DataFrame(rows)
+
+
+def test_factor_seed_rows_load_as_s7_factor_definitions() -> None:
+    specs = load_factor_seed_specs()
+    definitions = factor_seed_definitions()
+    frame = factor_seed_frame()
+
+    assert {spec.family for spec in specs} == {
+        "fundamental_value",
+        "fundamental_quality",
+        "fundamental_profitability",
+    }
+    assert "profitability_gross_profitability" in set(frame["factor_id"])
+    assert all(row.declared_in == "db/seeds/factor_definitions.csv" for row in definitions)
+    assert frame.loc[frame["factor_id"] == "profitability_gross_profitability", "valid_from"].iloc[0] == dt.date(1900, 1, 1)
+
+
+def test_core_academic_factors_emit_pit_rows_with_lineage_and_standardization() -> None:
+    rows = compute_fundamental_factor_rows(_fixture_metrics(), run_id="s8-run")
+    gross = rows[
+        (rows["factor_id"] == "profitability_gross_profitability")
+        & (rows["security_id"] == "SEC-A")
+    ].iloc[0]
+    quality = rows[(rows["factor_id"] == "quality_cash_earnings") & (rows["security_id"] == "SEC-A")].iloc[0]
+    families = set(rows["family"])
+
+    assert {"fundamental_value", "fundamental_quality", "fundamental_profitability"} <= families
+    assert gross["raw_value"] == pytest.approx(0.4)
+    assert gross["value"] == pytest.approx(0.70710678, abs=1e-6)
+    assert gross["available_at"] == pd.Timestamp("2024-02-02 10:00:00")
+    assert quality["raw_value"] == pytest.approx((180.0 - 120.0) / 1000.0)
+    lineage = json.loads(gross["input_lineage_json"])
+    assert {leg["metric_code"] for leg in lineage} == {"gross_profit", "assets"}
+    assert all(leg["formula_code"] for leg in lineage)
+    assert all(leg["standardization_rule_id"] for leg in lineage)
+    assert all(leg["vintage_class"] == "as_first_reported" for leg in lineage)
+
+
+def test_core_factor_requires_all_pit_inputs() -> None:
+    missing_assets = _fixture_metrics()
+    missing_assets = missing_assets[
+        ~((missing_assets["security_id"] == "SEC-A") & (missing_assets["metric_code"] == "assets"))
+    ]
+    rows = compute_fundamental_factor_rows(missing_assets, families=("fundamental_profitability",))
+
+    assert not (
+        (rows["factor_id"] == "profitability_gross_profitability")
+        & (rows["security_id"] == "SEC-A")
+    ).any()
+
+
+def test_core_factor_seed_rows_round_trip_into_catalog(tmp_store) -> None:
+    seeded = tmp_store.con.execute(
+        """
+        SELECT family, standardization_spec_json, valid_from, valid_to
+        FROM factor_definition
+        WHERE factor_id = 'profitability_gross_profitability'
+        """
+    ).fetchone()
+    metric_edges = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT dependency_name
+            FROM factor_dependency_edges
+            WHERE factor_id = 'profitability_gross_profitability'
+              AND dependency_type = 'metric'
+            """
+        ).fetchall()
+    }
+    dataset_row = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM dataset_catalog
+        WHERE dataset_id = 'fundamental_factor_families'
+        """
+    ).fetchone()[0]
+
+    assert seeded[0] == "fundamental_profitability"
+    assert json.loads(seeded[1]) == {"method": "zscore_cs"}
+    assert seeded[2] == dt.date(1900, 1, 1)
+    assert seeded[3] is None
+    assert metric_edges == {"gross_profit", "assets"}
+    assert dataset_row == 1
