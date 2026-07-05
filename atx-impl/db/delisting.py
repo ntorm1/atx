@@ -293,6 +293,70 @@ def normalize_delisting_return_observations(
     return normalized[OBSERVATION_COLUMNS]
 
 
+def _resolve_observation_security_ids(store: DuckDBStore, observations: pd.DataFrame) -> pd.DataFrame:
+    if observations.empty:
+        return observations
+    out = observations.copy().reset_index(drop=True)
+    unresolved = (
+        out["security_id"].isna()
+        & out["vendor_security_id"].notna()
+        & out["vendor_security_id_type"].notna()
+        & out["delist_date"].notna()
+        & out["available_at"].notna()
+    )
+    if not bool(unresolved.any()):
+        return observations
+
+    relation_name = "delisting_return_observation_resolution_input"
+    lookup = out.loc[unresolved, [
+        "vendor_security_id",
+        "vendor_security_id_type",
+        "delist_date",
+        "as_of_date",
+        "available_at",
+    ]].copy()
+    lookup["__row_number"] = lookup.index
+    store.con.register(relation_name, lookup)
+    try:
+        resolved = store.con.execute(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    o.__row_number,
+                    h.security_id,
+                    row_number() OVER (
+                        PARTITION BY o.__row_number
+                        ORDER BY
+                            h.available_at DESC NULLS LAST,
+                            h.valid_from DESC,
+                            h.source_loaded_at DESC,
+                            h.security_id DESC
+                    ) AS rn
+                FROM {relation_name} o
+                JOIN security_identifier_history h
+                  ON upper(h.id_type) = upper(o.vendor_security_id_type)
+                 AND upper(h.id_value) = upper(o.vendor_security_id)
+                 AND h.valid_from <= o.delist_date
+                 AND coalesce(h.valid_to, DATE '9999-12-31') > o.delist_date
+                 AND h.as_of_date <= o.as_of_date
+                 AND (h.available_at IS NULL OR h.available_at <= o.available_at)
+            )
+            SELECT __row_number, security_id
+            FROM ranked
+            WHERE rn = 1
+            """
+        ).df()
+    finally:
+        store.con.unregister(relation_name)
+
+    if resolved.empty:
+        return observations
+    mapping = dict(zip(resolved["__row_number"], resolved["security_id"], strict=True))
+    target_index = out.index.intersection(mapping.keys())
+    out.loc[target_index, "security_id"] = [mapping[index] for index in target_index]
+    return out[OBSERVATION_COLUMNS]
+
+
 def load_delisting_return_observations(
     store: DuckDBStore,
     options: DelistingReturnObservationOptions,
@@ -309,6 +373,7 @@ def load_delisting_return_observations(
         source_file_sha256=source_hash,
         source_file=source_file,
     )
+    normalized = _resolve_observation_security_ids(store, normalized)
     record_source_file(
         store,
         dataset_id="delisting_return_observations",

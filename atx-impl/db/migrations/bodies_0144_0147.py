@@ -215,6 +215,31 @@ def _pf3_s5_enterprise_value_schema_catalog(conn: duckdb.DuckDBPyConnection) -> 
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s5_delisting_return_resolution_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S5 S5-2: observed DLRET security-id resolution support."""
+
+    statements = (
+        "CREATE INDEX IF NOT EXISTS idx_delisting_return_observations_security_asof "
+        "ON delisting_return_observations(security_id, delist_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_security_identifier_history_vendor_resolution "
+        "ON security_identifier_history(id_type, id_value, valid_from, valid_to, as_of_date, available_at)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('delisting_return_observations', 'security_id', 'identifier', 'Warehouse security identifier. When the injected observed-DLRET file omits security_id, the loader resolves vendor_security_id/vendor_security_id_type through security_identifier_history using the observation delist_date/as_of_date/available_at.', true, NULL, 'security_identifier_history.security_id', now()),
+            ('delisting_return_observations', 'available_at', 'timestamp', 'Timestamp when the observed terminal return became visible; for CRSP-like files this should be the delisting-confirmation/load availability timestamp, never merely the delist event date.', false, 'timestamp', NULL, now())
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=144,
@@ -225,5 +250,10 @@ MIGRATIONS: list[Migration] = [
         version=145,
         name="pf3_s5_enterprise_value_schema_catalog",
         up=_pf3_s5_enterprise_value_schema_catalog,
+    ),
+    Migration(
+        version=146,
+        name="pf3_s5_delisting_return_resolution_indexes",
+        up=_pf3_s5_delisting_return_resolution_indexes,
     ),
 ]

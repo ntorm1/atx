@@ -29,6 +29,32 @@ def _seed_security(tmp_store) -> None:
     )
 
 
+def _insert_vendor_identifier(
+    tmp_store,
+    *,
+    vendor_id: str,
+    security_id: str = SECURITY_ID,
+    available_at: dt.datetime = dt.datetime(2024, 4, 2, 12, 0),
+) -> None:
+    tmp_store.con.execute(
+        """
+        INSERT INTO security_identifier_history (
+            security_id,
+            id_type,
+            id_value,
+            valid_from,
+            valid_to,
+            as_of_date,
+            available_at,
+            source,
+            run_id
+        )
+        VALUES (?, 'PERMNO', ?, DATE '2020-01-01', NULL, DATE '2024-04-01', ?, 'fixture_permno', 'id-run')
+        """,
+        [security_id, vendor_id, available_at],
+    )
+
+
 def _insert_listing_status(
     tmp_store,
     *,
@@ -320,3 +346,90 @@ def test_observed_delisting_return_observations_enrich_asof_without_lookahead(tm
     assert enriched["return_observation_provider"] == "CRSP_SAMPLE"
     assert len(observations) == 1
     assert observations.iloc[0]["crsp_dlstcd"] == 233
+
+
+def test_observed_delisting_returns_resolve_vendor_identifier_without_lookahead(tmp_store, tmp_path):
+    from db.asof import delisting_events_asof
+    from db.delisting import (
+        DelistingReturnObservationOptions,
+        load_delisting_return_observations,
+        refresh_delisting_events,
+    )
+
+    _seed_security(tmp_store)
+    _insert_vendor_identifier(tmp_store, vendor_id="12345", available_at=dt.datetime(2024, 4, 2, 12))
+    _insert_vendor_identifier(tmp_store, vendor_id="99999", available_at=dt.datetime(2024, 4, 4, 12))
+    _insert_listing_status(
+        tmp_store,
+        listing_status_id="inactive-status-resolved-observed",
+        status="inactive",
+        valid_from=dt.date(2024, 4, 1),
+        as_of_date=dt.date(2024, 4, 1),
+        available_at=dt.datetime(2024, 4, 2, 12, 0),
+    )
+    refresh_delisting_events(tmp_store)
+
+    csv_path = tmp_path / "crsp_dsedelist_permno_only.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "PERMNO,DLSTDT,DLRET,available_at",
+                "12345,2024-04-01,-0.750000,2024-04-03T12:00:00",
+                "99999,2024-04-01,-0.100000,2024-04-03T12:00:00",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_delisting_return_observations(
+        tmp_store,
+        DelistingReturnObservationOptions(
+            source_file=csv_path,
+            provider="CRSP_SAMPLE",
+        ),
+    )
+
+    assert loaded == 2
+    resolved = tmp_store.con.execute(
+        """
+        SELECT vendor_security_id, security_id
+        FROM delisting_return_observations
+        ORDER BY vendor_security_id
+        """
+    ).fetchall()
+    assert resolved == [("12345", SECURITY_ID), ("99999", None)]
+
+    db_path = tmp_store.path
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    enriched = delisting_events_asof(
+        dt.date(2024, 4, 3),
+        as_of_ts=dt.datetime(2024, 4, 3, 13, 0),
+        db_path=db_path,
+        symbols=("DLS",),
+    )
+    assert len(enriched) == 1
+    assert enriched.iloc[0]["delisting_return"] == pytest.approx(-0.75)
+    assert enriched.iloc[0]["return_observation_provider"] == "CRSP_SAMPLE"
+
+
+def test_delisting_return_resolution_migration_is_present(tmp_store):
+    assert (
+        tmp_store.con.execute(
+            "SELECT description FROM schema_migrations WHERE version = 146"
+        ).fetchone()[0]
+        == "pf3_s5_delisting_return_resolution_indexes"
+    )
+    index_names = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE table_name IN ('delisting_return_observations', 'security_identifier_history')
+            """
+        ).fetchall()
+    }
+    assert "idx_delisting_return_observations_security_asof" in index_names
+    assert "idx_security_identifier_history_vendor_resolution" in index_names
