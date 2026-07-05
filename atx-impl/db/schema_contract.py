@@ -1,7 +1,7 @@
 """PF2-S1 S1-0/S1-2: declarative schema contract + live-vs-contract drift detector.
 
 Today the warehouse's "true" shape is emergent: whatever ``schema.py::ensure_quant_schema``
-plus ``migrations.py::MIGRATIONS`` happen to leave behind after running against a live
+plus ``db.migrations::MIGRATIONS`` happen to leave behind after running against a live
 connection. Nothing writes down what tables/columns *should* exist, so a dropped column,
 a widened type, or a new uncatalogued table is invisible until something downstream breaks.
 
@@ -11,7 +11,7 @@ This module is the first piece of clause (E) (schema-as-contract):
   Each column is tagged ``declared_in`` (``schema_py`` or ``migration``) because a single
   table's columns can originate from *both* paths -- e.g. a table created by
   ``ensure_quant_schema`` can later gain columns via a migration's ``ALTER TABLE ... ADD
-  COLUMN`` (see ``migrations.py::_schema_evolution_alters``), so ``declared_in`` is a
+  COLUMN`` (see ``db.migrations::_schema_evolution_alters``), so ``declared_in`` is a
   column-level fact, not a table-level one.
 
   S1-0 seeded the manifest *machinery* and a representative subset of tables (a mix of
@@ -24,7 +24,7 @@ This module is the first piece of clause (E) (schema-as-contract):
   two never disagree) and derives every other live table from a freshly bootstrapped
   connection's ``duckdb_tables()``/``duckdb_columns()``, attributing ``declared_in`` by
   text-scanning the imperative schema sources (schema.py + connection.py for the
-  unversioned bootstrap path, migrations.py for the versioned one -- see the module-level
+  unversioned bootstrap path, db/migrations/ for the versioned one -- see the module-level
   design note above ``build_contract_manifest``'s definition). This is the manifest
   migration 0097 now persists into ``schema_contract``, and the one a coverage test
   asserts has zero residual against ``duckdb_tables()`` in either direction.
@@ -41,7 +41,7 @@ This module is the first piece of clause (E) (schema-as-contract):
 
 The manifest is additionally persisted as data in the ``schema_contract`` table (migration
 0097; indexes in 0098) so it is queryable in plain SQL, not just importable Python -- see
-``migrations.py::_schema_contract_schema_catalog``.
+``db.migrations::_schema_contract_schema_catalog``.
 """
 
 from __future__ import annotations
@@ -555,7 +555,7 @@ def assert_schema_contract_version(
 #     bootstrap semantics as schema.py, just physically colocated in connection.py for
 #     historical reasons (it sandwiches the ensure_quant_schema/apply_pending_migrations
 #     calls). Both feed the `schema_py` declared_in bucket.
-#   - db/migrations.py::MIGRATIONS -- versioned migrations; the `migration` bucket.
+#   - db/migrations/::MIGRATIONS -- versioned migrations; the `migration` bucket.
 #
 # A handful of legacy tables (e.g. xbrl_validation_results, taxonomy, market_cap) were
 # later "rebaselined" directly into schema.py's CREATE TABLE list for fresh-bootstrap
@@ -573,7 +573,7 @@ def assert_schema_contract_version(
 # types/nullability), so simple regexes over the literal "CREATE TABLE IF NOT EXISTS x"
 # and "ALTER TABLE x ADD COLUMN [IF NOT EXISTS] y" statements are sufficient and avoid a
 # hand-maintained table-by-table literal that would rot exactly like the manifest itself
-# used to. The ONE wrinkle: migrations.py creates fundamental_statement_map via an
+# used to. The ONE wrinkle: db/migrations/ creates fundamental_statement_map via an
 # f-string-templated helper (`CREATE TABLE IF NOT EXISTS {table_name}` in
 # _create_fundamental_statement_map_table), which the literal-CREATE regex cannot see.
 # Since that table is ALSO created directly by schema.py, missing the migration side would
@@ -586,8 +586,8 @@ _DB_DIR = Path(__file__).resolve().parent
 
 # Unversioned "always run" bootstrap sources -> declared_in="schema_py".
 _SCHEMA_PY_SOURCE_FILES = ("schema.py", "connection.py")
-# Versioned migration source -> declared_in="migration".
-_MIGRATION_SOURCE_FILES = ("migrations.py",)
+# Versioned migration sources -> declared_in="migration".
+_MIGRATION_SOURCE_FILES = ("migrations/_runner.py", "migrations/bodies_0001_0137.py")
 
 _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
 _ALTER_ADD_COLUMN_RE = re.compile(r"ALTER TABLE (\w+) ADD COLUMN(?: IF NOT EXISTS)? (\w+)")
@@ -626,11 +626,11 @@ def _scan_declared_in_sources() -> tuple[set[str], set[str], set[tuple[str, str]
       - schema_py_tables: table names created via ``CREATE TABLE IF NOT EXISTS`` in
         schema.py or connection.py.
       - migration_tables: table names created via ``CREATE TABLE IF NOT EXISTS``
-        anywhere in migrations.py (every such statement lives inside some MIGRATIONS
+        anywhere in db/migrations/ (every such statement lives inside some MIGRATIONS
         entry's ``up()``), PLUS tables created via an f-string-templated
         ``_create_*_table(conn, "literal")`` helper (see _MIGRATION_HELPER_TABLE_RE).
       - migration_added_columns: (table, column) pairs added via an ``ALTER TABLE ...
-        ADD COLUMN`` in migrations.py.
+        ADD COLUMN`` in db/migrations/.
     """
     schema_py_text = "\n".join(_read_db_source(name) for name in _SCHEMA_PY_SOURCE_FILES)
     migration_text = "\n".join(_read_db_source(name) for name in _MIGRATION_SOURCE_FILES)
