@@ -25,7 +25,7 @@ db = ["seeds/*.csv"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["db/tests"]
-# -n auto: run across all cores via pytest-xdist. Each test uses an isolated
-# per-test file DB and the schema template is shared behind a file lock, so the
-# suite is process-safe. Override locally with `-n0` to force serial execution.
-addopts = "-q -n auto"
+# Keep the default bounded so an accidental full DB run does not saturate the
+# workstation. Use scripts/db_dev_tests.py for the normal changed-test loop, or
+# override with `-n auto` when the machine can be dedicated to a full-suite run.
+addopts = "-q -n 4"
