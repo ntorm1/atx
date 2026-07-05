@@ -7,6 +7,8 @@
     "BackupArtifact",
     "BlockholderOwnershipDataset",
     "BlockholderOwnershipOptions",
+    "BulkBarsBackfillDataset",
+    "BulkBarsBackfillOptions",
     "BulkBarsDataset",
     "BulkBarsOptions",
     "COMPANY_FACT_SYMBOL_SOURCES",

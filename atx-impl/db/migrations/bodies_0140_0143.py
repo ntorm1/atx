@@ -11,6 +11,29 @@ from .bodies_0001_0137 import (
 )
 
 
+def _refresh_schema_contract_v2_pin(conn: duckdb.DuckDBPyConnection) -> None:
+    _pf3_s2_schema_contract_semantics(conn)
+
+    from .schema_contract import (
+        SCHEMA_CONTRACT_VERSION,
+        assert_schema_contract_version,
+        build_contract_manifest,
+        schema_contract_sha256,
+    )
+
+    manifest = build_contract_manifest(conn)
+    manifest_sha256 = schema_contract_sha256(manifest)
+    conn.execute(
+        """
+        UPDATE schema_contract_version
+        SET manifest_sha256 = ?
+        WHERE version = ?
+        """,
+        [manifest_sha256, SCHEMA_CONTRACT_VERSION],
+    )
+    assert_schema_contract_version(conn, manifest=manifest)
+
+
 def _pf3_s4_universe_membership_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     """PF3-S4 S4-0: governed interval-keyed PIT universe decisions."""
 
@@ -98,26 +121,99 @@ def _pf3_s4_universe_membership_schema_catalog(conn: duckdb.DuckDBPyConnection) 
             ('universe_membership', 'source_loaded_at', 'timestamp', 'Warehouse timestamp when the interval row was loaded.', false, 'timestamp', NULL, now())
         """
     )
-    _pf3_s2_schema_contract_semantics(conn)
+    _refresh_schema_contract_v2_pin(conn)
 
-    from .schema_contract import (
-        SCHEMA_CONTRACT_VERSION,
-        assert_schema_contract_version,
-        build_contract_manifest,
-        schema_contract_sha256,
-    )
 
-    manifest = build_contract_manifest(conn)
-    manifest_sha256 = schema_contract_sha256(manifest)
+def _pf3_s4_price_backfill_partition_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S4 S4-1: per-partition price-backfill metadata."""
+
     conn.execute(
         """
-        UPDATE schema_contract_version
-        SET manifest_sha256 = ?
-        WHERE version = ?
-        """,
-        [manifest_sha256, SCHEMA_CONTRACT_VERSION],
+        CREATE TABLE IF NOT EXISTS price_backfill_partition (
+            dataset_id VARCHAR NOT NULL,
+            partition_key VARCHAR NOT NULL,
+            window_lo DATE NOT NULL,
+            window_hi DATE NOT NULL,
+            status VARCHAR NOT NULL,
+            rows_loaded BIGINT NOT NULL DEFAULT 0,
+            watermark_after VARCHAR,
+            min_trade_date DATE,
+            max_trade_date DATE,
+            source VARCHAR NOT NULL,
+            archive_path VARCHAR,
+            source_file_sha256 VARCHAR,
+            backfill_run_id VARCHAR,
+            details_json VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (dataset_id, partition_key)
+        )
+        """
     )
-    assert_schema_contract_version(conn, manifest=manifest)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'bulk_daily_bars_backfill',
+            'bulk_bars_2015plus',
+            'Bulk daily bars backfill partitions',
+            'PF3-S4 partition metadata for historical daily-bar backfills executed through the PF3-S1 backfill engine.',
+            'dataset_id,partition_key',
+            'price_backfill_partition',
+            'window_lo',
+            'updated_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'price_backfill_partition',
+            'control',
+            'price_backfill_partition',
+            'dataset_id,partition_key',
+            'Operator-facing partition metadata for PF3-S4 historical daily-bar backfills. The generic PF3-S1 backfill tables remain the execution source of truth; this table records price-specific source/archive and row-count evidence.',
+            '["dataset_id","partition_key"]',
+            'Rows are partition-control metadata. window_lo/window_hi identify the half-open date partition; updated_at/source_loaded_at record when the partition evidence was written.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("price_backfill_partition",))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('price_backfill_partition', 'dataset_id', 'identifier', 'Backfill dataset id, currently bulk_daily_bars_backfill.', false, NULL, NULL, now()),
+            ('price_backfill_partition', 'partition_key', 'identifier', 'PF3-S1 partition key for the price backfill window.', false, NULL, 'backfill_watermark.partition_key', now()),
+            ('price_backfill_partition', 'window_lo', 'date', 'Inclusive lower bound of the backfill partition.', false, 'date', 'backfill_watermark.window_lo', now()),
+            ('price_backfill_partition', 'window_hi', 'date', 'Exclusive upper bound of the backfill partition.', false, 'date', 'backfill_watermark.window_hi', now()),
+            ('price_backfill_partition', 'status', 'category', 'Partition load status recorded by the price backfill client.', false, NULL, NULL, now()),
+            ('price_backfill_partition', 'rows_loaded', 'count', 'Rows loaded by BulkBarsDataset for this partition execution.', false, 'count', NULL, now()),
+            ('price_backfill_partition', 'watermark_after', 'identifier', 'Watermark value returned to the generic PF3-S1 backfill engine.', true, NULL, 'backfill_watermark.watermark_after', now()),
+            ('price_backfill_partition', 'min_trade_date', 'date', 'Minimum trade date loaded in this partition execution.', true, 'date', 'equity_daily_bars.trade_date', now()),
+            ('price_backfill_partition', 'max_trade_date', 'date', 'Maximum trade date loaded in this partition execution.', true, 'date', 'equity_daily_bars.trade_date', now()),
+            ('price_backfill_partition', 'source', 'identifier', 'Bulk bar source name.', false, NULL, NULL, now()),
+            ('price_backfill_partition', 'archive_path', 'path', 'CSV or ZIP archive path used by the partition.', true, NULL, NULL, now()),
+            ('price_backfill_partition', 'source_file_sha256', 'identifier', 'SHA256 of the source archive when hashing is enabled.', true, NULL, 'raw_source_files.sha256', now()),
+            ('price_backfill_partition', 'backfill_run_id', 'identifier', 'PF3-S1 backfill run id that executed this partition.', true, NULL, 'backfill_run.backfill_run_id', now()),
+            ('price_backfill_partition', 'details_json', 'json', 'Full JSON details returned by the price backfill client.', true, NULL, NULL, now()),
+            ('price_backfill_partition', 'updated_at', 'timestamp', 'Timestamp when this partition evidence row was last written.', false, 'timestamp', NULL, now()),
+            ('price_backfill_partition', 'source_loaded_at', 'timestamp', 'Warehouse timestamp when this partition evidence row was inserted.', false, 'timestamp', NULL, now())
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
 
 
 MIGRATIONS: list[Migration] = [
@@ -125,5 +221,10 @@ MIGRATIONS: list[Migration] = [
         version=140,
         name="pf3_s4_universe_membership_schema_catalog",
         up=_pf3_s4_universe_membership_schema_catalog,
+    ),
+    Migration(
+        version=141,
+        name="pf3_s4_price_backfill_partition_schema_catalog",
+        up=_pf3_s4_price_backfill_partition_schema_catalog,
     ),
 ]

@@ -15,6 +15,7 @@ from .ticker_history import _drop_invalid_ohlcv, disambiguate_vendor_collisions
 from .warehouse import (
     file_sha256,
     insert_frame,
+    json_dumps,
     quality_check,
     record_source_file,
     snake_case,
@@ -55,6 +56,38 @@ class BulkBarsOptions:
     source: str = SOURCE_NAME
     compute_source_hash: bool = True
     run_id: str | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class BulkBarsBackfillOptions:
+    source_file: Path | None = None
+    source_zip: Path | None = None
+    symbols: tuple[str, ...] | None = None
+    start_date: dt.date | None = None
+    end_date: dt.date | None = None
+    chunk_size: int = 200_000
+    max_chunks: int | None = None
+    source: str = SOURCE_NAME
+    compute_source_hash: bool = True
+    partition_key: str | None = None
+    window_lo: dt.date | None = None
+    window_hi: dt.date | None = None
+    backfill_run_id: str | None = None
+    run_id: str | None = field(default=None, compare=False)
+
+    def bulk_options(self) -> BulkBarsOptions:
+        return BulkBarsOptions(
+            source_file=self.source_file,
+            source_zip=self.source_zip,
+            symbols=self.symbols,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            chunk_size=self.chunk_size,
+            max_chunks=self.max_chunks,
+            source=self.source,
+            compute_source_hash=self.compute_source_hash,
+            run_id=self.backfill_run_id or self.run_id,
+        )
 
 
 def _source_path(options: BulkBarsOptions) -> Path:
@@ -481,3 +514,95 @@ class BulkBarsDataset(Dataset):
         finally:
             store.con.unregister("bulk_equity_daily_bars_load")
         return int(len(bars))
+
+
+class BulkBarsBackfillDataset(Dataset):
+    """PF3-S4 client that runs ``BulkBarsDataset`` inside S1 backfill partitions."""
+
+    dataset_id = "bulk_daily_bars_backfill"
+    source_name = SOURCE_NAME
+
+    def ensure_schema(self, store: DuckDBStore) -> None:
+        store.initialize()
+
+    def load(self, store: DuckDBStore, options: BulkBarsBackfillOptions) -> DatasetLoadResult:
+        if not options.partition_key:
+            raise ValueError("partition_key is required for bulk bar backfill")
+        if options.window_lo is None or options.window_hi is None:
+            raise ValueError("window_lo and window_hi are required for bulk bar backfill")
+        if options.start_date is None or options.end_date is None:
+            raise ValueError("start_date and end_date are required for bulk bar backfill")
+
+        result = BulkBarsDataset().load(store, options.bulk_options())
+        watermark_after = options.window_hi.isoformat()
+        details = {
+            **result.details,
+            "partition_key": options.partition_key,
+            "window_lo": options.window_lo.isoformat(),
+            "window_hi": options.window_hi.isoformat(),
+            "watermark_after": watermark_after,
+            "backfill_run_id": options.backfill_run_id,
+        }
+        _record_price_backfill_partition(
+            store,
+            options=options,
+            rows_loaded=result.rows_loaded,
+            details=details,
+            status="succeeded",
+            watermark_after=watermark_after,
+        )
+        return DatasetLoadResult(
+            dataset_id=self.dataset_id,
+            rows_loaded=result.rows_loaded,
+            source=result.source,
+            details=details,
+        )
+
+
+def _record_price_backfill_partition(
+    store: DuckDBStore,
+    *,
+    options: BulkBarsBackfillOptions,
+    rows_loaded: int,
+    details: dict[str, object],
+    status: str,
+    watermark_after: str,
+) -> None:
+    store.con.execute(
+        """
+        INSERT OR REPLACE INTO price_backfill_partition (
+            dataset_id,
+            partition_key,
+            window_lo,
+            window_hi,
+            status,
+            rows_loaded,
+            watermark_after,
+            min_trade_date,
+            max_trade_date,
+            source,
+            archive_path,
+            source_file_sha256,
+            backfill_run_id,
+            details_json,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+        """,
+        [
+            BulkBarsBackfillDataset.dataset_id,
+            options.partition_key,
+            options.window_lo,
+            options.window_hi,
+            status,
+            rows_loaded,
+            watermark_after,
+            details.get("min_trade_date"),
+            details.get("max_trade_date"),
+            options.source,
+            str(options.source_file or options.source_zip),
+            details.get("source_file_sha256"),
+            options.backfill_run_id,
+            json_dumps(details),
+        ],
+    )
