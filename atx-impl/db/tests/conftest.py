@@ -47,6 +47,7 @@ _SCHEMA_CACHE_DIR = _ATXIMPL / ".pytest_cache" / "db_schema_templates"
 _SCHEMA_FINGERPRINT_FILES = (
     _ATXIMPL / "db" / "connection.py",
     _ATXIMPL / "db" / "schema.py",
+    _ATXIMPL / "db" / "schema_contract.py",
     _ATXIMPL / "db" / "migrations.py",
     _ATXIMPL / "db" / "fundamental_statements.py",
     _ATXIMPL / "db" / "parity.py",

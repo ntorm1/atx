@@ -254,101 +254,17 @@ class TestRunWarehouseQualityChecksIncludesSchemaContractChecks:
         assert {row[0] for row in rows} == {"catalog_completeness", "pit_column_presence"}
 
 
-# PF2-S1 S1-1: catalog_completeness IS green on a freshly bootstrapped warehouse (0
-# uncatalogued tables) -- confirmed by TestLiveWarehouseBaseline below.
-#
-# pit_column_presence is NOT green: it surfaces a GENUINE, PRE-EXISTING schema gap.
-# Captured 2026-07-03 against a fully bootstrapped warehouse (ensure_quant_schema +
-# every MIGRATIONS entry applied): ~53 fact tables (tables carrying >=1 strong
-# bitemporal marker per schema_contract._STRONG_TEMPORAL_MARKERS) are missing at
-# least one of the five canonical PIT columns -- overwhelmingly `is_latest_revision`,
-# with a handful also missing `as_of_date`/`available_at`/`run_id`/`source_loaded_at`.
-# Clause (A) (every fact/derived row carries all five) was never enforced before this
-# sprint, so this is expected, not a bug in the check -- per the S1-1 brief we do NOT
-# weaken the check to force a fake green. It is reported as a real finding for the
-# controller to adjudicate (see the PF2-S1 S1-1 report). Per (C) the live-schema
-# headline is not asserted hard-green in pytest; instead this baseline is pinned as a
-# `<=` regression guard -- closing existing gaps over time is welcomed, a NEW
-# uncovered fact table showing up is not.
-_KNOWN_LIVE_PIT_GAP_TABLES = frozenset(
-    {
-        "adjustment_factor_history",
-        "alpha_signal_values",
-        "blockholder_filing",
-        "congressional_disclosure",
-        "corporate_actions",
-        "daily_adjustment_factors",
-        "delisting_events",
-        "delisting_return_observations",
-        "entity_classification",
-        "entity_parent_edges",
-        "equity_daily_bars",
-        "est_actual",
-        "est_analyst",
-        "est_analyst_alias",
-        "est_broker",
-        "est_broker_alias",
-        "est_consensus",
-        "est_detail",
-        "est_guidance",
-        "est_period_dim",
-        "est_recommendation",
-        "est_recommendation_summary",
-        "est_security_link",
-        "est_surprise",
-        "exchange_listings",
-        "feature_values",
-        "filer_13f_cik_alias",
-        "filing_form4",
-        "filing_nport",
-        "finra_short_volume",
-        "form144_intent",
-        "form144_to_form4_link",
-        "fund_holding",
-        "fundamental_fact_revisions",
-        "fundamental_periods",
-        "fundamental_points",
-        "fundamental_ttm_points",
-        "identifier_resolution_candidates",
-        "identifier_resolution_decisions",
-        "insider_holding",
-        "insider_relationship",
-        "insider_transaction",
-        "listing_status_intervals",
-        "macro_observations",
-        "nasdaq_listing_events",
-        "nasdaq_symbol_directory",
-        "offexchange_security_period",
-        "offexchange_volume",
-        "proxy_vote",
-        "sec_company_facts",
-        "security_identifier_history",
-        "thirteenf_manager_reports",
-        "thirteenf_security_ownership",
-        "thirteenf_security_positions",
-        "tradingplan_10b5_1",
-        "universe_memberships",
-    }
-)
-
-
 class TestLiveWarehouseBaseline:
-    """The sprint's headline acceptance bench: both checks GREEN on a freshly
-    bootstrapped warehouse (0 uncatalogued, 0 PIT-missing) is the target.
-    catalog_completeness meets it today; pit_column_presence does not (see
-    _KNOWN_LIVE_PIT_GAP_TABLES above) -- that gap is a real finding, not a check bug,
-    and is pinned as a regression guard rather than papered over.
-    """
+    """Both schema-contract quality checks are hard-zero on a fresh bootstrap."""
 
     def test_catalog_completeness_is_green_on_fresh_bootstrap(self, tmp_store):
         result = catalog_completeness_check(tmp_store)
         assert result.status == "passed", f"uncatalogued tables: {result.details['uncatalogued_tables']}"
 
-    def test_pit_column_presence_known_gap_is_not_a_regression(self, tmp_store):
+    def test_pit_column_presence_is_green_on_fresh_bootstrap(self, tmp_store):
         result = pit_column_presence_check(tmp_store)
-        offenders = set(result.details["tables_missing_pit_columns"])
-        new_offenders = offenders - _KNOWN_LIVE_PIT_GAP_TABLES
-        assert new_offenders == set(), (
-            "NEW fact table(s) missing PIT columns beyond the known 2026-07-03 "
-            f"baseline: {sorted(new_offenders)}"
+        assert result.status == "passed", (
+            "PIT offenders after registered exemptions: "
+            f"{result.details['tables_missing_pit_columns']}"
         )
+        assert result.observed_value == 0.0

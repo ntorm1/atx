@@ -79,6 +79,39 @@ def _set_pit_gate(
     )
 
 
+def _plant_non_exempt_pit_violation(store) -> None:
+    store.con.execute(
+        """
+        CREATE TABLE quality_gate_pit_violation (
+            violation_id VARCHAR PRIMARY KEY,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR
+        )
+        """
+    )
+    store.con.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'quality_gate_pit_violation',
+            'test',
+            'schema_contract_gate_probe',
+            'violation_id',
+            'Test-only fact-like table intentionally missing is_latest_revision.',
+            '["violation_id"]',
+            'Carries strong PIT markers but omits one canonical PIT column so pit_column_presence can exercise gate failure behavior.',
+            ?
+        )
+        """,
+        [dt.datetime(2026, 7, 4, 12, 0, 0)],
+    )
+
+
 def _orchestrator(store):
     from db.orchestrator import DatasetOrchestrator
 
@@ -95,6 +128,7 @@ def test_critical_quality_gate_halts_run_and_leaves_downstream_pending(tmp_store
     from db.orchestrator import QualityGateError
     from db.quality import PIT_COLUMN_PRESENCE_CHECK_NAME
 
+    _plant_non_exempt_pit_violation(tmp_store)
     _set_pit_gate(tmp_store, severity="critical")
 
     with pytest.raises(QualityGateError):
@@ -152,6 +186,7 @@ def test_critical_quality_gate_halts_run_and_leaves_downstream_pending(tmp_store
 
 
 def test_error_quality_gate_degrades_run_to_partial(tmp_store):
+    _plant_non_exempt_pit_violation(tmp_store)
     _set_pit_gate(tmp_store, severity="error")
 
     result = _orchestrator(tmp_store).run(run_id="gate-error", gate=True)

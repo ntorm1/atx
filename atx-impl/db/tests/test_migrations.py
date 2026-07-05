@@ -618,14 +618,36 @@ def test_migration_0022_catalogs_est_recommendation_identifiers(tmp_store):
 
     rows = tmp_store.con.execute(
         """
-        SELECT field_name, semantic_type
+        SELECT field_name, semantic_type, description, unit, source_field
         FROM field_catalog
         WHERE table_name = 'est_recommendation'
-          AND field_name IN ('symbol', 'source_file_sha256')
+          AND field_name IN ('price_target', 'symbol', 'source_file_sha256')
         ORDER BY field_name
         """
     ).fetchall()
-    assert rows == [("source_file_sha256", "identifier"), ("symbol", "identifier")]
+    assert rows == [
+        (
+            "price_target",
+            "price",
+            "Broker price target value.",
+            "target_currency",
+            None,
+        ),
+        (
+            "source_file_sha256",
+            "identifier",
+            "SHA-256 hash of the injected source file.",
+            None,
+            None,
+        ),
+        (
+            "symbol",
+            "identifier",
+            "symbol field on est_recommendation.",
+            None,
+            None,
+        ),
+    ]
 
 
 def test_migration_0024_catalogs_est_recommendation_summary(tmp_store):

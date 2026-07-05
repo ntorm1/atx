@@ -9557,6 +9557,12 @@ def _catalog_fields_for_tables(conn: duckdb.DuckDBPyConnection, table_names: tup
         WHERE c.schema_name = 'main'
           AND coalesce(c.internal, false) = false
           AND c.table_name IN ({table_list})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM field_catalog f
+              WHERE f.table_name = c.table_name
+                AND f.field_name = c.column_name
+          )
         """
     )
 
@@ -10288,6 +10294,43 @@ def _quality_check_registry_seed_rows() -> list[tuple[object, ...]]:
         ]
     )
     return rows
+
+
+def _semantic_contract_quality_registry(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-2: make semantic_contract gate-ready in quality_check_registry."""
+    exists = conn.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'quality_check_registry'
+        """
+    ).fetchone()[0]
+    if not exists:
+        return
+
+    from .quality import SCHEMA_CONTRACT_DATASET_ID, SEMANTIC_CONTRACT_CHECK_NAME
+
+    conn.execute(
+        """
+        INSERT INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        SELECT ?, ?, ?, 'critical', 0.0, 'eq', true, 'failed', 'schema_contract', now()
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM quality_check_registry
+            WHERE check_name = ?
+        )
+        """,
+        [
+            SEMANTIC_CONTRACT_CHECK_NAME,
+            SCHEMA_CONTRACT_DATASET_ID,
+            "schema_contract",
+            SEMANTIC_CONTRACT_CHECK_NAME,
+        ],
+    )
 
 
 def _quality_gating_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
@@ -11299,6 +11342,893 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_schema_catalog(conn)
 
 
+def _pf3_s2_recreate_pit_gap_views(conn: duckdb.DuckDBPyConnection) -> None:
+    """Recreate bootstrap views temporarily dropped for PIT-column ALTERs."""
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_equity_daily_returns AS
+        SELECT
+            source,
+            security_id,
+            symbol,
+            trade_date,
+            close,
+            close / lag(close) OVER (
+                PARTITION BY source, security_id
+                ORDER BY trade_date
+            ) - 1.0 AS simple_return,
+            ln(close / lag(close) OVER (
+                PARTITION BY source, security_id
+                ORDER BY trade_date
+            )) AS log_return,
+            volume,
+            source_loaded_at
+        FROM equity_daily_bars
+        WHERE close IS NOT NULL AND close > 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_points_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY security_id, metric, period_end, unit
+                    ORDER BY as_of_date DESC, source_loaded_at DESC
+                ) AS recency_rank
+            FROM fundamental_points
+        )
+        WHERE recency_rank = 1
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_ttm_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY security_id, canonical_metric, ttm_end_date, unit
+                    ORDER BY as_of_date DESC, available_at DESC NULLS LAST, source_loaded_at DESC
+                ) AS recency_rank
+            FROM fundamental_ttm_points
+        )
+        WHERE recency_rank = 1
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_periods_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY period_group_id
+                    ORDER BY as_of_date DESC, available_at DESC NULLS LAST, source_loaded_at DESC
+                ) AS recency_rank
+            FROM fundamental_periods
+        )
+        WHERE recency_rank = 1
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_alpha_daily_panel AS
+        SELECT
+            b.security_id,
+            b.symbol,
+            b.trade_date AS as_of_date,
+            b.close,
+            r.simple_return,
+            r.log_return,
+            b.volume,
+            b.close * b.volume AS dollar_volume
+        FROM equity_daily_bars b
+        LEFT JOIN v_equity_daily_returns r
+          ON r.source = b.source
+         AND r.security_id = b.security_id
+         AND r.trade_date = b.trade_date
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_macro_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY series_id, observation_date
+                    ORDER BY as_of_date DESC, source_loaded_at DESC
+                ) AS recency_rank
+            FROM macro_observations
+        )
+        WHERE recency_rank = 1
+        """
+    )
+
+
+def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-0: close the PIT-column gap by backfill or explicit exemption."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pit_exemption (
+            table_name VARCHAR PRIMARY KEY,
+            missing_columns VARCHAR NOT NULL CHECK (length(trim(missing_columns)) > 0),
+            reason VARCHAR NOT NULL CHECK (length(trim(reason)) > 0),
+            exempted_by VARCHAR NOT NULL CHECK (length(trim(exempted_by)) > 0),
+            exempted_at TIMESTAMP NOT NULL DEFAULT now(),
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'pit_exemption',
+            'control',
+            'schema_contract_pit_exemption',
+            'table_name',
+            'Registry of explicit schema-contract exemptions for canonical PIT columns that are not meaningful on a manifest-marked table.',
+            '["table_name"]',
+            'Quality gate input for pit_column_presence. Each row names the exact missing PIT columns it exempts and carries a non-empty reason; undeclared tables or columns are not subtracted by the check.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('pit_exemption', 'table_name', 'identifier', 'Manifest table name whose declared missing PIT columns are exempted.', false, NULL, NULL, now()),
+            ('pit_exemption', 'missing_columns', 'json', 'JSON array of canonical PIT column names exempted for this table only.', false, NULL, NULL, now()),
+            ('pit_exemption', 'reason', 'text', 'Non-empty human-readable reason explaining why the declared PIT column is not meaningful for this table.', false, NULL, NULL, now()),
+            ('pit_exemption', 'exempted_by', 'identifier', 'Sprint, operator, or agent that registered the exemption.', false, NULL, NULL, now()),
+            ('pit_exemption', 'exempted_at', 'timestamp', 'Timestamp when the exemption was registered.', false, 'timestamp', NULL, now()),
+            ('pit_exemption', 'source_loaded_at', 'timestamp', 'Warehouse load timestamp for this exemption registry row.', false, 'timestamp', NULL, now())
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO pit_exemption (
+            table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at
+        )
+        VALUES
+            (
+                'est_analyst',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate analyst is an identity dimension. PIT validity is represented by valid_from/valid_to plus available_at; row-level as_of_date and revision-latest flags would duplicate that window.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_analyst_alias',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate analyst aliases are validity-windowed dimension rows keyed by alias and provider. valid_from/valid_to plus available_at carry PIT semantics; revision-latest is not meaningful.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_broker',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate broker is an identity dimension. PIT validity is represented by valid_from/valid_to plus available_at; row-level as_of_date and revision-latest flags would duplicate that window.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_broker_alias',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate broker aliases are validity-windowed dimension rows keyed by alias and provider. valid_from/valid_to plus available_at carry PIT semantics; revision-latest is not meaningful.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_period_dim',
+                '["is_latest_revision"]',
+                'Estimate period metadata is a provider period dimension with valid_from/valid_to and available_at. There is no row revision chain to mark latest without inventing one.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            )
+        """
+    )
+
+    existing_tables = {
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE schema_name = 'main'
+              AND coalesce(internal, false) = false
+            """
+        ).fetchall()
+    }
+
+    def _execute_if_table_exists(table_name: str, statement: str) -> None:
+        if table_name in existing_tables:
+            conn.execute(statement)
+
+    for view_name in (
+        "v_alpha_daily_panel",
+        "v_equity_daily_returns",
+        "v_fundamental_points_latest",
+        "v_fundamental_ttm_latest",
+        "v_fundamental_periods_latest",
+        "v_macro_latest",
+    ):
+        conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+
+    # Do not drop/recreate legacy secondary indexes around these ALTERs: recreating
+    # them in this transaction trips DuckDB's BoundIndex delta-index path.
+    for table_name, statement in (
+        ("adjustment_factor_history", "ALTER TABLE adjustment_factor_history ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("blockholder_filing", "ALTER TABLE blockholder_filing ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("congressional_disclosure", "ALTER TABLE congressional_disclosure ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("corporate_actions", "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("equity_daily_bars", "ALTER TABLE equity_daily_bars ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("filing_form4", "ALTER TABLE filing_form4 ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("filing_nport", "ALTER TABLE filing_nport ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("fund_holding", "ALTER TABLE fund_holding ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("fundamental_fact_revisions", "ALTER TABLE fundamental_fact_revisions ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("proxy_vote", "ALTER TABLE proxy_vote ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("sec_company_facts", "ALTER TABLE sec_company_facts ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("thirteenf_manager_reports", "ALTER TABLE thirteenf_manager_reports ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+    ):
+        _execute_if_table_exists(table_name, statement)
+
+    # Avoid default-bearing ALTERs on these populated legacy tables; backfill instead.
+    for table_name in ("alpha_signal_values", "feature_values"):
+        _execute_if_table_exists(
+            table_name,
+            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP",
+        )
+        _execute_if_table_exists(
+            table_name,
+            f"""
+            UPDATE {table_name}
+            SET source_loaded_at = computed_at
+            WHERE source_loaded_at IS NULL
+            """,
+        )
+
+    for table_name, statement in (
+        ("fundamental_periods", "ALTER TABLE fundamental_periods ADD COLUMN IF NOT EXISTS run_id VARCHAR"),
+        ("fundamental_ttm_points", "ALTER TABLE fundamental_ttm_points ADD COLUMN IF NOT EXISTS run_id VARCHAR"),
+        ("macro_observations", "ALTER TABLE macro_observations ADD COLUMN IF NOT EXISTS run_id VARCHAR"),
+    ):
+        _execute_if_table_exists(table_name, statement)
+
+    for table_name, statement in (
+        ("nasdaq_listing_events", "ALTER TABLE nasdaq_listing_events ADD COLUMN IF NOT EXISTS available_at TIMESTAMP"),
+        ("nasdaq_symbol_directory", "ALTER TABLE nasdaq_symbol_directory ADD COLUMN IF NOT EXISTS available_at TIMESTAMP"),
+    ):
+        _execute_if_table_exists(table_name, statement)
+
+    # Same pattern here: nullable ADD COLUMN first, then explicit population.
+    latest_revision_tables = (
+        "adjustment_factor_history",
+        "alpha_signal_values",
+        "blockholder_filing",
+        "congressional_disclosure",
+        "corporate_actions",
+        "daily_adjustment_factors",
+        "delisting_events",
+        "delisting_return_observations",
+        "entity_classification",
+        "entity_parent_edges",
+        "equity_daily_bars",
+        "est_actual",
+        "est_consensus",
+        "est_detail",
+        "est_guidance",
+        "est_recommendation",
+        "est_recommendation_summary",
+        "est_security_link",
+        "est_surprise",
+        "exchange_listings",
+        "feature_values",
+        "filer_13f_cik_alias",
+        "filing_form4",
+        "filing_nport",
+        "finra_short_volume",
+        "form144_intent",
+        "form144_to_form4_link",
+        "fund_holding",
+        "fundamental_points",
+        "identifier_resolution_candidates",
+        "identifier_resolution_decisions",
+        "insider_holding",
+        "insider_relationship",
+        "insider_transaction",
+        "listing_status_intervals",
+        "macro_observations",
+        "nasdaq_listing_events",
+        "nasdaq_symbol_directory",
+        "offexchange_security_period",
+        "offexchange_volume",
+        "proxy_vote",
+        "sec_company_facts",
+        "security_identifier_history",
+        "thirteenf_manager_reports",
+        "thirteenf_security_ownership",
+        "thirteenf_security_positions",
+        "tradingplan_10b5_1",
+        "universe_memberships",
+    )
+    for table_name in latest_revision_tables:
+        _execute_if_table_exists(
+            table_name,
+            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN",
+        )
+        _execute_if_table_exists(
+            table_name,
+            f"UPDATE {table_name} SET is_latest_revision = true WHERE is_latest_revision IS NULL",
+        )
+
+    for table_name, statement in (
+        ("adjustment_factor_history", "UPDATE adjustment_factor_history SET as_of_date = ex_date WHERE as_of_date IS NULL"),
+        ("blockholder_filing", "UPDATE blockholder_filing SET as_of_date = coalesce(event_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("congressional_disclosure", "UPDATE congressional_disclosure SET as_of_date = coalesce(transaction_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("corporate_actions", "UPDATE corporate_actions SET as_of_date = ex_date WHERE as_of_date IS NULL"),
+        ("equity_daily_bars", "UPDATE equity_daily_bars SET as_of_date = trade_date WHERE as_of_date IS NULL"),
+        ("filing_form4", "UPDATE filing_form4 SET as_of_date = coalesce(period_of_report, filing_date, CAST(acceptance_datetime AS DATE), CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("filing_nport", "UPDATE filing_nport SET as_of_date = period_of_report WHERE as_of_date IS NULL"),
+        ("fund_holding", "UPDATE fund_holding SET as_of_date = period_of_report WHERE as_of_date IS NULL"),
+        ("fundamental_fact_revisions", "UPDATE fundamental_fact_revisions SET as_of_date = filed_date WHERE as_of_date IS NULL"),
+        ("proxy_vote", "UPDATE proxy_vote SET as_of_date = coalesce(meeting_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("sec_company_facts", "UPDATE sec_company_facts SET as_of_date = filed_date WHERE as_of_date IS NULL"),
+        ("thirteenf_manager_reports", "UPDATE thirteenf_manager_reports SET as_of_date = report_period WHERE as_of_date IS NULL"),
+        ("alpha_signal_values", "UPDATE alpha_signal_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL"),
+        ("feature_values", "UPDATE feature_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL"),
+        ("nasdaq_listing_events", "UPDATE nasdaq_listing_events SET available_at = coalesce(source_file_created_at, source_loaded_at) WHERE available_at IS NULL"),
+        ("nasdaq_symbol_directory", "UPDATE nasdaq_symbol_directory SET available_at = source_loaded_at WHERE available_at IS NULL"),
+        ("finra_short_volume", "UPDATE finra_short_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest"),
+        ("offexchange_volume", "UPDATE offexchange_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest"),
+        ("form144_intent", "UPDATE form144_intent SET is_latest_revision = coalesce(is_latest, true) WHERE is_latest_revision IS DISTINCT FROM coalesce(is_latest, true)"),
+    ):
+        _execute_if_table_exists(table_name, statement)
+
+    _pf3_s2_recreate_pit_gap_views(conn)
+
+    touched_tables = (
+        "adjustment_factor_history",
+        "alpha_signal_values",
+        "blockholder_filing",
+        "congressional_disclosure",
+        "corporate_actions",
+        "daily_adjustment_factors",
+        "delisting_events",
+        "delisting_return_observations",
+        "entity_classification",
+        "entity_parent_edges",
+        "equity_daily_bars",
+        "est_actual",
+        "est_consensus",
+        "est_detail",
+        "est_guidance",
+        "est_recommendation",
+        "est_recommendation_summary",
+        "est_security_link",
+        "est_surprise",
+        "exchange_listings",
+        "feature_values",
+        "filer_13f_cik_alias",
+        "filing_form4",
+        "filing_nport",
+        "finra_short_volume",
+        "form144_intent",
+        "form144_to_form4_link",
+        "fund_holding",
+        "fundamental_fact_revisions",
+        "fundamental_periods",
+        "fundamental_points",
+        "fundamental_ttm_points",
+        "identifier_resolution_candidates",
+        "identifier_resolution_decisions",
+        "insider_holding",
+        "insider_relationship",
+        "insider_transaction",
+        "listing_status_intervals",
+        "macro_observations",
+        "nasdaq_listing_events",
+        "nasdaq_symbol_directory",
+        "offexchange_security_period",
+        "offexchange_volume",
+        "proxy_vote",
+        "sec_company_facts",
+        "security_identifier_history",
+        "thirteenf_manager_reports",
+        "thirteenf_security_ownership",
+        "thirteenf_security_positions",
+        "tradingplan_10b5_1",
+        "universe_memberships",
+    )
+    _catalog_fields_for_tables(conn, touched_tables)
+    _catalog_fields_for_tables(
+        conn,
+        (
+            "v_fundamental_points_latest",
+            "v_fundamental_ttm_latest",
+            "v_fundamental_periods_latest",
+            "v_macro_latest",
+        ),
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-1: persist semantic contract fields on schema_contract."""
+
+    for statement in (
+        "DROP INDEX IF EXISTS idx_schema_contract_table_name",
+        "DROP INDEX IF EXISTS idx_schema_contract_declared_in",
+    ):
+        conn.execute(statement)
+
+    for statement in (
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS unit VARCHAR",
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS sign VARCHAR",
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS scale VARCHAR",
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS natural_key BOOLEAN DEFAULT false",
+    ):
+        conn.execute(statement)
+
+    existing_columns = [
+        "table_name",
+        "column_name",
+        "data_type",
+        "nullable",
+        "is_natural_key",
+        "is_pit_column",
+        "declared_in",
+        "manifest_sha256",
+        "source_loaded_at",
+        "unit",
+        "sign",
+        "scale",
+        "natural_key",
+    ]
+    existing_rows = conn.execute(
+        """
+        SELECT
+            table_name,
+            column_name,
+            data_type,
+            nullable,
+            is_natural_key,
+            is_pit_column,
+            declared_in,
+            manifest_sha256,
+            source_loaded_at,
+            unit,
+            sign,
+            scale,
+            natural_key
+        FROM schema_contract
+        """
+    ).fetchall()
+    import pandas as pd
+
+    existing_snapshot = pd.DataFrame.from_records(existing_rows, columns=existing_columns)
+    conn.execute("DROP TABLE IF EXISTS _schema_contract_0136_existing")
+    try:
+        conn.unregister("_schema_contract_0136_existing")
+    except Exception:
+        pass
+
+    try:
+        _schema_contract_schema_catalog(conn)
+
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO field_catalog (
+                table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+            )
+            VALUES
+                ('schema_contract', 'unit', 'category', 'Declared semantic unit for this contract column, resolved from explicit ColumnSpec declarations or field_catalog.unit fallback where present.', true, 'unit', NULL, now()),
+                ('schema_contract', 'sign', 'category', 'Declared sign/domain convention for this contract column: signed, non_negative, non_positive, unit_interval, bounded, or NULL when not applicable.', true, NULL, NULL, now()),
+                ('schema_contract', 'scale', 'category', 'Declared semantic scale for this contract column, such as 1, day, second, boolean, or nominal.', true, NULL, NULL, now()),
+                ('schema_contract', 'natural_key', 'flag', 'Semantic-tier mirror of is_natural_key; true when this column participates in the table natural/business key.', false, NULL, NULL, now())
+            """
+        )
+
+        from .schema_contract import build_contract_manifest, schema_contract_sha256
+
+        manifest = build_contract_manifest(conn)
+        manifest_sha256 = schema_contract_sha256(manifest)
+        rows = [
+            (
+                table_name,
+                spec.name,
+                spec.unit,
+                spec.sign,
+                spec.scale,
+                bool(spec.natural_key),
+                manifest_sha256,
+            )
+            for table_name, specs in manifest.items()
+            for spec in specs
+        ]
+
+        seed = pd.DataFrame.from_records(
+            rows,
+            columns=[
+                "table_name",
+                "column_name",
+                "unit",
+                "sign",
+                "scale",
+                "natural_key",
+                "manifest_sha256",
+            ],
+        )
+        conn.register("_schema_contract_0136_existing", existing_snapshot)
+        try:
+            conn.register("_schema_contract_semantic_seed", seed)
+            try:
+                conn.execute(
+                    """
+                    DELETE FROM schema_contract AS sc
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM _schema_contract_semantic_seed AS seed
+                        WHERE seed.table_name = sc.table_name
+                          AND seed.column_name = sc.column_name
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TEMP TABLE _schema_contract_semantic_changed AS
+                    SELECT
+                        seed.table_name,
+                        seed.column_name,
+                        seed.unit,
+                        seed.sign,
+                        seed.scale,
+                        seed.natural_key,
+                        seed.manifest_sha256,
+                        CAST(existing.source_loaded_at AS TIMESTAMP) AS existing_source_loaded_at,
+                        existing.table_name IS NOT NULL
+                            AND sc.data_type IS NOT DISTINCT FROM existing.data_type
+                            AND sc.nullable IS NOT DISTINCT FROM existing.nullable
+                            AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                            AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
+                            AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
+                            AND seed.unit IS NOT DISTINCT FROM existing.unit
+                            AND seed.sign IS NOT DISTINCT FROM existing.sign
+                            AND seed.scale IS NOT DISTINCT FROM existing.scale
+                            AND seed.natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                            AS preserve_source_loaded_at
+                    FROM schema_contract AS sc
+                    JOIN _schema_contract_semantic_seed AS seed
+                      ON sc.table_name = seed.table_name
+                     AND sc.column_name = seed.column_name
+                    LEFT JOIN _schema_contract_0136_existing AS existing
+                      ON sc.table_name = existing.table_name
+                     AND sc.column_name = existing.column_name
+                    WHERE sc.table_name = seed.table_name
+                      AND sc.column_name = seed.column_name
+                      AND (
+                          sc.unit IS DISTINCT FROM seed.unit
+                          OR sc.sign IS DISTINCT FROM seed.sign
+                          OR sc.scale IS DISTINCT FROM seed.scale
+                          OR sc.natural_key IS DISTINCT FROM seed.natural_key
+                          OR sc.manifest_sha256 IS DISTINCT FROM seed.manifest_sha256
+                      )
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE schema_contract AS sc
+                    SET
+                        unit = changed.unit,
+                        sign = changed.sign,
+                        scale = changed.scale,
+                        natural_key = changed.natural_key,
+                        manifest_sha256 = changed.manifest_sha256,
+                        source_loaded_at = CASE
+                            WHEN changed.preserve_source_loaded_at THEN changed.existing_source_loaded_at
+                            ELSE CAST(now() AS TIMESTAMP)
+                        END
+                    FROM _schema_contract_semantic_changed AS changed
+                    WHERE sc.table_name = changed.table_name
+                      AND sc.column_name = changed.column_name
+                    """
+                )
+            finally:
+                conn.execute("DROP TABLE IF EXISTS _schema_contract_semantic_changed")
+                conn.unregister("_schema_contract_semantic_seed")
+
+            conn.execute(
+                """
+                UPDATE schema_contract AS sc
+                SET
+                    source_loaded_at = CAST(existing.source_loaded_at AS TIMESTAMP)
+                FROM _schema_contract_0136_existing AS existing
+                WHERE sc.table_name = existing.table_name
+                  AND sc.column_name = existing.column_name
+                  AND sc.data_type IS NOT DISTINCT FROM existing.data_type
+                  AND sc.nullable IS NOT DISTINCT FROM existing.nullable
+                  AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                  AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
+                  AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
+                  AND sc.unit IS NOT DISTINCT FROM existing.unit
+                  AND sc.sign IS NOT DISTINCT FROM existing.sign
+                  AND sc.scale IS NOT DISTINCT FROM existing.scale
+                  AND sc.natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                """
+            )
+        finally:
+            conn.unregister("_schema_contract_0136_existing")
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _schema_contract_0136_existing")
+
+    _schema_contract_indexes(conn)
+
+
+def _pf3_s2_schema_contract_version_and_panel_contract(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-3: version-pin schema contract v2 and seed panel contract stub."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_contract_version (
+            version VARCHAR PRIMARY KEY,
+            manifest_sha256 VARCHAR NOT NULL CHECK (length(trim(manifest_sha256)) = 64),
+            declared_by_migration VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'schema_contract_version',
+            'control',
+            'schema_contract_version',
+            'version',
+            'Semantic identity for the warehouse schema contract: one append-only row per declared contract version paired with the manifest sha256 for that version.',
+            '["version"]',
+            'Version pin for schema_contract_sha256(build_contract_manifest(conn)). A manifest hash change without a matching new version row is contract drift, not a silent update. This is contract metadata, not fact-row PIT data.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('schema_contract_version', 'version', 'identifier', 'Semantic schema-contract version string, e.g. v2.', false, NULL, NULL, now()),
+            ('schema_contract_version', 'manifest_sha256', 'identifier', 'schema_contract_sha256(build_contract_manifest(conn)) pinned for this contract version.', false, NULL, NULL, now()),
+            ('schema_contract_version', 'declared_by_migration', 'identifier', 'Migration that first persisted this contract version row.', false, NULL, NULL, now()),
+            ('schema_contract_version', 'source_loaded_at', 'timestamp', 'Warehouse timestamp when the version row was first persisted.', false, 'timestamp', NULL, now())
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS panel_contract (
+            column_name VARCHAR PRIMARY KEY,
+            data_type VARCHAR NOT NULL,
+            is_panel_key BOOLEAN NOT NULL DEFAULT false,
+            key_ordinal INTEGER,
+            unit VARCHAR NOT NULL,
+            sign VARCHAR NOT NULL,
+            scale VARCHAR NOT NULL,
+            panel_contract_sha256 VARCHAR NOT NULL CHECK (length(trim(panel_contract_sha256)) = 64),
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'panel_contract',
+            'control',
+            'factor_panel_contract',
+            'column_name',
+            'Forward contract for the future v_factor_panel export: one row per declared panel column with key membership and unit/sign/scale semantics.',
+            '["column_name"]',
+            'PF3-S10 will enforce the materialized/exported factor panel against this declaration. The panel point-in-time key is (security_id, as_of_date); this stub intentionally does not require v_factor_panel to exist yet.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('panel_contract', 'column_name', 'identifier', 'Declared factor-panel export column name.', false, NULL, NULL, now()),
+            ('panel_contract', 'data_type', 'category', 'Declared DuckDB data type for the future panel column.', false, NULL, NULL, now()),
+            ('panel_contract', 'is_panel_key', 'flag', 'True when the column participates in the panel PIT key.', false, NULL, NULL, now()),
+            ('panel_contract', 'key_ordinal', 'ordinal', 'One-based key position for panel PIT keys; NULL for non-key columns.', true, NULL, NULL, now()),
+            ('panel_contract', 'unit', 'category', 'Declared unit for this panel column.', false, 'unit', NULL, now()),
+            ('panel_contract', 'sign', 'category', 'Declared sign/domain convention for this panel column.', false, NULL, NULL, now()),
+            ('panel_contract', 'scale', 'category', 'Declared semantic scale for this panel column.', false, NULL, NULL, now()),
+            ('panel_contract', 'panel_contract_sha256', 'identifier', 'Stable sha256 over db.panel_contract.PANEL_CONTRACT.', false, NULL, NULL, now()),
+            ('panel_contract', 'source_loaded_at', 'timestamp', 'Warehouse timestamp when this panel contract row was first persisted or updated.', false, 'timestamp', NULL, now())
+        """
+    )
+
+    from .panel_contract import PANEL_CONTRACT, panel_contract_sha256
+
+    panel_sha256 = panel_contract_sha256(PANEL_CONTRACT)
+    rows = [
+        (
+            spec.name,
+            spec.data_type,
+            spec.is_panel_key,
+            spec.key_ordinal,
+            spec.unit,
+            spec.sign,
+            spec.scale,
+            panel_sha256,
+        )
+        for spec in PANEL_CONTRACT
+    ]
+    import pandas as pd
+
+    seed = pd.DataFrame.from_records(
+        rows,
+        columns=[
+            "column_name",
+            "data_type",
+            "is_panel_key",
+            "key_ordinal",
+            "unit",
+            "sign",
+            "scale",
+            "panel_contract_sha256",
+        ],
+    )
+    conn.register("_panel_contract_seed", seed)
+    try:
+        conn.execute(
+            """
+            DELETE FROM panel_contract AS pc
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM _panel_contract_seed AS seed
+                WHERE seed.column_name = pc.column_name
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TEMP TABLE _panel_contract_changed AS
+            SELECT
+                seed.column_name,
+                seed.data_type,
+                seed.is_panel_key,
+                seed.key_ordinal,
+                seed.unit,
+                seed.sign,
+                seed.scale,
+                seed.panel_contract_sha256
+            FROM _panel_contract_seed AS seed
+            JOIN panel_contract AS pc
+              ON pc.column_name = seed.column_name
+            WHERE pc.data_type IS DISTINCT FROM seed.data_type
+               OR pc.is_panel_key IS DISTINCT FROM seed.is_panel_key
+               OR pc.key_ordinal IS DISTINCT FROM seed.key_ordinal
+               OR pc.unit IS DISTINCT FROM seed.unit
+               OR pc.sign IS DISTINCT FROM seed.sign
+               OR pc.scale IS DISTINCT FROM seed.scale
+               OR pc.panel_contract_sha256 IS DISTINCT FROM seed.panel_contract_sha256
+            """
+        )
+        conn.execute(
+            """
+            UPDATE panel_contract AS pc
+            SET
+                data_type = changed.data_type,
+                is_panel_key = changed.is_panel_key,
+                key_ordinal = changed.key_ordinal,
+                unit = changed.unit,
+                sign = changed.sign,
+                scale = changed.scale,
+                panel_contract_sha256 = changed.panel_contract_sha256,
+                source_loaded_at = now()
+            FROM _panel_contract_changed AS changed
+            WHERE pc.column_name = changed.column_name
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO panel_contract (
+                column_name, data_type, is_panel_key, key_ordinal,
+                unit, sign, scale, panel_contract_sha256, source_loaded_at
+            )
+            SELECT
+                seed.column_name,
+                seed.data_type,
+                seed.is_panel_key,
+                seed.key_ordinal,
+                seed.unit,
+                seed.sign,
+                seed.scale,
+                seed.panel_contract_sha256,
+                now()
+            FROM _panel_contract_seed AS seed
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM panel_contract AS pc
+                WHERE pc.column_name = seed.column_name
+            )
+            """
+        )
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _panel_contract_changed")
+        conn.unregister("_panel_contract_seed")
+
+    _pf3_s2_schema_contract_semantics(conn)
+
+    from .schema_contract import (
+        SCHEMA_CONTRACT_VERSION,
+        assert_schema_contract_version,
+        build_contract_manifest,
+        schema_contract_sha256,
+    )
+
+    manifest = build_contract_manifest(conn)
+    manifest_sha256 = schema_contract_sha256(manifest)
+    conn.execute(
+        """
+        INSERT INTO schema_contract_version (
+            version, manifest_sha256, declared_by_migration, source_loaded_at
+        )
+        SELECT ?, ?, '0137', now()
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM schema_contract_version
+            WHERE version = ?
+        )
+        """,
+        [SCHEMA_CONTRACT_VERSION, manifest_sha256, SCHEMA_CONTRACT_VERSION],
+    )
+    assert_schema_contract_version(conn, manifest=manifest)
+
+
+def _pf3_s2_semantic_contract_quality_registry(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-2/S2-3: contract v2/panel stub plus semantic_contract gate."""
+
+    _pf3_s2_schema_contract_version_and_panel_contract(conn)
+
+    _semantic_contract_quality_registry(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -11895,6 +12825,21 @@ MIGRATIONS: list[Migration] = [
         version=134,
         name="pf3_s1_backfill_status_view",
         up=_pf3_s1_backfill_status_view,
+    ),
+    Migration(
+        version=135,
+        name="pf3_s2_pit_gap_close",
+        up=_pf3_s2_pit_gap_close,
+    ),
+    Migration(
+        version=136,
+        name="pf3_s2_schema_contract_semantics",
+        up=_pf3_s2_schema_contract_semantics,
+    ),
+    Migration(
+        version=137,
+        name="pf3_s2_semantic_contract_quality_registry",
+        up=_pf3_s2_semantic_contract_quality_registry,
     ),
 ]
 

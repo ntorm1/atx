@@ -772,15 +772,30 @@ class TestBuildContractManifestPitColumnScoping:
 
 class TestBuildContractManifestConsistencyWithHandCuratedContract:
     """The S1-0 hand-written 6-table CONTRACT and the S1-2 complete manifest must never
-    disagree on the tables CONTRACT already declares -- build_contract_manifest() reuses
-    CONTRACT verbatim for exactly this reason.
+    disagree on the structural fields CONTRACT already declares. S2-1 may fill missing
+    semantic fields from field_catalog, while preserving explicit semantic declarations.
     """
 
-    def test_contract_tables_are_reused_verbatim(self, tmp_store):
+    def test_contract_tables_preserve_hand_curated_declarations(self, tmp_store):
         manifest = build_contract_manifest(tmp_store.con)
         for table_name, specs in CONTRACT.items():
             assert table_name in manifest
-            assert manifest[table_name] == list(specs)
+            actual = {spec.name: spec for spec in manifest[table_name]}
+            for expected in specs:
+                assert expected.name in actual
+                got = actual[expected.name]
+                assert got.data_type == expected.data_type
+                assert got.nullable == expected.nullable
+                assert got.is_natural_key == expected.is_natural_key
+                assert got.is_pit_column == expected.is_pit_column
+                assert got.declared_in == expected.declared_in
+                assert got.natural_key == expected.natural_key
+                if expected.unit is not None:
+                    assert got.unit == expected.unit
+                if expected.sign is not None:
+                    assert got.sign == expected.sign
+                if expected.scale is not None:
+                    assert got.scale == expected.scale
 
     def test_contract_declared_in_values_agree_with_manifest(self, tmp_store):
         manifest = build_contract_manifest(tmp_store.con)

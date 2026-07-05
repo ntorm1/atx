@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from dataclasses import dataclass, replace
 from typing import Iterable, Literal, Mapping, Sequence
 
@@ -9,6 +10,7 @@ from .lake import DEFAULT_EXPORT_OBJECTS
 from .schema_contract import (
     ColumnSpec,
     PIT_COLUMN_NAMES,
+    SIGN_VALUES,
     _fetch_catalogued_tables,
     _fetch_live_tables,
     build_contract_manifest,
@@ -29,7 +31,45 @@ DEFAULT_VALUATION_STALE_GAP_DAYS = 5
 # and (later) PF2-S10's orchestrator gating never have to hand-copy the literal string.
 CATALOG_COMPLETENESS_CHECK_NAME = "catalog_completeness"
 PIT_COLUMN_PRESENCE_CHECK_NAME = "pit_column_presence"
+SEMANTIC_CONTRACT_CHECK_NAME = "semantic_contract"
+PIT_EXEMPTION_TABLE_NAME = "pit_exemption"
 SCHEMA_CONTRACT_DATASET_ID = "schema_contract"
+SCHEMA_CONTRACT_TABLE_NAME = "schema_contract"
+
+_NUMERIC_DATA_TYPES = frozenset(
+    {
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "UHUGEINT",
+        "FLOAT",
+        "REAL",
+        "DOUBLE",
+        "DECIMAL",
+        "NUMERIC",
+    }
+)
+_SCHEMA_CONTRACT_SEMANTIC_COLUMNS = frozenset(
+    {
+        "table_name",
+        "column_name",
+        "data_type",
+        "nullable",
+        "is_natural_key",
+        "is_pit_column",
+        "declared_in",
+        "unit",
+        "sign",
+        "scale",
+        "natural_key",
+    }
+)
 
 # PF-S7 S7-1: the statement-layer parent that fundamental_ratios rows resolve
 # against. TODAY this is fundamental_points (raw SEC companyfacts). Once
@@ -118,6 +158,17 @@ class GateResult:
         return self.decision == "pass"
 
 
+@dataclass(frozen=True)
+class _SemanticContractColumn:
+    table_name: str
+    column_name: str
+    data_type: str
+    sign: str | None
+    unit: str | None
+    scale: str | None
+    natural_key: bool | None
+
+
 def _main_objects(store: DuckDBStore) -> set[str]:
     return {
         row[0]
@@ -143,6 +194,125 @@ def _table_exists(
     if objects is not None:
         return table_name in objects
     return table_name in _main_objects(store)
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _duckdb_type_family(data_type: str) -> str:
+    return data_type.upper().split("(", 1)[0].strip()
+
+
+def _is_numeric_data_type(data_type: str) -> bool:
+    return _duckdb_type_family(data_type) in _NUMERIC_DATA_TYPES
+
+
+def _parse_declared_bounds(scale: str | None) -> tuple[float | None, float | None] | None:
+    if scale is None:
+        return None
+    text = scale.strip()
+    if not text:
+        return None
+    if text.startswith("[") and text.endswith("]"):
+        parts = text[1:-1].split(",", 1)
+    elif ".." in text:
+        parts = text.split("..", 1)
+    else:
+        return None
+    if len(parts) != 2:
+        return None
+    lower_text, upper_text = (part.strip() for part in parts)
+    try:
+        lower = None if lower_text in {"", "-inf", "-infinity"} else float(lower_text)
+        upper = None if upper_text in {"", "inf", "infinity"} else float(upper_text)
+    except ValueError:
+        return None
+    return lower, upper
+
+
+def _semantic_columns_from_manifest(
+    manifest: Mapping[str, Sequence[ColumnSpec]],
+) -> list[_SemanticContractColumn]:
+    columns: list[_SemanticContractColumn] = []
+    for table_name, specs in manifest.items():
+        if not any(spec.is_pit_column for spec in specs):
+            continue
+        for spec in specs:
+            columns.append(
+                _SemanticContractColumn(
+                    table_name=table_name,
+                    column_name=spec.name,
+                    data_type=spec.data_type,
+                    sign=spec.sign,
+                    unit=spec.unit,
+                    scale=spec.scale,
+                    natural_key=spec.natural_key,
+                )
+            )
+    return sorted(columns, key=lambda column: (column.table_name, column.column_name))
+
+
+def _schema_contract_semantic_columns(store: DuckDBStore) -> set[str]:
+    if not _table_exists(store, SCHEMA_CONTRACT_TABLE_NAME):
+        return set()
+    return {
+        row[0]
+        for row in store.con.execute(
+            """
+            SELECT column_name
+            FROM duckdb_columns()
+            WHERE schema_name = 'main'
+              AND table_name = ?
+            """,
+            [SCHEMA_CONTRACT_TABLE_NAME],
+        ).fetchall()
+    }
+
+
+def _semantic_columns_from_schema_contract(
+    store: DuckDBStore,
+) -> tuple[list[_SemanticContractColumn], list[str]]:
+    available_columns = _schema_contract_semantic_columns(store)
+    missing_columns = sorted(_SCHEMA_CONTRACT_SEMANTIC_COLUMNS - available_columns)
+    if missing_columns:
+        return [], missing_columns
+
+    rows = store.con.execute(
+        """
+        WITH fact_tables AS (
+            SELECT table_name
+            FROM schema_contract
+            GROUP BY table_name
+            HAVING max(CASE WHEN is_pit_column THEN 1 ELSE 0 END) > 0
+        )
+        SELECT
+            sc.table_name,
+            sc.column_name,
+            sc.data_type,
+            sc.sign,
+            sc.unit,
+            sc.scale,
+            sc.natural_key
+        FROM schema_contract AS sc
+        JOIN fact_tables AS ft
+          ON ft.table_name = sc.table_name
+        ORDER BY sc.table_name, sc.column_name
+        """
+    ).fetchall()
+    columns = [
+        _SemanticContractColumn(
+            table_name=str(table_name),
+            column_name=str(column_name),
+            data_type=str(data_type),
+            sign=None if sign is None else str(sign),
+            unit=None if unit is None else str(unit),
+            scale=None if scale is None else str(scale),
+            natural_key=None if natural_key is None else bool(natural_key),
+        )
+        for table_name, column_name, data_type, sign, unit, scale, natural_key in rows
+    ]
+    return columns, []
 
 
 def _passes(observed_value: float, threshold: float, comparator: Comparator) -> bool:
@@ -257,6 +427,14 @@ def _apply_registry_to_result(
             "registry_threshold_value": threshold,
         },
     )
+
+
+def _registry_allows_check(
+    check_name: str,
+    registry: Mapping[str, QualityRegistryEntry],
+) -> bool:
+    entry = registry.get(check_name)
+    return entry is None or entry.enabled
 
 
 def _record_quality_result(store: DuckDBStore, result: QualityResult) -> None:
@@ -7244,6 +7422,60 @@ def catalog_completeness_check(
     )
 
 
+def _pit_exemption_registry(store: DuckDBStore) -> tuple[dict[str, set[str]], list[dict[str, str]]]:
+    """Read valid PIT exemptions from ``pit_exemption``.
+
+    Exemptions are intentionally narrow: a row can subtract only the declared
+    canonical PIT columns for its own table, and only with a non-empty reason.
+    Invalid rows are reported to the check caller and do not subtract anything.
+    """
+    if not _table_exists(store, PIT_EXEMPTION_TABLE_NAME):
+        return {}, []
+
+    rows = store.con.execute(
+        """
+        SELECT table_name, missing_columns, reason
+        FROM pit_exemption
+        """
+    ).fetchall()
+    canonical = set(PIT_COLUMN_NAMES)
+    exemptions: dict[str, set[str]] = {}
+    invalid: list[dict[str, str]] = []
+    for table_name, missing_columns, reason in rows:
+        table = str(table_name or "").strip()
+        reason_text = str(reason or "").strip()
+        raw_columns = str(missing_columns or "").strip()
+        if not table:
+            invalid.append({"table_name": table, "reason": "table_name is empty"})
+            continue
+        if not reason_text:
+            invalid.append({"table_name": table, "reason": "reason is empty"})
+            continue
+        try:
+            decoded = json.loads(raw_columns)
+        except (TypeError, ValueError) as exc:
+            invalid.append({"table_name": table, "reason": f"missing_columns is not JSON: {exc}"})
+            continue
+        if not isinstance(decoded, list):
+            invalid.append({"table_name": table, "reason": "missing_columns must be a JSON array"})
+            continue
+        columns = {str(column).strip() for column in decoded if str(column).strip()}
+        unknown = sorted(columns - canonical)
+        if not columns:
+            invalid.append({"table_name": table, "reason": "missing_columns is empty"})
+            continue
+        if unknown:
+            invalid.append(
+                {
+                    "table_name": table,
+                    "reason": f"unknown PIT columns: {', '.join(unknown)}",
+                }
+            )
+            continue
+        exemptions.setdefault(table, set()).update(columns)
+    return exemptions, invalid
+
+
 def pit_column_presence_check(
     store: DuckDBStore,
     *,
@@ -7269,18 +7501,24 @@ def pit_column_presence_check(
     resolved_manifest: Mapping[str, Sequence[ColumnSpec]] = (
         manifest if manifest is not None else build_contract_manifest(store.con)
     )
+    exemptions, invalid_exemptions = _pit_exemption_registry(store)
 
     offenders: dict[str, list[str]] = {}
+    applied_exemptions: dict[str, list[str]] = {}
     for table_name, specs in resolved_manifest.items():
         is_fact = any(spec.is_pit_column for spec in specs)
         if not is_fact:
             continue
         spec_names = {spec.name for spec in specs}
-        missing = sorted(set(PIT_COLUMN_NAMES) - spec_names)
+        missing_set = set(PIT_COLUMN_NAMES) - spec_names
+        exempted = sorted(missing_set & exemptions.get(table_name, set()))
+        if exempted:
+            applied_exemptions[table_name] = exempted
+        missing = sorted(missing_set - set(exempted))
         if missing:
             offenders[table_name] = missing
 
-    observed_value = float(len(offenders))
+    observed_value = float(len(offenders) + len(invalid_exemptions))
     passed = observed_value == 0.0
     return QualityResult(
         dataset_id=SCHEMA_CONTRACT_DATASET_ID,
@@ -7289,7 +7527,252 @@ def pit_column_presence_check(
         status="passed" if passed else "failed",
         observed_value=observed_value,
         threshold_value=0.0,
-        details={"tables_missing_pit_columns": offenders, "checked_at": checked_at.isoformat()},
+        details={
+            "tables_missing_pit_columns": offenders,
+            "exempted_pit_columns": applied_exemptions,
+            "invalid_pit_exemptions": invalid_exemptions,
+            "checked_at": checked_at.isoformat(),
+        },
+        severity="critical",
+    )
+
+
+def _semantic_violation_predicate(
+    column: _SemanticContractColumn, quoted_column: str
+) -> tuple[str | None, str | None, str | None]:
+    sign = column.sign
+    data_type = _duckdb_type_family(column.data_type)
+    unit = (column.unit or "").strip().lower()
+    scale = (column.scale or "").strip().lower()
+    value = f"TRY_CAST({quoted_column} AS DOUBLE)"
+    non_finite = f"NOT isfinite({value})"
+
+    if sign not in SIGN_VALUES:
+        return None, None, f"unknown semantic sign {sign!r}"
+    if sign == "signed":
+        return None, "signed", None
+    if sign == "bounded":
+        bounds = _parse_declared_bounds(column.scale)
+        if bounds is None and (unit == "flag" or scale == "boolean"):
+            if data_type == "BOOLEAN":
+                return None, "bounded(boolean physical type)", None
+            if not _is_numeric_data_type(column.data_type):
+                return None, None, "bounded boolean/flag domain is not numeric or BOOLEAN"
+            return f"{non_finite} OR {value} NOT IN (0.0, 1.0)", "bounded(boolean 0/1)", None
+        if bounds is None:
+            return None, "bounded(no declared numeric bounds)", None
+        if not _is_numeric_data_type(column.data_type):
+            return None, None, "bounded domain declares numeric bounds on a non-numeric column"
+        lower, upper = bounds
+        predicates: list[str] = []
+        predicates.append(non_finite)
+        if lower is not None:
+            predicates.append(f"{value} < {float(lower)!r}")
+        if upper is not None:
+            predicates.append(f"{value} > {float(upper)!r}")
+        domain = (
+            f"bounded({lower}, {upper})"
+            if lower is not None or upper is not None
+            else "bounded(finite numeric)"
+        )
+        return " OR ".join(predicates), domain, None
+
+    if not _is_numeric_data_type(column.data_type):
+        return None, None, f"{sign} domain is not numeric"
+    if sign == "non_negative":
+        return f"{non_finite} OR {value} < 0.0", "non_negative", None
+    if sign == "non_positive":
+        return f"{non_finite} OR {value} > 0.0", "non_positive", None
+    if sign == "unit_interval":
+        return f"{non_finite} OR {value} < 0.0 OR {value} > 1.0", "unit_interval[0,1]", None
+    return None, None, f"unsupported semantic sign {sign!r}"
+
+
+def _incomplete_semantic_declaration_reason(column: _SemanticContractColumn) -> str | None:
+    missing: list[str] = []
+    if column.unit is None or not str(column.unit).strip():
+        missing.append("unit")
+    if column.sign is None or not str(column.sign).strip():
+        missing.append("sign")
+    if column.scale is None or not str(column.scale).strip():
+        missing.append("scale")
+    if column.natural_key is None:
+        missing.append("natural_key")
+    if not missing:
+        return None
+    return "missing semantic declaration fields: " + ", ".join(missing)
+
+
+def semantic_contract_check(
+    store: DuckDBStore,
+    *,
+    manifest: Mapping[str, Sequence[ColumnSpec]] | None = None,
+    checked_at: dt.datetime | None = None,
+) -> QualityResult:
+    """Validate fact-column values against the S2-1 semantic tier.
+
+    The semantic tier is read from the persisted ``schema_contract`` rows by
+    default, or from an injected manifest in small offline fixtures. Domain
+    rules are driven by each column's declared ``sign``/``unit``/``scale``:
+    ``signed`` columns are deliberately unconstrained, while constrained signs
+    fail on bad values.
+    """
+    checked_at = checked_at or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    source = "manifest" if manifest is not None else SCHEMA_CONTRACT_TABLE_NAME
+
+    if manifest is not None:
+        semantic_columns = _semantic_columns_from_manifest(manifest)
+        missing_semantic_columns: list[str] = []
+    else:
+        if not _table_exists(store, SCHEMA_CONTRACT_TABLE_NAME):
+            return QualityResult(
+                dataset_id=SCHEMA_CONTRACT_DATASET_ID,
+                table_name=SCHEMA_CONTRACT_TABLE_NAME,
+                check_name=SEMANTIC_CONTRACT_CHECK_NAME,
+                status="warning",
+                observed_value=None,
+                threshold_value=0.0,
+                details={
+                    "missing_tables": [SCHEMA_CONTRACT_TABLE_NAME],
+                    "source": source,
+                    "checked_at": checked_at.isoformat(),
+                },
+                severity="critical",
+            )
+        semantic_columns, missing_semantic_columns = _semantic_columns_from_schema_contract(store)
+
+    objects = _main_objects(store)
+    live_columns: dict[str, set[str]] = {}
+    for table_name, column_name in store.con.execute(
+        """
+        SELECT table_name, column_name
+        FROM duckdb_columns()
+        WHERE schema_name = 'main'
+        """
+    ).fetchall():
+        live_columns.setdefault(str(table_name), set()).add(str(column_name))
+
+    violations: list[dict[str, object]] = []
+    invalid_declarations: list[dict[str, str]] = []
+    missing_targets: list[dict[str, str]] = []
+    skipped_bounded_columns: list[dict[str, str]] = []
+    checked_columns = 0
+    signed_columns = 0
+
+    for column in semantic_columns:
+        incomplete_reason = _incomplete_semantic_declaration_reason(column)
+        if incomplete_reason is not None:
+            invalid_declarations.append(
+                {
+                    "table_name": column.table_name,
+                    "column_name": column.column_name,
+                    "reason": incomplete_reason,
+                }
+            )
+            continue
+        if column.sign not in SIGN_VALUES:
+            invalid_declarations.append(
+                {
+                    "table_name": column.table_name,
+                    "column_name": column.column_name,
+                    "reason": f"unknown semantic sign {column.sign!r}",
+                }
+            )
+            continue
+        if column.table_name not in objects:
+            missing_targets.append(
+                {
+                    "table_name": column.table_name,
+                    "column_name": column.column_name,
+                    "reason": "table is missing",
+                }
+            )
+            continue
+        if column.column_name not in live_columns.get(column.table_name, set()):
+            missing_targets.append(
+                {
+                    "table_name": column.table_name,
+                    "column_name": column.column_name,
+                    "reason": "column is missing",
+                }
+            )
+            continue
+        if column.sign == "signed":
+            signed_columns += 1
+            continue
+
+        quoted_column = _quote_identifier(column.column_name)
+        predicate, domain, invalid_reason = _semantic_violation_predicate(column, quoted_column)
+        if invalid_reason is not None:
+            invalid_declarations.append(
+                {
+                    "table_name": column.table_name,
+                    "column_name": column.column_name,
+                    "reason": invalid_reason,
+                }
+            )
+            continue
+        if predicate is None:
+            if domain and column.sign == "bounded":
+                skipped_bounded_columns.append(
+                    {
+                        "table_name": column.table_name,
+                        "column_name": column.column_name,
+                        "domain": domain,
+                    }
+                )
+            continue
+
+        checked_columns += 1
+        count = int(
+            store.con.execute(
+                f"""
+                SELECT count(*)::BIGINT
+                FROM {_quote_identifier(column.table_name)}
+                WHERE {quoted_column} IS NOT NULL
+                  AND ({predicate})
+                """
+            ).fetchone()[0]
+        )
+        if count:
+            violations.append(
+                {
+                    "table_name": column.table_name,
+                    "column_name": column.column_name,
+                    "sign": column.sign,
+                    "unit": column.unit,
+                    "scale": column.scale,
+                    "domain": domain,
+                    "violation_count": count,
+                }
+            )
+
+    observed_value = float(
+        sum(int(row["violation_count"]) for row in violations)
+        + len(invalid_declarations)
+        + len(missing_targets)
+        + len(missing_semantic_columns)
+    )
+    passed = observed_value == 0.0
+    return QualityResult(
+        dataset_id=SCHEMA_CONTRACT_DATASET_ID,
+        table_name=SCHEMA_CONTRACT_TABLE_NAME,
+        check_name=SEMANTIC_CONTRACT_CHECK_NAME,
+        status="passed" if passed else "failed",
+        observed_value=observed_value,
+        threshold_value=0.0,
+        details={
+            "source": source,
+            "violations": violations,
+            "invalid_declarations": invalid_declarations,
+            "missing_targets": missing_targets,
+            "missing_schema_contract_semantic_columns": missing_semantic_columns,
+            "skipped_bounded_columns": skipped_bounded_columns,
+            "checked_columns": checked_columns,
+            "signed_columns": signed_columns,
+            "semantic_columns": len(semantic_columns),
+            "checked_at": checked_at.isoformat(),
+        },
         severity="critical",
     )
 
@@ -7384,19 +7867,34 @@ def run_warehouse_quality_checks(
     # folded into the same result list / record() path as every other check.
     schema_results: list[QualityResult] = []
     if (
-        (requested_checks is None and requested_datasets is None)
-        or (requested_checks is not None and CATALOG_COMPLETENESS_CHECK_NAME in requested_checks)
-        or (requested_datasets is not None and SCHEMA_CONTRACT_DATASET_ID in requested_datasets)
+        _registry_allows_check(CATALOG_COMPLETENESS_CHECK_NAME, registry)
+        and (
+            (requested_checks is None and requested_datasets is None)
+            or (requested_checks is not None and CATALOG_COMPLETENESS_CHECK_NAME in requested_checks)
+            or (requested_datasets is not None and SCHEMA_CONTRACT_DATASET_ID in requested_datasets)
+        )
     ):
         schema_results.append(
             catalog_completeness_check(store, checked_at=checked_at, objects=objects)
         )
     if (
-        (requested_checks is None and requested_datasets is None)
-        or (requested_checks is not None and PIT_COLUMN_PRESENCE_CHECK_NAME in requested_checks)
-        or (requested_datasets is not None and SCHEMA_CONTRACT_DATASET_ID in requested_datasets)
+        _registry_allows_check(PIT_COLUMN_PRESENCE_CHECK_NAME, registry)
+        and (
+            (requested_checks is None and requested_datasets is None)
+            or (requested_checks is not None and PIT_COLUMN_PRESENCE_CHECK_NAME in requested_checks)
+            or (requested_datasets is not None and SCHEMA_CONTRACT_DATASET_ID in requested_datasets)
+        )
     ):
         schema_results.append(pit_column_presence_check(store, checked_at=checked_at))
+    if (
+        _registry_allows_check(SEMANTIC_CONTRACT_CHECK_NAME, registry)
+        and (
+            (requested_checks is None and requested_datasets is None)
+            or (requested_checks is not None and SEMANTIC_CONTRACT_CHECK_NAME in requested_checks)
+            or (requested_datasets is not None and SCHEMA_CONTRACT_DATASET_ID in requested_datasets)
+        )
+    ):
+        schema_results.append(semantic_contract_check(store, checked_at=checked_at))
 
     for result in schema_results:
         resolved_result = _apply_registry_to_result(result, registry)

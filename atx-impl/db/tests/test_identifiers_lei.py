@@ -709,7 +709,8 @@ def test_lei_alias_dataset_duplicate_cik_routes_to_resolution_ledger_not_merge(t
 # ---------------------------------------------------------------------------
 # Migration 0081 (entity_parent_edges_schema_catalog) field_catalog coverage.
 # entity_parent_edges is a brand-new table, not additive columns, so every one
-# of its 10 columns must be seeded -- not just the 3 "identity" columns.
+# of its base columns must be seeded -- not just the 3 "identity" columns.
+# PF3-S2 later adds/catalogs is_latest_revision to close the PIT gap.
 # ---------------------------------------------------------------------------
 
 
@@ -735,6 +736,7 @@ def test_migration_0081_entity_parent_edges_field_catalog_full_coverage(tmp_stor
         "source",
         "run_id",
         "source_loaded_at",
+        "is_latest_revision",
     }
 
     cataloged_columns = {

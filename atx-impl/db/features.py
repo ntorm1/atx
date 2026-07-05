@@ -622,10 +622,7 @@ class EquityDailyFeatureDataset(Dataset):
                       AND dst.as_of_date = src.as_of_date
                     """
                 )
-                columns = ", ".join(features.columns)
-                store.con.execute(
-                    f"INSERT INTO feature_values ({columns}) SELECT {columns} FROM feature_values_load"
-                )
+                insert_frame(store, features, "feature_values", "feature_values_insert")
                 self._upsert_feature_manifest(store, manifest)
         finally:
             store.con.unregister("feature_values_load")
@@ -1207,9 +1204,11 @@ class FundamentalFeatureDataset(Dataset):
                             options.end_date,
                         ],
                     )
-                    columns = ", ".join(features.columns)
-                    store.con.execute(
-                        f"INSERT INTO feature_values ({columns}) SELECT {columns} FROM fundamental_feature_values_load"
+                    insert_frame(
+                        store,
+                        features,
+                        "feature_values",
+                        "fundamental_feature_values_insert",
                     )
                     self._upsert_feature_manifest(store, manifest)
             finally:
