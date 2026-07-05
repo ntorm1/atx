@@ -244,3 +244,295 @@ Describe 'New-ReportArgv - --capacity-curve opt-in' {
         ($argv -contains '--report-out') | Should Be $true
     }
 }
+
+Describe 'Resolve-ActiveStages - explicit stage requests are never silently emptied (S7-0)' {
+
+    It 'an explicit -Stage optimize -Profile prod resolves to @(''optimize''), NOT empty' {
+        $stages = Resolve-ActiveStages -Stage @('optimize') -Profile 'prod'
+        ($stages -contains 'optimize') | Should Be $true
+        $stages.Count | Should Be 1
+    }
+
+    It 'the "all" shorthand still auto-excludes optimize for -Profile prod (metabook substitutes)' {
+        $stages = Resolve-ActiveStages -Stage @('all') -Profile 'prod'
+        ($stages -contains 'metabook') | Should Be $true
+        ($stages -contains 'optimize') | Should Be $false
+    }
+
+    It 'the "all" shorthand still auto-excludes metabook for -Profile smoke (optimize substitutes)' {
+        $stages = Resolve-ActiveStages -Stage @('all') -Profile 'smoke'
+        ($stages -contains 'optimize') | Should Be $true
+        ($stages -contains 'metabook') | Should Be $false
+    }
+
+    It 'the "pipeline" shorthand behaves identically to "all" minus discover' {
+        $stages = Resolve-ActiveStages -Stage @('pipeline') -Profile 'prod'
+        ($stages -contains 'discover') | Should Be $false
+        ($stages -contains 'metabook') | Should Be $true
+        ($stages -contains 'optimize') | Should Be $false
+    }
+}
+
+Describe 'Script defaults - S7-1 $AtxExe fix (stale p8 worktree -> p9 worktree)' {
+
+    It 'the $AtxExe default points at the p9 worktree binary this script now lives in' {
+        $AtxExe | Should Be 'C:\atx-wt\p9\build\bin\atx-impl.exe'
+    }
+}
+
+Describe 'New-CombineArgv - S7-1 --risk-model factor reaches the combine CLI entry (S2)' {
+
+    It 'prod: contains --risk-model factor' {
+        $argv = New-CombineArgv -PanelBin $testPanel -WorkDir $testWorkDir -Method 'stack' -RiskModel 'factor'
+        $ri = [array]::IndexOf($argv, '--risk-model')
+        $ri | Should BeGreaterThan -1
+        $argv[$ri + 1] | Should Be 'factor'
+    }
+
+    It 'default (smoke): omits --risk-model entirely (absence == inert; combine CLI entry stays Diagonal)' {
+        $argv = New-CombineArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--risk-model') | Should Be $false
+    }
+}
+
+Describe 'New-MetabookArgv - S7-1 risk-model + book-level gates now reach the prod book stage' {
+
+    It 'prod: contains --risk-model factor --dead-alpha-factors --dead-alpha-lib-dir (the levers metabook DOES consume)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -RiskModel 'factor' -DeadAlphaFactors -DeadAlphaLibDir 'C:\atx-test\work\_library'
+        ($argv -contains '--risk-model')         | Should Be $true
+        ($argv -contains '--dead-alpha-factors')  | Should Be $true
+        ($argv -contains '--dead-alpha-lib-dir')  | Should Be $true
+    }
+
+    It 'Potemkin guard: metabook argv NEVER carries --group-neutralize or --participation-cap (stage_metabook has no reader; optimizer-only)' {
+        # Even given a maximal prod-shaped call, New-MetabookArgv must not emit the
+        # two optimizer-only levers -- doing so would parse-but-ignore on the HRP-
+        # sleeve path (the exact defect p9 kills). They live on New-OptimizeArgv.
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -RiskModel 'factor' -DeadAlphaFactors -DeadAlphaLibDir 'C:\atx-test\work\_library' -BookTurnoverGate 0.20
+        ($argv -contains '--group-neutralize')   | Should Be $false
+        ($argv -contains '--participation-cap')  | Should Be $false
+    }
+
+    It 'default (smoke): omits risk-model/dead-alpha entirely (absence == inert)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'invvol'
+        ($argv -contains '--risk-model')        | Should Be $false
+        ($argv -contains '--dead-alpha-factors') | Should Be $false
+        ($argv -contains '--dead-alpha-lib-dir') | Should Be $false
+        ($argv -contains '--group-neutralize')   | Should Be $false
+    }
+
+    It 'coupling: --dead-alpha-factors implies --dead-alpha-lib-dir is present with a non-empty value (fail-open default)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -RiskModel 'factor' -DeadAlphaFactors
+        if ($argv -contains '--dead-alpha-factors') {
+            $i = [array]::IndexOf($argv, '--dead-alpha-lib-dir')
+            $i | Should BeGreaterThan -1
+            $argv[$i + 1] | Should Not Be ''
+        }
+    }
+
+    It 'contains --book-turnover-gate 0.20 when requested (the one book-level gate metabook consumes)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -BookTurnoverGate 0.20
+        $gi = [array]::IndexOf($argv, '--book-turnover-gate')
+        $argv[$gi + 1] | Should Be '0.2'
+    }
+
+    It 'omits --book-turnover-gate when 0 (the inert default)' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp'
+        ($argv -contains '--book-turnover-gate') | Should Be $false
+    }
+}
+
+Describe 'New-DiscoverArgv - S7-1 capacity/turnover objectives + deflation + robustness battery (S4/S5/p8)' {
+
+    It 'prod: contains --deflate-selection, --capacity-objective, --turnover-objective' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -DeflateSelection -CapacityObjective -TurnoverObjective
+        ($argv -contains '--deflate-selection')  | Should Be $true
+        ($argv -contains '--capacity-objective') | Should Be $true
+        ($argv -contains '--turnover-objective') | Should Be $true
+    }
+
+    It 'default (smoke): omits deflate-selection/capacity-objective/turnover-objective entirely' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir -LooseGates
+        ($argv -contains '--deflate-selection')  | Should Be $false
+        ($argv -contains '--capacity-objective') | Should Be $false
+        ($argv -contains '--turnover-objective') | Should Be $false
+    }
+
+    It 'prod: contains --robustness-battery and its 3 sub-checks when all requested' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -RobustnessBattery -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--robustness-battery')            | Should Be $true
+        ($argv -contains '--robustness-sub-universe')       | Should Be $true
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $true
+        ($argv -contains '--robustness-param-perturb')      | Should Be $true
+    }
+
+    It 'default (smoke): omits --robustness-battery and all 3 sub-checks' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir -LooseGates
+        ($argv -contains '--robustness-battery')            | Should Be $false
+        ($argv -contains '--robustness-sub-universe')       | Should Be $false
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $false
+        ($argv -contains '--robustness-param-perturb')      | Should Be $false
+    }
+}
+
+Describe 'New-OptimizeArgv - S7-1 dead-alpha-lib-dir coupling + gp-trading flags (S1/S3)' {
+
+    It 'coupling: --dead-alpha-factors implies --dead-alpha-lib-dir is present with a non-empty value (fail-open default)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -RiskModel 'factor' -DeadAlphaFactors -GroupNeutralize
+        if ($argv -contains '--dead-alpha-factors') {
+            $i = [array]::IndexOf($argv, '--dead-alpha-lib-dir')
+            $i | Should BeGreaterThan -1
+            $argv[$i + 1] | Should Not Be ''
+        }
+    }
+
+    It 'contains --gp-trading --gp-risk-aversion --gp-trade-cost-scale when explicitly requested' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -GpTrading -GpRiskAversion 1.0 -GpTradeCostScale 1.0
+        ($argv -contains '--gp-trading')          | Should Be $true
+        $ri = [array]::IndexOf($argv, '--gp-risk-aversion')
+        $ci = [array]::IndexOf($argv, '--gp-trade-cost-scale')
+        $ri | Should BeGreaterThan -1
+        $ci | Should BeGreaterThan -1
+    }
+}
+
+Describe 'New-ReportArgv - S7-1 --borrow-bps (S5 financing into the honest book-level cost numbers)' {
+
+    It 'prod: contains --borrow-bps with a positive value' {
+        $argv = New-ReportArgv -PanelBin $testPanel -WorkDir $testWorkDir -CapacityCurve -BorrowBps 25
+        $i = [array]::IndexOf($argv, '--borrow-bps')
+        $i | Should BeGreaterThan -1
+        [double]$argv[$i + 1] | Should BeGreaterThan 0
+    }
+
+    It 'default (smoke): omits --borrow-bps' {
+        $argv = New-ReportArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--borrow-bps') | Should Be $false
+    }
+}
+
+Describe 'New-OptimizeArgv - S7-2 gp-trading coupling' {
+
+    It 'contains --gp-trading --gp-risk-aversion --gp-trade-cost-scale together' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -GpTrading -GpRiskAversion 1.0 -GpTradeCostScale 1.0
+        ($argv -contains '--gp-trading') | Should Be $true
+        $ri = [array]::IndexOf($argv, '--gp-risk-aversion')
+        $ci = [array]::IndexOf($argv, '--gp-trade-cost-scale')
+        $ri | Should BeGreaterThan -1
+        $ci | Should BeGreaterThan -1
+    }
+
+    It 'omits all three by default (smoke stays untouched)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10
+        ($argv -contains '--gp-trading') | Should Be $false
+        ($argv -contains '--gp-risk-aversion') | Should Be $false
+        ($argv -contains '--gp-trade-cost-scale') | Should Be $false
+    }
+
+    It 'coupling: --gp-risk-aversion/--gp-trade-cost-scale are NEVER emitted without --gp-trading (no orphan numerics)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 `
+            -GpRiskAversion 1.0 -GpTradeCostScale 1.0
+        ($argv -contains '--gp-trading') | Should Be $false
+        ($argv -contains '--gp-risk-aversion') | Should Be $false
+        ($argv -contains '--gp-trade-cost-scale') | Should Be $false
+    }
+
+    It 'coupling: --gp-trading alone still emits its own risk-aversion/cost-scale (illustrative defaults, never a bare flag)' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10 -GpTrading
+        ($argv -contains '--gp-trading') | Should Be $true
+        ($argv -contains '--gp-risk-aversion') | Should Be $true
+        ($argv -contains '--gp-trade-cost-scale') | Should Be $true
+    }
+}
+
+Describe 'New-DiscoverArgv - S7-2 robustness sub-checks require the master --robustness-battery' {
+
+    It 'sub-checks are ABSENT even if requested when RobustnessBattery is not set (fail-safe, not silent)' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--robustness-sub-universe') | Should Be $false
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $false
+        ($argv -contains '--robustness-param-perturb') | Should Be $false
+        ($argv -contains '--robustness-battery') | Should Be $false
+    }
+
+    It 'sub-checks ARE present when RobustnessBattery is also set (the prod combination)' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -RobustnessBattery -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--robustness-battery') | Should Be $true
+        ($argv -contains '--robustness-sub-universe') | Should Be $true
+        ($argv -contains '--robustness-alt-neutralization') | Should Be $true
+        ($argv -contains '--robustness-param-perturb') | Should Be $true
+    }
+}
+
+Describe 'New-DiscoverArgv / New-MetabookArgv - S7-2 S6 guard: ml-seeds/nco deferred, never emitted' {
+
+    It 'discover: --ml-seeds / --ml-seed-model-dir are structurally absent -- S6 deferred, no wiring exists' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir `
+            -DeflateSelection -CapacityObjective -TurnoverObjective `
+            -RobustnessBattery -RobustnessSubUniverse -RobustnessAltNeutralization -RobustnessParamPerturb
+        ($argv -contains '--ml-seeds') | Should Be $false
+        ($argv -contains '--ml-seed-model-dir') | Should Be $false
+    }
+
+    It 'metabook: --sleeve-method stays hrp (prod)/invvol (smoke) -- the raw string pass-through is unchanged by S7' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp'
+        $si = [array]::IndexOf($argv, '--sleeve-method')
+        $argv[$si + 1] | Should Be 'hrp'
+    }
+
+    It 'the top-level script exposes no -MlSeeds / -MlSeedModelDir / -SleeveMethod switch (S6 wiring was never added, not silently omitted)' {
+        $scriptParams = (Get-Command $scriptPath).Parameters.Keys
+        ($scriptParams -contains 'MlSeeds')        | Should Be $false
+        ($scriptParams -contains 'MlSeedModelDir') | Should Be $false
+        ($scriptParams -contains 'SleeveMethod')   | Should Be $false
+    }
+}
+
+Describe 'Smoke profile - S7-3 stays minimal: none of the new p9 flags leak in' {
+
+    It 'New-DiscoverArgv default (smoke-shaped call) omits every new p9 flag' {
+        $argv = New-DiscoverArgv -PanelBin $testPanel -SeedFile $testSeed -WorkDir $testWorkDir -LooseGates
+        foreach ($f in @('--deflate-selection','--capacity-objective','--turnover-objective',
+                          '--robustness-battery','--robustness-sub-universe',
+                          '--robustness-alt-neutralization','--robustness-param-perturb',
+                          '--ml-seeds','--ml-seed-model-dir')) {
+            ($argv -contains $f) | Should Be $false
+        }
+    }
+
+    It 'New-CombineArgv default (smoke-shaped call) omits --risk-model' {
+        $argv = New-CombineArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--risk-model') | Should Be $false
+    }
+
+    It 'New-MetabookArgv default (smoke-shaped call) omits every new p9 flag' {
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'invvol'
+        foreach ($f in @('--risk-model','--dead-alpha-factors','--dead-alpha-lib-dir',
+                          '--group-neutralize','--book-turnover-gate','--participation-cap')) {
+            ($argv -contains $f) | Should Be $false
+        }
+    }
+
+    It 'New-OptimizeArgv default (smoke-shaped call) omits gp-trading + new S1 flags' {
+        $argv = New-OptimizeArgv -PanelBin $testPanel -WorkDir $testWorkDir -CostBps 10
+        foreach ($f in @('--gp-trading','--gp-risk-aversion','--gp-trade-cost-scale','--dead-alpha-lib-dir')) {
+            ($argv -contains $f) | Should Be $false
+        }
+    }
+
+    It 'New-ReportArgv default (smoke-shaped call) omits --borrow-bps' {
+        $argv = New-ReportArgv -PanelBin $testPanel -WorkDir $testWorkDir
+        ($argv -contains '--borrow-bps') | Should Be $false
+    }
+}

@@ -165,6 +165,8 @@ struct Lcg {
   c.adaptive_operators = false;  // Task 5: fixed-uniform operator draw on the pin
   c.jitter_anneal = false;       // Task 5: constant sigma on the pin
   c.enable_wrap_in_op = false;   // W1b: wrap_in_op OFF on the boundary pin (legacy)
+  c.capacity_objective = false;  // S4: capacity objective off on the boundary pin
+  c.turnover_objective = false;  // S4: turnover objective off on the boundary pin
   return c;
 }
 
@@ -182,6 +184,22 @@ TEST(NsgaSearch, ScalarRaw_ReproducesGoldenDigest) {
   const SearchResult r = driver.run(legacy_pin_cfg(777), pool);
   EXPECT_EQ(r.digest, kGoldenDigest)
       << "ScalarRaw boundary pin broke: an S4 edit perturbed the pre-S4 path.";
+}
+
+// S4: with BOTH new objective flags at their inert default (false), the objective
+// vector width stays exactly what it was pre-S4 -> the golden digest is unmoved.
+// This pins the load-bearing invariant that kMaxObjectives 7->9 growth is inert on
+// the off-path (NSGA-II sizes off n_objectives, never kMaxObjectives).
+TEST(NsgaSearch, CapacityTurnoverObjectives_DefaultOff_ByteIdentical) {
+  Library lib{};
+  Panel panel = fixture_panel(96, 6);
+  WeightPolicy policy{};
+  ExecutionSimulator sim = frictionless_sim();
+  SearchDriver driver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}};
+  AlphaStore pool{};
+  const SearchResult r = driver.run(legacy_pin_cfg(777), pool);
+  EXPECT_EQ(r.digest, kGoldenDigest)
+      << "ScalarRaw boundary pin broken by kMaxObjectives growth (7->9).";
 }
 
 // ---------------------------------------------------------------------------
@@ -631,6 +649,85 @@ TEST(NsgaSearch, DeflateSelection_GenZeroRawIdenticalToOffPath) {
   EXPECT_EQ(r_on.trial_count, r_off.trial_count)
       << "gen-0 trial_count differs — the same population was scored, so the "
          "distinct-structure count must be identical.";
+}
+
+// ---------------------------------------------------------------------------
+//  S4-4 (b) — front-membership flip through the REAL factory::dominates, at the
+//  exact objective-vector widths finish_report produces. Two candidates equal on
+//  wq/diversify/robust, differing ONLY on the new column. OFF (the column excluded
+//  from the width) => neither dominates; ON (column included) => the better one
+//  STRICTLY dominates. This is the load-bearing "the GA can now order alphas by
+//  capacity/persistence" proof — no hand-rolled dominance, the real primitive.
+// ---------------------------------------------------------------------------
+TEST(NsgaSearch, CapacityObjective_FlipsFrontMembership) {
+  using atx::engine::factory::dominates;
+  using atx::engine::factory::kObjCapacity;
+  std::array<atx::f64, 9> high{}; // equal wq/diversify/robust; differ ONLY on capacity
+  std::array<atx::f64, 9> low{};
+  high[0] = low[0] = 0.5;
+  high[1] = low[1] = 0.8;
+  high[2] = low[2] = 1.0;
+  high[kObjCapacity] = 0.9; // deep-ADV/low-impact
+  low[kObjCapacity] = 0.1;  // thin-ADV/high-impact
+
+  // OFF (width 7 -- the capacity slot excluded): neither dominates.
+  EXPECT_FALSE(dominates({high.data(), 7}, {low.data(), 7}));
+  EXPECT_FALSE(dominates({low.data(), 7}, {high.data(), 7}));
+
+  // ON (width 8 -- capacity slot 7 included): high STRICTLY dominates low.
+  EXPECT_TRUE(dominates({high.data(), 8}, {low.data(), 8}))
+      << "capacity-objective-on must make the high-ADV/low-impact alpha dominate "
+         "the equal-Sharpe low-capacity one";
+  EXPECT_FALSE(dominates({low.data(), 8}, {high.data(), 8}));
+}
+
+TEST(NsgaSearch, TurnoverObjective_FlipsFrontMembership) {
+  using atx::engine::factory::dominates;
+  using atx::engine::factory::kObjTurnover;
+  std::array<atx::f64, 9> slow_decay{}; // slot 7 (capacity) inert-default 0 on BOTH
+  std::array<atx::f64, 9> churny{};
+  slow_decay[0] = churny[0] = 0.5;
+  slow_decay[1] = churny[1] = 0.8;
+  slow_decay[2] = churny[2] = 1.0;
+  slow_decay[kObjTurnover] = 0.9; // persistent, slow decay
+  churny[kObjTurnover] = -1.0;    // maximal churn
+
+  EXPECT_FALSE(dominates({slow_decay.data(), 7}, {churny.data(), 7}));
+  EXPECT_TRUE(dominates({slow_decay.data(), 9}, {churny.data(), 9}))
+      << "turnover-objective-on must make the slow-decay alpha dominate the "
+         "equal-Sharpe churny one";
+  EXPECT_FALSE(dominates({churny.data(), 9}, {slow_decay.data(), 9}));
+}
+
+// ---------------------------------------------------------------------------
+//  S4-4 (d) — seq==parallel: SearchDriver::run with BOTH objectives on produces an
+//  identical digest across n_workers {1,2,4} (worker count never enters the math).
+// ---------------------------------------------------------------------------
+TEST(NsgaSearch, CapacityTurnoverObjectives_DigestInvariantAcrossWorkers) {
+  Library lib{};
+  Panel panel = fixture_panel(96, 6); // NOTE: no "volume" field -> capacity
+  // saturates to a UNIFORM 1.0 for every candidate here (harmless for (d), which
+  // needs only cross-worker reproducibility, not discrimination).
+  WeightPolicy policy{};
+  ExecutionSimulator sim = frictionless_sim();
+  SearchDriver driver{lib, panel, policy, sim, seed_exprs(), {"close", "rev"}};
+  const std::array<usize, 3> worker_counts{1, 2, 4};
+  atx::u64 first_digest = 0;
+  for (usize wi = 0; wi < worker_counts.size(); ++wi) {
+    SearchConfig cfg = legacy_pin_cfg(777);
+    cfg.objective_mode = ObjectiveMode::MultiObjective;
+    cfg.capacity_objective = true;
+    cfg.turnover_objective = true;
+    cfg.fitness.target_aum = 1.0e6;
+    cfg.n_workers = worker_counts[wi];
+    AlphaStore pool{};
+    const SearchResult r = driver.run(cfg, pool);
+    if (wi == 0) {
+      first_digest = r.digest;
+    } else {
+      EXPECT_EQ(r.digest, first_digest) << "digest changed at n_workers=" << worker_counts[wi];
+    }
+  }
 }
 
 } // namespace

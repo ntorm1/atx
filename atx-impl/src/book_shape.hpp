@@ -102,4 +102,33 @@ inline void shape_book(std::vector<atx::f64>& w,
     }
 }
 
+// book_turnover_per_day (p9 S5-1): convert a per-rebalance-period L1 turnover
+// series into a book-level DAILY rate: mean per-period turnover divided by the
+// average trading-day spacing between rebalances. A schedule with < 2 periods
+// (or non-advancing periods) has no spacing to divide by -- reports the raw
+// per-period mean instead (an honest degenerate: there is no "day" yet to
+// normalize against). This mirrors stage_report.cpp's step-spacing convention
+// (rebalance-day gaps read off the same RebalanceSchedule.periods axis) rather
+// than inventing a new normalization. Pure, order-fixed reduction over an
+// already-deterministic MultiPeriodResult.turnover / MetaBook turnover_net
+// series -- no RNG, no parallelism, so it is bit-identical across runs.
+//
+// Ownership: this is a neutral house helper (no sprint owns it exclusively);
+// both stage_optimize.cpp and stage_metabook.cpp call it. turnover and
+// sched_periods must have the SAME per-period cardinality when both are
+// non-empty (turnover[s] is the L1 move at rebalance sched_periods[s]); the
+// function only reads sched_periods.front()/.back()/.size() for the spacing.
+[[nodiscard]] inline atx::f64
+book_turnover_per_day(std::span<const atx::f64> turnover,
+                      std::span<const atx::usize> sched_periods) {
+    if (turnover.empty()) return 0.0;
+    atx::f64 sum = 0.0;
+    for (atx::f64 t : turnover) sum += t;
+    const atx::f64 mean = sum / static_cast<atx::f64>(turnover.size());
+    if (sched_periods.size() < 2 || sched_periods.back() <= sched_periods.front()) return mean;
+    const atx::f64 span_days = static_cast<atx::f64>(sched_periods.back() - sched_periods.front());
+    const atx::f64 step_days = span_days / static_cast<atx::f64>(sched_periods.size() - 1);
+    return mean / step_days;
+}
+
 } // namespace atx::impl

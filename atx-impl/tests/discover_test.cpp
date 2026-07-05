@@ -293,6 +293,35 @@ TEST(AtxImplDiscover, AdmitsAtLeastOneAlpha) {
 }
 
 // ---------------------------------------------------------------------------
+// p9 S4: --capacity-objective without a positive --target-aum is fail-loud
+// (the anti-roadmap "never a silent no-op" guardrail), not a quiet 0-score run.
+// ---------------------------------------------------------------------------
+TEST(AtxImplDiscover, CapacityObjectiveWithoutTargetAumFailsLoud) {
+    namespace fs = std::filesystem;
+    auto panel_opt = make_momentum_panel();
+    ASSERT_TRUE(panel_opt.has_value());
+    const std::string panel_path = write_panel_tmp(*panel_opt, "capacity_no_aum");
+
+    atx::impl::RunConfig cfg;
+    cfg.subcommand  = "discover";
+    cfg.panel       = panel_path;
+    cfg.alpha_out   = (fs::temp_directory_path() / "atx_impl_capacity_no_aum_out").string();
+    cfg.seed        = 777ULL;
+    cfg.population  = 16;
+    cfg.generations = 5;
+    cfg.seed_exprs  = safe_seed_exprs();
+    cfg.capacity_objective = true; // gate ON ...
+    cfg.target_aum         = 0.0;  // ... but no AUM anchor -> must Err
+
+    auto r = atx::impl::run_discover(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+    std::error_code ec;
+    fs::remove(panel_path, ec);
+}
+
+// ---------------------------------------------------------------------------
 // Test 2: SameSeedDeterministic (F1)
 // ---------------------------------------------------------------------------
 TEST(AtxImplDiscover, SameSeedDeterministic) {

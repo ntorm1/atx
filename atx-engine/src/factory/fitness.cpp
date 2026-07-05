@@ -9,9 +9,11 @@
 
 #include "atx/engine/alpha/bytecode.hpp"       // alpha::compile, alpha::Program
 #include "atx/engine/alpha/streams.hpp"        // alpha::extract_streams, AlphaStreams
+#include "atx/engine/alpha/ts_ops.hpp"         // alpha::detail::ou_ar1_fit (S4-2 AR(1) reuse)
 #include "atx/engine/alpha/vm.hpp"             // alpha::Engine
 #include "atx/engine/combine/correlation.hpp"  // combine::pairwise_complete_corr
 #include "atx/engine/combine/metrics.hpp"      // combine::compute_metrics, AlphaMetrics
+#include "atx/engine/cost/capacity.hpp"       // cost::capacity_point, risk::CapacityPoint (S4-1)
 #include "atx/engine/cost/cost_aware.hpp"      // cost::round_trip_cost_bps (S4.3 ONE cost model)
 #include "atx/engine/eval/deflated_sharpe.hpp" // eval::deflated_sharpe, DsrResult
 #include "atx/engine/eval/stats_ext.hpp"       // eval::skewness, eval::excess_kurtosis
@@ -387,15 +389,30 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     selection_cost_bps = book_cost_bps(strm, panel, cfg.cost, cfg.cost_selection.selection_aum);
   }
 
+  // (6c) S4-1: sqrt-law capacity objective, GATED on cfg.capacity_objective (mirrors
+  // the S4.3 cost gate -- zero compute at all when off, preserving both the
+  // off-path byte-identity AND the off-path perf cost).
+  atx::f64 capacity_score = 0.0;
+  if (cfg.capacity_objective) {
+    capacity_score = capacity_sqrt_law_score(strm, panel, cfg.cost, cfg.target_aum);
+  }
+  // (6d) S4-2: turnover/alpha-decay objective, GATED on cfg.turnover_objective.
+  atx::f64 turnover_autocorr = 0.0;
+  if (cfg.turnover_objective) {
+    turnover_autocorr = turnover_autocorr_score(strm);
+  }
+
   // S3-0: thread the OOS mean turnover (already computed in aggregate_oos with
   // no additional eval) into FitnessCore so finish_report can apply the opt-in
   // penalty.  The FitnessCore field order (matched by this aggregate init) is:
   //   oos_pnl, wq, robust, dsr, haircut_sharpe, cost_bps, turnover,
-  //   sharpe_h1, sharpe_h2, split_stable, selection_cost_bps
+  //   sharpe_h1, sharpe_h2, split_stable, selection_cost_bps,
+  //   capacity_score, turnover_autocorr (S4 — the two trailing gate columns; left
+  //   at their inert 0.0 defaults here, populated by S4-3's gated compute block).
   return atx::core::Ok(FitnessCore{std::move(agg.oos_pnl), wq, robust, dsr.dsr,
                                    dsr.haircut_sharpe, cost_bps, agg.turnover,
                                    split.sharpe_h1, split.sharpe_h2, split.stable,
-                                   selection_cost_bps});
+                                   selection_cost_bps, capacity_score, turnover_autocorr});
 }
 
 // Fold a pool-dependent redundancy into a FitnessCore -> the final FitnessReport.
@@ -479,6 +496,25 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     rep.objectives[4] = -core.cost_bps;
     rep.n_objectives = 5;
   }
+  // S4-1: kObjCapacity -- active iff cfg.capacity_objective. std::max (not a hard
+  // assignment) so this never REGRESSES n_objectives if cost_active already bumped
+  // it to 5 -- mirrors search_driver.cpp's kObjParsimony/kObjDeflation bump pattern.
+  // When off: rep.capacity_score stays core's inert 0.0, objectives[7] is untouched
+  // (uniform default across genomes -> inert in NSGA), n_objectives is unchanged --
+  // the boundary-pin no-op, byte-identical.
+  rep.capacity_score = core.capacity_score;
+  if (cfg.capacity_objective) {
+    rep.objectives[kObjCapacity] = core.capacity_score;
+    rep.n_objectives = static_cast<atx::u8>(
+        std::max<atx::usize>(rep.n_objectives, kObjCapacity + 1U));
+  }
+  // S4-2: kObjTurnover -- active iff cfg.turnover_objective (same discipline).
+  rep.turnover_autocorr = core.turnover_autocorr;
+  if (cfg.turnover_objective) {
+    rep.objectives[kObjTurnover] = core.turnover_autocorr;
+    rep.n_objectives = static_cast<atx::u8>(
+        std::max<atx::usize>(rep.n_objectives, kObjTurnover + 1U));
+  }
   // S4.2: carry the candidate's realized OOS PnL profile (the behavioral
   // descriptor / phenotype) out of the core so the SearchDriver can canon-cache it
   // and compute population-relative behavioral novelty without a re-eval. Copy (not
@@ -559,6 +595,90 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     acc += abs_w * cost::round_trip_cost_bps(cost, part, sigma); // the ONE cost model
   }
   return acc;
+}
+
+namespace detail {
+// S4-1: log-spaced AUM grid, 1 decade either side of `center`, ascending.
+// Mirrors cost::compute_capacity_vector's grid-building CONVENTION
+// (cost/capacity.hpp:145-161) at a coarser resolution -- this objective only
+// needs to bracket the zero-crossing for GA selection pressure, not emit a
+// diagnostic-grade curve, so 8 points is ample and far cheaper per genome.
+inline constexpr atx::usize kCapacityObjGridPoints = 8U;
+
+[[nodiscard]] std::vector<atx::f64> capacity_obj_aum_grid(atx::f64 center) {
+  std::vector<atx::f64> grid;
+  grid.reserve(kCapacityObjGridPoints);
+  const atx::f64 log_lo = std::log(0.1 * center);
+  const atx::f64 log_hi = std::log(10.0 * center);
+  const atx::f64 denom = static_cast<atx::f64>(kCapacityObjGridPoints - 1U);
+  for (atx::usize k = 0U; k < kCapacityObjGridPoints; ++k) {
+    const atx::f64 frac = static_cast<atx::f64>(k) / denom;
+    grid.push_back(std::exp(log_lo + frac * (log_hi - log_lo)));
+  }
+  return grid;
+}
+} // namespace detail
+
+[[nodiscard]] atx::f64 capacity_sqrt_law_score(const alpha::AlphaStreams &strm,
+                                               const alpha::Panel &panel,
+                                               const cost::CalibratedCost &cost,
+                                               atx::f64 target_aum) noexcept {
+  if (target_aum <= 0.0 || strm.n_alphas() == 0U || strm.n_periods() == 0U) {
+    return 0.0; // no AUM anchor -> no capacity signal (mirrors book_cost_bps's guard)
+  }
+  const std::span<const atx::f64> pnl0 = strm.pnl(0U);
+  atx::f64 sum = 0.0;
+  for (const atx::f64 p : pnl0) {
+    sum += p;
+  }
+  const atx::f64 gross_edge_bps =
+      pnl0.empty() ? 0.0 : 1.0e4 * (sum / static_cast<atx::f64>(pnl0.size()));
+
+  const std::vector<atx::f64> grid = detail::capacity_obj_aum_grid(target_aum);
+  std::vector<risk::CapacityPoint> curve;
+  curve.reserve(grid.size());
+  for (const atx::f64 aum : grid) { // ascending -> capacity_point's monotonicity precondition
+    const atx::f64 cost_bps_at_aum = book_cost_bps(strm, panel, cost, aum); // the ONE cost model
+    curve.push_back(risk::CapacityPoint{aum, gross_edge_bps - cost_bps_at_aum});
+  }
+  const atx::f64 capacity_aum =
+      cost::capacity_point(std::span<const risk::CapacityPoint>{curve});
+  if (std::isinf(capacity_aum)) {
+    return 1.0; // ample capacity (never crosses zero on the grid) -> saturate
+  }
+  return capacity_aum / (capacity_aum + target_aum);
+}
+
+[[nodiscard]] atx::f64 turnover_autocorr_score(const alpha::AlphaStreams &strm) noexcept {
+  const atx::usize insts = strm.n_instruments();
+  const atx::usize periods = strm.n_periods();
+  if (insts == 0U || periods < 3U || strm.n_alphas() == 0U) {
+    return 0.0; // need >= 2 lag pairs (ou_ar1_fit's own floor)
+  }
+  const std::span<const atx::f64> last_w = strm.positions(0U, periods - 1U);
+  std::vector<atx::f64> series;
+  series.reserve(periods);
+  atx::f64 wsum = 0.0;
+  atx::f64 acc = 0.0;
+  for (atx::usize i = 0U; i < insts; ++i) { // ascending inst -> order-fixed reduction
+    const atx::f64 wi = last_w[i];
+    if (std::isnan(wi) || wi == 0.0) {
+      continue; // dead name -> no turnover signal to weight in
+    }
+    series.clear();
+    for (atx::usize t = 0U; t < periods; ++t) { // ascending period -> order-fixed
+      series.push_back(strm.positions(0U, t)[i]);
+    }
+    const alpha::detail::OuAr1Fit fit =
+        alpha::detail::ou_ar1_fit(std::span<const atx::f64>{series});
+    if (std::isnan(fit.b)) {
+      continue; // degenerate fit -- SKIP, do not zero-in a real neighbour's signal
+    }
+    const atx::f64 abs_w = std::abs(wi);
+    acc += abs_w * fit.b;
+    wsum += abs_w;
+  }
+  return (wsum == 0.0) ? 0.0 : acc / wsum;
 }
 
 [[nodiscard]] atx::core::Result<FitnessReport>

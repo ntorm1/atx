@@ -97,6 +97,22 @@ TEST(ConfigParse, MegaBookFlags_OmittedAreInert) {
     EXPECT_FALSE(cfg.robustness_battery);
 }
 
+// p9 S4: --capacity-objective / --turnover-objective are valueless bools that
+// round-trip to their RunConfig fields; omitted, both stay inert (false).
+TEST(ConfigParse, CapacityTurnoverObjectives_RoundTrip) {
+    auto r = parse({"atx-impl", "discover", "--capacity-objective",
+                    "--turnover-objective", "--target-aum", "1e6"});
+    ASSERT_TRUE(r.has_value()) << (r.has_value() ? "" : r.error().message());
+    EXPECT_TRUE(r->capacity_objective);
+    EXPECT_TRUE(r->turnover_objective);
+    EXPECT_DOUBLE_EQ(r->target_aum, 1e6);
+
+    auto r0 = parse({"atx-impl", "discover"});
+    ASSERT_TRUE(r0.has_value());
+    EXPECT_FALSE(r0->capacity_objective);
+    EXPECT_FALSE(r0->turnover_objective);
+}
+
 // --risk-model / --sleeve-method reject an unknown value (closed taxonomy, like
 // --weight-transform / --executor).
 TEST(ConfigParse, RiskModelRejectsUnknownValue) {

@@ -21,20 +21,25 @@
 #include "atx/engine/alpha/streams.hpp"  // alpha::extract_streams, alpha::AlphaStreams
 #include "atx/engine/alpha/vm.hpp"       // alpha::Engine
 #include "atx/engine/combine/gate.hpp"   // combine::GateConfig (read-only library open)
+#include "atx/engine/data/adapt_factor.hpp" // data::artifact_to_factor_model (S1, frozen)
 #include "atx/engine/library/library.hpp"
 #include "atx/engine/loop/weight_policy.hpp" // atx::engine::WeightPolicy
 #include "atx/engine/risk/constraints.hpp"
 #include "atx/engine/risk/multi_horizon.hpp"
 
 #include "artifacts.hpp"      // to_hex16
+#include "book_shape.hpp"     // book_turnover_per_day (S5-1, shared house helper)
+#include "dead_alpha_wire.hpp" // maybe_open_dead_lib / collect_dead_alpha_ids (S1, shared via S2-0)
 #include "diag_risk.hpp"      // diagonal_risk_model (the shared S5/S6 diagonal model)
 #include "research_sim.hpp"   // frictionless_sim (shared atx-impl helper)
 #include "serialize_panel.hpp" // read_panel / write_panel
+#include "stage_riskmodel.hpp" // build_risk_model (S1, frozen)
 
 namespace atx::impl {
 
 namespace alpha = atx::engine::alpha;
 namespace combine = atx::engine::combine;
+namespace data = atx::engine::data;
 namespace risk = atx::engine::risk;
 using atx::engine::WeightPolicy;
 using library::AlphaId;
@@ -401,8 +406,26 @@ assign_sleeves(const library::Library &lib, const MetaBookStageConfig &cfg) {
                         "assign_sleeves: unknown SleeveAssignment");
 }
 
+// S2 (p9): the 2-arg overload is now a thin forwarder -- builds RiskModelConfig from
+// cfg.risk_model (mirroring stage_optimize.cpp's run_optimize(const RunConfig&) seam
+// exactly) and calls the 3-arg body below. risk_model=="diagonal" (RunConfig{} default)
+// constructs RiskModelConfig{} (kind==Diagonal) -- byte-identical to every pre-S2 caller.
+// dead_alpha_factors IS copied (R3/R4, amendment): stage_run.cpp:127 reaches the mega-book
+// via THIS 2-arg form, so --dead-alpha-factors must flow through here to reach the Factor
+// loop's build_risk_model augmentation -- otherwise the crowding defense is dead on the real
+// CLI path (the exact Potemkin defect R3/R4 exists to close). Inert at the default (false).
 atx::core::Result<fund::MetaBookResult>
 build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in) {
+  risk::RiskModelConfig risk_cfg{};
+  risk_cfg.kind = (cfg.risk_model == "factor") ? risk::RiskModelKind::Factor
+                                                : risk::RiskModelKind::Diagonal;
+  risk_cfg.dead_alpha_factors = cfg.dead_alpha_factors;
+  return build_metabook_result(cfg, scfg_in, risk_cfg);
+}
+
+atx::core::Result<fund::MetaBookResult>
+build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in,
+                      const risk::RiskModelConfig &risk_cfg) {
   if (cfg.panel.empty() || cfg.combo.empty()) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "metabook: --panel and --combo required");
@@ -497,10 +520,59 @@ build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in) 
     }
   }
 
-  // model_at: diag_risk.hpp's diagonal_risk_model(research) -- the SAME model
-  // stage_optimize's Diagonal path uses (stage_optimize.cpp:202/243-245). No Factor-model
-  // variant is wired here (S1/S5 seam; recorded in the ledger).
-  ATX_TRY(auto model, diagonal_risk_model(research));
+  // model_at (S2, p9): kind==Diagonal (default) -- the SAME single whole-panel
+  // diagonal_risk_model(research) every pre-p9 caller got (byte-identical). kind==Factor --
+  // one FactorModel PER REBALANCE STEP, PIT-fit at fit_end = period+1, mirroring
+  // stage_optimize.cpp's Factor branch exactly (including its diagonal warm-up fallback for a
+  // step too early for a genuine Factor fit). build_risk_model/artifact_to_factor_model are
+  // S1's frozen producer -- not re-derived here.
+  std::optional<risk::FactorModel> single_model;   // Diagonal path only
+  std::vector<risk::FactorModel> step_models;      // Factor path only; one per sched.periods[s]
+
+  if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
+    ATX_TRY(auto model, diagonal_risk_model(research));
+    single_model.emplace(std::move(model));
+  } else {
+    const risk::RiskModelConfig diag_fallback_cfg; // kind==Diagonal -- warm-up fallback only
+    const atx::usize n_steps = sched.periods.size();
+    step_models.reserve(n_steps);
+
+    // R3/R4 (p9): reach the mega-book with S1's crowding defense. The metabook path
+    // SUBSTITUTES run_optimize (stage_run.cpp:127), so this is the mega-book's only
+    // build_risk_model site -- resolve the dead-alpha library ONCE (Library::open does
+    // sqlite I/O; the triple is identical for every step) via the SAME shared helpers
+    // stage_optimize uses. Fail-open: dead_alpha_factors=false / no dir / missing dir /
+    // empty pool all yield nullptr/{}, byte-identical to the pre-amendment nullptr calls.
+    std::optional<library::Library> dead_lib_opt = maybe_open_dead_lib(cfg, risk_cfg);
+    const library::Library *dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
+    std::vector<combine::AlphaId> dead_ids;
+    atx::usize dead_as_of = 0;
+    if (dead_lib_ptr != nullptr) {
+      dead_as_of = dead_lib_ptr->n_periods() > 0 ? dead_lib_ptr->n_periods() - 1 : 0;
+      dead_ids = collect_dead_alpha_ids(*dead_lib_ptr, dead_as_of);
+    }
+
+    for (atx::usize s = 0; s < n_steps; ++s) {
+      const atx::usize fit_end = sched.periods[s] + 1U; // PIT: through `period` inclusive
+      auto factor_artifact =
+          build_risk_model(research, risk_cfg, {}, dead_lib_ptr, dead_ids, dead_as_of, fit_end);
+      if (factor_artifact.has_value()) {
+        ATX_TRY(auto step_model, data::artifact_to_factor_model(*factor_artifact));
+        step_models.push_back(std::move(step_model));
+      } else {
+        // Warm-up fallback: too little history for a genuine Factor fit at this step -- a
+        // PIT diagonal over [0, fit_end) for THIS STEP ONLY (never the whole-panel diagonal,
+        // which would reintroduce look-ahead for this step). diag_fallback_cfg.dead_alpha_
+        // factors==false gates the augmentation off regardless -- but the dead-alpha triple is
+        // threaded for symmetry so no build_risk_model call in this loop spells a literal
+        // nullptr, matching stage_optimize.cpp's own post-S1 shape.
+        ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, dead_lib_ptr,
+                                                     dead_ids, dead_as_of, fit_end));
+        ATX_TRY(auto diag_model, data::artifact_to_factor_model(diag_artifact));
+        step_models.push_back(std::move(diag_model));
+      }
+    }
+  }
 
   // returns_at: realized per-instrument simple return from research's "close" field, the
   // SAME TRI-return convention diag_risk.hpp computes. Drives Ω + the report, NOT the books
@@ -547,7 +619,12 @@ build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in) 
     hs.pairs.emplace_back(row, risk::SignalHorizon::identity());
     return hs;
   };
-  const auto model_at = [&](atx::usize) -> const risk::FactorModel & { return model; };
+  const auto model_at = [&](atx::usize period) -> const risk::FactorModel & {
+    if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
+      return *single_model;
+    }
+    return step_models[period / step]; // `step` in scope above; forward-filled between dates
+  };
   const auto returns_at = [&](atx::usize period) -> std::span<const atx::f64> {
     return std::span<const atx::f64>{returns[period]};
   };
@@ -555,12 +632,26 @@ build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in) 
   return mb.run(sched, sources_at, model_at, returns_at, cost);
 }
 
+// S2 (p9): the 2-arg overload is now a thin cfg.risk_model-aware forwarder (mirroring
+// stage_optimize.cpp's run_optimize seam). risk_model=="diagonal" (default) => RiskModelConfig{}
+// (kind==Diagonal) => byte-identical to every pre-S2 caller. dead_alpha_factors IS copied
+// (R3/R4, amendment): this is the form stage_run.cpp:127 calls, so --dead-alpha-factors must
+// flow through to the Factor loop's build_risk_model augmentation. Inert at the default.
 atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBookStageConfig &scfg) {
+  risk::RiskModelConfig risk_cfg{};
+  risk_cfg.kind = (cfg.risk_model == "factor") ? risk::RiskModelKind::Factor
+                                                : risk::RiskModelKind::Diagonal;
+  risk_cfg.dead_alpha_factors = cfg.dead_alpha_factors;
+  return run_metabook(cfg, scfg, risk_cfg);
+}
+
+atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBookStageConfig &scfg,
+                                            const risk::RiskModelConfig &risk_cfg) {
   if (cfg.panel.empty() || cfg.combo.empty() || cfg.books_out.empty()) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "metabook: --panel, --combo, and --out required");
   }
-  ATX_TRY(auto result, build_metabook_result(cfg, scfg));
+  ATX_TRY(auto result, build_metabook_result(cfg, scfg, risk_cfg));
 
   const atx::usize S = result.fund_books.size();
   const atx::usize M = (S > 0) ? result.fund_books[0].size() : 0U;
@@ -667,6 +758,27 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
       {"risk_contrib_sum", std::to_string(risk_contrib_sum)},
       {"crossing_credit_sum", std::to_string(crossing_credit_sum)},
   };
+
+  // S5-1: book-level cross-sleeve-netted turnover as a PER-DAY rate, measured
+  // unconditionally (surfaced as a kv) and gated opt-in. result.report.turnover_net
+  // is the S2-3 fund-netted series (one L1 move per rebalance period). The schedule
+  // build_metabook_result used is dense multiples of `step` (sched.periods[s] ==
+  // s*step, EXACTLY stage_optimize.cpp's construction), reconstructed here from the
+  // same cfg.rebalance step so the day-normalization matches stage_optimize's. The
+  // added kv changes sr.kvs only, never `digest` (the fund book bytes) -- with the
+  // gate off the metabook digest is byte-identical to pre-S5-1.
+  const atx::usize turnover_step = (cfg.rebalance == "daily") ? 1U : 5U; // default weekly
+  std::vector<atx::usize> sched_periods(S);
+  for (atx::usize s = 0; s < S; ++s) sched_periods[s] = s * turnover_step;
+  const atx::f64 book_turnover =
+      book_turnover_per_day(result.report.turnover_net, sched_periods);
+  sr.kvs.emplace_back("book_turnover_per_day", std::to_string(book_turnover));
+  if (cfg.book_turnover_gate > 0.0 && book_turnover > cfg.book_turnover_gate) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: fund book turnover " + std::to_string(book_turnover) +
+                              "/day exceeds --book-turnover-gate " +
+                              std::to_string(cfg.book_turnover_gate));
+  }
   return atx::core::Ok(std::move(sr));
 }
 

@@ -166,6 +166,13 @@ struct RunConfig {
     // search digest and every existing golden are BYTE-IDENTICAL to today.
     bool        deflate_selection = false;  // --deflate-selection (R4)
 
+    // --capacity-objective / --turnover-objective (S4): opt-in NSGA objectives.
+    // capacity_objective REQUIRES --target-aum > 0 (its AUM anchor) -- validated in
+    // stage_discover.cpp (fail-loud, not a silent no-op). Both default false ->
+    // byte-identical to today.
+    bool        capacity_objective = false; // --capacity-objective -> SearchConfig
+    bool        turnover_objective = false; // --turnover-objective -> SearchConfig
+
     // --typed-fields (R1): opt-in field-type discipline. When set, before running
     // the search a one-pass cardinality scan classifies each numeric panel field;
     // binary / low-cardinality / categorical fields are excluded from the grammar's
@@ -308,6 +315,15 @@ struct RunConfig {
     bool dead_alpha_factors = false; // --dead-alpha-factors (S1; false = no crowding augmentation)
     bool group_neutralize   = false; // --group-neutralize   (S1; false = no factor/industry neutralize)
 
+    // --dead-alpha-lib-dir (p9 S1): the on-disk library::Library directory whose ADMITTED alpha
+    // pool is threaded into build_risk_model's dead_lib/dead_ids as the Kakushadze-Yu crowding-
+    // factor source (stage_optimize.cpp's build_risk_model call sites — the Potemkin-book gap).
+    // "" (default) FALLS BACK to cfg.library_dir (the discover accumulating library, if
+    // --library-dir was set); if THAT is also "" -- or the resolved directory does not exist on
+    // disk -- the wire is a documented fail-open no-op (matches build_risk_model's own
+    // dead_lib==nullptr contract, stage_riskmodel.hpp:120-126).
+    std::string dead_alpha_lib_dir; // --dead-alpha-lib-dir ("" = fall back to --library-dir, else off)
+
     // --metabook (S2): enable the meta-book stage (assign_sleeves + run_metabook)
     // in run_all / the standalone "metabook" subcommand. false (default) = the
     // pipeline's optimize stage runs exactly as today (no metabook stage inserted).
@@ -382,6 +398,57 @@ struct RunConfig {
     // gated behind the ATX_PANEL_INCREMENTAL compile macro, unreachable from any
     // build). false (default) = full rebuild, byte-identical to today.
     bool incremental_panel = false;
+
+    // --gp-trading / --gp-risk-aversion / --gp-trade-cost-scale (p9 S3): opt-in
+    // Gârleanu-Pedersen aim-portfolio trade for the position-mode partial-step
+    // (stage_optimize.cpp's "5a" branch). false (default) leaves the existing
+    // linear trade_rate blend (w := prev + trade_rate*(target-prev)) untouched --
+    // the no-flag path is byte-identical. When true, the partial-trade step
+    // instead trades toward the GP AIM (risk::gp_turnover_native_step), computed
+    // from risk::gp_aim_and_value(alpha_bar, V, gp_risk_aversion) over a single
+    // whole-panel Diagonal risk model V built once for the run (see
+    // stage_optimize.cpp's gp_trading block; independent of --risk-model, which
+    // remains an MVO-branch-only concern owned by S1/S2). gp_risk_aversion=0.0
+    // (inert default) is gp_aim_and_value's own documented lambda==0 convention
+    // (aim_pos == alpha_bar, no risk-curvature fold -- a valid, if aggressive, GP
+    // setting, NOT an error; unlike the nearby risk_aversion field, this one is
+    // read RAW, with no set_flags-gated substitution). gp_trade_cost_scale=0.0
+    // (inert default) leaves the effective GP trade rate kappa == cfg.trade_rate
+    // unchanged; kappa = trade_rate / (1 + gp_trade_cost_scale) for
+    // gp_trade_cost_scale > 0 -- a scoped, caller-side scalar approximation (the
+    // shipped GP reduction has no matrix trade-cost knob to bind this to; see
+    // garleanu_pedersen.hpp's own "matrix Riccati is the recorded lift, not
+    // shipped" note).
+    bool   gp_trading          = false; // --gp-trading
+    double gp_risk_aversion    = 0.0;   // --gp-risk-aversion (0 = lambda=0 GP convention)
+    double gp_trade_cost_scale = 0.0;   // --gp-trade-cost-scale (0 = kappa == trade_rate)
+
+    // -- p9 S5: book-level gates / capacity-in-optimizer / full robustness battery / borrow --
+    // All fields inert-default; a run asserting none of them is byte-identical to pre-S5.
+    // --book-turnover-gate (S5-1): cross-sleeve-netted book turnover, expressed as a PER-DAY
+    // L1 rate (mean per-period turnover / average rebalance-day spacing). 0.0 (default) = the
+    // rate is measured and surfaced (stage_optimize/stage_metabook kvs: "book_turnover_per_day")
+    // but never rejects. Active when > 0.0: a measured rate exceeding this threshold fails the
+    // stage CLOSED (mirrors --blocking-pbo's escalation; the books/sidecar are already written
+    // by the time the check runs, so a rejected run's own diagnostics stay inspectable).
+    double book_turnover_gate = 0.0;
+    // --participation-cap (S5-2): ADV participation fraction rho bounding |w_i| INSIDE the
+    // optimizer's QP construction (risk::ParticipationCap.adv_frac), not just the post-hoc
+    // stage_report.cpp capacity curve. 0.0 (default) = mc.constraints stays unset -> the fast
+    // (non-augmented) PortfolioOptimizer path runs, byte-identical to today.
+    double participation_cap = 0.0;
+    // --borrow-bps (S5-4): flat per-period financing charge (bps) on the book's SHORT weight
+    // (mirrors --cost-bps's own bps-per-period convention). 0.0 (default) = pnl_borrow is
+    // exactly 0.0 every period -> report digest byte-identical to today.
+    double borrow_bps = 0.0;
+    // --robustness-sub-universe / --robustness-alt-neutralization / --robustness-param-perturb
+    // (S5-3): expose the 3 currently-unreachable eval::BatteryConfig checks (noise_control is
+    // already wired via --robustness-battery alone, p8 final-wave). Each requires BOTH its own
+    // flag AND --robustness-battery; all false (default) = battery_cfg construction is exactly
+    // today's noise-control-only shape -> byte-identical admitted set/digest.
+    bool robustness_sub_universe = false;
+    bool robustness_alt_neutralization = false;
+    bool robustness_param_perturb = false;
 
     // Canonical names of flags explicitly supplied by the parsed source (CLI
     // args or config-file keys). Used by the run-mode merge so a CLI-present

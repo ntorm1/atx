@@ -380,7 +380,7 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         const atx::f64 capacity_gross = 1e9;
         ATX_TRY(auto rep,
                 book::accumulate_report(mpr, retpanel, ret_fid, sched, V,
-                                        capacity_gross, libr, 0));
+                                        capacity_gross, libr, 0, cfg.borrow_bps));
 
         // 6b. (A2b) Locate + parse combo.meta to recover the IS/OOS boundary.
         //
@@ -506,6 +506,11 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
             std::accumulate(rep.pnl_net.begin(), rep.pnl_net.end(), 0.0);
         const atx::f64 total_pnl_cost =
             std::accumulate(rep.pnl_cost.begin(), rep.pnl_cost.end(), 0.0);
+        // S5-4: total realized short-notional financing debit. 0.0 at cfg.borrow_bps's
+        // 0.0 default (rep.pnl_borrow is exactly 0.0 every period) -- additive, never
+        // folded into the stage digest below (rep.pnl_net already reflects it).
+        const atx::f64 total_pnl_borrow =
+            std::accumulate(rep.pnl_borrow.begin(), rep.pnl_borrow.end(), 0.0);
         const atx::f64 avg_gross_leverage =
             S > 0
             ? std::accumulate(rep.gross_leverage.begin(),
@@ -739,6 +744,10 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 sm_file << "book_gross_edge_bps=" << std::to_string(book_gross_edge_bps) << "\n";
                 sm_file << "capacity_point_aum=" << std::to_string(capacity_point_aum) << "\n";
                 sm_file << "capacity_curve_points=" << std::to_string(capacity_curve_pts.size()) << "\n";
+                // (S5-4) Total realized borrow/financing debit (additive; after every
+                // existing prefix; existing lines stay byte-identical). 0.0 at the
+                // --borrow-bps default.
+                sm_file << "total_pnl_borrow=" << std::to_string(total_pnl_borrow) << "\n";
             }
         }
 
@@ -776,6 +785,9 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
             // exemption as portfolio_sharpe above (rep.* series only).
             {"capacity_point_aum",    std::to_string(capacity_point_aum)},
             {"book_gross_edge_bps",   std::to_string(book_gross_edge_bps)},
+            // (S5-4) total realized borrow debit -- additive, same digest exemption
+            // (rep.pnl_net already reflects it; this kv is a convenience readback).
+            {"total_pnl_borrow",      std::to_string(total_pnl_borrow)},
         };
         return atx::core::Ok(std::move(sr));
     }

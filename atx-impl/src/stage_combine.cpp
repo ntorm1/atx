@@ -757,18 +757,37 @@ fit_stack_combo(const combine::AlphaStore& pool, std::span<const atx::f64> close
 // ---------------------------------------------------------------------------
 // run_combine
 // ---------------------------------------------------------------------------
+// S2 (p9): builds RiskModelConfig from cfg.risk_model, mirroring stage_optimize.cpp's own
+// run_optimize(const RunConfig&) seam (S1/S5-0, stage_optimize.cpp:40-48) field-for-field.
+// Duplicated locally rather than shared: stage_optimize.cpp is not an S2-owned file, and this
+// is a 3-line block, not an abstraction worth a new shared header. At the RunConfig{} default
+// (risk_model=="diagonal") this constructs RiskModelConfig{} (kind==Diagonal) -- identical to
+// the pre-S2 hardcode below -- so the no-flag path is byte-identical BY CONSTRUCTION.
+static risk::RiskModelConfig risk_cfg_from_run_config(const RunConfig& cfg) {
+    risk::RiskModelConfig risk_cfg{};
+    risk_cfg.kind = (cfg.risk_model == "factor") ? risk::RiskModelKind::Factor
+                                                  : risk::RiskModelKind::Diagonal;
+    // dead_alpha_factors / group_neutralize are deliberately NOT copied from cfg here: the
+    // S3-4 Factor branch this feeds (fit_shrinkage_mv_cleaned_cov) reads ONLY risk_cfg.kind --
+    // it never calls build_risk_model/extract_dead_factors, so those two fields have no
+    // observable effect on this path (they exist only for stage_optimize's build_risk_model
+    // call). Leaving them at their RiskModelConfig{} default (false) keeps this function
+    // honest about what it actually threads.
+    return risk_cfg;
+}
+
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg)
 {
     ATX_TRY(auto cm0, method_from_string(cfg.method));
     combine::CombinerConfig combiner_cfg0{};
     combiner_cfg0.method = cm0;
-    return run_combine(cfg, combiner_cfg0, risk::RiskModelConfig{});
+    return run_combine(cfg, combiner_cfg0, risk_cfg_from_run_config(cfg));
 }
 
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
                                            const combine::CombinerConfig& combiner_cfg)
 {
-    return run_combine(cfg, combiner_cfg, risk::RiskModelConfig{});
+    return run_combine(cfg, combiner_cfg, risk_cfg_from_run_config(cfg));
 }
 
 atx::core::Result<StageResult> run_combine(const RunConfig& cfg,

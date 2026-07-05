@@ -266,6 +266,14 @@ struct SearchConfig {
   // always false), and a user-set floor simply moves the threshold up to that
   // value. The 3 golden-digest tests confirm the default path is unchanged.
   atx::f64 min_viable_raw{0.0};
+
+  // S4: capacity + turnover as first-class NSGA objectives (kObjCapacity=7,
+  // kObjTurnover=8; fitness.hpp). Both default false -> the FitnessCfg mirror stays
+  // off -> zero extra compute -> objective-vector width is whatever it was pre-S4
+  // (golden-preservation: ROADMAP's S4 registry note). See evaluate_generation's
+  // gen_fit derivation for the SearchConfig->FitnessCfg wire (S4-3).
+  bool capacity_objective{false}; // --capacity-objective
+  bool turnover_objective{false}; // --turnover-objective
 };
 
 // =========================================================================

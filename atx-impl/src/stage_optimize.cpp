@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -13,12 +14,17 @@
 
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/data/adapt_factor.hpp"
+#include "atx/engine/library/library.hpp"
+#include "atx/engine/risk/constraints.hpp"     // ConstraintSet / ParticipationCap / PositionCap (S5-2)
+#include "atx/engine/risk/garleanu_pedersen.hpp"
 #include "atx/engine/risk/multi_period.hpp"
 #include "atx/engine/risk/optimizer.hpp"
+#include "atx/engine/risk/reference_data.hpp"   // CapacityRef (%ADV participation reference — S5-2)
 
 #include "artifacts.hpp"
 #include "book_shape.hpp"
 #include "config.hpp"
+#include "dead_alpha_wire.hpp"
 #include "serialize_panel.hpp"
 #include "stage_riskmodel.hpp"
 
@@ -27,6 +33,8 @@ namespace atx::impl {
 namespace alpha = atx::engine::alpha;
 namespace data  = atx::engine::data;
 namespace risk  = atx::engine::risk;
+namespace combine = atx::engine::combine;
+namespace library = atx::engine::library;
 
 // S1-2 / S5-0: the public no-flag entry point (declared in stages.hpp, the
 // S5-CLI-hub surface) builds a RiskModelConfig from the S5-0 CLI fields
@@ -169,6 +177,37 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
 
         std::vector<atx::f64> prev(M, 0.0);  // w[-1] = 0 (flat)
 
+        // S3: Gârleanu-Pedersen aim-portfolio trading (opt-in via cfg.gp_trading). Built
+        // ONCE for the whole run: a single whole-panel Diagonal FactorModel (the SAME
+        // inert-default kind risk::RiskModelConfig{} builds on the MVO branch below),
+        // INDEPENDENT of --risk-model/risk_cfg -- position-mode never threads risk_cfg
+        // today, and extending risk-model SELECTION into position mode is S1/S2 turf,
+        // not S3's. Kept outside the per-period loop: it is the fixed risk lens
+        // gp_aim_and_value inverts every period, not a per-period PIT refit (Diagonal's
+        // own variance estimate already reads the whole research panel once, exactly as
+        // the MVO Diagonal branch below does -- no look-ahead concern distinct from that
+        // existing path).
+        //
+        // Fail-open (never silent, per the ROADMAP guardrail): if the build Errs (e.g.
+        // `research` lacks "close"), gp_trading is disabled FOR THIS RUN -- every period
+        // falls back to the pre-S3 linear blend, and the fallback is recorded in kvs
+        // (see write_books call below) so it is never silent.
+        std::optional<risk::FactorModel> gp_v;
+        bool gp_fallback = false;
+        if (cfg.gp_trading) {
+            auto gp_artifact = build_risk_model(research, risk::RiskModelConfig{});
+            if (gp_artifact.has_value()) {
+                auto gp_model = data::artifact_to_factor_model(*gp_artifact);
+                if (gp_model.has_value()) {
+                    gp_v.emplace(std::move(*gp_model));
+                } else {
+                    gp_fallback = true;
+                }
+            } else {
+                gp_fallback = true;
+            }
+        }
+
         for (atx::usize s = 0; s < S; ++s) {
             const atx::usize d = sched.periods[s];
             const auto cs = combo.field_cross_section(alpha_fid, d);
@@ -179,16 +218,48 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
             }
             shape_book(w, std::span<const std::uint8_t>{live}, gross_val, name_cap_val);
 
-            // Partial-step (Garleanu-Pedersen / WorldQuant trade-rate): deploy only
-            // part of the way from the prior book to the freshly-shaped target,
-            // smoothing the book and cutting turnover.
-            // w := prev + rate*(w - prev).
-            // Dollar-neutrality is preserved (linear blend of two dollar-neutral
-            // books) and name-cap is preserved (|blend| <= max(|prev|,|target|) <=
-            // cap); gross may drift slightly BELOW the target (intended — the
-            // partial step IS the deployed position, not re-normalized).
-            // Guard preserves byte-identical legacy output when trade_rate == 1.0.
-            if (trade_rate_val < 1.0) {
+            // Partial-step: either the Gârleanu-Pedersen aim-portfolio trade (opt-in,
+            // cfg.gp_trading) or the pre-S3 linear blend toward the freshly-shaped target.
+            // See garleanu_pedersen.hpp for the closed-form math; this call site is the
+            // ONLY thing S3 changes. The legacy `else if` arm below is textually the
+            // pre-S3 code, so gp_trading=false is byte-identical by construction.
+            //
+            // Legacy linear blend (w := prev + rate*(w - prev)): dollar-neutrality is
+            // preserved (linear blend of two dollar-neutral books) and name-cap is
+            // preserved (|blend| <= max(|prev|,|target|) <= cap); gross may drift
+            // slightly BELOW the target (intended -- the partial step IS the deployed
+            // position, not re-normalized). Guard keeps byte-identical output at
+            // trade_rate == 1.0.
+            if (cfg.gp_trading && gp_v.has_value()) {
+                // alpha_bar: the per-name RETURN-space signal this period -- the SAME raw
+                // cross-section shape_book above just turned into the legacy target `w`.
+                // NaN names are preserved (gp_aim_and_value maps them to 0 in the V^-1 apply).
+                std::vector<atx::f64> alpha_bar(cs.begin(), cs.end());
+                auto gp = risk::gp_aim_and_value(std::span<const atx::f64>{alpha_bar}, *gp_v,
+                                                 cfg.gp_risk_aversion);
+                if (gp.has_value()) {
+                    // Shape the GP aim through the SAME gross/name-cap/dollar-neutral
+                    // contract as the legacy target `w`, so the GP path never breaks the
+                    // book-shape invariants the rest of this function (and shape_book's own
+                    // header) document.
+                    std::vector<atx::f64> aim = gp->aim_pos;
+                    shape_book(aim, std::span<const std::uint8_t>{live}, gross_val, name_cap_val);
+                    // kappa: cfg.trade_rate discounted by the trade-cost-scale knob
+                    // (gp_trade_cost_scale == 0 => kappa == trade_rate_val, inert).
+                    const atx::f64 kappa = trade_rate_val / (1.0 + cfg.gp_trade_cost_scale);
+                    w = risk::gp_turnover_native_step(std::span<const atx::f64>{prev},
+                                                      std::span<const atx::f64>{aim}, kappa);
+                } else {
+                    // Degenerate per-period fallback (defensive -- lambda>=0 is CLI-guarded
+                    // and the length always matches M by construction, so this should not
+                    // fire in practice). Never silently drop the period: trade the legacy way.
+                    if (trade_rate_val < 1.0) {
+                        for (atx::usize i = 0; i < M; ++i) {
+                            w[i] = prev[i] + trade_rate_val * (w[i] - prev[i]);
+                        }
+                    }
+                }
+            } else if (trade_rate_val < 1.0) {
                 for (atx::usize i = 0; i < M; ++i) {
                     w[i] = prev[i] + trade_rate_val * (w[i] - prev[i]);
                 }
@@ -216,6 +287,19 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
         ATX_TRY(auto sr, write_books(books_flat, turnover, cost_bps));
         if (cfg.set_flags.count("trade-rate"))
             sr.kvs.emplace_back("trade_rate", std::to_string(trade_rate_val));
+        if (cfg.gp_trading)
+            sr.kvs.emplace_back("gp_trading", gp_fallback ? "fallback" : "on");
+        // S5-1: measure FIRST (always -- "measure before gate"), gate opt-in second.
+        // Same shared helper + guard as the MVO branch, reusing this branch's own
+        // per-period `turnover` vector and `sched.periods`.
+        const atx::f64 book_turnover = book_turnover_per_day(turnover, sched.periods);
+        sr.kvs.emplace_back("book_turnover_per_day", std::to_string(book_turnover));
+        if (cfg.book_turnover_gate > 0.0 && book_turnover > cfg.book_turnover_gate) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "optimize: book turnover " + std::to_string(book_turnover) +
+                                      "/day exceeds --book-turnover-gate " +
+                                      std::to_string(cfg.book_turnover_gate));
+        }
         return atx::core::Ok(std::move(sr));
     }
 
@@ -248,8 +332,25 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     std::optional<risk::FactorModel> single_model; // Diagonal path only
     std::vector<risk::FactorModel> step_models;    // Factor path only; one per sched.periods[s]
 
+    // S1 (p9): resolve the dead-alpha wire ONCE, shared by both the Diagonal
+    // single-model branch and the Factor per-step loop below (Library::open does
+    // real sqlite I/O; reopening it per rebalance step would be wasteful and
+    // unnecessary since the resolved triple is identical for every step -- the
+    // library's own holdings/period axis has no established alignment with the
+    // per-step fit_end, so a single "latest known crowding snapshot" is used for
+    // the whole run rather than attempting a per-step correspondence).
+    std::optional<library::Library> dead_lib_opt = maybe_open_dead_lib(cfg, risk_cfg);
+    const library::Library* dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
+    std::vector<combine::AlphaId> dead_ids;
+    atx::usize dead_as_of = 0;
+    if (dead_lib_ptr != nullptr) {
+        dead_as_of = dead_lib_ptr->n_periods() > 0 ? dead_lib_ptr->n_periods() - 1 : 0;
+        dead_ids = collect_dead_alpha_ids(*dead_lib_ptr, dead_as_of);
+    }
+
     if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
-        ATX_TRY(auto artifact, build_risk_model(research, risk_cfg));
+        ATX_TRY(auto artifact,
+                build_risk_model(research, risk_cfg, /*group_id=*/{}, dead_lib_ptr, dead_ids, dead_as_of));
         ATX_TRY(auto model, data::artifact_to_factor_model(artifact));
         single_model.emplace(std::move(model));
     } else {
@@ -257,15 +358,16 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
         step_models.reserve(S);
         for (atx::usize s = 0; s < S; ++s) {
             const atx::usize fit_end = sched.periods[s] + 1U; // PIT: through `period` inclusive
-            auto factor_artifact = build_risk_model(research, risk_cfg, {}, nullptr, {}, 0, fit_end);
+            auto factor_artifact =
+                build_risk_model(research, risk_cfg, {}, dead_lib_ptr, dead_ids, dead_as_of, fit_end);
             if (factor_artifact.has_value()) {
                 ATX_TRY(auto step_model, data::artifact_to_factor_model(*factor_artifact));
                 step_models.push_back(std::move(step_model));
             } else {
                 // Warm-up fallback: too little history yet for a genuine
                 // Factor fit at this step -- a PIT diagonal over [0, fit_end).
-                ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, nullptr,
-                                                             {}, 0, fit_end));
+                ATX_TRY(auto diag_artifact, build_risk_model(research, diag_fallback_cfg, {}, dead_lib_ptr,
+                                                             dead_ids, dead_as_of, fit_end));
                 ATX_TRY(auto diag_model, data::artifact_to_factor_model(diag_artifact));
                 step_models.push_back(std::move(diag_model));
             }
@@ -284,6 +386,13 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
         return step_models[period / step];
     };
 
+    // S5-2: participation-cap reference panels. Declared at FUNCTION scope (NOT
+    // inside the cfg.participation_cap>0 block below) on purpose: risk::CapacityRef
+    // holds non-owning (BORROWED) spans, so the buffers mc.ref.adv/price point at
+    // MUST outlive mpo.run() further down. Left empty + unread when the cap is off.
+    std::vector<atx::f64> part_adv;
+    std::vector<atx::f64> part_price;
+
     risk::MultiPeriodConfig mc;
     mc.single.risk_aversion   = cfg.set_flags.count("risk-aversion")
                                     ? cfg.risk_aversion : 1.0;
@@ -291,6 +400,51 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     mc.single.name_cap        = name_cap_val;
     mc.single.dollar_neutral  = true;
     mc.single.turnover_penalty = cfg.turnover_penalty;
+
+    // S5-2: participation-rate cap INSIDE the QP construction (inert unless
+    // --participation-cap > 0). Building a CapacityRef needs a per-instrument ADV +
+    // a current mark; reuse the SAME 20-day trailing-ADV convention stage_report.cpp's
+    // capacity-footprint metric documents, anchored at the panel's LAST date. The
+    // one correctness trap (RISKS #1): is_minimal_constraint_set returns false the
+    // moment .part is populated, so the augmented path activates -- and it
+    // materializes ConstraintSet::gross/pos INDEPENDENTLY of mc.single (it does NOT
+    // fall back to mc.single.gross_leverage/.name_cap). So cs.gross/cs.pos MUST be
+    // populated here from the SAME gross_val/name_cap_val the fast path resolves, or
+    // gross-leverage/dollar-neutral/name-cap silently vanish once .part activates.
+    if (cfg.participation_cap > 0.0) {
+        ATX_TRY(const auto vol_fid, research.field_id("volume"));
+        ATX_TRY(const auto cls_fid, research.field_id("close"));
+        constexpr atx::usize kAdvWindow = 20;
+        const atx::usize last = D - 1;
+        const atx::usize win_begin = (last + 1 > kAdvWindow) ? (last + 1 - kAdvWindow) : 0;
+        const auto vol_all = research.field_all(vol_fid);
+        const auto cls_all = research.field_all(cls_fid);
+        part_adv.assign(M, 0.0);
+        part_price.assign(M, 0.0);
+        for (atx::usize i = 0; i < M; ++i) {
+            atx::f64 sum = 0.0;
+            atx::usize n = 0;
+            for (atx::usize t = win_begin; t <= last; ++t) {
+                const atx::f64 v = vol_all[t * M + i];
+                if (!std::isnan(v)) { sum += v; ++n; }
+            }
+            part_adv[i]   = (n > 0) ? sum / static_cast<atx::f64>(n) : 0.0;
+            part_price[i] = cls_all[last * M + i];
+        }
+        risk::ConstraintSet cs;
+        cs.gross.gross_leverage = gross_val;   // carry the fast-path gross forward
+        cs.gross.dollar_neutral = true;        // (the augmented path does not read cfg.single)
+        cs.pos  = risk::PositionCap{name_cap_val};
+        cs.part = risk::ParticipationCap{cfg.participation_cap};
+        mc.constraints = std::move(cs);
+        mc.ref.adv   = part_adv;   // borrowed spans (see the function-scope note above)
+        mc.ref.price = part_price;
+        // Reuse the SAME AUM field stage_report.cpp assumes for capacity metrics, so
+        // construction-time and post-hoc capacity share ONE dollar scale.
+        mc.ref.nav = cfg.report_aum > 0.0 ? cfg.report_aum : 1e9;
+        mc.ref.horizon_days = 1.0; // conservative 1-day participation horizon
+    }
+
     risk::MultiPeriodOptimizer mpo;
     mpo.cfg = mc;
 
@@ -351,7 +505,22 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     }
 
     // 8. Serialize + return StageResult.
-    return write_books(flat, result.turnover, result.cost_bps);
+    // S5-1: measure FIRST (always -- the design-spec's "measure before gate"
+    // mitigation), gate opt-in second. The rate is computed AFTER write_books so a
+    // rejected run's own books/sidecar stay on disk and inspectable (mirrors
+    // --blocking-pbo's documented "already persisted" caveat). The added kv changes
+    // sr.kvs's content but never sr.digest (the books panel bytes), so with the gate
+    // off the books digest is byte-identical to pre-S5-1.
+    ATX_TRY(auto sr, write_books(flat, result.turnover, result.cost_bps));
+    const atx::f64 book_turnover = book_turnover_per_day(result.turnover, sched.periods);
+    sr.kvs.emplace_back("book_turnover_per_day", std::to_string(book_turnover));
+    if (cfg.book_turnover_gate > 0.0 && book_turnover > cfg.book_turnover_gate) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "optimize: book turnover " + std::to_string(book_turnover) +
+                                  "/day exceeds --book-turnover-gate " +
+                                  std::to_string(cfg.book_turnover_gate));
+    }
+    return atx::core::Ok(std::move(sr));
 }
 
 } // namespace atx::impl

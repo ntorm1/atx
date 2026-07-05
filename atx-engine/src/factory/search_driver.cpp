@@ -704,6 +704,13 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   if (cfg.deflate_selection) {
     gen_fit.trial_count = cfg.prior_trial_count + std::max<atx::usize>(1U, canon.size());
   }
+  // S4-3: thread the SearchConfig-level objective gates into the per-generation
+  // FitnessCfg -- fitness_core/finish_report (which alone have strm/panel in scope)
+  // read the FitnessCfg mirror, never SearchConfig directly. Both default false on
+  // BOTH structs, so this copy is a no-op unless the caller set the SearchConfig
+  // flag (byte-identical off-path).
+  gen_fit.capacity_objective = cfg.capacity_objective;
+  gen_fit.turnover_objective = cfg.turnover_objective;
 
   // S3-1 PERF: create a shared CpcvCache for this generation.  All workers in the
   // parallel_for share it (its internal mutex serialises the rare cold insert).

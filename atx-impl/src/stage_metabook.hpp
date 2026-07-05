@@ -49,6 +49,7 @@
 #include "atx/engine/fund/meta_book.hpp" // fund::MetaBookConfig (full type: a value member below)
 #include "atx/engine/fund/sleeve.hpp"    // fund::SleeveConfig (assign_sleeves' return element)
 #include "atx/engine/library/fwd.hpp"    // library::Library (fwd decl; assign_sleeves takes a ref)
+#include "atx/engine/risk/factor_model.hpp" // risk::RiskModelConfig (S2-2 3-arg overload param)
 
 #include "config.hpp" // RunConfig
 #include "stages.hpp" // StageResult
@@ -157,5 +158,31 @@ build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg);
 
 [[nodiscard]] atx::core::Result<StageResult>
 run_metabook(const RunConfig &cfg, const MetaBookStageConfig &scfg);
+
+// ===========================================================================
+//  S2-2 (p9) — the RiskModelConfig-parameterized overloads (the deferred p8-S2 seam).
+// ===========================================================================
+//  Closes the seam p8 `sprint-2-progress.md:269-294` recorded as deferred ("A Factor-model
+//  model_at variant is a straightforward follow-on... Recorded here as the integration seam
+//  for whoever picks it up next"). These ADD a third `risk::RiskModelConfig` argument; the
+//  2-arg overloads above become thin `cfg.risk_model`-aware forwarders (mirroring
+//  stage_optimize.cpp's own run_optimize 1-arg/2-arg split), so `--risk-model factor` reaches
+//  metabook through the real CLI/run_all path with zero edits to stage_run.cpp/dispatch.cpp.
+//
+//  `risk_cfg.kind==Diagonal` (the RunConfig{} default) keeps the exact single whole-panel
+//  diagonal_risk_model(research) call every pre-S2 caller got -- byte-identical.
+//  `risk_cfg.kind==Factor` drives `model_at` with ONE FactorModel per rebalance step, PIT-fit
+//  via build_risk_model at fit_end=period+1 (the same per-step producer loop stage_optimize's
+//  Factor branch runs), including its diagonal warm-up fallback for an under-determined early
+//  step. The Factor loop also threads S1's shared dead-alpha crowding wire (R3/R4): the
+//  mega-book path SUBSTITUTES run_optimize (stage_run.cpp:127), so this is the mega-book's only
+//  build_risk_model site -- inert (byte-identical) when --dead-alpha-factors is off.
+[[nodiscard]] atx::core::Result<fund::MetaBookResult>
+build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg,
+                      const atx::engine::risk::RiskModelConfig &risk_cfg);
+
+[[nodiscard]] atx::core::Result<StageResult>
+run_metabook(const RunConfig &cfg, const MetaBookStageConfig &scfg,
+             const atx::engine::risk::RiskModelConfig &risk_cfg);
 
 } // namespace atx::impl
