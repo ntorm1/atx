@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <utility>
 
 #include "atx/core/math.hpp"
@@ -302,13 +303,42 @@ Result<CorrectionCache> CorrectionCache::build(
     sigma_grid[k] = detail::cheb_from_unit(detail::cheb_node(k, n_s), sigma_min, sigma_max);
   }
 
-  // Step 1: sample the correction at every (i, j, k) into the final layout.
+  // Step 1: sample the correction at every (i, j, k) into the final layout. The
+  // innermost k_log axis at a fixed (T, sigma) is a set of call strikes
+  // K = e^{k_log} against a fixed S = e^{-(r-q)T}, so the CALL side prices the
+  // whole i-row with ONE early-exercise boundary solve (andersen_lake_call_slice)
+  // instead of n_k — bit-identical to per-node sample_correction. The put side
+  // (internal-put strike varies per strike) keeps the scalar per-node path.
+  std::array<double, kChebMaxNodes> strike_buf{};
+  std::array<double, kChebMaxNodes> px_buf{};
   for (std::uint16_t j = 0; j < n_T; ++j) {
+    const double Tj = T_grid[j];
+    const double df_j = std::exp(-r * Tj);
+    const double S_j = std::exp(-(r - q) * Tj);
     for (std::uint16_t k = 0; k < n_s; ++k) {
-      for (std::uint16_t i = 0; i < n_k; ++i) {
-        const double c = sample_correction(k_log_grid[i], T_grid[j], sigma_grid[k],
-                                           r, q, side, opts);
-        coefs[detail::cheb_idx(i, j, k, n_k, n_s)] = c;
+      const double sig = sigma_grid[k];
+      double* row = coefs + detail::cheb_idx(0, j, k, n_k, n_s);  // i-contiguous
+      bool used_slice = false;
+      if (side == Side::Call) {
+        for (std::uint16_t i = 0; i < n_k; ++i) {
+          strike_buf[i] = std::exp(k_log_grid[i]);
+        }
+        const Status st = andersen_lake_call_slice(
+            S_j, std::span<const double>(strike_buf.data(), n_k), Tj, sig, r, q,
+            std::span<double>(px_buf.data(), n_k), opts);
+        if (st) {
+          for (std::uint16_t i = 0; i < n_k; ++i) {
+            const double euro = black76_price(1.0, strike_buf[i], Tj, sig, df_j, Side::Call);
+            const double c = px_buf[i] - euro;
+            row[i] = (c > 0.0) ? c : 0.0;
+          }
+          used_slice = true;
+        }
+      }
+      if (!used_slice) {
+        for (std::uint16_t i = 0; i < n_k; ++i) {
+          row[i] = sample_correction(k_log_grid[i], Tj, sig, r, q, side, opts);
+        }
       }
     }
   }
@@ -371,7 +401,10 @@ double CorrectionCache::eval(double k_log, double T, double sigma) const noexcep
   const double xj = detail::cheb_to_unit(T, T_min_, T_max_);
   const double xk = detail::cheb_to_unit(sigma, sigma_min_, sigma_max_);
 
-  std::array<double, kTmpSize> tmp_jk{};
+  // Uninitialized scratch: cheb_clenshaw3d writes every used cell (the n_T*n_s
+  // prefix) before it reads, so zero-init here is a dead ~32 KB memset on a
+  // per-eval hot path.
+  std::array<double, kTmpSize> tmp_jk;
   const double v = detail::cheb_clenshaw3d(coefs_.data(), n_k_, n_T_, n_s_, xi, xj,
                                            xk, tmp_jk.data());
   return (v > 0.0) ? v : 0.0;
@@ -410,7 +443,9 @@ double CorrectionCache::eval_grad(double k_log, double T, double sigma,
   const double scale_T = 2.0 / (T_max_ - T_min_);
   const double scale_s = 2.0 / (sigma_max_ - sigma_min_);
 
-  std::array<double, kTmpSize> tmp_jk{};
+  // Uninitialized scratch (see eval): every used cell is written before read by
+  // cheb_clenshaw3d / cheb_clenshaw3d_partial.
+  std::array<double, kTmpSize> tmp_jk;
   const double v = detail::cheb_clenshaw3d(coefs_.data(), n_k_, n_T_, n_s_, xi, xj,
                                            xk, tmp_jk.data());
   if (out_dk_log) {

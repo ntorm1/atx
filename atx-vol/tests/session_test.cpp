@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/calib.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
@@ -26,8 +27,11 @@
 
 namespace {
 
+using atx::vol::build_observations;
+using atx::vol::CalibOpts;
 using atx::vol::chain_index;
 using atx::vol::data_install;
+using atx::vol::FitDiag;
 using atx::vol::DividendEvent;
 using atx::vol::iso_to_ns;
 using atx::vol::make_synthetic_american_panel;
@@ -366,4 +370,60 @@ TEST(FitPreset, RobustPresetBuildsSessionOnKnownPanel) {
   EXPECT_EQ(sess->diagnostics().n_slices, std::size_t{4});
   // The clean panel is already calendar-arb-free; Robust preserves that.
   EXPECT_TRUE(sess->diagnostics().calendar_arb_free);
+}
+
+// Tick-to-quote: warm-start refit of a single expiry from a fresh observation
+// set updates the surface in place, warm-starts from the prior slice, and
+// guards its arguments.
+TEST(VolaSession, RefitSlice_WarmUpdatesOneExpiryAndGuardsArgs) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  // Rebuild the observation set for the middle expiry from its chain, on the
+  // session's own (forward, T) for that slice.
+  const std::size_t idx = 1;
+  const auto& chain = under->chains[idx];
+  const double T = sess->expiries()[idx].T;
+  const double F = sess->expiries()[idx].forward;
+  const double df = std::exp(-spec.r * T);
+  const auto obs = build_observations(chain, F, T, df, CalibOpts{});
+  ASSERT_TRUE(obs.has_value()) << obs.error().to_string();
+  ASSERT_GE(obs->obs.size(), std::size_t{5});
+
+  // Query the pre-refit ATM vol, then refit and confirm the surface stays a
+  // valid, finite, arb-free slice serving that expiry.
+  const double vol_before = sess->iv(100.0, T);
+  ASSERT_TRUE(std::isfinite(vol_before));
+
+  const auto diag = sess->refit_slice(idx, obs->obs);
+  ASSERT_TRUE(diag.has_value()) << diag.error().to_string();
+  EXPECT_EQ(diag->n_quotes_used, static_cast<std::uint32_t>(obs->obs.size()));
+  EXPECT_EQ(sess->expiries()[idx].n_used, obs->obs.size());
+
+  const double vol_after = sess->iv(100.0, T);
+  EXPECT_TRUE(std::isfinite(vol_after));
+  EXPECT_GT(vol_after, 0.01);
+  EXPECT_LT(vol_after, 3.0);
+  EXPECT_TRUE(sess->diagnostics().calendar_arb_free);
+
+  // A SECOND refit with the same obs is warm from the just-fit slice, so it stays
+  // in the same small inner-LM budget as the first — it must NOT blow up toward a
+  // cold fit (max_outer·max_inner = 4·12 = 48). A few steps of slack: IRLS
+  // reweighting can add a Newton step or two, and the exact LM path shifts
+  // slightly with the per-slice parity carry (the obs are rebuilt on the session's
+  // own forward), so an exact `<=` is fixture-brittle rather than a real property.
+  FitDiag first = *diag;
+  const auto diag2 = sess->refit_slice(idx, obs->obs);
+  ASSERT_TRUE(diag2.has_value());
+  EXPECT_LE(diag2->inner_iters_total, first.inner_iters_total + 8);
+
+  // Guards: out-of-range index and an empty observation set.
+  EXPECT_FALSE(sess->refit_slice(99, obs->obs).has_value());
+  const std::vector<atx::vol::FitObs> empty;
+  EXPECT_FALSE(sess->refit_slice(idx, empty).has_value());
 }

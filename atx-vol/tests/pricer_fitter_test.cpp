@@ -1,0 +1,189 @@
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <cstddef>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
+
+#include "atx/vol/chain.hpp"
+#include "atx/vol/panel.hpp"
+#include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/session.hpp"
+#include "atx/vol/spy_fixture.hpp"
+#include "atx/vol/types.hpp"
+
+// Acceptance harness for the unified library layer (chain.hpp + pricer_fitter.hpp):
+// the OptionChain -> PricerFitter -> parallel value_chain lifecycle over the SPY
+// known-truth fixture. Proves the id-addressed chain enumerate/decode/update, that
+// fit stores the surface, that value_chain fields equal the VolaSession scalar
+// queries, and that the parallel evaluator is bit-identical across thread counts.
+
+namespace {
+
+using atx::vol::ChainValuation;
+using atx::vol::FitPreset;
+using atx::vol::make_spy_synthetic_spec;
+using atx::vol::make_synthetic_american_panel;
+using atx::vol::OptionChain;
+using atx::vol::OptionId;
+using atx::vol::OutputField;
+using atx::vol::PricerConfig;
+using atx::vol::PricerFitter;
+using atx::vol::Side;
+using atx::vol::SynthPanelSpec;
+using atx::vol::VolaSession;
+
+// NaN-aware equality: two failed/absent cells (both NaN) compare equal, so the
+// determinism check does not trip on the (deterministic) NaN slots.
+bool same(double a, double b) {
+  if (std::isnan(a) && std::isnan(b)) {
+    return true;
+  }
+  return a == b;
+}
+
+class PricerFitterTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    const SynthPanelSpec spec = make_spy_synthetic_spec();
+    r_ = spec.r;
+    spot_ = spec.spot;
+    auto panel = make_synthetic_american_panel(spec);
+    ASSERT_TRUE(panel.has_value()) << panel.error().message();
+    auto ch = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+    ASSERT_TRUE(ch.has_value()) << ch.error().message();
+    chain_.emplace(std::move(*ch));
+  }
+
+  std::optional<OptionChain> chain_;
+  double r_{0.0};
+  double spot_{0.0};
+};
+
+TEST_F(PricerFitterTest, ChainEnumerateDecodeAndSnapshot) {
+  const OptionChain& chain = *chain_;
+  EXPECT_EQ(chain.spot(), spot_);
+  EXPECT_EQ(chain.rate(), r_);
+
+  const std::vector<OptionId> ids = chain.ids();
+  ASSERT_FALSE(ids.empty());
+  EXPECT_EQ(ids.size(), chain.size());
+
+  bool saw_call = false;
+  bool saw_put = false;
+  for (const OptionId id : ids) {
+    const auto ref = chain.at(id);
+    ASSERT_TRUE(ref.has_value());
+    EXPECT_GT(ref->strike, 0.0);
+    EXPECT_GT(ref->T, 0.0);
+    saw_call = saw_call || (ref->side == Side::Call);
+    saw_put = saw_put || (ref->side == Side::Put);
+  }
+  EXPECT_TRUE(saw_call);
+  EXPECT_TRUE(saw_put);
+
+  // An id that does not decode to a known leg is rejected.
+  EXPECT_FALSE(chain.at(OptionId{0}).has_value());
+}
+
+TEST_F(PricerFitterTest, UpdateQuotesReplacesBidAsk) {
+  OptionChain& chain = *chain_;
+  const OptionId id = chain.ids().front();
+  const double nb = 12.34;
+  const double na = 12.78;
+  std::vector<OptionId> ids{id};
+  std::vector<double> bids{nb};
+  std::vector<double> asks{na};
+  ASSERT_TRUE(chain
+                  .update_quotes(std::span<const OptionId>(ids),
+                                 std::span<const double>(bids),
+                                 std::span<const double>(asks))
+                  .has_value());
+  const auto ref = chain.at(id);
+  ASSERT_TRUE(ref.has_value());
+  EXPECT_DOUBLE_EQ(ref->bid, nb);
+  EXPECT_DOUBLE_EQ(ref->ask, na);
+  EXPECT_DOUBLE_EQ(ref->mid, 0.5 * (nb + na));
+}
+
+TEST_F(PricerFitterTest, FitStoresSurfaceAndGatesValueChain) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  // value_chain before a fit is gated.
+  EXPECT_FALSE(fitter.value_chain(*chain_, OutputField::ModelIV).has_value());
+  EXPECT_FALSE(fitter.fitted());
+
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  EXPECT_TRUE(fitter.fitted());
+  ASSERT_NE(fitter.surface(), nullptr);
+  EXPECT_GT(fitter.surface()->diagnostics().n_slices, 0u);
+}
+
+TEST_F(PricerFitterTest, ValueChainFieldsMatchSessionScalarQueries) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto valr = fitter.value_chain(*chain_, OutputField::All, 1);
+  ASSERT_TRUE(valr.has_value());
+  const ChainValuation& v = *valr;
+  const OptionChain& chain = *chain_;
+  const VolaSession& sess = fitter.surface()->session();
+  ASSERT_EQ(v.size(), chain.ids().size());
+
+  int checked = 0;
+  for (std::size_t i = 0; i < v.size(); ++i) {
+    const auto ref = chain.at(v.ids[i]);
+    ASSERT_TRUE(ref.has_value());
+    // model IV / fair value are EXACTLY the session scalar queries (the facade
+    // adds ownership + parallelism, never a different number).
+    EXPECT_TRUE(same(v.model_iv[i], sess.iv(ref->strike, ref->T)));
+    const auto fv = sess.fair_value(ref->strike, ref->T, ref->side);
+    EXPECT_TRUE(same(v.model_price[i], fv.has_value() ? *fv : std::nan("")));
+    ++checked;
+  }
+  EXPECT_GT(checked, 0);
+}
+
+TEST_F(PricerFitterTest, ValueChainThreadCountDeterminism) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto v1r = fitter.value_chain(*chain_, OutputField::All, 1);
+  const auto v4r = fitter.value_chain(*chain_, OutputField::All, 4);
+  ASSERT_TRUE(v1r.has_value());
+  ASSERT_TRUE(v4r.has_value());
+  const ChainValuation& a = *v1r;
+  const ChainValuation& b = *v4r;
+  ASSERT_EQ(a.size(), b.size());
+
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(a.ids[i], b.ids[i]);
+    EXPECT_TRUE(same(a.model_iv[i], b.model_iv[i]));
+    EXPECT_TRUE(same(a.model_price[i], b.model_price[i]));
+    EXPECT_TRUE(same(a.bid_iv[i], b.bid_iv[i]));
+    EXPECT_TRUE(same(a.ask_iv[i], b.ask_iv[i]));
+    EXPECT_TRUE(same(a.mid_iv[i], b.mid_iv[i]));
+    EXPECT_TRUE(same(a.greeks[i].price, b.greeks[i].price));
+    EXPECT_TRUE(same(a.greeks[i].delta, b.greeks[i].delta));
+    EXPECT_TRUE(same(a.greeks[i].vega, b.greeks[i].vega));
+  }
+}
+
+TEST_F(PricerFitterTest, ValueChainPopulatesOnlyRequestedFields) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto vr = fitter.value_chain(*chain_, OutputField::ModelIV, 1);
+  ASSERT_TRUE(vr.has_value());
+  const ChainValuation& v = *vr;
+  EXPECT_EQ(v.model_iv.size(), v.size());
+  EXPECT_TRUE(v.model_price.empty());
+  EXPECT_TRUE(v.bid_iv.empty());
+  EXPECT_TRUE(v.ask_iv.empty());
+  EXPECT_TRUE(v.greeks.empty());
+  EXPECT_TRUE(atx::vol::has(v.filled, OutputField::ModelIV));
+  EXPECT_FALSE(atx::vol::has(v.filled, OutputField::ModelPrice));
+}
+
+}  // namespace

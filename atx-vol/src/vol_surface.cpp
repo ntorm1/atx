@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with calibrator)
 
 namespace atx::vol {
 
@@ -69,26 +70,29 @@ double essvi_residual_w(const EssviParams& s, double k_log) noexcept {
   if (!(s.resid_scale > 0.0)) {
     return 0.0;
   }
-  // PORT NOTE: HINGE_QUAD is the only wing-residual basis ported to the hot
-  // path (it is the shipped runtime basis). C2Bspline / Chebyshev /
-  // WingBspline / Fengler are calibration-side fitters that are out of scope;
-  // a slice tagged with one of them intentionally falls through to the
-  // HINGE_QUAD evaluation below so eval always stays finite (see header).
   double y = k_log / s.resid_scale;
   y = std::clamp(y, -1.0, 1.0);
 
   int n_basis = (s.resid_n_basis != 0) ? static_cast<int>(s.resid_n_basis) : 5;
   n_basis = std::clamp(n_basis, 1, 16);
 
-  // Hinge basis: out[0] = 0; a clamped hinge (+ its square) on each wing
-  // outside the dead band; out[>=5] = 0.
-  const double yp = (y < -kResidInnerY) ? (-y - kResidInnerY) : 0.0;
-  const double yc = (y > kResidInnerY) ? (y - kResidInnerY) : 0.0;
   std::array<double, 16> basis{};
-  basis[1] = yp;
-  basis[2] = yp * yp;
-  basis[3] = yc;
-  basis[4] = yc * yc;
+  if (s.resid_basis_kind == ResidualBasisKind::C2Bspline) {
+    // Dense full-smile C2 bump basis (near-money capable). The identical
+    // evaluator the calibrator fit against — see detail/resid_basis.hpp.
+    detail::resid_bump_basis(y, n_basis, basis);
+  } else {
+    // HINGE_QUAD (the shipped wing-only runtime basis): out[0] = 0; a clamped
+    // hinge (+ its square) on each wing outside the dead band; out[>=5] = 0.
+    // Chebyshev / WingBspline / Fengler tags fall through to this so a hot-path
+    // eval always stays finite (see header).
+    const double yp = (y < -kResidInnerY) ? (-y - kResidInnerY) : 0.0;
+    const double yc = (y > kResidInnerY) ? (y - kResidInnerY) : 0.0;
+    basis[1] = yp;
+    basis[2] = yp * yp;
+    basis[3] = yc;
+    basis[4] = yc * yc;
+  }
 
   double dw = 0.0;
   for (int j = 0; j < n_basis; ++j) {

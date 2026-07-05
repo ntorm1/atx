@@ -11,9 +11,11 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"        // american_price, american_price_cached, american_greeks
+#include "atx/vol/arb.hpp"             // arb_check_calendar (post-refit recheck)
 #include "atx/vol/correction.hpp"      // CorrectionCache, AmericanCorrectionCaches
 #include "atx/vol/data.hpp"           // data_install
 #include "atx/vol/dividend.hpp"        // hybrid_forward (representative carry)
+#include "atx/vol/essvi_calib.hpp"     // essvi_fit_slice (warm-start refit)
 #include "atx/vol/surface_parity.hpp"  // run_surface_parity, SurfaceParityInputs/Report
 #include "atx/vol/universe.hpp"        // Universe, Underlying, Uid, Chain
 #include "atx/vol/vol_surface.hpp"     // VolSurface
@@ -182,6 +184,13 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept {
       in.deam.al_opts = al_default_opts();
       in.deam.iv_tol = 1.0e-7;
       in.deam.n_atm = 3;
+      // NOTE on the wing-residual layer: measured OFF here deliberately. On real
+      // SPY OPRA the eSSVI backbone alone already fits the tradeable smile to
+      // ~1.0 vol pt vega-weighted; enabling the additive HingeQuad residual moves
+      // that headline by ~0 (it only reshapes the low-vega deep wings, which the
+      // vega weighting discounts) and OVER-FITS sparse event wings (a lone deep
+      // put can swing ~50 vol pts) — matching the existing profile.cpp finding.
+      // So it stays at its default (disabled); accuracy comes from the backbone.
       // Robust makes the surface calendar-arb-free near-money at held quality;
       // Accurate reports the raw calendar status without altering the fit.
       in.calendar_repair =
@@ -324,6 +333,20 @@ VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
                       a.q_eff + alpha * (b.q_eff - a.q_eff)};
 }
 
+double VolaSession::forward_at(double T) const noexcept {
+  if (!(T > 0.0) || ctx_.empty()) {
+    return 0.0;
+  }
+  return interp_forward(T).forward;
+}
+
+double VolaSession::q_eff_at(double T) const noexcept {
+  if (!(T > 0.0) || ctx_.empty()) {
+    return 0.0;
+  }
+  return interp_forward(T).q_eff;
+}
+
 double VolaSession::iv(double K, double T) const {
   if (!valid_query(K, T)) {
     return kNaN;
@@ -456,6 +479,60 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     }
   }
   return Ok();
+}
+
+Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
+                                         std::span<const FitObs> new_obs) {
+  if (slice_idx >= ctx_.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::refit_slice: slice_idx out of range");
+  }
+  if (new_obs.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::refit_slice: empty observation set");
+  }
+  const std::span<const EssviParams> slices = surface_.essvi_slices();
+  if (slice_idx >= slices.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::refit_slice: no eSSVI slice at that index");
+  }
+  // Copy the current slice: it is BOTH the warm-start seed and the source of the
+  // expiry identity we must preserve across the swap.
+  const EssviParams warm = slices[slice_idx];
+  const SliceContext& sc = ctx_[slice_idx];
+
+  // Keep the term structure calendar-monotone through the update by flooring the
+  // ATM level at the previous slice's theta (a no-op for the first slice, and
+  // only binds where the refit would otherwise invert against its neighbour).
+  const double theta_floor =
+      (slice_idx > 0) ? slices[slice_idx - 1].theta : 0.0;
+
+  FitDiag diag{};
+  Result<EssviParams> refit = essvi_fit_slice(new_obs, sc.T, sc.forward,
+                                              in_.calib, &diag, theta_floor,
+                                              &warm);
+  if (!refit.has_value()) {
+    return Err(std::move(refit).error());  // surface untouched on failure
+  }
+  refit->expiry_id = warm.expiry_id;   // preserve identity across the swap
+  refit->expiry_ns = warm.expiry_ns;
+
+  if (Status st = surface_.set_slice_essvi(slice_idx, *refit); !st.has_value()) {
+    return Err(std::move(st).error());
+  }
+  ctx_[slice_idx].n_used = new_obs.size();
+
+  // Re-evaluate the surface-level calendar no-arb flag over the standard window
+  // so diagnostics() stays truthful about the mutated surface (the same window
+  // run_surface_parity checks). A check failure leaves the flag conservatively
+  // false rather than asserting no-arb it could not verify.
+  constexpr double kArbKMin = -3.0;
+  constexpr double kArbKMax = 3.0;
+  constexpr std::uint32_t kArbNGrid = 25;
+  auto cal = arb_check_calendar(surface_, kArbKMin, kArbKMax, kArbNGrid);
+  diag_.calendar_arb_free = cal.has_value() && cal->empty();
+
+  return Ok(diag);
 }
 
 }  // namespace atx::vol

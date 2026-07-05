@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
@@ -24,10 +27,13 @@
 
 namespace {
 
+using atx::vol::AloPricer;
 using atx::vol::AlOpts;
 using atx::vol::american_greeks;
+using atx::vol::al_fast_opts;
 using atx::vol::american_price_cached;
 using atx::vol::andersen_lake;
+using atx::vol::andersen_lake_call_slice;
 using atx::vol::baw_american;
 using atx::vol::black76_greeks;
 using atx::vol::black76_price;
@@ -389,6 +395,135 @@ TEST(AmericanGreeks, NoCorrection_FallsBackToBlack76) {
   const double m = std::exp((r - q) * T);
   EXPECT_LT(std::fabs(g->delta - m * gB.delta), 1.0e-12);
   EXPECT_LT(std::fabs(g->vega - gB.vega), 1.0e-12);
+}
+
+// ── Warm-started AloPricer (the American-IV throughput lever) ─────────────
+
+// A fresh AloPricer's first price() is the cold-seed path, which is the SAME code
+// as andersen_lake (BAW seed + scheme sweeps) — so it must reproduce it exactly.
+TEST(AloPricer, ColdFirstCall_MatchesAndersenLake) {
+  const double S = 100.0, r = 0.05;
+  for (double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+    for (double T : {0.1, 0.5, 1.0, 2.0}) {
+      for (double sigma : {0.1, 0.2, 0.4}) {
+        for (double q : {0.0, 0.03}) {
+          for (Side side : {Side::Call, Side::Put}) {
+            AloPricer pr(S, K, T, r, q, side);
+            const double warm = pr.price(sigma);
+            const double cold =
+                value_or_fail(andersen_lake(S, K, T, sigma, r, q, side));
+            ASSERT_TRUE(std::isfinite(warm)) << "K=" << K << " T=" << T;
+            EXPECT_NEAR(warm, cold, 1.0e-9 * std::fmax(1.0, cold))
+                << "K=" << K << " T=" << T << " sig=" << sigma << " q=" << q;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Reused across a fine ascending sigma sweep (warm start engaged), price() stays
+// within the scheme's convergence noise of a fresh cold solve. It is NOT required
+// to be bit-identical: at hard corners the 2-JN/4-FP boundary is not fully
+// converged and is thus seed-dependent (the reason the IV inverter cold-polishes).
+TEST(AloPricer, WarmSweep_TracksColdWithinSchemeNoise) {
+  const double S = 100.0, r = 0.05, q = 0.02;
+  for (double K : {85.0, 100.0, 115.0}) {
+    for (double T : {0.25, 1.0, 2.0}) {
+      for (Side side : {Side::Call, Side::Put}) {
+        AloPricer pr(S, K, T, r, q, side);
+        for (double sigma = 0.12; sigma <= 0.45 + 1e-9; sigma += 0.01) {
+          const double warm = pr.price(sigma);  // warm after the first
+          const double cold =
+              value_or_fail(andersen_lake(S, K, T, sigma, r, q, side));
+          ASSERT_TRUE(std::isfinite(warm));
+          EXPECT_NEAR(warm, cold, 3.0e-3 * std::fmax(1.0, cold) + 1.0e-6)
+              << "K=" << K << " T=" << T << " sig=" << sigma;
+        }
+      }
+    }
+  }
+}
+
+// Degenerate sigma collapses to intrinsic; a no-early-exercise contract (put with
+// r <= 0) collapses to the European price — mirroring andersen_lake's guards.
+TEST(AloPricer, DegenerateAndEuropeanBranches) {
+  {
+    AloPricer pr(100.0, 110.0, 1.0, 0.05, 0.0, Side::Put);
+    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9);  // intrinsic K - S
+  }
+  {
+    AloPricer pr(100.0, 90.0, 1.0, 0.05, 0.0, Side::Call);
+    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9);  // intrinsic S - K
+  }
+  {
+    // Put with r < 0: no early exercise -> European put.
+    const double S = 100.0, K = 110.0, T = 1.0, r = -0.01, q = 0.0, sig = 0.3;
+    AloPricer pr(S, K, T, r, q, Side::Put);
+    EXPECT_NEAR(pr.price(sig), euro_put(S, K, T, sig, r, q), 1.0e-10);
+  }
+}
+
+// ── Cross-strike call-slice pricer (one boundary, many strikes) ──────────
+
+TEST(AndersenLakeCallSlice, MatchesPerStrikeAndersenLakeBitIdentical) {
+  const double S = 600.0, T = 0.35, sigma = 0.22, r = 0.03, q = 0.02;
+  std::vector<double> strikes;
+  for (double K = 480.0; K <= 720.0 + 1e-9; K += 12.0) {
+    strikes.push_back(K);
+  }
+  std::vector<double> px(strikes.size(), 0.0);
+  const atx::vol::Status st = andersen_lake_call_slice(
+      S, std::span<const double>(strikes), T, sigma, r, q,
+      std::span<double>(px), std::nullopt);
+  ASSERT_TRUE(st.has_value()) << (st ? std::string{} : st.error().to_string());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const double ref = value_or_fail(
+        andersen_lake(S, strikes[i], T, sigma, r, q, Side::Call, std::nullopt));
+    // One shared boundary solve must reproduce each per-strike cold solve to the
+    // bit (the whole point — surface numbers must not move).
+    EXPECT_EQ(px[i], ref) << "strike " << strikes[i];
+  }
+}
+
+TEST(AndersenLakeCallSlice, FastPresetDegenerateEuroAndValidation) {
+  const double S = 600.0, T = 0.5, r = 0.03, q = 0.02;
+  std::vector<double> strikes{540.0, 600.0, 660.0};
+  std::vector<double> px(3, 0.0);
+
+  // Fast preset routes bit-identically too.
+  const AlOpts fast = al_fast_opts();
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2,
+                                       r, q, std::span<double>(px), fast)
+                  .has_value());
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(px[i], value_or_fail(andersen_lake(S, strikes[i], T, 0.2, r, q,
+                                                 Side::Call, fast)));
+  }
+
+  // Degenerate sigma -> intrinsic per strike.
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.0,
+                                       r, q, std::span<double>(px), std::nullopt)
+                  .has_value());
+  EXPECT_DOUBLE_EQ(px[0], 60.0);  // 600 - 540
+  EXPECT_DOUBLE_EQ(px[1], 0.0);   // 600 - 600
+  EXPECT_DOUBLE_EQ(px[2], 0.0);   // max(600 - 660, 0)
+
+  // q <= 0: European call per strike (matches the andersen_lake short-circuit).
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2,
+                                       r, 0.0, std::span<double>(px), std::nullopt)
+                  .has_value());
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(px[i], value_or_fail(andersen_lake(S, strikes[i], T, 0.2, r, 0.0,
+                                                 Side::Call, std::nullopt)));
+  }
+
+  // Length mismatch is rejected.
+  std::vector<double> short_out(2, 0.0);
+  EXPECT_FALSE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2,
+                                        r, q, std::span<double>(short_out),
+                                        std::nullopt)
+                   .has_value());
 }
 
 }  // namespace

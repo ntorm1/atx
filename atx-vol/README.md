@@ -10,7 +10,7 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It passes
-**556 GoogleTest cases across 111 suites** under `/W4 /permissive- /WX` (clang-cl).
+**584 GoogleTest cases across 118 suites** under `/W4 /permissive- /WX` (clang-cl).
 The C library's arena / SoA-slab / thread-local / hand-written-AVX2 machinery is
 re-expressed with `std::vector` + Rule of Zero + `atx::core` (error vocabulary,
 linear algebra, hashing) rather than transliterated; the numerics are ported
@@ -54,6 +54,7 @@ faithfully and mirror the upstream test tolerances.
 | Panel fixtures | `panel.hpp` | Known-truth synthetic American-equity chain generator + exception-free CSV chain loader |
 | Parity harness | `vola_parity.hpp`, `surface_parity.hpp` | Single- and multi-expiry de-Am → fit → re-Am → metrics; interpolation + calendar-arb parity |
 | Composable session | `session.hpp` | `VolaSession` — build once from a snapshot, then query `iv`/`fair_value`/`greeks`/`diagnostics` at any `(K,T)`; owns a per-side `CorrectionCache` hot path |
+| Unified library layer | `chain.hpp`, `pricer_fitter.hpp` | `OptionChain` (id-addressed board, tick-to-quote update) → `PricerFitter` (fit + owns `unique_ptr<FittedSurface>`) → deterministic multi-threaded `value_chain` with per-field output flags |
 | Real-data loader | `opra_panel.hpp` | Databento OPRA cbbo-1m (NBBO) Parquet → `QuoteFrame`, OSI/OCC symbol parser, front-PCP spot implication |
 
 ## Vola Dynamics parity (American equity options)
@@ -135,6 +136,66 @@ call (per-expiry context resolved once; per-strike NaN isolation), bit-identical
 the scalar path — an ergonomics/robustness primitive, not a speedup (the per-strike
 cached pricer dominates: measured ~1× vs the loop, ≈6.2 µs/option).
 
+**Tick-to-quote incremental refit.** When one chain reprints, a market maker does
+not rebuild the whole surface — `VolaSession::refit_slice(slice_idx, new_obs)`
+re-fits just that expiry's eSSVI slice from the fresh quotes and swaps it in
+(calendar-floored at its neighbour, expiry identity preserved, calendar-arb flag
+refreshed; queries then reflect it with no further refit). The fit warm-starts from
+the slice's current params via `essvi_fit_slice`'s optional `warm` seed — the whole
+Mingone cube seeds from the prior optimum (null = byte-identical cold fit), and
+`CalibOpts::prior_strength` adds a Tikhonov pull toward the prior to stabilise thin
+ticks. **Measured (XOM):** the win is structural — a single-slice refit is **~4250×
+cheaper than the 18-slice whole-surface rebuild** (≈126 µs vs ≈534 ms), because the
+17 unchanged expiries are untouched. The warm-vs-cold *seed* is only ~1.2× on a
+liquid slice (identical iteration counts — the cold ATM seed is already near the
+optimum; the seed's iteration cut shows on far-from-neutral/thin slices), so warm's
+durable value on liquid data is prior-anchored stability, not raw iterations —
+documented honestly, not oversold.
+
+**Unified library layer** (`chain.hpp`, `pricer_fitter.hpp`; `examples/chain_pricer_bench`).
+The Vola-Dynamics-style lifecycle in one object graph: an `OptionChain` is a
+single-underlier board where every option is a unique `OptionId` (the packed
+universe `ContractId` — no side table), built with `from_frame` and mutated by
+`update_quotes(ids, bids, asks)` (tick-to-quote, keyed by id). A `PricerFitter`
+takes a chain + optional `PricerConfig`, fits, and **owns the fitted surface**
+(`unique_ptr<FittedSurface>` wrapping the `VolaSession`). `value_chain(chain,
+fields, n_threads)` prices the whole chain into SoA columns, requesting only the
+fields wanted via `OutputField {ModelPrice, ModelIV, BidIV, AskIV, MidIV, Greeks}`;
+the cold bid/ask/mid American-IV inversions are embarrassingly parallel, fanned
+out across `std::jthread` workers with a static block partition so the result is
+**bit-identical for any thread count** (disjoint output slots, pure const reads —
+the `calibrate_pool` determinism pattern). Model price/IV/Greeks flow through the
+fitted surface's cached hot path; every number is bit-consistent with the
+`VolaSession` scalar queries (the facade adds ownership + parallelism, never a
+different number).
+
+The **SOTA American-IV method** is a cheap *surrogate* in the root-find, not a
+pricer (Andersen-Lake-Offengenden 2015; Longo, *Chasing Speed*, SSRN 2025;
+Le Floc'h & Healy 2026): `value_chain` inverts bid/ask/mid through the session's
+per-side Chebyshev `CorrectionCache` (Black-76 + one interpolation per residual,
+seeded by the surface IV) instead of a cold Andersen-Lake solve per residual
+(12 BAW root-finds + sweeps + quadrature + polish). That plus a dedicated
+`american_vega` (one cache eval vs the full-Greeks bundle's ~7) is a ~15-20×
+per-inversion win. **Measured (real SPY OPRA, 14,556 legs, `build-rel`):**
+`value_chain(All)` runs **21,395 inv/s/core → 93,612 inv/s on 4 cores** (a full
+43.7k-inversion board reprice in **0.40 s**, vs ~137 s for the naive cold path),
+bit-identical across thread counts; the surface build (with the call-side
+`andersen_lake_call_slice` boundary reuse) owns 35 slices in **245 ms**. Single-core
+20-21k inv/s sits in the ~20-33k/s/core SOTA American-IV frontier. See
+`examples/chain_pricer_bench` (scaling + determinism + tick-update) and
+`examples/american_iv_bench` config 4 (isolated cold-vs-surrogate on a known-truth
+board: cold 1.2k inv/s at 1e-9 round-trip, surrogate 20.5k inv/s at ~1e-3 near-ATM,
+wing-degraded where vega vanishes).
+
+**Cross-strike call boundary reuse** (`andersen_lake_call_slice`, `american.hpp`).
+A call `C(S,K,r,q)=P(K,S,q,r)` has an internal-put strike `Kp=S` (the fixed spot),
+so the Andersen-Lake early-exercise boundary is identical across a slice's call
+strikes at one σ — one cold boundary solve prices the whole strike row, each price
+bit-identical to a per-strike `andersen_lake`. Wired into the call-side
+`CorrectionCache::build` (its k-row sampler is exactly this shape) for an
+`n_strikes`-fold cut in boundary solves on the surface-fit hot path, at zero change
+to the produced surface.
+
 **Real-data proof** (`opra_panel.hpp`; `examples/opra_parity_bench`). A real
 Databento **OPRA cbbo-1m (NBBO)** XOM chain slice (2026-06-05 15:55 ET) is loaded
 from Parquet (OSI symbols parsed, spot implied from the front-expiry PCP forward),
@@ -150,6 +211,35 @@ cached DBN by atx-core's `opra_dbn_to_parquet` — **no API spend**. Result over
 | cold vs cached agreement (in-bid-ask, χ²) | 98.5% vs 98.5%, 0.214 vs 0.207 | self-consistent |
 | **cold whole-surface fit (single-thread)** | **≈0.36 s** (438 quotes, ≈0.8 ms/quote) | Vola cold-start class |
 | `fair_value` query hot path (cached vs cold) | **6.6 µs vs 103 µs (15.5×)** | — |
+
+**Real-data proof — SPY index at scale** (`examples/spy_diag`, `tests/spy_real_test.cpp`).
+The same pipeline on a real **SPY OPRA cbbo-1m** slice (2026-06-05, cached DBN → Parquet,
+`SPY.OPT`): **13,889 contracts across 35 expiries** (weeklies → LEAPs), implied spot
+≈$739, a steep index crash-put skew, and **penny-tight NBBO half-spreads**.
+
+| metric | value |
+|---|---|
+| median **vega-weighted vol-RMSE**, liquid slices (T ≥ 1wk) | **≈0.010 (1.0 vol pt)** |
+| liquid slices within 2 vol pts (vega-weighted) | **26 / 30** |
+| whole-surface build, cached hot path (13.9k contracts) | **≈8.6 s** (≈0.6 ms/contract) |
+| `fair_value` query hot path (cached) | **≈6.5 µs (75×)** |
+
+Two findings the SPY slice forced, both documented rather than papered over:
+- **In-bid-ask is the wrong gate at penny spreads.** SPY NBBO half-spreads are ~1¢, so a
+  ~0.4 vol-pt fit already lands *outside* bid-ask — the raw in-bid-ask reads ~12% while the
+  vega-weighted vol-RMSE is ~1 vol pt. Vol-RMSE (vega-weighted, near-money) is the accuracy
+  metric; fraction-in-bid-ask is a tick-size metric. The apparent "failure" was a metric
+  trap, not a fit failure.
+- **The wing-residual layer is not a net win on SPY.** The eSSVI backbone alone already fits
+  the tradeable smile to ~1 vol pt vega-weighted; the additive HingeQuad residual only
+  reshapes the low-vega deep wings (which vega weighting discounts) and *over-fits* sparse
+  event wings, so it stays off (matching the pre-existing `profile.cpp` note). Ultra-short
+  (< ~1wk) and the deepest tails (|k| > 1.5) are separate regimes, reported separately.
+
+A deterministic **synthetic** SPY known-truth oracle (`include/atx/vol/spy_fixture.hpp`,
+`examples/spy_surface_bench`) complements the real slice: with no quote noise the fit
+recovers the truth exactly (0.0 bp ATM, 100% in-bid-ask, calendar-arb-free) — a zero-bias
+round-trip check, where the real slice supplies the noisy-data accuracy number above.
 
 **Cold-start fit performance.** The single-threaded cold XOM surface fit went from
 **9.0 s → ≈0.36 s (≈25×)** with fit quality held (in-bid-ask, χ², vol-RMSE

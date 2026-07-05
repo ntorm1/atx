@@ -58,17 +58,18 @@ struct NoArbBand {
   return std::nullopt;
 }
 
-// American vega for the Newton step. `american_greeks` with a null correction
-// cache returns the Black-76 (European-leg) vega, which shares the sign and
-// scale of the American vega; the bracket keeps a mis-scaled step safe. Returns
-// 0 when the Greeks evaluation fails or the vega is non-positive, which the
-// rtsafe range test naturally reads as "force bisection".
+// American vega for the Newton step. `american_vega` (a null correction gives the
+// Black-76 European-leg vega, which shares the sign and scale of the American
+// vega; the bracket keeps a mis-scaled step safe) instead of the full
+// `american_greeks` bundle — the inverter only needs vega, and the bundle's
+// second-order FD terms are ~6 extra cache evaluations per Newton step. Returns 0
+// when the vega is non-finite or non-positive, which the rtsafe range test reads
+// as "force bisection".
 [[nodiscard]] double newton_vega(double S, double K, double T, double sigma,
                                  double r, double q, Side side,
                                  const CorrectionCache* correction) noexcept {
-  const Result<AmericanGreeks> g =
-      american_greeks(S, K, T, sigma, r, q, side, correction);
-  return (g && std::isfinite(g->vega) && g->vega > 0.0) ? g->vega : 0.0;
+  const double v = american_vega(S, K, T, sigma, r, q, side, correction);
+  return (std::isfinite(v) && v > 0.0) ? v : 0.0;
 }
 
 // True iff `correction` is usable as the forward map for `side`: non-null,
@@ -117,6 +118,17 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
     return Ok(kIvMin);
   }
 
+  // Warm-started ALO forward map for the cold Andersen-Lake path: one pricer per
+  // inversion holds the early-exercise boundary across residual evaluations, so
+  // each sigma re-solve reuses the previous boundary (1-2 sweeps) instead of a
+  // cold seed (12 Barone-Adesi-Whaley root-finds + ~6 sweeps). Identical output to
+  // repeated `andersen_lake(...)` calls, at a fraction of the cost. Only built for
+  // the un-cached AndersenLake path; the cached hot path and BAW keep their maps.
+  std::optional<AloPricer> alo;
+  if (!use_cache && method == AmericanMethod::AndersenLake) {
+    alo.emplace(S, K, T, r, q, side, opts);
+  }
+
   // f(sigma) = american_price(sigma) - price, monotone increasing in sigma. On
   // the cached path the forward map is `american_price_cached` (Black-76 + the
   // Chebyshev correction), which is still monotone in sigma; a non-finite cached
@@ -131,6 +143,14 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
       }
       return Ok(p - price);
     }
+    if (alo) {
+      const double p = alo->price(sigma);
+      if (!std::isfinite(p)) {
+        return Err(ErrorCode::NotImplemented,
+                   "american_implied_vol: ALO boundary collapsed (negative-carry corner)");
+      }
+      return Ok(p - price);
+    }
     Result<double> p = american_price(S, K, T, sigma, r, q, side, method, opts);
     if (!p) {
       return p;  // propagate the pricer's Error
@@ -138,54 +158,122 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
     return Ok(*p - price);
   };
 
-  // ── Bracket the root so that f(a) < 0 <= f(b) ──────────────────────────
-  double a = kSigmaLo;
-  ATX_TRY(double fa0, residual(a));
-  if (fa0 >= 0.0) {
-    // Even the vol floor over-prices the quote -> IV is at/below the floor.
-    return Ok(kIvMin);
-  }
+  // ── Bracket the root so f(xl) < 0 <= f(xh) ──────────────────────────────
+  //
+  // The European implied vol of the American price bounds the American IV from
+  // ABOVE: the American price >= the European at equal sigma, and by construction
+  // euro_price(seed) = price, so f(seed) = american_price(seed) - price >= 0. So
+  // when the seed exists we bracket AROUND it — one cold solve at the seed, then
+  // small (~7%) steps DOWN to the sign change — never pricing the far extremes
+  // sigma in {1e-4, 5}, which cost two cold ALO solves of pure bracket overhead.
+  // The small steps stay inside the AloPricer warm-reseed band, so for OTM options
+  // (American ~ European, root within a few percent of the seed) the entire
+  // bracket-and-polish is warm. A caller warm_start (a prior nearby sigma) is used
+  // as the seed when valid; the safeguarded Newton below makes any seed safe.
+  double xl = 0.0;  // residual(xl) < 0
+  double xh = 0.0;  // residual(xh) >= 0
+  double rts = 0.0;
+  double f = 0.0;
+  bool bracketed = false;
 
-  double b = kSigmaHi;
-  ATX_TRY(double fb, residual(b));
-  for (unsigned e = 0; fb < 0.0 && b < kSigmaHiCap && e < kMaxExpand; ++e) {
-    a = b;  // f(a) < 0 preserved (the old b was still on the negative side)
-    b = std::fmin(b * 2.0, kSigmaHiCap);
-    ATX_TRY(double fb_next, residual(b));
-    fb = fb_next;
-  }
-  if (fb < 0.0) {
-    return Err(ErrorCode::OutOfRange,
-               "american_implied_vol: price above max-vol price");
-  }
-
-  // ── Safeguarded Newton (rtsafe): oriented so f(xl) < 0 < f(xh) ─────────
-  double xl = a;  // residual(xl) < 0
-  double xh = b;  // residual(xh) >= 0
-
-  double rts = 0.5 * (xl + xh);
-  // A caller-supplied warm start (a prior nearby sigma) takes priority over the
-  // European seed when it is a valid in-bracket vol; otherwise fall back to the
-  // European implied vol of the American price. Both only set the initial Newton
-  // iterate — the safeguarded bracket makes any seed safe.
-  if (warm_start > 0.0 && warm_start > xl && warm_start < xh) {
-    rts = warm_start;
-  } else if (const std::optional<double> s =
+  double seed = 0.0;
+  if (warm_start > kSigmaLo && warm_start < kSigmaHi) {
+    seed = warm_start;
+  } else if (const std::optional<double> es =
                  euro_seed(price, S, K, T, r, q, side)) {
-    if (*s > xl && *s < xh) {
-      rts = *s;
+    if (*es > kSigmaLo && *es < kSigmaHi) {
+      seed = *es;
     }
   }
 
+  if (seed > 0.0) {
+    ATX_TRY(double f_seed, residual(seed));
+    if (f_seed == 0.0) {
+      return Ok(seed);  // seed is the root
+    }
+    rts = seed;
+    f = f_seed;
+    if (f_seed > 0.0) {
+      // Root at/below the seed: step down to the sign change (each step warm). The
+      // seed stays the upper bracket end (xh), so the Newton start rts = seed is
+      // always in [xl, xh].
+      xh = seed;
+      double s_lo = seed;
+      for (unsigned e = 0; e < 16; ++e) {
+        s_lo *= 0.93;  // ~7% < the 12% AloPricer warm-reseed band
+        if (s_lo <= kSigmaLo) {
+          s_lo = kSigmaLo;
+        }
+        ATX_TRY(double f_lo, residual(s_lo));
+        if (f_lo < 0.0) {
+          xl = s_lo;
+          bracketed = true;
+          break;
+        }
+        if (s_lo <= kSigmaLo) {
+          break;
+        }
+      }
+      if (!bracketed) {
+        // Even the vol floor over-prices the quote -> IV is at/below the floor.
+        return Ok(kIvMin);
+      }
+    } else {
+      // f(seed) < 0 (seed under-estimates — rare; the bound above is >= 0). Step
+      // up to the sign change; the seed stays the lower bracket end (xl).
+      xl = seed;
+      double s_hi = seed;
+      for (unsigned e = 0; e < 16 && s_hi < kSigmaHiCap; ++e) {
+        s_hi = std::fmin(s_hi * 1.15, kSigmaHiCap);
+        ATX_TRY(double f_hi, residual(s_hi));
+        if (f_hi >= 0.0) {
+          xh = s_hi;
+          bracketed = true;
+          break;
+        }
+      }
+      if (!bracketed) {
+        return Err(ErrorCode::OutOfRange,
+                   "american_implied_vol: price above max-vol price");
+      }
+    }
+  }
+
+  if (!bracketed) {
+    // Fallback wide bracket [1e-4, 5] with geometric hi-expansion: deep-ITM where
+    // the European seed is unavailable (American price above the European band), or
+    // a pathological quote.
+    double a = kSigmaLo;
+    ATX_TRY(double fa0, residual(a));
+    if (fa0 >= 0.0) {
+      return Ok(kIvMin);
+    }
+    double b = kSigmaHi;
+    ATX_TRY(double fb, residual(b));
+    for (unsigned e = 0; fb < 0.0 && b < kSigmaHiCap && e < kMaxExpand; ++e) {
+      a = b;  // f(a) < 0 preserved (the old b was still on the negative side)
+      b = std::fmin(b * 2.0, kSigmaHiCap);
+      ATX_TRY(double fb_next, residual(b));
+      fb = fb_next;
+    }
+    if (fb < 0.0) {
+      return Err(ErrorCode::OutOfRange,
+                 "american_implied_vol: price above max-vol price");
+    }
+    xl = a;
+    xh = b;
+    rts = 0.5 * (xl + xh);
+    ATX_TRY(double f_mid, residual(rts));
+    f = f_mid;
+  }
+
+  // ── Safeguarded Newton (rtsafe): oriented so f(xl) < 0 < f(xh) ─────────
+  bool converged = (f == 0.0);  // seed landed exactly on the root
   double dx = xh - xl;
   double dx_old = dx;
-  ATX_TRY(double f, residual(rts));
-  if (f == 0.0) {
-    return Ok(rts);  // seed landed exactly on the root
-  }
-  double df = newton_vega(S, K, T, rts, r, q, side, correction);
+  double df = converged ? 0.0 : newton_vega(S, K, T, rts, r, q, side, correction);
 
-  for (std::uint16_t iter = 0; iter < max_iter; ++iter) {
+  for (std::uint16_t iter = 0; !converged && iter < max_iter; ++iter) {
     // Bisect when the Newton iterate would leave [xl, xh] or is not shrinking
     // the step by at least half — this is what guarantees convergence.
     const bool newton_out =
@@ -196,18 +284,21 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
       dx = 0.5 * (xh - xl);
       rts = xl + dx;
       if (rts == xl) {
-        return Ok(rts);  // interval collapsed to a representable point
+        converged = true;  // interval collapsed to a representable point
+        break;
       }
     } else {
       dx = f / df;
       const double prev = rts;
       rts -= dx;
       if (rts == prev) {
-        return Ok(rts);  // step below one ULP
+        converged = true;  // step below one ULP
+        break;
       }
     }
     if (std::fabs(dx) < tol) {
-      return Ok(rts);
+      converged = true;
+      break;
     }
 
     ATX_TRY(double f_next, residual(rts));
@@ -218,11 +309,48 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
     } else if (f > 0.0) {
       xh = rts;
     } else {
-      return Ok(rts);  // exact hit
+      converged = true;  // exact hit
+      break;
     }
   }
 
-  return Err(ErrorCode::Unavailable, "american_implied_vol: no convergence");
+  if (!converged) {
+    return Err(ErrorCode::Unavailable, "american_implied_vol: no convergence");
+  }
+
+  // Cold polish (un-cached Andersen-Lake path only). The warm AloPricer forward
+  // map used for the search reproduces andersen_lake exactly when its boundary is
+  // fully converged, but at hard corners (long-dated, low-vol) the 2-JN/4-FP
+  // boundary is not fully converged and is thus SEED-dependent, so the warm map
+  // differs from the reference cold andersen_lake by up to the scheme's noise
+  // (~1e-3 price there). One or two Newton steps on the COLD reference map lock
+  // *iv to andersen_lake(*iv) = price, so the inversion is self-consistent with
+  // re-pricing. The cached and BAW paths already reprice through their own search
+  // map, so they need no polish. The scheme's max_dy convergence flag cannot
+  // reliably predict warm==cold (a damped sweep step under-reports), so this runs
+  // unconditionally; it is at most two cold solves, and the warm seed-centric
+  // bracket (one cold seed, not two far extremes) keeps the inversion well below
+  // the cold-per-residual baseline.
+  if (alo) {
+    for (int k = 0; k < 2; ++k) {
+      ATX_TRY(double pc, american_price(S, K, T, rts, r, q, side, method, opts));
+      const double v = newton_vega(S, K, T, rts, r, q, side, correction);
+      if (!(v > 0.0)) {
+        break;
+      }
+      const double step = (pc - price) / v;
+      const double prev = rts;
+      rts -= step;
+      if (!(rts > 0.0)) {
+        rts = prev;  // keep the last valid iterate
+        break;
+      }
+      if (std::fabs(step) < tol) {
+        break;
+      }
+    }
+  }
+  return Ok(rts);
 }
 
 Status american_implied_vol_batch(std::span<const double> price, double S,

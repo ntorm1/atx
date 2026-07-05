@@ -20,6 +20,7 @@ add_executable(atx-vol-tests
     svi_calib_test.cpp
     cstar_test.cpp
     cstar_calib_test.cpp
+    dense_slice_test.cpp
     profile_test.cpp
     data_test.cpp
     surface_archive_test.cpp
@@ -41,6 +42,8 @@ add_executable(atx-vol-tests
     opra_panel_test.cpp
     session_test.cpp
     vol_umbrella_test.cpp
+    spy_real_test.cpp
+    pricer_fitter_test.cpp
 )
 
 target_link_libraries(atx-vol-tests

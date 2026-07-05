@@ -20,18 +20,25 @@
 // (mirroring the C fixtures' skip-when-absent convention).
 
 #include <chrono>
+#include <cmath>    // exp, log
 #include <cstdio>
 #include <cstdlib>  // atof
 #include <exception>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/arb.hpp"     // arb_check_calendar (crossing localization)
+#include "atx/vol/calib.hpp"       // build_observations, CalibOpts, FitObs/FitDiag
+#include "atx/vol/data.hpp"        // data_install
+#include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice (warm vs cold refit)
 #include "atx/vol/opra_panel.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/types.hpp"  // Side
+#include "atx/vol/universe.hpp"     // Universe, Underlying (chains for refit)
+#include "atx/vol/vol_surface.hpp"  // EssviParams
 
 namespace {
 
@@ -308,6 +315,84 @@ int main(int argc, char** argv) {
     if (ladder_ms > 0.0) {
       std::printf("  ladder speedup        : %.2fx   (checksum %.3f)\n",
                   loop_ms / ladder_ms, sink);
+    }
+
+    // ── Incremental warm-start refit latency (the tick-to-quote path) ──────
+    // A market maker does not rebuild the whole surface when one chain reprints
+    // — it refits THAT expiry's eSSVI slice from the fresh quotes. Measure the
+    // per-slice refit COLD (neutral cube seed) vs WARM-STARTED (the whole cube
+    // seeded from the pre-tick slice): iterations and wall-clock, on a real
+    // middle expiry. Same landing quality; warm is the incremental hot path.
+    atx::vol::Universe u_refit;
+    if (const auto uid = atx::vol::data_install(u_refit, panel.frame);
+        uid.has_value() && !ctx.empty()) {
+      const auto under = u_refit.get_underlying(*uid);
+      if (under.has_value() && !(*under)->chains.empty()) {
+        const std::size_t idx = (*under)->chains.size() / 2;  // a middle expiry
+        const auto& chain = (*under)->chains[idx];
+        const double T = ctx[idx].T;
+        const double F = ctx[idx].forward;
+        const double df = std::exp(-rate * T);
+        atx::vol::CalibOpts opts;  // default policy (== the session's in_.calib)
+        const auto obs = atx::vol::build_observations(chain, F, T, df, opts);
+        const auto slices = cached->surface().essvi_slices();
+        if (obs.has_value() && obs->obs.size() >= 5 && idx < slices.size()) {
+          const atx::vol::EssviParams prior = slices[idx];
+          const std::span<const atx::vol::FitObs> os{obs->obs};
+
+          atx::vol::FitDiag dc{};
+          atx::vol::FitDiag dw{};
+          (void)atx::vol::essvi_fit_slice(os, T, F, opts, &dc);            // cold
+          (void)atx::vol::essvi_fit_slice(os, T, F, opts, &dw, 0.0, &prior);  // warm
+
+          constexpr int kRR = 4000;
+          const double rc0 = now_ms();
+          for (int rep = 0; rep < kRR; ++rep) {
+            const auto r = atx::vol::essvi_fit_slice(os, T, F, opts, nullptr);
+            if (r.has_value()) sink += r->theta;
+          }
+          const double cold_refit_ms = now_ms() - rc0;
+
+          const double rw0 = now_ms();
+          for (int rep = 0; rep < kRR; ++rep) {
+            const auto r =
+                atx::vol::essvi_fit_slice(os, T, F, opts, nullptr, 0.0, &prior);
+            if (r.has_value()) sink += r->theta;
+          }
+          const double warm_refit_ms = now_ms() - rw0;
+
+          const double warm_us = 1000.0 * warm_refit_ms / kRR;
+          std::printf(
+              "\n=== incremental slice refit (tick-to-quote) @ T=%.3f, %zu obs ===\n",
+              T, obs->obs.size());
+          std::printf("  cold  (neutral seed) : %8.1f us/refit   inner %u  outer %u\n",
+                      1000.0 * cold_refit_ms / kRR, dc.inner_iters_total,
+                      dc.outer_iters);
+          std::printf("  warm  (prior seed)   : %8.1f us/refit   inner %u  outer %u\n",
+                      warm_us, dw.inner_iters_total, dw.outer_iters);
+          if (warm_refit_ms > 0.0) {
+            std::printf("  warm/cold seed       : %.2fx  (iteration cut shows on"
+                        " far-from-neutral / thin slices; this liquid slice is\n"
+                        "                         already near the cold ATM seed,"
+                        " so warm's win here is small — its real value is\n"
+                        "                         prior-anchored stability across"
+                        " ticks, see prior_strength)\n",
+                        cold_refit_ms / warm_refit_ms);
+          }
+          // The headline tick-to-quote win is not warm-vs-cold; it is touching
+          // ONE expiry instead of rebuilding the whole surface. Compare the
+          // single-slice refit to the full cached whole-surface build.
+          if (warm_us > 0.0) {
+            std::printf("  vs full surface build: %.0fx cheaper than the %zu-slice"
+                        " whole-surface rebuild (%.1f ms) — a single-expiry\n"
+                        "                         re-quote reprices its own slice,"
+                        " not the %zu unchanged expiries\n",
+                        (cached_ms * 1000.0) / warm_us, d.n_slices, cached_ms,
+                        d.n_slices > 0 ? d.n_slices - 1 : 0);
+          }
+          sink += static_cast<double>(dc.inner_iters_total);
+        }
+      }
     }
 
     return 0;

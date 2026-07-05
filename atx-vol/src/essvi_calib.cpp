@@ -13,6 +13,7 @@
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
 #include "atx/vol/arb.hpp"             // arb_project_calendar_essvi
+#include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
 #include "atx/vol/detail/robust.hpp"   // huber_weights_strided
 #include "atx/vol/vol_surface.hpp"     // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
 
@@ -107,15 +108,39 @@ void clamp_cube(double& psi, double& p, double& lambda) noexcept {
 }
 
 // Weighted SSE of the w-domain residual Σ w_i (w_model(k_i) − w_mkt_i)².
+// ── Warm-start cube prior (Tikhonov shrinkage toward a previous fit) ──────
+//
+// A soft pull of the cube (psi, p, lambda) toward a target cube — the previous
+// fit's converged coordinates on a tick-to-quote refit. `strength` is already
+// scaled to the dataset's total weight in `fit_core` (so `opts.prior_strength`
+// reads as a fraction of the data's influence), meaning cube_sse / lm_step use
+// it raw. A null `CubePrior*` (or strength <= 0) is a no-op — byte-identical to
+// the historical fit. The penalty is added to BOTH the SSE (so the LM's
+// accept/reject sees it) and the Gauss-Newton normal equations (so the step
+// descends it), in the same factor-of-2-dropped convention the obs term uses.
+struct CubePrior {
+  double psi{0.0};
+  double p{0.0};
+  double lambda{0.0};
+  double strength{0.0};  // >0 enables; already weight-scaled
+};
+
 [[nodiscard]] double cube_sse(std::span<const FitObs> obs,
                               std::span<const double> weights,
                               const ThetaBand& band, double T, double psi,
-                              double p, double lambda) noexcept {
+                              double p, double lambda,
+                              const CubePrior* prior = nullptr) noexcept {
   const EssviParams s = slice_from_cube(psi, p, lambda, band, T);
   double acc = 0.0;
   for (std::size_t i = 0; i < obs.size(); ++i) {
     const double r = essvi_backbone_w(s, obs[i].k) - obs[i].w_mkt;
     acc += weights[i] * r * r;
+  }
+  if (prior != nullptr && prior->strength > 0.0) {
+    const double dpsi = psi - prior->psi;
+    const double dp = p - prior->p;
+    const double dl = lambda - prior->lambda;
+    acc += prior->strength * (dpsi * dpsi + dp * dp + dl * dl);
   }
   return acc;
 }
@@ -210,7 +235,8 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
                              double& p, double& lambda, double prev_sse,
                              double& lambda_lm, std::span<double> r,
                              std::span<double> jpsi, std::span<double> jp,
-                             std::span<double> jl) {
+                             std::span<double> jl,
+                             const CubePrior* prior = nullptr) {
   residuals_and_jac(obs, band, T, psi, p, lambda, r, jpsi, jp, jl);
 
   double h00 = 0.0, h01 = 0.0, h02 = 0.0, h11 = 0.0, h12 = 0.0, h22 = 0.0;
@@ -230,6 +256,18 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     g0 += wi * j0 * ri;
     g1 += wi * j1 * ri;
     g2 += wi * j2 * ri;
+  }
+  // Warm-start prior: a diagonal Tikhonov term pulling the cube toward the
+  // target. Contributes `strength` to each Hessian diagonal and
+  // `strength·(x−x0)` to the gradient (the factor-of-2 the obs term drops).
+  if (prior != nullptr && prior->strength > 0.0) {
+    const double s = prior->strength;
+    h00 += s;
+    h11 += s;
+    h22 += s;
+    g0 += s * (psi - prior->psi);
+    g1 += s * (p - prior->p);
+    g2 += s * (lambda - prior->lambda);
   }
 
   for (int trial = 0; trial < kLmTrialCap; ++trial) {
@@ -264,7 +302,7 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     clamp_cube(psi_new, p_new, lambda_new);
 
     const double new_sse =
-        cube_sse(obs, weights, band, T, psi_new, p_new, lambda_new);
+        cube_sse(obs, weights, band, T, psi_new, p_new, lambda_new, prior);
     if (new_sse < prev_sse) {
       psi = psi_new;
       p = p_new;
@@ -341,6 +379,226 @@ bool lee_project(double& psi, double& p, double& lambda, const ThetaBand& band,
   return c;
 }
 
+// ── Dense C2 residual layer (smoothing spline on w_mkt − backbone) ───────────
+//
+// The wing-only HINGE_QUAD layer (below) corrects the deep wings but is zero
+// inside |y| < kResidInnerY, so it never tightens the high-vega core — and the
+// core is exactly where the penny bid-ask band is narrowest and % within bid-ask
+// is decided. This layer instead fits a DENSE C2 bump basis over the WHOLE smile
+// (detail/resid_basis.hpp) to the vega-weighted total-variance residual, with a
+// 2nd-difference roughness penalty so it behaves as a smoothing spline:
+// near-interpolating where quotes are dense and clean (the liquid core), smooth
+// where they are sparse (the wings). A butterfly guard raises the penalty until
+// the total (backbone + residual) density g(k) >= 0; if no arb-free fit is found
+// the slice is left backbone-only.
+
+// Lee/Roper density g(k) = (1 - k·w'/2w)² - (w'²/4)(¼ + 1/w) + w''/2 on the TOTAL
+// (backbone + residual) variance, min over a grid spanning the fitted range.
+// Central finite differences (matches arb.hpp's butterfly check). Returns a large
+// negative sentinel on a non-positive w (treated as a violation).
+[[nodiscard]] double dense_resid_min_g(const EssviParams& s, double kmax,
+                                      double* k_worst = nullptr) noexcept {
+  constexpr int kNg = 80;
+  const double klo = -1.15 * kmax;
+  const double khi = 1.15 * kmax;
+  const double h = std::max(1.0e-4, (khi - klo) / (4.0 * kNg));
+  double gmin = std::numeric_limits<double>::infinity();
+  for (int i = 0; i <= kNg; ++i) {
+    const double k = klo + (khi - klo) * static_cast<double>(i) / kNg;
+    const double w = essvi_total_w(s, k);
+    if (!(w > 0.0) || !std::isfinite(w)) {
+      if (k_worst != nullptr) {
+        *k_worst = k;
+      }
+      return -1.0e9;
+    }
+    const double wp = essvi_total_w(s, k + h);
+    const double wm = essvi_total_w(s, k - h);
+    const double dw = (wp - wm) / (2.0 * h);
+    const double d2w = (wp - 2.0 * w + wm) / (h * h);
+    const double a = 1.0 - k * dw / (2.0 * w);
+    const double g = a * a - 0.25 * dw * dw * (0.25 + 1.0 / w) + 0.5 * d2w;
+    if (g < gmin) {
+      gmin = g;
+      if (k_worst != nullptr) {
+        *k_worst = k;
+      }
+    }
+  }
+  return gmin;
+}
+
+// Fit the dense C2 residual on the converged backbone. Weighted (vega²/spread²)
+// least squares of (w_mkt − backbone) against the N-bump basis + a
+// 2nd-difference roughness penalty λ·(D²)ᵀD², escalating λ until the fit is
+// butterfly-arb-free. Writes resid_coef[0..N-1] / resid_scale / kind / n_basis on
+// success; leaves the slice backbone-only otherwise.
+void fit_dense_residual(std::span<const FitObs> obs, EssviParams& slice,
+                        const CalibOpts& opts) {
+  double kmax = 0.0;
+  for (const FitObs& o : obs) {
+    kmax = std::max(kmax, std::fabs(o.k));
+  }
+  if (!(kmax > 0.0)) {
+    return;
+  }
+  const int N = detail::resid_bump_count(
+      opts.residual_n_basis_terms != 0 ? opts.residual_n_basis_terms : 12);
+  const double scale = kmax;
+
+  // Precompute per-obs basis rows, the backbone-residual target (w-space), and
+  // the base (vega²/spread²) weight. Since ~1/4 of a raw penny-quote SPY board is
+  // locally butterfly-violating (stale / one-sided / non-synchronous quotes that
+  // NO arb-free surface can reproduce), a plain LSQ residual chases that noise and
+  // manufactures arbitrage. The IRLS-Huber loop below rejects those outliers so
+  // the layer fits the smooth consensus of the CLEAN quotes and stays arb-free.
+  const std::size_t n = obs.size();
+  std::vector<std::array<double, 16>> B(n);
+  std::vector<double> target(n);
+  std::vector<double> base_w(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double y = std::clamp(obs[i].k / scale, -1.0, 1.0);
+    detail::resid_bump_basis(y, N, B[i]);
+    target[i] = obs[i].w_mkt - essvi_backbone_w(slice, obs[i].k);
+    base_w[i] = (obs[i].weight_w > 0.0) ? obs[i].weight_w : 1.0;
+  }
+
+  const double huber_k = (opts.huber_k > 0.0) ? opts.huber_k : 1.5;
+  const double lam_f =
+      (opts.residual_ridge_factor > 0.0) ? opts.residual_ridge_factor : 5.0e-4;
+
+  std::vector<double> w_eff = base_w;  // IRLS-mutable weights
+  std::array<double, 16> coef{};
+  bool have = false;
+  for (int pass = 0; pass < 4; ++pass) {
+    // Weighted normal equations Bᵀ W B c = Bᵀ W target + roughness + ridge.
+    MatX A = MatX::Zero(N, N);
+    VecX rhs = VecX::Zero(N);
+    for (std::size_t i = 0; i < n; ++i) {
+      const double wt = w_eff[i];
+      if (!(wt > 0.0)) {
+        continue;
+      }
+      const auto& bi = B[i];
+      for (int r = 0; r < N; ++r) {
+        const auto rr = static_cast<std::size_t>(r);
+        rhs(r) += wt * bi[rr] * target[i];
+        for (int c = 0; c <= r; ++c) {
+          A(r, c) += wt * bi[rr] * bi[static_cast<std::size_t>(c)];
+        }
+      }
+    }
+    for (int r = 0; r < N; ++r) {
+      for (int c = r + 1; c < N; ++c) {
+        A(r, c) = A(c, r);
+      }
+    }
+    double tr = 0.0;
+    for (int i = 0; i < N; ++i) {
+      tr += A(i, i);
+    }
+    if (!(tr > 0.0)) {
+      if (have) {
+        break;
+      }
+      return;
+    }
+    const double tr_avg = tr / static_cast<double>(N);
+    // Soft 2nd-difference roughness penalty λ·(D²)ᵀD² (smoothing-spline behavior)
+    // + tiny conditioning ridge. Kept soft: near-interpolate the dense clean core.
+    const double lam = lam_f * tr_avg;
+    for (int r = 1; r < N - 1; ++r) {
+      const int idx[3] = {r - 1, r, r + 1};
+      const double val[3] = {1.0, -2.0, 1.0};
+      for (int a = 0; a < 3; ++a) {
+        for (int c = 0; c < 3; ++c) {
+          A(idx[a], idx[c]) += lam * val[a] * val[c];
+        }
+      }
+    }
+    for (int i = 0; i < N; ++i) {
+      A(i, i) += 1.0e-9 * tr_avg + 1.0e-15;
+    }
+    const auto sol = atx::core::linalg::solve_spd(A, rhs);
+    if (!sol.has_value()) {
+      if (have) {
+        break;
+      }
+      return;  // leave backbone-only (safe)
+    }
+    for (int j = 0; j < N; ++j) {
+      coef[static_cast<std::size_t>(j)] = (*sol)(j);
+    }
+    have = true;
+    if (pass == 3) {
+      break;
+    }
+    // Robust reweight: standardized residual z = (fit − target)·√(base_w) is the
+    // residual in noise units (base_w ≈ 1/σ_w²); Huber down-weights |z| > k so the
+    // arb-violating quotes stop driving the fit.
+    for (std::size_t i = 0; i < n; ++i) {
+      double fit = 0.0;
+      for (int j = 0; j < N; ++j) {
+        fit += coef[static_cast<std::size_t>(j)] * B[i][static_cast<std::size_t>(j)];
+      }
+      const double z = (fit - target[i]) * std::sqrt(base_w[i]);
+      const double az = std::fabs(z);
+      const double hw = (az <= huber_k) ? 1.0 : huber_k / az;
+      w_eff[i] = base_w[i] * hw;
+    }
+  }
+  if (!have) {
+    return;
+  }
+
+  // Static-arb safety by LOCAL greedy coordinate projection. The robust residual
+  // still over-bends in thin regions (density g(k) craters where it chases a
+  // penny-noise quote), but a GLOBAL scalar damp would strip the whole slice's
+  // correction to fix one point. Instead: repeatedly locate the worst-g grid
+  // point and HALVE the single coefficient whose bump dominates there, until
+  // g(k) >= 0 everywhere — so the correction survives wherever it is arb-safe.
+  auto store = [&](EssviParams& s, const std::array<double, 16>& c) {
+    s.resid_coef = {};
+    for (int j = 0; j < N; ++j) {
+      s.resid_coef[static_cast<std::size_t>(j)] = c[static_cast<std::size_t>(j)];
+    }
+    s.resid_scale = scale;
+    s.resid_basis_kind = ResidualBasisKind::C2Bspline;
+    s.resid_n_basis = static_cast<std::uint8_t>(N);
+  };
+
+  std::array<double, 16> row{};
+  for (int iter = 0; iter < 80; ++iter) {
+    EssviParams trial = slice;
+    store(trial, coef);
+    double k_worst = 0.0;
+    const double gmin = dense_resid_min_g(trial, kmax, &k_worst);
+    if (gmin >= 0.0) {
+      slice = trial;  // arb-free — accept the locally-projected residual
+      return;
+    }
+    // Halve the coefficient whose basis bump dominates the violation at k_worst.
+    const double y = std::clamp(k_worst / scale, -1.0, 1.0);
+    detail::resid_bump_basis(y, N, row);
+    int jbest = -1;
+    double best = 0.0;
+    for (int j = 0; j < N; ++j) {
+      const auto jj = static_cast<std::size_t>(j);
+      const double contrib = std::fabs(coef[jj]) * row[jj];
+      if (contrib > best) {
+        best = contrib;
+        jbest = j;
+      }
+    }
+    if (jbest < 0) {
+      break;  // no active coefficient at the violation — cannot repair locally
+    }
+    coef[static_cast<std::size_t>(jbest)] *= 0.5;
+  }
+  // Did not converge to arb-free within the budget: leave the slice
+  // backbone-only (safe) rather than serve a butterfly-arb residual.
+}
+
 // ── Optional wing-residual layer (ridge LS on w_mkt − backbone) ──────────
 //
 // HINGE_QUAD basis (slots 1..4 of resid_coef == {yp, yp², yc, yc²}, matching
@@ -406,7 +664,8 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
 [[nodiscard]] Result<EssviParams> fit_core(std::span<const FitObs> obs, double T,
                                            double F, const CalibOpts& opts,
                                            const ThetaBand& band,
-                                           FitDiag* out_diag) {
+                                           FitDiag* out_diag,
+                                           const EssviParams* warm = nullptr) {
   if (obs.empty() || !(T > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "essvi_fit_slice: empty observations or non-positive T");
@@ -416,16 +675,28 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   // Base (fixed) weights and the IRLS-mutable active copy.
   std::vector<double> base_w(n);
   std::vector<double> active(n);
+  double total_base_w = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
     base_w[i] = (obs[i].weight_w > 0.0) ? obs[i].weight_w : 1.0;
     active[i] = base_w[i];
+    total_base_w += base_w[i];
   }
 
-  // Cube seed: psi from the ATM total variance, neutral p / lambda.
+  // Cube seed. The COLD path seeds psi from the ATM total variance (a crude
+  // band-ratio level estimate) and p / lambda neutral. A WARM-start refit seeds
+  // the whole cube (psi, p, lambda) from the PREVIOUS fit's CONVERGED
+  // coordinates: for a tick-to-quote update of the same expiry that lands the LM
+  // essentially at the optimum, so it converges in far fewer inner iterations
+  // than the cold seed (the crude band-ratio psi is nowhere near as good as the
+  // prior optimum). A null `warm` is byte-identical to the historical seed.
   double psi = 0.5;
   double p = 0.3;
   double lambda = 0.4;
-  {
+  if (warm != nullptr) {
+    psi = warm->psi;
+    p = warm->p;
+    lambda = warm->lambda;
+  } else {
     double atm_w = 0.0;
     double atm_absk = std::numeric_limits<double>::infinity();
     for (const FitObs& o : obs) {
@@ -439,6 +710,21 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
     }
   }
   clamp_cube(psi, p, lambda);
+
+  // Optional warm-start Tikhonov prior. Enabled only when a warm slice is given
+  // AND opts.prior_strength > 0. The user-facing strength (0..1, "fraction of
+  // the data's influence") is scaled here by the dataset's total weight so the
+  // penalty is dimensionally comparable to the obs SSE; downstream it is used
+  // raw. Anchored at the CLAMPED seed cube (== warm cube), the fit's home base.
+  CubePrior cube_prior{};
+  const bool use_prior = (warm != nullptr) && (opts.prior_strength > 0.0);
+  if (use_prior) {
+    cube_prior.psi = std::clamp(warm->psi, kCubeEdge, 1.0 - kCubeEdge);
+    cube_prior.p = p;
+    cube_prior.lambda = lambda;
+    cube_prior.strength = opts.prior_strength * total_base_w;
+  }
+  const CubePrior* prior = use_prior ? &cube_prior : nullptr;
 
   // Morozov noise floor in w-domain SSE units (off by default). The C poses it
   // in price units; here the per-obs half-spread is mapped to a w-noise via
@@ -479,14 +765,14 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   double prev_outer_sse = std::numeric_limits<double>::infinity();
 
   for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
-    double sse = cube_sse(obs, active, band, T, psi, p, lambda);
+    double sse = cube_sse(obs, active, band, T, psi, p, lambda, prior);
     double lambda_lm = kLambdaLmInit;
     for (std::uint16_t inner = 0; inner < max_inner; ++inner) {
       const double psi_old = psi;
       const double p_old = p;
       const double lambda_old = lambda;
       const double new_sse = lm_step(obs, active, band, T, psi, p, lambda, sse,
-                                     lambda_lm, r, jpsi, jp, jl);
+                                     lambda_lm, r, jpsi, jp, jl, prior);
       ++inner_total;
       if (new_sse < 0.0) {
         break;  // unrecoverable solve; keep the last good cube
@@ -547,9 +833,15 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   slice.T = T;
   slice.F = F;
 
-  // Optional additive wing-residual layer (fit on the converged backbone).
+  // Optional additive residual layer (fit on the converged backbone). The dense
+  // C2 basis tightens the whole smile (incl. the high-vega core, where % within
+  // bid-ask is decided); HINGE_QUAD is the wing-only legacy layer.
   if (!opts.residual_disable) {
-    fit_wing_residual(obs, slice, opts);
+    if (opts.residual_basis_kind == ResidualBasisKind::C2Bspline) {
+      fit_dense_residual(obs, slice, opts);
+    } else {
+      fit_wing_residual(obs, slice, opts);
+    }
   }
 
   // Diagnostics: vol-domain vega-agnostic RMSE and max residual (vol pts).
@@ -710,14 +1002,15 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
 
 Result<EssviParams> essvi_fit_slice(std::span<const FitObs> obs, double T,
                                     double F, const CalibOpts& opts,
-                                    FitDiag* out_diag, double theta_floor) {
+                                    FitDiag* out_diag, double theta_floor,
+                                    const EssviParams* warm) {
   ThetaBand band = default_band(T);
   // Raise the cube's theta_lo to the floor (calendar-monotone seam), exactly as
   // calib_surface_impl does for the sequential driver. 0 / <= band.lo is a no-op.
   if (theta_floor > band.lo) {
     band.lo = std::min(theta_floor, band.hi - 1.0e-12);
   }
-  return fit_core(obs, T, F, opts, band, out_diag);
+  return fit_core(obs, T, F, opts, band, out_diag, warm);
 }
 
 std::array<double, 3> essvi_w_cube_grad(const EssviParams& slice,

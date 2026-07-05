@@ -223,6 +223,43 @@ class VolaSession {
                                      std::span<const Side> sides,
                                      std::span<AmericanGreeks> out) const;
 
+  // ── Incremental update (tick-to-quote) ─────────────────────────────────────
+  //
+  // Warm-start refit of ONE already-fitted expiry from a fresh observation set —
+  // the market-maker's re-quote path. When a chain re-prints, the desk does not
+  // want a whole-surface rebuild; it wants that one expiry's eSSVI slice nudged
+  // to the new quotes, in microseconds, reusing the prior fit.
+  //
+  // `slice_idx` indexes the ascending-T fitted slices (parallel to `expiries()`
+  // / `parity()`). `new_obs` is the rebuilt w-space observation set for that
+  // expiry — produce it with `build_observations(chain, F, T, df, ...)` on the
+  // fresh quotes (F/T/df are `expiries()[slice_idx]`'s forward / T / carry).
+  //
+  // The fit WARM-STARTS from the slice's current eSSVI params: the whole cube
+  // (level/curvature/skew) seeds from the prior fit, so the LM converges in far
+  // fewer iterations than the cold seed at the same quality (see essvi_calib.hpp
+  // `warm`; measured in opra_parity_bench). If `in.calib.prior_strength > 0` a
+  // Tikhonov term also
+  // shrinks toward the prior, stabilising thin/noisy updates. The refit is
+  // calendar-floored at the previous slice's ATM level so the term structure
+  // stays monotone through the update.
+  //
+  // On success the refit slice REPLACES the old one in the surface (its expiry
+  // identity preserved), the slice's `n_used` is refreshed, and the surface-
+  // level calendar-arb flag in `diagnostics()` is re-evaluated; every subsequent
+  // query (`iv`/`fair_value`/`greeks`/ladders) reflects the new slice with no
+  // further refit. The returned `FitDiag` carries the refit's fit quality
+  // (RMSE, iteration counts). NOTE: the per-expiry re-Americanized bid-ask
+  // `parity()` fracs are NOT re-scored (the raw market quotes are not retained);
+  // fit quality is in the returned diag. On a fit failure the surface is left
+  // untouched and the fit error is propagated.
+  //
+  // @return InvalidArgument for an out-of-range `slice_idx`, empty `new_obs`, or
+  //         a surface with no eSSVI slice at that index; the fit's own error
+  //         (Unavailable on a degenerate slice) otherwise; else Ok(FitDiag).
+  [[nodiscard]] Result<FitDiag> refit_slice(std::size_t slice_idx,
+                                            std::span<const FitObs> new_obs);
+
   // ── Introspection ──────────────────────────────────────────────────────────
 
   [[nodiscard]] const VolSurface& surface() const noexcept { return surface_; }
@@ -239,6 +276,27 @@ class VolaSession {
 
   [[nodiscard]] const SessionDiagnostics& diagnostics() const noexcept {
     return diag_;
+  }
+
+  // ── Term carry accessors (the query re-pricing forward / effective yield) ──
+  //
+  // The interpolated term forward F(T) and effective carry q_eff(T) at an
+  // arbitrary T — the SAME clamp-outside / linear-interp-between-slices mechanic
+  // the const queries use to re-price (see the forward-interpolation note above).
+  // Exposed so a batch / whole-chain evaluator can resolve the per-expiry carry
+  // (e.g. to invert bid/ask to American IV on the fit's own carry) without a
+  // refit. Both return 0 for a non-finite / non-positive T (no slice to locate).
+  [[nodiscard]] double forward_at(double T) const noexcept;
+  [[nodiscard]] double q_eff_at(double T) const noexcept;
+
+  // The per-side correction caches this session built (null pointers where a side
+  // is on the cold path). Lets a batch / whole-chain evaluator route its
+  // American-IV inversions through the SAME cached hot path (`american_price_cached`
+  // = Black-76 + Chebyshev correction) that `fair_value` uses — orders of magnitude
+  // faster than a cold Andersen-Lake solve per residual, and self-consistent with
+  // the session's own re-pricing.
+  [[nodiscard]] AmericanCorrectionCaches correction_caches() const noexcept {
+    return query_caches();
   }
 
  private:

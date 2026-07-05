@@ -226,8 +226,31 @@ resolve_chain_borrow(const Chain& chain, double S, double r,
                "de_americanize_chain: no near-ATM co-terminal pair for borrow");
   }
 
-  const std::size_t k = std::min(opts.n_atm == 0 ? std::size_t{1} : opts.n_atm,
-                                 both_valid.size());
+  // Robust multi-strike carry solve. Use EVERY near-ATM co-terminal pair inside a
+  // ±6% moneyness band (falling back to the opts.n_atm nearest when too few), and
+  // average their implied borrows. Two deliberate departures from a single-pair
+  // solve, both required to hit the sub-tick forward accuracy dense boards need:
+  //   (1) the COLD Andersen-Lake de-Am is used for the carry solve (empty caches),
+  //       NOT the query correction cache — the cache's small American→European
+  //       Chebyshev bias, fed through the put-call parity solve, shifts the implied
+  //       forward by ~$1–2 and injects a systematic near-ATM put/call IV step
+  //       (measured on the SPY board). The carry solve is once per expiry, so the
+  //       cold path is affordable.
+  //   (2) many pairs, not one: a single ATM pair is quote-noise-fragile; the band
+  //       average is the robust, put-call-IV-agreement-consistent forward.
+  const AmericanCorrectionCaches cold_caches{};
+  std::size_t band = 0;
+  for (std::size_t j = 0; j < both_valid.size(); ++j) {
+    if (std::fabs(chain.strikes[both_valid[j]] / S - 1.0) <= 0.06) ++band;
+  }
+  // Cap the solve at the 12 nearest pairs: a dozen near-money pairs already pin
+  // the forward to sub-tick accuracy, and the cold per-pair de-Am is the cost
+  // driver, so an unbounded ±6% band (80+ pairs on a $1-strike near-dated chain)
+  // would bloat the fit for no accuracy gain.
+  constexpr std::size_t kMaxCarryPairs = 12;
+  const std::size_t k_min = (opts.n_atm == 0 ? std::size_t{1} : opts.n_atm);
+  const std::size_t k = std::min(
+      std::min(std::max(k_min, band), kMaxCarryPairs), both_valid.size());
   std::partial_sort(both_valid.begin(),
                     both_valid.begin() + static_cast<std::ptrdiff_t>(k),
                     both_valid.end(),
@@ -245,7 +268,7 @@ resolve_chain_borrow(const Chain& chain, double S, double r,
     const std::size_t pi = chain_index(static_cast<std::uint16_t>(i), Side::Put);
     const Result<TermBorrow> tb = imply_term_borrow(
         chain.mids[ci], chain.mids[pi], S, K, T, r, cash_divs, chain.expiry_ns,
-        now_ts_ns, opts.hyb, opts.method, opts.al_opts, opts.caches);
+        now_ts_ns, opts.hyb, opts.method, opts.al_opts, cold_caches);
     if (tb) {
       sum += tb->borrow;
       ++hits;

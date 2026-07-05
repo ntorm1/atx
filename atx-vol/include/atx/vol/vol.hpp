@@ -74,6 +74,8 @@
 #include "atx/vol/vola_parity.hpp"     // single-expiry parity harness
 #include "atx/vol/surface_parity.hpp"  // run_surface_parity, CalendarRepair
 #include "atx/vol/session.hpp"         // VolaSession, SessionInputs, FitPreset
+#include "atx/vol/chain.hpp"           // OptionChain, OptionId (unique-id chain handle)
+#include "atx/vol/pricer_fitter.hpp"   // PricerFitter, FittedSurface, OutputField, ChainValuation
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
 #include "atx/vol/projection.hpp"   // eval at non-listed T/K, delta anchors
@@ -85,6 +87,7 @@
 #include "atx/vol/data.hpp"            // QuoteFrame, data_install
 #include "atx/vol/panel.hpp"           // synthetic + CSV panels
 #include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
+#include "atx/vol/spy_fixture.hpp"     // deterministic SPY index known-truth fixture
 #include "atx/vol/surface_archive.hpp" // fitted-surface archive
 
 // ── Portfolio / risk analytics ──────────────────────────────────────────────

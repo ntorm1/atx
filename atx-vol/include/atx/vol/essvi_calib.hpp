@@ -90,13 +90,24 @@ namespace atx::vol {
 //              raw fit would invert, so quality is preserved elsewhere). This is
 //              the seam the calendar-monotone surface fit drives; it mirrors the
 //              theta floor `essvi_calib_surface_sequential` applies internally.
+// @param warm  optional warm-start seed — a PREVIOUS fit of (ideally) this same
+//              expiry. When non-null the WHOLE Mingone cube (psi == level, p ==
+//              curvature, lambda == skew) seeds from `warm`'s converged
+//              coordinates instead of the cold seed (a crude band-ratio psi +
+//              neutral p / lambda). A tick-to-quote refit thus starts essentially
+//              at the prior optimum and converges in far fewer LM iterations at
+//              the same fit quality — the incremental-update hot path. Null
+//              (default) is byte-identical to the cold fit. Additionally, if
+//              `opts.prior_strength > 0` a
+//              Tikhonov term shrinks the cube toward `warm` (scaled to the
+//              dataset weight), stabilising thin / noisy tick updates; with a
+//              null `warm` that field is inert.
 // @return InvalidArgument if `obs` is empty or T <= 0; Unavailable if the LM
 //         produced a non-finite / degenerate slice; otherwise Ok(slice).
-[[nodiscard]] Result<EssviParams> essvi_fit_slice(std::span<const FitObs> obs,
-                                                  double T, double F,
-                                                  const CalibOpts& opts,
-                                                  FitDiag* out_diag = nullptr,
-                                                  double theta_floor = 0.0);
+[[nodiscard]] Result<EssviParams> essvi_fit_slice(
+    std::span<const FitObs> obs, double T, double F, const CalibOpts& opts,
+    FitDiag* out_diag = nullptr, double theta_floor = 0.0,
+    const EssviParams* warm = nullptr);
 
 // Gradient of the eSSVI backbone total variance w.r.t. the Mingone cube
 // coordinates ∂w/∂(psi, p, lambda) at log-moneyness `k_log`, evaluated at the

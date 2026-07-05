@@ -268,6 +268,28 @@ struct ObsSet {
                                                 double T, double df,
                                                 const CalibOpts &opts);
 
+// De-Americanized ("European-equivalent") observation builder. Runs the SAME
+// filter cascade as `build_observations`, but each surviving leg's American
+// premium is stripped to its European equivalent before it is stored: the mid is
+// inverted to a European-equivalent lognormal vol via `american_implied_vol` on
+// the carry (S, r, q_eff = r − ln(F/S)/T), and `FitObs::{mid, sigma_mkt, w_mkt,
+// vega, weight_w}` are restated in European terms (mid = Black-76 price at that
+// vol). `k`, `K`, `F`, `df`, `spread`, `side` are unchanged.
+//
+// This is the correct input for the convex dense-slice fit (`fit_convex_slice`),
+// which folds put→call via EUROPEAN put-call parity `C = P + df·(F−K)` and whose
+// model IV is re-Americanized downstream: feeding it raw American mids leaves the
+// (large, put-side) early-exercise premium in and biases the near-money put wing
+// systematically high. With European inputs the fit→re-Americanize round-trips.
+//
+// @return same error contract as `build_observations`; additionally, a leg whose
+//         de-Americanization fails or leaves the band is counted as a drop.
+[[nodiscard]] Result<ObsSet> build_observations_european(const Chain &chain,
+                                                         double S, double r,
+                                                         double F, double T,
+                                                         double df,
+                                                         const CalibOpts &opts);
+
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):
 // would the (strike_idx, side) tuple survive the same cascade as one row of
 // `build_observations`? The `max_spread_to_mid_pct` filter is mirrored; the

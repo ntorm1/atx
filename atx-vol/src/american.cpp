@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 
 #include "atx/core/math.hpp"
 #include "atx/vol/black76.hpp"
@@ -904,6 +905,136 @@ void american_greeks_first_order(double S, double K, double T, double sigma,
 
 }  // namespace
 
+// ── Warm-started ALO pricer (fixed contract, sigma sweep) ────────────────
+//
+// State mirrors al_solve_put's internals but hoists the sigma-independent setup
+// (node grid, Gauss-Legendre binding) into the constructor and keeps the
+// early-exercise boundary `bnd.y[]` alive between price() calls. All calls solve
+// an internal PUT; a Call is the McDonald-Schroder put P(K,S,q,r), so the boundary
+// machinery is identical.
+struct AloPricer::State {
+  double Sp{};   // internal-put spot   (= K for a call)
+  double Kp{};   // internal-put strike (= S for a call) — drives the boundary
+  double T{};
+  double rp{};   // internal-put rate   (= q for a call)
+  double qp{};   // internal-put yield  (= r for a call)
+  AlScheme sch{};
+  AlBoundary bnd{};
+  AlWorkspace ws{};
+  bool prepared{false};       // node grid + quadrature bound, xmax > 0
+  bool european_only{false};  // no early exercise -> American == European
+  bool seeded{false};         // bnd.y[] holds a usable warm boundary
+  double last_sigma{-1.0};
+};
+
+AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
+                     const std::optional<AlOpts>& opts)
+    : st_(std::make_unique<State>()) {
+  State& s = *st_;
+  s.T = T;
+  s.sch = scheme_from_opts(opts);
+  // Internal put contract. Put: as-is. Call: McDonald-Schroder swap (S<->K, r<->q).
+  if (side == Side::Put) {
+    s.Sp = S;
+    s.Kp = K;
+    s.rp = r;
+    s.qp = q;
+  } else {
+    s.Sp = K;
+    s.Kp = S;
+    s.rp = q;
+    s.qp = r;
+  }
+  // No early exercise (put r<=0 / call q<=0, both -> internal rp<=0): pure European.
+  s.european_only = !(s.rp > 0.0);
+  if (s.european_only) {
+    s.prepared = true;
+    return;
+  }
+  al_init_nodes(s.bnd, s.sch.n_boundary, s.T, s.Kp, s.rp, s.qp);
+  if (!(s.bnd.xmax > 0.0)) {
+    return;  // asymptotic boundary collapsed (matches andersen_lake NotImplemented)
+  }
+  const detail::GaussLegendre* fp = gl_find(s.sch.n_quad_fp);
+  const detail::GaussLegendre* pr = gl_find(s.sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return;  // quadrature table unavailable
+  }
+  s.ws.qx_fp = fp->nodes.data();
+  s.ws.qw_fp = fp->weights.data();
+  s.ws.n_quad_fp = s.sch.n_quad_fp;
+  s.ws.qx_price = pr->nodes.data();
+  s.ws.qw_price = pr->weights.data();
+  s.ws.n_quad_price = s.sch.n_quad_price;
+  s.prepared = true;
+}
+
+AloPricer::~AloPricer() = default;
+AloPricer::AloPricer(AloPricer&&) noexcept = default;
+AloPricer& AloPricer::operator=(AloPricer&&) noexcept = default;
+
+double AloPricer::price(double sigma) noexcept {
+  State& s = *st_;
+  // Degenerate: sigma ~ 0 or T ~ 0 collapses to intrinsic (internal-put intrinsic
+  // Kp - Sp equals the original option's intrinsic for both sides).
+  if (!(sigma > 1.0e-8) || s.T <= 1.0e-12) {
+    const double intr = s.Kp - s.Sp;
+    return (intr > 0.0) ? intr : 0.0;
+  }
+  const double euro = euro_put_sk(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp);
+  if (s.european_only) {
+    return euro;
+  }
+  if (!s.prepared) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  // Warm-start unless this is the first solve or sigma moved more than ~12% (then
+  // the previous boundary is a poor seed and we re-seed cold via Barone-Adesi-
+  // Whaley). Inside an IV Newton loop the near-convergence sigma steps are tiny,
+  // so almost every residual after the bracket is a cheap warm solve.
+  const bool cold = !s.seeded || !(s.last_sigma > 0.0) ||
+                    std::fabs(sigma - s.last_sigma) > 0.12 * s.last_sigma;
+  if (cold) {
+    al_seed_boundary(s.bnd, sigma, s.rp, s.qp);
+  }
+  // Warm start skips ONLY the ~12-node Barone-Adesi-Whaley re-seed (the dominant
+  // cold cost — 12 nested Newton root-finds), then runs the SAME sweep budget as a
+  // cold solve (andersen_lake's n_iter_jn JN + n_iter_fp FP, early break at tol).
+  // The sweeps — not the seed — are what converges the boundary, so warm and cold
+  // reach the same fixed point; a cheaper warm budget under-converges the curved
+  // long-dated early-exercise boundary and breaks the price round-trip. The 12%
+  // re-seed guard keeps a warm sigma step small enough that the full budget fully
+  // reconverges.
+  double resid = 1.0;
+  for (std::uint16_t k = 0; k < s.sch.n_iter_jn; ++k) {
+    resid = al_jacobi_newton_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
+    if (resid <= s.sch.tol) {
+      break;
+    }
+  }
+  if (resid > s.sch.tol) {
+    for (std::uint16_t k = 0; k < s.sch.n_iter_fp; ++k) {
+      resid = al_fixed_point_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
+      if (resid <= s.sch.tol) {
+        break;
+      }
+    }
+  }
+  s.seeded = true;
+  s.last_sigma = sigma;
+
+  const double prem = al_put_premium(s.bnd, s.ws, s.Sp, sigma, s.rp, s.qp);
+  double px = euro + prem;
+  const double intr = s.Kp - s.Sp;
+  if (intr > px) {
+    px = intr;
+  }
+  if (euro > px) {
+    px = euro;
+  }
+  return (px > 0.0) ? px : 0.0;
+}
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 AlOpts al_default_opts() noexcept { return AlOpts{12, 24, 8, 1.0e-10}; }
@@ -945,6 +1076,114 @@ Result<double> andersen_lake(double S, double K, double T, double sigma,
   }
   // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
   return al_solve_put(K, S, T, sigma, q, r, sch);
+}
+
+Status andersen_lake_call_slice(double S, std::span<const double> strikes,
+                                double T, double sigma, double r, double q,
+                                std::span<double> price_out,
+                                const std::optional<AlOpts>& opts) {
+  if (!(S > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice: S must be > 0");
+  }
+  if (!(T >= 0.0) || !(sigma >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "andersen_lake_call_slice: T and sigma must be >= 0");
+  }
+  if (strikes.size() != price_out.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "andersen_lake_call_slice: strikes / price_out length mismatch");
+  }
+  for (const double K : strikes) {
+    if (!(K > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "andersen_lake_call_slice: every strike must be > 0");
+    }
+  }
+
+  const std::size_t n = strikes.size();
+
+  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic (mirrors andersen_lake).
+  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const double intr = S - strikes[i];
+      price_out[i] = (intr > 0.0) ? intr : 0.0;
+    }
+    return Ok();
+  }
+
+  // No early exercise for calls when q <= 0: American == European (matches the
+  // andersen_lake short-circuit exactly, including its Black-76 evaluation).
+  if (q <= 0.0) {
+    const double F = S * std::exp((r - q) * T);
+    const double df = std::exp(-r * T);
+    for (std::size_t i = 0; i < n; ++i) {
+      price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Call);
+    }
+    return Ok();
+  }
+
+  // Boundary case (q > 0). The internal put has strike Kp = S (fixed), spot
+  // Sp = K_i, rate rp = q, yield qp = r — so the boundary is solved ONCE here and
+  // reused across every strike's premium quadrature. The sequence mirrors
+  // al_solve_put (with S=Sp) exactly so each price is bit-identical to
+  // andersen_lake(S, K_i, T, sigma, r, q, Side::Call, opts).
+  const AlScheme sch = scheme_from_opts(opts);
+  const double rp = q;  // internal-put rate
+  const double qp = r;  // internal-put yield
+
+  AlBoundary bnd;
+  AlWorkspace ws;
+  al_init_nodes(bnd, sch.n_boundary, T, /*K=*/S, rp, qp);
+  if (!(bnd.xmax > 0.0)) {
+    return Err(ErrorCode::NotImplemented,
+               "andersen_lake_call_slice: asymptotic boundary collapsed (xmax <= 0)");
+  }
+  const detail::GaussLegendre* fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre* pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return Err(ErrorCode::Internal,
+               "andersen_lake_call_slice: Gauss-Legendre table unavailable");
+  }
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+
+  al_seed_boundary(bnd, sigma, rp, qp);
+  double resid = 1.0;
+  for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
+    resid = al_jacobi_newton_sweep(bnd, ws, sigma, rp, qp);
+    if (resid <= sch.tol) {
+      break;
+    }
+  }
+  if (resid > sch.tol) {
+    for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
+      resid = al_fixed_point_sweep(bnd, ws, sigma, rp, qp);
+      if (resid <= sch.tol) {
+        break;
+      }
+    }
+  }
+
+  // Per-strike premium: only the internal-put spot Sp = K_i changes.
+  for (std::size_t i = 0; i < n; ++i) {
+    const double Ki = strikes[i];
+    const double euro = euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
+    const double prem = al_put_premium(bnd, ws, /*S=*/Ki, sigma, rp, qp);
+    double px = euro + prem;
+    const double intr = S - Ki;  // internal-put intrinsic Kp - Sp == call intrinsic
+    if (intr > px) {
+      px = intr;
+    }
+    if (euro > px) {
+      px = euro;
+    }
+    price_out[i] = (px > 0.0) ? px : 0.0;
+  }
+  return Ok();
 }
 
 Result<double> baw_american(double S, double K, double T, double sigma,
@@ -1069,6 +1308,24 @@ Result<AmericanGreeks> american_greeks(double S, double K, double T,
   AmericanGreeks out;
   american_greeks_first_order(S, K, T, sigma, r, q, side, correction, out);
   return Ok(out);
+}
+
+double american_vega(double S, double K, double T, double sigma, double r,
+                     double q, Side side, const CorrectionCache* correction) noexcept {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return 0.0;
+  }
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  // Black-76 vega is closed-form (no early-exercise FD); the correction adds only
+  // its first-order sigma partial — one cache eval_grad instead of the seven the
+  // full american_greeks bundle runs for its second-order FD terms.
+  const double euro_vega = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
+  double dc_ds = 0.0;
+  if (correction) {
+    correction->eval_grad(std::log(K / F), T, sigma, nullptr, nullptr, &dc_ds);
+  }
+  return euro_vega + F * dc_ds;
 }
 
 namespace detail {

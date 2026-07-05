@@ -6,8 +6,9 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/american_iv.hpp"  // american_implied_vol (de-Americanization)
 #include "atx/vol/arb.hpp"          // QuoteFlag, has_flag (kill-mask filter step)
-#include "atx/vol/black76.hpp"      // black76_value_and_vega (vega)
+#include "atx/vol/black76.hpp"      // black76_value_and_vega, black76_price
 #include "atx/vol/implied_vol.hpp"  // implied_vol (IV inversion)
 
 // Shared calibration infrastructure — implementation.
@@ -215,6 +216,60 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T,
   if (out.obs.size() < kMinObs) {
     return Err(ErrorCode::NotFound,
                "build_observations: fewer than 5 observations survived");
+  }
+  return Ok(std::move(out));
+}
+
+Result<ObsSet> build_observations_european(const Chain &chain, double S, double r,
+                                           double F, double T, double df,
+                                           const CalibOpts &opts) {
+  if (!(S > 0.0) || !(F > 0.0) || !(T > 0.0) || !(df > 0.0) || !std::isfinite(r)) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_observations_european: S, F, T, df must be positive");
+  }
+  // Run the shared American filter cascade, then strip each surviving leg.
+  auto am = build_observations(chain, F, T, df, opts);
+  if (!am.has_value()) {
+    return am;  // propagate NotFound / InvalidArgument unchanged
+  }
+  // q_eff bridge: S·e^{(r−q_eff)T} == F exactly (matches the fit/de-Am carry).
+  const double q_eff = r - std::log(F / S) / T;
+
+  ObsSet out;
+  out.obs.reserve(am->obs.size());
+  out.n_dropped = am->n_dropped;
+  for (FitObs o : am->obs) {
+    // `o.mid` is the anchor premium (the raw American mid under the default Mid
+    // anchor). Recover the European-equivalent lognormal vol, then restate the
+    // observation entirely in European terms.
+    const Result<double> sig =
+        american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side);
+    if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
+      ++out.n_dropped;
+      continue;
+    }
+    const double sigma_eu = *sig;
+    const double eu_px = black76_price(F, o.K, T, sigma_eu, df, o.side);
+    if (!(eu_px > 0.0) || !std::isfinite(eu_px)) {
+      ++out.n_dropped;
+      continue;
+    }
+    const double vega =
+        black76_value_and_vega(F, o.K, T, sigma_eu, df, o.side).vega;
+    const double denom_w = 2.0 * sigma_eu * T;
+    o.sigma_mkt = sigma_eu;
+    o.w_mkt = sigma_eu * sigma_eu * T;
+    o.mid = eu_px;  // European-equivalent premium (what the convex fold expects)
+    o.vega = vega;
+    o.weight_w = (vega * vega) / (o.spread * o.spread + kWeightEps) /
+                 (denom_w * denom_w + kWeightEps);
+    o.active_weight_w = o.weight_w;
+    o.noise_sigma = (vega > kVegaFloor) ? (o.spread / vega) : 1.0;
+    out.obs.push_back(o);
+  }
+  if (out.obs.size() < kMinObs) {
+    return Err(ErrorCode::NotFound,
+               "build_observations_european: fewer than 5 European obs survived");
   }
   return Ok(std::move(out));
 }

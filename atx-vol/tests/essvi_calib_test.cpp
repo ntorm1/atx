@@ -167,6 +167,136 @@ TEST(EssviFitSlice, EmptyObservations_ReturnsInvalidArgument) {
   EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
 }
 
+// ── Warm-start (tick-to-quote incremental refit) ─────────────────────────
+
+namespace {
+
+// A skewed / curved synthetic obs grid — the neutral cold seed (p=0.3, lambda
+// ~ATM-symmetric) sits far from this optimum, so the cold LM has real work to
+// do and a warm seed can visibly cut it.
+std::vector<FitObs> synth_obs(const EssviParams& truth, double T, double F,
+                              double w_scale = 1.0) {
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k =
+        -0.40 + 0.80 * static_cast<double>(i) / static_cast<double>(n - 1);
+    const double w = essvi_backbone_w(truth, k) * w_scale;
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    obs.push_back(o);
+  }
+  return obs;
+}
+
+}  // namespace
+
+// A warm seed taken from the CONVERGED fit of the same data must reproduce that
+// fit (the optimum is unchanged) while spending no more LM work than the cold
+// path — the warm start begins at the answer.
+TEST(EssviFitSlice, WarmStart_FromOwnOptimumIsIdempotentAndCheaper) {
+  const double T = 0.5;
+  const double F = 100.0;
+  const EssviParams truth = backbone(0.040, 2.0, -0.55, T);
+  const std::vector<FitObs> obs = synth_obs(truth, T, F);
+
+  FitDiag cold_diag{};
+  const auto cold = essvi_fit_slice(obs, T, F, calib_default_opts(), &cold_diag);
+  ASSERT_TRUE(cold.has_value());
+
+  FitDiag warm_diag{};
+  const auto warm = essvi_fit_slice(obs, T, F, calib_default_opts(), &warm_diag,
+                                    0.0, &*cold);
+  ASSERT_TRUE(warm.has_value());
+
+  // Same optimum in w-space (the load-bearing equivalence).
+  double max_dw = 0.0;
+  for (int i = -40; i <= 40; ++i) {
+    const double k = 0.01 * static_cast<double>(i);
+    max_dw = std::max(max_dw,
+                      std::fabs(essvi_backbone_w(*warm, k) -
+                                essvi_backbone_w(*cold, k)));
+  }
+  EXPECT_LT(max_dw, 1.0e-6);
+  // Warm from the optimum spends no more inner LM steps than the cold seed.
+  EXPECT_LE(warm_diag.inner_iters_total, cold_diag.inner_iters_total);
+}
+
+// The core tick-to-quote claim: after a small quote move, refitting warm from
+// the pre-tick slice converges in strictly fewer inner LM iterations than a
+// cold refit — at the same fit quality.
+TEST(EssviFitSlice, WarmStart_ReducesIterationsOnTick) {
+  const double T = 0.5;
+  const double F = 100.0;
+  const EssviParams truth = backbone(0.040, 2.0, -0.55, T);
+
+  // Pre-tick fit (the retained slice).
+  FitDiag pre_diag{};
+  const auto pre =
+      essvi_fit_slice(synth_obs(truth, T, F), T, F, calib_default_opts(),
+                      &pre_diag);
+  ASSERT_TRUE(pre.has_value());
+
+  // A tick: the whole slice's total variance nudges up 0.5 %.
+  const std::vector<FitObs> ticked = synth_obs(truth, T, F, 1.005);
+
+  FitDiag cold_diag{};
+  const auto cold =
+      essvi_fit_slice(ticked, T, F, calib_default_opts(), &cold_diag);
+  ASSERT_TRUE(cold.has_value());
+
+  FitDiag warm_diag{};
+  const auto warm = essvi_fit_slice(ticked, T, F, calib_default_opts(),
+                                    &warm_diag, 0.0, &*pre);
+  ASSERT_TRUE(warm.has_value());
+
+  EXPECT_LT(warm_diag.inner_iters_total, cold_diag.inner_iters_total);
+  // Same landing quality — warm is cheaper, not worse.
+  EXPECT_NEAR(warm_diag.rmse_vol_vega_weighted,
+              cold_diag.rmse_vol_vega_weighted, 5.0e-4);
+}
+
+// prior_strength shrinks the warm refit toward the prior: when new data pulls
+// the skew one way, a strong prior holds rho closer to the pre-tick value than
+// an unregularized (strength 0) warm fit does.
+TEST(EssviFitSlice, PriorStrength_ShrinksTowardPrior) {
+  const double T = 0.5;
+  const double F = 100.0;
+  const EssviParams truth_prior = backbone(0.040, 2.0, -0.55, T);
+
+  const auto prior =
+      essvi_fit_slice(synth_obs(truth_prior, T, F), T, F, calib_default_opts());
+  ASSERT_TRUE(prior.has_value());
+
+  // New quotes imply a materially different (less negative) skew.
+  const EssviParams truth_new = backbone(0.040, 2.0, -0.20, T);
+  const std::vector<FitObs> new_obs = synth_obs(truth_new, T, F);
+
+  CalibOpts free_opts = calib_default_opts();
+  free_opts.prior_strength = 0.0;
+  const auto unreg =
+      essvi_fit_slice(new_obs, T, F, free_opts, nullptr, 0.0, &*prior);
+  ASSERT_TRUE(unreg.has_value());
+
+  CalibOpts shrunk_opts = calib_default_opts();
+  shrunk_opts.prior_strength = 2.0;  // strong pull toward the prior cube
+  const auto shrunk =
+      essvi_fit_slice(new_obs, T, F, shrunk_opts, nullptr, 0.0, &*prior);
+  ASSERT_TRUE(shrunk.has_value());
+
+  // The shrunk fit's skew stays closer to the prior than the free fit's.
+  const double d_free = std::fabs(unreg->rho - prior->rho);
+  const double d_shrunk = std::fabs(shrunk->rho - prior->rho);
+  EXPECT_LT(d_shrunk, d_free);
+}
+
 // ── Test 2: analytic cube Jacobian vs central FD ─────────────────────────
 
 TEST(EssviCubeGrad, MatchesCentralFiniteDifference) {

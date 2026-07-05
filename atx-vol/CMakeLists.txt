@@ -34,6 +34,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/svi_calib.cpp
     src/cstar.cpp
     src/cstar_calib.cpp
+    src/dense_slice.cpp
     src/profile.cpp
     src/data.cpp
     src/surface_archive.cpp
@@ -55,6 +56,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/surface_parity.cpp
     src/opra_panel.cpp
     src/session.cpp
+    src/chain.cpp
+    src/pricer_fitter.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -84,4 +87,47 @@ endif()
 if(ATX_BUILD_EXAMPLES)
     add_executable(opra_parity_bench examples/opra_parity_bench.cpp)
     target_link_libraries(opra_parity_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # SOTA perf + accuracy proof on the synthetic SPY index fixture (no data
+    # dependency; known-truth accuracy oracle). See examples/spy_surface_bench.cpp.
+    add_executable(spy_surface_bench examples/spy_surface_bench.cpp)
+    target_link_libraries(spy_surface_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    add_executable(spy_diag examples/spy_diag.cpp)
+    target_link_libraries(spy_diag PRIVATE atx::vol atx::core atx_warnings)
+
+    # SOTA %-within-bid-ask acceptance: eSSVI (3 DoF) vs dense C16 (16 DoF) on the
+    # real SPY board, scored through the same re-Americanization. See
+    # examples/spy_bidask_bench.cpp.
+    add_executable(spy_bidask_bench examples/spy_bidask_bench.cpp)
+    target_link_libraries(spy_bidask_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # SOTA American-IV conversion throughput + accuracy proof (known-truth oracle,
+    # no data dependency). Reports inversions/sec and round-trip sigma error for
+    # the cold baseline vs the warm-started AloPricer path. See
+    # examples/american_iv_bench.cpp.
+    add_executable(american_iv_bench examples/american_iv_bench.cpp)
+    target_link_libraries(american_iv_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # Unified library layer (OptionChain -> PricerFitter -> parallel value_chain)
+    # proof: parallel-inversion scaling {1,2,4,8 threads}, thread-count determinism,
+    # and tick-to-quote update->revalue on the real SPY OPRA board. See
+    # examples/chain_pricer_bench.cpp.
+    add_executable(chain_pricer_bench examples/chain_pricer_bench.cpp)
+    target_link_libraries(chain_pricer_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # Dump the SPY Dec-2026 vol smile + bid/ask IV bands over z in [-2,2] (CSV on
+    # stdout) for plotting. See examples/spy_dec_curve.cpp.
+    add_executable(spy_dec_curve examples/spy_dec_curve.cpp)
+    target_link_libraries(spy_dec_curve PRIVATE atx::vol atx::core atx_warnings)
+
+    # Carry diagnostic: locate the put-call-consistent forward per expiry (repo's
+    # own Andersen-Lake de-Am) vs the pipeline forward. See examples/spy_carry_diag.cpp.
+    add_executable(spy_carry_diag examples/spy_carry_diag.cpp)
+    target_link_libraries(spy_carry_diag PRIVATE atx::vol atx::core atx_warnings)
+
+    # Out-of-sample honesty check: leave-every-other-strike-out generalization of
+    # the convex-QP dense fit. See examples/spy_oos_check.cpp.
+    add_executable(spy_oos_check examples/spy_oos_check.cpp)
+    target_link_libraries(spy_oos_check PRIVATE atx::vol atx::core atx_warnings)
 endif()
