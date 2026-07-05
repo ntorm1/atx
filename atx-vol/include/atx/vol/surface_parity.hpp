@@ -1,0 +1,158 @@
+#pragma once
+
+// MULTI-EXPIRY de-Americanized volatility-SURFACE parity — the calendar +
+// time-interpolation acceptance layer above the single-expiry harness
+// (vola_parity.hpp).
+//
+// Where `run_expiry_parity` proves the Vola Dynamics workflow for ONE expiry
+// (de-Americanize -> fit a 3-parameter eSSVI slice -> re-Americanize -> score),
+// this module lifts that to a whole `Underlying`: it de-Americanizes and fits
+// EVERY expiry chain, assembles the fitted slices into one ascending-T eSSVI
+// `VolSurface`, and then proves the two properties a surface (as opposed to a
+// bag of independent slices) must additionally satisfy:
+//
+//   1. CALENDAR NO-ARBITRAGE — total variance w(k, T) is non-decreasing in T at
+//      every sampled log-moneyness (arb.hpp's `arb_check_calendar`).
+//   2. TIME-INTERPOLATION PARITY — because each fitted eSSVI slice reproduces
+//      its S3/SSVI truth, the surface's linear-in-total-variance interpolation
+//      between adjacent slices reproduces the truth slices' own linear-in-w
+//      interpolation. This is the "interpolation parity with Vola" property;
+//      the acceptance test checks it against the s3_iv reference directly.
+//
+// ## Reuse of the single-expiry pattern
+//
+// The per-expiry work mirrors `vola_parity.cpp` exactly: de_americanize_chain
+// -> rebuild the aligned observation set on the de-Am forward / q_eff ->
+// essvi_fit_slice -> the natural-form `EssviParams` slice. `run_surface_parity`
+// re-does that per chain (vola_parity returns only metrics, never the slice) so
+// it can WRITE each fitted slice into the surface. The q_eff bridge
+// (q_eff = r - ln(F/S)/T) is used throughout, exactly as in the single-expiry
+// harness.
+//
+// Stateless and pure — a single call owns only its local scratch; the returned
+// report OWNS the fitted `VolSurface` by value (move it out). Safe to call
+// concurrently on distinct underlyings.
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+#include "atx/vol/calib.hpp"        // CalibOpts
+#include "atx/vol/curve.hpp"        // DividendEvent
+#include "atx/vol/deamer.hpp"       // DeAmOptions
+#include "atx/vol/parity.hpp"       // ParityReport
+#include "atx/vol/types.hpp"        // Result
+#include "atx/vol/universe.hpp"     // Underlying
+#include "atx/vol/vol_surface.hpp"  // VolSurface
+
+namespace atx::vol {
+
+// Calendar-arbitrage repair policy applied to the ASSEMBLED surface before the
+// per-expiry parity is scored.
+//
+// Independent per-slice eSSVI fits + wing extrapolation can cross in total
+// variance (the flagged Vola-parity gap): the raw surface is not guaranteed
+// calendar-arb-free. Two repair strategies, at opposite ends of the
+// quality-vs-strictness trade-off:
+//
+//  * `MonotoneFit` — the QUALITY-PRESERVING calendar-constrained fit. Slices are
+//    fit short→long with a calendar floor w_i(k) >= w_{i-1}(k) enforced over the
+//    near-money region: a theta floor on the ATM level PLUS an active set of
+//    one-sided floor pseudo-observations (each currently-violating grid point is
+//    added as a heavily-weighted obs targeting w_{i-1}(k), then the slice is
+//    refit, iterated until no violation remains). Because the floor is enforced
+//    by least squares over just the violating points, the fit lifts only where it
+//    must and gives up the MINIMAL error needed to stay monotone — unlike a
+//    global theta bump. MEASURED (XOM OPRA slice): clears the near-money window
+//    (|k|<=0.6) 26 -> 0 violations at held quality (fair-value-in-bid-ask
+//    98.5% -> 98.5%, reduced chi2 0.207 -> 0.209). Deep-wing crossings (|k| out
+//    to 3, ~20 sigma, no quotes) are left free — economically irrelevant
+//    extrapolation; use `Project` if a strict full-grid guarantee is required.
+//    This is the "parity with Vola" surface: calendar-arb-free where it trades,
+//    at held fit quality.
+//
+//  * `Project` — STRICT but quality-COSTLY. Runs the post-hoc backbone
+//    projection (`arb_project_calendar_essvi`) + residual damping over the whole
+//    check grid, guaranteeing calendar-arb-free over |k|<=3. MEASURED TRADE-OFF
+//    (XOM OPRA slice): the projection lifts a crossing slice's theta to cover a
+//    far-wing crossing, moving the whole slice (ATM included) off market — mean
+//    fair-value-in-bid-ask 98.5% -> ~20%, reduced chi2 0.21 -> ~750. Reserve it
+//    for callers that require strict wing no-arb and accept the fit cost.
+//
+// Parity is scored off the FINAL surface in every mode, so the reported quality
+// is what the surface actually serves.
+//
+// `None` (the default) leaves the surface untouched and only CHECKS calendar
+// arbitrage — byte-identical to the historical behaviour.
+enum class CalendarRepair : std::uint8_t {
+  None = 0,         // check only; leave the assembled surface untouched (default)
+  MonotoneFit = 1,  // sequential theta-floor fit: ATM-monotone, quality-preserving
+  Project = 2,      // post-hoc projection to strict |k|<=3 arb-free (quality cost)
+};
+
+// Market/pricing context for a whole-surface parity run. `cash_divs` is held by
+// value so the call owns a span-friendly copy of the dividend schedule, shared
+// across every expiry (each chain supplies its own T / expiry_ns).
+struct SurfaceParityInputs {
+  double S{0.0};                         // spot (> 0)
+  double r{0.0};                         // continuously-compounded rate (finite)
+  std::vector<DividendEvent> cash_divs;  // discrete cash-dividend schedule
+  std::int64_t now_ts_ns{0};             // valuation timestamp (epoch ns)
+  DeAmOptions deam{};                    // borrow-implication / pricer policy
+  CalibOpts calib{};                     // per-slice curve-fit policy
+  double band_k{1.0};                    // minimum-edge band multiplier (parity)
+  CalendarRepair repair{CalendarRepair::None};  // post-assembly calendar-arb repair
+};
+
+// Per-fitted-slice pricing context: everything the composable facade
+// (session.hpp) needs to RE-PRICE an option off the assembled surface without
+// re-running de-Americanization. `q_eff` is the effective carry that reproduces
+// the term forward exactly (S*e^{(r-q_eff)T} == forward), so a single scalar
+// drives both the surface's log-moneyness and the American re-pricing.
+struct SliceContext {
+  double T{0.0};            // year-fraction to expiry (== expiry_T[i])
+  double forward{0.0};      // term forward F used for the fit / scoring
+  double borrow{0.0};       // implied (or fixed) per-term borrow
+  double q_eff{0.0};        // effective carry: r - ln(F/S)/T
+  std::size_t n_used{0};    // strikes that survived to the fit
+  std::size_t n_dropped{0}; // strikes skipped (bad quote / failed invert)
+};
+
+// The whole-surface acceptance bundle. `surface` OWNS the fitted eSSVI surface
+// (movable); the vectors are parallel per fitted slice (ascending T).
+struct SurfaceParityReport {
+  VolSurface surface;                     // fitted eSSVI surface (move it out)
+  std::vector<double> expiry_T;           // per fitted slice, strictly ascending
+  std::vector<ParityReport> per_expiry;   // re-Americanized metrics per expiry
+  std::vector<SliceContext> context;      // per-slice re-pricing context (‖ expiry_T)
+  double worst_frac_within_bidask{0.0};   // min over expiries of frac in bid-ask
+  bool calendar_arb_free{false};          // arb.hpp calendar check on the surface
+  std::size_t n_slices{0};                // fitted slice count (== expiry_T.size())
+  std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair
+};
+
+// De-Americanize + fit each expiry chain of `under`, assemble an ascending-T
+// eSSVI `VolSurface`, run the calendar no-arbitrage check on it, and score
+// per-expiry re-Americanized parity.
+//
+// For each chain in `under.chains` (stored ascending in T): de_americanize_chain
+// (implied/fixed borrow + term forward F), rebuild the aligned observation set
+// on (F, q_eff = r - ln(F/S)/T), fit the eSSVI slice, write it into the surface
+// at the next ascending index, and score re-Americanized parity with a model IV
+// read back from the assembled surface. Slices with fewer than five usable
+// strikes (or that fail to de-Americanize / fit) are SKIPPED (not fatal); a run
+// that produces zero slices is an error. After assembly the surface's calendar
+// arbitrage is checked over k in [-3, 3] (25 grid points).
+//
+// @param under  the underlying whose chains are de-Americanized and fit.
+// @param in     market/pricing context, borrow-implication + curve-fit policy.
+// @return       the assembled-surface parity bundle, or an Error:
+//                 InvalidArgument — S <= 0 or non-finite r;
+//                 NotFound        — `under` carries no chains, or not a single
+//                                   expiry produced a usable eSSVI slice.
+//               Any surface-construction, curve-fitter, or parity/pricer error
+//               is propagated.
+[[nodiscard]] atx::core::Result<SurfaceParityReport> run_surface_parity(
+    const Underlying& under, const SurfaceParityInputs& in);
+
+}  // namespace atx::vol

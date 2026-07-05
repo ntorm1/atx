@@ -1,0 +1,732 @@
+// Surface projection spine — implementation.
+//
+// Ports ats_vol_projection.c (Sprint 20 Stage I). See projection.hpp for the
+// public contract and the port-scope adaptations. Where a primitive serves
+// both the scalar Stage I paths and the Stage II portfolio-risk hot path (the
+// inserted-slice IV blend), it is written here once.
+
+#include "atx/vol/projection.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+#include "atx/core/math.hpp"    // norm_cdf
+#include "atx/vol/american.hpp" // american_price_cached
+#include "atx/vol/black76.hpp"  // black76_price
+
+namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::Ok;
+
+namespace {
+
+// Exact-pillar tolerance on the forward-curve T axis (~1 trading minute);
+// matches the C ATS_VOL_T_EXACT_TOL and VolSurface::find_exact_T.
+inline constexpr double kProjExactTTol = 1.0 / (252.0 * 6.5 * 60.0);
+
+// Forward-delta, B76 convention: calls positive, puts negative.
+[[nodiscard]] double forward_delta(double F, double K, double tau, double sigma,
+                                   Side side) noexcept {
+  if (!(tau > 0.0) || !(sigma > 0.0) || !(F > 0.0) || !(K > 0.0)) {
+    return kQuietNaN;
+  }
+  const double v = sigma * std::sqrt(tau);
+  const double d1 = (std::log(F / K) + 0.5 * v * v) / v;
+  const double n_d1 = atx::core::norm_cdf(d1);
+  return (side == Side::Call) ? n_d1 : (n_d1 - 1.0);
+}
+
+// Per-slice total variance w(k), matching VolSurface::eval_slice_w exactly so
+// the inserted-slice blend reproduces VolSurface::w to machine precision.
+[[nodiscard]] double slice_w(const VolSurface& s, std::uint16_t idx,
+                             double k_log) noexcept {
+  const std::size_t i = static_cast<std::size_t>(idx);
+  switch (s.param()) {
+    case Parametrization::Essvi: {
+      const auto sl = s.essvi_slices();
+      return (i < sl.size()) ? essvi_total_w(sl[i], k_log) : kQuietNaN;
+    }
+    case Parametrization::Svi:
+    case Parametrization::SviMm: {
+      const auto sl = s.svi_slices();
+      return (i < sl.size()) ? svi_total_w(sl[i], k_log) : kQuietNaN;
+    }
+    case Parametrization::Wing:
+    case Parametrization::C8:
+    case Parametrization::CStar16M:
+      return kQuietNaN;
+  }
+  return kQuietNaN;
+}
+
+[[nodiscard]] double slice_T(const VolSurface& s, std::uint16_t idx) noexcept {
+  const std::size_t i = static_cast<std::size_t>(idx);
+  switch (s.param()) {
+    case Parametrization::Essvi: {
+      const auto sl = s.essvi_slices();
+      return (i < sl.size()) ? sl[i].T : kQuietNaN;
+    }
+    case Parametrization::Svi:
+    case Parametrization::SviMm: {
+      const auto sl = s.svi_slices();
+      return (i < sl.size()) ? sl[i].T : kQuietNaN;
+    }
+    case Parametrization::Wing:
+    case Parametrization::C8:
+    case Parametrization::CStar16M:
+      return kQuietNaN;
+  }
+  return kQuietNaN;
+}
+
+}  // namespace
+
+// ── Defaults ─────────────────────────────────────────────────────────────
+
+TimeModel time_model_clock() noexcept { return TimeModel{}; }
+
+CoordConvertRequest coord_convert_request_default() noexcept {
+  return CoordConvertRequest{};
+}
+
+EvalRequest eval_request_default() noexcept { return EvalRequest{}; }
+
+// ── Volatility-time conversion ───────────────────────────────────────────
+
+Result<TauVol> tau_vol_from_clock(const TimeModel& tm, double T_clock) {
+  if (!(std::isfinite(T_clock) && T_clock > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "non-positive T_clock");
+  }
+  if (tm.mode == TimeMode::Clock) {
+    return TauVol{T_clock, 0u};
+  }
+  return Err(ErrorCode::NotImplemented, "reserved time mode");
+}
+
+// ── Non-pillar forward lookup ────────────────────────────────────────────
+
+Result<ForwardLookup> curve_forward_T(const CurveSet& curves, double T,
+                                      ProjExtrapPolicy extrap) {
+  if (!(std::isfinite(T) && T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "non-positive T");
+  }
+  const std::span<const ForwardPoint> pts = curves.forward.points();
+  if (pts.empty()) {
+    return Err(ErrorCode::NotFound, "empty forward curve");
+  }
+
+  // Gather the valid (finite, positive) rows and sort ascending by T.
+  struct Row {
+    double T;
+    double F;
+    double q_eff;
+    std::uint16_t idx;
+  };
+  std::vector<Row> rows;
+  rows.reserve(pts.size());
+  for (std::size_t i = 0; i < pts.size(); ++i) {
+    const ForwardPoint& p = pts[i];
+    if (!(std::isfinite(p.T) && p.T > 0.0)) continue;
+    if (!(std::isfinite(p.F) && p.F > 0.0)) continue;
+    rows.push_back(Row{p.T, p.F, p.q_eff, static_cast<std::uint16_t>(i)});
+  }
+  if (rows.empty()) {
+    return Err(ErrorCode::NotFound, "no valid forward pillars");
+  }
+  std::sort(rows.begin(), rows.end(),
+            [](const Row& a, const Row& b) noexcept { return a.T < b.T; });
+
+  ForwardLookup out;
+  out.T = T;
+  out.df = curves.yield.disc(T);
+  out.r = curves.yield.zero(T);
+  const double spot = curves.spot;
+
+  const double T_first = rows.front().T;
+  const double T_last = rows.back().T;
+
+  // Exact pillar — favoured fast path (no interpolation flag).
+  for (const Row& row : rows) {
+    if (std::fabs(row.T - T) <= kProjExactTTol) {
+      out.F = row.F;
+      out.lo_idx = row.idx;
+      out.hi_idx = row.idx;
+      out.q_eff = row.q_eff;
+      return out;
+    }
+  }
+
+  // Out of bracket.
+  if (T < T_first || T > T_last) {
+    out.flags |= kFlagExtrapolatedT;
+    if (extrap == ProjExtrapPolicy::ClampForReporting) {
+      const Row& pick = (T < T_first) ? rows.front() : rows.back();
+      out.F = pick.F;
+      out.lo_idx = pick.idx;
+      out.hi_idx = pick.idx;
+      if (spot > 0.0 && T > 0.0) {
+        out.q_eff = out.r - std::log(out.F / spot) / T;
+      }
+      return out;
+    }
+    out.flags |= kFlagInvalid;
+    return Err(ErrorCode::OutOfRange, "forward extrapolation forbidden");
+  }
+
+  // Bracket-search over the sorted valid rows.
+  std::size_t lo_pos = 0;
+  std::size_t hi_pos = rows.size() - 1;
+  while (hi_pos > lo_pos + 1) {
+    const std::size_t mid = (lo_pos + hi_pos) / 2;
+    if (rows[mid].T <= T) {
+      lo_pos = mid;
+    } else {
+      hi_pos = mid;
+    }
+  }
+  const Row& plo = rows[lo_pos];
+  const Row& phi = rows[hi_pos];
+
+  // Linear in log(F): keeps the result positive and monotone-friendly.
+  const double alpha = (T - plo.T) / (phi.T - plo.T);
+  const double log_f = std::log(plo.F) + alpha * (std::log(phi.F) - std::log(plo.F));
+  out.F = std::exp(log_f);
+  out.lo_idx = plo.idx;
+  out.hi_idx = phi.idx;
+  out.flags |= kFlagForwardInterp;
+  if (spot > 0.0 && T > 0.0 && out.F > 0.0) {
+    out.q_eff = out.r - std::log(out.F / spot) / T;
+  }
+  return out;
+}
+
+// ── Inserted-slice helpers ───────────────────────────────────────────────
+
+Result<InsertedSliceHandle> surface_insert_vol_slice(
+    const VolSurface& surface, const CurveSet* curves, const TimeModel& tm,
+    double T_clock, InterpMode interp, ProjExtrapPolicy extrap,
+    bool with_no_arb_check) {
+  (void)with_no_arb_check;  // PORT NOTE: dense no-arb sweep deferred.
+
+  InsertedSliceHandle out;
+  out.uid = surface.uid();
+  out.T_clock = T_clock;
+  out.interp_mode = interp;
+
+  const std::size_t n = surface.n_slices();
+  if (n == 0) {
+    out.flags |= kFlagInvalid;
+    return Err(ErrorCode::NotFound, "surface has no slices");
+  }
+  if (interp != InterpMode::PiecewiseTotalVariance) {
+    out.flags |= kFlagInvalid;
+    return Err(ErrorCode::NotImplemented, "reserved interp mode");
+  }
+
+  auto tau = tau_vol_from_clock(tm, T_clock);
+  if (!tau) {
+    out.flags |= kFlagInvalid;
+    return Err(std::move(tau).error());
+  }
+  out.tau_vol = tau->tau_vol;
+  out.flags |= tau->flags;
+  if (tm.mode != TimeMode::Clock) {
+    out.flags |= kFlagVolTimeConverted;
+  }
+
+  // Bracket on the surface's slice-T axis (slices ascending by T).
+  const std::uint16_t exact = surface.find_exact_T(T_clock);
+  if (exact != 0xFFFFu) {
+    out.parent_lo_idx = exact;
+    out.parent_hi_idx = exact;
+    out.alpha_T = 0.0;
+    out.exact_slice_idx = static_cast<std::int32_t>(exact);
+    out.flags |= kResolverNativeFastPath;
+  } else {
+    const std::size_t last = n - 1;
+    const double T_first = slice_T(surface, 0);
+    const double T_last = slice_T(surface, static_cast<std::uint16_t>(last));
+    if (T_clock < T_first || T_clock > T_last) {
+      out.flags |= kFlagExtrapolatedT;
+      if (extrap == ProjExtrapPolicy::ClampForReporting) {
+        const std::size_t pick = (T_clock < T_first) ? std::size_t{0} : last;
+        out.parent_lo_idx = static_cast<std::uint32_t>(pick);
+        out.parent_hi_idx = static_cast<std::uint32_t>(pick);
+        out.alpha_T = 0.0;
+        out.exact_slice_idx = static_cast<std::int32_t>(pick);
+      } else {
+        out.flags |= kFlagInvalid;
+        return Err(ErrorCode::OutOfRange, "slice-T extrapolation forbidden");
+      }
+    } else {
+      std::size_t lo = 0;
+      std::size_t hi = last;
+      while (hi > lo + 1) {
+        const std::size_t mid = (lo + hi) / 2;
+        if (slice_T(surface, static_cast<std::uint16_t>(mid)) <= T_clock) {
+          lo = mid;
+        } else {
+          hi = mid;
+        }
+      }
+      out.parent_lo_idx = static_cast<std::uint32_t>(lo);
+      out.parent_hi_idx = static_cast<std::uint32_t>(hi);
+      const double T_lo = slice_T(surface, static_cast<std::uint16_t>(lo));
+      const double T_hi = slice_T(surface, static_cast<std::uint16_t>(hi));
+      out.alpha_T = (T_clock - T_lo) / (T_hi - T_lo);
+      out.flags |= kFlagInterpolatedT;
+      out.flags |= kFlagInsertedSlice;
+    }
+  }
+
+  // Forward / discount cache (optional).
+  if (curves != nullptr) {
+    auto fl = curve_forward_T(*curves, T_clock, extrap);
+    if (fl) {
+      out.F = fl->F;
+      out.df = fl->df;
+      out.r = fl->r;
+      out.q_eff = fl->q_eff;
+      out.logF = (fl->F > 0.0) ? std::log(fl->F) : kQuietNaN;
+      out.sqrtT = (T_clock > 0.0) ? std::sqrt(T_clock) : kQuietNaN;
+      out.flags |= fl->flags;
+    }
+    // If the forward lookup failed under Forbid, leave the cache NaN so
+    // IV-only callers still get a usable handle.
+  }
+  return out;
+}
+
+double w_on_inserted_slice(const VolSurface& surface,
+                           const InsertedSliceHandle& handle,
+                           double k_log) noexcept {
+  if (handle.exact_slice_idx >= 0) {
+    return slice_w(surface, static_cast<std::uint16_t>(handle.exact_slice_idx),
+                   k_log);
+  }
+  const double w_lo =
+      slice_w(surface, static_cast<std::uint16_t>(handle.parent_lo_idx), k_log);
+  const double w_hi =
+      slice_w(surface, static_cast<std::uint16_t>(handle.parent_hi_idx), k_log);
+  return w_lo + handle.alpha_T * (w_hi - w_lo);
+}
+
+double iv_on_inserted_slice(const VolSurface& surface,
+                            const InsertedSliceHandle& handle,
+                            double k_log) noexcept {
+  const double w = w_on_inserted_slice(surface, handle, k_log);
+  if (!(std::isfinite(w) && w > 0.0)) return kQuietNaN;
+  if (!(handle.tau_vol > 0.0)) return kQuietNaN;
+  return std::sqrt(w / handle.tau_vol);
+}
+
+Status iv_on_inserted_slice_batch(const VolSurface& surface,
+                                  const InsertedSliceHandle& handle,
+                                  std::span<const double> k_log,
+                                  std::span<double> out_iv) {
+  if (out_iv.size() != k_log.size()) {
+    return Err(ErrorCode::InvalidArgument, "k_log / out_iv size mismatch");
+  }
+  if (handle.exact_slice_idx < 0 && !(handle.tau_vol > 0.0)) {
+    for (double& v : out_iv) v = kQuietNaN;
+    return Err(ErrorCode::InvalidArgument, "degenerate tau_vol");
+  }
+  for (std::size_t i = 0; i < k_log.size(); ++i) {
+    out_iv[i] = iv_on_inserted_slice(surface, handle, k_log[i]);
+  }
+  return Ok();
+}
+
+// ── Coordinate conversion ────────────────────────────────────────────────
+
+Result<CoordConvertResult> convert_coord(const VolSurface& surface,
+                                         const CurveSet& curves,
+                                         const TimeModel& tm,
+                                         const CoordConvertRequest& request) {
+  // Reserved delta conventions are rejected rather than guessed.
+  if (request.from_kind == CoordKind::Delta ||
+      request.to_kind == CoordKind::Delta) {
+    if (request.delta_convention != DeltaConvention::Forward) {
+      return Err(ErrorCode::NotImplemented, "reserved delta convention");
+    }
+  }
+
+  CoordConvertResult out;
+  out.T_clock = request.T_clock;
+
+  auto tau = tau_vol_from_clock(tm, request.T_clock);
+  if (!tau) {
+    return Err(std::move(tau).error());
+  }
+  out.tau_vol = tau->tau_vol;
+  out.flags |= tau->flags;
+  if (tm.mode != TimeMode::Clock) {
+    out.flags |= kFlagVolTimeConverted;
+  }
+
+  auto fwd = curve_forward_T(curves, request.T_clock, request.extrap_policy);
+  if (!fwd) {
+    return Err(std::move(fwd).error());
+  }
+  out.F = fwd->F;
+  out.df = fwd->df;
+  out.r = fwd->r;
+  out.q_eff = fwd->q_eff;
+  out.flags |= fwd->flags;
+
+  double K = kQuietNaN;
+  double k_log = kQuietNaN;
+  switch (request.from_kind) {
+    case CoordKind::Strike:
+      K = request.x;
+      if (!(K > 0.0) || !(out.F > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, "bad strike / forward");
+      }
+      k_log = std::log(K) - std::log(out.F);
+      break;
+    case CoordKind::LogMoneyness:
+      k_log = request.x;
+      if (!std::isfinite(k_log) || !(out.F > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, "bad log-moneyness / forward");
+      }
+      K = out.F * std::exp(k_log);
+      break;
+    case CoordKind::StandardMoneyness:
+      if (!(curves.spot > 0.0) || !(out.F > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, "bad spot / forward");
+      }
+      K = curves.spot * request.x;
+      if (!(K > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, "non-positive strike");
+      }
+      k_log = std::log(K) - std::log(out.F);
+      break;
+    case CoordKind::Delta: {
+      auto inner = surface_solve_k_for_delta(
+          surface, curves, tm, request.T_clock, request.x, request.side,
+          request.delta_convention, request.extrap_policy);
+      if (!inner) {
+        return Err(std::move(inner).error());
+      }
+      K = inner->K;
+      k_log = inner->k_log;
+      out.flags |= inner->flags;
+      out.quote_delta = inner->quote_delta;
+      break;
+    }
+  }
+
+  out.K = K;
+  out.k_log = k_log;
+  if (curves.spot > 0.0) {
+    out.standard_moneyness = K / curves.spot;
+  }
+
+  // Output delta requested (and input wasn't delta): surface-implied delta.
+  if (request.to_kind == CoordKind::Delta &&
+      request.from_kind != CoordKind::Delta) {
+    const double iv = surface.iv(k_log, tau->tau_vol);
+    if (std::isfinite(iv) && iv > 0.0) {
+      out.quote_delta = forward_delta(out.F, K, tau->tau_vol, iv, request.side);
+    }
+  }
+  return out;
+}
+
+// ── Extended evaluation ──────────────────────────────────────────────────
+
+Result<EvalResult> surface_eval_ex(const VolSurface& surface,
+                                   const CurveSet& curves,
+                                   const CorrectionCache* correction,
+                                   const TimeModel& tm,
+                                   const EvalRequest& request) {
+  // AL_CORRECTION (interpolated correction across T) is reserved.
+  if (request.pricing_route_policy == RoutePolicy::AlCorrection) {
+    return Err(ErrorCode::NotImplemented, "AL correction route deferred");
+  }
+
+  CoordConvertRequest creq;
+  creq.T_clock = request.T_clock;
+  creq.x = request.x;
+  creq.from_kind = request.coord_kind;
+  creq.to_kind = CoordKind::LogMoneyness;
+  creq.side = request.side;
+  creq.delta_convention = request.delta_convention;
+  creq.time_mode = request.time_mode;
+  creq.extrap_policy = request.extrap_policy;
+
+  auto cr = convert_coord(surface, curves, tm, creq);
+  if (!cr) {
+    return Err(std::move(cr).error());
+  }
+
+  EvalResult out;
+  out.T_clock = cr->T_clock;
+  out.tau_vol = cr->tau_vol;
+  out.K = cr->K;
+  out.k_log = cr->k_log;
+  out.F = cr->F;
+  out.df = cr->df;
+  out.r = cr->r;
+  out.q_eff = cr->q_eff;
+  out.flags |= cr->flags;
+  if (request.coord_kind == CoordKind::Delta) {
+    out.quote_delta = cr->quote_delta;
+  }
+
+  const double w = surface.w(cr->k_log, cr->tau_vol);
+  if (!(std::isfinite(w) && w > 0.0)) {
+    out.flags |= kFlagInvalid;
+    return Err(ErrorCode::OutOfRange, "non-positive total variance");
+  }
+  out.total_variance = w;
+  const double iv = std::sqrt(w / cr->tau_vol);
+  out.iv = iv;
+
+  if (request.coord_kind != CoordKind::Delta) {
+    out.quote_delta = forward_delta(cr->F, cr->K, cr->tau_vol, iv, request.side);
+  }
+
+  switch (request.pricing_route_policy) {
+    case RoutePolicy::B76Only:
+      out.price = black76_price(cr->F, cr->K, cr->T_clock, iv, cr->df, request.side);
+      out.pricing_route = RoutePolicy::B76Only;
+      out.flags |= kFlagRouteB76Only;
+      break;
+    case RoutePolicy::B76AlCache:
+      if (correction != nullptr && correction->populated()) {
+        const double S = (curves.spot > 0.0) ? curves.spot : cr->F;
+        const double q = std::isfinite(cr->q_eff) ? cr->q_eff : 0.0;
+        out.price = american_price_cached(S, cr->K, cr->T_clock, iv, cr->r, q,
+                                          request.side, correction);
+        out.pricing_route = RoutePolicy::B76AlCache;
+        out.flags |= kFlagRouteAmerican;
+      } else {
+        out.price = black76_price(cr->F, cr->K, cr->T_clock, iv, cr->df,
+                                  request.side);
+        out.pricing_route = RoutePolicy::B76Only;
+        out.flags |= kFlagRouteB76Only;
+        out.flags |= kResolverRouteFallbackB76;
+      }
+      break;
+    case RoutePolicy::AlCorrection:
+      out.flags |= kFlagInvalid;
+      return Err(ErrorCode::NotImplemented, "AL correction route deferred");
+  }
+  return out;
+}
+
+Status surface_eval_grid(const VolSurface& surface, const CurveSet& curves,
+                         const CorrectionCache* correction, const TimeModel& tm,
+                         std::span<const EvalRequest> requests,
+                         std::span<EvalResult> out_results) {
+  if (out_results.size() != requests.size()) {
+    return Err(ErrorCode::InvalidArgument, "requests / results size mismatch");
+  }
+  Status last = Ok();
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    auto r = surface_eval_ex(surface, curves, correction, tm, requests[i]);
+    if (r) {
+      out_results[i] = *r;
+    } else {
+      out_results[i] = EvalResult{};
+      last = Err(r.error());
+    }
+  }
+  return last;
+}
+
+// ── Delta inversion ──────────────────────────────────────────────────────
+
+namespace {
+
+inline constexpr double kDeltaBracketLo = -2.0;
+inline constexpr double kDeltaBracketHi = 2.0;
+inline constexpr double kDeltaTol = 1.0e-9;
+inline constexpr int kDeltaMaxIter = 64;
+
+[[nodiscard]] double delta_at_k(const VolSurface& surface, double F, double tau,
+                                double k_log, Side side) noexcept {
+  const double K = F * std::exp(k_log);
+  const double iv = surface.iv(k_log, tau);
+  if (!(std::isfinite(iv) && iv > 0.0)) return kQuietNaN;
+  return forward_delta(F, K, tau, iv, side);
+}
+
+}  // namespace
+
+Result<CoordConvertResult> surface_solve_k_for_delta(
+    const VolSurface& surface, const CurveSet& curves, const TimeModel& tm,
+    double T_clock, double target_delta, Side side, DeltaConvention convention,
+    ProjExtrapPolicy extrap) {
+  if (convention != DeltaConvention::Forward) {
+    return Err(ErrorCode::NotImplemented, "reserved delta convention");
+  }
+  // Sign sanity: calls in (0, 1), puts in (-1, 0).
+  if (side == Side::Call) {
+    if (!(target_delta > 0.0 && target_delta < 1.0)) {
+      return Err(ErrorCode::NotFound, "call delta out of (0,1)");
+    }
+  } else {
+    if (!(target_delta < 0.0 && target_delta > -1.0)) {
+      return Err(ErrorCode::NotFound, "put delta out of (-1,0)");
+    }
+  }
+
+  CoordConvertResult out;
+  out.T_clock = T_clock;
+
+  auto tau = tau_vol_from_clock(tm, T_clock);
+  if (!tau) {
+    return Err(std::move(tau).error());
+  }
+  out.tau_vol = tau->tau_vol;
+  out.flags |= tau->flags;
+
+  auto fwd = curve_forward_T(curves, T_clock, extrap);
+  if (!fwd) {
+    return Err(std::move(fwd).error());
+  }
+  out.F = fwd->F;
+  out.df = fwd->df;
+  out.r = fwd->r;
+  out.q_eff = fwd->q_eff;
+  out.flags |= fwd->flags;
+
+  double k_lo = kDeltaBracketLo;
+  double k_hi = kDeltaBracketHi;
+  double d_lo = delta_at_k(surface, fwd->F, tau->tau_vol, k_lo, side);
+  double d_hi = delta_at_k(surface, fwd->F, tau->tau_vol, k_hi, side);
+
+  if (!std::isfinite(d_lo) || !std::isfinite(d_hi)) {
+    for (int shrink = 0; shrink < 8; ++shrink) {
+      if (!std::isfinite(d_lo)) {
+        k_lo += 0.25;
+        d_lo = delta_at_k(surface, fwd->F, tau->tau_vol, k_lo, side);
+      }
+      if (!std::isfinite(d_hi)) {
+        k_hi -= 0.25;
+        d_hi = delta_at_k(surface, fwd->F, tau->tau_vol, k_hi, side);
+      }
+      if (std::isfinite(d_lo) && std::isfinite(d_hi)) break;
+    }
+    if (!std::isfinite(d_lo) || !std::isfinite(d_hi) || k_hi <= k_lo) {
+      out.flags |= kFlagDeltaNotBracketed;
+      return Err(ErrorCode::Unavailable, "delta bracket collapsed");
+    }
+  }
+
+  const double diff_lo = d_lo - target_delta;
+  const double diff_hi = d_hi - target_delta;
+  if (diff_lo * diff_hi > 0.0) {
+    out.flags |= kFlagDeltaNotBracketed;
+    return Err(ErrorCode::NotFound, "delta target not bracketed");
+  }
+
+  double k_mid = 0.5 * (k_lo + k_hi);
+  double d_mid = kQuietNaN;
+  for (int it = 0; it < kDeltaMaxIter; ++it) {
+    k_mid = 0.5 * (k_lo + k_hi);
+    d_mid = delta_at_k(surface, fwd->F, tau->tau_vol, k_mid, side);
+    if (!std::isfinite(d_mid)) {
+      out.flags |= kFlagDeltaNotBracketed;
+      return Err(ErrorCode::Unavailable, "delta blew up mid-solve");
+    }
+    if (std::fabs(d_mid - target_delta) < kDeltaTol ||
+        (k_hi - k_lo) < 1.0e-12) {
+      break;
+    }
+    const double dm = d_mid - target_delta;
+    if (dm * (d_lo - target_delta) < 0.0) {
+      k_hi = k_mid;
+      d_hi = d_mid;
+    } else {
+      k_lo = k_mid;
+      d_lo = d_mid;
+    }
+  }
+
+  out.k_log = k_mid;
+  out.K = fwd->F * std::exp(k_mid);
+  out.quote_delta = d_mid;
+  if (curves.spot > 0.0) {
+    out.standard_moneyness = out.K / curves.spot;
+  }
+  return out;
+}
+
+// ── Surface-to-surface project_compare ───────────────────────────────────
+
+Status surface_project_compare(const ProjectCompareInputs& in,
+                               std::span<ProjectGridRow> rows) {
+  if (in.source_surface == nullptr || in.target_surface == nullptr) {
+    return Err(ErrorCode::InvalidArgument, "null surface");
+  }
+  if (in.source_curves == nullptr || in.target_curves == nullptr) {
+    return Err(ErrorCode::InvalidArgument, "null curves");
+  }
+
+  TimeModel tm;
+  tm.mode = in.time_mode;
+
+  Status last = Ok();
+  for (ProjectGridRow& row : rows) {
+    EvalRequest req = eval_request_default();
+    req.T_clock = row.T_clock;
+    req.x = row.x;
+    req.coord_kind = row.coord_kind;
+    req.side = row.side;
+    req.interp_mode = in.interp_mode;
+    req.extrap_policy = in.extrap_policy;
+    req.delta_convention = in.delta_convention;
+    req.time_mode = in.time_mode;
+    req.pricing_route_policy = in.route_policy;
+
+    auto rs = surface_eval_ex(*in.source_surface, *in.source_curves,
+                              in.source_correction, tm, req);
+    if (rs) {
+      row.from_source = *rs;
+    } else {
+      row.from_source = EvalResult{};
+      last = Err(rs.error());
+    }
+
+    // Target side. Forward basis matters only for the LogMoneyness path: a
+    // shared K is forwarded to both sides under the chosen basis.
+    EvalRequest req_t = req;
+    if (req.coord_kind == CoordKind::LogMoneyness &&
+        in.basis != ForwardBasis::Self) {
+      double F_basis = kQuietNaN;
+      if (in.basis == ForwardBasis::Source) {
+        F_basis = row.from_source.F;
+      } else if (in.basis == ForwardBasis::Target) {
+        auto fl = curve_forward_T(*in.target_curves, row.T_clock, in.extrap_policy);
+        if (fl) F_basis = fl->F;
+      } else if (in.basis == ForwardBasis::External) {
+        F_basis = in.external_F;
+      }
+      if (std::isfinite(F_basis) && F_basis > 0.0) {
+        req_t.x = F_basis * std::exp(row.x);
+        req_t.coord_kind = CoordKind::Strike;
+      }
+    }
+
+    auto rt = surface_eval_ex(*in.target_surface, *in.target_curves,
+                              in.target_correction, tm, req_t);
+    if (rt) {
+      row.from_target = *rt;
+    } else {
+      row.from_target = EvalResult{};
+      last = Err(rt.error());
+    }
+
+    row.price_diff = row.from_target.price - row.from_source.price;
+    row.iv_diff = row.from_target.iv - row.from_source.iv;
+    row.union_flags = row.from_source.flags | row.from_target.flags;
+  }
+  return last;
+}
+
+}  // namespace atx::vol

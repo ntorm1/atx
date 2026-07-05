@@ -1,0 +1,55 @@
+add_executable(atx-vol-tests
+    version_test.cpp
+    black76_test.cpp
+    greeks_test.cpp
+    implied_vol_test.cpp
+    surface_test.cpp
+    curve_test.cpp
+    universe_test.cpp
+    derivatives_test.cpp
+    vol_surface_test.cpp
+    robust_test.cpp
+    american_test.cpp
+    correction_test.cpp
+    support/oracle_pricer_pde.cpp
+    arb_test.cpp
+    calib_test.cpp
+    c8_test.cpp
+    c8_calib_test.cpp
+    essvi_calib_test.cpp
+    svi_calib_test.cpp
+    cstar_test.cpp
+    cstar_calib_test.cpp
+    profile_test.cpp
+    data_test.cpp
+    surface_archive_test.cpp
+    batch_test.cpp
+    portfolio_test.cpp
+    bulk_test.cpp
+    calib_pool_test.cpp
+    projection_test.cpp
+    portfolio_risk_test.cpp
+    american_iv_test.cpp
+    dividend_test.cpp
+    s3_test.cpp
+    fit_metrics_test.cpp
+    deamer_test.cpp
+    parity_test.cpp
+    panel_test.cpp
+    vola_parity_test.cpp
+    surface_parity_test.cpp
+    opra_panel_test.cpp
+    session_test.cpp
+    vol_umbrella_test.cpp
+)
+
+target_link_libraries(atx-vol-tests
+    PRIVATE
+        atx::vol
+        atx::core
+        GTest::gtest_main
+        atx_warnings
+)
+
+include(GoogleTest)
+gtest_discover_tests(atx-vol-tests)

@@ -8,6 +8,7 @@ add_executable(atx-core-tests
     util_test.cpp
     safe_math_test.cpp
     math_test.cpp
+    normal_dist_test.cpp
     hash_test.cpp
     decimal_test.cpp
     random_test.cpp

@@ -26,6 +26,7 @@
 //   - Python math.isclose specification (PEP 485).
 //   - IEEE 754-2008 §5.11 for comparison semantics.
 
+#include <cmath>     // std::erfc, std::exp
 #include <concepts>  // std::floating_point
 #include <limits>    // std::numeric_limits
 
@@ -159,6 +160,48 @@ template <std::floating_point T>
     if (v < T{0}) { return -1; }
     if (v > T{0}) { return  1; }
     return 0;
+}
+
+// ============================================================
+//  Standard normal distribution
+// ============================================================
+//
+// Folded in from the C `ats-vol` library (ats_vol_internal.h), which needed
+// a high-precision Φ / φ on the option-pricing hot path and had no home for
+// them in the shared numeric layer. atx-engine likewise wanted a normal CDF
+// over std::erfc; this is the single reusable home.
+//
+// Not constexpr: std::erfc / std::exp are not constexpr under C++20 (clang-cl).
+// The extra-precision constants below beat the <math.h> literals in the last
+// few ULPs, which matters to the IV inverter's tail behaviour.
+
+/// 1 / sqrt(2π) — normalizing constant for the standard normal PDF.
+template <std::floating_point T>
+inline constexpr T inv_sqrt_2pi = T{0.398942280401432677939946059934381868};
+
+/// 1 / sqrt(2) — argument scale for the erfc-based CDF.
+template <std::floating_point T>
+inline constexpr T inv_sqrt_2 = T{0.707106781186547524400844362104849039};
+
+/// Standard normal probability density φ(x) = (1/√(2π))·exp(-x²/2).
+///
+/// @param x  Evaluation point.
+/// @return   φ(x); underflows smoothly to 0 for |x| beyond ~38.
+template <std::floating_point T>
+[[nodiscard]] T norm_pdf(T x) noexcept {
+    return inv_sqrt_2pi<T> * std::exp(T{-0.5} * x * x);
+}
+
+/// Standard normal cumulative distribution Φ(x) = ½·erfc(-x/√2).
+///
+/// erfc is the precision-friendly primitive: it avoids the catastrophic
+/// cancellation a naive `0.5*(1+erf(...))` suffers in the left tail.
+///
+/// @param x  Evaluation point.
+/// @return   Φ(x) ∈ [0, 1].
+template <std::floating_point T>
+[[nodiscard]] T norm_cdf(T x) noexcept {
+    return T{0.5} * std::erfc(-x * inv_sqrt_2<T>);
 }
 
 } // namespace atx::core

@@ -16,3 +16,8 @@ target_link_libraries(databento_opra_xom PRIVATE databento::databento)
 # Full XOM OPRA chain L1/BBO snapshot (bbo-1m) -> disk, cost-gated.
 add_executable(databento_xom_bbo databento_xom_bbo.cpp)
 target_link_libraries(databento_xom_bbo PRIVATE databento::databento)
+
+# OFFLINE OPRA cbbo-1m DBN -> Parquet converter (pull_opra_cbbo_1m_to_parquet schema).
+# No network / no cost. Links atx::core for io::write_parquet AND databento for the DBN read.
+add_executable(opra_dbn_to_parquet opra_dbn_to_parquet.cpp)
+target_link_libraries(opra_dbn_to_parquet PRIVATE atx::core databento::databento)

@@ -49,7 +49,15 @@ endif()
 # compiled in ANY worktree yields byte-identical output -> sccache cache HITS across
 # worktrees (and reproducible builds). clang/clang-cl accept -ffile-prefix-map.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
+    # clang-cl (MSVC frontend) rejects the GNU-spelled flag as an unknown
+    # argument, which /WX then promotes to a hard error; forward it through the
+    # embedded clang driver with /clang: instead. Plain clang (GNU frontend)
+    # takes it directly.
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        add_compile_options("/clang:-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
+    else()
+        add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
+    endif()
 endif()
 
 # ---- Fast linker: LLD ------------------------------------------------------
@@ -224,6 +232,7 @@ if(ATX_BUILD_TESTS)
 endif()
 
 add_subdirectory(atx-core)
+add_subdirectory(atx-vol)
 add_subdirectory(atx-tsdb)
 add_subdirectory(atx-engine)
 add_subdirectory(atx-impl)

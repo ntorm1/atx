@@ -1,0 +1,278 @@
+# atx-vol
+
+Equity-options pricing and volatility-fitting library — a C++20 port of the C17
+`ats-vol` library, refactored to the atx house style (`.agents/cpp/agent.md`)
+and layered above `atx-core`.
+
+## Status: full port
+
+The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
+ported in full to idiomatic, tested C++20, and then extended with a
+Vola-Dynamics American-equity parity layer (see below), a composable
+`VolaSession` handle, and a cached high-performance pricing hot path. It passes
+**556 GoogleTest cases across 111 suites** under `/W4 /permissive- /WX` (clang-cl).
+The C library's arena / SoA-slab / thread-local / hand-written-AVX2 machinery is
+re-expressed with `std::vector` + Rule of Zero + `atx::core` (error vocabulary,
+linear algebra, hashing) rather than transliterated; the numerics are ported
+faithfully and mirror the upstream test tolerances.
+
+## Ported modules
+
+| Layer | Header(s) | What it does |
+|---|---|---|
+| Types / version | `types.hpp`, `version.hpp` | `Side`, `ExerciseStyle`, numeric constants, `atx::core` error re-exports |
+| Black-76 | `black76.hpp` | European price, price+aux (d1/d2/Φ), fused price+vega, price-from-log-moneyness |
+| Greeks | `greeks.hpp` | Analytic B76 delta/gamma/vega/theta/rho/vanna/volga/charm |
+| Implied vol | `implied_vol.hpp` | Stefanica–Radoicic (2017) seed + Halley inversion → `Result<double>` |
+| American pricers | `american.hpp`, `correction.hpp` | Andersen–Lake (Gauss-Legendre + Chebyshev boundary), BAW, American Greeks, Chebyshev American-minus-European correction cache, Crank–Nicolson PDE oracle |
+| Surface eval | `surface.hpp` | Lightweight SVI / eSSVI per-slice evaluators + total-variance time interpolation |
+| Surface (calibration-grade) | `vol_surface.hpp` | `VolSurface` (tagged eSSVI/SVI + full slice params), backbone/residual/total eval, grad3/grad4, Mingone reparam, φ_max |
+| Curves | `curve.hpp` | Yield (Fritsch–Carlson) / forward / dividend / borrow (HTB) curve set |
+| Universe | `universe.hpp` | Ticker↔uid interning, SoA per-(uid,expiry) chain registry, quote ingest, LRU eviction |
+| Arbitrage | `arb.hpp` | Calendar + butterfly (Roper density) checks, SVI-MM admissibility, calendar projection/repair, quote pre-fit filters |
+| Robust math | `detail/robust.hpp` | Huber loss/weight, strided Huber weights, order-statistic quantile |
+| Calibration infra | `calib.hpp` | `CalibOpts`, `FitObs`, observation builder (IV-inversion + vega-spread weighting + filter cascade), accept-predicate |
+| eSSVI calibrator | `essvi_calib.hpp` | Cube-space Levenberg–Marquardt (analytic Mingone Jacobian) + IRLS-Huber + wing residual + sequential driver + calendar projection |
+| SVI calibrators | `svi_calib.hpp` | Zeliade quasi-explicit (BLLS + Nelder–Mead), Martini–Mingone constrained LM, raw↔JW |
+| C8 family | `c8.hpp`, `c8_calib.hpp` | SVI-JW backbone + ATM/wing curvature bumps (8p), basis, raw↔JW, Roper arb projection, IRLS-Newton calibrator |
+| CStar family | `cstar.hpp`, `cstar_calib.hpp` | C16M modal parametrization (base + 11 modal coeffs, C5/C8/C12/C16 tiers), block LM, calendar/butterfly arb |
+| Calibration pool | `calib_pool.hpp` | Cadence priority queue + deterministic multi-underlier fan-out (`std::jthread`) |
+| Vol derivatives | `derivatives.hpp` | Variance-swap strip, Carr–Lee vol swap, aged/marquee PnL, realized-vol tracker |
+| Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
+| Portfolio | `portfolio.hpp` | Leg/book/agg types, bulk pricer + select, portfolio pricing + 8-Greek aggregation by agg-mode |
+| Portfolio risk | `portfolio_risk.hpp` | Scenario/shock revaluation, plan/resolve/explain (PnL attribution) |
+| Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
+| Surface archive | `surface_archive.hpp` | ATSVSA binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
+| Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
+| Batch kernels | `batch.hpp` | Scalar-backed batch B76 price/vega/from-lnfk, IV, Greeks, eSSVI-w (batch == scalar, bit-exact) |
+| American IV | `american_iv.hpp` | Invert an American premium → implied vol (safeguarded Newton on the American pricer); the de-Americanization primitive |
+| Dividends / borrow | `dividend.hpp` | Hybrid dividend forward (escrowed cash → proportional blend, `S=S̃+D`), European put-call-parity borrow solver |
+| De-Americanization | `deamer.hpp` | Chain → European-equivalent IVs + per-term implied borrow (OTM-leg selection, fixed-point American-PCP borrow, q_eff bridge) |
+| Fit metrics | `fit_metrics.hpp` | Per-vol error bars from bid-ask, reduced-χ², "minimum edge" band, avE5 |
+| Parity metrics | `parity.hpp` | Re-Americanized fair-value-within-bid-ask fraction, mid-RMSE (vol & price), reduced-χ², edge band |
+| S3 / SSVI curve | `s3.hpp` | Exact Vola S3 shape curve in normalized-strike form, wings `C±`, analytic Roper `g`, ATF butterfly bound |
+| Panel fixtures | `panel.hpp` | Known-truth synthetic American-equity chain generator + exception-free CSV chain loader |
+| Parity harness | `vola_parity.hpp`, `surface_parity.hpp` | Single- and multi-expiry de-Am → fit → re-Am → metrics; interpolation + calendar-arb parity |
+| Composable session | `session.hpp` | `VolaSession` — build once from a snapshot, then query `iv`/`fair_value`/`greeks`/`diagnostics` at any `(K,T)`; owns a per-side `CorrectionCache` hot path |
+| Real-data loader | `opra_panel.hpp` | Databento OPRA cbbo-1m (NBBO) Parquet → `QuoteFrame`, OSI/OCC symbol parser, front-PCP spot implication |
+
+## Vola Dynamics parity (American equity options)
+
+A second layer brings the library to feature + fit parity with the Vola Dynamics
+analytics library for **American equity options**, following Klassen's published
+methodology (*Arbitrage-Free Parametric Volatility Surfaces and Real-Time
+Fitting*, 2017). See `docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md`
+for the full gap analysis.
+
+**The pipeline (Vola's workflow).** American quotes are light exotics, so all
+fitting happens on *European-equivalent* implied vols:
+
+```
+American chain → de-Americanize (imply borrow per term via American PCP,
+                 invert each American premium → European-equivalent IV)
+              → fit an arbitrage-free parametric curve (eSSVI / SVI / C8 / CStar)
+              → re-Americanize the fitted vols → model American fair value
+              → parity metrics (RMSE, fair-value-%-within-bid-ask, reduced-χ²)
+```
+
+- **De-Americanization** (`american_iv.hpp`, `deamer.hpp`): the European-equivalent
+  IV is the lognormal σ that reprices the American quote through the American
+  pricer; recovered by a safeguarded Newton that is self-consistent by
+  construction. The OTM leg is inverted per strike (least early-exercise
+  premium). σ is only identifiable where the *American* option carries time
+  value — deep-ITM early-exercise quotes are correctly reported at the vol floor.
+- **Dividends & borrow** (`dividend.hpp`): hybrid model `S = S̃ + D` (escrowed
+  cash blending to proportional), with the per-term borrow implied from
+  put-call parity — the discrete-cash-dividend handling that is Vola's
+  differentiator. `blend=0, borrow=0` reproduces the existing Battig-Jarrow
+  escrowed forward bit-for-bit.
+- **Curve family** (`s3.hpp` + existing `eSSVI`/`SVI`/`C8`/`CStar`): Vola's
+  nested curves S3 → C5..C12 map directly onto atx-vol's existing
+  `eSSVI`/`SVI-JW`/`C8`/`CStar` tiers (the C `ats-vol` library was itself
+  modeled on this family). `s3.hpp` adds the exact 3-parameter S3/SSVI shape
+  curve `σ²(z)=σ₀²[½(1+s₂z)+√(¼(1+s₂z)²+½c₂z²)]` with its analytic Roper
+  density and closed-form ATF butterfly bound `s₂²≤(4+2c₂)/(1+¼σ̂₀²)`; its
+  density matches `arb.hpp`'s Roper `g` to machine precision.
+- **Fit objective** (`fit_metrics.hpp`): reduced-χ² (Vola's primary metric) plus
+  per-vol error bars from bid-ask spreads and the "minimum edge" band (a model
+  vol inside the error band carries no statistical edge) — on top of the
+  existing vega/spread IRLS-Huber weighting and interval/anchor loss.
+- **Parity metrics** (`parity.hpp`): fraction of re-Americanized fair values
+  inside the bid-ask, mid-RMSE, reduced-χ².
+
+**Acceptance harness** (`vola_parity.hpp`, `surface_parity.hpp`; suites
+`VolaParity`, `SurfaceParity`). On a known-truth synthetic American-equity panel
+(discrete cash dividend + borrow + skewed smile), the full pipeline:
+recovers the injected borrow and forward; fits within bid-ask
+(**fair-value-within-bid-ask ≥ 0.95**, mid-vol-RMSE ≤ 5e-3, reduced-χ² ≤ 2);
+interpolates in maturity to match the truth surface (linear-in-total-variance)
+and stays calendar-arbitrage-free. The event-W-shape test documents that the
+3-parameter SSVI-family curves (S3 = eSSVI backbone) cannot represent negative
+ATM curvature — exactly why the nested `C8`/`CStar` curves exist (Vola's
+S5→C8→C12 χ² improvement).
+
+**Composable session & high-performance hot path** (`session.hpp`). `VolaSession`
+ties the whole pipeline into one handle: `build`/`from_frame` de-Americanizes and
+fits every expiry into an ascending-T eSSVI `VolSurface` once, after which
+`iv(K,T)`, `fair_value(K,T,side)` (re-Americanized), `greeks(...)`, and aggregate
+`diagnostics()` answer cheaply with no refit (forward/carry interpolated in T).
+When `use_correction_cache` is set (default), it builds a per-side Chebyshev
+`CorrectionCache` over the chain's `(k,T,σ)` box and routes every American
+inversion and re-pricing through the cached pricer (Black-76 + correction). The
+same cache prices both legs, so the invert/re-price round-trip stays
+self-consistent; a null/failed cache degrades transparently to cold Andersen-Lake.
+
+**One-include API + named presets.** `#include "atx/vol/vol.hpp"` pulls the whole
+public surface (grouped, with a 10-line quickstart in the header). Fit policy is a
+single choice via `FitPreset {Fast, Accurate, Robust, Hft}` +
+`make_session_inputs(preset, S, r, now)` / `apply_fit_preset(in, preset)` — no
+hand-assembling the de-Am / calib / cache / repair structs. `Robust` (the
+market-maker default) turns on `MonotoneFit` calendar repair for a surface that is
+calendar-arb-free near-money at held quality; `Fast` is the cold-≈0.36 s hot path;
+`Accurate` pins the reference Andersen-Lake preset. For repricing a whole expiry,
+`fair_value_ladder`/`greeks_ladder` take a SoA strike ladder and reprice it in one
+call (per-expiry context resolved once; per-strike NaN isolation), bit-identical to
+the scalar path — an ergonomics/robustness primitive, not a speedup (the per-strike
+cached pricer dominates: measured ~1× vs the loop, ≈6.2 µs/option).
+
+**Real-data proof** (`opra_panel.hpp`; `examples/opra_parity_bench`). A real
+Databento **OPRA cbbo-1m (NBBO)** XOM chain slice (2026-06-05 15:55 ET) is loaded
+from Parquet (OSI symbols parsed, spot implied from the front-expiry PCP forward),
+de-Americanized and fit end-to-end. The Parquet is produced offline from the
+cached DBN by atx-core's `opra_dbn_to_parquet` — **no API spend**. Result over
+1134 contracts / 19 expiries (spot $150.16, 438 OTM quotes, 18 slices):
+
+| metric | value | Vola reference |
+|---|---|---|
+| fair value within bid-ask (mean / worst) | **98.5% / 91.3%** | its headline gate |
+| mean reduced χ² | **0.207** | C8 = 0.599, C12 = 0.021 |
+| mean vol-RMSE | 0.019 | — |
+| cold vs cached agreement (in-bid-ask, χ²) | 98.5% vs 98.5%, 0.214 vs 0.207 | self-consistent |
+| **cold whole-surface fit (single-thread)** | **≈0.36 s** (438 quotes, ≈0.8 ms/quote) | Vola cold-start class |
+| `fair_value` query hot path (cached vs cold) | **6.6 µs vs 103 µs (15.5×)** | — |
+
+**Cold-start fit performance.** The single-threaded cold XOM surface fit went from
+**9.0 s → ≈0.36 s (≈25×)** with fit quality held (in-bid-ask, χ², vol-RMSE
+unchanged) and all acceptance tests green. Levers, in order of impact: precompute
+the Chebyshev-Lobatto barycentric nodes/weights out of the Andersen–Lake boundary
+hot loop; a surface-fit `al_fast_opts()` Andersen–Lake preset (7 collocation, 16-pt
+Gauss-Legendre, 2 Jacobi-Newton + 2 fixed-point sweeps) threaded as the session
+default, with the IV-inversion tolerance matched to the pricer's price-accuracy
+floor (a tighter IV tol than the pricer resolves collapses safeguarded Newton into
+bisection — each step a full American solve — and *slows* the fit); a single
+redundant per-strike inversion removed from the borrow solve (`resolve_chain_forward`);
+and per-leg Newton warm-starts across the borrow fixed point. Once the cold path is
+this fast, the correction cache no longer speeds up a *one-shot* surface build (it
+costs more to build than it saves there) — its payoff is the repeated-query hot
+path (15.5× above). **SIMD/AVX2 was investigated and does not help here** (see the
+SIMD note under *Deferred*).
+
+Run: `opra_dbn_to_parquet` then `opra_parity_bench` (both opt-in via
+`-DATX_BUILD_EXAMPLES=ON`; the bench skips cleanly if the Parquet is absent).
+
+**Calendar arbitrage (near-money CLOSED).** The raw independent-per-slice fit
+crosses in total variance (55 crossings on the 18-slice XOM surface over k∈[−3,3];
+26 inside |k|≤0.6). `FitPreset::Robust` / `CalendarRepair::MonotoneFit` — a
+θ-floor + active-set one-sided w-floor calendar-constrained fit — clears the
+near-money window **|k|≤0.6: 26 → 0 at held quality** (fair-value-in-bid-ask
+98.5%→98.5%, reduced χ² 0.207→0.209, vol-RMSE 0.0190→0.0191). Contrast the
+post-hoc θ-bump projection (`CalendarRepair::Project`): strictly arb-free over the
+full |k|≤3 grid but it lifts a crossing slice's ATM level off market and collapses
+quality (98.5%→20.4%, χ² →749) — kept opt-in for callers that require the strict
+wing guarantee. Deep-wing (|k|→3, ~20σ, no quotes) strict no-arb without a θ-bump
+needs a φ-slope term-structure constraint and stays deferred; Vola's
+calendar-coupled joint mode with per-term error bars remains the richer target.
+See `docs/superpowers/specs/2026-07-04-atx-vol-sota-hft-roadmap.md`.
+
+**Fixtures.** Beyond the real OPRA path above, the repo commits no vendor
+option-chain data, so the acceptance suites use the known-truth synthetic
+generator + a CSV loader (`panel.hpp`). Matching Vola's literal RMSE-in-bps needs
+a Vola/market feed that is not in-repo — the known-truth self-consistency plus
+the Crank-Nicolson PDE oracle is the rigorous in-repo substitute that makes the
+synthetic numbers falsifiable.
+
+**Deferred (documented, no impact on the shipped acceptance path).** A native
+discrete-cash-dividend PDE American pricer (the escrowed-forward Andersen-Lake
+path is self-consistent and used for both generation and re-Americanization);
+the eSSVI asymmetric-ρ / Fengler / candidate-selection research knobs; a
+multi-underlier de-Americanized surface driver over the calibration pool.
+
+## Folded into atx-core
+
+The standard-normal special functions the pricer hot path needs were folded into
+the shared numeric layer (per the port brief): `atx::core::norm_cdf` /
+`norm_pdf` (plus `inv_sqrt_2pi` / `inv_sqrt_2` constants) in
+`atx-core/include/atx/core/math.hpp`, covered by
+`atx-core/tests/normal_dist_test.cpp`. atx-core already supplied the arena,
+linear-algebra (`solve_spd` backs every LM/ridge normal-equation solve),
+hashing (`hash_bytes` for the archive symbol index), and `Result`/`Status`
+vocabulary the C library got from `ats-base`, so nothing else needed folding.
+
+## Deferred (documented per-file)
+
+Faithful numeric behavior is preserved everywhere; the following are throughput
+or research-mode refinements deferred as clearly-marked `// PORT NOTE:`s, none of
+which change the numerical results of the shipped paths:
+
+- **SIMD vectorization.** The batch APIs ship scalar-backed (each lane calls the
+  ported scalar kernel), so `batch == scalar` holds bit-for-bit — the exact
+  contract the C's AVX2 kernels went to lane-patching lengths to preserve.
+  AVX2/AVX-512 vectorization of Φ/log/exp is a throughput-only follow-on.
+  **Measured, not just deferred:** the Andersen–Lake Gauss-Legendre quad loop
+  (the dominant cold cost) was vectorized two ways and both reverted. The kernel
+  is transcendental-bound (per point: 2×√, log, 2×exp, 2×Φ) and its data layout
+  is already SoA and L1-resident, so there is no cache/AoS→SoA win — the only
+  lever is faster vector transcendentals. (1) A portable **xsimd** AVX2 rewrite
+  ran **≈6.6× slower** — xsimd's polynomial `exp`/`log`/`erfc` are far heavier
+  than the SVML-backed scalar libm the loop already calls, and 4-wide throughput
+  could not overcome the per-call cost. (2) **Intel SVML** vector intrinsics
+  (`_mm256_exp_pd`/`_mm256_cdfnorm_pd`) do beat scalar but compile only under MSVC
+  `cl.exe`; the project's **clang-cl** toolchain exposes no SVML, and the one
+  clang route (`-fveclib=SVML`) would add a fragile Intel SVML runtime-DLL
+  dependency to the whole library. A profitable vectorization therefore needs
+  either that runtime dependency or a batch-across-options SoA American solver
+  (many strikes' boundaries advanced together) — both larger than warranted at
+  ≈0.8 ms/quote. The scalar kernel is the measured optimum in-toolchain.
+- **SpiderRock parquet decoder.** The in-memory quote-frame / install path is
+  ported and tested; the bespoke ~1.4k-line Thrift/Parquet byte-decoder (built on
+  `malloc`/`goto`, and with no committed `.parquet` fixture — the upstream tests
+  skip when it is absent) is stubbed to `NotImplemented`, with the full column→
+  field schema mapping documented for a re-port onto `atx::core::io::LazyParquet`.
+- **eSSVI LM research knobs.** The load-bearing w-domain cube LM (analytic
+  Jacobian) + wing residual + calendar projection + sequential driver are ported.
+  The Fengler nonparametric overlay, three-way candidate selection, the
+  Andersen–Lake-correction-inside-the-LM objective, and the 4D asymmetric-ρ LM are
+  documented as deferred.
+- **Archive side-blobs.** `VolSurface` slices round-trip bit-identically; the C
+  archive's optional curve-set / profile / AL-correction-cache blob sections are
+  not emitted (those types are not part of atx-vol's archived surface).
+
+## Build & test
+
+Wired into the top-level atx CMake as `atx-vol` (alias `atx::vol`), linking
+`atx::core`. From a VS Developer shell (or via `scripts/atx-build.ps1`):
+
+```powershell
+cmake --preset dev
+cmake --build build --target atx-vol-tests
+ctest --test-dir build -R "Black76|Greeks|ImpliedVol|Surface|Curve|Universe|Arb|Essvi|Svi|C8|CStar|American|Correction|Portfolio|Bulk|Batch|Data|Profile|Cadence|Deriv|Realized|VolProjection|CurveProjection|CalibratePool|SurfaceArchive"
+```
+
+Or run the full suite directly: `build/bin/atx-vol-tests.exe` (556 tests). The
+Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='VolaParity.*:SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
+
+Real-data OPRA parity + throughput benchmark (opt-in examples):
+
+```powershell
+cmake --preset dev -DATX_BUILD_EXAMPLES=ON
+cmake --build build --target opra_dbn_to_parquet opra_parity_bench
+build/bin/opra_dbn_to_parquet.exe   # cached DBN -> Parquet (no API spend)
+build/bin/opra_parity_bench.exe     # de-Am + fit + parity + cold-vs-cached timing
+```
+
+## Conventions
+
+Follows `.agents/cpp/agent.md`: C++20, no UB, `enum class`, `const`/`noexcept`/
+`[[nodiscard]]` by default, expected failures via `atx::core::Result<T>` (not
+exceptions), Rule of Zero, `/W4 /permissive- /WX` clean. Public headers live
+under `include/atx/vol/`; the namespace is `atx::vol`.
