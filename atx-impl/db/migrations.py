@@ -10296,6 +10296,43 @@ def _quality_check_registry_seed_rows() -> list[tuple[object, ...]]:
     return rows
 
 
+def _semantic_contract_quality_registry(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-2: make semantic_contract gate-ready in quality_check_registry."""
+    exists = conn.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = 'quality_check_registry'
+        """
+    ).fetchone()[0]
+    if not exists:
+        return
+
+    from .quality import SCHEMA_CONTRACT_DATASET_ID, SEMANTIC_CONTRACT_CHECK_NAME
+
+    conn.execute(
+        """
+        INSERT INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        SELECT ?, ?, ?, 'critical', 0.0, 'eq', true, 'failed', 'schema_contract', now()
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM quality_check_registry
+            WHERE check_name = ?
+        )
+        """,
+        [
+            SEMANTIC_CONTRACT_CHECK_NAME,
+            SCHEMA_CONTRACT_DATASET_ID,
+            "schema_contract",
+            SEMANTIC_CONTRACT_CHECK_NAME,
+        ],
+    )
+
+
 def _quality_gating_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     """PF2-S10 S10-0: severity/threshold registry for quality-as-SLO gates."""
 
@@ -11948,6 +11985,250 @@ def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_indexes(conn)
 
 
+def _pf3_s2_schema_contract_version_and_panel_contract(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-3: version-pin schema contract v2 and seed panel contract stub."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_contract_version (
+            version VARCHAR PRIMARY KEY,
+            manifest_sha256 VARCHAR NOT NULL CHECK (length(trim(manifest_sha256)) = 64),
+            declared_by_migration VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'schema_contract_version',
+            'control',
+            'schema_contract_version',
+            'version',
+            'Semantic identity for the warehouse schema contract: one append-only row per declared contract version paired with the manifest sha256 for that version.',
+            '["version"]',
+            'Version pin for schema_contract_sha256(build_contract_manifest(conn)). A manifest hash change without a matching new version row is contract drift, not a silent update. This is contract metadata, not fact-row PIT data.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('schema_contract_version', 'version', 'identifier', 'Semantic schema-contract version string, e.g. v2.', false, NULL, NULL, now()),
+            ('schema_contract_version', 'manifest_sha256', 'identifier', 'schema_contract_sha256(build_contract_manifest(conn)) pinned for this contract version.', false, NULL, NULL, now()),
+            ('schema_contract_version', 'declared_by_migration', 'identifier', 'Migration that first persisted this contract version row.', false, NULL, NULL, now()),
+            ('schema_contract_version', 'source_loaded_at', 'timestamp', 'Warehouse timestamp when the version row was first persisted.', false, 'timestamp', NULL, now())
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS panel_contract (
+            column_name VARCHAR PRIMARY KEY,
+            data_type VARCHAR NOT NULL,
+            is_panel_key BOOLEAN NOT NULL DEFAULT false,
+            key_ordinal INTEGER,
+            unit VARCHAR NOT NULL,
+            sign VARCHAR NOT NULL,
+            scale VARCHAR NOT NULL,
+            panel_contract_sha256 VARCHAR NOT NULL CHECK (length(trim(panel_contract_sha256)) = 64),
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'panel_contract',
+            'control',
+            'factor_panel_contract',
+            'column_name',
+            'Forward contract for the future v_factor_panel export: one row per declared panel column with key membership and unit/sign/scale semantics.',
+            '["column_name"]',
+            'PF3-S10 will enforce the materialized/exported factor panel against this declaration. The panel point-in-time key is (security_id, as_of_date); this stub intentionally does not require v_factor_panel to exist yet.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('panel_contract', 'column_name', 'identifier', 'Declared factor-panel export column name.', false, NULL, NULL, now()),
+            ('panel_contract', 'data_type', 'category', 'Declared DuckDB data type for the future panel column.', false, NULL, NULL, now()),
+            ('panel_contract', 'is_panel_key', 'flag', 'True when the column participates in the panel PIT key.', false, NULL, NULL, now()),
+            ('panel_contract', 'key_ordinal', 'ordinal', 'One-based key position for panel PIT keys; NULL for non-key columns.', true, NULL, NULL, now()),
+            ('panel_contract', 'unit', 'category', 'Declared unit for this panel column.', false, 'unit', NULL, now()),
+            ('panel_contract', 'sign', 'category', 'Declared sign/domain convention for this panel column.', false, NULL, NULL, now()),
+            ('panel_contract', 'scale', 'category', 'Declared semantic scale for this panel column.', false, NULL, NULL, now()),
+            ('panel_contract', 'panel_contract_sha256', 'identifier', 'Stable sha256 over db.panel_contract.PANEL_CONTRACT.', false, NULL, NULL, now()),
+            ('panel_contract', 'source_loaded_at', 'timestamp', 'Warehouse timestamp when this panel contract row was first persisted or updated.', false, 'timestamp', NULL, now())
+        """
+    )
+
+    from .panel_contract import PANEL_CONTRACT, panel_contract_sha256
+
+    panel_sha256 = panel_contract_sha256(PANEL_CONTRACT)
+    rows = [
+        (
+            spec.name,
+            spec.data_type,
+            spec.is_panel_key,
+            spec.key_ordinal,
+            spec.unit,
+            spec.sign,
+            spec.scale,
+            panel_sha256,
+        )
+        for spec in PANEL_CONTRACT
+    ]
+    import pandas as pd
+
+    seed = pd.DataFrame.from_records(
+        rows,
+        columns=[
+            "column_name",
+            "data_type",
+            "is_panel_key",
+            "key_ordinal",
+            "unit",
+            "sign",
+            "scale",
+            "panel_contract_sha256",
+        ],
+    )
+    conn.register("_panel_contract_seed", seed)
+    try:
+        conn.execute(
+            """
+            DELETE FROM panel_contract AS pc
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM _panel_contract_seed AS seed
+                WHERE seed.column_name = pc.column_name
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TEMP TABLE _panel_contract_changed AS
+            SELECT
+                seed.column_name,
+                seed.data_type,
+                seed.is_panel_key,
+                seed.key_ordinal,
+                seed.unit,
+                seed.sign,
+                seed.scale,
+                seed.panel_contract_sha256
+            FROM _panel_contract_seed AS seed
+            JOIN panel_contract AS pc
+              ON pc.column_name = seed.column_name
+            WHERE pc.data_type IS DISTINCT FROM seed.data_type
+               OR pc.is_panel_key IS DISTINCT FROM seed.is_panel_key
+               OR pc.key_ordinal IS DISTINCT FROM seed.key_ordinal
+               OR pc.unit IS DISTINCT FROM seed.unit
+               OR pc.sign IS DISTINCT FROM seed.sign
+               OR pc.scale IS DISTINCT FROM seed.scale
+               OR pc.panel_contract_sha256 IS DISTINCT FROM seed.panel_contract_sha256
+            """
+        )
+        conn.execute(
+            """
+            UPDATE panel_contract AS pc
+            SET
+                data_type = changed.data_type,
+                is_panel_key = changed.is_panel_key,
+                key_ordinal = changed.key_ordinal,
+                unit = changed.unit,
+                sign = changed.sign,
+                scale = changed.scale,
+                panel_contract_sha256 = changed.panel_contract_sha256,
+                source_loaded_at = now()
+            FROM _panel_contract_changed AS changed
+            WHERE pc.column_name = changed.column_name
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO panel_contract (
+                column_name, data_type, is_panel_key, key_ordinal,
+                unit, sign, scale, panel_contract_sha256, source_loaded_at
+            )
+            SELECT
+                seed.column_name,
+                seed.data_type,
+                seed.is_panel_key,
+                seed.key_ordinal,
+                seed.unit,
+                seed.sign,
+                seed.scale,
+                seed.panel_contract_sha256,
+                now()
+            FROM _panel_contract_seed AS seed
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM panel_contract AS pc
+                WHERE pc.column_name = seed.column_name
+            )
+            """
+        )
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _panel_contract_changed")
+        conn.unregister("_panel_contract_seed")
+
+    _pf3_s2_schema_contract_semantics(conn)
+
+    from .schema_contract import (
+        SCHEMA_CONTRACT_VERSION,
+        assert_schema_contract_version,
+        build_contract_manifest,
+        schema_contract_sha256,
+    )
+
+    manifest = build_contract_manifest(conn)
+    manifest_sha256 = schema_contract_sha256(manifest)
+    conn.execute(
+        """
+        INSERT INTO schema_contract_version (
+            version, manifest_sha256, declared_by_migration, source_loaded_at
+        )
+        SELECT ?, ?, '0137', now()
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM schema_contract_version
+            WHERE version = ?
+        )
+        """,
+        [SCHEMA_CONTRACT_VERSION, manifest_sha256, SCHEMA_CONTRACT_VERSION],
+    )
+    assert_schema_contract_version(conn, manifest=manifest)
+
+
+def _pf3_s2_semantic_contract_quality_registry(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-2/S2-3: contract v2/panel stub plus semantic_contract gate."""
+
+    _pf3_s2_schema_contract_version_and_panel_contract(conn)
+
+    _semantic_contract_quality_registry(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -12554,6 +12835,11 @@ MIGRATIONS: list[Migration] = [
         version=136,
         name="pf3_s2_schema_contract_semantics",
         up=_pf3_s2_schema_contract_semantics,
+    ),
+    Migration(
+        version=137,
+        name="pf3_s2_semantic_contract_quality_registry",
+        up=_pf3_s2_semantic_contract_quality_registry,
     ),
 ]
 

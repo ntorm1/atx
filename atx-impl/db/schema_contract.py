@@ -59,6 +59,8 @@ from .connection import DuckDBStore
 # ensure_quant_schema can later gain columns via a migration's ALTER TABLE ADD COLUMN.
 DECLARED_IN_VALUES = frozenset({"schema_py", "migration"})
 SIGN_VALUES = frozenset({"signed", "non_negative", "non_positive", "unit_interval", "bounded"})
+SCHEMA_CONTRACT_VERSION = "v2"
+SCHEMA_CONTRACT_VERSION_TABLE = "schema_contract_version"
 
 # The typed drift categories detect_schema_drift can emit. Keep in sync with the S1-0
 # plan section (sprint-1-schema-contract.md) -- this is the closed set, not an example.
@@ -124,6 +126,20 @@ class DriftRow:
     def __post_init__(self) -> None:
         if self.drift_type not in DRIFT_TYPES:
             raise ValueError(f"drift_type must be one of {sorted(DRIFT_TYPES)}, got {self.drift_type!r}")
+
+
+@dataclass(frozen=True)
+class SchemaContractVersionPin:
+    """Persisted schema-contract identity paired with the live manifest hash."""
+
+    version: str
+    manifest_sha256: str
+    expected_version: str
+    expected_manifest_sha256: str
+
+
+class SchemaContractVersionMismatch(RuntimeError):
+    """Raised when the persisted schema-contract version pin does not match live code."""
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +469,73 @@ def schema_contract_sha256(contract: Mapping[str, Sequence[ColumnSpec]] | None =
     manifest: Mapping[str, Sequence[ColumnSpec]] = CONTRACT if contract is None else contract
     payload = json.dumps(_manifest_payload(manifest), sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def assert_schema_contract_version(
+    con,
+    *,
+    expected_version: str | None = None,
+    manifest: Mapping[str, Sequence[ColumnSpec]] | None = None,
+) -> SchemaContractVersionPin:
+    """Assert the persisted contract version row pins the live manifest hash.
+
+    A schema-contract hash change without a matching version-row migration fails here:
+    callers must either keep the manifest stable for the current version, or bump
+    ``SCHEMA_CONTRACT_VERSION`` and persist the new version/hash row.
+    """
+    resolved_version = expected_version or SCHEMA_CONTRACT_VERSION
+    resolved_manifest = build_contract_manifest(con) if manifest is None else manifest
+    expected_sha256 = schema_contract_sha256(resolved_manifest)
+
+    table_exists = con.execute(
+        """
+        SELECT count(*)
+        FROM duckdb_tables()
+        WHERE schema_name = 'main'
+          AND table_name = ?
+        """,
+        [SCHEMA_CONTRACT_VERSION_TABLE],
+    ).fetchone()[0]
+    if not table_exists:
+        raise SchemaContractVersionMismatch(
+            f"{SCHEMA_CONTRACT_VERSION_TABLE} is missing; expected {resolved_version} "
+            f"with manifest_sha256 {expected_sha256}"
+        )
+
+    row = con.execute(
+        f"""
+        SELECT version, manifest_sha256
+        FROM {SCHEMA_CONTRACT_VERSION_TABLE}
+        WHERE version = ?
+        """,
+        [resolved_version],
+    ).fetchone()
+    if row is None:
+        versions = [
+            str(value)
+            for (value,) in con.execute(
+                f"SELECT version FROM {SCHEMA_CONTRACT_VERSION_TABLE} ORDER BY version"
+            ).fetchall()
+        ]
+        raise SchemaContractVersionMismatch(
+            f"schema contract version {resolved_version!r} is not persisted; "
+            f"persisted versions={versions!r}, expected manifest_sha256 {expected_sha256}"
+        )
+
+    version, manifest_sha256 = str(row[0]), str(row[1])
+    pin = SchemaContractVersionPin(
+        version=version,
+        manifest_sha256=manifest_sha256,
+        expected_version=resolved_version,
+        expected_manifest_sha256=expected_sha256,
+    )
+    if manifest_sha256 != expected_sha256:
+        raise SchemaContractVersionMismatch(
+            f"schema contract {version} pins manifest_sha256 {manifest_sha256}, "
+            f"but live manifest is {expected_sha256}; bump {SCHEMA_CONTRACT_VERSION_TABLE} "
+            "with the contract version when the manifest intentionally changes"
+        )
+    return pin
 
 
 # ---------------------------------------------------------------------------
