@@ -12,11 +12,12 @@ import hashlib
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from .connection import DuckDBStore
+from .connection import DEFAULT_DB_PATH, DuckDBStore, connect
 from .dataset import Dataset, DatasetLoadResult
 from .formula_library import (
     REQUIRE_POSITIVE_DENOMINATOR_RULE,
@@ -640,6 +641,77 @@ def _normalized_symbols(symbols: tuple[str, ...] | None) -> tuple[str, ...]:
 
 def _normalized_metrics(metrics: tuple[str, ...] | None) -> tuple[str, ...]:
     return tuple(sorted({str(metric).strip() for metric in metrics or () if str(metric).strip()}))
+
+
+def _end_of_day_asof_ts(as_of_date: dt.date) -> dt.datetime:
+    return dt.datetime.combine(as_of_date, dt.time.max).replace(tzinfo=None)
+
+
+def _register_filter(store: DuckDBStore, relation: str, column: str, values: tuple[str, ...]) -> bool:
+    if not values:
+        return False
+    store.con.register(relation, pd.DataFrame({column: list(values)}))
+    return True
+
+
+def metric_lineage_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store: DuckDBStore | None = None,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    metric_codes: tuple[str, ...] | list[str] | None = None,
+    source_tables: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Return latest-visible metric lineage rows as of a point in time."""
+
+    resolved_as_of_ts = (as_of_ts or _end_of_day_asof_ts(as_of_date)).replace(tzinfo=None)
+    symbol_values = _normalized_symbols(tuple(symbols or ()))
+    metric_values = _normalized_metrics(tuple(metric_codes or ()))
+    source_table_values = _normalized_metrics(tuple(source_tables or ()))
+
+    def _run(active: DuckDBStore) -> pd.DataFrame:
+        registered: list[str] = []
+        joins: list[str] = []
+        try:
+            if _register_filter(active, "metric_lineage_symbol_filter", "symbol", symbol_values):
+                registered.append("metric_lineage_symbol_filter")
+                joins.append("JOIN metric_lineage_symbol_filter sf ON sf.symbol = ml.symbol")
+            if _register_filter(active, "metric_lineage_code_filter", "metric_code", metric_values):
+                registered.append("metric_lineage_code_filter")
+                joins.append("JOIN metric_lineage_code_filter cf ON cf.metric_code = ml.metric_code")
+            if _register_filter(active, "metric_lineage_source_filter", "metric_source_table", source_table_values):
+                registered.append("metric_lineage_source_filter")
+                joins.append("JOIN metric_lineage_source_filter stf ON stf.metric_source_table = ml.metric_source_table")
+            join_sql = "\n        ".join(joins)
+            return active.con.execute(
+                f"""
+                SELECT ml.*
+                FROM v_metric_lineage ml
+                {join_sql}
+                WHERE ml.metric_as_of_date <= ?
+                  AND ml.metric_available_at <= ?
+                  AND (
+                      ml.formula_valid_from IS NULL
+                      OR ml.formula_valid_from <= ?
+                  )
+                  AND (
+                      ml.formula_valid_to IS NULL
+                      OR ml.formula_valid_to > ?
+                  )
+                ORDER BY ml.metric_source_table, ml.security_id, ml.metric_code, ml.metric_as_of_date
+                """,
+                [as_of_date, resolved_as_of_ts, as_of_date, as_of_date],
+            ).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)
 
 
 def _derive_free_cash_flow_rows(history: pd.DataFrame) -> pd.DataFrame:

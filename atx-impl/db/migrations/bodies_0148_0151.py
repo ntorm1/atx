@@ -1000,6 +1000,207 @@ def _pf3_s6_growth_engine_schema_catalog(conn: duckdb.DuckDBPyConnection) -> Non
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s6_metric_lineage_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S6 S6-2: queryable metric -> formula + source lineage surface."""
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_metric_lineage AS
+        WITH formula_defs AS (
+            SELECT *
+            FROM v_formula_registry
+        )
+        SELECT
+            sha256(concat_ws('|', 'fundamental_ratios', r.ratio_id)) AS metric_lineage_id,
+            'fundamental_ratios' AS metric_source_table,
+            r.ratio_id AS metric_row_id,
+            r.source,
+            r.security_id,
+            r.symbol,
+            r.cik,
+            r.ratio_code AS metric_code,
+            r.ratio_category AS metric_family,
+            r.ratio_kind AS metric_kind,
+            r.unit,
+            r.basis,
+            CAST(NULL AS VARCHAR) AS growth_method,
+            CAST(NULL AS DOUBLE) AS horizon_years,
+            r.period_start,
+            r.period_end,
+            r.as_of_date AS metric_as_of_date,
+            r.available_at AS metric_available_at,
+            r.available_at AS available_at,
+            r.is_latest_revision,
+            r.vintage_class,
+            r.source_accession AS current_source_accession,
+            CAST(NULL AS VARCHAR) AS base_source_accession,
+            r.filed_date AS current_filed_date,
+            CAST(NULL AS DATE) AS base_filed_date,
+            r.input_codes_json,
+            r.input_item_ids_json,
+            coalesce(r.input_item_ids_json, r.input_codes_json) AS source_fact_refs_json,
+            CAST(to_json(struct_pack(
+                source_accession := r.source_accession,
+                filed_date := CAST(r.filed_date AS VARCHAR),
+                input_codes_json := r.input_codes_json,
+                input_item_ids_json := r.input_item_ids_json
+            )) AS VARCHAR) AS input_lineage_json,
+            r.run_id,
+            r.source_loaded_at,
+            f.formula_code,
+            f.family AS formula_family,
+            f.kind AS formula_kind,
+            f.unit AS formula_unit,
+            f.transform AS formula_transform,
+            f.expression AS formula_expression,
+            f.inputs_json AS formula_inputs_json,
+            f.definition AS formula_definition,
+            f.citation AS formula_citation,
+            f.valid_from AS formula_valid_from,
+            f.valid_to AS formula_valid_to
+        FROM fundamental_ratios r
+        LEFT JOIN formula_defs f
+          ON f.formula_code = r.ratio_code
+
+        UNION ALL
+
+        SELECT
+            sha256(concat_ws('|', 'fundamental_growth', g.growth_id)) AS metric_lineage_id,
+            'fundamental_growth' AS metric_source_table,
+            g.growth_id AS metric_row_id,
+            g.source,
+            g.security_id,
+            g.symbol,
+            g.cik,
+            g.formula_code AS metric_code,
+            g.family AS metric_family,
+            g.kind AS metric_kind,
+            g.unit,
+            g.basis,
+            g.growth_method,
+            g.horizon_years,
+            g.period_start,
+            g.period_end,
+            g.as_of_date AS metric_as_of_date,
+            g.available_at AS metric_available_at,
+            g.available_at AS available_at,
+            g.is_latest_revision,
+            g.vintage_class,
+            g.current_source_accession,
+            g.base_source_accession,
+            g.current_filed_date,
+            g.base_filed_date,
+            g.input_codes_json,
+            CAST(NULL AS VARCHAR) AS input_item_ids_json,
+            g.input_lineage_json AS source_fact_refs_json,
+            g.input_lineage_json,
+            g.run_id,
+            g.source_loaded_at,
+            f.formula_code,
+            f.family AS formula_family,
+            f.kind AS formula_kind,
+            f.unit AS formula_unit,
+            f.transform AS formula_transform,
+            f.expression AS formula_expression,
+            f.inputs_json AS formula_inputs_json,
+            f.definition AS formula_definition,
+            f.citation AS formula_citation,
+            f.valid_from AS formula_valid_from,
+            f.valid_to AS formula_valid_to
+        FROM fundamental_growth g
+        LEFT JOIN formula_defs f
+          ON f.formula_code = g.formula_code
+
+        UNION ALL
+
+        SELECT
+            sha256(concat_ws('|', 'valuation_multiples', v.valuation_multiple_id)) AS metric_lineage_id,
+            'valuation_multiples' AS metric_source_table,
+            v.valuation_multiple_id AS metric_row_id,
+            v.source,
+            v.security_id,
+            v.symbol,
+            CAST(NULL AS VARCHAR) AS cik,
+            v.formula_code AS metric_code,
+            v.category AS metric_family,
+            v.kind AS metric_kind,
+            v.unit,
+            CAST(NULL AS VARCHAR) AS basis,
+            CAST(NULL AS VARCHAR) AS growth_method,
+            CAST(NULL AS DOUBLE) AS horizon_years,
+            v.period_start,
+            v.period_end,
+            v.as_of_date AS metric_as_of_date,
+            v.available_at AS metric_available_at,
+            v.available_at AS available_at,
+            v.is_latest_revision,
+            'most_recently_restated' AS vintage_class,
+            CAST(NULL AS VARCHAR) AS current_source_accession,
+            CAST(NULL AS VARCHAR) AS base_source_accession,
+            CAST(NULL AS DATE) AS current_filed_date,
+            CAST(NULL AS DATE) AS base_filed_date,
+            v.input_codes_json,
+            CAST(NULL AS VARCHAR) AS input_item_ids_json,
+            v.input_lineage_json AS source_fact_refs_json,
+            v.input_lineage_json,
+            v.run_id,
+            v.source_loaded_at,
+            f.formula_code,
+            f.family AS formula_family,
+            f.kind AS formula_kind,
+            f.unit AS formula_unit,
+            f.transform AS formula_transform,
+            f.expression AS formula_expression,
+            f.inputs_json AS formula_inputs_json,
+            f.definition AS formula_definition,
+            f.citation AS formula_citation,
+            f.valid_from AS formula_valid_from,
+            f.valid_to AS formula_valid_to
+        FROM valuation_multiples v
+        LEFT JOIN formula_defs f
+          ON f.formula_code = v.formula_code
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'v_metric_lineage',
+            'view',
+            'metric_lineage',
+            'metric_source_table,metric_row_id',
+            'Queryable derived-metric lineage surface joining metric rows to formula_registry definitions and source-input lineage JSON.',
+            '["metric_source_table","metric_row_id"]',
+            'Use metric_lineage_asof or filter metric_available_at <= decision timestamp and metric_as_of_date <= decision date. Formula definition validity is carried by formula_valid_from/formula_valid_to.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("v_metric_lineage",))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_metric_lineage', 'metric_source_table', 'category', 'Source metric table: fundamental_ratios, fundamental_growth, or valuation_multiples.', false, NULL, NULL, now()),
+            ('v_metric_lineage', 'metric_row_id', 'identifier', 'Primary row identifier from the source metric table.', false, NULL, NULL, now()),
+            ('v_metric_lineage', 'metric_code', 'identifier', 'Metric/formula code emitted by the source metric table.', false, NULL, 'formula_registry.formula_code', now()),
+            ('v_metric_lineage', 'metric_available_at', 'timestamp', 'Visibility timestamp of the metric row, derived as max availability of its consumed inputs.', false, 'timestamp', NULL, now()),
+            ('v_metric_lineage', 'source_fact_refs_json', 'json', 'Source fact references or input lineage JSON for the metric row.', true, 'json', NULL, now()),
+            ('v_metric_lineage', 'input_lineage_json', 'json', 'Metric input lineage JSON normalized across derived metric surfaces.', true, 'json', NULL, now()),
+            ('v_metric_lineage', 'formula_expression', 'text', 'Formula expression from formula_registry.', true, NULL, 'formula_registry.expression', now()),
+            ('v_metric_lineage', 'formula_valid_from', 'date', 'Formula definition valid-from date.', true, 'date', 'formula_registry.valid_from', now()),
+            ('v_metric_lineage', 'formula_valid_to', 'date', 'Formula definition valid-to date.', true, 'date', 'formula_registry.valid_to', now())
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=148,
@@ -1010,5 +1211,10 @@ MIGRATIONS: list[Migration] = [
         version=149,
         name="pf3_s6_growth_engine_schema_catalog",
         up=_pf3_s6_growth_engine_schema_catalog,
+    ),
+    Migration(
+        version=150,
+        name="pf3_s6_metric_lineage_view",
+        up=_pf3_s6_metric_lineage_view,
     ),
 ]

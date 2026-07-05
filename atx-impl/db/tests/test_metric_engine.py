@@ -11,6 +11,7 @@ from db.metric_engine import (
     GrowthFormulaSpec,
     compute_growth_rows,
     load_growth_formula_specs,
+    metric_lineage_asof,
     refresh_fundamental_growth,
 )
 from db.warehouse import insert_frame
@@ -259,6 +260,26 @@ def test_refresh_fundamental_growth_materializes_pit_visible_rows(tmp_store) -> 
     assert late[0] == pytest.approx(0.10, abs=1e-4)
     assert late[1:] == (dt.date(2020, 12, 31), 133.1, 100.0)
 
+    early_lineage = metric_lineage_asof(
+        dt.date(2024, 1, 31),
+        store=tmp_store,
+        metric_codes=("revenue_cagr_3y",),
+        source_tables=("fundamental_growth",),
+    )
+    late_lineage = metric_lineage_asof(
+        dt.date(2024, 2, 2),
+        store=tmp_store,
+        metric_codes=("revenue_cagr_3y",),
+        source_tables=("fundamental_growth",),
+    )
+
+    assert early_lineage.empty
+    assert len(late_lineage) == 1
+    lineage = late_lineage.iloc[0]
+    assert lineage["formula_expression"] == "metric:revenue|mode:cagr|horizon_years:3|basis:ttm"
+    assert pd.Timestamp(lineage["formula_valid_from"]).date() == dt.date(1900, 1, 1)
+    assert json.loads(lineage["input_lineage_json"])["current"]["period_end"] == "2023-12-31"
+
 
 def test_fundamental_growth_migration_catalog_and_formula_seed_are_present(tmp_store) -> None:
     columns = {
@@ -275,6 +296,9 @@ def test_fundamental_growth_migration_catalog_and_formula_seed_are_present(tmp_s
     ).fetchone()[0]
     transform = tmp_store.con.execute(
         "SELECT transform FROM formula_registry WHERE formula_code = 'revenue_cagr_3y'"
+    ).fetchone()[0]
+    lineage_field_count = tmp_store.con.execute(
+        "SELECT count(*) FROM field_catalog WHERE table_name = 'v_metric_lineage'"
     ).fetchone()[0]
 
     assert {
@@ -295,3 +319,10 @@ def test_fundamental_growth_migration_catalog_and_formula_seed_are_present(tmp_s
     assert field_count == len(columns)
     assert family_count == 35
     assert transform == "cagr"
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM duckdb_views() WHERE view_name = 'v_metric_lineage'"
+    ).fetchone()[0] == 1
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM table_catalog WHERE table_name = 'v_metric_lineage'"
+    ).fetchone()[0] == 1
+    assert lineage_field_count > 0

@@ -17,7 +17,7 @@ Updated: 2026-07-05 America/New_York
 
 - S6-0 - Complete the ratio catalog: done. Worker `019f3425-5b30-7823-8a37-0319a15b32cf` expanded the registry CSV and ratio tests; worker `019f342d-ff60-7941-a193-0b3eb7621f5b` added migration 0148 and seed-loader durability; reviewer `019f3449-2f39-7fa1-b8a9-b46254ecdf35` found the valuation routing gap; worker `019f3451-505e-7c31-8b03-9645f344e90a` wired the new valuation formulas through the valuation-multiples path.
 - S6-1 - Growth / CAGR engine: done. Explorer `019f3462-6dfe-7821-892d-1050235fff61` mapped the least-invasive input and migration path; controller implemented the `fundamental_growth` metric engine, migration 0149, growth formula specs, job registration, and focused test coverage.
-- S6-2 - Metric engine + queryable lineage: not started.
+- S6-2 - Metric engine + queryable lineage: done. Controller added migration 0150 with `v_metric_lineage`, spanning `fundamental_ratios`, `fundamental_growth`, and `valuation_multiples`, plus `metric_lineage_asof` gating on metric availability and formula definition validity.
 - S6-3 - Reconciliation gate + catalog: not started.
 
 ## Verification
@@ -33,6 +33,12 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_jobs_dag.py -q -n0` passed.
 - `python -m pytest db\tests\test_metric_engine.py db\tests\test_module_boundaries.py -q -n0` passed.
 - `python -m pytest db\tests\test_formula_library.py db\tests\test_fundamental_ratios.py -q -n0` passed.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed.
+- `python -m pytest db\tests\test_metric_engine.py -q -n0` passed after S6-2 lineage-view additions.
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S6-2.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S6-2.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S6-2.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S6-2.
 - `git diff --check` passed with Git LF/CRLF normalization warnings only.
 
 ## Live Smoke
