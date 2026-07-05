@@ -82,6 +82,115 @@ def market_reference_check_specs(
             severity="critical",
         ),
         SqlQualityCheck(
+            dataset_id="universe_membership",
+            table_name="universe_membership",
+            check_name="priced_fundamental_universe_decision_coverage",
+            sql="""
+                WITH price_days AS (
+                    SELECT
+                        security_id,
+                        trade_date,
+                        max(available_at) AS price_available_at
+                    FROM equity_daily_bars
+                    WHERE security_id IS NOT NULL
+                      AND trade_date IS NOT NULL
+                      AND close IS NOT NULL
+                      AND close > 0
+                    GROUP BY security_id, trade_date
+                ),
+                priced_fundamental_days AS (
+                    SELECT p.*
+                    FROM price_days p
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM fundamental_points f
+                        WHERE f.security_id = p.security_id
+                          AND f.period_end IS NOT NULL
+                          AND f.period_end <= p.trade_date
+                          AND f.value IS NOT NULL
+                          AND (
+                              f.available_at IS NULL
+                              OR p.price_available_at IS NULL
+                              OR f.available_at <= p.price_available_at
+                          )
+                    )
+                )
+                SELECT count(*)::DOUBLE
+                FROM priced_fundamental_days p
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM universe_membership u
+                    WHERE u.security_id = p.security_id
+                      AND u.valid_from <= p.trade_date
+                      AND (u.valid_to IS NULL OR u.valid_to >= p.trade_date)
+                      AND u.as_of_date <= p.trade_date
+                      AND u.is_latest_revision
+                      AND (
+                          u.available_at IS NULL
+                          OR p.price_available_at IS NULL
+                          OR u.available_at <= p.price_available_at
+                      )
+                )
+            """,
+            threshold=0.0,
+            required_tables=("equity_daily_bars", "fundamental_points", "universe_membership"),
+            detail_sql="""
+                WITH price_days AS (
+                    SELECT
+                        security_id,
+                        max(symbol) AS symbol,
+                        trade_date,
+                        max(available_at) AS price_available_at
+                    FROM equity_daily_bars
+                    WHERE security_id IS NOT NULL
+                      AND trade_date IS NOT NULL
+                      AND close IS NOT NULL
+                      AND close > 0
+                    GROUP BY security_id, trade_date
+                ),
+                priced_fundamental_days AS (
+                    SELECT p.*
+                    FROM price_days p
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM fundamental_points f
+                        WHERE f.security_id = p.security_id
+                          AND f.period_end IS NOT NULL
+                          AND f.period_end <= p.trade_date
+                          AND f.value IS NOT NULL
+                          AND (
+                              f.available_at IS NULL
+                              OR p.price_available_at IS NULL
+                              OR f.available_at <= p.price_available_at
+                          )
+                    )
+                )
+                SELECT
+                    p.security_id,
+                    p.symbol,
+                    p.trade_date,
+                    p.price_available_at
+                FROM priced_fundamental_days p
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM universe_membership u
+                    WHERE u.security_id = p.security_id
+                      AND u.valid_from <= p.trade_date
+                      AND (u.valid_to IS NULL OR u.valid_to >= p.trade_date)
+                      AND u.as_of_date <= p.trade_date
+                      AND u.is_latest_revision
+                      AND (
+                          u.available_at IS NULL
+                          OR p.price_available_at IS NULL
+                          OR u.available_at <= p.price_available_at
+                      )
+                )
+                ORDER BY p.trade_date, p.security_id
+                LIMIT 25
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
             dataset_id="tbltickerhistory_daily",
             table_name="equity_daily_bars",
             check_name="duplicate_equity_daily_bars",

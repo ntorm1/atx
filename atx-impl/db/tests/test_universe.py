@@ -5,6 +5,7 @@ import datetime as dt
 import pandas as pd
 
 from db.asof import universe_membership_asof
+from db.quality import run_warehouse_quality_checks
 from db.universe import (
     GovernedUniverseMembershipDataset,
     UniverseMembershipOptions,
@@ -218,6 +219,36 @@ def _load_governed_universe_slice(tmp_store):
     return GovernedUniverseMembershipDataset().run(tmp_store, _governed_universe_options())
 
 
+def _insert_fundamental_point(
+    tmp_store,
+    *,
+    security_id: str = "COMMON",
+    symbol: str = "COM",
+    available_at: dt.datetime | str = "2020-01-02 21:00:00",
+) -> None:
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                {
+                    "source": "fixture",
+                    "security_id": security_id,
+                    "symbol": symbol,
+                    "metric": "revenue",
+                    "period_start": dt.date(2019, 1, 1),
+                    "period_end": dt.date(2019, 12, 31),
+                    "as_of_date": dt.date(2020, 1, 2),
+                    "value": 100.0,
+                    "available_at": pd.Timestamp(available_at),
+                    "run_id": "fundamentals",
+                }
+            ]
+        ),
+        "fundamental_points",
+        f"fundamental_points_{security_id}",
+    )
+
+
 def test_governed_universe_dataset_writes_interval_members_and_exclusions(tmp_store):
     result = _load_governed_universe_slice(tmp_store)
 
@@ -282,27 +313,7 @@ def test_universe_membership_asof_gates_availability_and_validity(tmp_store):
 
 def test_price_fundamental_overlap_view_counts_visible_universe_security_days(tmp_store):
     _load_governed_universe_slice(tmp_store)
-    insert_frame(
-        tmp_store,
-        pd.DataFrame(
-            [
-                {
-                    "source": "fixture",
-                    "security_id": "COMMON",
-                    "symbol": "COM",
-                    "metric": "revenue",
-                    "period_start": dt.date(2019, 1, 1),
-                    "period_end": dt.date(2019, 12, 31),
-                    "as_of_date": dt.date(2020, 1, 2),
-                    "value": 100.0,
-                    "available_at": pd.Timestamp("2020-01-02 21:00:00"),
-                    "run_id": "fundamentals",
-                }
-            ]
-        ),
-        "fundamental_points",
-        "overlap_fundamental_points",
-    )
+    _insert_fundamental_point(tmp_store)
 
     row = tmp_store.con.execute(
         """
@@ -330,6 +341,69 @@ def test_price_fundamental_overlap_view_counts_visible_universe_security_days(tm
     assert round(row[6], 6) == round(4 / 6, 6)
 
 
+def test_universe_decision_coverage_quality_check_passes_when_all_overlap_days_decided(tmp_store):
+    _load_governed_universe_slice(tmp_store)
+    _insert_fundamental_point(tmp_store)
+
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        check_names=("priced_fundamental_universe_decision_coverage",),
+        record=False,
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == "passed"
+    assert result.observed_value == 0.0
+    assert result.severity == "critical"
+
+
+def test_universe_decision_coverage_quality_check_fails_for_undecided_overlap_day(tmp_store):
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                {
+                    "source": "fixture",
+                    "security_id": "UNDECIDED",
+                    "symbol": "UND",
+                    "trade_date": dt.date(2020, 1, 2),
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.0,
+                    "close": 10.0,
+                    "volume": 1000,
+                    "available_at": pd.Timestamp("2020-01-02 22:00:00"),
+                    "run_id": "bars",
+                }
+            ]
+        ),
+        "equity_daily_bars",
+        "undecided_overlap_bars",
+    )
+    _insert_fundamental_point(tmp_store, security_id="UNDECIDED", symbol="UND")
+
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        check_names=("priced_fundamental_universe_decision_coverage",),
+        record=False,
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == "failed"
+    assert result.observed_value == 1.0
+    assert result.severity == "critical"
+    assert result.details["rows"] == [
+        {
+            "security_id": "UNDECIDED",
+            "symbol": "UND",
+            "trade_date": dt.date(2020, 1, 2),
+            "price_available_at": dt.datetime(2020, 1, 2, 22),
+        }
+    ]
+
+
 def test_universe_membership_migration_catalogs_contract_surface(tmp_store):
     tables = {
         row[0]
@@ -344,3 +418,41 @@ def test_universe_membership_migration_catalogs_contract_surface(tmp_store):
     assert tmp_store.con.execute(
         "SELECT count(*) FROM schema_contract WHERE table_name = 'universe_membership'"
     ).fetchone()[0] >= 10
+
+
+def test_pf3_s4_quality_indexes_and_registry_are_seeded(tmp_store):
+    indexes = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE index_name IN (
+                'idx_universe_membership_asof',
+                'idx_universe_membership_decision',
+                'idx_price_backfill_partition_status',
+                'idx_price_backfill_partition_run'
+            )
+            """
+        ).fetchall()
+    }
+    assert indexes == {
+        "idx_universe_membership_asof",
+        "idx_universe_membership_decision",
+        "idx_price_backfill_partition_status",
+        "idx_price_backfill_partition_run",
+    }
+    assert tmp_store.con.execute(
+        """
+        SELECT dataset_id, table_name, severity, threshold_value, comparator, enabled
+        FROM quality_check_registry
+        WHERE check_name = 'priced_fundamental_universe_decision_coverage'
+        """
+    ).fetchone() == (
+        "universe_membership",
+        "universe_membership",
+        "critical",
+        0.0,
+        "eq",
+        True,
+    )

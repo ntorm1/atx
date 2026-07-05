@@ -357,6 +357,45 @@ def _pf3_s4_price_fundamental_overlap_view_catalog(conn: duckdb.DuckDBPyConnecti
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s4_quality_indexes_registry(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S4 S4-3: universe/backfill indexes and coverage quality gate registry."""
+
+    statements = (
+        "CREATE INDEX IF NOT EXISTS idx_universe_membership_asof "
+        "ON universe_membership(universe_id, security_id, valid_from, valid_to, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_universe_membership_decision "
+        "ON universe_membership(security_id, valid_from, valid_to, is_member, is_latest_revision)",
+        "CREATE INDEX IF NOT EXISTS idx_price_backfill_partition_status "
+        "ON price_backfill_partition(dataset_id, status, window_lo, window_hi)",
+        "CREATE INDEX IF NOT EXISTS idx_price_backfill_partition_run "
+        "ON price_backfill_partition(backfill_run_id, updated_at)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES (
+            'priced_fundamental_universe_decision_coverage',
+            'universe_membership',
+            'universe_membership',
+            'critical',
+            0.0,
+            'eq',
+            true,
+            'failed',
+            'pf3_s4',
+            now()
+        )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=140,
@@ -372,5 +411,10 @@ MIGRATIONS: list[Migration] = [
         version=142,
         name="pf3_s4_price_fundamental_overlap_view_catalog",
         up=_pf3_s4_price_fundamental_overlap_view_catalog,
+    ),
+    Migration(
+        version=143,
+        name="pf3_s4_quality_indexes_registry",
+        up=_pf3_s4_quality_indexes_registry,
     ),
 ]
