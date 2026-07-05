@@ -21,11 +21,13 @@ class FixtureBackfillDataset:
     dataset_id = "fixture_backfill"
     depends_on: tuple[str, ...] = ()
     calls: list[str] = []
+    options_seen: list[dict] = []
     fail_once_for: set[str] = set()
 
     @classmethod
     def reset(cls) -> None:
         cls.calls = []
+        cls.options_seen = []
         cls.fail_once_for = set()
 
     def run(self, store, options):
@@ -35,6 +37,7 @@ class FixtureBackfillDataset:
         window_lo = options["window_lo"]
         window_hi = options["window_hi"]
         type(self).calls.append(partition_key)
+        type(self).options_seen.append(dict(options))
 
         current = window_lo
         rows = 0
@@ -1164,13 +1167,58 @@ def test_maintenance_caps_partial_trailing_coarse_watermark(tmp_store):
 
     assert first.partitions_planned == 1
     assert first.partitions_succeeded == 1
+    assert first.rows_written == (dt.date(2014, 2, 15) - start).days
     assert first_watermark == ("2014-02-15",)
     assert second.partitions_planned == 1
     assert second.partitions_succeeded == 1
+    assert second.rows_written == (dt.date(2014, 3, 1) - start).days
     assert second_watermark == ("2014-03-01",)
     assert FixtureMaintenanceDataset.calls == [
         partition.partition_key,
         partition.partition_key,
+    ]
+    assert [
+        (
+            options["partition_key"],
+            options["backfill_partition_key"],
+            options["start_date"],
+            options["end_date"],
+            options["window_lo"],
+            options["window_hi"],
+            options["window_hi_exclusive"],
+            options["current_watermark"],
+            options["maintenance_watermark"],
+            options["full_rebuild"],
+            options["maintenance"],
+        )
+        for options in FixtureMaintenanceDataset.options_seen
+    ] == [
+        (
+            partition.partition_key,
+            partition.partition_key,
+            partition.window_lo,
+            dt.date(2014, 2, 14),
+            partition.window_lo,
+            dt.date(2014, 2, 15),
+            dt.date(2014, 2, 15),
+            "2014-02-15",
+            "2014-02-15",
+            False,
+            True,
+        ),
+        (
+            partition.partition_key,
+            partition.partition_key,
+            partition.window_lo,
+            dt.date(2014, 2, 28),
+            partition.window_lo,
+            dt.date(2014, 3, 1),
+            dt.date(2014, 3, 1),
+            "2014-03-01",
+            "2014-03-01",
+            False,
+            True,
+        ),
     ]
 
 

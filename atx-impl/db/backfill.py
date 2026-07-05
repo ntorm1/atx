@@ -687,6 +687,26 @@ def _partition_params(
     return params
 
 
+def _maintenance_window_hi(
+    partition: Partition,
+    current_watermark: str | None,
+) -> dt.date:
+    if current_watermark is None:
+        return partition.window_hi
+
+    parsed = _parse_watermark_datetime(current_watermark)
+    if parsed is None:
+        return partition.window_hi
+
+    window_lo = dt.datetime.combine(partition.window_lo, dt.time.min)
+    window_hi = dt.datetime.combine(partition.window_hi, dt.time.min)
+    if parsed <= window_lo:
+        return partition.window_lo
+    if parsed >= window_hi:
+        return partition.window_hi
+    return parsed.date()
+
+
 def _maintenance_partition_params(
     base_params: Mapping[str, Any],
     partition: Partition,
@@ -699,6 +719,10 @@ def _maintenance_partition_params(
         partition,
         backfill_run_id=backfill_run_id,
     )
+    window_hi = _maintenance_window_hi(partition, current_watermark)
+    params["end_date"] = window_hi - dt.timedelta(days=1)
+    params["window_hi"] = window_hi
+    params["window_hi_exclusive"] = window_hi
     params["full_rebuild"] = False
     params["maintenance"] = True
     if current_watermark is not None:
