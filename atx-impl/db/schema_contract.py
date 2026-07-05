@@ -618,6 +618,7 @@ def _fetch_field_catalog_units(con) -> dict[tuple[str, str], str]:
 _SIGNED_SEMANTIC_TOKENS = frozenset({"change", "delta", "growth", "net", "return", "returns"})
 _RATIO_UNIT_TOKENS = frozenset({"growth", "pct", "percent", "percentage", "percentile", "ratio", "return", "returns", "weight"})
 _NON_NEGATIVE_NAME_TOKENS = frozenset({"amount", "count", "price", "quantity", "share", "shares", "volume"})
+_PERCENTILE_UNIT_NAMES = frozenset({"percentile", "percent_rank", "pct_rank"})
 
 
 def _semantic_tokens(name: str) -> set[str]:
@@ -634,6 +635,23 @@ def _has_ratio_unit_semantic(name: str) -> bool:
     lower = name.lower()
     tokens = _semantic_tokens(name)
     return bool(tokens & _RATIO_UNIT_TOKENS) or lower.startswith("ret_")
+
+
+def _has_rank_semantic(name: str) -> bool:
+    lower = name.lower()
+    tokens = _semantic_tokens(name)
+    return "rank" in tokens or lower.endswith("_rank")
+
+
+def _has_unit_interval_semantic(name: str, unit: str) -> bool:
+    lower = name.lower()
+    tokens = _semantic_tokens(name)
+    unit_lower = unit.lower()
+    return (
+        "percentile" in lower
+        or unit_lower in _PERCENTILE_UNIT_NAMES
+        or (_has_rank_semantic(name) and ({"pct", "percent", "percentile"} & tokens))
+    )
 
 
 def _infer_semantic_unit(name: str, data_type: str) -> str:
@@ -690,8 +708,10 @@ def _infer_semantic_sign(name: str, data_type: str, unit: str) -> str:
         or dtype == "BOOLEAN"
     ):
         return "bounded"
-    if "percentile" in lower or lower in {"weight", "confidence", "extraction_confidence"}:
+    if _has_unit_interval_semantic(name, unit) or lower in {"weight", "confidence", "extraction_confidence"}:
         return "unit_interval"
+    if _has_rank_semantic(name):
+        return "bounded"
     if _has_signed_semantic(name):
         return "signed"
     if tokens & _NON_NEGATIVE_NAME_TOKENS or "market_cap" in lower:

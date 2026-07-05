@@ -6,6 +6,7 @@ import datetime as dt
 import time
 
 import duckdb
+import pandas as pd
 import pytest
 
 from db.connection import DuckDBStore
@@ -20,6 +21,7 @@ from db.schema_contract import (
     build_contract_manifest,
     schema_contract_sha256,
 )
+from db.warehouse import insert_frame
 
 
 def _bootstrap_through_migration_0134(store: DuckDBStore) -> None:
@@ -277,6 +279,67 @@ def test_migration_0135_recovers_source_loaded_at_from_computed_at(tmp_path):
             store.connection.close()
 
 
+def test_insert_frame_populates_migrated_pit_columns(tmp_store):
+    feature_frame = pd.DataFrame(
+        [
+            {
+                "feature_set": "fixture_set",
+                "feature_name": "fixture_feature",
+                "security_id": "SEC-1",
+                "symbol": "AAA",
+                "as_of_date": dt.date(2001, 2, 3),
+                "value": 1.25,
+                "input_hash": "hash-feature",
+                "available_at": dt.datetime(2001, 2, 3, 9, 30),
+                "source": "test",
+                "run_id": "run-feature",
+            }
+        ]
+    )
+    alpha_frame = pd.DataFrame(
+        [
+            {
+                "alpha_signal_id": "signal-1",
+                "alpha_id": "alpha-1",
+                "security_id": "SEC-1",
+                "symbol": "AAA",
+                "as_of_date": dt.date(2002, 3, 4),
+                "signal_value": 2.5,
+                "rank_value": 1.0,
+                "weight": 0.5,
+                "cross_section_count": 10,
+                "available_at": dt.datetime(2002, 3, 4, 9, 30),
+                "input_hash": "hash-alpha",
+                "source": "test",
+                "run_id": "run-alpha",
+                "source_loaded_at": pd.NaT,
+                "is_latest_revision": None,
+            }
+        ]
+    )
+
+    insert_frame(tmp_store, feature_frame, "feature_values", "feature_values_insert_fixture")
+    insert_frame(tmp_store, alpha_frame, "alpha_signal_values", "alpha_signal_values_insert_fixture")
+
+    rows = dict(
+        tmp_store.con.execute(
+            """
+            SELECT 'feature_values' AS table_name,
+                   source_loaded_at IS NOT NULL AND is_latest_revision AS pit_populated
+            FROM feature_values
+            WHERE feature_set = 'fixture_set'
+            UNION ALL
+            SELECT 'alpha_signal_values' AS table_name,
+                   source_loaded_at IS NOT NULL AND is_latest_revision AS pit_populated
+            FROM alpha_signal_values
+            WHERE alpha_signal_id = 'signal-1'
+            """
+        ).fetchall()
+    )
+
+    assert rows == {"feature_values": True, "alpha_signal_values": True}
+
+
 def test_non_exempt_fact_missing_available_at_still_goes_red(tmp_store):
     result = pit_column_presence_check(
         tmp_store,
@@ -422,6 +485,19 @@ def test_semantic_sign_inference_treats_change_delta_net_values_as_signed(name, 
 
 def test_semantic_sign_inference_keeps_percentile_change_bounded():
     assert _infer_semantic_sign("short_interest_change_pct_percentile", "DOUBLE", "ratio") == "unit_interval"
+
+
+def test_semantic_sign_inference_keeps_percentile_rank_unit_interval():
+    assert _infer_semantic_sign("daily_return_cs_pct_rank", "DOUBLE", "percentile") == "unit_interval"
+
+
+def test_manifest_percentile_rank_example_is_unit_interval(tmp_store):
+    specs = {spec.name: spec for spec in build_contract_manifest(tmp_store.con)["equity_price_metrics"]}
+
+    assert (specs["daily_return_cs_pct_rank"].unit, specs["daily_return_cs_pct_rank"].sign) == (
+        "percentile",
+        "unit_interval",
+    )
 
 
 def test_manifest_change_delta_net_examples_are_signed(tmp_store):

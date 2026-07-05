@@ -126,13 +126,54 @@ def register_frame(store: DuckDBStore, name: str, frame: pd.DataFrame) -> None:
     store.con.register(name, frame)
 
 
+def _table_columns(store: DuckDBStore, table: str) -> set[str]:
+    rows = store.con.execute(
+        """
+        SELECT column_name
+        FROM duckdb_columns()
+        WHERE schema_name = 'main'
+          AND table_name = ?
+        """,
+        [table],
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _insert_projection(frame: pd.DataFrame, target_columns: set[str]) -> tuple[str, str]:
+    insert_columns = list(frame.columns)
+    select_expressions = []
+
+    for column in insert_columns:
+        if column == "source_loaded_at" and column in target_columns:
+            select_expressions.append("coalesce(CAST(source_loaded_at AS TIMESTAMP), now()) AS source_loaded_at")
+        elif column == "is_latest_revision" and column in target_columns:
+            select_expressions.append("coalesce(CAST(is_latest_revision AS BOOLEAN), true) AS is_latest_revision")
+        else:
+            select_expressions.append(column)
+
+    if "source_loaded_at" in target_columns and "source_loaded_at" not in frame.columns:
+        insert_columns.append("source_loaded_at")
+        if "computed_at" in frame.columns:
+            select_expressions.append("coalesce(CAST(computed_at AS TIMESTAMP), now()) AS source_loaded_at")
+        else:
+            select_expressions.append("now() AS source_loaded_at")
+
+    if "is_latest_revision" in target_columns and "is_latest_revision" not in frame.columns:
+        insert_columns.append("is_latest_revision")
+        select_expressions.append("true AS is_latest_revision")
+
+    return ", ".join(insert_columns), ", ".join(select_expressions)
+
+
 def insert_frame(store: DuckDBStore, frame: pd.DataFrame, table: str, relation_name: str) -> int:
     if frame.empty:
         return 0
+    columns, select_expressions = _insert_projection(frame, _table_columns(store, table))
     register_frame(store, relation_name, frame)
     try:
-        columns = ", ".join(frame.columns)
-        store.con.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM {relation_name}")
+        store.con.execute(
+            f"INSERT INTO {table} ({columns}) SELECT {select_expressions} FROM {relation_name}"
+        )
     finally:
         store.con.unregister(relation_name)
     return int(len(frame))
