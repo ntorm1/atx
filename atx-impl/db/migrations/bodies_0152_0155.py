@@ -454,6 +454,113 @@ def _pf3_s7_cross_section_operator_metadata(conn: duckdb.DuckDBPyConnection) -> 
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s7_factor_engine_indexes_and_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S7 S7-3: factor-engine indexes, catalog view, and PIT-safety gate registration."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_factor_definition_family ON factor_definition(family, factor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_dependency_edges_factor ON factor_dependency_edges(factor_id, dependency_type)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_operator_kind ON factor_operator(kind)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_build_manifests_run ON factor_build_manifests(run_id, source_loaded_at)",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_factor_engine_catalog AS
+        SELECT
+            fd.factor_id,
+            fd.factor_name,
+            fd.family,
+            fd.description,
+            fd.expression,
+            fd.input_ids_json,
+            fd.direction,
+            fd.lookback_days,
+            fd.neutralization_spec_json,
+            fd.unit,
+            fd.sign,
+            fd.scale,
+            fd.is_point_in_time_safe,
+            fd.available_at_policy,
+            fd.declared_in,
+            coalesce(edge_counts.dependency_count, 0) AS dependency_count,
+            coalesce(edge_counts.factor_dependency_count, 0) AS factor_dependency_count,
+            coalesce(edge_counts.source_dependency_count, 0) AS source_dependency_count,
+            fd.source,
+            fd.source_loaded_at
+        FROM factor_definition fd
+        LEFT JOIN (
+            SELECT
+                factor_id,
+                count(*)::BIGINT AS dependency_count,
+                sum(CASE WHEN dependency_type = 'factor' THEN 1 ELSE 0 END)::BIGINT AS factor_dependency_count,
+                sum(CASE WHEN dependency_type = 'source' THEN 1 ELSE 0 END)::BIGINT AS source_dependency_count
+            FROM factor_dependency_edges
+            GROUP BY factor_id
+        ) edge_counts
+          ON edge_counts.factor_id = fd.factor_id
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'v_factor_engine_catalog',
+            'view',
+            'factor_engine_catalog',
+            'factor_id',
+            'Queryable factor-engine catalog joining governed factor definitions with dependency-edge counts and PIT policy metadata.',
+            '["factor_id"]',
+            'Catalog metadata is knowledge-time data; factor value readers must still gate value rows on available_at <= decision timestamp.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("v_factor_engine_catalog",))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_factor_engine_catalog', 'factor_id', 'identifier', 'Governed factor id.', false, NULL, 'factor_definition.factor_id', now()),
+            ('v_factor_engine_catalog', 'family', 'category', 'Factor family.', false, NULL, 'factor_definition.family', now()),
+            ('v_factor_engine_catalog', 'input_ids_json', 'json', 'Declared factor/source/metric input ids.', false, NULL, 'factor_definition.input_ids_json', now()),
+            ('v_factor_engine_catalog', 'dependency_count', 'count', 'Total direct dependencies declared for the factor.', false, 'count', 'factor_dependency_edges', now()),
+            ('v_factor_engine_catalog', 'factor_dependency_count', 'count', 'Direct dependencies that reference another factor.', false, 'count', 'factor_dependency_edges', now()),
+            ('v_factor_engine_catalog', 'source_dependency_count', 'count', 'Direct dependencies that reference a source table/input.', false, 'count', 'factor_dependency_edges', now()),
+            ('v_factor_engine_catalog', 'unit', 'category', 'Semantic factor unit.', false, 'unit', 'factor_definition.unit', now()),
+            ('v_factor_engine_catalog', 'sign', 'category', 'Semantic factor sign convention.', false, 'sign', 'factor_definition.sign', now()),
+            ('v_factor_engine_catalog', 'scale', 'category', 'Semantic factor scale.', false, 'scale', 'factor_definition.scale', now())
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES (
+            'factor_operator_pit_safety',
+            'factor_engine',
+            'factor_operator',
+            'critical',
+            0.0,
+            'eq',
+            true,
+            'failed',
+            'pf3_s7',
+            now()
+        )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=152,
@@ -469,5 +576,10 @@ MIGRATIONS: list[Migration] = [
         version=154,
         name="pf3_s7_cross_section_operator_metadata",
         up=_pf3_s7_cross_section_operator_metadata,
+    ),
+    Migration(
+        version=155,
+        name="pf3_s7_factor_engine_indexes_and_view",
+        up=_pf3_s7_factor_engine_indexes_and_view,
     ),
 ]

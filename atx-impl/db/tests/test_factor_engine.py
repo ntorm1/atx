@@ -21,6 +21,7 @@ from db.factors.engine import (
     factor_dependency_edges_frame,
     topological_factor_order,
 )
+from db.factors.cross_section import neutralize, pit_safety_report
 from db.factors.cross_section import rank as cs_rank
 from db.factors.cross_section import winsorize, zscore
 
@@ -287,3 +288,68 @@ def test_factor_operator_metadata_migration_seeds_pit_safe_operators(tmp_store) 
     assert rows["zscore"] == ("cross_section_zscore", ["factor_id", "as_of_date"], True)
     assert rows["winsorize"] == ("cross_section_winsorize", ["factor_id", "as_of_date"], True)
     assert table_catalog_count == 1
+
+
+def test_neutralize_residualizes_within_asof_sector_groups() -> None:
+    frame = pd.DataFrame(
+        [
+            {"factor_id": "value", "security_id": "A", "sector": "tech", "as_of_date": dt.date(2023, 1, 3), "value": 1.0},
+            {"factor_id": "value", "security_id": "B", "sector": "tech", "as_of_date": dt.date(2023, 1, 3), "value": 3.0},
+            {"factor_id": "value", "security_id": "C", "sector": "energy", "as_of_date": dt.date(2023, 1, 3), "value": 10.0},
+            {"factor_id": "value", "security_id": "D", "sector": "energy", "as_of_date": dt.date(2023, 1, 3), "value": 14.0},
+        ]
+    )
+
+    residuals = neutralize(frame, by=("sector",))
+    means = residuals.groupby(["as_of_date", "sector"])["value"].mean()
+
+    assert all(abs(value) < 1e-12 for value in means)
+
+
+def test_pit_safety_report_flags_future_inputs_and_cross_date_pooling() -> None:
+    raw = _cross_section_fixture()
+    raw["available_at"] = pd.to_datetime(raw["as_of_date"].astype(str))
+    clean = zscore(raw)
+    future = raw.copy()
+    future.loc[0, "available_at"] = pd.Timestamp("2023-01-04")
+    pooled = raw.copy()
+    pooled["value"] = (raw["value"] - raw["value"].mean()) / raw["value"].std(ddof=1)
+
+    clean_report = pit_safety_report(raw, transformed_frame=clean, operator="zscore")
+    future_report = pit_safety_report(future)
+    pooled_report = pit_safety_report(raw, transformed_frame=pooled, operator="zscore")
+
+    assert clean_report["status"] == "passed"
+    assert future_report["status"] == "failed"
+    assert future_report["future_input_count"] == 1
+    assert pooled_report["status"] == "failed"
+    assert pooled_report["operator_mismatch_count"] > 0
+
+
+def test_factor_engine_catalog_view_and_pit_safety_gate_are_registered(tmp_store) -> None:
+    vol = tmp_store.con.execute(
+        """
+        SELECT family, dependency_count, factor_dependency_count, source_dependency_count
+        FROM v_factor_engine_catalog
+        WHERE factor_id = 'vol_21d'
+        """
+    ).fetchone()
+    gate = tmp_store.con.execute(
+        """
+        SELECT severity, enabled, failure_status
+        FROM quality_check_registry
+        WHERE check_name = 'factor_operator_pit_safety'
+          AND source = 'pf3_s7'
+        """
+    ).fetchone()
+    view_catalog = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM table_catalog
+        WHERE table_name = 'v_factor_engine_catalog'
+        """
+    ).fetchone()[0]
+
+    assert vol == ("volatility", 1, 1, 0)
+    assert gate == ("critical", True, "failed")
+    assert view_catalog == 1
