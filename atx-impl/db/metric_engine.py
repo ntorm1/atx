@@ -110,6 +110,18 @@ class FundamentalGrowthOptions:
     run_id: str | None = None
 
 
+@dataclass(frozen=True)
+class MetricReconciliationResult:
+    status: str
+    expected_count: int
+    actual_count: int
+    missing_count: int
+    extra_count: int
+    mismatched_count: int
+    max_abs_delta: float | None
+    tolerance: float
+
+
 def _present(value: Any) -> bool:
     try:
         return not pd.isna(value)
@@ -652,6 +664,147 @@ def _register_filter(store: DuckDBStore, relation: str, column: str, values: tup
         return False
     store.con.register(relation, pd.DataFrame({column: list(values)}))
     return True
+
+
+def reconcile_metric_frames(
+    expected: pd.DataFrame,
+    actual: pd.DataFrame,
+    *,
+    key_columns: tuple[str, ...],
+    value_column: str = "value",
+    tolerance: float = 1e-12,
+) -> MetricReconciliationResult:
+    """Compare two metric frames and fail on missing/extra/drifted keyed values."""
+
+    expected = expected.copy()
+    actual = actual.copy()
+    if expected.empty and actual.empty:
+        return MetricReconciliationResult("warning", 0, 0, 0, 0, 0, None, tolerance)
+    missing_columns = [column for column in (*key_columns, value_column) if column not in expected.columns]
+    missing_columns += [column for column in (*key_columns, value_column) if column not in actual.columns]
+    if missing_columns:
+        raise ValueError(f"Metric reconciliation missing columns: {sorted(set(missing_columns))}")
+
+    merged = expected[list(key_columns) + [value_column]].merge(
+        actual[list(key_columns) + [value_column]],
+        on=list(key_columns),
+        how="outer",
+        suffixes=("_expected", "_actual"),
+        indicator=True,
+    )
+    missing_count = int((merged["_merge"] == "left_only").sum())
+    extra_count = int((merged["_merge"] == "right_only").sum())
+    both = merged[merged["_merge"] == "both"].copy()
+    if both.empty:
+        mismatched_count = 0
+        max_abs_delta = None
+    else:
+        both["abs_delta"] = (
+            pd.to_numeric(both[f"{value_column}_actual"], errors="coerce")
+            - pd.to_numeric(both[f"{value_column}_expected"], errors="coerce")
+        ).abs()
+        mismatched_count = int((both["abs_delta"] > tolerance).sum())
+        max_abs_delta = float(both["abs_delta"].max()) if not both["abs_delta"].empty else None
+    status = "passed" if missing_count == extra_count == mismatched_count == 0 else "failed"
+    return MetricReconciliationResult(
+        status=status,
+        expected_count=int(len(expected)),
+        actual_count=int(len(actual)),
+        missing_count=missing_count,
+        extra_count=extra_count,
+        mismatched_count=mismatched_count,
+        max_abs_delta=max_abs_delta,
+        tolerance=float(tolerance),
+    )
+
+
+def metric_lineage_completeness(
+    store: DuckDBStore,
+    *,
+    source_tables: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, object]:
+    """Return a gate-ready completeness report for ``v_metric_lineage``."""
+
+    source_table_values = _normalized_metrics(tuple(source_tables or ()))
+    registered: list[str] = []
+    join_sql = ""
+    try:
+        if _register_filter(store, "metric_lineage_completeness_source_filter", "metric_source_table", source_table_values):
+            registered.append("metric_lineage_completeness_source_filter")
+            join_sql = (
+                "JOIN metric_lineage_completeness_source_filter sf "
+                "ON sf.metric_source_table = ml.metric_source_table"
+            )
+        row = store.con.execute(
+            f"""
+            SELECT
+                count(*)::BIGINT AS total_count,
+                coalesce(sum(CASE
+                    WHEN ml.metric_row_id IS NULL
+                      OR ml.metric_code IS NULL
+                      OR ml.formula_code IS NULL
+                      OR ml.formula_definition IS NULL
+                      OR ml.metric_available_at IS NULL
+                      OR ml.source_fact_refs_json IS NULL
+                      OR trim(ml.source_fact_refs_json) IN ('', '[]', '{{}}')
+                      OR ml.input_lineage_json IS NULL
+                      OR trim(ml.input_lineage_json) IN ('', '[]', '{{}}')
+                      OR ml.vintage_class IS NULL
+                    THEN 1 ELSE 0
+                END), 0)::BIGINT AS incomplete_count
+            FROM v_metric_lineage ml
+            {join_sql}
+            """
+        ).fetchone()
+        examples_cursor = store.con.execute(
+            f"""
+            SELECT
+                ml.metric_source_table,
+                ml.metric_row_id,
+                ml.security_id,
+                ml.metric_code,
+                ml.metric_as_of_date,
+                ml.metric_available_at,
+                ml.formula_code,
+                ml.vintage_class
+            FROM v_metric_lineage ml
+            {join_sql}
+            WHERE ml.metric_row_id IS NULL
+               OR ml.metric_code IS NULL
+               OR ml.formula_code IS NULL
+               OR ml.formula_definition IS NULL
+               OR ml.metric_available_at IS NULL
+               OR ml.source_fact_refs_json IS NULL
+               OR trim(ml.source_fact_refs_json) IN ('', '[]', '{{}}')
+               OR ml.input_lineage_json IS NULL
+               OR trim(ml.input_lineage_json) IN ('', '[]', '{{}}')
+               OR ml.vintage_class IS NULL
+            ORDER BY ml.metric_source_table, ml.security_id, ml.metric_code
+            LIMIT 20
+            """
+        )
+        columns = [column[0] for column in examples_cursor.description or ()]
+        examples = [
+            {
+                key: (_iso(value) if isinstance(value, (dt.date, dt.datetime, pd.Timestamp)) else value)
+                for key, value in dict(zip(columns, values, strict=True)).items()
+            }
+            for values in examples_cursor.fetchall()
+        ]
+    finally:
+        for relation in registered:
+            store.con.unregister(relation)
+
+    total_count = int(row[0] or 0)
+    incomplete_count = int(row[1] or 0)
+    status = "warning" if total_count == 0 else ("passed" if incomplete_count == 0 else "failed")
+    return {
+        "status": status,
+        "source_tables": list(source_table_values),
+        "total_count": total_count,
+        "incomplete_count": incomplete_count,
+        "examples": examples,
+    }
 
 
 def metric_lineage_asof(

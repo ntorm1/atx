@@ -17,6 +17,116 @@ from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
 
 
 def _s6_1_growth_formula_rows() -> tuple[tuple[object, ...], ...]:
+    legacy_yoy_rows = (
+        (
+            "revenue_growth_yoy",
+            "growth",
+            "growth",
+            "ratio",
+            "revenue",
+            "revenue_prior_year",
+            "[1001]",
+            "[1001]",
+            '["rev", "rev_prior"]',
+            "pct_change",
+            "key:rev|key:rev_prior",
+            "require_positive_denominator",
+            "Year-over-year percentage change in revenue.",
+            None,
+            "1900-01-01",
+            None,
+        ),
+        (
+            "net_income_growth_yoy",
+            "growth",
+            "growth",
+            "ratio",
+            "net_income",
+            "net_income_prior_year",
+            "[1031]",
+            "[1031]",
+            '["ni", "ni_prior"]',
+            "pct_change",
+            "key:ni|key:ni_prior",
+            "require_positive_denominator",
+            "Year-over-year percentage change in net income.",
+            None,
+            "1900-01-01",
+            None,
+        ),
+        (
+            "operating_income_growth_yoy",
+            "growth",
+            "growth",
+            "ratio",
+            "operating_income",
+            "operating_income_prior_year",
+            "[1014]",
+            "[1014]",
+            '["oi", "oi_prior"]',
+            "pct_change",
+            "key:oi|key:oi_prior",
+            "require_positive_denominator",
+            "Year-over-year percentage change in operating income.",
+            None,
+            "1900-01-01",
+            None,
+        ),
+        (
+            "operating_cash_flow_growth_yoy",
+            "growth",
+            "growth",
+            "ratio",
+            "operating_cash_flow",
+            "operating_cash_flow_prior_year",
+            "[1301]",
+            "[1301]",
+            '["ocf", "ocf_prior"]',
+            "pct_change",
+            "key:ocf|key:ocf_prior",
+            "require_positive_denominator",
+            "Year-over-year percentage change in operating cash flow.",
+            None,
+            "1900-01-01",
+            None,
+        ),
+        (
+            "assets_growth_yoy",
+            "growth",
+            "growth",
+            "ratio",
+            "assets",
+            "assets_prior_year",
+            "[1101]",
+            "[1101]",
+            '["assets", "assets_prior"]',
+            "pct_change",
+            "key:assets|key:assets_prior",
+            "require_positive_denominator",
+            "Year-over-year percentage change in total assets.",
+            None,
+            "1900-01-01",
+            None,
+        ),
+        (
+            "equity_growth_yoy",
+            "growth",
+            "growth",
+            "ratio",
+            "stockholders_equity",
+            "stockholders_equity_prior_year",
+            "[1221]",
+            "[1221]",
+            '["equity", "equity_prior"]',
+            "pct_change",
+            "key:equity|key:equity_prior",
+            "require_positive_denominator",
+            "Year-over-year percentage change in stockholders' equity.",
+            None,
+            "1900-01-01",
+            None,
+        ),
+    )
     metrics = (
         ("revenue", "revenue", "ttm", "[1001]", "trailing-twelve-month revenue"),
         ("net_income", "net_income", "ttm", "[1031]", "trailing-twelve-month net income"),
@@ -32,7 +142,7 @@ def _s6_1_growth_formula_rows() -> tuple[tuple[object, ...], ...]:
         ("assets", "assets", "instant", "[1101]", "total assets"),
         ("equity", "stockholders_equity", "instant", "[1221]", "stockholders equity"),
     )
-    rows: list[tuple[object, ...]] = []
+    rows: list[tuple[object, ...]] = list(legacy_yoy_rows)
     for prefix, metric_code, basis, item_ids, label in metrics:
         inputs_json = json.dumps([metric_code])
         rows.extend(
@@ -1201,6 +1311,128 @@ def _pf3_s6_metric_lineage_view(conn: duckdb.DuckDBPyConnection) -> None:
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s6_metric_catalog_and_gates(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S6 S6-3: metric catalog, lookup indexes, and gate registry rows."""
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_metric_catalog AS
+        SELECT
+            formula_code AS metric_code,
+            family,
+            kind,
+            unit,
+            CASE
+                WHEN kind IN ('growth', 'difference') THEN 'signed'
+                WHEN kind = 'score' THEN 'bounded'
+                WHEN unit IN ('ratio', 'currency_per_share') THEN 'signed'
+                WHEN unit = 'currency' THEN 'signed'
+                ELSE 'bounded'
+            END AS sign_convention,
+            CASE
+                WHEN unit IN ('ratio', 'currency_per_share') THEN '1'
+                WHEN unit = 'currency' THEN 'USD'
+                WHEN unit = 'score' THEN 'score'
+                ELSE unit
+            END AS scale,
+            numerator_code,
+            denominator_code,
+            numerator_item_ids_json,
+            denominator_item_ids_json,
+            inputs_json,
+            transform,
+            expression,
+            is_meaningful_rule,
+            definition,
+            citation,
+            valid_from,
+            valid_to,
+            CAST(NULL AS TIMESTAMP) AS source_loaded_at
+        FROM v_formula_registry
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'v_metric_catalog',
+            'view',
+            'metric_catalog',
+            'metric_code',
+            'Queryable catalog of every formula-backed metric with family, unit, sign convention, definition, citation, expression, and validity window.',
+            '["metric_code"]',
+            'Definition validity follows formula_registry valid_from/valid_to. This is catalog metadata, not metric value availability.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("v_metric_catalog",))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_metric_catalog', 'metric_code', 'identifier', 'Metric/formula code.', false, NULL, 'formula_registry.formula_code', now()),
+            ('v_metric_catalog', 'family', 'category', 'Metric family.', false, NULL, 'formula_registry.family', now()),
+            ('v_metric_catalog', 'unit', 'category', 'Metric unit.', false, NULL, 'formula_registry.unit', now()),
+            ('v_metric_catalog', 'sign_convention', 'category', 'Semantic sign convention used by downstream gates.', false, NULL, NULL, now()),
+            ('v_metric_catalog', 'scale', 'category', 'Semantic scale used by downstream gates.', false, NULL, NULL, now()),
+            ('v_metric_catalog', 'definition', 'text', 'Human-readable metric definition.', false, NULL, 'formula_registry.definition', now()),
+            ('v_metric_catalog', 'citation', 'text', 'Metric citation where available.', true, NULL, 'formula_registry.citation', now())
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_growth_code_available "
+        "ON fundamental_growth(formula_code, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_growth_source_available "
+        "ON fundamental_growth(source, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_multiples_formula_available "
+        "ON valuation_multiples(formula_code, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_ratios_code_available "
+        "ON fundamental_ratios(ratio_code, available_at)",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES
+            (
+                'metric_lineage_completeness',
+                'metric_lineage',
+                'v_metric_lineage',
+                'critical',
+                0.0,
+                'eq',
+                true,
+                'failed',
+                'pf3_s6',
+                now()
+            ),
+            (
+                'fundamental_ratio_reconciliation',
+                'fundamental_ratios',
+                'fundamental_ratios',
+                'critical',
+                0.0,
+                'eq',
+                true,
+                'failed',
+                'pf3_s6',
+                now()
+            )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=148,
@@ -1216,5 +1448,10 @@ MIGRATIONS: list[Migration] = [
         version=150,
         name="pf3_s6_metric_lineage_view",
         up=_pf3_s6_metric_lineage_view,
+    ),
+    Migration(
+        version=151,
+        name="pf3_s6_metric_catalog_and_gates",
+        up=_pf3_s6_metric_catalog_and_gates,
     ),
 ]

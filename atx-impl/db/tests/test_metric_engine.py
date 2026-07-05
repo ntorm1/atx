@@ -12,6 +12,8 @@ from db.metric_engine import (
     compute_growth_rows,
     load_growth_formula_specs,
     metric_lineage_asof,
+    metric_lineage_completeness,
+    reconcile_metric_frames,
     refresh_fundamental_growth,
 )
 from db.warehouse import insert_frame
@@ -175,6 +177,40 @@ def test_registry_growth_specs_do_not_pollute_legacy_ratio_defs() -> None:
     assert "revenue_growth_stability_3y" not in ratio_codes
 
 
+def test_reconcile_metric_frames_detects_planted_perturbation() -> None:
+    expected = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-A",
+                "ratio_code": "net_profit_margin",
+                "basis": "ttm",
+                "period_end": dt.date(2023, 12, 31),
+                "value": 0.25,
+            }
+        ]
+    )
+    actual = expected.copy()
+
+    clean = reconcile_metric_frames(
+        expected,
+        actual,
+        key_columns=("security_id", "ratio_code", "basis", "period_end"),
+        tolerance=1e-9,
+    )
+    actual.loc[0, "value"] = 0.251
+    perturbed = reconcile_metric_frames(
+        expected,
+        actual,
+        key_columns=("security_id", "ratio_code", "basis", "period_end"),
+        tolerance=1e-9,
+    )
+
+    assert clean.status == "passed"
+    assert perturbed.status == "failed"
+    assert perturbed.mismatched_count == 1
+    assert perturbed.max_abs_delta == pytest.approx(0.001)
+
+
 def _ttm_row(metric: str, period_end: dt.date, value: float, available_at: dt.datetime) -> dict[str, object]:
     period_start = period_end - dt.timedelta(days=364)
     return {
@@ -281,6 +317,27 @@ def test_refresh_fundamental_growth_materializes_pit_visible_rows(tmp_store) -> 
     assert json.loads(lineage["input_lineage_json"])["current"]["period_end"] == "2023-12-31"
 
 
+def test_metric_lineage_completeness_flags_planted_orphan(tmp_store) -> None:
+    _seed_revenue_ttm(tmp_store)
+    refresh_fundamental_growth(
+        tmp_store,
+        FundamentalGrowthOptions(metrics=("revenue",), run_id="growth-run"),
+    )
+
+    clean = metric_lineage_completeness(tmp_store, source_tables=("fundamental_growth",))
+    orphan = tmp_store.con.execute("SELECT * FROM fundamental_growth LIMIT 1").df()
+    orphan.loc[0, "growth_id"] = "orphan-growth-row"
+    orphan.loc[0, "formula_code"] = "orphan_metric"
+    insert_frame(tmp_store, orphan, "fundamental_growth", "fundamental_growth_orphan")
+    failed = metric_lineage_completeness(tmp_store, source_tables=("fundamental_growth",))
+
+    assert clean["status"] == "passed"
+    assert clean["incomplete_count"] == 0
+    assert failed["status"] == "failed"
+    assert failed["incomplete_count"] == 1
+    assert failed["examples"][0]["metric_code"] == "orphan_metric"
+
+
 def test_fundamental_growth_migration_catalog_and_formula_seed_are_present(tmp_store) -> None:
     columns = {
         row[0]
@@ -300,6 +357,23 @@ def test_fundamental_growth_migration_catalog_and_formula_seed_are_present(tmp_s
     lineage_field_count = tmp_store.con.execute(
         "SELECT count(*) FROM field_catalog WHERE table_name = 'v_metric_lineage'"
     ).fetchone()[0]
+    metric_catalog_row = tmp_store.con.execute(
+        """
+        SELECT family, unit, sign_convention, definition
+        FROM v_metric_catalog
+        WHERE metric_code = 'revenue_cagr_3y'
+        """
+    ).fetchone()
+    gate_checks = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT check_name
+            FROM quality_check_registry
+            WHERE source = 'pf3_s6'
+            """
+        ).fetchall()
+    }
 
     assert {
         "growth_id",
@@ -326,3 +400,15 @@ def test_fundamental_growth_migration_catalog_and_formula_seed_are_present(tmp_s
         "SELECT count(*) FROM table_catalog WHERE table_name = 'v_metric_lineage'"
     ).fetchone()[0] == 1
     assert lineage_field_count > 0
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM duckdb_views() WHERE view_name = 'v_metric_catalog'"
+    ).fetchone()[0] == 1
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM table_catalog WHERE table_name = 'v_metric_catalog'"
+    ).fetchone()[0] == 1
+    assert metric_catalog_row[0:3] == ("growth_cagr", "ratio", "signed")
+    assert "Three-year compound annual growth rate" in metric_catalog_row[3]
+    assert {
+        "metric_lineage_completeness",
+        "fundamental_ratio_reconciliation",
+    } <= gate_checks
