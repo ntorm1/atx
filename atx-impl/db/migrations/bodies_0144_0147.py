@@ -240,6 +240,339 @@ def _pf3_s5_delisting_return_resolution_indexes(conn: duckdb.DuckDBPyConnection)
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s5_valuation_input_coverage_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S5 S5-3: valuation input catalog, coverage view, and gates."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS valuation_input_catalog (
+            canonical_input VARCHAR PRIMARY KEY,
+            display_name VARCHAR NOT NULL,
+            source_table VARCHAR NOT NULL,
+            source_field VARCHAR NOT NULL,
+            source_filter VARCHAR,
+            input_family VARCHAR NOT NULL,
+            unit VARCHAR NOT NULL,
+            sign_role VARCHAR NOT NULL,
+            is_core_input BOOLEAN NOT NULL DEFAULT true,
+            allow_zero BOOLEAN NOT NULL DEFAULT true,
+            description VARCHAR NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute("DELETE FROM valuation_input_catalog")
+    conn.executemany(
+        """
+        INSERT INTO valuation_input_catalog (
+            canonical_input,
+            display_name,
+            source_table,
+            source_field,
+            source_filter,
+            input_family,
+            unit,
+            sign_role,
+            is_core_input,
+            allow_zero,
+            description
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "shares_diluted_avg",
+                "Diluted Average Shares",
+                "shares_outstanding_history",
+                "share_count",
+                "share_count_type = 'shares_diluted_avg'",
+                "shares",
+                "shares",
+                "non_negative",
+                True,
+                False,
+                "Diluted average shares used as the EV market-cap share denominator.",
+            ),
+            (
+                "float",
+                "Public Float Shares",
+                "shares_outstanding_history",
+                "share_count",
+                "share_count_type = 'float'",
+                "shares",
+                "shares",
+                "non_negative",
+                True,
+                True,
+                "Public float shares when disclosed as shares.",
+            ),
+            (
+                "treasury",
+                "Treasury Shares",
+                "shares_outstanding_history",
+                "share_count",
+                "share_count_type = 'treasury'",
+                "shares",
+                "shares",
+                "non_negative",
+                True,
+                True,
+                "Treasury shares.",
+            ),
+            (
+                "market_cap",
+                "Market Capitalization",
+                "market_cap",
+                "market_cap",
+                "is_latest_revision",
+                "valuation",
+                "USD",
+                "add",
+                True,
+                False,
+                "PIT market capitalization component.",
+            ),
+            (
+                "total_debt",
+                "Total Debt",
+                "fundamental_statement_points",
+                "value",
+                "canonical_metric = 'total_debt'",
+                "valuation",
+                "USD",
+                "add",
+                True,
+                True,
+                "Total debt component.",
+            ),
+            (
+                "preferred_equity",
+                "Preferred Equity",
+                "fundamental_statement_points",
+                "value",
+                "canonical_metric = 'pref_stock'",
+                "valuation",
+                "USD",
+                "add",
+                True,
+                True,
+                "Preferred equity component.",
+            ),
+            (
+                "minority_interest",
+                "Minority Interest",
+                "fundamental_statement_points",
+                "value",
+                "canonical_metric = 'minority_int_bs'",
+                "valuation",
+                "USD",
+                "add",
+                True,
+                True,
+                "Minority interest component.",
+            ),
+            (
+                "cash_and_equivalents",
+                "Cash And Equivalents",
+                "fundamental_statement_points",
+                "value",
+                "canonical_metric = 'cash_st_inv'",
+                "valuation",
+                "USD",
+                "subtract",
+                True,
+                True,
+                "Cash and equivalents component; subtracted in EV.",
+            ),
+            (
+                "enterprise_value",
+                "Enterprise Value",
+                "enterprise_value",
+                "enterprise_value",
+                "is_latest_revision",
+                "valuation",
+                "USD",
+                "derived",
+                True,
+                True,
+                "Derived enterprise value.",
+            ),
+        ],
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_valuation_input_coverage AS
+        SELECT
+            share_count_type AS canonical_input,
+            security_id,
+            symbol,
+            effective_date AS input_date,
+            available_at,
+            'shares_outstanding_history' AS source_table,
+            source,
+            share_history_id AS input_id,
+            share_count AS value
+        FROM shares_outstanding_history
+        WHERE share_count_type IN ('shares_diluted_avg', 'float', 'treasury')
+          AND share_count IS NOT NULL
+          AND share_count >= 0
+
+        UNION ALL
+
+        SELECT
+            'market_cap' AS canonical_input,
+            security_id,
+            symbol,
+            trade_date AS input_date,
+            available_at,
+            'market_cap' AS source_table,
+            source,
+            market_cap_id AS input_id,
+            market_cap AS value
+        FROM market_cap
+        WHERE is_latest_revision
+          AND market_cap IS NOT NULL
+          AND market_cap >= 0
+
+        UNION ALL
+
+        SELECT
+            CASE canonical_metric
+                WHEN 'pref_stock' THEN 'preferred_equity'
+                WHEN 'minority_int_bs' THEN 'minority_interest'
+                WHEN 'cash_st_inv' THEN 'cash_and_equivalents'
+                ELSE canonical_metric
+            END AS canonical_input,
+            security_id,
+            symbol,
+            period_end AS input_date,
+            available_at,
+            'fundamental_statement_points' AS source_table,
+            source,
+            statement_point_id AS input_id,
+            value
+        FROM fundamental_statement_points
+        WHERE is_latest_revision
+          AND period_type = 'instant'
+          AND canonical_metric IN ('total_debt', 'pref_stock', 'minority_int_bs', 'cash_st_inv')
+          AND value IS NOT NULL
+          AND value >= 0
+
+        UNION ALL
+
+        SELECT
+            'enterprise_value' AS canonical_input,
+            security_id,
+            symbol,
+            trade_date AS input_date,
+            available_at,
+            'enterprise_value' AS source_table,
+            source,
+            enterprise_value_id AS input_id,
+            enterprise_value AS value
+        FROM enterprise_value
+        WHERE is_latest_revision
+          AND enterprise_value IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'valuation_input_coverage',
+            'atx_warehouse',
+            'Valuation input coverage catalog',
+            'Catalog and normalized coverage view for PF3-S5 core valuation inputs.',
+            'canonical_input,security_id,input_date',
+            'v_valuation_input_coverage',
+            'input_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'valuation_input_catalog',
+                'control',
+                'valuation_input',
+                'canonical_input',
+                'Data-owned list of core valuation inputs and their source surfaces.',
+                '["canonical_input"]',
+                'Quality gates read this table to determine which valuation inputs are required.',
+                now()
+            ),
+            (
+                'v_valuation_input_coverage',
+                'view',
+                'valuation_input',
+                'canonical_input,security_id,input_date',
+                'Normalized coverage rows for share, market-cap, fundamental, and enterprise-value inputs.',
+                '["canonical_input","security_id","input_date","input_id"]',
+                'Inputs are matched to universe dates with input_date <= universe date and available_at <= universe decision visibility.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("valuation_input_catalog", "v_valuation_input_coverage"))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_enterprise_value_key "
+        "ON enterprise_value(source, market_cap_source, security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_enterprise_value_security_date "
+        "ON enterprise_value(security_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_enterprise_value_asof "
+        "ON enterprise_value(as_of_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_shares_outstanding_history_class "
+        "ON shares_outstanding_history(security_id, share_count_type, share_class, effective_date, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_valuation_input_catalog_core "
+        "ON valuation_input_catalog(is_core_input, input_family)",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES
+            (
+                'valuation_input_core_completeness',
+                'valuation_input_coverage',
+                'v_valuation_input_coverage',
+                'critical',
+                0.0,
+                'eq',
+                true,
+                'failed',
+                'pf3_s5',
+                now()
+            ),
+            (
+                'valuation_core_item_stub_detector',
+                'valuation_input_coverage',
+                'v_valuation_input_coverage',
+                'critical',
+                0.0,
+                'eq',
+                true,
+                'failed',
+                'pf3_s5',
+                now()
+            )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=144,
@@ -255,5 +588,10 @@ MIGRATIONS: list[Migration] = [
         version=146,
         name="pf3_s5_delisting_return_resolution_indexes",
         up=_pf3_s5_delisting_return_resolution_indexes,
+    ),
+    Migration(
+        version=147,
+        name="pf3_s5_valuation_input_coverage_catalog",
+        up=_pf3_s5_valuation_input_coverage_catalog,
     ),
 ]

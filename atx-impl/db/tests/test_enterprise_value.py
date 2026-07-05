@@ -126,6 +126,96 @@ def _seed_enterprise_value_inputs(tmp_store, *, cash_available_at: dt.datetime |
     )
 
 
+def _share_history_row(share_count_type: str, share_count: float) -> dict[str, object]:
+    return {
+        "share_history_id": f"share-{share_count_type}",
+        "source": "fixture_shares",
+        "security_id": SECURITY_ID,
+        "symbol": "EVT",
+        "cik": "0000000001",
+        "share_count_type": share_count_type,
+        "share_class": None,
+        "share_count_category": "float_treasury"
+        if share_count_type in {"float", "treasury"}
+        else "consolidated",
+        "taxonomy": "us-gaap",
+        "concept": share_count_type,
+        "unit": "shares",
+        "period_type": "duration" if share_count_type == "shares_diluted_avg" else "instant",
+        "period_start": dt.date(2019, 1, 1)
+        if share_count_type == "shares_diluted_avg"
+        else None,
+        "period_end": dt.date(2019, 12, 31),
+        "effective_date": dt.date(2019, 12, 31),
+        "as_of_date": dt.date(2020, 2, 1),
+        "available_at": dt.datetime(2020, 2, 1, 10),
+        "fiscal_year": 2019,
+        "fiscal_period": "FY",
+        "form": "10-K",
+        "accession_number": "acc-coverage",
+        "revision_sequence": 1,
+        "revision_count": 1,
+        "is_latest_revision": True,
+        "share_count": share_count,
+        "source_url": "fixture",
+        "run_id": "coverage-shares",
+    }
+
+
+def _seed_valuation_coverage_inputs(tmp_store) -> None:
+    _seed_enterprise_value_inputs(tmp_store)
+    assert refresh_enterprise_value(tmp_store, EnterpriseValueOptions(run_id="coverage-ev")) == 1
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _share_history_row("shares_diluted_avg", 100.0),
+                _share_history_row("float", 80.0),
+                _share_history_row("treasury", 5.0),
+            ]
+        ),
+        "shares_outstanding_history",
+        "valuation_input_share_seed",
+    )
+    tmp_store.con.execute(
+        """
+        INSERT INTO universe_membership (
+            universe_id,
+            security_id,
+            symbol,
+            valid_from,
+            valid_to,
+            as_of_date,
+            is_member,
+            reason,
+            rules_json,
+            decision_count,
+            available_at,
+            source,
+            run_id,
+            is_latest_revision
+        )
+        VALUES (
+            'us_common_equity_liquid_v1',
+            ?,
+            'EVT',
+            DATE '2020-01-02',
+            NULL,
+            DATE '2020-01-02',
+            true,
+            'member',
+            '{}',
+            1,
+            TIMESTAMP '2020-03-01 00:00:00',
+            'fixture_universe',
+            'coverage-universe',
+            true
+        )
+        """,
+        [SECURITY_ID],
+    )
+
+
 def _wide_row(**overrides) -> dict[str, object]:
     row = {
         "market_cap_source": "derived_market_cap_v1",
@@ -290,3 +380,187 @@ def test_enterprise_value_migration_catalog_and_view_are_present(tmp_store) -> N
         ).fetchone()[0]
         == 7
     )
+
+
+def test_valuation_input_completeness_gate_passes_populated_slice(tmp_store) -> None:
+    from db.quality import run_warehouse_quality_checks
+
+    _seed_valuation_coverage_inputs(tmp_store)
+
+    results = {
+        result.check_name: result
+        for result in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=(
+                "valuation_input_core_completeness",
+                "valuation_core_item_stub_detector",
+            ),
+        )
+    }
+
+    assert results["valuation_input_core_completeness"].status == "passed"
+    assert results["valuation_input_core_completeness"].observed_value == 0.0
+    assert results["valuation_core_item_stub_detector"].status == "passed"
+    assert results["valuation_core_item_stub_detector"].observed_value == 0.0
+
+
+def test_valuation_input_completeness_gate_fails_when_component_stripped(tmp_store) -> None:
+    from db.quality import run_warehouse_quality_checks
+
+    _seed_valuation_coverage_inputs(tmp_store)
+    tmp_store.con.execute("DELETE FROM enterprise_value")
+
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("valuation_input_core_completeness",),
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == "failed"
+    assert result.severity == "critical"
+    assert result.observed_value == 1.0
+    assert result.details["rows"] == [
+        {
+            "security_id": SECURITY_ID,
+            "symbol": "EVT",
+            "as_of_date": dt.date(2020, 1, 2),
+            "decision_available_at": dt.datetime(2020, 3, 1),
+            "canonical_input": "enterprise_value",
+            "display_name": "Enterprise Value",
+            "source_table": "enterprise_value",
+        }
+    ]
+
+
+def test_valuation_core_item_stub_detector_fires_on_empty_surface(tmp_store) -> None:
+    from db.quality import run_warehouse_quality_checks
+
+    results = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("valuation_core_item_stub_detector",),
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == "failed"
+    assert result.severity == "critical"
+    assert result.observed_value == 9.0
+    assert {row["canonical_input"] for row in result.details["rows"]} == {
+        "cash_and_equivalents",
+        "enterprise_value",
+        "float",
+        "market_cap",
+        "minority_interest",
+        "preferred_equity",
+        "shares_diluted_avg",
+        "total_debt",
+        "treasury",
+    }
+
+
+def test_valuation_input_catalog_migration_registry_and_indexes_are_present(tmp_store) -> None:
+    assert (
+        tmp_store.con.execute(
+            "SELECT description FROM schema_migrations WHERE version = 147"
+        ).fetchone()[0]
+        == "pf3_s5_valuation_input_coverage_catalog"
+    )
+    catalog_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM duckdb_columns()
+            WHERE table_name = 'valuation_input_catalog'
+            """
+        ).fetchall()
+    }
+    assert {
+        "canonical_input",
+        "display_name",
+        "source_table",
+        "source_field",
+        "source_filter",
+        "input_family",
+        "unit",
+        "sign_role",
+        "is_core_input",
+    }.issubset(catalog_columns)
+    assert (
+        tmp_store.con.execute(
+            """
+            SELECT count(*)
+            FROM valuation_input_catalog
+            WHERE is_core_input
+            """
+        ).fetchone()[0]
+        == 9
+    )
+    assert (
+        tmp_store.con.execute(
+            """
+            SELECT count(*)
+            FROM information_schema.tables
+            WHERE table_name = 'v_valuation_input_coverage'
+              AND table_type = 'VIEW'
+            """
+        ).fetchone()[0]
+        == 1
+    )
+    assert {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE index_name IN (
+                'idx_enterprise_value_key',
+                'idx_enterprise_value_security_date',
+                'idx_enterprise_value_asof',
+                'idx_shares_outstanding_history_class',
+                'idx_valuation_input_catalog_core'
+            )
+            """
+        ).fetchall()
+    } == {
+        "idx_enterprise_value_key",
+        "idx_enterprise_value_security_date",
+        "idx_enterprise_value_asof",
+        "idx_shares_outstanding_history_class",
+        "idx_valuation_input_catalog_core",
+    }
+    registry_rows = tmp_store.con.execute(
+        """
+        SELECT check_name, dataset_id, table_name, severity, threshold_value, comparator, enabled
+        FROM quality_check_registry
+        WHERE check_name IN (
+            'valuation_input_core_completeness',
+            'valuation_core_item_stub_detector'
+        )
+        ORDER BY check_name
+        """
+    ).fetchall()
+    assert registry_rows == [
+        (
+            "valuation_core_item_stub_detector",
+            "valuation_input_coverage",
+            "v_valuation_input_coverage",
+            "critical",
+            0.0,
+            "eq",
+            True,
+        ),
+        (
+            "valuation_input_core_completeness",
+            "valuation_input_coverage",
+            "v_valuation_input_coverage",
+            "critical",
+            0.0,
+            "eq",
+            True,
+        ),
+    ]
