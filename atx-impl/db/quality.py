@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from dataclasses import dataclass, replace
 from typing import Iterable, Literal, Mapping, Sequence
 
@@ -29,6 +30,7 @@ DEFAULT_VALUATION_STALE_GAP_DAYS = 5
 # and (later) PF2-S10's orchestrator gating never have to hand-copy the literal string.
 CATALOG_COMPLETENESS_CHECK_NAME = "catalog_completeness"
 PIT_COLUMN_PRESENCE_CHECK_NAME = "pit_column_presence"
+PIT_EXEMPTION_TABLE_NAME = "pit_exemption"
 SCHEMA_CONTRACT_DATASET_ID = "schema_contract"
 
 # PF-S7 S7-1: the statement-layer parent that fundamental_ratios rows resolve
@@ -7244,6 +7246,60 @@ def catalog_completeness_check(
     )
 
 
+def _pit_exemption_registry(store: DuckDBStore) -> tuple[dict[str, set[str]], list[dict[str, str]]]:
+    """Read valid PIT exemptions from ``pit_exemption``.
+
+    Exemptions are intentionally narrow: a row can subtract only the declared
+    canonical PIT columns for its own table, and only with a non-empty reason.
+    Invalid rows are reported to the check caller and do not subtract anything.
+    """
+    if not _table_exists(store, PIT_EXEMPTION_TABLE_NAME):
+        return {}, []
+
+    rows = store.con.execute(
+        """
+        SELECT table_name, missing_columns, reason
+        FROM pit_exemption
+        """
+    ).fetchall()
+    canonical = set(PIT_COLUMN_NAMES)
+    exemptions: dict[str, set[str]] = {}
+    invalid: list[dict[str, str]] = []
+    for table_name, missing_columns, reason in rows:
+        table = str(table_name or "").strip()
+        reason_text = str(reason or "").strip()
+        raw_columns = str(missing_columns or "").strip()
+        if not table:
+            invalid.append({"table_name": table, "reason": "table_name is empty"})
+            continue
+        if not reason_text:
+            invalid.append({"table_name": table, "reason": "reason is empty"})
+            continue
+        try:
+            decoded = json.loads(raw_columns)
+        except (TypeError, ValueError) as exc:
+            invalid.append({"table_name": table, "reason": f"missing_columns is not JSON: {exc}"})
+            continue
+        if not isinstance(decoded, list):
+            invalid.append({"table_name": table, "reason": "missing_columns must be a JSON array"})
+            continue
+        columns = {str(column).strip() for column in decoded if str(column).strip()}
+        unknown = sorted(columns - canonical)
+        if not columns:
+            invalid.append({"table_name": table, "reason": "missing_columns is empty"})
+            continue
+        if unknown:
+            invalid.append(
+                {
+                    "table_name": table,
+                    "reason": f"unknown PIT columns: {', '.join(unknown)}",
+                }
+            )
+            continue
+        exemptions.setdefault(table, set()).update(columns)
+    return exemptions, invalid
+
+
 def pit_column_presence_check(
     store: DuckDBStore,
     *,
@@ -7269,18 +7325,24 @@ def pit_column_presence_check(
     resolved_manifest: Mapping[str, Sequence[ColumnSpec]] = (
         manifest if manifest is not None else build_contract_manifest(store.con)
     )
+    exemptions, invalid_exemptions = _pit_exemption_registry(store)
 
     offenders: dict[str, list[str]] = {}
+    applied_exemptions: dict[str, list[str]] = {}
     for table_name, specs in resolved_manifest.items():
         is_fact = any(spec.is_pit_column for spec in specs)
         if not is_fact:
             continue
         spec_names = {spec.name for spec in specs}
-        missing = sorted(set(PIT_COLUMN_NAMES) - spec_names)
+        missing_set = set(PIT_COLUMN_NAMES) - spec_names
+        exempted = sorted(missing_set & exemptions.get(table_name, set()))
+        if exempted:
+            applied_exemptions[table_name] = exempted
+        missing = sorted(missing_set - set(exempted))
         if missing:
             offenders[table_name] = missing
 
-    observed_value = float(len(offenders))
+    observed_value = float(len(offenders) + len(invalid_exemptions))
     passed = observed_value == 0.0
     return QualityResult(
         dataset_id=SCHEMA_CONTRACT_DATASET_ID,
@@ -7289,7 +7351,12 @@ def pit_column_presence_check(
         status="passed" if passed else "failed",
         observed_value=observed_value,
         threshold_value=0.0,
-        details={"tables_missing_pit_columns": offenders, "checked_at": checked_at.isoformat()},
+        details={
+            "tables_missing_pit_columns": offenders,
+            "exempted_pit_columns": applied_exemptions,
+            "invalid_pit_exemptions": invalid_exemptions,
+            "checked_at": checked_at.isoformat(),
+        },
         severity="critical",
     )
 

@@ -11299,6 +11299,463 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_schema_catalog(conn)
 
 
+def _pf3_s2_recreate_pit_gap_views(conn: duckdb.DuckDBPyConnection) -> None:
+    """Recreate bootstrap views temporarily dropped for PIT-column ALTERs."""
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_equity_daily_returns AS
+        SELECT
+            source,
+            security_id,
+            symbol,
+            trade_date,
+            close,
+            close / lag(close) OVER (
+                PARTITION BY source, security_id
+                ORDER BY trade_date
+            ) - 1.0 AS simple_return,
+            ln(close / lag(close) OVER (
+                PARTITION BY source, security_id
+                ORDER BY trade_date
+            )) AS log_return,
+            volume,
+            source_loaded_at
+        FROM equity_daily_bars
+        WHERE close IS NOT NULL AND close > 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_points_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY security_id, metric, period_end, unit
+                    ORDER BY as_of_date DESC, source_loaded_at DESC
+                ) AS recency_rank
+            FROM fundamental_points
+        )
+        WHERE recency_rank = 1
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_ttm_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY security_id, canonical_metric, ttm_end_date, unit
+                    ORDER BY as_of_date DESC, available_at DESC NULLS LAST, source_loaded_at DESC
+                ) AS recency_rank
+            FROM fundamental_ttm_points
+        )
+        WHERE recency_rank = 1
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_periods_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY period_group_id
+                    ORDER BY as_of_date DESC, available_at DESC NULLS LAST, source_loaded_at DESC
+                ) AS recency_rank
+            FROM fundamental_periods
+        )
+        WHERE recency_rank = 1
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_alpha_daily_panel AS
+        SELECT
+            b.security_id,
+            b.symbol,
+            b.trade_date AS as_of_date,
+            b.close,
+            r.simple_return,
+            r.log_return,
+            b.volume,
+            b.close * b.volume AS dollar_volume
+        FROM equity_daily_bars b
+        LEFT JOIN v_equity_daily_returns r
+          ON r.source = b.source
+         AND r.security_id = b.security_id
+         AND r.trade_date = b.trade_date
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_macro_latest AS
+        SELECT *
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (
+                    PARTITION BY series_id, observation_date
+                    ORDER BY as_of_date DESC, source_loaded_at DESC
+                ) AS recency_rank
+            FROM macro_observations
+        )
+        WHERE recency_rank = 1
+        """
+    )
+
+
+def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-0: close the PIT-column gap by backfill or explicit exemption."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pit_exemption (
+            table_name VARCHAR PRIMARY KEY,
+            missing_columns VARCHAR NOT NULL CHECK (length(trim(missing_columns)) > 0),
+            reason VARCHAR NOT NULL CHECK (length(trim(reason)) > 0),
+            exempted_by VARCHAR NOT NULL CHECK (length(trim(exempted_by)) > 0),
+            exempted_at TIMESTAMP NOT NULL DEFAULT now(),
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'pit_exemption',
+            'control',
+            'schema_contract_pit_exemption',
+            'table_name',
+            'Registry of explicit schema-contract exemptions for canonical PIT columns that are not meaningful on a manifest-marked table.',
+            '["table_name"]',
+            'Quality gate input for pit_column_presence. Each row names the exact missing PIT columns it exempts and carries a non-empty reason; undeclared tables or columns are not subtracted by the check.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('pit_exemption', 'table_name', 'identifier', 'Manifest table name whose declared missing PIT columns are exempted.', false, NULL, NULL, now()),
+            ('pit_exemption', 'missing_columns', 'json', 'JSON array of canonical PIT column names exempted for this table only.', false, NULL, NULL, now()),
+            ('pit_exemption', 'reason', 'text', 'Non-empty human-readable reason explaining why the declared PIT column is not meaningful for this table.', false, NULL, NULL, now()),
+            ('pit_exemption', 'exempted_by', 'identifier', 'Sprint, operator, or agent that registered the exemption.', false, NULL, NULL, now()),
+            ('pit_exemption', 'exempted_at', 'timestamp', 'Timestamp when the exemption was registered.', false, 'timestamp', NULL, now()),
+            ('pit_exemption', 'source_loaded_at', 'timestamp', 'Warehouse load timestamp for this exemption registry row.', false, 'timestamp', NULL, now())
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO pit_exemption (
+            table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at
+        )
+        VALUES
+            (
+                'est_analyst',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate analyst is an identity dimension. PIT validity is represented by valid_from/valid_to plus available_at; row-level as_of_date and revision-latest flags would duplicate that window.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_analyst_alias',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate analyst aliases are validity-windowed dimension rows keyed by alias and provider. valid_from/valid_to plus available_at carry PIT semantics; revision-latest is not meaningful.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_broker',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate broker is an identity dimension. PIT validity is represented by valid_from/valid_to plus available_at; row-level as_of_date and revision-latest flags would duplicate that window.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_broker_alias',
+                '["as_of_date","is_latest_revision"]',
+                'Estimate broker aliases are validity-windowed dimension rows keyed by alias and provider. valid_from/valid_to plus available_at carry PIT semantics; revision-latest is not meaningful.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            ),
+            (
+                'est_period_dim',
+                '["is_latest_revision"]',
+                'Estimate period metadata is a provider period dimension with valid_from/valid_to and available_at. There is no row revision chain to mark latest without inventing one.',
+                'pf3-s2-s2-0',
+                now(),
+                now()
+            )
+        """
+    )
+
+    indexed_tables = (
+        "adjustment_factor_history",
+        "alpha_signal_values",
+        "blockholder_filing",
+        "congressional_disclosure",
+        "corporate_actions",
+        "daily_adjustment_factors",
+        "delisting_events",
+        "delisting_return_observations",
+        "entity_classification",
+        "entity_parent_edges",
+        "equity_daily_bars",
+        "est_actual",
+        "est_consensus",
+        "est_detail",
+        "est_guidance",
+        "est_recommendation",
+        "est_recommendation_summary",
+        "est_security_link",
+        "est_surprise",
+        "exchange_listings",
+        "feature_values",
+        "filer_13f_cik_alias",
+        "filing_form4",
+        "filing_nport",
+        "finra_short_volume",
+        "form144_intent",
+        "form144_to_form4_link",
+        "fund_holding",
+        "fundamental_fact_revisions",
+        "fundamental_periods",
+        "fundamental_points",
+        "fundamental_ttm_points",
+        "identifier_resolution_candidates",
+        "identifier_resolution_decisions",
+        "insider_holding",
+        "insider_relationship",
+        "insider_transaction",
+        "listing_status_intervals",
+        "macro_observations",
+        "nasdaq_listing_events",
+        "nasdaq_symbol_directory",
+        "offexchange_security_period",
+        "offexchange_volume",
+        "proxy_vote",
+        "sec_company_facts",
+        "security_identifier_history",
+        "thirteenf_manager_reports",
+        "thirteenf_security_ownership",
+        "thirteenf_security_positions",
+        "tradingplan_10b5_1",
+        "universe_memberships",
+    )
+    table_list = ", ".join(f"'{name}'" for name in indexed_tables)
+    index_rows = conn.execute(
+        f"""
+        SELECT index_name, sql
+        FROM duckdb_indexes()
+        WHERE schema_name = 'main'
+          AND table_name IN ({table_list})
+        ORDER BY index_name
+        """
+    ).fetchall()
+
+    for view_name in (
+        "v_alpha_daily_panel",
+        "v_equity_daily_returns",
+        "v_fundamental_points_latest",
+        "v_fundamental_ttm_latest",
+        "v_fundamental_periods_latest",
+        "v_macro_latest",
+    ):
+        conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+    for index_name, _sql in index_rows:
+        conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+
+    for statement in (
+        "ALTER TABLE adjustment_factor_history ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE blockholder_filing ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE congressional_disclosure ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE equity_daily_bars ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE filing_form4 ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE filing_nport ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE fund_holding ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE fundamental_fact_revisions ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE proxy_vote ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE sec_company_facts ADD COLUMN IF NOT EXISTS as_of_date DATE",
+        "ALTER TABLE thirteenf_manager_reports ADD COLUMN IF NOT EXISTS as_of_date DATE",
+    ):
+        conn.execute(statement)
+
+    for statement in (
+        "ALTER TABLE alpha_signal_values ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP DEFAULT now()",
+        "ALTER TABLE feature_values ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP DEFAULT now()",
+    ):
+        conn.execute(statement)
+
+    for statement in (
+        "ALTER TABLE fundamental_periods ADD COLUMN IF NOT EXISTS run_id VARCHAR",
+        "ALTER TABLE fundamental_ttm_points ADD COLUMN IF NOT EXISTS run_id VARCHAR",
+        "ALTER TABLE macro_observations ADD COLUMN IF NOT EXISTS run_id VARCHAR",
+    ):
+        conn.execute(statement)
+
+    for statement in (
+        "ALTER TABLE nasdaq_listing_events ADD COLUMN IF NOT EXISTS available_at TIMESTAMP",
+        "ALTER TABLE nasdaq_symbol_directory ADD COLUMN IF NOT EXISTS available_at TIMESTAMP",
+    ):
+        conn.execute(statement)
+
+    for statement in (
+        "ALTER TABLE adjustment_factor_history ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE alpha_signal_values ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE blockholder_filing ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE congressional_disclosure ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE daily_adjustment_factors ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE delisting_events ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE delisting_return_observations ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE entity_classification ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE entity_parent_edges ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE equity_daily_bars ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_actual ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_recommendation_summary ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_security_link ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE est_surprise ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE exchange_listings ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE feature_values ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE filer_13f_cik_alias ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE filing_form4 ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE filing_nport ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE finra_short_volume ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE fund_holding ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE fundamental_points ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE identifier_resolution_candidates ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE identifier_resolution_decisions ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE insider_holding ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE insider_relationship ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE insider_transaction ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE listing_status_intervals ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE macro_observations ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE nasdaq_listing_events ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE nasdaq_symbol_directory ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE offexchange_security_period ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE offexchange_volume ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE proxy_vote ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE sec_company_facts ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE security_identifier_history ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE thirteenf_manager_reports ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE thirteenf_security_ownership ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE thirteenf_security_positions ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE tradingplan_10b5_1 ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+        "ALTER TABLE universe_memberships ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
+    ):
+        conn.execute(statement)
+
+    for statement in (
+        "UPDATE adjustment_factor_history SET as_of_date = ex_date WHERE as_of_date IS NULL",
+        "UPDATE blockholder_filing SET as_of_date = coalesce(event_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
+        "UPDATE congressional_disclosure SET as_of_date = coalesce(transaction_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
+        "UPDATE corporate_actions SET as_of_date = ex_date WHERE as_of_date IS NULL",
+        "UPDATE equity_daily_bars SET as_of_date = trade_date WHERE as_of_date IS NULL",
+        "UPDATE filing_form4 SET as_of_date = coalesce(period_of_report, filing_date, CAST(acceptance_datetime AS DATE), CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
+        "UPDATE filing_nport SET as_of_date = period_of_report WHERE as_of_date IS NULL",
+        "UPDATE fund_holding SET as_of_date = period_of_report WHERE as_of_date IS NULL",
+        "UPDATE fundamental_fact_revisions SET as_of_date = filed_date WHERE as_of_date IS NULL",
+        "UPDATE proxy_vote SET as_of_date = coalesce(meeting_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
+        "UPDATE sec_company_facts SET as_of_date = filed_date WHERE as_of_date IS NULL",
+        "UPDATE thirteenf_manager_reports SET as_of_date = report_period WHERE as_of_date IS NULL",
+        "UPDATE alpha_signal_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL",
+        "UPDATE feature_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL",
+        "UPDATE nasdaq_listing_events SET available_at = coalesce(source_file_created_at, source_loaded_at) WHERE available_at IS NULL",
+        "UPDATE nasdaq_symbol_directory SET available_at = source_loaded_at WHERE available_at IS NULL",
+        "UPDATE finra_short_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest",
+        "UPDATE offexchange_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest",
+        "UPDATE form144_intent SET is_latest_revision = coalesce(is_latest, true) WHERE is_latest_revision IS DISTINCT FROM coalesce(is_latest, true)",
+    ):
+        conn.execute(statement)
+
+    for _index_name, sql in index_rows:
+        if sql:
+            conn.execute(sql)
+
+    _pf3_s2_recreate_pit_gap_views(conn)
+
+    touched_tables = (
+        "adjustment_factor_history",
+        "alpha_signal_values",
+        "blockholder_filing",
+        "congressional_disclosure",
+        "corporate_actions",
+        "daily_adjustment_factors",
+        "delisting_events",
+        "delisting_return_observations",
+        "entity_classification",
+        "entity_parent_edges",
+        "equity_daily_bars",
+        "est_actual",
+        "est_consensus",
+        "est_detail",
+        "est_guidance",
+        "est_recommendation",
+        "est_recommendation_summary",
+        "est_security_link",
+        "est_surprise",
+        "exchange_listings",
+        "feature_values",
+        "filer_13f_cik_alias",
+        "filing_form4",
+        "filing_nport",
+        "finra_short_volume",
+        "form144_intent",
+        "form144_to_form4_link",
+        "fund_holding",
+        "fundamental_fact_revisions",
+        "fundamental_periods",
+        "fundamental_points",
+        "fundamental_ttm_points",
+        "identifier_resolution_candidates",
+        "identifier_resolution_decisions",
+        "insider_holding",
+        "insider_relationship",
+        "insider_transaction",
+        "listing_status_intervals",
+        "macro_observations",
+        "nasdaq_listing_events",
+        "nasdaq_symbol_directory",
+        "offexchange_security_period",
+        "offexchange_volume",
+        "proxy_vote",
+        "sec_company_facts",
+        "security_identifier_history",
+        "thirteenf_manager_reports",
+        "thirteenf_security_ownership",
+        "thirteenf_security_positions",
+        "tradingplan_10b5_1",
+        "universe_memberships",
+    )
+    _catalog_fields_for_tables(conn, touched_tables)
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -11895,6 +12352,11 @@ MIGRATIONS: list[Migration] = [
         version=134,
         name="pf3_s1_backfill_status_view",
         up=_pf3_s1_backfill_status_view,
+    ),
+    Migration(
+        version=135,
+        name="pf3_s2_pit_gap_close",
+        up=_pf3_s2_pit_gap_close,
     ),
 ]
 
