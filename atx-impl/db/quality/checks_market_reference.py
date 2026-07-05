@@ -191,6 +191,133 @@ def market_reference_check_specs(
             severity="critical",
         ),
         SqlQualityCheck(
+            dataset_id="valuation_input_coverage",
+            table_name="v_valuation_input_coverage",
+            check_name="valuation_input_core_completeness",
+            sql="""
+                WITH universe_days AS (
+                    SELECT DISTINCT
+                        security_id,
+                        symbol,
+                        valid_from AS as_of_date,
+                        coalesce(available_at, CAST(valid_from AS TIMESTAMP)) AS decision_available_at
+                    FROM universe_membership
+                    WHERE is_member
+                      AND is_latest_revision
+                ),
+                required_inputs AS (
+                    SELECT canonical_input
+                    FROM valuation_input_catalog
+                    WHERE is_core_input
+                ),
+                missing_inputs AS (
+                    SELECT
+                        u.security_id,
+                        u.as_of_date,
+                        r.canonical_input
+                    FROM universe_days u
+                    CROSS JOIN required_inputs r
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM v_valuation_input_coverage c
+                        WHERE c.security_id = u.security_id
+                          AND c.canonical_input = r.canonical_input
+                          AND c.input_date <= u.as_of_date
+                          AND (
+                              c.available_at IS NULL
+                              OR c.available_at <= u.decision_available_at
+                          )
+                    )
+                )
+                SELECT count(*)::DOUBLE
+                FROM missing_inputs
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=(
+                "valuation_input_catalog",
+                "v_valuation_input_coverage",
+                "universe_membership",
+            ),
+            detail_sql="""
+                WITH universe_days AS (
+                    SELECT DISTINCT
+                        security_id,
+                        symbol,
+                        valid_from AS as_of_date,
+                        coalesce(available_at, CAST(valid_from AS TIMESTAMP)) AS decision_available_at
+                    FROM universe_membership
+                    WHERE is_member
+                      AND is_latest_revision
+                ),
+                required_inputs AS (
+                    SELECT canonical_input, display_name, source_table
+                    FROM valuation_input_catalog
+                    WHERE is_core_input
+                )
+                SELECT
+                    u.security_id,
+                    u.symbol,
+                    u.as_of_date,
+                    u.decision_available_at,
+                    r.canonical_input,
+                    r.display_name,
+                    r.source_table
+                FROM universe_days u
+                CROSS JOIN required_inputs r
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM v_valuation_input_coverage c
+                    WHERE c.security_id = u.security_id
+                      AND c.canonical_input = r.canonical_input
+                      AND c.input_date <= u.as_of_date
+                      AND (
+                          c.available_at IS NULL
+                          OR c.available_at <= u.decision_available_at
+                      )
+                )
+                ORDER BY u.as_of_date, u.security_id, r.canonical_input
+                LIMIT 50
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="valuation_input_coverage",
+            table_name="v_valuation_input_coverage",
+            check_name="valuation_core_item_stub_detector",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM valuation_input_catalog c
+                WHERE c.is_core_input
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM v_valuation_input_coverage v
+                      WHERE v.canonical_input = c.canonical_input
+                  )
+            """,
+            threshold=0.0,
+            comparator="eq",
+            required_tables=("valuation_input_catalog", "v_valuation_input_coverage"),
+            detail_sql="""
+                SELECT
+                    c.canonical_input,
+                    c.display_name,
+                    c.source_table,
+                    c.source_field,
+                    c.source_filter
+                FROM valuation_input_catalog c
+                WHERE c.is_core_input
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM v_valuation_input_coverage v
+                      WHERE v.canonical_input = c.canonical_input
+                  )
+                ORDER BY c.canonical_input
+                LIMIT 50
+            """,
+            severity="critical",
+        ),
+        SqlQualityCheck(
             dataset_id="tbltickerhistory_daily",
             table_name="equity_daily_bars",
             check_name="duplicate_equity_daily_bars",
@@ -485,7 +612,10 @@ def market_reference_check_specs(
                    OR security_id = ''
                    OR cik IS NULL
                    OR cik = ''
-                   OR share_count_type NOT IN ('shares_outstanding', 'shares_basic_avg', 'shares_diluted_avg')
+                   OR share_count_type NOT IN (
+                        'shares_outstanding', 'shares_basic_avg', 'shares_diluted_avg',
+                        'float', 'treasury', 'class_a', 'class_b', 'class_c', 'class_d'
+                   )
                    OR taxonomy IS NULL
                    OR taxonomy = ''
                    OR concept IS NULL
@@ -508,6 +638,26 @@ def market_reference_check_specs(
                    OR share_count < 0
                    OR source_url IS NULL
                    OR source_url = ''
+            """,
+            threshold=0.0,
+            required_tables=("shares_outstanding_history",),
+        ),
+        SqlQualityCheck(
+            dataset_id="shares_outstanding_history",
+            table_name="shares_outstanding_history",
+            check_name="float_shares_not_above_outstanding",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM shares_outstanding_history f
+                JOIN shares_outstanding_history s
+                  ON s.source = f.source
+                 AND s.security_id = f.security_id
+                 AND s.accession_number = f.accession_number
+                 AND s.period_end = f.period_end
+                 AND s.as_of_date = f.as_of_date
+                 AND s.share_count_type = 'shares_outstanding'
+                WHERE f.share_count_type = 'float'
+                  AND f.share_count > s.share_count
             """,
             threshold=0.0,
             required_tables=("shares_outstanding_history",),

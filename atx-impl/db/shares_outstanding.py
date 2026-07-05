@@ -8,7 +8,18 @@ from .warehouse import quality_check
 
 
 SOURCE_NAME = "SEC XBRL share counts"
-SHARE_COUNT_METRICS = ("shares_outstanding", "shares_basic_avg", "shares_diluted_avg")
+SHARE_COUNT_METRICS = (
+    "shares_outstanding",
+    "shares_basic_avg",
+    "shares_diluted_avg",
+    "float",
+    "treasury",
+    "class_a",
+    "class_b",
+    "class_c",
+    "class_d",
+)
+_METRIC_SQL_LIST = ", ".join(f"'{metric}'" for metric in SHARE_COUNT_METRICS)
 
 
 @dataclass(frozen=True)
@@ -27,7 +38,7 @@ def refresh_shares_outstanding_history(
     with store.transaction():
         store.con.execute("DELETE FROM shares_outstanding_history WHERE source = ?", [options.source])
         store.con.execute(
-            """
+            f"""
             INSERT INTO shares_outstanding_history (
                 share_history_id,
                 source,
@@ -35,6 +46,8 @@ def refresh_shares_outstanding_history(
                 symbol,
                 cik,
                 share_count_type,
+                share_class,
+                share_count_category,
                 taxonomy,
                 concept,
                 unit,
@@ -74,7 +87,15 @@ def refresh_shares_outstanding_history(
                 p.security_id,
                 p.symbol,
                 p.cik,
-                p.canonical_metric AS share_count_type,
+                m.share_count_type,
+                m.share_class,
+                CASE
+                    WHEN m.share_count_type IN ('shares_outstanding', 'shares_basic_avg', 'shares_diluted_avg')
+                        THEN 'consolidated'
+                    WHEN m.share_count_type IN ('float', 'treasury')
+                        THEN 'float_treasury'
+                    ELSE 'share_class'
+                END AS share_count_category,
                 p.taxonomy,
                 p.concept,
                 p.unit,
@@ -96,9 +117,43 @@ def refresh_shares_outstanding_history(
                 coalesce(?, p.run_id) AS run_id,
                 p.source_loaded_at
             FROM fundamental_statement_points p
-            WHERE p.canonical_metric IN ('shares_outstanding', 'shares_basic_avg', 'shares_diluted_avg')
+            JOIN (
+                SELECT
+                    statement_point_id,
+                    CASE
+                        WHEN lower(canonical_metric) IN ('shares_float', 'public_float') THEN 'float'
+                        WHEN lower(canonical_metric) IN ('shares_treasury', 'treasury_shares') THEN 'treasury'
+                        ELSE lower(canonical_metric)
+                    END AS share_count_type,
+                    CASE
+                        WHEN lower(canonical_metric) LIKE 'class_%'
+                            THEN upper(substr(lower(canonical_metric), 7))
+                        ELSE NULL
+                    END AS share_class
+                FROM fundamental_statement_points
+            ) m
+              ON m.statement_point_id = p.statement_point_id
+            LEFT JOIN (
+                SELECT
+                    security_id,
+                    accession_number,
+                    period_end,
+                    as_of_date,
+                    max(value) AS shares_outstanding
+                FROM fundamental_statement_points
+                WHERE lower(canonical_metric) = 'shares_outstanding'
+                  AND value IS NOT NULL
+                  AND value >= 0
+                GROUP BY security_id, accession_number, period_end, as_of_date
+            ) outstanding
+              ON outstanding.security_id = p.security_id
+             AND outstanding.accession_number = p.accession_number
+             AND outstanding.period_end = p.period_end
+             AND outstanding.as_of_date = p.as_of_date
+            WHERE m.share_count_type IN ({_METRIC_SQL_LIST})
               AND p.value IS NOT NULL
               AND p.value >= 0
+              AND (lower(p.unit) IN ('share', 'shares') OR lower(p.unit_type) IN ('share', 'shares'))
               AND p.security_id IS NOT NULL
               AND p.security_id <> ''
               AND p.cik IS NOT NULL
@@ -107,6 +162,11 @@ def refresh_shares_outstanding_history(
               AND p.as_of_date IS NOT NULL
               AND p.accession_number IS NOT NULL
               AND p.accession_number <> ''
+              AND (
+                  m.share_count_type <> 'float'
+                  OR outstanding.shares_outstanding IS NULL
+                  OR p.value <= outstanding.shares_outstanding
+              )
             """,
             [options.source, options.source, options.run_id],
         )

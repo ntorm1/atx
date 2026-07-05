@@ -35,7 +35,12 @@ def _insert_statement_point(
     accession_number: str,
     period_type: str = "instant",
     is_latest_revision: bool = True,
+    taxonomy: str = "dei",
+    concept: str | None = None,
+    unit: str = "shares",
+    unit_type: str = "shares",
 ) -> None:
+    concept = concept or "EntityCommonStockSharesOutstanding"
     tmp_store.con.execute(
         """
         INSERT INTO fundamental_statement_points (
@@ -80,8 +85,8 @@ def _insert_statement_point(
         )
         VALUES (
             ?, ?, ?, 'SEC companyfacts API', ?, 'AAPL', '0000320193',
-            'share_count', 'shares', ?, ?, 'dei',
-            'EntityCommonStockSharesOutstanding', 'shares', 'shares', ?, 'credit',
+            'share_count', 'shares', ?, ?, ?,
+            ?, ?, ?, ?, 'credit',
             ?, ?, ?, ?, 2024, 'FY', '10-K', ?, 1, 1, ?, false,
             ?, ?, NULL, NULL, NULL, NULL, 'seed-run',
             'https://data.sec.gov/submissions/CIK0000320193.json', ?
@@ -94,6 +99,10 @@ def _insert_statement_point(
             SECURITY_ID,
             metric,
             metric.replace("_", " ").title(),
+            taxonomy,
+            concept,
+            unit,
+            unit_type,
             period_type,
             period_start,
             period_end,
@@ -216,6 +225,120 @@ def test_refresh_materializes_public_sec_share_count_history(tmp_store):
     ]
 
 
+def test_refresh_materializes_float_treasury_and_share_class_counts(tmp_store):
+    from db.shares_outstanding import refresh_shares_outstanding_history
+
+    _seed_share_statement_points(tmp_store)
+    _insert_statement_point(
+        tmp_store,
+        statement_point_id="float-2023fy",
+        metric="float",
+        value=14_000_000_000,
+        period_start=None,
+        period_end=dt.date(2023, 12, 30),
+        as_of_date=dt.date(2024, 2, 2),
+        available_at=dt.datetime(2024, 2, 2, 21, 30),
+        accession_number="0000320193-24-000006",
+        taxonomy="dei",
+        concept="EntityPublicFloat",
+    )
+    _insert_statement_point(
+        tmp_store,
+        statement_point_id="float-too-large-ignored",
+        metric="float",
+        value=99_000_000_000,
+        period_start=None,
+        period_end=dt.date(2023, 12, 30),
+        as_of_date=dt.date(2024, 2, 2),
+        available_at=dt.datetime(2024, 2, 2, 21, 30),
+        accession_number="0000320193-24-000006",
+        taxonomy="dei",
+        concept="EntityPublicFloat",
+    )
+    _insert_statement_point(
+        tmp_store,
+        statement_point_id="monetary-public-float-ignored",
+        metric="float",
+        value=2_500_000_000_000,
+        period_start=None,
+        period_end=dt.date(2023, 12, 30),
+        as_of_date=dt.date(2024, 2, 2),
+        available_at=dt.datetime(2024, 2, 2, 21, 30),
+        accession_number="0000320193-24-000006",
+        taxonomy="dei",
+        concept="EntityPublicFloat",
+        unit="USD",
+        unit_type="monetary",
+    )
+    _insert_statement_point(
+        tmp_store,
+        statement_point_id="treasury-2023fy",
+        metric="treasury",
+        value=100_000_000,
+        period_start=None,
+        period_end=dt.date(2023, 12, 30),
+        as_of_date=dt.date(2024, 2, 2),
+        available_at=dt.datetime(2024, 2, 2, 21, 30),
+        accession_number="0000320193-24-000006",
+        taxonomy="us-gaap",
+        concept="TreasuryStockShares",
+    )
+    _insert_statement_point(
+        tmp_store,
+        statement_point_id="class-a-2023fy",
+        metric="class_a",
+        value=10_000_000_000,
+        period_start=None,
+        period_end=dt.date(2023, 12, 30),
+        as_of_date=dt.date(2024, 2, 2),
+        available_at=dt.datetime(2024, 2, 2, 21, 30),
+        accession_number="0000320193-24-000006",
+        taxonomy="us-gaap",
+        concept="ClassACommonStockSharesOutstanding",
+    )
+    _insert_statement_point(
+        tmp_store,
+        statement_point_id="class-b-2023fy",
+        metric="class_b",
+        value=5_442_000_000,
+        period_start=None,
+        period_end=dt.date(2023, 12, 30),
+        as_of_date=dt.date(2024, 2, 2),
+        available_at=dt.datetime(2024, 2, 2, 21, 30),
+        accession_number="0000320193-24-000006",
+        taxonomy="us-gaap",
+        concept="ClassBCommonStockSharesOutstanding",
+    )
+
+    assert refresh_shares_outstanding_history(tmp_store) == 7
+
+    rows = tmp_store.con.execute(
+        """
+        SELECT share_count_type, share_class, share_count_category, share_count
+        FROM shares_outstanding_history
+        WHERE share_count_type IN ('float', 'treasury', 'class_a', 'class_b')
+        ORDER BY share_count_type
+        """
+    ).fetchall()
+    assert rows == [
+        ("class_a", "A", "share_class", 10_000_000_000),
+        ("class_b", "B", "share_class", 5_442_000_000),
+        ("float", None, "float_treasury", 14_000_000_000),
+        ("treasury", None, "float_treasury", 100_000_000),
+    ]
+
+    legacy_counts = tmp_store.con.execute(
+        """
+        SELECT share_count_type, count(*)
+        FROM shares_outstanding_history
+        WHERE share_count_type IN ('shares_outstanding', 'shares_basic_avg', 'shares_diluted_avg')
+        GROUP BY 1
+        ORDER BY 1
+        """
+    ).fetchall()
+    assert legacy_counts == [("shares_basic_avg", 1), ("shares_outstanding", 2)]
+
+
 def test_dataset_wrapper_records_run_and_quality(tmp_store):
     from db.shares_outstanding import SharesOutstandingHistoryDataset, SharesOutstandingHistoryOptions
 
@@ -289,6 +412,37 @@ def test_shares_outstanding_asof_filters_by_availability_and_type(tmp_store):
     assert basic["share_count"].tolist() == [15_744_231_000]
 
 
+def test_share_count_extension_migration_and_catalog_are_present(tmp_store):
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM duckdb_columns()
+            WHERE table_name = 'shares_outstanding_history'
+            """
+        ).fetchall()
+    }
+    assert {"share_class", "share_count_category"}.issubset(columns)
+    assert (
+        tmp_store.con.execute(
+            "SELECT description FROM schema_migrations WHERE version = 144"
+        ).fetchone()[0]
+        == "pf3_s5_share_count_extensions"
+    )
+    assert (
+        tmp_store.con.execute(
+            """
+            SELECT count(*)
+            FROM field_catalog
+            WHERE table_name = 'shares_outstanding_history'
+              AND field_name IN ('share_count_type', 'share_class', 'share_count_category', 'share_count')
+            """
+        ).fetchone()[0]
+        == 4
+    )
+
+
 def test_shares_quality_checks_and_watermarks_pass_clean_sample(tmp_store):
     from db.quality import run_warehouse_quality_checks
     from db.shares_outstanding import refresh_shares_outstanding_history
@@ -310,6 +464,7 @@ def test_shares_quality_checks_and_watermarks_pass_clean_sample(tmp_store):
     assert {result.check_name for result in target_results} == {
         "duplicate_shares_outstanding_history",
         "bad_shares_outstanding_history_rows",
+        "float_shares_not_above_outstanding",
         "orphan_shares_outstanding_security_ids",
     }
     assert {result.status for result in target_results} == {"passed"}
