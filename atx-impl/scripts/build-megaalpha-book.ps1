@@ -77,12 +77,18 @@
                                 combine:  --method stack --risk-model factor
                                 metabook: --sleeve-method hrp --risk-model factor
                                   --dead-alpha-factors --dead-alpha-lib-dir
-                                  --group-neutralize --book-turnover-gate
-                                  --participation-cap
+                                  --book-turnover-gate
                                 report:   --capacity-curve --borrow-bps
-                              --gp-trading (S3) is NOT in the above -- it only
-                              bites via `optimize`, which `-Stage all`'s routing
-                              excludes for -Profile prod. Reachable via the
+                              --gp-trading (S3), --group-neutralize (S1/S2) and
+                              --participation-cap (S5) are NOT on the metabook argv
+                              above -- all three are consumed ONLY by stage_optimize's
+                              MVO path (:191, :477, :414-438), which `-Stage all`'s
+                              routing excludes for -Profile prod. metabook's HRP-sleeve
+                              construction has no reader for them, so emitting them
+                              there would be a parse-but-ignore Potemkin. They ARE
+                              carried on the explicit `-Stage optimize -Profile prod`
+                              companion command the S7-0 Resolve-ActiveStages fix
+                              restores. Reachable via the
                               explicit `-Stage optimize -Profile prod` companion
                               command the S7-0 Resolve-ActiveStages fix restores.
                               S6 (ML-seeded discovery + NCO sleeve) was DEFERRED
@@ -297,11 +303,23 @@ function New-MetabookArgv {
         # --dead-alpha-factors.
         [switch] $DeadAlphaFactors,
         [string] $DeadAlphaLibDir = '',
-        [switch] $GroupNeutralize,
-        # S7-1 (S5): book-level turnover gate + optimizer participation cap.
-        # 0.0 (default) => off.
-        [double] $BookTurnoverGate = 0.0,
-        [double] $ParticipationCap = 0.0
+        # S7-1 (S5): book-level turnover gate. stage_metabook.cpp:776 reads
+        # cfg.book_turnover_gate directly against the HRP-sleeve fund book's own
+        # cross-sleeve-netted per-day turnover rate. 0.0 (default) => off.
+        [double] $BookTurnoverGate = 0.0
+        # S7 REVIEW CLOSEOUT — deliberately NO -GroupNeutralize / -ParticipationCap
+        # here. The metabook subcommand's HRP-sleeve construction has no reader for
+        # either lever: participation-cap is consumed ONLY by stage_optimize.cpp's
+        # MVO QP (:414-438), and group-neutralize only by stage_optimize.cpp:477 /
+        # stage_combine.cpp -- stage_metabook.cpp never copies cfg.group_neutralize
+        # into its risk_cfg (:419-423, :641-645 set only .kind + .dead_alpha_factors).
+        # Emitting either on the metabook argv would parse-but-ignore: a Potemkin
+        # lever on the flagship book, the exact defect p9 exists to kill. Both are
+        # correctly carried on New-OptimizeArgv (the MVO path that DOES consume them,
+        # reachable via an explicit `-Stage optimize`). Actually giving the sleeve
+        # path its own equivalents is future ENGINE work (S2-scope for group-neutralize;
+        # new %ADV-sleeve-bound design for participation-cap), out of this DryRun
+        # recipe sprint's scope.
     )
     $libraryDir = Join-Path $WorkDir '_library'
     $comboIn    = Join-Path $WorkDir 'combo.bin'
@@ -325,9 +343,7 @@ function New-MetabookArgv {
         $libDir = if ($DeadAlphaLibDir -ne '') { $DeadAlphaLibDir } else { $libraryDir }
         $argv.Add('--dead-alpha-lib-dir'); $argv.Add($libDir)
     }
-    if ($GroupNeutralize) { $argv.Add('--group-neutralize') }
     if ($BookTurnoverGate -gt 0) { $argv.Add('--book-turnover-gate'); $argv.Add([string]$BookTurnoverGate) }
-    if ($ParticipationCap -gt 0) { $argv.Add('--participation-cap'); $argv.Add([string]$ParticipationCap) }
     [string[]]$argv.ToArray()
 }
 
@@ -542,8 +558,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             'metabook' {
                 if ($Profile -eq 'prod') {
                     $argv = New-MetabookArgv -PanelBin $PanelBin -WorkDir $WorkDir -SleeveMethod 'hrp' `
-                        -RiskModel 'factor' -DeadAlphaFactors -GroupNeutralize `
-                        -BookTurnoverGate 0.20 -ParticipationCap 0.10
+                        -RiskModel 'factor' -DeadAlphaFactors `
+                        -BookTurnoverGate 0.20
                 } else {
                     $argv = New-MetabookArgv -PanelBin $PanelBin -WorkDir $WorkDir -SleeveMethod 'invvol'
                 }

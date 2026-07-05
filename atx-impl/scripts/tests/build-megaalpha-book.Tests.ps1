@@ -297,16 +297,25 @@ Describe 'New-CombineArgv - S7-1 --risk-model factor reaches the combine CLI ent
 
 Describe 'New-MetabookArgv - S7-1 risk-model + book-level gates now reach the prod book stage' {
 
-    It 'prod: contains --risk-model factor --dead-alpha-factors --dead-alpha-lib-dir --group-neutralize' {
+    It 'prod: contains --risk-model factor --dead-alpha-factors --dead-alpha-lib-dir (the levers metabook DOES consume)' {
         $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
-            -RiskModel 'factor' -DeadAlphaFactors -DeadAlphaLibDir 'C:\atx-test\work\_library' -GroupNeutralize
+            -RiskModel 'factor' -DeadAlphaFactors -DeadAlphaLibDir 'C:\atx-test\work\_library'
         ($argv -contains '--risk-model')         | Should Be $true
         ($argv -contains '--dead-alpha-factors')  | Should Be $true
         ($argv -contains '--dead-alpha-lib-dir')  | Should Be $true
-        ($argv -contains '--group-neutralize')    | Should Be $true
     }
 
-    It 'default (smoke): omits risk-model/dead-alpha/group-neutralize entirely (absence == inert)' {
+    It 'Potemkin guard: metabook argv NEVER carries --group-neutralize or --participation-cap (stage_metabook has no reader; optimizer-only)' {
+        # Even given a maximal prod-shaped call, New-MetabookArgv must not emit the
+        # two optimizer-only levers -- doing so would parse-but-ignore on the HRP-
+        # sleeve path (the exact defect p9 kills). They live on New-OptimizeArgv.
+        $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
+            -RiskModel 'factor' -DeadAlphaFactors -DeadAlphaLibDir 'C:\atx-test\work\_library' -BookTurnoverGate 0.20
+        ($argv -contains '--group-neutralize')   | Should Be $false
+        ($argv -contains '--participation-cap')  | Should Be $false
+    }
+
+    It 'default (smoke): omits risk-model/dead-alpha entirely (absence == inert)' {
         $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'invvol'
         ($argv -contains '--risk-model')        | Should Be $false
         ($argv -contains '--dead-alpha-factors') | Should Be $false
@@ -324,19 +333,16 @@ Describe 'New-MetabookArgv - S7-1 risk-model + book-level gates now reach the pr
         }
     }
 
-    It 'contains --book-turnover-gate 0.20 and --participation-cap when requested' {
+    It 'contains --book-turnover-gate 0.20 when requested (the one book-level gate metabook consumes)' {
         $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp' `
-            -BookTurnoverGate 0.20 -ParticipationCap 0.10
+            -BookTurnoverGate 0.20
         $gi = [array]::IndexOf($argv, '--book-turnover-gate')
-        $pi = [array]::IndexOf($argv, '--participation-cap')
         $argv[$gi + 1] | Should Be '0.2'
-        $argv[$pi + 1] | Should Be '0.1'
     }
 
-    It 'omits --book-turnover-gate/--participation-cap when both are 0 (the inert default)' {
+    It 'omits --book-turnover-gate when 0 (the inert default)' {
         $argv = New-MetabookArgv -PanelBin $testPanel -WorkDir $testWorkDir -SleeveMethod 'hrp'
         ($argv -contains '--book-turnover-gate') | Should Be $false
-        ($argv -contains '--participation-cap')  | Should Be $false
     }
 }
 
