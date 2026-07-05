@@ -166,3 +166,73 @@ def test_warehouse_backfill_cli_backfill_status_and_resume(tmp_path: Path, capsy
     assert final_status["count"] == 2
     assert {row["status"] for row in final_status["rows"]} == {"succeeded"}
     assert {row["dead_letter_state"] for row in final_status["rows"]} == {"clear"}
+
+
+def test_warehouse_backfill_cli_status_reports_all_skipped_rerun(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    CliBackfillDataset.reset()
+    db_path = tmp_path / "warehouse_backfill_cli_skipped.duckdb"
+
+    first = _run_cli(
+        [
+            "backfill",
+            "--dataset",
+            "cli_backfill",
+            "--start",
+            "2014-01-01",
+            "--end",
+            "2014-03-01",
+            "--chunk",
+            "1mo",
+            "--db-path",
+            str(db_path),
+        ],
+        capsys,
+    )
+    calls_after_first = list(CliBackfillDataset.calls)
+
+    second = _run_cli(
+        [
+            "backfill",
+            "--dataset",
+            "cli_backfill",
+            "--start",
+            "2014-01-01",
+            "--end",
+            "2014-03-01",
+            "--chunk",
+            "1mo",
+            "--db-path",
+            str(db_path),
+        ],
+        capsys,
+    )
+
+    assert first["status"] == "succeeded"
+    assert second["status"] == "succeeded"
+    assert second["partitions_skipped"] == 2
+    assert second["partitions_succeeded"] == 0
+    assert second["rows_written"] == 0
+    assert CliBackfillDataset.calls == calls_after_first
+
+    status = _run_cli(
+        [
+            "status",
+            "--dataset",
+            "cli_backfill",
+            "--backfill-run-id",
+            second["backfill_run_id"],
+            "--db-path",
+            str(db_path),
+        ],
+        capsys,
+    )
+
+    assert status["count"] == 2
+    assert {row["backfill_run_id"] for row in status["rows"]} == {second["backfill_run_id"]}
+    assert {row["run_id"] for row in status["rows"]} == {first["backfill_run_id"]}
+    assert {row["status"] for row in status["rows"]} == {"skipped"}
+    assert {row["rows_written"] for row in status["rows"]} == {0}
+    assert {row["run_status"] for row in status["rows"]} == {"succeeded"}

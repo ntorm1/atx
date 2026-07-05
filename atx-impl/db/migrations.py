@@ -10706,7 +10706,7 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         """
         CREATE OR REPLACE VIEW v_backfill_status AS
-        WITH latest_dead_letter AS (
+        WITH RECURSIVE latest_dead_letter AS (
             SELECT
                 dataset_id,
                 partition_key,
@@ -10719,19 +10719,191 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
                     ORDER BY dead_lettered_at DESC, run_id DESC
                 ) AS rn
             FROM backfill_dead_letter
+        ),
+        run_seed AS (
+            SELECT
+                backfill_run_id,
+                dataset_id AS root_dataset_id,
+                start_date,
+                end_date,
+                chunk,
+                status AS run_status,
+                started_at,
+                finished_at,
+                error_message,
+                try_cast(regexp_extract(chunk, '([0-9]+)', 1) AS INTEGER) AS chunk_amount,
+                CASE lower(regexp_extract(chunk, '([A-Za-z]+)$', 1))
+                    WHEN 'd' THEN 'day'
+                    WHEN 'day' THEN 'day'
+                    WHEN 'days' THEN 'day'
+                    WHEN 'w' THEN 'week'
+                    WHEN 'week' THEN 'week'
+                    WHEN 'weeks' THEN 'week'
+                    WHEN 'm' THEN 'month'
+                    WHEN 'mo' THEN 'month'
+                    WHEN 'mon' THEN 'month'
+                    WHEN 'month' THEN 'month'
+                    WHEN 'months' THEN 'month'
+                    WHEN 'q' THEN 'quarter'
+                    WHEN 'qr' THEN 'quarter'
+                    WHEN 'qtr' THEN 'quarter'
+                    WHEN 'quarter' THEN 'quarter'
+                    WHEN 'quarters' THEN 'quarter'
+                    WHEN 'y' THEN 'year'
+                    WHEN 'yr' THEN 'year'
+                    WHEN 'year' THEN 'year'
+                    WHEN 'years' THEN 'year'
+                END AS chunk_unit
+            FROM backfill_run
+            WHERE start_date < end_date
+        ),
+        run_partition_plan AS (
+            SELECT
+                backfill_run_id,
+                root_dataset_id,
+                start_date,
+                end_date,
+                chunk,
+                run_status,
+                started_at,
+                finished_at,
+                error_message,
+                chunk_amount,
+                chunk_unit,
+                start_date AS window_lo,
+                least(
+                    CASE chunk_unit
+                        WHEN 'day' THEN CAST(start_date + chunk_amount * INTERVAL '1 day' AS DATE)
+                        WHEN 'week' THEN CAST(start_date + chunk_amount * INTERVAL '1 week' AS DATE)
+                        WHEN 'month' THEN CAST(start_date + chunk_amount * INTERVAL '1 month' AS DATE)
+                        WHEN 'quarter' THEN CAST(start_date + (chunk_amount * 3) * INTERVAL '1 month' AS DATE)
+                        WHEN 'year' THEN CAST(start_date + chunk_amount * INTERVAL '1 year' AS DATE)
+                    END,
+                    end_date
+                ) AS window_hi
+            FROM run_seed
+            WHERE chunk_amount > 0
+              AND chunk_unit IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                backfill_run_id,
+                root_dataset_id,
+                start_date,
+                end_date,
+                chunk,
+                run_status,
+                started_at,
+                finished_at,
+                error_message,
+                chunk_amount,
+                chunk_unit,
+                window_hi AS window_lo,
+                least(
+                    CASE chunk_unit
+                        WHEN 'day' THEN CAST(window_hi + chunk_amount * INTERVAL '1 day' AS DATE)
+                        WHEN 'week' THEN CAST(window_hi + chunk_amount * INTERVAL '1 week' AS DATE)
+                        WHEN 'month' THEN CAST(window_hi + chunk_amount * INTERVAL '1 month' AS DATE)
+                        WHEN 'quarter' THEN CAST(window_hi + (chunk_amount * 3) * INTERVAL '1 month' AS DATE)
+                        WHEN 'year' THEN CAST(window_hi + chunk_amount * INTERVAL '1 year' AS DATE)
+                    END,
+                    end_date
+                ) AS window_hi
+            FROM run_partition_plan
+            WHERE window_hi < end_date
+        ),
+        run_scoped_watermarks AS (
+            SELECT
+                p.backfill_run_id,
+                w.run_id,
+                p.root_dataset_id,
+                w.dataset_id AS partition_dataset_id,
+                w.dataset_id AS dataset_id,
+                w.partition_key,
+                w.window_lo,
+                w.window_hi,
+                CASE
+                    WHEN w.run_id = p.backfill_run_id THEN w.status
+                    WHEN w.status = 'succeeded' THEN 'skipped'
+                    ELSE w.status
+                END AS status,
+                CASE
+                    WHEN w.run_id = p.backfill_run_id THEN w.rows_written
+                    WHEN w.status = 'succeeded' THEN 0
+                    ELSE w.rows_written
+                END AS rows_written,
+                w.watermark_after,
+                p.run_status,
+                p.started_at AS run_started_at,
+                p.finished_at AS run_finished_at,
+                p.start_date AS run_start_date,
+                p.end_date AS run_end_date,
+                p.chunk AS run_chunk,
+                p.error_message AS run_error_message,
+                w.updated_at AS partition_updated_at
+            FROM run_partition_plan p
+            JOIN backfill_watermark w
+                ON w.dataset_id = p.root_dataset_id
+               AND w.partition_key = concat(
+                    p.root_dataset_id,
+                    ':',
+                    CAST(p.window_lo AS VARCHAR),
+                    ':',
+                    CAST(p.window_hi AS VARCHAR)
+               )
+               AND w.window_lo = p.window_lo
+               AND w.window_hi = p.window_hi
+        ),
+        direct_watermarks AS (
+            SELECT
+                coalesce(r.backfill_run_id, w.run_id) AS backfill_run_id,
+                w.run_id,
+                r.dataset_id AS root_dataset_id,
+                w.dataset_id AS partition_dataset_id,
+                w.dataset_id AS dataset_id,
+                w.partition_key,
+                w.window_lo,
+                w.window_hi,
+                w.status,
+                w.rows_written,
+                w.watermark_after,
+                r.status AS run_status,
+                r.started_at AS run_started_at,
+                r.finished_at AS run_finished_at,
+                r.start_date AS run_start_date,
+                r.end_date AS run_end_date,
+                r.chunk AS run_chunk,
+                r.error_message AS run_error_message,
+                w.updated_at AS partition_updated_at
+            FROM backfill_watermark w
+            LEFT JOIN backfill_run r
+                ON r.backfill_run_id = w.run_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM run_scoped_watermarks scoped
+                WHERE scoped.backfill_run_id = coalesce(r.backfill_run_id, w.run_id)
+                  AND scoped.partition_dataset_id = w.dataset_id
+                  AND scoped.partition_key = w.partition_key
+            )
+        ),
+        status_rows AS (
+            SELECT * FROM run_scoped_watermarks
+            UNION ALL
+            SELECT * FROM direct_watermarks
         )
         SELECT
-            coalesce(r.backfill_run_id, w.run_id) AS backfill_run_id,
-            w.run_id,
-            r.dataset_id AS root_dataset_id,
-            w.dataset_id AS partition_dataset_id,
-            w.dataset_id AS dataset_id,
-            w.partition_key,
-            w.window_lo,
-            w.window_hi,
-            w.status,
-            w.rows_written,
-            w.watermark_after,
+            s.backfill_run_id,
+            s.run_id,
+            s.root_dataset_id,
+            s.partition_dataset_id,
+            s.dataset_id,
+            s.partition_key,
+            s.window_lo,
+            s.window_hi,
+            s.status,
+            s.rows_written,
+            s.watermark_after,
             coalesce(d.attempts, 0) AS attempts,
             d.error AS dead_letter_error,
             d.dead_lettered_at,
@@ -10740,20 +10912,18 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
                 ELSE 'dead_lettered'
             END AS dead_letter_state,
             d.run_id AS dead_letter_run_id,
-            r.status AS run_status,
-            r.started_at AS run_started_at,
-            r.finished_at AS run_finished_at,
-            r.start_date AS run_start_date,
-            r.end_date AS run_end_date,
-            r.chunk AS run_chunk,
-            r.error_message AS run_error_message,
-            w.updated_at AS partition_updated_at
-        FROM backfill_watermark w
-        LEFT JOIN backfill_run r
-            ON r.backfill_run_id = w.run_id
+            s.run_status,
+            s.run_started_at,
+            s.run_finished_at,
+            s.run_start_date,
+            s.run_end_date,
+            s.run_chunk,
+            s.run_error_message,
+            s.partition_updated_at
+        FROM status_rows s
         LEFT JOIN latest_dead_letter d
-            ON d.dataset_id = w.dataset_id
-           AND d.partition_key = w.partition_key
+            ON d.dataset_id = s.partition_dataset_id
+           AND d.partition_key = s.partition_key
            AND d.rn = 1
         """
     )
@@ -10768,10 +10938,10 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
             'v_backfill_status',
             'observability',
             'backfill_status',
-            'partition_dataset_id,partition_key',
-            'Queryable PF3 backfill observability surface joining the run header, current per-partition watermark/progress row, and active/latest dead-letter quarantine state.',
-            '["partition_dataset_id","partition_key"]',
-            'Current-state view over persisted backfill progress. It reports recorded watermarks and dead-letter rows only; it does not compute forward-looking freshness or synthesize historical partitions absent from backfill_watermark.',
+            'backfill_run_id,partition_dataset_id,partition_key',
+            'Queryable PF3 backfill observability surface joining run headers, current per-partition watermark/progress rows, and active/latest dead-letter quarantine state.',
+            '["backfill_run_id","partition_dataset_id","partition_key"]',
+            'Run-scoped current-state view over persisted backfill progress. For all-skipped idempotent reruns, matching root partitions are projected from the run header and existing watermark rows without mutating backfill_watermark.',
             now()
         )
         """
@@ -10784,10 +10954,10 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
         )
         VALUES
             ('v_backfill_status', 'backfill_run_id', 'identifier',
-             'Backfill run identifier from backfill_run, falling back to the watermark run_id for legacy/current-state rows without a matching run header.',
-             false, NULL, 'backfill_run.backfill_run_id', now()),
+             'Requested backfill run identifier associated with this status row, falling back to the watermark run_id for legacy/current-state rows without a matching run header.',
+             false, NULL, 'backfill_run.backfill_run_id or backfill_watermark.run_id', now()),
             ('v_backfill_status', 'run_id', 'identifier',
-             'Run id that last advanced the partition watermark row.',
+             'Run id that last advanced the partition watermark row; differs from backfill_run_id for skipped idempotent rerun rows.',
              false, NULL, 'backfill_watermark.run_id', now()),
             ('v_backfill_status', 'root_dataset_id', 'identifier',
              'Requested/root dataset id from the backfill run header; dependency partition rows may have a different partition_dataset_id.',
@@ -10808,11 +10978,11 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
              'Exclusive upper bound of the deterministic half-open backfill partition window.',
              false, 'date', 'backfill_watermark.window_hi', now()),
             ('v_backfill_status', 'status', 'category',
-             'Current partition status recorded in backfill_watermark.',
-             false, NULL, 'backfill_watermark.status', now()),
+             'Run-scoped partition status: current watermark status for rows advanced by this run, or skipped when this run reused an already-succeeded watermark.',
+             false, NULL, 'backfill_watermark.status plus backfill_run plan', now()),
             ('v_backfill_status', 'rows_written', 'measure',
-             'Rows written by the run that last advanced this partition watermark.',
-             false, 'rows', 'backfill_watermark.rows_written', now()),
+             'Rows written by this requested run for the partition; projected skipped rows report zero while retaining watermark_after from the current watermark.',
+             false, 'rows', 'backfill_watermark.rows_written plus backfill_run plan', now()),
             ('v_backfill_status', 'watermark_after', 'text',
              'Recorded high-water mark after the last successful partition advance.',
              true, NULL, 'backfill_watermark.watermark_after', now()),
@@ -10832,7 +11002,7 @@ def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
              'Run id that produced the latest active dead-letter row, if any.',
              true, NULL, 'backfill_dead_letter.run_id', now()),
             ('v_backfill_status', 'run_status', 'category',
-             'Status of the run header that last advanced this partition.',
+             'Status of the requested run header associated with this status row.',
              true, NULL, 'backfill_run.status', now()),
             ('v_backfill_status', 'run_started_at', 'timestamp',
              'Run header start timestamp.',

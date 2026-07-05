@@ -414,6 +414,32 @@ def test_immediate_second_backfill_is_strict_noop(tmp_store):
     assert FixtureBackfillDataset.calls == calls_after_first
     assert watermarks_after == watermarks_before
 
+    rerun_status_rows = tmp_store.con.execute(
+        """
+        SELECT backfill_run_id, run_id, partition_key, status, rows_written, watermark_after, run_status
+        FROM v_backfill_status
+        WHERE dataset_id = 'fixture_backfill'
+          AND backfill_run_id = 'backfill-second'
+        ORDER BY partition_key
+        """
+    ).fetchall()
+    watermark_by_partition = {row[0]: row for row in watermarks_before}
+    assert len(rerun_status_rows) == 4
+    assert {row[2] for row in rerun_status_rows} == set(watermark_by_partition)
+    assert {row[0] for row in rerun_status_rows} == {"backfill-second"}
+    assert {row[1] for row in rerun_status_rows} == {"backfill-first"}
+    assert {row[3] for row in rerun_status_rows} == {"skipped"}
+    assert {row[4] for row in rerun_status_rows} == {0}
+    assert {row[6] for row in rerun_status_rows} == {"succeeded"}
+    assert {
+        (row[2], row[5])
+        for row in rerun_status_rows
+    } == {
+        (partition_key, watermark_after)
+        for partition_key, _status, _rows_written, watermark_after, _run_id, _updated_at
+        in watermarks_before
+    }
+
 
 def test_same_run_id_resumes_failed_and_running_partitions_without_duplicates(tmp_store):
     from db.backfill import plan_backfill, run_backfill
