@@ -1,4 +1,4 @@
-"""PF3-S2 S2-0 acceptance tests for the PIT-gap close."""
+"""PF3-S2 acceptance tests for schema-contract v2."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from db.connection import DuckDBStore
 from db.migrations import MIGRATIONS
 from db.quality import pit_column_presence_check
 from db.schema import ensure_quant_schema
-from db.schema_contract import ColumnSpec
+from db.schema_contract import ColumnSpec, build_contract_manifest, schema_contract_sha256
 
 
 def _bootstrap_through_migration_0134(store: DuckDBStore) -> None:
@@ -63,6 +63,10 @@ def _bootstrap_through_migration_0134(store: DuckDBStore) -> None:
 
 def _migration_0135():
     return next(migration for migration in MIGRATIONS if migration.version == 135)
+
+
+def _migration_0136():
+    return next(migration for migration in MIGRATIONS if migration.version == 136)
 
 
 def _pit_fact_specs(*missing: str) -> list[ColumnSpec]:
@@ -277,6 +281,158 @@ def test_non_exempt_fact_missing_available_at_still_goes_red(tmp_store):
         "unregistered_fact": ["available_at"]
     }
     assert result.details["exempted_pit_columns"] == {}
+
+
+def test_column_spec_validates_semantic_sign_values():
+    ColumnSpec("value", "DOUBLE", nullable=False, unit="USD", sign="non_negative", scale="1")
+    ColumnSpec("label", "VARCHAR", nullable=True, sign=None)
+
+    with pytest.raises(ValueError):
+        ColumnSpec("value", "DOUBLE", nullable=False, sign="positiveish")
+
+
+def test_schema_contract_hash_includes_semantic_fields_and_stays_reorder_stable():
+    base = {
+        "fact_a": [
+            ColumnSpec(
+                "fact_id",
+                "VARCHAR",
+                nullable=False,
+                is_natural_key=True,
+                declared_in="migration",
+                unit="identifier",
+                sign="bounded",
+                scale="nominal",
+            ),
+            ColumnSpec(
+                "value",
+                "DOUBLE",
+                nullable=False,
+                declared_in="migration",
+                unit="USD",
+                sign="non_negative",
+                scale="1",
+            ),
+        ],
+        "fact_b": [
+            ColumnSpec(
+                "weight",
+                "DOUBLE",
+                nullable=True,
+                declared_in="migration",
+                unit="ratio",
+                sign="unit_interval",
+                scale="1",
+            ),
+        ],
+    }
+    changed = {
+        **base,
+        "fact_a": [
+            base["fact_a"][0],
+            ColumnSpec(
+                "value",
+                "DOUBLE",
+                nullable=False,
+                declared_in="migration",
+                unit="USD",
+                sign="signed",
+                scale="1",
+            ),
+        ],
+    }
+    reordered = {
+        "fact_b": list(reversed(base["fact_b"])),
+        "fact_a": list(reversed(base["fact_a"])),
+    }
+
+    assert schema_contract_sha256(base) != schema_contract_sha256(changed)
+    assert schema_contract_sha256(base) == schema_contract_sha256(reordered)
+
+
+def test_schema_contract_table_has_s2_1_semantic_columns_catalogued(tmp_store):
+    expected = {"unit", "sign", "scale", "natural_key"}
+    live_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = 'schema_contract'"
+        ).fetchall()
+    }
+    field_rows = {
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT field_name FROM field_catalog WHERE table_name = 'schema_contract'"
+        ).fetchall()
+    }
+
+    assert expected <= live_columns
+    assert expected <= field_rows
+
+
+def test_every_manifest_fact_column_resolves_unit_sign_and_scale(tmp_store):
+    manifest = build_contract_manifest(tmp_store.con)
+    missing = {}
+    for table_name, specs in manifest.items():
+        if not any(spec.is_pit_column for spec in specs):
+            continue
+        offenders = [
+            spec.name
+            for spec in specs
+            if spec.unit is None or spec.sign is None or spec.scale is None
+        ]
+        if offenders:
+            missing[table_name] = offenders
+
+    assert missing == {}
+
+
+def test_persisted_schema_contract_fact_rows_have_semantics(tmp_store):
+    manifest = build_contract_manifest(tmp_store.con)
+    fact_tables = {table_name for table_name, specs in manifest.items() if any(spec.is_pit_column for spec in specs)}
+    assert fact_tables
+
+    rows = tmp_store.con.execute(
+        """
+        SELECT table_name, column_name, unit, sign, scale, natural_key
+        FROM schema_contract
+        ORDER BY table_name, column_name
+        """
+    ).fetchall()
+    missing = [
+        (table_name, column_name)
+        for table_name, column_name, unit, sign, scale, natural_key in rows
+        if table_name in fact_tables
+        and (unit is None or sign is None or scale is None or natural_key is None)
+    ]
+
+    assert missing == []
+
+
+def test_migration_0136_schema_contract_semantic_seed_is_idempotent(tmp_store):
+    def stable_rows():
+        return tmp_store.con.execute(
+            """
+            SELECT
+                table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
+                declared_in, manifest_sha256, unit, sign, scale, natural_key
+            FROM schema_contract
+            ORDER BY table_name, column_name
+            """
+        ).fetchall()
+
+    _migration_0136().up(tmp_store.con)
+    before_rows = stable_rows()
+    before_sha = tmp_store.con.execute("SELECT DISTINCT manifest_sha256 FROM schema_contract").fetchall()
+
+    _migration_0136().up(tmp_store.con)
+    _migration_0136().up(tmp_store.con)
+
+    after_rows = stable_rows()
+    after_sha = tmp_store.con.execute("SELECT DISTINCT manifest_sha256 FROM schema_contract").fetchall()
+
+    assert after_rows == before_rows
+    assert after_sha == before_sha
+    assert len(after_sha) == 1
 
 
 def test_pit_exemption_requires_non_empty_reason(tmp_store):

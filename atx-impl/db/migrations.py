@@ -11778,6 +11778,93 @@ def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_schema_catalog(conn)
 
 
+def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S2 S2-1: persist semantic contract fields on schema_contract."""
+
+    for statement in (
+        "DROP INDEX IF EXISTS idx_schema_contract_table_name",
+        "DROP INDEX IF EXISTS idx_schema_contract_declared_in",
+    ):
+        conn.execute(statement)
+
+    for statement in (
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS unit VARCHAR",
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS sign VARCHAR",
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS scale VARCHAR",
+        "ALTER TABLE schema_contract ADD COLUMN IF NOT EXISTS natural_key BOOLEAN DEFAULT false",
+    ):
+        conn.execute(statement)
+
+    _schema_contract_schema_catalog(conn)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('schema_contract', 'unit', 'category', 'Declared semantic unit for this contract column, resolved from explicit ColumnSpec declarations or field_catalog.unit fallback where present.', true, 'unit', NULL, now()),
+            ('schema_contract', 'sign', 'category', 'Declared sign/domain convention for this contract column: signed, non_negative, non_positive, unit_interval, bounded, or NULL when not applicable.', true, NULL, NULL, now()),
+            ('schema_contract', 'scale', 'category', 'Declared semantic scale for this contract column, such as 1, day, second, boolean, or nominal.', true, NULL, NULL, now()),
+            ('schema_contract', 'natural_key', 'flag', 'Semantic-tier mirror of is_natural_key; true when this column participates in the table natural/business key.', false, NULL, NULL, now())
+        """
+    )
+
+    from .schema_contract import build_contract_manifest, schema_contract_sha256
+
+    manifest = build_contract_manifest(conn)
+    manifest_sha256 = schema_contract_sha256(manifest)
+    rows = [
+        (
+            table_name,
+            spec.name,
+            spec.unit,
+            spec.sign,
+            spec.scale,
+            bool(spec.natural_key),
+            manifest_sha256,
+        )
+        for table_name, specs in manifest.items()
+        for spec in specs
+    ]
+
+    import pandas as pd
+
+    seed = pd.DataFrame.from_records(
+        rows,
+        columns=[
+            "table_name",
+            "column_name",
+            "unit",
+            "sign",
+            "scale",
+            "natural_key",
+            "manifest_sha256",
+        ],
+    )
+    conn.register("_schema_contract_semantic_seed", seed)
+    try:
+        conn.execute(
+            """
+            UPDATE schema_contract AS sc
+            SET
+                unit = seed.unit,
+                sign = seed.sign,
+                scale = seed.scale,
+                natural_key = seed.natural_key,
+                manifest_sha256 = seed.manifest_sha256,
+                source_loaded_at = now()
+            FROM _schema_contract_semantic_seed AS seed
+            WHERE sc.table_name = seed.table_name
+              AND sc.column_name = seed.column_name
+            """
+        )
+    finally:
+        conn.unregister("_schema_contract_semantic_seed")
+
+    _schema_contract_indexes(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -12379,6 +12466,11 @@ MIGRATIONS: list[Migration] = [
         version=135,
         name="pf3_s2_pit_gap_close",
         up=_pf3_s2_pit_gap_close,
+    ),
+    Migration(
+        version=136,
+        name="pf3_s2_schema_contract_semantics",
+        up=_pf3_s2_schema_contract_semantics,
     ),
 ]
 

@@ -58,6 +58,7 @@ from .connection import DuckDBStore
 # Column-level provenance tags. A table's columns can straddle both: a table created by
 # ensure_quant_schema can later gain columns via a migration's ALTER TABLE ADD COLUMN.
 DECLARED_IN_VALUES = frozenset({"schema_py", "migration"})
+SIGN_VALUES = frozenset({"signed", "non_negative", "non_positive", "unit_interval", "bounded"})
 
 # The typed drift categories detect_schema_drift can emit. Keep in sync with the S1-0
 # plan section (sprint-1-schema-contract.md) -- this is the closed set, not an example.
@@ -94,12 +95,20 @@ class ColumnSpec:
     is_natural_key: bool = False
     is_pit_column: bool = False
     declared_in: str = "schema_py"
+    unit: str | None = None
+    sign: str | None = None
+    scale: str | None = None
+    natural_key: bool | None = None
 
     def __post_init__(self) -> None:
         if self.declared_in not in DECLARED_IN_VALUES:
             raise ValueError(
                 f"declared_in must be one of {sorted(DECLARED_IN_VALUES)}, got {self.declared_in!r}"
             )
+        if self.sign is not None and self.sign not in SIGN_VALUES:
+            raise ValueError(f"sign must be one of {sorted(SIGN_VALUES)} or None, got {self.sign!r}")
+        if self.natural_key is None:
+            object.__setattr__(self, "natural_key", self.is_natural_key)
 
 
 @dataclass(frozen=True)
@@ -190,30 +199,102 @@ CONTRACT: dict[str, list[ColumnSpec]] = {
         ColumnSpec("source_loaded_at", "TIMESTAMP", nullable=False, declared_in="migration"),
     ],
     "market_cap": [
-        ColumnSpec("market_cap_id", "VARCHAR", nullable=False, declared_in="migration"),
-        ColumnSpec("source", "VARCHAR", nullable=False, is_natural_key=True, declared_in="migration"),
-        ColumnSpec("price_source", "VARCHAR", nullable=False, declared_in="migration"),
-        ColumnSpec("share_source", "VARCHAR", nullable=False, declared_in="migration"),
-        ColumnSpec("security_id", "VARCHAR", nullable=False, is_natural_key=True, declared_in="migration"),
-        ColumnSpec("symbol", "VARCHAR", nullable=True, declared_in="migration"),
-        ColumnSpec("trade_date", "DATE", nullable=False, is_natural_key=True, declared_in="migration"),
-        ColumnSpec("close", "DOUBLE", nullable=False, declared_in="migration"),
-        ColumnSpec("share_count", "DOUBLE", nullable=False, declared_in="migration"),
-        ColumnSpec("share_count_type_used", "VARCHAR", nullable=False, declared_in="migration"),
-        ColumnSpec("market_cap", "DOUBLE", nullable=False, declared_in="migration"),
-        ColumnSpec("is_latest_revision", "BOOLEAN", nullable=False, is_pit_column=True, declared_in="migration"),
-        ColumnSpec("as_of_date", "DATE", nullable=False, is_pit_column=True, declared_in="migration"),
-        ColumnSpec("available_at", "TIMESTAMP", nullable=False, is_pit_column=True, declared_in="migration"),
-        ColumnSpec("price_available_at", "TIMESTAMP", nullable=False, declared_in="migration"),
-        ColumnSpec("share_available_at", "TIMESTAMP", nullable=False, declared_in="migration"),
-        ColumnSpec("price_run_id", "VARCHAR", nullable=True, declared_in="migration"),
-        ColumnSpec("share_run_id", "VARCHAR", nullable=True, declared_in="migration"),
-        ColumnSpec("share_history_id", "VARCHAR", nullable=True, declared_in="migration"),
-        ColumnSpec("input_codes_json", "VARCHAR", nullable=False, declared_in="migration"),
-        ColumnSpec("input_lineage_json", "VARCHAR", nullable=False, declared_in="migration"),
-        ColumnSpec("run_id", "VARCHAR", nullable=True, is_pit_column=True, declared_in="migration"),
-        ColumnSpec("source_loaded_at", "TIMESTAMP", nullable=False, is_pit_column=True, declared_in="migration"),
-        ColumnSpec("updated_at", "TIMESTAMP", nullable=False, declared_in="migration"),
+        ColumnSpec(
+            "market_cap_id", "VARCHAR", nullable=False, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "source", "VARCHAR", nullable=False, is_natural_key=True, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "price_source", "VARCHAR", nullable=False, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "share_source", "VARCHAR", nullable=False, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "security_id", "VARCHAR", nullable=False, is_natural_key=True, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "symbol", "VARCHAR", nullable=True, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "trade_date", "DATE", nullable=False, is_natural_key=True, declared_in="migration",
+            unit="date", sign="bounded", scale="day",
+        ),
+        ColumnSpec(
+            "close", "DOUBLE", nullable=False, declared_in="migration",
+            unit="USD", sign="non_negative", scale="1",
+        ),
+        ColumnSpec(
+            "share_count", "DOUBLE", nullable=False, declared_in="migration",
+            unit="shares", sign="non_negative", scale="1",
+        ),
+        ColumnSpec(
+            "share_count_type_used", "VARCHAR", nullable=False, declared_in="migration",
+            unit="category", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "market_cap", "DOUBLE", nullable=False, declared_in="migration",
+            unit="USD", sign="non_negative", scale="1",
+        ),
+        ColumnSpec(
+            "is_latest_revision", "BOOLEAN", nullable=False, is_pit_column=True,
+            declared_in="migration", unit="flag", sign="bounded", scale="boolean",
+        ),
+        ColumnSpec(
+            "as_of_date", "DATE", nullable=False, is_pit_column=True, declared_in="migration",
+            unit="date", sign="bounded", scale="day",
+        ),
+        ColumnSpec(
+            "available_at", "TIMESTAMP", nullable=False, is_pit_column=True,
+            declared_in="migration", unit="timestamp", sign="bounded", scale="second",
+        ),
+        ColumnSpec(
+            "price_available_at", "TIMESTAMP", nullable=False, declared_in="migration",
+            unit="timestamp", sign="bounded", scale="second",
+        ),
+        ColumnSpec(
+            "share_available_at", "TIMESTAMP", nullable=False, declared_in="migration",
+            unit="timestamp", sign="bounded", scale="second",
+        ),
+        ColumnSpec(
+            "price_run_id", "VARCHAR", nullable=True, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "share_run_id", "VARCHAR", nullable=True, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "share_history_id", "VARCHAR", nullable=True, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "input_codes_json", "VARCHAR", nullable=False, declared_in="migration",
+            unit="json", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "input_lineage_json", "VARCHAR", nullable=False, declared_in="migration",
+            unit="json", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "run_id", "VARCHAR", nullable=True, is_pit_column=True, declared_in="migration",
+            unit="identifier", sign="bounded", scale="nominal",
+        ),
+        ColumnSpec(
+            "source_loaded_at", "TIMESTAMP", nullable=False, is_pit_column=True,
+            declared_in="migration", unit="timestamp", sign="bounded", scale="second",
+        ),
+        ColumnSpec(
+            "updated_at", "TIMESTAMP", nullable=False, declared_in="migration",
+            unit="timestamp", sign="bounded", scale="second",
+        ),
     ],
 }
 
@@ -355,6 +436,10 @@ def _manifest_payload(manifest: Mapping[str, Sequence[ColumnSpec]]) -> list[dict
                         "is_natural_key": spec.is_natural_key,
                         "is_pit_column": spec.is_pit_column,
                         "declared_in": spec.declared_in,
+                        "unit": spec.unit,
+                        "sign": spec.sign,
+                        "scale": spec.scale,
+                        "natural_key": spec.natural_key,
                     }
                     for spec in columns
                 ],
@@ -514,6 +599,139 @@ def _fetch_natural_keys(con) -> dict[str, set[str]]:
     return natural_keys
 
 
+def _fetch_field_catalog_units(con) -> dict[tuple[str, str], str]:
+    """(table_name, field_name) -> declared field_catalog.unit where present."""
+    try:
+        rows = con.execute(
+            """
+            SELECT table_name, field_name, unit
+            FROM field_catalog
+            WHERE unit IS NOT NULL
+              AND length(trim(unit)) > 0
+            """
+        ).fetchall()
+    except Exception:
+        rows = []
+    return {(str(table_name), str(field_name)): str(unit) for table_name, field_name, unit in rows}
+
+
+def _infer_semantic_unit(name: str, data_type: str) -> str:
+    lower = name.lower()
+    dtype = data_type.upper()
+    if lower.endswith("_usd") or lower in {
+        "value_usd",
+        "cash_amount",
+        "dollar_volume",
+        "market_cap",
+        "close",
+        "open",
+        "high",
+        "low",
+        "vwap",
+    }:
+        return "USD"
+    if "volume" in lower or "share" in lower or "quantity" in lower or lower.endswith("_count"):
+        return "shares"
+    if "percentile" in lower:
+        return "ratio"
+    if (
+        "percent" in lower
+        or lower.endswith("_return")
+        or lower.startswith("ret_")
+        or "ratio" in lower
+        or "weight" in lower
+    ):
+        return "ratio"
+    if lower.endswith("_date") or dtype == "DATE" or lower in {"valid_from", "valid_to"}:
+        return "date"
+    if lower.endswith("_at") or "TIMESTAMP" in dtype or "DATETIME" in dtype:
+        return "timestamp"
+    if dtype == "BOOLEAN" or lower.startswith("is_") or lower.startswith("has_"):
+        return "flag"
+    if lower.endswith("_json") or "json" in lower:
+        return "json"
+    if lower.endswith("_id") or lower in {
+        "id",
+        "source",
+        "symbol",
+        "ticker",
+        "cik",
+        "cusip",
+        "figi",
+        "run_id",
+    }:
+        return "identifier"
+    if any(token in lower for token in ("code", "type", "status", "category", "source")) or "VARCHAR" in dtype:
+        return "category"
+    return "dimensionless"
+
+
+def _infer_semantic_sign(name: str, data_type: str, unit: str) -> str:
+    lower = name.lower()
+    dtype = data_type.upper()
+    if (
+        unit in {"date", "timestamp", "flag", "identifier", "category", "json"}
+        or "VARCHAR" in dtype
+        or dtype == "BOOLEAN"
+    ):
+        return "bounded"
+    if "percentile" in lower or lower in {"weight", "confidence", "extraction_confidence"}:
+        return "unit_interval"
+    if any(token in lower for token in ("volume", "share", "quantity", "count", "price", "market_cap", "amount")):
+        return "non_negative"
+    if unit in {"USD", "shares"} and not any(token in lower for token in ("change", "return", "delta", "net")):
+        return "non_negative"
+    if unit == "ratio" and not any(token in lower for token in ("return", "change", "growth", "delta")):
+        return "bounded"
+    return "signed"
+
+
+def _infer_semantic_scale(unit: str, data_type: str) -> str:
+    dtype = data_type.upper()
+    if unit == "date":
+        return "day"
+    if unit == "timestamp":
+        return "second"
+    if unit == "flag":
+        return "boolean"
+    if unit in {"identifier", "category", "json"} or "VARCHAR" in dtype:
+        return "nominal"
+    return "1"
+
+
+def _resolve_semantic_spec(
+    *,
+    table_name: str,
+    spec: ColumnSpec,
+    table_is_fact: bool,
+    field_units: Mapping[tuple[str, str], str],
+) -> ColumnSpec:
+    """Attach deterministic semantic defaults without changing structural fields."""
+    unit = spec.unit or field_units.get((table_name, spec.name))
+    sign = spec.sign
+    scale = spec.scale
+
+    if table_is_fact:
+        unit = unit or _infer_semantic_unit(spec.name, spec.data_type)
+        sign = sign or _infer_semantic_sign(spec.name, spec.data_type, unit)
+        scale = scale or _infer_semantic_scale(unit, spec.data_type)
+
+    if unit == spec.unit and sign == spec.sign and scale == spec.scale and spec.natural_key == spec.is_natural_key:
+        return spec
+    return ColumnSpec(
+        name=spec.name,
+        data_type=spec.data_type,
+        nullable=spec.nullable,
+        is_natural_key=spec.is_natural_key,
+        is_pit_column=spec.is_pit_column,
+        declared_in=spec.declared_in,
+        unit=unit,
+        sign=sign,
+        scale=scale,
+        natural_key=spec.is_natural_key,
+    )
+
+
 def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
     """Reconcile BOTH imperative schema paths into one COMPLETE manifest.
 
@@ -544,6 +762,7 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
     live_tables = _fetch_live_tables(con)
     live_columns = _fetch_live_columns(con, sorted(live_tables))
     natural_keys = _fetch_natural_keys(con)
+    field_units = _fetch_field_catalog_units(con)
     # schema_py_tables is unused now that migration-wins-on-overlap collapses to a single
     # membership test (a non-migration table is schema_py by construction); keep the scan
     # returning it for callers/tests that want the full provenance triple.
@@ -568,14 +787,20 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
         columns: list[ColumnSpec] = []
         for column_name, (data_type, nullable) in sorted(table_columns.items()):
             column_is_migration = table_is_migration or (table_name, column_name) in migration_added_columns
+            spec = ColumnSpec(
+                name=column_name,
+                data_type=data_type,
+                nullable=nullable,
+                is_natural_key=column_name in natural_key_columns,
+                is_pit_column=table_is_fact and column_name in PIT_COLUMN_NAMES,
+                declared_in="migration" if column_is_migration else "schema_py",
+            )
             columns.append(
-                ColumnSpec(
-                    name=column_name,
-                    data_type=data_type,
-                    nullable=nullable,
-                    is_natural_key=column_name in natural_key_columns,
-                    is_pit_column=table_is_fact and column_name in PIT_COLUMN_NAMES,
-                    declared_in="migration" if column_is_migration else "schema_py",
+                _resolve_semantic_spec(
+                    table_name=table_name,
+                    spec=spec,
+                    table_is_fact=table_is_fact,
+                    field_units=field_units,
                 )
             )
         manifest[table_name] = columns
