@@ -11795,72 +11795,160 @@ def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
     ):
         conn.execute(statement)
 
-    _schema_contract_schema_catalog(conn)
-
     conn.execute(
         """
-        INSERT OR REPLACE INTO field_catalog (
-            table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
-        )
-        VALUES
-            ('schema_contract', 'unit', 'category', 'Declared semantic unit for this contract column, resolved from explicit ColumnSpec declarations or field_catalog.unit fallback where present.', true, 'unit', NULL, now()),
-            ('schema_contract', 'sign', 'category', 'Declared sign/domain convention for this contract column: signed, non_negative, non_positive, unit_interval, bounded, or NULL when not applicable.', true, NULL, NULL, now()),
-            ('schema_contract', 'scale', 'category', 'Declared semantic scale for this contract column, such as 1, day, second, boolean, or nominal.', true, NULL, NULL, now()),
-            ('schema_contract', 'natural_key', 'flag', 'Semantic-tier mirror of is_natural_key; true when this column participates in the table natural/business key.', false, NULL, NULL, now())
+        CREATE TEMP TABLE _schema_contract_0136_existing AS
+        SELECT
+            table_name,
+            column_name,
+            data_type,
+            nullable,
+            is_natural_key,
+            is_pit_column,
+            declared_in,
+            manifest_sha256,
+            source_loaded_at,
+            unit,
+            sign,
+            scale,
+            natural_key
+        FROM schema_contract
         """
     )
-
-    from .schema_contract import build_contract_manifest, schema_contract_sha256
-
-    manifest = build_contract_manifest(conn)
-    manifest_sha256 = schema_contract_sha256(manifest)
-    rows = [
-        (
-            table_name,
-            spec.name,
-            spec.unit,
-            spec.sign,
-            spec.scale,
-            bool(spec.natural_key),
-            manifest_sha256,
-        )
-        for table_name, specs in manifest.items()
-        for spec in specs
-    ]
-
-    import pandas as pd
-
-    seed = pd.DataFrame.from_records(
-        rows,
-        columns=[
-            "table_name",
-            "column_name",
-            "unit",
-            "sign",
-            "scale",
-            "natural_key",
-            "manifest_sha256",
-        ],
-    )
-    conn.register("_schema_contract_semantic_seed", seed)
     try:
+        _schema_contract_schema_catalog(conn)
+
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO field_catalog (
+                table_name, field_name, semantic_type, description, nullable, unit, source_field, updated_at
+            )
+            VALUES
+                ('schema_contract', 'unit', 'category', 'Declared semantic unit for this contract column, resolved from explicit ColumnSpec declarations or field_catalog.unit fallback where present.', true, 'unit', NULL, now()),
+                ('schema_contract', 'sign', 'category', 'Declared sign/domain convention for this contract column: signed, non_negative, non_positive, unit_interval, bounded, or NULL when not applicable.', true, NULL, NULL, now()),
+                ('schema_contract', 'scale', 'category', 'Declared semantic scale for this contract column, such as 1, day, second, boolean, or nominal.', true, NULL, NULL, now()),
+                ('schema_contract', 'natural_key', 'flag', 'Semantic-tier mirror of is_natural_key; true when this column participates in the table natural/business key.', false, NULL, NULL, now())
+            """
+        )
+
+        from .schema_contract import build_contract_manifest, schema_contract_sha256
+
+        manifest = build_contract_manifest(conn)
+        manifest_sha256 = schema_contract_sha256(manifest)
+        rows = [
+            (
+                table_name,
+                spec.name,
+                spec.unit,
+                spec.sign,
+                spec.scale,
+                bool(spec.natural_key),
+                manifest_sha256,
+            )
+            for table_name, specs in manifest.items()
+            for spec in specs
+        ]
+
+        import pandas as pd
+
+        seed = pd.DataFrame.from_records(
+            rows,
+            columns=[
+                "table_name",
+                "column_name",
+                "unit",
+                "sign",
+                "scale",
+                "natural_key",
+                "manifest_sha256",
+            ],
+        )
+        conn.register("_schema_contract_semantic_seed", seed)
+        try:
+            conn.execute(
+                """
+                CREATE TEMP TABLE _schema_contract_semantic_changed AS
+                SELECT
+                    seed.table_name,
+                    seed.column_name,
+                    seed.unit,
+                    seed.sign,
+                    seed.scale,
+                    seed.natural_key,
+                    seed.manifest_sha256,
+                    existing.source_loaded_at AS existing_source_loaded_at,
+                    existing.table_name IS NOT NULL
+                        AND sc.data_type IS NOT DISTINCT FROM existing.data_type
+                        AND sc.nullable IS NOT DISTINCT FROM existing.nullable
+                        AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                        AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
+                        AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
+                        AND seed.unit IS NOT DISTINCT FROM existing.unit
+                        AND seed.sign IS NOT DISTINCT FROM existing.sign
+                        AND seed.scale IS NOT DISTINCT FROM existing.scale
+                        AND seed.natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                        AS preserve_source_loaded_at
+                FROM schema_contract AS sc
+                JOIN _schema_contract_semantic_seed AS seed
+                  ON sc.table_name = seed.table_name
+                 AND sc.column_name = seed.column_name
+                LEFT JOIN _schema_contract_0136_existing AS existing
+                  ON sc.table_name = existing.table_name
+                 AND sc.column_name = existing.column_name
+                WHERE sc.table_name = seed.table_name
+                  AND sc.column_name = seed.column_name
+                  AND (
+                      sc.unit IS DISTINCT FROM seed.unit
+                      OR sc.sign IS DISTINCT FROM seed.sign
+                      OR sc.scale IS DISTINCT FROM seed.scale
+                      OR sc.natural_key IS DISTINCT FROM seed.natural_key
+                      OR sc.manifest_sha256 IS DISTINCT FROM seed.manifest_sha256
+                  )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE schema_contract AS sc
+                SET
+                    unit = changed.unit,
+                    sign = changed.sign,
+                    scale = changed.scale,
+                    natural_key = changed.natural_key,
+                    manifest_sha256 = changed.manifest_sha256,
+                    source_loaded_at = CASE
+                        WHEN changed.preserve_source_loaded_at THEN changed.existing_source_loaded_at
+                        ELSE now()
+                    END
+                FROM _schema_contract_semantic_changed AS changed
+                WHERE sc.table_name = changed.table_name
+                  AND sc.column_name = changed.column_name
+                """
+            )
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _schema_contract_semantic_changed")
+            conn.unregister("_schema_contract_semantic_seed")
+
         conn.execute(
             """
             UPDATE schema_contract AS sc
             SET
-                unit = seed.unit,
-                sign = seed.sign,
-                scale = seed.scale,
-                natural_key = seed.natural_key,
-                manifest_sha256 = seed.manifest_sha256,
-                source_loaded_at = now()
-            FROM _schema_contract_semantic_seed AS seed
-            WHERE sc.table_name = seed.table_name
-              AND sc.column_name = seed.column_name
+                source_loaded_at = existing.source_loaded_at
+            FROM _schema_contract_0136_existing AS existing
+            WHERE sc.table_name = existing.table_name
+              AND sc.column_name = existing.column_name
+              AND sc.data_type IS NOT DISTINCT FROM existing.data_type
+              AND sc.nullable IS NOT DISTINCT FROM existing.nullable
+              AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
+              AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
+              AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
+              AND sc.unit IS NOT DISTINCT FROM existing.unit
+              AND sc.sign IS NOT DISTINCT FROM existing.sign
+              AND sc.scale IS NOT DISTINCT FROM existing.scale
+              AND sc.natural_key IS NOT DISTINCT FROM existing.is_natural_key
             """
         )
     finally:
-        conn.unregister("_schema_contract_semantic_seed")
+        conn.execute("DROP TABLE IF EXISTS _schema_contract_0136_existing")
 
     _schema_contract_indexes(conn)
 

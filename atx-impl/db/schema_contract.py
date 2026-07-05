@@ -741,9 +741,9 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
     programmatically rather than hand-maintain a second giant literal).
 
     Wherever CONTRACT (the S1-0 hand-curated 6-table subset) already declares a table,
-    its ColumnSpec list is reused verbatim -- the hand-curated subset and the full
-    manifest must never disagree (see test_schema_contract.py's consistency test). Every
-    other live table is derived fresh:
+    its structural ColumnSpec declarations are preserved, with semantic fields resolved
+    through the same deterministic explicit-declaration / field_catalog / inference path
+    used for derived tables. Every other live table is derived fresh:
       - column shape (data_type, nullable) from duckdb_columns();
       - is_natural_key from table_catalog.natural_key_json (or a PRIMARY KEY fallback);
       - is_pit_column is a canonical PIT name (PIT_COLUMN_NAMES) AND the table carries at
@@ -770,8 +770,19 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
 
     manifest: dict[str, list[ColumnSpec]] = {}
     for table_name in sorted(live_tables):
+        table_columns = live_columns.get(table_name, {})
+        table_is_fact = any(marker in table_columns for marker in _STRONG_TEMPORAL_MARKERS)
+
         if table_name in CONTRACT:
-            manifest[table_name] = list(CONTRACT[table_name])
+            manifest[table_name] = [
+                _resolve_semantic_spec(
+                    table_name=table_name,
+                    spec=spec,
+                    table_is_fact=table_is_fact,
+                    field_units=field_units,
+                )
+                for spec in CONTRACT[table_name]
+            ]
             continue
 
         # migration wins on overlap. A table absent from BOTH scans (e.g. created by some
@@ -781,8 +792,6 @@ def build_contract_manifest(con) -> dict[str, list[ColumnSpec]]:
         # PIT columns only count where the fact/derived-row mandate applies: the table must
         # physically carry a strong bitemporal marker (as_of_date / available_at /
         # is_latest_revision). run_id/source_loaded_at alone do not qualify.
-        table_columns = live_columns.get(table_name, {})
-        table_is_fact = any(marker in table_columns for marker in _STRONG_TEMPORAL_MARKERS)
         natural_key_columns = natural_keys.get(table_name, set())
         columns: list[ColumnSpec] = []
         for column_name, (data_type, nullable) in sorted(table_columns.items()):

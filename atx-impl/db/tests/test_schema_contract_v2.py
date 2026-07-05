@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 import duckdb
 import pytest
@@ -11,7 +12,7 @@ from db.connection import DuckDBStore
 from db.migrations import MIGRATIONS
 from db.quality import pit_column_presence_check
 from db.schema import ensure_quant_schema
-from db.schema_contract import ColumnSpec, build_contract_manifest, schema_contract_sha256
+from db.schema_contract import CONTRACT, ColumnSpec, build_contract_manifest, schema_contract_sha256
 
 
 def _bootstrap_through_migration_0134(store: DuckDBStore) -> None:
@@ -408,13 +409,35 @@ def test_persisted_schema_contract_fact_rows_have_semantics(tmp_store):
     assert missing == []
 
 
+def test_contract_table_column_uses_field_catalog_unit_fallback(tmp_store):
+    manifest = build_contract_manifest(tmp_store.con)
+    contract_applied_at = next(
+        spec for spec in CONTRACT["schema_migrations"] if spec.name == "applied_at"
+    )
+    manifest_applied_at = next(
+        spec for spec in manifest["schema_migrations"] if spec.name == "applied_at"
+    )
+    persisted_unit = tmp_store.con.execute(
+        """
+        SELECT unit
+        FROM schema_contract
+        WHERE table_name = 'schema_migrations'
+          AND column_name = 'applied_at'
+        """
+    ).fetchone()[0]
+
+    assert contract_applied_at.unit is None
+    assert manifest_applied_at.unit == "timestamp"
+    assert persisted_unit == "timestamp"
+
+
 def test_migration_0136_schema_contract_semantic_seed_is_idempotent(tmp_store):
     def stable_rows():
         return tmp_store.con.execute(
             """
             SELECT
                 table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
-                declared_in, manifest_sha256, unit, sign, scale, natural_key
+                declared_in, manifest_sha256, unit, sign, scale, natural_key, source_loaded_at
             FROM schema_contract
             ORDER BY table_name, column_name
             """
@@ -424,6 +447,7 @@ def test_migration_0136_schema_contract_semantic_seed_is_idempotent(tmp_store):
     before_rows = stable_rows()
     before_sha = tmp_store.con.execute("SELECT DISTINCT manifest_sha256 FROM schema_contract").fetchall()
 
+    time.sleep(0.05)
     _migration_0136().up(tmp_store.con)
     _migration_0136().up(tmp_store.con)
 
