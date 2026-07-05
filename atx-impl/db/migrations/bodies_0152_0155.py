@@ -336,6 +336,124 @@ def _pf3_s7_factor_dependency_engine_tables(conn: duckdb.DuckDBPyConnection) -> 
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s7_cross_section_operator_metadata(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S7 S7-2: governed cross-sectional operator metadata."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_operator (
+            operator_id VARCHAR PRIMARY KEY,
+            kind VARCHAR NOT NULL,
+            params_json VARCHAR NOT NULL,
+            partition_keys_json VARCHAR NOT NULL,
+            description VARCHAR NOT NULL,
+            is_point_in_time_safe BOOLEAN NOT NULL DEFAULT true,
+            source VARCHAR NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO factor_operator (
+            operator_id,
+            kind,
+            params_json,
+            partition_keys_json,
+            description,
+            is_point_in_time_safe,
+            source
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "rank",
+                "cross_section_rank",
+                '{"ascending":true,"method":"min"}',
+                '["factor_id","as_of_date"]',
+                "Cross-sectional percent rank computed independently within each factor_id/as_of_date partition.",
+                True,
+                "atx-impl factor engine",
+            ),
+            (
+                "zscore",
+                "cross_section_zscore",
+                '{}',
+                '["factor_id","as_of_date"]',
+                "Sample z-score computed independently within each factor_id/as_of_date partition.",
+                True,
+                "atx-impl factor engine",
+            ),
+            (
+                "winsorize",
+                "cross_section_winsorize",
+                '{"limits":0.01}',
+                '["factor_id","as_of_date"]',
+                "Symmetric quantile capping computed independently within each factor_id/as_of_date partition.",
+                True,
+                "atx-impl factor engine",
+            ),
+        ],
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'factor_operator',
+            'atx_warehouse',
+            'Factor cross-sectional operator metadata',
+            'Governed metadata for reusable PIT-safe cross-sectional factor operators.',
+            'operator_id',
+            'factor_operator',
+            'updated_at',
+            'updated_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'factor_operator',
+            'gold',
+            'factor_operator',
+            'operator_id',
+            'Governed cross-sectional operator catalog for rank, zscore, and winsorize. Operators partition by factor_id/as_of_date and never pool future cross-sections.',
+            '["operator_id"]',
+            'Operator metadata is knowledge-time data. Operator execution must filter input values to available_at <= as-of before applying these cross-sectional transforms.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("factor_operator",))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('factor_operator', 'operator_id', 'identifier', 'Stable operator id used by factor definitions and engine plans.', false, NULL, NULL, now()),
+            ('factor_operator', 'kind', 'category', 'Operator kind: cross_section_rank, cross_section_zscore, or cross_section_winsorize.', false, NULL, NULL, now()),
+            ('factor_operator', 'params_json', 'json', 'Default operator parameter payload.', false, NULL, NULL, now()),
+            ('factor_operator', 'partition_keys_json', 'json', 'JSON list of keys used to isolate cross-sections.', false, NULL, NULL, now()),
+            ('factor_operator', 'description', 'text', 'Human-readable operator description and PIT-safety policy.', false, NULL, NULL, now()),
+            ('factor_operator', 'is_point_in_time_safe', 'flag', 'True when the operator is declared safe under clause I partitioning rules.', false, 'boolean', NULL, now()),
+            ('factor_operator', 'source', 'identifier', 'Source module that produced the metadata row.', false, NULL, NULL, now()),
+            ('factor_operator', 'updated_at', 'timestamp', 'Knowledge-time timestamp when the operator metadata was loaded.', false, 'timestamp', NULL, now())
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=152,
@@ -346,5 +464,10 @@ MIGRATIONS: list[Migration] = [
         version=153,
         name="pf3_s7_factor_dependency_engine_tables",
         up=_pf3_s7_factor_dependency_engine_tables,
+    ),
+    Migration(
+        version=154,
+        name="pf3_s7_cross_section_operator_metadata",
+        up=_pf3_s7_cross_section_operator_metadata,
     ),
 ]

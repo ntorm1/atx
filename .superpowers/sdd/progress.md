@@ -25,7 +25,7 @@ Updated: 2026-07-05 America/New_York
 
 - S7-0 - Factor catalog: done. Controller added the `db.factors` package with a pure legacy-catalog reconciler, migration 0152 with `factor_definition`, and focused tests for legacy feature/alpha attribution plus undeclared-input validation.
 - S7-1 - Factor dependency DAG + PIT compute engine: done. Controller added `db.factors.engine` with typed dependency-edge generation, topological ordering/cycle rejection, a minimal PIT-safe expression materializer with `available_at = max(inputs)`, migration 0153 for `factor_dependency_edges`/`factor_build_manifests`, and tests covering seeded legacy edges plus fixture compute.
-- S7-2 - Cross-sectional operators: not started.
+- S7-2 - Cross-sectional operators: done. Controller added pure `rank`, `zscore`, and `winsorize` operators in `db.factors.cross_section`, migration 0154 with `factor_operator` metadata, and tests proving full-frame output matches per-date isolated computation.
 - S7-3 - Neutralization + leakage/lookahead gate: not started.
 
 ## Verification
@@ -69,6 +69,13 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S7-1.
 - `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S7-1.
 - `git diff --check` passed after S7-1 with Git LF/CRLF normalization warnings only.
+- `python -m py_compile db\factors\cross_section.py db\migrations\bodies_0152_0155.py db\tests\test_factor_engine.py` passed after S7-2.
+- `python -m pytest db\tests\test_factor_engine.py -q -n0` passed after S7-2.
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S7-2.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S7-2.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S7-2.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S7-2.
+- `git diff --check` passed after S7-2 with Git LF/CRLF normalization warnings only.
 
 ## Live Smoke
 

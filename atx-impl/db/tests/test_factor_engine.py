@@ -21,6 +21,8 @@ from db.factors.engine import (
     factor_dependency_edges_frame,
     topological_factor_order,
 )
+from db.factors.cross_section import rank as cs_rank
+from db.factors.cross_section import winsorize, zscore
 
 
 def _row(frame, factor_id: str):
@@ -220,3 +222,68 @@ def test_factor_dependency_migration_seeds_legacy_edges(tmp_store) -> None:
     assert vol_edge == ("factor", "ret_1d")
     assert alpha_edges == {"mom_21d", "adv_21d"}
     assert manifest_catalog == 2
+
+
+def _cross_section_fixture() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"factor_id": "value", "security_id": "A", "as_of_date": dt.date(2023, 1, 3), "value": 1.0},
+            {"factor_id": "value", "security_id": "B", "as_of_date": dt.date(2023, 1, 3), "value": 2.0},
+            {"factor_id": "value", "security_id": "C", "as_of_date": dt.date(2023, 1, 3), "value": 3.0},
+            {"factor_id": "value", "security_id": "A", "as_of_date": dt.date(2023, 1, 4), "value": 10.0},
+            {"factor_id": "value", "security_id": "B", "as_of_date": dt.date(2023, 1, 4), "value": 20.0},
+            {"factor_id": "value", "security_id": "C", "as_of_date": dt.date(2023, 1, 4), "value": 30.0},
+        ]
+    )
+
+
+def _ordered_values(frame: pd.DataFrame) -> pd.Series:
+    return frame.sort_values(["as_of_date", "security_id"])["value"].reset_index(drop=True)
+
+
+def test_cross_section_operators_match_per_date_isolated_results() -> None:
+    frame = _cross_section_fixture()
+    operators = (cs_rank, zscore, winsorize)
+
+    for operator in operators:
+        full = operator(frame)
+        isolated = pd.concat([operator(group) for _, group in frame.groupby("as_of_date")], ignore_index=True)
+
+        pd.testing.assert_series_equal(_ordered_values(full), _ordered_values(isolated), check_names=False)
+
+
+def test_winsorize_caps_declared_cross_section_percentiles() -> None:
+    frame = pd.DataFrame(
+        [
+            {"factor_id": "value", "security_id": "A", "as_of_date": dt.date(2023, 1, 3), "value": 1.0},
+            {"factor_id": "value", "security_id": "B", "as_of_date": dt.date(2023, 1, 3), "value": 2.0},
+            {"factor_id": "value", "security_id": "C", "as_of_date": dt.date(2023, 1, 3), "value": 3.0},
+            {"factor_id": "value", "security_id": "D", "as_of_date": dt.date(2023, 1, 3), "value": 100.0},
+        ]
+    )
+
+    capped = winsorize(frame, limits=0.25).sort_values("security_id")
+
+    assert capped.iloc[0]["value"] == pytest.approx(1.75)
+    assert capped.iloc[-1]["value"] == pytest.approx(27.25)
+
+
+def test_factor_operator_metadata_migration_seeds_pit_safe_operators(tmp_store) -> None:
+    rows = {
+        row[0]: (row[1], json.loads(row[2]), bool(row[3]))
+        for row in tmp_store.con.execute(
+            """
+            SELECT operator_id, kind, partition_keys_json, is_point_in_time_safe
+            FROM factor_operator
+            ORDER BY operator_id
+            """
+        ).fetchall()
+    }
+    table_catalog_count = tmp_store.con.execute(
+        "SELECT count(*) FROM table_catalog WHERE table_name = 'factor_operator'"
+    ).fetchone()[0]
+
+    assert rows["rank"] == ("cross_section_rank", ["factor_id", "as_of_date"], True)
+    assert rows["zscore"] == ("cross_section_zscore", ["factor_id", "as_of_date"], True)
+    assert rows["winsorize"] == ("cross_section_winsorize", ["factor_id", "as_of_date"], True)
+    assert table_catalog_count == 1
