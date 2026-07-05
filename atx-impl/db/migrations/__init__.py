@@ -57,23 +57,28 @@ textwrap = _runner.textwrap
 uuid = _runner.uuid
 Callable = _runner.Callable
 
+__migration_runner = _runner
+__migration_bodies = _bodies_0001_0137
+
 
 class _MigrationsModule(_types.ModuleType):
     def __setattr__(self, name: str, value: object) -> None:
         super().__setattr__(name, value)
+        runner = globals()["__migration_runner"]
+        bodies = globals()["__migration_bodies"]
         if name == "MIGRATIONS":
-            _runner.MIGRATIONS = value
-        if hasattr(_runner, name):
-            setattr(_runner, name, value)
-        if hasattr(_bodies_0001_0137, name):
-            setattr(_bodies_0001_0137, name, value)
+            runner.MIGRATIONS = value
+        if hasattr(runner, name):
+            setattr(runner, name, value)
+        if hasattr(bodies, name):
+            setattr(bodies, name, value)
 
 
 _sys.modules[__name__].__class__ = _MigrationsModule
 
 globals().pop("bodies_0001_0137", None)
 globals().pop("registry", None)
-del _importlib, _module_name, _MigrationsModule, _name, _sys, _types, _value
+del _bodies_0001_0137, _importlib, _module_name, _MigrationsModule, _name, _runner, _sys, _types, _value
 
 __all__ = [
     "MIGRATIONS",
