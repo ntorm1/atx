@@ -93,10 +93,137 @@ def _pf3_s5_share_count_extensions(conn: duckdb.DuckDBPyConnection) -> None:
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s5_enterprise_value_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S5 S5-1: component-lineaged enterprise value surface."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS enterprise_value (
+            enterprise_value_id VARCHAR PRIMARY KEY,
+            source VARCHAR NOT NULL,
+            market_cap_source VARCHAR NOT NULL,
+            market_cap_id VARCHAR,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            trade_date DATE NOT NULL,
+            period_start DATE,
+            period_end DATE NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_period VARCHAR,
+            price DOUBLE,
+            share_count DOUBLE,
+            share_count_type_used VARCHAR,
+            market_cap DOUBLE NOT NULL,
+            total_debt DOUBLE NOT NULL,
+            preferred_equity DOUBLE NOT NULL,
+            minority_interest DOUBLE NOT NULL,
+            cash_and_equivalents DOUBLE NOT NULL,
+            enterprise_value DOUBLE NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            as_of_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            market_cap_available_at TIMESTAMP NOT NULL,
+            price_available_at TIMESTAMP,
+            share_available_at TIMESTAMP,
+            total_debt_available_at TIMESTAMP NOT NULL,
+            preferred_equity_available_at TIMESTAMP NOT NULL,
+            minority_interest_available_at TIMESTAMP NOT NULL,
+            cash_and_equivalents_available_at TIMESTAMP NOT NULL,
+            input_codes_json VARCHAR NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            formula_version VARCHAR NOT NULL,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_enterprise_value_latest AS
+        SELECT *
+        FROM enterprise_value
+        WHERE is_latest_revision
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'enterprise_value',
+            'atx_warehouse',
+            'Derived enterprise value',
+            'Daily PIT enterprise value rows with explicit market cap, total debt, preferred equity, minority interest, cash, and full component lineage.',
+            'source,market_cap_source,security_id,trade_date',
+            'enterprise_value',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'enterprise_value',
+                'gold',
+                'valuation',
+                'source,market_cap_source,security_id,trade_date',
+                'Component-lineaged enterprise value: market_cap + total_debt + preferred_equity + minority_interest - cash_and_equivalents.',
+                '["source","market_cap_source","security_id","trade_date"]',
+                'Rows are visible when every component input is visible. available_at is max(market_cap_available_at, total_debt_available_at, preferred_equity_available_at, minority_interest_available_at, cash_and_equivalents_available_at).',
+                now()
+            ),
+            (
+                'v_enterprise_value_latest',
+                'view',
+                'valuation',
+                'source,market_cap_source,security_id,trade_date',
+                'Latest-revision view over enterprise_value.',
+                '["source","market_cap_source","security_id","trade_date"]',
+                'Convenience latest-revision view; use enterprise_value_asof for timestamp-gated reads.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("enterprise_value", "v_enterprise_value_latest"))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('enterprise_value', 'market_cap', 'currency', 'Market capitalization component; added in EV.', false, 'USD', 'market_cap.market_cap', now()),
+            ('enterprise_value', 'total_debt', 'currency', 'Total debt component; added in EV.', false, 'USD', 'fundamental_statement_points.total_debt', now()),
+            ('enterprise_value', 'preferred_equity', 'currency', 'Preferred equity component; added in EV.', false, 'USD', 'fundamental_statement_points.pref_stock', now()),
+            ('enterprise_value', 'minority_interest', 'currency', 'Minority interest component; added in EV.', false, 'USD', 'fundamental_statement_points.minority_int_bs', now()),
+            ('enterprise_value', 'cash_and_equivalents', 'currency', 'Cash and equivalents component; subtracted in EV.', false, 'USD', 'fundamental_statement_points.cash_st_inv', now()),
+            ('enterprise_value', 'enterprise_value', 'currency', 'Enterprise value = market_cap + total_debt + preferred_equity + minority_interest - cash_and_equivalents.', false, 'USD', NULL, now()),
+            ('enterprise_value', 'available_at', 'timestamp', 'Maximum visible-at timestamp across all EV inputs.', false, 'timestamp', NULL, now()),
+            ('enterprise_value', 'input_lineage_json', 'json', 'Component-level lineage including source ids, availability timestamps, values, and add/subtract signs.', false, 'json', NULL, now())
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=144,
         name="pf3_s5_share_count_extensions",
         up=_pf3_s5_share_count_extensions,
+    ),
+    Migration(
+        version=145,
+        name="pf3_s5_enterprise_value_schema_catalog",
+        up=_pf3_s5_enterprise_value_schema_catalog,
     ),
 ]

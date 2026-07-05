@@ -93,6 +93,21 @@ def test_default_jobs_include_valuation_multiples_after_inputs(tmp_store):
     assert order.index("sec_company_facts") < order.index("valuation_multiples")
 
 
+def test_default_jobs_include_enterprise_value_after_inputs(tmp_store):
+    """Enterprise value waits for market cap and statement components."""
+    from db.jobs import JobManager
+
+    mgr = JobManager(tmp_store)
+    mgr.seed_default_jobs()
+
+    order = mgr.enabled_job_order()
+    assert "market_cap" in order
+    assert "sec_company_facts" in order
+    assert "enterprise_value" in order
+    assert order.index("market_cap") < order.index("enterprise_value")
+    assert order.index("sec_company_facts") < order.index("enterprise_value")
+
+
 def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_store):
     """Adjustment factors are derived from normalized corporate-action events."""
     from db.jobs import JobManager
@@ -287,6 +302,10 @@ def test_dataset_registry_dag_has_expected_foundation_edges():
     assert dag.dependencies_of("market_cap") == (
         "shares_outstanding_history",
         "tbltickerhistory_daily",
+    )
+    assert dag.dependencies_of("enterprise_value") == (
+        "market_cap",
+        "sec_company_facts",
     )
     assert dag.dependencies_of("valuation_multiples") == (
         "fundamental_xbrl_metric",
