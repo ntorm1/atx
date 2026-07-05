@@ -1464,3 +1464,100 @@ def test_migration_0132_0133_0134_backfill_catalog_indexes_and_status_view(tmp_s
     assert "CREATE TABLE" not in index_src
     assert "CREATE TABLE" not in view_src
     assert "CREATE INDEX" not in view_src
+
+
+def test_backfill_status_view_migration_handles_missing_manifest_tables(tmp_store):
+    from db import migrations
+
+    con = tmp_store.con
+    con.execute("DROP VIEW IF EXISTS v_backfill_status")
+    con.execute("DROP TABLE IF EXISTS etl_job_audit")
+    con.execute("DROP TABLE IF EXISTS etl_job_steps")
+    con.execute("DROP TABLE IF EXISTS etl_job_runs")
+    con.execute("DELETE FROM backfill_watermark WHERE dataset_id = 'legacy_fixture'")
+    con.execute("DELETE FROM backfill_run WHERE backfill_run_id = 'legacy-run'")
+    con.execute(
+        """
+        INSERT INTO backfill_run (
+            backfill_run_id, dataset_id, start_date, end_date, chunk, status, started_at
+        )
+        VALUES (
+            'legacy-run',
+            'legacy_fixture',
+            DATE '2020-01-01',
+            DATE '2020-02-01',
+            '1mo',
+            'succeeded',
+            TIMESTAMP '2026-07-04 09:30:00'
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO backfill_watermark (
+            dataset_id,
+            partition_key,
+            window_lo,
+            window_hi,
+            status,
+            rows_written,
+            watermark_after,
+            run_id,
+            updated_at
+        )
+        VALUES (
+            'legacy_fixture',
+            'legacy_fixture:2020-01-01:2020-02-01',
+            DATE '2020-01-01',
+            DATE '2020-02-01',
+            'succeeded',
+            31,
+            '2020-02-01',
+            'legacy-run',
+            TIMESTAMP '2026-07-04 09:31:00'
+        )
+        """
+    )
+
+    migrations._pf3_s1_backfill_status_view(con)
+
+    manifest_tables = {
+        row[0]
+        for row in con.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE table_name IN ('etl_job_runs', 'etl_job_steps', 'etl_job_audit')
+            """
+        ).fetchall()
+    }
+    assert manifest_tables == {"etl_job_runs", "etl_job_steps", "etl_job_audit"}
+
+    rows = con.execute(
+        """
+        SELECT
+            backfill_run_id,
+            run_id,
+            root_dataset_id,
+            partition_dataset_id,
+            partition_key,
+            status,
+            rows_written,
+            run_status
+        FROM v_backfill_status
+        WHERE backfill_run_id = 'legacy-run'
+        ORDER BY partition_key
+        """
+    ).fetchall()
+    assert rows == [
+        (
+            "legacy-run",
+            "legacy-run",
+            "legacy_fixture",
+            "legacy_fixture",
+            "legacy_fixture:2020-01-01:2020-02-01",
+            "succeeded",
+            31,
+            "succeeded",
+        )
+    ]

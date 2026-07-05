@@ -10700,8 +10700,225 @@ def _pf3_s1_backfill_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(statement)
 
 
+def _pf3_s1_backfill_status_manifest_compat(conn: duckdb.DuckDBPyConnection) -> None:
+    """Ensure PF-S2 manifest tables referenced by v_backfill_status exist on legacy-forward DBs."""
+
+    def add_missing_columns(table_name: str, columns: tuple[tuple[str, str], ...]) -> None:
+        existing = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM duckdb_columns()
+                WHERE schema_name = 'main'
+                  AND table_name = ?
+                """,
+                [table_name],
+            ).fetchall()
+        }
+        for column_name, column_ddl in columns:
+            if column_name not in existing:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_ddl}")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_runs (
+            job_run_id VARCHAR PRIMARY KEY,
+            job_name VARCHAR NOT NULL,
+            dataset_id VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            started_at TIMESTAMP NOT NULL,
+            finished_at TIMESTAMP,
+            dataset_run_id VARCHAR,
+            rows_loaded BIGINT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 0,
+            retry_delay_seconds DOUBLE NOT NULL DEFAULT 0,
+            params_json VARCHAR,
+            error_message VARCHAR,
+            run_id VARCHAR,
+            run_kind VARCHAR DEFAULT 'dataset',
+            parent_run_id VARCHAR,
+            git_sha VARCHAR
+        )
+        """
+    )
+    add_missing_columns(
+        "etl_job_runs",
+        (
+            ("run_id", "run_id VARCHAR"),
+            ("run_kind", "run_kind VARCHAR DEFAULT 'dataset'"),
+            ("parent_run_id", "parent_run_id VARCHAR"),
+            ("git_sha", "git_sha VARCHAR"),
+        ),
+    )
+
+    has_job_run_id = bool(
+        conn.execute(
+            """
+            SELECT count(*)
+            FROM duckdb_columns()
+            WHERE schema_name = 'main'
+              AND table_name = 'etl_job_runs'
+              AND column_name = 'job_run_id'
+            """
+        ).fetchone()[0]
+    )
+    if has_job_run_id:
+        conn.execute("UPDATE etl_job_runs SET run_id = job_run_id WHERE run_id IS NULL")
+    conn.execute("UPDATE etl_job_runs SET run_kind = 'dataset' WHERE run_kind IS NULL")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_steps (
+            run_id VARCHAR NOT NULL,
+            dataset_id VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            rows BIGINT,
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            watermark_before VARCHAR,
+            watermark_after VARCHAR,
+            error VARCHAR,
+            PRIMARY KEY (run_id, dataset_id)
+        )
+        """
+    )
+    add_missing_columns(
+        "etl_job_steps",
+        (
+            ("run_id", "run_id VARCHAR"),
+            ("dataset_id", "dataset_id VARCHAR"),
+            ("status", "status VARCHAR"),
+            ("rows", "rows BIGINT"),
+            ("started_at", "started_at TIMESTAMP"),
+            ("finished_at", "finished_at TIMESTAMP"),
+            ("watermark_before", "watermark_before VARCHAR"),
+            ("watermark_after", "watermark_after VARCHAR"),
+            ("error", "error VARCHAR"),
+        ),
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_audit (
+            audit_id VARCHAR PRIMARY KEY,
+            run_id VARCHAR NOT NULL,
+            dataset_id VARCHAR,
+            actor VARCHAR NOT NULL,
+            ts TIMESTAMP NOT NULL DEFAULT now(),
+            action VARCHAR NOT NULL,
+            details_json VARCHAR
+        )
+        """
+    )
+    add_missing_columns(
+        "etl_job_audit",
+        (
+            ("audit_id", "audit_id VARCHAR"),
+            ("run_id", "run_id VARCHAR"),
+            ("dataset_id", "dataset_id VARCHAR"),
+            ("actor", "actor VARCHAR"),
+            ("ts", "ts TIMESTAMP DEFAULT now()"),
+            ("action", "action VARCHAR"),
+            ("details_json", "details_json VARCHAR"),
+        ),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        SELECT *
+        FROM (
+            VALUES
+                (
+                    'etl_job_runs',
+                    'control',
+                    'etl_job_run',
+                    'job_run_id/run_id',
+                    'ETL run table reconciled for legacy single-dataset job rows and parent orchestrator manifests.',
+                    '["job_run_id"]',
+                    'Compatibility manifest table required by the backfill status view on legacy-forward warehouses.',
+                    now()
+                ),
+                (
+                    'etl_job_steps',
+                    'control',
+                    'etl_job_step',
+                    'run_id,dataset_id',
+                    'One row per orchestrator DAG node per parent run, holding status, row count, watermarks, and terminal error text.',
+                    '["run_id", "dataset_id"]',
+                    'Compatibility manifest table required by the backfill status view on legacy-forward warehouses.',
+                    now()
+                ),
+                (
+                    'etl_job_audit',
+                    'audit',
+                    'etl_job_audit',
+                    'audit_id',
+                    'Append-only orchestrator audit trail for run and step actions.',
+                    '["audit_id"]',
+                    'Compatibility audit table paired with the PF-S2 manifest substrate on legacy-forward warehouses.',
+                    now()
+                )
+        ) AS v(
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM table_catalog c
+            WHERE c.table_name = v.table_name
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%_json' THEN 'json'
+                WHEN lower(c.column_name) LIKE '%_id' OR lower(c.column_name) = 'source' THEN 'identifier'
+                WHEN lower(c.column_name) IN ('status', 'run_kind', 'actor', 'action') THEN 'category'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'FLOAT', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.',
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN upper(c.data_type) IN ('INTEGER', 'BIGINT') AND lower(c.column_name) LIKE '%rows%' THEN 'rows'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name IN ('etl_job_runs', 'etl_job_steps', 'etl_job_audit')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM field_catalog f
+              WHERE f.table_name = c.table_name
+                AND f.field_name = c.column_name
+          )
+        """
+    )
+
+
 def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
     """PF3-S1 S1-3: catalogued backfill run/partition observability view."""
+
+    _pf3_s1_backfill_status_manifest_compat(conn)
 
     conn.execute(
         """
