@@ -11599,11 +11599,18 @@ def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
     ):
         conn.execute(statement)
 
-    for statement in (
-        "ALTER TABLE alpha_signal_values ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP DEFAULT now()",
-        "ALTER TABLE feature_values ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP DEFAULT now()",
-    ):
-        conn.execute(statement)
+    for table_name in ("alpha_signal_values", "feature_values"):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP")
+        conn.execute(
+            f"""
+            UPDATE {table_name}
+            SET source_loaded_at = computed_at
+            WHERE source_loaded_at IS NULL
+            """
+        )
+        conn.execute(
+            f"ALTER TABLE {table_name} ALTER COLUMN source_loaded_at SET DEFAULT now()"
+        )
 
     for statement in (
         "ALTER TABLE fundamental_periods ADD COLUMN IF NOT EXISTS run_id VARCHAR",
