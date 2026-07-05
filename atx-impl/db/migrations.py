@@ -11766,6 +11766,15 @@ def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
         "universe_memberships",
     )
     _catalog_fields_for_tables(conn, touched_tables)
+    _catalog_fields_for_tables(
+        conn,
+        (
+            "v_fundamental_points_latest",
+            "v_fundamental_ttm_latest",
+            "v_fundamental_periods_latest",
+            "v_macro_latest",
+        ),
+    )
     _schema_contract_schema_catalog(conn)
 
 

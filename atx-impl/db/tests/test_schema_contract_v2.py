@@ -159,6 +159,50 @@ def test_bootstrapped_warehouse_has_zero_pit_column_presence_after_s2_0(tmp_stor
     assert result.details["invalid_pit_exemptions"] == []
 
 
+def test_migration_0135_catalogs_recreated_latest_view_pit_columns(tmp_store):
+    expected_fields = {
+        "v_fundamental_points_latest": {"is_latest_revision"},
+        "v_fundamental_ttm_latest": {"run_id"},
+        "v_fundamental_periods_latest": {"run_id"},
+        "v_macro_latest": {"is_latest_revision", "run_id"},
+    }
+
+    missing_live_columns = {}
+    missing_catalog_rows = {}
+    for table_name, field_names in expected_fields.items():
+        live_columns = {
+            row[0]
+            for row in tmp_store.con.execute(
+                """
+                SELECT column_name
+                FROM duckdb_columns()
+                WHERE schema_name = 'main'
+                  AND table_name = ?
+                """,
+                [table_name],
+            ).fetchall()
+        }
+        catalog_rows = {
+            row[0]
+            for row in tmp_store.con.execute(
+                """
+                SELECT field_name
+                FROM field_catalog
+                WHERE table_name = ?
+                """,
+                [table_name],
+            ).fetchall()
+        }
+
+        if missing := sorted(field_names - live_columns):
+            missing_live_columns[table_name] = missing
+        if missing := sorted(field_names - catalog_rows):
+            missing_catalog_rows[table_name] = missing
+
+    assert missing_live_columns == {}
+    assert missing_catalog_rows == {}
+
+
 def test_migration_0135_recovers_source_loaded_at_from_computed_at(tmp_path):
     db_path = tmp_path / "pre_0135.duckdb"
     store = DuckDBStore(db_path)
