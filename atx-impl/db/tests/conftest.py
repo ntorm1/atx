@@ -48,7 +48,6 @@ _SCHEMA_FINGERPRINT_FILES = (
     _ATXIMPL / "db" / "connection.py",
     _ATXIMPL / "db" / "schema.py",
     _ATXIMPL / "db" / "schema_contract.py",
-    _ATXIMPL / "db" / "migrations.py",
     _ATXIMPL / "db" / "fundamental_statements.py",
     _ATXIMPL / "db" / "parity.py",
 )
@@ -83,7 +82,11 @@ def _schema_fingerprint() -> str:
     h.update(f"python={sys.implementation.cache_tag}\n".encode())
     h.update(f"duckdb={duckdb.__version__}\n".encode())
     paths = sorted(
-        (*_SCHEMA_FINGERPRINT_FILES, *(_ATXIMPL / "db" / "seeds").glob("*.csv")),
+        (
+            *_SCHEMA_FINGERPRINT_FILES,
+            *(_ATXIMPL / "db" / "migrations").glob("*.py"),
+            *(_ATXIMPL / "db" / "seeds").glob("*.csv"),
+        ),
         key=lambda p: p.relative_to(_ATXIMPL).as_posix(),
     )
     for path in paths:
