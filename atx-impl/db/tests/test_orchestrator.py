@@ -576,6 +576,256 @@ def test_orchestrator_retries_with_exponential_backoff_and_audit(tmp_store):
     assert [details["delay_seconds"] for details in retry_details] == [0.5, 1.0]
 
 
+def test_orchestrator_backfill_entrypoint_records_manifest_steps_and_audit(tmp_store):
+    from db.orchestrator import DatasetOrchestrator
+
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+
+    result = orchestrator.run_backfill(
+        "a",
+        dt.date(2014, 1, 1),
+        dt.date(2014, 3, 1),
+        "1mo",
+        run_id="orchestrated-backfill-1",
+        max_parallel=2,
+    )
+
+    assert result.run_id == "orchestrated-backfill-1"
+    assert result.status == "succeeded"
+    assert result.partitions_planned == 2
+    assert result.rows_written == 20
+    assert result.requested_max_parallel == 2
+    assert result.effective_max_parallel == 1
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == ["a", "a"]
+    assert all(
+        options["backfill_run_id"] == "orchestrated-backfill-1"
+        for _dataset_id, options in RecordingDataset.calls
+    )
+
+    parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, job_name, dataset_id, status, params_json
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert parent[:4] == (
+        "backfill",
+        "warehouse_backfill",
+        "__orchestrator__",
+        "succeeded",
+    )
+    params = json.loads(parent[4])
+    assert params["mode"] == "backfill"
+    assert params["requested_max_parallel"] == 2
+    assert params["effective_max_parallel"] == 1
+    assert params["max_parallel"] == 1
+
+    step = tmp_store.con.execute(
+        """
+        SELECT status, rows, watermark_after, error
+        FROM etl_job_steps
+        WHERE run_id = ? AND dataset_id = 'a'
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert step[0:2] == ("succeeded", 20)
+    assert step[3] is None
+    summary = json.loads(step[2])["partition_summary"]
+    assert summary["partitions"] == 2
+    assert summary["succeeded"] == 2
+    assert summary["rows_written"] == 20
+
+    backfill_header = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert backfill_header == ("a", "succeeded")
+
+    audit_actions = [
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT action
+            FROM etl_job_audit
+            WHERE run_id = ?
+            ORDER BY ts, action
+            """,
+            [result.run_id],
+        ).fetchall()
+    ]
+    assert "run_start" in audit_actions
+    assert "backfill_step_start" in audit_actions
+    assert "backfill_step_succeeded" in audit_actions
+    assert "backfill_run_succeed" in audit_actions
+    backfill_done_details = json.loads(
+        tmp_store.con.execute(
+            """
+            SELECT details_json
+            FROM etl_job_audit
+            WHERE run_id = ? AND action = 'backfill_run_succeed'
+            """,
+            [result.run_id],
+        ).fetchone()[0]
+    )
+    assert backfill_done_details["requested_max_parallel"] == 2
+    assert backfill_done_details["effective_max_parallel"] == 1
+    assert backfill_done_details["max_parallel"] == 1
+
+
+def test_orchestrator_maintenance_entrypoint_records_manifest_steps_and_audit(tmp_store):
+    from db.orchestrator import DatasetOrchestrator
+
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA, ExecB),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+
+    result = orchestrator.run_maintenance(
+        "b",
+        dt.date(2014, 1, 1),
+        dt.date(2014, 3, 1),
+        "1mo",
+        run_id="orchestrated-maintenance-1",
+    )
+
+    assert result.status == "succeeded"
+    assert result.dataset_order == ("b",)
+    assert result.partitions_planned == 2
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == ["b", "b"]
+
+    parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, job_name, status
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert parent == ("maintenance", "warehouse_maintenance", "succeeded")
+
+    steps = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [result.run_id],
+    ).fetchall()
+    assert steps == [("b", "succeeded", 20)]
+
+    audit_actions = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT action
+            FROM etl_job_audit
+            WHERE run_id = ?
+            """,
+            [result.run_id],
+        ).fetchall()
+    }
+    assert {"run_start", "maintenance_step_start", "maintenance_run_succeed"}.issubset(
+        audit_actions
+    )
+
+
+def test_orchestrator_resume_rejects_backfill_run_id_without_mutating_status(tmp_store):
+    from db.orchestrator import DatasetOrchestrator
+
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+    result = orchestrator.run_backfill(
+        "a",
+        dt.date(2014, 1, 1),
+        dt.date(2014, 3, 1),
+        "1mo",
+        run_id="resume-rejects-backfill-run",
+    )
+    before_parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, status, finished_at
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    before_backfill = tmp_store.con.execute(
+        """
+        SELECT status, finished_at
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    before_steps = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows, finished_at
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [result.run_id],
+    ).fetchall()
+
+    with pytest.raises(ValueError, match="run_kind.*backfill"):
+        orchestrator.resume(result.run_id)
+
+    assert tmp_store.con.execute(
+        """
+        SELECT run_kind, status, finished_at
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone() == before_parent
+    assert tmp_store.con.execute(
+        """
+        SELECT status, finished_at
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone() == before_backfill
+    assert tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows, finished_at
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [result.run_id],
+    ).fetchall() == before_steps
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM etl_job_audit
+        WHERE run_id = ? AND action = 'run_resume'
+        """,
+        [result.run_id],
+    ).fetchone()[0] == 0
+
+
 def test_orchestrator_resume_reruns_only_failed_and_pending_steps(tmp_store):
     from db.orchestrator import DatasetOrchestrator, OrchestratorRunError
 

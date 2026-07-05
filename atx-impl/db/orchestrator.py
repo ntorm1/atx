@@ -39,6 +39,20 @@ INCREMENTAL_WINDOW_PARAM_KEYS = frozenset(
     ("incremental_since", "since", "as_of_ts", "start_date")
 )
 DATASET_PARAMS_KEY = "__dataset_params__"
+PARTITION_DRIVER_MANIFEST_KEYS = frozenset(
+    {
+        "mode",
+        "dataset_id",
+        "start",
+        "end",
+        "chunk",
+        "include_dependencies",
+        "max_parallel",
+        "requested_max_parallel",
+        "effective_max_parallel",
+        "dead_letter",
+    }
+)
 
 
 class CycleError(ValueError):
@@ -100,6 +114,21 @@ class OrchestratorResult:
     run_id: str
     status: str
     dataset_order: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OrchestratorBackfillResult:
+    run_id: str
+    status: str
+    dataset_order: tuple[str, ...]
+    backfill_run_id: str
+    partitions_planned: int
+    partitions_succeeded: int
+    partitions_skipped: int
+    partitions_failed: int
+    rows_written: int
+    requested_max_parallel: int
+    effective_max_parallel: int
 
 
 def _quality_gate_details(gate_result: GateResult | None) -> dict[str, Any] | None:
@@ -250,6 +279,23 @@ def _nonnegative_int(value: Any, name: str) -> int:
     return parsed
 
 
+def _positive_int(value: Any, name: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def _partition_parallelism_limits(
+    max_parallel: int,
+    *,
+    allow_parallel_executor: bool,
+) -> tuple[int, int]:
+    requested_parallel = _positive_int(max_parallel, "max_parallel")
+    effective_parallel = requested_parallel if allow_parallel_executor else 1
+    return requested_parallel, effective_parallel
+
+
 def _nonnegative_float(value: Any, name: str) -> float:
     parsed = float(value)
     if parsed < 0:
@@ -294,6 +340,9 @@ def create_run_manifest(
     git_sha: str | None = None,
     actor: str = "orchestrator",
     started_at: dt.datetime | None = None,
+    run_kind: str = "orchestrator",
+    job_name: str = "refresh_quant_warehouse",
+    manifest_dataset_id: str = "__orchestrator__",
 ) -> RunManifest:
     """Create the S2 parent run row, pending step rows, and run_start audit row."""
 
@@ -319,10 +368,18 @@ def create_run_manifest(
             params_json,
             git_sha
         )
-        VALUES (?, ?, 'orchestrator', NULL, 'refresh_quant_warehouse',
-                '__orchestrator__', 'running', ?, 0, 0, 0, ?, ?)
+        VALUES (?, ?, ?, NULL, ?, ?, 'running', ?, 0, 0, 0, ?, ?)
         """,
-        [manifest_run_id, manifest_run_id, ts, params_json, git_sha],
+        [
+            manifest_run_id,
+            manifest_run_id,
+            run_kind,
+            job_name,
+            manifest_dataset_id,
+            ts,
+            params_json,
+            git_sha,
+        ],
     )
 
     for dataset_id in dag.order:
@@ -461,6 +518,7 @@ class DatasetOrchestrator:
         gate: bool = False,
     ) -> OrchestratorResult:
         self._initialize_store()
+        self._require_orchestrator_run(run_id)
         steps = self._step_statuses(run_id)
         missing_steps = sorted(set(self.dag.order) - set(steps))
         if missing_steps:
@@ -503,10 +561,794 @@ class DatasetOrchestrator:
             gate=gate,
         )
 
+    def run_backfill(
+        self,
+        dataset_id: str,
+        start: dt.date | dt.datetime | str,
+        end: dt.date | dt.datetime | str,
+        chunk: int | dt.timedelta | str,
+        *,
+        run_id: str | None = None,
+        params: Mapping[str, Any] | None = None,
+        git_sha: str | None = None,
+        include_dependencies: bool = True,
+        max_parallel: int = 1,
+        executor: Callable[[Any, Any, Mapping[str, Any]], Any] | None = None,
+    ) -> OrchestratorBackfillResult:
+        return self._run_partition_driver(
+            mode="backfill",
+            dataset_id=dataset_id,
+            start=start,
+            end=end,
+            chunk=chunk,
+            run_id=run_id,
+            params=params,
+            git_sha=git_sha,
+            include_dependencies=include_dependencies,
+            max_parallel=max_parallel,
+            executor=executor,
+        )
+
+    def run_maintenance(
+        self,
+        dataset_id: str,
+        start: dt.date | dt.datetime | str,
+        end: dt.date | dt.datetime | str,
+        chunk: int | dt.timedelta | str,
+        *,
+        run_id: str | None = None,
+        params: Mapping[str, Any] | None = None,
+        git_sha: str | None = None,
+        include_dependencies: bool = False,
+        max_parallel: int = 1,
+        executor: Callable[[Any, Any, Mapping[str, Any]], Any] | None = None,
+    ) -> OrchestratorBackfillResult:
+        return self._run_partition_driver(
+            mode="maintenance",
+            dataset_id=dataset_id,
+            start=start,
+            end=end,
+            chunk=chunk,
+            run_id=run_id,
+            params=params,
+            git_sha=git_sha,
+            include_dependencies=include_dependencies,
+            max_parallel=max_parallel,
+            executor=executor,
+        )
+
+    def resume_backfill(
+        self,
+        backfill_run_id: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        executor: Callable[[Any, Any, Mapping[str, Any]], Any] | None = None,
+    ) -> OrchestratorBackfillResult:
+        """Resume an orchestrated backfill/maintenance run by its backfill run id.
+
+        The original run header supplies the dataset/window/chunk. The parent
+        ``etl_job_runs.params_json`` supplies the mode, include-dependencies flag,
+        and requested parallelism. Completed partition watermarks remain no-ops;
+        failed/running/dead-lettered partitions are re-entered by the partition
+        driver under the same backfill_run_id.
+        """
+
+        return self._resume_partition_driver(
+            backfill_run_id,
+            params=params,
+            executor=executor,
+        )
+
+    def _run_partition_driver(
+        self,
+        *,
+        mode: str,
+        dataset_id: str,
+        start: dt.date | dt.datetime | str,
+        end: dt.date | dt.datetime | str,
+        chunk: int | dt.timedelta | str,
+        run_id: str | None,
+        params: Mapping[str, Any] | None,
+        git_sha: str | None,
+        include_dependencies: bool,
+        max_parallel: int,
+        executor: Callable[[Any, Any, Mapping[str, Any]], Any] | None,
+    ) -> OrchestratorBackfillResult:
+        from . import backfill as backfill_driver
+
+        self._initialize_store()
+        dataset_order = self._partition_dataset_order(
+            dataset_id,
+            include_dependencies=include_dependencies,
+        )
+        requested_parallel, effective_parallel = _partition_parallelism_limits(
+            max_parallel,
+            allow_parallel_executor=executor is not None,
+        )
+        manifest_params = {
+            **dict(params or {}),
+            "mode": mode,
+            "dataset_id": dataset_id,
+            "start": start,
+            "end": end,
+            "chunk": chunk,
+            "include_dependencies": include_dependencies,
+            "max_parallel": effective_parallel,
+            "requested_max_parallel": requested_parallel,
+            "effective_max_parallel": effective_parallel,
+            "dead_letter": True,
+        }
+        manifest = create_run_manifest(
+            self.store,
+            self._manifest_dag_for_order(dataset_order),
+            run_id=run_id,
+            params=manifest_params,
+            git_sha=git_sha,
+            actor=self.actor,
+            started_at=self.clock(),
+            run_kind=mode,
+            job_name=f"warehouse_{mode}",
+        )
+        before_by_dataset = {
+            current_dataset_id: self._watermark_snapshot(current_dataset_id)
+            for current_dataset_id in dataset_order
+        }
+        self._mark_partition_steps_running(
+            manifest.run_id,
+            dataset_order,
+            mode=mode,
+            before_by_dataset=before_by_dataset,
+        )
+
+        retry_policy_by_dataset = {
+            current_dataset_id: self._retry_policy(current_dataset_id)
+            for current_dataset_id in dataset_order
+        }
+        driver = (
+            backfill_driver.run_backfill
+            if mode == "backfill"
+            else backfill_driver.run_maintenance
+        )
+        try:
+            backfill_result = driver(
+                self.store,
+                dataset_id,
+                start,
+                end,
+                chunk,
+                registry=self.registry,
+                params=dict(params or {}),
+                backfill_run_id=manifest.run_id,
+                include_dependencies=include_dependencies,
+                executor=executor,
+                clock=self.clock,
+                retry_policy=retry_policy_by_dataset,
+                sleeper=self.sleeper,
+                max_parallel=requested_parallel,
+                dead_letter=True,
+            )
+        except Exception as exc:
+            self._mark_partition_steps_failed(
+                manifest.run_id,
+                dataset_order,
+                mode=mode,
+                error_message=str(exc),
+            )
+            self._finish_run_kind(
+                manifest.run_id,
+                mode,
+                "failed",
+                error_message=str(exc),
+            )
+            record_audit(
+                self.store,
+                run_id=manifest.run_id,
+                dataset_id=None,
+                actor=self.actor,
+                action=f"{mode}_run_fail",
+                details={"error": str(exc), "dataset_id": dataset_id},
+                ts=self.clock(),
+            )
+            raise
+
+        self._finish_partition_steps(
+            manifest.run_id,
+            dataset_order,
+            mode=mode,
+            before_by_dataset=before_by_dataset,
+            partition_results=backfill_result.partition_results,
+        )
+        self._finish_run_kind(manifest.run_id, mode, backfill_result.status)
+        record_audit(
+            self.store,
+            run_id=manifest.run_id,
+            dataset_id=None,
+            actor=self.actor,
+            action=(
+                f"{mode}_run_partial"
+                if backfill_result.status == "partial"
+                else f"{mode}_run_succeed"
+            ),
+            details={
+                "dataset_id": dataset_id,
+                "dataset_order": list(backfill_result.dataset_order),
+                "partitions_planned": backfill_result.partitions_planned,
+                "partitions_succeeded": backfill_result.partitions_succeeded,
+                "partitions_skipped": backfill_result.partitions_skipped,
+                "partitions_failed": backfill_result.partitions_failed,
+                "rows_written": backfill_result.rows_written,
+                "max_parallel": backfill_result.effective_max_parallel,
+                "requested_max_parallel": backfill_result.requested_max_parallel,
+                "effective_max_parallel": backfill_result.effective_max_parallel,
+            },
+            ts=self.clock(),
+        )
+        return OrchestratorBackfillResult(
+            run_id=manifest.run_id,
+            status=backfill_result.status,
+            dataset_order=backfill_result.dataset_order,
+            backfill_run_id=backfill_result.backfill_run_id,
+            partitions_planned=backfill_result.partitions_planned,
+            partitions_succeeded=backfill_result.partitions_succeeded,
+            partitions_skipped=backfill_result.partitions_skipped,
+            partitions_failed=backfill_result.partitions_failed,
+            rows_written=backfill_result.rows_written,
+            requested_max_parallel=backfill_result.requested_max_parallel,
+            effective_max_parallel=backfill_result.effective_max_parallel,
+        )
+
+    def _resume_partition_driver(
+        self,
+        backfill_run_id: str,
+        *,
+        params: Mapping[str, Any] | None,
+        executor: Callable[[Any, Any, Mapping[str, Any]], Any] | None,
+    ) -> OrchestratorBackfillResult:
+        from . import backfill as backfill_driver
+
+        self._initialize_store()
+        metadata = self._partition_resume_metadata(backfill_run_id)
+        mode = metadata["mode"]
+        dataset_id = metadata["dataset_id"]
+        start = metadata["start"]
+        end = metadata["end"]
+        chunk = metadata["chunk"]
+        include_dependencies = metadata["include_dependencies"]
+        dataset_params = dict(metadata["params"])
+        dataset_params.update(dict(params or {}))
+
+        dataset_order = self._partition_dataset_order(
+            dataset_id,
+            include_dependencies=include_dependencies,
+        )
+        requested_parallel, effective_parallel = _partition_parallelism_limits(
+            metadata["max_parallel"],
+            allow_parallel_executor=executor is not None,
+        )
+        self._ensure_partition_steps(backfill_run_id, dataset_order)
+        self.store.con.execute(
+            """
+            UPDATE etl_job_runs
+            SET status = 'running',
+                finished_at = NULL,
+                error_message = NULL
+            WHERE run_id = ? AND run_kind = ?
+            """,
+            [backfill_run_id, mode],
+        )
+        self.store.con.execute(
+            """
+            UPDATE backfill_run
+            SET status = 'running',
+                finished_at = NULL,
+                error_message = NULL
+            WHERE backfill_run_id = ?
+            """,
+            [backfill_run_id],
+        )
+        before_by_dataset = {
+            current_dataset_id: self._watermark_snapshot(current_dataset_id)
+            for current_dataset_id in dataset_order
+        }
+        self._mark_partition_steps_running(
+            backfill_run_id,
+            dataset_order,
+            mode=mode,
+            before_by_dataset=before_by_dataset,
+        )
+        record_audit(
+            self.store,
+            run_id=backfill_run_id,
+            dataset_id=None,
+            actor=self.actor,
+            action=f"{mode}_run_resume",
+            details={
+                "dataset_id": dataset_id,
+                "dataset_order": list(dataset_order),
+                "start": start,
+                "end": end,
+                "chunk": chunk,
+                "include_dependencies": include_dependencies,
+                "max_parallel": effective_parallel,
+                "requested_max_parallel": requested_parallel,
+                "effective_max_parallel": effective_parallel,
+            },
+            ts=self.clock(),
+        )
+
+        retry_policy_by_dataset = {
+            current_dataset_id: self._retry_policy(current_dataset_id)
+            for current_dataset_id in dataset_order
+        }
+        driver = (
+            backfill_driver.run_backfill
+            if mode == "backfill"
+            else backfill_driver.run_maintenance
+        )
+        try:
+            backfill_result = driver(
+                self.store,
+                dataset_id,
+                start,
+                end,
+                chunk,
+                registry=self.registry,
+                params=dataset_params,
+                backfill_run_id=backfill_run_id,
+                include_dependencies=include_dependencies,
+                executor=executor,
+                clock=self.clock,
+                retry_policy=retry_policy_by_dataset,
+                sleeper=self.sleeper,
+                max_parallel=requested_parallel,
+                dead_letter=True,
+            )
+        except Exception as exc:
+            self._mark_partition_steps_failed(
+                backfill_run_id,
+                dataset_order,
+                mode=mode,
+                error_message=str(exc),
+            )
+            self._finish_run_kind(
+                backfill_run_id,
+                mode,
+                "failed",
+                error_message=str(exc),
+            )
+            record_audit(
+                self.store,
+                run_id=backfill_run_id,
+                dataset_id=None,
+                actor=self.actor,
+                action=f"{mode}_run_fail",
+                details={
+                    "error": str(exc),
+                    "dataset_id": dataset_id,
+                    "resume": True,
+                },
+                ts=self.clock(),
+            )
+            raise
+
+        self._finish_partition_steps(
+            backfill_run_id,
+            dataset_order,
+            mode=mode,
+            before_by_dataset=before_by_dataset,
+            partition_results=backfill_result.partition_results,
+        )
+        self._finish_run_kind(backfill_run_id, mode, backfill_result.status)
+        record_audit(
+            self.store,
+            run_id=backfill_run_id,
+            dataset_id=None,
+            actor=self.actor,
+            action=(
+                f"{mode}_run_partial"
+                if backfill_result.status == "partial"
+                else f"{mode}_run_succeed"
+            ),
+            details={
+                "dataset_id": dataset_id,
+                "dataset_order": list(backfill_result.dataset_order),
+                "partitions_planned": backfill_result.partitions_planned,
+                "partitions_succeeded": backfill_result.partitions_succeeded,
+                "partitions_skipped": backfill_result.partitions_skipped,
+                "partitions_failed": backfill_result.partitions_failed,
+                "rows_written": backfill_result.rows_written,
+                "max_parallel": backfill_result.effective_max_parallel,
+                "requested_max_parallel": backfill_result.requested_max_parallel,
+                "effective_max_parallel": backfill_result.effective_max_parallel,
+                "resume": True,
+            },
+            ts=self.clock(),
+        )
+        return OrchestratorBackfillResult(
+            run_id=backfill_run_id,
+            status=backfill_result.status,
+            dataset_order=backfill_result.dataset_order,
+            backfill_run_id=backfill_result.backfill_run_id,
+            partitions_planned=backfill_result.partitions_planned,
+            partitions_succeeded=backfill_result.partitions_succeeded,
+            partitions_skipped=backfill_result.partitions_skipped,
+            partitions_failed=backfill_result.partitions_failed,
+            rows_written=backfill_result.rows_written,
+            requested_max_parallel=backfill_result.requested_max_parallel,
+            effective_max_parallel=backfill_result.effective_max_parallel,
+        )
+
+    def _partition_resume_metadata(self, backfill_run_id: str) -> dict[str, Any]:
+        row = self.store.con.execute(
+            """
+            SELECT
+                b.dataset_id,
+                b.start_date,
+                b.end_date,
+                b.chunk,
+                r.run_kind,
+                r.params_json
+            FROM backfill_run b
+            LEFT JOIN etl_job_runs r
+              ON r.run_id = b.backfill_run_id
+             AND r.parent_run_id IS NULL
+             AND r.run_kind IN ('backfill', 'maintenance')
+            WHERE b.backfill_run_id = ?
+            ORDER BY r.started_at DESC NULLS LAST, r.job_run_id DESC NULLS LAST
+            LIMIT 1
+            """,
+            [backfill_run_id],
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"No backfill_run found for backfill_run_id {backfill_run_id!r}")
+        if row[4] is None:
+            raise ValueError(
+                "resume_backfill() requires an orchestrated run header in etl_job_runs "
+                f"for backfill_run_id {backfill_run_id!r}"
+            )
+
+        raw_params = json.loads(row[5] or "{}")
+        if not isinstance(raw_params, dict):
+            raise ValueError(
+                f"Run {backfill_run_id!r} params_json must decode to an object"
+            )
+        mode = str(raw_params.get("mode") or row[4])
+        if mode not in {"backfill", "maintenance"}:
+            raise ValueError(
+                f"Run {backfill_run_id!r} has unsupported partition mode {mode!r}"
+            )
+        include_default = mode == "backfill"
+        include_dependencies = bool(
+            raw_params.get("include_dependencies", include_default)
+        )
+        max_parallel = raw_params.get(
+            "requested_max_parallel",
+            raw_params.get("max_parallel", 1),
+        )
+        dataset_params = {
+            key: value
+            for key, value in raw_params.items()
+            if key not in PARTITION_DRIVER_MANIFEST_KEYS
+        }
+        return {
+            "mode": mode,
+            "dataset_id": str(row[0]),
+            "start": row[1],
+            "end": row[2],
+            "chunk": str(row[3]),
+            "include_dependencies": include_dependencies,
+            "max_parallel": _positive_int(max_parallel, "max_parallel"),
+            "params": dataset_params,
+        }
+
+    def _ensure_partition_steps(
+        self,
+        run_id: str,
+        dataset_order: tuple[str, ...],
+    ) -> None:
+        existing = {
+            str(row[0])
+            for row in self.store.con.execute(
+                """
+                SELECT dataset_id
+                FROM etl_job_steps
+                WHERE run_id = ?
+                """,
+                [run_id],
+            ).fetchall()
+        }
+        for dataset_id in dataset_order:
+            if dataset_id in existing:
+                continue
+            self.store.con.execute(
+                """
+                INSERT INTO etl_job_steps (
+                    run_id,
+                    dataset_id,
+                    status,
+                    rows,
+                    started_at,
+                    finished_at,
+                    watermark_before,
+                    watermark_after,
+                    error
+                )
+                VALUES (?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL)
+                """,
+                [run_id, dataset_id],
+            )
+
     def _initialize_store(self) -> None:
         initialize = getattr(self.store, "initialize", None)
         if callable(initialize):
             initialize()
+
+    def _partition_dataset_order(
+        self,
+        dataset_id: str,
+        *,
+        include_dependencies: bool,
+    ) -> tuple[str, ...]:
+        if dataset_id not in self.registry:
+            raise KeyError(f"Unknown dataset_id {dataset_id!r}")
+        if not include_dependencies:
+            return (dataset_id,)
+
+        needed: set[str] = {dataset_id}
+
+        def visit(current: str) -> None:
+            for dependency in self.dag.dependencies_of(current):
+                if dependency not in needed:
+                    needed.add(dependency)
+                    visit(dependency)
+
+        visit(dataset_id)
+        return tuple(candidate for candidate in self.dag.order if candidate in needed)
+
+    def _manifest_dag_for_order(self, dataset_order: tuple[str, ...]) -> DatasetDAG:
+        selected = set(dataset_order)
+        dependencies = {
+            dataset_id: tuple(
+                dependency
+                for dependency in self.dag.dependencies_of(dataset_id)
+                if dependency in selected
+            )
+            for dataset_id in dataset_order
+        }
+        children: dict[str, list[str]] = {dataset_id: [] for dataset_id in dataset_order}
+        for dataset_id, dataset_dependencies in dependencies.items():
+            for dependency in dataset_dependencies:
+                children[dependency].append(dataset_id)
+        return DatasetDAG(
+            dependencies=dependencies,
+            children={
+                dataset_id: tuple(sorted(dataset_children))
+                for dataset_id, dataset_children in children.items()
+            },
+            order=dataset_order,
+        )
+
+    def _mark_partition_steps_running(
+        self,
+        run_id: str,
+        dataset_order: tuple[str, ...],
+        *,
+        mode: str,
+        before_by_dataset: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        ts = self.clock()
+        for dataset_id in dataset_order:
+            before_json = _json_dumps(
+                {
+                    "mode": mode,
+                    "watermark_before": before_by_dataset[dataset_id],
+                }
+            )
+            self.store.con.execute(
+                """
+                UPDATE etl_job_steps
+                SET status = 'running',
+                    started_at = coalesce(started_at, ?),
+                    watermark_before = ?,
+                    error = NULL
+                WHERE run_id = ? AND dataset_id = ?
+                """,
+                [ts, before_json, run_id, dataset_id],
+            )
+            record_audit(
+                self.store,
+                run_id=run_id,
+                dataset_id=dataset_id,
+                actor=self.actor,
+                action=f"{mode}_step_start",
+                details={"watermark_before": before_by_dataset[dataset_id]},
+                ts=ts,
+            )
+
+    def _partition_step_summaries(
+        self,
+        dataset_order: tuple[str, ...],
+        partition_results: tuple[Any, ...],
+    ) -> dict[str, dict[str, Any]]:
+        summaries: dict[str, dict[str, Any]] = {
+            dataset_id: {
+                "partitions": 0,
+                "succeeded": 0,
+                "skipped": 0,
+                "failed": 0,
+                "dead_lettered": 0,
+                "rows_written": 0,
+                "partition_keys": [],
+                "dead_letter_keys": [],
+                "errors": [],
+            }
+            for dataset_id in dataset_order
+        }
+        for result in partition_results:
+            partition = result.partition
+            dataset_id = partition.dataset_id
+            summary = summaries.setdefault(
+                dataset_id,
+                {
+                    "partitions": 0,
+                    "succeeded": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "dead_lettered": 0,
+                    "rows_written": 0,
+                    "partition_keys": [],
+                    "dead_letter_keys": [],
+                    "errors": [],
+                },
+            )
+            status = str(result.status)
+            summary["partitions"] += 1
+            summary["partition_keys"].append(partition.partition_key)
+            summary["rows_written"] += int(result.rows_written or 0)
+            if status == "succeeded":
+                summary["succeeded"] += 1
+            elif status == "skipped":
+                summary["skipped"] += 1
+            elif status == "dead_lettered":
+                summary["failed"] += 1
+                summary["dead_lettered"] += 1
+                summary["dead_letter_keys"].append(partition.partition_key)
+                if result.error:
+                    summary["errors"].append(str(result.error))
+            else:
+                summary["failed"] += 1
+                if result.error:
+                    summary["errors"].append(str(result.error))
+        return summaries
+
+    def _step_status_from_partition_summary(self, summary: Mapping[str, Any]) -> str:
+        if int(summary.get("failed", 0)) > 0:
+            return "failed"
+        if int(summary.get("partitions", 0)) == 0:
+            return "skipped"
+        if int(summary.get("succeeded", 0)) == 0 and int(summary.get("skipped", 0)) > 0:
+            return "skipped"
+        return "succeeded"
+
+    def _finish_partition_steps(
+        self,
+        run_id: str,
+        dataset_order: tuple[str, ...],
+        *,
+        mode: str,
+        before_by_dataset: Mapping[str, Mapping[str, Any]],
+        partition_results: tuple[Any, ...],
+    ) -> None:
+        summaries = self._partition_step_summaries(dataset_order, partition_results)
+        for dataset_id in dataset_order:
+            summary = summaries[dataset_id]
+            status = self._step_status_from_partition_summary(summary)
+            finished_at = self.clock()
+            after_json = _json_dumps(
+                {
+                    "mode": mode,
+                    "partition_summary": summary,
+                }
+            )
+            before_json = _json_dumps(
+                {
+                    "mode": mode,
+                    "watermark_before": before_by_dataset[dataset_id],
+                }
+            )
+            error = None
+            if status == "failed":
+                dead_lettered = int(summary.get("dead_lettered", 0))
+                error = (
+                    f"{dead_lettered} partition(s) dead-lettered"
+                    if dead_lettered
+                    else "partition execution failed"
+                )
+            self.store.con.execute(
+                """
+                UPDATE etl_job_steps
+                SET status = ?,
+                    rows = ?,
+                    finished_at = ?,
+                    watermark_before = ?,
+                    watermark_after = ?,
+                    error = ?
+                WHERE run_id = ? AND dataset_id = ?
+                """,
+                [
+                    status,
+                    int(summary["rows_written"]),
+                    finished_at,
+                    before_json,
+                    after_json,
+                    error,
+                    run_id,
+                    dataset_id,
+                ],
+            )
+            record_audit(
+                self.store,
+                run_id=run_id,
+                dataset_id=dataset_id,
+                actor=self.actor,
+                action=(
+                    f"{mode}_step_dead_letter"
+                    if int(summary.get("dead_lettered", 0)) > 0
+                    else f"{mode}_step_{status}"
+                ),
+                details=summary,
+                ts=finished_at,
+            )
+
+    def _mark_partition_steps_failed(
+        self,
+        run_id: str,
+        dataset_order: tuple[str, ...],
+        *,
+        mode: str,
+        error_message: str,
+    ) -> None:
+        ts = self.clock()
+        for dataset_id in dataset_order:
+            self.store.con.execute(
+                """
+                UPDATE etl_job_steps
+                SET status = 'failed',
+                    finished_at = ?,
+                    error = ?
+                WHERE run_id = ? AND dataset_id = ?
+                  AND status IN ('pending', 'running')
+                """,
+                [ts, error_message, run_id, dataset_id],
+            )
+            record_audit(
+                self.store,
+                run_id=run_id,
+                dataset_id=dataset_id,
+                actor=self.actor,
+                action=f"{mode}_step_fail",
+                details={"error": error_message},
+                ts=ts,
+            )
+
+    def _finish_run_kind(
+        self,
+        run_id: str,
+        run_kind: str,
+        status: str,
+        *,
+        error_message: str | None = None,
+    ) -> None:
+        self.store.con.execute(
+            """
+            UPDATE etl_job_runs
+            SET status = ?,
+                finished_at = ?,
+                error_message = ?
+            WHERE run_id = ? AND run_kind = ?
+            """,
+            [status, self.clock(), error_message, run_id, run_kind],
+        )
 
     def _execute(
         self,
@@ -613,6 +1455,27 @@ class DatasetOrchestrator:
             [run_id],
         ).fetchone()[0]
         return "partial" if int(completed or 0) > 0 else "failed"
+
+    def _require_orchestrator_run(self, run_id: str) -> None:
+        row = self.store.con.execute(
+            """
+            SELECT coalesce(run_kind, 'dataset')
+            FROM etl_job_runs
+            WHERE run_id = ?
+              AND parent_run_id IS NULL
+            ORDER BY started_at DESC, job_run_id DESC
+            LIMIT 1
+            """,
+            [run_id],
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"No orchestrator run found for run_id {run_id!r}")
+        run_kind = str(row[0])
+        if run_kind != "orchestrator":
+            raise ValueError(
+                "resume() only supports run_kind='orchestrator'; "
+                f"run {run_id!r} has run_kind={run_kind!r}"
+            )
 
     def _step_statuses(self, run_id: str) -> dict[str, str]:
         rows = self.store.con.execute(

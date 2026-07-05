@@ -10570,6 +10570,735 @@ def _pf2_s10_indexes_rebuild(conn: duckdb.DuckDBPyConnection) -> None:
     _schema_contract_schema_catalog(conn)
 
 
+def _pf3_s1_backfill_schema_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S1 S1-0: windowed backfill run headers and per-partition progress."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backfill_run (
+            backfill_run_id VARCHAR PRIMARY KEY,
+            dataset_id VARCHAR NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            chunk VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            started_at TIMESTAMP NOT NULL DEFAULT now(),
+            finished_at TIMESTAMP,
+            error_message VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backfill_watermark (
+            dataset_id VARCHAR NOT NULL,
+            partition_key VARCHAR NOT NULL,
+            window_lo DATE NOT NULL,
+            window_hi DATE NOT NULL,
+            status VARCHAR NOT NULL,
+            rows_written BIGINT NOT NULL DEFAULT 0,
+            watermark_after VARCHAR,
+            run_id VARCHAR NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (dataset_id, partition_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backfill_dead_letter (
+            dataset_id VARCHAR NOT NULL,
+            partition_key VARCHAR NOT NULL,
+            run_id VARCHAR NOT NULL,
+            error VARCHAR NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            dead_lettered_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (dataset_id, partition_key, run_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'backfill_run',
+                'audit',
+                'backfill_run',
+                'backfill_run_id',
+                'PF3 windowed historical backfill run header with requested dataset, half-open date bounds, chunk size, terminal status, and error summary.',
+                '["backfill_run_id"]',
+                'Control/audit header for deterministic backfill planning. start_date/end_date define the requested half-open planning window; per-partition PIT progress lives in backfill_watermark.',
+                now()
+            ),
+            (
+                'backfill_watermark',
+                'control',
+                'backfill_watermark',
+                'dataset_id,partition_key',
+                'Per-dataset, per-partition backfill progress state used to skip completed windows and resume running or failed windows idempotently.',
+                '["dataset_id","partition_key"]',
+                'Clause H state table. A succeeded row is a strict no-op on rerun; window_lo/window_hi are half-open partition bounds and watermark_after records the completed partition high-water mark.',
+                now()
+            ),
+            (
+                'backfill_dead_letter',
+                'audit',
+                'backfill_dead_letter',
+                'dataset_id,partition_key,run_id',
+                'Dead-letter quarantine table reserved for PF3-S1 retry/fan-out follow-up work when a poisoned partition exhausts its retry budget.',
+                '["dataset_id","partition_key","run_id"]',
+                'Append-only failure quarantine. S1-0 lands the catalogued schema so S1-2 can wire retry exhaustion without another schema churn.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(
+        conn,
+        ("backfill_run", "backfill_watermark", "backfill_dead_letter"),
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Exclusive upper bound of the deterministic half-open backfill partition window.'
+        WHERE table_name = 'backfill_watermark'
+          AND field_name = 'window_hi'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Inclusive lower bound of the deterministic half-open backfill partition window.'
+        WHERE table_name = 'backfill_watermark'
+          AND field_name = 'window_lo'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE field_catalog
+        SET description = 'Backfill run identifier that last advanced this partition state.'
+        WHERE table_name = 'backfill_watermark'
+          AND field_name = 'run_id'
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
+def _pf3_s1_backfill_indexes(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S1 S1-0: indexes for backfill run and partition progress lookup."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_backfill_run_dataset_status ON backfill_run(dataset_id, status, started_at)",
+        "CREATE INDEX IF NOT EXISTS idx_backfill_watermark_status ON backfill_watermark(dataset_id, status, window_lo, window_hi)",
+        "CREATE INDEX IF NOT EXISTS idx_backfill_watermark_run ON backfill_watermark(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_backfill_dead_letter_partition ON backfill_dead_letter(dataset_id, partition_key, dead_lettered_at)",
+    ):
+        conn.execute(statement)
+
+
+def _pf3_s1_backfill_status_manifest_compat(conn: duckdb.DuckDBPyConnection) -> None:
+    """Ensure PF-S2 manifest tables referenced by v_backfill_status exist on legacy-forward DBs."""
+
+    def add_missing_columns(table_name: str, columns: tuple[tuple[str, str], ...]) -> None:
+        existing = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM duckdb_columns()
+                WHERE schema_name = 'main'
+                  AND table_name = ?
+                """,
+                [table_name],
+            ).fetchall()
+        }
+        for column_name, column_ddl in columns:
+            if column_name not in existing:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_ddl}")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_runs (
+            job_run_id VARCHAR PRIMARY KEY,
+            job_name VARCHAR NOT NULL,
+            dataset_id VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            started_at TIMESTAMP NOT NULL,
+            finished_at TIMESTAMP,
+            dataset_run_id VARCHAR,
+            rows_loaded BIGINT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 0,
+            retry_delay_seconds DOUBLE NOT NULL DEFAULT 0,
+            params_json VARCHAR,
+            error_message VARCHAR,
+            run_id VARCHAR,
+            run_kind VARCHAR DEFAULT 'dataset',
+            parent_run_id VARCHAR,
+            git_sha VARCHAR
+        )
+        """
+    )
+    add_missing_columns(
+        "etl_job_runs",
+        (
+            ("run_id", "run_id VARCHAR"),
+            ("run_kind", "run_kind VARCHAR DEFAULT 'dataset'"),
+            ("parent_run_id", "parent_run_id VARCHAR"),
+            ("git_sha", "git_sha VARCHAR"),
+        ),
+    )
+
+    has_job_run_id = bool(
+        conn.execute(
+            """
+            SELECT count(*)
+            FROM duckdb_columns()
+            WHERE schema_name = 'main'
+              AND table_name = 'etl_job_runs'
+              AND column_name = 'job_run_id'
+            """
+        ).fetchone()[0]
+    )
+    if has_job_run_id:
+        conn.execute("UPDATE etl_job_runs SET run_id = job_run_id WHERE run_id IS NULL")
+    conn.execute("UPDATE etl_job_runs SET run_kind = 'dataset' WHERE run_kind IS NULL")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_steps (
+            run_id VARCHAR NOT NULL,
+            dataset_id VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            rows BIGINT,
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            watermark_before VARCHAR,
+            watermark_after VARCHAR,
+            error VARCHAR,
+            PRIMARY KEY (run_id, dataset_id)
+        )
+        """
+    )
+    add_missing_columns(
+        "etl_job_steps",
+        (
+            ("run_id", "run_id VARCHAR"),
+            ("dataset_id", "dataset_id VARCHAR"),
+            ("status", "status VARCHAR"),
+            ("rows", "rows BIGINT"),
+            ("started_at", "started_at TIMESTAMP"),
+            ("finished_at", "finished_at TIMESTAMP"),
+            ("watermark_before", "watermark_before VARCHAR"),
+            ("watermark_after", "watermark_after VARCHAR"),
+            ("error", "error VARCHAR"),
+        ),
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl_job_audit (
+            audit_id VARCHAR PRIMARY KEY,
+            run_id VARCHAR NOT NULL,
+            dataset_id VARCHAR,
+            actor VARCHAR NOT NULL,
+            ts TIMESTAMP NOT NULL DEFAULT now(),
+            action VARCHAR NOT NULL,
+            details_json VARCHAR
+        )
+        """
+    )
+    add_missing_columns(
+        "etl_job_audit",
+        (
+            ("audit_id", "audit_id VARCHAR"),
+            ("run_id", "run_id VARCHAR"),
+            ("dataset_id", "dataset_id VARCHAR"),
+            ("actor", "actor VARCHAR"),
+            ("ts", "ts TIMESTAMP DEFAULT now()"),
+            ("action", "action VARCHAR"),
+            ("details_json", "details_json VARCHAR"),
+        ),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        SELECT *
+        FROM (
+            VALUES
+                (
+                    'etl_job_runs',
+                    'control',
+                    'etl_job_run',
+                    'job_run_id/run_id',
+                    'ETL run table reconciled for legacy single-dataset job rows and parent orchestrator manifests.',
+                    '["job_run_id"]',
+                    'Compatibility manifest table required by the backfill status view on legacy-forward warehouses.',
+                    now()
+                ),
+                (
+                    'etl_job_steps',
+                    'control',
+                    'etl_job_step',
+                    'run_id,dataset_id',
+                    'One row per orchestrator DAG node per parent run, holding status, row count, watermarks, and terminal error text.',
+                    '["run_id", "dataset_id"]',
+                    'Compatibility manifest table required by the backfill status view on legacy-forward warehouses.',
+                    now()
+                ),
+                (
+                    'etl_job_audit',
+                    'audit',
+                    'etl_job_audit',
+                    'audit_id',
+                    'Append-only orchestrator audit trail for run and step actions.',
+                    '["audit_id"]',
+                    'Compatibility audit table paired with the PF-S2 manifest substrate on legacy-forward warehouses.',
+                    now()
+                )
+        ) AS v(
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM table_catalog c
+            WHERE c.table_name = v.table_name
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        SELECT
+            c.table_name,
+            c.column_name,
+            CASE
+                WHEN lower(c.column_name) LIKE '%_json' THEN 'json'
+                WHEN lower(c.column_name) LIKE '%_id' OR lower(c.column_name) = 'source' THEN 'identifier'
+                WHEN lower(c.column_name) IN ('status', 'run_kind', 'actor', 'action') THEN 'category'
+                WHEN lower(c.column_name) LIKE '%_at' OR upper(c.data_type) LIKE '%TIMESTAMP%' THEN 'timestamp'
+                WHEN upper(c.data_type) IN ('DOUBLE', 'FLOAT', 'INTEGER', 'BIGINT', 'DECIMAL') THEN 'measure'
+                ELSE 'text'
+            END AS semantic_type,
+            replace(c.column_name, '_', ' ') || ' field on ' || c.table_name || '.',
+            coalesce(c.is_nullable, true),
+            CASE
+                WHEN lower(c.column_name) LIKE '%_at' THEN 'timestamp'
+                WHEN upper(c.data_type) IN ('INTEGER', 'BIGINT') AND lower(c.column_name) LIKE '%rows%' THEN 'rows'
+                ELSE NULL
+            END AS unit,
+            NULL AS source_field,
+            now() AS updated_at
+        FROM duckdb_columns() c
+        WHERE c.schema_name = 'main'
+          AND coalesce(c.internal, false) = false
+          AND c.table_name IN ('etl_job_runs', 'etl_job_steps', 'etl_job_audit')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM field_catalog f
+              WHERE f.table_name = c.table_name
+                AND f.field_name = c.column_name
+          )
+        """
+    )
+
+
+def _pf3_s1_backfill_status_view(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S1 S1-3: catalogued backfill run/partition observability view."""
+
+    _pf3_s1_backfill_status_manifest_compat(conn)
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_backfill_status AS
+        WITH RECURSIVE latest_dead_letter AS (
+            SELECT
+                dataset_id,
+                partition_key,
+                run_id,
+                error,
+                attempts,
+                dead_lettered_at,
+                row_number() OVER (
+                    PARTITION BY dataset_id, partition_key
+                    ORDER BY dead_lettered_at DESC, run_id DESC
+                ) AS rn
+            FROM backfill_dead_letter
+        ),
+        run_seed AS (
+            SELECT
+                backfill_run_id,
+                dataset_id AS root_dataset_id,
+                start_date,
+                end_date,
+                chunk,
+                status AS run_status,
+                started_at,
+                finished_at,
+                error_message,
+                try_cast(regexp_extract(chunk, '([0-9]+)', 1) AS INTEGER) AS chunk_amount,
+                CASE lower(regexp_extract(chunk, '([A-Za-z]+)$', 1))
+                    WHEN 'd' THEN 'day'
+                    WHEN 'day' THEN 'day'
+                    WHEN 'days' THEN 'day'
+                    WHEN 'w' THEN 'week'
+                    WHEN 'week' THEN 'week'
+                    WHEN 'weeks' THEN 'week'
+                    WHEN 'm' THEN 'month'
+                    WHEN 'mo' THEN 'month'
+                    WHEN 'mon' THEN 'month'
+                    WHEN 'month' THEN 'month'
+                    WHEN 'months' THEN 'month'
+                    WHEN 'q' THEN 'quarter'
+                    WHEN 'qr' THEN 'quarter'
+                    WHEN 'qtr' THEN 'quarter'
+                    WHEN 'quarter' THEN 'quarter'
+                    WHEN 'quarters' THEN 'quarter'
+                    WHEN 'y' THEN 'year'
+                    WHEN 'yr' THEN 'year'
+                    WHEN 'year' THEN 'year'
+                    WHEN 'years' THEN 'year'
+                END AS chunk_unit
+            FROM backfill_run
+            WHERE start_date < end_date
+        ),
+        run_step_datasets AS (
+            SELECT DISTINCT
+                r.run_id AS backfill_run_id,
+                s.dataset_id AS partition_dataset_id
+            FROM etl_job_runs r
+            JOIN etl_job_steps s
+              ON s.run_id = r.run_id
+            WHERE r.parent_run_id IS NULL
+              AND r.run_kind IN ('backfill', 'maintenance')
+        ),
+        run_plan_seed AS (
+            SELECT
+                rs.backfill_run_id,
+                rs.root_dataset_id,
+                d.partition_dataset_id,
+                rs.start_date,
+                rs.end_date,
+                rs.chunk,
+                rs.run_status,
+                rs.started_at,
+                rs.finished_at,
+                rs.error_message,
+                rs.chunk_amount,
+                rs.chunk_unit
+            FROM run_seed rs
+            JOIN run_step_datasets d
+              ON d.backfill_run_id = rs.backfill_run_id
+
+            UNION ALL
+
+            SELECT
+                rs.backfill_run_id,
+                rs.root_dataset_id,
+                rs.root_dataset_id AS partition_dataset_id,
+                rs.start_date,
+                rs.end_date,
+                rs.chunk,
+                rs.run_status,
+                rs.started_at,
+                rs.finished_at,
+                rs.error_message,
+                rs.chunk_amount,
+                rs.chunk_unit
+            FROM run_seed rs
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM run_step_datasets d
+                WHERE d.backfill_run_id = rs.backfill_run_id
+            )
+        ),
+        run_partition_plan AS (
+            SELECT
+                backfill_run_id,
+                root_dataset_id,
+                partition_dataset_id,
+                start_date,
+                end_date,
+                chunk,
+                run_status,
+                started_at,
+                finished_at,
+                error_message,
+                chunk_amount,
+                chunk_unit,
+                start_date AS window_lo,
+                least(
+                    CASE chunk_unit
+                        WHEN 'day' THEN CAST(start_date + chunk_amount * INTERVAL '1 day' AS DATE)
+                        WHEN 'week' THEN CAST(start_date + chunk_amount * INTERVAL '1 week' AS DATE)
+                        WHEN 'month' THEN CAST(start_date + chunk_amount * INTERVAL '1 month' AS DATE)
+                        WHEN 'quarter' THEN CAST(start_date + (chunk_amount * 3) * INTERVAL '1 month' AS DATE)
+                        WHEN 'year' THEN CAST(start_date + chunk_amount * INTERVAL '1 year' AS DATE)
+                    END,
+                    end_date
+                ) AS window_hi
+            FROM run_plan_seed
+            WHERE chunk_amount > 0
+              AND chunk_unit IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                backfill_run_id,
+                root_dataset_id,
+                partition_dataset_id,
+                start_date,
+                end_date,
+                chunk,
+                run_status,
+                started_at,
+                finished_at,
+                error_message,
+                chunk_amount,
+                chunk_unit,
+                window_hi AS window_lo,
+                least(
+                    CASE chunk_unit
+                        WHEN 'day' THEN CAST(window_hi + chunk_amount * INTERVAL '1 day' AS DATE)
+                        WHEN 'week' THEN CAST(window_hi + chunk_amount * INTERVAL '1 week' AS DATE)
+                        WHEN 'month' THEN CAST(window_hi + chunk_amount * INTERVAL '1 month' AS DATE)
+                        WHEN 'quarter' THEN CAST(window_hi + (chunk_amount * 3) * INTERVAL '1 month' AS DATE)
+                        WHEN 'year' THEN CAST(window_hi + chunk_amount * INTERVAL '1 year' AS DATE)
+                    END,
+                    end_date
+                ) AS window_hi
+            FROM run_partition_plan
+            WHERE window_hi < end_date
+        ),
+        run_scoped_watermarks AS (
+            SELECT
+                p.backfill_run_id,
+                w.run_id,
+                p.root_dataset_id,
+                p.partition_dataset_id AS partition_dataset_id,
+                w.dataset_id AS dataset_id,
+                w.partition_key,
+                w.window_lo,
+                w.window_hi,
+                CASE
+                    WHEN w.run_id = p.backfill_run_id THEN w.status
+                    WHEN w.status = 'succeeded' THEN 'skipped'
+                    ELSE w.status
+                END AS status,
+                CASE
+                    WHEN w.run_id = p.backfill_run_id THEN w.rows_written
+                    WHEN w.status = 'succeeded' THEN 0
+                    ELSE w.rows_written
+                END AS rows_written,
+                w.watermark_after,
+                p.run_status,
+                p.started_at AS run_started_at,
+                p.finished_at AS run_finished_at,
+                p.start_date AS run_start_date,
+                p.end_date AS run_end_date,
+                p.chunk AS run_chunk,
+                p.error_message AS run_error_message,
+                w.updated_at AS partition_updated_at
+            FROM run_partition_plan p
+            JOIN backfill_watermark w
+                ON w.dataset_id = p.partition_dataset_id
+               AND w.partition_key = concat(
+                    p.partition_dataset_id,
+                    ':',
+                    CAST(p.window_lo AS VARCHAR),
+                    ':',
+                    CAST(p.window_hi AS VARCHAR)
+               )
+               AND w.window_lo = p.window_lo
+               AND w.window_hi = p.window_hi
+        ),
+        direct_watermarks AS (
+            SELECT
+                coalesce(r.backfill_run_id, w.run_id) AS backfill_run_id,
+                w.run_id,
+                r.dataset_id AS root_dataset_id,
+                w.dataset_id AS partition_dataset_id,
+                w.dataset_id AS dataset_id,
+                w.partition_key,
+                w.window_lo,
+                w.window_hi,
+                w.status,
+                w.rows_written,
+                w.watermark_after,
+                r.status AS run_status,
+                r.started_at AS run_started_at,
+                r.finished_at AS run_finished_at,
+                r.start_date AS run_start_date,
+                r.end_date AS run_end_date,
+                r.chunk AS run_chunk,
+                r.error_message AS run_error_message,
+                w.updated_at AS partition_updated_at
+            FROM backfill_watermark w
+            LEFT JOIN backfill_run r
+                ON r.backfill_run_id = w.run_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM run_scoped_watermarks scoped
+                WHERE scoped.backfill_run_id = coalesce(r.backfill_run_id, w.run_id)
+                  AND scoped.partition_dataset_id = w.dataset_id
+                  AND scoped.partition_key = w.partition_key
+            )
+        ),
+        status_rows AS (
+            SELECT * FROM run_scoped_watermarks
+            UNION ALL
+            SELECT * FROM direct_watermarks
+        )
+        SELECT
+            s.backfill_run_id,
+            s.run_id,
+            s.root_dataset_id,
+            s.partition_dataset_id,
+            s.dataset_id,
+            s.partition_key,
+            s.window_lo,
+            s.window_hi,
+            s.status,
+            s.rows_written,
+            s.watermark_after,
+            coalesce(d.attempts, 0) AS attempts,
+            d.error AS dead_letter_error,
+            d.dead_lettered_at,
+            CASE
+                WHEN d.partition_key IS NULL THEN 'clear'
+                ELSE 'dead_lettered'
+            END AS dead_letter_state,
+            d.run_id AS dead_letter_run_id,
+            s.run_status,
+            s.run_started_at,
+            s.run_finished_at,
+            s.run_start_date,
+            s.run_end_date,
+            s.run_chunk,
+            s.run_error_message,
+            s.partition_updated_at
+        FROM status_rows s
+        LEFT JOIN latest_dead_letter d
+            ON d.dataset_id = s.partition_dataset_id
+           AND d.partition_key = s.partition_key
+           AND d.rn = 1
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'v_backfill_status',
+            'observability',
+            'backfill_status',
+            'backfill_run_id,partition_dataset_id,partition_key',
+            'Queryable PF3 backfill observability surface joining run headers, current per-partition watermark/progress rows, and active/latest dead-letter quarantine state.',
+            '["backfill_run_id","partition_dataset_id","partition_key"]',
+            'Run-scoped current-state view over persisted backfill progress. For all-skipped idempotent reruns, matching manifest partitions are projected from the run header, orchestrator steps when present, and existing watermark rows without mutating backfill_watermark.',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_backfill_status', 'backfill_run_id', 'identifier',
+             'Requested backfill run identifier associated with this status row, falling back to the watermark run_id for legacy/current-state rows without a matching run header.',
+             false, NULL, 'backfill_run.backfill_run_id or backfill_watermark.run_id', now()),
+            ('v_backfill_status', 'run_id', 'identifier',
+             'Run id that last advanced the partition watermark row; differs from backfill_run_id for skipped idempotent rerun rows.',
+             false, NULL, 'backfill_watermark.run_id', now()),
+            ('v_backfill_status', 'root_dataset_id', 'identifier',
+             'Requested/root dataset id from the backfill run header; dependency partition rows may have a different partition_dataset_id.',
+             true, NULL, 'backfill_run.dataset_id', now()),
+            ('v_backfill_status', 'partition_dataset_id', 'identifier',
+             'Dataset id of the concrete partition watermark row.',
+             false, NULL, 'backfill_watermark.dataset_id', now()),
+            ('v_backfill_status', 'dataset_id', 'identifier',
+             'Compatibility alias for partition_dataset_id so operators can filter by the partition dataset directly.',
+             false, NULL, 'backfill_watermark.dataset_id', now()),
+            ('v_backfill_status', 'partition_key', 'identifier',
+             'Deterministic partition key for the half-open window.',
+             false, NULL, 'backfill_watermark.partition_key', now()),
+            ('v_backfill_status', 'window_lo', 'date',
+             'Inclusive lower bound of the deterministic half-open backfill partition window.',
+             false, 'date', 'backfill_watermark.window_lo', now()),
+            ('v_backfill_status', 'window_hi', 'date',
+             'Exclusive upper bound of the deterministic half-open backfill partition window.',
+             false, 'date', 'backfill_watermark.window_hi', now()),
+            ('v_backfill_status', 'status', 'category',
+             'Run-scoped partition status: current watermark status for rows advanced by this run, or skipped when this run reused an already-succeeded watermark.',
+             false, NULL, 'backfill_watermark.status plus backfill_run plan', now()),
+            ('v_backfill_status', 'rows_written', 'measure',
+             'Rows written by this requested run for the partition; projected skipped rows report zero while retaining watermark_after from the current watermark.',
+             false, 'rows', 'backfill_watermark.rows_written plus backfill_run plan', now()),
+            ('v_backfill_status', 'watermark_after', 'text',
+             'Recorded high-water mark after the last successful partition advance.',
+             true, NULL, 'backfill_watermark.watermark_after', now()),
+            ('v_backfill_status', 'attempts', 'measure',
+             'Dead-letter attempt count when the partition is quarantined; zero otherwise.',
+             false, 'count', 'backfill_dead_letter.attempts', now()),
+            ('v_backfill_status', 'dead_letter_error', 'text',
+             'Latest active dead-letter error text for the partition, if quarantined.',
+             true, NULL, 'backfill_dead_letter.error', now()),
+            ('v_backfill_status', 'dead_lettered_at', 'timestamp',
+             'Timestamp when the latest active dead-letter row was recorded.',
+             true, 'timestamp', 'backfill_dead_letter.dead_lettered_at', now()),
+            ('v_backfill_status', 'dead_letter_state', 'category',
+             'clear when no active dead-letter row exists for the partition; dead_lettered otherwise.',
+             false, NULL, 'backfill_dead_letter', now()),
+            ('v_backfill_status', 'dead_letter_run_id', 'identifier',
+             'Run id that produced the latest active dead-letter row, if any.',
+             true, NULL, 'backfill_dead_letter.run_id', now()),
+            ('v_backfill_status', 'run_status', 'category',
+             'Status of the requested run header associated with this status row.',
+             true, NULL, 'backfill_run.status', now()),
+            ('v_backfill_status', 'run_started_at', 'timestamp',
+             'Run header start timestamp.',
+             true, 'timestamp', 'backfill_run.started_at', now()),
+            ('v_backfill_status', 'run_finished_at', 'timestamp',
+             'Run header finish timestamp, if terminal.',
+             true, 'timestamp', 'backfill_run.finished_at', now()),
+            ('v_backfill_status', 'run_start_date', 'date',
+             'Requested inclusive start date from the run header.',
+             true, 'date', 'backfill_run.start_date', now()),
+            ('v_backfill_status', 'run_end_date', 'date',
+             'Requested exclusive end date from the run header.',
+             true, 'date', 'backfill_run.end_date', now()),
+            ('v_backfill_status', 'run_chunk', 'text',
+             'Requested chunk size label from the run header.',
+             true, NULL, 'backfill_run.chunk', now()),
+            ('v_backfill_status', 'run_error_message', 'text',
+             'Run-level error summary from backfill_run, if the run failed.',
+             true, NULL, 'backfill_run.error_message', now()),
+            ('v_backfill_status', 'partition_updated_at', 'timestamp',
+             'Timestamp when the partition watermark row was last updated.',
+             false, 'timestamp', 'backfill_watermark.updated_at', now())
+        """
+    )
+    _schema_contract_schema_catalog(conn)
+
+
 # Ordered registry of all migrations. Add new entries at the END only.
 MIGRATIONS: list[Migration] = [
     Migration(
@@ -11151,6 +11880,21 @@ MIGRATIONS: list[Migration] = [
         version=131,
         name="pf2_s10_indexes_rebuild",
         up=_pf2_s10_indexes_rebuild,
+    ),
+    Migration(
+        version=132,
+        name="pf3_s1_backfill_schema_catalog",
+        up=_pf3_s1_backfill_schema_catalog,
+    ),
+    Migration(
+        version=133,
+        name="pf3_s1_backfill_indexes",
+        up=_pf3_s1_backfill_indexes,
+    ),
+    Migration(
+        version=134,
+        name="pf3_s1_backfill_status_view",
+        up=_pf3_s1_backfill_status_view,
     ),
 ]
 
