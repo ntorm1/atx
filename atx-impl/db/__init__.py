@@ -354,6 +354,11 @@ from .symbol_directory import (
 from .pricing_bulk import BulkBarsDataset, BulkBarsOptions
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
+from .universe import (
+    GovernedUniverseMembershipDataset,
+    UniverseMembershipOptions,
+    compute_universe_membership_intervals,
+)
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
 from .migrations import (
     MIGRATIONS,
@@ -658,7 +663,10 @@ __all__ = [
     "TickerHistoryDataset",
     "TickerHistoryOptions",
     "UniverseBuildOptions",
+    "UniverseMembershipOptions",
     "UniverseMembershipDataset",
+    "GovernedUniverseMembershipDataset",
+    "compute_universe_membership_intervals",
     "WatermarkRefreshResult",
     "XbrlFilingContextDataset",
     "XbrlFilingContextOptions",

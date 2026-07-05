@@ -587,7 +587,11 @@ _DB_DIR = Path(__file__).resolve().parent
 # Unversioned "always run" bootstrap sources -> declared_in="schema_py".
 _SCHEMA_PY_SOURCE_FILES = ("schema.py", "connection.py")
 # Versioned migration sources -> declared_in="migration".
-_MIGRATION_SOURCE_FILES = ("migrations/_runner.py", "migrations/bodies_0001_0137.py")
+_MIGRATION_SOURCE_FILES = (
+    "migrations/_runner.py",
+    "migrations/bodies_0001_0137.py",
+    "migrations/bodies_0140_0143.py",
+)
 
 _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
 _ALTER_ADD_COLUMN_RE = re.compile(r"ALTER TABLE (\w+) ADD COLUMN(?: IF NOT EXISTS)? (\w+)")

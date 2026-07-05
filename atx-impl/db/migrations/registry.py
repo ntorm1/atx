@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from .bodies_0001_0137 import MIGRATIONS
+from .bodies_0001_0137 import MIGRATIONS as _MIGRATIONS_0001_0137
+from .bodies_0140_0143 import MIGRATIONS as _MIGRATIONS_0140_0143
+
+
+MIGRATIONS = [*_MIGRATIONS_0001_0137, *_MIGRATIONS_0140_0143]
 
 
 def _validate_registry_versions() -> None:
