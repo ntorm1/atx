@@ -592,6 +592,7 @@ _MIGRATION_SOURCE_FILES = (
     "migrations/bodies_0001_0137.py",
     "migrations/bodies_0140_0143.py",
     "migrations/bodies_0144_0147.py",
+    "migrations/bodies_0148_0151.py",
 )
 
 _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")

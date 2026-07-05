@@ -3,7 +3,7 @@
 Covers migrations 0075 (schema + table_catalog/field_catalog seed) and 0076
 (indexes) for ``formula_registry``, plus ``db/formula_library.py``'s seed
 reader/loader (mirrors the item_registry seed pattern: strict
-fieldnames==SEED_COLUMNS csv.DictReader contract, DELETE-by-ids-then-upsert
+fieldnames==SEED_COLUMNS csv.DictReader contract, code-scoped replacement
 in one transaction).
 
 This is the FOUNDATION task: no formula codes are ported here (that is
@@ -63,6 +63,34 @@ SEED_COLUMNS = (
     "citation",
     "valid_from",
     "valid_to",
+)
+
+S6_0_FORMULA_CODES = (
+    "pretax_margin",
+    "effective_tax_rate",
+    "sga_to_revenue",
+    "return_on_capital",
+    "inventory_turnover",
+    "payables_turnover",
+    "working_capital_turnover",
+    "long_term_debt_to_capital",
+    "net_debt_to_capital",
+    "long_term_debt_to_ebitda",
+    "net_debt_to_ebitda",
+    "operating_cash_flow_to_debt",
+    "cash_to_assets",
+    "current_assets_to_assets",
+    "current_liabilities_to_assets",
+    "capex_per_share",
+    "dividends_per_share",
+    "cash_per_share",
+    "price_to_cash_flow",
+    "price_to_free_cash_flow",
+    "ev_to_ebit",
+    "ev_to_fcf",
+    "ev_to_assets",
+    "buyback_yield",
+    "shareholder_yield",
 )
 
 
@@ -175,6 +203,17 @@ def test_migrations_0075_and_0076_recorded(tmp_store):
     versions = {row[0] for row in rows}
     assert 75 in versions, f"Migration 0075 not recorded; found: {sorted(versions)}"
     assert 76 in versions, f"Migration 0076 not recorded; found: {sorted(versions)}"
+
+
+def test_migration_0148_recorded(tmp_store):
+    row = tmp_store.con.execute(
+        """
+        SELECT description
+        FROM schema_migrations
+        WHERE version = '0148'
+        """
+    ).fetchone()
+    assert row == ("pf3_s6_ratio_formula_catalog_expansion",)
 
 
 def test_formula_registry_migration_bodies_are_idempotent(tmp_store):
@@ -316,7 +355,7 @@ def test_read_formula_registry_seed_allows_blank_citation_and_expression(tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# Seed loader (db/formula_library.py) -- DELETE-by-ids-then-upsert in one txn
+# Seed loader (db/formula_library.py) -- code-scoped replacement in one txn
 # ---------------------------------------------------------------------------
 
 
@@ -334,7 +373,13 @@ def test_seed_formula_registry_loads_rows(tmp_store, tmp_path):
     assert count == 2
 
     rows = tmp_store.con.execute(
-        "SELECT formula_code FROM formula_registry ORDER BY formula_code"
+        """
+        SELECT formula_code
+        FROM formula_registry
+        WHERE formula_code = ANY(?)
+        ORDER BY formula_code
+        """,
+        [["net_profit_margin", "return_on_assets"]],
     ).fetchall()
     assert {row[0] for row in rows} == {"net_profit_margin", "return_on_assets"}
 
@@ -372,9 +417,8 @@ def test_seed_formula_registry_reload_replaces_changed_definition(tmp_store, tmp
     assert definition == "Updated definition text."
 
 
-def test_seed_formula_registry_delete_by_ids_removes_stale_rows_only_for_reloaded_codes(tmp_store, tmp_path):
-    """DELETE-by-ids-then-upsert: a formula_code present before but absent from the new
-    seed file is NOT touched (mirrors item_registry's DELETE WHERE item_id = ANY(seed ids))."""
+def test_seed_formula_registry_replacement_leaves_codes_absent_from_seed_untouched(tmp_store, tmp_path):
+    """A formula_code present before but absent from the new seed file is NOT touched."""
     from db.formula_library import seed_formula_registry
 
     first_path = _write_seed_csv(
@@ -391,9 +435,20 @@ def test_seed_formula_registry_delete_by_ids_removes_stale_rows_only_for_reloade
 
     codes = {
         row[0]
-        for row in tmp_store.con.execute("SELECT formula_code FROM formula_registry").fetchall()
+        for row in tmp_store.con.execute(
+            """
+            SELECT formula_code
+            FROM formula_registry
+            WHERE formula_code = ANY(?)
+            """,
+            [["net_profit_margin", "return_on_assets"]],
+        ).fetchall()
     }
     assert codes == {"net_profit_margin", "return_on_assets"}
+    s6_row_count = tmp_store.con.execute(
+        "SELECT count(*) FROM formula_registry WHERE formula_code = 'pretax_margin'"
+    ).fetchone()[0]
+    assert s6_row_count == 1
 
 
 def test_seed_formula_registry_stores_json_and_bitemporal_columns(tmp_store, tmp_path):
@@ -458,6 +513,132 @@ def test_formula_registry_seed_csv_is_stdlib_parseable():
 
     if rows:
         assert tuple(rows[0].keys()) == MODULE_SEED_COLUMNS
+
+
+def test_s6_0_catalog_rows_load_and_parse_through_closed_interpreter():
+    """S6-0 catalog additions stay definition-as-data and use only named operand terms."""
+    import json
+
+    from db.formula_library import eval_operand_term, load_ratio_formula_rows, parse_operand_expression
+
+    expected_codes = set(S6_0_FORMULA_CODES)
+    rows = {row.formula_code: row for row in load_ratio_formula_rows()}
+    assert expected_codes <= set(rows)
+
+    sample = {
+        "assets": 350.0,
+        "capex": -30.0,
+        "cash_and_equivalents": 40.0,
+        "cost_of_revenue": 220.0,
+        "current_assets": 200.0,
+        "current_liabilities": 100.0,
+        "div": -15.0,
+        "enterprise_value": 1150.0,
+        "equity": 60.0,
+        "income_tax": 15.0,
+        "inventory": 30.0,
+        "long_term_debt": 90.0,
+        "market_cap": 1000.0,
+        "accounts_payable": 35.0,
+        "ocf": 130.0,
+        "oi": 120.0,
+        "depreciation_amortization": 25.0,
+        "pretax_income": 115.0,
+        "repurch": -50.0,
+        "rev": 400.0,
+        "selling_general_and_administrative_expense": 44.0,
+        "shares": 15.0,
+    }
+
+    for code in expected_codes:
+        row = rows[code]
+        assert row.expression is not None
+        assert not row.expression.startswith("composite:")
+        assert set(json.loads(row.inputs)) <= set(sample)
+        numerator_term, denominator_term = parse_operand_expression(row.expression)
+        assert eval_operand_term(numerator_term, sample) is not None
+        assert eval_operand_term(denominator_term, sample) is not None
+
+
+def test_migration_0148_seeds_s6_0_catalog_rows_without_seed_loader(tmp_store):
+    """Fresh migrations persist S6-0 formula rows without calling seed_formula_registry()."""
+    rows = tmp_store.con.execute(
+        """
+        SELECT formula_code, family, kind, unit, expression, is_meaningful_rule, valid_from, valid_to
+        FROM formula_registry
+        WHERE formula_code = ANY(?)
+        ORDER BY formula_code
+        """,
+        [list(S6_0_FORMULA_CODES)],
+    ).fetchall()
+    by_code = {row[0]: row for row in rows}
+    assert set(by_code) == set(S6_0_FORMULA_CODES)
+    assert len(rows) == len(S6_0_FORMULA_CODES)
+    assert by_code["pretax_margin"][1:6] == (
+        "profitability",
+        "ratio",
+        "ratio",
+        "key:pretax_income|key:rev",
+        "require_positive_denominator",
+    )
+    assert by_code["capex_per_share"][1:6] == (
+        "per_share",
+        "per_share",
+        "currency_per_share",
+        "abs:capex|key:shares",
+        None,
+    )
+    assert by_code["ev_to_fcf"][1:6] == (
+        "valuation",
+        "ratio",
+        "ratio",
+        "key:enterprise_value|sum:ocf,capex",
+        "require_positive_denominator",
+    )
+    assert all(str(row[6]) == "1900-01-01" for row in rows)
+    assert all(row[7] is None for row in rows)
+
+    view_codes = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT formula_code
+            FROM v_formula_registry
+            WHERE formula_code = ANY(?)
+            """,
+            [list(S6_0_FORMULA_CODES)],
+        ).fetchall()
+    }
+    assert view_codes == set(S6_0_FORMULA_CODES)
+
+
+def test_migration_0148_body_upserts_existing_s6_0_catalog_rows(tmp_store):
+    from db.migrations.bodies_0148_0151 import _pf3_s6_ratio_formula_catalog_expansion
+
+    tmp_store.con.execute(
+        """
+        UPDATE formula_registry
+        SET definition = 'mutated test definition'
+        WHERE formula_code = 'buyback_yield'
+        """
+    )
+    _pf3_s6_ratio_formula_catalog_expansion(tmp_store.con)
+    _pf3_s6_ratio_formula_catalog_expansion(tmp_store.con)
+
+    row = tmp_store.con.execute(
+        """
+        SELECT definition
+        FROM formula_registry
+        WHERE formula_code = 'buyback_yield'
+        """
+    ).fetchone()
+    row_count = tmp_store.con.execute(
+        "SELECT count(*) FROM formula_registry WHERE formula_code = ANY(?)",
+        [list(S6_0_FORMULA_CODES)],
+    ).fetchone()[0]
+
+    assert row == ("Absolute trailing-twelve-month share repurchases divided by market capitalization.",)
+    assert row_count == len(S6_0_FORMULA_CODES)
 
 
 def test_seed_formula_registry_loads_from_committed_seed(tmp_store):

@@ -95,8 +95,12 @@ VALUATION_TTM_INPUTS = {
     "ocf": "operating_cash_flow",
     "capex": "capital_expenditures",
     "div": "dividends_paid",
+    "repurch": "share_repurchases",
 }
-VALUATION_BALANCE_INPUTS = {"equity": "stockholders_equity"}
+VALUATION_BALANCE_INPUTS = {
+    "assets": "assets",
+    "equity": "stockholders_equity",
+}
 VALUATION_XBRL_INSTANT_INPUTS = {
     "long_term_debt": "long_term_debt",
     "cash_and_equivalents": "cash_and_equivalents",
@@ -108,12 +112,15 @@ VALUATION_XBRL_DURATION_INPUTS = {
 VALUATION_INPUT_CODES = {
     "price": "market_cap.close",
     "market_cap": "market_cap.market_cap",
+    "enterprise_value": "valuation_multiples.enterprise_value",
     "rev": "fundamental_ttm_points.revenue",
     "ni": "fundamental_ttm_points.net_income",
     "oi": "fundamental_ttm_points.operating_income",
     "ocf": "fundamental_ttm_points.operating_cash_flow",
     "capex": "fundamental_ttm_points.capital_expenditures",
     "div": "fundamental_ttm_points.dividends_paid",
+    "repurch": "fundamental_ttm_points.share_repurchases",
+    "assets": "fundamental_statement_points.assets",
     "equity": "fundamental_statement_points.stockholders_equity",
     "long_term_debt": "fundamental_xbrl_metric.long_term_debt",
     "cash_and_equivalents": "fundamental_xbrl_metric.cash_and_equivalents",
@@ -213,6 +220,69 @@ VALUATION_FORMULA_DEFS: tuple[ValuationFormulaDef, ...] = (
         "abs_dividends_paid_ttm",
         "market_cap",
         ("div", "market_cap"),
+    ),
+    ValuationFormulaDef(
+        "price_to_cash_flow",
+        "valuation",
+        "ratio",
+        "ratio",
+        "market_cap",
+        "operating_cash_flow_ttm",
+        ("market_cap", "ocf"),
+    ),
+    ValuationFormulaDef(
+        "price_to_free_cash_flow",
+        "valuation",
+        "ratio",
+        "ratio",
+        "market_cap",
+        "free_cash_flow_ttm",
+        ("market_cap", "ocf", "capex"),
+    ),
+    ValuationFormulaDef(
+        "ev_to_ebit",
+        "valuation",
+        "ratio",
+        "ratio",
+        "enterprise_value",
+        "operating_income",
+        ("enterprise_value", "oi"),
+    ),
+    ValuationFormulaDef(
+        "ev_to_fcf",
+        "valuation",
+        "ratio",
+        "ratio",
+        "enterprise_value",
+        "free_cash_flow_ttm",
+        ("enterprise_value", "ocf", "capex"),
+    ),
+    ValuationFormulaDef(
+        "ev_to_assets",
+        "valuation",
+        "ratio",
+        "ratio",
+        "enterprise_value",
+        "assets",
+        ("enterprise_value", "assets"),
+    ),
+    ValuationFormulaDef(
+        "buyback_yield",
+        "valuation",
+        "ratio",
+        "ratio",
+        "abs_share_repurchases_ttm",
+        "market_cap",
+        ("repurch", "market_cap"),
+    ),
+    ValuationFormulaDef(
+        "shareholder_yield",
+        "valuation",
+        "ratio",
+        "ratio",
+        "abs_dividends_plus_repurchases_ttm",
+        "market_cap",
+        ("div", "repurch", "market_cap"),
     ),
 )
 
@@ -670,6 +740,30 @@ def _fundamental_av_columns() -> list[str]:
     return [f"{key}_av" for key in keys]
 
 
+def _synthesize_enterprise_value_inputs(out: pd.DataFrame) -> pd.DataFrame:
+    if "enterprise_value" not in out.columns:
+        out["enterprise_value"] = pd.NA
+    if "enterprise_value_av" not in out.columns:
+        out["enterprise_value_av"] = pd.NaT
+
+    component_columns = ("market_cap", "long_term_debt", "cash_and_equivalents")
+    if all(column in out.columns for column in component_columns):
+        components_present = out[list(component_columns)].notna().all(axis=1)
+        computed = out["market_cap"] + out["long_term_debt"] - out["cash_and_equivalents"]
+        out.loc[out["enterprise_value"].isna() & components_present, "enterprise_value"] = computed[components_present]
+
+    av_columns = ("market_cap_available_at", "long_term_debt_av", "cash_and_equivalents_av")
+    if all(column in out.columns for column in av_columns):
+        av_present = out[list(av_columns)].notna().all(axis=1)
+        computed_av = out[list(av_columns)].max(axis=1)
+        out.loc[out["enterprise_value"].notna() & out["enterprise_value_av"].isna() & av_present, "enterprise_value_av"] = (
+            computed_av[av_present]
+        )
+    out["enterprise_value"] = pd.to_numeric(out["enterprise_value"], errors="coerce")
+    out["enterprise_value_av"] = pd.to_datetime(out["enterprise_value_av"], errors="coerce")
+    return out
+
+
 def _normalize_valuation_inputs(inputs: pd.DataFrame) -> pd.DataFrame:
     out = inputs.copy()
     if "market_cap_source" not in out.columns:
@@ -700,18 +794,27 @@ def _normalize_valuation_inputs(inputs: pd.DataFrame) -> pd.DataFrame:
     out["trade_date"] = pd.to_datetime(out["trade_date"], errors="coerce").dt.date
     out["period_end"] = pd.to_datetime(out["period_end"], errors="coerce").dt.date
     out["period_start"] = pd.to_datetime(out["period_start"], errors="coerce").dt.date
-    for column in ("market_cap_available_at", "price_available_at", "fundamental_available_at", *_fundamental_av_columns()):
+    for column in (
+        "market_cap_available_at",
+        "price_available_at",
+        "fundamental_available_at",
+        "enterprise_value_av",
+        *_fundamental_av_columns(),
+    ):
         if column in out.columns:
             out[column] = pd.to_datetime(out[column], errors="coerce")
     for column in (
         "price",
         "market_cap",
+        "enterprise_value",
         "rev",
         "ni",
         "oi",
         "ocf",
         "capex",
         "div",
+        "repurch",
+        "assets",
         "equity",
         "long_term_debt",
         "cash_and_equivalents",
@@ -719,6 +822,8 @@ def _normalize_valuation_inputs(inputs: pd.DataFrame) -> pd.DataFrame:
     ):
         if column in out.columns:
             out[column] = pd.to_numeric(out[column], errors="coerce")
+
+    out = _synthesize_enterprise_value_inputs(out)
 
     if "fundamental_available_at" not in out.columns:
         av_columns = [column for column in _fundamental_av_columns() if column in out.columns]
@@ -746,7 +851,12 @@ def _select_latest_valuation_inputs(inputs: pd.DataFrame) -> pd.DataFrame:
 
 
 def _input_available_at(rec: dict[str, Any], key: str) -> pd.Timestamp | None:
-    column = "market_cap_available_at" if key == "market_cap" else f"{key}_av"
+    if key == "market_cap":
+        column = "market_cap_available_at"
+    elif key == "enterprise_value":
+        column = "enterprise_value_av"
+    else:
+        column = f"{key}_av"
     return _safe_timestamp(rec.get(column))
 
 
@@ -842,6 +952,46 @@ def _formula_values(
         num, den = (None if div is None else abs(div)), market_cap
         ratio = _ratio_values(num, den)
         return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "price_to_cash_flow":
+        num, den = market_cap, _safe_float(rec.get("ocf"))
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "price_to_free_cash_flow":
+        ocf = _safe_float(rec.get("ocf"))
+        capex = _safe_float(rec.get("capex"))
+        num = market_cap
+        den = None if ocf is None or capex is None else ocf + capex
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "ev_to_ebit":
+        enterprise_value = _safe_float(rec.get("enterprise_value"))
+        den = _safe_float(rec.get("oi"))
+        ratio = _ratio_values(enterprise_value, den, meaningful_gate=bool((market_cap or 0) > 0))
+        return None if ratio is None else (ratio[0], enterprise_value, den, enterprise_value, ratio[1])
+    if definition.code == "ev_to_fcf":
+        enterprise_value = _safe_float(rec.get("enterprise_value"))
+        ocf = _safe_float(rec.get("ocf"))
+        capex = _safe_float(rec.get("capex"))
+        den = None if ocf is None or capex is None else ocf + capex
+        ratio = _ratio_values(enterprise_value, den, meaningful_gate=bool((market_cap or 0) > 0))
+        return None if ratio is None else (ratio[0], enterprise_value, den, enterprise_value, ratio[1])
+    if definition.code == "ev_to_assets":
+        enterprise_value = _safe_float(rec.get("enterprise_value"))
+        den = _safe_float(rec.get("assets"))
+        ratio = _ratio_values(enterprise_value, den, meaningful_gate=bool((market_cap or 0) > 0))
+        return None if ratio is None else (ratio[0], enterprise_value, den, enterprise_value, ratio[1])
+    if definition.code == "buyback_yield":
+        repurch = _safe_float(rec.get("repurch"))
+        num, den = (None if repurch is None else abs(repurch)), market_cap
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
+    if definition.code == "shareholder_yield":
+        div = _safe_float(rec.get("div"))
+        repurch = _safe_float(rec.get("repurch"))
+        num = None if div is None or repurch is None else abs(div) + abs(repurch)
+        den = market_cap
+        ratio = _ratio_values(num, den)
+        return None if ratio is None else (ratio[0], num, den, None, ratio[1])
     raise KeyError(f"unknown valuation formula {definition.code!r}")
 
 
@@ -861,6 +1011,18 @@ def _input_lineage_for_key(rec: dict[str, Any], key: str) -> dict[str, Any]:
             "available_at": rec.get("market_cap_available_at"),
             "price_available_at": rec.get("price_available_at"),
             "upstream_lineage": _safe_json_loads(rec.get("market_cap_input_lineage_json")),
+        }
+    if key == "enterprise_value":
+        return {
+            "table": "derived",
+            "formula": "market_cap + long_term_debt - cash_and_equivalents",
+            "value": rec.get("enterprise_value"),
+            "available_at": rec.get("enterprise_value_av"),
+            "components": {
+                "market_cap": _input_lineage_for_key(rec, "market_cap"),
+                "long_term_debt": _input_lineage_for_key(rec, "long_term_debt"),
+                "cash_and_equivalents": _input_lineage_for_key(rec, "cash_and_equivalents"),
+            },
         }
     if key in VALUATION_TTM_INPUTS:
         return {
@@ -1132,14 +1294,15 @@ def _valuation_fundamental_denominator_count(
                   'operating_income',
                   'operating_cash_flow',
                   'capital_expenditures',
-                  'dividends_paid'
+                  'dividends_paid',
+                  'share_repurchases'
               )
             UNION ALL
             SELECT security_id, symbol, period_end, available_at
             FROM fundamental_statement_points
             WHERE is_latest_revision
               AND period_type = 'instant'
-              AND canonical_metric = 'stockholders_equity'
+              AND canonical_metric IN ('stockholders_equity', 'assets')
             UNION ALL
             SELECT security_id, symbol, period_end, available_at
             FROM fundamental_xbrl_metric
@@ -1465,6 +1628,8 @@ def load_valuation_multiple_inputs(
         "ttm.ocf_av",
         "ttm.capex_av",
         "ttm.div_av",
+        "ttm.repurch_av",
+        "bal.assets_av",
         "bal.equity_av",
         "balx.long_term_debt_av",
         "balx.cash_and_equivalents_av",
@@ -1477,6 +1642,8 @@ def load_valuation_multiple_inputs(
         "ttm.ocf_id",
         "ttm.capex_id",
         "ttm.div_id",
+        "ttm.repurch_id",
+        "bal.assets_id",
         "bal.equity_id",
         "balx.long_term_debt_id",
         "balx.cash_and_equivalents_id",
@@ -1524,7 +1691,7 @@ def load_valuation_multiple_inputs(
             WHERE t.is_latest_revision
               AND t.canonical_metric IN ('revenue', 'net_income', 'operating_income',
                                          'operating_cash_flow', 'capital_expenditures',
-                                         'dividends_paid')
+                                         'dividends_paid', 'share_repurchases')
         ),
         ttm AS (
             SELECT
@@ -1554,7 +1721,7 @@ def load_valuation_multiple_inputs(
             FROM fundamental_statement_points s
             WHERE s.is_latest_revision
               AND s.period_type = 'instant'
-              AND s.canonical_metric = 'stockholders_equity'
+              AND s.canonical_metric IN ('stockholders_equity', 'assets')
         ),
         bal AS (
             SELECT
@@ -1653,6 +1820,8 @@ def load_valuation_multiple_inputs(
                 ttm.ocf, ttm.ocf_av, ttm.ocf_id, ttm.ocf_source,
                 ttm.capex, ttm.capex_av, ttm.capex_id, ttm.capex_source,
                 ttm.div, ttm.div_av, ttm.div_id, ttm.div_source,
+                ttm.repurch, ttm.repurch_av, ttm.repurch_id, ttm.repurch_source,
+                bal.assets, bal.assets_av, bal.assets_id, bal.assets_source,
                 bal.equity, bal.equity_av, bal.equity_id, bal.equity_source,
                 balx.long_term_debt, balx.long_term_debt_av, balx.long_term_debt_id, balx.long_term_debt_source,
                 balx.cash_and_equivalents, balx.cash_and_equivalents_av, balx.cash_and_equivalents_id, balx.cash_and_equivalents_source,
@@ -1687,12 +1856,26 @@ def load_valuation_multiple_inputs(
                 f.ocf, f.ocf_av, f.ocf_id, f.ocf_source,
                 f.capex, f.capex_av, f.capex_id, f.capex_source,
                 f.div, f.div_av, f.div_id, f.div_source,
+                f.repurch, f.repurch_av, f.repurch_id, f.repurch_source,
+                f.assets, f.assets_av, f.assets_id, f.assets_source,
                 f.equity, f.equity_av, f.equity_id, f.equity_source,
                 f.long_term_debt, f.long_term_debt_av, f.long_term_debt_id, f.long_term_debt_source,
                 f.cash_and_equivalents, f.cash_and_equivalents_av,
                 f.cash_and_equivalents_id, f.cash_and_equivalents_source,
                 f.depreciation_amortization, f.depreciation_amortization_av,
                 f.depreciation_amortization_id, f.depreciation_amortization_source,
+                CASE
+                    WHEN mc.market_cap IS NOT NULL
+                     AND f.long_term_debt IS NOT NULL
+                     AND f.cash_and_equivalents IS NOT NULL
+                    THEN mc.market_cap + f.long_term_debt - f.cash_and_equivalents
+                END AS enterprise_value,
+                CASE
+                    WHEN mc.market_cap_available_at IS NOT NULL
+                     AND f.long_term_debt_av IS NOT NULL
+                     AND f.cash_and_equivalents_av IS NOT NULL
+                    THEN greatest(mc.market_cap_available_at, f.long_term_debt_av, f.cash_and_equivalents_av)
+                END AS enterprise_value_av,
                 f.fundamental_available_at,
                 f.fundamental_sort_key,
                 row_number() OVER (
