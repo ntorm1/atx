@@ -155,10 +155,196 @@ def _pf3_s7_factor_definition_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s7_factor_dependency_engine_tables(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S7 S7-1: factor dependency DAG and build-manifest surfaces."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_dependency_edges (
+            dependency_id VARCHAR PRIMARY KEY,
+            factor_id VARCHAR NOT NULL,
+            dependency_type VARCHAR NOT NULL,
+            dependency_name VARCHAR NOT NULL,
+            dependency_factor_id VARCHAR,
+            dependency_metric_id VARCHAR,
+            dependency_source_id VARCHAR,
+            dependency_depth INTEGER NOT NULL,
+            expression VARCHAR,
+            lookback_days INTEGER,
+            is_direct BOOLEAN NOT NULL DEFAULT true,
+            source VARCHAR NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_build_manifests (
+            manifest_id VARCHAR PRIMARY KEY,
+            run_id VARCHAR,
+            factor_ids_json VARCHAR NOT NULL,
+            topological_order_json VARCHAR NOT NULL,
+            input_row_count BIGINT NOT NULL,
+            output_row_count BIGINT NOT NULL,
+            output_min_as_of_date DATE,
+            output_max_as_of_date DATE,
+            min_available_at TIMESTAMP,
+            max_available_at TIMESTAMP,
+            params_json VARCHAR,
+            source VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    from ..factors.engine import legacy_factor_dependency_edges_frame
+
+    edges = legacy_factor_dependency_edges_frame()
+    if not edges.empty:
+        conn.execute("DELETE FROM factor_dependency_edges")
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO factor_dependency_edges (
+                dependency_id,
+                factor_id,
+                dependency_type,
+                dependency_name,
+                dependency_factor_id,
+                dependency_metric_id,
+                dependency_source_id,
+                dependency_depth,
+                expression,
+                lookback_days,
+                is_direct,
+                source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            list(
+                edges[
+                    [
+                        "dependency_id",
+                        "factor_id",
+                        "dependency_type",
+                        "dependency_name",
+                        "dependency_factor_id",
+                        "dependency_metric_id",
+                        "dependency_source_id",
+                        "dependency_depth",
+                        "expression",
+                        "lookback_days",
+                        "is_direct",
+                        "source",
+                    ]
+                ].itertuples(index=False, name=None)
+            ),
+        )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES
+            (
+                'factor_dependency_edges',
+                'atx_warehouse',
+                'Factor dependency DAG edges',
+                'Typed dependency graph linking governed factor definitions to factor, metric, ratio, and source inputs.',
+                'factor_id,dependency_type,dependency_name',
+                'factor_dependency_edges',
+                'updated_at',
+                'updated_at',
+                now()
+            ),
+            (
+                'factor_build_manifests',
+                'atx_warehouse',
+                'Factor engine build manifests',
+                'Per-run factor engine manifest recording target factors, topological order, input/output counts, and availability range.',
+                'manifest_id',
+                'factor_build_manifests',
+                'source_loaded_at',
+                'source_loaded_at',
+                now()
+            )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'factor_dependency_edges',
+                'gold',
+                'factor_dependency',
+                'factor_id,dependency_type,dependency_name',
+                'Typed factor dependency graph extending the legacy feature_dependency_edges concept into the governed factor namespace.',
+                '["dependency_id"]',
+                'Dependency metadata is knowledge-time data. Engine materialization must still enforce available_at <= as-of on value inputs.',
+                now()
+            ),
+            (
+                'factor_build_manifests',
+                'gold',
+                'factor_build_manifest',
+                'manifest_id',
+                'Per-run factor engine manifest with dependency order, row counts, and availability window for deterministic rebuild checks.',
+                '["manifest_id"]',
+                'Manifest availability summarizes the emitted factor rows; downstream PIT readers should use factor value available_at, not manifest timestamps.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("factor_dependency_edges", "factor_build_manifests"))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('factor_dependency_edges', 'dependency_id', 'identifier', 'Stable hash identifier for this factor dependency edge.', false, NULL, NULL, now()),
+            ('factor_dependency_edges', 'factor_id', 'identifier', 'Governed factor id from factor_definition.', false, NULL, 'factor_definition.factor_id', now()),
+            ('factor_dependency_edges', 'dependency_type', 'category', 'Dependency namespace: factor, metric, ratio, or source.', false, NULL, NULL, now()),
+            ('factor_dependency_edges', 'dependency_name', 'identifier', 'Dependency identifier inside dependency_type.', false, NULL, NULL, now()),
+            ('factor_dependency_edges', 'dependency_factor_id', 'identifier', 'Referenced factor id when dependency_type=factor.', true, NULL, 'factor_definition.factor_id', now()),
+            ('factor_dependency_edges', 'dependency_metric_id', 'identifier', 'Referenced metric or ratio id when dependency_type=metric/ratio.', true, NULL, 'v_metric_catalog.metric_code', now()),
+            ('factor_dependency_edges', 'dependency_source_id', 'identifier', 'Referenced source table or external source id when dependency_type=source.', true, NULL, NULL, now()),
+            ('factor_dependency_edges', 'dependency_depth', 'count', 'Dependency depth in the declared factor DAG. S7-1 seeds direct edges at depth 1.', false, 'count', NULL, now()),
+            ('factor_dependency_edges', 'expression', 'text', 'Factor expression associated with the dependency edge.', true, NULL, 'factor_definition.expression', now()),
+            ('factor_dependency_edges', 'lookback_days', 'duration', 'Declared lookback inherited from factor_definition.', true, 'days', 'factor_definition.lookback_days', now()),
+            ('factor_dependency_edges', 'is_direct', 'flag', 'True when this is a direct declared dependency.', false, 'boolean', NULL, now()),
+            ('factor_dependency_edges', 'source', 'identifier', 'Source module that produced the edge row.', false, NULL, NULL, now()),
+            ('factor_build_manifests', 'manifest_id', 'identifier', 'Stable manifest id for a factor engine build.', false, NULL, NULL, now()),
+            ('factor_build_manifests', 'run_id', 'identifier', 'Optional caller-supplied run id.', true, NULL, NULL, now()),
+            ('factor_build_manifests', 'factor_ids_json', 'json', 'JSON list of target factor ids in the build.', false, NULL, NULL, now()),
+            ('factor_build_manifests', 'topological_order_json', 'json', 'JSON list of dependency-first factor ids visited by the engine.', false, NULL, NULL, now()),
+            ('factor_build_manifests', 'input_row_count', 'count', 'Input factor value rows read by the engine.', false, 'count', NULL, now()),
+            ('factor_build_manifests', 'output_row_count', 'count', 'Output factor rows emitted by the engine.', false, 'count', NULL, now()),
+            ('factor_build_manifests', 'output_min_as_of_date', 'date', 'Minimum as-of date emitted by the build.', true, 'date', NULL, now()),
+            ('factor_build_manifests', 'output_max_as_of_date', 'date', 'Maximum as-of date emitted by the build.', true, 'date', NULL, now()),
+            ('factor_build_manifests', 'min_available_at', 'timestamp', 'Minimum factor availability timestamp emitted by the build.', true, 'timestamp', NULL, now()),
+            ('factor_build_manifests', 'max_available_at', 'timestamp', 'Maximum factor availability timestamp emitted by the build.', true, 'timestamp', NULL, now()),
+            ('factor_build_manifests', 'params_json', 'json', 'Build parameter payload.', true, NULL, NULL, now()),
+            ('factor_build_manifests', 'source', 'identifier', 'Source module that produced the manifest.', false, NULL, NULL, now()),
+            ('factor_build_manifests', 'source_loaded_at', 'timestamp', 'Warehouse timestamp when the manifest row was loaded.', false, 'timestamp', NULL, now())
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=152,
         name="pf3_s7_factor_definition_catalog",
         up=_pf3_s7_factor_definition_catalog,
+    ),
+    Migration(
+        version=153,
+        name="pf3_s7_factor_dependency_engine_tables",
+        up=_pf3_s7_factor_dependency_engine_tables,
     ),
 ]
