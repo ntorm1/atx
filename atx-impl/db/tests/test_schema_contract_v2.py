@@ -12,7 +12,14 @@ from db.connection import DuckDBStore
 from db.migrations import MIGRATIONS
 from db.quality import pit_column_presence_check
 from db.schema import ensure_quant_schema
-from db.schema_contract import CONTRACT, ColumnSpec, build_contract_manifest, schema_contract_sha256
+from db.schema_contract import (
+    CONTRACT,
+    ColumnSpec,
+    _infer_semantic_sign,
+    _infer_semantic_unit,
+    build_contract_manifest,
+    schema_contract_sha256,
+)
 
 
 def _bootstrap_through_migration_0134(store: DuckDBStore) -> None:
@@ -387,6 +394,51 @@ def test_every_manifest_fact_column_resolves_unit_sign_and_scale(tmp_store):
     assert missing == {}
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "shares_change_pct",
+        "net_call_share_change_pct",
+        "holder_count_change_pct",
+        "market_share_growth",
+    ],
+)
+def test_semantic_unit_inference_prefers_ratio_markers_before_share_tokens(name):
+    assert _infer_semantic_unit(name, "DOUBLE") == "ratio"
+
+
+@pytest.mark.parametrize(
+    ("name", "data_type", "unit"),
+    [
+        ("shares_change", "DOUBLE", "shares"),
+        ("net_call_share_change", "DOUBLE", "count"),
+        ("holder_count_change", "BIGINT", "ratio"),
+        ("cash_amount_delta", "DOUBLE", "USD"),
+    ],
+)
+def test_semantic_sign_inference_treats_change_delta_net_values_as_signed(name, data_type, unit):
+    assert _infer_semantic_sign(name, data_type, unit) == "signed"
+
+
+def test_semantic_sign_inference_keeps_percentile_change_bounded():
+    assert _infer_semantic_sign("short_interest_change_pct_percentile", "DOUBLE", "ratio") == "unit_interval"
+
+
+def test_manifest_change_delta_net_examples_are_signed(tmp_store):
+    manifest = build_contract_manifest(tmp_store.con)
+    expected = {
+        ("thirteenf_position_metrics", "shares_change"): ("shares", "signed"),
+        ("thirteenf_position_metrics", "shares_change_pct"): ("ratio", "signed"),
+        ("thirteenf_option_metrics", "net_call_share_change"): ("count", "signed"),
+        ("thirteenf_option_metrics", "net_call_share_change_pct"): ("ratio", "signed"),
+        ("thirteenf_concentration_metrics", "holder_count_change"): ("ratio", "signed"),
+    }
+
+    for (table_name, column_name), (unit, sign) in expected.items():
+        spec = {spec.name: spec for spec in manifest[table_name]}[column_name]
+        assert (spec.unit, spec.sign) == (unit, sign)
+
+
 def test_persisted_schema_contract_fact_rows_have_semantics(tmp_store):
     manifest = build_contract_manifest(tmp_store.con)
     fact_tables = {table_name for table_name, specs in manifest.items() if any(spec.is_pit_column for spec in specs)}
@@ -429,6 +481,43 @@ def test_contract_table_column_uses_field_catalog_unit_fallback(tmp_store):
     assert contract_applied_at.unit is None
     assert manifest_applied_at.unit == "timestamp"
     assert persisted_unit == "timestamp"
+
+
+def test_migration_0136_prunes_stale_snapshot_row_without_hash_pollution(tmp_store):
+    tmp_store.con.execute(
+        """
+        INSERT OR REPLACE INTO schema_contract (
+            table_name, column_name, data_type, nullable, is_natural_key, is_pit_column,
+            declared_in, manifest_sha256, source_loaded_at, unit, sign, scale, natural_key
+        )
+        VALUES (
+            '_schema_contract_0136_existing', 'table_name', 'VARCHAR', false, false, false,
+            'migration', 'stale-temp-hash', ?, 'identifier', 'bounded', 'nominal', false
+        )
+        """,
+        [dt.datetime(2001, 1, 1)],
+    )
+
+    _migration_0136().up(tmp_store.con)
+    manifest = build_contract_manifest(tmp_store.con)
+    manifest_sha = schema_contract_sha256(manifest)
+    hashes = {
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT DISTINCT manifest_sha256 FROM schema_contract"
+        ).fetchall()
+    }
+    stale_count = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM schema_contract
+        WHERE table_name = '_schema_contract_0136_existing'
+        """
+    ).fetchone()[0]
+
+    assert "_schema_contract_0136_existing" not in manifest
+    assert stale_count == 0
+    assert hashes == {manifest_sha}
 
 
 def test_migration_0136_schema_contract_semantic_seed_is_idempotent(tmp_store):

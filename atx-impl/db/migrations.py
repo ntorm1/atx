@@ -11513,7 +11513,80 @@ def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
-    indexed_tables = (
+    existing_tables = {
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE schema_name = 'main'
+              AND coalesce(internal, false) = false
+            """
+        ).fetchall()
+    }
+
+    def _execute_if_table_exists(table_name: str, statement: str) -> None:
+        if table_name in existing_tables:
+            conn.execute(statement)
+
+    for view_name in (
+        "v_alpha_daily_panel",
+        "v_equity_daily_returns",
+        "v_fundamental_points_latest",
+        "v_fundamental_ttm_latest",
+        "v_fundamental_periods_latest",
+        "v_macro_latest",
+    ):
+        conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+
+    # Do not drop/recreate legacy secondary indexes around these ALTERs: recreating
+    # them in this transaction trips DuckDB's BoundIndex delta-index path.
+    for table_name, statement in (
+        ("adjustment_factor_history", "ALTER TABLE adjustment_factor_history ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("blockholder_filing", "ALTER TABLE blockholder_filing ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("congressional_disclosure", "ALTER TABLE congressional_disclosure ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("corporate_actions", "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("equity_daily_bars", "ALTER TABLE equity_daily_bars ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("filing_form4", "ALTER TABLE filing_form4 ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("filing_nport", "ALTER TABLE filing_nport ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("fund_holding", "ALTER TABLE fund_holding ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("fundamental_fact_revisions", "ALTER TABLE fundamental_fact_revisions ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("proxy_vote", "ALTER TABLE proxy_vote ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("sec_company_facts", "ALTER TABLE sec_company_facts ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+        ("thirteenf_manager_reports", "ALTER TABLE thirteenf_manager_reports ADD COLUMN IF NOT EXISTS as_of_date DATE"),
+    ):
+        _execute_if_table_exists(table_name, statement)
+
+    # Avoid default-bearing ALTERs on these populated legacy tables; backfill instead.
+    for table_name in ("alpha_signal_values", "feature_values"):
+        _execute_if_table_exists(
+            table_name,
+            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP",
+        )
+        _execute_if_table_exists(
+            table_name,
+            f"""
+            UPDATE {table_name}
+            SET source_loaded_at = computed_at
+            WHERE source_loaded_at IS NULL
+            """,
+        )
+
+    for table_name, statement in (
+        ("fundamental_periods", "ALTER TABLE fundamental_periods ADD COLUMN IF NOT EXISTS run_id VARCHAR"),
+        ("fundamental_ttm_points", "ALTER TABLE fundamental_ttm_points ADD COLUMN IF NOT EXISTS run_id VARCHAR"),
+        ("macro_observations", "ALTER TABLE macro_observations ADD COLUMN IF NOT EXISTS run_id VARCHAR"),
+    ):
+        _execute_if_table_exists(table_name, statement)
+
+    for table_name, statement in (
+        ("nasdaq_listing_events", "ALTER TABLE nasdaq_listing_events ADD COLUMN IF NOT EXISTS available_at TIMESTAMP"),
+        ("nasdaq_symbol_directory", "ALTER TABLE nasdaq_symbol_directory ADD COLUMN IF NOT EXISTS available_at TIMESTAMP"),
+    ):
+        _execute_if_table_exists(table_name, statement)
+
+    # Same pattern here: nullable ADD COLUMN first, then explicit population.
+    latest_revision_tables = (
         "adjustment_factor_history",
         "alpha_signal_values",
         "blockholder_filing",
@@ -11542,10 +11615,7 @@ def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
         "form144_intent",
         "form144_to_form4_link",
         "fund_holding",
-        "fundamental_fact_revisions",
-        "fundamental_periods",
         "fundamental_points",
-        "fundamental_ttm_points",
         "identifier_resolution_candidates",
         "identifier_resolution_decisions",
         "insider_holding",
@@ -11566,149 +11636,38 @@ def _pf3_s2_pit_gap_close(conn: duckdb.DuckDBPyConnection) -> None:
         "tradingplan_10b5_1",
         "universe_memberships",
     )
-    table_list = ", ".join(f"'{name}'" for name in indexed_tables)
-    index_rows = conn.execute(
-        f"""
-        SELECT index_name, sql
-        FROM duckdb_indexes()
-        WHERE schema_name = 'main'
-          AND table_name IN ({table_list})
-        ORDER BY index_name
-        """
-    ).fetchall()
-
-    for view_name in (
-        "v_alpha_daily_panel",
-        "v_equity_daily_returns",
-        "v_fundamental_points_latest",
-        "v_fundamental_ttm_latest",
-        "v_fundamental_periods_latest",
-        "v_macro_latest",
-    ):
-        conn.execute(f"DROP VIEW IF EXISTS {view_name}")
-    for index_name, _sql in index_rows:
-        conn.execute(f"DROP INDEX IF EXISTS {index_name}")
-
-    for statement in (
-        "ALTER TABLE adjustment_factor_history ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE blockholder_filing ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE congressional_disclosure ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE equity_daily_bars ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE filing_form4 ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE filing_nport ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE fund_holding ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE fundamental_fact_revisions ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE proxy_vote ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE sec_company_facts ADD COLUMN IF NOT EXISTS as_of_date DATE",
-        "ALTER TABLE thirteenf_manager_reports ADD COLUMN IF NOT EXISTS as_of_date DATE",
-    ):
-        conn.execute(statement)
-
-    for table_name in ("alpha_signal_values", "feature_values"):
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS source_loaded_at TIMESTAMP")
-        conn.execute(
-            f"""
-            UPDATE {table_name}
-            SET source_loaded_at = computed_at
-            WHERE source_loaded_at IS NULL
-            """
+    for table_name in latest_revision_tables:
+        _execute_if_table_exists(
+            table_name,
+            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN",
         )
-        conn.execute(
-            f"ALTER TABLE {table_name} ALTER COLUMN source_loaded_at SET DEFAULT now()"
+        _execute_if_table_exists(
+            table_name,
+            f"UPDATE {table_name} SET is_latest_revision = true WHERE is_latest_revision IS NULL",
         )
 
-    for statement in (
-        "ALTER TABLE fundamental_periods ADD COLUMN IF NOT EXISTS run_id VARCHAR",
-        "ALTER TABLE fundamental_ttm_points ADD COLUMN IF NOT EXISTS run_id VARCHAR",
-        "ALTER TABLE macro_observations ADD COLUMN IF NOT EXISTS run_id VARCHAR",
+    for table_name, statement in (
+        ("adjustment_factor_history", "UPDATE adjustment_factor_history SET as_of_date = ex_date WHERE as_of_date IS NULL"),
+        ("blockholder_filing", "UPDATE blockholder_filing SET as_of_date = coalesce(event_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("congressional_disclosure", "UPDATE congressional_disclosure SET as_of_date = coalesce(transaction_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("corporate_actions", "UPDATE corporate_actions SET as_of_date = ex_date WHERE as_of_date IS NULL"),
+        ("equity_daily_bars", "UPDATE equity_daily_bars SET as_of_date = trade_date WHERE as_of_date IS NULL"),
+        ("filing_form4", "UPDATE filing_form4 SET as_of_date = coalesce(period_of_report, filing_date, CAST(acceptance_datetime AS DATE), CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("filing_nport", "UPDATE filing_nport SET as_of_date = period_of_report WHERE as_of_date IS NULL"),
+        ("fund_holding", "UPDATE fund_holding SET as_of_date = period_of_report WHERE as_of_date IS NULL"),
+        ("fundamental_fact_revisions", "UPDATE fundamental_fact_revisions SET as_of_date = filed_date WHERE as_of_date IS NULL"),
+        ("proxy_vote", "UPDATE proxy_vote SET as_of_date = coalesce(meeting_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL"),
+        ("sec_company_facts", "UPDATE sec_company_facts SET as_of_date = filed_date WHERE as_of_date IS NULL"),
+        ("thirteenf_manager_reports", "UPDATE thirteenf_manager_reports SET as_of_date = report_period WHERE as_of_date IS NULL"),
+        ("alpha_signal_values", "UPDATE alpha_signal_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL"),
+        ("feature_values", "UPDATE feature_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL"),
+        ("nasdaq_listing_events", "UPDATE nasdaq_listing_events SET available_at = coalesce(source_file_created_at, source_loaded_at) WHERE available_at IS NULL"),
+        ("nasdaq_symbol_directory", "UPDATE nasdaq_symbol_directory SET available_at = source_loaded_at WHERE available_at IS NULL"),
+        ("finra_short_volume", "UPDATE finra_short_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest"),
+        ("offexchange_volume", "UPDATE offexchange_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest"),
+        ("form144_intent", "UPDATE form144_intent SET is_latest_revision = coalesce(is_latest, true) WHERE is_latest_revision IS DISTINCT FROM coalesce(is_latest, true)"),
     ):
-        conn.execute(statement)
-
-    for statement in (
-        "ALTER TABLE nasdaq_listing_events ADD COLUMN IF NOT EXISTS available_at TIMESTAMP",
-        "ALTER TABLE nasdaq_symbol_directory ADD COLUMN IF NOT EXISTS available_at TIMESTAMP",
-    ):
-        conn.execute(statement)
-
-    for statement in (
-        "ALTER TABLE adjustment_factor_history ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE alpha_signal_values ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE blockholder_filing ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE congressional_disclosure ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE daily_adjustment_factors ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE delisting_events ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE delisting_return_observations ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE entity_classification ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE entity_parent_edges ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE equity_daily_bars ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_actual ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_consensus ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_detail ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_guidance ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_recommendation ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_recommendation_summary ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_security_link ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE est_surprise ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE exchange_listings ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE feature_values ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE filer_13f_cik_alias ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE filing_form4 ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE filing_nport ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE finra_short_volume ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE form144_intent ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE form144_to_form4_link ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE fund_holding ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE fundamental_points ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE identifier_resolution_candidates ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE identifier_resolution_decisions ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE insider_holding ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE insider_relationship ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE insider_transaction ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE listing_status_intervals ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE macro_observations ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE nasdaq_listing_events ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE nasdaq_symbol_directory ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE offexchange_security_period ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE offexchange_volume ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE proxy_vote ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE sec_company_facts ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE security_identifier_history ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE thirteenf_manager_reports ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE thirteenf_security_ownership ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE thirteenf_security_positions ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE tradingplan_10b5_1 ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-        "ALTER TABLE universe_memberships ADD COLUMN IF NOT EXISTS is_latest_revision BOOLEAN DEFAULT true",
-    ):
-        conn.execute(statement)
-
-    for statement in (
-        "UPDATE adjustment_factor_history SET as_of_date = ex_date WHERE as_of_date IS NULL",
-        "UPDATE blockholder_filing SET as_of_date = coalesce(event_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
-        "UPDATE congressional_disclosure SET as_of_date = coalesce(transaction_date, filing_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
-        "UPDATE corporate_actions SET as_of_date = ex_date WHERE as_of_date IS NULL",
-        "UPDATE equity_daily_bars SET as_of_date = trade_date WHERE as_of_date IS NULL",
-        "UPDATE filing_form4 SET as_of_date = coalesce(period_of_report, filing_date, CAST(acceptance_datetime AS DATE), CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
-        "UPDATE filing_nport SET as_of_date = period_of_report WHERE as_of_date IS NULL",
-        "UPDATE fund_holding SET as_of_date = period_of_report WHERE as_of_date IS NULL",
-        "UPDATE fundamental_fact_revisions SET as_of_date = filed_date WHERE as_of_date IS NULL",
-        "UPDATE proxy_vote SET as_of_date = coalesce(meeting_date, CAST(available_at AS DATE), CAST(source_loaded_at AS DATE)) WHERE as_of_date IS NULL",
-        "UPDATE sec_company_facts SET as_of_date = filed_date WHERE as_of_date IS NULL",
-        "UPDATE thirteenf_manager_reports SET as_of_date = report_period WHERE as_of_date IS NULL",
-        "UPDATE alpha_signal_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL",
-        "UPDATE feature_values SET source_loaded_at = coalesce(source_loaded_at, computed_at) WHERE source_loaded_at IS NULL",
-        "UPDATE nasdaq_listing_events SET available_at = coalesce(source_file_created_at, source_loaded_at) WHERE available_at IS NULL",
-        "UPDATE nasdaq_symbol_directory SET available_at = source_loaded_at WHERE available_at IS NULL",
-        "UPDATE finra_short_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest",
-        "UPDATE offexchange_volume SET is_latest_revision = is_latest WHERE is_latest_revision IS DISTINCT FROM is_latest",
-        "UPDATE form144_intent SET is_latest_revision = coalesce(is_latest, true) WHERE is_latest_revision IS DISTINCT FROM coalesce(is_latest, true)",
-    ):
-        conn.execute(statement)
-
-    for _index_name, sql in index_rows:
-        if sql:
-            conn.execute(sql)
+        _execute_if_table_exists(table_name, statement)
 
     _pf3_s2_recreate_pit_gap_views(conn)
 
@@ -11795,9 +11754,23 @@ def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
     ):
         conn.execute(statement)
 
-    conn.execute(
+    existing_columns = [
+        "table_name",
+        "column_name",
+        "data_type",
+        "nullable",
+        "is_natural_key",
+        "is_pit_column",
+        "declared_in",
+        "manifest_sha256",
+        "source_loaded_at",
+        "unit",
+        "sign",
+        "scale",
+        "natural_key",
+    ]
+    existing_rows = conn.execute(
         """
-        CREATE TEMP TABLE _schema_contract_0136_existing AS
         SELECT
             table_name,
             column_name,
@@ -11814,7 +11787,16 @@ def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
             natural_key
         FROM schema_contract
         """
-    )
+    ).fetchall()
+    import pandas as pd
+
+    existing_snapshot = pd.DataFrame.from_records(existing_rows, columns=existing_columns)
+    conn.execute("DROP TABLE IF EXISTS _schema_contract_0136_existing")
+    try:
+        conn.unregister("_schema_contract_0136_existing")
+    except Exception:
+        pass
+
     try:
         _schema_contract_schema_catalog(conn)
 
@@ -11849,8 +11831,6 @@ def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
             for spec in specs
         ]
 
-        import pandas as pd
-
         seed = pd.DataFrame.from_records(
             rows,
             columns=[
@@ -11863,90 +11843,105 @@ def _pf3_s2_schema_contract_semantics(conn: duckdb.DuckDBPyConnection) -> None:
                 "manifest_sha256",
             ],
         )
-        conn.register("_schema_contract_semantic_seed", seed)
+        conn.register("_schema_contract_0136_existing", existing_snapshot)
         try:
-            conn.execute(
-                """
-                CREATE TEMP TABLE _schema_contract_semantic_changed AS
-                SELECT
-                    seed.table_name,
-                    seed.column_name,
-                    seed.unit,
-                    seed.sign,
-                    seed.scale,
-                    seed.natural_key,
-                    seed.manifest_sha256,
-                    existing.source_loaded_at AS existing_source_loaded_at,
-                    existing.table_name IS NOT NULL
-                        AND sc.data_type IS NOT DISTINCT FROM existing.data_type
-                        AND sc.nullable IS NOT DISTINCT FROM existing.nullable
-                        AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
-                        AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
-                        AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
-                        AND seed.unit IS NOT DISTINCT FROM existing.unit
-                        AND seed.sign IS NOT DISTINCT FROM existing.sign
-                        AND seed.scale IS NOT DISTINCT FROM existing.scale
-                        AND seed.natural_key IS NOT DISTINCT FROM existing.is_natural_key
-                        AS preserve_source_loaded_at
-                FROM schema_contract AS sc
-                JOIN _schema_contract_semantic_seed AS seed
-                  ON sc.table_name = seed.table_name
-                 AND sc.column_name = seed.column_name
-                LEFT JOIN _schema_contract_0136_existing AS existing
-                  ON sc.table_name = existing.table_name
-                 AND sc.column_name = existing.column_name
-                WHERE sc.table_name = seed.table_name
-                  AND sc.column_name = seed.column_name
-                  AND (
-                      sc.unit IS DISTINCT FROM seed.unit
-                      OR sc.sign IS DISTINCT FROM seed.sign
-                      OR sc.scale IS DISTINCT FROM seed.scale
-                      OR sc.natural_key IS DISTINCT FROM seed.natural_key
-                      OR sc.manifest_sha256 IS DISTINCT FROM seed.manifest_sha256
-                  )
-                """
-            )
+            conn.register("_schema_contract_semantic_seed", seed)
+            try:
+                conn.execute(
+                    """
+                    DELETE FROM schema_contract AS sc
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM _schema_contract_semantic_seed AS seed
+                        WHERE seed.table_name = sc.table_name
+                          AND seed.column_name = sc.column_name
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TEMP TABLE _schema_contract_semantic_changed AS
+                    SELECT
+                        seed.table_name,
+                        seed.column_name,
+                        seed.unit,
+                        seed.sign,
+                        seed.scale,
+                        seed.natural_key,
+                        seed.manifest_sha256,
+                        CAST(existing.source_loaded_at AS TIMESTAMP) AS existing_source_loaded_at,
+                        existing.table_name IS NOT NULL
+                            AND sc.data_type IS NOT DISTINCT FROM existing.data_type
+                            AND sc.nullable IS NOT DISTINCT FROM existing.nullable
+                            AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                            AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
+                            AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
+                            AND seed.unit IS NOT DISTINCT FROM existing.unit
+                            AND seed.sign IS NOT DISTINCT FROM existing.sign
+                            AND seed.scale IS NOT DISTINCT FROM existing.scale
+                            AND seed.natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                            AS preserve_source_loaded_at
+                    FROM schema_contract AS sc
+                    JOIN _schema_contract_semantic_seed AS seed
+                      ON sc.table_name = seed.table_name
+                     AND sc.column_name = seed.column_name
+                    LEFT JOIN _schema_contract_0136_existing AS existing
+                      ON sc.table_name = existing.table_name
+                     AND sc.column_name = existing.column_name
+                    WHERE sc.table_name = seed.table_name
+                      AND sc.column_name = seed.column_name
+                      AND (
+                          sc.unit IS DISTINCT FROM seed.unit
+                          OR sc.sign IS DISTINCT FROM seed.sign
+                          OR sc.scale IS DISTINCT FROM seed.scale
+                          OR sc.natural_key IS DISTINCT FROM seed.natural_key
+                          OR sc.manifest_sha256 IS DISTINCT FROM seed.manifest_sha256
+                      )
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE schema_contract AS sc
+                    SET
+                        unit = changed.unit,
+                        sign = changed.sign,
+                        scale = changed.scale,
+                        natural_key = changed.natural_key,
+                        manifest_sha256 = changed.manifest_sha256,
+                        source_loaded_at = CASE
+                            WHEN changed.preserve_source_loaded_at THEN changed.existing_source_loaded_at
+                            ELSE CAST(now() AS TIMESTAMP)
+                        END
+                    FROM _schema_contract_semantic_changed AS changed
+                    WHERE sc.table_name = changed.table_name
+                      AND sc.column_name = changed.column_name
+                    """
+                )
+            finally:
+                conn.execute("DROP TABLE IF EXISTS _schema_contract_semantic_changed")
+                conn.unregister("_schema_contract_semantic_seed")
+
             conn.execute(
                 """
                 UPDATE schema_contract AS sc
                 SET
-                    unit = changed.unit,
-                    sign = changed.sign,
-                    scale = changed.scale,
-                    natural_key = changed.natural_key,
-                    manifest_sha256 = changed.manifest_sha256,
-                    source_loaded_at = CASE
-                        WHEN changed.preserve_source_loaded_at THEN changed.existing_source_loaded_at
-                        ELSE now()
-                    END
-                FROM _schema_contract_semantic_changed AS changed
-                WHERE sc.table_name = changed.table_name
-                  AND sc.column_name = changed.column_name
+                    source_loaded_at = CAST(existing.source_loaded_at AS TIMESTAMP)
+                FROM _schema_contract_0136_existing AS existing
+                WHERE sc.table_name = existing.table_name
+                  AND sc.column_name = existing.column_name
+                  AND sc.data_type IS NOT DISTINCT FROM existing.data_type
+                  AND sc.nullable IS NOT DISTINCT FROM existing.nullable
+                  AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
+                  AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
+                  AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
+                  AND sc.unit IS NOT DISTINCT FROM existing.unit
+                  AND sc.sign IS NOT DISTINCT FROM existing.sign
+                  AND sc.scale IS NOT DISTINCT FROM existing.scale
+                  AND sc.natural_key IS NOT DISTINCT FROM existing.is_natural_key
                 """
             )
         finally:
-            conn.execute("DROP TABLE IF EXISTS _schema_contract_semantic_changed")
-            conn.unregister("_schema_contract_semantic_seed")
-
-        conn.execute(
-            """
-            UPDATE schema_contract AS sc
-            SET
-                source_loaded_at = existing.source_loaded_at
-            FROM _schema_contract_0136_existing AS existing
-            WHERE sc.table_name = existing.table_name
-              AND sc.column_name = existing.column_name
-              AND sc.data_type IS NOT DISTINCT FROM existing.data_type
-              AND sc.nullable IS NOT DISTINCT FROM existing.nullable
-              AND sc.is_natural_key IS NOT DISTINCT FROM existing.is_natural_key
-              AND sc.is_pit_column IS NOT DISTINCT FROM existing.is_pit_column
-              AND sc.declared_in IS NOT DISTINCT FROM existing.declared_in
-              AND sc.unit IS NOT DISTINCT FROM existing.unit
-              AND sc.sign IS NOT DISTINCT FROM existing.sign
-              AND sc.scale IS NOT DISTINCT FROM existing.scale
-              AND sc.natural_key IS NOT DISTINCT FROM existing.is_natural_key
-            """
-        )
+            conn.unregister("_schema_contract_0136_existing")
     finally:
         conn.execute("DROP TABLE IF EXISTS _schema_contract_0136_existing")
 

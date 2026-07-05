@@ -615,33 +615,30 @@ def _fetch_field_catalog_units(con) -> dict[tuple[str, str], str]:
     return {(str(table_name), str(field_name)): str(unit) for table_name, field_name, unit in rows}
 
 
+_SIGNED_SEMANTIC_TOKENS = frozenset({"change", "delta", "growth", "net", "return", "returns"})
+_RATIO_UNIT_TOKENS = frozenset({"growth", "pct", "percent", "percentage", "percentile", "ratio", "return", "returns", "weight"})
+_NON_NEGATIVE_NAME_TOKENS = frozenset({"amount", "count", "price", "quantity", "share", "shares", "volume"})
+
+
+def _semantic_tokens(name: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", name.lower()))
+
+
+def _has_signed_semantic(name: str) -> bool:
+    lower = name.lower()
+    tokens = _semantic_tokens(name)
+    return bool(tokens & _SIGNED_SEMANTIC_TOKENS) or lower.startswith("ret_")
+
+
+def _has_ratio_unit_semantic(name: str) -> bool:
+    lower = name.lower()
+    tokens = _semantic_tokens(name)
+    return bool(tokens & _RATIO_UNIT_TOKENS) or lower.startswith("ret_")
+
+
 def _infer_semantic_unit(name: str, data_type: str) -> str:
     lower = name.lower()
     dtype = data_type.upper()
-    if lower.endswith("_usd") or lower in {
-        "value_usd",
-        "cash_amount",
-        "dollar_volume",
-        "market_cap",
-        "close",
-        "open",
-        "high",
-        "low",
-        "vwap",
-    }:
-        return "USD"
-    if "volume" in lower or "share" in lower or "quantity" in lower or lower.endswith("_count"):
-        return "shares"
-    if "percentile" in lower:
-        return "ratio"
-    if (
-        "percent" in lower
-        or lower.endswith("_return")
-        or lower.startswith("ret_")
-        or "ratio" in lower
-        or "weight" in lower
-    ):
-        return "ratio"
     if lower.endswith("_date") or dtype == "DATE" or lower in {"valid_from", "valid_to"}:
         return "date"
     if lower.endswith("_at") or "TIMESTAMP" in dtype or "DATETIME" in dtype:
@@ -661,6 +658,22 @@ def _infer_semantic_unit(name: str, data_type: str) -> str:
         "run_id",
     }:
         return "identifier"
+    if lower.endswith("_usd") or lower in {
+        "value_usd",
+        "cash_amount",
+        "dollar_volume",
+        "market_cap",
+        "close",
+        "open",
+        "high",
+        "low",
+        "vwap",
+    }:
+        return "USD"
+    if _has_ratio_unit_semantic(name):
+        return "ratio"
+    if "volume" in lower or "share" in lower or "quantity" in lower or lower.endswith("_count"):
+        return "shares"
     if any(token in lower for token in ("code", "type", "status", "category", "source")) or "VARCHAR" in dtype:
         return "category"
     return "dimensionless"
@@ -669,6 +682,8 @@ def _infer_semantic_unit(name: str, data_type: str) -> str:
 def _infer_semantic_sign(name: str, data_type: str, unit: str) -> str:
     lower = name.lower()
     dtype = data_type.upper()
+    tokens = _semantic_tokens(name)
+    unit_lower = unit.lower()
     if (
         unit in {"date", "timestamp", "flag", "identifier", "category", "json"}
         or "VARCHAR" in dtype
@@ -677,11 +692,13 @@ def _infer_semantic_sign(name: str, data_type: str, unit: str) -> str:
         return "bounded"
     if "percentile" in lower or lower in {"weight", "confidence", "extraction_confidence"}:
         return "unit_interval"
-    if any(token in lower for token in ("volume", "share", "quantity", "count", "price", "market_cap", "amount")):
+    if _has_signed_semantic(name):
+        return "signed"
+    if tokens & _NON_NEGATIVE_NAME_TOKENS or "market_cap" in lower:
         return "non_negative"
-    if unit in {"USD", "shares"} and not any(token in lower for token in ("change", "return", "delta", "net")):
+    if unit_lower in {"usd", "shares", "count"}:
         return "non_negative"
-    if unit == "ratio" and not any(token in lower for token in ("return", "change", "growth", "delta")):
+    if unit_lower == "ratio":
         return "bounded"
     return "signed"
 
