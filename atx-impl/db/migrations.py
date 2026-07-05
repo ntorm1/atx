@@ -9557,6 +9557,12 @@ def _catalog_fields_for_tables(conn: duckdb.DuckDBPyConnection, table_names: tup
         WHERE c.schema_name = 'main'
           AND coalesce(c.internal, false) = false
           AND c.table_name IN ({table_list})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM field_catalog f
+              WHERE f.table_name = c.table_name
+                AND f.field_name = c.column_name
+          )
         """
     )
 
