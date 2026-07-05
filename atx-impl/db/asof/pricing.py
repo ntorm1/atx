@@ -302,6 +302,56 @@ JOIN snapshot s
 ORDER BY u.symbol, u.security_id
 """
 
+UNIVERSE_MEMBERSHIP_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts,
+        CAST(? AS VARCHAR) AS universe_id
+),
+ranked AS (
+    SELECT
+        u.*,
+        row_number() OVER (
+            PARTITION BY u.universe_id, u.security_id
+            ORDER BY u.valid_from DESC,
+                     u.available_at DESC NULLS LAST,
+                     u.source_loaded_at DESC NULLS LAST,
+                     u.source DESC
+        ) AS rn
+    FROM universe_membership u
+    {symbol_join}
+    {security_join}
+    CROSS JOIN params p
+    WHERE u.universe_id = p.universe_id
+      AND u.valid_from <= p.as_of_date
+      AND (u.valid_to IS NULL OR u.valid_to >= p.as_of_date)
+      AND u.as_of_date <= p.as_of_date
+      AND u.is_member
+      AND u.is_latest_revision
+      AND (u.available_at IS NULL OR u.available_at <= p.as_of_ts)
+)
+SELECT
+    universe_id,
+    security_id,
+    symbol,
+    valid_from,
+    valid_to,
+    as_of_date,
+    is_member,
+    reason,
+    rules_json,
+    decision_count,
+    available_at,
+    source,
+    run_id,
+    is_latest_revision,
+    source_loaded_at
+FROM ranked
+WHERE rn = 1
+ORDER BY symbol, security_id
+"""
+
 CORPORATE_ACTIONS_ASOF_SQL = """
 WITH params AS (
     SELECT
@@ -490,6 +540,48 @@ def universe_asof(
         finally:
             for relation in registered:
                 store.con.unregister(relation)
+
+def universe_membership_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    store=None,
+    universe_id: str = "us_common_equity_liquid_v1",
+    symbols: tuple[str, ...] | list[str] | None = None,
+    security_ids: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    security_values = _normalize_ids(security_ids)
+
+    def _run(active):
+        registered = []
+        try:
+            symbol_join = ""
+            security_join = ""
+            if _register_filter(active, "asof_universe_member_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_universe_member_symbol_filter")
+                symbol_join = "JOIN asof_universe_member_symbol_filter sf ON sf.symbol = u.symbol"
+            if _register_filter(active, "asof_universe_member_security_filter", "security_id", security_values):
+                registered.append("asof_universe_member_security_filter")
+                security_join = (
+                    "JOIN asof_universe_member_security_filter sif "
+                    "ON sif.security_id = u.security_id"
+                )
+            sql = UNIVERSE_MEMBERSHIP_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                security_join=security_join,
+            )
+            return active.con.execute(sql, [as_of_date, as_of_ts, universe_id]).df()
+        finally:
+            for relation in registered:
+                active.con.unregister(relation)
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=True) as opened:
+        return _run(opened)
 
 def corporate_actions_asof(
     as_of_date: dt.date,

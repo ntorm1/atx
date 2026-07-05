@@ -91,7 +91,12 @@ from .offexchange import (
 )
 from .offexchange_quality import OffExchangeQualityReportDataset, OffExchangeQualityReportOptions
 from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
-from .pricing_bulk import BulkBarsDataset, BulkBarsOptions
+from .pricing_bulk import (
+    BulkBarsBackfillDataset,
+    BulkBarsBackfillOptions,
+    BulkBarsDataset,
+    BulkBarsOptions,
+)
 from .sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
 from .security_master import SecurityMasterDataset, SecurityMasterOptions
 from .shares_outstanding import SharesOutstandingHistoryDataset, SharesOutstandingHistoryOptions
@@ -261,6 +266,27 @@ def _bulk_bars_options(params: dict[str, Any]) -> BulkBarsOptions:
         max_chunks=None if params.get("max_chunks") in (None, "") else int(params["max_chunks"]),
         source=params.get("source", default.source),
         compute_source_hash=_bool_param(params.get("compute_source_hash"), default.compute_source_hash),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _bulk_bars_backfill_options(params: dict[str, Any]) -> BulkBarsBackfillOptions:
+    default = BulkBarsBackfillOptions()
+    return BulkBarsBackfillOptions(
+        source_file=None if params.get("source_file") in (None, "") else Path(params["source_file"]),
+        source_zip=None if params.get("source_zip") in (None, "") else Path(params["source_zip"]),
+        symbols=_tuple_or_none(params.get("symbols")),
+        start_date=_date_or_none(params.get("start_date", default.start_date)),
+        end_date=_date_or_none(params.get("end_date")),
+        chunk_size=int(params.get("chunk_size", default.chunk_size)),
+        max_chunks=None if params.get("max_chunks") in (None, "") else int(params["max_chunks"]),
+        source=params.get("source", default.source),
+        compute_source_hash=_bool_param(params.get("compute_source_hash"), default.compute_source_hash),
+        partition_key=params.get("partition_key") or params.get("backfill_partition_key"),
+        window_lo=_date_or_none(params.get("window_lo")),
+        window_hi=_date_or_none(params.get("window_hi") or params.get("window_hi_exclusive")),
+        backfill_run_id=params.get("backfill_run_id"),
+        run_id=params.get("run_id") or default.run_id,
     )
 
 
@@ -976,6 +1002,10 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     SecurityMasterDataset.dataset_id: (SecurityMasterDataset, _security_master_options),
     TickerHistoryDataset.dataset_id: (TickerHistoryDataset, _ticker_history_options),
     BulkBarsDataset.dataset_id: (BulkBarsDataset, _bulk_bars_options),
+    BulkBarsBackfillDataset.dataset_id: (
+        BulkBarsBackfillDataset,
+        _bulk_bars_backfill_options,
+    ),
     CorporateActionsDataset.dataset_id: (CorporateActionsDataset, _corporate_actions_options),
     AdjustmentFactorHistoryDataset.dataset_id: (
         AdjustmentFactorHistoryDataset,
@@ -1212,6 +1242,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "thirteenf_option_metrics": ("sec_13f_ownership_features",),
     "thirteenf_position_metrics": ("sec_13f_ownership_features",),
     "tbltickerhistory_daily": ("sec_security_master",),
+    "bulk_daily_bars_backfill": ("sec_security_master",),
     "trading_calendar": ("tbltickerhistory_daily",),
     "universe_memberships": ("tbltickerhistory_daily",),
     "xbrl_filing_contexts": ("sec_submissions",),

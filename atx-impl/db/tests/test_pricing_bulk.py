@@ -5,7 +5,13 @@ import zipfile
 
 import pandas as pd
 
-from db.pricing_bulk import BulkBarsDataset, BulkBarsOptions, _normalize_chunk
+from db.backfill import run_backfill
+from db.pricing_bulk import (
+    BulkBarsBackfillDataset,
+    BulkBarsDataset,
+    BulkBarsOptions,
+    _normalize_chunk,
+)
 from db.warehouse import insert_frame
 
 
@@ -345,3 +351,206 @@ def test_normalize_chunk_requires_offline_ohlcv_columns() -> None:
         assert "bulk bars missing required columns" in str(exc)
     else:
         raise AssertionError("missing OHLCV columns should fail")
+
+
+def test_bulk_bars_backfill_migration_catalogs_partition_surface(tmp_store) -> None:
+    columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'price_backfill_partition'
+            """
+        ).fetchall()
+    }
+    assert {
+        "dataset_id",
+        "partition_key",
+        "window_lo",
+        "window_hi",
+        "status",
+        "rows_loaded",
+        "watermark_after",
+        "source_file_sha256",
+        "details_json",
+    }.issubset(columns)
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'bulk_daily_bars_backfill'"
+    ).fetchone()[0] == 1
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM table_catalog WHERE table_name = 'price_backfill_partition'"
+    ).fetchone()[0] == 1
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM schema_contract WHERE table_name = 'price_backfill_partition'"
+    ).fetchone()[0] >= 10
+
+
+def test_bulk_bars_backfill_runs_s1_partitions_and_skips_completed(tmp_store, tmp_path) -> None:
+    _seed_symbol(tmp_store, "AAPL", "SEC-AAPL")
+    source = tmp_path / "backfill-bars.csv"
+    _write_csv(
+        source,
+        [
+            {
+                "symbol": "AAPL",
+                "trade_date": "2015-01-02",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10,
+                "volume": 1000,
+            },
+            {
+                "symbol": "AAPL",
+                "trade_date": "2015-02-03",
+                "open": 20,
+                "high": 21,
+                "low": 19,
+                "close": 20,
+                "volume": 2000,
+            },
+        ],
+    )
+
+    result = run_backfill(
+        tmp_store,
+        BulkBarsBackfillDataset.dataset_id,
+        dt.date(2015, 1, 1),
+        dt.date(2015, 3, 1),
+        "1mo",
+        params={"source_file": str(source), "chunk_size": 10},
+        include_dependencies=False,
+        backfill_run_id="price-bf-1",
+    )
+
+    assert result.status == "succeeded"
+    assert result.partitions_succeeded == 2
+    assert result.rows_written == 2
+    assert tmp_store.con.execute(
+        """
+        SELECT partition_key, status, rows_loaded, watermark_after, min_trade_date, max_trade_date
+        FROM price_backfill_partition
+        ORDER BY partition_key
+        """
+    ).fetchall() == [
+        (
+            "bulk_daily_bars_backfill:2015-01-01:2015-02-01",
+            "succeeded",
+            1,
+            "2015-02-01",
+            dt.date(2015, 1, 2),
+            dt.date(2015, 1, 2),
+        ),
+        (
+            "bulk_daily_bars_backfill:2015-02-01:2015-03-01",
+            "succeeded",
+            1,
+            "2015-03-01",
+            dt.date(2015, 2, 3),
+            dt.date(2015, 2, 3),
+        ),
+    ]
+
+    rerun = run_backfill(
+        tmp_store,
+        BulkBarsBackfillDataset.dataset_id,
+        dt.date(2015, 1, 1),
+        dt.date(2015, 3, 1),
+        "1mo",
+        params={"source_file": str(source), "chunk_size": 10},
+        include_dependencies=False,
+        backfill_run_id="price-bf-2",
+    )
+
+    assert rerun.status == "succeeded"
+    assert rerun.partitions_skipped == 2
+    assert rerun.rows_written == 0
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*), count(DISTINCT security_id || ':' || trade_date)
+        FROM equity_daily_bars
+        WHERE source = 'bulk_bars_2015plus'
+        """
+    ).fetchone() == (2, 2)
+
+
+def test_bulk_bars_backfill_failed_partition_rerun_replaces_existing_bars(tmp_store, tmp_path) -> None:
+    _seed_symbol(tmp_store, "AAPL", "SEC-AAPL")
+    source = tmp_path / "partial-replay.csv"
+    _write_csv(
+        source,
+        [
+            {
+                "symbol": "AAPL",
+                "trade_date": "2015-01-02",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10,
+                "volume": 1000,
+            },
+            {
+                "symbol": "AAPL",
+                "trade_date": "2015-01-05",
+                "open": 12,
+                "high": 13,
+                "low": 11,
+                "close": 12,
+                "volume": 1500,
+            },
+        ],
+    )
+
+    first = run_backfill(
+        tmp_store,
+        BulkBarsBackfillDataset.dataset_id,
+        dt.date(2015, 1, 1),
+        dt.date(2015, 2, 1),
+        "1mo",
+        params={"source_file": str(source), "chunk_size": 1, "max_chunks": 1},
+        include_dependencies=False,
+        backfill_run_id="price-bf-partial",
+    )
+    assert first.rows_written == 1
+    tmp_store.con.execute(
+        """
+        UPDATE backfill_watermark
+        SET status = 'failed', rows_written = 0, watermark_after = NULL
+        WHERE dataset_id = 'bulk_daily_bars_backfill'
+          AND partition_key = 'bulk_daily_bars_backfill:2015-01-01:2015-02-01'
+        """
+    )
+
+    replay = run_backfill(
+        tmp_store,
+        BulkBarsBackfillDataset.dataset_id,
+        dt.date(2015, 1, 1),
+        dt.date(2015, 2, 1),
+        "1mo",
+        params={"source_file": str(source), "chunk_size": 10},
+        include_dependencies=False,
+        backfill_run_id="price-bf-replay",
+    )
+
+    assert replay.partitions_succeeded == 1
+    assert replay.rows_written == 2
+    assert tmp_store.con.execute(
+        """
+        SELECT trade_date, close, run_id
+        FROM equity_daily_bars
+        WHERE source = 'bulk_bars_2015plus'
+        ORDER BY trade_date
+        """
+    ).fetchall() == [
+        (dt.date(2015, 1, 2), 10.0, "price-bf-replay"),
+        (dt.date(2015, 1, 5), 12.0, "price-bf-replay"),
+    ]
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*), count(DISTINCT security_id || ':' || trade_date)
+        FROM equity_daily_bars
+        WHERE source = 'bulk_bars_2015plus'
+        """
+    ).fetchone() == (2, 2)

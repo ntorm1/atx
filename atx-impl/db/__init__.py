@@ -60,6 +60,7 @@ from .asof import (
     short_interest_asof,
     thirteenf_positioning_asof,
     universe_asof,
+    universe_membership_asof,
 )
 from .adjustment_factors import (
     AdjustmentFactorHistoryDataset,
@@ -351,9 +352,14 @@ from .symbol_directory import (
     NasdaqSymbolDirectoryDataset,
     NasdaqSymbolDirectoryOptions,
 )
-from .pricing_bulk import BulkBarsDataset, BulkBarsOptions
+from .pricing_bulk import BulkBarsBackfillDataset, BulkBarsBackfillOptions, BulkBarsDataset, BulkBarsOptions
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
+from .universe import (
+    GovernedUniverseMembershipDataset,
+    UniverseMembershipOptions,
+    compute_universe_membership_intervals,
+)
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
 from .migrations import (
     MIGRATIONS,
@@ -430,6 +436,8 @@ __all__ = [
     "AdjustmentFactorHistoryOptions",
     "AlphaResearchDataset",
     "AlphaResearchOptions",
+    "BulkBarsBackfillDataset",
+    "BulkBarsBackfillOptions",
     "BulkBarsDataset",
     "BulkBarsOptions",
     "blockholder_asof",
@@ -658,7 +666,10 @@ __all__ = [
     "TickerHistoryDataset",
     "TickerHistoryOptions",
     "UniverseBuildOptions",
+    "UniverseMembershipOptions",
     "UniverseMembershipDataset",
+    "GovernedUniverseMembershipDataset",
+    "compute_universe_membership_intervals",
     "WatermarkRefreshResult",
     "XbrlFilingContextDataset",
     "XbrlFilingContextOptions",
@@ -772,5 +783,6 @@ __all__ = [
     "thirteenf_positioning_asof",
     "template_for_sic",
     "universe_asof",
+    "universe_membership_asof",
     "validate_lake_export",
 ]
