@@ -64,6 +64,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/curve_selector.cpp
     src/priced_surface.cpp
     src/portfolio_pricer.cpp
+    src/corpus.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 

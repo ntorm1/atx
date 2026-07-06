@@ -54,6 +54,7 @@ add_executable(atx-vol-tests
     spy_portfolio_pnl_test.cpp
     pnl_greeks_consistency_test.cpp
     lifecycle_integration_test.cpp
+    corpus_test.cpp
 )
 
 target_link_libraries(atx-vol-tests
