@@ -48,6 +48,7 @@ Updated: 2026-07-05 America/New_York
 ## PF3-S10 - Backtest Export Panel
 
 - S10-0 - PIT factor-panel views: done. Controller added `db.factor_panel` with pure long-panel assembly and wide pivot helpers, plus migration 0164 with `v_factor_panel` and `v_factor_panel_wide`. The panel uses decision dates (`max(source as_of_date, available_at date)`), applies PF3-S4 universe membership as-of, and catalogs both long and wide surfaces. Focused tests cover long/wide consistency, non-member exclusion, and future-availability rows moving to their first safe decision date.
+- S10-1 - Parquet lake export registration: done. Controller added migration 0165 registering `v_factor_panel` as a date-partitioned lake object with `available_at` watermark metadata and a persisted expected schema hash, extended `LakehouseExporter` to enforce optional schema contracts before writing, and taught `validate_lake_export` to validate partitioned export directories from their manifests. `db.factor_panel.export_factor_panel` is a thin governed export entry point over the existing lake exporter.
 
 ## Verification
 
@@ -163,6 +164,13 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S10-0.
 - `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S10-0.
 - `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S10-0.
+- `python -m py_compile db\factor_panel.py db\lake.py db\migrations\bodies_0164_0167.py db\tests\test_factor_panel.py` passed after S10-1.
+- `python -m pytest db\tests\test_factor_panel.py -q -n0` passed after S10-1.
+- `python -m pytest db\tests\test_storage_admin.py -q -n0 -k "partitioned_incremental_lake_export_skips_unchanged_partitions or undeclared_lake_object_keeps_single_file_layout"` passed after S10-1 (rerun with larger timeout after the first run hit the local cap without failure output).
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S10-1.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S10-1.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S10-1.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S10-1.
 
 ## Live Smoke
 

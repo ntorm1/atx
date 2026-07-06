@@ -4,8 +4,10 @@ import datetime as dt
 import json
 
 import pandas as pd
+import pytest
 
-from db.factor_panel import assemble_factor_panel_long, pivot_factor_panel_wide
+from db.factor_panel import assemble_factor_panel_long, export_factor_panel, pivot_factor_panel_wide
+from db.lake import DEFAULT_EXPORT_OBJECTS, validate_lake_export
 
 
 def _factor_row(
@@ -69,79 +71,7 @@ def _membership(
     }
 
 
-def test_assemble_factor_panel_long_uses_decision_dates_and_universe_membership() -> None:
-    fundamental = pd.DataFrame(
-        [
-            _factor_row(
-                "fundamental",
-                "SEC-A",
-                "profitability_gross_profitability",
-                0.8,
-                as_of_date="2023-12-31",
-                available_at="2024-02-01 10:00:00",
-            ),
-            _factor_row(
-                "fundamental",
-                "SEC-B",
-                "profitability_gross_profitability",
-                0.1,
-                as_of_date="2023-12-31",
-                available_at="2024-02-01 10:00:00",
-            ),
-        ]
-    )
-    cross_domain = pd.DataFrame(
-        [
-            _factor_row(
-                "cross",
-                "SEC-A",
-                "price_momentum_21d",
-                1.0,
-                as_of_date="2024-02-01",
-                available_at="2024-02-01 21:00:00",
-            ),
-            _factor_row(
-                "cross",
-                "SEC-C",
-                "price_momentum_21d",
-                0.5,
-                as_of_date="2024-02-01",
-                available_at="2024-02-02 09:00:00",
-            ),
-        ]
-    )
-    membership = pd.DataFrame(
-        [
-            _membership("SEC-A"),
-            _membership("SEC-B", is_member=False),
-            _membership("SEC-C"),
-        ]
-    )
-
-    panel = assemble_factor_panel_long(
-        fundamental,
-        cross_domain,
-        universe_membership=membership,
-        as_of_date=dt.date(2024, 2, 1),
-    )
-
-    assert list(panel["security_id"].unique()) == ["SEC-A"]
-    assert set(panel["factor_id"]) == {"profitability_gross_profitability", "price_momentum_21d"}
-    assert set(panel["as_of_date"]) == {dt.date(2024, 2, 1)}
-    assert all(pd.to_datetime(panel["available_at"]).dt.date <= panel["as_of_date"])
-
-    wide = pivot_factor_panel_wide(panel)
-    assert list(wide.columns) == [
-        "security_id",
-        "as_of_date",
-        "price_momentum_21d",
-        "profitability_gross_profitability",
-    ]
-    assert wide.loc[0, "price_momentum_21d"] == 1.0
-    assert wide.loc[0, "profitability_gross_profitability"] == 0.8
-
-
-def test_factor_panel_views_resolve_long_and_wide_with_pit_universe_filter(tmp_store) -> None:
+def _insert_factor_value_fixtures(tmp_store) -> None:
     fundamental = _factor_row(
         "fundamental",
         "SEC-A",
@@ -263,6 +193,82 @@ def test_factor_panel_views_resolve_long_and_wide_with_pit_universe_filter(tmp_s
             ],
         )
 
+
+def test_assemble_factor_panel_long_uses_decision_dates_and_universe_membership() -> None:
+    fundamental = pd.DataFrame(
+        [
+            _factor_row(
+                "fundamental",
+                "SEC-A",
+                "profitability_gross_profitability",
+                0.8,
+                as_of_date="2023-12-31",
+                available_at="2024-02-01 10:00:00",
+            ),
+            _factor_row(
+                "fundamental",
+                "SEC-B",
+                "profitability_gross_profitability",
+                0.1,
+                as_of_date="2023-12-31",
+                available_at="2024-02-01 10:00:00",
+            ),
+        ]
+    )
+    cross_domain = pd.DataFrame(
+        [
+            _factor_row(
+                "cross",
+                "SEC-A",
+                "price_momentum_21d",
+                1.0,
+                as_of_date="2024-02-01",
+                available_at="2024-02-01 21:00:00",
+            ),
+            _factor_row(
+                "cross",
+                "SEC-C",
+                "price_momentum_21d",
+                0.5,
+                as_of_date="2024-02-01",
+                available_at="2024-02-02 09:00:00",
+            ),
+        ]
+    )
+    membership = pd.DataFrame(
+        [
+            _membership("SEC-A"),
+            _membership("SEC-B", is_member=False),
+            _membership("SEC-C"),
+        ]
+    )
+
+    panel = assemble_factor_panel_long(
+        fundamental,
+        cross_domain,
+        universe_membership=membership,
+        as_of_date=dt.date(2024, 2, 1),
+    )
+
+    assert list(panel["security_id"].unique()) == ["SEC-A"]
+    assert set(panel["factor_id"]) == {"profitability_gross_profitability", "price_momentum_21d"}
+    assert set(panel["as_of_date"]) == {dt.date(2024, 2, 1)}
+    assert all(pd.to_datetime(panel["available_at"]).dt.date <= panel["as_of_date"])
+
+    wide = pivot_factor_panel_wide(panel)
+    assert list(wide.columns) == [
+        "security_id",
+        "as_of_date",
+        "price_momentum_21d",
+        "profitability_gross_profitability",
+    ]
+    assert wide.loc[0, "price_momentum_21d"] == 1.0
+    assert wide.loc[0, "profitability_gross_profitability"] == 0.8
+
+
+def test_factor_panel_views_resolve_long_and_wide_with_pit_universe_filter(tmp_store) -> None:
+    _insert_factor_value_fixtures(tmp_store)
+
     long_rows = tmp_store.con.execute(
         """
         SELECT security_id, as_of_date, factor_id, value, CAST(available_at AS DATE) AS available_date
@@ -311,3 +317,67 @@ def test_factor_panel_views_resolve_long_and_wide_with_pit_universe_filter(tmp_s
         """
     ).fetchone()
     assert catalog_counts == (1, 1, 1)
+
+
+def test_factor_panel_exports_partitioned_lake_object_with_schema_contract(tmp_store, tmp_path) -> None:
+    from db.connection import DuckDBStore
+
+    _insert_factor_value_fixtures(tmp_store)
+    db_path = tmp_store.path
+    tmp_store.con.execute("CHECKPOINT")
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    result = export_factor_panel(db_path, lake_root=tmp_path / "lake", incremental=True)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    assert "v_factor_panel" in DEFAULT_EXPORT_OBJECTS
+    assert result.object_name == "v_factor_panel"
+    assert result.rows == 3
+    assert manifest["partition_columns"] == ["as_of_date"]
+    assert manifest["watermark_column"] == "available_at"
+    assert manifest["schema_sha256"] == manifest["expected_schema_sha256"]
+    assert len(manifest["files"]) == 2
+    assert {item["partition_values"]["as_of_date"] for item in manifest["files"]} == {
+        "2024-02-01",
+        "2024-02-02",
+    }
+    assert all(item["path"].endswith("part-00000.parquet") for item in manifest["files"])
+
+    summary = validate_lake_export(db_path, export_run_id=result.export_run_id)
+    assert summary.problems == []
+    assert summary.rows_checked == 3
+    assert summary.files_readable == 2
+
+    with DuckDBStore(db_path, read_only=True) as store:
+        contract = store.con.execute(
+            """
+            SELECT expected_schema_sha256, partition_columns_json, watermark_column
+            FROM lake_export_object_contract
+            WHERE object_name = 'v_factor_panel'
+            """
+        ).fetchone()
+        audit = store.con.execute(
+            """
+            SELECT schema_sha256, expected_schema_sha256
+            FROM lake_export_files
+            WHERE export_run_id = ?
+              AND object_name = 'v_factor_panel'
+            """,
+            [result.export_run_id],
+        ).fetchone()
+
+    assert contract == (manifest["schema_sha256"], '["as_of_date"]', "available_at")
+    assert audit == (manifest["schema_sha256"], manifest["schema_sha256"])
+
+    with DuckDBStore(db_path) as store:
+        store.con.execute(
+            """
+            UPDATE lake_export_object_contract
+            SET expected_schema_sha256 = repeat('0', 64)
+            WHERE object_name = 'v_factor_panel'
+            """
+        )
+
+    with pytest.raises(ValueError, match="Schema SHA-256 mismatch for v_factor_panel"):
+        export_factor_panel(db_path, lake_root=tmp_path / "lake_bad", incremental=True)

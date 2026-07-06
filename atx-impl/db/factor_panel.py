@@ -8,9 +8,13 @@ the panel's ``as_of_date`` is the first date the row is safe to consume.
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+
+from .connection import DEFAULT_DB_PATH
+from .lake import DEFAULT_LAKE_ROOT, LakeExportResult, LakehouseExporter
 
 DEFAULT_FACTOR_PANEL_UNIVERSE_ID = "us_common_equity_liquid_v1"
 
@@ -227,3 +231,17 @@ def pivot_factor_panel_wide(panel_long: pd.DataFrame) -> pd.DataFrame:
         aggfunc="last",
     )
     return wide.reset_index().sort_values(["as_of_date", "security_id"]).reset_index(drop=True)
+
+
+def export_factor_panel(
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    lake_root: Path | str = DEFAULT_LAKE_ROOT,
+    incremental: bool = True,
+) -> LakeExportResult:
+    """Export the long factor panel through the governed lake exporter."""
+
+    return LakehouseExporter(db_path=db_path, lake_root=lake_root).export_objects(
+        ("v_factor_panel",),
+        incremental=incremental,
+    )[0]

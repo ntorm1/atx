@@ -2,11 +2,41 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import duckdb
 
 from ._runner import Migration
 from .bodies_0001_0137 import _catalog_fields_for_tables
 from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
+
+
+def _object_schema(conn: duckdb.DuckDBPyConnection, object_name: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT column_name, data_type, is_nullable, column_index
+        FROM duckdb_columns()
+        WHERE schema_name = 'main'
+          AND table_name = ?
+        ORDER BY column_index
+        """,
+        [object_name],
+    ).fetchall()
+    return [
+        {
+            "ordinal": int(column_index),
+            "name": str(column_name),
+            "type": str(data_type),
+            "nullable": bool(is_nullable),
+        }
+        for column_name, data_type, is_nullable, column_index in rows
+    ]
+
+
+def _schema_sha256(schema: list[dict[str, object]]) -> str:
+    payload = json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _pf3_s10_factor_panel_views(conn: duckdb.DuckDBPyConnection) -> None:
@@ -166,10 +196,77 @@ def _pf3_s10_factor_panel_views(conn: duckdb.DuckDBPyConnection) -> None:
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s10_factor_panel_lake_export_registration(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S10 S10-1: partitioned lake export registration and schema contract."""
+
+    conn.execute("ALTER TABLE lake_export_files ADD COLUMN IF NOT EXISTS expected_schema_sha256 VARCHAR")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lake_export_object_contract (
+            object_name VARCHAR PRIMARY KEY,
+            expected_schema_sha256 VARCHAR NOT NULL,
+            schema_json VARCHAR NOT NULL,
+            format VARCHAR NOT NULL DEFAULT 'parquet',
+            compression VARCHAR,
+            partition_columns_json VARCHAR NOT NULL DEFAULT '[]',
+            watermark_column VARCHAR,
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    schema = _object_schema(conn, "v_factor_panel")
+    schema_hash = _schema_sha256(schema)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO lake_partition_specs (
+            object_name, partition_columns_json, watermark_column,
+            retention_runs, enabled, updated_at
+        )
+        VALUES ('v_factor_panel', '["as_of_date"]', 'available_at', 3, true, now())
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO lake_export_object_contract (
+            object_name, expected_schema_sha256, schema_json, format, compression,
+            partition_columns_json, watermark_column, enabled, updated_at
+        )
+        VALUES (?, ?, ?, 'parquet', 'zstd', '["as_of_date"]', 'available_at', true, now())
+        """,
+        ["v_factor_panel", schema_hash, json.dumps(schema, sort_keys=True, separators=(",", ":"))],
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'lake_export_object_contract',
+            'control',
+            'lake_export_object_contract',
+            'object_name',
+            'Expected schema hashes and partition/export metadata for governed lake export objects.',
+            '["object_name"]',
+            'Control table; expected_schema_sha256 is checked at export time so schema drift fails before a governed object is written.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("lake_export_files", "lake_partition_specs", "lake_export_object_contract"))
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=164,
         name="pf3_s10_factor_panel_views",
         up=_pf3_s10_factor_panel_views,
+    ),
+    Migration(
+        version=165,
+        name="pf3_s10_factor_panel_lake_export_registration",
+        up=_pf3_s10_factor_panel_lake_export_registration,
     ),
 ]

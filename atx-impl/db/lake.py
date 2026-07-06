@@ -122,6 +122,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "est_recommendation",
     "est_recommendation_summary",
     "est_security_link",
+    "v_factor_panel",
 )
 
 
@@ -164,6 +165,12 @@ class LakePartitionSpec:
     watermark_column: str | None
     retention_runs: int
     enabled: bool
+
+
+@dataclass(frozen=True)
+class LakeExportContract:
+    object_name: str
+    expected_schema_sha256: str
 
 
 _OBJECT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -243,6 +250,43 @@ def _load_partition_specs(store, objects: tuple[str, ...]) -> dict[str, LakePart
             enabled=bool(enabled),
         )
     return specs
+
+
+def _load_export_contracts(store, objects: tuple[str, ...]) -> dict[str, LakeExportContract]:
+    if not objects or not _table_exists(store, "lake_export_object_contract"):
+        return {}
+    placeholders = ", ".join("?" for _ in objects)
+    rows = store.con.execute(
+        f"""
+        SELECT object_name, expected_schema_sha256
+        FROM lake_export_object_contract
+        WHERE object_name IN ({placeholders})
+          AND enabled
+        """,
+        list(objects),
+    ).fetchall()
+    return {
+        str(object_name): LakeExportContract(
+            object_name=str(object_name),
+            expected_schema_sha256=str(expected_schema_sha256),
+        )
+        for object_name, expected_schema_sha256 in rows
+    }
+
+
+def _assert_expected_schema(
+    object_name: str,
+    schema_sha256: str,
+    contract: LakeExportContract | None,
+) -> str | None:
+    if contract is None:
+        return None
+    if schema_sha256 != contract.expected_schema_sha256:
+        raise ValueError(
+            f"Schema SHA-256 mismatch for {object_name}: "
+            f"expected {contract.expected_schema_sha256}, got {schema_sha256}"
+        )
+    return contract.expected_schema_sha256
 
 
 def _sql_literal(value: Any) -> str:
@@ -367,13 +411,16 @@ class LakehouseExporter:
             )
             try:
                 partition_specs = _load_partition_specs(store, objects)
+                export_contracts = _load_export_contracts(store, objects)
                 for object_name in objects:
                     spec = partition_specs.get(object_name)
+                    contract = export_contracts.get(object_name)
                     if spec is not None and spec.enabled and spec.partition_columns:
                         result = self._export_partitioned_object(
                             store,
                             object_name=object_name,
                             spec=spec,
+                            contract=contract,
                             export_run_id=export_run_id,
                             exported_at=exported_at,
                             exported_at_naive=exported_at_naive,
@@ -383,6 +430,7 @@ class LakehouseExporter:
                         result = self._export_single_file_object(
                             store,
                             object_name=object_name,
+                            contract=contract,
                             export_run_id=export_run_id,
                             exported_at=exported_at,
                             exported_at_naive=exported_at_naive,
@@ -461,6 +509,7 @@ class LakehouseExporter:
         byte_count: int,
         sha256: str,
         schema_sha256: str,
+        expected_schema_sha256: str | None,
         exported_at_naive: dt.datetime,
     ) -> None:
         store.con.execute(
@@ -474,11 +523,12 @@ class LakehouseExporter:
                 byte_count,
                 sha256,
                 schema_sha256,
+                expected_schema_sha256,
                 format,
                 compression,
                 exported_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 export_run_id,
@@ -489,6 +539,7 @@ class LakehouseExporter:
                 byte_count,
                 sha256,
                 schema_sha256,
+                expected_schema_sha256,
                 "parquet",
                 "zstd",
                 exported_at_naive,
@@ -500,6 +551,7 @@ class LakehouseExporter:
         store,
         *,
         object_name: str,
+        contract: LakeExportContract | None,
         export_run_id: str,
         exported_at: dt.datetime,
         exported_at_naive: dt.datetime,
@@ -507,6 +559,7 @@ class LakehouseExporter:
         quoted_object_name = _quote_object_name(object_name)
         schema = _object_schema(store, object_name)
         schema_hash = _schema_sha256(schema)
+        expected_schema_hash = _assert_expected_schema(object_name, schema_hash, contract)
         rows = int(store.con.execute(f"SELECT count(*) FROM {quoted_object_name}").fetchone()[0])
         output_dir = self.lake_root / object_name
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -539,6 +592,7 @@ class LakehouseExporter:
             "byte_count": byte_count,
             "sha256": parquet_sha256,
             "schema_sha256": schema_hash,
+            "expected_schema_sha256": expected_schema_hash,
             "schema": schema,
         }
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -552,6 +606,7 @@ class LakehouseExporter:
             byte_count=byte_count,
             sha256=parquet_sha256,
             schema_sha256=schema_hash,
+            expected_schema_sha256=expected_schema_hash,
             exported_at_naive=exported_at_naive,
         )
         return LakeExportResult(
@@ -570,6 +625,7 @@ class LakehouseExporter:
         *,
         object_name: str,
         spec: LakePartitionSpec,
+        contract: LakeExportContract | None,
         export_run_id: str,
         exported_at: dt.datetime,
         exported_at_naive: dt.datetime,
@@ -584,6 +640,7 @@ class LakehouseExporter:
         if spec.watermark_column and spec.watermark_column not in schema_columns:
             raise ValueError(f"Watermark column not found for {object_name}: {spec.watermark_column}")
         schema_hash = _schema_sha256(schema)
+        expected_schema_hash = _assert_expected_schema(object_name, schema_hash, contract)
         partition_select = ", ".join(_quote_object_name(column) for column in spec.partition_columns)
         partition_rows = store.con.execute(
             f"""
@@ -699,6 +756,7 @@ class LakehouseExporter:
             "byte_count": total_bytes,
             "sha256": parquet_sha256,
             "schema_sha256": schema_hash,
+            "expected_schema_sha256": expected_schema_hash,
             "schema": schema,
         }
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -712,6 +770,7 @@ class LakehouseExporter:
             byte_count=total_bytes,
             sha256=parquet_sha256,
             schema_sha256=schema_hash,
+            expected_schema_sha256=expected_schema_hash,
             exported_at_naive=exported_at_naive,
         )
         return LakeExportResult(
@@ -761,6 +820,86 @@ def _problem(
     )
 
 
+def _validate_parquet_file(
+    store,
+    *,
+    export_run_id: str,
+    object_name: str,
+    output: Path,
+    expected_rows: int,
+    expected_byte_count: int,
+    expected_sha256: str,
+    problems: list[LakeValidationProblem],
+) -> tuple[int, int, int]:
+    if not output.exists():
+        problems.append(
+            _problem(
+                export_run_id=export_run_id,
+                object_name=object_name,
+                problem="missing_parquet",
+                message="Parquet file is missing.",
+                path=str(output),
+            )
+        )
+        return 0, 0, 0
+
+    byte_count = output.stat().st_size
+    if byte_count != expected_byte_count:
+        problems.append(
+            _problem(
+                export_run_id=export_run_id,
+                object_name=object_name,
+                problem="byte_count_mismatch",
+                message="Parquet file byte count differs from audit row.",
+                path=str(output),
+                expected=expected_byte_count,
+                actual=byte_count,
+            )
+        )
+
+    actual_sha256 = file_sha256(output)
+    if actual_sha256 != expected_sha256:
+        problems.append(
+            _problem(
+                export_run_id=export_run_id,
+                object_name=object_name,
+                problem="sha256_mismatch",
+                message="Parquet file SHA-256 differs from audit row.",
+                path=str(output),
+                expected=expected_sha256,
+                actual=actual_sha256,
+            )
+        )
+
+    try:
+        rows = int(store.con.execute("SELECT count(*) FROM read_parquet(?)", [str(output)]).fetchone()[0])
+    except Exception as exc:
+        problems.append(
+            _problem(
+                export_run_id=export_run_id,
+                object_name=object_name,
+                problem="parquet_read_failed",
+                message=str(exc),
+                path=str(output),
+            )
+        )
+        return 0, byte_count, 0
+
+    if rows != expected_rows:
+        problems.append(
+            _problem(
+                export_run_id=export_run_id,
+                object_name=object_name,
+                problem="row_count_mismatch",
+                message="Parquet row count differs from audit row.",
+                path=str(output),
+                expected=expected_rows,
+                actual=rows,
+            )
+        )
+    return rows, byte_count, 1
+
+
 def validate_lake_export(
     db_path: Path | str = DEFAULT_DB_PATH,
     *,
@@ -784,6 +923,7 @@ def validate_lake_export(
                 byte_count,
                 sha256,
                 schema_sha256,
+                expected_schema_sha256,
                 format,
                 compression
             FROM lake_export_files
@@ -818,6 +958,7 @@ def validate_lake_export(
             expected_byte_count,
             expected_sha256,
             expected_schema_sha256,
+            expected_contract_schema_sha256,
             expected_format,
             expected_compression,
         ) in audit_rows:
@@ -828,6 +969,9 @@ def validate_lake_export(
             expected_byte_count = int(expected_byte_count)
             expected_sha256 = str(expected_sha256)
             expected_schema_sha256 = str(expected_schema_sha256)
+            expected_contract_schema_sha256 = (
+                None if expected_contract_schema_sha256 in (None, "") else str(expected_contract_schema_sha256)
+            )
             expected_format = str(expected_format)
             expected_compression = str(expected_compression)
 
@@ -856,76 +1000,110 @@ def validate_lake_export(
                         )
                     )
 
-            if not output.exists():
-                problems.append(
-                    _problem(
+            if output.is_dir():
+                if manifest is None:
+                    continue
+                file_items = manifest.get("files")
+                if not isinstance(file_items, list):
+                    problems.append(
+                        _problem(
+                            export_run_id=selected_export_run_id,
+                            object_name=object_name,
+                            problem="invalid_manifest_files",
+                            message="Partitioned export manifest is missing a files list.",
+                            path=str(manifest_file),
+                        )
+                    )
+                    continue
+                actual_file_rows = 0
+                actual_file_bytes = 0
+                actual_file_readable = 0
+                actual_files: list[dict[str, Any]] = []
+                for item in file_items:
+                    if not isinstance(item, dict):
+                        problems.append(
+                            _problem(
+                                export_run_id=selected_export_run_id,
+                                object_name=object_name,
+                                problem="invalid_manifest_file_entry",
+                                message="Partitioned export manifest file entry is not an object.",
+                                path=str(manifest_file),
+                            )
+                        )
+                        continue
+                    file_path = Path(str(item.get("path", "")))
+                    item_rows = int(item.get("rows", 0))
+                    item_bytes = int(item.get("byte_count", 0))
+                    item_sha256 = str(item.get("sha256", ""))
+                    rows, bytes_checked, readable = _validate_parquet_file(
+                        store,
                         export_run_id=selected_export_run_id,
                         object_name=object_name,
-                        problem="missing_parquet",
-                        message="Parquet file is missing.",
-                        path=str(output),
+                        output=file_path,
+                        expected_rows=item_rows,
+                        expected_byte_count=item_bytes,
+                        expected_sha256=item_sha256,
+                        problems=problems,
                     )
-                )
-                continue
+                    actual_file_rows += rows
+                    actual_file_bytes += bytes_checked
+                    actual_file_readable += readable
+                    actual_files.append({"path": str(file_path.resolve()), "sha256": item_sha256})
 
-            actual_byte_count = output.stat().st_size
-            byte_count_checked += actual_byte_count
-            if actual_byte_count != expected_byte_count:
-                problems.append(
-                    _problem(
-                        export_run_id=selected_export_run_id,
-                        object_name=object_name,
-                        problem="byte_count_mismatch",
-                        message="Parquet file byte count differs from audit row.",
-                        path=str(output),
-                        expected=expected_byte_count,
-                        actual=actual_byte_count,
+                actual_sha256 = _directory_sha256(actual_files)
+                if actual_sha256 != expected_sha256:
+                    problems.append(
+                        _problem(
+                            export_run_id=selected_export_run_id,
+                            object_name=object_name,
+                            problem="sha256_mismatch",
+                            message="Partitioned export directory SHA-256 differs from audit row.",
+                            path=str(output),
+                            expected=expected_sha256,
+                            actual=actual_sha256,
+                        )
                     )
-                )
-
-            actual_sha256 = file_sha256(output)
-            if actual_sha256 != expected_sha256:
-                problems.append(
-                    _problem(
-                        export_run_id=selected_export_run_id,
-                        object_name=object_name,
-                        problem="sha256_mismatch",
-                        message="Parquet file SHA-256 differs from audit row.",
-                        path=str(output),
-                        expected=expected_sha256,
-                        actual=actual_sha256,
-                    )
-                )
-
-            try:
-                actual_rows = int(
-                    store.con.execute("SELECT count(*) FROM read_parquet(?)", [str(output)]).fetchone()[0]
-                )
-            except Exception as exc:
-                problems.append(
-                    _problem(
-                        export_run_id=selected_export_run_id,
-                        object_name=object_name,
-                        problem="parquet_read_failed",
-                        message=str(exc),
-                        path=str(output),
-                    )
-                )
-            else:
-                files_readable += 1
-                rows_checked += actual_rows
-                if actual_rows != expected_rows:
+                if actual_file_rows != expected_rows:
                     problems.append(
                         _problem(
                             export_run_id=selected_export_run_id,
                             object_name=object_name,
                             problem="row_count_mismatch",
-                            message="Parquet row count differs from audit row.",
+                            message="Partitioned export row count differs from audit row.",
                             path=str(output),
                             expected=expected_rows,
-                            actual=actual_rows,
+                            actual=actual_file_rows,
                         )
                     )
+                if actual_file_bytes != expected_byte_count:
+                    problems.append(
+                        _problem(
+                            export_run_id=selected_export_run_id,
+                            object_name=object_name,
+                            problem="byte_count_mismatch",
+                            message="Partitioned export byte count differs from audit row.",
+                            path=str(output),
+                            expected=expected_byte_count,
+                            actual=actual_file_bytes,
+                        )
+                    )
+                rows_checked += actual_file_rows
+                byte_count_checked += actual_file_bytes
+                files_readable += actual_file_readable
+            else:
+                actual_rows, actual_byte_count, readable = _validate_parquet_file(
+                    store,
+                    export_run_id=selected_export_run_id,
+                    object_name=object_name,
+                    output=output,
+                    expected_rows=expected_rows,
+                    expected_byte_count=expected_byte_count,
+                    expected_sha256=expected_sha256,
+                    problems=problems,
+                )
+                rows_checked += actual_rows
+                byte_count_checked += actual_byte_count
+                files_readable += readable
 
             if manifest is None:
                 continue
@@ -939,6 +1117,8 @@ def validate_lake_export(
                 "format": expected_format,
                 "compression": expected_compression,
             }
+            if expected_contract_schema_sha256 is not None:
+                manifest_expectations["expected_schema_sha256"] = expected_contract_schema_sha256
             for field, expected in manifest_expectations.items():
                 actual = manifest.get(field)
                 if actual != expected:
@@ -953,6 +1133,21 @@ def validate_lake_export(
                             actual=actual,
                         )
                     )
+            if (
+                expected_contract_schema_sha256 is not None
+                and expected_contract_schema_sha256 != expected_schema_sha256
+            ):
+                problems.append(
+                    _problem(
+                        export_run_id=selected_export_run_id,
+                        object_name=object_name,
+                        problem="schema_contract_mismatch",
+                        message="Exported schema SHA-256 differs from the registered expected schema SHA-256.",
+                        path=str(manifest_file),
+                        expected=expected_contract_schema_sha256,
+                        actual=expected_schema_sha256,
+                    )
+                )
 
     return LakeValidationSummary(
         export_run_id=selected_export_run_id,
