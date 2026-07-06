@@ -284,6 +284,58 @@ def _pf3_s10_factor_panel_contract_gate(conn: duckdb.DuckDBPyConnection) -> None
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s10_factor_panel_read_path_catalog(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S10 S10-3: panel read-path indexes and consumer catalog metadata."""
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_factor_values_panel_read "
+        "ON fundamental_factor_values(security_id, factor_id, available_at, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_cross_domain_factor_values_panel_read "
+        "ON cross_domain_factor_values(security_id, factor_id, available_at, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_universe_membership_panel_read "
+        "ON universe_membership(universe_id, security_id, valid_from, valid_to, available_at, is_member)",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES
+            (
+                'factor_panel_wide',
+                'atx_warehouse',
+                'Backtest-ready factor panel wide cross-section',
+                'Dynamic factor_id/value JSON cross-section derived from the governed long factor panel.',
+                'security_id,as_of_date',
+                'v_factor_panel_wide',
+                'as_of_date',
+                'max_available_at',
+                now()
+            )
+        """
+    )
+    conn.execute(
+        """
+        UPDATE table_catalog
+        SET pit_notes = 'Consumer read path: db.factor_panel.read_panel_asof(as_of_date) returns the latest visible factor per security/factor with available_at <= end-of-day as_of_date; CLI: python -m db.factor_panel read --as-of YYYY-MM-DD.',
+            updated_at = now()
+        WHERE table_name = 'v_factor_panel'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE table_catalog
+        SET pit_notes = 'Consumer wide view derived from v_factor_panel; use db.factor_panel.read_panel_asof(..., wide=True) for a dynamic column pivot.',
+            updated_at = now()
+        WHERE table_name = 'v_factor_panel_wide'
+        """
+    )
+    _catalog_fields_for_tables(conn, ("v_factor_panel", "v_factor_panel_wide"))
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=164,
@@ -299,5 +351,10 @@ MIGRATIONS: list[Migration] = [
         version=166,
         name="pf3_s10_factor_panel_contract_gate",
         up=_pf3_s10_factor_panel_contract_gate,
+    ),
+    Migration(
+        version=167,
+        name="pf3_s10_factor_panel_read_path_catalog",
+        up=_pf3_s10_factor_panel_read_path_catalog,
     ),
 ]

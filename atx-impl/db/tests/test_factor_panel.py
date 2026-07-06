@@ -10,9 +10,12 @@ from db.factor_panel import (
     PANEL_EXPORT_GATE_CHECK_NAME,
     assemble_factor_panel_long,
     assert_factor_panel_export_ready,
+    describe_factor_panel,
     export_factor_panel,
     factor_panel_export_gate_report,
+    main,
     pivot_factor_panel_wide,
+    read_panel_asof,
 )
 from db.lake import DEFAULT_EXPORT_OBJECTS, validate_lake_export
 
@@ -462,3 +465,87 @@ def test_factor_panel_export_gate_blocks_contract_lookahead_and_non_member_rows(
 
     with pytest.raises(ValueError, match="factor panel export gate failed"):
         export_factor_panel(db_path, lake_root=tmp_path / "blocked_lake", incremental=True)
+
+
+def test_read_panel_asof_catalog_and_cli_round_trip(tmp_store, tmp_path, capsys) -> None:
+    _insert_factor_value_fixtures(tmp_store)
+
+    early = read_panel_asof(dt.date(2024, 2, 1), store=tmp_store)
+    assert set(early["security_id"]) == {"SEC-A"}
+    assert set(early["factor_id"]) == {"price_momentum_21d", "profitability_gross_profitability"}
+    assert set(early["as_of_date"]) == {pd.Timestamp("2024-02-01")}
+
+    late = read_panel_asof(
+        dt.date(2024, 2, 3),
+        store=tmp_store,
+        factor_ids=("price_momentum_21d",),
+    )
+    assert set(late["security_id"]) == {"SEC-A", "SEC-C"}
+    assert set(late["factor_id"]) == {"price_momentum_21d"}
+    assert set(late["as_of_date"]) == {pd.Timestamp("2024-02-03")}
+
+    wide = read_panel_asof(
+        dt.date(2024, 2, 3),
+        store=tmp_store,
+        factor_ids=("price_momentum_21d",),
+        wide=True,
+    )
+    assert list(wide.columns) == ["security_id", "as_of_date", "price_momentum_21d"]
+    assert set(wide["security_id"]) == {"SEC-A", "SEC-C"}
+
+    description = describe_factor_panel(store=tmp_store)
+    assert description["row_count"] == 3
+    assert description["factor_count"] == 2
+    assert description["partition_columns"] == ["as_of_date"]
+    assert description["watermark_column"] == "available_at"
+
+    index_names = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE index_name LIKE 'idx_%_panel_read'
+            """
+        ).fetchall()
+    }
+    assert {
+        "idx_fundamental_factor_values_panel_read",
+        "idx_cross_domain_factor_values_panel_read",
+        "idx_universe_membership_panel_read",
+    } <= index_names
+    wide_catalog_count = tmp_store.con.execute(
+        "SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'factor_panel_wide'"
+    ).fetchone()[0]
+    assert wide_catalog_count == 1
+
+    db_path = tmp_store.path
+    tmp_store.con.execute("CHECKPOINT")
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    assert main(["--db-path", str(db_path), "describe"]) == 0
+    describe_payload = json.loads(capsys.readouterr().out)
+    assert describe_payload["row_count"] == 3
+    assert describe_payload["partition_columns"] == ["as_of_date"]
+
+    assert main(
+        [
+            "--db-path",
+            str(db_path),
+            "read",
+            "--as-of",
+            "2024-02-03",
+            "--wide",
+            "--factor-id",
+            "price_momentum_21d",
+        ]
+    ) == 0
+    read_output = capsys.readouterr().out
+    assert "price_momentum_21d" in read_output
+    assert "SEC-C" in read_output
+
+    assert main(["--db-path", str(db_path), "export", "--lake-root", str(tmp_path / "cli_lake")]) == 0
+    export_payload = json.loads(capsys.readouterr().out)
+    assert export_payload["object_name"] == "v_factor_panel"
+    assert export_payload["rows"] == 3

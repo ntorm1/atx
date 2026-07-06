@@ -8,8 +8,10 @@ the panel's ``as_of_date`` is the first date the row is safe to consume.
 from __future__ import annotations
 
 import datetime as dt
+import argparse
 import json
 from pathlib import Path
+import sys
 from typing import Any, Iterable
 
 import pandas as pd
@@ -31,6 +33,8 @@ FACTOR_PANEL_COLUMNS = (
     "run_id",
     "input_lineage_json",
 )
+
+READ_PANEL_COLUMNS = FACTOR_PANEL_COLUMNS
 
 _FACTOR_INPUT_COLUMNS = (
     "security_id",
@@ -572,6 +576,169 @@ def assert_factor_panel_export_ready(store) -> None:
     )
 
 
+def _normalize_filter_values(values: Iterable[str] | None) -> list[str]:
+    if values is None:
+        return []
+    return [str(value) for value in values if str(value)]
+
+
+def _read_panel_asof_active(
+    active,
+    *,
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime,
+    factor_ids: Iterable[str] | None,
+    security_ids: Iterable[str] | None,
+) -> pd.DataFrame:
+    factor_values = _normalize_filter_values(factor_ids)
+    security_values = _normalize_filter_values(security_ids)
+    registered: list[str] = []
+    joins = []
+    try:
+        if factor_values:
+            frame = pd.DataFrame({"factor_id": factor_values})
+            active.con.register("factor_panel_factor_filter", frame)
+            registered.append("factor_panel_factor_filter")
+            joins.append("JOIN factor_panel_factor_filter ff ON ff.factor_id = p.factor_id")
+        if security_values:
+            frame = pd.DataFrame({"security_id": security_values})
+            active.con.register("factor_panel_security_filter", frame)
+            registered.append("factor_panel_security_filter")
+            joins.append("JOIN factor_panel_security_filter sf ON sf.security_id = p.security_id")
+        sql = f"""
+            WITH params AS (
+                SELECT CAST(? AS DATE) AS as_of_date,
+                       CAST(? AS TIMESTAMP) AS as_of_ts
+            ),
+            eligible AS (
+                SELECT p.*
+                FROM v_factor_panel p
+                {' '.join(joins)}
+                CROSS JOIN params
+                WHERE p.as_of_date <= params.as_of_date
+                  AND p.available_at <= params.as_of_ts
+            ),
+            ranked AS (
+                SELECT
+                    security_id,
+                    factor_id,
+                    value,
+                    available_at,
+                    source_loaded_at,
+                    run_id,
+                    input_lineage_json,
+                    row_number() OVER (
+                        PARTITION BY security_id, factor_id
+                        ORDER BY as_of_date DESC,
+                                 available_at DESC,
+                                 source_loaded_at DESC
+                    ) AS rn
+                FROM eligible
+            )
+            SELECT
+                security_id,
+                CAST(? AS DATE) AS as_of_date,
+                factor_id,
+                value,
+                available_at,
+                source_loaded_at,
+                run_id,
+                input_lineage_json
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY security_id, factor_id
+        """
+        return active.con.execute(sql, [as_of_date, as_of_ts, as_of_date]).df()
+    finally:
+        for relation in registered:
+            active.con.unregister(relation)
+
+
+def read_panel_asof(
+    as_of_date: dt.date | str,
+    *,
+    as_of_ts: dt.datetime | str | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    store=None,
+    factor_ids: Iterable[str] | None = None,
+    security_ids: Iterable[str] | None = None,
+    wide: bool = False,
+) -> pd.DataFrame:
+    """Read the latest PIT-safe factor cross-section for a decision date."""
+
+    resolved_date = pd.Timestamp(as_of_date).date()
+    resolved_ts = pd.Timestamp(as_of_ts).to_pydatetime() if as_of_ts is not None else _end_of_day(resolved_date).to_pydatetime()
+
+    if store is not None:
+        long = _read_panel_asof_active(
+            store,
+            as_of_date=resolved_date,
+            as_of_ts=resolved_ts,
+            factor_ids=factor_ids,
+            security_ids=security_ids,
+        )
+    else:
+        with connect(db_path, read_only=False) as opened:
+            long = _read_panel_asof_active(
+                opened,
+                as_of_date=resolved_date,
+                as_of_ts=resolved_ts,
+                factor_ids=factor_ids,
+                security_ids=security_ids,
+            )
+    if wide:
+        return pivot_factor_panel_wide(long)
+    return long.loc[:, READ_PANEL_COLUMNS] if not long.empty else pd.DataFrame(columns=READ_PANEL_COLUMNS)
+
+
+def describe_factor_panel(db_path: Path | str = DEFAULT_DB_PATH, *, store=None) -> dict[str, object]:
+    """Return lightweight catalog and row-count metadata for the factor panel."""
+
+    def _run(active) -> dict[str, object]:
+        row = active.con.execute(
+            """
+            SELECT
+                count(*)::BIGINT AS row_count,
+                count(DISTINCT security_id)::BIGINT AS security_count,
+                count(DISTINCT factor_id)::BIGINT AS factor_count,
+                min(as_of_date) AS min_as_of_date,
+                max(as_of_date) AS max_as_of_date
+            FROM v_factor_panel
+            """
+        ).fetchone()
+        contract = active.con.execute(
+            """
+            SELECT expected_schema_sha256
+            FROM lake_export_object_contract
+            WHERE object_name = 'v_factor_panel'
+            """
+        ).fetchone()
+        partition = active.con.execute(
+            """
+            SELECT partition_columns_json, watermark_column
+            FROM lake_partition_specs
+            WHERE object_name = 'v_factor_panel'
+            """
+        ).fetchone()
+        return {
+            "object_name": "v_factor_panel",
+            "row_count": int(row[0]),
+            "security_count": int(row[1]),
+            "factor_count": int(row[2]),
+            "min_as_of_date": None if row[3] is None else str(row[3]),
+            "max_as_of_date": None if row[4] is None else str(row[4]),
+            "expected_schema_sha256": None if contract is None else str(contract[0]),
+            "partition_columns": [] if partition is None else json.loads(str(partition[0])),
+            "watermark_column": None if partition is None else str(partition[1]),
+            "panel_contract_sha256": PANEL_CONTRACT_SHA256,
+        }
+
+    if store is not None:
+        return _run(store)
+    with connect(db_path, read_only=False) as opened:
+        return _run(opened)
+
+
 def export_factor_panel(
     db_path: Path | str = DEFAULT_DB_PATH,
     *,
@@ -586,3 +753,73 @@ def export_factor_panel(
         ("v_factor_panel",),
         incremental=incremental,
     )[0]
+
+
+def _parse_date(value: str) -> dt.date:
+    return pd.Timestamp(value).date()
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Read and export the governed PF3 factor panel.")
+    parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    export_parser = subparsers.add_parser("export", help="Export v_factor_panel to the lake.")
+    export_parser.add_argument("--lake-root", default=str(DEFAULT_LAKE_ROOT))
+    export_parser.add_argument("--full", action="store_true", help="Disable incremental partition skipping.")
+
+    read_parser = subparsers.add_parser("read", help="Print a PIT factor cross-section as CSV.")
+    read_parser.add_argument("--as-of", required=True, type=_parse_date)
+    read_parser.add_argument("--as-of-ts")
+    read_parser.add_argument("--wide", action="store_true")
+    read_parser.add_argument("--factor-id", action="append", dest="factor_ids")
+    read_parser.add_argument("--security-id", action="append", dest="security_ids")
+    read_parser.add_argument("--limit", type=int, default=0)
+
+    subparsers.add_parser("describe", help="Print panel metadata as JSON.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    db_path = Path(args.db_path)
+    if args.command == "export":
+        result = export_factor_panel(
+            db_path,
+            lake_root=Path(args.lake_root),
+            incremental=not args.full,
+        )
+        payload = {
+            "export_run_id": result.export_run_id,
+            "object_name": result.object_name,
+            "rows": result.rows,
+            "byte_count": result.byte_count,
+            "sha256": result.sha256,
+            "output_path": str(result.output_path),
+            "manifest_path": str(result.manifest_path),
+        }
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return 0
+    if args.command == "read":
+        frame = read_panel_asof(
+            args.as_of,
+            as_of_ts=args.as_of_ts,
+            db_path=db_path,
+            factor_ids=args.factor_ids,
+            security_ids=args.security_ids,
+            wide=args.wide,
+        )
+        if args.limit and args.limit > 0:
+            frame = frame.head(args.limit)
+        sys.stdout.write(frame.to_csv(index=False))
+        return 0
+    if args.command == "describe":
+        sys.stdout.write(json.dumps(describe_factor_panel(db_path), sort_keys=True) + "\n")
+        return 0
+    parser.error(f"Unsupported command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
