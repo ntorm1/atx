@@ -301,6 +301,152 @@ def _pf3_s8_signal_native_factor_definitions(conn: duckdb.DuckDBPyConnection) ->
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s8_family_panel_catalog_and_gates(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S8 S8-3: factor-family panel surface, catalog view, and gate registration."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_factor_values (
+            factor_value_id VARCHAR PRIMARY KEY,
+            factor_id VARCHAR NOT NULL,
+            factor_name VARCHAR NOT NULL,
+            family VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            as_of_date DATE NOT NULL,
+            raw_value DOUBLE,
+            value DOUBLE,
+            available_at TIMESTAMP NOT NULL,
+            input_ids_json VARCHAR NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_factor_values_factor_asof ON fundamental_factor_values(factor_id, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_factor_values_family_asof ON fundamental_factor_values(family, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_factor_values_security_asof ON fundamental_factor_values(security_id, as_of_date)",
+    ):
+        conn.execute(statement)
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_fundamental_factor_family_catalog AS
+        SELECT
+            fd.factor_id,
+            fd.factor_name,
+            fd.family,
+            fd.description,
+            fd.expression,
+            fd.input_ids_json,
+            fd.direction,
+            fd.standardization_spec_json,
+            fd.neutralization_spec_json,
+            fd.unit,
+            fd.sign,
+            fd.scale,
+            fd.valid_from,
+            fd.valid_to,
+            coalesce(edges.dependency_count, 0) AS dependency_count,
+            fd.source
+        FROM factor_definition fd
+        LEFT JOIN (
+            SELECT factor_id, count(*)::BIGINT AS dependency_count
+            FROM factor_dependency_edges
+            GROUP BY factor_id
+        ) edges
+          ON edges.factor_id = fd.factor_id
+        WHERE fd.declared_in = 'db/seeds/factor_definitions.csv'
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'fundamental_factor_values',
+            'atx_warehouse',
+            'Fundamental factor family values',
+            'PIT factor-family panel rows emitted by PF3-S8 academic and signal-native factor computations.',
+            'factor_id,security_id,as_of_date',
+            'fundamental_factor_values',
+            'as_of_date',
+            'available_at',
+            now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'fundamental_factor_values',
+                'gold',
+                'fundamental_factor_value',
+                'factor_id,security_id,as_of_date',
+                'PIT fundamental factor family panel values with raw and standardized values plus full input lineage.',
+                '["factor_value_id"]',
+                'Use available_at <= decision timestamp and as_of_date <= decision date. raw_value is the family formula output; value is standardized through S7 operators.',
+                now()
+            ),
+            (
+                'v_fundamental_factor_family_catalog',
+                'view',
+                'fundamental_factor_family_catalog',
+                'factor_id',
+                'Queryable catalog of PF3-S8 factor-family definitions, semantic metadata, and dependency counts.',
+                '["factor_id"]',
+                'Definition metadata is knowledge-time data; factor values remain PIT-gated by fundamental_factor_values.available_at.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("fundamental_factor_values", "v_fundamental_factor_family_catalog"))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES
+            (
+                'fundamental_factor_lineage_completeness',
+                'fundamental_factor_values',
+                'fundamental_factor_values',
+                'critical',
+                0.0,
+                'eq',
+                true,
+                'failed',
+                'pf3_s8',
+                now()
+            ),
+            (
+                'fundamental_factor_family_coverage',
+                'fundamental_factor_values',
+                'fundamental_factor_values',
+                'critical',
+                0.0,
+                'eq',
+                true,
+                'failed',
+                'pf3_s8',
+                now()
+            )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=156,
@@ -316,5 +462,10 @@ MIGRATIONS: list[Migration] = [
         version=158,
         name="pf3_s8_signal_native_factor_definitions",
         up=_pf3_s8_signal_native_factor_definitions,
+    ),
+    Migration(
+        version=159,
+        name="pf3_s8_family_panel_catalog_and_gates",
+        up=_pf3_s8_family_panel_catalog_and_gates,
     ),
 ]

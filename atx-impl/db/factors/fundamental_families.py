@@ -596,3 +596,70 @@ def compute_signal_native_factor_rows(
     if not rows:
         return pd.DataFrame(columns=FUNDAMENTAL_FACTOR_COLUMNS)
     return _standardize_rows(pd.DataFrame(rows))
+
+
+def fundamental_factor_lineage_completeness(frame: pd.DataFrame) -> dict[str, object]:
+    """Return a gate-ready lineage completeness report for emitted factor rows."""
+
+    if frame is None or frame.empty:
+        return {"status": "warning", "total_count": 0, "incomplete_count": 0, "examples": []}
+    incomplete: list[dict[str, object]] = []
+    for row in frame.itertuples(index=False):
+        payload = getattr(row, "input_lineage_json", None)
+        ok = bool(payload)
+        if ok:
+            try:
+                lineage = json.loads(payload)
+                ok = isinstance(lineage, list) and bool(lineage)
+            except (TypeError, json.JSONDecodeError):
+                ok = False
+        if not ok:
+            incomplete.append(
+                {
+                    "factor_id": getattr(row, "factor_id", None),
+                    "security_id": getattr(row, "security_id", None),
+                    "as_of_date": str(getattr(row, "as_of_date", None)),
+                }
+            )
+    return {
+        "status": "passed" if not incomplete else "failed",
+        "total_count": int(len(frame)),
+        "incomplete_count": int(len(incomplete)),
+        "examples": incomplete[:20],
+    }
+
+
+def fundamental_factor_family_coverage(
+    frame: pd.DataFrame,
+    *,
+    expected_families: Iterable[str] | None = None,
+) -> dict[str, object]:
+    """Return coverage status for expected fundamental factor families."""
+
+    expected = set(
+        expected_families
+        or {
+            "fundamental_value",
+            "fundamental_quality",
+            "fundamental_profitability",
+            "fundamental_growth",
+            "fundamental_investment",
+            "fundamental_leverage",
+            "fundamental_distress",
+            "fundamental_accruals",
+            "signal_native",
+        }
+    )
+    present = set() if frame is None or frame.empty else {str(value) for value in frame["family"].dropna().unique()}
+    missing = sorted(expected - present)
+    counts = (
+        {}
+        if frame is None or frame.empty
+        else {str(key): int(value) for key, value in frame.groupby("family")["factor_id"].nunique().items()}
+    )
+    return {
+        "status": "passed" if not missing else "failed",
+        "expected_families": sorted(expected),
+        "missing_families": missing,
+        "family_factor_counts": counts,
+    }

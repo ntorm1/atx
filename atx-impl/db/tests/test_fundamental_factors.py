@@ -11,6 +11,8 @@ from db.factors.fundamental_families import (
     compute_signal_native_factor_rows,
     factor_seed_definitions,
     factor_seed_frame,
+    fundamental_factor_family_coverage,
+    fundamental_factor_lineage_completeness,
     load_factor_seed_specs,
 )
 
@@ -387,3 +389,86 @@ def test_signal_native_seed_rows_round_trip_into_catalog(tmp_store) -> None:
         "signal_footnote_disclosure_change": "signal_native",
     }
     assert dataset_row == 1
+
+
+def test_factor_lineage_and_coverage_gates_flag_planted_failures() -> None:
+    academic = compute_fundamental_factor_rows(_fixture_metrics(), run_id="gate-run")
+    native = compute_signal_native_factor_rows(
+        revisions=pd.DataFrame(
+            [
+                {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 100.0, "available_at": pd.Timestamp("2024-01-15")},
+                {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 110.0, "available_at": pd.Timestamp("2024-02-15")},
+                {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 100.0, "available_at": pd.Timestamp("2024-01-15")},
+                {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 95.0, "available_at": pd.Timestamp("2024-02-15")},
+            ]
+        ),
+        run_id="gate-run",
+    )
+    panel = pd.concat([academic, native], ignore_index=True)
+
+    clean_lineage = fundamental_factor_lineage_completeness(panel)
+    broken = panel.copy()
+    broken.loc[0, "input_lineage_json"] = ""
+    failed_lineage = fundamental_factor_lineage_completeness(broken)
+    clean_coverage = fundamental_factor_family_coverage(
+        panel,
+        expected_families=(
+            "fundamental_value",
+            "fundamental_quality",
+            "fundamental_profitability",
+            "signal_native",
+        ),
+    )
+    failed_coverage = fundamental_factor_family_coverage(
+        panel[panel["family"] != "signal_native"],
+        expected_families=(
+            "fundamental_value",
+            "fundamental_quality",
+            "fundamental_profitability",
+            "signal_native",
+        ),
+    )
+
+    assert clean_lineage["status"] == "passed"
+    assert failed_lineage["status"] == "failed"
+    assert failed_lineage["incomplete_count"] == 1
+    assert clean_coverage["status"] == "passed"
+    assert failed_coverage["status"] == "failed"
+    assert failed_coverage["missing_families"] == ["signal_native"]
+
+
+def test_factor_family_panel_catalog_and_gate_registry_are_present(tmp_store) -> None:
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM table_catalog
+            WHERE table_name IN ('fundamental_factor_values', 'v_fundamental_factor_family_catalog')
+            """
+        ).fetchall()
+    }
+    registry = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT check_name
+            FROM quality_check_registry
+            WHERE source = 'pf3_s8'
+            """
+        ).fetchall()
+    }
+    catalog_row = tmp_store.con.execute(
+        """
+        SELECT family, dependency_count
+        FROM v_fundamental_factor_family_catalog
+        WHERE factor_id = 'profitability_gross_profitability'
+        """
+    ).fetchone()
+
+    assert tables == {"fundamental_factor_values", "v_fundamental_factor_family_catalog"}
+    assert {
+        "fundamental_factor_lineage_completeness",
+        "fundamental_factor_family_coverage",
+    } <= registry
+    assert catalog_row == ("fundamental_profitability", 2)
