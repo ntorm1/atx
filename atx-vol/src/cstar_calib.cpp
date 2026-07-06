@@ -13,6 +13,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/solve.hpp"  // solve_spd, MatX, VecX
 #include "atx/vol/black76.hpp"        // black76_price, black76_value_and_vega
+#include "atx/vol/detail/calib_shared.hpp"  // shared LM damping constants
 #include "atx/vol/detail/robust.hpp"  // huber_weights_strided
 
 namespace atx::vol {
@@ -26,12 +27,18 @@ using atx::core::linalg::VecX;
 
 namespace {
 
-// LM / IRLS constants (ats_vol_cstar_internal.h).
-constexpr double kLambdaInit = 1.0e-3;
-constexpr double kLambdaGrow = 10.0;
-constexpr double kLambdaShrink = 0.5;
-constexpr double kLambdaMax = 1.0e8;
-constexpr double kLambdaMin = 1.0e-12;
+// LM / IRLS constants (ats_vol_cstar_internal.h). The LM damping schedule is
+// shared with the eSSVI and SVI-MM fitters — canonical values live in
+// atx/vol/detail/calib_shared.hpp (routed here so they cannot drift). The
+// remaining constants are CStar-specific and deliberately NOT shared: the
+// inner-block cap is a fixed 12 (a different role from the opts-driven fallback
+// default), and the IRLS-outer count / total-iteration cap / Huber threshold
+// have no counterpart in the other fitters.
+constexpr double kLambdaInit = detail::kLambdaLmInit;
+constexpr double kLambdaGrow = detail::kLambdaGrow;
+constexpr double kLambdaShrink = detail::kLambdaShrink;
+constexpr double kLambdaMax = detail::kLambdaLmMax;
+constexpr double kLambdaMin = detail::kLambdaLmMin;
 constexpr int kLmInnerMax = 12;
 constexpr int kIrlsOuterMax = 4;
 constexpr int kTotalIterCap = 72;

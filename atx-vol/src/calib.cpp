@@ -43,6 +43,18 @@ inline constexpr double kWeightEps = 1.0e-18;
 // The C returns ERR_NO_DATA (→ NotFound) unless at least this many rows survive.
 inline constexpr std::size_t kMinObs = 5;
 
+// w-space observation weight: vega² / (spread² + eps) / ((2σT)² + eps). Shared
+// by the American builder (`build_observations`) and the de-Americanized
+// builder (`build_observations_european`) so the two can never drift. The
+// operand order is exactly what both sites evaluated inline, so the returned
+// weight is bit-identical to the historical per-site arithmetic.
+[[nodiscard]] double obs_weight_w(double vega, double spread, double sigma,
+                                  double T) noexcept {
+  const double denom_w = 2.0 * sigma * T;
+  return (vega * vega) / (spread * spread + kWeightEps) /
+         (denom_w * denom_w + kWeightEps);
+}
+
 // Per-row filter outcome. `Skipped` is the non-preferred leg that passed the
 // flag + bid/ask gates but lost the prefer-call heuristic — the C `continue`
 // that is NOT counted as a drop (unlike a genuine `Rejected`).
@@ -140,10 +152,10 @@ struct RowResult {
   }
 
   // 7. w-space weight: weight_sigma = vega²/spread² is the filter quantity;
-  //    weight_w = weight_sigma / (2σT)² is the value stored on the obs.
-  const double denom_w = 2.0 * iv * T;
+  //    weight_w = weight_sigma / (2σT)² is the value stored on the obs (built by
+  //    the shared obs_weight_w helper — identical arithmetic to the de-Am path).
   const double weight_sigma = (vega * vega) / (spread * spread + kWeightEps);
-  const double weight_w = weight_sigma / (denom_w * denom_w + kWeightEps);
+  const double weight_w = obs_weight_w(vega, spread, iv, T);
   if (weight_sigma < opts.min_vega_weight) {
     return r;  // Rejected
   }
@@ -259,13 +271,11 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     }
     const double vega =
         black76_value_and_vega(F, o.K, T, sigma_eu, df, o.side).vega;
-    const double denom_w = 2.0 * sigma_eu * T;
     o.sigma_mkt = sigma_eu;
     o.w_mkt = sigma_eu * sigma_eu * T;
     o.mid = eu_px;  // European-equivalent premium (what the convex fold expects)
     o.vega = vega;
-    o.weight_w = (vega * vega) / (o.spread * o.spread + kWeightEps) /
-                 (denom_w * denom_w + kWeightEps);
+    o.weight_w = obs_weight_w(vega, o.spread, sigma_eu, T);
     o.active_weight_w = o.weight_w;
     o.noise_sigma = (vega > kVegaFloor) ? (o.spread / vega) : 1.0;
     out.obs.push_back(o);

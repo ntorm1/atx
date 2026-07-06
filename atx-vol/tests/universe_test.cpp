@@ -337,6 +337,12 @@ TEST(UniverseQuotes, ApplyQuotes_UnknownContracts_CountedAsDropped) {
   const UniverseStats st = u.stats();
   EXPECT_EQ(st.n_quotes_applied, std::uint64_t{1});
   EXPECT_EQ(st.n_quotes_dropped, std::uint64_t{3});
+  // Per-reason drop tally: one of each engineered bad contract.
+  EXPECT_EQ(st.drops.unknown_uid, std::uint64_t{1});
+  EXPECT_EQ(st.drops.expiry_out_of_range, std::uint64_t{1});
+  EXPECT_EQ(st.drops.strike_out_of_range, std::uint64_t{1});
+  // The breakdown must sum to the headline drop count.
+  EXPECT_EQ(st.drops.total(), st.n_quotes_dropped);
 }
 
 TEST(UniverseQuotes, ApplyQuotes_UpdatesLastTouched) {

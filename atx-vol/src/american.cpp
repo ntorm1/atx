@@ -1302,6 +1302,13 @@ Result<AmericanGreeks> american_greeks(double S, double K, double T,
                                        double sigma, double r, double q,
                                        Side side,
                                        const CorrectionCache* correction) {
+  // Degenerate-input contract: SURFACE an error. This is deliberately asymmetric
+  // with `american_vega`, which returns a 0.0 sentinel on the same input. The
+  // difference is intentional: `american_greeks` has no sentinel consumer — a
+  // caller must distinguish "greeks unavailable" from a legitimately zero
+  // sensitivity — so it reports InvalidArgument. `american_vega`, by contrast,
+  // feeds the IV inverter's Newton step, which reads a 0 vega as "force
+  // bisection"; changing either behavior breaks a downstream contract.
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks: S, K, T, sigma must be > 0");
   }
@@ -1399,6 +1406,11 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
 
 double american_vega(double S, double K, double T, double sigma, double r,
                      double q, Side side, const CorrectionCache* correction) noexcept {
+  // Degenerate-input contract: return the 0.0 SENTINEL, not an error. This is a
+  // LOAD-BEARING difference from `american_greeks` (which returns InvalidArgument
+  // on the same input): the IV inverter's Newton step reads a 0 vega as "vega
+  // unavailable, force bisection". Do NOT change this to an error/NaN — see the
+  // doc comment on american_vega() in american.hpp.
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return 0.0;
   }

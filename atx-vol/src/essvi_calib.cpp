@@ -13,6 +13,7 @@
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
 #include "atx/vol/arb.hpp"             // arb_project_calendar_essvi
+#include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
 #include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
 #include "atx/vol/detail/robust.hpp"   // huber_weights_strided
 #include "atx/vol/vol_surface.hpp"     // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
@@ -50,11 +51,18 @@ constexpr double kCubeEdge = 1.0e-6;
 // surface driver (mirrors the C `T_MIN_FIT`: half an hour in year units).
 constexpr double kTMinFit = 1.0 / (365.25 * 24.0 * 2.0);
 
-// LM control constants (mirror the C fitter).
-constexpr double kLambdaLmInit = 1.0e-3;
-constexpr double kLambdaLmMax = 1.0e8;
-constexpr double kLambdaLmMin = 1.0e-12;
-constexpr int kLmTrialCap = 8;
+// LM control constants — canonical values live in
+// atx/vol/detail/calib_shared.hpp and are shared with the SVI-MM and CStar
+// fitters (routed here so a value can never drift between calibrators).
+using detail::kLambdaGrow;
+using detail::kLambdaLmInit;
+using detail::kLambdaLmMax;
+using detail::kLambdaLmMin;
+using detail::kLambdaShrink;
+using detail::kLmInnerDefault;
+using detail::kLmTrialCap;
+using detail::kOuterStallSse;
+using detail::kTolParamDefault;
 
 [[nodiscard]] double eff_T(double T) noexcept { return (T > 0.0) ? T : kDefaultT; }
 
@@ -289,7 +297,7 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
 
     const auto sol = atx::core::linalg::solve_spd(hd, ng);
     if (!sol.has_value()) {
-      lambda_lm *= 10.0;
+      lambda_lm *= kLambdaGrow;
       if (lambda_lm > kLambdaLmMax) {
         return -1.0;
       }
@@ -307,13 +315,13 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
       psi = psi_new;
       p = p_new;
       lambda = lambda_new;
-      lambda_lm *= 0.5;
+      lambda_lm *= kLambdaShrink;
       if (lambda_lm < kLambdaLmMin) {
         lambda_lm = kLambdaLmMin;
       }
       return new_sse;
     }
-    lambda_lm *= 10.0;
+    lambda_lm *= kLambdaGrow;
     if (lambda_lm > kLambdaLmMax) {
       return prev_sse;  // stuck at (or near) the minimum
     }
@@ -351,32 +359,6 @@ bool lee_project(double& psi, double& p, double& lambda, const ThetaBand& band,
   }
   p = lo;
   return true;
-}
-
-// Profile-aware outer IRLS cap (mirrors `ats_vol_calib_outer_cap`).
-[[nodiscard]] std::uint16_t outer_cap(const CalibOpts& opts) noexcept {
-  std::uint16_t c = 0;
-  switch (opts.optimization_level) {
-    case OptimizationLevel::QuickMark:
-      c = opts.max_iter_quick_mark;
-      break;
-    case OptimizationLevel::Trading:
-      c = opts.max_iter_trading;
-      break;
-    case OptimizationLevel::Risk:
-      c = opts.max_iter_risk;
-      break;
-    case OptimizationLevel::Reference:
-      c = opts.max_iter_reference;
-      break;
-    case OptimizationLevel::ColdFast:
-      c = opts.max_iter_cold_fast;
-      break;
-  }
-  if (c == 0) {
-    c = (opts.max_outer_iter > 0) ? opts.max_outer_iter : 4;
-  }
-  return c;
 }
 
 // ── Dense C2 residual layer (smoothing spline on w_mkt − backbone) ───────────
@@ -747,10 +729,11 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
     }
   }
 
-  const std::uint16_t max_outer = outer_cap(opts);
+  const std::uint16_t max_outer = detail::outer_cap(opts);
   const std::uint16_t max_inner =
-      (opts.max_inner_iter > 0) ? opts.max_inner_iter : 12;
-  const double tol_param = (opts.tol_param > 0.0) ? opts.tol_param : 1.0e-9;
+      (opts.max_inner_iter > 0) ? opts.max_inner_iter : kLmInnerDefault;
+  const double tol_param =
+      (opts.tol_param > 0.0) ? opts.tol_param : kTolParamDefault;
 
   // LM scratch (residuals + 3 Jacobian columns).
   std::vector<double> r(n);
@@ -797,7 +780,7 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
     if (opts.lee_bound_project) {
       (void)lee_project(psi, p, lambda, band, T);
     }
-    if (std::fabs(prev_outer_sse - sse) < 1.0e-15) {
+    if (std::fabs(prev_outer_sse - sse) < kOuterStallSse) {
       break;
     }
     prev_outer_sse = sse;

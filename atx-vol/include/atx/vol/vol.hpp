@@ -29,6 +29,56 @@
 // contract is: every entry is a pure function of its inputs (Result<T>/Status for
 // expected failures, no exceptions), and a built VolaSession / VolSurface is safe
 // for concurrent const queries. See README.md for the full tour.
+//
+// ── THE canonical lifecycle (chain -> fit -> priced surface -> archive -> book) ─
+//
+// One blessed path takes a listed board all the way to a portfolio mark + PnL.
+// Every hand-off below is exercised end-to-end (bit-identically) in
+// tests/lifecycle_integration_test.cpp; new code should follow this shape.
+//
+//   using namespace atx::vol;
+//   // 1. Chain: an id-addressed board + its MarketEnv (spot / rate / cash divs).
+//   OptionChain chain = OptionChain::from_frame(frame,
+//       MarketEnv::flat(spot, r, now_ns, cash_divs)).value();
+//   // 2. Fit: own the fitted surface. Pin ConvexDense for a dense index board,
+//   //    or leave `curve` unset to auto-select per board (eSSVI on sparse names).
+//   PricerFitter fitter{ PricerConfig{ .preset = FitPreset::Fast,
+//                                      .curve = CurveConfig{ /*ConvexDense*/ } } };
+//   fitter.fit(chain);
+//   const VolaSession& sess = fitter.surface()->session();
+//   // 3. Snapshot: distil the live fit into a small, cache-free PricedSurface —
+//   //    its cold served theo is bit-identical to the session (override path).
+//   PricedSurface ps = sess.to_priced_surface().value();
+//   // 4. Archive: serialize -> reload with ZERO theo drift (ATXVSA v3 round-trip).
+//   auto bytes = write_surface_archive(std::array{SurfaceArchiveItem{"SPY", &ps}}).value();
+//   PricedSurface reloaded = SurfaceArchive::open(std::move(bytes)).value()
+//                                .map_symbol("SPY").value();
+//   // 5. Book: dedup contracts, mark the portfolio, and Taylor-explain a reprice.
+//   Portfolio pf = Portfolio::create(positions).value();               // uid == ps.uid()
+//   PortfolioPricer pricer{ std::move(pf) };
+//   SurfaceSet surfaces = SurfaceSet::create(std::array{ &reloaded }).value();
+//   PriceFrame frame_out = pricer.price(surfaces).value();             // pv + Greeks
+//   PnlFrame   explain   = pricer.pnl_explain(base, shifted).value();  // delta/gamma/...
+//
+// CANONICAL portfolio engine: portfolio_pricer.hpp (the PricedSurface-native
+// PortfolioPricer above). `portfolio.hpp` / `portfolio_risk.hpp` are the
+// DEPRECATED legacy VolSurface/Universe-bound engine (banner-marked below); do not
+// build new features on them.
+//
+// ── Coordinate + pricing conventions (used everywhere in the library) ──────────
+//
+//   * Log-moneyness  k = ln(K / F): every slice is stored / queried in k, so an
+//     absolute-strike query first resolves the term forward F(T).
+//   * Forward / carry  F = S * e^{(r - q) T}, with discrete cash dividends folded
+//     into the forward (q is the effective continuous carry, q_eff). A query at T
+//     clamps outside [T_0, T_last] and LINEARLY interpolates (F, q_eff) between
+//     bracketing fitted slices — the one mechanic the queries re-price on.
+//   * Time  T is a year-fraction on a 365.25-day year (data.cpp `year_fraction`).
+//   * Greeks are SPOT-based: delta = dP/dS, gamma = d2P/dS2; theta is CALENDAR,
+//     theta = dP/dt = -dP/dT. vega = dP/dsigma, rho = dP/dr.
+//   * Price basis is the American Andersen-Lake mark; on the cold (index / override)
+//     path the Greeks are American cold finite differences on that SAME mark, so
+//     `greeks().price` is bit-identical to `fair_value()`.
 
 // ── Core vocabulary ─────────────────────────────────────────────────────────
 #include "atx/vol/types.hpp"    // Side, ExerciseStyle, Result/Status, numeric bounds
@@ -98,8 +148,20 @@
 #include "atx/vol/surface_archive.hpp" // fitted priced-surface archive (v3)
 
 // ── Portfolio / risk analytics ──────────────────────────────────────────────
-#include "atx/vol/portfolio.hpp"           // legacy VolSurface-bound portfolio + bulk
-#include "atx/vol/portfolio_risk.hpp"
-#include "atx/vol/portfolio_pricer.hpp"     // PricedSurface-native pricer + Taylor PnL explain
+//
+// CANONICAL portfolio path: `portfolio_pricer.hpp` (PricedSurface-native
+// `PortfolioPricer` — dedup + American mark + American cold-FD Greeks + Taylor
+// PnL-explain over N underlyings). New code should use it.
+//
+// The `portfolio.hpp` / `portfolio_risk.hpp` pair below is the DEPRECATED legacy
+// VolSurface/Universe-bound engine. It is retained (not deleted) only because it
+// still carries capabilities the canonical pricer does not yet cover — stock/cash
+// legs, by-uid/by-expiry/by-group aggregation, chain-moneyness/strike bulk
+// selection, the multi-shock scenario engine, theoretical/delta-coordinate legs,
+// and forward/vol/route/interp factor PnL attribution. Do not build new features
+// on it; migrate those capabilities onto the PricedSurface path as they are needed.
+#include "atx/vol/portfolio.hpp"           // DEPRECATED legacy VolSurface-bound portfolio + bulk
+#include "atx/vol/portfolio_risk.hpp"      // DEPRECATED legacy scenario / theoretical-leg risk
+#include "atx/vol/portfolio_pricer.hpp"    // CANONICAL PricedSurface-native pricer + Taylor PnL explain
 #include "atx/vol/calib_pool.hpp"
 #include "atx/vol/profile.hpp"

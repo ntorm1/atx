@@ -30,6 +30,7 @@ namespace {
 using atx::vol::AloPricer;
 using atx::vol::AlOpts;
 using atx::vol::american_greeks;
+using atx::vol::american_vega;
 using atx::vol::al_fast_opts;
 using atx::vol::american_price_cached;
 using atx::vol::andersen_lake;
@@ -115,6 +116,38 @@ TEST(AndersenLake, NonPositiveSpot_IsInvalidArgument) {
   const auto r = andersen_lake(-1.0, 100.0, 0.5, 0.25, 0.05, 0.0, Side::Put);
   ASSERT_FALSE(r.has_value());
   EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── Degenerate-input contract: greeks vs vega asymmetry (P1-4) ──────────────
+//
+// Intentional, LOAD-BEARING asymmetry: `american_greeks` surfaces an error on
+// degenerate input while `american_vega` returns the exact 0.0 sentinel the IV
+// inverter's Newton step reads as "vega unavailable, force bisection". Pin BOTH
+// so neither contract can silently drift.
+TEST(AmericanDegenerateContract, GreeksErrorButVegaReturnsZeroSentinel) {
+  const double K = 100.0, T = 0.5, sigma = 0.25, r = 0.05, q = 0.0;
+
+  // Non-positive spot.
+  {
+    const auto g = american_greeks(-1.0, K, T, sigma, r, q, Side::Call, nullptr);
+    ASSERT_FALSE(g.has_value());
+    EXPECT_EQ(g.error().code(), atx::core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(american_vega(-1.0, K, T, sigma, r, q, Side::Call, nullptr), 0.0);
+  }
+  // Zero volatility.
+  {
+    const auto g = american_greeks(100.0, K, T, 0.0, r, q, Side::Put, nullptr);
+    ASSERT_FALSE(g.has_value());
+    EXPECT_EQ(g.error().code(), atx::core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(american_vega(100.0, K, T, 0.0, r, q, Side::Put, nullptr), 0.0);
+  }
+  // Non-positive time to expiry.
+  {
+    const auto g = american_greeks(100.0, K, 0.0, sigma, r, q, Side::Call, nullptr);
+    ASSERT_FALSE(g.has_value());
+    EXPECT_EQ(g.error().code(), atx::core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(american_vega(100.0, K, 0.0, sigma, r, q, Side::Call, nullptr), 0.0);
+  }
 }
 
 // ── McDonald-Schroder put-call symmetry ─────────────────────────────────

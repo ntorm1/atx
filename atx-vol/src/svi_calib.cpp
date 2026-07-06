@@ -15,6 +15,7 @@
 #include "atx/vol/arb.hpp"             // arb_project_calendar_svi
 #include "atx/vol/black76.hpp"         // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"           // CalibOpts, FitObs, FitDiag, build_observations
+#include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
 
 // Per-slice raw-SVI calibrators — implementation.
 //
@@ -79,35 +80,6 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
     out[i] = (*res)(i);
   }
   return true;
-}
-
-// Profile-aware outer-iteration cap (ats_calibrate_internal.h
-// `ats_vol_calib_outer_cap`).
-[[nodiscard]] std::uint16_t outer_cap(const CalibOpts &opts) noexcept {
-  std::uint16_t per_level = 0;
-  switch (opts.optimization_level) {
-    case OptimizationLevel::QuickMark:
-      per_level = opts.max_iter_quick_mark;
-      break;
-    case OptimizationLevel::Trading:
-      per_level = opts.max_iter_trading;
-      break;
-    case OptimizationLevel::Risk:
-      per_level = opts.max_iter_risk;
-      break;
-    case OptimizationLevel::Reference:
-      per_level = opts.max_iter_reference;
-      break;
-    case OptimizationLevel::ColdFast:
-      per_level = opts.max_iter_cold_fast;
-      break;
-  }
-  if (per_level > 0) {
-    return per_level;
-  }
-  // The ternary promotes its uint16_t arms to int; cast back for the return.
-  return static_cast<std::uint16_t>((opts.max_outer_iter > 0) ? opts.max_outer_iter
-                                                              : 4);
 }
 
 // ── SVI raw evaluators (self-contained; no SviParams temporaries) ────────
@@ -619,7 +591,7 @@ void build_normal_eqs_5(std::span<const FitObs> obs, const LmWorkspaceMm &ws,
   std::array<double, 5> g{};
   build_normal_eqs_5(obs, ws, H, g);
 
-  for (int trial = 0; trial < 8; ++trial) {
+  for (int trial = 0; trial < detail::kLmTrialCap; ++trial) {
     std::array<double, 25> hd = H;
     const double damp = 1.0 + lambda_lm;
     hd[0] *= damp;
@@ -631,8 +603,8 @@ void build_normal_eqs_5(std::span<const FitObs> obs, const LmWorkspaceMm &ws,
     const std::array<double, 5> neg_g{-g[0], -g[1], -g[2], -g[3], -g[4]};
     std::array<double, 5> step{};
     if (!solve_spd_dense(hd.data(), neg_g.data(), 5, step.data())) {
-      lambda_lm *= 10.0;
-      if (lambda_lm > 1.0e8) {
+      lambda_lm *= detail::kLambdaGrow;
+      if (lambda_lm > detail::kLambdaLmMax) {
         return prev_sse;
       }
       continue;
@@ -669,14 +641,14 @@ void build_normal_eqs_5(std::span<const FitObs> obs, const LmWorkspaceMm &ws,
       rho = rho_new;
       m = m_new;
       sigma = sigma_new;
-      lambda_lm *= 0.5;
-      if (lambda_lm < 1.0e-12) {
-        lambda_lm = 1.0e-12;
+      lambda_lm *= detail::kLambdaShrink;
+      if (lambda_lm < detail::kLambdaLmMin) {
+        lambda_lm = detail::kLambdaLmMin;
       }
       return new_sse;
     }
-    lambda_lm *= 10.0;
-    if (lambda_lm > 1.0e8) {
+    lambda_lm *= detail::kLambdaGrow;
+    if (lambda_lm > detail::kLambdaLmMax) {
       return prev_sse;
     }
   }
@@ -766,7 +738,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
   std::uint16_t outer_total_iters = 0;
   std::uint16_t inner_total_iters = 0;
 
-  const std::uint16_t max_outer = outer_cap(opts);
+  const std::uint16_t max_outer = detail::outer_cap(opts);
   const std::uint16_t max_inner = static_cast<std::uint16_t>(
       (opts.max_inner_iter > 0) ? opts.max_inner_iter : 200);
   const double tol = (opts.tol_residual > 0.0) ? opts.tol_residual : 1.0e-10;
@@ -949,10 +921,11 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
   (void)mm_project_default(T, a, b, rho, sigma);
 
   const std::span<const FitObs> wspan{work};
-  const std::uint16_t max_outer = outer_cap(opts);
+  const std::uint16_t max_outer = detail::outer_cap(opts);
   const std::uint16_t max_inner = static_cast<std::uint16_t>(
-      (opts.max_inner_iter > 0) ? opts.max_inner_iter : 12);
-  const double tol_param = (opts.tol_param > 0.0) ? opts.tol_param : 1.0e-9;
+      (opts.max_inner_iter > 0) ? opts.max_inner_iter : detail::kLmInnerDefault);
+  const double tol_param =
+      (opts.tol_param > 0.0) ? opts.tol_param : detail::kTolParamDefault;
 
   LmWorkspaceMm ws{};
   ws.r0.assign(n, 0.0);
@@ -986,7 +959,7 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
 
   for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
     double sse = svi_mm_sse(wspan, T, a, b, rho, m, sigma);
-    double lambda_lm = 1.0e-3;
+    double lambda_lm = detail::kLambdaLmInit;
 
     for (std::uint16_t inner = 0; inner < max_inner; ++inner) {
       const double a_old = a;
@@ -1035,7 +1008,7 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
       sumwr2 += o.weight_w * r_px * r_px;
     }
     const double rms_resid_px = (sumw > 1.0e-15) ? std::sqrt(sumwr2 / sumw) : 0.0;
-    if (std::fabs(prev_outer_sse - sse) < 1.0e-15) {
+    if (std::fabs(prev_outer_sse - sse) < detail::kOuterStallSse) {
       break;
     }
     prev_outer_sse = sse;

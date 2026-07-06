@@ -1,5 +1,16 @@
 #pragma once
 
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ DEPRECATED — legacy VolSurface/Universe-bound portfolio engine.            │
+// │ The CANONICAL portfolio path is `portfolio_pricer.hpp` (PricedSurface-     │
+// │ native: contract dedup, American mark + American cold-FD Greeks, Taylor    │
+// │ PnL-explain). Do NOT build new features here. This module is retained as   │
+// │ reference only for capabilities not yet on the canonical path — stock/cash │
+// │ legs, by-uid/by-expiry/by-group aggregation, and chain moneyness/strike    │
+// │ bulk selection; migrate those onto PricedSurface when a consumer needs     │
+// │ them rather than extending this VolSurface-bound code.                     │
+// └──────────────────────────────────────────────────────────────────────────┘
+//
 // Portfolio pricing engine + bulk chain pricer.
 //
 // Ported from the C `ats-vol` library (ats_vol_portfolio.h /

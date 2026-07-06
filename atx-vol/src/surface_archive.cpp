@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -358,7 +359,17 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
       sp.ctx = ctx[i];
       if (sp.kind == VolCurveKind::ConvexDense) {
         const auto* cd = static_cast<const ConvexDenseCurve*>(c);
-        sp.node_count = static_cast<std::uint32_t>(cd->fit().u.size());
+        // `node_count` is a uint32 field on disk. Guard the narrowing so an
+        // (implausibly large) slice cannot silently wrap the count instead of
+        // being reported — matches the write-path validation above (>0xFFFF
+        // slices, empty surface). Defensive: a >UINT32_MAX-node curve is not
+        // reachable in practice.
+        const std::size_t node_count = cd->fit().u.size();
+        if (node_count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+          return Err(ErrorCode::InvalidArgument,
+                     "write_surface_archive: slice node count exceeds uint32");
+        }
+        sp.node_count = static_cast<std::uint32_t>(node_count);
       }
       sp.payload_size = slice_payload_size(sp.kind, sp.node_count);
       sp.rec_size = align_up(sizeof(ArchiveSliceHeader) + sp.payload_size, array_align);

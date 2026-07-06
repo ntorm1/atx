@@ -205,6 +205,11 @@ struct AmericanGreeks {
 // American Greeks + price. A null `correction` degrades to the Black-76 leg
 // (American -> European), exactly like the underlying cached pricer.
 //
+// Degenerate-input policy: this SURFACES an error, deliberately asymmetric with
+// `american_vega`, which returns a 0.0 sentinel on the same input. The
+// difference is intentional — `american_greeks` has no sentinel consumer, so it
+// reports the error; `american_vega`'s 0 is a signal the IV inverter depends on.
+//
 // @return InvalidArgument if any of S, K, T, sigma is non-positive.
 [[nodiscard]] Result<AmericanGreeks> american_greeks(double S, double K, double T,
                                                      double sigma, double r, double q,
@@ -228,7 +233,9 @@ struct AmericanGreeks {
 // which cost ~6 extra cache evaluations). It is the Black-76 vega plus
 // F·∂correction/∂sigma (one cache `eval_grad`). A null `correction` gives the
 // Black-76 (European-leg) vega. Returns 0 on a degenerate / non-positive input
-// (the inverter reads 0 as "force bisection").
+// (the inverter reads 0 as "force bisection"). This 0 sentinel is LOAD-BEARING
+// and is why this function differs from `american_greeks`, which surfaces
+// InvalidArgument on the same input rather than a sentinel.
 [[nodiscard]] double american_vega(double S, double K, double T, double sigma,
                                    double r, double q, Side side,
                                    const CorrectionCache* correction) noexcept;

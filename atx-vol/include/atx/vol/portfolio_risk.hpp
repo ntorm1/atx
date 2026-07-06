@@ -1,5 +1,16 @@
 #pragma once
 
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ DEPRECATED — legacy VolSurface/Universe-bound risk engine (see            │
+// │ portfolio.hpp banner). The CANONICAL PnL path is                          │
+// │ `PortfolioPricer::pnl_explain` (portfolio_pricer.hpp): a Taylor Greek     │
+// │ decomposition over a base/shifted PricedSurface pair. This module is kept │
+// │ as reference for its distinct capabilities the canonical path lacks — the │
+// │ multi-shock scenario engine, theoretical/delta-coordinate legs, and the   │
+// │ forward/vol/route/interp factor attribution basis. Do NOT extend it;      │
+// │ port a capability onto PricedSurface when a consumer actually needs it.   │
+// └──────────────────────────────────────────────────────────────────────────┘
+//
 // Theoretical portfolio-RISK engine: scenario/shock revaluation plus the
 // plan / resolve / price / PnL-explain lifecycle for theoretical option legs.
 //

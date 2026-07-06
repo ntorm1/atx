@@ -179,15 +179,18 @@ Status Universe::apply_quotes(const QuoteBatch &batch) {
     Underlying *under = find_underlying(uid);
     if (under == nullptr) {
       ++n_quotes_dropped_;
+      ++quote_drops_.unknown_uid;
       continue;
     }
     if (exp >= under->chains.size()) {
       ++n_quotes_dropped_;
+      ++quote_drops_.expiry_out_of_range;
       continue;
     }
     Chain &c = under->chains[exp];
     if (strike >= c.strikes.size()) {
       ++n_quotes_dropped_;
+      ++quote_drops_.strike_out_of_range;
       continue;
     }
 
@@ -216,6 +219,7 @@ UniverseStats Universe::stats() const noexcept {
   out.n_underlyings = n_underlyings();
   out.n_quotes_applied = n_quotes_applied_;
   out.n_quotes_dropped = n_quotes_dropped_;
+  out.drops = quote_drops_;
 
   std::uint32_t n_chains = 0u;
   std::uint64_t n_strikes = 0u;

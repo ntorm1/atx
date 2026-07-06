@@ -203,6 +203,24 @@ struct QuoteBatch {
 
 // ── Stats ───────────────────────────────────────────────────────────────────
 
+// Per-reason breakdown of quotes dropped by `apply_quotes`. Every drop path in
+// `apply_quotes` bumps exactly one of these, so the fields sum to
+// `UniverseStats::n_quotes_dropped`. Cheap (per-reason counter increments, no
+// allocation, no per-quote logging) so it is safe in the ingest hot path. The
+// only drop reasons `apply_quotes` has are contract-id decode failures — it does
+// not filter on quote economics (non-finite / crossed / min-obs live at the
+// calibration layer, not here).
+struct QuoteDropTally {
+  std::uint64_t unknown_uid = 0u;          // contract id decodes to no known uid
+  std::uint64_t expiry_out_of_range = 0u;  // expiry index past the uid's chains
+  std::uint64_t strike_out_of_range = 0u;  // strike index past the chain's strikes
+
+  // Sum of all drop reasons; equals UniverseStats::n_quotes_dropped.
+  [[nodiscard]] std::uint64_t total() const noexcept {
+    return unknown_uid + expiry_out_of_range + strike_out_of_range;
+  }
+};
+
 // Snapshot counters (AtsVolUniverseStats in the C, minus `bytes_arena_used` —
 // there is no arena in this port).
 struct UniverseStats {
@@ -210,7 +228,8 @@ struct UniverseStats {
   std::uint32_t n_chains = 0u;
   std::uint64_t n_strikes = 0u;      // summed across all chains
   std::uint64_t n_quotes_applied = 0u;
-  std::uint64_t n_quotes_dropped = 0u; // unknown contract id
+  std::uint64_t n_quotes_dropped = 0u; // unknown contract id (== drops.total())
+  QuoteDropTally drops;                // per-reason breakdown of n_quotes_dropped
 };
 
 // ── LRU residency policy ────────────────────────────────────────────────────
@@ -283,8 +302,10 @@ public:
   // ── Bulk quote ingest ──────────────────────────────────────────────────
 
   // Apply a batch of quotes. Quotes whose contract id does not decode to a
-  // known (uid, expiry, strike) tuple are silently dropped and counted in
-  // `stats().n_quotes_dropped`. Updates mids/flags but not `ivs` (the
+  // known (uid, expiry, strike) tuple are dropped and counted in
+  // `stats().n_quotes_dropped`, with a per-reason breakdown in `stats().drops`
+  // (unknown uid / expiry out of range / strike out of range). Updates
+  // mids/flags but not `ivs` (the
   // calibration cadence owns that). Also advances each touched underlier's
   // `last_touched_ns` to the max quote timestamp.
   // @return InvalidArgument if the batch columns are not all the same length.
@@ -325,6 +346,7 @@ private:
   std::unordered_map<std::string, Uid> ticker_index_; // ticker -> uid
   std::uint64_t n_quotes_applied_ = 0u;
   std::uint64_t n_quotes_dropped_ = 0u;
+  QuoteDropTally quote_drops_; // per-reason breakdown; sums to n_quotes_dropped_
 };
 
 } // namespace atx::vol
