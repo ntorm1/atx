@@ -265,10 +265,22 @@ queryable archive corpus the backtest reads.
 - **P3-3 Integrity + throughput gates.** Round-trip theo bit-identical
   (fit → serialize → reload → price); corpus build throughput + storage
   footprint bench.
+- **P3-4 Curve-family extension (as needed).** Corpus fit-quality is bucketed by
+  member/shape. Where a class of members sits below the in-band floor that the
+  three shipped kinds cannot close, extend the analytics layer through the
+  `IVolCurve` / `VolCurveKind` seam (new adapter + enum tag + `fit_slice_curve`
+  arm + archive slice serializer + `CurveSelector` entry) or add the needed
+  `CurveConfig` / `CalibOpts` shape option — see "Analytics-layer extensibility".
+  Promoting the partially-ported C8 / CStar evaluators is the cheapest first
+  option. This task is *conditional*: run it only when the coverage data shows a
+  shape the current family misfits; otherwise it is a no-op the phase records.
 
 **Acceptance gate.** Pilot corpus built and reloadable; per-surface reload theo
 bit-identical to the live fit; manifest enumerates the corpus; fit-quality
-distribution across members recorded (flag members below an in-band floor).
+distribution across members recorded (flag members below an in-band floor). Any
+curve kind / config added under P3-4 round-trips bit-identically through the
+archive, bumps the schema hash, and does not regress the SPY in-band or
+determinism gates.
 
 ### P4 — Dispersion strategy + backtest engine
 
@@ -318,11 +330,46 @@ spot/vol-only steps). Determinism: same corpus ⇒ bit-identical backtest output
 - Every performance claim measured with the interleaved A/B throttle-canceling
   discipline; negative results documented as such.
 
+## Analytics-layer extensibility (reserved freedom)
+
+Scaling across many `(symbol, date)` pairs will surface smile/term shapes the
+three shipped curve kinds (ConvexDense / eSSVI / SVI) do not fit well — low-price
+names, hard-borrow single-names, event-month term inversions, thin/one-sided
+boards, high-skew or fat-tailed wings. **This sprint explicitly reserves the
+freedom to extend the core analytics layer — new curve kinds, new fit
+configuration, richer selection — whenever the corpus demands it.** It is not a
+non-goal; it is an expected, gated activity (P3-4, and available earlier in P1
+if the unification exposes the need).
+
+The extension is *bounded by an existing abstraction*, so growth stays clean
+rather than sprawling:
+
+- **The seam is `IVolCurve` / `VolCurveKind`** (`include/atx/vol/vol_curve.hpp`).
+  A new curve kind = a thin adapter over its concrete params + an enum tag + a
+  `fit_slice_curve` dispatch arm + a `SurfaceArchive` slice serializer
+  (kind-tagged records already exist: `ArchiveSliceHeader.kind`,
+  `ArchiveDirEntry.kind_bits`) + a `CurveSelector` entry. Virtual dispatch sits
+  only at the per-slice query layer, so the arithmetic hot path is unaffected.
+- **Config grows through `CurveConfig` / `CalibOpts` / `FitPreset`**, not ad-hoc
+  knobs — a new shape parameter or per-family option is threaded through the one
+  `fit_curve_surface` driver.
+- **Every addition holds the same gates**: fits from the shared de-Americanized
+  European obs set (`build_observations_european`), round-trips bit-identically
+  through the archive, and does not regress SPY 99.5% in-band or determinism.
+  Adding a kind bumps the archive schema hash by construction, so old corpora are
+  cleanly rejected (re-fit is the migration), never mis-read.
+- **C8 / CStar evaluators are already partially ported** (`VolCurveKind` marks
+  them deferred); promoting one to a live kind is the cheapest first extension
+  when a shape needs more DoF than eSSVI without ConvexDense's density.
+
 ## Non-goals
 
-- No new pricing/fit math beyond the American-greeks FD path (P0-1) — numbers
-  still flow through the validated `andersen_lake` / `american_price` /
-  convex-QP / eSSVI primitives.
+- No new pricing/fit math is *required* by the pilot; the American-greeks FD path
+  (P0-1) is the only mandated pricer change, and the mandatory numbers still flow
+  through the validated `andersen_lake` / `american_price` / convex-QP / eSSVI
+  primitives. New curve kinds / fit config are *permitted and expected* when the
+  data demands (see "Analytics-layer extensibility") — additive and gated, not a
+  rewrite of the shipped path.
 - No SIMD vector transcendentals (toolchain-blocked under clang-cl; measured
   negative in prior sessions).
 - Not scaling the universe past the ~10-member pilot this sprint (50-100 members
