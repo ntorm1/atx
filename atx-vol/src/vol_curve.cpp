@@ -16,9 +16,6 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-// Below the shortest slice by more than this fraction, the surface declines to
-// extrapolate (matches the VolSurface / Surface<> Sprint-26 guard).
-constexpr double kMaxBelowFirst = 0.50;
 }  // namespace
 
 const char* to_string(VolCurveKind kind) noexcept {
@@ -108,14 +105,19 @@ double CurveSurface::w(double k_log, double T) const noexcept {
   if (slices_.empty() || !(T > 0.0)) {
     return kNaN;
   }
-  // No-extrapolation guard: more than 50% below the shortest slice.
-  if (T < slices_.front()->T() * (1.0 - kMaxBelowFirst)) {
-    return kNaN;
+  // Short-end model: below the front slice, hold implied vol FLAT at the front
+  // curve's iv (total variance scales linearly, w = w_front * T/T_front). This is
+  // bounded and positive as T -> 0, so options aged to near-expiry (the hold-to-
+  // expiry backtest path) price cleanly instead of hitting the old NaN cliff.
+  const double T_front = slices_.front()->T();
+  if (T < T_front) {
+    const double w_front = slices_.front()->w(k_log);
+    return std::isfinite(w_front) ? w_front * (T / T_front) : kNaN;
   }
   const Bracket b = locate(T);
   const double wlo = slices_[b.lo]->w(k_log);
   if (b.lo == b.hi) {
-    return wlo;
+    return wlo;  // long-end: flat total variance beyond the last slice
   }
   const double whi = slices_[b.hi]->w(k_log);
   if (!std::isfinite(wlo) || !std::isfinite(whi)) {

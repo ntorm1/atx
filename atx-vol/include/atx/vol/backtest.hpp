@@ -43,6 +43,8 @@
 
 namespace atx::vol {
 
+class IStrategy;  // strategy.hpp — drives the strategy-aware run_backtest overload
+
 // ── Timeline ────────────────────────────────────────────────────────────────
 
 // One dated market snapshot in the backtest timeline: the corpus date string and
@@ -148,6 +150,9 @@ struct BacktestResult {
   std::vector<double> nav;             // cumulative from inception = 0
   std::vector<double> gross_delta, gross_gamma, gross_vega, gross_theta;  // book greeks on the base
   std::vector<double> n_open_lots;
+  // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
+  // Empty for the fixed-book overload; populated by the IStrategy overload.
+  std::vector<std::pair<std::string, std::vector<double>>> signals;
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 };
@@ -157,6 +162,15 @@ struct BacktestResult {
 // pnl_explain(base -> shifted); settle expiries; record @ granularity;
 // base = std::move(shifted); }.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
+                                                  const RunConfig& cfg = {});
+
+// B1 driver: the strategy-aware overload. `strat.on_step` runs at inception
+// (step 0) and after each move-swap on the new base — opening entries / rolling
+// cohorts / closing lots — then the same resolve-today -> pnl_explain-forward ->
+// move-swap loop MTMs the evolving book. Book greeks and `signals(base)` are
+// recorded AFTER each step's entries. Settlement of expiring lots is engine-owned
+// (at intrinsic), identical to the fixed-book overload.
+[[nodiscard]] Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat,
                                                   const RunConfig& cfg = {});
 
 }  // namespace atx::vol

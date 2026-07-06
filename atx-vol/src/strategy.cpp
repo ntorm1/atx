@@ -1,0 +1,405 @@
+// atx-vol strategy DSL interpreter (Phase B1) — see strategy.hpp for the model.
+//
+// Resolution: strike-from-delta (deterministic bisection on log-moneyness), the
+// StrikeSelector -> K map, LegSpec -> ResolvedLeg expansion, per-leg sizing, and
+// the cross-leg vega constraint. Plus the DeclarativeStrategy lifecycle (entry
+// cadence, HoldToExpiry overlapping cohorts / RollAtHorizon single-cohort roll).
+
+#include "atx/vol/strategy.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "atx/core/error.hpp"
+#include "atx/vol/american.hpp"  // AmericanGreeks
+
+namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+
+// ── Strike-from-delta solver ────────────────────────────────────────────────
+
+Result<double> resolve_strike_by_delta(const PricedSurface& s, double T, Side side,
+                                       double target_abs_delta) {
+  if (!(std::isfinite(target_abs_delta) && target_abs_delta > 0.0 && target_abs_delta < 1.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "resolve_strike_by_delta: target |delta| must lie in (0,1)");
+  }
+  const double F = s.forward_at(T);
+  if (!(F > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "resolve_strike_by_delta: no forward at tenor");
+  }
+
+  // g(k) = |delta(F*e^k)| - target. `exact=false` marks a ±sentinel used only for
+  // bracketing: when greeks() is unavailable at an extreme k, we impute the
+  // asymptotic |delta| (-> 1 deep ITM, -> 0 deep OTM). The final root is validated
+  // against a real reprice, so a sentinel-only "straddle" cannot pass as a hit.
+  struct GVal {
+    double value{0.0};
+    bool exact{false};
+  };
+  const auto gof = [&](double k) -> GVal {
+    const double K = F * std::exp(k);
+    const Result<AmericanGreeks> gr = s.greeks(K, T, side);
+    if (gr) {
+      const double d = std::fabs(gr->delta);
+      if (std::isfinite(d)) {
+        return GVal{d - target_abs_delta, true};
+      }
+    }
+    const bool itm = (side == Side::Call) ? (k < 0.0) : (k > 0.0);
+    const double asym = itm ? (1.0 - target_abs_delta) : (0.0 - target_abs_delta);
+    return GVal{asym, false};
+  };
+
+  // Bracket: the first width whose endpoints straddle the target.
+  double lo = 0.0;
+  double hi = 0.0;
+  GVal glo{};
+  GVal ghi{};
+  bool bracketed = false;
+  for (const double w : {1.5, 3.0, 5.0}) {
+    lo = -w;
+    hi = w;
+    glo = gof(lo);
+    ghi = gof(hi);
+    if ((glo.value <= 0.0) != (ghi.value <= 0.0)) {
+      bracketed = true;
+      break;
+    }
+  }
+  if (!bracketed) {
+    return Err(ErrorCode::InvalidArgument, "resolve_strike_by_delta: delta target unreachable");
+  }
+
+  // Bisection: fixed iteration cap (deterministic). Monotone |delta| per side.
+  double kroot = 0.5 * (lo + hi);
+  for (int it = 0; it < 128; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    kroot = mid;
+    const GVal gm = gof(mid);
+    if (gm.exact && std::fabs(gm.value) <= 1.0e-7) {
+      break;
+    }
+    if ((hi - lo) <= 1.0e-10) {
+      break;
+    }
+    if ((gm.value <= 0.0) == (glo.value <= 0.0)) {
+      lo = mid;
+      glo = gm;
+    } else {
+      hi = mid;
+      ghi = gm;
+    }
+  }
+
+  // Validate: the root must actually reprice to the target (guards unreachable
+  // targets that straddled only through the asymptotic sentinel).
+  const double Kroot = F * std::exp(kroot);
+  const Result<AmericanGreeks> gr = s.greeks(Kroot, T, side);
+  if (!gr || !std::isfinite(gr->delta) ||
+      std::fabs(std::fabs(gr->delta) - target_abs_delta) > 1.0e-4) {
+    return Err(ErrorCode::InvalidArgument, "resolve_strike_by_delta: delta target unreachable");
+  }
+  return Ok(Kroot);
+}
+
+// ── StrikeSelector -> absolute K ────────────────────────────────────────────
+
+Result<double> resolve_strike(const PricedSurface& s, const TenorSpec& tenor, Side side,
+                              const StrikeSelector& sel) {
+  const double T = tenor.target_T;
+  switch (sel.kind) {
+    case StrikeSelector::Kind::AtmForward: {
+      const double F = s.forward_at(T);
+      if (!(F > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, "resolve_strike: no forward at tenor");
+      }
+      return Ok(F);
+    }
+    case StrikeSelector::Kind::Delta:
+      return resolve_strike_by_delta(s, T, side, sel.value);
+    case StrikeSelector::Kind::Moneyness: {
+      const double F = s.forward_at(T);
+      if (!(F > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, "resolve_strike: no forward at tenor");
+      }
+      return Ok(F * std::exp(sel.value));
+    }
+    case StrikeSelector::Kind::AbsStrike:
+      if (!(std::isfinite(sel.value) && sel.value > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, "resolve_strike: AbsStrike must be positive");
+      }
+      return Ok(sel.value);
+  }
+  return Err(ErrorCode::InvalidArgument, "resolve_strike: unknown selector kind");
+}
+
+// ── LegSpec -> ResolvedLeg(s) ───────────────────────────────────────────────
+
+Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot& snap, const LegSpec& leg) {
+  std::uint32_t uid = leg.uid;
+  if (uid == 0) {
+    const std::optional<std::uint32_t> u = snap.uid_of(leg.symbol);
+    if (!u) {
+      return Err(ErrorCode::NotFound, "expand_leg: symbol '" + leg.symbol + "' not in snapshot");
+    }
+    uid = *u;
+  }
+  const PricedSurface* surf = snap.find(uid);
+  if (surf == nullptr) {
+    return Err(ErrorCode::NotFound, "expand_leg: no surface for leg's uid");
+  }
+  const double T = leg.tenor.target_T;
+  if (!(std::isfinite(T) && T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: tenor T must be finite and positive");
+  }
+
+  // Resolve one (side, selector) into a ResolvedLeg with per-share vega + sigma.
+  const auto make_one = [&](Side side, const StrikeSelector& sel) -> Result<ResolvedLeg> {
+    const Result<double> K = resolve_strike(*surf, leg.tenor, side, sel);
+    if (!K) {
+      return Err(K.error());
+    }
+    const Result<AmericanGreeks> gr = surf->greeks(*K, T, side);
+    if (!gr) {
+      return Err(gr.error());
+    }
+    ResolvedLeg rl;
+    rl.uid = uid;
+    rl.K = *K;
+    rl.T = T;
+    rl.sigma = surf->iv(*K, T);
+    rl.vega = gr->vega;  // signed greek vega (> 0 for both call and put)
+    rl.side = side;
+    rl.group = leg.group;
+    return Ok(rl);
+  };
+
+  std::vector<ResolvedLeg> out;
+  switch (leg.structure.kind) {
+    case StructureSpec::Kind::Single: {
+      Result<ResolvedLeg> rl = make_one(leg.structure.single_side, leg.strike);
+      if (!rl) {
+        return Err(rl.error());
+      }
+      out.push_back(std::move(*rl));
+      break;
+    }
+    case StructureSpec::Kind::Straddle: {
+      // Call + Put at the SAME strike (the leg's selector; default AtmForward).
+      const Result<double> K = resolve_strike(*surf, leg.tenor, Side::Call, leg.strike);
+      if (!K) {
+        return Err(K.error());
+      }
+      const double sigma = surf->iv(*K, T);
+      for (const Side side : {Side::Call, Side::Put}) {
+        const Result<AmericanGreeks> gr = surf->greeks(*K, T, side);
+        if (!gr) {
+          return Err(gr.error());
+        }
+        ResolvedLeg rl;
+        rl.uid = uid;
+        rl.K = *K;
+        rl.T = T;
+        rl.sigma = sigma;
+        rl.vega = gr->vega;
+        rl.side = side;
+        rl.group = leg.group;
+        out.push_back(rl);
+      }
+      break;
+    }
+    case StructureSpec::Kind::Strangle: {
+      Result<ResolvedLeg> rc = make_one(Side::Call, leg.structure.call_leg);
+      if (!rc) {
+        return Err(rc.error());
+      }
+      Result<ResolvedLeg> rp = make_one(Side::Put, leg.structure.put_leg);
+      if (!rp) {
+        return Err(rp.error());
+      }
+      out.push_back(std::move(*rc));
+      out.push_back(std::move(*rp));
+      break;
+    }
+    case StructureSpec::Kind::RiskReversal:
+      return Err(ErrorCode::InvalidArgument, "expand_leg: RiskReversal not in B1");
+  }
+  return Ok(std::move(out));
+}
+
+// ── Sizing + cross-leg constraint ───────────────────────────────────────────
+
+namespace {
+
+// Gross position vega Σ|qty*vega*mult| over the sized legs tagged `group`.
+[[nodiscard]] double group_gross_vega(const std::vector<SizedLeg>& sized, const std::string& group) {
+  double g = 0.0;
+  for (const SizedLeg& sl : sized) {
+    if (sl.leg.group == group) {
+      g += std::fabs(sl.qty * sl.leg.vega * sl.multiplier);
+    }
+  }
+  return g;
+}
+
+}  // namespace
+
+Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot& snap, const StrategySpec& spec) {
+  constexpr double kMult = 100.0;
+
+  std::vector<SizedLeg> sized;
+  for (const LegSpec& ls : spec.legs) {
+    Result<std::vector<ResolvedLeg>> exp = expand_leg(snap, ls);
+    if (!exp) {
+      return Err(exp.error());
+    }
+    const std::vector<ResolvedLeg>& opts = *exp;
+
+    // Per-leg base sizing: one signed qty applied to every option of the structure.
+    double qty = 0.0;
+    switch (ls.size.kind) {
+      case SizeSpec::Kind::FixedContracts:
+      case SizeSpec::Kind::Weight:
+        qty = ls.size.sign * ls.size.value;  // Weight: unitless, pre-constraint
+        break;
+      case SizeSpec::Kind::TargetVega: {
+        double structure_vega = 0.0;
+        for (const ResolvedLeg& o : opts) {
+          structure_vega += o.vega;
+        }
+        if (!(std::isfinite(structure_vega) && std::fabs(structure_vega) > 0.0)) {
+          return Err(ErrorCode::Unavailable, "resolve_spec: degenerate structure vega");
+        }
+        qty = ls.size.sign * ls.size.value / (structure_vega * kMult);
+        break;
+      }
+    }
+    for (const ResolvedLeg& o : opts) {
+      sized.push_back(SizedLeg{o, qty, kMult});
+    }
+  }
+
+  // Cross-leg constraint: scale one group's gross vega onto another's.
+  const CrossLegConstraint& c = spec.constraint;
+  if (c.kind == CrossLegConstraint::Kind::FlatVega ||
+      c.kind == CrossLegConstraint::Kind::VegaNeutralBasket) {
+    std::string ga = c.group_a;
+    std::string gb = c.group_b;
+    if (c.kind == CrossLegConstraint::Kind::VegaNeutralBasket) {
+      if (ga.empty()) {
+        ga = "index";
+      }
+      if (gb.empty()) {
+        gb = "basket";
+      }
+    }
+    const double gross_a = group_gross_vega(sized, ga);
+    const double gross_b = group_gross_vega(sized, gb);
+    if (!(gross_b > 0.0)) {
+      return Err(ErrorCode::Unavailable, "resolve_spec: constraint target group has zero gross vega");
+    }
+    const double scale = gross_a / gross_b;  // one factor => intra-group ratios preserved
+    for (SizedLeg& sl : sized) {
+      if (sl.leg.group == gb) {
+        sl.qty *= scale;
+      }
+    }
+  }
+
+  return Ok(std::move(sized));
+}
+
+// ── Lifecycle decision ──────────────────────────────────────────────────────
+
+LifecycleDecision lifecycle_decide(const LifecycleSpec& lifecycle, std::size_t step_index,
+                                   bool book_empty, std::int64_t base_ts, std::int64_t front_expiry,
+                                   bool have_front) {
+  if (lifecycle.holding == LifecycleSpec::Holding::HoldToExpiry) {
+    bool tick = true;
+    if (lifecycle.entry == LifecycleSpec::Entry::EveryNDays) {
+      const unsigned n = (lifecycle.entry_every_n == 0) ? 1u : lifecycle.entry_every_n;
+      tick = (step_index % n) == 0;
+    }
+    return LifecycleDecision{tick, false};  // overlapping cohorts: never clear
+  }
+
+  // RollAtHorizon: a single cohort, rolled at the horizon.
+  bool need = book_empty;
+  if (!need && have_front) {
+    const double residual_T =
+        (static_cast<double>(front_expiry) - static_cast<double>(base_ts)) / kNsPerYear;
+    if (residual_T < lifecycle.roll_at_T) {
+      need = true;
+    }
+  }
+  return LifecycleDecision{need, need && !book_empty};
+}
+
+// ── DeclarativeStrategy ─────────────────────────────────────────────────────
+
+Status DeclarativeStrategy::open_cohort(const MarketSnapshot& base, PortfolioState& book,
+                                        std::uint64_t& next_lot_id) {
+  Result<std::vector<SizedLeg>> sized = resolve_spec(base, spec_);
+  if (!sized) {
+    return Err(sized.error());
+  }
+  const std::uint32_t cohort = cohort_counter_++;
+  std::int64_t front_expiry = 0;
+  bool have_front = false;
+  for (const SizedLeg& sl : *sized) {
+    const PricedSurface* surf = base.find(sl.leg.uid);
+    if (surf == nullptr) {
+      return Err(ErrorCode::NotFound, "DeclarativeStrategy: no surface for sized leg");
+    }
+    const Result<double> mark = surf->fair_value(sl.leg.K, sl.leg.T, sl.leg.side);
+    if (!mark) {
+      return Err(mark.error());
+    }
+    const std::int64_t expiry =
+        base.ts_ns() + std::llround(sl.leg.T * kNsPerYear);
+    Lot lot;
+    lot.id = next_lot_id++;
+    lot.contract = OptionContract{sl.leg.uid, sl.leg.K, sl.leg.T, sl.leg.side};
+    lot.qty = sl.qty;
+    lot.multiplier = sl.multiplier;
+    lot.expiry_ts_ns = expiry;
+    lot.cohort = cohort;
+    lot.entry_price = *mark;  // fill at mid
+    book.lots.push_back(lot);
+    if (!have_front || expiry < front_expiry) {
+      front_expiry = expiry;
+      have_front = true;
+    }
+  }
+  if (have_front) {
+    front_expiry_ = front_expiry;  // earliest-expiring leg drives the roll
+    have_front_ = true;
+  }
+  return Ok();
+}
+
+Status DeclarativeStrategy::on_step(const MarketSnapshot& base, std::size_t step_index,
+                                    PortfolioState& book, std::uint64_t& next_lot_id) {
+  const LifecycleDecision d = lifecycle_decide(spec_.lifecycle, step_index, book.lots.empty(),
+                                               base.ts_ns(), front_expiry_, have_front_);
+  if (!d.open) {
+    return Ok();
+  }
+  if (d.clear) {
+    book.lots.clear();  // RollAtHorizon: close the front cohort before reopening
+    have_front_ = false;
+  }
+  return open_cohort(base, book, next_lot_id);
+}
+
+}  // namespace atx::vol

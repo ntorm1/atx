@@ -67,6 +67,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/corpus.cpp
     src/dispersion.cpp
     src/backtest.cpp
+    src/strategy.cpp
+    src/dispersion_strategy.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 

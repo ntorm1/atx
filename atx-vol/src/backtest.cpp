@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/strategy.hpp"         // IStrategy
 #include "atx/vol/surface_archive.hpp"  // SurfaceArchive
 
 namespace atx::vol {
@@ -62,6 +64,61 @@ std::atomic<std::uint64_t> g_open_count{0};
     return Err(fr.error());
   }
   return Ok(fr->total);
+}
+
+// One priced step base -> shifted over `lots`: partition expiring lots (settled at
+// intrinsic: qty*mult*(intrinsic(S_shifted) - base_mark)) from survivors, then
+// Taylor PnL-explain the survivors. Byte-identical arithmetic to the fixed-book
+// loop above; shared by the strategy overload.
+struct StepPnl {
+  PnlTotals totals{};
+  double settlement{0.0};
+};
+
+[[nodiscard]] Result<StepPnl> compute_step(const MarketSnapshot& base, const MarketSnapshot& shifted,
+                                           const std::vector<Lot>& lots, const PriceOptions& opts) {
+  std::vector<Position> alive;
+  alive.reserve(lots.size());
+  double settlement = 0.0;
+  for (const Lot& lot : lots) {
+    if (lot.expiry_ts_ns <= shifted.ts_ns()) {
+      const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
+      const PricedSurface* bs = base.find(lot.contract.uid);
+      const PricedSurface* ss = shifted.find(lot.contract.uid);
+      if (bs == nullptr || ss == nullptr) {
+        return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
+      }
+      auto mark = bs->fair_value(lot.contract.K, T_base, lot.contract.side);
+      if (!mark) {
+        return Err(mark.error());
+      }
+      const double S = ss->pricing().S;
+      const double K = lot.contract.K;
+      const double intrinsic =
+          (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+      settlement += lot.qty * lot.multiplier * (intrinsic - *mark);
+    } else {
+      const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
+      alive.push_back(
+          Position{lot.id, OptionContract{lot.contract.uid, lot.contract.K, T_base, lot.contract.side},
+                   lot.qty, lot.multiplier});
+    }
+  }
+
+  PnlTotals t{};
+  if (!alive.empty()) {
+    auto pf = Portfolio::create(alive);
+    if (!pf) {
+      return Err(pf.error());
+    }
+    const PortfolioPricer pricer(std::move(*pf));
+    auto fr = pricer.pnl_explain(base.set(), shifted.set(), opts);
+    if (!fr) {
+      return Err(fr.error());
+    }
+    t = fr->total;
+  }
+  return Ok(StepPnl{t, settlement});
 }
 
 }  // namespace
@@ -281,6 +338,132 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
       push_row(refs[i].date, base.ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
                t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
                settlement, nav, *g, book.lots.size());
+    }
+  }
+
+  return Ok(std::move(out));
+}
+
+Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const RunConfig& cfg) {
+  const std::span<const SnapshotRef> refs = clock.refs();
+  if (refs.empty()) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
+  }
+  const std::size_t stride = (cfg.record_every_n == 0) ? std::size_t{1} : cfg.record_every_n;
+
+  BacktestResult out;
+  PortfolioState book{};
+  std::uint64_t next_id = 1;  // monotonic lot ids the strategy consumes
+
+  const auto push_row = [&out](const std::string& date, std::int64_t ts, double p_total,
+                               double p_delta, double p_gamma, double p_vega, double p_vanna,
+                               double p_volga, double p_theta, double p_rho, double p_charm,
+                               double p_unexpl, double p_settle, double nav_v, const PriceTotals& g,
+                               std::size_t n_lots) {
+    out.date.push_back(date);
+    out.ts_ns.push_back(ts);
+    out.pnl_total.push_back(p_total);
+    out.pnl_delta.push_back(p_delta);
+    out.pnl_gamma.push_back(p_gamma);
+    out.pnl_vega.push_back(p_vega);
+    out.pnl_vanna.push_back(p_vanna);
+    out.pnl_volga.push_back(p_volga);
+    out.pnl_theta.push_back(p_theta);
+    out.pnl_rho.push_back(p_rho);
+    out.pnl_charm.push_back(p_charm);
+    out.pnl_unexplained.push_back(p_unexpl);
+    out.pnl_settlement.push_back(p_settle);
+    out.nav.push_back(nav_v);
+    out.gross_delta.push_back(g.delta);
+    out.gross_gamma.push_back(g.gamma);
+    out.gross_vega.push_back(g.vega);
+    out.gross_theta.push_back(g.theta);
+    out.n_open_lots.push_back(static_cast<double>(n_lots));
+  };
+
+  // Signal series: names captured on the first recorded row, then one value per
+  // recorded row per series (NaN when a name is absent that row).
+  bool sig_init = false;
+  const auto record_signals = [&out, &strat, &sig_init](const MarketSnapshot& snap) {
+    const std::vector<std::pair<std::string, double>> s = strat.signals(snap);
+    if (!sig_init) {
+      for (const auto& kv : s) {
+        out.signals.emplace_back(kv.first, std::vector<double>{});
+      }
+      sig_init = true;
+    }
+    for (auto& series : out.signals) {
+      double v = std::numeric_limits<double>::quiet_NaN();
+      for (const auto& kv : s) {
+        if (kv.first == series.first) {
+          v = kv.second;
+          break;
+        }
+      }
+      series.second.push_back(v);
+    }
+  };
+
+  auto base_res = MarketSnapshot::load(refs[0].archive_path);
+  if (!base_res) {
+    return Err(base_res.error());
+  }
+  MarketSnapshot base = std::move(*base_res);
+
+  double nav = 0.0;
+
+  // Inception: resolve/open positions AS OF refs[0], then record row 0.
+  {
+    Status st = strat.on_step(base, 0, book, next_id);
+    if (!st) {
+      return Err(st.error());
+    }
+    auto g = book_greeks(base, book.lots, cfg.price);
+    if (!g) {
+      return Err(g.error());
+    }
+    push_row(refs[0].date, base.ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+             *g, book.lots.size());
+    record_signals(base);
+  }
+
+  for (std::size_t i = 1; i < refs.size(); ++i) {
+    auto shifted_res = MarketSnapshot::load(refs[i].archive_path);
+    if (!shifted_res) {
+      return Err(shifted_res.error());
+    }
+    MarketSnapshot shifted = std::move(*shifted_res);
+
+    // PnL of the current book (resolved on base) forward to shifted.
+    auto step = compute_step(base, shifted, book.lots, cfg.price);
+    if (!step) {
+      return Err(step.error());
+    }
+    const PnlTotals& t = step->totals;
+    const double settlement = step->settlement;
+    const double step_total = t.pnl_total + settlement;
+    nav += step_total;
+
+    // Adopt shifted as the next base (no reload), drop expiries, then run the
+    // strategy AS OF the new base (entries / rolls / closes).
+    base = std::move(shifted);
+    std::erase_if(book.lots, [&base](const Lot& l) { return l.expiry_ts_ns <= base.ts_ns(); });
+    Status st = strat.on_step(base, i, book, next_id);
+    if (!st) {
+      return Err(st.error());
+    }
+
+    const bool is_last = (i + 1 == refs.size());
+    const bool record = ((i % stride) == 0) || is_last;
+    if (record) {
+      auto g = book_greeks(base, book.lots, cfg.price);
+      if (!g) {
+        return Err(g.error());
+      }
+      push_row(refs[i].date, base.ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
+               t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
+               settlement, nav, *g, book.lots.size());
+      record_signals(base);
     }
   }
 
