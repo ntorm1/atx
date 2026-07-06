@@ -1,8 +1,8 @@
 # PF3 SDD Progress
 
 Controller: Codex
-Worktree: `C:\atx-wt\pf3-s9`
-Branch: `feat/pf3-s9`
+Worktree: `C:\atx-wt\pf3-s10`
+Branch: `feat/pf3-s10`
 Updated: 2026-07-05 America/New_York
 
 ## Landed Before This Worktree
@@ -14,7 +14,8 @@ Updated: 2026-07-05 America/New_York
 - PF3-S5 valuation input completeness: merged to `main` at `6a33e86`.
 - PF3-S6 ratio & metric engine v2: completed on `feat/pf3-s6` through `29d2cc1`. This S7 worktree is stacked on `feat/pf3-s6` because the primary tree is currently on an unrelated dirty branch and the helper finish merge could not be run safely from it.
 - PF3-S7 factor framework + PIT engine: completed on `feat/pf3-s7` through `f8aa3fa`. The S8 worktree was stacked on `feat/pf3-s7` for the same primary-tree isolation reason.
-- PF3-S8 fundamental factor families: completed on `feat/pf3-s8` through `1bcbe22`. This S9 worktree is stacked on `feat/pf3-s8` while the primary tree remains on an unrelated dirty branch.
+- PF3-S8 fundamental factor families: completed on `feat/pf3-s8` through `1bcbe22`.
+- PF3-S9 cross-domain factors + unified namespace: completed on `feat/pf3-s9` through `840b4a8`. This S10 worktree is stacked on `feat/pf3-s9` while the primary tree remains on an unrelated dirty branch.
 
 ## PF3-S6 - Ratio & Metric Engine V2
 
@@ -43,6 +44,10 @@ Updated: 2026-07-05 America/New_York
 - S9-1 - Estimate-revision + 13F-flow factors: done. Controller extended `db.factors.cross_domain` with pure mappers for `est_surprise` SUE/surprise percent, `est_consensus` revision mean/breadth, and `thirteenf_concentration_metrics` crowding/flow factors. Migration 0161 seeds the estimate and 13F definitions/edges plus `v_cross_domain_estimate_13f_factor_catalog`; tests cover consensus-revision lineage and a 13F filing-lag fixture that emits no row before `available_at`.
 - S9-2 - Short-interest + insider factors: done. Controller added mappers for `short_interest_metrics` crowding/flow/pressure factors and `insider_transaction_metrics` net-buy, cluster-buy, and plan-sale factors. Migration 0162 seeds the short-interest/insider definitions/edges plus `v_cross_domain_short_insider_factor_catalog`; tests cover FINRA publication-lag filtering, bearish short-pressure rank direction, insider symbol propagation, and plan-sale direction.
 - S9-3 - Unified namespace assembly + consistency gates: done. Controller added `compute_cross_domain_factor_rows`, `cross_domain_namespace_consistency`, the `cross_domain_factor_values` table, `v_cross_domain_factor_catalog`, and the critical `cross_domain_factor_namespace_consistency` quality-check registration. Tests cover five-domain assembly, planted duplicate/missing/collision failures, and catalog/gate registry rows.
+
+## PF3-S10 - Backtest Export Panel
+
+- S10-0 - PIT factor-panel views: done. Controller added `db.factor_panel` with pure long-panel assembly and wide pivot helpers, plus migration 0164 with `v_factor_panel` and `v_factor_panel_wide`. The panel uses decision dates (`max(source as_of_date, available_at date)`), applies PF3-S4 universe membership as-of, and catalogs both long and wide surfaces. Focused tests cover long/wide consistency, non-member exclusion, and future-availability rows moving to their first safe decision date.
 
 ## Verification
 
@@ -152,6 +157,12 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S9-3.
 - `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S9-3.
 - `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S9-3.
+- `python -m py_compile db\factor_panel.py db\migrations\bodies_0164_0167.py db\tests\test_factor_panel.py` passed after S10-0.
+- `python -m pytest db\tests\test_factor_panel.py -q -n0` passed after S10-0.
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S10-0.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S10-0.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S10-0.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S10-0.
 
 ## Live Smoke
 
