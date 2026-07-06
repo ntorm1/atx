@@ -106,6 +106,63 @@ earnings smile, nor strongly asymmetric wings. This is *precisely* why the neste
 C8 / CStar bump-families exist (Vola's documented S5 → C8 → C12 χ² ladder), and
 why "any equity" needs more than the three currently-wired kinds.
 
+### Reference implementation — how Vola Dynamics does it
+
+atx-vol's frame is a deliberate port of the **Vola Dynamics** analytics library
+(Klassen 2017, *Arbitrage-Free Parametric Volatility Surfaces and Real-Time
+Fitting*, Global Derivatives Chicago). Vola Dynamics LLC (founded 2016 by Timothy
+Klassen, Jiri Hoogland, Misha Fomytskyi — physics PhDs ex-Goldman/Getco/Morgan
+Stanley; ~50 of the top trading firms use it) is the reference against which the
+breadth target is measured. What they do, and where atx-vol stands against each:
+
+- **The C\* nested curve family** is the core. A hierarchy of increasing
+  flexibility on one shared shape spine: **C5** (5 params — SVI's count but "more
+  general shapes"), **C8** (8), **C12 / C12m** (12), up to C16. Vola is explicit
+  that the win is *the qualitative shapes allowed, not just the parameter count*.
+  Published ladder on E-mini SPX (May 2016): **SVI/S5 χ² = 6.458** (avE5 24 bps,
+  "systematic bias across strikes") → **C8 χ² = 0.599** (10× better, avE5 8×) →
+  **C12m χ² = 0.021** (300× better, "bias-free across all strikes"). Their stated
+  motivation is exactly the breadth-critical fact above: *SVI cannot fit some of
+  the most liquid options in the world* (SPX-VIX complex, AAPL/AMZN) because it
+  **cannot accommodate negative curvature around ATM** (FOMC, earnings W-shapes).
+  → **atx-vol already ports this**: `s3.hpp` (S3/SSVI shape = S5-class backbone),
+  `c8.hpp` (C8, 8 DoF), `cstar.hpp` (CStar, C5/C8/C12/C16 tiers). The gap is
+  purely that C8/CStar are **not wired into the live `VolCurveKind` seam** (Part
+  II) — Vola's ladder is *built but unreachable through the fitter*.
+- **Dividend modeling** is a first-class module ("Div Fitter"), with a
+  discrete-cash / proportional **hybrid** and three named blend variants
+  **FHM / PHM / SKA** (they differ only in how the blend and yield are
+  parameterized). → **atx-vol ports the hybrid directly** (`dividend.hpp`
+  `HybridDivParams`: escrowed-cash → proportional blend + implied borrow); the
+  named variants collapse to one exposed blend parameter.
+- **No-arbitrage in BOTH price-space and vol-space** — butterfly (density ≥ 0)
+  and calendar, enforced during the fit, "even during the COVID crash or earnings."
+  → **atx-vol matches**: Roper `g ≥ 0` density (`arb.hpp`, `s3_density_g`,
+  `c8_min_roper_g`, `cstar_min_roper_g`) + calendar projection/`MonotoneFit`.
+- **Event / earnings variance** — an **Event Var Fitter** that smooths the ATM
+  term structure by calibrating event variance (which *improves American option
+  pricing* and enables cross-name vol comparison), and an **Event Modeling
+  module** that decomposes a "dirty" surface into a clean non-event surface plus
+  discrete event jumps with calibrated probabilities and sizes. → **atx-vol gap**:
+  no event-variance term-structure fitter and no event-jump decomposition. This is
+  the one *conceptually new* fitting capability Vola has that atx-vol lacks — it is
+  the right tool for the `MegaCapEvent` term kink (roadmap B2/B3 flag an
+  "event-aware term node"; a full Event Var Fitter is the richer target, noted).
+- **Real-time fitter** — curves run through a live fitter (or "by hand");
+  robust/sensible surfaces in real time is the product claim. → **atx-vol matches**:
+  `VolaSession` + `PricerFitter` + tick-to-quote `refit_slice` (~4250× vs rebuild).
+- **Coverage** — equities, ETFs, indices, **futures** (commodity, treasury,
+  equity-index), and **FX** (SPX, SPY, AEX, KOSPI, Nikkei, Hang Seng, crude,
+  treasury, crypto). → atx-vol's breadth target here is **American equity +
+  ETF/index** (the 7 `ProfileKind`s); futures/FX are out of this goal's scope.
+
+**Takeaway for the map:** atx-vol is already a faithful port of Vola's *curve
+math and dividend/no-arb machinery* — the breadth work is (1) **activating** the
+C\* ladder Vola relies on (wire C8/CStar through the seam), and (2) optionally
+adopting Vola's **event-variance** term-structure fitter for event names. It is
+not a new modeling paradigm; it is finishing the port and routing it through one
+selection entry point.
+
 ---
 
 ## Part II — Current atx-vol coverage (ground truth)
@@ -246,6 +303,41 @@ shared de-Americanized European observation set (`build_observations_european`)
 and must hold the standing gates (SPY 99.5% in-band; `value_chain` determinism;
 `/W4 /permissive- /WX`).
 
+### `curve_selector` is the single routing entry (load-bearing constraint)
+
+Breadth means *many* curve kinds — which is only safe if there is **one** place
+that decides which kind a board gets. **The production fit path routes kind
+selection through `curve_selector`; no breadth consumer hardcodes a
+`VolCurveKind`.** The layering, verified against the current code:
+
+- **`curve_selector` is the sole kind-decision point.** `PricerFitter::fit`
+  (`pricer_fitter.cpp:85-100`) already resolves the slice curve via
+  `select_curve` (→ `SelectorResult`, `curve_selector.hpp:45`) — vega-weighted OOS
+  in-band on the even/odd holdout, parsimony tie-break — *unless* the caller pins
+  `cfg_.curve`. This is the entry every corpus/production fit uses; the breadth
+  work keeps it the canonical one.
+- **`VolaSession::build` is the executor, not a second selector.** It consumes the
+  resolved `in.curve` kind (`session.cpp:268-313`) and builds the per-kind
+  `IVolCurve` container (the eSSVI arm at `session.cpp:432`). Wiring a new kind
+  (B1) means adding its arm *here* and in `fit_curve_surface` (`curve_fit.cpp`) —
+  **not** teaching any consumer a new branch. Consumers keep asking the selector.
+- **The candidate menu is keyed by `ProfileKind`** (the C-frame): the profile
+  picks the *menu*, the selector picks the *dish* from it by holdout fit. Cheap
+  where the shape is known (index → ConvexDense-only menu), rich where it is not
+  (event names → eSSVI / C8 / CStar menu). "Pinning" a kind = handing the selector
+  a one-element menu, never branching around it.
+- **A new kind is inert until it joins a menu.** Adding a `VolCurveKind` (B1)
+  cannot capture any board until B2 adds it to a profile's candidate set — a new
+  kind is unreachable except through the selector, and every board's chosen kind
+  is auditable from the logged per-candidate `SelectorResult` scores.
+
+Honest caveat: direct `VolaSession::build` / `fit_curve_surface` calls with a
+hand-set `CurveConfig` *do* exist (tests, benches) and bypass the selector by
+construction — that is intentional for unit tests. The routing **gate** is on the
+production/corpus path: quotes → `PricerFitter` → selector. The roadmap's routing
+gates assert exactly that path, and that a pinned kind is expressed as a
+one-element menu rather than a bypass branch.
+
 ---
 
 ## Part V — Phased roadmap (hybrid: A-led, C-framed)
@@ -267,21 +359,45 @@ new pricing math *conditionally*, driven by the B3 gate data.
 ### B1 — Wire the built curves into the unified seam (A)
 
 - Promote **C8**, **CStar**, **S3** (and **Wing** if its evaluator lands cheaply)
-  to live `VolCurveKind` values via the six touch-points in Part IV.
+  to live `VolCurveKind` values via the six touch-points in Part IV. The
+  executor arms land in `VolaSession::build` (`session.cpp:268-313`, the
+  non-eSSVI branch), the `IVolCurve`-container builder (`session.cpp:432`), and
+  `fit_curve_surface` (`curve_fit.cpp`) — **no consumer learns a new branch.**
 - Each new kind round-trips **bit-identically** through the archive and is
-  reachable from `VolaSession` / `PricedSurface` / `PricerFitter`.
+  reachable from `PricerFitter` **only via the selector** — proven by pinning it
+  as a one-element `default_selector_candidates()` menu, never a bypass call.
+- *Routing gate:* the sole quotes→surface path exercised is
+  `OptionChain → PricerFitter::fit → select_curve → VolaSession::build`; a test
+  asserts no production consumer constructs a `VolaSession` with a hand-set kind.
 - *Gate:* a fit through the unified path using each new kind reproduces the
   standalone module's evaluator bit-for-bit; archive round-trip bit-identical;
   schema hash bumped; SPY 99.5% and determinism unregressed.
 
-### B2 — Full candidate selector + real term structure (A)
+### B2 — Profile-keyed selector menus + real term structure (A)
 
-- Grow `default_selector_candidates()` from 2 to the full panel
-  (ConvexDense / eSSVI / SVI / C8 / CStar / S3), scored by vega-weighted OOS
-  in-band with the parsimony tie-break already implemented. Selection stays
-  data-driven — a name only pays for DoF its board's holdout justifies.
+- Replace the single 2-candidate `default_selector_candidates()` with a
+  **`ProfileKind`-keyed candidate menu** — the profile picks the menu, the
+  existing `select_curve` (vega-weighted OOS in-band, parsimony tie-break) picks
+  the kind from it. Proposed menus (tuned against the B0 scoreboard):
+
+  | `ProfileKind` | Candidate menu (selector chooses within) |
+  |---|---|
+  | IndexEtfUltraLiquid | ConvexDense (pinned; shape known) |
+  | LiquidSingleName | eSSVI, SVI, ConvexDense |
+  | OrdinarySingleName | eSSVI, SVI |
+  | MegaCapEvent | eSSVI, **C8**, **CStar** (needs neg-ATM-curvature) |
+  | IlliquidSmallCap | S3, eSSVI (parsimony-first; thin boards) |
+  | HtbDividendName | eSSVI, SVI, C8 |
+  | VolProduct | eSSVI (until scoped; see Non-goals) |
+
+  Wire the menu into `PricerFitter` via `cfg_.selector` keyed off the board's
+  classified `ProfileKind` (`classify_underlier_with_ticker`). A name still only
+  pays for DoF its holdout justifies; the menu just bounds the search.
 - Feed the multi-pillar `YieldCurve` from ingest (close sprint P2-3's flat
   `{T=1,r}`), correcting LEAP forwards/discounts.
+- *Routing gate:* every board's chosen kind comes back in the logged
+  `SelectorResult`; a corpus-wide audit confirms no board reached a kind outside
+  its profile's menu, and none bypassed `select_curve`.
 - *Gate:* on the B0 scoreboard, MegaCapEvent event-smile boards select C8/CStar
   and beat the eSSVI-only baseline in χ²; LEAP forwards match a hand-checked
   term-structure case; no selection regression on SPY/XOM.
@@ -375,10 +491,38 @@ AL.*
 - **Wing evaluator:** promote to a live kind in B1, or leave as a `Parametrization`
   tag? Decide by whether any B0 board needs the exchange-wing shape that C8 does
   not already cover.
-- **Selector cost budget:** the full 6-candidate panel is ~3× the fit cost of the
-  2-candidate default. Cap the panel per `ProfileKind` (e.g. index → ConvexDense
-  only; event names → eSSVI/C8/CStar) so the selector stays cheap where the shape
-  is known.
+- **Selector menu tuning:** the B2 `ProfileKind`→menu table is the proposed
+  default; the exact per-profile menus are tuned against the B0 scoreboard (a
+  6-candidate menu is ~3× the 2-candidate fit cost, so keep menus minimal where
+  the shape is known). Decision is *which kinds per profile*, not *whether to
+  route through the selector* — that is fixed (Part IV).
+- **Event Var Fitter (Vola parity):** adopt Vola's event-variance ATM
+  term-structure fitter + event-jump decomposition for `MegaCapEvent`, or settle
+  for a simpler event-aware term node? Decide in B3 by whether wired C8/CStar
+  alone close the event-name gate, or the term kink also needs event-variance
+  smoothing. A full Event Var Fitter is a larger, separately-scoped addition.
 - **Discrete-div engine choice (B4):** CRR tree (simple, robust, slower) vs
   Crank–Nicolson PDE (faster, matches the existing oracle) — pick when B4 is
   triggered, against the accuracy the failing gate demands.
+
+## References
+
+Vola Dynamics (the reference implementation this port targets):
+- T. Klassen, *Arbitrage-Free Parametric Volatility Surfaces and Real-Time
+  Fitting*, Global Derivatives Chicago, 2017 —
+  <https://voladynamics.com/pdf/Klassen_GD_Chicago_2017.pdf>
+- Vola Dynamics — *Next Generation Curves* (C5/C8/C12m χ² ladder, negative-ATM
+  curvature) — <https://voladynamics.com/examples/next-generation-curves>
+- Vola Dynamics — *FAQ* (Event Var Fitter, Event Modeling, asset coverage) —
+  <https://voladynamics.com/faq/>
+- Vola Dynamics — *Products* / *Research* — <https://voladynamics.com/products>,
+  <https://www1.voladynamics.com/research>
+
+Curve/surface parameterization literature:
+- J. Gatheral, A. Jacquier, *Arbitrage-Free SVI Volatility Surfaces*, 2014 —
+  <https://arxiv.org/pdf/1204.0646>
+- A. Mingone, *No-arbitrage global parametrization for the eSSVI volatility
+  surface*, Quantitative Finance, 2022 — <https://arxiv.org/pdf/2204.00312>
+- Hendriks & Martini, eSSVI (2019); Hagan et al., SABR (2002); Fengler,
+  arbitrage-free smoothing (2009); Andreasen–Huge, single-step Dupire (2011);
+  Gatheral–Jaisson–Rosenbaum, rough volatility (2018).
