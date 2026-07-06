@@ -504,6 +504,12 @@ SHORT_INSIDER_SPECS: tuple[CrossDomainFactorSpec, ...] = (
     *INSIDER_SPECS,
 )
 
+CROSS_DOMAIN_SPECS: tuple[CrossDomainFactorSpec, ...] = (
+    *PRICE_LIQUIDITY_SPECS,
+    *ESTIMATE_13F_SPECS,
+    *SHORT_INSIDER_SPECS,
+)
+
 
 def price_liquidity_factor_definitions() -> tuple[FactorDefinition, ...]:
     return tuple(spec.to_factor_definition() for spec in PRICE_LIQUIDITY_SPECS)
@@ -600,6 +606,18 @@ def short_insider_definition_frame() -> pd.DataFrame:
 
 def short_insider_dependency_edges_frame() -> pd.DataFrame:
     return _dependency_edges_frame(SHORT_INSIDER_SPECS)
+
+
+def cross_domain_factor_definitions() -> tuple[FactorDefinition, ...]:
+    return tuple(spec.to_factor_definition() for spec in CROSS_DOMAIN_SPECS)
+
+
+def cross_domain_definition_frame() -> pd.DataFrame:
+    return _definition_frame(CROSS_DOMAIN_SPECS)
+
+
+def cross_domain_dependency_edges_frame() -> pd.DataFrame:
+    return _dependency_edges_frame(CROSS_DOMAIN_SPECS)
 
 
 def _hash_id(prefix: str, *parts: object) -> str:
@@ -1130,3 +1148,84 @@ def compute_short_insider_factor_rows(
     return pd.concat(materialized, ignore_index=True).sort_values(
         ["domain", "factor_id", "as_of_date", "security_id"], kind="mergesort"
     ).reset_index(drop=True)
+
+
+def compute_cross_domain_factor_rows(
+    *,
+    price_metrics: pd.DataFrame | None = None,
+    surprises: pd.DataFrame | None = None,
+    consensus: pd.DataFrame | None = None,
+    concentration_metrics: pd.DataFrame | None = None,
+    short_interest_metrics: pd.DataFrame | None = None,
+    insider_metrics: pd.DataFrame | None = None,
+    as_of_date: dt.date | None = None,
+    as_of_ts: dt.datetime | pd.Timestamp | None = None,
+    run_id: str | None = None,
+    source: str = SOURCE_NAME,
+) -> pd.DataFrame:
+    """Assemble all S9 cross-domain factor families into one canonical shape."""
+
+    pieces = [
+        compute_price_liquidity_factor_rows(
+            price_metrics if price_metrics is not None else pd.DataFrame(),
+            run_id=run_id,
+            source=source,
+        ),
+        compute_estimate_13f_factor_rows(
+            surprises=surprises,
+            consensus=consensus,
+            concentration_metrics=concentration_metrics,
+            as_of_date=as_of_date,
+            as_of_ts=as_of_ts,
+            run_id=run_id,
+            source=source,
+        ),
+        compute_short_insider_factor_rows(
+            short_interest_metrics=short_interest_metrics,
+            insider_metrics=insider_metrics,
+            as_of_date=as_of_date,
+            as_of_ts=as_of_ts,
+            run_id=run_id,
+            source=source,
+        ),
+    ]
+    materialized = [piece for piece in pieces if not piece.empty]
+    if not materialized:
+        return pd.DataFrame(columns=CROSS_DOMAIN_FACTOR_COLUMNS)
+    return pd.concat(materialized, ignore_index=True).sort_values(
+        ["domain", "factor_id", "as_of_date", "security_id"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def cross_domain_namespace_consistency(
+    frame: pd.DataFrame,
+    *,
+    definitions: Iterable[FactorDefinition] | None = None,
+) -> dict[str, object]:
+    """Return a gate-ready consistency report for the S9 factor namespace."""
+
+    definition_rows = tuple(cross_domain_factor_definitions() if definitions is None else definitions)
+    factor_ids = [definition.factor_id for definition in definition_rows]
+    duplicate_factor_ids = sorted({factor_id for factor_id in factor_ids if factor_ids.count(factor_id) > 1})
+    definition_by_id = {definition.factor_id: definition for definition in definition_rows}
+    metadata_missing = sorted(
+        definition.factor_id
+        for definition in definition_rows
+        if not definition.unit or not definition.sign or not definition.scale
+    )
+    emitted_factor_ids = set() if frame is None or frame.empty else {str(value) for value in frame["factor_id"].dropna().unique()}
+    missing_catalog = sorted(emitted_factor_ids - set(definition_by_id))
+    domain_collisions: list[str] = []
+    if frame is not None and not frame.empty and {"factor_id", "domain"} <= set(frame.columns):
+        domains_by_factor = frame.groupby("factor_id")["domain"].nunique(dropna=True)
+        domain_collisions = sorted(str(factor_id) for factor_id, count in domains_by_factor.items() if int(count) > 1)
+    status = "passed" if not (duplicate_factor_ids or metadata_missing or missing_catalog or domain_collisions) else "failed"
+    return {
+        "status": status,
+        "definition_count": len(definition_rows),
+        "emitted_factor_count": len(emitted_factor_ids),
+        "duplicate_factor_ids": duplicate_factor_ids,
+        "missing_catalog_factor_ids": missing_catalog,
+        "metadata_missing_factor_ids": metadata_missing,
+        "domain_collision_factor_ids": domain_collisions,
+    }

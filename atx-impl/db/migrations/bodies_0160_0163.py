@@ -549,6 +549,168 @@ def _pf3_s9_short_insider_factor_definitions(conn: duckdb.DuckDBPyConnection) ->
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s9_unified_cross_domain_factor_surface(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S9 S9-3: unified cross-domain factor values surface and gates."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cross_domain_factor_values (
+            factor_value_id VARCHAR PRIMARY KEY,
+            factor_id VARCHAR NOT NULL,
+            factor_name VARCHAR NOT NULL,
+            domain VARCHAR NOT NULL,
+            family VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            symbol VARCHAR,
+            as_of_date DATE NOT NULL,
+            raw_value DOUBLE,
+            value DOUBLE,
+            available_at TIMESTAMP NOT NULL,
+            source_row_id VARCHAR,
+            input_ids_json VARCHAR NOT NULL,
+            input_lineage_json VARCHAR NOT NULL,
+            is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+            run_id VARCHAR,
+            source VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_cross_domain_factor_values_factor_asof ON cross_domain_factor_values(factor_id, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_cross_domain_factor_values_domain_asof ON cross_domain_factor_values(domain, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_cross_domain_factor_values_security_asof ON cross_domain_factor_values(security_id, as_of_date)",
+        "CREATE INDEX IF NOT EXISTS idx_cross_domain_factor_values_available_at ON cross_domain_factor_values(available_at)",
+    ):
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_cross_domain_factor_catalog AS
+        SELECT
+            fd.factor_id,
+            fd.factor_name,
+            CASE
+                WHEN fd.declared_in = 'db.factors.cross_domain.price_liquidity_specs' THEN 'price_liquidity'
+                WHEN fd.factor_id LIKE 'estimate_%' THEN 'estimate_revision'
+                WHEN fd.factor_id LIKE 'thirteenf_%' THEN '13f_flow'
+                WHEN fd.factor_id LIKE 'short_interest_%' THEN 'short_interest'
+                WHEN fd.factor_id LIKE 'insider_%' THEN 'insider'
+                ELSE 'cross_domain'
+            END AS domain,
+            fd.family,
+            fd.description,
+            fd.expression,
+            fd.input_ids_json,
+            fd.direction,
+            fd.standardization_spec_json,
+            fd.neutralization_spec_json,
+            fd.unit,
+            fd.sign,
+            fd.scale,
+            fd.valid_from,
+            fd.valid_to,
+            coalesce(edges.dependency_count, 0) AS dependency_count,
+            fd.declared_in,
+            fd.source
+        FROM factor_definition fd
+        LEFT JOIN (
+            SELECT factor_id, count(*)::BIGINT AS dependency_count
+            FROM factor_dependency_edges
+            GROUP BY factor_id
+        ) edges
+          ON edges.factor_id = fd.factor_id
+        WHERE fd.declared_in IN (
+            'db.factors.cross_domain.price_liquidity_specs',
+            'db.factors.cross_domain.estimate_13f_specs',
+            'db.factors.cross_domain.short_insider_specs'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES
+            (
+                'cross_domain_factor_values',
+                'atx_warehouse',
+                'Cross-domain factor values',
+                'Unified S9 price/liquidity, estimate, 13F, short-interest, and insider factor rows in the canonical factor shape.',
+                'factor_id,security_id,as_of_date',
+                'cross_domain_factor_values',
+                'as_of_date',
+                'available_at',
+                now()
+            ),
+            (
+                'cross_domain_factor_catalog',
+                'atx_warehouse',
+                'Cross-domain factor catalog',
+                'Unified queryable catalog for all S9 cross-domain factor definitions and dependency counts.',
+                'factor_id',
+                'v_cross_domain_factor_catalog',
+                'valid_from',
+                'source_loaded_at',
+                now()
+            )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES
+            (
+                'cross_domain_factor_values',
+                'gold',
+                'cross_domain_factor_value',
+                'factor_id,security_id,as_of_date',
+                'Unified PIT cross-domain factor values with raw value, S7-ranked value, source availability, and source lineage.',
+                '["factor_value_id"]',
+                'Use available_at <= decision timestamp. Values preserve each source domain availability lag; as_of_date is the source observation period/date.',
+                now()
+            ),
+            (
+                'v_cross_domain_factor_catalog',
+                'view',
+                'cross_domain_factor_catalog',
+                'factor_id',
+                'Unified S9 cross-domain factor catalog spanning price/liquidity, estimates, 13F, short-interest, and insider definitions.',
+                '["factor_id"]',
+                'Definition metadata is knowledge-time data; emitted factor values remain PIT-gated by cross_domain_factor_values.available_at.',
+                now()
+            )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("cross_domain_factor_values", "v_cross_domain_factor_catalog"))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES (
+            'cross_domain_factor_namespace_consistency',
+            'cross_domain_factor_values',
+            'cross_domain_factor_values',
+            'critical',
+            0.0,
+            'eq',
+            true,
+            'failed',
+            'pf3_s9',
+            now()
+        )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=160,
@@ -564,5 +726,10 @@ MIGRATIONS: list[Migration] = [
         version=162,
         name="pf3_s9_short_insider_factor_definitions",
         up=_pf3_s9_short_insider_factor_definitions,
+    ),
+    Migration(
+        version=163,
+        name="pf3_s9_unified_cross_domain_factor_surface",
+        up=_pf3_s9_unified_cross_domain_factor_surface,
     ),
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from dataclasses import replace
 
 import pandas as pd
 import pytest
@@ -11,11 +12,14 @@ from db.factors.cross_domain import (
     ESTIMATE_13F_SPECS,
     PRICE_LIQUIDITY_SPECS,
     SHORT_INSIDER_SPECS,
+    compute_cross_domain_factor_rows,
     compute_estimate_revision_factor_rows,
     compute_insider_factor_rows,
     compute_price_liquidity_factor_rows,
     compute_short_interest_factor_rows,
     compute_thirteenf_flow_factor_rows,
+    cross_domain_factor_definitions,
+    cross_domain_namespace_consistency,
     estimate_13f_definition_frame,
     estimate_13f_factor_definitions,
     price_liquidity_definition_frame,
@@ -814,3 +818,133 @@ def test_short_insider_seed_rows_round_trip_into_catalog(tmp_store) -> None:
     assert edge_sources == {"short_interest_metrics", "insider_transaction_metrics"}
     assert catalog_domains == {"short_interest", "insider"}
     assert dataset_row == 1
+
+
+def test_unified_cross_domain_assembly_unions_all_s9_domains_and_gate_passes() -> None:
+    rows = compute_cross_domain_factor_rows(
+        price_metrics=_price_metrics_fixture(),
+        surprises=_estimate_surprises_fixture(),
+        consensus=_estimate_consensus_fixture(),
+        concentration_metrics=_thirteenf_fixture(),
+        short_interest_metrics=_short_interest_fixture(),
+        insider_metrics=_insider_fixture(),
+        as_of_date=dt.date(2024, 6, 5),
+        run_id="s9-unified-run",
+    )
+    report = cross_domain_namespace_consistency(rows)
+
+    assert len(rows) == 87
+    assert set(rows["domain"]) == {
+        "price_liquidity",
+        "estimate_revision",
+        "13f_flow",
+        "short_interest",
+        "insider",
+    }
+    assert report["status"] == "passed"
+    assert report["definition_count"] == 29
+    assert report["emitted_factor_count"] == 29
+    assert set(rows.columns) == {
+        "factor_value_id",
+        "factor_id",
+        "factor_name",
+        "domain",
+        "family",
+        "security_id",
+        "symbol",
+        "as_of_date",
+        "raw_value",
+        "value",
+        "available_at",
+        "source_row_id",
+        "input_ids_json",
+        "input_lineage_json",
+        "is_latest_revision",
+        "run_id",
+        "source",
+    }
+
+
+def test_cross_domain_namespace_gate_flags_planted_catalog_failures() -> None:
+    rows = compute_cross_domain_factor_rows(price_metrics=_price_metrics_fixture(), run_id="gate-run")
+    definitions = cross_domain_factor_definitions()
+
+    duplicate = cross_domain_namespace_consistency(rows, definitions=(*definitions, definitions[0]))
+    missing_metadata = cross_domain_namespace_consistency(
+        rows,
+        definitions=(replace(definitions[0], unit=""), *definitions[1:]),
+    )
+    unknown = rows.copy()
+    unknown.loc[0, "factor_id"] = "unknown_cross_domain_factor"
+    missing_catalog = cross_domain_namespace_consistency(unknown, definitions=definitions)
+    collision = rows.copy()
+    collision.loc[0, "domain"] = "planted_other_domain"
+    domain_collision = cross_domain_namespace_consistency(collision, definitions=definitions)
+
+    assert duplicate["status"] == "failed"
+    assert duplicate["duplicate_factor_ids"] == [definitions[0].factor_id]
+    assert missing_metadata["status"] == "failed"
+    assert missing_metadata["metadata_missing_factor_ids"] == [definitions[0].factor_id]
+    assert missing_catalog["status"] == "failed"
+    assert missing_catalog["missing_catalog_factor_ids"] == ["unknown_cross_domain_factor"]
+    assert domain_collision["status"] == "failed"
+    assert domain_collision["domain_collision_factor_ids"] == [rows.loc[0, "factor_id"]]
+
+
+def test_unified_cross_domain_surface_catalog_and_gate_registry_are_present(tmp_store) -> None:
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM table_catalog
+            WHERE table_name IN ('cross_domain_factor_values', 'v_cross_domain_factor_catalog')
+            """
+        ).fetchall()
+    }
+    dataset_rows = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT dataset_id
+            FROM dataset_catalog
+            WHERE dataset_id IN ('cross_domain_factor_values', 'cross_domain_factor_catalog')
+            """
+        ).fetchall()
+    }
+    registry = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT check_name
+            FROM quality_check_registry
+            WHERE source = 'pf3_s9'
+            """
+        ).fetchall()
+    }
+    catalog_count = tmp_store.con.execute("SELECT count(*) FROM v_cross_domain_factor_catalog").fetchone()[0]
+    value_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'cross_domain_factor_values'
+            """
+        ).fetchall()
+    }
+
+    assert tables == {"cross_domain_factor_values", "v_cross_domain_factor_catalog"}
+    assert dataset_rows == {"cross_domain_factor_values", "cross_domain_factor_catalog"}
+    assert "cross_domain_factor_namespace_consistency" in registry
+    assert catalog_count == len(cross_domain_factor_definitions())
+    assert {
+        "factor_value_id",
+        "factor_id",
+        "domain",
+        "security_id",
+        "as_of_date",
+        "available_at",
+        "input_lineage_json",
+    } <= value_columns
