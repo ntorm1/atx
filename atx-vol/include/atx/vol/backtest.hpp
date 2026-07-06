@@ -90,6 +90,10 @@ class MarketSnapshot {
   [[nodiscard]] const PricedSurface* find(std::uint32_t uid) const noexcept {
     return set_.find(uid);
   }
+  // Read-only view of the owned surfaces (archive order; always non-empty after a
+  // successful load). Used by the financing ledger to read a representative
+  // base-date rate. Safe across a move (vector move preserves element addresses).
+  [[nodiscard]] std::span<const PricedSurface> surfaces() const noexcept { return surfaces_; }
   [[nodiscard]] std::int64_t ts_ns() const noexcept { return ts_ns_; }
   [[nodiscard]] std::optional<std::uint32_t> uid_of(std::string_view symbol) const;
 
@@ -129,10 +133,37 @@ class PortfolioState {
   std::vector<Lot> lots;
 };
 
+// ── Execution frictions + financing (Phase B2) ───────────────────────────────
+
+// Modeled bid/ask + costs applied ONLY to traded quantity (entries, roll-closes,
+// hedge shares); holding accrues financing only. PricedSurface is a fitted MID
+// surface (no stored bid/ask), so the spread is a documented model. The default
+// (`SpreadKind::None`, all costs 0) reproduces the frictionless run bit-for-bit.
+struct FrictionModel {
+  enum class SpreadKind : std::uint8_t { None = 0, PriceBps = 1, VolTicks = 2 };
+  SpreadKind spread_kind{SpreadKind::None};
+  double half_spread_bps{0.0};    // PriceBps: half-spread = mark * bps/1e4 (per share)
+  double vol_tick{0.0};           // VolTicks: half-spread = vega * vol_tick (per share)
+  double per_contract_cost{0.0};  // $ per option contract traded
+  double hedge_slippage_bps{0.0};  // shares fill at S * (1 +/- bps/1e4)
+};
+
+// Engine-internal cash / borrow ledger config. The B2 DEFAULT keeps `finance_premium`
+// and `shares_carry` OFF (a documented deviation from the design's true-defaults) so
+// that a default `RunConfig{}` reproduces B1 bit-for-bit; operators opt in explicitly.
+struct FinancingConfig {
+  double borrow_rate{0.0};        // continuous, on |short shares| * S (hard-borrow proxy)
+  bool finance_premium{false};    // cash balance accrues at r (DEFAULT OFF => B2 == B1)
+  bool shares_carry{false};       // long shares earn q_eff*S*dt, pay r*S*dt
+  double initial_cash{0.0};       // opening cash balance
+};
+
 // ── Run config + result ─────────────────────────────────────────────────────
 
 struct RunConfig {
   PriceOptions price{};              // pricer thread fan-out (bit-deterministic)
+  FrictionModel frictions{};         // execution frictions (B2; default: frictionless)
+  FinancingConfig financing{};       // cash/borrow ledger (B2; default: off => B1-identity)
   unsigned record_every_n{1};        // persist every Nth step (1 = every step)
   bool retain_position_frames{false};  // reserved for B1 (per-position frames)
 };
@@ -147,8 +178,14 @@ struct BacktestResult {
   std::vector<double> pnl_total, pnl_delta, pnl_gamma, pnl_vega, pnl_vanna, pnl_volga, pnl_theta,
       pnl_rho, pnl_charm, pnl_unexplained;
   std::vector<double> pnl_settlement;  // intrinsic settlement PnL this step
-  std::vector<double> nav;             // cumulative from inception = 0
+  // B2 execution/ledger columns (per-step; 0.0 in the fixed-book overload and when
+  // the corresponding feature is off). `pnl_shares` = hedge-share MTM, `financing` =
+  // cash carry + short borrow + shares carry, `cost` = realized frictions this step.
+  std::vector<double> pnl_shares, financing, cost;
+  std::vector<double> nav;             // cumulative from inception = 0 (running Sum step_total)
+  std::vector<double> cash;            // engine cash ledger balance (B2; 0.0 fixed-book)
   std::vector<double> gross_delta, gross_gamma, gross_vega, gross_theta;  // book greeks on the base
+  std::vector<double> turnover_notional, turnover_vega;  // traded |notional| / |vega| this step
   std::vector<double> n_open_lots;
   // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
   // Empty for the fixed-book overload; populated by the IStrategy overload.

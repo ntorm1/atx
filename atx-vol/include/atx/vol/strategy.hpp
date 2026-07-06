@@ -200,6 +200,10 @@ class IStrategy {
       const MarketSnapshot& /*base*/) const {
     return {};
   }
+  // The engine-owned delta-hedge overlay this strategy requests (B2). The engine
+  // reads it each step and trades the shares ledger to satisfy it. Default: None
+  // (no hedge), so a strategy that ignores it runs exactly as in B1.
+  [[nodiscard]] virtual HedgeSpec hedge_spec() const { return {}; }
 };
 
 // Interprets a `StrategySpec` against each snapshot. Holds the lifecycle state:
@@ -210,6 +214,8 @@ class DeclarativeStrategy : public IStrategy {
 
   Status on_step(const MarketSnapshot& base, std::size_t step_index, PortfolioState& book,
                  std::uint64_t& next_lot_id) override;
+
+  [[nodiscard]] HedgeSpec hedge_spec() const override { return spec_.hedge; }
 
   [[nodiscard]] const StrategySpec& spec() const noexcept { return spec_; }
 

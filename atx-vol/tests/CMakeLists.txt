@@ -58,6 +58,7 @@ add_executable(atx-vol-tests
     dispersion_test.cpp
     backtest_test.cpp
     strategy_test.cpp
+    backtest_exec_test.cpp
 )
 
 target_link_libraries(atx-vol-tests
