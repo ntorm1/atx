@@ -1,0 +1,391 @@
+// DispersionBook synthetic suite — proves the implied-correlation signal, the
+// vega-neutral straddle sizing, and the uid-remap binding, with NO external data.
+//
+// The universe is built from deterministic known-truth boards (make_board_spec,
+// the make_singlename_spec pattern parametrized by ATM vol): one low-vol INDEX
+// board and two higher-vol single-name boards, each fitted through the blessed
+// PricerFitter -> to_priced_surface path and remapped to a DISTINCT uid via
+// `with_uid` (index=1, names=2,3). So this test runs everywhere and is NOT
+// GTEST_SKIP-gated.
+//
+// Coverage:
+//   1. Signal_MatchesClosedForm — dispersion_signal reproduces rho_imp computed by
+//      hand from the exact ATM vols the surfaces return, and it is finite / > 0;
+//   2. Book_IsVegaNeutral       — the priced book's index-leg vega equals minus the
+//      basket-leg vega (== target_vega gross), with a Call+Put straddle per leg;
+//   3. WithUid_RemapsAndPrices  — with_uid only changes uid() and reprices
+//      bit-identically;
+//   4. Rejections               — <2 names, non-positive weight sum, target_T<=0,
+//      target_vega<=0, and a uid missing from the set each Err with the right code.
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "atx/vol/american.hpp"          // AmericanGreeks
+#include "atx/vol/chain.hpp"             // OptionChain
+#include "atx/vol/data.hpp"              // iso_to_ns, year_fraction
+#include "atx/vol/dispersion.hpp"        // DispersionUniverse, dispersion_signal, ...
+#include "atx/vol/market_env.hpp"        // MarketEnv
+#include "atx/vol/panel.hpp"             // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/portfolio_pricer.hpp"  // Portfolio, SurfaceSet, PortfolioPricer
+#include "atx/vol/priced_surface.hpp"    // PricedSurface, SliceContext
+#include "atx/vol/pricer_fitter.hpp"     // PricerFitter, PricerConfig
+#include "atx/vol/s3.hpp"                // S3Params
+#include "atx/vol/session.hpp"           // VolaSession::to_priced_surface
+#include "atx/vol/surface_parity.hpp"    // SliceContext
+#include "atx/vol/types.hpp"             // Side, ErrorCode
+
+using namespace atx::vol;
+
+namespace {
+
+constexpr char kSnapshot[] = "2026-07-06";
+constexpr double kTargetT = 30.0 / 365.25;
+constexpr std::uint32_t kIndexUid = 1;
+constexpr std::uint32_t kName0Uid = 2;
+constexpr std::uint32_t kName1Uid = 3;
+constexpr double kW0 = 0.6;  // basket weights (sum to 1 => the book is vega-neutral)
+constexpr double kW1 = 0.4;
+
+[[nodiscard]] bool bits_equal(double a, double b) noexcept {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof ba);
+  std::memcpy(&bb, &b, sizeof bb);
+  return ba == bb;
+}
+
+// Relative-tolerance closeness (avoids fragile fp-associativity assumptions).
+[[nodiscard]] bool close(double a, double b, double rel = 1e-9) noexcept {
+  return std::fabs(a - b) <= rel * (std::fabs(a) + std::fabs(b) + 1e-300);
+}
+
+// A smooth known-truth board (the make_singlename_spec pattern) parametrized by
+// its ATM vol level `sigma0`. Four expiries with a mild declining term structure
+// and a 13-strike ladder — robustly fittable, auto-selecting the eSSVI backbone.
+[[nodiscard]] SynthPanelSpec make_board_spec(const std::string& uid, double spot,
+                                             double sigma0) {
+  SynthPanelSpec s;
+  s.uid = uid;
+  s.snapshot_iso = kSnapshot;
+  s.spot = spot;
+  s.r = 0.043;
+  s.borrow = 0.0;
+
+  struct Row {
+    const char* iso;
+    double sig;
+    double skew_k;
+    double c2;
+  };
+  const Row rows[] = {
+      {"2026-07-17", sigma0, -0.55, 0.6},
+      {"2026-08-21", sigma0 - 0.02, -0.52, 0.7},
+      {"2026-09-18", sigma0 - 0.04, -0.50, 0.8},
+      {"2026-12-18", sigma0 - 0.06, -0.46, 0.9},
+  };
+  for (const Row& r : rows) {
+    SynthExpiry e;
+    e.expiry_iso = r.iso;
+    e.T = year_fraction(kSnapshot, r.iso);
+    const double s2 = 2.0 * std::sqrt(e.T) * r.skew_k;
+    e.truth = S3Params{r.sig, s2, r.c2};
+    s.expiries.push_back(e);
+  }
+  for (const double m :
+       {0.80, 0.83, 0.87, 0.91, 0.95, 0.98, 1.0, 1.02, 1.05, 1.09, 1.13, 1.17, 1.20}) {
+    s.strikes.push_back(spot * m);
+  }
+  s.half_spread_frac = 0.05;
+  s.min_half_spread = 0.05;
+  return s;
+}
+
+// Fit a board through the blessed path into a PricedSurface (auto curve select,
+// single-threaded — deterministic).
+[[nodiscard]] PricedSurface fit_board(const SynthPanelSpec& spec) {
+  auto panel = make_synthetic_american_panel(spec);
+  EXPECT_TRUE(panel.has_value()) << (panel ? "" : panel.error().to_string());
+  auto chain = OptionChain::from_frame(
+      panel->frame,
+      MarketEnv::flat(spec.spot, spec.r, iso_to_ns(spec.snapshot_iso), spec.cash_divs));
+  EXPECT_TRUE(chain.has_value()) << (chain ? "" : chain.error().to_string());
+  PricerConfig cfg;
+  cfg.n_threads = 1;
+  PricerFitter fitter{cfg};
+  EXPECT_TRUE(fitter.fit(*chain).has_value());
+  auto ps = fitter.surface()->session().to_priced_surface();
+  EXPECT_TRUE(ps.has_value()) << (ps ? "" : ps.error().to_string());
+  return std::move(*ps);
+}
+
+// Fit a board and stamp it with `uid` via with_uid — the universe binding.
+[[nodiscard]] PricedSurface fit_member(const std::string& uid, double spot, double sigma0,
+                                       std::uint32_t surface_uid) {
+  const PricedSurface raw = fit_board(make_board_spec(uid, spot, sigma0));
+  auto remapped = with_uid(raw, surface_uid);
+  EXPECT_TRUE(remapped.has_value()) << (remapped ? "" : remapped.error().to_string());
+  return std::move(*remapped);
+}
+
+// The 3-board universe: one index (uid 1) + two names (uid 2,3), weights summing
+// to 1. Index ATM vol is set below the names so rho_imp is comfortably in (0, 1).
+[[nodiscard]] std::vector<PricedSurface> build_surfaces() {
+  std::vector<PricedSurface> s;
+  s.push_back(fit_member("IDX", 500.0, 0.28, kIndexUid));
+  s.push_back(fit_member("NM0", 100.0, 0.30, kName0Uid));
+  s.push_back(fit_member("NM1", 120.0, 0.34, kName1Uid));
+  return s;
+}
+
+[[nodiscard]] DispersionUniverse make_universe_w(double w0, double w1) {
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", kIndexUid, 0.0};
+  u.names.push_back(DispersionMember{"NM0", kName0Uid, w0});
+  u.names.push_back(DispersionMember{"NM1", kName1Uid, w1});
+  return u;
+}
+
+[[nodiscard]] DispersionUniverse make_universe() { return make_universe_w(kW0, kW1); }
+
+// Sum the priced book's position vega, bucketed into (index leg, name legs).
+struct BucketedVega {
+  double index{0.0};
+  double names{0.0};
+};
+[[nodiscard]] BucketedVega price_bucketed_vega(const DispersionBook& book, const SurfaceSet& set,
+                                               std::uint32_t index_uid) {
+  auto pf = Portfolio::create(book.positions);
+  EXPECT_TRUE(pf.has_value());
+  const PortfolioPricer pricer{std::move(*pf)};
+  auto frame = pricer.price(set);
+  EXPECT_TRUE(frame.has_value());
+  BucketedVega v;
+  if (frame.has_value()) {
+    for (std::size_t i = 0; i < frame->size(); ++i) {
+      if (frame->uid[i] == index_uid) {
+        v.index += frame->vega[i];
+      } else {
+        v.names += frame->vega[i];
+      }
+    }
+  }
+  return v;
+}
+
+[[nodiscard]] std::vector<const PricedSurface*> as_ptrs(const std::vector<PricedSurface>& v) {
+  std::vector<const PricedSurface*> p;
+  p.reserve(v.size());
+  for (const PricedSurface& s : v) {
+    p.push_back(&s);
+  }
+  return p;
+}
+
+}  // namespace
+
+// ── 1. Signal reproduces the closed-form implied correlation ────────────────
+TEST(Dispersion, Signal_MatchesClosedForm) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  auto sig = dispersion_signal(u, *set, kTargetT);
+  ASSERT_TRUE(sig.has_value()) << sig.error().to_string();
+
+  // Hand-compute rho_imp from the exact ATM vols the surfaces return.
+  const double si = surfaces[0].iv(surfaces[0].forward_at(kTargetT), kTargetT);
+  const double s0 = surfaces[1].iv(surfaces[1].forward_at(kTargetT), kTargetT);
+  const double s1 = surfaces[2].iv(surfaces[2].forward_at(kTargetT), kTargetT);
+  ASSERT_TRUE(std::isfinite(si) && std::isfinite(s0) && std::isfinite(s1));
+
+  const double sws = kW0 * s0 + kW1 * s1;
+  const double sw2s2 = kW0 * kW0 * s0 * s0 + kW1 * kW1 * s1 * s1;
+  const double denom = sws * sws - sw2s2;
+  const double rho = (si * si - sw2s2) / denom;
+
+  EXPECT_NEAR(sig->sigma_index, si, 1e-12);
+  ASSERT_EQ(sig->sigma_names.size(), 2u);
+  EXPECT_NEAR(sig->sigma_names[0], s0, 1e-12);
+  EXPECT_NEAR(sig->sigma_names[1], s1, 1e-12);
+  EXPECT_NEAR(sig->sum_w_sigma, sws, 1e-12);
+  EXPECT_NEAR(sig->sum_w2_sigma2, sw2s2, 1e-12);
+  EXPECT_NEAR(sig->implied_corr, rho, 1e-12);
+  EXPECT_NEAR(sig->T_used, kTargetT, 1e-15);
+
+  EXPECT_TRUE(std::isfinite(sig->implied_corr));
+  EXPECT_GT(sig->implied_corr, 0.0);
+  EXPECT_LT(sig->implied_corr, 1.5) << "implied correlation out of a reasonable band";
+}
+
+// ── 2. The book is vega-neutral (index vega == -basket vega) ────────────────
+TEST(Dispersion, Book_IsVegaNeutral) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig cfg;  // 30d tenor, 10000 target vega, short-index, mult 100
+  auto book = build_dispersion_book(u, *set, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+
+  // 2 positions (Call, Put) per straddle, 1 index + 2 names => 6.
+  ASSERT_EQ(book->positions.size(), 2u * (1u + u.names.size()));
+  ASSERT_EQ(book->name_legs.size(), 2u);
+
+  // Every straddle is a Call then a Put at equal K, T, qty; ids monotonic.
+  for (std::size_t i = 0; i < book->positions.size(); i += 2) {
+    const Position& c = book->positions[i];
+    const Position& p = book->positions[i + 1];
+    EXPECT_EQ(c.contract.side, Side::Call);
+    EXPECT_EQ(p.contract.side, Side::Put);
+    EXPECT_EQ(c.contract.uid, p.contract.uid);
+    EXPECT_TRUE(bits_equal(c.contract.K, p.contract.K));
+    EXPECT_TRUE(bits_equal(c.contract.T, p.contract.T));
+    EXPECT_TRUE(bits_equal(c.qty, p.qty));
+    EXPECT_LT(c.id, p.id);
+  }
+
+  // Short index, long names.
+  EXPECT_LT(book->index_leg.straddle_qty, 0.0);
+  for (const DispersionLeg& leg : book->name_legs) {
+    EXPECT_GT(leg.straddle_qty, 0.0);
+  }
+
+  // Price the book against the set and bucket position vega by uid.
+  const BucketedVega v = price_bucketed_vega(*book, *set, u.index.uid);
+
+  // Vega-neutral construction: index vega == -(basket vega), and the index leg
+  // carries target_vega of gross vega (sign per side).
+  EXPECT_TRUE(close(v.index, -v.names)) << v.index << " vs " << -v.names;
+  EXPECT_TRUE(close(std::fabs(v.index), cfg.target_vega)) << v.index;
+  EXPECT_LT(v.index, 0.0);  // short index
+
+  std::printf("[dispersion] rho_imp=%.6f sigma_idx=%.6f n_names=%zu "
+              "book_vega_idx=%.2f book_vega_names=%.2f\n",
+              book->signal.implied_corr, book->signal.sigma_index, book->name_legs.size(),
+              v.index, v.names);
+}
+
+// ── 2b. Signal + book are scale-invariant in the basket weights ─────────────
+TEST(Dispersion, Signal_ScaleInvariantInWeights) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  // Same ratios, different scale (Σ = 1 vs Σ = 5). Normalized internally, so the
+  // implied correlation must be identical.
+  const DispersionUniverse u_norm = make_universe_w(0.6, 0.4);
+  const DispersionUniverse u_scaled = make_universe_w(3.0, 2.0);
+
+  auto sig_norm = dispersion_signal(u_norm, *set, kTargetT);
+  auto sig_scaled = dispersion_signal(u_scaled, *set, kTargetT);
+  ASSERT_TRUE(sig_norm.has_value()) << sig_norm.error().to_string();
+  ASSERT_TRUE(sig_scaled.has_value()) << sig_scaled.error().to_string();
+
+  EXPECT_NEAR(sig_scaled->implied_corr, sig_norm->implied_corr, 1e-12);
+  EXPECT_NEAR(sig_scaled->sum_w_sigma, sig_norm->sum_w_sigma, 1e-12);
+  EXPECT_NEAR(sig_scaled->sum_w2_sigma2, sig_norm->sum_w2_sigma2, 1e-12);
+
+  // And the book built from the ×k weights is still exactly vega-neutral.
+  DispersionConfig cfg;
+  auto book = build_dispersion_book(u_scaled, *set, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  const BucketedVega v = price_bucketed_vega(*book, *set, u_scaled.index.uid);
+  EXPECT_TRUE(close(v.index, -v.names)) << v.index << " vs " << -v.names;
+  EXPECT_TRUE(close(std::fabs(v.index), cfg.target_vega)) << v.index;
+}
+
+// ── 3. with_uid remaps only the uid and reprices bit-identically ────────────
+TEST(Dispersion, WithUid_RemapsAndPrices) {
+  const PricedSurface base = fit_board(make_board_spec("NM0", 100.0, 0.30));
+  auto remapped = with_uid(base, 7);
+  ASSERT_TRUE(remapped.has_value()) << remapped.error().to_string();
+  EXPECT_EQ(remapped->uid(), 7u);
+
+  std::size_t n = 0;
+  for (const SliceContext& ctx : base.context()) {
+    const double T = ctx.T;
+    const double F = ctx.forward;
+    for (const double m : {0.95, 1.0, 1.05}) {
+      const double K = F * m;
+      const Side side = (m <= 1.0) ? Side::Put : Side::Call;
+
+      EXPECT_TRUE(bits_equal(base.iv(K, T), remapped->iv(K, T))) << "iv K=" << K;
+      const auto ga = base.greeks(K, T, side);
+      const auto gb = remapped->greeks(K, T, side);
+      ASSERT_EQ(ga.has_value(), gb.has_value());
+      if (ga.has_value()) {
+        EXPECT_TRUE(bits_equal(ga->price, gb->price)) << "price K=" << K;
+        EXPECT_TRUE(bits_equal(ga->delta, gb->delta)) << "delta K=" << K;
+        EXPECT_TRUE(bits_equal(ga->vega, gb->vega)) << "vega K=" << K;
+        ++n;
+      }
+    }
+  }
+  EXPECT_GT(n, 0u);
+}
+
+// ── 4. Boundary rejections (validation-first; empty set needs no fits) ───────
+TEST(Dispersion, Rejections) {
+  const std::vector<const PricedSurface*> none;
+  auto empty_set = SurfaceSet::create(none);
+  ASSERT_TRUE(empty_set.has_value()) << empty_set.error().to_string();
+
+  const DispersionUniverse u = make_universe();
+  const DispersionConfig cfg;
+
+  // Fewer than two names.
+  {
+    DispersionUniverse bad = u;
+    bad.names.resize(1);
+    auto r = build_dispersion_book(bad, *empty_set, cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // Non-positive weight sum.
+  {
+    DispersionUniverse bad = u;
+    bad.names[0].weight = -1.0;
+    bad.names[1].weight = 0.0;
+    auto r = build_dispersion_book(bad, *empty_set, cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // target_T <= 0.
+  {
+    DispersionConfig bad = cfg;
+    bad.target_T = 0.0;
+    auto r = build_dispersion_book(u, *empty_set, bad);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // target_vega <= 0.
+  {
+    DispersionConfig bad = cfg;
+    bad.target_vega = -5.0;
+    auto r = build_dispersion_book(u, *empty_set, bad);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // A member uid missing from the set (valid config + weights).
+  {
+    auto r = build_dispersion_book(u, *empty_set, cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+  }
+  {
+    auto r = dispersion_signal(u, *empty_set, kTargetT);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+  }
+}

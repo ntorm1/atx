@@ -65,6 +65,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/priced_surface.cpp
     src/portfolio_pricer.cpp
     src/corpus.cpp
+    src/dispersion.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
