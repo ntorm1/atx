@@ -258,6 +258,32 @@ def _pf3_s10_factor_panel_lake_export_registration(conn: duckdb.DuckDBPyConnecti
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s10_factor_panel_contract_gate(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S10 S10-2: critical export-boundary contract/lookahead gate."""
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES (
+            'factor_panel_export_contract',
+            'factor_panel',
+            'v_factor_panel',
+            'critical',
+            0.0,
+            'eq',
+            true,
+            'failed',
+            'pf3_s10',
+            now()
+        )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=164,
@@ -268,5 +294,10 @@ MIGRATIONS: list[Migration] = [
         version=165,
         name="pf3_s10_factor_panel_lake_export_registration",
         up=_pf3_s10_factor_panel_lake_export_registration,
+    ),
+    Migration(
+        version=166,
+        name="pf3_s10_factor_panel_contract_gate",
+        up=_pf3_s10_factor_panel_contract_gate,
     ),
 ]

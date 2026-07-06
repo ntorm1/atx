@@ -174,6 +174,34 @@ def run_warehouse_quality_checks(
     ):
         schema_results.append(semantic_contract_check(store, checked_at=checked_at))
 
+    from ..factor_panel import PANEL_EXPORT_GATE_CHECK_NAME, factor_panel_export_gate_report
+
+    if (
+        _registry_allows_check(PANEL_EXPORT_GATE_CHECK_NAME, registry)
+        and (
+            (requested_checks is None and requested_datasets is None)
+            or (requested_checks is not None and PANEL_EXPORT_GATE_CHECK_NAME in requested_checks)
+            or (requested_datasets is not None and "factor_panel" in requested_datasets)
+        )
+    ):
+        report = factor_panel_export_gate_report(store)
+        observed_value = float(report["violation_count"])
+        schema_results.append(
+            QualityResult(
+                dataset_id="factor_panel",
+                table_name="v_factor_panel",
+                check_name=PANEL_EXPORT_GATE_CHECK_NAME,
+                status="passed" if observed_value == 0.0 else "failed",
+                observed_value=observed_value,
+                threshold_value=0.0,
+                details={
+                    "checked_at": checked_at.isoformat(),
+                    "violations": report["violations"],
+                },
+                severity="critical",
+            )
+        )
+
     for result in schema_results:
         resolved_result = _apply_registry_to_result(result, registry)
         if resolved_result is None:

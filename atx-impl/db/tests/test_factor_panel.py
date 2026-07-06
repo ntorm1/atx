@@ -6,7 +6,14 @@ import json
 import pandas as pd
 import pytest
 
-from db.factor_panel import assemble_factor_panel_long, export_factor_panel, pivot_factor_panel_wide
+from db.factor_panel import (
+    PANEL_EXPORT_GATE_CHECK_NAME,
+    assemble_factor_panel_long,
+    assert_factor_panel_export_ready,
+    export_factor_panel,
+    factor_panel_export_gate_report,
+    pivot_factor_panel_wide,
+)
 from db.lake import DEFAULT_EXPORT_OBJECTS, validate_lake_export
 
 
@@ -313,10 +320,11 @@ def test_factor_panel_views_resolve_long_and_wide_with_pit_universe_filter(tmp_s
         SELECT
             (SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'factor_panel'),
             (SELECT count(*) FROM table_catalog WHERE table_name = 'v_factor_panel'),
-            (SELECT count(*) FROM table_catalog WHERE table_name = 'v_factor_panel_wide')
+            (SELECT count(*) FROM table_catalog WHERE table_name = 'v_factor_panel_wide'),
+            (SELECT count(*) FROM quality_check_registry WHERE check_name = 'factor_panel_export_contract')
         """
     ).fetchone()
-    assert catalog_counts == (1, 1, 1)
+    assert catalog_counts == (1, 1, 1, 1)
 
 
 def test_factor_panel_exports_partitioned_lake_object_with_schema_contract(tmp_store, tmp_path) -> None:
@@ -381,3 +389,76 @@ def test_factor_panel_exports_partitioned_lake_object_with_schema_contract(tmp_s
 
     with pytest.raises(ValueError, match="Schema SHA-256 mismatch for v_factor_panel"):
         export_factor_panel(db_path, lake_root=tmp_path / "lake_bad", incremental=True)
+
+
+def test_factor_panel_export_gate_blocks_contract_lookahead_and_non_member_rows(tmp_store, tmp_path) -> None:
+    from db.quality import run_warehouse_quality_checks
+
+    _insert_factor_value_fixtures(tmp_store)
+
+    clean_report = factor_panel_export_gate_report(tmp_store)
+    assert clean_report["violation_count"] == 0.0
+    assert_factor_panel_export_ready(tmp_store)
+    clean_result = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=(PANEL_EXPORT_GATE_CHECK_NAME,),
+    )
+    assert len(clean_result) == 1
+    assert clean_result[0].status == "passed"
+    assert clean_result[0].severity == "critical"
+
+    tmp_store.con.execute(
+        """
+        CREATE OR REPLACE VIEW v_factor_panel AS
+        SELECT
+            'SEC-BAD'::VARCHAR AS security_id,
+            DATE '2024-02-01' AS as_of_date,
+            'bad_factor'::VARCHAR AS factor_id,
+            1.0::DOUBLE AS value,
+            TIMESTAMP '2024-02-02 09:00:00' AS available_at,
+            TIMESTAMP '2024-02-02 09:01:00' AS source_loaded_at,
+            'bad-run'::VARCHAR AS run_id,
+            '[{"available_at":"2024-02-03T00:00:00"}]'::VARCHAR AS input_lineage_json,
+            'undeclared'::VARCHAR AS extra_export_column
+        """
+    )
+    tmp_store.con.execute(
+        """
+        UPDATE panel_contract
+        SET unit = 'wrong_unit'
+        WHERE column_name = 'value'
+        """
+    )
+
+    bad_report = factor_panel_export_gate_report(tmp_store)
+    kinds = {item["kind"] for item in bad_report["violations"]}
+    assert bad_report["violation_count"] >= 5.0
+    assert {
+        "panel_column_shape_mismatch",
+        "panel_contract_metadata_mismatch",
+        "panel_available_at_lookahead",
+        "panel_input_lineage_lookahead",
+        "panel_universe_membership_violation",
+    } <= kinds
+
+    with pytest.raises(ValueError, match="factor panel export gate failed"):
+        assert_factor_panel_export_ready(tmp_store)
+
+    bad_result = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=(PANEL_EXPORT_GATE_CHECK_NAME,),
+    )
+    assert len(bad_result) == 1
+    assert bad_result[0].status == "failed"
+    assert bad_result[0].severity == "critical"
+    assert bad_result[0].observed_value == bad_report["violation_count"]
+
+    db_path = tmp_store.path
+    tmp_store.con.execute("CHECKPOINT")
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    with pytest.raises(ValueError, match="factor panel export gate failed"):
+        export_factor_panel(db_path, lake_root=tmp_path / "blocked_lake", incremental=True)
