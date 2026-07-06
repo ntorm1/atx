@@ -41,7 +41,7 @@ Updated: 2026-07-05 America/New_York
 
 - S9-0 - Price/liquidity factor integration: done. Controller added `db.factors.cross_domain` with pure `equity_price_metrics` mappers for momentum, volatility, liquidity, beta, idiosyncratic vol, distance-from-high, and drawdown factors; native price-surface ranks are carried as diagnostics and cross-checked against S7 percent-rank output. Migration 0160 seeds price/liquidity definitions and source dependency edges into the S7 catalog plus `v_cross_domain_price_liquidity_factor_catalog`.
 - S9-1 - Estimate-revision + 13F-flow factors: done. Controller extended `db.factors.cross_domain` with pure mappers for `est_surprise` SUE/surprise percent, `est_consensus` revision mean/breadth, and `thirteenf_concentration_metrics` crowding/flow factors. Migration 0161 seeds the estimate and 13F definitions/edges plus `v_cross_domain_estimate_13f_factor_catalog`; tests cover consensus-revision lineage and a 13F filing-lag fixture that emits no row before `available_at`.
-- S9-2 - Short-interest + insider factors: not started.
+- S9-2 - Short-interest + insider factors: done. Controller added mappers for `short_interest_metrics` crowding/flow/pressure factors and `insider_transaction_metrics` net-buy, cluster-buy, and plan-sale factors. Migration 0162 seeds the short-interest/insider definitions/edges plus `v_cross_domain_short_insider_factor_catalog`; tests cover FINRA publication-lag filtering, bearish short-pressure rank direction, insider symbol propagation, and plan-sale direction.
 - S9-3 - Unified namespace assembly + consistency gates: not started.
 
 ## Verification
@@ -140,6 +140,12 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S9-1.
 - `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S9-1.
 - `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S9-1.
+- `python -m py_compile db\factors\cross_domain.py db\migrations\bodies_0160_0163.py db\tests\test_cross_domain_factors.py` passed after S9-2.
+- `python -m pytest db\tests\test_cross_domain_factors.py -q -n0` passed after S9-2.
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S9-2.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S9-2.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S9-2.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S9-2.
 
 ## Live Smoke
 

@@ -19,6 +19,7 @@ from .cross_section import rank as cs_rank
 SOURCE_NAME = "atx-impl cross-domain factor mapper"
 PRICE_LIQUIDITY_DECLARED_IN = "db.factors.cross_domain.price_liquidity_specs"
 ESTIMATE_13F_DECLARED_IN = "db.factors.cross_domain.estimate_13f_specs"
+SHORT_INSIDER_DECLARED_IN = "db.factors.cross_domain.short_insider_specs"
 CROSS_DOMAIN_FACTOR_COLUMNS = [
     "factor_value_id",
     "factor_id",
@@ -352,6 +353,158 @@ ESTIMATE_13F_SPECS: tuple[CrossDomainFactorSpec, ...] = (
 )
 
 
+SHORT_INTEREST_SPECS: tuple[CrossDomainFactorSpec, ...] = (
+    CrossDomainFactorSpec(
+        "short_interest_days_to_cover",
+        "Short interest days to cover",
+        "short_interest",
+        "short_interest_crowding",
+        "short_interest_metrics",
+        "days_to_cover",
+        "Current short position divided by average daily volume.",
+        -1,
+        "days",
+        "nonnegative",
+        lineage_columns=("settlement_date", "current_short_position", "average_daily_volume", "days_to_cover_percentile"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "short_interest_pct_shares_outstanding",
+        "Short interest percent shares outstanding",
+        "short_interest",
+        "short_interest_crowding",
+        "short_interest_metrics",
+        "short_pct_shares_outstanding",
+        "Current short position divided by point-in-time shares outstanding.",
+        -1,
+        "ratio",
+        "nonnegative",
+        lineage_columns=("settlement_date", "current_short_position", "short_interest_change_pct"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "short_interest_change_pct",
+        "Short interest change percent",
+        "short_interest",
+        "short_interest_flow",
+        "short_interest_metrics",
+        "short_interest_change_pct",
+        "Current short position change divided by previous short position.",
+        -1,
+        "ratio",
+        "signed",
+        lineage_columns=("settlement_date", "current_short_position", "previous_short_position"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "short_interest_momentum_3",
+        "Short interest momentum 3 settlements",
+        "short_interest",
+        "short_interest_flow",
+        "short_interest_metrics",
+        "short_interest_momentum_3",
+        "Short-position growth over the trailing three visible settlements.",
+        -1,
+        "ratio",
+        "signed",
+        lineage_columns=("settlement_date", "current_short_position", "days_to_cover_change_3"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "short_interest_short_pressure_score",
+        "Short pressure score",
+        "short_interest",
+        "short_interest_pressure",
+        "short_interest_metrics",
+        "short_pressure_score",
+        "Composite short-pressure score from crowding percentile and short-interest momentum diagnostics.",
+        -1,
+        "score",
+        "bounded",
+        lineage_columns=("settlement_date", "days_to_cover_percentile", "short_interest_change_pct_percentile", "is_squeeze_candidate"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+)
+
+INSIDER_SPECS: tuple[CrossDomainFactorSpec, ...] = (
+    CrossDomainFactorSpec(
+        "insider_net_purchase_value",
+        "Insider net purchase value",
+        "insider",
+        "insider_net_buy",
+        "insider_transaction_metrics",
+        "net_purchase_value",
+        "Open-market purchase value minus sale value for the issuer signal date.",
+        1,
+        "currency",
+        "signed",
+        lineage_columns=("signal_date", "window_days", "gross_purchase_value", "gross_sale_value", "transaction_count"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "insider_net_purchase_shares",
+        "Insider net purchase shares",
+        "insider",
+        "insider_net_buy",
+        "insider_transaction_metrics",
+        "net_purchase_shares",
+        "Open-market purchase shares minus sale shares for the issuer signal date.",
+        1,
+        "shares",
+        "signed",
+        lineage_columns=("signal_date", "window_days", "gross_purchase_shares", "gross_sale_shares"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "insider_cluster_purchase_value",
+        "Insider cluster purchase value",
+        "insider",
+        "insider_cluster_buy",
+        "insider_transaction_metrics",
+        "cluster_purchase_value",
+        "Trailing-window insider purchase value used by the cluster-buy diagnostic.",
+        1,
+        "currency",
+        "nonnegative",
+        lineage_columns=("signal_date", "window_days", "cluster_buyer_count", "cluster_purchase_count", "is_cluster_buy"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "insider_cluster_buy_flag",
+        "Insider cluster-buy flag",
+        "insider",
+        "insider_cluster_buy",
+        "insider_transaction_metrics",
+        "is_cluster_buy",
+        "Boolean indicator that the issuer meets the configured cluster-buy threshold.",
+        1,
+        "boolean",
+        "bounded",
+        lineage_columns=("signal_date", "window_days", "cluster_buyer_count", "cluster_min_buyers", "cluster_purchase_value"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+    CrossDomainFactorSpec(
+        "insider_plan_sale_value_ratio",
+        "Insider plan-sale value ratio",
+        "insider",
+        "insider_sell_pressure",
+        "insider_transaction_metrics",
+        "plan_sale_value_ratio",
+        "10b5-1 plan sale value divided by gross sale value for the issuer signal date.",
+        -1,
+        "ratio",
+        "nonnegative",
+        lineage_columns=("signal_date", "window_days", "plan_sale_value", "gross_sale_value", "plan_sale_count"),
+        declared_in=SHORT_INSIDER_DECLARED_IN,
+    ),
+)
+
+SHORT_INSIDER_SPECS: tuple[CrossDomainFactorSpec, ...] = (
+    *SHORT_INTEREST_SPECS,
+    *INSIDER_SPECS,
+)
+
+
 def price_liquidity_factor_definitions() -> tuple[FactorDefinition, ...]:
     return tuple(spec.to_factor_definition() for spec in PRICE_LIQUIDITY_SPECS)
 
@@ -435,6 +588,18 @@ def price_liquidity_dependency_edges_frame() -> pd.DataFrame:
 
 def estimate_13f_dependency_edges_frame() -> pd.DataFrame:
     return _dependency_edges_frame(ESTIMATE_13F_SPECS)
+
+
+def short_insider_factor_definitions() -> tuple[FactorDefinition, ...]:
+    return tuple(spec.to_factor_definition() for spec in SHORT_INSIDER_SPECS)
+
+
+def short_insider_definition_frame() -> pd.DataFrame:
+    return _definition_frame(SHORT_INSIDER_SPECS)
+
+
+def short_insider_dependency_edges_frame() -> pd.DataFrame:
+    return _dependency_edges_frame(SHORT_INSIDER_SPECS)
 
 
 def _hash_id(prefix: str, *parts: object) -> str:
@@ -865,6 +1030,94 @@ def compute_estimate_13f_factor_rows(
         ),
         compute_thirteenf_flow_factor_rows(
             concentration_metrics if concentration_metrics is not None else pd.DataFrame(),
+            as_of_date=as_of_date,
+            as_of_ts=as_of_ts,
+            run_id=run_id,
+            source=source,
+        ),
+    ]
+    materialized = [piece for piece in pieces if not piece.empty]
+    if not materialized:
+        return pd.DataFrame(columns=CROSS_DOMAIN_FACTOR_COLUMNS)
+    return pd.concat(materialized, ignore_index=True).sort_values(
+        ["domain", "factor_id", "as_of_date", "security_id"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def compute_short_interest_factor_rows(
+    short_interest_metrics: pd.DataFrame,
+    *,
+    as_of_date: dt.date | None = None,
+    as_of_ts: dt.datetime | pd.Timestamp | None = None,
+    run_id: str | None = None,
+    source: str = SOURCE_NAME,
+) -> pd.DataFrame:
+    """Map FINRA short-interest metrics into PIT-filterable factor rows."""
+
+    frame = _normalize_source_metrics(
+        short_interest_metrics,
+        source_row_id_column="metric_id",
+        date_columns=("as_of_date", "settlement_date"),
+    )
+    frame = _filter_decision_time(frame, as_of_date=as_of_date, as_of_ts=as_of_ts)
+    return _compute_source_factor_rows(
+        frame,
+        specs=SHORT_INTEREST_SPECS,
+        run_id=run_id,
+        source=source,
+        hash_prefix="short_interest_factor",
+    )
+
+
+def compute_insider_factor_rows(
+    insider_metrics: pd.DataFrame,
+    *,
+    as_of_date: dt.date | None = None,
+    as_of_ts: dt.datetime | pd.Timestamp | None = None,
+    run_id: str | None = None,
+    source: str = SOURCE_NAME,
+) -> pd.DataFrame:
+    """Map insider transaction metrics into PIT-filterable factor rows."""
+
+    frame = insider_metrics.copy() if insider_metrics is not None else pd.DataFrame()
+    if "symbol" not in frame.columns and "issuer_trading_symbol" in frame.columns:
+        frame["symbol"] = frame["issuer_trading_symbol"]
+    frame = _normalize_source_metrics(
+        frame,
+        source_row_id_column="metric_id",
+        date_columns=("as_of_date", "signal_date"),
+    )
+    frame = _filter_decision_time(frame, as_of_date=as_of_date, as_of_ts=as_of_ts)
+    return _compute_source_factor_rows(
+        frame,
+        specs=INSIDER_SPECS,
+        run_id=run_id,
+        source=source,
+        hash_prefix="insider_factor",
+    )
+
+
+def compute_short_insider_factor_rows(
+    *,
+    short_interest_metrics: pd.DataFrame | None = None,
+    insider_metrics: pd.DataFrame | None = None,
+    as_of_date: dt.date | None = None,
+    as_of_ts: dt.datetime | pd.Timestamp | None = None,
+    run_id: str | None = None,
+    source: str = SOURCE_NAME,
+) -> pd.DataFrame:
+    """Return the S9-2 short-interest plus insider factor rows."""
+
+    pieces = [
+        compute_short_interest_factor_rows(
+            short_interest_metrics if short_interest_metrics is not None else pd.DataFrame(),
+            as_of_date=as_of_date,
+            as_of_ts=as_of_ts,
+            run_id=run_id,
+            source=source,
+        ),
+        compute_insider_factor_rows(
+            insider_metrics if insider_metrics is not None else pd.DataFrame(),
             as_of_date=as_of_date,
             as_of_ts=as_of_ts,
             run_id=run_id,

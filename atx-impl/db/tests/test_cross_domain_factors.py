@@ -10,14 +10,19 @@ from db.factors.catalog import validate_catalog
 from db.factors.cross_domain import (
     ESTIMATE_13F_SPECS,
     PRICE_LIQUIDITY_SPECS,
+    SHORT_INSIDER_SPECS,
     compute_estimate_revision_factor_rows,
+    compute_insider_factor_rows,
     compute_price_liquidity_factor_rows,
+    compute_short_interest_factor_rows,
     compute_thirteenf_flow_factor_rows,
     estimate_13f_definition_frame,
     estimate_13f_factor_definitions,
     price_liquidity_definition_frame,
     price_liquidity_factor_definitions,
     price_liquidity_rank_crosscheck,
+    short_insider_definition_frame,
+    short_insider_factor_definitions,
 )
 
 
@@ -550,4 +555,262 @@ def test_estimate_13f_seed_rows_round_trip_into_catalog(tmp_store) -> None:
     assert json.loads(thirteenf_seeded[2])["source_table"] == "thirteenf_concentration_metrics"
     assert edge_sources == {"est_surprise", "est_consensus", "thirteenf_concentration_metrics"}
     assert catalog_domains == {"estimate_revision", "13f_flow"}
+    assert dataset_row == 1
+
+
+def test_short_insider_definitions_validate_for_source_surfaces() -> None:
+    definitions = short_insider_factor_definitions()
+    frame = short_insider_definition_frame()
+
+    validate_catalog(
+        definitions,
+        known_source_ids=("short_interest_metrics", "insider_transaction_metrics"),
+    )
+
+    assert len(definitions) == len(SHORT_INSIDER_SPECS) == 10
+    assert {"short_interest_days_to_cover", "insider_net_purchase_value"} <= set(frame["factor_id"])
+    assert json.loads(frame.loc[frame["factor_id"] == "short_interest_days_to_cover", "input_ids_json"].iloc[0]) == [
+        "source:short_interest_metrics"
+    ]
+    assert json.loads(frame.loc[frame["factor_id"] == "insider_net_purchase_value", "standardization_spec_json"].iloc[0])[
+        "source_table"
+    ] == "insider_transaction_metrics"
+
+
+def _short_interest_metric(
+    security_id: str,
+    symbol: str,
+    *,
+    days_to_cover: float,
+    short_pct_shares_outstanding: float,
+    short_interest_change_pct: float,
+    short_interest_momentum_3: float,
+    short_pressure_score: float,
+) -> dict[str, object]:
+    return {
+        "metric_id": f"short-{security_id}",
+        "security_id": security_id,
+        "symbol": symbol,
+        "settlement_date": dt.date(2024, 5, 15),
+        "as_of_date": dt.date(2024, 5, 15),
+        "current_short_position": 1_000_000.0,
+        "previous_short_position": 900_000.0,
+        "average_daily_volume": 100_000.0,
+        "days_to_cover": days_to_cover,
+        "days_to_cover_percentile": 0.5,
+        "short_pct_shares_outstanding": short_pct_shares_outstanding,
+        "short_interest_change_pct": short_interest_change_pct,
+        "short_interest_change_pct_percentile": 0.5,
+        "short_interest_momentum_3": short_interest_momentum_3,
+        "days_to_cover_change_3": days_to_cover / 10,
+        "short_pressure_score": short_pressure_score,
+        "is_squeeze_candidate": short_pressure_score >= 80,
+        "available_at": pd.Timestamp("2024-05-25 22:00:00"),
+        "is_latest_revision": True,
+        "source": "fixture_short_interest_metrics",
+    }
+
+
+def _short_interest_fixture() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _short_interest_metric(
+                "SEC-A",
+                "AAA",
+                days_to_cover=2.0,
+                short_pct_shares_outstanding=0.05,
+                short_interest_change_pct=-0.05,
+                short_interest_momentum_3=-0.10,
+                short_pressure_score=20.0,
+            ),
+            _short_interest_metric(
+                "SEC-B",
+                "BBB",
+                days_to_cover=5.0,
+                short_pct_shares_outstanding=0.10,
+                short_interest_change_pct=0.00,
+                short_interest_momentum_3=0.00,
+                short_pressure_score=50.0,
+            ),
+            _short_interest_metric(
+                "SEC-C",
+                "CCC",
+                days_to_cover=9.0,
+                short_pct_shares_outstanding=0.20,
+                short_interest_change_pct=0.20,
+                short_interest_momentum_3=0.30,
+                short_pressure_score=90.0,
+            ),
+        ]
+    )
+
+
+def test_short_interest_mapper_respects_publication_lag_and_ranks_bearish_metrics() -> None:
+    before = compute_short_interest_factor_rows(_short_interest_fixture(), as_of_date=dt.date(2024, 5, 24))
+    after = compute_short_interest_factor_rows(
+        _short_interest_fixture(),
+        as_of_date=dt.date(2024, 5, 26),
+        run_id="s9-short-run",
+    )
+    lookup = {(row.factor_id, row.security_id): row for row in after.itertuples(index=False)}
+    days = lookup[("short_interest_days_to_cover", "SEC-A")]
+    pressure = lookup[("short_interest_short_pressure_score", "SEC-A")]
+
+    assert before.empty
+    assert len(after) == 3 * 5
+    assert days.raw_value == pytest.approx(2.0)
+    assert days.value == pytest.approx(1.0)
+    assert lookup[("short_interest_days_to_cover", "SEC-C")].value == pytest.approx(0.0)
+    assert pressure.value == pytest.approx(1.0)
+
+    lineage = json.loads(days.input_lineage_json)[0]
+    assert lineage["source_table"] == "short_interest_metrics"
+    assert lineage["source_row_id"] == "short-SEC-A"
+    assert lineage["settlement_date"] == "2024-05-15"
+
+
+def _insider_metric(
+    security_id: str,
+    symbol: str,
+    *,
+    net_purchase_value: float,
+    net_purchase_shares: float,
+    cluster_purchase_value: float,
+    is_cluster_buy: bool,
+    plan_sale_value_ratio: float,
+) -> dict[str, object]:
+    return {
+        "metric_id": f"insider-{security_id}",
+        "security_id": security_id,
+        "issuer_trading_symbol": symbol,
+        "signal_date": dt.date(2024, 6, 3),
+        "as_of_date": dt.date(2024, 6, 3),
+        "window_days": 30,
+        "transaction_count": 4,
+        "gross_purchase_value": max(net_purchase_value, 0.0),
+        "gross_sale_value": max(-net_purchase_value, 0.0) + 1000.0,
+        "gross_purchase_shares": max(net_purchase_shares, 0.0),
+        "gross_sale_shares": max(-net_purchase_shares, 0.0),
+        "net_purchase_value": net_purchase_value,
+        "net_purchase_shares": net_purchase_shares,
+        "cluster_min_buyers": 2,
+        "cluster_buyer_count": 3 if is_cluster_buy else 1,
+        "cluster_purchase_count": 3 if is_cluster_buy else 1,
+        "cluster_purchase_value": cluster_purchase_value,
+        "plan_sale_value": plan_sale_value_ratio * 1000.0,
+        "plan_sale_count": 1 if plan_sale_value_ratio else 0,
+        "plan_sale_value_ratio": plan_sale_value_ratio,
+        "is_cluster_buy": is_cluster_buy,
+        "available_at": pd.Timestamp("2024-06-04 09:30:00"),
+        "is_latest_revision": True,
+        "source": "fixture_insider_transaction_metrics",
+    }
+
+
+def _insider_fixture() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _insider_metric(
+                "SEC-A",
+                "AAA",
+                net_purchase_value=100_000.0,
+                net_purchase_shares=10_000.0,
+                cluster_purchase_value=80_000.0,
+                is_cluster_buy=True,
+                plan_sale_value_ratio=0.0,
+            ),
+            _insider_metric(
+                "SEC-B",
+                "BBB",
+                net_purchase_value=0.0,
+                net_purchase_shares=0.0,
+                cluster_purchase_value=10_000.0,
+                is_cluster_buy=False,
+                plan_sale_value_ratio=0.5,
+            ),
+            _insider_metric(
+                "SEC-C",
+                "CCC",
+                net_purchase_value=-50_000.0,
+                net_purchase_shares=-5_000.0,
+                cluster_purchase_value=0.0,
+                is_cluster_buy=False,
+                plan_sale_value_ratio=1.0,
+            ),
+        ]
+    )
+
+
+def test_insider_mapper_emits_net_buy_cluster_and_plan_sale_factors() -> None:
+    rows = compute_insider_factor_rows(_insider_fixture(), as_of_date=dt.date(2024, 6, 5), run_id="s9-insider-run")
+    lookup = {(row.factor_id, row.security_id): row for row in rows.itertuples(index=False)}
+    net_buy = lookup[("insider_net_purchase_value", "SEC-A")]
+    cluster = lookup[("insider_cluster_buy_flag", "SEC-A")]
+    plan_sale = lookup[("insider_plan_sale_value_ratio", "SEC-A")]
+
+    assert len(rows) == 3 * 5
+    assert net_buy.symbol == "AAA"
+    assert net_buy.raw_value == pytest.approx(100_000.0)
+    assert net_buy.value == pytest.approx(1.0)
+    assert lookup[("insider_net_purchase_value", "SEC-C")].value == pytest.approx(0.0)
+    assert cluster.raw_value == pytest.approx(1.0)
+    assert cluster.value == pytest.approx(1.0)
+    assert plan_sale.value == pytest.approx(1.0)
+    assert lookup[("insider_plan_sale_value_ratio", "SEC-C")].value == pytest.approx(0.0)
+
+    lineage = json.loads(net_buy.input_lineage_json)[0]
+    assert lineage["source_table"] == "insider_transaction_metrics"
+    assert lineage["source_row_id"] == "insider-SEC-A"
+    assert lineage["signal_date"] == "2024-06-03"
+    assert lineage["gross_purchase_value"] == 100000.0
+
+
+def test_short_insider_seed_rows_round_trip_into_catalog(tmp_store) -> None:
+    short_seeded = tmp_store.con.execute(
+        """
+        SELECT family, direction, standardization_spec_json
+        FROM factor_definition
+        WHERE factor_id = 'short_interest_days_to_cover'
+        """
+    ).fetchone()
+    insider_seeded = tmp_store.con.execute(
+        """
+        SELECT family, direction, standardization_spec_json
+        FROM factor_definition
+        WHERE factor_id = 'insider_net_purchase_value'
+        """
+    ).fetchone()
+    edge_sources = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT dependency_source_id
+            FROM factor_dependency_edges
+            WHERE factor_id IN ('short_interest_days_to_cover', 'insider_net_purchase_value')
+            """
+        ).fetchall()
+    }
+    catalog_domains = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT DISTINCT domain
+            FROM v_cross_domain_short_insider_factor_catalog
+            """
+        ).fetchall()
+    }
+    dataset_row = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM dataset_catalog
+        WHERE dataset_id = 'cross_domain_short_insider_factors'
+        """
+    ).fetchone()[0]
+
+    assert short_seeded[0:2] == ("short_interest_crowding", -1)
+    assert json.loads(short_seeded[2])["source_table"] == "short_interest_metrics"
+    assert insider_seeded[0:2] == ("insider_net_buy", 1)
+    assert json.loads(insider_seeded[2])["source_table"] == "insider_transaction_metrics"
+    assert edge_sources == {"short_interest_metrics", "insider_transaction_metrics"}
+    assert catalog_domains == {"short_interest", "insider"}
     assert dataset_row == 1
