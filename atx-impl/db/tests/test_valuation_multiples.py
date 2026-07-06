@@ -191,6 +191,14 @@ def _valuation_wide_row(**overrides) -> dict[str, object]:
         "div_av": pd.Timestamp("2020-02-02 10:00:00"),
         "div_id": "ttm-div",
         "div_source": "stmt",
+        "repurch": -50.0,
+        "repurch_av": pd.Timestamp("2020-02-02 10:00:00"),
+        "repurch_id": "ttm-repurch",
+        "repurch_source": "stmt",
+        "assets": 350.0,
+        "assets_av": pd.Timestamp("2020-02-02 10:00:00"),
+        "assets_id": "stmt-assets",
+        "assets_source": "stmt",
         "equity": 50.0,
         "equity_av": pd.Timestamp("2020-02-02 10:00:00"),
         "equity_id": "stmt-equity",
@@ -365,6 +373,8 @@ def _seed_valuation_fundamentals(
     operating_cash_flow: float = 130.0,
     capex: float = -30.0,
     dividends: float = -10.0,
+    repurchases: float = -50.0,
+    assets: float = 350.0,
     equity: float = 50.0,
     debt: float = 200.0,
     cash: float = 50.0,
@@ -381,6 +391,7 @@ def _seed_valuation_fundamentals(
                 _ttm_row(security_id, symbol, "operating_cash_flow", operating_cash_flow, av=av),
                 _ttm_row(security_id, symbol, "capital_expenditures", capex, av=av),
                 _ttm_row(security_id, symbol, "dividends_paid", dividends, av=av),
+                _ttm_row(security_id, symbol, "share_repurchases", repurchases, av=av),
             ]
         ),
         "fundamental_ttm_points",
@@ -388,7 +399,12 @@ def _seed_valuation_fundamentals(
     )
     insert_frame(
         tmp_store,
-        pd.DataFrame([_stmt_row(security_id, symbol, "stockholders_equity", equity, av=av)]),
+        pd.DataFrame(
+            [
+                _stmt_row(security_id, symbol, "assets", assets, av=av),
+                _stmt_row(security_id, symbol, "stockholders_equity", equity, av=av),
+            ]
+        ),
         "fundamental_statement_points",
         f"valuation_stmt_seed_{symbol}",
     )
@@ -734,7 +750,7 @@ def test_market_cap_migration_and_catalog_are_present(tmp_store) -> None:
     ).fetchone()[0] == 3
 
 
-def test_compute_valuation_multiple_rows_emits_all_nine_formulas() -> None:
+def test_compute_valuation_multiple_rows_emits_all_sixteen_formulas() -> None:
     rows = compute_valuation_multiple_rows(pd.DataFrame([_valuation_wide_row()]), run_id="valuation-run")
     by_code = _valuation_rows_by_code(rows)
 
@@ -748,6 +764,13 @@ def test_compute_valuation_multiple_rows_emits_all_nine_formulas() -> None:
         "fcf_yield",
         "earnings_yield",
         "dividend_yield",
+        "price_to_cash_flow",
+        "price_to_free_cash_flow",
+        "ev_to_ebit",
+        "ev_to_fcf",
+        "ev_to_assets",
+        "buyback_yield",
+        "shareholder_yield",
     }
     expected = {
         "price_to_earnings": 10.0,
@@ -759,6 +782,13 @@ def test_compute_valuation_multiple_rows_emits_all_nine_formulas() -> None:
         "fcf_yield": 0.10,
         "earnings_yield": 0.10,
         "dividend_yield": 0.01,
+        "price_to_cash_flow": 1000.0 / 130.0,
+        "price_to_free_cash_flow": 10.0,
+        "ev_to_ebit": 1150.0 / 120.0,
+        "ev_to_fcf": 11.5,
+        "ev_to_assets": 1150.0 / 350.0,
+        "buyback_yield": 0.05,
+        "shareholder_yield": 0.06,
     }
     for code, value in expected.items():
         assert by_code[code].value == pytest.approx(value)
@@ -769,6 +799,14 @@ def test_compute_valuation_multiple_rows_emits_all_nine_formulas() -> None:
     assert by_code["enterprise_value"].denominator_value == pytest.approx(50.0)
     assert by_code["ev_to_ebitda"].enterprise_value == pytest.approx(1150.0)
     assert by_code["ev_to_ebitda"].denominator_value == pytest.approx(150.0)
+    assert by_code["ev_to_fcf"].enterprise_value == pytest.approx(1150.0)
+    assert by_code["ev_to_fcf"].denominator_value == pytest.approx(100.0)
+    assert by_code["buyback_yield"].numerator_value == pytest.approx(50.0)
+    assert by_code["shareholder_yield"].numerator_value == pytest.approx(60.0)
+
+    ev_lineage = json.loads(by_code["ev_to_fcf"].input_lineage_json)["inputs"]["enterprise_value"]
+    assert ev_lineage["available_at"] == "2020-02-06 10:00:00"
+    assert set(ev_lineage["components"]) == {"market_cap", "long_term_debt", "cash_and_equivalents"}
 
 
 def test_valuation_available_at_is_formula_specific_max() -> None:
@@ -777,6 +815,7 @@ def test_valuation_available_at_is_formula_specific_max() -> None:
 
     assert by_code["price_to_earnings"].available_at == pd.Timestamp("2020-02-03 10:00:00")
     assert by_code["enterprise_value"].available_at == pd.Timestamp("2020-02-06 10:00:00")
+    assert by_code["ev_to_fcf"].available_at == pd.Timestamp("2020-02-06 10:00:00")
     assert by_code["dividend_yield"].available_at == pd.Timestamp("2020-02-02 10:00:00")
 
 
@@ -807,8 +846,8 @@ def test_refresh_valuation_multiples_is_idempotent_and_scoped(tmp_store) -> None
     _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
     _seed_valuation_fundamentals(tmp_store, "SEC-B", "BBB", revenue=800.0, net_income=200.0)
 
-    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="run-1")) == 18
-    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="run-2")) == 18
+    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="run-1")) == 32
+    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="run-2")) == 32
 
     counts = tmp_store.con.execute(
         """
@@ -818,12 +857,12 @@ def test_refresh_valuation_multiples_is_idempotent_and_scoped(tmp_store) -> None
         ORDER BY symbol
         """
     ).fetchall()
-    assert counts == [("AAA", 9, "run-2", "run-2"), ("BBB", 9, "run-2", "run-2")]
+    assert counts == [("AAA", 16, "run-2", "run-2"), ("BBB", 16, "run-2", "run-2")]
 
     assert refresh_valuation_multiples(
         tmp_store,
         ValuationMultiplesOptions(symbols=("AAA",), run_id="scoped"),
-    ) == 9
+    ) == 16
     counts = tmp_store.con.execute(
         """
         SELECT symbol, count(*), min(run_id), max(run_id)
@@ -832,7 +871,7 @@ def test_refresh_valuation_multiples_is_idempotent_and_scoped(tmp_store) -> None
         ORDER BY symbol
         """
     ).fetchall()
-    assert counts == [("AAA", 9, "scoped", "scoped"), ("BBB", 9, "run-2", "run-2")]
+    assert counts == [("AAA", 16, "scoped", "scoped"), ("BBB", 16, "run-2", "run-2")]
 
 
 def test_refresh_valuation_multiples_blank_symbol_scope_preserves_rows(tmp_store) -> None:
@@ -841,7 +880,7 @@ def test_refresh_valuation_multiples_blank_symbol_scope_preserves_rows(tmp_store
     _seed_valuation_fundamentals(tmp_store, "SEC-A", "AAA")
     _seed_valuation_fundamentals(tmp_store, "SEC-B", "BBB", revenue=800.0, net_income=200.0)
 
-    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="initial")) == 18
+    assert refresh_valuation_multiples(tmp_store, ValuationMultiplesOptions(run_id="initial")) == 32
     before = tmp_store.con.execute(
         """
         SELECT symbol, formula_code, value, run_id
@@ -862,7 +901,7 @@ def test_refresh_valuation_multiples_blank_symbol_scope_preserves_rows(tmp_store
         """
     ).fetchall()
 
-    assert len(before) == 18
+    assert len(before) == 32
     assert after == before
 
 
@@ -901,7 +940,7 @@ def test_valuation_multiples_dataset_records_quality(tmp_store) -> None:
 
     result = ValuationMultiplesDataset().load(tmp_store, ValuationMultiplesOptions(run_id="dataset-run"))
 
-    assert result.rows_loaded == 9
+    assert result.rows_loaded == 16
     assert tmp_store.con.execute(
         """
         SELECT status, observed_value
@@ -909,7 +948,7 @@ def test_valuation_multiples_dataset_records_quality(tmp_store) -> None:
         WHERE dataset_id = 'valuation_multiples'
           AND check_name = 'rows_materialized'
         """
-    ).fetchall() == [("passed", 9.0)]
+    ).fetchall() == [("passed", 16.0)]
 
 
 def test_valuation_multiples_dataset_records_overlap_coverage_quality(tmp_store) -> None:
@@ -920,7 +959,7 @@ def test_valuation_multiples_dataset_records_overlap_coverage_quality(tmp_store)
 
     result = ValuationMultiplesDataset().load(tmp_store, ValuationMultiplesOptions(run_id="coverage-run"))
 
-    assert result.rows_loaded == 9
+    assert result.rows_loaded == 16
     status, observed, details_json = tmp_store.con.execute(
         """
         SELECT status, observed_value, details_json
@@ -949,7 +988,7 @@ def test_valuation_multiples_dataset_records_overlap_coverage_quality(tmp_store)
         WHERE source = 'derived_valuation_multiples_v1'
         """
     ).fetchone()
-    assert slice_row == (1, 2, pytest.approx(0.5), 9, "coverage-run")
+    assert slice_row == (1, 2, pytest.approx(0.5), 16, "coverage-run")
 
 
 def test_valuation_overlap_coverage_respects_available_at(tmp_store) -> None:
@@ -1024,7 +1063,7 @@ def test_valuation_multiples_dataset_flags_stale_price_fundamental_gap(tmp_store
         ),
     )
 
-    assert result.rows_loaded == 9
+    assert result.rows_loaded == 16
     status, observed, details_json = tmp_store.con.execute(
         """
         SELECT status, observed_value, details_json
@@ -1036,8 +1075,8 @@ def test_valuation_multiples_dataset_flags_stale_price_fundamental_gap(tmp_store
     details = json.loads(details_json)
 
     assert status == "warning"
-    assert observed == 9.0
-    assert details["stale_valuation_row_count"] == 9
+    assert observed == 16.0
+    assert details["stale_valuation_row_count"] == 16
     assert details["max_price_fundamental_gap_days"] == 46
     assert details["stale_price_fundamental_gap_days"] == 5
     assert {row["formula_code"] for row in details["rows"]} == {
@@ -1050,6 +1089,13 @@ def test_valuation_multiples_dataset_flags_stale_price_fundamental_gap(tmp_store
         "fcf_yield",
         "earnings_yield",
         "dividend_yield",
+        "price_to_cash_flow",
+        "price_to_free_cash_flow",
+        "ev_to_ebit",
+        "ev_to_fcf",
+        "ev_to_assets",
+        "buyback_yield",
+        "shareholder_yield",
     }
 
 
@@ -1135,7 +1181,7 @@ def test_valuation_multiples_warehouse_quality_stale_gap_fires(tmp_store) -> Non
     stale = results["stale_price_fundamental_gap_days"]
 
     assert stale.status == "warning"
-    assert stale.observed_value == 9.0
+    assert stale.observed_value == 16.0
     assert stale.details["rows"][0]["gap_days"] == 46
 
 
@@ -1204,6 +1250,13 @@ def test_valuation_multiples_migration_catalog_and_formula_seed_are_present(tmp_
         "fcf_yield",
         "earnings_yield",
         "dividend_yield",
+        "price_to_cash_flow",
+        "price_to_free_cash_flow",
+        "ev_to_ebit",
+        "ev_to_fcf",
+        "ev_to_assets",
+        "buyback_yield",
+        "shareholder_yield",
     }
     assert valuation_rows["enterprise_value"].kind == "difference"
     assert valuation_rows["enterprise_value"].expression == "sum:market_cap,long_term_debt|key:cash_and_equivalents"

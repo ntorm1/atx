@@ -123,7 +123,7 @@ class RatioDef:
 # column plus a fixed quick_ratio-only item_inputs override, matching the
 # pre-S4-1 literal exactly.
 _QUICK_RATIO_ITEM_INPUTS = ("current_assets", "inventory", "current_liabilities")
-_FUNDAMENTAL_RATIO_EXCLUDED_FAMILIES = frozenset({"valuation"})
+_FUNDAMENTAL_RATIO_EXCLUDED_FAMILIES = frozenset({"valuation", "growth_cagr"})
 
 
 def _build_operands(numerator_term: str, denominator_term: str) -> Callable[[dict], tuple]:

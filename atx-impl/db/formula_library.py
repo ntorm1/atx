@@ -8,9 +8,8 @@ the item_registry seed pattern (``db/item_registry.py``) exactly:
   (:func:`read_formula_registry_seed`).
 * A frozen seed-row dataclass (:class:`FormulaRegistrySeedRow`).
 * A direct-call loader -- NOT a :class:`db.dataset.Dataset` subclass, mirroring
-  ``seed_fundamental_item_registry`` -- that DELETEs by the seed's own
-  ``formula_code`` set then upserts, all inside one transaction
-  (:func:`seed_formula_registry`).
+  ``seed_fundamental_item_registry`` -- that replaces rows by the seed's own
+  ``formula_code`` set, all inside one transaction (:func:`seed_formula_registry`).
 
 Definition-as-data + citation precedent: like ``fundamental_items.csv``
 (``item_registry.SEED_COLUMNS`` -- ``definition``/``citation`` columns), every
@@ -95,12 +94,21 @@ SEED_COLUMNS = (
 # Governed enums. `kind` mirrors fundamental_ratios.RatioDef.kind exactly
 # (fundamental_ratios.py RatioDef :76-77 docstring). `transform` is the
 # reducer-selector mini-grammar named in the S4-0 brief: divide/sum/
-# difference/pct_change cover the existing kind branches in
-# compute_ratio_rows (:618-633); identity covers multi-term `expression`
+# difference/pct_change/cagr/stability/consistency cover the existing ratio
+# reducers plus PF3-S6's first-class growth metric engine. identity covers multi-term `expression`
 # formulas (composites, DuPont) where the top-level value is not itself a
 # binary reduction of numerator/denominator.
 VALID_KINDS = frozenset({"ratio", "level", "difference", "growth", "per_share", "score"})
-VALID_TRANSFORMS = frozenset({"divide", "sum", "difference", "pct_change", "identity"})
+VALID_TRANSFORMS = frozenset({
+    "divide",
+    "sum",
+    "difference",
+    "pct_change",
+    "cagr",
+    "stability",
+    "consistency",
+    "identity",
+})
 
 
 # --------------------------------------------------------------------------- #
@@ -961,12 +969,11 @@ def seed_formula_registry(
 ) -> int:
     """Seed the formula registry from the committed CSV.
 
-    Mirrors ``item_registry.seed_fundamental_item_registry``: DELETE the rows
-    for every ``formula_code`` present in the seed file, then re-INSERT them,
-    all inside one transaction. Codes NOT present in the seed file (e.g. a
+    Mirrors ``item_registry.seed_fundamental_item_registry`` semantics: replace
+    every ``formula_code`` present in the seed file, all inside one transaction.
+    Codes NOT present in the seed file (e.g. a
     formula retired from the CSV but still present from a prior load) are
-    left untouched, matching the item registry's DELETE-by-ids-then-upsert
-    contract.
+    left untouched, matching the item registry's code-scoped reload contract.
     """
 
     rows = read_formula_registry_seed(seed_path)
@@ -975,14 +982,32 @@ def seed_formula_registry(
 
     with store.transaction():
         store.con.execute(
-            "DELETE FROM formula_registry WHERE formula_code = ANY(?)",
-            [seed_codes],
+            """
+            CREATE TEMP TABLE IF NOT EXISTS _formula_registry_seed_rows (
+                formula_code VARCHAR PRIMARY KEY,
+                family VARCHAR NOT NULL,
+                kind VARCHAR NOT NULL,
+                unit VARCHAR NOT NULL,
+                numerator_code VARCHAR,
+                denominator_code VARCHAR,
+                numerator_item_ids_json VARCHAR,
+                denominator_item_ids_json VARCHAR,
+                inputs_json VARCHAR NOT NULL,
+                transform VARCHAR NOT NULL,
+                expression VARCHAR,
+                is_meaningful_rule VARCHAR,
+                definition VARCHAR NOT NULL,
+                citation VARCHAR,
+                valid_from DATE NOT NULL,
+                valid_to DATE
+            )
+            """
         )
-        for code in seed_codes:
-            row = by_code[code]
-            store.con.execute(
+        store.con.execute("DELETE FROM _formula_registry_seed_rows")
+        if seed_codes:
+            store.con.executemany(
                 """
-                INSERT INTO formula_registry (
+                INSERT INTO _formula_registry_seed_rows (
                     formula_code,
                     family,
                     kind,
@@ -1003,24 +1028,96 @@ def seed_formula_registry(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS DATE), CAST(? AS DATE))
                 """,
                 [
-                    row.formula_code,
-                    row.family,
-                    row.kind,
-                    row.unit,
-                    row.numerator_code,
-                    row.denominator_code,
-                    row.numerator_item_ids,
-                    row.denominator_item_ids,
-                    row.inputs,
-                    row.transform,
-                    row.expression,
-                    row.is_meaningful_rule,
-                    row.definition,
-                    row.citation,
-                    row.valid_from,
-                    row.valid_to,
+                    (
+                        by_code[code].formula_code,
+                        by_code[code].family,
+                        by_code[code].kind,
+                        by_code[code].unit,
+                        by_code[code].numerator_code,
+                        by_code[code].denominator_code,
+                        by_code[code].numerator_item_ids,
+                        by_code[code].denominator_item_ids,
+                        by_code[code].inputs,
+                        by_code[code].transform,
+                        by_code[code].expression,
+                        by_code[code].is_meaningful_rule,
+                        by_code[code].definition,
+                        by_code[code].citation,
+                        by_code[code].valid_from,
+                        by_code[code].valid_to,
+                    )
+                    for code in seed_codes
                 ],
             )
+        store.con.execute(
+            """
+            UPDATE formula_registry AS target
+            SET family = seed.family,
+                kind = seed.kind,
+                unit = seed.unit,
+                numerator_code = seed.numerator_code,
+                denominator_code = seed.denominator_code,
+                numerator_item_ids_json = seed.numerator_item_ids_json,
+                denominator_item_ids_json = seed.denominator_item_ids_json,
+                inputs_json = seed.inputs_json,
+                transform = seed.transform,
+                expression = seed.expression,
+                is_meaningful_rule = seed.is_meaningful_rule,
+                definition = seed.definition,
+                citation = seed.citation,
+                valid_from = seed.valid_from,
+                valid_to = seed.valid_to,
+                run_id = NULL,
+                source_loaded_at = now()
+            FROM _formula_registry_seed_rows AS seed
+            WHERE target.formula_code = seed.formula_code
+            """
+        )
+        store.con.execute(
+            """
+            INSERT INTO formula_registry (
+                formula_code,
+                family,
+                kind,
+                unit,
+                numerator_code,
+                denominator_code,
+                numerator_item_ids_json,
+                denominator_item_ids_json,
+                inputs_json,
+                transform,
+                expression,
+                is_meaningful_rule,
+                definition,
+                citation,
+                valid_from,
+                valid_to
+            )
+            SELECT seed.formula_code,
+                   seed.family,
+                   seed.kind,
+                   seed.unit,
+                   seed.numerator_code,
+                   seed.denominator_code,
+                   seed.numerator_item_ids_json,
+                   seed.denominator_item_ids_json,
+                   seed.inputs_json,
+                   seed.transform,
+                   seed.expression,
+                   seed.is_meaningful_rule,
+                   seed.definition,
+                   seed.citation,
+                   seed.valid_from,
+                   seed.valid_to
+            FROM _formula_registry_seed_rows AS seed
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM formula_registry AS target
+                WHERE target.formula_code = seed.formula_code
+            )
+            """
+        )
+        store.con.execute("DROP TABLE IF EXISTS _formula_registry_seed_rows")
 
     return len(seed_codes)
 

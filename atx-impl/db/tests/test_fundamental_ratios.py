@@ -132,6 +132,13 @@ S6_2_VALUATION_CODES = {
     "fcf_yield",
     "earnings_yield",
     "dividend_yield",
+    "price_to_cash_flow",
+    "price_to_free_cash_flow",
+    "ev_to_ebit",
+    "ev_to_fcf",
+    "ev_to_assets",
+    "buyback_yield",
+    "shareholder_yield",
 }
 
 
@@ -260,6 +267,25 @@ class TestComputeRatioRows:
             # PF-S4 S4-2: Montier C-score (hand-checked: flag 4 other-current-assets-share
             # rising, flag 6 asset growth 16.7% > 10% trigger; the rest do not -> score 2)
             ("montier_c_score", 2.0),
+            # PF3-S6 S6-0: catalog expansion rows expressible through existing operand terms
+            ("pretax_margin", 115.0 / 400.0),
+            ("effective_tax_rate", 15.0 / 115.0),
+            ("sga_to_revenue", 44.0 / 400.0),
+            ("return_on_capital", 120.0 / (90.0 + 60.0)),
+            ("inventory_turnover", 220.0 / 30.0),
+            ("payables_turnover", 220.0 / 35.0),
+            ("working_capital_turnover", 400.0 / (200.0 - 100.0)),
+            ("long_term_debt_to_capital", 90.0 / (90.0 + 60.0)),
+            ("net_debt_to_capital", (90.0 - 40.0) / (90.0 + 60.0)),
+            ("long_term_debt_to_ebitda", 90.0 / (120.0 + 25.0)),
+            ("net_debt_to_ebitda", (90.0 - 40.0) / (120.0 + 25.0)),
+            ("operating_cash_flow_to_debt", 130.0 / 90.0),
+            ("cash_to_assets", 40.0 / 350.0),
+            ("current_assets_to_assets", 200.0 / 350.0),
+            ("current_liabilities_to_assets", 100.0 / 350.0),
+            ("capex_per_share", 30.0 / 15.0),
+            ("dividends_per_share", 15.0 / 15.0),
+            ("cash_per_share", 40.0 / 15.0),
         ],
     )
     def test_ratio_values(self, code, expected):
