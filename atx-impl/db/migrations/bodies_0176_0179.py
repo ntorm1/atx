@@ -1,0 +1,102 @@
+"""PF4-S1 migration bodies: signal-evaluation surface (IC / decay / quantile / turnover / crowding / breadth / DQC)."""
+from __future__ import annotations
+
+import duckdb
+
+from ._runner import Migration
+from .bodies_0001_0137 import _catalog_fields_for_tables
+from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
+
+
+def _pf4_s1_ic_surface(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF4-S1-0: factor_eval_manifest + factor_ic + factor_ic_decay (rank-IC surface)."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_eval_manifest (
+            eval_id VARCHAR PRIMARY KEY,
+            factor_id VARCHAR NOT NULL,
+            eval_kind VARCHAR NOT NULL,
+            universe_id VARCHAR NOT NULL,
+            start_date DATE,
+            end_date DATE,
+            horizon_days INTEGER,
+            n_quantiles INTEGER,
+            evaluation_days BIGINT,
+            factor_row_count BIGINT,
+            params_json VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            created_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_ic (
+            eval_id VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            horizon INTEGER NOT NULL,
+            mean_rank_ic DOUBLE,
+            ic_std DOUBLE,
+            ic_information_ratio DOUBLE,
+            ic_tstat DOUBLE,
+            sign_consistency DOUBLE,
+            n_dates BIGINT,
+            mean_names DOUBLE,
+            universe_id VARCHAR NOT NULL,
+            start_date DATE,
+            end_date DATE,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_ic_decay (
+            eval_id VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            horizon INTEGER NOT NULL,
+            ladder_position INTEGER NOT NULL,
+            mean_rank_ic DOUBLE,
+            decay_ratio DOUBLE,
+            universe_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at) VALUES
+        ('factor_eval_manifest','control','factor_eval_manifest','eval_id',
+         'Per-factor signal-evaluation manifest (one row per factor/eval-kind/params run) mirroring the alpha-backtest manifest shape.',
+         '["eval_id"]',
+         'Manifest lineage only; evaluation reads v_factor_panel read-only and never rewrites factor values.', now()),
+        ('factor_ic','metric','factor_ic','factor_id,horizon,universe_id,run_id',
+         'Per-factor aggregate rank-IC over the horizon ladder: mean rank-IC, IC information ratio, IC t-stat, sign-consistency.',
+         '["factor_id","horizon","universe_id","run_id"]',
+         'Rank-IC computed cross-sectionally per as_of_date then aggregated across dates; forward returns strictly t+1..t+h.', now()),
+        ('factor_ic_decay','metric','factor_ic_decay','factor_id,horizon,universe_id,run_id',
+         'Per-factor rank-IC decay profile across the horizon ladder with decay ratio vs the shortest horizon.',
+         '["factor_id","horizon","universe_id","run_id"]',
+         'Decay = mean rank-IC per horizon ordered by the ladder; no cross-date pooling.', now())
+        """
+    )
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_factor_ic_factor_horizon ON factor_ic(factor_id, horizon)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_ic_decay_factor ON factor_ic_decay(factor_id, ladder_position)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_eval_manifest_factor_kind ON factor_eval_manifest(factor_id, eval_kind)",
+    ):
+        conn.execute(stmt)
+    _catalog_fields_for_tables(conn, ("factor_eval_manifest", "factor_ic", "factor_ic_decay"))
+    _refresh_schema_contract_v2_pin(conn)
+
+
+MIGRATIONS: list[Migration] = [
+    Migration(version=176, name="pf4_s1_ic_surface", up=_pf4_s1_ic_surface),
+    # 0177, 0178, 0179 appended by later tasks in this same sprint
+]
