@@ -6,6 +6,7 @@ add_executable(atx-vol-tests
     surface_test.cpp
     curve_test.cpp
     universe_test.cpp
+    ingest_scale_test.cpp
     derivatives_test.cpp
     vol_surface_test.cpp
     robust_test.cpp
@@ -41,6 +42,7 @@ add_executable(atx-vol-tests
     vola_parity_test.cpp
     surface_parity_test.cpp
     opra_panel_test.cpp
+    opra_batch_test.cpp
     session_test.cpp
     vol_umbrella_test.cpp
     spy_real_test.cpp

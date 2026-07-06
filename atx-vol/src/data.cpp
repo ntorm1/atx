@@ -7,6 +7,8 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -222,8 +224,14 @@ void sort_chains_by_T(Underlying &under) {
     }
     chains[j] = std::move(pivot);
   }
+  // Re-issue `expiry_id` to the new positions and rebuild the underlier's
+  // expiry index so `add_expiry`'s O(1) idempotency lookup stays consistent with
+  // the reordered chains (a later install into the same universe/uid relies on
+  // the index resolving expiry_ns -> the *current* post-sort id).
+  under.expiry_index.clear();
   for (std::size_t i = 0; i < chains.size(); ++i) {
     chains[i].expiry_id = static_cast<ExpiryId>(i);
+    under.expiry_index.emplace(chains[i].expiry_ns, static_cast<ExpiryId>(i));
   }
 }
 
@@ -269,7 +277,13 @@ std::string ns_to_iso_date(std::int64_t ns) {
 
 Status build_uid_list(QuoteFrame &frame) {
   std::vector<std::string> uids;
+  // Membership set for O(1) dedupe; `uids` still carries the first-seen order.
+  // Owns its own key copies (not string_views into `uids`) because `uids` grows
+  // via push_back and its SSO'd std::string elements relocate on reallocation,
+  // which would dangle any view aliasing that storage.
+  std::unordered_set<std::string> seen;
   if (!frame.uid.empty()) {
+    seen.insert(frame.uid);
     uids.push_back(frame.uid);
   }
   for (const QuoteRow &row : frame.rows) {
@@ -277,7 +291,7 @@ Status build_uid_list(QuoteFrame &frame) {
     if (uid.empty() || uid.size() >= kDataUidStrCap) {
       return Err(ErrorCode::InvalidArgument, "build_uid_list: empty or over-long row uid");
     }
-    if (std::find(uids.begin(), uids.end(), uid) == uids.end()) {
+    if (seen.insert(uid).second) { // newly inserted -> first sight
       uids.push_back(uid);
     }
   }
@@ -288,25 +302,40 @@ Status build_uid_list(QuoteFrame &frame) {
   return Ok();
 }
 
+// Join a (uid, expiry_iso) pair into a single unordered_map key. The 0x1F
+// (ASCII Unit Separator) delimiter cannot occur in either field — a uid is an
+// interned ticker and expiry_iso is an ISO date — so the concatenation is an
+// injective key: distinct pairs never collide onto the same string.
+[[nodiscard]] std::string join_uid_expiry(std::string_view uid, std::string_view expiry_iso) {
+  std::string key;
+  key.reserve(uid.size() + 1u + expiry_iso.size());
+  key.append(uid);
+  key.push_back('\x1f');
+  key.append(expiry_iso);
+  return key;
+}
+
 void build_expiry_inputs(QuoteFrame &frame) {
   std::vector<ExpiryInputs> table;
   table.reserve(frame.rows.size());
+  // (uid, expiry_iso) -> index into `table`, replacing the O(n) inner scan with
+  // an O(1) probe. Indices (not pointers) stay valid across `table` growth.
+  std::unordered_map<std::string, std::size_t> index;
   for (const QuoteRow &row : frame.rows) {
     const std::string &uid = row_uid(frame, row);
+    std::string key = join_uid_expiry(uid, row.expiry_iso);
 
     ExpiryInputs *cell = nullptr;
-    for (ExpiryInputs &c : table) {
-      if (c.uid == uid && c.expiry_iso == row.expiry_iso) {
-        cell = &c;
-        break;
-      }
-    }
-    if (cell == nullptr) {
+    if (const auto it = index.find(key); it != index.end()) {
+      cell = &table[it->second];
+    } else {
       ExpiryInputs fresh;
       fresh.uid = uid;
       fresh.expiry_iso = row.expiry_iso;
+      const std::size_t new_idx = table.size();
       table.push_back(std::move(fresh));
-      cell = &table.back();
+      index.emplace(std::move(key), new_idx);
+      cell = &table[new_idx];
     }
 
     // First finite row value wins per field (matches the C dedupe).
@@ -448,6 +477,16 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
     chain.flags[idx] = flag;
   }
 
+  // (uid, expiry_iso) -> source-input cell, built once so the per-chain ATM-IV
+  // stamp below is O(1) instead of `find_expiry_inputs`'s O(n) scan (that scan
+  // ran once per chain, i.e. O(chains * inputs) overall). `frame.expiry_inputs`
+  // is not mutated here, so the borrowed pointers stay valid.
+  std::unordered_map<std::string, const ExpiryInputs *> input_index;
+  input_index.reserve(frame.expiry_inputs.size());
+  for (const ExpiryInputs &ei : frame.expiry_inputs) {
+    input_index.emplace(join_uid_expiry(ei.uid, ei.expiry_iso), &ei);
+  }
+
   // Sort each touched underlier's chains by T (surface evaluators assume slices
   // ascending in T), then stamp the source-side ATM IV onto each chain from the
   // frame's expiry-input table (NaN/absent when the frame carries no inputs).
@@ -471,7 +510,8 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
         continue;
       }
       const std::string expiry_iso = ns_to_iso_date(chain.expiry_ns);
-      const ExpiryInputs *cell = find_expiry_inputs(frame, uid_str, expiry_iso);
+      const auto it = input_index.find(join_uid_expiry(uid_str, expiry_iso));
+      const ExpiryInputs *cell = (it != input_index.end()) ? it->second : nullptr;
       if (cell != nullptr && has_flag(cell->completeness, ExpiryInputField::AtmVol) &&
           std::isfinite(cell->atm_vol) && cell->atm_vol > 0.0) {
         chain.source_atm_vol = cell->atm_vol;

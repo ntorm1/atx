@@ -175,6 +175,13 @@ struct Underlying {
   std::vector<Chain> chains;  // one per expiry; `expiry_id` indexes this
   std::uint32_t flags = 0u;   // ATS_VOL_UFLAG_* bitfield (e.g. HTB)
 
+  // O(1) idempotency index for `add_expiry`: expiry_ns -> the chain's current
+  // `ExpiryId` (== its index into `chains`). Kept in lock-step with `chains`:
+  // `add_expiry` inserts on a new expiry, and `install_sort_chains_by_T`
+  // rebuilds it after it reorders the chains and re-issues their ids. A plain
+  // value member so Rule-of-Zero copy/move carries it with the underlier.
+  std::unordered_map<std::int64_t, ExpiryId> expiry_index;
+
   // LRU residency bookkeeping (Sprint 09). `last_touched_ns` advances on every
   // `apply_quotes` ingest touching this uid; `evict_lru` chooses the dormant
   // underliers by it. `evicted` marks that the (out-of-scope) surface /

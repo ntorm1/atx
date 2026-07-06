@@ -21,3 +21,9 @@ target_link_libraries(databento_xom_bbo PRIVATE databento::databento)
 # No network / no cost. Links atx::core for io::write_parquet AND databento for the DBN read.
 add_executable(opra_dbn_to_parquet opra_dbn_to_parquet.cpp)
 target_link_libraries(opra_dbn_to_parquet PRIVATE atx::core databento::databento)
+
+# Bulk OPRA cbbo-1m puller (P2-5): many symbols x date range -> per-(symbol,date) Parquet,
+# cost-gated with a FREE preflight + --dry-run. Links atx::core (estimate_cost /
+# pull_opra_cbbo_1m_to_parquet) AND databento for the Metadata preflight client.
+add_executable(databento_bulk_opra databento_bulk_opra.cpp)
+target_link_libraries(databento_bulk_opra PRIVATE atx::core databento::databento)

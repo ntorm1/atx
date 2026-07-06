@@ -55,6 +55,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/vola_parity.cpp
     src/surface_parity.cpp
     src/opra_panel.cpp
+    src/opra_batch.cpp
     src/session.cpp
     src/chain.cpp
     src/pricer_fitter.cpp

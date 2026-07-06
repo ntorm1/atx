@@ -78,8 +78,11 @@ constexpr double kPxScale = 1e-9;
 }
 
 // Imply the underlying spot from put-call parity on the earliest expiry that
-// carries at least one co-terminal call/put pair with both mids > 0.
-[[nodiscard]] Result<double> imply_spot_from_pcp(const QuoteFrame& frame, double r) {
+// carries at least one co-terminal call/put pair with both mids > 0. `rate_at`
+// yields the continuously-compounded rate at a maturity T (a flat scalar, or a
+// term YieldCurve query); the front expiry is discounted at its OWN r(T_front).
+template <typename RateFn>
+[[nodiscard]] Result<double> imply_spot_from_pcp(const QuoteFrame& frame, RateFn rate_at) {
   struct MidPair {
     double call_mid = -1.0;
     double put_mid = -1.0;
@@ -120,6 +123,10 @@ constexpr double kPxScale = 1e-9;
     if (!(t_front > kMinSpotT)) {
       continue;  // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
     }
+    // This expiry's own rate (flat scalar, or the term curve at T_front). On the
+    // flat path `rate_at` returns the scalar verbatim, so every float op below is
+    // bit-identical to the historical single-`r` code.
+    const double r = rate_at(t_front);
     // ATM reference: the strike whose call/put mids are closest (C == P at F).
     double s_ref = quotes.front().strike;
     double best = std::numeric_limits<double>::infinity();
@@ -213,6 +220,47 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
 
   const std::string_view filter = spec.underlying;
 
+  // ── P2-2 multi-symbol validation ────────────────────────────────────────
+  // This loader implies a SINGLE underlier's spot, so ambiguous multi-symbol
+  // input must be rejected rather than silently mixing books.
+  if (!filter.empty() && !has_underlying) {
+    return Err(ErrorCode::InvalidArgument,
+               "underlying filter '" + std::string(filter) +
+                   "' requested but parquet has no 'underlying' column");
+  }
+  if (has_underlying) {
+    std::vector<std::string_view> distinct;
+    bool filter_present = false;
+    for (std::size_t i = 0; i < n_rows; ++i) {
+      const std::string_view und = underlyings[i];
+      if (und.empty()) {
+        continue;
+      }
+      if (!filter.empty() && und == filter) {
+        filter_present = true;
+      }
+      if (std::find(distinct.begin(), distinct.end(), und) == distinct.end()) {
+        distinct.push_back(und);
+      }
+    }
+    if (filter.empty() && distinct.size() > 1) {
+      std::string list;
+      for (std::size_t j = 0; j < distinct.size(); ++j) {
+        if (j != 0) {
+          list.push_back(',');
+        }
+        list.append(distinct[j]);
+      }
+      return Err(ErrorCode::InvalidArgument,
+                 "mixed-symbol parquet: found {" + list +
+                     "}; set OpraLoadSpec.underlying to select one");
+    }
+    if (!filter.empty() && !filter_present) {
+      return Err(ErrorCode::InvalidArgument,
+                 "underlying '" + std::string(filter) + "' not found in parquet");
+    }
+  }
+
   std::vector<QuoteRow> rows;
   rows.reserve(n_rows);
   std::size_t n_dropped = 0;
@@ -271,15 +319,59 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     snapshot_iso = ns_to_iso_date(snapshot_ts_ns);
   }
 
+  // ── P2-3 term-structure yield curve ─────────────────────────────────────
+  // Caller-supplied pillars define a real term curve queried at each maturity;
+  // absent them we keep the historical flat {T=1, r=spec.r} pillar. A SINGLE
+  // pillar is treated as flat too: a 1-pillar YieldCurve interpolates as a
+  // CONSTANT discount factor (zero(T) = r*T0/T, NOT a flat rate), so the flat /
+  // single-pillar path uses the scalar rate directly and never routes through
+  // the curve — keeping it BIT-IDENTICAL to the pre-P2-3 behavior (this is the
+  // SPY/XOM held-quality invariant).
+  if (spec.yc_pillar_t.size() != spec.yc_pillar_r.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "OpraLoadSpec.yc_pillar_t/_r length mismatch");
+  }
+  const bool has_term_curve = spec.yc_pillar_t.size() >= 2;
+  YieldCurve yield;
+  if (has_term_curve) {
+    ATX_TRY(auto yc, YieldCurve::create(spec.yc_pillar_t, spec.yc_pillar_r));
+    yield = std::move(yc);
+  }
+  // The scalar rate the flat / single-pillar path uses: the sole supplied
+  // pillar's rate, else spec.r (the historical scalar, verbatim).
+  const double flat_r = spec.yc_pillar_r.empty() ? spec.r : spec.yc_pillar_r.front();
+  const auto rate_at = [&](double T) -> double {
+    return has_term_curve ? yield.zero(T) : flat_r;
+  };
+
   QuoteFrame frame;
   frame.uid = std::move(frame_uid);
   frame.snapshot_iso = snapshot_iso;
   frame.snapshot_ts_ns = snapshot_ts_ns;
   frame.spot_ts_ns = snapshot_ts_ns;
-  frame.yc_pillar_t = {1.0};
-  frame.yc_pillar_r = {spec.r};
+  if (spec.yc_pillar_t.empty()) {
+    frame.yc_pillar_t = {1.0};
+    frame.yc_pillar_r = {spec.r};
+  } else {
+    frame.yc_pillar_t = spec.yc_pillar_t;
+    frame.yc_pillar_r = spec.yc_pillar_r;
+  }
   frame.divs = spec.cash_divs;
   frame.rows = std::move(rows);
+
+  // Per-expiry rate wiring (P2-3): when the caller supplied pillars, stamp each
+  // kept row's source rate with the curve rate at its expiry's year-fraction so
+  // build_expiry_inputs surfaces the per-(uid, expiry) term rate. Left UNTOUCHED
+  // on the no-pillars flat path (rate_source stays NaN, ExpiryInputs.rate
+  // absent) so that path's frame is byte-for-byte the historical one.
+  if (!spec.yc_pillar_t.empty()) {
+    for (QuoteRow& row : frame.rows) {
+      const double T = year_fraction(frame.snapshot_iso, row.expiry_iso);
+      if (std::isfinite(T) && T > 0.0) {
+        row.rate_source = rate_at(T);
+      }
+    }
+  }
 
   ATX_TRY_VOID(build_uid_list(frame));
   build_expiry_inputs(frame);
@@ -299,7 +391,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   if (spec.spot_override > 0.0) {
     implied_spot = spec.spot_override;
   } else {
-    ATX_TRY(const double s, imply_spot_from_pcp(frame, spec.r));
+    ATX_TRY(const double s, imply_spot_from_pcp(frame, rate_at));
     implied_spot = s;
   }
   frame.spot = implied_spot;

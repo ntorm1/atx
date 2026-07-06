@@ -110,11 +110,11 @@ Result<ExpiryId> Universe::add_expiry(Uid uid, std::int64_t expiry_ns) {
     return Err(ErrorCode::NotFound, "add_expiry: unknown uid");
   }
 
-  // Idempotent on a duplicate expiry instant.
-  for (const Chain &c : under->chains) {
-    if (c.expiry_ns == expiry_ns) {
-      return Ok(c.expiry_id);
-    }
+  // Idempotent on a duplicate expiry instant. O(1) via the expiry index instead
+  // of an O(E) scan over `chains` (the index maps expiry_ns -> current id and is
+  // kept in lock-step with `chains` by add_expiry + install_sort_chains_by_T).
+  if (const auto it = under->expiry_index.find(expiry_ns); it != under->expiry_index.end()) {
+    return Ok(it->second);
   }
   if (under->chains.size() >= kMaxChainsPerUnderlying) {
     return Err(ErrorCode::OutOfRange, "add_expiry: chain capacity exhausted");
@@ -126,6 +126,7 @@ Result<ExpiryId> Universe::add_expiry(Uid uid, std::int64_t expiry_ns) {
   c.expiry_id = eid;
   c.expiry_ns = expiry_ns;
   c.T = 0.0;
+  under->expiry_index.emplace(expiry_ns, eid);
   return Ok(eid);
 }
 
