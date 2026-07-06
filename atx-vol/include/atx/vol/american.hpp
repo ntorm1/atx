@@ -211,6 +211,17 @@ struct AmericanGreeks {
                                                      Side side,
                                                      const CorrectionCache* correction);
 
+// American Greeks via central finite differences on the cold `american_price`
+// (same method/opts the mark is priced with). Used on the null-correction-cache
+// path so that greeks().price == fair_value() bit-identical and the coefficients
+// are American (not European). ~17 cold price solves — correctness path, not the
+// cached hot path. InvalidArgument on non-positive S/K/T/sigma; propagates any
+// american_price error (e.g. NotImplemented negative-carry corner).
+[[nodiscard]] Result<AmericanGreeks> american_greeks_fd(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    AmericanMethod method = AmericanMethod::AndersenLake,
+    const std::optional<AlOpts>& opts = std::nullopt);
+
 // American vega ONLY (∂price/∂sigma) — the single first-order sensitivity the IV
 // inverter's Newton step needs, WITHOUT the full `american_greeks` bundle's
 // second-order finite-difference correction partials (gamma/vanna/volga/charm,

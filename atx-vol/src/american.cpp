@@ -1310,6 +1310,93 @@ Result<AmericanGreeks> american_greeks(double S, double K, double T,
   return Ok(out);
 }
 
+Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
+                                          double sigma, double r, double q,
+                                          Side side, AmericanMethod method,
+                                          const std::optional<AlOpts>& opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_greeks_fd: S, K, T, sigma must be > 0");
+  }
+
+  // Central-difference steps (match the P0-1 spec). Near expiry the T-derivatives
+  // (theta, charm) fall back to a one-sided forward stencil so no bump reaches a
+  // non-positive T.
+  const double hS = 1.0e-3 * S;
+  double hv = 1.0e-3;
+  if (sigma - hv <= 0.0) {
+    hv = 0.5 * sigma;
+  }
+  const double hr = 1.0e-4;
+  const double hT = 1.0e-3;
+  const bool near_expiry = (T - hT <= 1.0e-8);
+
+  // Bumped cold price. Captures the FIRST american_price error and short-circuits;
+  // the poisoned NaN it returns afterwards is never consumed once `failed` is set.
+  bool failed = false;
+  atx::core::Error first_err;
+  auto P = [&](double dS, double dsig, double dr, double dT) -> double {
+    if (failed) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    const Result<double> p =
+        american_price(S + dS, K, T + dT, sigma + dsig, r + dr, q, side, method, opts);
+    if (!p) {
+      failed = true;
+      first_err = p.error();
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    return *p;
+  };
+
+  // Base mark: EXACT unbumped args — bit-identical to fair_value()'s own call.
+  const double p0 = P(0.0, 0.0, 0.0, 0.0);
+
+  // Spot stencils.
+  const double p_Sp = P(+hS, 0.0, 0.0, 0.0);
+  const double p_Sm = P(-hS, 0.0, 0.0, 0.0);
+  // Vol stencils.
+  const double p_vp = P(0.0, +hv, 0.0, 0.0);
+  const double p_vm = P(0.0, -hv, 0.0, 0.0);
+  // Rate stencils.
+  const double p_rp = P(0.0, 0.0, +hr, 0.0);
+  const double p_rm = P(0.0, 0.0, -hr, 0.0);
+  // Time stencils (one-sided forward near expiry).
+  const double p_Tp = P(0.0, 0.0, 0.0, +hT);
+  const double p_Tm = near_expiry ? p0 : P(0.0, 0.0, 0.0, -hT);
+  // Vanna cross (spot x vol), central.
+  const double p_SpVp = P(+hS, +hv, 0.0, 0.0);
+  const double p_SpVm = P(+hS, -hv, 0.0, 0.0);
+  const double p_SmVp = P(-hS, +hv, 0.0, 0.0);
+  const double p_SmVm = P(-hS, -hv, 0.0, 0.0);
+  // Charm cross (spot x time); one-sided in T near expiry.
+  const double p_SpTp = P(+hS, 0.0, 0.0, +hT);
+  const double p_SmTp = P(-hS, 0.0, 0.0, +hT);
+  const double p_SpTm = near_expiry ? p_Sp : P(+hS, 0.0, 0.0, -hT);
+  const double p_SmTm = near_expiry ? p_Sm : P(-hS, 0.0, 0.0, -hT);
+
+  if (failed) {
+    return Err(std::move(first_err));
+  }
+
+  // Time denominator collapses to hT for the one-sided forward stencils.
+  const double dT_den = near_expiry ? hT : (2.0 * hT);
+
+  AmericanGreeks out;
+  out.price = p0;
+  out.delta = (p_Sp - p_Sm) / (2.0 * hS);
+  out.gamma = (p_Sp - 2.0 * p0 + p_Sm) / (hS * hS);
+  out.vega = (p_vp - p_vm) / (2.0 * hv);
+  out.volga = (p_vp - 2.0 * p0 + p_vm) / (hv * hv);
+  out.rho = (p_rp - p_rm) / (2.0 * hr);
+  // theta = dP/dt = -dP/dT (calendar convention).
+  out.theta = -(p_Tp - p_Tm) / dT_den;
+  out.vanna = (p_SpVp - p_SpVm - p_SmVp + p_SmVm) / (4.0 * hS * hv);
+  // charm = d2P/dS dt = -d2P/dS dT.
+  out.charm = -(p_SpTp - p_SpTm - p_SmTp + p_SmTm) / (2.0 * hS * dT_den);
+  return Ok(out);
+}
+
 double american_vega(double S, double K, double T, double sigma, double r,
                      double q, Side side, const CorrectionCache* correction) noexcept {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {

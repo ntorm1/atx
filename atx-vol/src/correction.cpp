@@ -1,5 +1,6 @@
 #include "atx/vol/correction.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -401,10 +402,14 @@ double CorrectionCache::eval(double k_log, double T, double sigma) const noexcep
   const double xj = detail::cheb_to_unit(T, T_min_, T_max_);
   const double xk = detail::cheb_to_unit(sigma, sigma_min_, sigma_max_);
 
-  // Uninitialized scratch: cheb_clenshaw3d writes every used cell (the n_T*n_s
-  // prefix) before it reads, so zero-init here is a dead ~32 KB memset on a
-  // per-eval hot path.
+  // Write-before-read invariant: cheb_clenshaw3d's first (i-axis) collapse writes
+  // every live cell tmp_jk[j*n_s_ + k] for j<n_T_, k<n_s_ before the later
+  // collapses read them. Bounded-init ONLY that live n_T_*n_s_ prefix (a few
+  // hundred doubles) — not the full kTmpSize (4096) capacity — so the hot path
+  // stays cheap while the used span is defined even if the kernel is later edited.
   std::array<double, kTmpSize> tmp_jk;
+  std::fill(tmp_jk.data(),
+            tmp_jk.data() + static_cast<std::size_t>(n_T_) * n_s_, 0.0);
   const double v = detail::cheb_clenshaw3d(coefs_.data(), n_k_, n_T_, n_s_, xi, xj,
                                            xk, tmp_jk.data());
   return (v > 0.0) ? v : 0.0;
@@ -443,9 +448,11 @@ double CorrectionCache::eval_grad(double k_log, double T, double sigma,
   const double scale_T = 2.0 / (T_max_ - T_min_);
   const double scale_s = 2.0 / (sigma_max_ - sigma_min_);
 
-  // Uninitialized scratch (see eval): every used cell is written before read by
-  // cheb_clenshaw3d / cheb_clenshaw3d_partial.
+  // Bounded live-span init (see eval): the n_T_*n_s_ prefix is written before it
+  // is read by cheb_clenshaw3d / cheb_clenshaw3d_partial; zero just that prefix.
   std::array<double, kTmpSize> tmp_jk;
+  std::fill(tmp_jk.data(),
+            tmp_jk.data() + static_cast<std::size_t>(n_T_) * n_s_, 0.0);
   const double v = detail::cheb_clenshaw3d(coefs_.data(), n_k_, n_T_, n_s_, xi, xj,
                                            xk, tmp_jk.data());
   if (out_dk_log) {

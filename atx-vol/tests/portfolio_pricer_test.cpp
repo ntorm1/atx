@@ -336,8 +336,8 @@ TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
     EXPECT_NEAR(f.pnl_delta[i] + f.pnl_gamma[i] + f.pnl_unexplained[i], f.pnl_total[i],
                 1e-6 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
     // Small move: delta + gamma explain the bulk.
-    // (residual = higher-order + early-exercise-premium change; tightness of the
-    // Taylor reconstruction is proven in PnlExplain_TaylorReconstruction_Tight.)
+    // (residual is now the pure higher-order Taylor tail: the early-exercise
+    // premium lives inside the American delta/gamma. See TaylorReconstruction_Tight.)
   }
 }
 
@@ -375,8 +375,8 @@ TEST(PortfolioPricer, PnlExplain_RateBump_RhoOnly) {
     EXPECT_TRUE(close(f.pnl_rho[i], w * g->rho * dr)) << i;
     EXPECT_NEAR(f.pnl_rho[i] + f.pnl_unexplained[i], f.pnl_total[i],
                 1e-6 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
-    // (residual = higher-order + early-exercise-premium change; tightness of the
-    // Taylor reconstruction is proven in PnlExplain_TaylorReconstruction_Tight.)
+    // (residual is now the pure higher-order Taylor tail: the early-exercise
+    // premium lives inside the American delta/gamma. See TaylorReconstruction_Tight.)
   }
 }
 
@@ -416,8 +416,8 @@ TEST(PortfolioPricer, PnlExplain_VolBump_VegaVolgaOnly) {
     EXPECT_TRUE(close(f.pnl_volga[i], w * 0.5 * g->volga * f.d_vol[i] * f.d_vol[i])) << i;
     EXPECT_NEAR(f.pnl_vega[i] + f.pnl_volga[i] + f.pnl_unexplained[i], f.pnl_total[i],
                 1e-6 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
-    // (residual = higher-order + early-exercise-premium change; tightness of the
-    // Taylor reconstruction is proven in PnlExplain_TaylorReconstruction_Tight.)
+    // (residual is now the pure higher-order Taylor tail: the early-exercise
+    // premium lives inside the American delta/gamma. See TaylorReconstruction_Tight.)
   }
 }
 
@@ -442,22 +442,26 @@ TEST(PortfolioPricer, PnlExplain_TimeBump_ThetaAndVolRoll) {
     EXPECT_NEAR(f.d_time[i], dt_expect, 1e-15);
     EXPECT_EQ(f.d_spot[i], 0.0) << i;
     EXPECT_EQ(f.d_rate[i], 0.0) << i;
-    // dS = 0 -> delta/gamma/vanna/charm/rho vanish; time roll leaves theta + a
-    // vol move (term structure) captured by vega.
+    // dS = 0 -> delta/gamma/vanna/charm/rho vanish. Vol is measured at the COMMON
+    // base maturity, so an identical-curve time roll leaves dvol EXACTLY zero (the
+    // term roll now stays inside theta), and vega/volga are inert.
+    EXPECT_EQ(f.d_vol[i], 0.0) << i;
     EXPECT_EQ(f.pnl_delta[i], 0.0) << i;
     EXPECT_EQ(f.pnl_gamma[i], 0.0) << i;
     EXPECT_EQ(f.pnl_vanna[i], 0.0) << i;
     EXPECT_EQ(f.pnl_charm[i], 0.0) << i;
     EXPECT_EQ(f.pnl_rho[i], 0.0) << i;
+    EXPECT_EQ(f.pnl_vega[i], 0.0) << i;
+    EXPECT_EQ(f.pnl_volga[i], 0.0) << i;
     const Position& p = book[i];
     const auto g = base.greeks(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(g.has_value());
     const double w = p.qty * p.multiplier;
     EXPECT_TRUE(close(f.pnl_theta[i], w * g->theta * dt_expect)) << i;
-    const double sum = f.pnl_theta[i] + f.pnl_vega[i] + f.pnl_volga[i] + f.pnl_unexplained[i];
+    const double sum = f.pnl_theta[i] + f.pnl_unexplained[i];
     EXPECT_NEAR(sum, f.pnl_total[i], 1e-6 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
-    // (residual = higher-order + early-exercise-premium change; tightness of the
-    // Taylor reconstruction is proven in PnlExplain_TaylorReconstruction_Tight.)
+    // (residual is now the pure higher-order Taylor tail: the early-exercise
+    // premium lives inside the American delta/gamma. See TaylorReconstruction_Tight.)
   }
 }
 
@@ -492,25 +496,26 @@ TEST(PortfolioPricer, PnlExplain_CombinedShift_SumsToTotal_And_ThreadDeterminist
   EXPECT_TRUE(bits_equal(a->total.pnl_total, b->total.pnl_total));
 }
 
-// With q_eff = 0 the American CALL never exercises early, so the American mark
-// equals the European Black-76 value the model Greeks differentiate. The B76
-// Taylor then reconstructs the full reprice with no early-exercise residual —
-// the pure "does the Taylor math converge" check, isolated from the premium.
+// American-consistent Taylor reconstruction. The Greeks are now AMERICAN (cold
+// finite differences on american_price), so a GENUINE early-exercise surface
+// (q_eff > 0, both sides) reconstructs its American reprice from
+// delta/gamma/vega/volga/vanna to a tight residual — the early-exercise premium
+// lives inside the coefficients, so the old q_eff = 0 (European == American)
+// trick is no longer needed to isolate the pure higher-order Taylor tail.
 TEST(PortfolioPricer, PnlExplain_TaylorReconstruction_Tight) {
   const double dS = 0.05;
   const double dvol_bump = 0.0004;
-  const PricedSurface base = make_essvi(1, 5, 0.0, kS, kR, kNow, /*q_eff*/ 0.0);
-  const PricedSurface shifted =
-      make_essvi(1, 5, dvol_bump, kS + dS, kR, kNow, /*q_eff*/ 0.0);
+  const PricedSurface base = make_essvi(1, 5);                         // q_eff = 0.02
+  const PricedSurface shifted = make_essvi(1, 5, dvol_bump, kS + dS);  // spot + vol move
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 
-  // Calls only (early-exercise-free at q_eff = 0).
+  // A genuine American book: both sides carry an early-exercise premium.
   std::vector<Position> book;
   std::uint64_t id = 0;
   for (double K : {96.0, 100.0, 104.0, 110.0}) {
     book.push_back({id++, {1, K, 0.18, Side::Call}, +4.0, 100.0});
-    book.push_back({id++, {1, K, 0.30, Side::Call}, -3.0, 100.0});
+    book.push_back({id++, {1, K, 0.30, Side::Put}, -3.0, 100.0});
   }
   auto pf = Portfolio::create(book);
   ASSERT_TRUE(pf.has_value());
@@ -521,7 +526,7 @@ TEST(PortfolioPricer, PnlExplain_TaylorReconstruction_Tight) {
 
   for (std::size_t i = 0; i < f.size(); ++i) {
     ASSERT_EQ(f.status[i], PriceStatus::Ok) << i;
-    // delta+gamma+vega+volga+vanna explain the reprice to a tight residual.
+    // delta+gamma+vega+volga+vanna explain the American reprice to a tight residual.
     EXPECT_LT(std::fabs(f.pnl_unexplained[i]), 5e-3 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
   }
   EXPECT_LT(std::fabs(f.total.pnl_unexplained),

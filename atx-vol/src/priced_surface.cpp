@@ -132,8 +132,11 @@ Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) cons
   const ForwardCarry fc = interp_forward(T);
   const double k = std::log(K / fc.forward);
   const double sigma = surface_.iv(k, T);
-  // Null correction cache => the accurate leg, matching the session's override path.
-  return american_greeks(pricing_.S, K, T, sigma, pricing_.r, fc.q_eff, side, nullptr);
+  // American Greeks via finite differences on the SAME cold american_price (method
+  // + resolved AL preset) fair_value() prices with, so greeks().price == fair_value()
+  // bit-identical and the coefficients are American (not the European Black-76 leg).
+  return american_greeks_fd(pricing_.S, K, T, sigma, pricing_.r, fc.q_eff, side,
+                            pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
 }
 
 VolCurveKind PricedSurface::kind_at(std::size_t i) const noexcept {

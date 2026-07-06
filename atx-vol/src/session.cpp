@@ -492,10 +492,16 @@ Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const 
   const double k = std::log(K / fc.forward);
   const double sigma = model_iv(k, T);
 
-  // Cached hot path for the eSSVI default; a null cache (override surface, or a
-  // side on the cold path) degrades american_greeks to the accurate leg.
+  // Cached hot path for the eSSVI default: differentiate the cached graph. A null
+  // cache (override surface, or a side on the cold path) uses American finite
+  // differences on the SAME cold american_price the fair_value branch prices with,
+  // so greeks().price == fair_value() bit-identical (American, not Black-76).
   const CorrectionCache* const use = served_cache(side);
-  return american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use);
+  if (use != nullptr) {
+    return american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use);
+  }
+  return american_greeks_fd(in_.S, K, T, sigma, in_.r, fc.q_eff, side,
+                            in_.deam.method, in_.deam.al_opts);
 }
 
 Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
@@ -558,7 +564,13 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
     const CorrectionCache* const use = served_cache(side);
-    const auto g = american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use);
+    // Cached hot path differentiates the cached graph; the null-cache cold path
+    // finite-differences american_price so greeks.price == the cold fair_value.
+    const auto g =
+        (use != nullptr)
+            ? american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use)
+            : american_greeks_fd(in_.S, K, T, sigma, in_.r, fc.q_eff, side,
+                                 in_.deam.method, in_.deam.al_opts);
     if (g.has_value()) {
       out[i] = *g;
     } else {

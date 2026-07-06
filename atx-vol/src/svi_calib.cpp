@@ -118,6 +118,31 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
   return a + b * (rho * dk + std::sqrt(dk * dk + sigma * sigma));
 }
 
+// Post-fit positivity gate. A converged raw-SVI slice must have STRICTLY
+// positive total variance everywhere the surface consumes it, else pricing it
+// yields garbage IVs silently. The closed-form global minimum of w(k) is
+// w_min = a + b*sigma*sqrt(1-rho^2); if that is > 0 the whole curve is > 0. The
+// quasi-explicit fitter's non-negativity box and the SVI-MM admissibility
+// projection already guarantee this, so this is a defense-in-depth check that
+// pins the invariant against a future fitter change (the surface driver rejects
+// the expiry on violation, mirroring the post-fit max-sigma clamp). Also spot-
+// checks each observed strike so a non-finite param cannot slip through.
+[[nodiscard]] bool svi_slice_variance_positive(
+    const SviParams &s, std::span<const FitObs> obs) noexcept {
+  const double disc = 1.0 - s.rho * s.rho;
+  const double w_min = s.a + s.b * s.sigma * std::sqrt(disc > 0.0 ? disc : 0.0);
+  if (!std::isfinite(w_min) || !(w_min > 0.0)) {
+    return false;
+  }
+  for (const FitObs &o : obs) {
+    const double w = svi_w_raw(s.a, s.b, s.rho, s.m, s.sigma, o.k);
+    if (!std::isfinite(w) || !(w > 0.0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // ── Inner: bounded linear least squares over (a, d_uv, c_uv) ─────────────
 
 // Weighted SSE of the reduced linear model at coordinates `x = (a, d_uv, c_uv)`
@@ -1323,6 +1348,12 @@ Status svi_calib_surface(VolSurface &surface, const Underlying &under,
       }
     }
 
+    // Post-fit positivity gate: reject a converged slice with non-positive total
+    // variance rather than store a silent garbage fit (see the helper).
+    if (!svi_slice_variance_positive(slice, std::span<const FitObs>(os.obs))) {
+      continue;
+    }
+
     slice.F = F;
     slice.expiry_id = c.expiry_id;
     slice.expiry_ns = c.expiry_ns;
@@ -1397,6 +1428,11 @@ Status svi_mm_calib_surface(VolSurface &surface, const Underlying &under,
       continue;
     }
     SviParams slice = fit_res.value();
+    // Post-fit positivity gate (defense-in-depth; the MM projection already
+    // guarantees w_min >= edge_a > 0 — see the helper).
+    if (!svi_slice_variance_positive(slice, std::span<const FitObs>(os.obs))) {
+      continue;
+    }
     slice.F = F;
     slice.expiry_id = c.expiry_id;
     slice.expiry_ns = c.expiry_ns;

@@ -165,8 +165,8 @@ const PricedSurface* SurfaceSet::find(std::uint32_t uid) const noexcept {
 namespace {
 
 // Per-unique-contract price result. `fair_value` is the American Andersen-Lake
-// mark (the accurate served theo); `g` are the analytic Black-76 model Greeks
-// (the library's standard sensitivities — cheap, no AL solve).
+// mark (the accurate served theo); `g` are the American Greeks (cold finite
+// differences on american_price, so g.price == fair_value bit-identical).
 struct ContractPx {
   double fair_value{0.0};
   AmericanGreeks g{};
@@ -201,7 +201,7 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
     }
     out.iv = surf->iv(c.K, c.T);
     auto fv = surf->fair_value(c.K, c.T, c.side);  // American mark (the AL solve)
-    auto g = surf->greeks(c.K, c.T, c.side);       // analytic B76 model Greeks
+    auto g = surf->greeks(c.K, c.T, c.side);       // American (cold-FD) Greeks
     if (!fv.has_value() || !std::isfinite(*fv) || !g.has_value() ||
         !std::isfinite(g->price)) {
       out.status = PriceStatus::NumericError;
@@ -276,7 +276,7 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
 namespace {
 
 struct ContractPnl {
-  AmericanGreeks gb{};     // base B76 model Greeks (the Taylor coefficients)
+  AmericanGreeks gb{};     // base American (cold-FD) Greeks (the Taylor coefficients)
   double price_base{0.0};  // base American mark (fair_value)
   double price_target{0.0};// shifted American mark (fair_value)
   double dS{0.0};
@@ -317,16 +317,16 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
       out.status = PriceStatus::InvalidContract;  // rolled past expiry
       return;
     }
-    auto gb = sb->greeks(c.K, T_b, c.side);       // base B76 Greeks (coefficients)
+    auto gb = sb->greeks(c.K, T_b, c.side);       // base American (cold-FD) Greeks
     auto pb = sb->fair_value(c.K, T_b, c.side);   // base American mark
-    auto pt = st->fair_value(c.K, T_t, c.side);   // shifted American mark
+    auto pt = st->fair_value(c.K, T_t, c.side);   // shifted mark at the rolled maturity
     if (!gb.has_value() || !std::isfinite(gb->price) || !pb.has_value() ||
         !std::isfinite(*pb) || !pt.has_value() || !std::isfinite(*pt)) {
       out.status = PriceStatus::NumericError;
       return;
     }
     const double sig_b = sb->iv(c.K, T_b);
-    const double sig_t = st->iv(c.K, T_t);
+    const double sig_t = st->iv(c.K, T_b);  // common maturity: term roll stays in theta
     if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
       out.status = PriceStatus::NumericError;
       return;
@@ -381,10 +381,11 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
       continue;
     }
     const AmericanGreeks& g = c.gb;
-    // The full American PnL, decomposed by the base B76 model Greeks. The Greeks
-    // are analytic Black-76 sensitivities, so the residual (`unexpl`) carries the
-    // higher-order Taylor terms AND the early-exercise-premium change the B76
-    // Greeks cannot see (small for calls / index options, larger for deep puts).
+    // The full American PnL, decomposed by the base AMERICAN (cold-FD) Greeks. The
+    // coefficients now carry the early-exercise premium (delta/gamma finite-
+    // differenced through american_price), so `unexpl` is the pure higher-order
+    // Taylor tail — small for a small move — not the early-exercise gap the old
+    // European Black-76 Greeks left behind.
     const double pnl_total_ps = c.price_target - c.price_base;
     const double pd = g.delta * c.dS;
     const double pg = 0.5 * g.gamma * c.dS * c.dS;

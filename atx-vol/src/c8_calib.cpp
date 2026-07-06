@@ -73,6 +73,7 @@ struct NormalEq {
   std::array<std::array<double, 8>, 8> H{};
   std::array<double, 8> g{};
   double sse{0.0};
+  std::size_t grad_failures{0};  // obs whose analytic gradient was unavailable
 };
 
 [[nodiscard]] NormalEq build_normal_eq(const C8Params& s,
@@ -93,6 +94,7 @@ struct NormalEq {
 
     const std::optional<std::array<double, 8>> grad = c8_slice_grad_w(s, k[i]);
     if (!grad.has_value()) {
+      ++ne.grad_failures;
       continue;
     }
     std::array<double, 8> row = map_grad_jw_to_x(s, *grad);
@@ -114,6 +116,29 @@ struct NormalEq {
     }
   }
   return ne;
+}
+
+// True when too few observations produced a valid analytic gradient for the 8x8
+// normal system to be determined. c8_slice_grad_w fails (nullopt) when the JW
+// point — or its central-difference perturbation — leaves the admissibility
+// region, which can silently zero out whole gradient rows and leave the LM
+// "converging" on a rank-deficient (gradient-blind) step. The 8-DoF fit needs at
+// least min(8, n) valid rows; below that the driver must fail the slice rather
+// than accept a garbage fit. (A well-posed fit has zero gradient failures, so
+// this never fires on healthy data.)
+[[nodiscard]] bool c8_grad_underdetermined(
+    const C8Params& s, std::span<const double> k, std::span<const double> mid,
+    std::span<const double> sd, std::span<const double> weights,
+    double eps_floor) noexcept {
+  const std::size_t n = k.size();
+  if (n == 0) {
+    return true;
+  }
+  const NormalEq ne = build_normal_eq(s, k, mid, sd, weights, eps_floor);
+  const std::size_t valid =
+      (ne.grad_failures <= n) ? (n - ne.grad_failures) : 0;
+  const std::size_t need = (n < 8u) ? n : static_cast<std::size_t>(8);
+  return valid < need;
 }
 
 // Solve the LM-damped normal equations (H with diagonal scaled by (1+lambda))
@@ -255,6 +280,14 @@ Status c8_fit_slice_lm(C8Params& s, std::span<const double> k,
   }
   (void)fit_lm_inner(s, k, mid, spread, std::span<const double>{},
                      max_inner_iters, eps_floor);
+  // Gradient-rank guard: fail rather than accept a gradient-blind fit whose
+  // 8x8 normal system was under-determined (too many gradient failures).
+  if (c8_grad_underdetermined(s, k, mid, spread, std::span<const double>{},
+                              eps_floor)) {
+    return Err(ErrorCode::Unavailable,
+               "c8_fit_slice_lm: gradient rank-deficient — too few valid "
+               "gradient rows to determine the 8 parameters");
+  }
   c8_arb_project(s);
   return Ok();
 }
@@ -339,6 +372,15 @@ Result<C8SliceFit> c8_calib_slice(const C8Params& seed, const Chain& chain,
     detail::huber_weights_strided(std::span<const double>{r_abs},
                                   std::span<double>{weights},
                                   detail::kHuberDefaultK<double>);
+  }
+
+  // Gradient-rank guard: fail rather than accept a gradient-blind fit whose 8x8
+  // normal system was under-determined (mirrors c8_fit_slice_lm).
+  if (c8_grad_underdetermined(params, ks, mids, sds,
+                              std::span<const double>{weights}, kSdFloor)) {
+    return Err(ErrorCode::Unavailable,
+               "c8_calib_slice: gradient rank-deficient — too few valid "
+               "gradient rows to determine the 8 parameters");
   }
 
   c8_arb_project(params);

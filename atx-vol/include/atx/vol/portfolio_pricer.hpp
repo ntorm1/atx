@@ -26,32 +26,34 @@
 //      full Taylor expansion (delta/gamma, vega/volga, vanna, theta, rho, charm)
 //      plus the unexplained residual, alongside the base/target valuations.
 //
-// ## Price basis: American mark, Black-76 model Greeks
+// ## Price basis: American mark, American cold-FD Greeks
 //
 // The reported per-share price / PV is the American Andersen-Lake `fair_value`
 // (the accurate served theo — the surface reproduces its session's board accuracy
-// bit-for-bit). The Greeks are `PricedSurface::greeks`, the library's analytic
-// Black-76 model sensitivities (a null correction cache => a pure closed-form B76
-// evaluation, NO AL solve). So `pnl_explain` decomposes the FULL American PnL
-// (fair_value change) with the B76 model Greeks: the `pnl_unexplained` residual
-// carries the higher-order Taylor terms AND the early-exercise-premium change the
-// B76 Greeks cannot see (negligible for calls / index options, larger for deep
-// American puts). This matches the session's own convention (American price,
-// B76 Greeks); a fully American-consistent decomposition would need bump-reprice
-// Greeks and is deferred.
+// bit-for-bit). The Greeks are `PricedSurface::greeks`, which on the cold
+// (null-correction-cache) path are AMERICAN sensitivities from central finite
+// differences on the same cold `american_price` the mark uses (`american_greeks_fd`),
+// so `greeks().price == fair_value()` bit-for-bit and the coefficients are American.
+// So `pnl_explain` decomposes the FULL American PnL (fair_value change) with
+// American Greeks: the `pnl_unexplained` residual is the pure higher-order Taylor
+// tail (the early-exercise premium is now carried by the American delta/gamma/…, so
+// a spot-only move reconstructs to ~1e-4 relative rather than the early-exercise
+// premium's full magnitude).
 //
 // ## Why it is SOTA-fast
 //
-// The only expensive per-contract kernel is the SOTA cold Andersen-Lake solve
-// behind `fair_value` (one per unique contract in `price`; two — base + target —
-// in `pnl_explain`). The Greeks are analytic B76 (effectively free). The pricer
-// adds only a bit-hash dedup, a pointer lookup, and float multiplies per row, and
-// fans the solves out across `std::jthread`s writing disjoint output slots. The
+// The expensive per-contract kernel is the SOTA cold Andersen-Lake solve: one
+// `fair_value` solve plus the ~17 solves the cold-FD Greeks stencil runs (in
+// `price`, per unique contract; in `pnl_explain`, ~17 base-Greeks + 2 marks). The
+// pricer adds only a bit-hash dedup, a pointer lookup, and float multiplies per row,
+// and fans the solves out across `std::jthread`s writing disjoint output slots. The
 // output is deterministic across thread counts: the parallel section writes
 // per-contract results into disjoint slots, and the position scatter + total
-// reduction run serially in input order (no float-add reordering).
+// reduction run serially in input order (no float-add reordering). (On the eSSVI
+// hot path the served correction cache makes Greeks analytic; the FD cost is only
+// the cold override/index path.)
 //
-// ## Greek / Taylor conventions (Black-76 model Greeks, spot-based)
+// ## Greek / Taylor conventions (American, spot-based)
 //
 //   delta = dP/dS      gamma = d2P/dS2      vega  = dP/dsigma   volga = d2P/dsigma2
 //   vanna = d2P/dS dsigma   theta = dP/dt (calendar; = -dP/dT)  rho = dP/dr

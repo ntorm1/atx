@@ -160,7 +160,8 @@ TEST(SpyPortfolioPnl, MultiUnderlying_Price_And_ControlledExplain) {
     const double w = p.qty * p.multiplier;
     EXPECT_TRUE(bits_equal(f.pv[i], w * *fv)) << i;   // American mark
     EXPECT_TRUE(bits_equal(f.price[i], *fv)) << i;
-    EXPECT_TRUE(bits_equal(f.delta[i], w * g->delta)) << i;  // B76 model Greeks
+    EXPECT_TRUE(bits_equal(g->price, *fv)) << i;             // greeks price == fair_value
+    EXPECT_TRUE(bits_equal(f.delta[i], w * g->delta)) << i;  // American (cold-FD) Greeks
     EXPECT_TRUE(bits_equal(f.gamma[i], w * g->gamma)) << i;
     EXPECT_TRUE(bits_equal(f.vega[i], w * g->vega)) << i;
     EXPECT_TRUE(bits_equal(f.theta[i], w * g->theta)) << i;
@@ -169,8 +170,9 @@ TEST(SpyPortfolioPnl, MultiUnderlying_Price_And_ControlledExplain) {
   ASSERT_GT(n_ok, 40u);
 
   // ── 2. Controlled PnL-explain: spot +0.2% on both names (dvol=dt=dr=0). ─────
-  // A pure spot move isolates delta/gamma; the residual is the early-exercise
-  // premium's spot sensitivity (tiny for SPY index, modest for XOM single-name).
+  // A pure spot move isolates delta/gamma. The Greeks are now AMERICAN (cold-FD),
+  // so the early-exercise premium's spot sensitivity is captured inside
+  // delta/gamma and the residual is only the higher-order Taylor tail.
   const PricedSurface spy_shift = bump_scalars(*spy_ps, 0.002 * spy_ps->pricing().S, 0.0);
   const PricedSurface xom_shift = bump_scalars(*xom_ps, 0.002 * xom_ps->pricing().S, 0.0);
   const std::vector<const PricedSurface*> shift_ptrs{&spy_shift, &xom_shift};
@@ -203,11 +205,12 @@ TEST(SpyPortfolioPnl, MultiUnderlying_Price_And_ControlledExplain) {
     sum_abs_total += std::fabs(e.pnl_total[i]);
     sum_abs_unexpl += std::fabs(e.pnl_unexplained[i]);
   }
-  // Delta + gamma explain the bulk; the residual (early-exercise premium's spot
-  // sensitivity + higher order) is a modest fraction on the mixed real book.
+  // American delta + gamma reconstruct the American reprice: with the early-
+  // exercise premium now inside the coefficients, the residual collapses from the
+  // old European-greeks ~2% to a tiny higher-order tail on the mixed real book.
   ASSERT_GT(sum_abs_total, 0.0);
   const double resid_frac = sum_abs_unexpl / sum_abs_total;
-  EXPECT_LT(resid_frac, 0.15);
+  EXPECT_LT(resid_frac, 2e-4);  // measured ~4e-5; margin for the mixed SPY+XOM book
 
   std::printf(
       "[SPY+XOM portfolio] positions=%zu contracts=%zu underlyings=%zu ok=%zu | "

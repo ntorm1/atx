@@ -18,6 +18,7 @@ add_executable(atx-vol-tests
     c8_calib_test.cpp
     essvi_calib_test.cpp
     svi_calib_test.cpp
+    calib_robustness_test.cpp
     cstar_test.cpp
     cstar_calib_test.cpp
     dense_slice_test.cpp
@@ -49,6 +50,7 @@ add_executable(atx-vol-tests
     spy_archive_roundtrip_test.cpp
     portfolio_pricer_test.cpp
     spy_portfolio_pnl_test.cpp
+    pnl_greeks_consistency_test.cpp
 )
 
 target_link_libraries(atx-vol-tests

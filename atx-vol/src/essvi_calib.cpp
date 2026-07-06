@@ -922,10 +922,14 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
       continue;
     }
 
-    // Theta band: default, or floored at the previous slice's theta.
+    // Theta band: default, or floored at the previous slice's theta. Cap the
+    // raised floor a RELATIVE margin below theta_hi so the band stays strictly
+    // non-inverted (theta_lo < theta_hi) even when theta_hi is near zero on a
+    // tiny-T slice — an absolute 1e-12 gap could vanish against a small theta_hi.
     ThetaBand band = default_band(T);
     if (sequential && theta_floor > band.lo) {
-      band.lo = std::min(theta_floor, band.hi - 1.0e-12);
+      const double margin = std::max(2.0e-12, 1.0e-9 * band.hi);
+      band.lo = std::min(theta_floor, band.hi - margin);
     }
 
     FitDiag diag{};
@@ -1007,8 +1011,11 @@ Result<EssviParams> essvi_fit_slice(std::span<const FitObs> obs, double T,
   ThetaBand band = default_band(T);
   // Raise the cube's theta_lo to the floor (calendar-monotone seam), exactly as
   // calib_surface_impl does for the sequential driver. 0 / <= band.lo is a no-op.
+  // Relative margin keeps theta_lo < theta_hi strictly even for a near-zero
+  // theta_hi (see calib_surface_impl).
   if (theta_floor > band.lo) {
-    band.lo = std::min(theta_floor, band.hi - 1.0e-12);
+    const double margin = std::max(2.0e-12, 1.0e-9 * band.hi);
+    band.lo = std::min(theta_floor, band.hi - margin);
   }
   return fit_core(obs, T, F, opts, band, out_diag, warm);
 }
