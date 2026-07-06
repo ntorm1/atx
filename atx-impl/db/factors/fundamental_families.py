@@ -54,6 +54,7 @@ class FundamentalFactorSpec:
     scale: str
     valid_from: dt.date
     valid_to: dt.date | None
+    stage: str
 
     @property
     def input_ids_json(self) -> str:
@@ -98,10 +99,17 @@ def _parse_json_list(value: str) -> tuple[str, ...]:
     return tuple(str(item) for item in loaded)
 
 
-def load_factor_seed_specs(seed_path: str | Path = SEED_PATH) -> tuple[FundamentalFactorSpec, ...]:
+def load_factor_seed_specs(
+    seed_path: str | Path = SEED_PATH,
+    *,
+    stages: Iterable[str] | None = None,
+) -> tuple[FundamentalFactorSpec, ...]:
     """Load S8 factor-definition seed rows as typed specs."""
 
     frame = pd.read_csv(seed_path, keep_default_na=False)
+    stage_filter = {str(stage) for stage in (stages or ())}
+    if stage_filter and "stage" in frame.columns:
+        frame = frame[frame["stage"].astype(str).isin(stage_filter)]
     specs: list[FundamentalFactorSpec] = []
     required = {
         "factor_id",
@@ -119,6 +127,7 @@ def load_factor_seed_specs(seed_path: str | Path = SEED_PATH) -> tuple[Fundament
         "scale",
         "valid_from",
         "valid_to",
+        "stage",
     }
     missing = sorted(required - set(frame.columns))
     if missing:
@@ -141,6 +150,7 @@ def load_factor_seed_specs(seed_path: str | Path = SEED_PATH) -> tuple[Fundament
                 scale=str(row["scale"]).strip(),
                 valid_from=_as_date(row["valid_from"]) or dt.date(1900, 1, 1),
                 valid_to=_as_date(row["valid_to"]),
+                stage=str(row["stage"]).strip(),
             )
         )
     factor_ids = [spec.factor_id for spec in specs]
@@ -149,12 +159,20 @@ def load_factor_seed_specs(seed_path: str | Path = SEED_PATH) -> tuple[Fundament
     return tuple(sorted(specs, key=lambda spec: spec.factor_id))
 
 
-def factor_seed_definitions(seed_path: str | Path = SEED_PATH) -> tuple[FactorDefinition, ...]:
-    return tuple(spec.to_factor_definition() for spec in load_factor_seed_specs(seed_path))
+def factor_seed_definitions(
+    seed_path: str | Path = SEED_PATH,
+    *,
+    stages: Iterable[str] | None = None,
+) -> tuple[FactorDefinition, ...]:
+    return tuple(spec.to_factor_definition() for spec in load_factor_seed_specs(seed_path, stages=stages))
 
 
-def factor_seed_frame(seed_path: str | Path = SEED_PATH) -> pd.DataFrame:
-    specs = load_factor_seed_specs(seed_path)
+def factor_seed_frame(
+    seed_path: str | Path = SEED_PATH,
+    *,
+    stages: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    specs = load_factor_seed_specs(seed_path, stages=stages)
     return pd.DataFrame(
         [
             {
@@ -178,6 +196,7 @@ def factor_seed_frame(seed_path: str | Path = SEED_PATH) -> pd.DataFrame:
                 "standardization_spec_json": json_dumps({"method": spec.standardization}),
                 "valid_from": spec.valid_from,
                 "valid_to": spec.valid_to,
+                "stage": spec.stage,
             }
             for spec in specs
         ]
@@ -258,6 +277,51 @@ def _raw_value(expression: str, values: dict[str, float]) -> float | None:
         if scale is None or left is None or right is None or scale == 0:
             return None
         return (left - right) / scale
+    if method == "piotroski_f":
+        assets = values.get("assets")
+        if assets is None or assets == 0:
+            return None
+        roa = values.get("net_income", 0.0) / assets
+        cfo = values.get("operating_cash_flow")
+        net_income = values.get("net_income")
+        if cfo is None or net_income is None:
+            return None
+        signals = (
+            roa > 0,
+            cfo > 0,
+            values.get("roa_yoy_change", 0.0) > 0,
+            cfo > net_income,
+            values.get("debt_to_assets_change", 0.0) < 0,
+            values.get("current_ratio_change", 0.0) > 0,
+            values.get("shares_outstanding_growth", 0.0) <= 0,
+            values.get("gross_margin_change", 0.0) > 0,
+            values.get("asset_turnover_change", 0.0) > 0,
+        )
+        return float(sum(1 for signal in signals if signal))
+    if method == "altman_z":
+        assets = values.get("assets")
+        total_debt = values.get("total_debt")
+        if assets is None or total_debt is None or assets == 0 or total_debt == 0:
+            return None
+        return (
+            1.2 * (values.get("working_capital", 0.0) / assets)
+            + 1.4 * (values.get("retained_earnings", 0.0) / assets)
+            + 3.3 * (values.get("ebit", 0.0) / assets)
+            + 0.6 * (values.get("market_cap", 0.0) / total_debt)
+            + 1.0 * (values.get("revenue", 0.0) / assets)
+        )
+    if method == "sloan_accruals":
+        average_assets = values.get("average_assets")
+        if average_assets is None or average_assets == 0:
+            return None
+        accruals = (
+            values.get("delta_current_assets", 0.0)
+            - values.get("delta_cash_and_equivalents", 0.0)
+            - values.get("delta_current_liabilities", 0.0)
+            + values.get("delta_short_term_debt", 0.0)
+            - values.get("depreciation_expense", 0.0)
+        )
+        return accruals / average_assets
     raise ValueError(f"Unsupported factor expression: {expression!r}")
 
 

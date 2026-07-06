@@ -32,7 +32,7 @@ Updated: 2026-07-05 America/New_York
 ## PF3-S8 - Fundamental Factor Families
 
 - S8-0 - Core academic families: done. Controller added `db/seeds/factor_definitions.csv`, `db.factors.fundamental_families`, migration 0156 seeding value/quality/profitability rows into `factor_definition`, and tests covering Novy-Marx gross profitability hand reconciliation, PIT availability, lineage, missing-leg withholding, and catalog round-trip.
-- S8-1 - Growth / investment / leverage + named composites: not started.
+- S8-1 - Growth / investment / leverage + named composites: done. Controller extended the staged seed with growth, investment, leverage, Piotroski F-score, Altman Z-score, and Sloan accrual rows; migration 0157 seeds those definitions/edges; compute tests reconcile the named composites and verify missing-leg withholding.
 - S8-2 - Signal-native factors: not started.
 - S8-3 - Family panels + lineage + gated checks: not started.
 
@@ -98,6 +98,13 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S8-0.
 - `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S8-0.
 - `git diff --check` passed after S8-0 with Git LF/CRLF normalization warnings only.
+- `python -m py_compile db\factors\fundamental_families.py db\migrations\bodies_0156_0159.py db\tests\test_fundamental_factors.py` passed after S8-1.
+- `python -m pytest db\tests\test_fundamental_factors.py -q -n0` passed after S8-1.
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S8-1.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S8-1.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S8-1.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S8-1.
+- `git diff --check` passed after S8-1 with Git LF/CRLF normalization warnings only.
 
 ## Live Smoke
 

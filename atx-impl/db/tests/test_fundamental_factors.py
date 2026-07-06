@@ -86,12 +86,13 @@ def test_factor_seed_rows_load_as_s7_factor_definitions() -> None:
     definitions = factor_seed_definitions()
     frame = factor_seed_frame()
 
-    assert {spec.family for spec in specs} == {
+    assert {
         "fundamental_value",
         "fundamental_quality",
         "fundamental_profitability",
-    }
+    } <= {spec.family for spec in specs}
     assert "profitability_gross_profitability" in set(frame["factor_id"])
+    assert set(frame["stage"]) >= {"s8_0", "s8_1"}
     assert all(row.declared_in == "db/seeds/factor_definitions.csv" for row in definitions)
     assert frame.loc[frame["factor_id"] == "profitability_gross_profitability", "valid_from"].iloc[0] == dt.date(1900, 1, 1)
 
@@ -162,4 +163,144 @@ def test_core_factor_seed_rows_round_trip_into_catalog(tmp_store) -> None:
     assert seeded[2] == dt.date(1900, 1, 1)
     assert seeded[3] is None
     assert metric_edges == {"gross_profit", "assets"}
+    assert dataset_row == 1
+
+
+def _composite_metrics() -> pd.DataFrame:
+    rows = []
+    values = {
+        "SEC-A": {
+            "symbol": "AAA",
+            "revenue_growth_yoy": 0.15,
+            "revenue_cagr_3y": 0.12,
+            "assets_growth_yoy": 0.05,
+            "capital_expenditures": 80.0,
+            "assets": 1000.0,
+            "total_debt": 300.0,
+            "stockholders_equity": 500.0,
+            "net_income": 100.0,
+            "operating_cash_flow": 150.0,
+            "roa_yoy_change": 0.01,
+            "debt_to_assets_change": -0.05,
+            "current_ratio_change": 0.10,
+            "shares_outstanding_growth": 0.0,
+            "gross_margin_change": 0.02,
+            "asset_turnover_change": 0.03,
+            "working_capital": 200.0,
+            "retained_earnings": 300.0,
+            "ebit": 120.0,
+            "market_cap": 600.0,
+            "revenue": 1000.0,
+            "delta_current_assets": 50.0,
+            "delta_cash_and_equivalents": 10.0,
+            "delta_current_liabilities": 20.0,
+            "delta_short_term_debt": 5.0,
+            "depreciation_expense": 15.0,
+            "average_assets": 1000.0,
+        },
+        "SEC-B": {
+            "symbol": "BBB",
+            "revenue_growth_yoy": 0.02,
+            "revenue_cagr_3y": 0.04,
+            "assets_growth_yoy": 0.15,
+            "capital_expenditures": 120.0,
+            "assets": 1200.0,
+            "total_debt": 600.0,
+            "stockholders_equity": 400.0,
+            "net_income": -20.0,
+            "operating_cash_flow": -10.0,
+            "roa_yoy_change": -0.02,
+            "debt_to_assets_change": 0.04,
+            "current_ratio_change": -0.10,
+            "shares_outstanding_growth": 0.03,
+            "gross_margin_change": -0.02,
+            "asset_turnover_change": -0.01,
+            "working_capital": 50.0,
+            "retained_earnings": 80.0,
+            "ebit": 40.0,
+            "market_cap": 300.0,
+            "revenue": 700.0,
+            "delta_current_assets": 80.0,
+            "delta_cash_and_equivalents": 5.0,
+            "delta_current_liabilities": 20.0,
+            "delta_short_term_debt": 20.0,
+            "depreciation_expense": 10.0,
+            "average_assets": 1100.0,
+        },
+    }
+    for security_id, metrics in values.items():
+        symbol = str(metrics["symbol"])
+        for metric_code, value in metrics.items():
+            if metric_code == "symbol":
+                continue
+            rows.append(_metric(security_id, metric_code, float(value), "2024-02-03 10:00:00", symbol=symbol))
+    return pd.DataFrame(rows)
+
+
+def test_growth_investment_leverage_and_named_composites_reconcile_to_references() -> None:
+    rows = compute_fundamental_factor_rows(_composite_metrics(), run_id="s8-composite-run")
+    lookup = {
+        (row.factor_id, row.security_id): row
+        for row in rows.itertuples(index=False)
+    }
+
+    assert lookup[("growth_revenue_yoy", "SEC-A")].raw_value == pytest.approx(0.15)
+    assert lookup[("investment_capex_to_assets", "SEC-A")].raw_value == pytest.approx(0.08)
+    assert lookup[("leverage_debt_to_assets", "SEC-A")].raw_value == pytest.approx(0.30)
+    assert lookup[("quality_piotroski_f_score", "SEC-A")].raw_value == pytest.approx(9.0)
+    assert lookup[("quality_piotroski_f_score", "SEC-B")].raw_value == pytest.approx(1.0)
+    assert lookup[("distress_altman_z_score", "SEC-A")].raw_value == pytest.approx(3.256)
+    assert lookup[("accruals_sloan_working_capital", "SEC-A")].raw_value == pytest.approx(0.01)
+    assert json.loads(lookup[("quality_piotroski_f_score", "SEC-A")].input_lineage_json)[0]["metric_code"]
+
+
+def test_composite_with_missing_leg_is_withheld() -> None:
+    metrics = _composite_metrics()
+    metrics = metrics[
+        ~((metrics["security_id"] == "SEC-A") & (metrics["metric_code"] == "retained_earnings"))
+    ]
+    rows = compute_fundamental_factor_rows(metrics)
+
+    assert not (
+        (rows["factor_id"] == "distress_altman_z_score")
+        & (rows["security_id"] == "SEC-A")
+    ).any()
+
+
+def test_composite_seed_rows_round_trip_into_catalog(tmp_store) -> None:
+    composite = tmp_store.con.execute(
+        """
+        SELECT family, direction, standardization_spec_json
+        FROM factor_definition
+        WHERE factor_id = 'quality_piotroski_f_score'
+        """
+    ).fetchone()
+    edges = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT dependency_name
+            FROM factor_dependency_edges
+            WHERE factor_id = 'quality_piotroski_f_score'
+              AND dependency_type = 'metric'
+            """
+        ).fetchall()
+    }
+    dataset_row = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM dataset_catalog
+        WHERE dataset_id = 'fundamental_composite_factors'
+        """
+    ).fetchone()[0]
+
+    assert composite[0:2] == ("fundamental_quality", 1)
+    assert json.loads(composite[2]) == {"method": "zscore_cs"}
+    assert {
+        "net_income",
+        "operating_cash_flow",
+        "assets",
+        "gross_margin_change",
+        "asset_turnover_change",
+    } <= edges
     assert dataset_row == 1
