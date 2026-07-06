@@ -58,6 +58,11 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/session.cpp
     src/chain.cpp
     src/pricer_fitter.cpp
+    src/vol_curve.cpp
+    src/curve_fit.cpp
+    src/curve_selector.cpp
+    src/priced_surface.cpp
+    src/portfolio_pricer.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -130,4 +135,21 @@ if(ATX_BUILD_EXAMPLES)
     # the convex-QP dense fit. See examples/spy_oos_check.cpp.
     add_executable(spy_oos_check examples/spy_oos_check.cpp)
     target_link_libraries(spy_oos_check PRIVATE atx::vol atx::core atx_warnings)
+
+    # Breadth: one PricerFitter auto-selects the curve per underlying (index SPY
+    # vs single-name XOM) with no per-symbol config. See examples/vol_breadth_bench.cpp.
+    add_executable(vol_breadth_bench examples/vol_breadth_bench.cpp)
+    target_link_libraries(vol_breadth_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # Surface-archive (v3) deserialization throughput: fit -> serialize -> reload,
+    # reporting ns/surface for single-symbol random access + full map_all, plus the
+    # hardware vs table CRC-32C rate. See examples/surface_archive_bench.cpp.
+    add_executable(surface_archive_bench examples/surface_archive_bench.cpp)
+    target_link_libraries(surface_archive_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # PricedSurface-native portfolio pricer + Taylor PnL-explain throughput: mixed
+    # multi-underlying book, kernel-floor vs price() overhead, thread scaling +
+    # determinism, and pnl_explain rate. See examples/portfolio_pricer_bench.cpp.
+    add_executable(portfolio_pricer_bench examples/portfolio_pricer_bench.cpp)
+    target_link_libraries(portfolio_pricer_bench PRIVATE atx::vol atx::core atx_warnings)
 endif()

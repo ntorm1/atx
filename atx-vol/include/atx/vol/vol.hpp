@@ -70,7 +70,13 @@
 #include "atx/vol/fit_metrics.hpp"  // reduced-chi2 / error bars
 #include "atx/vol/parity.hpp"       // re-Americanized fair-value-in-bid-ask
 
+// ── Configurable curve family + auto-selection ──────────────────────────────
+#include "atx/vol/vol_curve.hpp"       // IVolCurve family, CurveSurface, CurveConfig, VolCurveKind
+#include "atx/vol/curve_fit.hpp"       // fit_curve_surface (curve-agnostic driver)
+#include "atx/vol/curve_selector.hpp"  // select_curve (out-of-sample curve/config search)
+
 // ── Whole-surface build + the composable session facade ─────────────────────
+#include "atx/vol/market_env.hpp"      // MarketEnv (spot / rate-curve / divs / valuation ts)
 #include "atx/vol/vola_parity.hpp"     // single-expiry parity harness
 #include "atx/vol/surface_parity.hpp"  // run_surface_parity, CalendarRepair
 #include "atx/vol/session.hpp"         // VolaSession, SessionInputs, FitPreset
@@ -88,10 +94,12 @@
 #include "atx/vol/panel.hpp"           // synthetic + CSV panels
 #include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
 #include "atx/vol/spy_fixture.hpp"     // deterministic SPY index known-truth fixture
-#include "atx/vol/surface_archive.hpp" // fitted-surface archive
+#include "atx/vol/priced_surface.hpp"  // PricedSurface (serialization-ready priced surface)
+#include "atx/vol/surface_archive.hpp" // fitted priced-surface archive (v3)
 
 // ── Portfolio / risk analytics ──────────────────────────────────────────────
-#include "atx/vol/portfolio.hpp"
+#include "atx/vol/portfolio.hpp"           // legacy VolSurface-bound portfolio + bulk
 #include "atx/vol/portfolio_risk.hpp"
+#include "atx/vol/portfolio_pricer.hpp"     // PricedSurface-native pricer + Taylor PnL explain
 #include "atx/vol/calib_pool.hpp"
 #include "atx/vol/profile.hpp"

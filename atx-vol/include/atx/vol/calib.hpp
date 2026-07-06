@@ -44,6 +44,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (optional de-Am hot path)
 #include "atx/vol/types.hpp"        // Side, Result
 #include "atx/vol/universe.hpp"     // Chain (SoA quote layout)
 #include "atx/vol/vol_surface.hpp"  // ResidualBasisKind (reused, not redefined)
@@ -284,11 +285,14 @@ struct ObsSet {
 //
 // @return same error contract as `build_observations`; additionally, a leg whose
 //         de-Americanization fails or leaves the band is counted as a drop.
-[[nodiscard]] Result<ObsSet> build_observations_european(const Chain &chain,
-                                                         double S, double r,
-                                                         double F, double T,
-                                                         double df,
-                                                         const CalibOpts &opts);
+// `caches` (optional) routes the per-strike American de-Americanization through
+// the cached hot path (Black-76 + Chebyshev correction) instead of the cold
+// Andersen-Lake solve — the SAME accurate, self-consistent de-Am the eSSVI path
+// uses, orders of magnitude faster on a wide board. Default-empty => cold
+// (bit-identical to the historical behaviour).
+[[nodiscard]] Result<ObsSet> build_observations_european(
+    const Chain &chain, double S, double r, double F, double T, double df,
+    const CalibOpts &opts, const AmericanCorrectionCaches &caches = {});
 
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):
 // would the (strike_idx, side) tuple survive the same cascade as one row of

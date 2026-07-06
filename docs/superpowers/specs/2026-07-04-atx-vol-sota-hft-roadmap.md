@@ -43,6 +43,8 @@ this roadmap attacks):
    but is scalar-loop-backed and unused by the pipeline. **Data-structures / perf gap.**
 5. **Tick-to-quote incremental update** — MMs reprice on every tick without a full
    refit. No incremental surface-update path exists. **Perf / latency gap.**
+   → CLOSED (Sprint 6): `VolaSession::refit_slice` + warm-start `essvi_fit_slice`;
+   a one-expiry refit is ~4250× cheaper than the whole-surface rebuild.
 
 ---
 
@@ -179,17 +181,74 @@ so deferred; `Project` covers callers who need the strict full-grid guarantee an
 accept the fit cost. Also candidate: promote `MonotoneFit` to the session default /
 `FitConfig::robust()` preset (Sprint 2) once query-path parity is confirmed.
 
-## Sprint 6 (candidate) — Tick-to-quote incremental update
+## Sprint 6 — Tick-to-quote incremental update (perf / API / robustness)  ✅ (this session)
 
-Re-price / locally re-fit on a single quote change without a full surface rebuild
-(warm-started single-slice re-solve + calendar-floor re-check against neighbours).
-The genuine HFT latency path. Scoped after Sprints 4–5 land the SoA book and the
-constrained fit they build on.
+Re-fit ONE expiry from fresh quotes without a whole-surface rebuild — the genuine
+HFT re-quote path. Delivered end-to-end:
+
+- **Warm-start kernel.** `essvi_fit_slice` gained an optional `const EssviParams*
+  warm`: when non-null the whole Mingone cube (level/curvature/skew) seeds from the
+  prior fit's converged coordinates instead of the cold ATM-band-ratio + neutral
+  seed. Null is byte-identical to the historical fit (567 tests green, cold path
+  unchanged).
+- **`prior_strength` made live.** The long-dead `CalibOpts::prior_strength` now
+  drives a Tikhonov pull of the cube toward the warm prior (scaled to the dataset
+  weight), added consistently to both the SSE and the Gauss-Newton normal
+  equations. Stabilises thin / noisy tick refits; inert without a `warm`.
+- **Session API.** `VolaSession::refit_slice(slice_idx, new_obs)` locates the
+  slice, warm-refits it (calendar-floored at the previous slice's θ), swaps it in
+  preserving expiry identity, refreshes `n_used` + the calendar-arb flag; all
+  subsequent queries reflect it with no further refit. Guards bad index / empty obs.
+
+**Measured (real XOM, opra_parity_bench):**
+- The headline win is structural: a single-slice refit is **~4250× cheaper than the
+  18-slice whole-surface rebuild** (≈126 µs vs ≈534 ms) — a one-expiry re-quote does
+  not touch the 17 unchanged expiries.
+- Warm-vs-cold *seed* is only ~1.15–1.20× on a liquid slice (iteration counts
+  identical: inner 8 / outer 2) — the cold ATM-w seed is already near the optimum
+  there. **Honest negative on the seed premise for well-conditioned slices**; the
+  seed's iteration cut shows on far-from-neutral / thin slices (the synthetic
+  extreme-skew unit test), and warm's durable value on liquid data is
+  prior-anchored *stability* across ticks (`prior_strength`), not raw iterations.
+
+Tests: `EssviFitSlice.WarmStart_*` (idempotent+cheaper, iteration cut on a tick,
+same quality), `PriorStrength_ShrinksTowardPrior`, `VolaSession.RefitSlice_*`.
+
+---
+
+## Sprint 7 — SPY index surface: real OPRA at scale + SOTA proof  ✅ (this session)
+
+Extend the proof beyond the XOM single-name to a real **SPY index** board.
+
+- **Real data, cached.** Pulled a real SPY OPRA cbbo-1m slice (2026-06-05, `SPY.OPT`
+  parent, cost-gated preflight → $0 within credit) and cached both the DBN and the
+  Parquet next to the XOM slice. Generalised `databento_xom_bbo` with an optional
+  parent-symbol arg. 13,889 contracts / 35 expiries, implied spot ≈$739.
+- **Synthetic known-truth oracle.** `include/atx/vol/spy_fixture.hpp` (+
+  `examples/spy_surface_bench`): a deterministic index surface (term structure,
+  sqrt(T)-scaled strike-skew, tight spreads, dividends) that the fit recovers
+  EXACTLY (0.0 bp, 100% in-bid-ask) — a zero-bias round-trip check.
+- **SOTA accuracy on the real slice** (`examples/spy_diag`, `tests/spy_real_test`):
+  **median vega-weighted vol-RMSE ≈1.0 vol pt** over the liquid surface, 26/30 slices
+  within 2 vol pts; **≈8.6 s** cached whole-surface build (13.9k contracts), 6.5 µs
+  cached query.
+
+**Two findings, both documented not papered over (systematic-debugging discipline):**
+- The initial "failure" (mean vol-RMSE 0.077, in-bid-ask 12%) was a **metric trap**:
+  SPY's penny NBBO spreads make fraction-in-bid-ask a tick-size metric (a 0.4 vol-pt
+  fit lands outside), and the unweighted RMSE was dominated by low-vega tails. The
+  vega-weighted near-money accuracy was ~1 vol pt all along.
+- Enabling the wing-residual layer does **not** move the vega-weighted number on SPY
+  and over-fits sparse event wings, so it was measured and REVERTED (no non-improvement
+  shipped) — matching the pre-existing `profile.cpp` "SPY wing-bspline over-fits" note.
+
+The `sqrt(T)` skew-scaling insight (dimensionless S3 `s2` blows up the short-dated
+strike-skew for a tiny ATF stdev) is baked into the synthetic fixture's construction.
 
 ---
 
 ## Cross-cutting invariants (every sprint)
-- Standing quality gate held on the real XOM OPRA slice; 557+ tests green; zero
+- Standing quality gate held on the real XOM OPRA slice; 567 tests green; zero
   `/W4 /permissive- /WX` warnings.
 - No paid Databento pulls (cached slice only). No commits unless the user asks.
 - Every performance claim measured with the throttle-canceling A/B discipline

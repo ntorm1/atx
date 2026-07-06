@@ -1,0 +1,219 @@
+// Real-OPRA multi-underlying portfolio pricing + Taylor PnL-explain end-to-end.
+//
+// Builds a book spanning TWO real underlyings from the committed OPRA boards —
+// SPY (index, ConvexDense fit) and XOM (single-name) — installed into ONE
+// universe so they carry distinct uids. Chain:
+//
+//   OPRA boards -> VolaSession per name -> to_priced_surface() (uid 1 / uid 2)
+//               -> Portfolio (positions across both) -> PortfolioPricer
+//
+// Two guarantees:
+//   1. PRICE: every priced row is BIT-IDENTICAL to the underlying
+//      PricedSurface::greeks (qty*mult scaled) — the multi-underlying pricer
+//      reproduces the served theo the archive already proved equals the live
+//      session (99.49% pxCLN on SPY).
+//   2. PnL-EXPLAIN: against a controlled shifted surface (same fitted curves,
+//      spot + rate bumped via CurveSurface::clone) the Taylor delta/gamma/rho
+//      terms reconstruct the full reprice to a tight aggregate residual, with the
+//      vol/time axes exactly inert (dvol = dt = 0).
+//
+// GTEST_SKIPs cleanly when either parquet fixture is absent.
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <utility>
+#include <vector>
+
+#include "atx/vol/data.hpp"             // data_install
+#include "atx/vol/portfolio_pricer.hpp"
+#include "atx/vol/priced_surface.hpp"
+#include "atx/vol/session.hpp"
+#include "atx/vol/universe.hpp"
+#include "atx/vol/vol_curve.hpp"
+#include "support/opra_fixture.hpp"
+
+using namespace atx::vol;
+using atx::vol::testkit::load_opra_board;
+
+namespace {
+
+[[nodiscard]] bool bits_equal(double a, double b) noexcept {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof ba);
+  std::memcpy(&bb, &b, sizeof bb);
+  return ba == bb;
+}
+
+// A shifted surface with IDENTICAL fitted curves but bumped spot / rate — a
+// controlled, Taylor-friendly market move on the real surface (dvol = dt = 0).
+[[nodiscard]] PricedSurface bump_scalars(const PricedSurface& base, double dS, double dr) {
+  CurveSurface c = base.surface().clone();
+  std::vector<SliceContext> ctx(base.context().begin(), base.context().end());
+  PricingContext pc = base.pricing();
+  pc.S += dS;
+  pc.r += dr;
+  auto ps = PricedSurface::create(std::move(c), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+// Build a liquid listed-contract book over `sess`'s expiries: a few strikes
+// straddling the forward per expiry, both sides. Contracts carry `uid`.
+void append_book(const VolaSession& sess, std::uint32_t uid, double qty_scale,
+                 std::vector<Position>& book, std::uint64_t& next_id) {
+  for (const auto& c : sess.expiries()) {
+    const double T = c.T;
+    if (T < 0.03 || T > 1.5) {
+      continue;
+    }
+    const double F = c.forward;
+    for (const double m : {0.92, 0.98, 1.0, 1.02, 1.08}) {
+      const double K = F * m;
+      const double iv = sess.iv(K, T);
+      if (!std::isfinite(iv)) {
+        continue;
+      }
+      const Side side = (m <= 1.0) ? Side::Put : Side::Call;
+      book.push_back(Position{next_id++, OptionContract{uid, K, T, side},
+                              qty_scale * (side == Side::Call ? 1.0 : -1.0), 100.0});
+    }
+  }
+}
+
+}  // namespace
+
+TEST(SpyPortfolioPnl, MultiUnderlying_Price_And_ControlledExplain) {
+  auto spy_board = load_opra_board("spy", "SPY");
+  auto xom_board = load_opra_board("xom", "XOM");
+  if (!spy_board.has_value() || !xom_board.has_value()) {
+    GTEST_SKIP() << "SPY/XOM OPRA parquet fixtures not found";
+  }
+
+  // Install both boards into ONE universe -> distinct uids (SPY=1, XOM=2).
+  Universe uni;
+  auto spy_uid = data_install(uni, spy_board->panel.frame);
+  auto xom_uid = data_install(uni, xom_board->panel.frame);
+  ASSERT_TRUE(spy_uid.has_value() && xom_uid.has_value());
+  ASSERT_NE(*spy_uid, *xom_uid);
+  const Underlying& spy_u = *uni.get_underlying(*spy_uid).value();
+  const Underlying& xom_u = *uni.get_underlying(*xom_uid).value();
+
+  // SPY: index ConvexDense fit (the 99.5% recipe). XOM: single-name default.
+  SessionInputs spy_in = make_session_inputs(FitPreset::Fast, spy_board->spot(),
+                                             spy_board->r, spy_board->now_ns());
+  spy_in.cash_divs = spy_board->panel.frame.divs;
+  spy_in.curve.kind = VolCurveKind::ConvexDense;
+  spy_in.curve.convex.node_cap = 40;
+  SessionInputs xom_in = make_session_inputs(FitPreset::Fast, xom_board->spot(),
+                                             xom_board->r, xom_board->now_ns());
+  xom_in.cash_divs = xom_board->panel.frame.divs;
+
+  auto spy_sess = VolaSession::build(spy_u, spy_in);
+  ASSERT_TRUE(spy_sess.has_value()) << spy_sess.error().to_string();
+  auto xom_sess = VolaSession::build(xom_u, xom_in);
+  ASSERT_TRUE(xom_sess.has_value()) << xom_sess.error().to_string();
+
+  auto spy_ps = spy_sess->to_priced_surface();
+  auto xom_ps = xom_sess->to_priced_surface();
+  ASSERT_TRUE(spy_ps.has_value()) << spy_ps.error().to_string();
+  ASSERT_TRUE(xom_ps.has_value()) << xom_ps.error().to_string();
+  ASSERT_NE(spy_ps->uid(), xom_ps->uid());
+
+  const std::vector<const PricedSurface*> base_ptrs{&*spy_ps, &*xom_ps};
+  auto base_set = SurfaceSet::create(base_ptrs);
+  ASSERT_TRUE(base_set.has_value());
+
+  // Multi-underlying book across both names.
+  std::vector<Position> book;
+  std::uint64_t id = 0;
+  append_book(*spy_sess, spy_ps->uid(), 10.0, book, id);
+  append_book(*xom_sess, xom_ps->uid(), 25.0, book, id);
+  ASSERT_GT(book.size(), 40u);
+
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  EXPECT_EQ(pf->n_underlyings(), 2u);
+  const PortfolioPricer pricer(std::move(*pf));
+
+  // ── 1. Price: rows bit-identical to the PricedSurface Greeks. ──────────────
+  auto fr = pricer.price(*base_set, PriceOptions{0});  // hardware concurrency
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame& f = *fr;
+  const PricedSurface* by_uid[3] = {nullptr, &*spy_ps, &*xom_ps};
+
+  std::size_t n_ok = 0;
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    if (f.status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    ++n_ok;
+    const Position& p = book[i];
+    const PricedSurface& s = *by_uid[p.contract.uid];
+    const auto fv = s.fair_value(p.contract.K, p.contract.T, p.contract.side);
+    const auto g = s.greeks(p.contract.K, p.contract.T, p.contract.side);
+    ASSERT_TRUE(fv.has_value() && g.has_value());
+    const double w = p.qty * p.multiplier;
+    EXPECT_TRUE(bits_equal(f.pv[i], w * *fv)) << i;   // American mark
+    EXPECT_TRUE(bits_equal(f.price[i], *fv)) << i;
+    EXPECT_TRUE(bits_equal(f.delta[i], w * g->delta)) << i;  // B76 model Greeks
+    EXPECT_TRUE(bits_equal(f.gamma[i], w * g->gamma)) << i;
+    EXPECT_TRUE(bits_equal(f.vega[i], w * g->vega)) << i;
+    EXPECT_TRUE(bits_equal(f.theta[i], w * g->theta)) << i;
+    EXPECT_TRUE(bits_equal(f.vanna[i], w * g->vanna)) << i;
+  }
+  ASSERT_GT(n_ok, 40u);
+
+  // ── 2. Controlled PnL-explain: spot +0.2% on both names (dvol=dt=dr=0). ─────
+  // A pure spot move isolates delta/gamma; the residual is the early-exercise
+  // premium's spot sensitivity (tiny for SPY index, modest for XOM single-name).
+  const PricedSurface spy_shift = bump_scalars(*spy_ps, 0.002 * spy_ps->pricing().S, 0.0);
+  const PricedSurface xom_shift = bump_scalars(*xom_ps, 0.002 * xom_ps->pricing().S, 0.0);
+  const std::vector<const PricedSurface*> shift_ptrs{&spy_shift, &xom_shift};
+  auto shift_set = SurfaceSet::create(shift_ptrs);
+  ASSERT_TRUE(shift_set.has_value());
+
+  auto er = pricer.pnl_explain(*base_set, *shift_set, PriceOptions{0});
+  ASSERT_TRUE(er.has_value());
+  const PnlFrame& e = *er;
+
+  double sum_abs_total = 0.0;
+  double sum_abs_unexpl = 0.0;
+  for (std::size_t i = 0; i < e.size(); ++i) {
+    if (e.status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    // Pure spot move: vol / time / rate axes are exactly inert.
+    EXPECT_EQ(e.d_vol[i], 0.0) << i;
+    EXPECT_EQ(e.d_time[i], 0.0) << i;
+    EXPECT_EQ(e.d_rate[i], 0.0) << i;
+    EXPECT_EQ(e.pnl_vega[i], 0.0) << i;
+    EXPECT_EQ(e.pnl_volga[i], 0.0) << i;
+    EXPECT_EQ(e.pnl_vanna[i], 0.0) << i;
+    EXPECT_EQ(e.pnl_theta[i], 0.0) << i;
+    EXPECT_EQ(e.pnl_rho[i], 0.0) << i;
+    EXPECT_EQ(e.pnl_charm[i], 0.0) << i;
+    // Components + residual == the full American reprice (bookkeeping, exact).
+    const double recon = e.pnl_delta[i] + e.pnl_gamma[i] + e.pnl_unexplained[i];
+    EXPECT_NEAR(recon, e.pnl_total[i], 1e-6 * (std::fabs(e.pnl_total[i]) + 1.0)) << i;
+    sum_abs_total += std::fabs(e.pnl_total[i]);
+    sum_abs_unexpl += std::fabs(e.pnl_unexplained[i]);
+  }
+  // Delta + gamma explain the bulk; the residual (early-exercise premium's spot
+  // sensitivity + higher order) is a modest fraction on the mixed real book.
+  ASSERT_GT(sum_abs_total, 0.0);
+  const double resid_frac = sum_abs_unexpl / sum_abs_total;
+  EXPECT_LT(resid_frac, 0.15);
+
+  std::printf(
+      "[SPY+XOM portfolio] positions=%zu contracts=%zu underlyings=%zu ok=%zu | "
+      "PV total=%.2f delta=%.2f vega=%.2f | PnL total=%.2f (delta=%.2f gamma=%.2f) "
+      "residual=%.4f%%\n",
+      pricer.portfolio().n_positions(), pricer.portfolio().n_contracts(),
+      pricer.portfolio().n_underlyings(), n_ok, f.total.pv, f.total.delta, f.total.vega,
+      e.total.pnl_total, e.total.pnl_delta, e.total.pnl_gamma, 100.0 * resid_frac);
+}

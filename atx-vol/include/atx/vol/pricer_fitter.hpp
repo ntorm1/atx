@@ -32,8 +32,10 @@
 #include "atx/vol/american.hpp"    // AmericanGreeks
 #include "atx/vol/chain.hpp"       // OptionChain, OptionId
 #include "atx/vol/curve.hpp"       // DividendEvent
+#include "atx/vol/curve_selector.hpp"  // SelectorConfig, SelectorResult
 #include "atx/vol/session.hpp"     // VolaSession, FitPreset, SessionDiagnostics
 #include "atx/vol/types.hpp"       // Result, Status, Side
+#include "atx/vol/vol_curve.hpp"   // CurveConfig, VolCurveKind
 
 namespace atx::vol {
 
@@ -94,11 +96,19 @@ struct ChainValuation {
 // (Robust preset: calendar-arb-free near-money at held quality).
 struct PricerConfig {
   FitPreset preset{FitPreset::Robust};
+  // Curve family + per-kind knobs. std::nullopt (the default) => the CurveSelector
+  // searches for the best kind + config for THIS board (out-of-sample
+  // generalization; SPY-dense boards pick ConvexDense, sparse single-name boards
+  // pick the parsimonious eSSVI backbone). Set it explicitly to pin a curve.
+  std::optional<CurveConfig> curve{};
+  // Search policy used only when `curve` is std::nullopt.
+  SelectorConfig selector{};
   // Worker count for value_chain. 0 => std::thread::hardware_concurrency();
   // 1 => serial. A per-call `value_chain(..., n_threads)` overrides this.
   unsigned n_threads{0};
-  // Extra discrete cash dividends the surface build should honour (usually left
-  // empty — the chain's installed curve drives the carry).
+  // Extra discrete cash dividends the surface build should honour. Usually left
+  // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
+  // value here overrides the env's divs.
   std::vector<DividendEvent> cash_divs{};
 };
 
@@ -148,6 +158,14 @@ class PricerFitter {
   [[nodiscard]] const PricerConfig& config() const noexcept { return cfg_; }
   void set_threads(unsigned n) noexcept { cfg_.n_threads = n; }
 
+  // The curve-selection outcome from the most recent `fit`, when the config left
+  // `curve` unset (auto-select). Empty if `curve` was pinned or no fit has run.
+  // Lets a caller see WHICH curve the library chose for this board (and the
+  // per-candidate out-of-sample scores).
+  [[nodiscard]] const std::optional<SelectorResult>& selection() const noexcept {
+    return selection_;
+  }
+
   // Price the chain's options for the requested `fields`, fanned out across
   // `n_threads` workers (0 => cfg.n_threads; final 0 => hardware_concurrency,
   // 1 => serial). DETERMINISTIC: the result is bit-identical for any thread
@@ -161,6 +179,7 @@ class PricerFitter {
  private:
   PricerConfig cfg_;
   std::unique_ptr<FittedSurface> surface_;
+  std::optional<SelectorResult> selection_;  // last auto-select outcome (if any)
 };
 
 }  // namespace atx::vol

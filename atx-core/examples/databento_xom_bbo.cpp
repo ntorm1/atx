@@ -59,9 +59,11 @@ int main(int argc, char** argv) {
       argc > 3 ? std::filesystem::path{argv[3]}
                : std::filesystem::path{"data/xom_opra_cbbo1m_2026-06-05T1955Z.dbn.zst"};
   const double cap = argc > 4 ? std::atof(argv[4]) : 2.0;
+  // 5th arg overrides the parent symbol (e.g. "SPY.OPT"); default keeps XOM.
+  const std::string parent = argc > 5 ? argv[5] : "XOM.OPT";
 
   const std::string dataset = dataset::kOpraPillar;
-  const std::vector<std::string> symbols{"XOM.OPT"};
+  const std::vector<std::string> symbols{parent};
   constexpr Schema kSchema = Schema::Cbbo1M;
   constexpr SType kStypeIn = SType::Parent;
   constexpr SType kStypeOut = SType::InstrumentId;

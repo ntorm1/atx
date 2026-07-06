@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "atx/vol/data.hpp"       // QuoteFrame, data_install
+#include "atx/vol/market_env.hpp" // MarketEnv (spot / rate-curve / divs / ts)
 #include "atx/vol/types.hpp"      // Side, Result, Status
 #include "atx/vol/universe.hpp"   // Universe, Uid, ContractId, Underlying
 
@@ -62,18 +63,26 @@ class OptionChain {
   OptionChain& operator=(const OptionChain&) = delete;
 
   // Install `frame` into an owned `Universe` (`data_install`) and resolve its
-  // single underlying. `r` is the flat continuously-compounded rate carried for
-  // downstream pricing/inversion. `spot` overrides the pricing spot (e.g. an
-  // OPRA panel's PCP-implied spot) when > 0; otherwise `frame.spot` is used.
+  // single underlying, carrying the full `MarketEnv` (spot / rate-curve / divs /
+  // valuation time). This is the self-contained entry point: everything the
+  // fitter needs travels in `env`. `env.spot` overrides `frame.spot` when > 0.
   // Propagates any install error; NotFound if the frame installs no usable
   // underlying.
+  [[nodiscard]] static Result<OptionChain> from_frame(const QuoteFrame& frame,
+                                                      MarketEnv env);
+
+  // Legacy flat-scalar overload (bit-identical to a flat `MarketEnv`). `r` is the
+  // flat continuously-compounded rate; `spot` overrides `frame.spot` when > 0.
   [[nodiscard]] static Result<OptionChain> from_frame(const QuoteFrame& frame,
                                                       double r, double spot = 0.0);
 
   // ── Market snapshot ────────────────────────────────────────────────────────
-  [[nodiscard]] double spot() const noexcept { return S_; }
-  [[nodiscard]] double rate() const noexcept { return r_; }
-  [[nodiscard]] std::int64_t now_ns() const noexcept { return now_ns_; }
+  [[nodiscard]] double spot() const noexcept { return env_.spot; }
+  // Representative continuously-compounded rate for the fit pipeline (the env's
+  // rate at the front listed expiry; == flat_rate for a flat env).
+  [[nodiscard]] double rate() const noexcept { return r_repr_; }
+  [[nodiscard]] std::int64_t now_ns() const noexcept { return env_.now_ns; }
+  [[nodiscard]] const MarketEnv& env() const noexcept { return env_; }
   [[nodiscard]] Uid uid() const noexcept { return uid_; }
 
   // ── Enumeration / decode ───────────────────────────────────────────────────
@@ -110,9 +119,8 @@ class OptionChain {
 
   Universe u_{};
   Uid uid_{kInvalidUid};
-  double S_{0.0};
-  double r_{0.0};
-  std::int64_t now_ns_{0};
+  MarketEnv env_{};       // spot / rate-curve / divs / valuation time
+  double r_repr_{0.0};    // representative pipeline rate (env_.rate_at(front T))
 };
 
 }  // namespace atx::vol

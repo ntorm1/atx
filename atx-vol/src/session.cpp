@@ -5,7 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -13,6 +15,7 @@
 #include "atx/vol/american.hpp"        // american_price, american_price_cached, american_greeks
 #include "atx/vol/arb.hpp"             // arb_check_calendar (post-refit recheck)
 #include "atx/vol/correction.hpp"      // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/curve_fit.hpp"       // fit_curve_surface (curve-agnostic driver)
 #include "atx/vol/data.hpp"           // data_install
 #include "atx/vol/dividend.hpp"        // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"     // essvi_fit_slice (warm-start refit)
@@ -61,14 +64,16 @@ VolaSession::VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
                          std::vector<ParityReport>&& parity, SessionInputs in,
                          const SessionDiagnostics& diag,
                          std::optional<CorrectionCache>&& corr_call,
-                         std::optional<CorrectionCache>&& corr_put)
+                         std::optional<CorrectionCache>&& corr_put,
+                         std::optional<CurveSurface>&& curve_override)
     : surface_{std::move(surface)},
       ctx_{std::move(ctx)},
       parity_{std::move(parity)},
       in_{std::move(in)},
       diag_{diag},
       corr_call_{std::move(corr_call)},
-      corr_put_{std::move(corr_put)} {}
+      corr_put_{std::move(corr_put)},
+      curve_override_{std::move(curve_override)} {}
 
 namespace {
 
@@ -259,6 +264,61 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
         caches.put ? &*caches.put : nullptr};
   }
 
+  // ── Curve-family dispatch ──────────────────────────────────────────────────
+  // Default (Essvi) keeps the byte-identical run_surface_parity path below.
+  // ConvexDense / Svi fit through the curve-agnostic driver and are SERVED via
+  // the polymorphic-surface override — this is how PricerFitter reaches the
+  // 99.5%-in-band convex dense fit (previously bench-only).
+  if (eff.curve.kind != VolCurveKind::Essvi) {
+    ATX_TRY(CurveSurfaceReport crep, fit_curve_surface(under, sp, eff.curve));
+
+    SessionDiagnostics cdiag{};
+    cdiag.n_slices = crep.n_slices;
+    // Calendar no-arb across slices is not (yet) checked for the dense/SVI
+    // override; report it unverified rather than asserting an unproven property.
+    // (Each convex slice is butterfly-arb-free by construction of the QP.)
+    cdiag.calendar_arb_free = false;
+    cdiag.n_calendar_viol_pre = 0;
+    {
+      double worst = std::numeric_limits<double>::infinity();
+      double sum_frac = 0.0, sum_chi2 = 0.0, sum_rmse = 0.0;
+      std::size_t np_scored = 0;
+      for (const ParityReport& p : crep.per_expiry) {
+        if (p.n == 0) {
+          continue;
+        }
+        worst = std::min(worst, p.frac_fv_within_bidask);
+        sum_frac += p.frac_fv_within_bidask;
+        sum_chi2 += p.chi2_reduced;
+        sum_rmse += p.rmse_mid_vol;
+        ++np_scored;
+      }
+      if (np_scored > 0) {
+        const double dn = static_cast<double>(np_scored);
+        cdiag.worst_frac_within_bidask = worst;
+        cdiag.mean_frac_within_bidask = sum_frac / dn;
+        cdiag.mean_chi2_reduced = sum_chi2 / dn;
+        cdiag.mean_rmse_vol = sum_rmse / dn;
+      }
+      std::size_t nq = 0;
+      for (const SliceContext& c : crep.context) {
+        nq += c.n_used;
+      }
+      cdiag.n_quotes = nq;
+    }
+
+    // Placeholder eSSVI VolSurface: queries read the override, so surface_ is
+    // unused, but VolaSession holds one by value. Cap >= 1 for create().
+    ATX_TRY(VolSurface placeholder,
+            VolSurface::create(under.uid, Parametrization::Essvi,
+                               std::max<std::size_t>(std::size_t{1},
+                                                     under.chains.size())));
+    return Ok(VolaSession{std::move(placeholder), std::move(crep.context),
+                          std::move(crep.per_expiry), std::move(eff), cdiag,
+                          std::move(caches.call), std::move(caches.put),
+                          std::optional<CurveSurface>{std::move(crep.surface)}});
+  }
+
   ATX_TRY(SurfaceParityReport rep, run_surface_parity(under, sp));
 
   // Aggregate diagnostics from the per-expiry parity + per-slice context BEFORE
@@ -295,7 +355,8 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
 
   return Ok(VolaSession{std::move(rep.surface), std::move(rep.context),
                         std::move(rep.per_expiry), std::move(eff), diag,
-                        std::move(caches.call), std::move(caches.put)});
+                        std::move(caches.call), std::move(caches.put),
+                        std::optional<CurveSurface>{}});
 }
 
 Result<VolaSession> VolaSession::from_frame(const QuoteFrame& frame,
@@ -347,13 +408,45 @@ double VolaSession::q_eff_at(double T) const noexcept {
   return interp_forward(T).q_eff;
 }
 
+Result<PricedSurface> VolaSession::to_priced_surface() const {
+  // Resolved cold-repricing scalars. `in_` carries the effective (post-build)
+  // pricer method + Andersen-Lake preset; build() always engages al_opts (either
+  // caller-pinned or the fast default), so value_or is a belt-and-braces fallback.
+  PricingContext pc;
+  pc.S = in_.S;
+  pc.r = in_.r;
+  pc.now_ts_ns = in_.now_ts_ns;
+  pc.method = in_.deam.method;
+  pc.al_opts = in_.deam.al_opts.value_or(al_fast_opts());
+  pc.uid = surface_.uid();
+
+  CurveSurface cs;
+  if (curve_override_.has_value()) {
+    // ConvexDense / Svi: the fitted curves already live in the override. A deep
+    // copy leaves the live session's surface intact for continued serving.
+    cs = curve_override_->clone();
+  } else {
+    // eSSVI default: the fitted slices live in the VolSurface, not a CurveSurface.
+    // Rebuild them into a uniform CurveSurface (df_i = exp(-r*T_i), ascending T,
+    // parallel to ctx_) so the snapshot serves through the SAME polymorphic path.
+    const std::span<const EssviParams> sl = surface_.essvi_slices();
+    for (const EssviParams& e : sl) {
+      const double df = std::exp(-in_.r * e.T);
+      cs.push(std::make_unique<EssviCurve>(e, df));
+    }
+  }
+
+  std::vector<SliceContext> ctx_copy(ctx_.begin(), ctx_.end());
+  return PricedSurface::create(std::move(cs), std::move(ctx_copy), pc);
+}
+
 double VolaSession::iv(double K, double T) const {
   if (!valid_query(K, T)) {
     return kNaN;
   }
   const ForwardCarry fc = interp_forward(T);
   const double k = std::log(K / fc.forward);
-  return surface_.iv(k, T);
+  return model_iv(k, T);
 }
 
 double VolaSession::total_variance(double K, double T) const {
@@ -362,7 +455,7 @@ double VolaSession::total_variance(double K, double T) const {
   }
   const ForwardCarry fc = interp_forward(T);
   const double k = std::log(K / fc.forward);
-  return surface_.w(k, T);
+  return model_w(k, T);
 }
 
 Result<double> VolaSession::fair_value(double K, double T, Side side) const {
@@ -372,11 +465,12 @@ Result<double> VolaSession::fair_value(double K, double T, Side side) const {
   }
   const ForwardCarry fc = interp_forward(T);
   const double k = std::log(K / fc.forward);
-  const double sigma = surface_.iv(k, T);
+  const double sigma = model_iv(k, T);
 
-  // Cached hot path when this side's cache is populated; else cold Andersen-Lake.
-  const CorrectionCache* const cc = query_caches().for_side(side);
-  if (cc != nullptr && cc->populated() && cc->side() == side) {
+  // Cached hot path for the eSSVI default; cold (accurate) Andersen-Lake for the
+  // high-accuracy override surface (see served_cache).
+  const CorrectionCache* const cc = served_cache(side);
+  if (cc != nullptr) {
     const double fv =
         american_price_cached(in_.S, K, T, sigma, in_.r, fc.q_eff, side, cc);
     if (!std::isfinite(fv)) {
@@ -396,13 +490,11 @@ Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const 
   }
   const ForwardCarry fc = interp_forward(T);
   const double k = std::log(K / fc.forward);
-  const double sigma = surface_.iv(k, T);
+  const double sigma = model_iv(k, T);
 
-  // Cached hot path when this side's cache is populated; a null cache degrades
-  // american_greeks to the Black-76 leg exactly as before.
-  const CorrectionCache* const cc = query_caches().for_side(side);
-  const CorrectionCache* const use =
-      (cc != nullptr && cc->populated() && cc->side() == side) ? cc : nullptr;
+  // Cached hot path for the eSSVI default; a null cache (override surface, or a
+  // side on the cold path) degrades american_greeks to the accurate leg.
+  const CorrectionCache* const use = served_cache(side);
   return american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use);
 }
 
@@ -421,7 +513,6 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
   // the T-bracket forward/carry interpolation and this session's per-side cache
   // pointers do not vary with strike.
   const ForwardCarry fc = interp_forward(T);
-  const AmericanCorrectionCaches caches = query_caches();
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     const double K = strikes[i];
     if (!std::isfinite(K) || !(K > 0.0)) {
@@ -430,9 +521,9 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
     }
     const Side side = sides[i];
     const double k = std::log(K / fc.forward);
-    const double sigma = surface_.iv(k, T);
-    const CorrectionCache* const cc = caches.for_side(side);
-    if (cc != nullptr && cc->populated() && cc->side() == side) {
+    const double sigma = model_iv(k, T);
+    const CorrectionCache* const cc = served_cache(side);
+    if (cc != nullptr) {
       out[i] =
           american_price_cached(in_.S, K, T, sigma, in_.r, fc.q_eff, side, cc);
     } else {
@@ -456,7 +547,6 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
                "VolaSession::greeks_ladder: strikes/sides/out length mismatch");
   }
   const ForwardCarry fc = interp_forward(T);
-  const AmericanCorrectionCaches caches = query_caches();
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     const double K = strikes[i];
     if (!std::isfinite(K) || !(K > 0.0)) {
@@ -466,10 +556,8 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     }
     const Side side = sides[i];
     const double k = std::log(K / fc.forward);
-    const double sigma = surface_.iv(k, T);
-    const CorrectionCache* const cc = caches.for_side(side);
-    const CorrectionCache* const use =
-        (cc != nullptr && cc->populated() && cc->side() == side) ? cc : nullptr;
+    const double sigma = model_iv(k, T);
+    const CorrectionCache* const use = served_cache(side);
     const auto g = american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use);
     if (g.has_value()) {
       out[i] = *g;

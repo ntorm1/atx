@@ -76,9 +76,30 @@ std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
 Status PricerFitter::fit(const OptionChain& chain) {
   SessionInputs in =
       make_session_inputs(cfg_.preset, chain.spot(), chain.rate(), chain.now_ns());
-  if (!cfg_.cash_divs.empty()) {
-    in.cash_divs = cfg_.cash_divs;
+  // Dividends: the chain's MarketEnv supplies the schedule; a non-empty config
+  // value overrides it.
+  in.cash_divs = cfg_.cash_divs.empty() ? chain.env().cash_divs : cfg_.cash_divs;
+
+  // Curve config: pinned, or auto-selected out-of-sample for THIS board.
+  selection_.reset();
+  if (cfg_.curve.has_value()) {
+    in.curve = *cfg_.curve;
+  } else {
+    SurfaceParityInputs sp;
+    sp.S = in.S;
+    sp.r = in.r;
+    sp.cash_divs = in.cash_divs;
+    sp.now_ts_ns = in.now_ts_ns;
+    sp.deam = in.deam;
+    sp.calib = in.calib;
+    sp.band_k = in.band_k;
+    sp.repair = in.calendar_repair;
+    ATX_TRY(SelectorResult chosen,
+            select_curve(chain.underlying(), sp, cfg_.selector));
+    in.curve = chosen.chosen;
+    selection_ = std::move(chosen);
   }
+
   ATX_TRY(VolaSession sess, VolaSession::build(chain.underlying(), in));
   // FittedSurface's ctor is private (friend PricerFitter), so make_unique cannot
   // reach it — construct explicitly.

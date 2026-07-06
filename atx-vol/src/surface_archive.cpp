@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -16,8 +17,21 @@
 #include <utility>
 #include <vector>
 
-#include "atx/core/bit.hpp"   // next_pow2, is_pow2
-#include "atx/core/hash.hpp"  // hash_bytes
+#include "atx/core/bit.hpp"        // next_pow2, is_pow2
+#include "atx/core/error.hpp"
+#include "atx/core/hash.hpp"       // hash_bytes
+#include "atx/vol/american.hpp"    // AlOpts, AmericanMethod
+#include "atx/vol/dense_slice.hpp" // ConvexSliceFit
+#include "atx/vol/priced_surface.hpp"
+#include "atx/vol/vol_curve.hpp"   // IVolCurve, Convex/Essvi/SviCurve, CurveSurface
+#include "atx/vol/vol_surface.hpp" // EssviParams, SviParams
+
+#if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
+#define ATX_ARCH_X86 1
+#include <intrin.h>
+#else
+#define ATX_ARCH_X86 0
+#endif
 
 namespace atx::vol {
 
@@ -25,22 +39,23 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
-// The slice structs are serialized verbatim (std::memcpy to / from the byte
-// buffer), so they must be trivially copyable for the round-trip to be
-// well-defined. A future field change that breaks this is a compile error.
+// The POD slice structs are serialized verbatim, so they must be trivially
+// copyable for the memcpy round-trip to be well-defined.
 static_assert(std::is_trivially_copyable_v<EssviParams>,
               "EssviParams must be trivially copyable for byte serialization");
 static_assert(std::is_trivially_copyable_v<SviParams>,
               "SviParams must be trivially copyable for byte serialization");
+static_assert(std::is_trivially_copyable_v<AlOpts>,
+              "AlOpts must be trivially copyable for byte serialization");
 
 namespace {
 
 // ── CRC-32C (Castagnoli, reflected poly 0x82F63B78) ──────────────────────
 //
-// Hand-rolled: atx-core exposes wyhash (hash.hpp) but no CRC. This mirrors the
-// C library's ats_crc32c (init 0xFFFFFFFF, final XOR 0xFFFFFFFF). Only internal
-// round-trip consistency matters — the archive is not shared with the C
-// library — so a standard table-driven CRC-32C is sufficient and faithful.
+// Two implementations with bit-identical output: a table-driven fallback and a
+// hardware SSE4.2 `_mm_crc32` path (8 bytes/step), runtime-dispatched by CPUID.
+// The running-state semantics (no init/final XOR inside `_update`) match, so the
+// one-shot `crc32c` = update(0xFFFFFFFF) ^ 0xFFFFFFFF regardless of path.
 
 [[nodiscard]] constexpr std::array<std::uint32_t, 256> make_crc32c_table() noexcept {
   std::array<std::uint32_t, 256> table{};
@@ -56,14 +71,60 @@ namespace {
 
 inline constexpr std::array<std::uint32_t, 256> kCrc32cTable = make_crc32c_table();
 
+[[nodiscard]] std::uint32_t crc32c_update_table(std::uint32_t crc, const std::byte* p,
+                                                std::size_t n) noexcept {
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto b = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(p[i]));
+    crc = kCrc32cTable[(crc ^ b) & 0xFFu] ^ (crc >> 8);
+  }
+  return crc;
+}
+
+#if ATX_ARCH_X86
+[[nodiscard]] bool detect_sse42() noexcept {
+  int regs[4] = {0, 0, 0, 0};
+  __cpuid(regs, 1);
+  return (regs[2] & (1 << 20)) != 0;  // ECX bit 20 = SSE4.2 (CRC32)
+}
+// Resolved once at load; the dispatch below is a predictable branch.
+const bool kHasSse42 = detect_sse42();
+
+// The SSE4.2 CRC32 intrinsics require the `crc32` target feature to be emitted.
+// The build compiles the TU without it (baseline x86-64), so mark just this
+// function with the target attribute; it is only ever *called* behind the runtime
+// CPUID gate (kHasSse42), so no unsupported instruction is executed on an old CPU.
+#if defined(__clang__)
+__attribute__((target("sse4.2")))
+#endif
+std::uint32_t
+crc32c_update_hw(std::uint32_t crc, const std::byte* p, std::size_t n) noexcept {
+  std::uint64_t c = crc;
+  while (n >= 8) {
+    std::uint64_t v = 0;
+    std::memcpy(&v, p, 8);
+    c = _mm_crc32_u64(c, v);
+    p += 8;
+    n -= 8;
+  }
+  auto c32 = static_cast<std::uint32_t>(c);
+  while (n != 0) {
+    c32 = _mm_crc32_u8(c32, std::to_integer<std::uint8_t>(*p));
+    ++p;
+    --n;
+  }
+  return c32;
+}
+#endif
+
 // Continue a CRC-32C over [p, p+n). `crc` is the running (un-finalized) state.
 [[nodiscard]] std::uint32_t crc32c_update(std::uint32_t crc, const std::byte* p,
                                           std::size_t n) noexcept {
-  for (std::size_t i = 0; i < n; ++i) {
-    const auto byte = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(p[i]));
-    crc = kCrc32cTable[(crc ^ byte) & 0xFFu] ^ (crc >> 8);
+#if ATX_ARCH_X86
+  if (kHasSse42) {
+    return crc32c_update_hw(crc, p, n);
   }
-  return crc;
+#endif
+  return crc32c_update_table(crc, p, n);
 }
 
 // One-shot CRC-32C with the standard init/final XOR applied.
@@ -73,8 +134,8 @@ inline constexpr std::array<std::uint32_t, 256> kCrc32cTable = make_crc32c_table
 
 // ── Small helpers ────────────────────────────────────────────────────────
 
-constexpr char kArchiveMagic[8] = {'A', 'T', 'S', 'V', 'S', 'A', '0', '2'};
-constexpr char kBlobMagic[8] = {'A', 'T', 'S', 'V', 'S', 'F', 'C', '2'};
+constexpr char kArchiveMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
+constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
 
 [[nodiscard]] constexpr std::uint64_t align_up(std::uint64_t v, std::uint64_t a) noexcept {
   return (v + (a - 1u)) & ~(a - 1u);
@@ -88,24 +149,25 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'S', 'V', 'S', 'F', 'C', '2'};
   return b.data() + static_cast<std::size_t>(off);
 }
 
-// Compile-time-constant fingerprint of the on-disk layout. Folds the sizeof of
-// every serialized record so a reader built against a different struct shape
-// rejects the file (ParseError) instead of mis-reading bytes. Mirrors the C's
-// archive_schema_hash (FNV prime, golden-ratio seed).
+// Compile-time fingerprint of the on-disk layout. Folds the sizeof of every
+// serialized record + a v3 format salt so a reader built against a different
+// struct shape (or the v2 format) rejects the file instead of mis-reading bytes.
 [[nodiscard]] std::uint64_t schema_hash() noexcept {
   constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
-  std::uint64_t h = 0x9e3779b97f4a7c15ull;
+  constexpr std::uint64_t kV3Salt = 0xA7C3'5F03'1D9E'0003ull;
+  std::uint64_t h = 0x9e3779b97f4a7c15ull ^ kV3Salt;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveHeader)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveIndexSlot)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveDirEntry)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(SurfaceBlobHeader)) * kFnvPrime;
+  h ^= static_cast<std::uint64_t>(sizeof(ArchivePricingRecord)) * kFnvPrime;
+  h ^= static_cast<std::uint64_t>(sizeof(ArchiveSliceHeader)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(EssviParams)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(SviParams)) * kFnvPrime;
   return h;
 }
 
-// CRC-32C over a header with its own checksum field zeroed (the field cannot
-// cover itself). Takes the header by value so the caller's copy is untouched.
+// CRC-32C over a header with its own checksum field zeroed.
 [[nodiscard]] std::uint32_t header_crc(ArchiveHeader h) noexcept {
   h.header_crc32c = 0;
   std::array<std::byte, sizeof(ArchiveHeader)> bytes{};
@@ -113,8 +175,7 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'S', 'V', 'S', 'F', 'C', '2'};
   return crc32c(bytes.data(), bytes.size());
 }
 
-// ASCII upper-case + truncate to kArchiveSymbolMax; zero-pads the tail. Returns
-// the canonical length. Matches the C's canonicalize_symbol.
+// ASCII upper-case + truncate to kArchiveSymbolMax; zero-pads the tail.
 [[nodiscard]] std::uint16_t canonicalize(std::string_view src,
                                          std::array<char, kArchiveSymbolMax>& dst) noexcept {
   const std::size_t n = std::min(src.size(), kArchiveSymbolMax);
@@ -131,45 +192,60 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'S', 'V', 'S', 'F', 'C', '2'};
   return static_cast<std::uint16_t>(n);
 }
 
-[[nodiscard]] std::uint64_t slice_elem_size(Parametrization p) noexcept {
-  return (p == Parametrization::Essvi) ? sizeof(EssviParams) : sizeof(SviParams);
-}
-
-[[nodiscard]] bool serializable_param(Parametrization p) noexcept {
-  return p == Parametrization::Essvi || p == Parametrization::Svi ||
-         p == Parametrization::SviMm;
-}
-
 [[nodiscard]] std::int64_t wall_clock_ns() noexcept {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
 }
 
-// One planned surface blob. Populated during the pre-pass, sorted by canonical
-// symbol for a deterministic layout, then materialized into the buffer.
+// Payload bytes for one slice of `kind` with `node_count` convex nodes.
+[[nodiscard]] std::uint32_t slice_payload_size(VolCurveKind kind,
+                                               std::uint32_t node_count) noexcept {
+  switch (kind) {
+    case VolCurveKind::ConvexDense:
+      return static_cast<std::uint32_t>(2ull * node_count * sizeof(double));
+    case VolCurveKind::Essvi:
+      return static_cast<std::uint32_t>(sizeof(EssviParams));
+    case VolCurveKind::Svi:
+      return static_cast<std::uint32_t>(sizeof(SviParams));
+  }
+  return 0;
+}
+
+// One planned slice within a blob (source curve + its carry context).
+struct SlicePlan {
+  VolCurveKind kind{VolCurveKind::Essvi};
+  std::uint32_t node_count{0};
+  std::uint32_t payload_size{0};
+  std::uint64_t rec_size{0};       // header + payload, padded to array_align
+  const IVolCurve* curve{nullptr};
+  SliceContext ctx{};
+};
+
+// One planned surface blob.
 struct BlobPlan {
   std::array<char, kArchiveSymbolMax> symbol{};
   std::uint16_t symbol_len{};
   std::uint64_t symbol_hash{};
-  Parametrization param{Parametrization::Essvi};
   std::uint16_t n_slices{};
+  std::uint16_t kind_bits{};
   std::uint32_t uid{};
-  std::uint64_t elem_size{};
+  const PricedSurface* surf{nullptr};
   std::uint64_t symbol_offset{};
   std::uint64_t symbol_size{};
+  std::uint64_t pricing_offset{};
+  std::uint64_t pricing_size{};
   std::uint64_t slices_offset{};
   std::uint64_t slices_size{};
   std::uint64_t blob_size{};
   std::uint64_t file_offset{};
   std::uint32_t crc32c{};
-  std::size_t item_index{};
   std::size_t slot_index{};
+  std::vector<SlicePlan> slices;
 };
 
 // Canonical-symbol comparator (memcmp of the shorter prefix, then length) —
-// gives a deterministic layout independent of caller order. Mirrors the C's
-// blob_plan_cmp.
+// deterministic layout independent of caller order.
 [[nodiscard]] bool plan_less(const BlobPlan& a, const BlobPlan& b) noexcept {
   const std::uint16_t n = std::min(a.symbol_len, b.symbol_len);
   const int c = std::memcmp(a.symbol.data(), b.symbol.data(), n);
@@ -177,6 +253,35 @@ struct BlobPlan {
     return c < 0;
   }
   return a.symbol_len < b.symbol_len;
+}
+
+// Fill an ArchivePricingRecord from a PricedSurface's PricingContext.
+[[nodiscard]] ArchivePricingRecord to_pricing_record(const PricingContext& pc) noexcept {
+  ArchivePricingRecord pr{};
+  pr.S = pc.S;
+  pr.r = pc.r;
+  pr.now_ts_ns = pc.now_ts_ns;
+  pr.uid = pc.uid;
+  pr.method = static_cast<std::uint8_t>(pc.method);
+  pr.al_n_collocation = pc.al_opts.n_collocation;
+  pr.al_n_quadrature = pc.al_opts.n_quadrature;
+  pr.al_max_newton_iter = pc.al_opts.max_newton_iter;
+  pr.al_tol = pc.al_opts.tol;
+  return pr;
+}
+
+[[nodiscard]] PricingContext from_pricing_record(const ArchivePricingRecord& pr) noexcept {
+  PricingContext pc;
+  pc.S = pr.S;
+  pc.r = pr.r;
+  pc.now_ts_ns = pr.now_ts_ns;
+  pc.uid = pr.uid;
+  pc.method = static_cast<AmericanMethod>(pr.method);
+  pc.al_opts.n_collocation = pr.al_n_collocation;
+  pc.al_opts.n_quadrature = pr.al_n_quadrature;
+  pc.al_opts.max_newton_iter = pr.al_max_newton_iter;
+  pc.al_opts.tol = pr.al_tol;
+  return pc;
 }
 
 }  // namespace
@@ -206,20 +311,15 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   // 1. Plan + validate every item.
   std::vector<BlobPlan> plans;
   plans.reserve(n_items);
-  for (std::size_t i = 0; i < items.size(); ++i) {
-    const SurfaceArchiveItem& it = items[i];
+  for (const SurfaceArchiveItem& it : items) {
     if (it.surface == nullptr) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: null surface");
     }
     if (it.symbol.empty()) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: empty symbol");
     }
-    const Parametrization p = it.surface->param();
-    if (!serializable_param(p)) {
-      return Err(ErrorCode::ParseError,
-                 "write_surface_archive: parametrization has no serializable slices");
-    }
-    const std::size_t n = it.surface->n_slices();
+    const PricedSurface& ps = *it.surface;
+    const std::size_t n = ps.n_slices();
     if (n == 0) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: surface has no slices");
     }
@@ -228,27 +328,47 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
     }
 
     BlobPlan plan;
-    plan.item_index = i;
+    plan.surf = &ps;
     plan.symbol_len = canonicalize(it.symbol, plan.symbol);
     if (plan.symbol_len == 0) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: empty canonical symbol");
     }
     plan.symbol_hash = atx::core::hash_bytes(plan.symbol.data(), plan.symbol_len);
-    plan.param = p;
     plan.n_slices = static_cast<std::uint16_t>(n);
-    plan.uid = it.surface->uid();
-    plan.elem_size = slice_elem_size(p);
+    plan.uid = ps.uid();
 
+    // Blob geometry: header -> symbol -> pricing -> sequential slice records.
     std::uint64_t cur = sizeof(SurfaceBlobHeader);
     plan.symbol_offset = cur;
     plan.symbol_size = plan.symbol_len;
     cur = align_up(cur + plan.symbol_size, array_align);
+    plan.pricing_offset = cur;
+    plan.pricing_size = sizeof(ArchivePricingRecord);
+    cur = align_up(cur + plan.pricing_size, array_align);
     plan.slices_offset = cur;
-    plan.slices_size = static_cast<std::uint64_t>(plan.n_slices) * plan.elem_size;
-    cur = align_up(cur + plan.slices_size, array_align);
-    plan.blob_size = cur;
 
-    plans.push_back(plan);
+    const std::span<const std::unique_ptr<IVolCurve>> curves = ps.surface().slices();
+    const std::span<const SliceContext> ctx = ps.context();
+    plan.slices.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      const IVolCurve* const c = curves[i].get();
+      SlicePlan sp;
+      sp.kind = c->kind();
+      sp.curve = c;
+      sp.ctx = ctx[i];
+      if (sp.kind == VolCurveKind::ConvexDense) {
+        const auto* cd = static_cast<const ConvexDenseCurve*>(c);
+        sp.node_count = static_cast<std::uint32_t>(cd->fit().u.size());
+      }
+      sp.payload_size = slice_payload_size(sp.kind, sp.node_count);
+      sp.rec_size = align_up(sizeof(ArchiveSliceHeader) + sp.payload_size, array_align);
+      plan.kind_bits |= static_cast<std::uint16_t>(1u << static_cast<unsigned>(sp.kind));
+      cur += sp.rec_size;
+      plan.slices.push_back(sp);
+    }
+    plan.slices_size = cur - plan.slices_offset;
+    plan.blob_size = align_up(cur, array_align);
+    plans.push_back(std::move(plan));
   }
 
   // 2. Deterministic order by canonical symbol.
@@ -256,13 +376,15 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
 
   // 3. Geometry.
   const std::uint64_t load = opts.lookup_load_pct;
-  const std::uint64_t want_slots = (static_cast<std::uint64_t>(n_items) * 100ull + load - 1ull) / load;
+  const std::uint64_t want_slots =
+      (static_cast<std::uint64_t>(n_items) * 100ull + load - 1ull) / load;
   std::uint32_t lookup_slots = atx::core::next_pow2(static_cast<std::uint32_t>(want_slots));
   if (lookup_slots < 8u) {
     lookup_slots = 8u;
   }
   const std::uint64_t lookup_offset = align_up(sizeof(ArchiveHeader), 64u);
-  const std::uint64_t lookup_bytes = static_cast<std::uint64_t>(lookup_slots) * sizeof(ArchiveIndexSlot);
+  const std::uint64_t lookup_bytes =
+      static_cast<std::uint64_t>(lookup_slots) * sizeof(ArchiveIndexSlot);
   const std::uint64_t directory_offset = lookup_offset + lookup_bytes;
   const std::uint64_t dir_bytes = static_cast<std::uint64_t>(n_items) * sizeof(ArchiveDirEntry);
   const std::uint64_t data_offset = align_up(directory_offset + dir_bytes, blob_align);
@@ -274,8 +396,7 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   }
   const std::uint64_t file_size = cursor;
 
-  // 4. Build the lookup table (open-addressed; duplicate canonical symbol is an
-  //    AlreadyExists) and the directory.
+  // 4. Lookup table (open-addressed) + directory.
   std::vector<ArchiveIndexSlot> lookup(lookup_slots);
   std::vector<ArchiveDirEntry> directory(n_items);
   const std::uint64_t mask = static_cast<std::uint64_t>(lookup_slots) - 1ull;
@@ -315,57 +436,87 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
     de.symbol_hash = plan.symbol_hash;
     de.uid = plan.uid;
     de.symbol_len = plan.symbol_len;
-    de.param = static_cast<std::uint16_t>(plan.param);
+    de.kind_bits = plan.kind_bits;
     de.n_slices = plan.n_slices;
     std::memcpy(de.symbol, plan.symbol.data(), plan.symbol_len);
   }
 
-  // 5. Materialize the buffer: header placeholder (zeros), blobs, then lookup +
-  //    directory, then finalize checksums.
+  // 5. Materialize the buffer.
   std::vector<std::byte> buffer(static_cast<std::size_t>(file_size));
 
   for (BlobPlan& plan : plans) {
-    const VolSurface& surf = *items[plan.item_index].surface;
     std::byte* base = buf_at(buffer, plan.file_offset);
 
-    // Payload: symbol bytes, then the slice array (copied verbatim — the slice
-    // structs are trivially copyable, so this round-trips bit-for-bit).
+    // Symbol bytes.
     std::memcpy(base + static_cast<std::size_t>(plan.symbol_offset), plan.symbol.data(),
                 plan.symbol_len);
-    if (plan.slices_size > 0) {
-      if (plan.param == Parametrization::Essvi) {
-        const std::span<const EssviParams> sl = surf.essvi_slices();
-        std::memcpy(base + static_cast<std::size_t>(plan.slices_offset), sl.data(),
-                    static_cast<std::size_t>(plan.slices_size));
-      } else {
-        const std::span<const SviParams> sl = surf.svi_slices();
-        std::memcpy(base + static_cast<std::size_t>(plan.slices_offset), sl.data(),
-                    static_cast<std::size_t>(plan.slices_size));
+
+    // Pricing record.
+    const ArchivePricingRecord pr = to_pricing_record(plan.surf->pricing());
+    std::memcpy(base + static_cast<std::size_t>(plan.pricing_offset), &pr, sizeof pr);
+
+    // Sequential slice records.
+    std::uint64_t off = plan.slices_offset;
+    for (const SlicePlan& sp : plan.slices) {
+      ArchiveSliceHeader sh{};
+      sh.kind = static_cast<std::uint8_t>(sp.kind);
+      sh.rec_size = static_cast<std::uint32_t>(sp.rec_size);
+      sh.node_count = sp.node_count;
+      sh.payload_size = sp.payload_size;
+      sh.T = sp.ctx.T;
+      sh.forward = sp.ctx.forward;
+      sh.borrow = sp.ctx.borrow;
+      sh.q_eff = sp.ctx.q_eff;
+      sh.df = sp.curve->df();
+      sh.n_used = sp.ctx.n_used;
+      sh.n_dropped = sp.ctx.n_dropped;
+
+      std::byte* rec = base + static_cast<std::size_t>(off);
+      std::byte* payload = rec + sizeof(ArchiveSliceHeader);
+      switch (sp.kind) {
+        case VolCurveKind::ConvexDense: {
+          const ConvexSliceFit& fit = static_cast<const ConvexDenseCurve*>(sp.curve)->fit();
+          sh.conv_rmse_price = fit.rmse_price;
+          sh.conv_n_obs = fit.n_obs;
+          sh.conv_n_active = fit.n_active;
+          const std::size_t nb = static_cast<std::size_t>(sp.node_count) * sizeof(double);
+          std::memcpy(payload, fit.u.data(), nb);
+          std::memcpy(payload + nb, fit.C.data(), nb);
+          break;
+        }
+        case VolCurveKind::Essvi: {
+          const EssviParams& e = static_cast<const EssviCurve*>(sp.curve)->slice();
+          std::memcpy(payload, &e, sizeof e);
+          break;
+        }
+        case VolCurveKind::Svi: {
+          const SviParams& v = static_cast<const SviCurve*>(sp.curve)->slice();
+          std::memcpy(payload, &v, sizeof v);
+          break;
+        }
       }
+      std::memcpy(rec, &sh, sizeof sh);  // header last (fields now complete)
+      off += sp.rec_size;
     }
 
-    // Header (written after the payload so payload_crc32c is well-defined).
-    SurfaceBlobHeader bh;
+    // Blob header (written after the payload so payload_crc32c is well-defined).
+    SurfaceBlobHeader bh{};
     std::memcpy(bh.magic, kBlobMagic, 8);
     bh.major = kArchiveMajor;
     bh.minor = kArchiveMinor;
-    bh.param = static_cast<std::uint16_t>(plan.param);
-    bh.uid = plan.uid;
     bh.n_slices = plan.n_slices;
-    bh.slices_offset = plan.slices_offset;
-    bh.slices_size = plan.slices_size;
-    bh.symbol_offset = plan.symbol_offset;
-    bh.symbol_size = plan.symbol_size;
+    bh.uid = plan.uid;
     bh.blob_header_size = static_cast<std::uint32_t>(sizeof(SurfaceBlobHeader));
     bh.blob_size = plan.blob_size;
-    bh.fit_ts_ns = surf.fit_ts_ns();
-    const VolSurface::Diagnostics& diag = surf.diagnostics();
-    bh.rmse_vol = diag.rmse_vol;
-    bh.max_residual_vol = diag.max_residual_vol;
-    bh.n_quotes_used = diag.n_quotes_used;
-    bh.n_quotes_dropped = diag.n_quotes_dropped;
-    bh.payload_crc32c = crc32c(base + sizeof(SurfaceBlobHeader),
-                               static_cast<std::size_t>(plan.blob_size - sizeof(SurfaceBlobHeader)));
+    bh.symbol_offset = plan.symbol_offset;
+    bh.symbol_size = plan.symbol_size;
+    bh.pricing_offset = plan.pricing_offset;
+    bh.pricing_size = plan.pricing_size;
+    bh.slices_offset = plan.slices_offset;
+    bh.slices_size = plan.slices_size;
+    bh.payload_crc32c =
+        crc32c(base + sizeof(SurfaceBlobHeader),
+               static_cast<std::size_t>(plan.blob_size - sizeof(SurfaceBlobHeader)));
     std::memcpy(base, &bh, sizeof bh);
 
     // Whole-blob CRC into the owning lookup slot.
@@ -374,13 +525,14 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   }
 
   if (lookup_bytes > 0) {
-    std::memcpy(buf_at(buffer, lookup_offset), lookup.data(), static_cast<std::size_t>(lookup_bytes));
+    std::memcpy(buf_at(buffer, lookup_offset), lookup.data(),
+                static_cast<std::size_t>(lookup_bytes));
   }
   if (dir_bytes > 0) {
-    std::memcpy(buf_at(buffer, directory_offset), directory.data(), static_cast<std::size_t>(dir_bytes));
+    std::memcpy(buf_at(buffer, directory_offset), directory.data(),
+                static_cast<std::size_t>(dir_bytes));
   }
 
-  // metadata CRC = CRC-32C over (lookup ‖ directory).
   std::uint32_t meta = crc32c_update(0xFFFFFFFFu, buf_at(buffer, lookup_offset),
                                      static_cast<std::size_t>(lookup_bytes));
   meta = crc32c_update(meta, buf_at(buffer, directory_offset),
@@ -398,8 +550,9 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   hdr.alignment_log2 = 12;
   hdr.flags = opts.flags;
   hdr.file_size = file_size;
-  hdr.created_ts_ns = opts.created_ts_ns != 0 ? static_cast<std::uint64_t>(opts.created_ts_ns)
-                                              : static_cast<std::uint64_t>(wall_clock_ns());
+  hdr.created_ts_ns = opts.created_ts_ns != 0
+                          ? static_cast<std::uint64_t>(opts.created_ts_ns)
+                          : static_cast<std::uint64_t>(wall_clock_ns());
   hdr.schema_hash = schema_hash();
   hdr.writer_version_hash = 0;
   hdr.surface_count = n_items;
@@ -410,6 +563,7 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   hdr.index_slot_size = static_cast<std::uint32_t>(sizeof(ArchiveIndexSlot));
   hdr.dir_entry_size = static_cast<std::uint32_t>(sizeof(ArchiveDirEntry));
   hdr.surface_blob_header_size = static_cast<std::uint32_t>(sizeof(SurfaceBlobHeader));
+  hdr.slice_header_size = static_cast<std::uint32_t>(sizeof(ArchiveSliceHeader));
   hdr.metadata_crc32c = meta;
   hdr.header_crc32c = header_crc(hdr);
   std::memcpy(buf_at(buffer, 0), &hdr, sizeof hdr);
@@ -429,14 +583,11 @@ Status write_surface_archive_file(std::string_view path,
   const std::filesystem::path dst{std::string(path)};
   std::filesystem::path tmp = dst;
   tmp += ".tmp";
-
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
       return Err(ErrorCode::IoError, "write_surface_archive_file: cannot open temp file");
     }
-    // SAFETY: std::byte may alias any object; reading its representation through
-    // char* for stream I/O is well-defined.
     os.write(reinterpret_cast<const char*>(buffer.data()),
              static_cast<std::streamsize>(buffer.size()));
     if (!os) {
@@ -445,7 +596,6 @@ Status write_surface_archive_file(std::string_view path,
       return Err(ErrorCode::IoError, "write_surface_archive_file: write failed");
     }
   }
-
   std::error_code ec;
   std::filesystem::rename(tmp, dst, ec);
   if (ec) {
@@ -484,7 +634,8 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
   }
   if (h.header_size != sizeof(ArchiveHeader) || h.index_slot_size != sizeof(ArchiveIndexSlot) ||
       h.dir_entry_size != sizeof(ArchiveDirEntry) ||
-      h.surface_blob_header_size != sizeof(SurfaceBlobHeader)) {
+      h.surface_blob_header_size != sizeof(SurfaceBlobHeader) ||
+      h.slice_header_size != sizeof(ArchiveSliceHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::open: record size mismatch");
   }
   if (h.schema_hash != schema_hash()) {
@@ -519,12 +670,10 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
   if (h.data_offset > h.file_size) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::open: data offset out of bounds");
   }
-
   if (header_crc(h) != h.header_crc32c) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::open: header checksum mismatch");
   }
 
-  // metadata CRC over (lookup ‖ directory).
   std::uint32_t meta = crc32c_update(0xFFFFFFFFu, buf_at(buf, h.lookup_offset),
                                      static_cast<std::size_t>(lookup_bytes));
   meta = crc32c_update(meta, buf_at(buf, h.directory_offset),
@@ -537,14 +686,15 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
   a.header_ = h;
   a.lookup_.resize(h.lookup_slot_count);
   if (lookup_bytes > 0) {
-    std::memcpy(a.lookup_.data(), buf_at(buf, h.lookup_offset), static_cast<std::size_t>(lookup_bytes));
+    std::memcpy(a.lookup_.data(), buf_at(buf, h.lookup_offset),
+                static_cast<std::size_t>(lookup_bytes));
   }
   a.directory_.resize(h.surface_count);
   if (dir_bytes > 0) {
-    std::memcpy(a.directory_.data(), buf_at(buf, h.directory_offset), static_cast<std::size_t>(dir_bytes));
+    std::memcpy(a.directory_.data(), buf_at(buf, h.directory_offset),
+                static_cast<std::size_t>(dir_bytes));
   }
 
-  // Every directory entry must sit fully inside the data region.
   for (const ArchiveDirEntry& de : a.directory_) {
     if (de.surface_offset < h.data_offset) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::open: directory entry precedes data");
@@ -573,7 +723,6 @@ Result<SurfaceArchive> SurfaceArchive::open_file(std::string_view path) {
   }
   std::vector<std::byte> bytes(static_cast<std::size_t>(size));
   is.seekg(0);
-  // SAFETY: char* aliasing of std::byte storage is well-defined for stream I/O.
   is.read(reinterpret_cast<char*>(bytes.data()), size);
   if (is.gcount() != size) {
     return Err(ErrorCode::IoError, "SurfaceArchive::open_file: short read");
@@ -622,8 +771,8 @@ Result<ArchiveDirEntry> SurfaceArchive::find(std::string_view symbol) const {
   return de;
 }
 
-Result<VolSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uint64_t size,
-                                               std::uint32_t expected_crc) const {
+Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uint64_t size,
+                                                  std::uint32_t expected_crc) const {
   if (size < sizeof(SurfaceBlobHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob smaller than header");
   }
@@ -647,71 +796,123 @@ Result<VolSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uint64
   if (bh.blob_size != size || bh.blob_header_size != sizeof(SurfaceBlobHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob size mismatch");
   }
-  if (bh.symbol_offset < sizeof(SurfaceBlobHeader) ||
-      bh.slices_offset < sizeof(SurfaceBlobHeader)) {
-    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: payload overlaps header");
-  }
+  // NOTE: the whole-blob `surface_crc32c` verified above STRICTLY SUBSUMES the
+  // payload CRC (payload bytes are a subspan of the blob), so the hot path does NOT
+  // re-CRC the payload — one pass, not two. `payload_crc32c` is still written (a
+  // self-describing field for external tools / partial verification) but not
+  // re-checked here; verifying it would double the per-surface CRC cost for no
+  // added integrity.
 
-  // Payload CRC (defense in depth alongside the whole-blob CRC above).
-  if (crc32c(base + sizeof(SurfaceBlobHeader),
-             static_cast<std::size_t>(size - sizeof(SurfaceBlobHeader))) != bh.payload_crc32c) {
-    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: payload checksum mismatch");
+  // Section bounds.
+  if (bh.pricing_offset < sizeof(SurfaceBlobHeader) ||
+      bh.pricing_size < sizeof(ArchivePricingRecord) ||
+      bh.pricing_offset > size || bh.pricing_size > size - bh.pricing_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: pricing section out of bounds");
   }
-
-  const auto param = static_cast<Parametrization>(bh.param);
-  if (!serializable_param(param)) {
-    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unsupported parametrization");
+  if (bh.slices_offset < sizeof(SurfaceBlobHeader) || bh.slices_offset > size ||
+      bh.slices_size > size - bh.slices_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slices section out of bounds");
   }
   const std::size_t n = bh.n_slices;
   if (n == 0) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: zero slices");
   }
-  const std::uint64_t elem = slice_elem_size(param);
-  const std::uint64_t need = static_cast<std::uint64_t>(n) * elem;
-  if (bh.slices_size < need) {
-    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice array too small");
-  }
-  if (bh.slices_offset > size || need > size - bh.slices_offset) {
-    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slices out of bounds");
-  }
 
-  auto surf = VolSurface::create(bh.uid, param, n);
-  if (!surf) {
-    return tl::unexpected<atx::core::Error>(std::move(surf).error());
-  }
-  VolSurface out = *std::move(surf);
+  ArchivePricingRecord pr;
+  std::memcpy(&pr, base + static_cast<std::size_t>(bh.pricing_offset), sizeof pr);
+  const PricingContext pc = from_pricing_record(pr);
 
+  CurveSurface surface;
+  std::vector<SliceContext> ctx;
+  ctx.reserve(n);
+
+  std::uint64_t off = bh.slices_offset;
+  const std::uint64_t slices_end = bh.slices_offset + bh.slices_size;
   for (std::size_t i = 0; i < n; ++i) {
-    const std::byte* sp =
-        base + static_cast<std::size_t>(bh.slices_offset + static_cast<std::uint64_t>(i) * elem);
-    if (param == Parametrization::Essvi) {
-      EssviParams e;
-      std::memcpy(&e, sp, sizeof e);
-      auto st = out.set_slice_essvi(i, e);
-      if (!st) {
-        return tl::unexpected<atx::core::Error>(std::move(st).error());
-      }
-    } else {
-      SviParams v;
-      std::memcpy(&v, sp, sizeof v);
-      auto st = out.set_slice_svi(i, v);
-      if (!st) {
-        return tl::unexpected<atx::core::Error>(std::move(st).error());
-      }
+    if (off + sizeof(ArchiveSliceHeader) > slices_end) {
+      return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice header out of bounds");
     }
-  }
-  out.set_fit_ts_ns(bh.fit_ts_ns);
-  VolSurface::Diagnostics diag;
-  diag.rmse_vol = bh.rmse_vol;
-  diag.max_residual_vol = bh.max_residual_vol;
-  diag.n_quotes_used = bh.n_quotes_used;
-  diag.n_quotes_dropped = bh.n_quotes_dropped;
-  out.set_diagnostics(diag);
+    ArchiveSliceHeader sh;
+    std::memcpy(&sh, base + static_cast<std::size_t>(off), sizeof sh);
+    if (sh.rec_size < sizeof(ArchiveSliceHeader) || off + sh.rec_size > slices_end) {
+      return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice record out of bounds");
+    }
+    if (sh.payload_size > sh.rec_size - sizeof(ArchiveSliceHeader)) {
+      return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice payload out of bounds");
+    }
+    const std::byte* payload = base + static_cast<std::size_t>(off + sizeof(ArchiveSliceHeader));
+    const auto kind = static_cast<VolCurveKind>(sh.kind);
 
-  return Ok(std::move(out));
+    std::unique_ptr<IVolCurve> curve;
+    switch (kind) {
+      case VolCurveKind::ConvexDense: {
+        const std::uint64_t need =
+            2ull * static_cast<std::uint64_t>(sh.node_count) * sizeof(double);
+        if (sh.node_count == 0 || need != sh.payload_size) {
+          return Err(ErrorCode::ParseError,
+                     "SurfaceArchive::reconstruct: convex node payload size mismatch");
+        }
+        ConvexSliceFit fit;
+        fit.T = sh.T;
+        fit.F = sh.forward;
+        fit.df = sh.df;
+        fit.rmse_price = sh.conv_rmse_price;
+        fit.n_obs = static_cast<std::size_t>(sh.conv_n_obs);
+        fit.n_active = static_cast<std::size_t>(sh.conv_n_active);
+        fit.u.resize(sh.node_count);
+        fit.C.resize(sh.node_count);
+        const std::size_t nb = static_cast<std::size_t>(sh.node_count) * sizeof(double);
+        std::memcpy(fit.u.data(), payload, nb);
+        std::memcpy(fit.C.data(), payload + nb, nb);
+        curve = std::make_unique<ConvexDenseCurve>(std::move(fit));
+        break;
+      }
+      case VolCurveKind::Essvi: {
+        if (sh.payload_size < sizeof(EssviParams)) {
+          return Err(ErrorCode::ParseError,
+                     "SurfaceArchive::reconstruct: essvi payload too small");
+        }
+        EssviParams e;
+        std::memcpy(&e, payload, sizeof e);
+        curve = std::make_unique<EssviCurve>(e, sh.df);
+        break;
+      }
+      case VolCurveKind::Svi: {
+        if (sh.payload_size < sizeof(SviParams)) {
+          return Err(ErrorCode::ParseError,
+                     "SurfaceArchive::reconstruct: svi payload too small");
+        }
+        SviParams v;
+        std::memcpy(&v, payload, sizeof v);
+        curve = std::make_unique<SviCurve>(v, sh.df);
+        break;
+      }
+      default:
+        return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unknown curve kind");
+    }
+    surface.push(std::move(curve));
+
+    SliceContext sc;
+    sc.T = sh.T;
+    sc.forward = sh.forward;
+    sc.borrow = sh.borrow;
+    sc.q_eff = sh.q_eff;
+    sc.n_used = static_cast<std::size_t>(sh.n_used);
+    sc.n_dropped = static_cast<std::size_t>(sh.n_dropped);
+    ctx.push_back(sc);
+
+    off += sh.rec_size;
+  }
+
+  auto ps = PricedSurface::create(std::move(surface), std::move(ctx), pc);
+  if (!ps) {
+    return Err(ErrorCode::ParseError,
+               "SurfaceArchive::reconstruct: reconstructed surface failed validation");
+  }
+  return ps;
 }
 
-Result<VolSurface> SurfaceArchive::map_symbol(std::string_view symbol) const {
+Result<PricedSurface> SurfaceArchive::map_symbol(std::string_view symbol) const {
   const ArchiveIndexSlot* s = find_slot(symbol);
   if (s == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceArchive::map_symbol: symbol not present");
@@ -719,13 +920,12 @@ Result<VolSurface> SurfaceArchive::map_symbol(std::string_view symbol) const {
   return reconstruct(s->surface_offset, s->surface_size, s->surface_crc32c);
 }
 
-Result<std::vector<VolSurface>> SurfaceArchive::map_all() const {
-  std::vector<VolSurface> out;
+Result<std::vector<PricedSurface>> SurfaceArchive::map_all() const {
+  std::vector<PricedSurface> out;
   out.reserve(directory_.size());
   const std::uint64_t mask =
       lookup_.empty() ? 0ull : static_cast<std::uint64_t>(lookup_.size()) - 1ull;
   for (const ArchiveDirEntry& de : directory_) {
-    // Cross-reference the owning slot for the canonical whole-blob CRC.
     std::uint32_t expected = 0;
     bool found = false;
     std::uint64_t i = de.symbol_hash & mask;
@@ -754,7 +954,7 @@ Result<std::vector<VolSurface>> SurfaceArchive::map_all() const {
   return Ok(std::move(out));
 }
 
-Result<std::size_t> SurfaceArchive::map_all_into(std::span<std::optional<VolSurface>> out) const {
+Result<std::size_t> SurfaceArchive::map_all_into(std::span<std::optional<PricedSurface>> out) const {
   if (out.size() < directory_.size()) {
     return Err(ErrorCode::OutOfRange, "SurfaceArchive::map_all_into: output too small");
   }
@@ -762,11 +962,12 @@ Result<std::size_t> SurfaceArchive::map_all_into(std::span<std::optional<VolSurf
   if (!all) {
     return tl::unexpected<atx::core::Error>(std::move(all).error());
   }
-  std::vector<VolSurface> surfaces = *std::move(all);
-  for (std::size_t i = 0; i < surfaces.size(); ++i) {
+  std::vector<PricedSurface> surfaces = *std::move(all);
+  const std::size_t count = surfaces.size();
+  for (std::size_t i = 0; i < count; ++i) {
     out[i].emplace(std::move(surfaces[i]));
   }
-  return Ok(surfaces.size());
+  return Ok(count);
 }
 
 }  // namespace atx::vol

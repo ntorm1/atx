@@ -44,6 +44,11 @@ add_executable(atx-vol-tests
     vol_umbrella_test.cpp
     spy_real_test.cpp
     pricer_fitter_test.cpp
+    spy_bidask_regression_test.cpp
+    breadth_regime_test.cpp
+    spy_archive_roundtrip_test.cpp
+    portfolio_pricer_test.cpp
+    spy_portfolio_pnl_test.cpp
 )
 
 target_link_libraries(atx-vol-tests

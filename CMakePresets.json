@@ -53,6 +53,16 @@
       }
     },
     {
+      "name": "rel",
+      "inherits": "dev",
+      "displayName": "rel: Release (canonical acceptance / benchmarks)",
+      "description": "Optimized Release build in build-rel/ for throughput benchmarks and canonical acceptance numbers, on the dev toolchain (clang-cl + sccache + shared deps). Never the debug-checked test gate — use `dev` for that.",
+      "binaryDir": "${sourceDir}/build-rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
       "name": "hygiene",
       "inherits": "_base",
       "displayName": "Ninja + clang-cl, PCH OFF (include hygiene / CI nightly)",
@@ -77,6 +87,7 @@
     { "name": "ninja", "configurePreset": "ninja" },
     { "name": "dev", "configurePreset": "dev" },
     { "name": "dev-shared", "configurePreset": "dev-shared" },
+    { "name": "rel", "configurePreset": "rel" },
     { "name": "hygiene", "configurePreset": "hygiene" },
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],

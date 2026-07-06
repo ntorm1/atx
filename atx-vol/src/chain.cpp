@@ -11,8 +11,8 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
-Result<OptionChain> OptionChain::from_frame(const QuoteFrame& frame, double r,
-                                            double spot) {
+Result<OptionChain> OptionChain::from_frame(const QuoteFrame& frame,
+                                            MarketEnv env) {
   OptionChain chain;
   ATX_TRY(const Uid uid, data_install(chain.u_, frame));
   // Validate the underlying resolves (install returned a live uid).
@@ -21,10 +21,28 @@ Result<OptionChain> OptionChain::from_frame(const QuoteFrame& frame, double r,
     return Err(ErrorCode::NotFound, "OptionChain::from_frame: no underlying installed");
   }
   chain.uid_ = uid;
-  chain.r_ = r;
-  chain.S_ = (spot > 0.0) ? spot : frame.spot;
-  chain.now_ns_ = frame.snapshot_ts_ns;
+  chain.env_ = std::move(env);
+  if (!(chain.env_.spot > 0.0)) {
+    chain.env_.spot = frame.spot;  // fall back to the frame's spot
+  }
+  if (chain.env_.now_ns == 0) {
+    chain.env_.now_ns = frame.snapshot_ts_ns;
+  }
+  // Representative pipeline rate: the env's rate at the front listed expiry
+  // (chains are installed ascending in T). == flat_rate for a flat env.
+  double front_T = 0.0;
+  if (!under->chains.empty()) {
+    front_T = under->chains.front().T;
+  }
+  chain.r_repr_ = (front_T > 0.0) ? chain.env_.rate_at(front_T) : chain.env_.flat_rate;
   return Ok(std::move(chain));
+}
+
+Result<OptionChain> OptionChain::from_frame(const QuoteFrame& frame, double r,
+                                            double spot) {
+  MarketEnv env = MarketEnv::flat(spot, r, frame.snapshot_ts_ns);
+  // A flat env with spot == 0 falls back to frame.spot inside the env overload.
+  return from_frame(frame, std::move(env));
 }
 
 const Underlying& OptionChain::underlying() const {
@@ -107,7 +125,7 @@ Status OptionChain::update_quotes(std::span<const OptionId> ids,
   }
   const std::size_t n = ids.size();
   std::vector<std::int32_t> sizes(n, 1);
-  std::vector<std::int64_t> ts(n, now_ns_);
+  std::vector<std::int64_t> ts(n, env_.now_ns);
   std::vector<std::uint8_t> flags(n, 0u);
   for (std::size_t i = 0; i < n; ++i) {
     // Stamp the LOCKED / CROSSED diagnostic bits the loader convention uses so a

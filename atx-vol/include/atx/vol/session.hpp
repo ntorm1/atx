@@ -54,9 +54,11 @@
 #include "atx/vol/data.hpp"            // QuoteFrame (from_frame input)
 #include "atx/vol/deamer.hpp"          // DeAmOptions
 #include "atx/vol/parity.hpp"          // ParityReport
+#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
 #include "atx/vol/surface_parity.hpp"  // SliceContext, run_surface_parity
 #include "atx/vol/types.hpp"           // Result, Side
 #include "atx/vol/universe.hpp"        // Underlying (build input)
+#include "atx/vol/vol_curve.hpp"       // CurveConfig, CurveSurface, VolCurveKind
 #include "atx/vol/vol_surface.hpp"     // VolSurface
 
 namespace atx::vol {
@@ -71,6 +73,14 @@ struct SessionInputs {
   std::int64_t now_ts_ns{0};              // valuation timestamp (epoch ns)
   DeAmOptions deam{};                     // borrow-implication + pricer method / AL opts
   CalibOpts calib{};                      // per-slice curve-fit policy
+  // Curve family to fit. Essvi (default) is byte-identical to the historical
+  // eSSVI path (run_surface_parity, with calendar repair). ConvexDense / Svi fit
+  // through the curve-agnostic driver (fit_curve_surface) and are served via the
+  // session's polymorphic-surface override — this is how PricerFitter reaches the
+  // 99.5%-in-band convex dense fit. The convex knobs live in curve.convex, the
+  // eSSVI/SVI knobs in curve.parametric (calib mirrors curve.parametric for the
+  // default path).
+  CurveConfig curve{VolCurveKind::Essvi};
   double band_k{1.0};                     // minimum-edge band multiplier (parity)
   // Build a per-side Chebyshev correction cache over the chain's (k, T, sigma)
   // box and route every American inversion / re-pricing through the fast cached
@@ -260,6 +270,25 @@ class VolaSession {
   [[nodiscard]] Result<FitDiag> refit_slice(std::size_t slice_idx,
                                             std::span<const FitObs> new_obs);
 
+  // ── Serialization snapshot ─────────────────────────────────────────────────
+  //
+  // Distil this live session into a small, cache-free, value-typed `PricedSurface`
+  // — the currency of `surface_archive`. The snapshot owns a DEEP COPY of the
+  // fitted curves (the session keeps serving), the per-slice re-pricing context,
+  // and the resolved pricing scalars (S, r, method, Andersen-Lake preset, uid).
+  //
+  // Its `fair_value`/`greeks` reproduce THIS session's COLD served path exactly:
+  // for a polymorphic-override session (ConvexDense / Svi) that is the very path
+  // the session prices on, so the snapshot is bit-identical to the live session.
+  // For the eSSVI default path the snapshot rebuilds the fitted eSSVI slices into a
+  // uniform `CurveSurface` and prices them COLD (the session's own cold fallback);
+  // the surface's model IV is preserved, and cold is the accurate reference (the
+  // live session's fast cached value differs only by the cache's carry surrogate).
+  //
+  // @return InvalidArgument if the session has no fitted slice (never for a
+  //         successfully built session); otherwise the snapshot.
+  [[nodiscard]] Result<PricedSurface> to_priced_surface() const;
+
   // ── Introspection ──────────────────────────────────────────────────────────
 
   [[nodiscard]] const VolSurface& surface() const noexcept { return surface_; }
@@ -308,12 +337,15 @@ class VolaSession {
 
   // Constructed only via build/from_frame (VolSurface's default ctor is private,
   // so VolaSession is not default-constructible either). Takes ownership of the
-  // (optional) per-side correction caches built during `build`.
+  // (optional) per-side correction caches built during `build`, and the optional
+  // polymorphic-surface override: empty for the default eSSVI path (queries read
+  // `surface_`); populated for ConvexDense / Svi (queries read the override).
   VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
               std::vector<ParityReport>&& parity, SessionInputs in,
               const SessionDiagnostics& diag,
               std::optional<CorrectionCache>&& corr_call,
-              std::optional<CorrectionCache>&& corr_put);
+              std::optional<CorrectionCache>&& corr_put,
+              std::optional<CurveSurface>&& curve_override);
 
   // Non-owning per-side cache bundle for the query re-pricing (empty when the
   // caches were not built). Recomputed on each call so it survives a move.
@@ -329,6 +361,34 @@ class VolaSession {
   // (guaranteed — build errors on an empty surface).
   [[nodiscard]] ForwardCarry interp_forward(double T) const noexcept;
 
+  // Model-vol source, dispatching to the polymorphic override when present and to
+  // the eSSVI VolSurface otherwise. Every query (iv / fair_value / greeks /
+  // ladders) reads the model IV through here, so the convex/SVI surface flows
+  // everywhere the eSSVI surface did with no other change.
+  [[nodiscard]] double model_iv(double k_log, double T) const noexcept {
+    return curve_override_ ? curve_override_->iv(k_log, T) : surface_.iv(k_log, T);
+  }
+  [[nodiscard]] double model_w(double k_log, double T) const noexcept {
+    return curve_override_ ? curve_override_->w(k_log, T) : surface_.w(k_log, T);
+  }
+
+  // Correction cache to serve a query through, or nullptr for the cold (accurate)
+  // Andersen-Lake path. The single-carry cache is a self-consistent DE-AM round-
+  // trip surrogate; pricing an arbitrary MODEL IV through it is penny-inaccurate
+  // on carry-distant expiries (its correction is baked at one representative
+  // carry). So the high-accuracy override surface (ConvexDense) serves COLD — the
+  // price the library produces then matches the fitted surface's ~99.5% board
+  // accuracy — while the eSSVI default keeps the fast cached path unchanged
+  // (byte-identical). Band-IV inversions in value_chain stay on the cache
+  // regardless (they are diagnostic bands, and the cache is their forward map).
+  [[nodiscard]] const CorrectionCache* served_cache(Side side) const noexcept {
+    if (curve_override_.has_value()) {
+      return nullptr;
+    }
+    const CorrectionCache* const cc = query_caches().for_side(side);
+    return (cc != nullptr && cc->populated() && cc->side() == side) ? cc : nullptr;
+  }
+
   VolSurface surface_;
   std::vector<SliceContext> ctx_;      // ascending T
   std::vector<ParityReport> parity_;   // ascending T (‖ ctx_)
@@ -336,6 +396,9 @@ class VolaSession {
   SessionDiagnostics diag_;
   std::optional<CorrectionCache> corr_call_;  // empty => cold path for calls
   std::optional<CorrectionCache> corr_put_;   // empty => cold path for puts
+  // Polymorphic-surface override (ConvexDense / Svi). Empty => default eSSVI path
+  // (queries read surface_). Move-only, like the session itself.
+  std::optional<CurveSurface> curve_override_;
 };
 
 }  // namespace atx::vol

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "atx/core/error.hpp"
@@ -222,7 +223,8 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T,
 
 Result<ObsSet> build_observations_european(const Chain &chain, double S, double r,
                                            double F, double T, double df,
-                                           const CalibOpts &opts) {
+                                           const CalibOpts &opts,
+                                           const AmericanCorrectionCaches &caches) {
   if (!(S > 0.0) || !(F > 0.0) || !(T > 0.0) || !(df > 0.0) || !std::isfinite(r)) {
     return Err(ErrorCode::InvalidArgument,
                "build_observations_european: S, F, T, df must be positive");
@@ -242,8 +244,9 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // `o.mid` is the anchor premium (the raw American mid under the default Mid
     // anchor). Recover the European-equivalent lognormal vol, then restate the
     // observation entirely in European terms.
-    const Result<double> sig =
-        american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side);
+    const Result<double> sig = american_implied_vol(
+        o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::AndersenLake, 1.0e-7,
+        64, std::nullopt, caches.for_side(o.side));
     if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
       ++out.n_dropped;
       continue;
