@@ -274,6 +274,33 @@ def _pf3_s8_growth_investment_leverage_composites(conn: duckdb.DuckDBPyConnectio
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf3_s8_signal_native_factor_definitions(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF3-S8 S8-2: signal-native factor definitions for surpass axis 2."""
+
+    _upsert_factor_seed_stage(conn, "s8_2")
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'signal_native_factors',
+            'atx_warehouse',
+            'Signal-native fundamental factors',
+            'Warehouse-native PIT revisions momentum, standardization-delta, segment concentration, and footnote disclosure-change factor definitions.',
+            'factor_id',
+            'factor_definition',
+            'valid_from',
+            'source_loaded_at',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("factor_definition", "factor_dependency_edges"))
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=156,
@@ -284,5 +311,10 @@ MIGRATIONS: list[Migration] = [
         version=157,
         name="pf3_s8_growth_investment_leverage_composites",
         up=_pf3_s8_growth_investment_leverage_composites,
+    ),
+    Migration(
+        version=158,
+        name="pf3_s8_signal_native_factor_definitions",
+        up=_pf3_s8_signal_native_factor_definitions,
     ),
 ]

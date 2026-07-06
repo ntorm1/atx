@@ -8,6 +8,7 @@ import pytest
 
 from db.factors.fundamental_families import (
     compute_fundamental_factor_rows,
+    compute_signal_native_factor_rows,
     factor_seed_definitions,
     factor_seed_frame,
     load_factor_seed_specs,
@@ -303,4 +304,86 @@ def test_composite_seed_rows_round_trip_into_catalog(tmp_store) -> None:
         "gross_margin_change",
         "asset_turnover_change",
     } <= edges
+    assert dataset_row == 1
+
+
+def test_signal_native_factors_emit_and_revisions_ignore_future_vintages() -> None:
+    as_of = dt.date(2024, 3, 1)
+    revisions = pd.DataFrame(
+        [
+            {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": as_of, "value": 100.0, "available_at": pd.Timestamp("2024-01-15"), "vintage_class": "as_first_reported"},
+            {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": as_of, "value": 110.0, "available_at": pd.Timestamp("2024-02-15"), "vintage_class": "amended"},
+            {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": as_of, "value": 200.0, "available_at": pd.Timestamp("2024-04-01"), "vintage_class": "future_restatement"},
+            {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": as_of, "value": 100.0, "available_at": pd.Timestamp("2024-01-15"), "vintage_class": "as_first_reported"},
+            {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": as_of, "value": 90.0, "available_at": pd.Timestamp("2024-02-15"), "vintage_class": "amended"},
+        ]
+    )
+    standardization = pd.DataFrame(
+        [
+            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "raw_value": 100.0, "standardized_value": 90.0, "available_at": pd.Timestamp("2024-02-01"), "standardization_rule_id": "std-a"},
+            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "raw_value": 100.0, "standardized_value": 110.0, "available_at": pd.Timestamp("2024-02-01"), "standardization_rule_id": "std-b"},
+        ]
+    )
+    segments = pd.DataFrame(
+        [
+            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "segment": "cloud", "segment_revenue": 70.0, "available_at": pd.Timestamp("2024-02-01")},
+            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "segment": "devices", "segment_revenue": 30.0, "available_at": pd.Timestamp("2024-02-01")},
+            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "segment": "cloud", "segment_revenue": 50.0, "available_at": pd.Timestamp("2024-02-01")},
+            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "segment": "devices", "segment_revenue": 50.0, "available_at": pd.Timestamp("2024-02-01")},
+        ]
+    )
+    footnotes = pd.DataFrame(
+        [
+            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "footnote_count": 12, "prior_footnote_count": 10, "available_at": pd.Timestamp("2024-02-01")},
+            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "footnote_count": 9, "prior_footnote_count": 10, "available_at": pd.Timestamp("2024-02-01")},
+        ]
+    )
+
+    rows = compute_signal_native_factor_rows(
+        revisions=revisions,
+        standardization_deltas=standardization,
+        segments=segments,
+        footnotes=footnotes,
+        run_id="s8-native-run",
+    )
+    lookup = {(row.factor_id, row.security_id): row for row in rows.itertuples(index=False)}
+
+    assert set(rows["factor_id"]) == {
+        "signal_revision_momentum",
+        "signal_standardization_delta",
+        "signal_segment_revenue_concentration",
+        "signal_footnote_disclosure_change",
+    }
+    assert lookup[("signal_revision_momentum", "SEC-A")].raw_value == pytest.approx(0.10)
+    assert "future_restatement" not in json.dumps(json.loads(lookup[("signal_revision_momentum", "SEC-A")].input_lineage_json))
+    assert lookup[("signal_standardization_delta", "SEC-A")].raw_value == pytest.approx(-0.10)
+    assert lookup[("signal_segment_revenue_concentration", "SEC-A")].raw_value == pytest.approx(0.58)
+    assert lookup[("signal_footnote_disclosure_change", "SEC-A")].raw_value == pytest.approx(0.20)
+
+
+def test_signal_native_seed_rows_round_trip_into_catalog(tmp_store) -> None:
+    signal_rows = {
+        row[0]: row[1]
+        for row in tmp_store.con.execute(
+            """
+            SELECT factor_id, family
+            FROM factor_definition
+            WHERE factor_id LIKE 'signal_%'
+            """
+        ).fetchall()
+    }
+    dataset_row = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM dataset_catalog
+        WHERE dataset_id = 'signal_native_factors'
+        """
+    ).fetchone()[0]
+
+    assert signal_rows == {
+        "signal_revision_momentum": "signal_native",
+        "signal_standardization_delta": "signal_native",
+        "signal_segment_revenue_concentration": "signal_native",
+        "signal_footnote_disclosure_change": "signal_native",
+    }
     assert dataset_row == 1

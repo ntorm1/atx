@@ -394,3 +394,205 @@ def compute_fundamental_factor_rows(
     return frame[FUNDAMENTAL_FACTOR_COLUMNS].sort_values(
         ["family", "factor_id", "as_of_date", "security_id"], kind="mergesort"
     ).reset_index(drop=True)
+
+
+def _standardize_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    standardized = zscore(
+        frame.rename(columns={"raw_value": "value"}),
+        value_column="value",
+        output_column="value",
+        partition_columns=("factor_id", "as_of_date"),
+    )
+    frame = frame.copy()
+    frame["value"] = standardized["value"]
+    return frame[FUNDAMENTAL_FACTOR_COLUMNS].sort_values(
+        ["family", "factor_id", "as_of_date", "security_id"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def _native_factor_id(factor_id: str, security_id: str, as_of_date: object, available_at: object, run_id: str | None) -> str:
+    return _hash_id("signal_native_factor", factor_id, security_id, as_of_date, available_at, run_id)
+
+
+def _native_lineage(records: list[dict[str, Any]]) -> str:
+    return json_dumps(records)
+
+
+def compute_signal_native_factor_rows(
+    *,
+    revisions: pd.DataFrame | None = None,
+    standardization_deltas: pd.DataFrame | None = None,
+    segments: pd.DataFrame | None = None,
+    footnotes: pd.DataFrame | None = None,
+    run_id: str | None = None,
+    source: str = SOURCE_NAME,
+) -> pd.DataFrame:
+    """Compute signal-native factors from PIT/vintage warehouse fixtures."""
+
+    rows: list[dict[str, object]] = []
+
+    if revisions is not None and not revisions.empty:
+        rev = revisions.copy()
+        rev["as_of_date"] = pd.to_datetime(rev["as_of_date"], errors="coerce").dt.date
+        rev["available_at"] = pd.to_datetime(rev["available_at"], errors="coerce")
+        rev["value"] = pd.to_numeric(rev["value"], errors="coerce")
+        rev = rev.dropna(subset=["security_id", "metric_code", "as_of_date", "available_at", "value"])
+        rev = rev[rev["available_at"].dt.date <= rev["as_of_date"]]
+        for (security_id, as_of_date), group in rev.groupby(["security_id", "as_of_date"], sort=True):
+            group = group.sort_values(["available_at", "metric_code"], kind="mergesort")
+            if len(group) < 2:
+                continue
+            first = float(group.iloc[0]["value"])
+            last = float(group.iloc[-1]["value"])
+            if first == 0:
+                continue
+            available_at = pd.Timestamp(group["available_at"].max())
+            symbol = group["symbol"].dropna().iloc[0] if "symbol" in group.columns and not group["symbol"].dropna().empty else pd.NA
+            lineage = [
+                {
+                    "metric_code": str(row.metric_code),
+                    "available_at": pd.Timestamp(row.available_at).isoformat(),
+                    "value": float(row.value),
+                    "vintage_class": getattr(row, "vintage_class", None),
+                }
+                for row in group.itertuples(index=False)
+            ]
+            rows.append(
+                {
+                    "factor_value_id": _native_factor_id("signal_revision_momentum", security_id, as_of_date, available_at, run_id),
+                    "factor_id": "signal_revision_momentum",
+                    "factor_name": "PIT revisions momentum",
+                    "family": "signal_native",
+                    "security_id": str(security_id),
+                    "symbol": symbol,
+                    "as_of_date": as_of_date,
+                    "raw_value": (last - first) / abs(first),
+                    "available_at": available_at,
+                    "input_ids_json": json_dumps(["metric:revision_vintages"]),
+                    "input_lineage_json": _native_lineage(lineage),
+                    "is_latest_revision": True,
+                    "run_id": run_id,
+                    "source": source,
+                }
+            )
+
+    if standardization_deltas is not None and not standardization_deltas.empty:
+        std = standardization_deltas.copy()
+        std["as_of_date"] = pd.to_datetime(std["as_of_date"], errors="coerce").dt.date
+        std["available_at"] = pd.to_datetime(std["available_at"], errors="coerce")
+        std["raw_value"] = pd.to_numeric(std["raw_value"], errors="coerce")
+        std["standardized_value"] = pd.to_numeric(std["standardized_value"], errors="coerce")
+        std = std.dropna(subset=["security_id", "as_of_date", "available_at", "raw_value", "standardized_value"])
+        for row in std.itertuples(index=False):
+            if float(row.raw_value) == 0:
+                continue
+            raw_value = (float(row.standardized_value) - float(row.raw_value)) / abs(float(row.raw_value))
+            lineage = [
+                {
+                    "raw_value": float(row.raw_value),
+                    "standardized_value": float(row.standardized_value),
+                    "standardization_rule_id": getattr(row, "standardization_rule_id", None),
+                    "available_at": pd.Timestamp(row.available_at).isoformat(),
+                }
+            ]
+            rows.append(
+                {
+                    "factor_value_id": _native_factor_id("signal_standardization_delta", row.security_id, row.as_of_date, row.available_at, run_id),
+                    "factor_id": "signal_standardization_delta",
+                    "factor_name": "Standardization-delta anomaly",
+                    "family": "signal_native",
+                    "security_id": str(row.security_id),
+                    "symbol": getattr(row, "symbol", pd.NA),
+                    "as_of_date": row.as_of_date,
+                    "raw_value": raw_value,
+                    "available_at": pd.Timestamp(row.available_at),
+                    "input_ids_json": json_dumps(["metric:standardization_delta"]),
+                    "input_lineage_json": _native_lineage(lineage),
+                    "is_latest_revision": True,
+                    "run_id": run_id,
+                    "source": source,
+                }
+            )
+
+    if segments is not None and not segments.empty:
+        seg = segments.copy()
+        seg["as_of_date"] = pd.to_datetime(seg["as_of_date"], errors="coerce").dt.date
+        seg["available_at"] = pd.to_datetime(seg["available_at"], errors="coerce")
+        seg["segment_revenue"] = pd.to_numeric(seg["segment_revenue"], errors="coerce")
+        seg = seg.dropna(subset=["security_id", "as_of_date", "available_at", "segment_revenue"])
+        for (security_id, as_of_date), group in seg.groupby(["security_id", "as_of_date"], sort=True):
+            total = float(group["segment_revenue"].sum())
+            if total <= 0:
+                continue
+            shares = group["segment_revenue"] / total
+            available_at = pd.Timestamp(group["available_at"].max())
+            symbol = group["symbol"].dropna().iloc[0] if "symbol" in group.columns and not group["symbol"].dropna().empty else pd.NA
+            lineage = [
+                {
+                    "segment": getattr(row, "segment", None),
+                    "segment_revenue": float(row.segment_revenue),
+                    "available_at": pd.Timestamp(row.available_at).isoformat(),
+                }
+                for row in group.itertuples(index=False)
+            ]
+            rows.append(
+                {
+                    "factor_value_id": _native_factor_id("signal_segment_revenue_concentration", security_id, as_of_date, available_at, run_id),
+                    "factor_id": "signal_segment_revenue_concentration",
+                    "factor_name": "Segment revenue concentration",
+                    "family": "signal_native",
+                    "security_id": str(security_id),
+                    "symbol": symbol,
+                    "as_of_date": as_of_date,
+                    "raw_value": float((shares**2).sum()),
+                    "available_at": available_at,
+                    "input_ids_json": json_dumps(["metric:segment_revenue"]),
+                    "input_lineage_json": _native_lineage(lineage),
+                    "is_latest_revision": True,
+                    "run_id": run_id,
+                    "source": source,
+                }
+            )
+
+    if footnotes is not None and not footnotes.empty:
+        foot = footnotes.copy()
+        foot["as_of_date"] = pd.to_datetime(foot["as_of_date"], errors="coerce").dt.date
+        foot["available_at"] = pd.to_datetime(foot["available_at"], errors="coerce")
+        foot["footnote_count"] = pd.to_numeric(foot["footnote_count"], errors="coerce")
+        foot["prior_footnote_count"] = pd.to_numeric(foot["prior_footnote_count"], errors="coerce")
+        foot = foot.dropna(subset=["security_id", "as_of_date", "available_at", "footnote_count", "prior_footnote_count"])
+        for row in foot.itertuples(index=False):
+            if float(row.prior_footnote_count) == 0:
+                continue
+            raw_value = (float(row.footnote_count) - float(row.prior_footnote_count)) / abs(float(row.prior_footnote_count))
+            lineage = [
+                {
+                    "footnote_count": float(row.footnote_count),
+                    "prior_footnote_count": float(row.prior_footnote_count),
+                    "available_at": pd.Timestamp(row.available_at).isoformat(),
+                }
+            ]
+            rows.append(
+                {
+                    "factor_value_id": _native_factor_id("signal_footnote_disclosure_change", row.security_id, row.as_of_date, row.available_at, run_id),
+                    "factor_id": "signal_footnote_disclosure_change",
+                    "factor_name": "Footnote disclosure change",
+                    "family": "signal_native",
+                    "security_id": str(row.security_id),
+                    "symbol": getattr(row, "symbol", pd.NA),
+                    "as_of_date": row.as_of_date,
+                    "raw_value": raw_value,
+                    "available_at": pd.Timestamp(row.available_at),
+                    "input_ids_json": json_dumps(["metric:footnote_disclosure_count"]),
+                    "input_lineage_json": _native_lineage(lineage),
+                    "is_latest_revision": True,
+                    "run_id": run_id,
+                    "source": source,
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=FUNDAMENTAL_FACTOR_COLUMNS)
+    return _standardize_rows(pd.DataFrame(rows))
