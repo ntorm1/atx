@@ -148,6 +148,24 @@ def compute_forward_returns(prices: pd.DataFrame, horizons: Iterable[int] = IC_H
     return result.loc[:, columns]
 
 
+def _normalize_asof(frame: pd.DataFrame) -> pd.DataFrame:
+    """Coerce ``as_of_date`` to one canonical dtype (midnight-normalized datetime64).
+
+    A panel read from DuckDB via ``.df()`` carries ``as_of_date`` as ``datetime64``, while
+    ``compute_forward_returns`` emits it as ``datetime.date`` objects (object dtype). Merging
+    the two on ``as_of_date`` otherwise raises ``ValueError: You are trying to merge on
+    datetime64[...] and object columns``. Normalizing BOTH sides to the same representation
+    before every panel x forward_returns merge closes that gap. Deterministic and row-order
+    preserving (no sort side effects); returns a copy, never mutating the caller's frame.
+    """
+
+    if "as_of_date" not in frame.columns:
+        return frame
+    out = frame.copy()
+    out["as_of_date"] = pd.to_datetime(out["as_of_date"]).dt.normalize()
+    return out
+
+
 def _rank_corr(values: pd.Series, targets: pd.Series) -> tuple[float, int]:
     """Spearman rank correlation of ``values``/``targets`` via Pearson-of-ranks (scipy-free)."""
 
@@ -280,8 +298,15 @@ def compute_information_coefficient(
     if panel is None or forward_returns is None or panel.empty or forward_returns.empty:
         return _empty_ic_result()
 
-    merged = panel.loc[:, ["security_id", "as_of_date", "factor_id", "value"]].merge(
-        forward_returns.loc[:, ["security_id", "as_of_date", "horizon", "forward_return"]],
+    # Normalize as_of_date on BOTH frames to one dtype before merging: the panel (from
+    # DuckDB) is datetime64 while forward_returns (from compute_forward_returns) is
+    # datetime.date objects, and pandas refuses to merge across that dtype mismatch.
+    panel_norm = _normalize_asof(panel.loc[:, ["security_id", "as_of_date", "factor_id", "value"]])
+    forward_norm = _normalize_asof(
+        forward_returns.loc[:, ["security_id", "as_of_date", "horizon", "forward_return"]]
+    )
+    merged = panel_norm.merge(
+        forward_norm,
         on=["security_id", "as_of_date"],
         how="inner",
     )
@@ -473,10 +498,12 @@ def _replace_rows(
 ) -> int:
     """Idempotent DELETE-then-``insert_frame`` replace, keyed by ``key_columns``.
 
-    Mirrors ``db.alpha_research``'s manifest discipline. Uses ``IS NOT DISTINCT FROM``
-    (rather than plain ``=``) so a nullable key column (e.g. ``run_id``) still matches
-    NULL-to-NULL -- required for ``factor_ic``/``factor_ic_decay`` idempotency when
-    ``run_id`` is not supplied.
+    Mirrors ``db.alpha_research``'s manifest discipline. This is a deliberate null-safe
+    variant of ``db.warehouse.replace_by_relation``: that sibling helper keys its DELETE on
+    ``coalesce(cast(col AS VARCHAR), '')``, which conflates SQL NULL with the empty string,
+    whereas here we use ``IS NOT DISTINCT FROM`` so a nullable natural-key component
+    (``run_id``) matches NULL-to-NULL without collapsing NULL and '' -- required for
+    ``factor_ic``/``factor_ic_decay`` idempotency when ``run_id`` is not supplied.
     """
 
     if frame.empty:

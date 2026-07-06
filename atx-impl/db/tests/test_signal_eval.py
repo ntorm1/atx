@@ -82,6 +82,33 @@ def test_compute_ic_is_order_invariant() -> None:
     pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
 
 
+def test_compute_ic_handles_mixed_asof_dtypes() -> None:
+    # Regression: the panel arrives from DuckDB `.df()` with as_of_date as datetime64,
+    # while compute_forward_returns emits as_of_date as datetime.date objects (object dtype).
+    # Merging the two on as_of_date must NOT raise
+    #   "ValueError: You are trying to merge on datetime64[us] and object columns".
+    rng = np.random.default_rng(5)
+    dates = _dates(12)
+    secs = [f"S{i}" for i in range(10)]
+    panel_rows, fr_rows = [], []
+    for d in dates:
+        for s in secs:
+            v = rng.normal()
+            panel_rows.append({"security_id": s, "as_of_date": d, "factor_id": "mixed", "value": v})
+            for h in IC_HORIZONS:
+                fr_rows.append({"security_id": s, "as_of_date": d, "horizon": h,
+                                "forward_return": v + rng.normal()})
+    panel = pd.DataFrame(panel_rows)
+    panel["as_of_date"] = pd.to_datetime(panel["as_of_date"])          # datetime64, like DuckDB .df()
+    forward_returns = pd.DataFrame(fr_rows)                            # as_of_date stays datetime.date (object)
+    assert pd.api.types.is_datetime64_any_dtype(panel["as_of_date"])
+    assert forward_returns["as_of_date"].dtype == object
+    result = compute_information_coefficient(panel, forward_returns)   # must not raise
+    assert isinstance(result, IcResult)
+    assert not result.ic.empty
+    assert (result.ic["n_dates"] > 0).all()
+
+
 def test_compute_forward_returns_from_prices() -> None:
     prices = pd.DataFrame({
         "security_id": ["S"] * 5,
