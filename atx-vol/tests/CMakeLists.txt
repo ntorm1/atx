@@ -56,6 +56,7 @@ add_executable(atx-vol-tests
     lifecycle_integration_test.cpp
     corpus_test.cpp
     dispersion_test.cpp
+    backtest_test.cpp
 )
 
 target_link_libraries(atx-vol-tests

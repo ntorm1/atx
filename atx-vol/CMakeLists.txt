@@ -66,6 +66,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/portfolio_pricer.cpp
     src/corpus.cpp
     src/dispersion.cpp
+    src/backtest.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
