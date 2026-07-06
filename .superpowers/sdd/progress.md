@@ -1,8 +1,8 @@
 # PF3 SDD Progress
 
 Controller: Codex
-Worktree: `C:\atx-wt\pf3-s8`
-Branch: `feat/pf3-s8`
+Worktree: `C:\atx-wt\pf3-s9`
+Branch: `feat/pf3-s9`
 Updated: 2026-07-05 America/New_York
 
 ## Landed Before This Worktree
@@ -13,7 +13,8 @@ Updated: 2026-07-05 America/New_York
 - PF3-S4 PIT universe + historical price backfill client: merged to `main`.
 - PF3-S5 valuation input completeness: merged to `main` at `6a33e86`.
 - PF3-S6 ratio & metric engine v2: completed on `feat/pf3-s6` through `29d2cc1`. This S7 worktree is stacked on `feat/pf3-s6` because the primary tree is currently on an unrelated dirty branch and the helper finish merge could not be run safely from it.
-- PF3-S7 factor framework + PIT engine: completed on `feat/pf3-s7` through `f8aa3fa`. This S8 worktree is stacked on `feat/pf3-s7` for the same primary-tree isolation reason.
+- PF3-S7 factor framework + PIT engine: completed on `feat/pf3-s7` through `f8aa3fa`. The S8 worktree was stacked on `feat/pf3-s7` for the same primary-tree isolation reason.
+- PF3-S8 fundamental factor families: completed on `feat/pf3-s8` through `1bcbe22`. This S9 worktree is stacked on `feat/pf3-s8` while the primary tree remains on an unrelated dirty branch.
 
 ## PF3-S6 - Ratio & Metric Engine V2
 
@@ -35,6 +36,13 @@ Updated: 2026-07-05 America/New_York
 - S8-1 - Growth / investment / leverage + named composites: done. Controller extended the staged seed with growth, investment, leverage, Piotroski F-score, Altman Z-score, and Sloan accrual rows; migration 0157 seeds those definitions/edges; compute tests reconcile the named composites and verify missing-leg withholding.
 - S8-2 - Signal-native factors: done. Controller added signal-native seed rows and pure compute for PIT revisions momentum, standardization-delta anomaly, segment revenue concentration, and footnote disclosure change, including a planted future-restatement fixture proving revisions momentum ignores unavailable future vintages.
 - S8-3 - Family panels + lineage + gated checks: done. Controller added the `fundamental_factor_values` panel table, `v_fundamental_factor_family_catalog`, lineage-completeness and family-coverage gate helpers, and critical `quality_check_registry` rows with green/red planted fixture tests.
+
+## PF3-S9 - Cross-Domain Factors + Unified Namespace
+
+- S9-0 - Price/liquidity factor integration: done. Controller added `db.factors.cross_domain` with pure `equity_price_metrics` mappers for momentum, volatility, liquidity, beta, idiosyncratic vol, distance-from-high, and drawdown factors; native price-surface ranks are carried as diagnostics and cross-checked against S7 percent-rank output. Migration 0160 seeds price/liquidity definitions and source dependency edges into the S7 catalog plus `v_cross_domain_price_liquidity_factor_catalog`.
+- S9-1 - Estimate-revision + 13F-flow factors: not started.
+- S9-2 - Short-interest + insider factors: not started.
+- S9-3 - Unified namespace assembly + consistency gates: not started.
 
 ## Verification
 
@@ -119,6 +127,13 @@ Updated: 2026-07-05 America/New_York
 - `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S8-3.
 - `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S8-3.
 - `git diff --check` passed after S8-3 with Git LF/CRLF normalization warnings only.
+- `python -m py_compile db\factors\cross_domain.py db\migrations\bodies_0160_0163.py db\tests\test_cross_domain_factors.py` passed after S9-0.
+- `python -m pytest db\tests\test_cross_domain_factors.py -q -n0` passed after S9-0.
+- `python -m pytest db\tests\test_migrations.py -q -n0 -k "migrations_ordered_ascending or migrations_unique_versions"` passed after S9-0.
+- `python -m pytest db\tests\test_schema_contract_v2.py -q -n0 -k "version_table_pins"` passed after S9-0.
+- `python -m pytest db\tests\test_schema_contract.py -q -n0 -k "complete_manifest or non_contract_fact_table_marks_present_pit_columns or every_pit_marked_table"` passed after S9-0.
+- `python -m pytest db\tests\test_module_boundaries.py -q -n0 -k public_api_snapshot_matches_pinned_fixture` passed after S9-0.
+- `git diff --check` passed after S9-0 with Git LF/CRLF normalization warnings only.
 
 ## Live Smoke
 
