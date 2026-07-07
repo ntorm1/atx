@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .connection import DEFAULT_DB_PATH, connect  # noqa: F401  (re-exported per interfaces contract)
+from .quality import QualityResult, _registry_allows_check  # noqa: F401  (gated factor DQC, PF4-S1-3)
 from .warehouse import insert_frame, json_dumps, quality_check  # noqa: F401  (quality_check reused by later tasks)
 
 
@@ -104,6 +105,19 @@ _BREADTH_COLUMNS = [
     "coverage_fraction",
     "effective_breadth",
     "available_at",
+]
+
+_LEAKAGE_COLUMNS = ["factor_id", "abs_corr", "threshold", "is_leaky"]
+_COVERAGE_COLUMNS = ["factor_id", "coverage_fraction", "min_fraction", "is_undercovered"]
+_FACTOR_DQC_RESULT_COLUMNS = [
+    "check_name",
+    "factor_id",
+    "status",
+    "observed_value",
+    "threshold_value",
+    "severity",
+    "details_json",
+    "run_id",
 ]
 
 _FACTOR_EVAL_MANIFEST_COLUMNS = [
@@ -851,6 +865,134 @@ def compute_breadth(panel: pd.DataFrame, universe_counts: pd.DataFrame | None = 
     return result.sort_values(["factor_id", "as_of_date"], kind="stable").reset_index(drop=True)
 
 
+def _empty_leakage() -> pd.DataFrame:
+    return pd.DataFrame(columns=_LEAKAGE_COLUMNS)
+
+
+def compute_leakage(
+    panel: pd.DataFrame,
+    same_day_returns: pd.DataFrame,
+    *,
+    threshold: float = DEFAULT_LEAKAGE_ABS_CORR_THRESHOLD,
+) -> pd.DataFrame:
+    """Per-factor pooled |Pearson corr| between the factor value and the SAME-DAY (t+0) return.
+
+    ``panel``: security_id, as_of_date, factor_id, value.
+    ``same_day_returns``: security_id, as_of_date, same_day_return -- the return realized
+    AT ``as_of_date`` (contemporaneous, NOT a forward/future return). This t+0 return is used
+    here purely as an adversarial leakage probe: it is never a scoring target (unlike
+    ``compute_information_coefficient``'s forward returns) and is never fed back into any
+    factor value.
+
+    Merges on ``(security_id, as_of_date)``; per ``factor_id`` computes ONE pooled Pearson
+    correlation across every merged (value, same_day_return) pair for that factor -- unlike
+    the rank-IC surface, this is deliberately NOT aggregated per as-of-date first, because the
+    failure mode under test is a factor that IS (or is a near-copy of) the contemporaneous
+    return, which a single pooled statistic over all names/dates catches directly.
+    ``is_leaky = abs_corr > threshold``. A factor with fewer than 2 valid pairs or with no
+    variance in either series has an undefined (NaN) correlation and is conservatively NOT
+    flagged leaky (``is_leaky = False``) rather than flagged on a degenerate statistic.
+    Stable-sorted by ["factor_id"] with a reset index so identical inputs (any row order)
+    reproduce byte-identical rows.
+    """
+
+    if panel is None or same_day_returns is None or panel.empty or same_day_returns.empty:
+        return _empty_leakage()
+
+    panel_norm = _normalize_asof(panel.loc[:, ["security_id", "as_of_date", "factor_id", "value"]])
+    returns_norm = _normalize_asof(
+        same_day_returns.loc[:, ["security_id", "as_of_date", "same_day_return"]]
+    )
+    merged = panel_norm.merge(returns_norm, on=["security_id", "as_of_date"], how="inner")
+    merged = merged.dropna(subset=["value", "same_day_return"])
+    if merged.empty:
+        return _empty_leakage()
+
+    rows: list[dict[str, Any]] = []
+    for factor_id, group in merged.groupby("factor_id", sort=True):
+        if (
+            len(group) < 2
+            or group["value"].nunique() < 2
+            or group["same_day_return"].nunique() < 2
+        ):
+            abs_corr = float("nan")
+        else:
+            corr = float(group["value"].corr(group["same_day_return"]))
+            abs_corr = abs(corr) if not math.isnan(corr) else float("nan")
+        is_leaky = bool(abs_corr > threshold) if not math.isnan(abs_corr) else False
+        rows.append(
+            {
+                "factor_id": factor_id,
+                "abs_corr": abs_corr,
+                "threshold": float(threshold),
+                "is_leaky": is_leaky,
+            }
+        )
+    result = pd.DataFrame(rows, columns=_LEAKAGE_COLUMNS)
+    return result.sort_values(["factor_id"], kind="stable").reset_index(drop=True)
+
+
+def _empty_coverage() -> pd.DataFrame:
+    return pd.DataFrame(columns=_COVERAGE_COLUMNS)
+
+
+def compute_coverage(
+    panel: pd.DataFrame,
+    universe_counts: pd.DataFrame,
+    *,
+    min_fraction: float = DEFAULT_COVERAGE_MIN_FRACTION,
+) -> pd.DataFrame:
+    """Per-factor mean-over-dates coverage of the as-of universe.
+
+    ``panel``: security_id, as_of_date, factor_id, value.
+    ``universe_counts``: as_of_date, universe_size -- the as-of universe membership size
+    (NOT a pooled roster; the same as-of-only contract ``compute_breadth`` documents).
+
+    Per ``(factor_id, as_of_date)``: ``date_fraction = n_non_null / universe_size``. Per
+    ``factor_id``: ``coverage_fraction`` is the mean of that per-date fraction across every
+    as_of_date the factor has any row for AND that has a known universe_size (a date with no
+    universe_size is skipped -- the fraction is undefined there, not zero). Dates the factor
+    has no row for at all are likewise simply absent from the mean, mirroring
+    ``compute_breadth``'s per-group aggregation. ``is_undercovered = coverage_fraction <
+    min_fraction``. Stable-sorted by ["factor_id"] with a reset index so identical inputs
+    (any row order) reproduce byte-identical rows.
+    """
+
+    if panel is None or panel.empty or universe_counts is None or universe_counts.empty:
+        return _empty_coverage()
+
+    frame = panel.loc[:, ["security_id", "as_of_date", "factor_id", "value"]].copy()
+    frame = _normalize_asof(frame)
+    per_date = (
+        frame.groupby(["factor_id", "as_of_date"], sort=True)
+        .agg(n_non_null=("value", "count"))
+        .reset_index()
+    )
+
+    uni = universe_counts.loc[:, ["as_of_date", "universe_size"]].copy()
+    uni = _normalize_asof(uni)
+    merged = per_date.merge(uni, on="as_of_date", how="inner")
+    merged = merged[merged["universe_size"] > 0]
+    if merged.empty:
+        return _empty_coverage()
+    merged = merged.copy()
+    merged["date_fraction"] = merged["n_non_null"] / merged["universe_size"]
+
+    rows: list[dict[str, Any]] = []
+    for factor_id, group in merged.groupby("factor_id", sort=True):
+        coverage_fraction = float(group["date_fraction"].mean())
+        rows.append(
+            {
+                "factor_id": factor_id,
+                "coverage_fraction": coverage_fraction,
+                "min_fraction": float(min_fraction),
+                "is_undercovered": bool(coverage_fraction < min_fraction),
+            }
+        )
+    result = pd.DataFrame(rows, columns=_COVERAGE_COLUMNS)
+    return result.sort_values(["factor_id"], kind="stable").reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # panel read (read-only) + persistence + orchestration (DuckDB)
 # ---------------------------------------------------------------------------
@@ -1586,3 +1728,384 @@ def evaluate_panel(
             counts[table] = counts.get(table, 0) + count
 
     return counts
+
+
+# ---------------------------------------------------------------------------
+# gated factor DQC (leakage + coverage) -- PF4-S1-3
+# ---------------------------------------------------------------------------
+
+
+def _relation_row_count(store, relation_name: str) -> int | None:
+    """Row count of ``relation_name`` (table or view), or ``None`` if it does not exist.
+
+    Mirrors ``db.factor_panel``'s ``_duckdb_columns``/``_table_or_view_exists`` helpers:
+    querying ``duckdb_columns()`` catalog metadata (which works uniformly for both tables
+    and views) rather than a bare ``SELECT`` that would raise on a missing object.
+    """
+
+    columns = store.con.execute(
+        """
+        SELECT column_name
+        FROM duckdb_columns()
+        WHERE schema_name = 'main' AND table_name = ?
+        LIMIT 1
+        """,
+        [relation_name],
+    ).fetchall()
+    if not columns:
+        return None
+    return int(store.con.execute(f"SELECT count(*) FROM {relation_name}").fetchone()[0])
+
+
+def _derive_same_day_returns_from_prices(store) -> pd.DataFrame:
+    """Contemporaneous (t+0) return per (security_id, as_of_date) from ``equity_daily_bars``.
+
+    Used ONLY by the leakage DQC probe -- never as a scoring target, never fed back into
+    any factor value.
+    """
+
+    return store.con.execute(
+        """
+        SELECT
+            security_id,
+            trade_date AS as_of_date,
+            close / lag(close) OVER (PARTITION BY security_id ORDER BY trade_date) - 1
+                AS same_day_return
+        FROM equity_daily_bars
+        WHERE close IS NOT NULL
+        ORDER BY security_id, trade_date
+        """
+    ).df()
+
+
+def _derive_universe_counts(
+    store, panel: pd.DataFrame, *, universe_id: str = DEFAULT_UNIVERSE_ID
+) -> pd.DataFrame:
+    """As-of universe membership size for every ``as_of_date`` present in ``panel``.
+
+    Read-only, PIT-correct join against ``universe_membership`` (mirrors the membership
+    predicate ``db.factor_panel.factor_panel_export_gate_report`` uses): a date absent from
+    ``universe_membership`` or with the table missing entirely yields an empty frame, which
+    ``compute_coverage`` treats as "coverage undefined for that date" rather than zero.
+    """
+
+    columns = ["as_of_date", "universe_size"]
+    if panel is None or panel.empty:
+        return pd.DataFrame(columns=columns)
+    if not _relation_row_count(store, "universe_membership"):
+        return pd.DataFrame(columns=columns)
+
+    dates = sorted(pd.to_datetime(panel["as_of_date"]).dt.date.unique())
+    if not dates:
+        return pd.DataFrame(columns=columns)
+
+    store.con.register("signal_eval_coverage_dates", pd.DataFrame({"as_of_date": dates}))
+    try:
+        return store.con.execute(
+            """
+            SELECT
+                d.as_of_date,
+                count(DISTINCT u.security_id) AS universe_size
+            FROM signal_eval_coverage_dates d
+            LEFT JOIN universe_membership u
+              ON u.universe_id = ?
+             AND u.valid_from <= d.as_of_date
+             AND (u.valid_to IS NULL OR u.valid_to >= d.as_of_date)
+             AND u.as_of_date <= d.as_of_date
+             AND u.is_member
+             AND u.is_latest_revision
+             AND (u.available_at IS NULL OR CAST(u.available_at AS DATE) <= d.as_of_date)
+            GROUP BY d.as_of_date
+            ORDER BY d.as_of_date
+            """,
+            [universe_id],
+        ).df()
+    finally:
+        store.con.unregister("signal_eval_coverage_dates")
+
+
+def factor_leakage_report(
+    store,
+    *,
+    panel: pd.DataFrame | None = None,
+    same_day_returns: pd.DataFrame | None = None,
+    threshold: float = DEFAULT_LEAKAGE_ABS_CORR_THRESHOLD,
+) -> dict[str, object]:
+    """Gate-report shape (mirrors ``factor_panel_export_gate_report``) over ``compute_leakage``.
+
+    Uses injected ``panel``/``same_day_returns`` when supplied (offline fixtures, tests);
+    otherwise reads ``v_factor_panel`` read-only via ``load_panel_for_eval`` and derives the
+    same-day return from ``equity_daily_bars``. Returns
+    ``{"violation_count": float(n_leaky), "rows": [...]}``.
+    """
+
+    if panel is None:
+        panel = load_panel_for_eval(store)
+    if same_day_returns is None:
+        same_day_returns = _derive_same_day_returns_from_prices(store)
+
+    leakage = compute_leakage(panel, same_day_returns, threshold=threshold)
+    leaky = leakage[leakage["is_leaky"].astype(bool)] if not leakage.empty else leakage
+    rows = [
+        {
+            "factor_id": row["factor_id"],
+            "abs_corr": None if pd.isna(row["abs_corr"]) else float(row["abs_corr"]),
+            "threshold": float(row["threshold"]),
+        }
+        for _, row in leaky.iterrows()
+    ]
+    return {"violation_count": float(len(rows)), "rows": rows}
+
+
+def factor_coverage_report(
+    store,
+    *,
+    panel: pd.DataFrame | None = None,
+    universe_counts: pd.DataFrame | None = None,
+    min_fraction: float = DEFAULT_COVERAGE_MIN_FRACTION,
+) -> dict[str, object]:
+    """Gate-report shape (mirrors ``factor_panel_export_gate_report``) over ``compute_coverage``.
+
+    Uses injected ``panel``/``universe_counts`` when supplied (offline fixtures, tests);
+    otherwise reads ``v_factor_panel`` read-only via ``load_panel_for_eval`` and derives
+    ``universe_counts`` from the as-of ``universe_membership`` roster. Returns
+    ``{"violation_count": float(n_undercovered), "rows": [...]}``.
+    """
+
+    if panel is None:
+        panel = load_panel_for_eval(store)
+    if universe_counts is None:
+        universe_counts = _derive_universe_counts(store, panel)
+
+    coverage = compute_coverage(panel, universe_counts, min_fraction=min_fraction)
+    undercovered = (
+        coverage[coverage["is_undercovered"].astype(bool)] if not coverage.empty else coverage
+    )
+    rows = [
+        {
+            "factor_id": row["factor_id"],
+            "coverage_fraction": (
+                None if pd.isna(row["coverage_fraction"]) else float(row["coverage_fraction"])
+            ),
+            "min_fraction": float(row["min_fraction"]),
+        }
+        for _, row in undercovered.iterrows()
+    ]
+    return {"violation_count": float(len(rows)), "rows": rows}
+
+
+def _dqc_check_requested(
+    check_name: str,
+    *,
+    requested_checks: Iterable[str] | None,
+    requested_datasets: Iterable[str] | None,
+) -> bool:
+    """Mirrors the ``PANEL_EXPORT_GATE_CHECK_NAME`` request-filter logic in ``db.quality._runner``."""
+
+    return (
+        (requested_checks is None and requested_datasets is None)
+        or (requested_checks is not None and check_name in requested_checks)
+        or (requested_datasets is not None and "factor_panel" in requested_datasets)
+    )
+
+
+def _skipped_dqc_result(check_name: str, *, checked_at: Any, reason: str) -> "QualityResult":
+    return QualityResult(
+        dataset_id="factor_panel",
+        table_name="v_factor_panel",
+        check_name=check_name,
+        status="skipped",
+        observed_value=None,
+        threshold_value=0.0,
+        details={"checked_at": checked_at.isoformat(), "reason": reason},
+        severity="critical",
+    )
+
+
+def signal_eval_dqc_results(
+    store,
+    *,
+    registry,
+    requested_checks,
+    requested_datasets,
+    checked_at,
+) -> list["QualityResult"]:
+    """The two clause-G gated factor DQC checks (leakage, coverage), gate-ready.
+
+    Mirrors the ``PANEL_EXPORT_GATE_CHECK_NAME`` block in ``db.quality._runner``: each check
+    is gated by ``_registry_allows_check`` plus the same requested-checks/requested-datasets
+    filter logic, and emits 0/1/2 ``QualityResult`` rows total. If ``v_factor_panel`` or
+    ``equity_daily_bars`` does not exist at all, the corresponding check is emitted as
+    ``status="skipped"`` (mirrors ``warn_if_missing``) so a warehouse that predates these
+    objects never spuriously halts the gate. An EMPTY-but-present relation (e.g. a freshly
+    migrated, not-yet-populated warehouse) is deliberately NOT special-cased here: it flows
+    into ``factor_leakage_report``/``factor_coverage_report`` as normal, whose underlying
+    ``compute_leakage``/``compute_coverage`` calls already return an empty result frame for
+    empty input, which naturally resolves to ``violation_count == 0`` -> ``status="passed"``
+    -- this keeps ``status`` within the same ``{"passed", "failed", "warning"}`` vocabulary
+    every other production check in the sweep already uses, rather than introducing a new
+    literal for a case ("no data yet") that is not actually a violation. Both checks read the
+    panel read-only via ``factor_leakage_report``/``factor_coverage_report``; recording
+    results to ``data_quality_checks`` is the runner's job (``_record_quality_result``),
+    matching every other check in the sweep -- this function has no side effects of its own.
+    """
+
+    results: list[QualityResult] = []
+
+    panel_rows = _relation_row_count(store, "v_factor_panel")
+    bars_rows = _relation_row_count(store, "equity_daily_bars")
+    panel_exists = panel_rows is not None
+    bars_exists = bars_rows is not None
+
+    if _registry_allows_check(LEAKAGE_DQC_CHECK_NAME, registry) and _dqc_check_requested(
+        LEAKAGE_DQC_CHECK_NAME,
+        requested_checks=requested_checks,
+        requested_datasets=requested_datasets,
+    ):
+        if not (panel_exists and bars_exists):
+            results.append(
+                _skipped_dqc_result(
+                    LEAKAGE_DQC_CHECK_NAME,
+                    checked_at=checked_at,
+                    reason="v_factor_panel or equity_daily_bars does not exist",
+                )
+            )
+        else:
+            report = factor_leakage_report(store, threshold=DEFAULT_LEAKAGE_ABS_CORR_THRESHOLD)
+            observed_value = float(report["violation_count"])
+            results.append(
+                QualityResult(
+                    dataset_id="factor_panel",
+                    table_name="v_factor_panel",
+                    check_name=LEAKAGE_DQC_CHECK_NAME,
+                    status="passed" if observed_value == 0.0 else "failed",
+                    observed_value=observed_value,
+                    threshold_value=0.0,
+                    details={"checked_at": checked_at.isoformat(), "rows": report["rows"]},
+                    severity="critical",
+                )
+            )
+
+    if _registry_allows_check(COVERAGE_DQC_CHECK_NAME, registry) and _dqc_check_requested(
+        COVERAGE_DQC_CHECK_NAME,
+        requested_checks=requested_checks,
+        requested_datasets=requested_datasets,
+    ):
+        if not panel_exists:
+            results.append(
+                _skipped_dqc_result(
+                    COVERAGE_DQC_CHECK_NAME,
+                    checked_at=checked_at,
+                    reason="v_factor_panel does not exist",
+                )
+            )
+        else:
+            report = factor_coverage_report(store, min_fraction=DEFAULT_COVERAGE_MIN_FRACTION)
+            observed_value = float(report["violation_count"])
+            results.append(
+                QualityResult(
+                    dataset_id="factor_panel",
+                    table_name="v_factor_panel",
+                    check_name=COVERAGE_DQC_CHECK_NAME,
+                    status="passed" if observed_value == 0.0 else "failed",
+                    observed_value=observed_value,
+                    threshold_value=0.0,
+                    details={"checked_at": checked_at.isoformat(), "rows": report["rows"]},
+                    severity="critical",
+                )
+            )
+
+    return results
+
+
+def _leakage_to_dqc_rows(leakage: pd.DataFrame, *, run_id: str | None) -> pd.DataFrame:
+    if leakage is None or leakage.empty:
+        return pd.DataFrame(columns=_FACTOR_DQC_RESULT_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for _, row in leakage.iterrows():
+        abs_corr = None if pd.isna(row["abs_corr"]) else float(row["abs_corr"])
+        is_leaky = bool(row["is_leaky"])
+        rows.append(
+            {
+                "check_name": LEAKAGE_DQC_CHECK_NAME,
+                "factor_id": row["factor_id"],
+                "status": "failed" if is_leaky else "passed",
+                "observed_value": abs_corr,
+                "threshold_value": float(row["threshold"]),
+                "severity": "critical",
+                "details_json": json_dumps({"abs_corr": abs_corr, "is_leaky": is_leaky}),
+                "run_id": run_id,
+            }
+        )
+    return pd.DataFrame(rows, columns=_FACTOR_DQC_RESULT_COLUMNS)
+
+
+def _coverage_to_dqc_rows(coverage: pd.DataFrame, *, run_id: str | None) -> pd.DataFrame:
+    if coverage is None or coverage.empty:
+        return pd.DataFrame(columns=_FACTOR_DQC_RESULT_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for _, row in coverage.iterrows():
+        coverage_fraction = (
+            None if pd.isna(row["coverage_fraction"]) else float(row["coverage_fraction"])
+        )
+        is_undercovered = bool(row["is_undercovered"])
+        rows.append(
+            {
+                "check_name": COVERAGE_DQC_CHECK_NAME,
+                "factor_id": row["factor_id"],
+                "status": "failed" if is_undercovered else "passed",
+                "observed_value": coverage_fraction,
+                "threshold_value": float(row["min_fraction"]),
+                "severity": "critical",
+                "details_json": json_dumps(
+                    {"coverage_fraction": coverage_fraction, "is_undercovered": is_undercovered}
+                ),
+                "run_id": run_id,
+            }
+        )
+    return pd.DataFrame(rows, columns=_FACTOR_DQC_RESULT_COLUMNS)
+
+
+def persist_factor_dqc(
+    store,
+    *,
+    leakage: pd.DataFrame | None = None,
+    coverage: pd.DataFrame | None = None,
+    run_id: str | None = None,
+) -> dict[str, int]:
+    """Persist per-factor leakage/coverage DQC detail rows into ``factor_dqc_result``.
+
+    ``leakage``/``coverage`` are the per-factor frames from ``compute_leakage``/
+    ``compute_coverage`` (either may be omitted/empty to persist only the other half). This
+    is the per-factor AUDIT TRAIL for the two gated checks -- distinct from (and
+    complementary to) the aggregate ``QualityResult`` rows ``signal_eval_dqc_results``
+    returns, which the runner records into ``data_quality_checks`` via
+    ``_record_quality_result``. Idempotent DELETE-then-insert keyed on
+    ``(check_name, factor_id, run_id)``, mirroring every other ``persist_*`` helper in this
+    module.
+    """
+
+    frames = [
+        frame
+        for frame in (
+            _leakage_to_dqc_rows(leakage, run_id=run_id) if leakage is not None else None,
+            _coverage_to_dqc_rows(coverage, run_id=run_id) if coverage is not None else None,
+        )
+        if frame is not None and not frame.empty
+    ]
+    if not frames:
+        return {"factor_dqc_result": 0}
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.sort_values(["check_name", "factor_id"], kind="stable").reset_index(drop=True)
+
+    with store.transaction():
+        count = _replace_rows(
+            store,
+            combined,
+            table="factor_dqc_result",
+            relation_name="factor_dqc_result_load",
+            key_columns=("check_name", "factor_id", "run_id"),
+        )
+
+    return {"factor_dqc_result": count}

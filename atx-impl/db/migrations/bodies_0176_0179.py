@@ -250,9 +250,53 @@ def _pf4_s1_correlation_breadth(conn: duckdb.DuckDBPyConnection) -> None:
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf4_s1_factor_dqc(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF4-S1-3: factor_dqc_result + quality_check_registry seeds (leakage + coverage, gated)."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_dqc_result (
+            check_name VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            observed_value DOUBLE,
+            threshold_value DOUBLE,
+            severity VARCHAR NOT NULL,
+            details_json VARCHAR,
+            run_id VARCHAR,
+            checked_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at) VALUES
+        ('factor_dqc_result','control','factor_dqc_result','check_name,factor_id,run_id',
+         'Per-factor data-quality-check outcomes (leakage t+0 probe, coverage) recorded for the gated factor DQC.',
+         '["check_name","factor_id","run_id"]',
+         'Leakage uses the same-day t+0 return purely as an adversarial probe, never as a scoring target or factor input.', now())
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_factor_dqc_result_check ON factor_dqc_result(check_name, factor_id)")
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+        """,
+        [
+            ("factor_leakage_tplus0", "factor_panel", "v_factor_panel", "critical", 0.0, "eq", True, "failed", "pf4_s1"),
+            ("factor_coverage_asof_universe", "factor_panel", "v_factor_panel", "critical", 0.0, "eq", True, "failed", "pf4_s1"),
+        ],
+    )
+    _catalog_fields_for_tables(conn, ("factor_dqc_result",))
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(version=176, name="pf4_s1_ic_surface", up=_pf4_s1_ic_surface),
     Migration(version=177, name="pf4_s1_quantile_turnover", up=_pf4_s1_quantile_turnover),
     Migration(version=178, name="pf4_s1_correlation_breadth", up=_pf4_s1_correlation_breadth),
-    # 0179 appended by a later task in this same sprint
+    Migration(version=179, name="pf4_s1_factor_dqc", up=_pf4_s1_factor_dqc),
 ]

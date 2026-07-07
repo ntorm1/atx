@@ -202,6 +202,18 @@ def run_warehouse_quality_checks(
             )
         )
 
+    from ..signal_eval import signal_eval_dqc_results
+
+    schema_results.extend(
+        signal_eval_dqc_results(
+            store,
+            registry=registry,
+            requested_checks=requested_checks,
+            requested_datasets=requested_datasets,
+            checked_at=checked_at,
+        )
+    )
+
     for result in schema_results:
         resolved_result = _apply_registry_to_result(result, registry)
         if resolved_result is None:

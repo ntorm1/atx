@@ -16,6 +16,8 @@ from db.signal_eval import (
     compute_factor_correlation,
     compute_crowding,
     compute_breadth,
+    compute_leakage,
+    compute_coverage,
     load_panel_for_eval,
     evaluate_panel,
 )
@@ -296,3 +298,71 @@ def test_compute_correlation_is_order_invariant() -> None:
     a = compute_factor_correlation(p)
     b = compute_factor_correlation(p.sample(frac=1.0, random_state=6).reset_index(drop=True))
     pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
+
+
+# ---------------------------------------------------------------------------
+# PF4-S1-3: gated factor DQC (leakage + coverage)
+# ---------------------------------------------------------------------------
+
+from db.quality import QualityResult, evaluate_quality_gate, run_warehouse_quality_checks
+from db.signal_eval import (
+    LEAKAGE_DQC_CHECK_NAME,
+    COVERAGE_DQC_CHECK_NAME,
+)
+
+
+def test_planted_leaky_factor_is_red_and_lagged_is_green() -> None:
+    rng = np.random.default_rng(4)
+    dates = _dates(40); secs = [f"S{i}" for i in range(30)]
+    rows, sdr = [], []
+    for d in dates:
+        for s in secs:
+            same_day = rng.normal()
+            sdr.append({"security_id": s, "as_of_date": d, "same_day_return": same_day})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "leaky", "value": same_day})       # dropped lag
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "lagged", "value": rng.normal()})  # independent
+    res = compute_leakage(pd.DataFrame(rows), pd.DataFrame(sdr), threshold=0.10).set_index("factor_id")
+    assert bool(res.loc["leaky", "is_leaky"]) is True
+    assert bool(res.loc["lagged", "is_leaky"]) is False
+
+
+def test_sparse_factor_fails_coverage_and_dense_passes() -> None:
+    dates = _dates(10); secs = [f"S{i}" for i in range(20)]
+    rows = []
+    for d in dates:
+        for i, s in enumerate(secs):
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "dense", "value": float(i)})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "sparse",
+                         "value": float(i) if i < 3 else None})    # 3/20 = 0.15 coverage
+    uni = pd.DataFrame({"as_of_date": dates, "universe_size": [20] * len(dates)})
+    cov = compute_coverage(pd.DataFrame(rows), uni, min_fraction=0.50).set_index("factor_id")
+    assert bool(cov.loc["sparse", "is_undercovered"]) is True
+    assert bool(cov.loc["dense", "is_undercovered"]) is False
+
+
+def test_leakage_check_is_registered_and_critical(tmp_store) -> None:
+    reg = tmp_store.con.execute(
+        "SELECT severity, enabled FROM quality_check_registry WHERE check_name = ?",
+        [LEAKAGE_DQC_CHECK_NAME],
+    ).fetchone()
+    assert reg is not None and reg[0] == "critical" and bool(reg[1]) is True
+
+
+def test_red_factor_dqc_routes_to_halt(tmp_store) -> None:
+    red = QualityResult(
+        dataset_id="factor_panel", table_name="v_factor_panel",
+        check_name=LEAKAGE_DQC_CHECK_NAME, status="failed",
+        observed_value=1.0, threshold_value=0.0, details={"rows": []}, severity="critical",
+    )
+    gate = evaluate_quality_gate(tmp_store, "factor_panel", additional_results=[red])
+    assert gate.decision == "halt"
+
+
+def test_factor_dqc_included_in_sweep_when_panel_empty(tmp_store) -> None:
+    # v_factor_panel is empty on a fresh template -> checks run and skip/ pass, never crash.
+    results = run_warehouse_quality_checks(tmp_store, check_names=[LEAKAGE_DQC_CHECK_NAME, COVERAGE_DQC_CHECK_NAME])
+    names = {r.check_name for r in results}
+    assert LEAKAGE_DQC_CHECK_NAME in names and COVERAGE_DQC_CHECK_NAME in names
+    for r in results:
+        if r.check_name in {LEAKAGE_DQC_CHECK_NAME, COVERAGE_DQC_CHECK_NAME}:
+            assert r.severity == "critical" and r.status in {"passed", "skipped"}
