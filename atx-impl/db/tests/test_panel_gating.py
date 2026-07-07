@@ -240,3 +240,30 @@ def test_lineage_completeness_flags_broken_not_traced(tmp_store):
         "SELECT factor_id, is_complete FROM lineage_completeness_checks "
         "WHERE factor_id IN ('f_traced', 'f_broken')").fetchall())
     assert counts["f_traced"] is True and counts["f_broken"] is False
+
+
+# --- PF4-S2 S2-3: maintenance_schedule (cadence-as-data) + read-only dry-run planner ---
+
+
+def test_maintenance_schedule_queryable_per_dataset(tmp_store):
+    row = tmp_store.con.execute(
+        "SELECT cadence, cadence_trigger, backfill_window_json, chunk FROM maintenance_schedule "
+        "WHERE dataset_id = 'factor_panel'").fetchone()
+    import json
+    assert row[0] == "on_rebuild" and row[1] == "upstream_watermark_advance"
+    assert json.loads(row[2])["shape"] == "rebuild" and row[3] == "P1M"
+    ids = [r[0] for r in tmp_store.con.execute(
+        "SELECT dataset_id FROM maintenance_schedule WHERE enabled ORDER BY dataset_id").fetchall()]
+    assert {"equity_daily_bars", "fundamentals", "vintages", "factor_panel"} <= set(ids)
+
+
+def test_planner_dry_runs_without_touching_db(tmp_store):
+    from scripts.warehouse_schedule_plan import plan_maintenance
+    before = tmp_store.con.execute("SELECT count(*) FROM maintenance_schedule").fetchone()[0]
+    plan = plan_maintenance(tmp_store)
+    by_id = {p["dataset_id"]: p for p in plan}
+    assert by_id["factor_panel"]["planned_mode"] == "backfill"  # rebuild shape -> backfill mode
+    assert by_id["equity_daily_bars"]["backfill_window"]["start"] == "2004-01-01"
+    assert all(p["executes"] is False and p["dry_run"] is True for p in plan)
+    after = tmp_store.con.execute("SELECT count(*) FROM maintenance_schedule").fetchone()[0]
+    assert after == before  # planner performed no writes

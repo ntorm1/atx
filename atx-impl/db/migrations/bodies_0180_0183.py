@@ -1,9 +1,9 @@
 """PF4-S2 migration bodies: panel gating + factor observability + maintenance cadence.
 
 Migration 0180 (panel_gate_config) landed in PF4-S2 S2-1. 0181 (factor-observability
-schema) and 0182 (its indexes) land in this task (PF4-S2 S2-2). 0183
-(maintenance_schedule) is reserved for S2-3 and will be appended to ``MIGRATIONS`` by
-that task.
+schema) and 0182 (its indexes) landed in PF4-S2 S2-2. 0183 (maintenance_schedule)
+lands in this task (PF4-S2 S2-3): cadence-as-data read by the read-only dry-run
+planner in ``scripts/warehouse_schedule_plan.py``.
 """
 from __future__ import annotations
 
@@ -163,10 +163,66 @@ def _pf4_s2_factor_observability_indexes(conn: duckdb.DuckDBPyConnection) -> Non
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf4_s2_maintenance_schedule(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF4-S2 S2-3: incremental cadence + backfill-window shape as queryable data."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS maintenance_schedule (
+            dataset_id          VARCHAR PRIMARY KEY,
+            cadence             VARCHAR NOT NULL,
+            cadence_trigger     VARCHAR,
+            backfill_window_json VARCHAR NOT NULL DEFAULT '{}',
+            chunk               VARCHAR,
+            enabled             BOOLEAN NOT NULL DEFAULT true,
+            notes               VARCHAR,
+            updated_at          TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO maintenance_schedule
+            (dataset_id, cadence, cadence_trigger, backfill_window_json, chunk, enabled, notes, updated_at)
+        VALUES
+            ('equity_daily_bars', 'daily', 'trading_day_close',
+             '{"lookback":"full_history","start":"2004-01-01","shape":"windowed"}', 'P1M', true,
+             'Dense price bars; backfill widens equity_daily_bars to 2004+.', now()),
+            ('fundamentals', 'quarterly', 'on_filing',
+             '{"lookback":"full_history","shape":"windowed"}', 'P3M', true,
+             'Quarterly refresh plus event-driven on SEC filing.', now()),
+            ('vintages', 'event', 'on_restatement',
+             '{"lookback":"affected_periods","shape":"targeted"}', 'P1Y', true,
+             'Vintage capture triggered by restatement, not a fixed cadence.', now()),
+            ('factor_panel', 'on_rebuild', 'upstream_watermark_advance',
+             '{"lookback":"incremental","shape":"rebuild"}', 'P1M', true,
+             'Panel rebuild triggered when any upstream factor watermark advances.', now())
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'maintenance_schedule', 'control', 'maintenance_schedule', 'dataset_id',
+            'Cadence-as-data: per-dataset incremental cadence + trigger + backfill-window shape the S1 DAG '
+            'runs on; read by the dry-run planner to plan (not execute) the operator archive.',
+            '["dataset_id"]',
+            'Control table; the planner reads it read-only and never mutates live data.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("maintenance_schedule",))
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(version=180, name="pf4_s2_panel_gate_config", up=_pf4_s2_panel_gate_config),
     Migration(version=181, name="pf4_s2_factor_observability_schema",
               up=_pf4_s2_factor_observability_schema),
     Migration(version=182, name="pf4_s2_factor_observability_indexes",
               up=_pf4_s2_factor_observability_indexes),
+    Migration(version=183, name="pf4_s2_maintenance_schedule", up=_pf4_s2_maintenance_schedule),
 ]
