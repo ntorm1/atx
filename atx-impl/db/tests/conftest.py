@@ -92,6 +92,12 @@ def _build_template(dest: Path) -> None:
     Uses DuckDBStore/ensure_quant_schema/apply_pending_migrations so the template
     is byte-for-byte what production bootstrap produces (schema + migrations +
     catalog seed), then closes cleanly (checkpoint, no WAL) so it can be copied.
+
+    (Re-packing the template to DuckDB's minimum 16 KiB block size was tried to
+    shrink the ~40 MB file / per-test copy; it shrank the template ~2.9x but made
+    the fast lane *slower* — 2m47s -> 4m16s — because the tiny blocks penalise
+    every test's queries far more than the cheaper copy saves. The per-test cost is
+    the DuckDB operations, not the file copy, so the default block size wins.)
     """
     from db.connection import DuckDBStore
 
