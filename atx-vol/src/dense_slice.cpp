@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -174,7 +175,8 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
 
 Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
                                         double T, double df,
-                                        const ConvexFitOpts& opts) {
+                                        const ConvexFitOpts& opts,
+                                        const std::function<double(double)>& w_prev) {
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "fit_convex_slice: F/T/df must be positive");
@@ -302,11 +304,36 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   }
   const VecX q = -2.0 * (BtW * co);  // N
 
+  // Calendar floor: if w_prev(k) (the previous, earlier-T expiry's total
+  // variance at log-moneyness k) is supplied, the fitted call price at each
+  // node must be >= the Black-76 price implied by that previous total
+  // variance — so this slice's total variance cannot dip below the prior
+  // expiry's at the nodes (calendar no-arbitrage). Skipped entirely (no rows
+  // added) when w_prev is empty, or per-node when w_prev(k_j) is non-finite
+  // or <= 0.
+  std::vector<double> cfloor(static_cast<std::size_t>(N), 0.0);
+  std::vector<char> has_floor(static_cast<std::size_t>(N), 0);
+  if (w_prev) {
+    for (Eigen::Index j = 0; j < N; ++j) {
+      const double k = std::log(un(j) / F);
+      const double wp = w_prev(k);
+      if (std::isfinite(wp) && wp > 0.0) {
+        const double sig = std::sqrt(wp / T);
+        const double c = black76_price(F, un(j), T, sig, df, Side::Call);
+        if (std::isfinite(c) && c > 0.0) {
+          cfloor[static_cast<std::size_t>(j)] = c;
+          has_floor[static_cast<std::size_t>(j)] = 1;
+        }
+      }
+    }
+  }
+
   // Constraints G g >= h on the node values: positivity (N), monotone
-  // non-increasing (N−1), convexity via divided second differences (N−2), and
-  // (optionally) the slope-below bound (N−1). `hrows` carries each row's RHS in
-  // parallel with `rows` — 0 for the homogeneous positivity/monotone/convexity
-  // rows, −df·Δ for the slope-below rows.
+  // non-increasing (N−1), convexity via divided second differences (N−2),
+  // (optionally) the slope-below bound (N−1), and (optionally) the calendar
+  // floor (<= N). `hrows` carries each row's RHS in parallel with `rows` — 0
+  // for the homogeneous positivity/monotone/convexity rows, −df·Δ for the
+  // slope-below rows, cfloor_j for the calendar-floor rows.
   std::vector<VecX> rows;
   std::vector<double> hrows;
   rows.reserve(static_cast<std::size_t>(4 * N));
@@ -346,6 +373,14 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
       hrows.push_back(-df * (un(i + 1) - un(i)));
     }
   }
+  for (Eigen::Index j = 0; j < N; ++j) {  // calendar floor: g_j >= cfloor_j
+    if (has_floor[static_cast<std::size_t>(j)]) {
+      VecX rrow = VecX::Zero(N);
+      rrow(j) = 1.0;
+      rows.push_back(rrow);
+      hrows.push_back(cfloor[static_cast<std::size_t>(j)]);
+    }
+  }
   const auto nc = static_cast<Eigen::Index>(rows.size());
   MatX G(nc, N);
   VecX h(nc);
@@ -365,7 +400,12 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   VecX x0(N);
   for (Eigen::Index j = 0; j < N; ++j) {
     const double t = (span > 0.0) ? (un(N - 1) - un(j)) / span : 0.0;
-    x0(j) = floor + cmax * t * t;
+    double v = floor + cmax * t * t;
+    if (has_floor[static_cast<std::size_t>(j)]) {
+      // max with the (convex, decreasing, positive) floor curve + strict margin.
+      v = std::max(v, cfloor[static_cast<std::size_t>(j)] * (1.0 + 1.0e-6) + 1.0e-9);
+    }
+    x0(j) = v;
   }
 
   ATX_TRY(VecX gn, qp_active_set(H, q, G, h, x0, opts.max_iter));

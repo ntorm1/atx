@@ -34,6 +34,7 @@
 // safe.
 
 #include <cstddef>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -95,11 +96,20 @@ struct ConvexFitOpts {
 // contributes to one convex call curve. Duplicate strikes are merged
 // (weight-combined). The convex QP is then solved to optimality.
 //
+// `w_prev`, if set, is the PREVIOUS (earlier-T) expiry's total-variance-by-
+// log-moneyness callback w_prev(k). When present, the fit adds a per-node
+// CALENDAR FLOOR: g_j >= black76_call(F, u_j, T, sqrt(w_prev(k_j)/T), df), for
+// every node where w_prev(k_j) is finite and positive — so this slice's total
+// variance cannot dip below the previous expiry's at the nodes (calendar
+// no-arbitrage). Left empty (the default), the floor is skipped entirely and
+// behavior is bit-identical to the unconstrained fit.
+//
 // @return InvalidArgument if F/T/df are non-positive or fewer than 3 distinct
 //         strikes survive; Internal if the QP solver fails to converge; otherwise
 //         the fitted convex smile.
-[[nodiscard]] Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs,
-                                                      double F, double T, double df,
-                                                      const ConvexFitOpts& opts = {});
+[[nodiscard]] Result<ConvexSliceFit> fit_convex_slice(
+    std::span<const FitObs> obs, double F, double T, double df,
+    const ConvexFitOpts& opts = {},
+    const std::function<double(double)>& w_prev = {});
 
 }  // namespace atx::vol

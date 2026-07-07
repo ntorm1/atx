@@ -206,3 +206,46 @@ TEST(ConvexSliceFit, SlopeBelowBoundHonored) {
     EXPECT_GE(slope, -df - 1e-7);
   }
 }
+
+TEST(ConvexSliceFit, CalendarFloorLiftsLowVarianceSlice) {
+  using namespace atx::vol;
+  const double F = 100.0, T = 0.5, df = 0.98;
+  // Obs imply LOW vol (0.15); floor demands total variance of a 0.25-vol prev
+  // slice at the SAME T. Floor must lift w above the unconstrained fit.
+  std::vector<FitObs> obs = make_synthetic_slice_obs(F, T, df, 0.15);
+  auto w_prev = [&](double /*k*/) {
+    const double sig = 0.25;
+    return sig * sig * T;   // flat prev total variance
+  };
+  auto free_fit = fit_convex_slice(obs, F, T, df, {});
+  auto floored  = fit_convex_slice(obs, F, T, df, {}, w_prev);
+  ASSERT_TRUE(free_fit && floored);
+  // At the money, floored total variance >= prev (minus tol), and >= free fit.
+  const double w_floor = 0.25 * 0.25 * T;
+  const double s_atm = floored->iv(0.0);
+  EXPECT_GE(s_atm * s_atm * T, w_floor - 1e-6);
+  EXPECT_GE(floored->iv(0.0), free_fit->iv(0.0) - 1e-9);
+}
+
+TEST(ConvexSliceFit, CalendarFloorSlackIsBitIdentical) {
+  using namespace atx::vol;
+  const double F = 100.0, T = 0.5, df = 0.98;
+  // A clean arbitrage-free board (real Black-76 prices, no synthetic mispricing —
+  // unlike make_synthetic_slice_obs's deliberately cheapened deep-ITM print, which
+  // makes even the UNCONSTRAINED fit dip under its own intrinsic value near that
+  // print, so ANY positive-vol calendar floor would bind there regardless of
+  // magnitude). Here every node's free-fit price sits at/above its true fair
+  // value, so a prev vol far BELOW the fitted vol is genuinely slack everywhere.
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) {
+    obs.push_back(mk_obs(F, T, df, K, 0.30));
+  }
+  auto w_prev = [&](double) { return 0.10 * 0.10 * T; };  // prev far BELOW → slack
+  auto free_fit = fit_convex_slice(obs, F, T, df, {});
+  auto floored  = fit_convex_slice(obs, F, T, df, {}, w_prev);
+  ASSERT_TRUE(free_fit && floored);
+  ASSERT_EQ(free_fit->C.size(), floored->C.size());
+  for (std::size_t j = 0; j < free_fit->C.size(); ++j) {
+    EXPECT_NEAR(free_fit->C[j], floored->C[j], 1e-12);  // slack ⇒ identical
+  }
+}
