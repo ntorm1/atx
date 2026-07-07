@@ -291,11 +291,17 @@ class GovernedUniverseMembershipDataset(Dataset):
             registered = True
             symbol_join = "JOIN governed_universe_symbol_filter sf ON sf.symbol = b.symbol"
         if options.start_date is not None:
+            # Read a lookback buffer of bars *before* start_date so the trailing
+            # history_days / avg_dollar_volume windows (computed below) are not
+            # truncated at the left edge of the emit window. Only in-window
+            # decisions are returned -- see the final SELECT filter below.
+            read_start = options.start_date - dt.timedelta(days=options.lookback_days)
             filters.append("b.trade_date >= ?")
-            params.append(options.start_date)
+            params.append(read_start)
         if options.end_date is not None:
             filters.append("b.trade_date <= ?")
             params.append(options.end_date)
+        emit_filter = "WHERE base.as_of_date >= ?" if options.start_date is not None else ""
 
         sql = f"""
             WITH base AS (
@@ -363,10 +369,14 @@ class GovernedUniverseMembershipDataset(Dataset):
              AND lm.security_id = base.security_id
              AND lm.as_of_date = base.as_of_date
              AND (lm.available_at IS NULL OR lm.available_at <= base.available_at)
+            {emit_filter}
             ORDER BY base.as_of_date, base.security_id
         """
+        exec_params = [*params, options.snapshot_universe_id]
+        if options.start_date is not None:
+            exec_params.append(options.start_date)
         try:
-            return store.con.execute(sql, [*params, options.snapshot_universe_id]).df()
+            return store.con.execute(sql, exec_params).df()
         finally:
             if registered:
                 store.con.unregister("governed_universe_symbol_filter")
