@@ -113,6 +113,13 @@ class PricedSurface {
   // bit-identical to `VolaSession::greeks` on the override path.
   [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T, Side side) const;
 
+  // Faster Greeks via the analytic Andersen-Lake path (american_greeks_al): five
+  // boundary solves instead of greeks()'s seven. price + delta/gamma/vega/rho/vanna/
+  // volga are bit-identical to greeks(); theta/charm are the exact continuation-region
+  // PDE (so NOT bit-reproducible across an archive round-trip — hence opt-in, off the
+  // bit-stable greeks() default). The pricer enables it via PriceOptions.
+  [[nodiscard]] Result<AmericanGreeks> greeks_analytic(double K, double T, Side side) const;
+
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
   // The interpolated term forward F(T) and effective carry q_eff(T): clamp to the

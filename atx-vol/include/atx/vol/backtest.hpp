@@ -165,7 +165,11 @@ struct RunConfig {
   // book's unique-contract count). Output is bit-identical to any thread count
   // (PortfolioPricer's serial-scatter reduction), so parallel-by-default is a free
   // throughput win — a backtest step reprices the whole book, the dominant cost.
-  PriceOptions price{/*n_threads=*/0};
+  // analytic_greeks on by default: the backtest reprices the whole book every step,
+  // so the analytic Andersen-Lake greeks (5 solves/contract vs the FD path's 7, with
+  // exact continuation-PDE theta/charm) are a direct per-step speedup; the mark and
+  // delta/gamma/vega/rho/vanna/volga are bit-identical to the FD path.
+  PriceOptions price{/*n_threads=*/0, /*analytic_greeks=*/true};
   FrictionModel frictions{};         // execution frictions (B2; default: frictionless)
   FinancingConfig financing{};       // cash/borrow ledger (B2; default: off => B1-identity)
   unsigned record_every_n{1};        // persist every Nth step (1 = every step)

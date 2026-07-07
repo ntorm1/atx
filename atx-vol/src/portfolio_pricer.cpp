@@ -200,7 +200,8 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
       return;
     }
     out.iv = surf->iv(c.K, c.T);
-    auto g = surf->greeks(c.K, c.T, c.side);  // American greeks + mark (one AL solve)
+    auto g = opts.analytic_greeks ? surf->greeks_analytic(c.K, c.T, c.side)
+                                  : surf->greeks(c.K, c.T, c.side);  // greeks + mark
     if (!g.has_value() || !std::isfinite(g->price)) {
       out.status = PriceStatus::NumericError;
       return;
@@ -319,7 +320,8 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
       out.status = PriceStatus::InvalidContract;  // rolled past expiry
       return;
     }
-    auto gb = sb->greeks(c.K, T_b, c.side);       // base American greeks + mark (one solve)
+    auto gb = opts.analytic_greeks ? sb->greeks_analytic(c.K, T_b, c.side)
+                                   : sb->greeks(c.K, T_b, c.side);  // base greeks + mark
     auto pt = st->fair_value(c.K, T_t, c.side);   // shifted mark at the rolled maturity
     if (!gb.has_value() || !std::isfinite(gb->price) || !pt.has_value() ||
         !std::isfinite(*pt)) {

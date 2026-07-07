@@ -1596,6 +1596,98 @@ double american_vega(double S, double K, double T, double sigma, double r,
   return euro_vega + F * dc_ds;
 }
 
+Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
+                                          double sigma, double r, double q,
+                                          Side side,
+                                          const std::optional<AlOpts>& opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_greeks_al: S, K, T, sigma must be > 0");
+  }
+  // Puts with genuine early exercise only. Calls (McDonald-Schroder: spot drives
+  // the boundary), the degenerate corners, and the no-early-exercise put (r<=0,
+  // American == European) all fall back to the exact cold FD path.
+  if (side != Side::Put || r <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
+    return american_greeks_fd(S, K, T, sigma, r, q, side,
+                              AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+  }
+
+  // Boundaries: the base (spot-independent, so delta/gamma are EXACT finite
+  // differences over it) plus sigma+/-, r+/- for the vega/rho/vanna/volga stencils
+  // — the exercise boundary genuinely moves with sigma/r (the envelope/frozen-
+  // boundary shortcut does NOT hold for the AL premium decomposition), so those are
+  // re-solved. The T+/- solves are DROPPED: theta/charm come from the continuation-
+  // region PDE. Five solves versus american_greeks_fd's seven, and theta/charm gain
+  // accuracy (no time-bump truncation). Any bumped-boundary corner (collapse, or
+  // r-hr crossing <=0) falls the whole bundle back to the exact FD path.
+  const AlScheme sch = scheme_from_opts(opts);
+  const double hS = 1.0e-3 * S;
+  double hv = 1.0e-3;
+  if (sigma - hv <= 0.0) hv = 0.5 * sigma;
+  const double hr = 1.0e-4;
+  if (r - hr <= 0.0) {  // r-bump would cross into the European regime — keep it simple
+    return american_greeks_fd(S, K, T, sigma, r, q, side,
+                              AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+  }
+
+  AlBoundary b0, bvp, bvm, brp, brm;
+  AlWorkspace w0, wvp, wvm, wrp, wrm;
+  if (al_solve_put_boundary(K, T, sigma, r, q, sch, b0, w0) != AlSolveStatus::Ok ||
+      al_solve_put_boundary(K, T, sigma + hv, r, q, sch, bvp, wvp) != AlSolveStatus::Ok ||
+      al_solve_put_boundary(K, T, sigma - hv, r, q, sch, bvm, wvm) != AlSolveStatus::Ok ||
+      al_solve_put_boundary(K, T, sigma, r + hr, q, sch, brp, wrp) != AlSolveStatus::Ok ||
+      al_solve_put_boundary(K, T, sigma, r - hr, q, sch, brm, wrm) != AlSolveStatus::Ok) {
+    return american_greeks_fd(S, K, T, sigma, r, q, side,
+                              AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+  }
+
+  // Price at spot S2 on a given solved boundary (its own sigma/r).
+  const auto px = [&](const AlBoundary& b, const AlWorkspace& w, double S2,
+                      double sig2, double r2) {
+    return al_put_price_from_boundary(b, w, S2, K, T, sig2, r2, q);
+  };
+
+  // Spot stencils on the base boundary (exact — boundary independent of S).
+  const double v0 = px(b0, w0, S, sigma, r);
+  const double vSp = px(b0, w0, S + hS, sigma, r), vSm = px(b0, w0, S - hS, sigma, r);
+  const double vS2p = px(b0, w0, S + 2.0 * hS, sigma, r);
+  const double vS2m = px(b0, w0, S - 2.0 * hS, sigma, r);
+  // Vol stencils on the re-solved sigma+/- boundaries (incl. the vanna cross).
+  const double vvp = px(bvp, wvp, S, sigma + hv, r), vvm = px(bvm, wvm, S, sigma - hv, r);
+  const double vSpVp = px(bvp, wvp, S + hS, sigma + hv, r);
+  const double vSmVp = px(bvp, wvp, S - hS, sigma + hv, r);
+  const double vSpVm = px(bvm, wvm, S + hS, sigma - hv, r);
+  const double vSmVm = px(bvm, wvm, S - hS, sigma - hv, r);
+  // Rate stencils on the re-solved r+/- boundaries.
+  const double vrp = px(brp, wrp, S, sigma, r + hr), vrm = px(brm, wrm, S, sigma, r - hr);
+
+  AmericanGreeks out;
+  out.price = v0;
+  out.delta = (vSp - vSm) / (2.0 * hS);
+  out.gamma = (vSp - 2.0 * v0 + vSm) / (hS * hS);
+  out.vega = (vvp - vvm) / (2.0 * hv);
+  out.volga = (vvp - 2.0 * v0 + vvm) / (hv * hv);
+  out.rho = (vrp - vrm) / (2.0 * hr);
+  out.vanna = (vSpVp - vSpVm - vSmVp + vSmVm) / (4.0 * hS * hv);
+
+  // theta / charm from the continuation-region PDE. In the exercise region the
+  // frozen price is at intrinsic (delta -> -1, gamma -> 0); there the intrinsic
+  // K - S has no time value, so theta = charm = 0.
+  const double intr0 = K - S;
+  const bool exercised = (v0 <= intr0 + 1.0e-9 * K) && (intr0 > 0.0);
+  if (exercised) {
+    out.theta = 0.0;
+    out.charm = 0.0;
+  } else {
+    // speed = d3V/dS3 (5-point), for charm = d(theta)/dS.
+    const double speed = (vS2p - 2.0 * vSp + 2.0 * vSm - vS2m) / (2.0 * hS * hS * hS);
+    out.theta = r * v0 - (r - q) * S * out.delta - 0.5 * sigma * sigma * S * S * out.gamma;
+    out.charm = r * out.delta - (r - q) * (out.delta + S * out.gamma) -
+                0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
+  }
+  return Ok(out);
+}
+
 namespace detail {
 
 GaussLegendre gauss_legendre(unsigned n) {

@@ -142,6 +142,25 @@ Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) cons
                             pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
 }
 
+Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side side) const {
+  if (!valid_query(K, T)) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::greeks_analytic: non-finite or non-positive K/T");
+  }
+  const ForwardCarry fc = interp_forward(T);
+  const double k = std::log(K / fc.forward);
+  const double sigma = surface_.iv(k, T);
+  // Analytic Andersen-Lake greeks (5 solves; theta/charm via the continuation PDE).
+  // Same base boundary as fair_value(), so greeks_analytic().price == fair_value().
+  // BAW / degenerate corners fall back to the cold FD path inside american_greeks_al.
+  if (pricing_.method == AmericanMethod::AndersenLake) {
+    return american_greeks_al(pricing_.S, K, T, sigma, pricing_.r, fc.q_eff, side,
+                              std::optional<AlOpts>{pricing_.al_opts});
+  }
+  return american_greeks_fd(pricing_.S, K, T, sigma, pricing_.r, fc.q_eff, side,
+                            pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+}
+
 VolCurveKind PricedSurface::kind_at(std::size_t i) const noexcept {
   return surface_.slices()[i]->kind();
 }

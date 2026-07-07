@@ -260,6 +260,12 @@ struct PriceOptions {
   // concurrency (>= 1); clamped to the unique-contract count. Output is
   // bit-identical regardless of this value.
   unsigned n_threads{1};
+  // Route Greeks through the analytic Andersen-Lake path (american_greeks_al: five
+  // boundary solves instead of the FD path's seven — delta/gamma exact, theta/charm
+  // from the continuation PDE). price + delta/gamma/vega/rho/vanna/volga stay
+  // bit-identical to the FD path; theta/charm become the exact PDE value. Off by
+  // default so PortfolioPricer::price is unchanged; the backtest enables it.
+  bool analytic_greeks{false};
 };
 
 class PortfolioPricer {

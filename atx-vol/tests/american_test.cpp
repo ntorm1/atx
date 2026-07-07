@@ -33,6 +33,7 @@ namespace {
 using atx::vol::AloPricer;
 using atx::vol::AlOpts;
 using atx::vol::american_greeks;
+using atx::vol::american_greeks_al;
 using atx::vol::american_greeks_fd;
 using atx::vol::american_price;
 using atx::vol::AmericanGreeks;
@@ -585,6 +586,68 @@ TEST(AmericanGreeks, WarmStart_MatchesCold_PutGrid) {
   EXPECT_LT(rel_vega, 1.5e-2);
   EXPECT_LT(rel_theta, 1.5e-2);
   EXPECT_LT(rel_rho, 1.5e-2);
+}
+
+// P2: analytic (1-solve) greeks vs the 7-solve FD path across the OPRA put grid.
+// Prints per-greek worst deviation so the accuracy is calibrated empirically; the
+// mark (price) must be bit-identical (same base-boundary evaluation).
+TEST(AmericanGreeks, Analytic_VsFd_PutGrid) {
+  const double S = 100.0;
+  const double r = 0.05;
+  const double q = 0.03;
+  struct Acc {
+    double abs = 0.0, rel = 0.0;
+    void add(double a, double b, double floor) {
+      abs = std::max(abs, std::fabs(a - b));
+      if (std::fabs(b) > floor) rel = std::max(rel, std::fabs(a - b) / std::fabs(b));
+    }
+  };
+  Acc price, delta, gamma, vega, volga, rho, vanna, theta, charm;
+  double abs_price = 0.0;
+  int checked = 0;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.02, 0.1, 0.5, 1.0, 2.0}) {
+      for (const double sig : {0.12, 0.25, 0.45}) {
+        const auto a = american_greeks_al(S, K, T, sig, r, q, Side::Put);
+        const auto f = american_greeks_fd(S, K, T, sig, r, q, Side::Put);
+        ASSERT_TRUE(a.has_value());
+        ASSERT_TRUE(f.has_value());
+        abs_price = std::max(abs_price, std::fabs(a->price - f->price));
+        price.add(a->price, f->price, 1.0);
+        delta.add(a->delta, f->delta, 0.05);
+        gamma.add(a->gamma, f->gamma, 1e-3);
+        vega.add(a->vega, f->vega, 1.0);
+        volga.add(a->volga, f->volga, 1.0);
+        rho.add(a->rho, f->rho, 1.0);
+        vanna.add(a->vanna, f->vanna, 1.0);
+        theta.add(a->theta, f->theta, 1.0);
+        charm.add(a->charm, f->charm, 1.0);
+        ++checked;
+      }
+    }
+  }
+  std::printf(
+      "[p2-analytic-vs-fd] pts=%d abs_price=%.2e\n"
+      "  delta abs=%.2e rel=%.2e | gamma abs=%.2e rel=%.2e | vega abs=%.2e rel=%.2e\n"
+      "  rho   abs=%.2e rel=%.2e | volga abs=%.2e rel=%.2e | vanna abs=%.2e rel=%.2e\n"
+      "  theta abs=%.2e rel=%.2e | charm abs=%.2e rel=%.2e\n",
+      checked, abs_price, delta.abs, delta.rel, gamma.abs, gamma.rel, vega.abs,
+      vega.rel, rho.abs, rho.rel, volga.abs, volga.rel, vanna.abs, vanna.rel,
+      theta.abs, theta.rel, charm.abs, charm.rel);
+  EXPECT_EQ(checked, 75);
+  // Same base + sigma+/- + r+/- boundaries => price and the six spot/vol/rate greeks
+  // are bit-identical to the FD path.
+  EXPECT_EQ(abs_price, 0.0);
+  EXPECT_EQ(delta.abs, 0.0);
+  EXPECT_EQ(gamma.abs, 0.0);
+  EXPECT_EQ(vega.abs, 0.0);
+  EXPECT_EQ(rho.abs, 0.0);
+  EXPECT_EQ(vanna.abs, 0.0);
+  EXPECT_EQ(volga.abs, 0.0);
+  // theta/charm are the continuation-region PDE (exact there; no time-bump
+  // truncation), agreeing with the FD reference to ~1e-3 relative.
+  EXPECT_LT(theta.rel, 3.0e-3);
+  EXPECT_LT(charm.rel, 5.0e-3);
 }
 
 // Controlled A/B of the isolated hot function: fast put greeks (7 boundary solves)

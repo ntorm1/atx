@@ -234,6 +234,27 @@ struct AmericanGreeks {
     AmericanMethod method = AmericanMethod::AndersenLake,
     const std::optional<AlOpts>& opts = std::nullopt, bool warm_start = false);
 
+// American Greeks in FIVE Andersen-Lake boundary solves instead of the FD path's
+// seven. The exercise boundary is spot-independent, so delta/gamma are exact finite
+// differences over the base boundary (no extra solve); vega/rho/vanna/volga re-solve
+// the sigma+/- and r+/- boundaries (the boundary genuinely moves with sigma/r — the
+// frozen-boundary/envelope shortcut is NOT valid for the AL premium decomposition);
+// theta/charm come from the continuation-region Black-Scholes PDE
+// (theta = rV - (r-q)S*delta - 0.5*sigma^2*S^2*gamma; charm = d theta/dS), which
+// DROPS the two time-bumped solves and is more accurate (no time-bump truncation).
+// A pure function of the inputs, so bit-reproducible across a surface-archive
+// round-trip.
+//
+// vs american_greeks_fd: price + delta/gamma/vega/rho/vanna/volga are bit-identical
+// (same boundaries), theta/charm differ (the PDE is the exact continuation-region
+// value, gated close to the FD reference). Puts with genuine early exercise (r>0,
+// non-degenerate) only; calls, the r<=0 European put, the degenerate corners, and
+// any bumped-boundary collapse defer to american_greeks_fd. greeks().price ==
+// fair_value(). InvalidArgument on non-positive S/K/T/sigma.
+[[nodiscard]] Result<AmericanGreeks> american_greeks_al(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    const std::optional<AlOpts>& opts = std::nullopt);
+
 // American vega ONLY (∂price/∂sigma) — the single first-order sensitivity the IV
 // inverter's Newton step needs, WITHOUT the full `american_greeks` bundle's
 // second-order finite-difference correction partials (gamma/vanna/volga/charm,
