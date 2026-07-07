@@ -200,14 +200,16 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
       return;
     }
     out.iv = surf->iv(c.K, c.T);
-    auto fv = surf->fair_value(c.K, c.T, c.side);  // American mark (the AL solve)
-    auto g = surf->greeks(c.K, c.T, c.side);       // American (cold-FD) Greeks
-    if (!fv.has_value() || !std::isfinite(*fv) || !g.has_value() ||
-        !std::isfinite(g->price)) {
+    auto g = surf->greeks(c.K, c.T, c.side);  // American greeks + mark (one AL solve)
+    if (!g.has_value() || !std::isfinite(g->price)) {
       out.status = PriceStatus::NumericError;
       return;
     }
-    out.fair_value = *fv;
+    // greeks().price IS the American fair_value (bit-identical, the P0 cold-FD
+    // invariant gated by PnlGreeksConsistency), so the mark comes straight off the
+    // greeks bundle — the separate fair_value() call would be a duplicate AL solve
+    // at the same (K,T,side).
+    out.fair_value = g->price;
     out.g = *g;
     out.status = PriceStatus::Ok;
   });
@@ -317,11 +319,10 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
       out.status = PriceStatus::InvalidContract;  // rolled past expiry
       return;
     }
-    auto gb = sb->greeks(c.K, T_b, c.side);       // base American (cold-FD) Greeks
-    auto pb = sb->fair_value(c.K, T_b, c.side);   // base American mark
+    auto gb = sb->greeks(c.K, T_b, c.side);       // base American greeks + mark (one solve)
     auto pt = st->fair_value(c.K, T_t, c.side);   // shifted mark at the rolled maturity
-    if (!gb.has_value() || !std::isfinite(gb->price) || !pb.has_value() ||
-        !std::isfinite(*pb) || !pt.has_value() || !std::isfinite(*pt)) {
+    if (!gb.has_value() || !std::isfinite(gb->price) || !pt.has_value() ||
+        !std::isfinite(*pt)) {
       out.status = PriceStatus::NumericError;
       return;
     }
@@ -332,7 +333,7 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
       return;
     }
     out.gb = *gb;
-    out.price_base = *pb;
+    out.price_base = gb->price;  // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
     out.price_target = *pt;
     out.dS = st->pricing().S - sb->pricing().S;
     out.dvol = sig_t - sig_b;
