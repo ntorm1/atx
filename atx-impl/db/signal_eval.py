@@ -81,6 +81,30 @@ _TURNOVER_COLUMNS = [
     "n_rebalances",
 ]
 
+_CORRELATION_COLUMNS = [
+    "factor_id_a",
+    "factor_id_b",
+    "mean_correlation",
+    "mean_abs_correlation",
+    "n_dates",
+]
+_CROWDING_COLUMNS = [
+    "factor_id",
+    "max_abs_correlation",
+    "avg_abs_correlation",
+    "most_correlated_factor_id",
+    "n_peers",
+]
+_BREADTH_COLUMNS = [
+    "factor_id",
+    "as_of_date",
+    "n_names",
+    "n_non_null",
+    "universe_size",
+    "coverage_fraction",
+    "effective_breadth",
+]
+
 _FACTOR_EVAL_MANIFEST_COLUMNS = [
     "eval_id",
     "factor_id",
@@ -148,6 +172,41 @@ _FACTOR_TURNOVER_TABLE_COLUMNS = [
     "bottom_decile_turnover",
     "mean_rank_autocorrelation",
     "n_rebalances",
+    "universe_id",
+    "source",
+    "run_id",
+]
+_FACTOR_CORRELATION_TABLE_COLUMNS = [
+    "eval_id",
+    "factor_id_a",
+    "factor_id_b",
+    "mean_correlation",
+    "mean_abs_correlation",
+    "n_dates",
+    "universe_id",
+    "source",
+    "run_id",
+]
+_FACTOR_CROWDING_TABLE_COLUMNS = [
+    "eval_id",
+    "factor_id",
+    "max_abs_correlation",
+    "avg_abs_correlation",
+    "most_correlated_factor_id",
+    "n_peers",
+    "universe_id",
+    "source",
+    "run_id",
+]
+_FACTOR_BREADTH_TABLE_COLUMNS = [
+    "eval_id",
+    "factor_id",
+    "as_of_date",
+    "n_names",
+    "n_non_null",
+    "universe_size",
+    "coverage_fraction",
+    "effective_breadth",
     "universe_id",
     "source",
     "run_id",
@@ -611,6 +670,156 @@ def compute_turnover(panel: pd.DataFrame, *, n_quantiles: int = DEFAULT_N_QUANTI
     return result.sort_values(["factor_id"], kind="stable").reset_index(drop=True)
 
 
+def _empty_correlation() -> pd.DataFrame:
+    return pd.DataFrame(columns=_CORRELATION_COLUMNS)
+
+
+def compute_factor_correlation(panel: pd.DataFrame) -> pd.DataFrame:
+    """Per-ordered-pair factor-to-factor cross-sectional Pearson correlation, averaged over dates.
+
+    ``panel``: security_id, as_of_date, factor_id, value. The panel is pivoted wide to
+    ``(security_id, as_of_date) x factor_id``; within each ``as_of_date`` the factor x factor
+    Pearson correlation is computed pairwise over the names present that date (``min_periods=3``,
+    mirroring the >= 3 common-names floor used elsewhere in this module). Each ordered pair
+    ``(a, b)``, ``a != b``, is then averaged over exactly the dates where that pair's
+    correlation was defined (both factors present on >= 3 common names); a pair with zero
+    such dates is omitted rather than emitted as NaN. Correlations are computed strictly
+    within one as-of cross-section and never pooled across dates. Stable-sorted by
+    ["factor_id_a", "factor_id_b"] with a reset index so identical inputs (any row order)
+    reproduce byte-identical rows.
+    """
+
+    if panel is None or panel.empty:
+        return _empty_correlation()
+
+    frame = panel.loc[:, ["security_id", "as_of_date", "factor_id", "value"]].copy()
+    frame = _normalize_asof(frame)
+    factor_ids = sorted(frame["factor_id"].unique())
+    if len(factor_ids) < 2:
+        return _empty_correlation()
+
+    pair_values: dict[tuple[Any, Any], list[float]] = {}
+    for _as_of_date, date_group in frame.groupby("as_of_date", sort=True):
+        wide = date_group.pivot_table(index="security_id", columns="factor_id", values="value", aggfunc="first")
+        wide = wide.reindex(columns=factor_ids)
+        corr_matrix = wide.corr(method="pearson", min_periods=3)
+        for a in factor_ids:
+            for b in factor_ids:
+                if a == b:
+                    continue
+                value = corr_matrix.loc[a, b]
+                if pd.isna(value):
+                    continue
+                pair_values.setdefault((a, b), []).append(float(value))
+
+    rows: list[dict[str, Any]] = []
+    for a in factor_ids:
+        for b in factor_ids:
+            if a == b:
+                continue
+            values = pair_values.get((a, b))
+            if not values:
+                continue
+            arr = np.asarray(values, dtype=float)
+            rows.append(
+                {
+                    "factor_id_a": a,
+                    "factor_id_b": b,
+                    "mean_correlation": float(arr.mean()),
+                    "mean_abs_correlation": float(np.abs(arr).mean()),
+                    "n_dates": int(len(arr)),
+                }
+            )
+
+    result = pd.DataFrame(rows, columns=_CORRELATION_COLUMNS)
+    return result.sort_values(["factor_id_a", "factor_id_b"], kind="stable").reset_index(drop=True)
+
+
+def _empty_crowding() -> pd.DataFrame:
+    return pd.DataFrame(columns=_CROWDING_COLUMNS)
+
+
+def compute_crowding(correlation: pd.DataFrame) -> pd.DataFrame:
+    """Per-factor crowding summary derived from ``compute_factor_correlation``'s output.
+
+    Per ``factor_id_a``: ``max_abs_correlation``/``avg_abs_correlation`` are the max/mean of
+    that factor's ``mean_abs_correlation`` across its peers; ``most_correlated_factor_id`` is
+    the peer ``factor_id_b`` that maximizes ``abs(mean_correlation)`` (the signed correlation,
+    not the abs-averaged one -- a peer can have a high abs-averaged correlation while its
+    signed mean is small if the sign flips across dates); ``n_peers`` is the number of peers
+    with a defined correlation. Ties in the argmax break on the first peer in
+    ``factor_id_b`` ascending order (the input is already sorted that way). Stable-sorted by
+    ["factor_id"] with a reset index.
+    """
+
+    if correlation is None or correlation.empty:
+        return _empty_crowding()
+
+    rows: list[dict[str, Any]] = []
+    for factor_id, group in correlation.groupby("factor_id_a", sort=True):
+        abs_signed = group["mean_correlation"].abs()
+        top_index = abs_signed.idxmax()
+        rows.append(
+            {
+                "factor_id": factor_id,
+                "max_abs_correlation": float(group["mean_abs_correlation"].max()),
+                "avg_abs_correlation": float(group["mean_abs_correlation"].mean()),
+                "most_correlated_factor_id": group.loc[top_index, "factor_id_b"],
+                "n_peers": int(len(group)),
+            }
+        )
+
+    result = pd.DataFrame(rows, columns=_CROWDING_COLUMNS)
+    return result.sort_values(["factor_id"], kind="stable").reset_index(drop=True)
+
+
+def _empty_breadth() -> pd.DataFrame:
+    return pd.DataFrame(columns=_BREADTH_COLUMNS)
+
+
+def compute_breadth(panel: pd.DataFrame, universe_counts: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Per-(factor, as_of_date) cross-sectional breadth: names, non-null coverage, universe fraction.
+
+    ``panel``: security_id, as_of_date, factor_id, value. ``n_names`` counts distinct
+    ``security_id`` rows present for the factor on that date (whether or not ``value`` is
+    null); ``n_non_null`` counts only the non-null ``value`` rows. If ``universe_counts``
+    (``as_of_date``, ``universe_size``) is supplied it is left-joined on ``as_of_date`` to
+    derive ``coverage_fraction = n_non_null / universe_size``; without it ``universe_size``
+    and ``coverage_fraction`` are NaN (SQL NULL once persisted). ``effective_breadth`` is
+    documented in ``field_catalog`` as a placeholder equal to ``n_non_null`` -- a true
+    weight-based effective-number-of-bets measure is a later sprint's concern. Stable-sorted
+    by ["factor_id", "as_of_date"] with a reset index so identical inputs (any row order)
+    reproduce byte-identical rows.
+    """
+
+    if panel is None or panel.empty:
+        return _empty_breadth()
+
+    frame = panel.loc[:, ["security_id", "as_of_date", "factor_id", "value"]].copy()
+    frame = _normalize_asof(frame)
+
+    breadth = (
+        frame.groupby(["factor_id", "as_of_date"], sort=True)
+        .agg(n_names=("security_id", "nunique"), n_non_null=("value", "count"))
+        .reset_index()
+    )
+    breadth["n_names"] = breadth["n_names"].astype(int)
+    breadth["n_non_null"] = breadth["n_non_null"].astype(int)
+
+    if universe_counts is not None and not universe_counts.empty:
+        uni = universe_counts.loc[:, ["as_of_date", "universe_size"]].copy()
+        uni = _normalize_asof(uni)
+        breadth = breadth.merge(uni, on="as_of_date", how="left")
+    else:
+        breadth["universe_size"] = float("nan")
+
+    breadth["coverage_fraction"] = breadth["n_non_null"] / breadth["universe_size"]
+    breadth["effective_breadth"] = breadth["n_non_null"].astype(float)
+
+    result = breadth.loc[:, _BREADTH_COLUMNS]
+    return result.sort_values(["factor_id", "as_of_date"], kind="stable").reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # panel read (read-only) + persistence + orchestration (DuckDB)
 # ---------------------------------------------------------------------------
@@ -875,6 +1084,63 @@ def _build_turnover_manifest(
     )
 
 
+def _build_correlation_manifest(
+    panel: pd.DataFrame,
+    correlation: pd.DataFrame,
+    *,
+    universe_id: str,
+    source: str,
+    run_id: str | None,
+) -> pd.DataFrame:
+    """One ``factor_eval_manifest`` row per factor scored by ``compute_factor_correlation``.
+
+    Keyed by the union of ``factor_id_a``/``factor_id_b`` (correlation is symmetric, so in
+    practice every factor with >= 1 qualifying peer appears on both sides).
+    """
+
+    if correlation.empty:
+        return pd.DataFrame(columns=_FACTOR_EVAL_MANIFEST_COLUMNS)
+    factor_ids = set(correlation["factor_id_a"].unique()) | set(correlation["factor_id_b"].unique())
+    params_json = json_dumps({})
+    return _build_factor_manifest_rows(
+        factor_ids,
+        _panel_stats_by_factor(panel),
+        eval_kind="factor_correlation",
+        universe_id=universe_id,
+        horizon_days=None,
+        n_quantiles=None,
+        params_json=params_json,
+        source=source,
+        run_id=run_id,
+    )
+
+
+def _build_breadth_manifest(
+    panel: pd.DataFrame,
+    breadth: pd.DataFrame,
+    *,
+    universe_id: str,
+    source: str,
+    run_id: str | None,
+) -> pd.DataFrame:
+    """One ``factor_eval_manifest`` row per factor scored by ``compute_breadth``."""
+
+    if breadth.empty:
+        return pd.DataFrame(columns=_FACTOR_EVAL_MANIFEST_COLUMNS)
+    params_json = json_dumps({})
+    return _build_factor_manifest_rows(
+        breadth["factor_id"].unique(),
+        _panel_stats_by_factor(panel),
+        eval_kind="breadth",
+        universe_id=universe_id,
+        horizon_days=None,
+        n_quantiles=None,
+        params_json=params_json,
+        source=source,
+        run_id=run_id,
+    )
+
+
 def _attach_manifest_lineage(
     frame: pd.DataFrame,
     manifest: pd.DataFrame,
@@ -887,6 +1153,30 @@ def _attach_manifest_lineage(
         manifest.loc[:, lineage_columns] if not manifest.empty else pd.DataFrame(columns=lineage_columns)
     )
     out = frame.merge(lineage, on="factor_id", how="left")
+    out["universe_id"] = universe_id
+    out["run_id"] = run_id
+    return out
+
+
+def _attach_manifest_lineage_by(
+    frame: pd.DataFrame,
+    manifest: pd.DataFrame,
+    *,
+    join_column: str,
+    universe_id: str,
+    run_id: str | None,
+) -> pd.DataFrame:
+    """Like ``_attach_manifest_lineage`` but joins the manifest's ``factor_id`` against an
+    arbitrarily-named column on ``frame`` (``factor_correlation`` keys on ``factor_id_a``,
+    not ``factor_id``).
+    """
+
+    lineage_columns = ["factor_id", "eval_id", "source"]
+    lineage = (
+        manifest.loc[:, lineage_columns] if not manifest.empty else pd.DataFrame(columns=lineage_columns)
+    )
+    lineage = lineage.rename(columns={"factor_id": join_column})
+    out = frame.merge(lineage, on=join_column, how="left")
     out["universe_id"] = universe_id
     out["run_id"] = run_id
     return out
@@ -1039,6 +1329,92 @@ def persist_turnover(
     }
 
 
+def persist_correlation_crowding(
+    store,
+    *,
+    manifest: pd.DataFrame,
+    correlation: pd.DataFrame,
+    crowding: pd.DataFrame,
+    universe_id: str,
+    run_id: str | None,
+) -> dict[str, int]:
+    """Attach manifest lineage to the correlation / crowding rows and persist all three tables.
+
+    ``correlation`` is keyed on ``factor_id_a`` (joined via ``_attach_manifest_lineage_by``);
+    ``crowding`` is keyed on ``factor_id`` (joined via the shared ``_attach_manifest_lineage``).
+    Both share the same manifest (one row per factor, ``eval_kind="factor_correlation"``) so a
+    single ``factor_eval_manifest`` delete-then-insert covers this surface.
+    """
+
+    correlation_persist = _attach_manifest_lineage_by(
+        correlation, manifest, join_column="factor_id_a", universe_id=universe_id, run_id=run_id
+    )
+    crowding_persist = _attach_manifest_lineage(crowding, manifest, universe_id=universe_id, run_id=run_id)
+
+    with store.transaction():
+        manifest_count = _replace_rows(
+            store,
+            manifest,
+            table="factor_eval_manifest",
+            relation_name="factor_eval_manifest_load_correlation",
+            key_columns=("eval_id",),
+        )
+        correlation_count = _replace_rows(
+            store,
+            correlation_persist.loc[:, _FACTOR_CORRELATION_TABLE_COLUMNS],
+            table="factor_correlation",
+            relation_name="factor_correlation_load",
+            key_columns=("factor_id_a", "factor_id_b", "universe_id", "run_id"),
+        )
+        crowding_count = _replace_rows(
+            store,
+            crowding_persist.loc[:, _FACTOR_CROWDING_TABLE_COLUMNS],
+            table="factor_crowding",
+            relation_name="factor_crowding_load",
+            key_columns=("factor_id", "universe_id", "run_id"),
+        )
+
+    return {
+        "factor_eval_manifest": manifest_count,
+        "factor_correlation": correlation_count,
+        "factor_crowding": crowding_count,
+    }
+
+
+def persist_breadth(
+    store,
+    *,
+    manifest: pd.DataFrame,
+    breadth: pd.DataFrame,
+    universe_id: str,
+    run_id: str | None,
+) -> dict[str, int]:
+    """Attach manifest lineage to the breadth rows and persist manifest + table."""
+
+    breadth_persist = _attach_manifest_lineage(breadth, manifest, universe_id=universe_id, run_id=run_id)
+
+    with store.transaction():
+        manifest_count = _replace_rows(
+            store,
+            manifest,
+            table="factor_eval_manifest",
+            relation_name="factor_eval_manifest_load_breadth",
+            key_columns=("eval_id",),
+        )
+        breadth_count = _replace_rows(
+            store,
+            breadth_persist.loc[:, _FACTOR_BREADTH_TABLE_COLUMNS],
+            table="factor_breadth",
+            relation_name="factor_breadth_load",
+            key_columns=("factor_id", "as_of_date", "universe_id", "run_id"),
+        )
+
+    return {
+        "factor_eval_manifest": manifest_count,
+        "factor_breadth": breadth_count,
+    }
+
+
 def _derive_forward_returns_from_prices(store, *, horizons: tuple[int, ...]) -> pd.DataFrame:
     prices = store.con.execute(
         """
@@ -1066,12 +1442,17 @@ def evaluate_panel(
     is not supplied, it is derived from ``equity_daily_bars`` (never re-derived from the
     panel itself, keeping the scoring target strictly separate from factor inputs).
 
-    Runs and persists, in order: the IC / IC-decay surface (PF4-S1-0), then the
-    quantile/decile spread and turnover surfaces (PF4-S1-1). Each surface writes its own
+    Runs and persists, in order: the IC / IC-decay surface (PF4-S1-0), the quantile/decile
+    spread and turnover surfaces (PF4-S1-1), then the factor-to-factor correlation/crowding
+    and per-date breadth surfaces (PF4-S1-2). Each surface writes its own
     ``factor_eval_manifest`` rows (keyed by a distinct, eval-kind-scoped ``eval_id``) plus
-    its own metric table; the returned dict merges every surface's per-table row counts,
-    summing ``factor_eval_manifest`` across surfaces. Later tasks in this sprint extend this
-    orchestrator further (correlation/crowding/breadth/DQC) without reworking this shape.
+    its own metric table(s); the returned dict merges every surface's per-table row counts,
+    summing ``factor_eval_manifest`` across surfaces. Breadth is computed without a live
+    as-of universe-size join here (``universe_counts=None``): wiring the as-of universe
+    membership count is deferred, matching the sprint doc's note that the live
+    price x fundamental overlap is currently empty pending PF4-S4/PF4-S6; ``compute_breadth``
+    still emits ``n_names``/``n_non_null`` with ``universe_size``/``coverage_fraction`` NULL.
+    The gated leakage/coverage DQC checks are PF4-S1-3 and are not run here.
     """
 
     horizons = tuple(horizons)
@@ -1135,7 +1516,41 @@ def evaluate_panel(
         run_id=run_id,
     )
 
-    for extra_counts in (quantile_counts, turnover_counts):
+    correlation = compute_factor_correlation(panel)
+    crowding = compute_crowding(correlation)
+    correlation_manifest = _build_correlation_manifest(
+        panel,
+        correlation,
+        universe_id=universe_id,
+        source=SOURCE_NAME,
+        run_id=run_id,
+    )
+    correlation_counts = persist_correlation_crowding(
+        store,
+        manifest=correlation_manifest,
+        correlation=correlation,
+        crowding=crowding,
+        universe_id=universe_id,
+        run_id=run_id,
+    )
+
+    breadth = compute_breadth(panel, universe_counts=None)
+    breadth_manifest = _build_breadth_manifest(
+        panel,
+        breadth,
+        universe_id=universe_id,
+        source=SOURCE_NAME,
+        run_id=run_id,
+    )
+    breadth_counts = persist_breadth(
+        store,
+        manifest=breadth_manifest,
+        breadth=breadth,
+        universe_id=universe_id,
+        run_id=run_id,
+    )
+
+    for extra_counts in (quantile_counts, turnover_counts, correlation_counts, breadth_counts):
         for table, count in extra_counts.items():
             counts[table] = counts.get(table, 0) + count
 

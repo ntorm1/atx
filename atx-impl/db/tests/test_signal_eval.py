@@ -13,6 +13,9 @@ from db.signal_eval import (
     compute_information_coefficient,
     compute_quantile_spread,
     compute_turnover,
+    compute_factor_correlation,
+    compute_crowding,
+    compute_breadth,
     load_panel_for_eval,
     evaluate_panel,
 )
@@ -188,4 +191,52 @@ def test_compute_quantile_spread_is_order_invariant() -> None:
     a = compute_quantile_spread(p, f, n_quantiles=5, horizons=[1])
     b = compute_quantile_spread(p.sample(frac=1.0, random_state=8).reset_index(drop=True),
                                 f.sample(frac=1.0, random_state=9).reset_index(drop=True), n_quantiles=5, horizons=[1])
+    pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
+
+
+def test_near_duplicate_factors_are_mutually_crowded() -> None:
+    rng = np.random.default_rng(2)
+    dates = _dates(30); secs = [f"S{i}" for i in range(40)]
+    rows = []
+    for d in dates:
+        base = {s: rng.normal() for s in secs}
+        for s in secs:
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "value_a", "value": base[s]})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "value_b", "value": base[s] + 0.01 * rng.normal()})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "indep",   "value": rng.normal()})
+    panel = pd.DataFrame(rows)
+    corr = compute_factor_correlation(panel)
+    ab = corr[(corr["factor_id_a"] == "value_a") & (corr["factor_id_b"] == "value_b")]["mean_abs_correlation"].iloc[0]
+    assert ab > 0.9
+    crowd = compute_crowding(corr).set_index("factor_id")
+    assert crowd.loc["value_a", "max_abs_correlation"] > 0.9
+    assert crowd.loc["value_b", "max_abs_correlation"] > 0.9
+    assert crowd.loc["indep", "max_abs_correlation"] < 0.5
+    assert crowd.loc["value_a", "most_correlated_factor_id"] == "value_b"
+
+
+def test_breadth_matches_known_fixture_coverage() -> None:
+    dates = _dates(3); secs = [f"S{i}" for i in range(10)]
+    rows = []
+    for d in dates:
+        for i, s in enumerate(secs):
+            val = float(i) if i < 6 else None                # only 6 of 10 names defined
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "sparse", "value": val})
+    uni = pd.DataFrame({"as_of_date": dates, "universe_size": [10, 10, 10]})
+    breadth = compute_breadth(pd.DataFrame(rows), uni)
+    assert set(breadth["n_non_null"]) == {6}
+    assert np.allclose(breadth["coverage_fraction"], 0.6)
+
+
+def test_compute_correlation_is_order_invariant() -> None:
+    rng = np.random.default_rng(31)
+    dates = _dates(12); secs = [f"S{i}" for i in range(20)]
+    rows = []
+    for d in dates:
+        for s in secs:
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "a", "value": rng.normal()})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "b", "value": rng.normal()})
+    p = pd.DataFrame(rows)
+    a = compute_factor_correlation(p)
+    b = compute_factor_correlation(p.sample(frac=1.0, random_state=6).reset_index(drop=True))
     pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))

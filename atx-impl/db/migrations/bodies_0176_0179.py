@@ -159,8 +159,112 @@ def _pf4_s1_quantile_turnover(conn: duckdb.DuckDBPyConnection) -> None:
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf4_s1_correlation_breadth(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF4-S1-2: factor_correlation + factor_crowding + factor_breadth."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_correlation (
+            eval_id VARCHAR NOT NULL,
+            factor_id_a VARCHAR NOT NULL,
+            factor_id_b VARCHAR NOT NULL,
+            mean_correlation DOUBLE,
+            mean_abs_correlation DOUBLE,
+            n_dates BIGINT,
+            universe_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_crowding (
+            eval_id VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            max_abs_correlation DOUBLE,
+            avg_abs_correlation DOUBLE,
+            most_correlated_factor_id VARCHAR,
+            n_peers BIGINT,
+            universe_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_breadth (
+            eval_id VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            as_of_date DATE NOT NULL,
+            n_names BIGINT,
+            n_non_null BIGINT,
+            universe_size BIGINT,
+            coverage_fraction DOUBLE,
+            effective_breadth DOUBLE,
+            universe_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at) VALUES
+        ('factor_correlation','metric','factor_correlation','factor_id_a,factor_id_b,universe_id,run_id',
+         'Pairwise cross-sectional factor-value correlation averaged over dates (ordered pairs a!=b) for redundancy analysis.',
+         '["factor_id_a","factor_id_b","universe_id","run_id"]',
+         'Correlations computed cross-sectionally per date then averaged; no date pooling.', now()),
+        ('factor_crowding','metric','factor_crowding','factor_id,universe_id,run_id',
+         'Per-factor crowding = max and average absolute correlation to the rest of the namespace, with the most-correlated peer.',
+         '["factor_id","universe_id","run_id"]',
+         'Derived from factor_correlation; a factor highly correlated with many others is crowded/redundant.', now()),
+        ('factor_breadth','metric','factor_breadth','factor_id,as_of_date,universe_id,run_id',
+         'Per-date cross-sectional breadth: non-null name count, as-of universe size, coverage fraction, effective breadth.',
+         '["factor_id","as_of_date","universe_id","run_id"]',
+         'Breadth is an as-of coverage measure over the as-of universe.', now())
+        """
+    )
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_factor_correlation_a ON factor_correlation(factor_id_a, factor_id_b)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_crowding_factor ON factor_crowding(factor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_breadth_factor_date ON factor_breadth(factor_id, as_of_date)",
+    ):
+        conn.execute(stmt)
+    # factor_breadth carries as_of_date (a strong bitemporal marker) as the cross-section
+    # label of a *derived, deterministically-recomputable* evaluation metric -- not a
+    # bitemporal fact row. as_of_date + run_id carry its PIT/lineage semantics; per-row
+    # available_at / source_loaded_at / is_latest_revision are not meaningful for a metric
+    # recomputed wholesale by evaluate_panel. Register that narrowly with the schema-contract
+    # PIT-exemption registry (mirroring the est_* dimension exemptions) so
+    # pit_column_presence_check stays green. factor_correlation / factor_crowding carry no
+    # strong marker and need no exemption.
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO pit_exemption (
+            table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at
+        )
+        VALUES (
+            'factor_breadth',
+            '["available_at","source_loaded_at","is_latest_revision"]',
+            'factor_breadth is a derived, deterministically-recomputable signal-evaluation metric keyed by (factor_id, as_of_date, universe_id, run_id). Its as_of_date is the cross-section label and run_id carries lineage; per-row available_at, source_loaded_at, and is_latest_revision are not meaningful for a metric recomputed wholesale from the read-only panel.',
+            'pf4-s1-s1-2',
+            now(),
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("factor_correlation", "factor_crowding", "factor_breadth"))
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(version=176, name="pf4_s1_ic_surface", up=_pf4_s1_ic_surface),
     Migration(version=177, name="pf4_s1_quantile_turnover", up=_pf4_s1_quantile_turnover),
-    # 0178, 0179 appended by later tasks in this same sprint
+    Migration(version=178, name="pf4_s1_correlation_breadth", up=_pf4_s1_correlation_breadth),
+    # 0179 appended by a later task in this same sprint
 ]
