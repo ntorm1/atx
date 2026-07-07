@@ -307,6 +307,96 @@ def test_refresh_enterprise_value_is_idempotent_and_asof_visible(tmp_store) -> N
     ]
 
 
+def test_ev_falls_back_to_latest_available_period_across_filing_boundary(tmp_store) -> None:
+    from db.asof import enterprise_value_asof
+
+    security_id = "SEC-EV-FILING"
+    symbol = "EVF"
+    period_1_end = dt.date(2019, 12, 31)
+    period_1_available = dt.datetime(2020, 2, 5, 10)
+    period_2_end = dt.date(2020, 3, 31)
+    period_2_available = dt.datetime(2020, 5, 10, 10)
+    trade_date_early = dt.date(2020, 5, 2)
+    trade_date_late = dt.date(2020, 5, 15)
+
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _market_cap_row(
+                    security_id=security_id,
+                    symbol=symbol,
+                    trade_date=trade_date_early,
+                    available_at=dt.datetime(2020, 5, 2, 22),
+                ),
+                _market_cap_row(
+                    security_id=security_id,
+                    symbol=symbol,
+                    trade_date=trade_date_late,
+                    available_at=dt.datetime(2020, 5, 15, 22),
+                ),
+            ]
+        ),
+        "market_cap",
+        "enterprise_value_filing_boundary_market_cap_seed",
+    )
+
+    statement_rows: list[dict[str, object]] = []
+    for metric, base_value in (
+        ("total_debt", 200.0),
+        ("pref_stock", 25.0),
+        ("minority_int_bs", 10.0),
+        ("cash_st_inv", 50.0),
+    ):
+        p1_row = _statement_row(
+            metric,
+            base_value,
+            security_id=security_id,
+            symbol=symbol,
+            period_end=period_1_end,
+            available_at=period_1_available,
+        )
+        p1_row["statement_point_id"] = f"{p1_row['statement_point_id']}-p1"
+        p1_row["fact_revision_id"] = f"{p1_row['fact_revision_id']}-p1"
+        p1_row["revision_group_id"] = f"{p1_row['revision_group_id']}-p1"
+        statement_rows.append(p1_row)
+
+        p2_row = _statement_row(
+            metric,
+            base_value + 5.0,
+            security_id=security_id,
+            symbol=symbol,
+            period_end=period_2_end,
+            available_at=period_2_available,
+        )
+        p2_row["statement_point_id"] = f"{p2_row['statement_point_id']}-p2"
+        p2_row["fact_revision_id"] = f"{p2_row['fact_revision_id']}-p2"
+        p2_row["revision_group_id"] = f"{p2_row['revision_group_id']}-p2"
+        statement_rows.append(p2_row)
+
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(statement_rows),
+        "fundamental_statement_points",
+        "enterprise_value_filing_boundary_statement_seed",
+    )
+
+    assert refresh_enterprise_value(tmp_store, EnterpriseValueOptions(run_id="filing-boundary-run")) == 2
+
+    early = enterprise_value_asof(trade_date_early, store=tmp_store, symbols=(symbol,))
+    early_at_trade_date = early[early["trade_date"] == pd.Timestamp(trade_date_early)]
+    assert not early_at_trade_date.empty, "EV must not have a coverage hole across the filing boundary"
+    early_row = early_at_trade_date.iloc[0]
+    assert pd.Timestamp(early_row["period_end"]) == pd.Timestamp(period_1_end)
+    assert early_row["available_at"].date() <= trade_date_early
+
+    late = enterprise_value_asof(trade_date_late, store=tmp_store, symbols=(symbol,))
+    late_at_trade_date = late[late["trade_date"] == pd.Timestamp(trade_date_late)]
+    assert not late_at_trade_date.empty
+    late_row = late_at_trade_date.iloc[0]
+    assert pd.Timestamp(late_row["period_end"]) == pd.Timestamp(period_2_end)
+
+
 def test_enterprise_value_dataset_records_quality(tmp_store) -> None:
     _seed_enterprise_value_inputs(tmp_store)
 

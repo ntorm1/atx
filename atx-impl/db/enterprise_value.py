@@ -209,12 +209,18 @@ def _select_latest_enterprise_value_inputs(inputs: pd.DataFrame) -> pd.DataFrame
         "cash_and_equivalents_available_at",
     ]
     out["fundamental_available_at"] = out[component_av[1:]].max(axis=1)
+    # Prefer periods already visible as of trade_date over a not-yet-filed later
+    # period; only fall back to an unavailable period when no available one exists
+    # for that trade_date (mirrors the `matched` CTE ranking in load_enterprise_value_inputs).
+    out["fundamental_is_available"] = out["fundamental_available_at"] <= out["trade_date"]
     key_columns = ["market_cap_source", "security_id", "trade_date"]
     out = out.sort_values(
-        key_columns + ["period_end", "fundamental_available_at", "fundamental_sort_key"],
-        ascending=[True, True, True, False, False, False],
+        key_columns
+        + ["fundamental_is_available", "period_end", "fundamental_available_at", "fundamental_sort_key"],
+        ascending=[True, True, True, False, False, False, False],
         kind="mergesort",
     )
+    out = out.drop(columns=["fundamental_is_available"])
     return out.drop_duplicates(key_columns, keep="first").reset_index(drop=True)
 
 
@@ -495,7 +501,11 @@ def load_enterprise_value_inputs(store: DuckDBStore, options: EnterpriseValueOpt
                 f.fundamental_sort_key,
                 row_number() OVER (
                     PARTITION BY mc.market_cap_source, mc.security_id, mc.trade_date
-                    ORDER BY f.period_end DESC, f.fundamental_available_at DESC, f.fundamental_sort_key DESC
+                    ORDER BY
+                        (f.fundamental_available_at <= mc.trade_date) DESC,
+                        f.period_end DESC,
+                        f.fundamental_available_at DESC,
+                        f.fundamental_sort_key DESC
                 ) AS ev_period_rn
             FROM market_caps mc
             JOIN complete_fundamentals f
