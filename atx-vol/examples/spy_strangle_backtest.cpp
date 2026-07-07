@@ -324,6 +324,46 @@ int main() {
   const double build_ms = std::chrono::duration<double, std::milli>(t_build1 - t_build0).count();
   const double run_ms = std::chrono::duration<double, std::milli>(t_run1 - t_run0).count();
   const int priced_steps = static_cast<int>(r.size()) - 1;
+
+  // CSV (pnl + greeks) with a `# key=value` metadata header the Python tearsheet
+  // reads. Values written at full round-trip precision.
+  const std::string csv = (base / "spy_short_strangle.csv").string();
+  {
+    std::ofstream os(csv, std::ios::binary | std::ios::trunc);
+    const double run_s0 = run_ms / 1000.0;
+    const double sps = (run_s0 > 0.0) ? static_cast<double>(priced_steps) / run_s0 : 0.0;
+    os.setf(std::ios::fmtflags(0), std::ios::floatfield);
+    os.precision(10);
+    os << "# symbol=SPY\n"
+       << "# strategy=Short 40-Delta 6M Strangle, Daily Restrike\n"
+       << "# window_start=" << dates.front() << "\n"
+       << "# window_end=" << dates.back() << "\n"
+       << "# business_days=" << dates.size() << "\n"
+       << "# priced_steps=" << priced_steps << "\n"
+       << "# n_strangles=1\n"
+       << "# multiplier=100\n"
+       << "# tenor_years=" << kTenorT << "\n"
+       << "# delta_target=0.40\n"
+       << "# wall_clock_ms=" << run_ms << "\n"
+       << "# steps_per_s=" << sps << "\n"
+       << "# total_return=" << t.total_return << "\n"
+       << "# ann_return=" << t.ann_return << "\n"
+       << "# ann_vol=" << t.ann_vol << "\n"
+       << "# sharpe=" << t.sharpe << "\n"
+       << "# max_drawdown=" << t.max_drawdown << "\n"
+       << "# hit_rate=" << t.hit_rate << "\n"
+       << "# avg_gross_vega=" << t.avg_gross_vega << "\n"
+       << "date,pnl_total,nav,pnl_theta,pnl_vega,pnl_gamma,pnl_delta,pnl_vanna,pnl_volga,"
+          "pnl_rho,pnl_charm,pnl_unexplained,gross_delta,gross_gamma,gross_vega,gross_theta,"
+          "n_open_lots\n";
+    for (std::size_t i = 0; i < r.size(); ++i) {
+      os << r.date[i] << ',' << r.pnl_total[i] << ',' << r.nav[i] << ',' << r.pnl_theta[i] << ','
+         << r.pnl_vega[i] << ',' << r.pnl_gamma[i] << ',' << r.pnl_delta[i] << ',' << r.pnl_vanna[i]
+         << ',' << r.pnl_volga[i] << ',' << r.pnl_rho[i] << ',' << r.pnl_charm[i] << ','
+         << r.pnl_unexplained[i] << ',' << r.gross_delta[i] << ',' << r.gross_gamma[i] << ','
+         << r.gross_vega[i] << ',' << r.gross_theta[i] << ',' << r.n_open_lots[i] << '\n';
+    }
+  }
   const long long leg_reprices =
       static_cast<long long>(priced_steps) * 2;  // 2 lots repriced per step
   const double run_s = run_ms / 1000.0;
@@ -388,6 +428,8 @@ int main() {
     }
   }
   std::printf("\n[wrote] %s (%zu rows)\n", tsv.c_str(), r.size());
+  std::printf("[wrote] %s (pnl + greeks + metadata header for the Python tearsheet)\n",
+              csv.c_str());
 
   return 0;
 }
