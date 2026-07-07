@@ -10,6 +10,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/universe.hpp"
+#include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
 
 namespace atx::vol {
@@ -134,6 +135,36 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const VolSurface &s,
       }
       w_prev = w;
       T_prev = T;
+    }
+  }
+  return Ok(std::move(out));
+}
+
+Result<std::vector<ArbViolation>> arb_check_calendar(const CurveSurface &s,
+                                                     double k_min, double k_max,
+                                                     std::uint32_t n_grid) {
+  std::vector<ArbViolation> out;
+  const auto slices = s.slices();
+  if (slices.size() < 2 || n_grid == 0 || !(k_max > k_min)) {
+    return Ok(std::move(out));
+  }
+  constexpr double kCalendarTol = 1.0e-7;  // total-variance units
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  for (std::size_t i = 1; i < slices.size(); ++i) {
+    const IVolCurve &prev = *slices[i - 1];
+    const IVolCurve &curr = *slices[i];
+    for (std::uint32_t g = 0; g <= n_grid; ++g) {
+      const double k = k_min + dk * static_cast<double>(g);
+      const double wp = prev.w(k);
+      const double wc = curr.w(k);
+      if (!std::isfinite(wp) || !std::isfinite(wc)) {
+        continue;  // wing coverage gap on one side — nothing to compare
+      }
+      const double slack = wp - wc;
+      if (slack > kCalendarTol) {
+        out.push_back(ArbViolation{k, prev.T(), curr.T(), slack,
+                                   ArbViolation::Kind::Calendar});
+      }
     }
   }
   return Ok(std::move(out));
