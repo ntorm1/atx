@@ -256,6 +256,26 @@ round-trip (the FD path's pure price-differences cancel that noise), so the anal
 path is opt-in — the bit-stable `PricedSurface::greeks` stays cold FD, the backtest
 (no round-trip contract) uses `greeks_analytic`.
 
+### Controlled per-call greeks speedup (single run, `DISABLED_FdBoundaryReuse_Speedup`)
+
+Isolated `american_greeks` call on a 40-point put grid × 400 reps, same process (the
+straddle backtest bench is too noisy — half its book is calls, which still take the
+FD path, and single-run wall swings ±40% under load):
+
+| Path | µs/call | vs 17-solve FD |
+|---|---|---|
+| FD reference (17 cold solves) | 6700 | 1.00× |
+| P1a (7 cold solves) | 1986 | **3.37×** |
+| P1b (7, warm-seeded bumps) | 1846 | 3.63× |
+| **P2 `american_greeks_al` (5 cold solves + PDE θ/charm)** | 1762 | **3.80×** |
+
+The backtest reprices puts via P2. Net backtest put hot path: **18→6 boundary
+solves/contract/step** (P1a+P1c+P2) on top of C1's 13.4× parallel throughput.
+Remaining levers (next cycle): P3 cross-step warm-start (temporal coherence — the
+book holds the same contracts day-to-day; warm-start + early-exit-at-tol cuts the
+dominant sweeps), call-side analytic (extend PDE θ/charm to calls, 7→5), P4 kernel,
+P5 correction-cache for dispersion-scale.
+
 ### Key measured finding — sweeps dominate, not the seed
 
 The controlled micro-bench (`DISABLED_FdBoundaryReuse_Speedup`, default reprice

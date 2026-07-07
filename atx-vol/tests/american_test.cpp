@@ -689,25 +689,35 @@ TEST(AmericanGreeks, DISABLED_FdBoundaryReuse_Speedup) {
   auto t2 = std::chrono::steady_clock::now();
   for (int rep = 0; rep < reps; ++rep) {
     for (const Pt& p : grid) {
+      const auto g = american_greeks_al(S, p.K, p.T, p.sigma, r, q, Side::Put);
+      sink += g ? g->delta + g->vega + g->gamma : 0.0;
+    }
+  }
+  auto t3 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep) {
+    for (const Pt& p : grid) {
       const auto g = greeks_fd_reference(S, p.K, p.T, p.sigma, r, q, Side::Put);
       sink += g.delta + g.vega + g.gamma;
     }
   }
-  auto t3 = std::chrono::steady_clock::now();
+  auto t4 = std::chrono::steady_clock::now();
 
   const double fast_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
   const double warm_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-  const double ref_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
+  const double al_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
+  const double ref_ms = std::chrono::duration<double, std::milli>(t4 - t3).count();
   const long calls = static_cast<long>(reps) * static_cast<long>(grid.size());
   const double per = static_cast<double>(calls);
   std::printf(
-      "[p1-speedup] calls=%ld ref(17cold)=%.1fms (%.1fus) p1a(7cold)=%.1fms "
-      "(%.1fus, %.2fx) p1b(warm)=%.1fms (%.1fus, %.2fx) sink=%.3g\n",
+      "[greeks-speedup] calls=%ld ref(17cold)=%.1fms (%.1fus)\n"
+      "  p1a(7cold)=%.1fms (%.1fus, %.2fx) p1b(warm)=%.1fms (%.1fus, %.2fx) "
+      "p2(al,5solve)=%.1fms (%.1fus, %.2fx) sink=%.3g\n",
       calls, ref_ms, 1000.0 * ref_ms / per, fast_ms, 1000.0 * fast_ms / per,
-      ref_ms / fast_ms, warm_ms, 1000.0 * warm_ms / per, ref_ms / warm_ms,
-      static_cast<double>(sink));
+      ref_ms / fast_ms, warm_ms, 1000.0 * warm_ms / per, ref_ms / warm_ms, al_ms,
+      1000.0 * al_ms / per, ref_ms / al_ms, static_cast<double>(sink));
   EXPECT_GT(ref_ms, fast_ms);
   EXPECT_GT(fast_ms, warm_ms);  // warm must beat cold-fast
+  EXPECT_GT(fast_ms, al_ms);    // analytic (5 solves) must beat P1a (7 solves)
 }
 
 // ── Warm-started AloPricer (the American-IV throughput lever) ─────────────
