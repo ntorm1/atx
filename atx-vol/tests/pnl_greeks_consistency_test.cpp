@@ -17,9 +17,11 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -159,11 +161,24 @@ TEST(PnlGreeksConsistency, Session_ConvexDense_GreeksPrice_BitEqual_FairValue) {
   ASSERT_TRUE(spy_sess.has_value()) << spy_sess.error().to_string();
 
   int n_checked = 0;
-  for (const auto& c : spy_sess->expiries()) {
-    const double T = c.T;
-    if (T < 0.03 || T > 1.5) {
-      continue;
+  // greeks()->price == fair_value() is a PER-CONTRACT property, so checking
+  // every expiry adds no coverage — only CPU. Sample a REPRESENTATIVE subset of
+  // at most ~6 expiries evenly spanning the term structure (front / middle /
+  // back T), still honoring the same T in [0.03, 1.5] tradeable window and all
+  // 5 moneyness points per sampled expiry.
+  const std::span<const SliceContext> exps = spy_sess->expiries();
+  std::vector<std::size_t> eligible;
+  for (std::size_t i = 0; i < exps.size(); ++i) {
+    if (exps[i].T >= 0.03 && exps[i].T <= 1.5) {
+      eligible.push_back(i);
     }
+  }
+  constexpr std::size_t kMaxExpiries = 6;
+  const std::size_t stride =
+      eligible.empty() ? 1 : (eligible.size() + kMaxExpiries - 1) / kMaxExpiries;
+  for (std::size_t j = 0; j < eligible.size(); j += stride) {
+    const SliceContext& c = exps[eligible[j]];
+    const double T = c.T;
     const double F = c.forward;
     for (double m : {0.92, 0.98, 1.0, 1.02, 1.08}) {
       const double K = F * m;

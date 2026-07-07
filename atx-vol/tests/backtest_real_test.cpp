@@ -33,6 +33,8 @@
 #include <utility>
 #include <vector>
 
+#include <process.h>  // _getpid — private temp dir per test process (parallel gate)
+
 #include "atx/vol/backtest.hpp"        // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
 #include "atx/vol/corpus.hpp"          // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
 #include "atx/vol/market_env.hpp"      // MarketEnv
@@ -187,7 +189,13 @@ class BacktestReal : public ::testing::Test {
       boards.push_back(std::move(b));
     }
 
-    out_dir_ = fs::temp_directory_path() / "atx-backtest-real-corpus";
+    // Per-process private corpus dir: the two BacktestReal.* tests run in
+    // separate ctest processes under the parallel gate (ctest -L atx_vol -j16),
+    // and a shared fixed path let one test's SetUp/TearDown remove_all() delete
+    // the archive out from under the other's in-flight run_backtest (flaky
+    // "SurfaceArchive::open_file: file not found"). The PID suffix isolates them.
+    out_dir_ = fs::temp_directory_path() /
+               ("atx-backtest-real-corpus-" + std::to_string(::_getpid()));
     std::error_code ec;
     fs::remove_all(out_dir_, ec);
 

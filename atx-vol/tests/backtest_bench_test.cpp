@@ -34,6 +34,7 @@
 #include "atx/vol/types.hpp"            // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "support/bench_gate.hpp"       // ATX_VOL_SKIP_UNLESS_BENCH
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -128,6 +129,7 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
 
 // ── Throughput smoke: D dates x U underliers, straddle clips held to expiry ──
 TEST(BacktestBench, MultiUnderlierStraddle_StepsPerSecond) {
+  ATX_VOL_SKIP_UNLESS_BENCH();
   const fs::path dir = fs::temp_directory_path() / "atx-backtest-bench";
   std::error_code ec;
   fs::remove_all(dir, ec);

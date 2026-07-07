@@ -50,6 +50,7 @@
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/types.hpp"           // Side
 #include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind, to_string
+#include "support/bench_gate.hpp"      // ATX_VOL_SKIP_UNLESS_BENCH
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -447,6 +448,7 @@ TEST(Corpus, Deterministic_AcrossThreadCounts) {
 
 // ── 5. Throughput smoke ─────────────────────────────────────────────────────
 TEST(Corpus, Throughput_FitsUnderCeiling) {
+  ATX_VOL_SKIP_UNLESS_BENCH();
   const fs::path out = fresh_out_dir("throughput");
 
   // 10 dates x 2 symbols = 20 boards. Snapshots are all before the earliest

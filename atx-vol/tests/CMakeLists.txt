@@ -74,4 +74,4 @@ target_link_libraries(atx-vol-tests
 )
 
 include(GoogleTest)
-gtest_discover_tests(atx-vol-tests)
+gtest_discover_tests(atx-vol-tests PROPERTIES LABELS atx_vol)
