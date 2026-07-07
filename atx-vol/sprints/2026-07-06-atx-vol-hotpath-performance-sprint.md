@@ -228,3 +228,37 @@ P1a (puts, bit-identical) first — safest, immediate ~2×, establishes the
 `AlSolved` solve/eval seam that P2/P3 build on. Then P2 (analytic, the headline
 win), then P3 (temporal coherence for the backtest regime), then P4 (kernel), then
 P5 (dispersion-scale). Each gated on the real-OPRA litmus before the next starts.
+
+---
+
+## 6. Progress log (implementation)
+
+| Increment | Commit | Result |
+|---|---|---|
+| **P1a** boundary-reuse in `american_greeks_fd` (puts: 17→7 boundary solves) | `28e2dbe` | **Bit-identical** (75-pt put grid, all 9 greeks `==` FD reference). Controlled micro-bench **2.50×** on the isolated put greeks call. |
+| **P1b** warm-start machinery (`al_solve_put_boundary_warm` + `warm_start` flag) | `e9e5715` | **2.91×** warm (only +1.16× over P1a). **Kept dormant** — `PricedSurface::greeks` stays cold to preserve greeks bit-reproducibility across a surface-archive round-trip (`LifecycleIntegration`). Warm belongs in the backtest-engine cross-step path (P3). |
+| **P1c** elide duplicate `fair_value` solve in `PortfolioPricer` | *(pending)* | **Bit-identical.** `price()` 8→7, `pnl_explain()` 9→8 boundary solves/put. |
+
+### Key measured finding — sweeps dominate, not the seed
+
+The controlled micro-bench (`DISABLED_FdBoundaryReuse_Speedup`, default reprice
+scheme `{n_boundary=12, n_quad_fp=24, n_iter_jn=2, n_iter_fp=4}`) shows the
+Barone-Adesi-Whaley cold seed is only ~16% of a solve; the **Jacobi-Newton +
+fixed-point sweeps dominate**. This revises the plan:
+
+- **P1b warm-start is worth little on its own** (skipping the seed = ~1.16×) — it
+  pays off only when a *cross-step* seed is close enough to also cut the sweep
+  budget (P3), so it ships as dormant infrastructure.
+- **P2 (analytic greeks) is promoted to the top remaining lever.** It removes 6 of
+  7 boundary *solves* (each with its full sweep budget) per greeks call — the
+  envelope theorem gives vega/rho/theta from the base boundary with no σ±/r±/T±
+  re-solve, delta/gamma are exact from the S-independent boundary, and
+  vanna/volga/charm stay as cheap FD on the base-boundary-reused prices. Target:
+  greeks from **1 boundary solve** ⇒ `pnl_explain` 8→2 solves/put (~4×). Gated vs a
+  Richardson-FD reference to tick epsilon (the FD path is retained as the oracle).
+- **Revised order:** P2 next, then P3 (cross-step warm, switching on P1b), then P4,
+  P5.
+
+Note: SIMD of the sweep kernel is a dead end here — xsimd measured 6.6× slower and
+SVML is unavailable under clang-cl (american.cpp:586). Fewer solves, not faster
+transcendentals, is the path.
