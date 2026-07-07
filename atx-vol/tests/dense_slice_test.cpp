@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
@@ -93,26 +94,45 @@ std::vector<FitObs> make_synthetic_slice_obs(double F, double T, double df,
   return obs;
 }
 
-// A convex, arbitrage-free call board with WIDE bid-ask bands. The mids lie on an
-// exact convex QUADRATIC in strike (uniform grid ⇒ zero third difference), so the
-// roughness-minimizing convex curve equals the mids: the interval fit interpolates
-// them and sits at every band's CENTER, strictly inside even a wide band. (A
-// flat-vol board's mids are convex but NOT roughness-minimal, so the interval loss
-// would smooth them toward the band edges — this quadratic pins the fit interior,
-// exercising the band composition without a knife-edge tolerance.) All strikes are
-// OTM calls, keeping mids positive. NOT used by the A3/A4 tests; `sigma` only sets
-// a realistic per-obs vega weight via mk_obs.
+// A DISCRIMINATING call board for the interval-loss band test: a MID fit is pulled
+// OUTSIDE a band while an INTERVAL fit can stay inside every band. The mechanism:
+//
+//   * a convex, decreasing, positive TRUE call curve `g_true` (quadratic in strike),
+//   * plus a localized CONCAVE bump over the three central strikes (120/125/130) so
+//     the board is NON-convex there — a convex fit cannot follow the bump,
+//   * per-strike bands CENTERED on the (bumped) mids: wide on the shoulders and a
+//     moderate band at the bump peak (K=125), each centered on `g_true` off the bump.
+//
+// The Mid loss anchors the fit to the mids (the band CENTERS) with weight
+// vega²/spread². It cannot reproduce the concave bump, so the least-squares convex
+// projection comes out nearly LINEAR from the peak outward — but LIFTED by the bump.
+// Because `g_true` curves DOWN faster than any line on the right wing, that lifted
+// Mid fit sits ABOVE the right-wing bands (K=135…150, centered on the steeply
+// decaying `g_true`): a clear multi-band overshoot. The Interval loss owes zero data
+// penalty anywhere inside a band, so it need not honor the lifted central mids; it
+// threads the SMOOTHEST convex curve (a slightly steeper line) that stays within
+// every band — that in-band curve is exactly the interval solution, so the
+// convex-in-band feasible set is non-empty. Uniform strike grid + ≤ node_cap strikes
+// ⇒ node grid == strike grid (design matrix B = identity), so the Mid violation is
+// the LOSS's doing, not an interpolation artifact. All strikes are OTM calls (K≥F),
+// keeping mids positive; NOT used by the A3/A4 tests; `sigma` only sets a realistic
+// per-obs vega weight via mk_obs.
 std::vector<FitObs> make_synthetic_slice_obs_wideband(double F, double T, double df,
                                                       double sigma) {
-  const std::vector<double> strikes = {100, 106, 112, 118, 124, 130,
-                                       136, 142, 148, 154, 160};
-  const double kmax = 166.0;
+  const std::vector<double> strikes = {100, 105, 110, 115, 120, 125,
+                                       130, 135, 140, 145, 150};
+  const double kmax = 170.0;
+  const auto g_true = [&](double K) { return 0.004 * (kmax - K) * (kmax - K); };
   std::vector<FitObs> obs;
   obs.reserve(strikes.size());
   for (const double K : strikes) {
     FitObs o = mk_obs(F, T, df, K, sigma);          // realistic side / vega weight
-    o.mid = 0.0016 * (kmax - K) * (kmax - K);        // convex, decreasing, positive
-    o.spread = std::max(0.30 * o.mid, 2.0);          // WIDE band around the mid
+    double bump = 0.0;                               // localized concave hump…
+    if (K == 120.0) bump = 1.5;
+    if (K == 125.0) bump = 3.0;                      // …peak of the concavity
+    if (K == 130.0) bump = 1.5;
+    o.mid = g_true(K) + bump;                        // convex base + concave bump
+    o.spread = (K == 125.0) ? 2.0 : 6.0;             // moderate peak band, wide else
     obs.push_back(o);
   }
   return obs;
@@ -279,16 +299,51 @@ TEST(ConvexSliceFit, CalendarFloorSlackIsBitIdentical) {
 TEST(ConvexSliceFit, IntervalLossPutsPriceInsideBand) {
   using namespace atx::vol;
   const double F = 100.0, T = 0.5, df = 0.98;
-  // Wide bands → many mid-only fits sit outside band; interval should pull inside.
+  // Discriminating board: a concave bump the convex fit cannot follow, wide
+  // shoulder bands, a moderate peak band (see make_synthetic_slice_obs_wideband).
   std::vector<FitObs> obs = make_synthetic_slice_obs_wideband(F, T, df, 0.20);
-  ConvexFitOpts opts; opts.loss = CalibLossKind::Interval;
-  auto fit = fit_convex_slice(obs, F, T, df, opts);
-  ASSERT_TRUE(fit.has_value());
+
+  // Call-folded per-obs band [c_bid, c_ask], matching the production composition
+  // (half-spread invariant under put-call parity): c_ask = co + s/2,
+  // c_bid = max(0, co − s/2), co the call-folded price of the obs.
+  const auto band = [&](const FitObs& o) {
+    const double co = (o.side == Side::Call) ? o.mid : o.mid + df * (F - o.K);
+    return std::pair<double, double>{std::max(0.0, co - o.spread / 2),
+                                     co + o.spread / 2};
+  };
+
+  // (1) LIVENESS GUARD — a default Mid fit MUST push at least one price OUTSIDE
+  // its band. If interval loss ever silently degrades to Mid, this same board
+  // would violate a band under the Interval branch too, failing part (2). So the
+  // pairing (Mid violates ≥1 band ∧ Interval in-band everywhere) gives the test
+  // teeth: it cannot pass unless the interval branch genuinely differs from Mid.
+  auto mid_fit = fit_convex_slice(obs, F, T, df, ConvexFitOpts{});
+  ASSERT_TRUE(mid_fit.has_value()) << mid_fit.error().to_string();
+  int mid_violations = 0;
+  double worst_out = 0.0;
   for (const auto& o : obs) {
-    const double call = (o.side == Side::Call) ? o.mid : o.mid + df*(F - o.K);
+    const auto [lo, hi] = band(o);
+    const double c = mid_fit->call_price(o.K);
+    if (c < lo - 1e-6 || c > hi + 1e-6) {
+      ++mid_violations;
+      worst_out = std::max(worst_out, std::max(lo - c, c - hi));
+    }
+  }
+  ASSERT_GT(mid_violations, 0)
+      << "board is not discriminating: the default Mid fit stays in every band, so "
+         "the interval assertion below would pass even if interval loss regressed to "
+         "Mid (worst overshoot " << worst_out << ")";
+
+  // (2) The Interval fit must put EVERY fitted call price INSIDE its band.
+  ConvexFitOpts opts;
+  opts.loss = CalibLossKind::Interval;
+  auto fit = fit_convex_slice(obs, F, T, df, opts);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  for (const auto& o : obs) {
+    const auto [lo, hi] = band(o);
     const double c = fit->call_price(o.K);
-    EXPECT_GE(c, call - o.spread/2 - 1e-6);
-    EXPECT_LE(c, call + o.spread/2 + 1e-6);
+    EXPECT_GE(c, lo - 1e-6) << "interval fit below band at K=" << o.K;
+    EXPECT_LE(c, hi + 1e-6) << "interval fit above band at K=" << o.K;
   }
 }
 
