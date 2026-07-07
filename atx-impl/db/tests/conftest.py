@@ -53,6 +53,32 @@ _SCHEMA_FINGERPRINT_FILES = (
 )
 
 
+def pytest_addoption(parser):
+    """Add ``--run-slow`` so the release gate can opt into heavy integration tests.
+
+    The default (fast) lane skips ``@pytest.mark.slow`` tests. A handful of
+    integration tests do full warehouse builds, DB backup/restore roundtrips,
+    WAL-recovery, and multi-dataset backfills; together they were ~55% of the
+    suite's wall time and crushed CPU/disk on every iterative run. They still
+    run in the gate (`pytest ... --run-slow`), just not on the inner dev loop.
+    """
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="Run @pytest.mark.slow heavy integration tests (default: skipped).",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-slow"):
+        return
+    skip_slow = pytest.mark.skip(reason="slow heavy integration test; pass --run-slow to run")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)
+
+
 def _cap_threads(con) -> None:
     try:
         con.execute(f"PRAGMA threads={_DUCKDB_TEST_THREADS}")
@@ -66,6 +92,12 @@ def _build_template(dest: Path) -> None:
     Uses DuckDBStore/ensure_quant_schema/apply_pending_migrations so the template
     is byte-for-byte what production bootstrap produces (schema + migrations +
     catalog seed), then closes cleanly (checkpoint, no WAL) so it can be copied.
+
+    (Re-packing the template to DuckDB's minimum 16 KiB block size was tried to
+    shrink the ~40 MB file / per-test copy; it shrank the template ~2.9x but made
+    the fast lane *slower* — 2m47s -> 4m16s — because the tiny blocks penalise
+    every test's queries far more than the cheaper copy saves. The per-test cost is
+    the DuckDB operations, not the file copy, so the default block size wins.)
     """
     from db.connection import DuckDBStore
 
@@ -164,7 +196,8 @@ def tmp_store(_schema_template, tmp_path):
 
     Copies the shared schema template (fast) and opens a new connection WITHOUT
     re-running initialization, so each test gets an isolated warehouse in
-    milliseconds instead of rebuilding the schema (~9s) every time.
+    milliseconds instead of rebuilding the schema (~180s at 150+ migrations)
+    every time.
     """
     db_path = tmp_path / "test_warehouse.duckdb"
     store = _open_template_copy(_schema_template, db_path)
@@ -189,3 +222,29 @@ def fresh_store(_schema_template, tmp_path):
         yield store
     finally:
         _close_store(store)
+
+
+@pytest.fixture
+def built_warehouse(_schema_template, tmp_path):
+    """Factory -> filesystem path to a fresh, fully-built warehouse file.
+
+    ``path = built_warehouse("my_name.duckdb")`` copies the shared schema template
+    to ``tmp_path/my_name.duckdb`` and returns the path. For tests that must
+    open/reopen/back up/restore a real warehouse *file* via ``DuckDBStore(path)``
+    but do NOT test the build/migration path itself: opening the copy sees
+    ``schema_migrations`` already at head, so ``initialize()`` takes the
+    schema-current fast path (~0.6s) instead of rebuilding from scratch (~180s at
+    150+ migrations). The factory lets each test keep its own filename (some couple
+    the WAL path to the db name). Copies are private to the test and fully writable.
+
+    Tests that genuinely exercise the from-scratch build or a partial/old-version
+    migration state must still construct their own ``DuckDBStore`` (and stay
+    ``@pytest.mark.slow``).
+    """
+
+    def _make(name: str = "built_warehouse.duckdb") -> Path:
+        db_path = tmp_path / name
+        shutil.copyfile(_schema_template, db_path)
+        return db_path
+
+    return _make

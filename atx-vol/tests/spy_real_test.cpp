@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "atx/vol/opra_panel.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/universe.hpp"
+#include "atx/vol/vol_curve.hpp"
 
 // Real-data SOTA-accuracy acceptance on a cached SPY OPRA cbbo-1m (NBBO) slice.
 //
@@ -33,9 +35,11 @@ using atx::vol::FitPreset;
 using atx::vol::load_opra_cbbo_parquet;
 using atx::vol::make_session_inputs;
 using atx::vol::OpraLoadSpec;
+using atx::vol::SessionDiagnostics;
 using atx::vol::Underlying;
 using atx::vol::Universe;
 using atx::vol::VolaSession;
+using atx::vol::VolCurveKind;
 
 // Locate the cached SPY parquet across the paths a test binary might run from.
 [[nodiscard]] std::string find_spy_parquet() {
@@ -134,4 +138,40 @@ TEST(SpyRealOpra, LiquidSurfaceFitsToOneVolPointVegaWeighted) {
   EXPECT_LT(median, 0.015) << "median vega-weighted RMSE (vol) over liquid slices";
   EXPECT_GE(under_2vp * 100, liq_vw.size() * 75)  // >= 75% within 2 vol points
       << under_2vp << " of " << liq_vw.size() << " liquid slices within 2 vol pts";
+}
+
+// The dense/SVI served surface (ConvexDense override path) must now REPORT a
+// measured calendar-arb status instead of the historical hardcoded `false`.
+// This reuses the same cached SPY board as the fit-accuracy test above, but
+// routes it through ConvexDense to reach the CurveSurface override path.
+TEST(SpyRealCalendarReporting, DenseSurfaceReportsMeasuredCalendar) {
+  const std::string path = find_spy_parquet();
+  if (path.empty()) {
+    GTEST_SKIP() << "cached SPY OPRA parquet not found; run the databento pull + "
+                    "opra_dbn_to_parquet to materialise the fixture.";
+  }
+
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "SPY";
+  spec.snapshot_iso = "2026-06-05T19:55:00Z";
+  spec.r = 0.043;
+  const auto panel = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  auto in = make_session_inputs(FitPreset::Fast, panel->implied_spot, spec.r,
+                                panel->frame.snapshot_ts_ns);
+  in.curve.kind = VolCurveKind::ConvexDense;  // route to the CurveSurface override
+  const auto sess = VolaSession::from_frame(panel->frame, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const SessionDiagnostics& d = sess->diagnostics();
+  std::printf(
+      "[SPY dense calendar] calendar_arb_free=%s n_calendar_viol_pre=%zu\n",
+      d.calendar_arb_free ? "true" : "false", d.n_calendar_viol_pre);
+
+  // Pre-enforcement this may be >0; the assertion is only that it is COMPUTED:
+  // n_calendar_viol_pre is 0 IFF calendar_arb_free is true (they agree). Before
+  // this fix, the stamp was hardcoded false/0, which fails this identity.
+  EXPECT_EQ(d.calendar_arb_free, d.n_calendar_viol_pre == 0u);
 }

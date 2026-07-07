@@ -183,4 +183,11 @@ if(ATX_BUILD_EXAMPLES)
     # archives + manifest, which spy_strangle_backtest --manifest then backtests.
     add_executable(spy_ytd_corpus examples/spy_ytd_corpus.cpp)
     target_link_libraries(spy_ytd_corpus PRIVATE atx::vol atx::core atx_warnings)
+
+    # Validation harness: re-run the SAME short 40d 6m strangle a second way — from
+    # the RAW OPRA mid marks on actual listed contracts — and compare its P&L series
+    # against the interpolated-from-fits backtest (with a bridge series that splits
+    # the gap into strike/tenor granularity vs fit-vs-market fidelity).
+    add_executable(spy_strangle_tradeable examples/spy_strangle_tradeable.cpp)
+    target_link_libraries(spy_strangle_tradeable PRIVATE atx::vol atx::core atx_warnings)
 endif()

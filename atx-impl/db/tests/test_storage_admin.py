@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 def test_storage_stats_and_compaction_create_backup(tmp_store, tmp_path):
     from db.storage_admin import checkpoint_and_compact, record_storage_stats
 
@@ -57,11 +56,11 @@ def _build_lake_probe(db_path: Path) -> None:
         )
 
 
-def test_partitioned_incremental_lake_export_skips_unchanged_partitions(tmp_path):
+def test_partitioned_incremental_lake_export_skips_unchanged_partitions(built_warehouse, tmp_path):
     from db.connection import DuckDBStore
     from db.lake import LakehouseExporter
 
-    db_path = tmp_path / "lake_probe.duckdb"
+    db_path = built_warehouse("lake_probe.duckdb")
     lake_root = tmp_path / "lake"
     _build_lake_probe(db_path)
 
@@ -98,11 +97,11 @@ def test_partitioned_incremental_lake_export_skips_unchanged_partitions(tmp_path
     assert third_manifest["files"][0]["partition_values"] == {"as_of_date": "2026-01-01"}
 
 
-def test_undeclared_lake_object_keeps_single_file_layout(tmp_path):
+def test_undeclared_lake_object_keeps_single_file_layout(built_warehouse, tmp_path):
     from db.connection import DuckDBStore
     from db.lake import LakehouseExporter
 
-    db_path = tmp_path / "lake_plain.duckdb"
+    db_path = built_warehouse("lake_plain.duckdb")
     with DuckDBStore(db_path) as store:
         store.con.execute("CREATE TABLE lake_plain AS SELECT 1 AS id")
 

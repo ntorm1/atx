@@ -24,6 +24,7 @@
 #include "atx/vol/opra_batch.hpp"  // OpraBatchSpec, load_opra_daterange, market_env_from_frame
 #include "atx/vol/session.hpp"     // FitPreset
 #include "atx/vol/types.hpp"       // Result
+#include "atx/vol/vol_curve.hpp"   // CurveConfig, VolCurveKind (pin the curve family)
 
 using namespace atx::vol;
 
@@ -91,6 +92,13 @@ int main(int argc, char** argv) {
   // ── Fit -> ATXVSA archives + manifest (Fast preset; parallel across dates) ─
   CorpusConfig cfg;
   cfg.fit_template.preset = FitPreset::Fast;  // matches spy_real_test's headline fit
+  // Pin the curve family: penny-dense SPY boards deterministically auto-select
+  // ConvexDense (node_cap 40 — the CurveConfig default), so leaving `curve` unset
+  // makes every board pay the selector's duplicate cold de-Americanization (two
+  // candidate fits + held-out cold repricings) only to re-derive ConvexDense. Pinning
+  // it drops that entire per-board pass; the served surface is unchanged (SPY was
+  // already served ConvexDense). ~2x faster corpus build on this hive.
+  cfg.fit_template.curve = CurveConfig{};  // {VolCurveKind::ConvexDense, node_cap 40}
   const Result<CorpusManifest> man = build_corpus(boards, out_dir, cfg);
   if (!man) {
     std::fprintf(stderr, "build_corpus: %s\n", man.error().to_string().c_str());

@@ -1,11 +1,17 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/arb.hpp"
+
+#include "atx/vol/black76.hpp"
+#include "atx/vol/dense_slice.hpp"
+#include "atx/vol/vol_curve.hpp"
 
 // Coverage for the static-arbitrage validators (arb.hpp), ported from the C
 // ats-vol library (ats_arb.c). Calendar / butterfly checks, SVI-MM
@@ -26,7 +32,11 @@ using atx::vol::arb_check_total_surface_all;
 using atx::vol::arb_filter_quotes_ex;
 using atx::vol::arb_project_calendar_essvi;
 using atx::vol::arb_project_calendar_svi;
+using atx::vol::black76_price;
+using atx::vol::ConvexDenseCurve;
+using atx::vol::ConvexSliceFit;
 using atx::vol::CurveSet;
+using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviParams;
 using atx::vol::filter_default_opts;
@@ -94,6 +104,24 @@ using atx::vol::VolSurface;
   return s;
 }
 
+// A trivial constant-vol convex slice at (T,F) — flat smile sigma. 5 strikes
+// around F; European call prices at flat sigma are convex/arb-free, so the
+// convex-QP-shaped fixture below feeds fit output directly rather than the
+// fitter itself.
+[[nodiscard]] ConvexSliceFit flat_slice(double T, double F, double df,
+                                        double sigma) {
+  ConvexSliceFit s;
+  s.T = T;
+  s.F = F;
+  s.df = df;
+  for (int i = -2; i <= 2; ++i) {
+    const double K = F * std::exp(0.05 * i);
+    s.u.push_back(K);
+    s.C.push_back(black76_price(F, K, T, sigma, df, Side::Call));
+  }
+  return s;
+}
+
 }  // namespace
 
 // ── Calendar check ────────────────────────────────────────────────────────
@@ -126,6 +154,30 @@ TEST(ArbCalendar, EmptyOrSingleSlice_NoOpEmpty) {
   const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
   ASSERT_TRUE(res.has_value());
   EXPECT_TRUE(res.value().empty());
+}
+
+// ── Calendar check (CurveSurface: ConvexDense/SVI served path) ─────────────
+
+TEST(ArbCheckCalendarCurveSurface, FlagsCrossing) {
+  CurveSurface surf;
+  // T1=0.25 with HIGH vol, T2=0.50 with LOW vol -> w(k,T2) < w(k,T1): calendar
+  // arb.
+  surf.push(std::make_unique<ConvexDenseCurve>(flat_slice(0.25, 100.0, 1.0, 0.40)));
+  surf.push(std::make_unique<ConvexDenseCurve>(flat_slice(0.50, 100.0, 1.0, 0.20)));
+  const auto v = arb_check_calendar(surf, -0.2, 0.2, 21);
+  ASSERT_TRUE(v.has_value());
+  EXPECT_FALSE(v->empty());
+  EXPECT_EQ(v->front().kind, ArbViolation::Kind::Calendar);
+}
+
+TEST(ArbCheckCalendarCurveSurface, CleanStackNoViolation) {
+  CurveSurface surf;
+  // Monotone total variance: same sigma -> w = sigma^2 * T is increasing in T.
+  surf.push(std::make_unique<ConvexDenseCurve>(flat_slice(0.25, 100.0, 1.0, 0.25)));
+  surf.push(std::make_unique<ConvexDenseCurve>(flat_slice(0.50, 100.0, 1.0, 0.25)));
+  const auto v = arb_check_calendar(surf, -0.2, 0.2, 21);
+  ASSERT_TRUE(v.has_value());
+  EXPECT_TRUE(v->empty());
 }
 
 // ── Butterfly check ───────────────────────────────────────────────────────

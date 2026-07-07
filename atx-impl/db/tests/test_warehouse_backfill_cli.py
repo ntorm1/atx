@@ -106,9 +106,9 @@ def _run_cli(argv: list[str], capsys, *, registry=None) -> dict:
     return json.loads(captured.out)
 
 
-def test_warehouse_backfill_cli_backfill_status_and_resume(tmp_path: Path, capsys) -> None:
+def test_warehouse_backfill_cli_backfill_status_and_resume(built_warehouse, capsys) -> None:
     CliBackfillDataset.reset()
-    db_path = tmp_path / "warehouse_backfill_cli.duckdb"
+    db_path = built_warehouse("warehouse_backfill_cli.duckdb")
     failed_key = "cli_backfill:2014-02-01:2014-03-01"
     CliBackfillDataset.failing_partition = failed_key
 
@@ -194,11 +194,11 @@ def test_warehouse_backfill_cli_backfill_status_and_resume(tmp_path: Path, capsy
 
 
 def test_warehouse_backfill_cli_status_reports_all_skipped_rerun(
-    tmp_path: Path,
+    built_warehouse,
     capsys,
 ) -> None:
     CliBackfillDataset.reset()
-    db_path = tmp_path / "warehouse_backfill_cli_skipped.duckdb"
+    db_path = built_warehouse("warehouse_backfill_cli_skipped.duckdb")
 
     first = _run_cli(
         [
@@ -264,12 +264,12 @@ def test_warehouse_backfill_cli_status_reports_all_skipped_rerun(
 
 
 def test_warehouse_backfill_cli_status_reports_dependency_all_skipped_rerun(
-    tmp_path: Path,
+    built_warehouse,
     capsys,
 ) -> None:
     CliBackfillDependencyDataset.reset()
     CliBackfillRootDataset.reset()
-    db_path = tmp_path / "warehouse_backfill_cli_dependency_skipped.duckdb"
+    db_path = built_warehouse("warehouse_backfill_cli_dependency_skipped.duckdb")
     registry = _dependency_registry()
 
     first = _run_cli(
@@ -361,13 +361,13 @@ def test_warehouse_backfill_cli_status_reports_dependency_all_skipped_rerun(
 
 
 def test_warehouse_backfill_cli_direct_resume_missing_dataset_does_not_leave_running(
-    tmp_path: Path,
+    built_warehouse,
     capsys,
 ) -> None:
     from db import DuckDBStore
     from scripts import warehouse_backfill
 
-    db_path = tmp_path / "warehouse_backfill_cli_direct_missing.duckdb"
+    db_path = built_warehouse("warehouse_backfill_cli_direct_missing.duckdb")
     run_id = "direct-missing-dataset"
     with DuckDBStore(db_path) as store:
         store.con.execute(

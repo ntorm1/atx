@@ -50,6 +50,7 @@
 #include "atx/vol/curve.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
+#include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
 
 namespace atx::vol {
@@ -112,6 +113,15 @@ struct ArbViolation {
 // surface carries fewer than two slices or `n_grid == 0`.
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_calendar(const VolSurface &s, double k_min, double k_max,
+                   std::uint32_t n_grid);
+
+// Calendar check for a polymorphic CurveSurface (ConvexDense/SVI served path).
+// Sample n_grid equispaced log-moneyness points in [k_min,k_max]; record a
+// Calendar violation wherever total variance DECREASES across a consecutive
+// (shorter-T, longer-T) slice pair, w_prev(k) - w_curr(k) > kCalendarTol.
+// Empty result => calendar-arb-free. No-op (empty) for < 2 slices or n_grid==0.
+[[nodiscard]] Result<std::vector<ArbViolation>>
+arb_check_calendar(const CurveSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
 
 // Per-slice Lee/Roper density positivity via finite-difference w'/w'' on the

@@ -264,6 +264,15 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     }
   }
 
+  // Snapshot stamp is hoisted above the row loop so the loop can drop expired /
+  // same-day contracts by year-fraction. (snapshot_ts_ns / snapshot_iso depend only
+  // on the table + spec, never on the kept rows.)
+  const std::int64_t snapshot_ts_ns = first_ts_ns(table);
+  std::string snapshot_iso = spec.snapshot_iso;
+  if (snapshot_iso.empty()) {
+    snapshot_iso = ns_to_iso_date(snapshot_ts_ns);
+  }
+
   std::vector<QuoteRow> rows;
   rows.reserve(n_rows);
   std::size_t n_dropped = 0;
@@ -282,6 +291,14 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     }
     auto osi = parse_osi_symbol(symbols[i]);
     if (!osi.has_value()) {
+      ++n_dropped;
+      continue;
+    }
+    // Drop expired / same-day (0DTE) contracts: with a 19:55Z snapshot and a
+    // midnight-UTC expiry parse, an expiry on/before the snapshot date yields a
+    // non-positive year-fraction. A T <= 0 point is not a tradeable forward node —
+    // it would poison sqrt(T) IV/greeks and any slice fit that admits it.
+    if (!(year_fraction(snapshot_iso, osi->expiry_iso) > 0.0)) {
       ++n_dropped;
       continue;
     }
@@ -316,11 +333,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     frame_uid = !first_underlying.empty() ? first_underlying : first_root;
   }
 
-  const std::int64_t snapshot_ts_ns = first_ts_ns(table);
-  std::string snapshot_iso = spec.snapshot_iso;
-  if (snapshot_iso.empty()) {
-    snapshot_iso = ns_to_iso_date(snapshot_ts_ns);
-  }
+  // (snapshot_ts_ns / snapshot_iso computed above the row loop.)
 
   // ── P2-3 term-structure yield curve ─────────────────────────────────────
   // Caller-supplied pillars define a real term curve queried at each maturity;

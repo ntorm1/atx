@@ -112,13 +112,10 @@ def test_apply_lock_release_is_holder_scoped(tmp_store):
     assert remaining == 0
 
 
-def test_apply_lock_blocks_second_connection(tmp_store, tmp_path):
-    from db.connection import DuckDBStore
+def test_apply_lock_blocks_second_connection(built_warehouse):
     from db.migrations import acquire_apply_lock
 
-    db_path = tmp_path / "lock_contention.duckdb"
-    with DuckDBStore(db_path):
-        pass
+    db_path = built_warehouse("lock_contention.duckdb")
     con_a = duckdb.connect(str(db_path))
     con_b = duckdb.connect(str(db_path))
     try:
@@ -201,11 +198,11 @@ def test_verify_schema_uses_persisted_contract_and_catches_drift(tmp_store):
         verify_schema(tmp_store.con)
 
 
-def test_backup_database_and_restore_roundtrip(tmp_path):
+def test_backup_database_and_restore_roundtrip(built_warehouse, tmp_path):
     from db.connection import DuckDBStore
     from db.migration_admin import backup_database, checkpoint, restore_database
 
-    db_path = tmp_path / "restore_roundtrip.duckdb"
+    db_path = built_warehouse("restore_roundtrip.duckdb")
     backup_dir = tmp_path / "backups"
     with DuckDBStore(db_path) as store:
         store.con.execute("CREATE TABLE restore_probe (id INTEGER)")
@@ -240,14 +237,11 @@ def test_backup_database_and_restore_roundtrip(tmp_path):
     assert rows == [(1,)]
 
 
-def test_run_governed_migrations_restores_on_verify_failure(tmp_path):
-    from db.connection import DuckDBStore
+def test_run_governed_migrations_restores_on_verify_failure(built_warehouse, tmp_path):
     from db.migration_admin import run_governed_migrations
 
-    db_path = tmp_path / "restore_on_verify_failure.duckdb"
+    db_path = built_warehouse("restore_on_verify_failure.duckdb")
     backup_dir = tmp_path / "backups"
-    with DuckDBStore(db_path):
-        pass
 
     def create_bad_post_backup_table(conn):
         conn.execute("CREATE TABLE injected_after_backup (id INTEGER)")
@@ -286,6 +280,7 @@ def test_run_governed_migrations_restores_on_verify_failure(tmp_path):
     assert lock_count == 0
 
 
+@pytest.mark.slow
 def test_governed_forward_migration_on_populated_pre_s2_db(tmp_path, monkeypatch):
     from db.connection import DuckDBStore
     from db.migration_admin import run_governed_migrations, verify_schema
@@ -336,11 +331,11 @@ def test_governed_forward_migration_on_populated_pre_s2_db(tmp_path, monkeypatch
     assert str(expected_forward_versions[-1]) in registry[1]
 
 
-def test_recover_from_wal_failure_restores_backup_and_reapplies(tmp_path):
+def test_recover_from_wal_failure_restores_backup_and_reapplies(built_warehouse, tmp_path):
     from db.connection import DuckDBStore
     from db.migration_admin import backup_database, checkpoint, recover_from_wal_failure
 
-    db_path = tmp_path / "wal_recovery.duckdb"
+    db_path = built_warehouse("wal_recovery.duckdb")
     backup_dir = tmp_path / "backups"
     with DuckDBStore(db_path) as store:
         store.con.execute(
@@ -399,7 +394,7 @@ def test_recover_from_wal_failure_restores_backup_and_reapplies(tmp_path):
     assert list(tmp_path.glob("wal_recovery.duckdb.wal.failed-*.bak"))
 
 
-def test_enforce_backup_retention_prunes_only_registered_completed_backups(tmp_path):
+def test_enforce_backup_retention_prunes_only_registered_completed_backups(built_warehouse, tmp_path):
     from db.connection import DuckDBStore
     from db.migration_admin import (
         backup_database,
@@ -408,7 +403,7 @@ def test_enforce_backup_retention_prunes_only_registered_completed_backups(tmp_p
         record_backup,
     )
 
-    db_path = tmp_path / "retention.duckdb"
+    db_path = built_warehouse("retention.duckdb")
     backup_dir = tmp_path / "backups"
     now = dt.datetime(2026, 7, 4, 12, 0, 0)
     with DuckDBStore(db_path) as store:

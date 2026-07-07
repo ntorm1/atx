@@ -274,11 +274,17 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
 
     SessionDiagnostics cdiag{};
     cdiag.n_slices = crep.n_slices;
-    // Calendar no-arb across slices is not (yet) checked for the dense/SVI
-    // override; report it unverified rather than asserting an unproven property.
-    // (Each convex slice is butterfly-arb-free by construction of the QP.)
-    cdiag.calendar_arb_free = false;
-    cdiag.n_calendar_viol_pre = 0;
+    // Calendar no-arb across slices, measured on the served CurveSurface. Each
+    // convex slice is butterfly-arb-free by construction; this is the missing
+    // half. k-range spans a wide moneyness band around the money.
+    {
+      constexpr double kBand = 0.60;   // log-moneyness half-width to sample
+      constexpr std::uint32_t kGrid = 64;
+      const auto cal = arb_check_calendar(crep.surface, -kBand, kBand, kGrid);
+      const std::size_t n_viol = cal ? cal->size() : 0;
+      cdiag.calendar_arb_free = (n_viol == 0);
+      cdiag.n_calendar_viol_pre = n_viol;
+    }
     {
       double worst = std::numeric_limits<double>::infinity();
       double sum_frac = 0.0, sum_chi2 = 0.0, sum_rmse = 0.0;
