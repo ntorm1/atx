@@ -84,6 +84,13 @@ struct ConvexFitOpts {
   int node_cap{40};
   // Max active-set iterations (safety cap).
   int max_iter{200};
+  // Data-fit loss. Mid (default) fits each price to its symmetric MIDPOINT (a
+  // point target). Interval fits it into the bid-ask BAND [bid, ask] with ZERO
+  // residual inside the band and a quadratic penalty outside — the exact
+  // interval loss, still a convex QP (solved via slack variables). Mid keeps
+  // production fits byte-identical; the Interval branch composes with the
+  // slope-below (`bound_slope_below`) and calendar-floor (`w_prev`) constraints.
+  CalibLossKind loss{CalibLossKind::Mid};
 };
 
 // Fit an arbitrage-free convex call-price smile to one expiry's filtered

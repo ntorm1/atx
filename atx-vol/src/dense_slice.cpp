@@ -137,6 +137,7 @@ struct Node {
   double u{};   // strike
   double c{};   // weighted-mean target European call price
   double w{};   // total weight
+  double s{};   // weighted-mean bid-ask band width (call-invariant; interval loss)
 };
 
 }  // namespace
@@ -198,7 +199,10 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     const double spread = (o.spread > 1.0e-9) ? o.spread : 1.0e-9;
     const double vega = (o.vega > 0.0) ? o.vega : 1.0e-6;
     const double w = (vega * vega) / (spread * spread);
-    nodes.push_back(Node{o.K, call, w});
+    // Raw (unclamped, call-invariant under put-call parity) band width for the
+    // optional interval loss; the Mid data term does not read it.
+    const double band = (o.spread > 0.0) ? o.spread : 0.0;
+    nodes.push_back(Node{o.K, call, w, band});
   }
   if (nodes.size() < 3) {
     return Err(ErrorCode::InvalidArgument,
@@ -214,6 +218,7 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
       Node& m = merged.back();
       const double wsum = m.w + nd.w;
       m.c = (m.c * m.w + nd.c * nd.w) / (wsum > 0.0 ? wsum : 1.0);
+      m.s = (m.s * m.w + nd.s * nd.w) / (wsum > 0.0 ? wsum : 1.0);
       m.w = wsum;
     } else {
       merged.push_back(nd);
@@ -406,6 +411,138 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
       v = std::max(v, cfloor[static_cast<std::size_t>(j)] * (1.0 + 1.0e-6) + 1.0e-9);
     }
     x0(j) = v;
+  }
+
+  // ── Optional interval (band) loss ─────────────────────────────────────────
+  // Instead of fitting each price to its MID, fit it into the bid-ask BAND
+  // [c_bid, c_ask] with ZERO residual inside the band and a quadratic penalty
+  // OUTSIDE — the exact interval loss, still a convex QP via slack variables.
+  // The variable vector widens to z = [g (N nodes); s⁺ (M); s⁻ (M)] (size N+2M):
+  //
+  //   minimize  ½ Σ_i w_i (s⁺_i² + s⁻_i²) + λ Σ (Δ³g)²
+  //   s.t.      (cone + slope-below + calendar-floor rows on g, reused verbatim)
+  //             −(Bg)_i + s⁺_i ≥ −c_ask_i        (price − c_ask ≤ s⁺)
+  //              (Bg)_i + s⁻_i ≥  c_bid_i         (c_bid − price ≤ s⁻)
+  //             s⁺_i ≥ 0,  s⁻_i ≥ 0
+  //
+  // At the optimum s⁺_i = max(0, price−c_ask_i), s⁻_i = max(0, c_bid_i−price):
+  // zero when the price is inside the band, its overshoot otherwise. The g-block
+  // reuses the SAME `rows`/`hrows` and feasible start `x0` assembled above (each
+  // g-block row embedded into the wider z layout by zero-padding the 2M slack
+  // columns, RHS unchanged) — so interval loss composes with the A3 slope-below
+  // and A4 calendar-floor constraints. The Mid branch below is untouched.
+  if (opts.loss == CalibLossKind::Interval) {
+    const Eigen::Index Nz = N + 2 * M;
+
+    // Objective ½zᵀHz z (qz = 0): the g sub-block carries the SAME third-
+    // difference roughness + conditioning ridge as the Mid path (NO data term —
+    // the band slacks carry the data fit); each slack gets a 2·w_i diagonal so
+    // its squared penalty is w_i·s².
+    MatX Hz = MatX::Zero(Nz, Nz);
+    const double lam_iv = opts.lambda * w_mean;
+    for (Eigen::Index i = 0; i + 3 < N; ++i) {
+      const double rrow[4] = {-1.0, 3.0, -3.0, 1.0};  // 3rd difference
+      for (int a = 0; a < 4; ++a) {
+        for (int b = 0; b < 4; ++b) {
+          Hz(i + a, i + b) += 2.0 * lam_iv * rrow[a] * rrow[b];
+        }
+      }
+    }
+    Hz.topLeftCorner(N, N) =
+        (0.5 * (Hz.topLeftCorner(N, N) +
+                Hz.topLeftCorner(N, N).transpose()))
+            .eval();  // exact symmetry for solve_spd
+    for (Eigen::Index i = 0; i < N; ++i) {
+      Hz(i, i) += 1.0e-9 * w_mean + 1.0e-15;  // conditioning ridge (matches Mid)
+    }
+    for (Eigen::Index i = 0; i < M; ++i) {
+      Hz(N + i, N + i) = 2.0 * wo(i);          // penalty w_i·(s⁺_i)²
+      Hz(N + M + i, N + M + i) = 2.0 * wo(i);  // penalty w_i·(s⁻_i)²
+    }
+    // Rescale the objective by 1/w_mean (a positive constant ⇒ the argmin is
+    // unchanged). The data weights w_i can be enormous when spreads collapse, so
+    // this brings Hz to O(1) — matching the O(1) constraint rows — which keeps
+    // the augmented KKT matrix well balanced and the solve accurate. (The Mid
+    // path is naturally balanced by its BᵀWB data term, so it needs no rescale.)
+    Hz *= 1.0 / w_mean;
+    const VecX qz = VecX::Zero(Nz);
+
+    // Band edges per merged obs (call-folded): the half-spread is invariant under
+    // put-call parity, so c_ask = co + spread/2, c_bid = max(0, co − spread/2).
+    VecX cask(M), cbid(M);
+    for (Eigen::Index i = 0; i < M; ++i) {
+      const double half = 0.5 * merged[static_cast<std::size_t>(i)].s;
+      cask(i) = co(i) + half;
+      cbid(i) = std::max(0.0, co(i) - half);
+    }
+
+    // Constraints Gz z ≥ hz: the reused g-block rows (zero-padded slack columns),
+    // then band-upper, band-lower, s⁺ ≥ 0, s⁻ ≥ 0.
+    const auto ncg = static_cast<Eigen::Index>(rows.size());
+    const Eigen::Index ncz = ncg + 4 * M;
+    MatX Gz = MatX::Zero(ncz, Nz);
+    VecX hz = VecX::Zero(ncz);
+    for (Eigen::Index i = 0; i < ncg; ++i) {
+      Gz.block(i, 0, 1, N) = rows[static_cast<std::size_t>(i)].transpose();
+      hz(i) = hrows[static_cast<std::size_t>(i)];
+    }
+    Eigen::Index rr = ncg;
+    for (Eigen::Index i = 0; i < M; ++i) {  // −(Bg)_i + s⁺_i ≥ −c_ask_i
+      Gz.block(rr, 0, 1, N) = -B.row(i);
+      Gz(rr, N + i) = 1.0;
+      hz(rr) = -cask(i);
+      ++rr;
+    }
+    for (Eigen::Index i = 0; i < M; ++i) {  // (Bg)_i + s⁻_i ≥ c_bid_i
+      Gz.block(rr, 0, 1, N) = B.row(i);
+      Gz(rr, N + M + i) = 1.0;
+      hz(rr) = cbid(i);
+      ++rr;
+    }
+    for (Eigen::Index i = 0; i < M; ++i) {  // s⁺_i ≥ 0
+      Gz(rr, N + i) = 1.0;
+      ++rr;
+    }
+    for (Eigen::Index i = 0; i < M; ++i) {  // s⁻_i ≥ 0
+      Gz(rr, N + M + i) = 1.0;
+      ++rr;
+    }
+
+    // Strictly feasible start: g = the Mid-path x0 (already lifted to the
+    // calendar floor, so the g-block rows are already strict); each slack set
+    // just past its band residual so every band + non-negativity row is strict.
+    const VecX Bx0 = B * x0;
+    VecX z0 = VecX::Zero(Nz);
+    z0.head(N) = x0;
+    constexpr double eps = 1.0e-6;
+    for (Eigen::Index i = 0; i < M; ++i) {
+      z0(N + i) = std::max(0.0, Bx0(i) - cask(i)) + eps;
+      z0(N + M + i) = std::max(0.0, cbid(i) - Bx0(i)) + eps;
+    }
+
+    ATX_TRY(VecX z, qp_active_set(Hz, qz, Gz, hz, z0, opts.max_iter));
+
+    // Recover node prices from the g sub-block; build the fit as the Mid path does.
+    ConvexSliceFit fit;
+    fit.T = T;
+    fit.F = F;
+    fit.df = df;
+    fit.u.resize(static_cast<std::size_t>(N));
+    fit.C.resize(static_cast<std::size_t>(N));
+    for (Eigen::Index j = 0; j < N; ++j) {
+      fit.u[static_cast<std::size_t>(j)] = un(j);
+      fit.C[static_cast<std::size_t>(j)] = z(j);
+    }
+    const VecX pred = B * z.head(N);
+    double wsse = 0.0, wtot = 0.0;
+    for (Eigen::Index i = 0; i < M; ++i) {
+      const double res = pred(i) - co(i);
+      wsse += wo(i) * res * res;
+      wtot += wo(i);
+    }
+    fit.rmse_price = (wtot > 0.0) ? std::sqrt(wsse / wtot) : 0.0;
+    fit.n_obs = static_cast<std::size_t>(M);
+    return Ok(std::move(fit));
   }
 
   ATX_TRY(VecX gn, qp_active_set(H, q, G, h, x0, opts.max_iter));

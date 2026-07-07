@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -88,6 +89,31 @@ std::vector<FitObs> make_synthetic_slice_obs(double F, double T, double df,
       o.spread = 1.0e-4;        // tight spread => near-interpolated by the fit
       o.vega = std::max(o.vega, 1.0);
     }
+  }
+  return obs;
+}
+
+// A convex, arbitrage-free call board with WIDE bid-ask bands. The mids lie on an
+// exact convex QUADRATIC in strike (uniform grid ⇒ zero third difference), so the
+// roughness-minimizing convex curve equals the mids: the interval fit interpolates
+// them and sits at every band's CENTER, strictly inside even a wide band. (A
+// flat-vol board's mids are convex but NOT roughness-minimal, so the interval loss
+// would smooth them toward the band edges — this quadratic pins the fit interior,
+// exercising the band composition without a knife-edge tolerance.) All strikes are
+// OTM calls, keeping mids positive. NOT used by the A3/A4 tests; `sigma` only sets
+// a realistic per-obs vega weight via mk_obs.
+std::vector<FitObs> make_synthetic_slice_obs_wideband(double F, double T, double df,
+                                                      double sigma) {
+  const std::vector<double> strikes = {100, 106, 112, 118, 124, 130,
+                                       136, 142, 148, 154, 160};
+  const double kmax = 166.0;
+  std::vector<FitObs> obs;
+  obs.reserve(strikes.size());
+  for (const double K : strikes) {
+    FitObs o = mk_obs(F, T, df, K, sigma);          // realistic side / vega weight
+    o.mid = 0.0016 * (kmax - K) * (kmax - K);        // convex, decreasing, positive
+    o.spread = std::max(0.30 * o.mid, 2.0);          // WIDE band around the mid
+    obs.push_back(o);
   }
   return obs;
 }
@@ -248,4 +274,32 @@ TEST(ConvexSliceFit, CalendarFloorSlackIsBitIdentical) {
   for (std::size_t j = 0; j < free_fit->C.size(); ++j) {
     EXPECT_NEAR(free_fit->C[j], floored->C[j], 1e-12);  // slack ⇒ identical
   }
+}
+
+TEST(ConvexSliceFit, IntervalLossPutsPriceInsideBand) {
+  using namespace atx::vol;
+  const double F = 100.0, T = 0.5, df = 0.98;
+  // Wide bands → many mid-only fits sit outside band; interval should pull inside.
+  std::vector<FitObs> obs = make_synthetic_slice_obs_wideband(F, T, df, 0.20);
+  ConvexFitOpts opts; opts.loss = CalibLossKind::Interval;
+  auto fit = fit_convex_slice(obs, F, T, df, opts);
+  ASSERT_TRUE(fit.has_value());
+  for (const auto& o : obs) {
+    const double call = (o.side == Side::Call) ? o.mid : o.mid + df*(F - o.K);
+    const double c = fit->call_price(o.K);
+    EXPECT_GE(c, call - o.spread/2 - 1e-6);
+    EXPECT_LE(c, call + o.spread/2 + 1e-6);
+  }
+}
+
+TEST(ConvexSliceFit, IntervalDegenerateBandEqualsMid) {
+  using namespace atx::vol;
+  const double F = 100.0, T = 0.5, df = 0.98;
+  auto obs = make_synthetic_slice_obs(F, T, df, 0.20);
+  for (auto& o : obs) o.spread = 0.0;             // zero-width band == mid target
+  ConvexFitOpts mid; auto a = fit_convex_slice(obs, F, T, df, mid);
+  ConvexFitOpts iv; iv.loss = CalibLossKind::Interval;
+  auto b = fit_convex_slice(obs, F, T, df, iv);
+  ASSERT_TRUE(a && b);
+  for (std::size_t j = 0; j < a->C.size(); ++j) EXPECT_NEAR(a->C[j], b->C[j], 1e-7);
 }
