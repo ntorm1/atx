@@ -435,3 +435,47 @@ def test_factor_dqc_existence_probes_are_lazy_for_unrelated_checks(tmp_store, mo
     )
     names = {r.check_name for r in results}
     assert LEAKAGE_DQC_CHECK_NAME not in names and COVERAGE_DQC_CHECK_NAME not in names
+
+
+# ---------------------------------------------------------------------------
+# PF4-S1-4: closeout catalog sweep (clause E)
+# ---------------------------------------------------------------------------
+
+def test_signal_eval_tables_are_catalogued(tmp_store) -> None:
+    # Every table migrations 0176-0179 create must be schema-as-contract catalogued:
+    # a table_catalog row (so warehouse_catalog_asof / catalog-completeness checks see it)
+    # and at least one field_catalog row (so the field-level contract is not silently thin).
+    # This is the S1-4 offline stand-in for the operator-run live table_catalog query in the
+    # task brief; it proves the same nine-table contract without touching the live DB.
+    tables = (
+        "factor_eval_manifest",
+        "factor_ic",
+        "factor_ic_decay",
+        "factor_quantile_spread",
+        "factor_turnover",
+        "factor_correlation",
+        "factor_crowding",
+        "factor_breadth",
+        "factor_dqc_result",
+    )
+    catalogued = {
+        row[0]
+        for row in tmp_store.con.execute(
+            f"SELECT table_name FROM table_catalog WHERE table_name IN ({','.join('?' for _ in tables)})",
+            list(tables),
+        ).fetchall()
+    }
+    assert catalogued == set(tables), f"missing from table_catalog: {set(tables) - catalogued}"
+
+    field_counts = tmp_store.con.execute(
+        f"""
+        SELECT table_name, count(*) AS n_fields
+        FROM field_catalog
+        WHERE table_name IN ({','.join('?' for _ in tables)})
+        GROUP BY table_name
+        """,
+        list(tables),
+    ).fetchall()
+    field_counts_by_table = dict(field_counts)
+    for table in tables:
+        assert field_counts_by_table.get(table, 0) >= 1, f"{table} has no field_catalog rows"
