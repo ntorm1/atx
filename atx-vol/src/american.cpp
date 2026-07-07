@@ -1688,6 +1688,79 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   return Ok(out);
 }
 
+Result<double> american_delta(double S, double K, double T, double sigma, double r,
+                              double q, Side side, AmericanMethod method,
+                              const std::optional<AlOpts>& opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_delta: S, K, T, sigma must be > 0");
+  }
+  const double hS = 1.0e-3 * S;  // same spot step as american_greeks_fd
+
+  // Put fast path (AndersenLake): the exercise boundary is spot-independent, so
+  // BOTH spot stencils reprice against ONE base boundary — delta in a single
+  // boundary solve + two price-from-boundary evals, BIT-IDENTICAL to
+  // american_greeks_fd's put delta (identical stencil, step, and guard chain).
+  if (side == Side::Put && method == AmericanMethod::AndersenLake) {
+    const AlScheme sch = scheme_from_opts(opts);
+    AlBoundary bnd{};
+    AlWorkspace ws{};
+    bool have_bnd = false;
+    bool bnd_ok = false;
+    bool failed = false;
+    atx::core::Error first_err;
+    // Price a put at spot S2, mirroring american_greeks_fd's Pput base stencil
+    // exactly (degenerate -> intrinsic, r<=0 -> European Black-76, else the shared
+    // AL boundary; a collapsed boundary falls back to the scalar cold price).
+    const auto put_px = [&](double S2) -> double {
+      if (failed) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+        const double intr = K - S2;
+        return (intr > 0.0) ? intr : 0.0;
+      }
+      if (r <= 0.0) {
+        return black76_price(S2 * std::exp((r - q) * T), K, T, sigma,
+                             std::exp(-r * T), Side::Put);
+      }
+      if (!have_bnd) {
+        bnd_ok = (al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws) == AlSolveStatus::Ok);
+        have_bnd = true;
+      }
+      if (!bnd_ok) {
+        const Result<double> p = american_price(S2, K, T, sigma, r, q, Side::Put, method, opts);
+        if (!p) {
+          failed = true;
+          first_err = p.error();
+          return std::numeric_limits<double>::quiet_NaN();
+        }
+        return *p;
+      }
+      return al_put_price_from_boundary(bnd, ws, S2, K, T, sigma, r, q);
+    };
+    const double pSp = put_px(S + hS);
+    const double pSm = put_px(S - hS);
+    if (failed) {
+      return Err(std::move(first_err));
+    }
+    return Ok((pSp - pSm) / (2.0 * hS));
+  }
+
+  // General path (calls, BAW, or anything not on the put-AL fast lane): the same
+  // central difference on the cold `american_price` that american_greeks_fd runs —
+  // two solves, and bit-identical to its delta.
+  const Result<double> pSp = american_price(S + hS, K, T, sigma, r, q, side, method, opts);
+  if (!pSp) {
+    return Err(pSp.error());
+  }
+  const Result<double> pSm = american_price(S - hS, K, T, sigma, r, q, side, method, opts);
+  if (!pSm) {
+    return Err(pSm.error());
+  }
+  return Ok((*pSp - *pSm) / (2.0 * hS));
+}
+
 namespace detail {
 
 GaussLegendre gauss_legendre(unsigned n) {

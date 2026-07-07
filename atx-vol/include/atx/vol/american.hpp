@@ -255,6 +255,22 @@ struct AmericanGreeks {
     double S, double K, double T, double sigma, double r, double q, Side side,
     const std::optional<AlOpts>& opts = std::nullopt);
 
+// American delta ONLY (∂price/∂S) — the single sensitivity the strike-from-delta
+// solver's bisection consumes, WITHOUT the full american_greeks_fd bundle's other
+// eight axes (which cost 17 boundary solves). The put/AndersenLake fast lane
+// exploits the spot-independent exercise boundary: ONE boundary solve + two
+// price-from-boundary spot stencils, BIT-IDENTICAL to american_greeks_fd's delta.
+// Calls / BAW / degenerate corners take a two-evaluation central difference on the
+// cold american_price — the same stencil (and value) american_greeks_fd uses, at
+// two solves instead of seventeen. So a delta-driven root-find (resolve_strike_by_
+// delta) that repriced full greeks per candidate now solves ~1-2 boundaries per
+// candidate at an unchanged strike. InvalidArgument on non-positive S/K/T/sigma;
+// propagates any american_price error.
+[[nodiscard]] Result<double> american_delta(double S, double K, double T, double sigma,
+                                            double r, double q, Side side,
+                                            AmericanMethod method = AmericanMethod::AndersenLake,
+                                            const std::optional<AlOpts>& opts = std::nullopt);
+
 // American vega ONLY (∂price/∂sigma) — the single first-order sensitivity the IV
 // inverter's Newton step needs, WITHOUT the full `american_greeks` bundle's
 // second-order finite-difference correction partials (gamma/vanna/volga/charm,

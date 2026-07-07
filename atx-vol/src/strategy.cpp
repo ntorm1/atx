@@ -48,9 +48,12 @@ Result<double> resolve_strike_by_delta(const PricedSurface& s, double T, Side si
   };
   const auto gof = [&](double k) -> GVal {
     const double K = F * std::exp(k);
-    const Result<AmericanGreeks> gr = s.greeks(K, T, side);
+    // The bisection consumes ONLY |delta|: the delta-only fast path (~1-2 boundary
+    // solves) replaces the full-greeks reprice (17) per candidate strike, at a
+    // bit-identical delta.
+    const Result<double> gr = s.delta(K, T, side);
     if (gr) {
-      const double d = std::fabs(gr->delta);
+      const double d = std::fabs(*gr);
       if (std::isfinite(d)) {
         return GVal{d - target_abs_delta, true};
       }
@@ -104,9 +107,9 @@ Result<double> resolve_strike_by_delta(const PricedSurface& s, double T, Side si
   // Validate: the root must actually reprice to the target (guards unreachable
   // targets that straddled only through the asymptotic sentinel).
   const double Kroot = F * std::exp(kroot);
-  const Result<AmericanGreeks> gr = s.greeks(Kroot, T, side);
-  if (!gr || !std::isfinite(gr->delta) ||
-      std::fabs(std::fabs(gr->delta) - target_abs_delta) > 1.0e-4) {
+  const Result<double> gr = s.delta(Kroot, T, side);
+  if (!gr || !std::isfinite(*gr) ||
+      std::fabs(std::fabs(*gr) - target_abs_delta) > 1.0e-4) {
     return Err(ErrorCode::InvalidArgument, "resolve_strike_by_delta: delta target unreachable");
   }
   return Ok(Kroot);

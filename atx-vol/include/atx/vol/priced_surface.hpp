@@ -120,6 +120,11 @@ class PricedSurface {
   // bit-stable greeks() default). The pricer enables it via PriceOptions.
   [[nodiscard]] Result<AmericanGreeks> greeks_analytic(double K, double T, Side side) const;
 
+  // American delta ONLY at (K, T, side) via `american_delta` — the single axis the
+  // strike-from-delta solver consumes, at ~1-2 boundary solves instead of greeks()'s
+  // seventeen (bit-identical value; same S/sigma/carry plumbing as greeks()).
+  [[nodiscard]] Result<double> delta(double K, double T, Side side) const;
+
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
   // The interpolated term forward F(T) and effective carry q_eff(T): clamp to the

@@ -74,3 +74,35 @@ the whole-book reprice (2 lots). This is exactly the "sub routine" the goal poin
 - Accept tick-level (½-tick $0.005 / ~1e-4 |delta|) deviation, not bit-identity.
 
 Sequenced, measured, each validated against the pre-change strikes to |delta| tol.
+
+## Phase 2 — results
+
+**Baseline (release, 130-date corpus, 1 strangle):** backtest run 7.99 s / 129
+priced steps = 62 ms/step for a 2-lot book. Confirmed the strike solver dominates:
+the reprice is 2 lots (~ms), the rest is `resolve_strike_by_delta` × 2 legs, whose
+bisection repriced full American greeks per candidate strike — `PricedSurface::
+greeks` = cold FD (`american_greeks_fd`: 7 boundary solves for the put fast lane,
+17 for the call) — to consume ONLY `|delta|`.
+
+**L1 — delta-only fast path (SHIPPED, bit-identical).** New free function
+`american_delta` + `PricedSurface::delta`, wired into `resolve_strike_by_delta`
+(bisection + validation):
+- Put/AndersenLake: ONE base-boundary solve + two price-from-boundary spot
+  stencils (the boundary is spot-independent) — BIT-IDENTICAL to the FD put delta.
+- Call / BAW / degenerate: the same two-price central difference on the cold
+  `american_price` the FD path uses — bit-identical, at 2 solves not 17.
+
+Result: **backtest run 7.99 s → 3.97 s = 2.01× faster, strikes and tearsheet
+bit-identical** (`total_return` 772.92 unchanged; strategy/backtest determinism +
+closure gates all still bit-identical). Gate `AmericanDelta.MatchesFd_PutCallGrid`
+locks `american_delta == american_greeks_fd.delta` bit-for-bit over a 150-point
+put+call grid. Full suite: 674 tests green.
+
+**Remaining bottleneck → next lever:** the call leg's delta path still routes
+through two cold `american_price` calls (each rebuilding the Gauss-Legendre tables
++ nodes), so it is heavier than the put's shared-workspace boundary solve. Taking
+the call leg onto the same in-family cheap primitives (McDonald-Schröder internal
+put via `al_solve_put_boundary`/`al_put_price_from_boundary`, tick-accurate not
+bit-identical) is the next increment. A cheaper tick-level lever also remains:
+loosening the bisection convergence from 1e-7 to ~1e-5 (still 10× inside the 1e-4
+validation gate) cuts ~25% of candidates.

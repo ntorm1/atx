@@ -33,6 +33,7 @@ namespace {
 using atx::vol::AloPricer;
 using atx::vol::AlOpts;
 using atx::vol::american_greeks;
+using atx::vol::american_delta;
 using atx::vol::american_greeks_al;
 using atx::vol::american_greeks_fd;
 using atx::vol::american_price;
@@ -520,6 +521,36 @@ TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
     }
   }
   EXPECT_EQ(checked, 75);
+}
+
+// Delta-only fast path: american_delta must reproduce american_greeks_fd's delta
+// BIT-IDENTICALLY on both sides (the put/AL lane shares the base boundary; the call
+// lane is the same two-price central difference), at ~1-2 boundary solves instead
+// of seven/seventeen. This is what makes resolve_strike_by_delta's bisection cheap
+// without moving the resolved strike.
+TEST(AmericanDelta, MatchesFd_PutCallGrid) {
+  const double S = 100.0;
+  const double r = 0.05;
+  const double q = 0.03;
+  int checked = 0;
+  for (const Side side : {Side::Put, Side::Call}) {
+    for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+      for (const double T : {0.02, 0.1, 0.5, 1.0, 2.0}) {
+        for (const double sigma : {0.12, 0.25, 0.45}) {
+          const auto d = american_delta(S, K, T, sigma, r, q, side);
+          const auto g = american_greeks_fd(S, K, T, sigma, r, q, side);
+          ASSERT_TRUE(d.has_value() && g.has_value())
+              << (side == Side::Put ? "put" : "call") << " K=" << K << " T=" << T
+              << " sigma=" << sigma;
+          EXPECT_EQ(*d, g->delta)
+              << (side == Side::Put ? "put" : "call") << " K=" << K << " T=" << T
+              << " sigma=" << sigma;
+          ++checked;
+        }
+      }
+    }
+  }
+  EXPECT_EQ(checked, 150);
 }
 
 // P1b: warm-started greeks (6 bumped boundaries seeded from the converged base)
