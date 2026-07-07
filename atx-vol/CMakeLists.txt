@@ -169,4 +169,12 @@ if(ATX_BUILD_EXAMPLES)
 
     add_executable(atxvol_strategy_examples examples/strategy_examples.cpp)
     target_link_libraries(atxvol_strategy_examples PRIVATE atx::vol atx::core atx_warnings)
+
+    # Deliverable: short the 40-delta 6m SPY strangle, restriked every day
+    # (2026-01-02 -> 2026-07-02). Builds a deterministic rolling-vol synthetic SPY
+    # corpus, runs the backtest (timed), confirms the quote-slice CSV + ATXVSA
+    # surface-archive stores, and prints a tearsheet + TSV table. The correctness
+    # GATE is tests/spy_strangle_backtest_test.cpp. See examples/spy_strangle_backtest.cpp.
+    add_executable(spy_strangle_backtest examples/spy_strangle_backtest.cpp)
+    target_link_libraries(spy_strangle_backtest PRIVATE atx::vol atx::core atx_warnings)
 endif()

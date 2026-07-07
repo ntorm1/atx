@@ -62,6 +62,7 @@ add_executable(atx-vol-tests
     tearsheet_test.cpp
     backtest_real_test.cpp
     backtest_bench_test.cpp
+    spy_strangle_backtest_test.cpp
 )
 
 target_link_libraries(atx-vol-tests
