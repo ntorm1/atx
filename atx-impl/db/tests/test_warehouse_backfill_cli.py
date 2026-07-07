@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pytest
 
+# Full backfill-CLI integration runs (status/resume across datasets); each was
+# ~85-98s. Heavy lane only — run with `pytest ... --run-slow`.
+pytestmark = pytest.mark.slow
+
 
 class CliBackfillDataset:
     dataset_id = "cli_backfill"

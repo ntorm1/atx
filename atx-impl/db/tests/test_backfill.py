@@ -273,6 +273,7 @@ def test_plan_backfill_is_deterministic_for_half_open_quarterly_windows():
     assert second == expected
 
 
+@pytest.mark.slow
 def test_run_backfill_full_run_records_succeeded_watermarks(tmp_store):
     from db.backfill import run_backfill
 

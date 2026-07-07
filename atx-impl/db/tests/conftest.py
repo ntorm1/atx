@@ -53,6 +53,32 @@ _SCHEMA_FINGERPRINT_FILES = (
 )
 
 
+def pytest_addoption(parser):
+    """Add ``--run-slow`` so the release gate can opt into heavy integration tests.
+
+    The default (fast) lane skips ``@pytest.mark.slow`` tests. A handful of
+    integration tests do full warehouse builds, DB backup/restore roundtrips,
+    WAL-recovery, and multi-dataset backfills; together they were ~55% of the
+    suite's wall time and crushed CPU/disk on every iterative run. They still
+    run in the gate (`pytest ... --run-slow`), just not on the inner dev loop.
+    """
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="Run @pytest.mark.slow heavy integration tests (default: skipped).",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-slow"):
+        return
+    skip_slow = pytest.mark.skip(reason="slow heavy integration test; pass --run-slow to run")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)
+
+
 def _cap_threads(con) -> None:
     try:
         con.execute(f"PRAGMA threads={_DUCKDB_TEST_THREADS}")

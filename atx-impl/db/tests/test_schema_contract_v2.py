@@ -371,6 +371,7 @@ def test_migration_0135_catalogs_recreated_latest_view_pit_columns(tmp_store):
     assert missing_catalog_rows == {}
 
 
+@pytest.mark.slow
 def test_migration_0135_recovers_source_loaded_at_from_computed_at(tmp_path):
     db_path = tmp_path / "pre_0135.duckdb"
     store = DuckDBStore(db_path)

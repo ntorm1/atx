@@ -4,6 +4,7 @@ import datetime as dt
 
 import duckdb
 import pandas as pd
+import pytest
 
 
 def _old_spine_conn(path=":memory:"):
@@ -124,6 +125,7 @@ def _record_migrations_through(conn, max_version: int) -> None:
     )
 
 
+@pytest.mark.slow
 def test_legacy_pre_0079_initialize_applies_identifier_spine_after_safe_view_bootstrap(tmp_path):
     from db.connection import DuckDBStore
 

@@ -3,6 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+# Storage-admin integration: DB stats/compaction/backup + partitioned lake
+# exports over the full warehouse; several were ~90-114s. Heavy lane only —
+# run with `pytest ... --run-slow`.
+pytestmark = pytest.mark.slow
+
 
 def test_storage_stats_and_compaction_create_backup(tmp_store, tmp_path):
     from db.storage_admin import checkpoint_and_compact, record_storage_stats
