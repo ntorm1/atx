@@ -612,7 +612,6 @@ def test_migration_0148_seeds_s6_0_catalog_rows_without_seed_loader(tmp_store):
     assert view_codes == set(S6_0_FORMULA_CODES)
 
 
-@pytest.mark.slow
 def test_migration_0148_body_upserts_existing_s6_0_catalog_rows(tmp_store):
     from db.migrations.bodies_0148_0151 import _pf3_s6_ratio_formula_catalog_expansion
 
