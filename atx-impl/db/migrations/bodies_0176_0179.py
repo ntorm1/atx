@@ -96,7 +96,71 @@ def _pf4_s1_ic_surface(conn: duckdb.DuckDBPyConnection) -> None:
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf4_s1_quantile_turnover(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF4-S1-1: factor_quantile_spread + factor_turnover (decile spread + turnover)."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_quantile_spread (
+            eval_id VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            horizon INTEGER NOT NULL,
+            n_quantiles INTEGER NOT NULL,
+            quantile INTEGER NOT NULL,
+            mean_forward_return DOUBLE,
+            mean_factor_value DOUBLE,
+            n_obs BIGINT,
+            long_short_spread DOUBLE,
+            long_short_hit_rate DOUBLE,
+            decile_monotonicity DOUBLE,
+            universe_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS factor_turnover (
+            eval_id VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            n_quantiles INTEGER NOT NULL,
+            top_decile_turnover DOUBLE,
+            bottom_decile_turnover DOUBLE,
+            mean_rank_autocorrelation DOUBLE,
+            n_rebalances BIGINT,
+            universe_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at) VALUES
+        ('factor_quantile_spread','metric','factor_quantile_spread','factor_id,horizon,quantile,universe_id,run_id',
+         'Per-factor per-decile mean forward return (monotonicity) plus denormalized top-minus-bottom long-short spread, hit-rate, and decile monotonicity.',
+         '["factor_id","horizon","quantile","universe_id","run_id"]',
+         'Quantile buckets formed within the as-of cross-section only; forward returns future-dated.', now()),
+        ('factor_turnover','metric','factor_turnover','factor_id,universe_id,run_id',
+         'Per-factor top/bottom-decile membership churn rebalance-to-rebalance plus factor rank autocorrelation.',
+         '["factor_id","universe_id","run_id"]',
+         'Turnover compares consecutive as-of dates in forward chronological order; no lookahead.', now())
+        """
+    )
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_factor_quantile_spread_factor ON factor_quantile_spread(factor_id, horizon, quantile)",
+        "CREATE INDEX IF NOT EXISTS idx_factor_turnover_factor ON factor_turnover(factor_id)",
+    ):
+        conn.execute(stmt)
+    _catalog_fields_for_tables(conn, ("factor_quantile_spread", "factor_turnover"))
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(version=176, name="pf4_s1_ic_surface", up=_pf4_s1_ic_surface),
-    # 0177, 0178, 0179 appended by later tasks in this same sprint
+    Migration(version=177, name="pf4_s1_quantile_turnover", up=_pf4_s1_quantile_turnover),
+    # 0178, 0179 appended by later tasks in this same sprint
 ]

@@ -11,6 +11,8 @@ from db.signal_eval import (
     IcResult,
     compute_forward_returns,
     compute_information_coefficient,
+    compute_quantile_spread,
+    compute_turnover,
     load_panel_for_eval,
     evaluate_panel,
 )
@@ -129,3 +131,61 @@ def test_evaluate_panel_persists_ic_rows_per_factor(tmp_store) -> None:
         run_id="rid-ic",
     )
     assert "factor_ic" in counts and "factor_ic_decay" in counts
+
+
+def test_monotone_factor_has_monotone_deciles_and_positive_spread() -> None:
+    dates = _dates(50); secs = [f"S{i}" for i in range(50)]
+    panel_rows, fr_rows = [], []
+    for d in dates:
+        for i, s in enumerate(secs):
+            v = float(i)                                    # perfectly ordered factor
+            panel_rows.append({"security_id": s, "as_of_date": d, "factor_id": "mono", "value": v})
+            fr_rows.append({"security_id": s, "as_of_date": d, "horizon": 1, "forward_return": v / 100.0})
+    spread = compute_quantile_spread(pd.DataFrame(panel_rows), pd.DataFrame(fr_rows), n_quantiles=10, horizons=[1])
+    deciles = spread.sort_values("quantile")["mean_forward_return"].to_numpy()
+    assert np.all(np.diff(deciles) > -1e-9)                 # monotone non-decreasing decile returns
+    assert spread["long_short_spread"].iloc[0] > 0
+    assert spread["long_short_hit_rate"].iloc[0] > 0.9
+    assert spread["decile_monotonicity"].iloc[0] > 0.99
+
+
+def test_random_walk_factor_has_flat_deciles_and_high_turnover() -> None:
+    rng = np.random.default_rng(5)
+    dates = _dates(60); secs = [f"S{i}" for i in range(40)]
+    panel_rows, fr_rows = [], []
+    for d in dates:
+        for s in secs:
+            v = rng.normal()                                # re-drawn each date -> unstable ranking
+            panel_rows.append({"security_id": s, "as_of_date": d, "factor_id": "rw", "value": v})
+            fr_rows.append({"security_id": s, "as_of_date": d, "horizon": 1, "forward_return": rng.normal()})
+    p, fr = pd.DataFrame(panel_rows), pd.DataFrame(fr_rows)
+    spread = compute_quantile_spread(p, fr, n_quantiles=10, horizons=[1])
+    assert abs(spread["long_short_spread"].iloc[0]) < 0.05
+    turnover = compute_turnover(p, n_quantiles=10)
+    assert turnover["top_decile_turnover"].iloc[0] > 0.5    # membership churns hard for a random walk
+    assert abs(turnover["mean_rank_autocorrelation"].iloc[0]) < 0.2
+
+
+def test_stable_factor_has_low_turnover() -> None:
+    dates = _dates(30); secs = [f"S{i}" for i in range(40)]
+    panel_rows = [{"security_id": s, "as_of_date": d, "factor_id": "stable", "value": float(i)}
+                  for d in dates for i, s in enumerate(secs)]
+    turnover = compute_turnover(pd.DataFrame(panel_rows), n_quantiles=10)
+    assert turnover["top_decile_turnover"].iloc[0] < 1e-9   # ranking never changes -> zero churn
+    assert turnover["mean_rank_autocorrelation"].iloc[0] > 0.99
+
+
+def test_compute_quantile_spread_is_order_invariant() -> None:
+    rng = np.random.default_rng(21)
+    dates = _dates(15); secs = [f"S{i}" for i in range(30)]
+    rows, fr = [], []
+    for d in dates:
+        for s in secs:
+            v = rng.normal()
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "f", "value": v})
+            fr.append({"security_id": s, "as_of_date": d, "horizon": 1, "forward_return": v + rng.normal()})
+    p, f = pd.DataFrame(rows), pd.DataFrame(fr)
+    a = compute_quantile_spread(p, f, n_quantiles=5, horizons=[1])
+    b = compute_quantile_spread(p.sample(frac=1.0, random_state=8).reset_index(drop=True),
+                                f.sample(frac=1.0, random_state=9).reset_index(drop=True), n_quantiles=5, horizons=[1])
+    pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
