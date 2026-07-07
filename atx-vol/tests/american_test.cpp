@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <optional>
 #include <span>
 #include <string>
@@ -30,6 +32,10 @@ namespace {
 using atx::vol::AloPricer;
 using atx::vol::AlOpts;
 using atx::vol::american_greeks;
+using atx::vol::american_greeks_fd;
+using atx::vol::american_price;
+using atx::vol::AmericanGreeks;
+using atx::vol::AmericanMethod;
 using atx::vol::american_vega;
 using atx::vol::al_fast_opts;
 using atx::vol::american_price_cached;
@@ -428,6 +434,136 @@ TEST(AmericanGreeks, NoCorrection_FallsBackToBlack76) {
   const double m = std::exp((r - q) * T);
   EXPECT_LT(std::fabs(g->delta - m * gB.delta), 1.0e-12);
   EXPECT_LT(std::fabs(g->vega - gB.vega), 1.0e-12);
+}
+
+// ── FD boundary-reuse (P1a): fast greeks == 17-solve reference, bit-identical ──
+
+// The pre-P1a algorithm: every one of the 17 stencils a full cold american_price.
+// american_greeks_fd's put fast path solves each of the 7 unique (sigma,r,T)
+// boundaries once and re-prices the spot stencils against it; because the boundary
+// is S-independent and the solve/eval split is the same code al_solve_put runs,
+// the result must reproduce this reference to the last bit.
+AmericanGreeks greeks_fd_reference(double S, double K, double T, double sigma,
+                                   double r, double q, Side side) {
+  const double hS = 1.0e-3 * S;
+  double hv = 1.0e-3;
+  if (sigma - hv <= 0.0) {
+    hv = 0.5 * sigma;
+  }
+  const double hr = 1.0e-4;
+  const double hT = 1.0e-3;
+  const bool near_expiry = (T - hT <= 1.0e-8);
+  auto P = [&](double dS, double dsig, double dr, double dT) {
+    return value_or_fail(american_price(S + dS, K, T + dT, sigma + dsig, r + dr, q,
+                                        side, AmericanMethod::AndersenLake,
+                                        std::nullopt));
+  };
+  const double p0 = P(0, 0, 0, 0);
+  const double p_Sp = P(+hS, 0, 0, 0);
+  const double p_Sm = P(-hS, 0, 0, 0);
+  const double p_vp = P(0, +hv, 0, 0);
+  const double p_vm = P(0, -hv, 0, 0);
+  const double p_rp = P(0, 0, +hr, 0);
+  const double p_rm = P(0, 0, -hr, 0);
+  const double p_Tp = P(0, 0, 0, +hT);
+  const double p_Tm = near_expiry ? p0 : P(0, 0, 0, -hT);
+  const double p_SpVp = P(+hS, +hv, 0, 0);
+  const double p_SpVm = P(+hS, -hv, 0, 0);
+  const double p_SmVp = P(-hS, +hv, 0, 0);
+  const double p_SmVm = P(-hS, -hv, 0, 0);
+  const double p_SpTp = P(+hS, 0, 0, +hT);
+  const double p_SmTp = P(-hS, 0, 0, +hT);
+  const double p_SpTm = near_expiry ? p_Sp : P(+hS, 0, 0, -hT);
+  const double p_SmTm = near_expiry ? p_Sm : P(-hS, 0, 0, -hT);
+  const double dT_den = near_expiry ? hT : (2.0 * hT);
+  AmericanGreeks g;
+  g.price = p0;
+  g.delta = (p_Sp - p_Sm) / (2.0 * hS);
+  g.gamma = (p_Sp - 2.0 * p0 + p_Sm) / (hS * hS);
+  g.vega = (p_vp - p_vm) / (2.0 * hv);
+  g.volga = (p_vp - 2.0 * p0 + p_vm) / (hv * hv);
+  g.rho = (p_rp - p_rm) / (2.0 * hr);
+  g.theta = -(p_Tp - p_Tm) / dT_den;
+  g.vanna = (p_SpVp - p_SpVm - p_SmVp + p_SmVm) / (4.0 * hS * hv);
+  g.charm = -(p_SpTp - p_SpTm - p_SmTp + p_SmTm) / (2.0 * hS * dT_den);
+  return g;
+}
+
+TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
+  const double S = 100.0;
+  const double r = 0.05;
+  const double q = 0.03;
+  int checked = 0;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.02, 0.1, 0.5, 1.0, 2.0}) {
+      for (const double sigma : {0.12, 0.25, 0.45}) {
+        const auto fast = american_greeks_fd(S, K, T, sigma, r, q, Side::Put);
+        ASSERT_TRUE(fast.has_value())
+            << "K=" << K << " T=" << T << " sigma=" << sigma;
+        const AmericanGreeks ref = greeks_fd_reference(S, K, T, sigma, r, q, Side::Put);
+        const std::string at =
+            "K=" + std::to_string(K) + " T=" + std::to_string(T) +
+            " sigma=" + std::to_string(sigma);
+        EXPECT_EQ(fast->price, ref.price) << at;
+        EXPECT_EQ(fast->delta, ref.delta) << at;
+        EXPECT_EQ(fast->gamma, ref.gamma) << at;
+        EXPECT_EQ(fast->vega, ref.vega) << at;
+        EXPECT_EQ(fast->volga, ref.volga) << at;
+        EXPECT_EQ(fast->rho, ref.rho) << at;
+        EXPECT_EQ(fast->theta, ref.theta) << at;
+        EXPECT_EQ(fast->vanna, ref.vanna) << at;
+        EXPECT_EQ(fast->charm, ref.charm) << at;
+        ++checked;
+      }
+    }
+  }
+  EXPECT_EQ(checked, 75);
+}
+
+// Controlled A/B of the isolated hot function: fast put greeks (7 boundary solves)
+// vs the 17-solve reference. Same params, same process — the ratio is P1a's true
+// per-call speedup, free of backtest/book noise. DISABLED (perf, not correctness):
+//   run: --gtest_also_run_disabled_tests --gtest_filter=*FdBoundaryReuse_Speedup*
+TEST(AmericanGreeks, DISABLED_FdBoundaryReuse_Speedup) {
+  const double S = 100.0, r = 0.05, q = 0.03;
+  struct Pt { double K, T, sigma; };
+  std::vector<Pt> grid;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.05, 0.25, 0.75, 1.5}) {
+      for (const double sigma : {0.15, 0.30}) {
+        grid.push_back({K, T, sigma});
+      }
+    }
+  }
+  const int reps = 400;
+  volatile double sink = 0.0;
+
+  auto t0 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep) {
+    for (const Pt& p : grid) {
+      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Put);
+      sink += g ? g->delta + g->vega + g->gamma : 0.0;
+    }
+  }
+  auto t1 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep) {
+    for (const Pt& p : grid) {
+      const auto g = greeks_fd_reference(S, p.K, p.T, p.sigma, r, q, Side::Put);
+      sink += g.delta + g.vega + g.gamma;
+    }
+  }
+  auto t2 = std::chrono::steady_clock::now();
+
+  const double fast_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const double ref_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+  const long calls = static_cast<long>(reps) * static_cast<long>(grid.size());
+  std::printf(
+      "[p1a-speedup] calls=%ld fast=%.1f ms (%.2f us/call) ref=%.1f ms (%.2f "
+      "us/call) speedup=%.2fx sink=%.3g\n",
+      calls, fast_ms, 1000.0 * fast_ms / static_cast<double>(calls), ref_ms,
+      1000.0 * ref_ms / static_cast<double>(calls), ref_ms / fast_ms,
+      static_cast<double>(sink));
+  EXPECT_GT(ref_ms, fast_ms);  // fast path must not be slower
 }
 
 // ── Warm-started AloPricer (the American-IV throughput lever) ─────────────

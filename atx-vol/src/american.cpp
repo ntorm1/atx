@@ -756,32 +756,31 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
   return (total > 0.0) ? total : 0.0;
 }
 
-// Put core — used directly for puts and via McDonald-Schroder for calls.
-[[nodiscard]] Result<double> al_solve_put(double S, double K, double T,
-                                          double sigma, double r, double q,
-                                          const AlScheme& sch) {
-  const double euro = euro_put_sk(S, K, T, sigma, r, q);
+// ── Boundary solve / price split (S-independence seam) ───────────────────
+//
+// The Andersen-Lake exercise boundary depends on (K, T, sigma, r, q) but NOT on
+// the spot S — al_init_nodes / al_seed_boundary / the sweeps all ignore S; only
+// al_put_premium reads it. Splitting al_solve_put here lets a greeks bundle solve
+// one boundary and re-price every SPOT stencil against it (american_greeks_fd),
+// collapsing the 17 solves to the 7 unique (sigma,r,T) boundaries — bit-identical.
+enum class AlSolveStatus { Ok, Collapsed, TableMissing };
 
-  if (r <= 0.0) {
-    const double intr = K - S;
-    const double price = (euro > intr) ? euro : (intr > 0.0 ? intr : 0.0);
-    return Ok(price);
-  }
-
-  AlBoundary bnd;
-  AlWorkspace ws;
+// S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
+// `bnd`/`ws` hold a converged boundary ready for al_put_price_from_boundary.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma,
+                                                  double r, double q,
+                                                  const AlScheme& sch,
+                                                  AlBoundary& bnd,
+                                                  AlWorkspace& ws) noexcept {
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
-
   if (!(bnd.xmax > 0.0)) {
     // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
-    return Err(ErrorCode::NotImplemented,
-               "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
+    return AlSolveStatus::Collapsed;
   }
-
   const detail::GaussLegendre* fp = gl_find(sch.n_quad_fp);
   const detail::GaussLegendre* pr = gl_find(sch.n_quad_price);
   if (!fp || !fp->ok || !pr || !pr->ok) {
-    return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
+    return AlSolveStatus::TableMissing;
   }
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
@@ -807,7 +806,18 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
       }
     }
   }
+  return AlSolveStatus::Ok;
+}
 
+// Put price at spot S from a solved boundary. Assumes the caller applied the
+// andersen_lake degenerate (T~0/sigma~0) and no-early-exercise (r<=0) guards, so
+// only the r>0 non-degenerate arm runs here. Clamp order matches al_solve_put's
+// exactly, so euro + premium + clamps is bit-identical to a full cold solve.
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary& bnd,
+                                                const AlWorkspace& ws, double S,
+                                                double K, double T, double sigma,
+                                                double r, double q) noexcept {
+  const double euro = euro_put_sk(S, K, T, sigma, r, q);
   const double prem = al_put_premium(bnd, ws, S, sigma, r, q);
   double price = euro + prem;
   const double intr = K - S;
@@ -820,7 +830,32 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
   if (price < 0.0) {
     price = 0.0;
   }
-  return Ok(price);
+  return price;
+}
+
+// Put core — used directly for puts and via McDonald-Schroder for calls.
+[[nodiscard]] Result<double> al_solve_put(double S, double K, double T,
+                                          double sigma, double r, double q,
+                                          const AlScheme& sch) {
+  if (r <= 0.0) {
+    const double euro = euro_put_sk(S, K, T, sigma, r, q);
+    const double intr = K - S;
+    const double price = (euro > intr) ? euro : (intr > 0.0 ? intr : 0.0);
+    return Ok(price);
+  }
+
+  AlBoundary bnd;
+  AlWorkspace ws;
+  switch (al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws)) {
+    case AlSolveStatus::Collapsed:
+      return Err(ErrorCode::NotImplemented,
+                 "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
+    case AlSolveStatus::TableMissing:
+      return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
+    case AlSolveStatus::Ok:
+      break;
+  }
+  return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
 }
 
 // ── American Greeks (chain rule + FD on the correction gradient) ─────────
@@ -1356,31 +1391,89 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
     return *p;
   };
 
+  // Put fast path (AndersenLake only): the AL boundary is S-independent, so the 17
+  // stencils share just 7 unique (sigma,r,T) boundaries. Memoize the boundary per
+  // (dsig,dr,dT) and re-price each spot stencil against it. Bit-identical to P():
+  // al_solve_put with r>0 non-degenerate IS solve-boundary + price-from-boundary,
+  // and the degenerate / r<=0 guards below mirror andersen_lake exactly. The rare
+  // boundary-collapse corner falls back to the scalar P() path (same error).
+  const bool put_fast =
+      (side == Side::Put) && (method == AmericanMethod::AndersenLake);
+  const AlScheme sch = scheme_from_opts(opts);
+  struct BndCache {
+    double dsig{0.0}, dr{0.0}, dT{0.0};
+    AlBoundary bnd{};
+    AlWorkspace ws{};
+    bool ok{false};
+  };
+  std::array<BndCache, 7> memo{};
+  std::size_t n_memo = 0;
+  auto Pput = [&](double dS, double dsig, double dr, double dT) -> double {
+    if (failed) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double S2 = S + dS;
+    const double sig2 = sigma + dsig;
+    const double r2 = r + dr;
+    const double T2 = T + dT;
+    // andersen_lake guards, replicated so each stencil matches a full cold call.
+    if (T2 <= 1.0e-12 || sig2 <= 1.0e-8) {
+      const double intr = K - S2;
+      return (intr > 0.0) ? intr : 0.0;
+    }
+    if (r2 <= 0.0) {  // put no-early-exercise: American == European (Black-76)
+      return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2,
+                           std::exp(-r2 * T2), Side::Put);
+    }
+    BndCache* c = nullptr;
+    for (std::size_t i = 0; i < n_memo; ++i) {
+      if (memo[i].dsig == dsig && memo[i].dr == dr && memo[i].dT == dT) {
+        c = &memo[i];
+        break;
+      }
+    }
+    if (c == nullptr) {
+      c = &memo[n_memo++];
+      c->dsig = dsig;
+      c->dr = dr;
+      c->dT = dT;
+      c->ok = (al_solve_put_boundary(K, T2, sig2, r2, q, sch, c->bnd, c->ws) ==
+               AlSolveStatus::Ok);
+    }
+    if (!c->ok) {
+      return P(dS, dsig, dr, dT);  // boundary collapsed: exact scalar fallback
+    }
+    return al_put_price_from_boundary(c->bnd, c->ws, S2, K, T2, sig2, r2, q);
+  };
+  auto EV = [&](double dS, double dsig, double dr, double dT) -> double {
+    return put_fast ? Pput(dS, dsig, dr, dT) : P(dS, dsig, dr, dT);
+  };
+
   // Base mark: EXACT unbumped args — bit-identical to fair_value()'s own call.
-  const double p0 = P(0.0, 0.0, 0.0, 0.0);
+  const double p0 = EV(0.0, 0.0, 0.0, 0.0);
 
   // Spot stencils.
-  const double p_Sp = P(+hS, 0.0, 0.0, 0.0);
-  const double p_Sm = P(-hS, 0.0, 0.0, 0.0);
+  const double p_Sp = EV(+hS, 0.0, 0.0, 0.0);
+  const double p_Sm = EV(-hS, 0.0, 0.0, 0.0);
   // Vol stencils.
-  const double p_vp = P(0.0, +hv, 0.0, 0.0);
-  const double p_vm = P(0.0, -hv, 0.0, 0.0);
+  const double p_vp = EV(0.0, +hv, 0.0, 0.0);
+  const double p_vm = EV(0.0, -hv, 0.0, 0.0);
   // Rate stencils.
-  const double p_rp = P(0.0, 0.0, +hr, 0.0);
-  const double p_rm = P(0.0, 0.0, -hr, 0.0);
+  const double p_rp = EV(0.0, 0.0, +hr, 0.0);
+  const double p_rm = EV(0.0, 0.0, -hr, 0.0);
   // Time stencils (one-sided forward near expiry).
-  const double p_Tp = P(0.0, 0.0, 0.0, +hT);
-  const double p_Tm = near_expiry ? p0 : P(0.0, 0.0, 0.0, -hT);
+  const double p_Tp = EV(0.0, 0.0, 0.0, +hT);
+  const double p_Tm = near_expiry ? p0 : EV(0.0, 0.0, 0.0, -hT);
   // Vanna cross (spot x vol), central.
-  const double p_SpVp = P(+hS, +hv, 0.0, 0.0);
-  const double p_SpVm = P(+hS, -hv, 0.0, 0.0);
-  const double p_SmVp = P(-hS, +hv, 0.0, 0.0);
-  const double p_SmVm = P(-hS, -hv, 0.0, 0.0);
+  const double p_SpVp = EV(+hS, +hv, 0.0, 0.0);
+  const double p_SpVm = EV(+hS, -hv, 0.0, 0.0);
+  const double p_SmVp = EV(-hS, +hv, 0.0, 0.0);
+  const double p_SmVm = EV(-hS, -hv, 0.0, 0.0);
   // Charm cross (spot x time); one-sided in T near expiry.
-  const double p_SpTp = P(+hS, 0.0, 0.0, +hT);
-  const double p_SmTp = P(-hS, 0.0, 0.0, +hT);
-  const double p_SpTm = near_expiry ? p_Sp : P(+hS, 0.0, 0.0, -hT);
-  const double p_SmTm = near_expiry ? p_Sm : P(-hS, 0.0, 0.0, -hT);
+  const double p_SpTp = EV(+hS, 0.0, 0.0, +hT);
+  const double p_SmTp = EV(-hS, 0.0, 0.0, +hT);
+  const double p_SpTm = near_expiry ? p_Sp : EV(+hS, 0.0, 0.0, -hT);
+  const double p_SmTm = near_expiry ? p_Sm : EV(-hS, 0.0, 0.0, -hT);
 
   if (failed) {
     return Err(std::move(first_err));
