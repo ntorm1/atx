@@ -237,7 +237,24 @@ P5 (dispersion-scale). Each gated on the real-OPRA litmus before the next starts
 |---|---|---|
 | **P1a** boundary-reuse in `american_greeks_fd` (puts: 17→7 boundary solves) | `28e2dbe` | **Bit-identical** (75-pt put grid, all 9 greeks `==` FD reference). Controlled micro-bench **2.50×** on the isolated put greeks call. |
 | **P1b** warm-start machinery (`al_solve_put_boundary_warm` + `warm_start` flag) | `e9e5715` | **2.91×** warm (only +1.16× over P1a). **Kept dormant** — `PricedSurface::greeks` stays cold to preserve greeks bit-reproducibility across a surface-archive round-trip (`LifecycleIntegration`). Warm belongs in the backtest-engine cross-step path (P3). |
-| **P1c** elide duplicate `fair_value` solve in `PortfolioPricer` | *(pending)* | **Bit-identical.** `price()` 8→7, `pnl_explain()` 9→8 boundary solves/put. |
+| **P1c** elide duplicate `fair_value` solve in `PortfolioPricer` | `39fcaf7` | **Bit-identical.** `price()` 8→7, `pnl_explain()` 9→8 boundary solves/put. |
+| **P2** analytic greeks `american_greeks_al` (7→5 solves) | *(pending)* | delta/gamma exact + vega/rho/vanna/volga re-solved (bit-identical to FD) + theta/charm continuation-PDE. Opt-in via `PriceOptions::analytic_greeks`; **backtest defaults ON**. Backtest closure 1.137e-13, det preserved. |
+
+### Key negative result — the envelope theorem does NOT hold for the AL premium
+
+The headline plan was "greeks from 1 solve" via the envelope theorem (freeze the
+boundary, take σ/r partials). **Measured wrong:** frozen-boundary vega/rho/volga/vanna
+were off by 4–22× relative. The Andersen-Lake early-exercise-*premium* decomposition
+`V = euro + Premium(b)` is not stationary to a frozen boundary — `db/dσ`, `db/dr`
+genuinely dominate — so those greeks must re-solve the σ±/r± boundaries. What DID
+work: **delta/gamma exact** (boundary truly spot-independent) and **theta/charm from
+the continuation-region PDE** `θ = rV − (r−q)SΔ − ½σ²S²Γ` (drops the T± solves, and
+more accurate than FD — no time-bump truncation). Net 7→5, not 7→1.
+
+PDE-theta's absolute `rV` term is not bit-reproducible across the archive carry
+round-trip (the FD path's pure price-differences cancel that noise), so the analytic
+path is opt-in — the bit-stable `PricedSurface::greeks` stays cold FD, the backtest
+(no round-trip contract) uses `greeks_analytic`.
 
 ### Key measured finding — sweeps dominate, not the seed
 
